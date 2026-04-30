@@ -11,7 +11,7 @@ import type {
   ChannelSubscription,
 } from "../types";
 
-export const CHANNEL_SYMBOL = Symbol("channel");
+export const CHANNEL_SYMBOL = Symbol.for("tako.channel");
 
 export type ChannelAuthResult = boolean | { subject?: string };
 

@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use super::adapter::{BuildAdapter, detect_build_adapter};
 
@@ -319,11 +320,18 @@ fn build_env_block(env_names: &[String]) -> String {
 }
 
 /// Build the full `tako.gen.ts` content.
-fn build_gen(secret_names: &[String], env_names: &[String]) -> String {
+fn build_gen(secret_names: &[String], env_names: &[String], channel_types: &str) -> String {
     let mut out = String::from(TAKO_GEN_HEADER);
     out.push_str(&build_env_block(env_names));
     out.push_str(&build_secrets_block(secret_names));
     out.push_str(&build_runtime_block());
+    if !channel_types.trim().is_empty() {
+        out.push('\n');
+        out.push_str(channel_types);
+        if !channel_types.ends_with('\n') {
+            out.push('\n');
+        }
+    }
     out
 }
 
@@ -343,7 +351,8 @@ pub fn write_types_for_adapter(
 ) -> std::io::Result<bool> {
     let secret_names = read_secret_names(project_dir);
     let env_names = read_env_names(project_dir);
-    let content = build_gen(&secret_names, &env_names);
+    let channel_types = generate_channel_types(project_dir)?;
+    let content = build_gen(&secret_names, &env_names, &channel_types);
     let path = resolve_gen_path(project_dir);
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
@@ -374,6 +383,47 @@ pub fn write_types_for_adapter(
     Ok(true)
 }
 
+fn generate_channel_types(project_dir: &Path) -> std::io::Result<String> {
+    let channels_dir = project_dir.join("channels");
+    if !channels_dir.is_dir() {
+        return Ok(String::new());
+    }
+
+    let output = match channel_typegen_command(project_dir, &channels_dir).output() {
+        Ok(output) => output,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+        Err(err) => return Err(err),
+    };
+    if !output.status.success() {
+        return Err(std::io::Error::other(format!(
+            "channel typegen failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn channel_typegen_command(project_dir: &Path, channels_dir: &Path) -> Command {
+    let repo_script = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("tako crate lives under repo root")
+        .join("sdk/javascript/bin/gen-channel-types.ts");
+    if repo_script.is_file() {
+        let mut command = Command::new("bun");
+        command.arg(repo_script).arg(channels_dir);
+        command.current_dir(project_dir);
+        return command;
+    }
+
+    let mut command = Command::new("bun");
+    command
+        .arg("run")
+        .arg("tako-sh-gen-channel-types")
+        .arg(channels_dir);
+    command.current_dir(project_dir);
+    command
+}
+
 pub fn write_typegen_support_files(project_dir: &Path) -> std::io::Result<JsTypegenResult> {
     write_typegen_support_files_for_adapter(project_dir, detect_build_adapter(project_dir))
 }
@@ -382,8 +432,8 @@ pub fn write_typegen_support_files_for_adapter(
     project_dir: &Path,
     adapter: BuildAdapter,
 ) -> std::io::Result<JsTypegenResult> {
-    let wrote_runtime_types = write_types_for_adapter(project_dir, adapter)?;
     let wrote_scaffolds = ensure_js_definition_scaffolds(project_dir)?;
+    let wrote_runtime_types = write_types_for_adapter(project_dir, adapter)?;
     Ok(JsTypegenResult {
         wrote_runtime_types,
         wrote_scaffolds,
@@ -624,6 +674,35 @@ mod tests {
     }
 
     #[test]
+    fn write_types_includes_takochannels_block_when_channels_present() {
+        let dir = TempDir::new().unwrap();
+        let channels_dir = dir.path().join("channels");
+        fs::create_dir_all(&channels_dir).unwrap();
+        let sdk_entry = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("sdk/javascript/src/index.ts");
+        let sdk_url = format!("file://{}", sdk_entry.display());
+        fs::write(
+            channels_dir.join("chat.ts"),
+            format!(
+                r#"import {{ defineChannel }} from {sdk_url:?};
+export default defineChannel({{
+  paramsSchema: (t) => t.Object({{ roomId: t.String() }}),
+}}).$messageTypes<{{}}>();
+"#
+            ),
+        )
+        .unwrap();
+
+        write_types(dir.path()).unwrap();
+
+        let content = fs::read_to_string(dir.path().join("tako.gen.ts")).unwrap();
+        assert!(content.contains("export interface TakoChannels"));
+        assert!(content.contains(r#""chat": { params: { roomId: string; }"#));
+    }
+
+    #[test]
     fn write_types_deletes_legacy_tako_dts() {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join("tako.d.ts"), "// legacy").unwrap();
@@ -637,6 +716,7 @@ mod tests {
     #[test]
     fn typegen_creates_demo_channel_and_workflow_in_empty_dirs() {
         let dir = TempDir::new().unwrap();
+        link_sdk_package(dir.path());
         fs::create_dir_all(dir.path().join("channels")).unwrap();
         fs::create_dir_all(dir.path().join("workflows")).unwrap();
 
@@ -658,6 +738,7 @@ mod tests {
     #[test]
     fn typegen_populates_empty_channel_and_workflow_files() {
         let dir = TempDir::new().unwrap();
+        link_sdk_package(dir.path());
         let channels_dir = dir.path().join("channels");
         let workflows_dir = dir.path().join("workflows");
         fs::create_dir_all(&channels_dir).unwrap();
@@ -679,6 +760,7 @@ mod tests {
     #[test]
     fn typegen_adds_missing_default_exports_without_overwriting_existing_content() {
         let dir = TempDir::new().unwrap();
+        link_sdk_package(dir.path());
         let channels_dir = dir.path().join("channels");
         let workflows_dir = dir.path().join("workflows");
         fs::create_dir_all(&channels_dir).unwrap();
@@ -713,13 +795,21 @@ mod tests {
     #[test]
     fn typegen_leaves_existing_default_exports_untouched() {
         let dir = TempDir::new().unwrap();
+        link_sdk_package(dir.path());
         let channels_dir = dir.path().join("channels");
         let workflows_dir = dir.path().join("workflows");
         fs::create_dir_all(&channels_dir).unwrap();
         fs::create_dir_all(&workflows_dir).unwrap();
-        let channel_src = "export default somethingElse;\n";
+        let sdk_entry = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("sdk/javascript/src/index.ts");
+        let sdk_url = format!("file://{}", sdk_entry.display());
+        let channel_src = format!(
+            "import {{ defineChannel }} from {sdk_url:?};\nexport default defineChannel({{}});\n"
+        );
         let workflow_src = "export default async function run() {}\n";
-        fs::write(channels_dir.join("demo.ts"), channel_src).unwrap();
+        fs::write(channels_dir.join("demo.ts"), &channel_src).unwrap();
         fs::write(workflows_dir.join("demo.ts"), workflow_src).unwrap();
 
         let result = write_typegen_support_files(dir.path()).unwrap();
@@ -733,5 +823,25 @@ mod tests {
             fs::read_to_string(workflows_dir.join("demo.ts")).unwrap(),
             workflow_src
         );
+    }
+
+    fn link_sdk_package(project_dir: &Path) {
+        let package_dir = project_dir.join("node_modules").join("tako.sh");
+        fs::create_dir_all(&package_dir).unwrap();
+        let entry = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("sdk/javascript/src/index.ts");
+        let entry_url = format!("file://{}", entry.display());
+        fs::write(
+            package_dir.join("package.json"),
+            r#"{"name":"tako.sh","type":"module","exports":{".":"./index.ts"}}"#,
+        )
+        .unwrap();
+        fs::write(
+            package_dir.join("index.ts"),
+            format!("export * from {entry_url:?};\n"),
+        )
+        .unwrap();
     }
 }
