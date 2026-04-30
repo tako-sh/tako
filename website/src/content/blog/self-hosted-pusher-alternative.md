@@ -50,10 +50,15 @@ The Tako shape is similar in spirit but file-based — channel definitions live 
 // channels/chat.ts
 import { defineChannel } from "tako.sh";
 
-export default defineChannel("chat/:roomId", {
-  auth: async (request, ctx) => {
-    const session = await readSession(request);
-    return session ? { subject: session.userId } : false;
+export default defineChannel({
+  paramsSchema: (t) => t.Object({ roomId: t.String({ minLength: 1 }) }),
+  auth: {
+    headerName: "authorization",
+    verify: async ({ header, params }) => {
+      const session = await readSession(header);
+      if (!session || !canReadRoom(session.userId, params.roomId)) return false;
+      return { subject: session.userId };
+    },
   },
 }).$messageTypes<{ msg: { text: string } }>();
 ```
@@ -67,7 +72,7 @@ await chat({ roomId: "42" }).publish({ type: "msg", data: { text: "hello" } });
 ```tsx
 // Client (React)
 import { useChannel } from "tako.sh/react";
-const { messages } = useChannel("chat/42");
+const { messages } = useChannel("chat", { params: { roomId: "42" } });
 ```
 
 There's no app key, no cluster, no auth endpoint to stand up separately. The auth callback runs inside your app on every connection and can hit your session store, your database, your feature flags — whatever "is this user allowed in this room" already means in your code. See the [Durable Channels announcement](/blog/durable-channels-built-in) for the full surface, or the [docs](/docs/how-tako-works) for the protocol.

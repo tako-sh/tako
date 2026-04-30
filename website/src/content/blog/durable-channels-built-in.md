@@ -14,10 +14,16 @@ Tako now ships this as a built-in primitive. Two new lines in your app give you 
 A channel is just a named stream. Your app defines it and declares who can read or write. The Tako proxy owns the public endpoint at `/channels/<name>`, handles the SSE or WebSocket handshake, persists messages to a small SQLite store on the server, and asks your app for an auth decision on every connection.
 
 ```go
-tako.Channels.Define("chat:*", tako.ChannelDefinition{
+tako.Channels.Register("chat", tako.ChannelDefinition{
   Transport: tako.ChannelTransportWS,
-  Auth: func(r *http.Request, ctx tako.ChannelAuthContext) tako.ChannelAuthDecision {
-    userID := authenticate(r)
+  ParamsSchema: []byte(`{
+    "type": "object",
+    "properties": { "roomId": { "type": "string" } },
+    "required": ["roomId"]
+  }`),
+  Auth: &tako.ChannelAuthScheme{HeaderName: "authorization"},
+  Verify: func(input tako.VerifyInput) tako.ChannelAuthDecision {
+    userID := authenticate(input.Header)
     if userID == "" {
       return tako.RejectChannel()
     }
@@ -26,7 +32,7 @@ tako.Channels.Define("chat:*", tako.ChannelDefinition{
 })
 ```
 
-The pattern `chat:*` matches `chat:lobby`, `chat:room-42`, and so on. The auth callback runs inside your app, so it can touch your session store, your database, your feature flags — whatever "is this user allowed" already means in your code. The same callback works in the [JavaScript SDK](/docs).
+The filename or registered name is the channel name; typed params travel as query parameters, so clients connect to paths like `/channels/chat?roomId=lobby`. The verify callback runs inside your app, so it can touch your session store, your database, your feature flags — whatever "is this user allowed" already means in your code. The same callback works in the [JavaScript SDK](/docs).
 
 ```d2
 direction: right
@@ -36,7 +42,7 @@ proxy: Tako Proxy {style.fill: "#E88783"; style.font-size: 16}
 app: Your App {style.fill: "#FFF9F4"; style.stroke: "#2F2A44"; style.font-size: 16}
 store: SQLite replay {style.fill: "#E88783"; style.font-size: 16}
 
-client -> proxy: "GET /channels/chat:lobby"
+client -> proxy: "GET /channels/chat?roomId=lobby"
 proxy -> app: "POST /channels/authorize"
 app -> proxy: "ok + subject"
 proxy -> store: "replay from Last-Event-ID"

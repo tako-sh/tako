@@ -88,9 +88,15 @@ Secrets come from one place: the fd 3 bootstrap envelope Tako hands to your proc
 The Go SDK ships with the same channel primitive as the JavaScript SDK — [channels](/docs/how-tako-works) for WebSocket/SSE communication:
 
 ```go
-tako.Channels.Define("chat:*", tako.ChannelDefinition{
-  Auth: func(r *http.Request, ctx tako.ChannelAuthContext) tako.ChannelAuthDecision {
-    userID := authenticate(r)
+tako.Channels.Register("chat", tako.ChannelDefinition{
+  ParamsSchema: []byte(`{
+    "type": "object",
+    "properties": { "roomId": { "type": "string" } },
+    "required": ["roomId"]
+  }`),
+  Auth: &tako.ChannelAuthScheme{HeaderName: "authorization"},
+  Verify: func(input tako.VerifyInput) tako.ChannelAuthDecision {
+    userID := authenticate(input.Header)
     if userID != "" {
       return tako.AllowChannel(tako.ChannelGrant{Subject: userID})
     }
@@ -99,7 +105,7 @@ tako.Channels.Define("chat:*", tako.ChannelDefinition{
 })
 ```
 
-Pattern matching, per-channel auth callbacks, transport selection (SSE, WebSocket, or auto) — all wired up through the same protocol the proxy already speaks.
+Typed params, per-channel auth callbacks, and transport selection are wired up through the same protocol the proxy already speaks. Clients connect to the exact channel name plus query params, for example `/channels/chat?roomId=lobby`.
 
 ## Getting Started
 
