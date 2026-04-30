@@ -3,8 +3,25 @@
 // header (RFC 9110 content negotiation) and rewrites to the sibling .md file
 // emitted at build time by scripts/emit-markdown.ts.
 
+import { normalizeCanonicalPath } from "./utils/canonical";
+
 interface Env {
   ASSETS: Fetcher;
+}
+
+function canonicalRedirect(request: Request, url: URL): Response | null {
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    return null;
+  }
+
+  const canonicalPathname = normalizeCanonicalPath(url.pathname);
+  if (canonicalPathname === url.pathname) {
+    return null;
+  }
+
+  const redirectUrl = new URL(url);
+  redirectUrl.pathname = canonicalPathname;
+  return Response.redirect(redirectUrl, 301);
 }
 
 function prefersMarkdown(accept: string | null): boolean {
@@ -31,6 +48,10 @@ function estimateTokens(text: string): number {
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+    const redirect = canonicalRedirect(request, url);
+    if (redirect) {
+      return redirect;
+    }
 
     if (
       (request.method === "GET" || request.method === "HEAD") &&

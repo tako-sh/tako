@@ -117,9 +117,12 @@ export default defineConfig({
     }),
     sitemap({
       serialize(item) {
-        const pathname = normalizeRoutePath(new URL(item.url).pathname);
+        const itemUrl = new URL(item.url);
+        const pathname = normalizeRoutePath(itemUrl.pathname);
+        itemUrl.pathname = pathname;
         return {
           ...item,
+          url: itemUrl.toString(),
           lastmod: pageLastModified.get(pathname) ?? defaultLastModified,
         };
       },
