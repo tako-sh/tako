@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -345,13 +346,18 @@ pub fn write_types(project_dir: &Path) -> std::io::Result<bool> {
 /// Like [`write_types`] but with an explicit adapter (currently unused —
 /// the generated file is runtime-agnostic, but we keep the parameter for
 /// symmetry with `write_types_go` and forward compatibility).
-pub fn write_types_for_adapter(
+pub fn write_types_for_adapter(project_dir: &Path, adapter: BuildAdapter) -> std::io::Result<bool> {
+    write_types_for_adapter_with_bun(project_dir, adapter, OsStr::new("bun"))
+}
+
+fn write_types_for_adapter_with_bun(
     project_dir: &Path,
     _adapter: BuildAdapter,
+    bun: &OsStr,
 ) -> std::io::Result<bool> {
     let secret_names = read_secret_names(project_dir);
     let env_names = read_env_names(project_dir);
-    let channel_types = generate_channel_types(project_dir)?;
+    let channel_types = generate_channel_types_with_bun(project_dir, bun)?;
     let content = build_gen(&secret_names, &env_names, &channel_types);
     let path = resolve_gen_path(project_dir);
     if let Some(parent) = path.parent()
@@ -383,13 +389,13 @@ pub fn write_types_for_adapter(
     Ok(true)
 }
 
-fn generate_channel_types(project_dir: &Path) -> std::io::Result<String> {
+fn generate_channel_types_with_bun(project_dir: &Path, bun: &OsStr) -> std::io::Result<String> {
     let channels_dir = project_dir.join("channels");
     if !channels_dir.is_dir() {
         return Ok(String::new());
     }
 
-    let output = match channel_typegen_command(project_dir, &channels_dir).output() {
+    let output = match channel_typegen_command(project_dir, &channels_dir, bun).output() {
         Ok(output) => output,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
         Err(err) => return Err(err),
@@ -403,19 +409,19 @@ fn generate_channel_types(project_dir: &Path) -> std::io::Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-fn channel_typegen_command(project_dir: &Path, channels_dir: &Path) -> Command {
+fn channel_typegen_command(project_dir: &Path, channels_dir: &Path, bun: &OsStr) -> Command {
     let repo_script = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("tako crate lives under repo root")
         .join("sdk/javascript/bin/gen-channel-types.ts");
     if repo_script.is_file() {
-        let mut command = Command::new("bun");
+        let mut command = Command::new(bun);
         command.arg(repo_script).arg(channels_dir);
         command.current_dir(project_dir);
         return command;
     }
 
-    let mut command = Command::new("bun");
+    let mut command = Command::new(bun);
     command
         .arg("run")
         .arg("tako-sh-gen-channel-types")
@@ -674,28 +680,25 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn write_types_includes_takochannels_block_when_channels_present() {
         let dir = TempDir::new().unwrap();
         let channels_dir = dir.path().join("channels");
         fs::create_dir_all(&channels_dir).unwrap();
-        let sdk_entry = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .join("sdk/javascript/src/index.ts");
-        let sdk_url = format!("file://{}", sdk_entry.display());
+        fs::write(channels_dir.join("chat.ts"), "export default {};\n").unwrap();
+
+        let fake_bun = dir.path().join("bun");
         fs::write(
-            channels_dir.join("chat.ts"),
-            format!(
-                r#"import {{ defineChannel }} from {sdk_url:?};
-export default defineChannel({{
-  paramsSchema: (t) => t.Object({{ roomId: t.String() }}),
-}}).$messageTypes<{{}}>();
-"#
-            ),
+            &fake_bun,
+            r#"#!/bin/sh
+printf '%s\n' 'export interface TakoChannels {' '  "chat": { params: { roomId: string; }; messages: Record<string, unknown>; transport: "sse"; };' '}'
+"#,
         )
         .unwrap();
+        make_executable(&fake_bun);
 
-        write_types(dir.path()).unwrap();
+        write_types_for_adapter_with_bun(dir.path(), BuildAdapter::Unknown, fake_bun.as_os_str())
+            .unwrap();
 
         let content = fs::read_to_string(dir.path().join("tako.gen.ts")).unwrap();
         assert!(content.contains("export interface TakoChannels"));
@@ -843,5 +846,14 @@ export default defineChannel({{
             format!("export * from {entry_url:?};\n"),
         )
         .unwrap();
+    }
+
+    #[cfg(unix)]
+    fn make_executable(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut perms = fs::metadata(path).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(path, perms).unwrap();
     }
 }

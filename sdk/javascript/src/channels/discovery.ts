@@ -6,7 +6,7 @@ import {
   isChannelDefinition,
   isChannelExport,
   type ChannelDefinition,
-} from "./define";
+} from "./meta";
 
 const VALID_EXTS = new Set([".ts", ".tsx", ".js", ".mjs", ".mts"]);
 

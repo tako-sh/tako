@@ -10,7 +10,7 @@ import type {
   ChannelSubscribeOptions,
   ChannelSubscription,
 } from "./types";
-import { bindChannelName, isChannelDefinition, type ChannelDefinition } from "./channels/define";
+import { bindChannelName, isChannelDefinition, type ChannelDefinition } from "./channels/meta";
 import { getChannelsConfig } from "./channels/configure";
 import { SseReader } from "./channels/sse-reader";
 

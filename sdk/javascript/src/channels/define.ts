@@ -1,53 +1,27 @@
 import { Type, type Static, type TSchema } from "@sinclair/typebox";
 import { Channel } from "../channels";
+import {
+  bindChannelName,
+  CHANNEL_SYMBOL,
+  isChannelDefinition,
+  isChannelExport as isChannelExportMeta,
+  type ChannelAuthConfig,
+  type ChannelAuthResult,
+  type ChannelAuthScheme,
+  type ChannelDefinition,
+  type ChannelHandlerContext,
+  type ChannelLifecycleConfig,
+  type MessageHandler,
+  type VerifyInput,
+} from "./meta";
 import type {
   ChannelConnectOptions,
-  ChannelHeaderValue,
   ChannelMessage,
-  ChannelOperation,
   ChannelPublishOptions,
   ChannelSocket,
   ChannelSubscribeOptions,
   ChannelSubscription,
 } from "../types";
-
-export const CHANNEL_SYMBOL = Symbol.for("tako.channel");
-
-export type ChannelAuthResult = boolean | { subject?: string };
-
-export interface VerifyInput<Params = Record<string, unknown>> {
-  channel: string;
-  operation: ChannelOperation;
-  params: Params;
-  header?: ChannelHeaderValue;
-  cookie?: string;
-}
-
-export interface ChannelAuthConfig<Params> {
-  headerName?: string | false;
-  cookieName?: string;
-  verify: (input: VerifyInput<Params>) => ChannelAuthResult | Promise<ChannelAuthResult>;
-}
-
-export interface ChannelHandlerContext<Params = Record<string, unknown>> {
-  channel: string;
-  operation: ChannelOperation;
-  params: Params;
-  subject?: string;
-  publishedBy: "server" | "client";
-}
-
-export type MessageHandler<Data, Params> = (
-  data: Data,
-  ctx: ChannelHandlerContext<Params>,
-) => Data | void | Promise<Data | void>;
-
-export interface ChannelLifecycleConfig {
-  replayWindowMs?: number;
-  inactivityTtlMs?: number;
-  keepaliveIntervalMs?: number;
-  maxConnectionLifetimeMs?: number;
-}
 
 export interface ChannelConfig<
   ParamsSchema extends TSchema | undefined,
@@ -57,27 +31,6 @@ export interface ChannelConfig<
   paramsSchema?: (t: typeof Type) => ParamsSchema extends TSchema ? ParamsSchema : TSchema;
   auth?: false | ChannelAuthConfig<Params>;
   handler?: { [T in keyof Messages]?: MessageHandler<Messages[T], Params> };
-}
-
-export type ChannelAuthScheme<Params> =
-  | false
-  | {
-      headerName?: string | false;
-      cookieName?: string;
-      verify: ChannelAuthConfig<Params>["verify"];
-    };
-
-export interface ChannelDefinition<
-  Params = Record<string, unknown>,
-  Messages = Record<string, unknown>,
-> extends ChannelLifecycleConfig {
-  readonly type: typeof CHANNEL_SYMBOL;
-  readonly channel?: string;
-  readonly paramsSchema: object;
-  readonly auth: ChannelAuthScheme<Params>;
-  readonly handler?: { [T in keyof Messages]?: MessageHandler<Messages[T], Params> };
-  readonly transport?: "ws";
-  readonly hasParams: boolean;
 }
 
 export interface ChannelHandle<Params, Messages> {
@@ -183,15 +136,6 @@ function attachMeta<P, M, T extends object>(
   return target as T & ChannelExportMeta<P, M>;
 }
 
-export function bindChannelName(definition: ChannelDefinition, channel: string): void {
-  Object.defineProperty(definition, "channel", {
-    value: channel,
-    writable: true,
-    enumerable: true,
-    configurable: true,
-  });
-}
-
 export function defineChannel<
   ParamsSchema extends TSchema | undefined = undefined,
   Params = ParamsSchema extends TSchema ? Static<ParamsSchema> : Record<string, never>,
@@ -227,19 +171,19 @@ export function defineChannel<
 
 /** Narrow `value` to a `ChannelExport` produced by `defineChannel`. */
 export function isChannelExport(value: unknown): value is ChannelExport<unknown, unknown> {
-  return (
-    value !== null &&
-    (typeof value === "function" || typeof value === "object") &&
-    "definition" in (value as object) &&
-    isChannelDefinition((value as { definition: unknown }).definition)
-  );
+  return isChannelExportMeta(value);
 }
 
-export function isChannelDefinition(value: unknown): value is ChannelDefinition {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "type" in value &&
-    (value as { type: unknown }).type === CHANNEL_SYMBOL
-  );
-}
+export {
+  bindChannelName,
+  CHANNEL_SYMBOL,
+  isChannelDefinition,
+  type ChannelAuthConfig,
+  type ChannelAuthResult,
+  type ChannelAuthScheme,
+  type ChannelDefinition,
+  type ChannelHandlerContext,
+  type ChannelLifecycleConfig,
+  type MessageHandler,
+  type VerifyInput,
+};
