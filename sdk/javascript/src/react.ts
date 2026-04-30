@@ -11,7 +11,9 @@
  * import { useChannel } from "tako.sh/react";
  *
  * function ChatRoom({ room }: { room: string }) {
- *   const { messages, status, error } = useChannel(`chat:${room}`);
+ *   const { messages, status, error } = useChannel("chat", {
+ *     params: { roomId: room },
+ *   });
  *   // ...
  * }
  * ```
@@ -19,7 +21,10 @@
  * Or connect via WebSocket:
  * @example
  * ```typescript
- * const { messages, status, send } = useChannel(`chat:${room}`, { transport: "ws" });
+ * const { messages, status, send } = useChannel("chat", {
+ *   params: { roomId: room },
+ *   transport: "ws",
+ * });
  * ```
  *
  * React imperatively to each incoming message via the `onMessage` option.

@@ -182,10 +182,6 @@ func (r *ChannelRegistry) Lookup(channel string) *ChannelDefinition {
 	return &definition
 }
 
-func (r *ChannelRegistry) ResolveDefinition(channel string) *ChannelDefinition {
-	return r.Lookup(channel)
-}
-
 func (r *ChannelRegistry) Authorize(input ChannelAuthorizeInput) (ChannelAuthorizeResponse, bool, bool) {
 	definition := r.Lookup(input.Channel)
 	if definition == nil {

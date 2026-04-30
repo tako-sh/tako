@@ -439,9 +439,7 @@ impl StubKind {
 
     fn default_export_line(self, stem: &str) -> String {
         match self {
-            Self::Channel => {
-                format!("export default defineChannel(\"{stem}\").$messageTypes<{{}}>();")
-            }
+            Self::Channel => "export default defineChannel({}).$messageTypes<{}>();".to_string(),
             Self::Workflow => {
                 format!(
                     "export default defineWorkflow(\"{stem}\", {{ handler: async () => {{}} }});"
@@ -647,7 +645,7 @@ mod tests {
         assert!(result.wrote_scaffolds);
         let channel = fs::read_to_string(dir.path().join("channels").join("demo.ts")).unwrap();
         assert!(channel.contains(r#"import { defineChannel } from "tako.sh";"#));
-        assert!(channel.contains(r#"export default defineChannel("demo").$messageTypes<{}>();"#));
+        assert!(channel.contains(r#"export default defineChannel({}).$messageTypes<{}>();"#));
 
         let workflow = fs::read_to_string(dir.path().join("workflows").join("demo.ts")).unwrap();
         assert!(workflow.contains(r#"import { defineWorkflow } from "tako.sh";"#));
@@ -671,9 +669,7 @@ mod tests {
 
         assert!(result.wrote_scaffolds);
         let channel = fs::read_to_string(channels_dir.join("mission-log.ts")).unwrap();
-        assert!(
-            channel.contains(r#"export default defineChannel("mission-log").$messageTypes<{}>();"#)
-        );
+        assert!(channel.contains(r#"export default defineChannel({}).$messageTypes<{}>();"#));
         let workflow = fs::read_to_string(workflows_dir.join("send-email.ts")).unwrap();
         assert!(workflow.contains(
             r#"export default defineWorkflow("send-email", { handler: async () => {} });"#
@@ -704,9 +700,7 @@ mod tests {
         let channel = fs::read_to_string(channels_dir.join("mission-log.ts")).unwrap();
         assert!(channel.starts_with("import { defineChannel } from \"tako.sh\";\n"));
         assert!(channel.contains("const pattern = \"mission-log/:base\";"));
-        assert!(
-            channel.contains(r#"export default defineChannel("mission-log").$messageTypes<{}>();"#)
-        );
+        assert!(channel.contains(r#"export default defineChannel({}).$messageTypes<{}>();"#));
 
         let workflow = fs::read_to_string(workflows_dir.join("send-email.ts")).unwrap();
         assert!(workflow.starts_with("import { defineWorkflow } from \"tako.sh\";\n"));
