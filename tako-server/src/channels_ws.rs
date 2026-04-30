@@ -1,4 +1,4 @@
-use crate::channels::{ChannelError, ChannelPublishPayload};
+use crate::channels::{ChannelError, ChannelHeaderValue, ChannelPublishPayload};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use openssl::sha::sha1;
@@ -172,6 +172,38 @@ pub(crate) fn parse_publish_payload(payload: &[u8]) -> Result<ChannelPublishPayl
         .map_err(|_| ChannelError::BadRequest("invalid websocket publish payload".to_string()))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FirstFrameAuth {
+    pub header_value: Option<ChannelHeaderValue>,
+    pub last_message_id: Option<i64>,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("malformed tako.auth envelope")]
+pub(crate) struct FirstFrameError;
+
+pub(crate) fn parse_first_frame(json: &str) -> Result<FirstFrameAuth, FirstFrameError> {
+    let value: serde_json::Value = serde_json::from_str(json).map_err(|_| FirstFrameError)?;
+    if value.get("type").and_then(|value| value.as_str()) != Some("tako.auth") {
+        return Err(FirstFrameError);
+    }
+
+    let header_value = value
+        .get("token")
+        .and_then(|value| value.as_str())
+        .map(ChannelHeaderValue::parse);
+    let last_message_id = value.get("lastMessageId").and_then(|value| match value {
+        serde_json::Value::String(value) => value.parse::<i64>().ok(),
+        serde_json::Value::Number(value) => value.as_i64(),
+        _ => None,
+    });
+
+    Ok(FirstFrameAuth {
+        header_value,
+        last_message_id,
+    })
+}
+
 fn websocket_accept(key: &str) -> String {
     let mut input = String::with_capacity(key.len() + WEBSOCKET_GUID.len());
     input.push_str(key);
@@ -237,5 +269,35 @@ mod tests {
     fn websocket_text_frame_encodes_unmasked_payload() {
         let frame = websocket_text_frame("hi");
         assert_eq!(frame, vec![0x81, 0x02, b'h', b'i']);
+    }
+
+    #[test]
+    fn first_frame_auth_extracts_token_into_header_value() {
+        let parsed = parse_first_frame(r#"{"type":"tako.auth","token":"Bearer abc"}"#).unwrap();
+        assert_eq!(
+            parsed.header_value,
+            Some(ChannelHeaderValue {
+                scheme: Some("Bearer".into()),
+                value: "abc".into()
+            })
+        );
+        assert_eq!(parsed.last_message_id, None);
+    }
+
+    #[test]
+    fn first_frame_auth_accepts_numeric_or_string_last_message_id() {
+        let parsed =
+            parse_first_frame(r#"{"type":"tako.auth","token":"plain","lastMessageId":"42"}"#)
+                .unwrap();
+        assert_eq!(parsed.last_message_id, Some(42));
+
+        let parsed = parse_first_frame(r#"{"type":"tako.auth","lastMessageId":43}"#).unwrap();
+        assert_eq!(parsed.last_message_id, Some(43));
+    }
+
+    #[test]
+    fn first_frame_auth_rejects_malformed_envelope() {
+        assert!(parse_first_frame("not json").is_err());
+        assert!(parse_first_frame(r#"{"type":"chat.send"}"#).is_err());
     }
 }
