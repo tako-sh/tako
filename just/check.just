@@ -9,5 +9,6 @@ website:
         --exclude 'pkg\.go\.dev' \
         --exclude 'npmjs\.com/package/tako\.sh' \
         --exclude 'x\.com/dhh' \
-        --exclude 'tako\.sh/blog/' \
+        --exclude 'tako\.sh/blog' \
+        --exclude 'tako\.sh/docs' \
         'website/dist/**/*.html'

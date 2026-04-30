@@ -189,7 +189,7 @@ idle_timeout = 120
 **Instance behavior:**
 
 - Desired instances are runtime app state stored on each server, not `tako.toml` config.
-- New app deploys start with desired instances `1` on each server. The first request after deploy hits a hot instance — no cold start. Opt into scale-to-zero with `tako scale <app> --replicas 0`.
+- New app deploys start with desired instances `1` on each server. The first request after deploy hits a hot instance — no cold start. Opt into scale-to-zero with `tako scale 0 --env <environment>` from a project directory, or `tako scale 0 --server <server> --app <app>/<env>` outside one.
 - `tako scale` changes the desired instance count per targeted server, and that value persists across server restarts, deploys, and rollbacks.
 - Desired instances `0`: On-demand with scale-to-zero. Deploy keeps one warm instance running so the app is immediately reachable after deploy. Instances are stopped after idle timeout.
   - Once scaled to zero, the next request triggers a cold start and waits for readiness up to startup timeout (default 30 seconds). If no healthy instance is ready before timeout, proxy returns `504 App startup timed out`.
@@ -828,7 +828,7 @@ Deploy flow helpers:
 1. Pre-deployment validation (secrets present, server target metadata present/valid for all selected servers)
 2. Resolve source bundle root (git root when available; otherwise app directory)
 3. Resolve app subdirectory from the selected config file's parent directory relative to source bundle root
-4. Resolve deploy runtime `main` (`main` from `tako.toml`; otherwise preset `main`, with JS index fallback order: `index.<ext>` then `src/index.<ext>` for `ts`/`tsx`/`js`/`jsx` when applicable)
+4. Resolve deploy runtime `main` (`main` from `tako.toml`; otherwise manifest main such as `package.json` `main`; otherwise preset `main`, with JS index fallback order: `index.<ext>` then `src/index.<ext>` for `ts`/`tsx`/`js`/`jsx` when applicable)
 5. Resolve app preset (top-level `preset` in `tako.toml`), fetching unpinned official aliases from `master`
 6. Prepare build dir: copy project from source root into `.tako/build` (respecting `.gitignore`), symlink `node_modules/` directories from original tree
 7. Run build commands in build dir:
@@ -1329,13 +1329,21 @@ Response:
 { "command": "get_secrets_hash", "app": "my-app/production" }
 ```
 
-- **`RunRelease`** — Run a one-shot release command on this server for
-  the given release. Sent only to the leader server. Validates the app
-  name and release version, acquires the per-app deploy lock, merges
-  non-secret env from `app.json` + `TAKO_BUILD` + `TAKO_DATA_DIR` +
-  stored secrets + parent `PATH`, and runs `sh -c "<command_line>"` in
-  the release directory. Returns the exit code on success or an error
-  response with stderr tail on non-zero exit / timeout.
+- `run_release` (run a one-shot release command on the leader server before rolling update):
+
+```json
+{
+  "command": "run_release",
+  "app": "my-app/production",
+  "version": "abc1234",
+  "path": "/opt/tako/apps/my-app/production/releases/abc1234",
+  "command_line": "bun run db:migrate",
+  "vars": {},
+  "secrets": {}
+}
+```
+
+The server validates the app name and release version, acquires the per-app deploy lock, derives env from release `app.json`, injects `TAKO_BUILD`, `TAKO_DATA_DIR`, stored server-side secrets, and parent `PATH`, then runs `sh -c "<command_line>"` in the release directory. The `vars` and `secrets` fields are present in the v0 wire shape but are not the source of truth for execution env. Success returns exit metadata; non-zero exit or timeout returns an error response with a stderr tail.
 
 Server-side validation on `deploy` and app-scoped commands:
 

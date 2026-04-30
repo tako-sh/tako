@@ -13,9 +13,9 @@ main = "dist/server/entry.mjs"
 assets = ["dist/client"]
 dev = ["vite", "dev"]
 
-# Runtime-local override. When the selected runtime matches this nested
-# section, its fields replace the base-preset fields; any field the
-# override leaves out falls through to the base section.
+# Runtime-local dev-command override. When the selected runtime matches this
+# nested section, its `dev` field replaces the base preset's `dev` command.
+# Other base preset fields (`name`, `main`, `assets`) are not overridden here.
 #
 # Used in real presets to accommodate runtime-specific invocation quirks
 # (e.g. running Vite under Bun's ESM loader without going through
