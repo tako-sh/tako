@@ -2,7 +2,11 @@
 //!
 //! Used by both `tako-server` (production) and the `tako dev` server.
 
+pub mod close_codes;
+pub mod error_codes;
 pub mod pattern;
+
+pub use close_codes::ChannelCloseCode;
 
 use parking_lot::Mutex;
 use percent_encoding::percent_decode_str;

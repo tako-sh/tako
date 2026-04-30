@@ -1,0 +1,37 @@
+{
+  "$schema": "https://unpkg.com/errkit@latest/schema.json",
+  "outputs": [
+    {
+      "path": "tako-channels/src/error_codes.rs",
+      "scopes": ["channels"],
+    },
+  ],
+  "scopes": {
+    "channels": {
+      "auth_frame_missing": {
+        "description": "WS header-auth channel did not receive an auth envelope within the required window.",
+        "code": "47WJ38",
+      },
+      "auth_frame_malformed": {
+        "description": "WS first frame failed to parse as a tako.auth envelope.",
+        "code": "PDS2Z5",
+      },
+      "channel_unknown": {
+        "description": "Channel name does not match any defined channel.",
+        "code": "7RQYM3",
+      },
+      "params_invalid": {
+        "description": "Query-string params failed JSON-Schema validation.",
+        "code": "K5Q4D8",
+      },
+      "replay_too_old": {
+        "description": "lastMessageId is older than the channel replay window.",
+        "code": "YHNEN8",
+      },
+      "verify_rejected": {
+        "description": "The app's verify callback rejected the channel request.",
+        "code": "GJRQHR",
+      },
+    },
+  },
+}
