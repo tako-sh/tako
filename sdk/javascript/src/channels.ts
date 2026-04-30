@@ -12,6 +12,8 @@ import type {
 } from "./types";
 import { comparePatterns, matchPattern } from "./channels/pattern";
 import { isChannelDefinition, type ChannelDefinition } from "./channels/define";
+import { getChannelsConfig } from "./channels/configure";
+import { SseReader } from "./channels/sse-reader";
 
 export type ChannelSocketPublisher = <T>(
   channel: string,
@@ -91,14 +93,6 @@ function fetchInitOptions(headers?: HeadersInit, signal?: AbortSignal) {
     options.signal = signal;
   }
   return options;
-}
-
-function defaultEventSourceFactory(url: string): unknown {
-  const ctor = globalThis.EventSource;
-  if (!ctor) {
-    throw new Error("EventSource is not available in this runtime.");
-  }
-  return new ctor(url);
 }
 
 function defaultWebSocketFactory(url: string): unknown {
@@ -186,7 +180,7 @@ export class Channel {
 
   subscribe(options: ChannelSubscribeOptions = {}): ChannelSubscription {
     const url = channelBaseUrl(this.name, options.baseUrl);
-    const factory = options.eventSourceFactory ?? defaultEventSourceFactory;
+    const factory = options.eventSourceFactory;
     const init: { headers?: Record<string, string>; lastEventId?: string } = {};
     if (options.headers !== undefined) {
       init.headers = options.headers;
@@ -194,12 +188,32 @@ export class Channel {
     if (options.lastEventId !== undefined) {
       init.lastEventId = options.lastEventId;
     }
-    const raw = factory(url.toString(), init);
+    if (factory) {
+      const raw = factory(url.toString(), init);
+      return {
+        transport: "sse",
+        raw,
+        close() {
+          closeRaw(raw);
+        },
+      };
+    }
+
+    const readerOptions = {
+      fetch: getChannelsConfig().fetch,
+      onMessage: () => {},
+      ...(options.headers !== undefined && { headers: options.headers }),
+    };
+    const reader = new SseReader(url.toString(), readerOptions);
+    if (options.lastEventId !== undefined) {
+      reader.lastEventId = options.lastEventId;
+    }
+    void reader.start();
     return {
       transport: "sse",
-      raw,
+      raw: reader,
       close() {
-        closeRaw(raw);
+        reader.close();
       },
     };
   }

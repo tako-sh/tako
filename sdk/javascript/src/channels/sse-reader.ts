@@ -21,12 +21,15 @@ interface DrainOptions {
   connections?: number;
 }
 
+type Listener = EventListenerOrEventListenerObject;
+
 export class SseReader {
   lastEventId: string | undefined;
 
   readonly #url: string;
   readonly #opts: SseReaderOptions;
   readonly #abort = new AbortController();
+  readonly #listeners = new Map<string, Set<Listener>>();
   #pump: Promise<void> | null = null;
   #connections = 0;
   #connectionsWaiters: Array<() => void> = [];
@@ -60,6 +63,40 @@ export class SseReader {
     this.#resolveConnectionWaiters();
   }
 
+  addEventListener(type: string, listener: Listener | null): void {
+    if (!listener) {
+      return;
+    }
+    let listeners = this.#listeners.get(type);
+    if (!listeners) {
+      listeners = new Set();
+      this.#listeners.set(type, listeners);
+    }
+    listeners.add(listener);
+  }
+
+  removeEventListener(type: string, listener: Listener | null): void {
+    if (!listener) {
+      return;
+    }
+    this.#listeners.get(type)?.delete(listener);
+  }
+
+  dispatchEvent(event: Event): boolean {
+    const listeners = this.#listeners.get(event.type);
+    if (!listeners) {
+      return true;
+    }
+    for (const listener of listeners) {
+      if (typeof listener === "function") {
+        listener.call(this, event);
+      } else {
+        listener.handleEvent(event);
+      }
+    }
+    return true;
+  }
+
   async drain(options: DrainOptions = {}): Promise<void> {
     const targetConnections = options.connections;
     if (targetConnections !== undefined) {
@@ -84,6 +121,7 @@ export class SseReader {
       } catch (error) {
         const err = asError(error);
         this.#opts.onError?.(err);
+        this.dispatchEvent(new ErrorEvent("error", { error: err, message: err.message }));
         if (this.#abort.signal.aborted) {
           this.#resolveStart?.();
           return;
@@ -121,6 +159,7 @@ export class SseReader {
     this.#resolveConnectionWaiters();
     this.#resolveStart?.();
     this.#opts.onOpen?.();
+    this.dispatchEvent(new Event("open"));
 
     await this.#readBody(response.body);
   }
@@ -134,6 +173,7 @@ export class SseReader {
         this.lastEventId = message.id;
       }
       this.#opts.onMessage(message);
+      this.dispatchEvent(new MessageEvent("message", { data: message.data }));
     });
 
     try {

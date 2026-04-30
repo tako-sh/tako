@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { Channel, ChannelRegistry } from "../src/channels";
+import { configureChannels, resetChannelsConfig } from "../src/channels/configure";
+import { SseReader } from "../src/channels/sse-reader";
 import { defineChannel } from "../src/channels/define";
 
 describe("channels", () => {
   afterEach(() => {
     mock.restore();
+    resetChannelsConfig();
   });
 
   test("creates channel handles with a name", () => {
@@ -108,6 +111,35 @@ describe("channels", () => {
     });
     expect(eventSourceFactory).toHaveBeenCalledTimes(1);
     expect(webSocketFactory).toHaveBeenCalledTimes(0);
+  });
+
+  test("subscribe uses fetch-based SSE reader by default", async () => {
+    const fetchMock = mock((_url: string) =>
+      Promise.resolve(
+        new Response("data: hi\n\n", {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        }),
+      ),
+    );
+    configureChannels({ fetch: fetchMock as unknown as typeof fetch });
+
+    const channel = new Channel("chat/room-123");
+    const subscription = channel.subscribe({
+      baseUrl: "https://app.example.com",
+      headers: { Authorization: "Bearer t" },
+      lastEventId: "7",
+    });
+
+    expect(subscription.transport).toBe("sse");
+    expect(subscription.raw).toBeInstanceOf(SseReader);
+    await (subscription.raw as SseReader).drain();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe("https://app.example.com/channels/chat/room-123");
+    expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer t");
+    expect(new Headers(init?.headers).get("Last-Event-ID")).toBe("7");
   });
 
   test("connect targets the canonical websocket route with last_message_id", () => {
