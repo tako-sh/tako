@@ -341,12 +341,12 @@ One connection, one buffer, any number of consumers.
 
 ### Network routes
 
-| Direction     | Method | Path                        | Transport                        |
-| ------------- | ------ | --------------------------- | -------------------------------- |
-| Subscribe     | GET    | `/channels/<name>`          | SSE (`text/event-stream`)        |
-| Connect       | GET    | `/channels/<name>`          | WebSocket (`Upgrade: websocket`) |
-| Publish       | POST   | `/channels/<name>/messages` | JSON body                        |
-| Auth callback | POST   | `/channels/authorize`       | Internal (`Host: tako.internal`) |
+| Direction     | Method | Path                  | Transport                        |
+| ------------- | ------ | --------------------- | -------------------------------- |
+| Subscribe     | GET    | `/channels/<name>`    | SSE (`text/event-stream`)        |
+| Connect       | GET    | `/channels/<name>`    | WebSocket (`Upgrade: websocket`) |
+| Publish       | WS     | `/channels/<name>`    | JSON text frame                  |
+| Auth callback | POST   | `/channels/authorize` | Internal (`Host: tako.internal`) |
 
 ## Workflows
 

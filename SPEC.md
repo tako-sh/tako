@@ -1707,11 +1707,11 @@ Channel WebSocket transport uses JSON text frames:
 - server-to-client text frames are serialized `ChannelMessage` objects
 - client-to-server text frames are parsed as `ChannelPublishPayload` objects, routed through the channel's declared `handler`, and the handler's return value is fanned out to subscribers
 
-Channel paths are hierarchical: the channel name is whatever follows `/channels/` (everything before the optional `/messages` suffix). `chat/room-123` is a valid channel name; it appears at `/channels/chat/room-123`.
+Channel routes are exact and flat: `channels/chat.ts` is served at `/channels/chat`. Dynamic values are query params validated against the channel's declared JSON Schema, for example `/channels/chat?roomId=room-123`.
 
 ### Authoring channels
 
-**JS/TypeScript** — file-based discovery: drop a file into `channels/<name>.ts` with a default export of `defineChannel(pattern, config?).$messageTypes<M>()`. The pattern is a Hono-style path (`/`-separated segments with `:name` captures and an optional trailing `*` wildcard). `.$messageTypes<M>()` is a type-level narrower that declares the message map; at runtime it returns the same export.
+**JS/TypeScript** — file-based discovery: drop a file into `channels/<name>.ts` with a default export of `defineChannel(config?).$messageTypes<M>()`. The filename is the wire channel name. `paramsSchema` is a TypeBox schema that becomes both the TypeScript params type and the server-side JSON Schema used by `tako-server` before app auth. `.$messageTypes<M>()` is a type-level narrower that declares the message map; at runtime it returns the same export.
 
 ```ts
 // channels/chat.ts
@@ -1722,12 +1722,16 @@ type ChatMessages = {
   typing: { userId: string };
 };
 
-export default defineChannel("chat/:roomId", {
-  auth: async (request, ctx) => {
-    const session = await readSession(request);
-    if (!session) return false;
-    const allowed = await db.isMember(ctx.params.roomId, session.userId);
-    return allowed ? { subject: session.userId } : false;
+export default defineChannel({
+  paramsSchema: (t) => t.Object({ roomId: t.String({ minLength: 1 }) }),
+  auth: {
+    headerName: "authorization",
+    async verify(input) {
+      const session = await readSession(input.header);
+      if (!session) return false;
+      const allowed = await db.isMember(input.params.roomId, session.userId);
+      return allowed ? { subject: session.userId } : false;
+    },
   },
   handler: {
     msg: async (data, ctx) => {
@@ -1739,28 +1743,49 @@ export default defineChannel("chat/:roomId", {
 }).$messageTypes<ChatMessages>();
 ```
 
-- **`pattern`** — required first positional arg. Must be a string literal (codegen reads it from the AST).
-- **`auth`** — optional. Called on every `subscribe` / `publish` / `connect`. Return `false` to deny, `true` to allow anonymously, or `{ subject }` to allow and stamp the connection identity. When omitted, all access is allowed — use only for genuinely public channels.
+- **`paramsSchema`** — optional TypeBox schema. Omit it for channels with no params. The serialized JSON Schema is sent to `tako-server`, which rejects invalid query params before round-tripping to the app.
+- **`auth`** — optional. Omit or set `false` for public channels. Auth is declarative: `{ headerName, cookieName, verify }`. `headerName` defaults to `authorization`; set it to `false` for cookie-only auth. `verify(input)` receives `{ header?, cookie?, params, channel, operation }` and returns `false`, `true`, or `{ subject }`.
 - **`handler`** — optional map keyed by message type. Presence of `handler` makes the channel a **WebSocket** channel (bidirectional); absence makes it **SSE** (broadcast-only). Each handler returns the data to broadcast, or `void` / `undefined` to drop the message.
 - Lifecycle fields (`replayWindowMs`, `inactivityTtlMs`, `keepaliveIntervalMs`, `maxConnectionLifetimeMs`) — unchanged from before.
 
 **Transport inference:**
 
 - `handler` present → **WS**. Clients can send over the socket; each frame routes through the declared handler; the return value fans out to subscribers. Handler errors or `void` returns drop the message. Types not in the handler map pass through without server processing.
-- `handler` absent → **SSE**. Broadcast-only. Server publishes via the imported channel module (`await missionLog({ base }).publish(...)`); clients only receive. `POST /channels/<name>/messages` from clients is rejected with 405.
+- `handler` absent → **SSE**. Broadcast-only. Server publishes via the imported channel module (`await missionLog({ base }).publish(...)`); clients only receive.
 
-**Pattern overlap resolution:** literal segments beat param segments beat wildcards per-position; longer patterns with the same mix win; ties break by discovery order.
+WebSocket header auth is sent as the first text frame:
+
+```json
+{ "type": "tako.auth", "token": "Bearer ...", "lastMessageId": "123" }
+```
+
+If an auth-required WebSocket does not send a valid first frame within five seconds, `tako-server` closes it with an errkit-generated app close code.
+
+**Go** — programmatic registration mirrors the same wire protocol:
+
+```go
+tako.Channels.Register("chat", tako.ChannelDefinition{
+  ParamsSchema: []byte(`{"type":"object","properties":{"roomId":{"type":"string"}},"required":["roomId"]}`),
+  Auth: &tako.ChannelAuthScheme{HeaderName: "authorization"},
+  Verify: func(input tako.VerifyInput) tako.ChannelAuthDecision {
+    if input.Header == nil || input.Header.Scheme != "Bearer" {
+      return tako.RejectChannel()
+    }
+    return tako.AllowChannel(tako.ChannelGrant{Subject: "user-123"})
+  },
+})
+```
 
 ### Publishing from the server
 
 Server-side code (HTTP handlers, workflow bodies) imports a channel module directly and calls it. Unparameterized channels expose `publish` / `subscribe` / `connect` on the export; parameterized ones are callable with their params, returning the same handle:
 
 ```ts
-// channels/status.ts → pattern "status" (unparameterized)
+// channels/status.ts (unparameterized)
 import status from "../channels/status";
 await status.publish({ type: "ping", data: { at: Date.now() } });
 
-// channels/mission-log.ts → pattern "mission-log/:base" (parameterized)
+// channels/mission-log.ts (parameterized by paramsSchema)
 import missionLog from "../channels/mission-log";
 await missionLog({ base }).publish({ type: "event", data: event });
 ```

@@ -375,7 +375,7 @@ Channels are Tako-owned durable pub-sub streams available on one public route:
 - `GET /channels/<name>` with `Accept: text/event-stream` serves Server-Sent Events.
 - `GET /channels/<name>` with `Upgrade: websocket` upgrades to a WebSocket.
 
-You declare channels as files under `channels/<name>.ts`, each default-exporting `defineChannel(pattern, config?).$messageTypes<M>()`. The pattern is a Hono-style path with `:param` captures and an optional trailing `*` wildcard. Whether the channel is SSE or WebSocket is inferred from the config: if you define a `handler` map, the channel is bidirectional WebSocket (each client frame routes through the matching handler and its return value fans out to subscribers). If there's no `handler`, the channel is broadcast-only SSE — client POSTs are rejected with `405`.
+You declare channels as files under `channels/<name>.ts`, each default-exporting `defineChannel(config?).$messageTypes<M>()`. The filename is the wire channel name; dynamic values are typed query params declared with `paramsSchema` and validated by `tako-server` before app auth. Whether the channel is SSE or WebSocket is inferred from the config: if you define a `handler` map, the channel is bidirectional WebSocket (each client frame routes through the matching handler and its return value fans out to subscribers). If there's no `handler`, the channel is broadcast-only SSE.
 
 ```ts
 // channels/chat.ts
@@ -386,10 +386,14 @@ type ChatMessages = {
   typing: { userId: string };
 };
 
-export default defineChannel("chat/:roomId", {
-  auth: async (request, ctx) => {
-    const session = await readSession(request);
-    return session ? { subject: session.userId } : false;
+export default defineChannel({
+  paramsSchema: (t) => t.Object({ roomId: t.String({ minLength: 1 }) }),
+  auth: {
+    headerName: "authorization",
+    async verify(input) {
+      const session = await readSession(input.header);
+      return session ? { subject: session.userId } : false;
+    },
   },
   handler: {
     msg: async (data, ctx) => {
@@ -401,9 +405,9 @@ export default defineChannel("chat/:roomId", {
 }).$messageTypes<ChatMessages>();
 ```
 
-Channels keep a bounded replay window so reconnects and `tako-server` reloads don't drop clients mid-conversation. SSE clients resume from `Last-Event-ID`; WebSocket clients resume from `last_message_id` in the query string. If the requested cursor is older than the retained window, Tako returns `410 Gone` and the client can resubscribe from the tail.
+Channels keep a bounded replay window so reconnects and `tako-server` reloads don't drop clients mid-conversation. SSE clients resume from `Last-Event-ID`; WebSocket clients resume from `last_message_id` in the query string or the first `tako.auth` frame. If the requested cursor is older than the retained window, Tako returns `410 Gone` and the client can resubscribe from the tail.
 
-Channel names are hierarchical: whatever follows `/channels/` is the channel name, so `chat/room-123` is a perfectly valid name living at `/channels/chat/room-123`.
+Channel routes are flat and exact: `channels/chat.ts` maps to `/channels/chat`, and params are query strings such as `/channels/chat?roomId=room-123`.
 
 Server-side publishing goes through the channel module directly (`await missionLog({ base }).publish(...)`) — it never round-trips through the HTTPS proxy. That's what the internal socket is for.
 

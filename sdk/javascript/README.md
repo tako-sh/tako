@@ -47,17 +47,21 @@ type ChatMessages = {
   typing: { userId: string };
 };
 
-export default defineChannel("chat/:roomId", {
-  auth: async (request) => {
-    const userId = await getUserId(request);
-    return userId ? { subject: userId } : false;
+export default defineChannel({
+  paramsSchema: (t) => t.Object({ roomId: t.String({ minLength: 1 }) }),
+  auth: {
+    headerName: "authorization",
+    async verify(input) {
+      const userId = await getUserId(input.header);
+      return userId ? { subject: userId } : false;
+    },
   },
 }).$messageTypes<ChatMessages>();
 ```
 
-- Patterns are Hono-style (`:name` captures, trailing `*` wildcard).
-- `auth` is optional — omit for public channels.
-- Call `.$messageTypes<T>()` to type the per-message-type payloads. Presence of a `handler` option (not shown) chooses transport: WebSocket when present, SSE otherwise. SSE channels reject client POST publishes.
+- The filename is the channel name; dynamic values are typed query params from `paramsSchema`.
+- `auth` is optional — omit or set `false` for public channels. Declarative auth receives `{ header?, cookie?, params, channel, operation }`.
+- Call `.$messageTypes<T>()` to type the per-message-type payloads. Presence of a `handler` option (not shown) chooses transport: WebSocket when present, SSE otherwise.
 
 Publish by importing the channel wherever you need it:
 
