@@ -56,6 +56,7 @@ export function getChannelsConfig(): {
   fetch: typeof fetch;
   websocket: typeof WebSocket;
   resolveToken(): Promise<string>;
+  resolveOptionalToken(): Promise<string | null>;
 } {
   const config = getCurrent();
   return {
@@ -70,6 +71,11 @@ export function getChannelsConfig(): {
         throw new Error("configureChannels token resolver returned null.");
       }
       return token;
+    },
+    async resolveOptionalToken() {
+      if (!config.token) return null;
+      const token = await config.token();
+      return token || null;
     },
   };
 }

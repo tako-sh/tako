@@ -5,10 +5,6 @@ use crate::channels::{
     authorize_channel_request, fetch_channel_registry, parse_channel_route,
     parse_message_id_cursor, parse_ws_last_message_id,
 };
-use crate::channels_ws::{
-    WebSocketFrameReader, build_websocket_upgrade_response, parse_publish_payload,
-    websocket_close_frame, websocket_ping_frame, websocket_pong_frame, websocket_text_frame,
-};
 use crate::proxy::TakoProxy;
 use crate::proxy::request::insert_body_headers;
 use bytes::Bytes;
@@ -19,6 +15,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tako_channels::params::{ParamsError, validate_query};
+use ws::ChannelWebSocketAuth;
+
+mod ws;
 
 impl TakoProxy {
     /// Return the cached `ChannelStore` for `app_name`, opening (and
@@ -187,176 +186,6 @@ impl TakoProxy {
         }
     }
 
-    async fn write_channel_websocket(
-        &self,
-        session: &mut Session,
-        store: &ChannelStore,
-        channel: &str,
-        mut after: Option<i64>,
-        auth: &ChannelAuthResponse,
-    ) -> Result<bool> {
-        if !session.as_downstream().is_upgrade_req() {
-            return self
-                .write_json_response(
-                    session,
-                    400,
-                    &serde_json::json!({ "error": "WebSocket upgrade required" }),
-                )
-                .await;
-        }
-
-        let header = match build_websocket_upgrade_response(session.req_header()) {
-            Ok(header) => header,
-            Err(error) => return self.write_channel_error(session, error).await,
-        };
-        session
-            .write_response_header(Box::new(header), false)
-            .await?;
-
-        let keepalive_interval = Duration::from_millis(auth.keepalive_interval_ms.max(1));
-        let max_connection_lifetime = Duration::from_millis(auth.max_connection_lifetime_ms.max(1));
-        let started_at = tokio::time::Instant::now();
-        let mut next_ping = started_at + keepalive_interval;
-        let mut reader = WebSocketFrameReader::default();
-
-        loop {
-            let messages = store.read_after(channel, after, 100).map_err(|error| {
-                Error::explain(
-                    ErrorType::InternalError,
-                    format!("Failed to read channel replay: {error}"),
-                )
-            })?;
-
-            if !messages.is_empty() {
-                for message in messages {
-                    let encoded = serde_json::to_string(&message).map_err(|error| {
-                        Error::explain(
-                            ErrorType::InternalError,
-                            format!("Failed to encode websocket payload: {error}"),
-                        )
-                    })?;
-                    session
-                        .write_response_body(
-                            Some(Bytes::from(websocket_text_frame(&encoded))),
-                            false,
-                        )
-                        .await?;
-                    after = Some(
-                        message
-                            .id
-                            .parse::<i64>()
-                            .expect("channel ids are always numeric"),
-                    );
-                }
-                next_ping = tokio::time::Instant::now() + keepalive_interval;
-            }
-
-            if started_at.elapsed() >= max_connection_lifetime {
-                session
-                    .write_response_body(
-                        Some(Bytes::from(websocket_close_frame(
-                            1000,
-                            "connection expired",
-                        ))),
-                        true,
-                    )
-                    .await?;
-                return Ok(true);
-            }
-
-            let ping_deadline = next_ping;
-            let sleep_until = std::cmp::min(ping_deadline, started_at + max_connection_lifetime);
-            enum WebSocketAction {
-                Read(Option<Bytes>),
-                Tick,
-            }
-
-            let action = {
-                let mut sleep = std::pin::pin!(tokio::time::sleep_until(sleep_until));
-                let mut read = std::pin::pin!(session.as_downstream_mut().read_body_or_idle(true));
-                tokio::select! {
-                    body = &mut read => WebSocketAction::Read(body?),
-                    _ = &mut sleep => WebSocketAction::Tick,
-                }
-            };
-
-            match action {
-                WebSocketAction::Read(Some(chunk)) => {
-                    reader.extend(&chunk);
-                    while let Some(frame) = reader.next_frame().map_err(|error| {
-                        Error::explain(
-                            ErrorType::InvalidHTTPHeader,
-                            format!("Invalid websocket frame: {error}"),
-                        )
-                    })? {
-                        match frame.opcode {
-                            0x1 => {
-                                let payload =
-                                    parse_publish_payload(&frame.payload).map_err(|error| {
-                                        Error::explain(
-                                            ErrorType::InvalidHTTPHeader,
-                                            format!("Invalid websocket publish payload: {error}"),
-                                        )
-                                    })?;
-                                store.append(channel, &payload).map_err(|error| {
-                                    Error::explain(
-                                        ErrorType::InternalError,
-                                        format!(
-                                            "Failed to append websocket channel payload: {error}"
-                                        ),
-                                    )
-                                })?;
-                            }
-                            0x8 => {
-                                session
-                                    .write_response_body(
-                                        Some(Bytes::from(websocket_close_frame(1000, "closing"))),
-                                        true,
-                                    )
-                                    .await?;
-                                return Ok(true);
-                            }
-                            0x9 => {
-                                session
-                                    .write_response_body(
-                                        Some(Bytes::from(websocket_pong_frame(&frame.payload))),
-                                        false,
-                                    )
-                                    .await?;
-                            }
-                            0xA => {}
-                            _ => {
-                                session
-                                    .write_response_body(
-                                        Some(Bytes::from(websocket_close_frame(
-                                            1003,
-                                            "unsupported frame",
-                                        ))),
-                                        true,
-                                    )
-                                    .await?;
-                                return Ok(true);
-                            }
-                        }
-                    }
-                    next_ping = tokio::time::Instant::now() + keepalive_interval;
-                }
-                WebSocketAction::Read(None) => return Ok(true),
-                WebSocketAction::Tick => {
-                    if tokio::time::Instant::now() >= next_ping {
-                        session
-                            .write_response_body(
-                                Some(Bytes::from(websocket_ping_frame(b""))),
-                                false,
-                            )
-                            .await?;
-                        next_ping = tokio::time::Instant::now() + keepalive_interval;
-                    }
-                }
-            }
-        }
-    }
-
     pub(crate) async fn try_handle_channel_request(
         &self,
         session: &mut Session,
@@ -456,9 +285,13 @@ impl TakoProxy {
             }
         };
 
+        let is_websocket = session.as_downstream().is_upgrade_req();
         let request_headers = request_headers_to_map(session.req_header());
         let (header, cookie) = extract_credentials(&request_headers, &meta.auth);
-        if auth_scheme_requires_declared_credentials(&meta.auth)
+        let use_first_frame_auth =
+            is_websocket && auth_scheme_requires_header(&meta.auth) && header.is_none();
+        if !use_first_frame_auth
+            && auth_scheme_requires_declared_credentials(&meta.auth)
             && header.is_none()
             && cookie.is_none()
         {
@@ -469,15 +302,111 @@ impl TakoProxy {
                 .await;
         }
 
-        let auth_result = authorize_channel_request(
-            &instance,
-            operation.clone(),
-            &route.channel,
-            params,
-            header,
-            cookie,
-        )
-        .await;
+        if is_websocket {
+            if session.req_header().method.as_str() != "GET" {
+                self.lb
+                    .request_completed(&backend.app_name, &backend.instance_id);
+                return self
+                    .write_json_response(
+                        session,
+                        405,
+                        &serde_json::json!({ "error": "Method not allowed" }),
+                    )
+                    .await;
+            }
+            if meta.transport != Some(ChannelTransport::Ws) {
+                self.lb
+                    .request_completed(&backend.app_name, &backend.instance_id);
+                return self
+                    .write_channel_error(session, ChannelError::Unsupported)
+                    .await;
+            }
+            let query_cursor = match parse_ws_last_message_id(session.req_header().uri.query()) {
+                Ok(cursor) => cursor,
+                Err(error) => {
+                    self.lb
+                        .request_completed(&backend.app_name, &backend.instance_id);
+                    return self.write_channel_error(session, error).await;
+                }
+            };
+            let store = match self.channel_store_for_app(app_name) {
+                Ok(store) => store,
+                Err(error) => {
+                    self.lb
+                        .request_completed(&backend.app_name, &backend.instance_id);
+                    tracing::error!("channel store unavailable for {app_name}: {error}");
+                    return self
+                        .write_channel_error(
+                            session,
+                            ChannelError::Storage(format!("open store: {error}")),
+                        )
+                        .await;
+                }
+            };
+
+            if use_first_frame_auth {
+                let Some(endpoint) = instance.endpoint() else {
+                    self.lb
+                        .request_completed(&backend.app_name, &backend.instance_id);
+                    return self
+                        .write_channel_error(session, ChannelError::AuthUnavailable)
+                        .await;
+                };
+                let auth_mode = ChannelWebSocketAuth::FirstFrame {
+                    endpoint: endpoint.to_string(),
+                    internal_token: instance.internal_token().to_string(),
+                    params,
+                    cookie,
+                };
+                self.lb
+                    .request_completed(&backend.app_name, &backend.instance_id);
+                return self
+                    .write_channel_websocket(
+                        session,
+                        &store,
+                        &route.channel,
+                        query_cursor,
+                        auth_mode,
+                    )
+                    .await;
+            }
+
+            let auth_result = authorize_channel_request(
+                &instance,
+                operation,
+                &route.channel,
+                params,
+                header,
+                cookie,
+            )
+            .await;
+
+            self.lb
+                .request_completed(&backend.app_name, &backend.instance_id);
+
+            let auth_result = match auth_result {
+                Ok(result) => result,
+                Err(error) => return self.write_channel_error(session, error).await,
+            };
+            if auth_result.transport != Some(ChannelTransport::Ws) {
+                return self
+                    .write_channel_error(session, ChannelError::Unsupported)
+                    .await;
+            }
+            return self
+                .write_channel_websocket(
+                    session,
+                    &store,
+                    &route.channel,
+                    query_cursor,
+                    ChannelWebSocketAuth::Authorized(auth_result),
+                )
+                .await;
+        }
+
+        let auth_result =
+            authorize_channel_request(&instance, operation, &route.channel, params, header, cookie)
+                .await;
 
         self.lb
             .request_completed(&backend.app_name, &backend.instance_id);
@@ -503,55 +432,30 @@ impl TakoProxy {
             return self.write_channel_error(session, error).await;
         }
 
-        if session.as_downstream().is_upgrade_req() {
-            if session.req_header().method.as_str() != "GET" {
-                return self
-                    .write_json_response(
-                        session,
-                        405,
-                        &serde_json::json!({ "error": "Method not allowed" }),
-                    )
-                    .await;
-            }
-            if auth_result.transport != Some(ChannelTransport::Ws) {
-                return self
-                    .write_channel_error(session, ChannelError::Unsupported)
-                    .await;
-            }
-            let cursor = match parse_ws_last_message_id(session.req_header().uri.query())
-                .and_then(|cursor| store.replay_cursor(&route.channel, cursor))
-            {
-                Ok(cursor) => cursor,
-                Err(error) => return self.write_channel_error(session, error).await,
-            };
-            self.write_channel_websocket(session, &store, &route.channel, cursor, &auth_result)
-                .await
-        } else {
-            if session.req_header().method.as_str() != "GET" {
-                return self
-                    .write_json_response(
-                        session,
-                        405,
-                        &serde_json::json!({ "error": "Method not allowed" }),
-                    )
-                    .await;
-            }
-            let cursor = match parse_message_id_cursor(
-                session
-                    .req_header()
-                    .headers
-                    .get("last-event-id")
-                    .and_then(|value| value.to_str().ok()),
-                "Last-Event-ID",
-            )
-            .and_then(|cursor| store.replay_cursor(&route.channel, cursor))
-            {
-                Ok(cursor) => cursor,
-                Err(error) => return self.write_channel_error(session, error).await,
-            };
-            self.write_channel_events(session, &store, &route.channel, cursor, &auth_result)
-                .await
+        if session.req_header().method.as_str() != "GET" {
+            return self
+                .write_json_response(
+                    session,
+                    405,
+                    &serde_json::json!({ "error": "Method not allowed" }),
+                )
+                .await;
         }
+        let cursor = match parse_message_id_cursor(
+            session
+                .req_header()
+                .headers
+                .get("last-event-id")
+                .and_then(|value| value.to_str().ok()),
+            "Last-Event-ID",
+        )
+        .and_then(|cursor| store.replay_cursor(&route.channel, cursor))
+        {
+            Ok(cursor) => cursor,
+            Err(error) => return self.write_channel_error(session, error).await,
+        };
+        self.write_channel_events(session, &store, &route.channel, cursor, &auth_result)
+            .await
     }
 }
 
@@ -580,6 +484,16 @@ fn auth_scheme_requires_declared_credentials(scheme: &ChannelAuthScheme) -> bool
         } | ChannelAuthScheme::Required {
             header_name: _,
             cookie_name: Some(_)
+        }
+    )
+}
+
+fn auth_scheme_requires_header(scheme: &ChannelAuthScheme) -> bool {
+    matches!(
+        scheme,
+        ChannelAuthScheme::Required {
+            header_name: Some(_),
+            ..
         }
     )
 }
@@ -626,94 +540,4 @@ pub(crate) fn extract_credentials(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn extract_credentials_picks_declared_header_and_cookie() {
-        let mut headers = HashMap::new();
-        headers.insert("authorization".into(), "Bearer abc".into());
-        headers.insert("cookie".into(), "session=xyz; other=ignored".into());
-
-        let scheme = ChannelAuthScheme::Required {
-            header_name: Some("authorization".into()),
-            cookie_name: Some("session".into()),
-        };
-
-        let (header, cookie) = extract_credentials(&headers, &scheme);
-        assert_eq!(
-            header,
-            Some(ChannelHeaderValue {
-                scheme: Some("Bearer".into()),
-                value: "abc".into()
-            })
-        );
-        assert_eq!(cookie, Some("xyz".to_string()));
-    }
-
-    #[test]
-    fn extract_credentials_normalizes_header_name_lookup() {
-        let mut headers = HashMap::new();
-        headers.insert("x-session-token".into(), "plain-token".into());
-
-        let scheme = ChannelAuthScheme::Required {
-            header_name: Some("X-Session-Token".into()),
-            cookie_name: None,
-        };
-
-        let (header, cookie) = extract_credentials(&headers, &scheme);
-        assert_eq!(
-            header,
-            Some(ChannelHeaderValue {
-                scheme: None,
-                value: "plain-token".into()
-            })
-        );
-        assert!(cookie.is_none());
-    }
-
-    #[test]
-    fn extract_credentials_returns_none_for_public_channels() {
-        let mut headers = HashMap::new();
-        headers.insert("authorization".into(), "Bearer abc".into());
-
-        let (header, cookie) = extract_credentials(&headers, &ChannelAuthScheme::Public);
-        assert!(header.is_none());
-        assert!(cookie.is_none());
-    }
-
-    #[test]
-    fn channel_params_query_excludes_ws_cursor() {
-        assert_eq!(
-            channel_params_query(Some("roomId=r1&last_message_id=42&limit=10")),
-            "roomId=r1&limit=10"
-        );
-        assert_eq!(channel_params_query(Some("last_message_id=42")), "");
-        assert_eq!(channel_params_query(None), "");
-    }
-
-    #[test]
-    fn auth_scheme_requires_declared_credentials_only_for_declared_fields() {
-        assert!(auth_scheme_requires_declared_credentials(
-            &ChannelAuthScheme::Required {
-                header_name: Some("authorization".into()),
-                cookie_name: None,
-            },
-        ));
-        assert!(auth_scheme_requires_declared_credentials(
-            &ChannelAuthScheme::Required {
-                header_name: None,
-                cookie_name: Some("session".into()),
-            },
-        ));
-        assert!(!auth_scheme_requires_declared_credentials(
-            &ChannelAuthScheme::Required {
-                header_name: None,
-                cookie_name: None,
-            },
-        ));
-        assert!(!auth_scheme_requires_declared_credentials(
-            &ChannelAuthScheme::Public,
-        ));
-    }
-}
+mod tests;

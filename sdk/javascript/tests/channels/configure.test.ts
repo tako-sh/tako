@@ -36,6 +36,12 @@ describe("configureChannels", () => {
     );
   });
 
+  test("optional token resolves null when unset", async () => {
+    resetChannelsConfig();
+
+    expect(await getChannelsConfig().resolveOptionalToken()).toBeNull();
+  });
+
   test("null token throws actionable error", async () => {
     configureChannels({ token: () => null });
 

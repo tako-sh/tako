@@ -178,6 +178,30 @@ describe("channels", () => {
     );
   });
 
+  test("connect sends tako.auth envelope when token is configured", async () => {
+    const sent: unknown[] = [];
+    const webSocketFactory = mock(() => ({
+      readyState: 1,
+      OPEN: 1,
+      send: (data: unknown) => sent.push(data),
+      close() {},
+    }));
+    configureChannels({ token: () => "Bearer abc" });
+
+    const channel = new Channel("chat", "ws");
+    channel.connect({
+      baseUrl: "https://app.example.com",
+      lastMessageId: "42",
+      webSocketFactory,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(sent[0]).toBe(
+      JSON.stringify({ type: "tako.auth", token: "Bearer abc", lastMessageId: "42" }),
+    );
+  });
+
   test("connect throws when channel has no ws transport", () => {
     const channel = new Channel("status");
     expect(() => channel.connect({ baseUrl: "https://app.example.com" })).toThrow(

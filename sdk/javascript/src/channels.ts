@@ -117,6 +117,39 @@ function sendRaw(raw: unknown, data: unknown): void {
   maybeSend.call(raw, payload);
 }
 
+function sendWhenOpen(raw: unknown, data: unknown): void {
+  if (typeof raw !== "object" || raw === null) return;
+  const target = raw as {
+    readyState?: number;
+    OPEN?: number;
+    addEventListener?: (type: "open", listener: () => void, opts?: { once?: boolean }) => void;
+  };
+  const send = () => sendRaw(raw, data);
+  const openState = target.OPEN ?? 1;
+
+  if (target.readyState === undefined || target.readyState === openState) {
+    send();
+    return;
+  }
+
+  if (typeof target.addEventListener === "function") {
+    target.addEventListener("open", send, { once: true });
+  }
+}
+
+function sendAuthEnvelope(raw: unknown, lastMessageId?: string): void {
+  void getChannelsConfig()
+    .resolveOptionalToken()
+    .then((token) => {
+      if (!token) return;
+      sendWhenOpen(raw, {
+        type: "tako.auth",
+        token,
+        ...(lastMessageId !== undefined && { lastMessageId }),
+      });
+    });
+}
+
 export class Channel {
   readonly name: string;
   readonly transport: ChannelDefinitionTransport | undefined;
@@ -195,6 +228,7 @@ export class Channel {
 
     const factory = options.webSocketFactory ?? defaultWebSocketFactory;
     const raw = factory(toWebSocketUrl(url));
+    sendAuthEnvelope(raw, options.lastMessageId);
     return {
       transport: "ws",
       raw,
