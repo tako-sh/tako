@@ -71,6 +71,8 @@ export interface ChannelConnection<T = unknown> {
 }
 
 interface BaseHookOptions<T> {
+  /** Typed channel params serialized into the channel query string. */
+  params?: Record<string, unknown>;
   /**
    * Called for each incoming message. The latest handler is always used —
    * you do not need to memoize it.
@@ -125,6 +127,7 @@ export function useChannel<T = unknown>(
 
   const optionsRef = useRef(options);
   optionsRef.current = options;
+  const paramsKey = JSON.stringify(options.params ?? {});
 
   const handlerRef = useRef<MessageHandler<T> | undefined>(options.onMessage);
   handlerRef.current = options.onMessage;
@@ -158,7 +161,7 @@ export function useChannel<T = unknown>(
       const connect = () => {
         if (disposed) return;
 
-        const channel = new Channel(name, "ws");
+        const channel = new Channel(name, "ws", optionsRef.current.params ?? {});
         const conn = channel.connect(optionsRef.current as ChannelConnectOptions);
         const target = conn.raw as EventTarget;
         socketRef.current = conn;
@@ -205,7 +208,7 @@ export function useChannel<T = unknown>(
     }
 
     // SSE path — EventSource auto-reconnects natively.
-    const channel = new Channel(name);
+    const channel = new Channel(name, undefined, optionsRef.current.params ?? {});
     const sub = channel.subscribe(optionsRef.current as ChannelSubscribeOptions);
     const target = sub.raw as EventTarget;
 
@@ -231,7 +234,7 @@ export function useChannel<T = unknown>(
       target.removeEventListener("error", handleError);
       sub.close();
     };
-  }, [name, transport, handleIncoming]);
+  }, [name, transport, paramsKey, handleIncoming]);
 
   const clear = useCallback(() => setMessages([]), []);
   const send = useCallback((data: unknown) => {

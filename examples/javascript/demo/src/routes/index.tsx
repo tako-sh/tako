@@ -124,7 +124,6 @@ function Controller({
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
-  const channelName = `mission-log/${encodeURIComponent(tenantSlug)}`;
   const requests = useMemo(
     () => Object.values(requestsById).sort((left, right) => right.createdAt - left.createdAt),
     [requestsById],
@@ -141,7 +140,10 @@ function Controller({
     });
   }, []);
 
-  const { status } = useChannel(channelName, { onMessage });
+  const { status } = useChannel("mission-log", {
+    params: { base: tenantSlug },
+    onMessage,
+  });
   const connected = status === "open";
 
   const handleSubmit = useCallback(

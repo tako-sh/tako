@@ -118,10 +118,18 @@ function encodeParams(params: Record<string, unknown>): string {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
     if (value === undefined || value === null) continue;
-    search.set(key, String(value));
+    search.set(key, encodeQueryValue(value));
   }
   const query = search.toString();
   return query ? `?${query}` : "";
+}
+
+function encodeQueryValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return value.toString();
+  }
+  return JSON.stringify(value);
 }
 
 function makeHandle<P, M>(definition: ChannelDefinition<P, M>, params: P): ChannelHandle<P, M> {

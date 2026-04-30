@@ -52,9 +52,17 @@ function channelBaseUrl(
   url.search = "";
   for (const [key, value] of Object.entries(params)) {
     if (value === undefined || value === null) continue;
-    url.searchParams.set(key, String(value));
+    url.searchParams.set(key, encodeQueryValue(value));
   }
   return url;
+}
+
+function encodeQueryValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return value.toString();
+  }
+  return JSON.stringify(value);
 }
 
 function withQuery(url: URL, key: string, value?: string | number): URL {

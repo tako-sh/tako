@@ -89,6 +89,17 @@ describe("useChannel (sse)", () => {
     expect(result.current.status).toBe("open");
   });
 
+  test("passes params as query string to SSE subscriptions", () => {
+    renderHook(() =>
+      useChannel("chat", {
+        params: { roomId: "r1", limit: 10 },
+        eventSourceFactory: factory,
+        baseUrl: "http://test",
+      }),
+    );
+    expect(es!.url).toBe("http://test/channels/chat?roomId=r1&limit=10");
+  });
+
   test("appends messages on incoming events", () => {
     const { result } = renderHook(() =>
       useChannel("chat:1", { eventSourceFactory: factory, baseUrl: "http://test" }),
@@ -238,6 +249,18 @@ describe("useChannel (ws)", () => {
     });
     expect(result.current.status).toBe("open");
     expect(result.current.messages).toHaveLength(1);
+  });
+
+  test("passes params as query string to websocket connections", () => {
+    renderHook(() =>
+      useChannel("chat", {
+        params: { roomId: "r1" },
+        transport: "ws",
+        webSocketFactory: factory,
+        baseUrl: "http://test",
+      }),
+    );
+    expect(sockets[0]!.url).toBe("ws://test/channels/chat?roomId=r1");
   });
 
   test("send() forwards to the underlying socket", () => {

@@ -183,7 +183,7 @@ Durable pub-sub streams with SSE and WebSocket transport.
 
 ### Defining channels (file-based)
 
-Drop one file per channel pattern in `channels/<name>.ts` that default-exports `defineChannel(pattern, config?).$messageTypes<M>()`. Server code imports the file directly to publish or authorize.
+Drop one file per channel in `channels/<name>.ts` that default-exports `defineChannel(config?).$messageTypes<M>()`. The filename is the wire channel name. Server code imports the file directly to publish.
 
 ```typescript
 // channels/chat.ts
@@ -194,12 +194,16 @@ interface ChatMessages {
   typing: { userId: string };
 }
 
-export default defineChannel("chat/:roomId", {
-  async auth(request, ctx) {
-    // ctx.params.roomId is typed; ctx.operation = "subscribe" | "publish" | "connect"
-    const userId = await getUserId(request);
-    if (!userId) return false;
-    return { subject: userId };
+export default defineChannel({
+  paramsSchema: (t) => t.Object({ roomId: t.String({ minLength: 1 }) }),
+  auth: {
+    headerName: "authorization",
+    async verify(input) {
+      // input.params.roomId is typed; operation = "subscribe" | "publish" | "connect"
+      const userId = await getUserId(input.header);
+      if (!userId) return false;
+      return { subject: userId };
+    },
   },
   handler: {
     msg: async (data, ctx) => {
@@ -215,9 +219,10 @@ export default defineChannel("chat/:roomId", {
 }).$messageTypes<ChatMessages>();
 ```
 
-- Patterns are Hono-style: `/`-separated segments with `:name` captures and an optional trailing `*` wildcard. Must be a string literal.
+- Filename is the channel name. `channels/chat.ts` maps to `/channels/chat`.
+- `paramsSchema` serializes to JSON Schema; tako-server validates query params before app auth.
 - `.$messageTypes<M>()` is a type-level narrower that declares the message map — runtime no-op. Omit for channels with no typed messages.
-- `auth` is optional. Omit for public channels (defaults to allow-all).
+- `auth` is optional. Omit or set `false` for public channels.
 - `handler` presence decides transport: present → WebSocket, absent → SSE (broadcast-only). SSE channels reject client POST publishes.
 
 Auth return values: `false` deny · `true` allow anonymously · `{ subject }` allow with identity.
@@ -231,7 +236,7 @@ Import the channel module. The export is a typed handle (unparameterized) or a c
 import status from "../channels/status";
 await status.publish({ type: "ping", data: { at: Date.now() } });
 
-// Parameterized channel: bind params, then publish
+// Channel with params: bind params, then publish
 import chat from "../channels/chat";
 await chat({ roomId: "room1" }).publish({
   type: "msg",
@@ -241,7 +246,7 @@ await chat({ roomId: "room1" }).publish({
 
 ### Subscribing / connecting (client-side)
 
-In the browser, use the `Channel` class from `tako.sh/client` with the fully-resolved channel name. `subscribe()` returns an `EventSource`-shaped subscription; `connect()` returns a `WebSocket`-shaped socket.
+In the browser, use the `Channel` class from `tako.sh/client` with the channel filename and optional params. `subscribe()` returns an `EventSource`-shaped subscription; `connect()` returns a `WebSocket`-shaped socket.
 
 ```typescript
 import { Channel } from "tako.sh/client";
@@ -255,8 +260,8 @@ const sub = status.subscribe();
 });
 sub.close();
 
-// WebSocket channel — expand params into the name yourself
-const room = new Channel("chat/room1", "ws");
+// WebSocket channel with params
+const room = new Channel("chat", "ws", { roomId: "room1" });
 const socket = room.connect();
 (socket.raw as WebSocket).addEventListener("message", (e) => {
   const msg = JSON.parse(e.data);
@@ -278,7 +283,9 @@ For React apps, prefer `useChannel` from `tako.sh/react` — it wraps `Channel` 
 import { useChannel } from "tako.sh/react";
 
 function ChatRoom({ room }: { room: string }) {
-  const { messages, status, error } = useChannel<{ body: string }>(`chat:${room}`);
+  const { messages, status, error } = useChannel<{ body: string }>("chat", {
+    params: { roomId: room },
+  });
   if (error) return <p>error: {error.message}</p>;
   return (
     <ul>
@@ -293,7 +300,10 @@ function ChatRoom({ room }: { room: string }) {
 WebSocket with `send`:
 
 ```tsx
-const { messages, send } = useChannel(`chat:${room}`, { transport: "ws" });
+const { messages, send } = useChannel("chat", {
+  params: { roomId: room },
+  transport: "ws",
+});
 ```
 
 Return shape (`ChannelConnection<T>`): `messages` (capped at 500, oldest-first), `status` (`"connecting" | "open"`), `error`, `clear()`, and `send(data)` on WebSocket only.
