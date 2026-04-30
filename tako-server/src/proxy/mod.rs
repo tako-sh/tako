@@ -17,7 +17,7 @@ pub use server::{ProxyBuilder, TlsConfig, build_server, build_server_with_acme};
 #[allow(unused_imports)]
 pub use static_files::*;
 
-use crate::channels::ChannelStore;
+use crate::channels::{ChannelStore, registry::ChannelRegistry};
 use crate::lb::LoadBalancer;
 use crate::routing::RouteTable;
 use crate::scaling::ColdStartManager;
@@ -68,6 +68,8 @@ pub struct TakoProxy {
     channel_stores: SyncRwLock<HashMap<String, Arc<ChannelStore>>>,
     /// Per-IP concurrent request limiter (DDoS mitigation)
     ip_tracker: IpRequestTracker,
+    /// Channel metadata cache hydrated from app internal endpoints.
+    channel_registry: Arc<ChannelRegistry>,
 }
 
 impl TakoProxy {
@@ -91,6 +93,7 @@ impl TakoProxy {
             static_servers: SyncRwLock::new(HashMap::new()),
             channel_stores: SyncRwLock::new(HashMap::new()),
             ip_tracker: IpRequestTracker::new(),
+            channel_registry: Arc::new(ChannelRegistry::new()),
         }
     }
 
@@ -116,6 +119,7 @@ impl TakoProxy {
             static_servers: SyncRwLock::new(HashMap::new()),
             channel_stores: SyncRwLock::new(HashMap::new()),
             ip_tracker: IpRequestTracker::new(),
+            channel_registry: Arc::new(ChannelRegistry::new()),
         }
     }
 

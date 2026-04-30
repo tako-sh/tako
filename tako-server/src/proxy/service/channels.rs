@@ -1,8 +1,9 @@
 use super::{BackendResolution, RequestCtx};
 use crate::channels::{
-    ChannelAuthResponse, ChannelAuthScheme, ChannelError, ChannelHeaderValue, ChannelOperation,
-    ChannelStore, ChannelTransport, app_channels_db_path, authorize_channel_request,
-    parse_channel_route, parse_message_id_cursor, parse_ws_last_message_id,
+    ChannelAuthResponse, ChannelAuthScheme, ChannelDefinitionMeta, ChannelError,
+    ChannelHeaderValue, ChannelOperation, ChannelStore, ChannelTransport, app_channels_db_path,
+    authorize_channel_request, fetch_channel_registry, parse_channel_route,
+    parse_message_id_cursor, parse_ws_last_message_id,
 };
 use crate::channels_ws::{
     WebSocketFrameReader, build_websocket_upgrade_response, parse_publish_payload,
@@ -17,6 +18,7 @@ use pingora_proxy::Session;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
+use tako_channels::params::{ParamsError, validate_query};
 
 impl TakoProxy {
     /// Return the cached `ChannelStore` for `app_name`, opening (and
@@ -42,6 +44,23 @@ impl TakoProxy {
         })?);
         stores.insert(app_name.to_string(), store.clone());
         Ok(store)
+    }
+
+    async fn channel_meta_for_app(
+        &self,
+        app_name: &str,
+        instance: &crate::instances::Instance,
+        channel: &str,
+    ) -> std::result::Result<ChannelDefinitionMeta, ChannelError> {
+        if let Some(meta) = self.channel_registry.get(app_name, channel) {
+            return Ok(meta);
+        }
+
+        let defs = fetch_channel_registry(instance).await?;
+        self.channel_registry.install(app_name, defs);
+        self.channel_registry
+            .get(app_name, channel)
+            .ok_or(ChannelError::NotDefined)
     }
 
     async fn write_json_response(
@@ -73,6 +92,7 @@ impl TakoProxy {
         error: ChannelError,
     ) -> Result<bool> {
         let (status, body) = match error {
+            ChannelError::Unauthorized => (401, serde_json::json!({ "error": "Unauthorized" })),
             ChannelError::Forbidden => (403, serde_json::json!({ "error": "Forbidden" })),
             ChannelError::NotDefined => {
                 (404, serde_json::json!({ "error": "Channel not defined" }))
@@ -399,18 +419,63 @@ impl TakoProxy {
             ChannelOperation::Subscribe
         };
 
+        let meta = match self
+            .channel_meta_for_app(app_name, &instance, &route.channel)
+            .await
+        {
+            Ok(meta) => meta,
+            Err(error) => {
+                self.lb
+                    .request_completed(&backend.app_name, &backend.instance_id);
+                return self.write_channel_error(session, error).await;
+            }
+        };
+
+        let params_query = channel_params_query(session.req_header().uri.query());
+        let params = match validate_query(&meta.params_schema, &params_query) {
+            Ok(params) => params,
+            Err(ParamsError::Invalid(message)) => {
+                self.lb
+                    .request_completed(&backend.app_name, &backend.instance_id);
+                return self
+                    .write_channel_error(
+                        session,
+                        ChannelError::BadRequest(format!("invalid channel params: {message}")),
+                    )
+                    .await;
+            }
+            Err(ParamsError::InvalidSchema(message)) => {
+                self.lb
+                    .request_completed(&backend.app_name, &backend.instance_id);
+                return self
+                    .write_channel_error(
+                        session,
+                        ChannelError::Storage(format!("invalid channel schema: {message}")),
+                    )
+                    .await;
+            }
+        };
+
         let request_headers = request_headers_to_map(session.req_header());
-        let header = request_headers
-            .get("authorization")
-            .map(|raw| ChannelHeaderValue::parse(raw));
+        let (header, cookie) = extract_credentials(&request_headers, &meta.auth);
+        if auth_scheme_requires_declared_credentials(&meta.auth)
+            && header.is_none()
+            && cookie.is_none()
+        {
+            self.lb
+                .request_completed(&backend.app_name, &backend.instance_id);
+            return self
+                .write_channel_error(session, ChannelError::Unauthorized)
+                .await;
+        }
 
         let auth_result = authorize_channel_request(
             &instance,
             operation.clone(),
             &route.channel,
-            serde_json::json!({}),
+            params,
             header,
-            None,
+            cookie,
         )
         .await;
 
@@ -488,6 +553,35 @@ impl TakoProxy {
                 .await
         }
     }
+}
+
+fn channel_params_query(query: Option<&str>) -> String {
+    let Some(query) = query else {
+        return String::new();
+    };
+
+    query
+        .split('&')
+        .filter(|pair| {
+            let key = pair.split_once('=').map_or(*pair, |(key, _)| key);
+            key != "last_message_id"
+        })
+        .filter(|pair| !pair.is_empty())
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+fn auth_scheme_requires_declared_credentials(scheme: &ChannelAuthScheme) -> bool {
+    matches!(
+        scheme,
+        ChannelAuthScheme::Required {
+            header_name: Some(_),
+            cookie_name: _
+        } | ChannelAuthScheme::Required {
+            header_name: _,
+            cookie_name: Some(_)
+        }
+    )
 }
 
 fn request_headers_to_map(request: &RequestHeader) -> HashMap<String, String> {
@@ -586,5 +680,40 @@ mod tests {
         let (header, cookie) = extract_credentials(&headers, &ChannelAuthScheme::Public);
         assert!(header.is_none());
         assert!(cookie.is_none());
+    }
+
+    #[test]
+    fn channel_params_query_excludes_ws_cursor() {
+        assert_eq!(
+            channel_params_query(Some("roomId=r1&last_message_id=42&limit=10")),
+            "roomId=r1&limit=10"
+        );
+        assert_eq!(channel_params_query(Some("last_message_id=42")), "");
+        assert_eq!(channel_params_query(None), "");
+    }
+
+    #[test]
+    fn auth_scheme_requires_declared_credentials_only_for_declared_fields() {
+        assert!(auth_scheme_requires_declared_credentials(
+            &ChannelAuthScheme::Required {
+                header_name: Some("authorization".into()),
+                cookie_name: None,
+            },
+        ));
+        assert!(auth_scheme_requires_declared_credentials(
+            &ChannelAuthScheme::Required {
+                header_name: None,
+                cookie_name: Some("session".into()),
+            },
+        ));
+        assert!(!auth_scheme_requires_declared_credentials(
+            &ChannelAuthScheme::Required {
+                header_name: None,
+                cookie_name: None,
+            },
+        ));
+        assert!(!auth_scheme_requires_declared_credentials(
+            &ChannelAuthScheme::Public,
+        ));
     }
 }

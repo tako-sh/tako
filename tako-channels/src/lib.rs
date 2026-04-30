@@ -209,6 +209,8 @@ pub enum ChannelError {
     InvalidPath,
     #[error("unsupported channel operation")]
     Unsupported,
+    #[error("unauthorized")]
+    Unauthorized,
     #[error("forbidden")]
     Forbidden,
     #[error("channel not defined")]

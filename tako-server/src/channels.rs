@@ -56,3 +56,38 @@ pub(crate) async fn authorize_channel_request(
     )
     .await
 }
+
+pub(crate) async fn fetch_channel_registry(
+    instance: &Instance,
+) -> Result<Vec<ChannelDefinitionMeta>, ChannelError> {
+    let endpoint = instance.endpoint().ok_or(ChannelError::AuthUnavailable)?;
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(2))
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|e| ChannelError::Storage(format!("build registry client: {e}")))?;
+
+    let response = client
+        .get(format!(
+            "http://{}{}",
+            endpoint,
+            tako_channels::INTERNAL_CHANNEL_REGISTRY_PATH
+        ))
+        .header("Host", INTERNAL_STATUS_HOST)
+        .header(INTERNAL_TOKEN_HEADER, instance.internal_token())
+        .send()
+        .await
+        .map_err(|_| ChannelError::AuthUnavailable)?;
+
+    match response.status().as_u16() {
+        200 => response
+            .json::<Vec<ChannelDefinitionMeta>>()
+            .await
+            .map_err(|e| ChannelError::BadRequest(format!("invalid channel registry: {e}"))),
+        404 => Err(ChannelError::NotDefined),
+        401 | 403 => Err(ChannelError::AuthUnavailable),
+        status => Err(ChannelError::BadRequest(format!(
+            "channel registry returned {status}"
+        ))),
+    }
+}

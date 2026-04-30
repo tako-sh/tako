@@ -28,6 +28,7 @@ impl TakoProxy {
         self.routes.write().await.remove_app_routes(app_name);
         self.static_servers.write().remove(app_name);
         self.channel_stores.write().remove(app_name);
+        self.channel_registry.invalidate(app_name);
     }
 }
 
