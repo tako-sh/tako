@@ -1,10 +1,16 @@
 package internal
 
 import (
-	"net/http"
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/santhosh-tekuri/jsonschema/v5"
 )
 
 const (
@@ -48,10 +54,29 @@ func (c ChannelLifecycleConfig) withDefaults() ChannelLifecycleConfig {
 	return c
 }
 
-type ChannelAuthContext struct {
-	Channel   string           `json:"channel"`
-	Operation ChannelOperation `json:"operation"`
-	Pattern   string           `json:"pattern"`
+type ChannelHeaderValue struct {
+	Scheme string `json:"scheme,omitempty"`
+	Value  string `json:"value"`
+}
+
+func ParseChannelHeaderValue(raw string) ChannelHeaderValue {
+	if idx := strings.IndexByte(raw, ' '); idx >= 0 {
+		return ChannelHeaderValue{Scheme: raw[:idx], Value: raw[idx+1:]}
+	}
+	return ChannelHeaderValue{Value: raw}
+}
+
+type ChannelAuthScheme struct {
+	HeaderName string `json:"headerName,omitempty"`
+	CookieName string `json:"cookieName,omitempty"`
+}
+
+type VerifyInput struct {
+	Channel   string              `json:"channel"`
+	Operation ChannelOperation    `json:"operation"`
+	Params    json.RawMessage     `json:"params"`
+	Header    *ChannelHeaderValue `json:"header,omitempty"`
+	Cookie    *string             `json:"cookie,omitempty"`
 }
 
 type ChannelGrant struct {
@@ -77,21 +102,19 @@ func RejectChannel() ChannelAuthDecision {
 }
 
 type ChannelDefinition struct {
-	Auth func(*http.Request, ChannelAuthContext) ChannelAuthDecision
 	ChannelLifecycleConfig
-	Transport ChannelTransport
-}
-
-type ChannelAuthRequest struct {
-	URL     string            `json:"url"`
-	Method  string            `json:"method,omitempty"`
-	Headers map[string]string `json:"headers,omitempty"`
+	ParamsSchema json.RawMessage
+	Auth         *ChannelAuthScheme
+	Verify       func(VerifyInput) ChannelAuthDecision
+	Transport    ChannelTransport
 }
 
 type ChannelAuthorizeInput struct {
-	Channel   string             `json:"channel"`
-	Operation ChannelOperation   `json:"operation"`
-	Request   ChannelAuthRequest `json:"request"`
+	Channel   string              `json:"channel"`
+	Operation ChannelOperation    `json:"operation"`
+	Params    json.RawMessage     `json:"params"`
+	Header    *ChannelHeaderValue `json:"header,omitempty"`
+	Cookie    *string             `json:"cookie,omitempty"`
 }
 
 type ChannelAuthorizeResponse struct {
@@ -100,182 +123,220 @@ type ChannelAuthorizeResponse struct {
 	ChannelGrant
 }
 
-type Channel struct {
-	name      string
-	transport ChannelTransport
+type ChannelAuthMetadata struct {
+	Public bool
+	Scheme ChannelAuthScheme
 }
 
-func (c *Channel) Name() string {
-	return c.name
+func (m ChannelAuthMetadata) MarshalJSON() ([]byte, error) {
+	if m.Public {
+		return []byte("false"), nil
+	}
+	return json.Marshal(m.Scheme)
 }
 
-func (c *Channel) Transport() ChannelTransport {
-	return c.transport
-}
-
-type channelDefinitionEntry struct {
-	definition ChannelDefinition
-	index      int
-	pattern    string
+type ChannelDefinitionMeta struct {
+	Channel      string              `json:"channel"`
+	ParamsSchema json.RawMessage     `json:"paramsSchema"`
+	Auth         ChannelAuthMetadata `json:"auth"`
+	Transport    ChannelTransport    `json:"transport,omitempty"`
 }
 
 type ChannelRegistry struct {
 	mu          sync.RWMutex
-	definitions []channelDefinitionEntry
-	nextIndex   int
+	definitions map[string]ChannelDefinition
 }
 
 func NewChannelRegistry() *ChannelRegistry {
-	return &ChannelRegistry{}
+	return &ChannelRegistry{definitions: map[string]ChannelDefinition{}}
 }
 
 var Channels = NewChannelRegistry()
 
-func (r *ChannelRegistry) Create(name string, definition ...ChannelDefinition) *Channel {
-	if len(definition) > 0 {
-		r.Define(name, definition[0])
-		return &Channel{name: name, transport: definition[0].Transport}
+func (r *ChannelRegistry) Register(name string, definition ChannelDefinition) {
+	if definition.ParamsSchema == nil {
+		definition.ParamsSchema = json.RawMessage(`{"type":"object"}`)
 	}
-	return &Channel{name: name}
-}
+	if definition.Auth != nil && definition.Auth.HeaderName == "" && definition.Auth.CookieName == "" {
+		definition.Auth.HeaderName = "authorization"
+	}
 
-func (r *ChannelRegistry) Define(pattern string, definition ChannelDefinition) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.definitions = append(r.definitions, channelDefinitionEntry{
-		definition: definition,
-		index:      r.nextIndex,
-		pattern:    pattern,
-	})
-	r.nextIndex++
+	r.definitions[name] = definition
 }
 
 func (r *ChannelRegistry) Clear() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.definitions = nil
-	r.nextIndex = 0
+	r.definitions = map[string]ChannelDefinition{}
 }
 
-func (r *ChannelRegistry) ResolveDefinition(channel string) *ChannelDefinition {
+func (r *ChannelRegistry) Lookup(channel string) *ChannelDefinition {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-
-	matches := make([]channelDefinitionEntry, 0)
-	for _, entry := range r.definitions {
-		if patternMatches(entry.pattern, channel) {
-			matches = append(matches, entry)
-		}
-	}
-	if len(matches) == 0 {
+	definition, ok := r.definitions[channel]
+	if !ok {
 		return nil
 	}
-
-	sort.SliceStable(matches, func(i, j int) bool {
-		left, right := matches[i], matches[j]
-		if isExactPattern(left.pattern) != isExactPattern(right.pattern) {
-			return isExactPattern(left.pattern)
-		}
-		leftSpecificity := patternSpecificity(left.pattern)
-		rightSpecificity := patternSpecificity(right.pattern)
-		if leftSpecificity != rightSpecificity {
-			return leftSpecificity > rightSpecificity
-		}
-		return left.index < right.index
-	})
-
-	definition := matches[0].definition
 	return &definition
 }
 
+func (r *ChannelRegistry) ResolveDefinition(channel string) *ChannelDefinition {
+	return r.Lookup(channel)
+}
+
 func (r *ChannelRegistry) Authorize(input ChannelAuthorizeInput) (ChannelAuthorizeResponse, bool, bool) {
-	entry := r.resolveEntry(input.Channel)
-	if entry == nil {
+	definition := r.Lookup(input.Channel)
+	if definition == nil {
 		return ChannelAuthorizeResponse{}, false, false
 	}
 
-	method := input.Request.Method
-	if method == "" {
-		method = http.MethodGet
-	}
-	req, err := http.NewRequest(method, input.Request.URL, nil)
-	if err != nil {
-		return ChannelAuthorizeResponse{}, true, false
-	}
-	for key, value := range input.Request.Headers {
-		req.Header.Set(key, value)
+	if len(input.Params) == 0 {
+		input.Params = json.RawMessage(`{}`)
 	}
 
-	decision := entry.definition.Auth(req, ChannelAuthContext{
+	if definition.Auth == nil {
+		grant := ChannelGrant{ChannelLifecycleConfig: definition.ChannelLifecycleConfig.withDefaults()}
+		return ChannelAuthorizeResponse{
+			OK:           true,
+			Transport:    definition.Transport,
+			ChannelGrant: grant,
+		}, true, true
+	}
+	if definition.Verify == nil {
+		return ChannelAuthorizeResponse{OK: false}, true, false
+	}
+
+	decision := definition.Verify(VerifyInput{
 		Channel:   input.Channel,
 		Operation: input.Operation,
-		Pattern:   entry.pattern,
+		Params:    input.Params,
+		Header:    input.Header,
+		Cookie:    input.Cookie,
 	})
 	if !decision.OK {
-		return ChannelAuthorizeResponse{}, true, false
+		return ChannelAuthorizeResponse{OK: false}, true, false
 	}
 
 	grant := decision.ChannelGrant
 	if grant.ChannelLifecycleConfig == (ChannelLifecycleConfig{}) {
-		grant.ChannelLifecycleConfig = entry.definition.ChannelLifecycleConfig
+		grant.ChannelLifecycleConfig = definition.ChannelLifecycleConfig
 	}
 	grant.ChannelLifecycleConfig = grant.ChannelLifecycleConfig.withDefaults()
 
 	return ChannelAuthorizeResponse{
 		OK:           true,
-		Transport:    entry.definition.Transport,
+		Transport:    definition.Transport,
 		ChannelGrant: grant,
 	}, true, true
 }
 
-func (r *ChannelRegistry) resolveEntry(channel string) *channelDefinitionEntry {
+func (r *ChannelRegistry) ValidateParams(channel string, query string) (json.RawMessage, error) {
+	definition := r.Lookup(channel)
+	if definition == nil {
+		return nil, fmt.Errorf("channel %q is not registered", channel)
+	}
+	if len(definition.ParamsSchema) == 0 {
+		return json.RawMessage(`{}`), nil
+	}
+
+	var schema map[string]any
+	if err := json.Unmarshal(definition.ParamsSchema, &schema); err != nil {
+		return nil, fmt.Errorf("invalid params schema: %w", err)
+	}
+
+	values, err := url.ParseQuery(query)
+	if err != nil {
+		return nil, err
+	}
+	params := make(map[string]any, len(values))
+	for key, vals := range values {
+		if len(vals) == 0 {
+			continue
+		}
+		params[key] = coerceParamValue(schema, key, vals[len(vals)-1])
+	}
+
+	compiled, err := compileSchema(definition.ParamsSchema)
+	if err != nil {
+		return nil, err
+	}
+	if err := compiled.Validate(params); err != nil {
+		return nil, err
+	}
+
+	b, err := json.Marshal(params)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(b), nil
+}
+
+func (r *ChannelRegistry) Metadata() []ChannelDefinitionMeta {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	matches := make([]channelDefinitionEntry, 0)
-	for _, entry := range r.definitions {
-		if patternMatches(entry.pattern, channel) {
-			matches = append(matches, entry)
-		}
+	names := make([]string, 0, len(r.definitions))
+	for name := range r.definitions {
+		names = append(names, name)
 	}
-	if len(matches) == 0 {
-		return nil
+	sort.Strings(names)
+
+	out := make([]ChannelDefinitionMeta, 0, len(names))
+	for _, name := range names {
+		definition := r.definitions[name]
+		auth := ChannelAuthMetadata{Public: true}
+		if definition.Auth != nil {
+			auth = ChannelAuthMetadata{Scheme: *definition.Auth}
+		}
+		out = append(out, ChannelDefinitionMeta{
+			Channel:      name,
+			ParamsSchema: definition.ParamsSchema,
+			Auth:         auth,
+			Transport:    definition.Transport,
+		})
 	}
-
-	sort.SliceStable(matches, func(i, j int) bool {
-		left, right := matches[i], matches[j]
-		if isExactPattern(left.pattern) != isExactPattern(right.pattern) {
-			return isExactPattern(left.pattern)
-		}
-		leftSpecificity := patternSpecificity(left.pattern)
-		rightSpecificity := patternSpecificity(right.pattern)
-		if leftSpecificity != rightSpecificity {
-			return leftSpecificity > rightSpecificity
-		}
-		return left.index < right.index
-	})
-
-	entry := matches[0]
-	return &entry
+	return out
 }
 
-func isExactPattern(pattern string) bool {
-	return !strings.Contains(pattern, "*")
+func compileSchema(raw json.RawMessage) (*jsonschema.Schema, error) {
+	compiler := jsonschema.NewCompiler()
+	compiler.Draft = jsonschema.Draft2020
+	if err := compiler.AddResource("schema.json", bytes.NewReader(raw)); err != nil {
+		return nil, err
+	}
+	return compiler.Compile("schema.json")
 }
 
-func patternMatches(pattern, channel string) bool {
-	if pattern == "*" {
-		return true
+func coerceParamValue(schema map[string]any, key string, raw string) any {
+	expected := propertyType(schema, key)
+	switch expected {
+	case "integer":
+		if value, err := strconv.ParseInt(raw, 10, 64); err == nil {
+			return value
+		}
+	case "number":
+		if value, err := strconv.ParseFloat(raw, 64); err == nil {
+			return value
+		}
+	case "boolean":
+		if value, err := strconv.ParseBool(raw); err == nil {
+			return value
+		}
 	}
-	if isExactPattern(pattern) {
-		return pattern == channel
-	}
-	if strings.HasSuffix(pattern, "*") {
-		return strings.HasPrefix(channel, strings.TrimSuffix(pattern, "*"))
-	}
-	return false
+	return raw
 }
 
-func patternSpecificity(pattern string) int {
-	return len(strings.ReplaceAll(pattern, "*", ""))
+func propertyType(schema map[string]any, key string) string {
+	properties, ok := schema["properties"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	property, ok := properties[key].(map[string]any)
+	if !ok {
+		return ""
+	}
+	value, _ := property["type"].(string)
+	return value
 }

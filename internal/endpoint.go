@@ -11,6 +11,7 @@ import (
 const internalTokenHeader = "x-tako-internal-token"
 const internalHost = "tako.internal"
 const internalChannelAuthorizePath = "/channels/authorize"
+const internalChannelRegistryPath = "/channels/registry"
 
 // StatusResponse is the JSON shape returned by GET /status on Host: tako.internal.
 type StatusResponse struct {
@@ -65,6 +66,8 @@ func (h *EndpointHandler) handleInternal(w http.ResponseWriter, r *http.Request)
 		h.handleStatus(w)
 	case r.Method == http.MethodPost && r.URL.Path == internalChannelAuthorizePath:
 		h.handleChannelAuthorize(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == internalChannelRegistryPath:
+		h.handleChannelRegistry(w)
 	default:
 		http.NotFound(w, r)
 	}
@@ -91,7 +94,7 @@ func (h *EndpointHandler) handleChannelAuthorize(w http.ResponseWriter, r *http.
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
-	if input.Channel == "" || input.Operation == "" || input.Request.URL == "" {
+	if input.Channel == "" || input.Operation == "" {
 		http.Error(w, "invalid request", http.StatusBadRequest)
 		return
 	}
@@ -111,6 +114,14 @@ func (h *EndpointHandler) handleChannelAuthorize(w http.ResponseWriter, r *http.
 		w.Header().Set(internalTokenHeader, h.internalToken)
 	}
 	json.NewEncoder(w).Encode(response)
+}
+
+func (h *EndpointHandler) handleChannelRegistry(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	if h.internalToken != "" {
+		w.Header().Set(internalTokenHeader, h.internalToken)
+	}
+	json.NewEncoder(w).Encode(Channels.Metadata())
 }
 
 func normalizeHost(host string) string {

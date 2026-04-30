@@ -77,6 +77,20 @@ func TestMetadataEmptyInDevMode(t *testing.T) {
 	}
 }
 
+func TestChannelExportsCompile(t *testing.T) {
+	t.Parallel()
+
+	var _ ChannelDefinition = ChannelDefinition{}
+	var _ VerifyInput = VerifyInput{}
+	var _ ChannelAuthScheme = ChannelAuthScheme{}
+	var _ ChannelHeaderValue = ParseChannelHeaderValue("Bearer token")
+	var _ = AllowChannel(ChannelGrant{})
+	var _ = RejectChannel()
+
+	registry := internal.NewChannelRegistry()
+	registry.Register("test", ChannelDefinition{})
+}
+
 func TestListenerTCP(t *testing.T) {
 	configOnce = syncOnce()
 	origArgs := os.Args

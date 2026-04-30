@@ -95,17 +95,25 @@ func TestChannelAuthorizeEndpoint(t *testing.T) {
 	Channels.Clear()
 	defer Channels.Clear()
 
-	Channels.Define("chat:*", ChannelDefinition{
-		Auth: func(r *http.Request, ctx ChannelAuthContext) ChannelAuthDecision {
+	Channels.Register("chat", ChannelDefinition{
+		Auth: &ChannelAuthScheme{HeaderName: "authorization"},
+		Verify: func(input VerifyInput) ChannelAuthDecision {
 			called = true
-			if got := r.Header.Get("Authorization"); got != "Bearer test" {
-				t.Fatalf("authorization header = %q, want %q", got, "Bearer test")
+			if input.Header == nil || input.Header.Scheme != "Bearer" || input.Header.Value != "test" {
+				t.Fatalf("header = %#v, want Bearer test", input.Header)
 			}
-			if ctx.Channel != "chat:room-123" {
-				t.Fatalf("ctx.Channel = %q, want %q", ctx.Channel, "chat:room-123")
+			if input.Channel != "chat" {
+				t.Fatalf("channel = %q, want %q", input.Channel, "chat")
 			}
-			if ctx.Operation != ChannelOperationSubscribe {
-				t.Fatalf("ctx.Operation = %q, want %q", ctx.Operation, ChannelOperationSubscribe)
+			if input.Operation != ChannelOperationSubscribe {
+				t.Fatalf("operation = %q, want %q", input.Operation, ChannelOperationSubscribe)
+			}
+			var params map[string]string
+			if err := json.Unmarshal(input.Params, &params); err != nil {
+				t.Fatal(err)
+			}
+			if params["roomId"] != "room-123" {
+				t.Fatalf("roomId = %q, want room-123", params["roomId"])
 			}
 			return AllowChannel(ChannelGrant{
 				Subject: "user-123",
@@ -120,13 +128,10 @@ func TestChannelAuthorizeEndpoint(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/channels/authorize", strings.NewReader(`{
-		"channel":"chat:room-123",
+		"channel":"chat",
 		"operation":"subscribe",
-		"request":{
-			"url":"https://app.example.com/channels/chat%3Aroom-123",
-			"method":"GET",
-			"headers":{"authorization":"Bearer test"}
-		}
+		"params":{"roomId":"room-123"},
+		"header":{"scheme":"Bearer","value":"test"}
 	}`))
 	req.Host = "tako.internal"
 	req.Header.Set("Content-Type", "application/json")
@@ -161,6 +166,71 @@ func TestChannelAuthorizeEndpoint(t *testing.T) {
 	}
 	if resp.ReplayWindowMs != 86_400_000 {
 		t.Fatalf("replayWindowMs = %d, want %d", resp.ReplayWindowMs, 86_400_000)
+	}
+}
+
+func TestChannelAuthorizeEndpointRejectsVerifyDenial(t *testing.T) {
+	handler := NewEndpointHandler("test1234", "v1.0", "secret-token", http.NotFoundHandler())
+	Channels.Clear()
+	defer Channels.Clear()
+
+	Channels.Register("chat", ChannelDefinition{
+		Auth:   &ChannelAuthScheme{HeaderName: "authorization"},
+		Verify: func(VerifyInput) ChannelAuthDecision { return RejectChannel() },
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/channels/authorize", strings.NewReader(`{
+		"channel":"chat",
+		"operation":"subscribe",
+		"params":{},
+		"header":{"scheme":"Bearer","value":"test"}
+	}`))
+	req.Host = "tako.internal"
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-tako-internal-token", "secret-token")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status code = %d, want 403", w.Code)
+	}
+}
+
+func TestChannelRegistryEndpoint(t *testing.T) {
+	handler := NewEndpointHandler("test1234", "v1.0", "secret-token", http.NotFoundHandler())
+	Channels.Clear()
+	defer Channels.Clear()
+
+	Channels.Register("chat", ChannelDefinition{
+		ParamsSchema: []byte(`{"type":"object","properties":{"roomId":{"type":"string"}},"required":["roomId"]}`),
+		Auth:         &ChannelAuthScheme{HeaderName: "authorization"},
+		Transport:    ChannelTransportWS,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/channels/registry", nil)
+	req.Host = "tako.internal"
+	req.Header.Set("x-tako-internal-token", "secret-token")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want 200", w.Code)
+	}
+	var resp []struct {
+		Channel      string          `json:"channel"`
+		ParamsSchema json.RawMessage `json:"paramsSchema"`
+		Auth         struct {
+			HeaderName string `json:"headerName"`
+		} `json:"auth"`
+		Transport string `json:"transport"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp) != 1 || resp[0].Channel != "chat" || resp[0].Auth.HeaderName != "authorization" || resp[0].Transport != "ws" {
+		t.Fatalf("unexpected registry response: %#v", resp)
 	}
 }
 

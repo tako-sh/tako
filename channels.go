@@ -7,14 +7,15 @@ import (
 type ChannelTransport = internal.ChannelTransport
 type ChannelOperation = internal.ChannelOperation
 type ChannelLifecycleConfig = internal.ChannelLifecycleConfig
-type ChannelAuthContext = internal.ChannelAuthContext
+type ChannelHeaderValue = internal.ChannelHeaderValue
+type ChannelAuthScheme = internal.ChannelAuthScheme
+type VerifyInput = internal.VerifyInput
 type ChannelGrant = internal.ChannelGrant
 type ChannelAuthDecision = internal.ChannelAuthDecision
 type ChannelDefinition = internal.ChannelDefinition
-type ChannelAuthRequest = internal.ChannelAuthRequest
 type ChannelAuthorizeInput = internal.ChannelAuthorizeInput
 type ChannelAuthorizeResponse = internal.ChannelAuthorizeResponse
-type Channel = internal.Channel
+type ChannelDefinitionMeta = internal.ChannelDefinitionMeta
 type ChannelRegistry = internal.ChannelRegistry
 
 const (
@@ -33,4 +34,8 @@ func AllowChannel(grant ChannelGrant) ChannelAuthDecision {
 
 func RejectChannel() ChannelAuthDecision {
 	return internal.RejectChannel()
+}
+
+func ParseChannelHeaderValue(raw string) ChannelHeaderValue {
+	return internal.ParseChannelHeaderValue(raw)
 }
