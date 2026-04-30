@@ -4,6 +4,7 @@
 
 pub mod close_codes;
 pub mod error_codes;
+pub mod params;
 pub mod pattern;
 
 pub use close_codes::ChannelCloseCode;

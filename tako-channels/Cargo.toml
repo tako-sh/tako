@@ -5,6 +5,7 @@ edition.workspace = true
 publish = false
 
 [dependencies]
+jsonschema = { version = "0.46.3", default-features = false }
 parking_lot = "0.12"
 percent-encoding = "2.3"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
