@@ -196,41 +196,6 @@ impl TestServer {
         String::from_utf8(response).map_err(|e| format!("Invalid UTF-8: {}", e))
     }
 
-    fn http_request_with_host_and_headers(
-        &self,
-        method: &str,
-        host: &str,
-        path: &str,
-        headers: &[(&str, &str)],
-        body: Option<&str>,
-    ) -> Result<String, String> {
-        let addr = format!("127.0.0.1:{}", self.http_port);
-        let mut stream =
-            TcpStream::connect(&addr).map_err(|e| format!("Failed to connect: {}", e))?;
-
-        stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
-        let extra_headers = headers
-            .iter()
-            .map(|(name, value)| format!("{name}: {value}\r\n"))
-            .collect::<String>();
-        let body = body.unwrap_or_default();
-        let request = format!(
-            "{method} {path} HTTP/1.1\r\nHost: {host}\r\nContent-Length: {}\r\n{}Connection: close\r\n\r\n{}",
-            body.len(),
-            extra_headers,
-            body,
-        );
-        stream
-            .write_all(request.as_bytes())
-            .map_err(|e| format!("Failed to write: {}", e))?;
-
-        let mut response = Vec::new();
-        std::io::Read::read_to_end(&mut stream, &mut response)
-            .map_err(|e| format!("Failed to read: {}", e))?;
-
-        String::from_utf8(response).map_err(|e| format!("Invalid UTF-8: {}", e))
-    }
-
     fn data_dir(&self) -> &std::path::Path {
         self.data_dir.path()
     }
@@ -620,7 +585,7 @@ Bun.serve({
       const authz = payload.header?.scheme
         ? `${payload.header.scheme} ${payload.header.value}`
         : payload.header?.value;
-      if (payload.channel !== "chat:room-123") {
+      if (payload.channel !== "chat" || payload.params?.roomId !== "room-123") {
         return new Response(JSON.stringify({ ok: false, error: "not_defined" }), {
           status: 404,
           headers: { "Content-Type": "application/json" },
@@ -640,6 +605,27 @@ Bun.serve({
         maxConnectionLifetimeMs: 200,
         transport: "ws"
       }), { headers: { "Content-Type": "application/json" } });
+    }
+
+    if (requestHost === "tako.internal" && url.pathname === "/channels/registry") {
+      if (request.headers.get("x-tako-internal-token") !== internalToken) {
+        return new Response(JSON.stringify({ error: "forbidden" }), {
+          status: 403,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify([{
+        channel: "chat",
+        paramsSchema: {
+          type: "object",
+          properties: {
+            roomId: { type: "string", minLength: 1 },
+          },
+          required: ["roomId"],
+        },
+        auth: { headerName: "authorization" },
+        transport: "ws",
+      }]), { headers: { "Content-Type": "application/json" } });
     }
 
     return new Response("chat-app");
@@ -674,33 +660,14 @@ Bun.serve({
         let server = TestServer::start();
         deploy_chat_app(&server);
 
-        let publish = server
-            .http_request_with_host_and_headers(
-                "POST",
-                "chat-app.localhost",
-                "/channels/chat%3Aroom-123/messages",
-                &[
-                    ("X-Forwarded-Proto", "https"),
-                    ("Authorization", "Bearer good"),
-                    ("Content-Type", "application/json"),
-                ],
-                Some(r#"{"type":"message","data":{"text":"hi"}}"#),
-            )
-            .expect("publish should succeed");
-        assert!(
-            publish.starts_with("HTTP/1.1 200") || publish.starts_with("HTTP/1.0 200"),
-            "expected 200 publish response: {publish}"
-        );
-        assert!(
-            publish.contains(r#""channel":"chat:room-123""#),
-            "{publish}"
-        );
-        assert!(publish.contains(r#""type":"message""#), "{publish}");
+        let published = publish_via_websocket(&server, "hi");
+        assert!(published.contains(r#""channel":"chat""#), "{published}");
+        assert!(published.contains(r#""type":"message""#), "{published}");
 
         let events = server
             .http_get_with_host_and_headers(
                 "chat-app.localhost",
-                "/channels/chat%3Aroom-123",
+                "/channels/chat?roomId=room-123",
                 &[
                     ("X-Forwarded-Proto", "https"),
                     ("Authorization", "Bearer good"),
@@ -718,7 +685,7 @@ Bun.serve({
         let denied = server
             .http_get_with_host_and_headers(
                 "chat-app.localhost",
-                "/channels/chat%3Aroom-123",
+                "/channels/chat?roomId=room-123",
                 &[
                     ("X-Forwarded-Proto", "https"),
                     ("Accept", "text/event-stream"),
@@ -741,28 +708,12 @@ Bun.serve({
         let server = TestServer::start();
         deploy_chat_app(&server);
 
-        let publish = server
-            .http_request_with_host_and_headers(
-                "POST",
-                "chat-app.localhost",
-                "/channels/chat%3Aroom-123/messages",
-                &[
-                    ("X-Forwarded-Proto", "https"),
-                    ("Authorization", "Bearer good"),
-                    ("Content-Type", "application/json"),
-                ],
-                Some(r#"{"type":"message","data":{"text":"hello sse"}}"#),
-            )
-            .expect("publish should succeed");
-        assert!(
-            publish.starts_with("HTTP/1.1 200") || publish.starts_with("HTTP/1.0 200"),
-            "expected 200 publish response: {publish}"
-        );
+        publish_via_websocket(&server, "hello sse");
 
         let events = server
             .http_get_with_host_and_headers(
                 "chat-app.localhost",
-                "/channels/chat%3Aroom-123",
+                "/channels/chat?roomId=room-123",
                 &[
                     ("X-Forwarded-Proto", "https"),
                     ("Authorization", "Bearer good"),
@@ -781,7 +732,12 @@ Bun.serve({
                 .contains("content-type: text/event-stream"),
             "expected text/event-stream response: {events}"
         );
-        assert!(events.contains(r#"data: {"id":"1","channel":"chat:room-123","type":"message","data":{"text":"hello sse"}}"#), "{events}");
+        assert!(
+            events.contains(
+                r#"data: {"id":"1","channel":"chat","type":"message","data":{"text":"hello sse"}}"#
+            ),
+            "{events}"
+        );
     }
 
     fn websocket_connect(server: &TestServer, path: &str) -> (TcpStream, String) {
@@ -815,6 +771,23 @@ Bun.serve({
         }
 
         (stream, String::from_utf8_lossy(&response).to_string())
+    }
+
+    fn publish_via_websocket(server: &TestServer, text: &str) -> String {
+        let (mut stream, handshake) = websocket_connect(server, "/channels/chat?roomId=room-123");
+        assert!(
+            handshake.starts_with("HTTP/1.1 101") || handshake.starts_with("HTTP/1.0 101"),
+            "expected websocket upgrade response: {handshake}"
+        );
+
+        write_masked_text_frame(
+            &mut stream,
+            &format!(
+                r#"{{"type":"message","data":{{"text":{}}}}}"#,
+                serde_json::to_string(text).unwrap()
+            ),
+        );
+        String::from_utf8(read_server_frame(&mut stream)).unwrap()
     }
 
     fn read_server_frame(stream: &mut TcpStream) -> Vec<u8> {
@@ -869,26 +842,10 @@ Bun.serve({
         let server = TestServer::start();
         deploy_chat_app(&server);
 
-        let publish = server
-            .http_request_with_host_and_headers(
-                "POST",
-                "chat-app.localhost",
-                "/channels/chat%3Aroom-123/messages",
-                &[
-                    ("X-Forwarded-Proto", "https"),
-                    ("Authorization", "Bearer good"),
-                    ("Content-Type", "application/json"),
-                ],
-                Some(r#"{"type":"message","data":{"text":"hello ws"}}"#),
-            )
-            .expect("publish should succeed");
-        assert!(
-            publish.starts_with("HTTP/1.1 200") || publish.starts_with("HTTP/1.0 200"),
-            "expected 200 publish response: {publish}"
-        );
+        publish_via_websocket(&server, "hello ws");
 
         let (mut stream, handshake) =
-            websocket_connect(&server, "/channels/chat%3Aroom-123?last_message_id=0");
+            websocket_connect(&server, "/channels/chat?roomId=room-123&last_message_id=0");
         assert!(
             handshake.starts_with("HTTP/1.1 101") || handshake.starts_with("HTTP/1.0 101"),
             "expected websocket upgrade response: {handshake}"
