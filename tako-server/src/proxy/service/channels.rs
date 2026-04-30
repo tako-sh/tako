@@ -341,10 +341,10 @@ impl TakoProxy {
     pub(crate) async fn try_handle_channel_request(
         &self,
         session: &mut Session,
-        ctx: &mut RequestCtx,
+        _ctx: &mut RequestCtx,
         app_name: &str,
         path: &str,
-        host: &str,
+        _host: &str,
     ) -> Result<bool> {
         let route = match parse_channel_route(path) {
             Ok(Some(route)) => route,
@@ -403,20 +403,17 @@ impl TakoProxy {
         };
 
         let request_headers = request_headers_to_map(session.req_header());
-        let request_url = format!(
-            "{}://{}{}",
-            if ctx.is_https { "https" } else { "http" },
-            host,
-            session.req_header().uri
-        );
+        let header = request_headers
+            .get("authorization")
+            .map(|raw| ChannelHeaderValue::parse(raw));
 
         let auth_result = authorize_channel_request(
             &instance,
             operation.clone(),
             &route.channel,
-            request_url,
-            session.req_header().method.as_str(),
-            request_headers,
+            serde_json::json!({}),
+            header,
+            None,
         )
         .await;
 

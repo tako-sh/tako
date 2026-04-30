@@ -170,7 +170,7 @@ async function handleChannelAuthorize(
     return internalResponse({ error: "Invalid JSON", ok: false }, 400, token);
   }
 
-  if (!input.channel || !input.operation || !input.request?.url) {
+  if (!input.channel || !input.operation || input.params === undefined) {
     return internalResponse({ error: "Invalid request", ok: false }, 400, token);
   }
 

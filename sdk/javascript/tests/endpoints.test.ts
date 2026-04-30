@@ -142,12 +142,10 @@ describe("handleTakoEndpoint", () => {
         body: JSON.stringify({
           channel: "chat/room-123",
           operation: "subscribe",
-          request: {
-            url: "https://app.example.com/channels/chat/room-123",
-            method: "GET",
-            headers: {
-              authorization: "Bearer test",
-            },
+          params: { roomId: "room-123" },
+          header: {
+            scheme: "Bearer",
+            value: "test",
           },
         }),
       });
@@ -184,9 +182,7 @@ describe("handleTakoEndpoint", () => {
         body: JSON.stringify({
           channel: "chat/room-123",
           operation: "subscribe",
-          request: {
-            url: "https://app.example.com/channels/chat/room-123",
-          },
+          params: { roomId: "room-123" },
         }),
       });
 
@@ -209,9 +205,7 @@ describe("handleTakoEndpoint", () => {
         body: JSON.stringify({
           channel: "chat:room-123",
           operation: "publish",
-          request: {
-            url: "https://app.example.com/chat/room-123",
-          },
+          params: {},
         }),
       });
 
@@ -248,9 +242,7 @@ describe("handleTakoEndpoint", () => {
         body: JSON.stringify({
           channel: "chat/room-123",
           operation: "subscribe",
-          request: {
-            url: "https://app.example.com/chat/room-123",
-          },
+          params: { roomId: "room-123" },
         }),
       });
 

@@ -617,7 +617,9 @@ Bun.serve({
         });
       }
       const payload = await request.json();
-      const authz = payload.request?.headers?.authorization;
+      const authz = payload.header?.scheme
+        ? `${payload.header.scheme} ${payload.header.value}`
+        : payload.header?.value;
       if (payload.channel !== "chat:room-123") {
         return new Response(JSON.stringify({ ok: false, error: "not_defined" }), {
           status: 404,

@@ -28,7 +28,7 @@ describe("channels", () => {
     const result = await reg.authorize({
       channel: "chat/room-123",
       operation: "subscribe",
-      request: { url: "https://app.example.com/channels/chat/room-123" },
+      params: {},
     });
 
     expect(result.ok).toBe(true);
@@ -45,7 +45,7 @@ describe("channels", () => {
     const result = await reg.authorize({
       channel: "chat/room-123",
       operation: "subscribe",
-      request: { url: "https://app.example.com/channels/chat/room-123" },
+      params: { roomId: "room-123" },
     });
 
     expect(result).toEqual({
@@ -162,7 +162,7 @@ describe("channels", () => {
     const result = await reg.authorize({
       channel: "chat/room-123",
       operation: "subscribe",
-      request: { url: "https://app.example.com/channels/chat/room-123" },
+      params: { roomId: "room-123" },
     });
 
     expect(result).toEqual({

@@ -346,11 +346,23 @@ export class ChannelRegistry {
       return { ok: false, reason: "sse_publish_not_allowed" };
     }
 
+    const headers: Record<string, string> = {};
+    if (input.header) {
+      headers["authorization"] = input.header.scheme
+        ? `${input.header.scheme} ${input.header.value}`
+        : input.header.value;
+    }
+    if (input.cookie !== undefined) {
+      headers["cookie"] = input.cookie;
+    }
     const request = new Request(
-      input.request.url,
+      `http://tako.internal${TAKO_CHANNELS_BASE_PATH}/${input.channel
+        .split("/")
+        .map(encodeURIComponent)
+        .join("/")}`,
       buildFetchInit(
-        { method: input.request.method ?? "GET" },
-        { ...fetchInitOptions(requestHeaders(flattenHeaders(input.request.headers))) },
+        { method: input.operation === "publish" ? "POST" : "GET" },
+        { ...fetchInitOptions(requestHeaders(headers)) },
       ),
     );
 
@@ -407,17 +419,4 @@ function definitionLifecycleConfig(definition: ChannelDefinition) {
     config.transport = "ws";
   }
   return config;
-}
-
-function flattenHeaders(
-  headers?: Record<string, string | string[]>,
-): Record<string, string> | undefined {
-  if (!headers) {
-    return undefined;
-  }
-  const flattened: Record<string, string> = {};
-  for (const [key, value] of Object.entries(headers)) {
-    flattened[key] = Array.isArray(value) ? value.join(", ") : value;
-  }
-  return flattened;
 }

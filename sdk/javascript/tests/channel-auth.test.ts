@@ -42,7 +42,7 @@ describe("ChannelRegistry.authorize", () => {
     const resp = await reg.authorize({
       channel: "nope",
       operation: "subscribe",
-      request: { url: "http://localhost/channels/nope" },
+      params: {},
     });
     expect(resp).toEqual({ ok: false });
   });
@@ -59,7 +59,7 @@ describe("ChannelRegistry.authorize", () => {
     const resp = await reg.authorize({
       channel: "chat/r1",
       operation: "subscribe",
-      request: { url: "http://localhost/channels/chat/r1" },
+      params: { roomId: "r1" },
     });
     expect(resp.ok).toBe(true);
     expect(resp.transport).toBe("ws");
@@ -71,7 +71,7 @@ describe("ChannelRegistry.authorize", () => {
     const resp = await reg.authorize({
       channel: "status",
       operation: "subscribe",
-      request: { url: "http://localhost/channels/status" },
+      params: {},
     });
     expect(resp.ok).toBe(true);
     expect(resp.transport).toBeUndefined();
@@ -93,7 +93,7 @@ describe("ChannelRegistry.authorize", () => {
     await reg.authorize({
       channel: "chat/r1",
       operation: "publish",
-      request: { url: "http://localhost/channels/chat/r1/messages", method: "POST" },
+      params: { roomId: "r1" },
     });
     expect(seen).toEqual({
       params: { roomId: "r1" },
@@ -108,7 +108,7 @@ describe("ChannelRegistry.authorize", () => {
     const resp = await reg.authorize({
       channel: "status",
       operation: "publish",
-      request: { url: "http://localhost/channels/status/messages", method: "POST" },
+      params: {},
     });
     expect(resp).toEqual({ ok: false, reason: "sse_publish_not_allowed" });
   });
@@ -124,7 +124,7 @@ describe("ChannelRegistry.authorize", () => {
     const resp = await reg.authorize({
       channel: "status",
       operation: "subscribe",
-      request: { url: "http://localhost/channels/status" },
+      params: {},
     });
     expect(resp.ok).toBe(true);
     expect(resp.subject).toBe("user-42");
@@ -136,7 +136,7 @@ describe("ChannelRegistry.authorize", () => {
     const resp = await reg.authorize({
       channel: "private",
       operation: "subscribe",
-      request: { url: "http://localhost/channels/private" },
+      params: {},
     });
     expect(resp).toEqual({ ok: false });
   });

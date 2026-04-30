@@ -13,7 +13,6 @@ pub use close_codes::ChannelCloseCode;
 use parking_lot::Mutex;
 use percent_encoding::percent_decode_str;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -105,22 +104,6 @@ pub struct ChannelAuthVerifyRequest {
     pub header: Option<ChannelHeaderValue>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cookie: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ChannelAuthRequest {
-    pub channel: String,
-    pub operation: String,
-    pub request: ChannelAuthHttpRequest,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ChannelAuthHttpRequest {
-    pub url: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub method: Option<String>,
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
-    pub headers: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -338,9 +321,9 @@ pub async fn authorize_channel_request(
     internal_token: &str,
     operation: ChannelOperation,
     channel: &str,
-    request_url: String,
-    request_method: &str,
-    request_headers: HashMap<String, String>,
+    params: serde_json::Value,
+    header: Option<ChannelHeaderValue>,
+    cookie: Option<String>,
 ) -> Result<ChannelAuthResponse, ChannelError> {
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(2))
@@ -352,14 +335,12 @@ pub async fn authorize_channel_request(
         .post(format!("http://{endpoint}{INTERNAL_CHANNEL_AUTH_PATH}"))
         .header("Host", internal_host)
         .header(internal_token_header, internal_token)
-        .json(&ChannelAuthRequest {
+        .json(&ChannelAuthVerifyRequest {
             channel: channel.to_string(),
             operation: operation.as_str().to_string(),
-            request: ChannelAuthHttpRequest {
-                url: request_url,
-                method: Some(request_method.to_string()),
-                headers: request_headers,
-            },
+            params,
+            header,
+            cookie,
         })
         .send()
         .await

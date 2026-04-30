@@ -5,7 +5,6 @@ use crate::proxy::MAX_REQUEST_BODY_BYTES;
 use crate::release::app_runtime_data_paths;
 use bytes::Bytes;
 use pingora_core::{Error, ErrorType};
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 pub(crate) fn app_channels_db_path(data_dir: &Path, app_name: &str) -> PathBuf {
@@ -39,9 +38,9 @@ pub(crate) async fn authorize_channel_request(
     instance: &Instance,
     operation: ChannelOperation,
     channel: &str,
-    request_url: String,
-    request_method: &str,
-    request_headers: HashMap<String, String>,
+    params: serde_json::Value,
+    header: Option<ChannelHeaderValue>,
+    cookie: Option<String>,
 ) -> Result<ChannelAuthResponse, ChannelError> {
     let endpoint = instance.endpoint().ok_or(ChannelError::AuthUnavailable)?;
     tako_channels::authorize_channel_request(
@@ -51,9 +50,9 @@ pub(crate) async fn authorize_channel_request(
         instance.internal_token(),
         operation,
         channel,
-        request_url,
-        request_method,
-        request_headers,
+        params,
+        header,
+        cookie,
     )
     .await
 }

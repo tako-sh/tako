@@ -36,20 +36,12 @@ export type ChannelLiveTransport = "sse" | "ws";
 /** Channel operations that pass through the auth callback. */
 export type ChannelOperation = "subscribe" | "publish" | "connect";
 
-/**
- * Request shape seen by the channel authorizer.
- *
- * This is a transport-neutral projection of the incoming HTTP request so the
- * registry can reconstruct a standard `Request` without the caller pulling in
- * a full server framework type.
- */
-export interface ChannelAuthRequest {
-  /** Absolute URL of the incoming request. */
-  url: string;
-  /** HTTP method. Defaults to `"GET"` when omitted. */
-  method?: string;
-  /** Request headers, preserving multi-value entries as string arrays. */
-  headers?: Record<string, string | string[]>;
+/** Declared header credential extracted by tako-server before verify. */
+export interface ChannelHeaderValue {
+  /** Optional auth scheme, e.g. `"Bearer"`. */
+  scheme?: string;
+  /** Credential value without the scheme prefix when a scheme is present. */
+  value: string;
 }
 
 /**
@@ -88,8 +80,12 @@ export interface ChannelAuthorizeInput {
   channel: string;
   /** Operation being requested. */
   operation: ChannelOperation;
-  /** Transport-neutral view of the incoming HTTP request. */
-  request: ChannelAuthRequest;
+  /** JSON params validated by tako-server from the channel query string. */
+  params: Record<string, unknown>;
+  /** Declared header credential, when the channel auth scheme requested one. */
+  header?: ChannelHeaderValue;
+  /** Declared cookie credential, when the channel auth scheme requested one. */
+  cookie?: string;
 }
 
 /**
