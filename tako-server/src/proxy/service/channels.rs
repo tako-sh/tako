@@ -1,8 +1,9 @@
 use super::{BackendResolution, RequestCtx};
 use crate::channels::{
-    ChannelAuthResponse, ChannelEndpoint, ChannelError, ChannelOperation, ChannelPublishPayload,
-    ChannelStore, ChannelTransport, app_channels_db_path, authorize_channel_request,
-    parse_channel_route, parse_message_id_cursor, parse_ws_last_message_id, read_request_body,
+    ChannelAuthResponse, ChannelAuthScheme, ChannelEndpoint, ChannelError, ChannelHeaderValue,
+    ChannelOperation, ChannelPublishPayload, ChannelStore, ChannelTransport, app_channels_db_path,
+    authorize_channel_request, parse_channel_route, parse_message_id_cursor,
+    parse_ws_last_message_id, read_request_body,
 };
 use crate::channels_ws::{
     WebSocketFrameReader, build_websocket_upgrade_response, parse_publish_payload,
@@ -535,4 +536,90 @@ fn request_headers_to_map(request: &RequestHeader) -> HashMap<String, String> {
                 .map(|value| (name.as_str().to_ascii_lowercase(), value.to_string()))
         })
         .collect()
+}
+
+pub(crate) fn extract_credentials(
+    headers: &HashMap<String, String>,
+    scheme: &ChannelAuthScheme,
+) -> (Option<ChannelHeaderValue>, Option<String>) {
+    let ChannelAuthScheme::Required {
+        header_name,
+        cookie_name,
+    } = scheme
+    else {
+        return (None, None);
+    };
+
+    let header = header_name
+        .as_ref()
+        .and_then(|name| headers.get(&name.to_ascii_lowercase()))
+        .map(|raw| ChannelHeaderValue::parse(raw));
+
+    let cookie = cookie_name.as_ref().and_then(|name| {
+        let raw = headers.get("cookie")?;
+        raw.split(';').find_map(|pair| {
+            let (key, value) = pair.trim().split_once('=')?;
+            (key == name).then(|| value.to_string())
+        })
+    });
+
+    (header, cookie)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_credentials_picks_declared_header_and_cookie() {
+        let mut headers = HashMap::new();
+        headers.insert("authorization".into(), "Bearer abc".into());
+        headers.insert("cookie".into(), "session=xyz; other=ignored".into());
+
+        let scheme = ChannelAuthScheme::Required {
+            header_name: Some("authorization".into()),
+            cookie_name: Some("session".into()),
+        };
+
+        let (header, cookie) = extract_credentials(&headers, &scheme);
+        assert_eq!(
+            header,
+            Some(ChannelHeaderValue {
+                scheme: Some("Bearer".into()),
+                value: "abc".into()
+            })
+        );
+        assert_eq!(cookie, Some("xyz".to_string()));
+    }
+
+    #[test]
+    fn extract_credentials_normalizes_header_name_lookup() {
+        let mut headers = HashMap::new();
+        headers.insert("x-session-token".into(), "plain-token".into());
+
+        let scheme = ChannelAuthScheme::Required {
+            header_name: Some("X-Session-Token".into()),
+            cookie_name: None,
+        };
+
+        let (header, cookie) = extract_credentials(&headers, &scheme);
+        assert_eq!(
+            header,
+            Some(ChannelHeaderValue {
+                scheme: None,
+                value: "plain-token".into()
+            })
+        );
+        assert!(cookie.is_none());
+    }
+
+    #[test]
+    fn extract_credentials_returns_none_for_public_channels() {
+        let mut headers = HashMap::new();
+        headers.insert("authorization".into(), "Bearer abc".into());
+
+        let (header, cookie) = extract_credentials(&headers, &ChannelAuthScheme::Public);
+        assert!(header.is_none());
+        assert!(cookie.is_none());
+    }
 }
