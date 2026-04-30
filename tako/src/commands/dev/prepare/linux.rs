@@ -16,8 +16,6 @@ const DEV_HTTPS_PORT: u16 = 47831;
 const DEV_HTTP_PORT: u16 = 47830;
 
 #[cfg(target_os = "linux")]
-const DEV_PROXY_SERVICE_NAME: &str = "tako-dev-proxy.service";
-#[cfg(target_os = "linux")]
 const DEV_PROXY_SERVICE_PATH: &str = "/etc/systemd/system/tako-dev-proxy.service";
 #[cfg(target_os = "linux")]
 const DEV_PROXY_SOCKET_NAME: &str = "tako-dev-proxy.socket";

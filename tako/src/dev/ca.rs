@@ -19,7 +19,7 @@ use rcgen::{
     Issuer, KeyPair, KeyUsagePurpose, SanType,
 };
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 use thiserror::Error;
 use time::{Duration, OffsetDateTime};
@@ -645,6 +645,7 @@ fn ca_issuer_params(now: OffsetDateTime) -> CertificateParams {
     ca_params
 }
 
+#[cfg(any(target_os = "macos", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TrustState {
     Unspecified,
@@ -652,6 +653,7 @@ enum TrustState {
     Denied,
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn effective_trust_by_precedence(states: &[TrustState]) -> Option<bool> {
     for state in states {
         match state {
@@ -664,7 +666,7 @@ fn effective_trust_by_precedence(states: &[TrustState]) -> Option<bool> {
 }
 
 #[cfg(target_os = "macos")]
-fn security_verify_cert(cert_path: &Path) -> bool {
+fn security_verify_cert(cert_path: &std::path::Path) -> bool {
     Command::new("security")
         .args([
             "verify-cert",
