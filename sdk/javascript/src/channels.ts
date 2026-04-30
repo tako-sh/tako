@@ -96,7 +96,7 @@ function fetchInitOptions(headers?: HeadersInit, signal?: AbortSignal) {
 }
 
 function defaultWebSocketFactory(url: string): unknown {
-  const ctor = globalThis.WebSocket;
+  const ctor = getChannelsConfig().websocket;
   if (!ctor) {
     throw new Error("WebSocket is not available in this runtime.");
   }
@@ -153,7 +153,7 @@ export class Channel {
 
     const url = channelBaseUrl(this.name, options.baseUrl);
     url.pathname = `${url.pathname}/messages`;
-    const response = await fetch(url.toString(), {
+    const response = await getChannelsConfig().fetch(url.toString(), {
       ...buildFetchInit(
         {
           method: "POST",

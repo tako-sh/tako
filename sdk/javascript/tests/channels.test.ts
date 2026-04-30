@@ -70,26 +70,21 @@ describe("channels", () => {
         }),
       ),
     );
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = fetchMock as typeof fetch;
+    configureChannels({ fetch: fetchMock as unknown as typeof fetch });
 
-    try {
-      const channel = new Channel("chat/room-123");
-      const response = await channel.publish(
-        { type: "message", data: { text: "hi" } },
-        { baseUrl: "https://app.example.com" },
-      );
+    const channel = new Channel("chat/room-123");
+    const response = await channel.publish(
+      { type: "message", data: { text: "hi" } },
+      { baseUrl: "https://app.example.com" },
+    );
 
-      expect(response.id).toBe("42");
-      expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(response.id).toBe("42");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
 
-      const [url, init] = fetchMock.mock.calls[0]!;
-      expect(url).toBe("https://app.example.com/channels/chat/room-123/messages");
-      expect(init?.method).toBe("POST");
-      expect(init?.headers).toEqual({ "Content-Type": "application/json" });
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe("https://app.example.com/channels/chat/room-123/messages");
+    expect(init?.method).toBe("POST");
+    expect(init?.headers).toEqual({ "Content-Type": "application/json" });
   });
 
   test("subscribe opens the canonical SSE route", () => {
@@ -168,6 +163,32 @@ describe("channels", () => {
     expect(send).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledWith(JSON.stringify({ type: "typing" }));
     expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  test("connect uses configured websocket when no factory is passed", () => {
+    class MockWebSocket {
+      readonly url: string;
+      sent: unknown[] = [];
+
+      constructor(url: string) {
+        this.url = url;
+      }
+
+      send(data: unknown) {
+        this.sent.push(data);
+      }
+
+      close() {}
+    }
+    configureChannels({ websocket: MockWebSocket as unknown as typeof WebSocket });
+
+    const channel = new Channel("chat/room-123", "ws");
+    const connection = channel.connect({ baseUrl: "https://app.example.com" });
+
+    expect(connection.raw).toBeInstanceOf(MockWebSocket);
+    expect((connection.raw as MockWebSocket).url).toBe(
+      "wss://app.example.com/channels/chat/room-123",
+    );
   });
 
   test("connect throws when channel has no ws transport", () => {
