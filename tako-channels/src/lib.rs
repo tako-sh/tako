@@ -26,6 +26,7 @@ const DEFAULT_MAX_CONNECTION_LIFETIME_MS: u64 = 2 * 60 * 60 * 1000;
 pub const CHANNELS_BASE_PATH: &str = "/channels/";
 pub const INTERNAL_CHANNEL_AUTH_PATH: &str = "/channels/authorize";
 pub const INTERNAL_CHANNEL_DISPATCH_PATH: &str = "/channels/dispatch";
+pub const INTERNAL_CHANNEL_REGISTRY_PATH: &str = "/channels/registry";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -803,6 +804,11 @@ mod tests {
         assert_eq!(value["params"]["roomId"], "room-9");
         assert_eq!(value["header"]["scheme"], "Bearer");
         assert!(value.get("cookie").is_none());
+    }
+
+    #[test]
+    fn registry_path_constant_exposed() {
+        assert_eq!(INTERNAL_CHANNEL_REGISTRY_PATH, "/channels/registry");
     }
 
     #[test]
