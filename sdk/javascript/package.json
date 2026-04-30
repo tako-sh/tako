@@ -18,6 +18,7 @@
     "directory": "sdk/javascript"
   },
   "bin": {
+    "tako-sh-gen-channel-types": "./dist/gen-channel-types.mjs",
     "tako-worker": "./dist/entrypoints/bun-worker.mjs"
   },
   "files": [

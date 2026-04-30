@@ -23,6 +23,7 @@ export default defineConfig([
       vite: "src/vite.ts",
       internal: "src/internal.ts",
       nextjs: "src/nextjs/index.ts",
+      "gen-channel-types": "bin/gen-channel-types.ts",
       "entrypoints/bun-server": "src/tako/entrypoints/bun-server.ts",
       "entrypoints/node-server": "src/tako/entrypoints/node-server.ts",
       "entrypoints/deno-server": "src/tako/entrypoints/deno-server.ts",
