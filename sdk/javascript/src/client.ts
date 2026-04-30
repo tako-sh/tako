@@ -19,6 +19,7 @@
  */
 
 export { Channel } from "./channels";
+export { configureChannels } from "./channels/configure";
 
 export type {
   ChannelConnectOptions,

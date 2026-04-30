@@ -5,6 +5,8 @@ test("tako.sh/client exports Channel", async () => {
   const mod = await import("../src/client");
   expect(mod.Channel).toBeDefined();
   expect(typeof mod.Channel).toBe("function");
+  expect(mod.configureChannels).toBeDefined();
+  expect(typeof mod.configureChannels).toBe("function");
 });
 
 test("tako.sh/client bundles cleanly for the browser (no node:* specifiers)", async () => {
