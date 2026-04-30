@@ -7,10 +7,10 @@ function makeRegistry() {
   const reg = new ChannelRegistry();
   reg.register(
     "chat",
-    defineChannel<{ msg: { text: string }; typing: { userId: string } }>("chat/:roomId", {
-      auth: async () => ({ subject: "u1" }),
+    defineChannel({
+      auth: { verify: async () => ({ subject: "u1" }) },
       handler: {
-        msg: async (data, ctx) =>
+        msg: async (data: { text: string }, ctx) =>
           ({
             text: data.text.toUpperCase(),
             roomId: ctx.params.roomId,
@@ -26,7 +26,8 @@ describe("dispatchWsMessage", () => {
   test("runs the handler for the message type and returns fanout data", async () => {
     const reg = makeRegistry();
     const res = await dispatchWsMessage(reg, {
-      channel: "chat/r1",
+      channel: "chat",
+      params: { roomId: "r1" },
       frame: { type: "msg", data: { text: "hello" } },
       subject: "u1",
     });
@@ -38,7 +39,8 @@ describe("dispatchWsMessage", () => {
   test("drops the message when handler returns undefined", async () => {
     const reg = makeRegistry();
     const res = await dispatchWsMessage(reg, {
-      channel: "chat/r1",
+      channel: "chat",
+      params: { roomId: "r1" },
       frame: { type: "typing", data: { userId: "u1" } },
       subject: "u1",
     });
@@ -48,7 +50,8 @@ describe("dispatchWsMessage", () => {
   test("passes message through when no handler registered for type", async () => {
     const reg = makeRegistry();
     const res = await dispatchWsMessage(reg, {
-      channel: "chat/r1",
+      channel: "chat",
+      params: { roomId: "r1" },
       frame: { type: "joined", data: { userId: "u2" } },
       subject: "u1",
     });
@@ -69,7 +72,7 @@ describe("dispatchWsMessage", () => {
 
   test("rejects SSE channels (no handler on definition)", async () => {
     const reg = new ChannelRegistry();
-    reg.register("status", defineChannel("status", { auth: async () => true }));
+    reg.register("status", defineChannel());
     const res = await dispatchWsMessage(reg, {
       channel: "status",
       frame: { type: "ping", data: {} },
@@ -84,8 +87,8 @@ describe("dispatchWsMessage", () => {
     const reg = new ChannelRegistry();
     reg.register(
       "boom",
-      defineChannel<{ msg: { x: number } }>("boom/:id", {
-        auth: async () => true,
+      defineChannel({
+        auth: { verify: async () => true },
         handler: {
           msg: async () => {
             throw new Error("kaboom");
@@ -94,7 +97,8 @@ describe("dispatchWsMessage", () => {
       }),
     );
     const res = await dispatchWsMessage(reg, {
-      channel: "boom/1",
+      channel: "boom",
+      params: { id: "1" },
       frame: { type: "msg", data: { x: 1 } },
       subject: "u1",
     });

@@ -29,28 +29,39 @@ describe("discoverChannels", () => {
     expect(found).toEqual([]);
   });
 
-  test("discovers default-exported defineChannel result", async () => {
+  test("channel filename becomes the channel name", async () => {
     await writeChannel(
       "status.ts",
       `import { defineChannel } from "${sdkImportPath()}";
-       export default defineChannel("status", { auth: async () => true });`,
+       export default defineChannel({ auth: { verify: async () => true } });`,
     );
     const found = await discoverChannels(join(dir, "channels"));
     expect(found).toHaveLength(1);
     expect(found[0]!.name).toBe("status");
-    expect(found[0]!.definition.pattern).toBe("status");
+    expect(found[0]!.definition.channel).toBe("status");
+  });
+
+  test("kebab-case filenames are preserved", async () => {
+    await writeChannel(
+      "mission-log.ts",
+      `import { defineChannel } from "${sdkImportPath()}";
+       export default defineChannel();`,
+    );
+    const found = await discoverChannels(join(dir, "channels"));
+    expect(found[0]!.name).toBe("mission-log");
+    expect(found[0]!.definition.channel).toBe("mission-log");
   });
 
   test("skips _ and . prefixed files", async () => {
     await writeChannel(
       "_skipped.ts",
       `import { defineChannel } from "${sdkImportPath()}";
-       export default defineChannel("skipped", { auth: async () => true });`,
+       export default defineChannel();`,
     );
     await writeChannel(
       ".hidden.ts",
       `import { defineChannel } from "${sdkImportPath()}";
-       export default defineChannel("hidden", { auth: async () => true });`,
+       export default defineChannel();`,
     );
     const found = await discoverChannels(join(dir, "channels"));
     expect(found).toEqual([]);
@@ -63,19 +74,11 @@ describe("discoverChannels", () => {
     );
   });
 
-  test("rejects duplicate pattern across files", async () => {
-    await writeChannel(
-      "a.ts",
-      `import { defineChannel } from "${sdkImportPath()}";
-       export default defineChannel("status", { auth: async () => true });`,
-    );
-    await writeChannel(
-      "b.ts",
-      `import { defineChannel } from "${sdkImportPath()}";
-       export default defineChannel("status", { auth: async () => true });`,
-    );
+  test("nested directories are rejected", async () => {
+    await mkdir(join(dir, "channels", "chat"));
+    await writeFile(join(dir, "channels", "chat", "room.ts"), "export default {};", "utf8");
     await expect(discoverChannels(join(dir, "channels"))).rejects.toThrow(
-      /duplicate channel pattern 'status'/,
+      /nested channel directory/,
     );
   });
 });

@@ -123,12 +123,15 @@ describe("handleTakoEndpoint", () => {
     test("authorizes a matching channel definition", async () => {
       channels.register(
         "chat",
-        defineChannel("chat/:roomId", {
-          auth(request, ctx) {
-            expect(request.headers.get("authorization")).toBe("Bearer test");
-            expect(ctx.channel).toBe("chat/room-123");
-            expect(ctx.operation).toBe("subscribe");
-            return { subject: "user-123" };
+        defineChannel({
+          auth: {
+            verify(input) {
+              expect(input.header).toEqual({ scheme: "Bearer", value: "test" });
+              expect(input.params).toEqual({ roomId: "room-123" });
+              expect(input.channel).toBe("chat");
+              expect(input.operation).toBe("subscribe");
+              return { subject: "user-123" };
+            },
           },
         }),
       );
@@ -140,7 +143,7 @@ describe("handleTakoEndpoint", () => {
           [TAKO_INTERNAL_TOKEN_HEADER]: "test-token",
         },
         body: JSON.stringify({
-          channel: "chat/room-123",
+          channel: "chat",
           operation: "subscribe",
           params: { roomId: "room-123" },
           header: {
@@ -166,9 +169,11 @@ describe("handleTakoEndpoint", () => {
     test("returns 403 when channel auth denies access", async () => {
       channels.register(
         "chat",
-        defineChannel("chat/:roomId", {
-          auth() {
-            return false;
+        defineChannel({
+          auth: {
+            verify() {
+              return false;
+            },
           },
         }),
       );
@@ -180,7 +185,7 @@ describe("handleTakoEndpoint", () => {
           [TAKO_INTERNAL_TOKEN_HEADER]: "test-token",
         },
         body: JSON.stringify({
-          channel: "chat/room-123",
+          channel: "chat",
           operation: "subscribe",
           params: { roomId: "room-123" },
         }),
@@ -221,11 +226,13 @@ describe("handleTakoEndpoint", () => {
     test("returns channel lifecycle config in authorize responses", async () => {
       channels.register(
         "chat",
-        defineChannel<{ msg: { text: string } }>("chat/:roomId", {
-          auth() {
-            return { subject: "user-123" };
+        defineChannel({
+          auth: {
+            verify() {
+              return { subject: "user-123" };
+            },
           },
-          handler: { msg: async (d) => d },
+          handler: { msg: async (d: { text: string }) => d },
           replayWindowMs: 86_400_000,
           inactivityTtlMs: 0,
           keepaliveIntervalMs: 25_000,
@@ -240,7 +247,7 @@ describe("handleTakoEndpoint", () => {
           [TAKO_INTERNAL_TOKEN_HEADER]: "test-token",
         },
         body: JSON.stringify({
-          channel: "chat/room-123",
+          channel: "chat",
           operation: "subscribe",
           params: { roomId: "room-123" },
         }),
@@ -265,9 +272,9 @@ describe("handleTakoEndpoint", () => {
     test("returns fanout data for a handled type", async () => {
       channels.register(
         "chat",
-        defineChannel<{ msg: { text: string } }>("chat/:roomId", {
-          auth: async () => true,
-          handler: { msg: async (data) => ({ text: data.text.toUpperCase() }) },
+        defineChannel({
+          auth: { verify: async () => true },
+          handler: { msg: async (data: { text: string }) => ({ text: data.text.toUpperCase() }) },
         }),
       );
 
@@ -278,7 +285,8 @@ describe("handleTakoEndpoint", () => {
           [TAKO_INTERNAL_TOKEN_HEADER]: "test-token",
         },
         body: JSON.stringify({
-          channel: "chat/r1",
+          channel: "chat",
+          params: { roomId: "r1" },
           frame: { type: "msg", data: { text: "hi" } },
           subject: "u1",
         }),

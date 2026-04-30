@@ -44,10 +44,10 @@ export type {
 } from "./types";
 export type {
   ChannelDefinition,
-  ChannelAuthContext,
+  ChannelAuthConfig,
   ChannelExport,
   ChannelHandle,
-  ChannelPathParams,
+  VerifyInput,
 } from "./channels/define";
 export { defineChannel, isChannelDefinition, isChannelExport } from "./channels/define";
 

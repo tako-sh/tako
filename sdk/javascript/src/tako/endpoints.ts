@@ -118,6 +118,7 @@ async function handleChannelDispatch(
 
   type DispatchBody = {
     channel?: string;
+    params?: Record<string, unknown>;
     frame?: { type?: string; data?: unknown };
     subject?: string;
   };
@@ -140,6 +141,7 @@ async function handleChannelDispatch(
 
   const input = {
     channel: body.channel,
+    params: body.params ?? {},
     frame: { type: body.frame.type, data: body.frame.data },
     ...(typeof body.subject === "string" && { subject: body.subject }),
   };

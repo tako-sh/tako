@@ -7,32 +7,25 @@ function newRegistry() {
 }
 
 describe("ChannelRegistry.register + resolve", () => {
-  test("literal pattern beats param at the same position", () => {
+  test("resolves exact filename channel names", () => {
     const reg = newRegistry();
-    reg.register("lobby", defineChannel("chat/lobby", { auth: async () => true }));
-    reg.register("chat", defineChannel("chat/:roomId", { auth: async () => true }));
+    reg.register("chat", defineChannel({ auth: { verify: async () => true } }));
 
-    const lobbyHit = reg.resolve("chat/lobby");
-    expect(lobbyHit?.params).toEqual({});
-    expect(lobbyHit?.definition.pattern).toBe("chat/lobby");
-
-    const paramHit = reg.resolve("chat/abc-123");
-    expect(paramHit?.params).toEqual({ roomId: "abc-123" });
-    expect(paramHit?.definition.pattern).toBe("chat/:roomId");
+    const hit = reg.resolve("chat");
+    expect(hit?.definition.channel).toBe("chat");
+    expect(reg.resolve("chat/r1")).toBeNull();
   });
 
   test("returns null for unmatched channel", () => {
     const reg = newRegistry();
-    reg.register("chat", defineChannel("chat/:roomId", { auth: async () => true }));
-    expect(reg.resolve("other/123")).toBeNull();
+    reg.register("chat", defineChannel({ auth: { verify: async () => true } }));
+    expect(reg.resolve("other")).toBeNull();
   });
 
-  test("rejects duplicate patterns", () => {
+  test("rejects duplicate channel names", () => {
     const reg = newRegistry();
-    reg.register("a", defineChannel("status", { auth: async () => true }));
-    expect(() => reg.register("b", defineChannel("status", { auth: async () => true }))).toThrow(
-      /duplicate/,
-    );
+    reg.register("status", defineChannel());
+    expect(() => reg.register("status", defineChannel())).toThrow(/duplicate/);
   });
 });
 
@@ -47,17 +40,28 @@ describe("ChannelRegistry.authorize", () => {
     expect(resp).toEqual({ ok: false });
   });
 
-  test("allows when auth returns true; stamps transport when handler present", async () => {
+  test("allows public channels without verify", async () => {
+    const reg = newRegistry();
+    reg.register("status", defineChannel());
+    const resp = await reg.authorize({
+      channel: "status",
+      operation: "subscribe",
+      params: {},
+    });
+    expect(resp.ok).toBe(true);
+  });
+
+  test("allows when verify returns true; stamps transport when handler present", async () => {
     const reg = newRegistry();
     reg.register(
       "chat",
-      defineChannel<{ msg: { text: string } }>("chat/:roomId", {
-        auth: async () => true,
-        handler: { msg: async (data) => data },
+      defineChannel({
+        auth: { verify: async () => true },
+        handler: { msg: async (data: { text: string }) => data },
       }),
     );
     const resp = await reg.authorize({
-      channel: "chat/r1",
+      channel: "chat",
       operation: "subscribe",
       params: { roomId: "r1" },
     });
@@ -65,46 +69,37 @@ describe("ChannelRegistry.authorize", () => {
     expect(resp.transport).toBe("ws");
   });
 
-  test("omits transport when no handler (SSE channel)", async () => {
-    const reg = newRegistry();
-    reg.register("status", defineChannel("status", { auth: async () => true }));
-    const resp = await reg.authorize({
-      channel: "status",
-      operation: "subscribe",
-      params: {},
-    });
-    expect(resp.ok).toBe(true);
-    expect(resp.transport).toBeUndefined();
-  });
-
-  test("passes params and operation into auth callback", async () => {
+  test("passes params and operation into verify callback", async () => {
     const reg = newRegistry();
     let seen: unknown = null;
     reg.register(
       "chat",
-      defineChannel<{ msg: { text: string } }>("chat/:roomId", {
-        auth: async (_req, ctx) => {
-          seen = { params: ctx.params, operation: ctx.operation, pattern: ctx.pattern };
-          return true;
+      defineChannel({
+        auth: {
+          verify: async (input) => {
+            seen = { params: input.params, operation: input.operation, header: input.header };
+            return true;
+          },
         },
         handler: { msg: async (d) => d },
       }),
     );
     await reg.authorize({
-      channel: "chat/r1",
+      channel: "chat",
       operation: "publish",
       params: { roomId: "r1" },
+      header: { scheme: "Bearer", value: "abc" },
     });
     expect(seen).toEqual({
       params: { roomId: "r1" },
       operation: "publish",
-      pattern: "chat/:roomId",
+      header: { scheme: "Bearer", value: "abc" },
     });
   });
 
   test("rejects client publish on SSE channel (no handler)", async () => {
     const reg = newRegistry();
-    reg.register("status", defineChannel("status", { auth: async () => true }));
+    reg.register("status", defineChannel({ auth: { verify: async () => true } }));
     const resp = await reg.authorize({
       channel: "status",
       operation: "publish",
@@ -117,8 +112,8 @@ describe("ChannelRegistry.authorize", () => {
     const reg = newRegistry();
     reg.register(
       "status",
-      defineChannel("status", {
-        auth: async () => ({ subject: "user-42" }),
+      defineChannel({
+        auth: { verify: async () => ({ subject: "user-42" }) },
       }),
     );
     const resp = await reg.authorize({
@@ -130,9 +125,9 @@ describe("ChannelRegistry.authorize", () => {
     expect(resp.subject).toBe("user-42");
   });
 
-  test("denies when auth returns false", async () => {
+  test("denies when verify returns false", async () => {
     const reg = newRegistry();
-    reg.register("private", defineChannel("private", { auth: async () => false }));
+    reg.register("private", defineChannel({ auth: { verify: async () => false } }));
     const resp = await reg.authorize({
       channel: "private",
       operation: "subscribe",

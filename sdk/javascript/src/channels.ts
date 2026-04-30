@@ -10,8 +10,7 @@ import type {
   ChannelSubscribeOptions,
   ChannelSubscription,
 } from "./types";
-import { comparePatterns, matchPattern } from "./channels/pattern";
-import { isChannelDefinition, type ChannelDefinition } from "./channels/define";
+import { bindChannelName, isChannelDefinition, type ChannelDefinition } from "./channels/define";
 import { getChannelsConfig } from "./channels/configure";
 import { SseReader } from "./channels/sse-reader";
 
@@ -42,11 +41,19 @@ function normalizeBaseUrl(baseUrl?: string): URL {
   throw new Error("Channel operations require a baseUrl outside the browser.");
 }
 
-function channelBaseUrl(channel: string, baseUrl?: string): URL {
+function channelBaseUrl(
+  channel: string,
+  baseUrl?: string,
+  params: Record<string, unknown> = {},
+): URL {
   const url = normalizeBaseUrl(baseUrl);
   const segments = channel.split("/").map(encodeURIComponent).join("/");
   url.pathname = `${TAKO_CHANNELS_BASE_PATH}/${segments}`;
   url.search = "";
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null) continue;
+    url.searchParams.set(key, String(value));
+  }
   return url;
 }
 
@@ -61,13 +68,6 @@ function toWebSocketUrl(url: URL): string {
   const ws = new URL(url.toString());
   ws.protocol = ws.protocol === "https:" ? "wss:" : "ws:";
   return ws.toString();
-}
-
-function requestHeaders(headers?: Record<string, string>): HeadersInit | undefined {
-  if (!headers) {
-    return undefined;
-  }
-  return headers;
 }
 
 function buildFetchInit(
@@ -137,10 +137,16 @@ function sendRaw(raw: unknown, data: unknown): void {
 export class Channel {
   readonly name: string;
   readonly transport: ChannelDefinitionTransport | undefined;
+  readonly params: Record<string, unknown>;
 
-  constructor(name: string, transport?: ChannelDefinitionTransport) {
+  constructor(
+    name: string,
+    transport?: ChannelDefinitionTransport,
+    params: Record<string, unknown> = {},
+  ) {
     this.name = name;
     this.transport = transport;
+    this.params = params;
   }
 
   async publish<T = unknown>(
@@ -151,7 +157,7 @@ export class Channel {
       return socketPublisher(this.name, message);
     }
 
-    const url = channelBaseUrl(this.name, options.baseUrl);
+    const url = channelBaseUrl(this.name, options.baseUrl, this.params);
     url.pathname = `${url.pathname}/messages`;
     const response = await getChannelsConfig().fetch(url.toString(), {
       ...buildFetchInit(
@@ -179,7 +185,7 @@ export class Channel {
   }
 
   subscribe(options: ChannelSubscribeOptions = {}): ChannelSubscription {
-    const url = channelBaseUrl(this.name, options.baseUrl);
+    const url = channelBaseUrl(this.name, options.baseUrl, this.params);
     const factory = options.eventSourceFactory;
     const init: { headers?: Record<string, string>; lastEventId?: string } = {};
     if (options.headers !== undefined) {
@@ -223,7 +229,7 @@ export class Channel {
       throw new Error("Channel does not enable WebSocket transport.");
     }
 
-    const url = channelBaseUrl(this.name, options.baseUrl);
+    const url = channelBaseUrl(this.name, options.baseUrl, this.params);
     withQuery(url, "last_message_id", options.lastMessageId);
 
     const factory = options.webSocketFactory ?? defaultWebSocketFactory;
@@ -264,26 +270,15 @@ export interface ChannelHandle {
  * is valid for a given channel.
  */
 export type ChannelAccessorEntry = ChannelHandle &
-  ((params: Record<string, string>) => ChannelHandle);
+  ((params: Record<string, unknown>) => ChannelHandle);
 
-function expandPattern(pattern: string, params: Record<string, string>): string {
-  return pattern
-    .split("/")
-    .map((seg) => {
-      if (!seg.startsWith(":")) return seg;
-      const name = seg.slice(1);
-      const value = params[name];
-      if (value === undefined || value === null || value === "") {
-        throw new Error(`missing channel param '${name}'`);
-      }
-      return encodeURIComponent(value);
-    })
-    .join("/");
-}
-
-function makeHandle(definition: ChannelDefinition, resolvedName: string): ChannelHandle {
-  const isWs = definition.handler !== undefined;
-  const channel = new Channel(resolvedName, isWs ? "ws" : undefined);
+function makeHandle(
+  definition: ChannelDefinition,
+  resolvedName: string,
+  params: Record<string, unknown> = {},
+): ChannelHandle {
+  const isWs = definition.transport === "ws";
+  const channel = new Channel(resolvedName, isWs ? "ws" : undefined, params);
   const handle: ChannelHandle = {
     publish: channel.publish.bind(channel),
     subscribe: channel.subscribe.bind(channel),
@@ -295,11 +290,11 @@ function makeHandle(definition: ChannelDefinition, resolvedName: string): Channe
 }
 
 function buildAccessorEntry(definition: ChannelDefinition, baseName: string): ChannelAccessorEntry {
-  if (definition.compiled.paramNames.length === 0) {
+  if (!definition.hasParams) {
     return makeHandle(definition, baseName) as ChannelAccessorEntry;
   }
-  return ((params: Record<string, string>) =>
-    makeHandle(definition, expandPattern(definition.pattern, params))) as ChannelAccessorEntry;
+  return ((params: Record<string, unknown>) =>
+    makeHandle(definition, baseName, params)) as ChannelAccessorEntry;
 }
 
 /** Convert a camelCase prop to the kebab-case channel file name. */
@@ -326,11 +321,11 @@ export class ChannelRegistry {
       "definition" in input && isChannelDefinition(input.definition)
         ? input.definition
         : (input as ChannelDefinition);
-    if (this.entries.some((e) => e.definition.pattern === definition.pattern)) {
-      throw new Error(`duplicate channel pattern '${definition.pattern}'`);
+    if (this.entries.some((e) => e.name === name)) {
+      throw new Error(`duplicate channel '${name}'`);
     }
+    bindChannelName(definition, name);
     this.entries.push({ name, definition });
-    this.entries.sort((a, b) => comparePatterns(a.definition.compiled, b.definition.compiled));
   }
 
   clear(): void {
@@ -344,12 +339,10 @@ export class ChannelRegistry {
 
   resolve(
     channel: string,
-  ): { definition: ChannelDefinition; params: Record<string, string> } | null {
-    for (const entry of this.entries) {
-      const match = matchPattern(entry.definition.compiled, channel);
-      if (match) return { definition: entry.definition, params: match.params };
-    }
-    return null;
+  ): { definition: ChannelDefinition; params: Record<string, unknown> } | null {
+    const entry = this.entries.find((candidate) => candidate.name === channel);
+    if (!entry) return null;
+    return { definition: entry.definition, params: {} };
   }
 
   async authorize(input: ChannelAuthorizeInput): Promise<ChannelAuthorizeResponse> {
@@ -360,31 +353,16 @@ export class ChannelRegistry {
       return { ok: false, reason: "sse_publish_not_allowed" };
     }
 
-    const headers: Record<string, string> = {};
-    if (input.header) {
-      headers["authorization"] = input.header.scheme
-        ? `${input.header.scheme} ${input.header.value}`
-        : input.header.value;
+    if (matched.definition.auth === false) {
+      return { ok: true, ...definitionLifecycleConfig(matched.definition) };
     }
-    if (input.cookie !== undefined) {
-      headers["cookie"] = input.cookie;
-    }
-    const request = new Request(
-      `http://tako.internal${TAKO_CHANNELS_BASE_PATH}/${input.channel
-        .split("/")
-        .map(encodeURIComponent)
-        .join("/")}`,
-      buildFetchInit(
-        { method: input.operation === "publish" ? "POST" : "GET" },
-        { ...fetchInitOptions(requestHeaders(headers)) },
-      ),
-    );
 
-    const verdict = await matched.definition.auth(request, {
+    const verdict = await matched.definition.auth.verify({
       channel: input.channel,
       operation: input.operation,
-      pattern: matched.definition.pattern,
-      params: matched.params,
+      params: input.params,
+      ...(input.header !== undefined && { header: input.header }),
+      ...(input.cookie !== undefined && { cookie: input.cookie }),
     });
 
     if (verdict === false) return { ok: false };

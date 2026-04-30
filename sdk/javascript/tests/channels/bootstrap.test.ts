@@ -30,7 +30,7 @@ describe("bootstrapChannels", () => {
     await writeFile(
       join(appDir, "channels", "status.ts"),
       `import { defineChannel } from "${sdkImportPath()}";
-       export default defineChannel("status", { auth: async () => true });`,
+       export default defineChannel({ auth: { verify: async () => true } });`,
       "utf8",
     );
     const { registry, channelCount } = await bootstrapChannels({ appDir });
@@ -43,7 +43,7 @@ describe("bootstrapChannels", () => {
     await writeFile(
       join(appDir, "channels", "status.ts"),
       `import { defineChannel } from "${sdkImportPath()}";
-       export default defineChannel("status", { auth: async () => true });`,
+       export default defineChannel({ auth: { verify: async () => true } });`,
       "utf8",
     );
     const first = await bootstrapChannels({ appDir });

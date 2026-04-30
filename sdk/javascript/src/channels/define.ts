@@ -1,9 +1,10 @@
-import type { CompiledPattern } from "./pattern";
-import { compilePattern } from "./pattern";
+import { Type, type Static, type TSchema } from "@sinclair/typebox";
 import { Channel } from "../channels";
 import type {
   ChannelConnectOptions,
+  ChannelHeaderValue,
   ChannelMessage,
+  ChannelOperation,
   ChannelPublishOptions,
   ChannelSocket,
   ChannelSubscribeOptions,
@@ -12,18 +13,26 @@ import type {
 
 export const CHANNEL_SYMBOL = Symbol("channel");
 
-type ChannelAuthResult = boolean | { subject?: string };
+export type ChannelAuthResult = boolean | { subject?: string };
 
-export interface ChannelAuthContext<Params = Record<string, string>> {
+export interface VerifyInput<Params = Record<string, unknown>> {
   channel: string;
-  operation: "subscribe" | "publish" | "connect";
-  pattern: string;
+  operation: ChannelOperation;
   params: Params;
+  header?: ChannelHeaderValue;
+  cookie?: string;
 }
 
-export interface ChannelHandlerContext<
-  Params = Record<string, string>,
-> extends ChannelAuthContext<Params> {
+export interface ChannelAuthConfig<Params> {
+  headerName?: string | false;
+  cookieName?: string;
+  verify: (input: VerifyInput<Params>) => ChannelAuthResult | Promise<ChannelAuthResult>;
+}
+
+export interface ChannelHandlerContext<Params = Record<string, unknown>> {
+  channel: string;
+  operation: ChannelOperation;
+  params: Params;
   subject?: string;
   publishedBy: "server" | "client";
 }
@@ -40,58 +49,41 @@ export interface ChannelLifecycleConfig {
   maxConnectionLifetimeMs?: number;
 }
 
-export interface ChannelConfig<Messages, Params> extends ChannelLifecycleConfig {
-  /**
-   * Auth callback. Return `false` to deny, `true` to allow anonymously, or a
-   * {@link ChannelGrant} to allow and stamp the connection with a subject.
-   * Omit to allow all access — use only for channels intended to be public.
-   */
-  auth?: (
-    request: Request,
-    ctx: ChannelAuthContext<Params>,
-  ) => ChannelAuthResult | Promise<ChannelAuthResult>;
+export interface ChannelConfig<
+  ParamsSchema extends TSchema | undefined,
+  Params,
+  Messages,
+> extends ChannelLifecycleConfig {
+  paramsSchema?: (t: typeof Type) => ParamsSchema extends TSchema ? ParamsSchema : TSchema;
+  auth?: false | ChannelAuthConfig<Params>;
   handler?: { [T in keyof Messages]?: MessageHandler<Messages[T], Params> };
 }
 
-export type ResolvedAuth<Params> = (
-  request: Request,
-  ctx: ChannelAuthContext<Params>,
-) => ChannelAuthResult | Promise<ChannelAuthResult>;
+export type ChannelAuthScheme<Params> =
+  | false
+  | {
+      headerName?: string | false;
+      cookieName?: string;
+      verify: ChannelAuthConfig<Params>["verify"];
+    };
 
 export interface ChannelDefinition<
+  Params = Record<string, unknown>,
   Messages = Record<string, unknown>,
-  Pattern extends string = string,
 > extends ChannelLifecycleConfig {
   readonly type: typeof CHANNEL_SYMBOL;
-  readonly pattern: Pattern;
-  readonly compiled: CompiledPattern;
-  readonly auth: ResolvedAuth<Record<string, string>>;
-  readonly handler?: ChannelConfig<Messages, Record<string, string>>["handler"];
+  readonly channel?: string;
+  readonly paramsSchema: object;
+  readonly auth: ChannelAuthScheme<Params>;
+  readonly handler?: { [T in keyof Messages]?: MessageHandler<Messages[T], Params> };
+  readonly transport?: "ws";
+  readonly hasParams: boolean;
 }
 
-/**
- * Extract `:param` names from a pattern string literal into a typed params
- * object: `"chat/:room/:msg"` → `{ room: string; msg: string }`;
- * `"status"` → `{}`.
- */
-// eslint-disable-next-line @typescript-eslint/no-empty-object-type
-export type ChannelPathParams<P extends string> = P extends `${string}:${infer Rest}`
-  ? Rest extends `${infer Name}/${infer Tail}`
-    ? { [K in Name]: string } & ChannelPathParams<Tail>
-    : { [K in Rest]: string }
-  : {};
-
-type PatternHasParams<P extends string> = P extends `${string}:${string}` ? true : false;
-
-/**
- * Typed handle returned by a channel export after parameter substitution
- * (or directly, for unparameterized channels). `publish` is constrained to
- * the channel's declared message map.
- */
-export interface ChannelHandle<Messages> {
-  /** Fully-resolved channel name (params substituted and URL-encoded). */
+export interface ChannelHandle<Params, Messages> {
+  readonly __params?: Params;
   readonly name: string;
-  publish<T extends keyof Messages>(
+  publish<T extends keyof Messages & string>(
     message: { type: T; data: Messages[T] },
     options?: ChannelPublishOptions,
   ): Promise<ChannelMessage<Messages[T]>>;
@@ -99,99 +91,18 @@ export interface ChannelHandle<Messages> {
   connect?(options?: ChannelConnectOptions): ChannelSocket;
 }
 
-/**
- * Shared surface on every channel export regardless of parameterization:
- * the `definition` metadata used by server-side discovery/auth, and the
- * chainable `.$messageTypes<M>()` type-level narrower (runtime no-op).
- */
-export interface ChannelExportMeta<Messages, Pattern extends string> {
-  readonly definition: ChannelDefinition<Messages, Pattern>;
-  /** Type-level narrower. Returns the same export typed with the given message map. */
-  $messageTypes<NewMessages>(): ChannelExport<NewMessages, Pattern>;
+export interface ChannelExportMeta<Params, Messages> {
+  readonly definition: ChannelDefinition<Params, Messages>;
+  $messageTypes<NewMessages>(): ChannelExport<Params, NewMessages>;
 }
 
-/**
- * The default export from a `channels/<name>.ts` file. Callable with
- * params when the pattern has `:param` segments; a direct handle when it
- * doesn't. Either way, `.definition` and `.$messageTypes()` are always there.
- */
-export type ChannelExport<
-  Messages,
-  Pattern extends string,
-> = (PatternHasParams<Pattern> extends true
-  ? (params: ChannelPathParams<Pattern>) => ChannelHandle<Messages>
-  : ChannelHandle<Messages>) &
-  ChannelExportMeta<Messages, Pattern>;
+export type ChannelExport<Params, Messages> = (Record<string, never> extends Params
+  ? ChannelHandle<Params, Messages>
+  : (params: Params) => ChannelHandle<Params, Messages>) &
+  ChannelExportMeta<Params, Messages>;
 
-const ALLOW_ALL_AUTH = async () => true as const;
-
-function expandPattern(pattern: string, params: Record<string, string>): string {
-  return pattern
-    .split("/")
-    .map((seg) => {
-      if (!seg.startsWith(":")) return seg;
-      const name = seg.slice(1);
-      const value = params[name];
-      if (value === undefined || value === null || value === "") {
-        throw new Error(`missing channel param '${name}'`);
-      }
-      return encodeURIComponent(value);
-    })
-    .join("/");
-}
-
-function makeHandle<M>(
-  definition: ChannelDefinition<M, string>,
-  resolvedName: string,
-): ChannelHandle<M> {
-  const isWs = definition.handler !== undefined;
-  const channel = new Channel(resolvedName, isWs ? "ws" : undefined);
-  const handle: ChannelHandle<M> = {
-    name: resolvedName,
-    publish: channel.publish.bind(channel) as ChannelHandle<M>["publish"],
-    subscribe: channel.subscribe.bind(channel),
-  };
-  if (isWs) {
-    handle.connect = channel.connect.bind(channel);
-  }
-  return handle;
-}
-
-function attachMeta<M, P extends string, T extends object>(
-  target: T,
-  definition: ChannelDefinition<M, P>,
-): T & ChannelExportMeta<M, P> {
-  Object.defineProperty(target, "definition", {
-    value: definition,
-    writable: false,
-    enumerable: false,
-    configurable: false,
-  });
-  Object.defineProperty(target, "$messageTypes", {
-    value: function messageTypesNarrow<NewM>() {
-      return this as unknown as ChannelExport<NewM, P>;
-    },
-    writable: false,
-    enumerable: false,
-    configurable: false,
-  });
-  return target as T & ChannelExportMeta<M, P>;
-}
-
-export function defineChannel<
-  Messages = Record<string, unknown>,
-  const Pattern extends string = string,
->(
-  pattern: Pattern,
-  config: ChannelConfig<Messages, Record<string, string>> = {},
-): ChannelExport<Messages, Pattern> {
-  const compiled = compilePattern(pattern);
-  const definition: ChannelDefinition<Messages, Pattern> = {
-    type: CHANNEL_SYMBOL,
-    pattern: pattern as Pattern,
-    compiled,
-    auth: config.auth ?? ALLOW_ALL_AUTH,
-    ...(config.handler !== undefined && { handler: config.handler }),
+function lifecycle(config: ChannelLifecycleConfig): ChannelLifecycleConfig {
+  return {
     ...(config.replayWindowMs !== undefined && { replayWindowMs: config.replayWindowMs }),
     ...(config.inactivityTtlMs !== undefined && { inactivityTtlMs: config.inactivityTtlMs }),
     ...(config.keepaliveIntervalMs !== undefined && {
@@ -201,19 +112,113 @@ export function defineChannel<
       maxConnectionLifetimeMs: config.maxConnectionLifetimeMs,
     }),
   };
+}
 
-  if (compiled.paramNames.length > 0) {
-    const callable = (params: Record<string, string>) =>
-      makeHandle(definition, expandPattern(definition.pattern, params));
-    return attachMeta(callable, definition) as unknown as ChannelExport<Messages, Pattern>;
+function encodeParams(params: Record<string, unknown>): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null) continue;
+    search.set(key, String(value));
+  }
+  const query = search.toString();
+  return query ? `?${query}` : "";
+}
+
+function makeHandle<P, M>(definition: ChannelDefinition<P, M>, params: P): ChannelHandle<P, M> {
+  const query = encodeParams(params as Record<string, unknown>);
+  const makeChannel = () =>
+    new Channel(definition.channel ?? "", definition.transport, params as Record<string, unknown>);
+  const handle = {
+    get name() {
+      return `${definition.channel ?? ""}${query}`;
+    },
+    publish<T extends keyof M & string>(
+      message: { type: T; data: M[T] },
+      options?: ChannelPublishOptions,
+    ) {
+      return makeChannel().publish(message, options);
+    },
+    subscribe(options?: ChannelSubscribeOptions) {
+      return makeChannel().subscribe(options);
+    },
+  };
+  if (definition.transport === "ws") {
+    Object.defineProperty(handle, "connect", {
+      value(options?: ChannelConnectOptions) {
+        return makeChannel().connect(options);
+      },
+      enumerable: true,
+      configurable: true,
+    });
+  }
+  return handle as ChannelHandle<P, M>;
+}
+
+function attachMeta<P, M, T extends object>(
+  target: T,
+  definition: ChannelDefinition<P, M>,
+): T & ChannelExportMeta<P, M> {
+  Object.defineProperty(target, "definition", {
+    value: definition,
+    writable: false,
+    enumerable: false,
+    configurable: false,
+  });
+  Object.defineProperty(target, "$messageTypes", {
+    value: function messageTypesNarrow<NewM>() {
+      return this as unknown as ChannelExport<P, NewM>;
+    },
+    writable: false,
+    enumerable: false,
+    configurable: false,
+  });
+  return target as T & ChannelExportMeta<P, M>;
+}
+
+export function bindChannelName(definition: ChannelDefinition, channel: string): void {
+  Object.defineProperty(definition, "channel", {
+    value: channel,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+}
+
+export function defineChannel<
+  ParamsSchema extends TSchema | undefined = undefined,
+  Params = ParamsSchema extends TSchema ? Static<ParamsSchema> : Record<string, never>,
+  Messages = Record<string, unknown>,
+>(config: ChannelConfig<ParamsSchema, Params, Messages> = {}): ChannelExport<Params, Messages> {
+  const schema = config.paramsSchema?.(Type) ?? Type.Object({});
+  const auth: ChannelDefinition<Params, Messages>["auth"] =
+    config.auth === undefined || config.auth === false
+      ? false
+      : {
+          headerName:
+            config.auth.headerName === undefined ? "authorization" : config.auth.headerName,
+          ...(config.auth.cookieName !== undefined && { cookieName: config.auth.cookieName }),
+          verify: config.auth.verify,
+        };
+  const definition: ChannelDefinition<Params, Messages> = {
+    type: CHANNEL_SYMBOL,
+    paramsSchema: schema,
+    auth,
+    hasParams: config.paramsSchema !== undefined,
+    ...(config.handler !== undefined && { handler: config.handler, transport: "ws" as const }),
+    ...lifecycle(config),
+  };
+
+  if (definition.hasParams) {
+    const callable = (params: Params) => makeHandle(definition, params);
+    return attachMeta(callable, definition) as unknown as ChannelExport<Params, Messages>;
   }
 
-  const handle = makeHandle(definition, definition.pattern);
-  return attachMeta(handle, definition) as unknown as ChannelExport<Messages, Pattern>;
+  const handle = makeHandle(definition, {} as Params);
+  return attachMeta(handle, definition) as unknown as ChannelExport<Params, Messages>;
 }
 
 /** Narrow `value` to a `ChannelExport` produced by `defineChannel`. */
-export function isChannelExport(value: unknown): value is ChannelExport<unknown, string> {
+export function isChannelExport(value: unknown): value is ChannelExport<unknown, unknown> {
   return (
     value !== null &&
     (typeof value === "function" || typeof value === "object") &&

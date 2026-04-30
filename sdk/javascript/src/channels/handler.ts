@@ -7,6 +7,7 @@ export interface WsFrame {
 
 export interface DispatchInput {
   channel: string;
+  params?: Record<string, unknown>;
   frame: WsFrame;
   subject?: string;
 }
@@ -37,8 +38,7 @@ export async function dispatchWsMessage(
     const result = await fn(input.frame.data as never, {
       channel: input.channel,
       operation: "publish",
-      pattern: definition.pattern,
-      params: matched.params,
+      params: input.params ?? {},
       ...(input.subject !== undefined && { subject: input.subject }),
       publishedBy: "client",
     });

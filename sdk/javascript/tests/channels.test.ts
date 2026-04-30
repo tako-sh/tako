@@ -19,34 +19,37 @@ describe("channels", () => {
     const reg = new ChannelRegistry();
     reg.register(
       "chat",
-      defineChannel("chat/room-123", {
-        auth(_req, ctx) {
-          expect(ctx.channel).toBe("chat/room-123");
-          expect(ctx.operation).toBe("subscribe");
-          return true;
+      defineChannel({
+        auth: {
+          verify(input) {
+            expect(input.channel).toBe("chat");
+            expect(input.operation).toBe("subscribe");
+            return true;
+          },
         },
       }),
     );
 
     const result = await reg.authorize({
-      channel: "chat/room-123",
+      channel: "chat",
       operation: "subscribe",
-      params: {},
+      params: { roomId: "room-123" },
     });
 
     expect(result.ok).toBe(true);
   });
 
-  test("most specific pattern wins over param capture", async () => {
+  test("channel lookup is exact by filename", async () => {
     const reg = new ChannelRegistry();
-    reg.register("chat-prefix", defineChannel("chat/:roomId", { auth: async () => false }));
     reg.register(
-      "chat-exact",
-      defineChannel("chat/room-123", { auth: async () => ({ subject: "user-123" }) }),
+      "chat",
+      defineChannel({
+        auth: { verify: async () => ({ subject: "user-123" }) },
+      }),
     );
 
     const result = await reg.authorize({
-      channel: "chat/room-123",
+      channel: "chat",
       operation: "subscribe",
       params: { roomId: "room-123" },
     });
@@ -202,8 +205,8 @@ describe("channels", () => {
     const reg = new ChannelRegistry();
     reg.register(
       "chat",
-      defineChannel<{ msg: { text: string } }>("chat/:roomId", {
-        auth: async () => ({ subject: "user-123" }),
+      defineChannel({
+        auth: { verify: async () => ({ subject: "user-123" }) },
         handler: { msg: async (d) => d },
         replayWindowMs: 86_400_000,
         inactivityTtlMs: 0,
@@ -213,7 +216,7 @@ describe("channels", () => {
     );
 
     const result = await reg.authorize({
-      channel: "chat/room-123",
+      channel: "chat",
       operation: "subscribe",
       params: { roomId: "room-123" },
     });

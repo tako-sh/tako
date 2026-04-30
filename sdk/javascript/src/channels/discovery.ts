@@ -1,7 +1,12 @@
 import { readdir, stat } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { join, parse } from "node:path";
-import { isChannelDefinition, isChannelExport, type ChannelDefinition } from "./define";
+import {
+  bindChannelName,
+  isChannelDefinition,
+  isChannelExport,
+  type ChannelDefinition,
+} from "./define";
 
 const VALID_EXTS = new Set([".ts", ".tsx", ".js", ".mjs", ".mts"]);
 
@@ -13,16 +18,21 @@ export interface DiscoveredChannel {
 export async function discoverChannels(dir: string): Promise<DiscoveredChannel[]> {
   if (!(await dirExists(dir))) return [];
 
-  const entries = await readdir(dir);
+  const entries = await readdir(dir, { withFileTypes: true });
   const found: DiscoveredChannel[] = [];
-  const seenPatterns = new Set<string>();
+  const seenNames = new Set<string>();
 
-  for (const entry of entries.sort()) {
-    const parsed = parse(entry);
+  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    if (entry.isDirectory()) {
+      throw new Error(`nested channel directory '${entry.name}' is not supported`);
+    }
+    if (!entry.isFile()) continue;
+
+    const parsed = parse(entry.name);
     if (!VALID_EXTS.has(parsed.ext)) continue;
     if (parsed.name.startsWith(".") || parsed.name.startsWith("_")) continue;
 
-    const url = pathToFileURL(join(dir, entry)).href;
+    const url = pathToFileURL(join(dir, entry.name)).href;
     const mod = (await import(/* @vite-ignore */ url)) as Record<string, unknown>;
     const defaultExport = mod["default"];
 
@@ -34,14 +44,15 @@ export async function discoverChannels(dir: string): Promise<DiscoveredChannel[]
 
     if (!definition) {
       throw new Error(
-        `channel '${parsed.name}' (${entry}) must default-export a defineChannel() result`,
+        `channel '${parsed.name}' (${entry.name}) must default-export a defineChannel() result`,
       );
     }
 
-    if (seenPatterns.has(definition.pattern)) {
-      throw new Error(`duplicate channel pattern '${definition.pattern}' in ${entry}`);
+    if (seenNames.has(parsed.name)) {
+      throw new Error(`duplicate channel '${parsed.name}' in ${entry.name}`);
     }
-    seenPatterns.add(definition.pattern);
+    seenNames.add(parsed.name);
+    bindChannelName(definition, parsed.name);
 
     found.push({ name: parsed.name, definition });
   }

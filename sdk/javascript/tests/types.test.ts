@@ -63,15 +63,16 @@ describe("Types", () => {
     });
 
     test("accepts channel definitions built with defineChannel", () => {
-      const exp = defineChannel<{ msg: { text: string } }>("chat/:roomId", {
-        auth: async () => true,
-        handler: { msg: async (d) => d },
+      const exp = defineChannel({
+        paramsSchema: (t) => t.Object({ roomId: t.String() }),
+        auth: { verify: async () => true },
+        handler: { msg: async (d: { text: string }) => d },
         replayWindowMs: 86_400_000,
         keepaliveIntervalMs: 25_000,
-      });
+      }).$messageTypes<{ msg: { text: string } }>();
       const definition: ChannelDefinition = exp.definition;
 
-      expect(definition.pattern).toBe("chat/:roomId");
+      expect(definition.paramsSchema).toMatchObject({ type: "object" });
       expect(definition.handler).toBeDefined();
       expect(definition.replayWindowMs).toBe(86_400_000);
       expect(definition.keepaliveIntervalMs).toBe(25_000);
