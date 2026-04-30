@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tako_channels::{
-    ChannelAuthResponse, ChannelEndpoint, ChannelPublishPayload, ChannelStore, parse_channel_route,
+    ChannelAuthResponse, ChannelPublishPayload, ChannelStore, parse_channel_route,
 };
 
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -73,20 +73,10 @@ pub async fn try_handle(
         Err(_) => return write_json(session, 400, r#"{"error":"Invalid channel path"}"#).await,
     };
 
-    match route.endpoint {
-        ChannelEndpoint::Read => {
-            if method != "GET" {
-                return write_json(session, 405, r#"{"error":"Method not allowed"}"#).await;
-            }
-            serve_sse(session, dev_store, &route.channel).await
-        }
-        ChannelEndpoint::Messages => {
-            if method != "POST" {
-                return write_json(session, 405, r#"{"error":"Method not allowed"}"#).await;
-            }
-            handle_publish(session, dev_store, &route.channel).await
-        }
+    if method != "GET" {
+        return write_json(session, 405, r#"{"error":"Method not allowed"}"#).await;
     }
+    serve_sse(session, dev_store, &route.channel).await
 }
 
 async fn serve_sse(
@@ -181,48 +171,6 @@ async fn serve_sse(
     }
 }
 
-async fn handle_publish(
-    session: &mut Session,
-    dev_store: &DevChannelStore,
-    channel: &str,
-) -> Result<bool> {
-    let store = &dev_store.store;
-    let auth = dev_auth_response();
-
-    // Ensure channel metadata exists.
-    if let Err(e) = store.sync_channel(channel, &auth) {
-        let msg = format!(r#"{{"error":"Channel sync failed: {e}"}}"#);
-        return write_json(session, 500, &msg).await;
-    }
-
-    let body = read_body(session).await?;
-    let payload: ChannelPublishPayload = match serde_json::from_slice(&body) {
-        Ok(p) => p,
-        Err(e) => {
-            return write_json(session, 400, &format!(r#"{{"error":"Invalid JSON: {e}"}}"#)).await;
-        }
-    };
-
-    match store.append(channel, &payload) {
-        Ok(message) => {
-            let json = serde_json::to_string(&message).unwrap_or_default();
-            write_json(session, 200, &json).await
-        }
-        Err(e) => {
-            let msg = format!(r#"{{"error":"Publish failed: {e}"}}"#);
-            write_json(session, 500, &msg).await
-        }
-    }
-}
-
-async fn read_body(session: &mut Session) -> Result<Vec<u8>> {
-    let mut body = Vec::new();
-    while let Some(bytes) = session.read_request_body().await? {
-        body.extend_from_slice(&bytes);
-    }
-    Ok(body)
-}
-
 async fn write_json(session: &mut Session, status: u16, body: &str) -> Result<bool> {
     let mut header = ResponseHeader::build(status, None)?;
     header.insert_header("Content-Type", "application/json")?;
@@ -247,16 +195,11 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(route.channel, "demo-broadcast");
-        assert_eq!(route.endpoint, ChannelEndpoint::Read);
     }
 
     #[test]
-    fn parse_publish_path() {
-        let route = parse_channel_route("/channels/demo-broadcast/messages")
-            .unwrap()
-            .unwrap();
-        assert_eq!(route.channel, "demo-broadcast");
-        assert_eq!(route.endpoint, ChannelEndpoint::Messages);
+    fn parse_rejects_nested_channel_path() {
+        assert!(parse_channel_route("/channels/demo-broadcast/messages").is_err());
     }
 
     #[test]

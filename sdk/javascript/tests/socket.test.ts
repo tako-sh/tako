@@ -216,27 +216,17 @@ describe("installChannelSocketPublisherFromEnv", () => {
     });
   });
 
-  test("explicit baseUrl bypasses the installed socket publisher", async () => {
+  test("explicit baseUrl bypasses the installed socket publisher and rejects browser publish", async () => {
     process.env[INTERNAL_SOCKET_ENV] = join(dir, "nonexistent.sock");
     process.env[APP_NAME_ENV] = "demo";
     expect(installChannelSocketPublisherFromEnv()).toBe(true);
 
-    const fetchMock = (async () =>
-      new Response(JSON.stringify({ id: "1", channel: "chat/room-1" }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      })) as typeof fetch;
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = fetchMock;
-    try {
-      const channel = new Channel("chat/room-1");
-      const result = await channel.publish(
+    const channel = new Channel("chat/room-1");
+    await expect(
+      channel.publish(
         { type: "message", data: { text: "hi" } },
         { baseUrl: "https://app.example.com" },
-      );
-      expect(result.id).toBe("1");
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
+      ),
+    ).rejects.toThrow(/connect\(\)\.send/);
   });
 });

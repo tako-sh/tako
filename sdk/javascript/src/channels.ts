@@ -78,31 +78,6 @@ function toWebSocketUrl(url: URL): string {
   return ws.toString();
 }
 
-function buildFetchInit(
-  base: Omit<RequestInit, "headers" | "signal">,
-  options: { headers?: HeadersInit; signal?: AbortSignal },
-): RequestInit {
-  const init: RequestInit = { ...base };
-  if (options.headers !== undefined) {
-    init.headers = options.headers;
-  }
-  if (options.signal !== undefined) {
-    init.signal = options.signal;
-  }
-  return init;
-}
-
-function fetchInitOptions(headers?: HeadersInit, signal?: AbortSignal) {
-  const options: { headers?: HeadersInit; signal?: AbortSignal } = {};
-  if (headers !== undefined) {
-    options.headers = headers;
-  }
-  if (signal !== undefined) {
-    options.signal = signal;
-  }
-  return options;
-}
-
 function defaultWebSocketFactory(url: string): unknown {
   const ctor = getChannelsConfig().websocket;
   if (!ctor) {
@@ -165,31 +140,9 @@ export class Channel {
       return socketPublisher(this.name, message);
     }
 
-    const url = channelBaseUrl(this.name, options.baseUrl, this.params);
-    url.pathname = `${url.pathname}/messages`;
-    const response = await getChannelsConfig().fetch(url.toString(), {
-      ...buildFetchInit(
-        {
-          method: "POST",
-          body: JSON.stringify(message),
-        },
-        {
-          ...fetchInitOptions(
-            {
-              "Content-Type": "application/json",
-              ...options.headers,
-            },
-            options.signal,
-          ),
-        },
-      ),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Channel publish failed with status ${response.status}.`);
-    }
-
-    return (await response.json()) as ChannelMessage<T>;
+    throw new Error(
+      "Channel.publish requires the Tako server runtime. Browser clients should use connect().send() for WebSocket channels.",
+    );
   }
 
   subscribe(options: ChannelSubscribeOptions = {}): ChannelSubscription {

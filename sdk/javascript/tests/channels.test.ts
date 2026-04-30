@@ -64,30 +64,14 @@ describe("channels", () => {
     });
   });
 
-  test("publish routes through HTTP when no socket publisher is installed", async () => {
-    const fetchMock = mock(() =>
-      Promise.resolve(
-        new Response(JSON.stringify({ id: "42", channel: "chat/room-123" }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        }),
-      ),
-    );
-    configureChannels({ fetch: fetchMock as unknown as typeof fetch });
-
+  test("publish without the server runtime points browser clients to websockets", async () => {
     const channel = new Channel("chat/room-123");
-    const response = await channel.publish(
-      { type: "message", data: { text: "hi" } },
-      { baseUrl: "https://app.example.com" },
-    );
-
-    expect(response.id).toBe("42");
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-
-    const [url, init] = fetchMock.mock.calls[0]!;
-    expect(url).toBe("https://app.example.com/channels/chat/room-123/messages");
-    expect(init?.method).toBe("POST");
-    expect(init?.headers).toEqual({ "Content-Type": "application/json" });
+    await expect(
+      channel.publish(
+        { type: "message", data: { text: "hi" } },
+        { baseUrl: "https://app.example.com" },
+      ),
+    ).rejects.toThrow(/connect\(\)\.send/);
   });
 
   test("subscribe opens the canonical SSE route", () => {

@@ -5,7 +5,6 @@
 pub mod close_codes;
 pub mod error_codes;
 pub mod params;
-pub mod pattern;
 pub mod registry;
 
 pub use close_codes::ChannelCloseCode;
@@ -47,15 +46,8 @@ impl ChannelOperation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ChannelEndpoint {
-    Read,
-    Messages,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelRoute {
     pub channel: String,
-    pub endpoint: ChannelEndpoint,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -239,28 +231,15 @@ pub fn parse_channel_route(path: &str) -> Result<Option<ChannelRoute>, ChannelEr
     }
 
     let rest = &path[CHANNELS_BASE_PATH.len()..];
-    if rest.is_empty() {
+    if rest.is_empty() || rest.contains('/') {
         return Err(ChannelError::InvalidPath);
     }
-
-    let (raw_channel, endpoint) = if let Some(stripped) = rest.strip_suffix("/messages") {
-        (stripped, ChannelEndpoint::Messages)
-    } else {
-        (rest, ChannelEndpoint::Read)
-    };
-
-    if raw_channel.is_empty() || raw_channel.starts_with('/') || raw_channel.ends_with('/') {
-        return Err(ChannelError::InvalidPath);
-    }
-    if raw_channel.split('/').any(|seg| seg.is_empty()) {
-        return Err(ChannelError::InvalidPath);
-    }
-    let channel = percent_decode_str(raw_channel)
+    let channel = percent_decode_str(rest)
         .decode_utf8()
         .map_err(|_| ChannelError::InvalidPath)?
         .into_owned();
 
-    Ok(Some(ChannelRoute { channel, endpoint }))
+    Ok(Some(ChannelRoute { channel }))
 }
 
 pub fn parse_message_id_cursor(
@@ -714,24 +693,15 @@ mod tests {
             Err(ChannelError::InvalidPath)
         ));
         assert!(matches!(
-            parse_channel_route("/channels//messages"),
+            parse_channel_route("/channels/chat/messages"),
             Err(ChannelError::InvalidPath)
         ));
     }
 
     #[test]
-    fn parse_channel_route_accepts_multi_segment_names() {
-        let route = parse_channel_route("/channels/chat/abc-123")
-            .unwrap()
-            .unwrap();
-        assert_eq!(route.channel, "chat/abc-123");
-        assert_eq!(route.endpoint, ChannelEndpoint::Read);
-
-        let route = parse_channel_route("/channels/chat/abc-123/messages")
-            .unwrap()
-            .unwrap();
-        assert_eq!(route.channel, "chat/abc-123");
-        assert_eq!(route.endpoint, ChannelEndpoint::Messages);
+    fn parse_channel_route_accepts_exact_channel_names() {
+        let route = parse_channel_route("/channels/chat").unwrap().unwrap();
+        assert_eq!(route.channel, "chat");
     }
 
     #[test]
@@ -740,7 +710,6 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(route.channel, "chat:room-123");
-        assert_eq!(route.endpoint, ChannelEndpoint::Read);
     }
 
     #[test]

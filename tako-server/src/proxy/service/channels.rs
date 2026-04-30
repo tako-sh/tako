@@ -1,9 +1,8 @@
 use super::{BackendResolution, RequestCtx};
 use crate::channels::{
-    ChannelAuthResponse, ChannelAuthScheme, ChannelEndpoint, ChannelError, ChannelHeaderValue,
-    ChannelOperation, ChannelPublishPayload, ChannelStore, ChannelTransport, app_channels_db_path,
-    authorize_channel_request, parse_channel_route, parse_message_id_cursor,
-    parse_ws_last_message_id, read_request_body,
+    ChannelAuthResponse, ChannelAuthScheme, ChannelError, ChannelHeaderValue, ChannelOperation,
+    ChannelStore, ChannelTransport, app_channels_db_path, authorize_channel_request,
+    parse_channel_route, parse_message_id_cursor, parse_ws_last_message_id,
 };
 use crate::channels_ws::{
     WebSocketFrameReader, build_websocket_upgrade_response, parse_publish_payload,
@@ -394,12 +393,10 @@ impl TakoProxy {
             }
         };
 
-        let operation = match route.endpoint {
-            ChannelEndpoint::Messages => ChannelOperation::Publish,
-            ChannelEndpoint::Read if session.as_downstream().is_upgrade_req() => {
-                ChannelOperation::Connect
-            }
-            ChannelEndpoint::Read => ChannelOperation::Subscribe,
+        let operation = if session.as_downstream().is_upgrade_req() {
+            ChannelOperation::Connect
+        } else {
+            ChannelOperation::Subscribe
         };
 
         let request_headers = request_headers_to_map(session.req_header());
@@ -441,83 +438,54 @@ impl TakoProxy {
             return self.write_channel_error(session, error).await;
         }
 
-        match route.endpoint {
-            ChannelEndpoint::Messages => {
-                if session.req_header().method.as_str() != "POST" {
-                    return self
-                        .write_json_response(
-                            session,
-                            405,
-                            &serde_json::json!({ "error": "Method not allowed" }),
-                        )
-                        .await;
-                }
-                let body = read_request_body(session).await?;
-                let payload: ChannelPublishPayload =
-                    serde_json::from_slice(&body).map_err(|e| {
-                        Error::explain(
-                            ErrorType::InvalidHTTPHeader,
-                            format!("Invalid JSON body: {e}"),
-                        )
-                    })?;
-                match store.append(&route.channel, &payload) {
-                    Ok(message) => {
-                        self.write_json_response(session, 200, &serde_json::json!(message))
-                            .await
-                    }
-                    Err(error) => self.write_channel_error(session, error).await,
-                }
+        if session.as_downstream().is_upgrade_req() {
+            if session.req_header().method.as_str() != "GET" {
+                return self
+                    .write_json_response(
+                        session,
+                        405,
+                        &serde_json::json!({ "error": "Method not allowed" }),
+                    )
+                    .await;
             }
-            ChannelEndpoint::Read if session.as_downstream().is_upgrade_req() => {
-                if session.req_header().method.as_str() != "GET" {
-                    return self
-                        .write_json_response(
-                            session,
-                            405,
-                            &serde_json::json!({ "error": "Method not allowed" }),
-                        )
-                        .await;
-                }
-                if auth_result.transport != Some(ChannelTransport::Ws) {
-                    return self
-                        .write_channel_error(session, ChannelError::Unsupported)
-                        .await;
-                }
-                let cursor = match parse_ws_last_message_id(session.req_header().uri.query())
-                    .and_then(|cursor| store.replay_cursor(&route.channel, cursor))
-                {
-                    Ok(cursor) => cursor,
-                    Err(error) => return self.write_channel_error(session, error).await,
-                };
-                self.write_channel_websocket(session, &store, &route.channel, cursor, &auth_result)
-                    .await
+            if auth_result.transport != Some(ChannelTransport::Ws) {
+                return self
+                    .write_channel_error(session, ChannelError::Unsupported)
+                    .await;
             }
-            ChannelEndpoint::Read => {
-                if session.req_header().method.as_str() != "GET" {
-                    return self
-                        .write_json_response(
-                            session,
-                            405,
-                            &serde_json::json!({ "error": "Method not allowed" }),
-                        )
-                        .await;
-                }
-                let cursor = match parse_message_id_cursor(
-                    session
-                        .req_header()
-                        .headers
-                        .get("last-event-id")
-                        .and_then(|value| value.to_str().ok()),
-                    "Last-Event-ID",
-                )
+            let cursor = match parse_ws_last_message_id(session.req_header().uri.query())
                 .and_then(|cursor| store.replay_cursor(&route.channel, cursor))
-                {
-                    Ok(cursor) => cursor,
-                    Err(error) => return self.write_channel_error(session, error).await,
-                };
-                self.write_channel_events(session, &store, &route.channel, cursor, &auth_result)
-                    .await
+            {
+                Ok(cursor) => cursor,
+                Err(error) => return self.write_channel_error(session, error).await,
+            };
+            self.write_channel_websocket(session, &store, &route.channel, cursor, &auth_result)
+                .await
+        } else {
+            if session.req_header().method.as_str() != "GET" {
+                return self
+                    .write_json_response(
+                        session,
+                        405,
+                        &serde_json::json!({ "error": "Method not allowed" }),
+                    )
+                    .await;
             }
+            let cursor = match parse_message_id_cursor(
+                session
+                    .req_header()
+                    .headers
+                    .get("last-event-id")
+                    .and_then(|value| value.to_str().ok()),
+                "Last-Event-ID",
+            )
+            .and_then(|cursor| store.replay_cursor(&route.channel, cursor))
+            {
+                Ok(cursor) => cursor,
+                Err(error) => return self.write_channel_error(session, error).await,
+            };
+            self.write_channel_events(session, &store, &route.channel, cursor, &auth_result)
+                .await
         }
     }
 }
