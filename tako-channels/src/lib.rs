@@ -70,6 +70,40 @@ pub struct ChannelMessage {
     pub data: serde_json::Value,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChannelHeaderValue {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scheme: Option<String>,
+    pub value: String,
+}
+
+impl ChannelHeaderValue {
+    pub fn parse(raw: &str) -> Self {
+        if let Some(idx) = raw.find(' ') {
+            Self {
+                scheme: Some(raw[..idx].to_string()),
+                value: raw[idx + 1..].to_string(),
+            }
+        } else {
+            Self {
+                scheme: None,
+                value: raw.to_string(),
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChannelAuthVerifyRequest {
+    pub channel: String,
+    pub operation: String,
+    pub params: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub header: Option<ChannelHeaderValue>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cookie: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ChannelAuthRequest {
     pub channel: String,
@@ -90,6 +124,69 @@ pub struct ChannelAuthHttpRequest {
 #[serde(rename_all = "lowercase")]
 pub enum ChannelTransport {
     Ws,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChannelAuthScheme {
+    Required {
+        header_name: Option<String>,
+        cookie_name: Option<String>,
+    },
+    Public,
+}
+
+impl Serialize for ChannelAuthScheme {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Public => serializer.serialize_bool(false),
+            Self::Required {
+                header_name,
+                cookie_name,
+            } => {
+                use serde::ser::SerializeMap;
+
+                let len = usize::from(header_name.is_some()) + usize::from(cookie_name.is_some());
+                let mut map = serializer.serialize_map(Some(len))?;
+                if let Some(value) = header_name {
+                    map.serialize_entry("headerName", value)?;
+                }
+                if let Some(value) = cookie_name {
+                    map.serialize_entry("cookieName", value)?;
+                }
+                map.end()
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ChannelAuthScheme {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match value {
+            serde_json::Value::Bool(false) => Ok(Self::Public),
+            serde_json::Value::Object(map) => Ok(Self::Required {
+                header_name: map
+                    .get("headerName")
+                    .and_then(|value| value.as_str())
+                    .map(String::from),
+                cookie_name: map
+                    .get("cookieName")
+                    .and_then(|value| value.as_str())
+                    .map(String::from),
+            }),
+            _ => Err(serde::de::Error::custom("expected false or object")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ChannelDefinitionMeta {
+    pub channel: String,
+    #[serde(rename = "paramsSchema")]
+    pub params_schema: serde_json::Value,
+    pub auth: ChannelAuthScheme,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport: Option<ChannelTransport>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -666,6 +763,103 @@ mod tests {
     fn parse_ws_last_message_id_reads_cursor() {
         let after = parse_ws_last_message_id(Some("last_message_id=42&noop=1")).unwrap();
         assert_eq!(after, Some(42));
+    }
+
+    #[test]
+    fn header_value_splits_on_first_space() {
+        assert_eq!(
+            ChannelHeaderValue::parse("Bearer abc 123"),
+            ChannelHeaderValue {
+                scheme: Some("Bearer".to_string()),
+                value: "abc 123".to_string(),
+            },
+        );
+        assert_eq!(
+            ChannelHeaderValue::parse("plain-token"),
+            ChannelHeaderValue {
+                scheme: None,
+                value: "plain-token".to_string(),
+            },
+        );
+    }
+
+    #[test]
+    fn verify_request_serializes_with_optional_credentials() {
+        let req = ChannelAuthVerifyRequest {
+            channel: "chat".to_string(),
+            operation: "subscribe".to_string(),
+            params: serde_json::json!({ "roomId": "room-9" }),
+            header: Some(ChannelHeaderValue {
+                scheme: Some("Bearer".to_string()),
+                value: "abc123".to_string(),
+            }),
+            cookie: None,
+        };
+
+        let value = serde_json::to_value(&req).unwrap();
+        assert_eq!(value["channel"], "chat");
+        assert_eq!(value["params"]["roomId"], "room-9");
+        assert_eq!(value["header"]["scheme"], "Bearer");
+        assert!(value.get("cookie").is_none());
+    }
+
+    #[test]
+    fn auth_scheme_serializes_false_for_public() {
+        let public = ChannelAuthScheme::Public;
+        assert_eq!(
+            serde_json::to_value(&public).unwrap(),
+            serde_json::json!(false)
+        );
+
+        let header_only = ChannelAuthScheme::Required {
+            header_name: Some("authorization".into()),
+            cookie_name: None,
+        };
+        let value = serde_json::to_value(&header_only).unwrap();
+        assert_eq!(value["headerName"], "authorization");
+        assert!(value.get("cookieName").is_none());
+    }
+
+    #[test]
+    fn auth_scheme_deserializes_false_or_object() {
+        assert_eq!(
+            serde_json::from_value::<ChannelAuthScheme>(serde_json::json!(false)).unwrap(),
+            ChannelAuthScheme::Public,
+        );
+        assert_eq!(
+            serde_json::from_value::<ChannelAuthScheme>(serde_json::json!({
+                "headerName": "authorization",
+                "cookieName": "sid"
+            }))
+            .unwrap(),
+            ChannelAuthScheme::Required {
+                header_name: Some("authorization".into()),
+                cookie_name: Some("sid".into()),
+            },
+        );
+    }
+
+    #[test]
+    fn channel_def_meta_serializes_params_schema_inline() {
+        let meta = ChannelDefinitionMeta {
+            channel: "chat".into(),
+            params_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "roomId": { "type": "string" }
+                }
+            }),
+            auth: ChannelAuthScheme::Required {
+                header_name: Some("authorization".into()),
+                cookie_name: None,
+            },
+            transport: Some(ChannelTransport::Ws),
+        };
+
+        let value = serde_json::to_value(&meta).unwrap();
+        assert_eq!(value["channel"], "chat");
+        assert_eq!(value["paramsSchema"]["type"], "object");
+        assert_eq!(value["transport"], "ws");
     }
 
     #[test]
