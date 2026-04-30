@@ -16,6 +16,7 @@ export const TAKO_INTERNAL_HOST = "tako.internal";
 export const TAKO_INTERNAL_STATUS_PATH = "/status";
 export const TAKO_INTERNAL_CHANNELS_AUTHORIZE_PATH = "/channels/authorize";
 export const TAKO_INTERNAL_CHANNELS_DISPATCH_PATH = "/channels/dispatch";
+export const TAKO_INTERNAL_CHANNELS_REGISTRY_PATH = "/channels/registry";
 export const TAKO_INTERNAL_TOKEN_HEADER = "x-tako-internal-token";
 const LOOPBACK_INTERNAL_HOSTS = new Set(["127.0.0.1", "localhost", "0.0.0.0"]);
 
@@ -101,10 +102,48 @@ export async function handleTakoEndpoint(
       return await handleChannelAuthorize(request, token, channels);
     case TAKO_INTERNAL_CHANNELS_DISPATCH_PATH:
       return await handleChannelDispatch(request, token, channels);
+    case TAKO_INTERNAL_CHANNELS_REGISTRY_PATH:
+      return handleChannelRegistry(request, token, channels);
 
     default:
       return internalResponse({ error: "Not found" }, 404, token);
   }
+}
+
+function handleChannelRegistry(
+  request: Request,
+  token: string,
+  channels: ChannelRegistry,
+): Response {
+  if (request.method !== "GET") {
+    return internalResponse({ error: "Method not allowed" }, 405, token);
+  }
+
+  const defs = channels.all.map(({ name, definition }) => {
+    const meta: {
+      channel: string;
+      paramsSchema: object;
+      auth: false | { headerName?: string | false; cookieName?: string };
+      transport?: "ws";
+    } = {
+      channel: name,
+      paramsSchema: definition.paramsSchema,
+      auth:
+        definition.auth === false
+          ? false
+          : {
+              ...(definition.auth.headerName !== undefined && {
+                headerName: definition.auth.headerName,
+              }),
+              ...(definition.auth.cookieName !== undefined && {
+                cookieName: definition.auth.cookieName,
+              }),
+            },
+      ...(definition.transport !== undefined && { transport: definition.transport }),
+    };
+    return meta;
+  });
+  return internalResponse(defs, 200, token);
 }
 
 async function handleChannelDispatch(

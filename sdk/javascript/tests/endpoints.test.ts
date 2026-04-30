@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import {
   TAKO_INTERNAL_CHANNELS_AUTHORIZE_PATH,
   TAKO_INTERNAL_CHANNELS_DISPATCH_PATH,
+  TAKO_INTERNAL_CHANNELS_REGISTRY_PATH,
   TAKO_INTERNAL_TOKEN_HEADER,
   handleTakoEndpoint,
 } from "../src/tako/endpoints";
@@ -325,6 +326,53 @@ describe("handleTakoEndpoint", () => {
     test("rejects non-POST methods", async () => {
       const request = new Request(`http://tako.internal${TAKO_INTERNAL_CHANNELS_DISPATCH_PATH}`, {
         method: "GET",
+        headers: { [TAKO_INTERNAL_TOKEN_HEADER]: "test-token" },
+      });
+      const response = await handleTakoEndpoint(request, mockStatus, channels);
+      expect(response!.status).toBe(405);
+    });
+  });
+
+  describe("internal host channel registry", () => {
+    test("returns channel definition metadata", async () => {
+      channels.register(
+        "chat",
+        defineChannel({
+          paramsSchema: (t) => t.Object({ roomId: t.String() }),
+          auth: { cookieName: "session", verify: async () => true },
+          handler: { msg: async (data: { text: string }) => data },
+        }),
+      );
+      channels.register("status", defineChannel());
+
+      const request = new Request(`http://tako.internal${TAKO_INTERNAL_CHANNELS_REGISTRY_PATH}`, {
+        headers: { [TAKO_INTERNAL_TOKEN_HEADER]: "test-token" },
+      });
+      const response = await handleTakoEndpoint(request, mockStatus, channels);
+
+      expect(response!.status).toBe(200);
+      expect(await response!.json()).toEqual([
+        {
+          channel: "chat",
+          paramsSchema: {
+            type: "object",
+            properties: { roomId: { type: "string" } },
+            required: ["roomId"],
+          },
+          auth: { headerName: "authorization", cookieName: "session" },
+          transport: "ws",
+        },
+        {
+          channel: "status",
+          paramsSchema: { type: "object", properties: {} },
+          auth: false,
+        },
+      ]);
+    });
+
+    test("rejects non-GET methods", async () => {
+      const request = new Request(`http://tako.internal${TAKO_INTERNAL_CHANNELS_REGISTRY_PATH}`, {
+        method: "POST",
         headers: { [TAKO_INTERNAL_TOKEN_HEADER]: "test-token" },
       });
       const response = await handleTakoEndpoint(request, mockStatus, channels);
