@@ -1,7 +1,6 @@
 import { Type, type Static, type TSchema } from "@sinclair/typebox";
 import { Channel } from "../channels";
 import {
-  bindChannelName,
   CHANNEL_SYMBOL,
   isChannelDefinition,
   isChannelExport as isChannelExportMeta,
@@ -28,6 +27,7 @@ export interface ChannelConfig<
   Params,
   Messages,
 > extends ChannelLifecycleConfig {
+  name: string;
   paramsSchema?: (t: typeof Type) => ParamsSchema extends TSchema ? ParamsSchema : TSchema;
   auth?: false | ChannelAuthConfig<Params>;
   handler?: { [T in keyof Messages]?: MessageHandler<Messages[T], Params> };
@@ -88,10 +88,10 @@ function encodeQueryValue(value: unknown): string {
 function makeHandle<P, M>(definition: ChannelDefinition<P, M>, params: P): ChannelHandle<P, M> {
   const query = encodeParams(params as Record<string, unknown>);
   const makeChannel = () =>
-    new Channel(definition.channel ?? "", definition.transport, params as Record<string, unknown>);
+    new Channel(definition.channel, definition.transport, params as Record<string, unknown>);
   const handle = {
     get name() {
-      return `${definition.channel ?? ""}${query}`;
+      return `${definition.channel}${query}`;
     },
     publish<T extends keyof M & string>(
       message: { type: T; data: M[T] },
@@ -140,7 +140,7 @@ export function defineChannel<
   ParamsSchema extends TSchema | undefined = undefined,
   Params = ParamsSchema extends TSchema ? Static<ParamsSchema> : Record<string, never>,
   Messages = Record<string, unknown>,
->(config: ChannelConfig<ParamsSchema, Params, Messages> = {}): ChannelExport<Params, Messages> {
+>(config: ChannelConfig<ParamsSchema, Params, Messages>): ChannelExport<Params, Messages> {
   const schema = config.paramsSchema?.(Type) ?? Type.Object({});
   const auth: ChannelDefinition<Params, Messages>["auth"] =
     config.auth === undefined || config.auth === false
@@ -153,6 +153,7 @@ export function defineChannel<
         };
   const definition: ChannelDefinition<Params, Messages> = {
     type: CHANNEL_SYMBOL,
+    channel: config.name,
     paramsSchema: schema,
     auth,
     hasParams: config.paramsSchema !== undefined,
@@ -175,7 +176,6 @@ export function isChannelExport(value: unknown): value is ChannelExport<unknown,
 }
 
 export {
-  bindChannelName,
   CHANNEL_SYMBOL,
   isChannelDefinition,
   type ChannelAuthConfig,

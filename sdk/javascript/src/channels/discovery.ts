@@ -1,12 +1,7 @@
 import { readdir, stat } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { join, parse } from "node:path";
-import {
-  bindChannelName,
-  isChannelDefinition,
-  isChannelExport,
-  type ChannelDefinition,
-} from "./meta";
+import { isChannelDefinition, isChannelExport, type ChannelDefinition } from "./meta";
 
 const VALID_EXTS = new Set([".ts", ".tsx", ".js", ".mjs", ".mts"]);
 
@@ -20,7 +15,7 @@ export async function discoverChannels(dir: string): Promise<DiscoveredChannel[]
 
   const entries = await readdir(dir, { withFileTypes: true });
   const found: DiscoveredChannel[] = [];
-  const seenNames = new Set<string>();
+  const seenNames = new Map<string, string>();
 
   for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
     if (entry.isDirectory()) {
@@ -47,14 +42,14 @@ export async function discoverChannels(dir: string): Promise<DiscoveredChannel[]
         `channel '${parsed.name}' (${entry.name}) must default-export a defineChannel() result`,
       );
     }
-
-    if (seenNames.has(parsed.name)) {
-      throw new Error(`duplicate channel '${parsed.name}' in ${entry.name}`);
+    if (seenNames.has(definition.channel)) {
+      throw new Error(
+        `duplicate channel '${definition.channel}' in ${entry.name} (already declared by ${seenNames.get(definition.channel)})`,
+      );
     }
-    seenNames.add(parsed.name);
-    bindChannelName(definition, parsed.name);
+    seenNames.set(definition.channel, entry.name);
 
-    found.push({ name: parsed.name, definition });
+    found.push({ name: definition.channel, definition });
   }
 
   return found;

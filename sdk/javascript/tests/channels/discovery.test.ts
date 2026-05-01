@@ -29,11 +29,12 @@ describe("discoverChannels", () => {
     expect(found).toEqual([]);
   });
 
-  test("channel filename becomes the channel name", async () => {
+  test("declared name becomes the channel name", async () => {
     await writeChannel(
       "status.ts",
       `import { defineChannel } from "${sdkImportPath()}";
-       export default defineChannel({ auth: { verify: async () => true } });`,
+       export default defineChannel({
+  name: "status", auth: { verify: async () => true } });`,
     );
     const found = await discoverChannels(join(dir, "channels"));
     expect(found).toHaveLength(1);
@@ -45,23 +46,34 @@ describe("discoverChannels", () => {
     await writeChannel(
       "mission-log.ts",
       `import { defineChannel } from "${sdkImportPath()}";
-       export default defineChannel();`,
+       export default defineChannel({ name: "mission-log" });`,
     );
     const found = await discoverChannels(join(dir, "channels"));
     expect(found[0]!.name).toBe("mission-log");
     expect(found[0]!.definition.channel).toBe("mission-log");
   });
 
+  test("declared name may differ from the file basename", async () => {
+    await writeChannel(
+      "mission-log.ts",
+      `import { defineChannel } from "${sdkImportPath()}";
+       export default defineChannel({ name: "expedition-feed" });`,
+    );
+    const found = await discoverChannels(join(dir, "channels"));
+    expect(found[0]!.name).toBe("expedition-feed");
+    expect(found[0]!.definition.channel).toBe("expedition-feed");
+  });
+
   test("skips _ and . prefixed files", async () => {
     await writeChannel(
       "_skipped.ts",
       `import { defineChannel } from "${sdkImportPath()}";
-       export default defineChannel();`,
+       export default defineChannel({ name: "_skipped" });`,
     );
     await writeChannel(
       ".hidden.ts",
       `import { defineChannel } from "${sdkImportPath()}";
-       export default defineChannel();`,
+       export default defineChannel({ name: ".hidden" });`,
     );
     const found = await discoverChannels(join(dir, "channels"));
     expect(found).toEqual([]);
@@ -71,6 +83,23 @@ describe("discoverChannels", () => {
     await writeChannel("bad.ts", `export default { foo: "bar" };`);
     await expect(discoverChannels(join(dir, "channels"))).rejects.toThrow(
       /must default-export a defineChannel/,
+    );
+  });
+
+  test("throws when two files declare the same channel name", async () => {
+    await writeChannel(
+      "mission-log.ts",
+      `import { defineChannel } from "${sdkImportPath()}";
+       export default defineChannel({ name: "updates" });`,
+    );
+    await writeChannel(
+      "updates.ts",
+      `import { defineChannel } from "${sdkImportPath()}";
+       export default defineChannel({ name: "updates" });`,
+    );
+
+    await expect(discoverChannels(join(dir, "channels"))).rejects.toThrow(
+      /duplicate channel 'updates'/,
     );
   });
 

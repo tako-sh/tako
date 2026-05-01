@@ -186,7 +186,9 @@ Channels are durable pub-sub streams available at:
 GET /channels/<name>
 ```
 
-SSE and WebSocket transports are supported, with bounded replay for reconnects.
+For JavaScript/TypeScript apps, `<name>` is the explicit `name` property passed
+to `defineChannel({ name: "<name>", ... })`. SSE and WebSocket transports are supported,
+with bounded replay for reconnects.
 
 ## Local Development
 

@@ -56,7 +56,7 @@ export interface ChannelDefinition<
   Messages = Record<string, unknown>,
 > extends ChannelLifecycleConfig {
   readonly type: typeof CHANNEL_SYMBOL;
-  readonly channel?: string;
+  readonly channel: string;
   readonly paramsSchema: object;
   readonly auth: ChannelAuthScheme<Params>;
   readonly handler?: { [T in keyof Messages]?: MessageHandler<Messages[T], Params> };
@@ -75,15 +75,6 @@ export interface ChannelHandle<Params, Messages> {
 
 export interface ChannelExportMeta<Params, Messages> {
   readonly definition: ChannelDefinition<Params, Messages>;
-}
-
-export function bindChannelName(definition: ChannelDefinition, channel: string): void {
-  Object.defineProperty(definition, "channel", {
-    value: channel,
-    writable: true,
-    enumerable: true,
-    configurable: true,
-  });
 }
 
 /** Narrow `value` to an object with channel export metadata. */

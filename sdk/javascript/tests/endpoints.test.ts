@@ -125,6 +125,7 @@ describe("handleTakoEndpoint", () => {
       channels.register(
         "chat",
         defineChannel({
+          name: "chat",
           auth: {
             verify(input) {
               expect(input.header).toEqual({ scheme: "Bearer", value: "test" });
@@ -171,6 +172,7 @@ describe("handleTakoEndpoint", () => {
       channels.register(
         "chat",
         defineChannel({
+          name: "chat",
           auth: {
             verify() {
               return false;
@@ -228,6 +230,7 @@ describe("handleTakoEndpoint", () => {
       channels.register(
         "chat",
         defineChannel({
+          name: "chat",
           auth: {
             verify() {
               return { subject: "user-123" };
@@ -274,6 +277,7 @@ describe("handleTakoEndpoint", () => {
       channels.register(
         "chat",
         defineChannel({
+          name: "chat",
           auth: { verify: async () => true },
           handler: { msg: async (data: { text: string }) => ({ text: data.text.toUpperCase() }) },
         }),
@@ -338,12 +342,13 @@ describe("handleTakoEndpoint", () => {
       channels.register(
         "chat",
         defineChannel({
+          name: "chat",
           paramsSchema: (t) => t.Object({ roomId: t.String() }),
           auth: { cookieName: "session", verify: async () => true },
           handler: { msg: async (data: { text: string }) => data },
         }),
       );
-      channels.register("status", defineChannel());
+      channels.register("status", defineChannel({ name: "status" }));
 
       const request = new Request(`http://tako.internal${TAKO_INTERNAL_CHANNELS_REGISTRY_PATH}`, {
         headers: { [TAKO_INTERNAL_TOKEN_HEADER]: "test-token" },

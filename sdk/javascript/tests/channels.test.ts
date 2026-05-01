@@ -20,6 +20,7 @@ describe("channels", () => {
     reg.register(
       "chat",
       defineChannel({
+        name: "chat",
         auth: {
           verify(input) {
             expect(input.channel).toBe("chat");
@@ -39,11 +40,12 @@ describe("channels", () => {
     expect(result.ok).toBe(true);
   });
 
-  test("channel lookup is exact by filename", async () => {
+  test("channel lookup is exact by registered name", async () => {
     const reg = new ChannelRegistry();
     reg.register(
       "chat",
       defineChannel({
+        name: "chat",
         auth: { verify: async () => ({ subject: "user-123" }) },
       }),
     );
@@ -77,7 +79,7 @@ describe("channels", () => {
   test("subscribe opens the canonical SSE route", () => {
     const eventSourceFactory = mock((url: string) => ({ url, kind: "eventsource", close() {} }));
     const webSocketFactory = mock((url: string) => ({ url, kind: "websocket" }));
-    const channel = new Channel("chat/room-123");
+    const channel = new Channel("chat", undefined, { roomId: "room-123" });
 
     const subscription = channel.subscribe({
       baseUrl: "https://app.example.com",
@@ -88,11 +90,26 @@ describe("channels", () => {
     expect(subscription.transport).toBe("sse");
     expect(subscription.raw).toEqual({
       kind: "eventsource",
-      url: "https://app.example.com/channels/chat/room-123",
+      url: "https://app.example.com/channels/chat?roomId=room-123",
       close: expect.any(Function),
     });
     expect(eventSourceFactory).toHaveBeenCalledTimes(1);
     expect(webSocketFactory).toHaveBeenCalledTimes(0);
+  });
+
+  test("subscribe encodes the whole channel name as one flat route segment", () => {
+    const eventSourceFactory = mock((url: string) => ({ url, kind: "eventsource", close() {} }));
+    const channel = new Channel("chat/room-123");
+
+    channel.subscribe({
+      baseUrl: "https://app.example.com",
+      eventSourceFactory,
+    });
+
+    expect(eventSourceFactory).toHaveBeenCalledWith(
+      "https://app.example.com/channels/chat%2Froom-123",
+      {},
+    );
   });
 
   test("subscribe uses fetch-based SSE reader by default", async () => {
@@ -106,7 +123,7 @@ describe("channels", () => {
     );
     configureChannels({ fetch: fetchMock as unknown as typeof fetch });
 
-    const channel = new Channel("chat/room-123");
+    const channel = new Channel("chat", undefined, { roomId: "room-123" });
     const subscription = channel.subscribe({
       baseUrl: "https://app.example.com",
       headers: { Authorization: "Bearer t" },
@@ -119,7 +136,7 @@ describe("channels", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0]!;
-    expect(url).toBe("https://app.example.com/channels/chat/room-123");
+    expect(url).toBe("https://app.example.com/channels/chat?roomId=room-123");
     expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer t");
     expect(new Headers(init?.headers).get("Last-Event-ID")).toBe("7");
   });
@@ -128,7 +145,7 @@ describe("channels", () => {
     const send = mock((_data: unknown) => {});
     const close = mock((_code?: number, _reason?: string) => {});
     const webSocketFactory = mock((url: string) => ({ url, kind: "websocket", send, close }));
-    const channel = new Channel("chat/room-123", "ws");
+    const channel = new Channel("chat", "ws", { roomId: "room-123" });
 
     const connection = channel.connect({
       baseUrl: "https://app.example.com",
@@ -139,7 +156,7 @@ describe("channels", () => {
     expect(connection.transport).toBe("ws");
     expect(connection.raw).toEqual({
       kind: "websocket",
-      url: "wss://app.example.com/channels/chat/room-123?last_message_id=42",
+      url: "wss://app.example.com/channels/chat?roomId=room-123&last_message_id=42",
       send,
       close,
     });
@@ -169,12 +186,12 @@ describe("channels", () => {
     }
     configureChannels({ websocket: MockWebSocket as unknown as typeof WebSocket });
 
-    const channel = new Channel("chat/room-123", "ws");
+    const channel = new Channel("chat", "ws", { roomId: "room-123" });
     const connection = channel.connect({ baseUrl: "https://app.example.com" });
 
     expect(connection.raw).toBeInstanceOf(MockWebSocket);
     expect((connection.raw as MockWebSocket).url).toBe(
-      "wss://app.example.com/channels/chat/room-123",
+      "wss://app.example.com/channels/chat?roomId=room-123",
     );
   });
 
@@ -214,6 +231,7 @@ describe("channels", () => {
     reg.register(
       "chat",
       defineChannel({
+        name: "chat",
         auth: { verify: async () => ({ subject: "user-123" }) },
         handler: { msg: async (d) => d },
         replayWindowMs: 86_400_000,

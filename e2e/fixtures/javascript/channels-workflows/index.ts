@@ -1,4 +1,5 @@
 import broadcast from "./workflows/broadcast";
+import demo from "./channels/demo";
 
 export default async function fetch(request: Request): Promise<Response> {
   const url = new URL(request.url);
@@ -13,6 +14,12 @@ export default async function fetch(request: Request): Promise<Response> {
     const { message } = (await request.json()) as { message: string };
     const runId = await broadcast.enqueue({ message });
     return Response.json({ ok: true, runId });
+  }
+
+  if (url.pathname === "/publish" && request.method === "POST") {
+    const { message } = (await request.json()) as { message: string };
+    const published = await demo.publish({ type: "message", data: { message } });
+    return Response.json({ ok: true, id: published.id });
   }
 
   return new Response("Not Found", { status: 404 });

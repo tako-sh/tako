@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
   CHANNEL_SYMBOL,
-  bindChannelName,
   defineChannel,
   isChannelDefinition,
   isChannelExport,
@@ -9,8 +8,9 @@ import {
 
 describe("defineChannel", () => {
   test("public channel without auth", () => {
-    const exp = defineChannel();
+    const exp = defineChannel({ name: "status" });
     expect(exp.definition.type).toBe(CHANNEL_SYMBOL);
+    expect(exp.definition.channel).toBe("status");
     expect(exp.definition.auth).toBe(false);
     expect(exp.definition.paramsSchema).toMatchObject({ type: "object" });
     expect(exp.definition.handler).toBeUndefined();
@@ -18,6 +18,7 @@ describe("defineChannel", () => {
 
   test("serializes paramsSchema to JSON Schema", () => {
     const exp = defineChannel({
+      name: "chat",
       paramsSchema: (t) => t.Object({ roomId: t.String({ minLength: 1 }) }),
     });
     expect(exp.definition.paramsSchema).toMatchObject({
@@ -29,6 +30,7 @@ describe("defineChannel", () => {
 
   test("declarative auth defaults headerName to authorization", () => {
     const exp = defineChannel({
+      name: "private",
       auth: { verify: () => true },
     });
     expect(exp.definition.auth).toMatchObject({ headerName: "authorization" });
@@ -36,6 +38,7 @@ describe("defineChannel", () => {
 
   test("auth headerName false disables header", () => {
     const exp = defineChannel({
+      name: "private",
       auth: { headerName: false, cookieName: "session", verify: () => true },
     });
     expect(exp.definition.auth).toMatchObject({
@@ -46,6 +49,7 @@ describe("defineChannel", () => {
 
   test("handler presence implies ws transport", () => {
     const exp = defineChannel({
+      name: "chat",
       handler: { "chat.send": async (data) => data },
     }).$messageTypes<{ "chat.send": { text: string } }>();
     expect(exp.definition.transport).toBe("ws");
@@ -53,6 +57,7 @@ describe("defineChannel", () => {
 
   test("passes through lifecycle config", () => {
     const exp = defineChannel({
+      name: "status",
       replayWindowMs: 1000,
       inactivityTtlMs: 2000,
       keepaliveIntervalMs: 3000,
@@ -65,8 +70,7 @@ describe("defineChannel", () => {
   });
 
   test("export is a typed handle when params absent", () => {
-    const exp = defineChannel().$messageTypes<{ ping: { at: number } }>();
-    bindChannelName(exp.definition, "status");
+    const exp = defineChannel({ name: "status" }).$messageTypes<{ ping: { at: number } }>();
     expect(exp.name).toBe("status");
     expect(typeof exp.publish).toBe("function");
     expect(isChannelExport(exp)).toBe(true);
@@ -74,9 +78,9 @@ describe("defineChannel", () => {
 
   test("export is callable when params present", () => {
     const exp = defineChannel({
+      name: "chat",
       paramsSchema: (t) => t.Object({ roomId: t.String() }),
     });
-    bindChannelName(exp.definition, "chat");
     const handle = exp({ roomId: "r1" });
     expect(handle.name).toBe("chat?roomId=r1");
   });
@@ -84,7 +88,7 @@ describe("defineChannel", () => {
 
 describe("isChannelExport", () => {
   test("true for output of defineChannel", () => {
-    expect(isChannelExport(defineChannel())).toBe(true);
+    expect(isChannelExport(defineChannel({ name: "status" }))).toBe(true);
   });
 
   test("false for plain objects and bare definitions", () => {
@@ -97,7 +101,7 @@ describe("isChannelExport", () => {
 
 describe("isChannelDefinition", () => {
   test("true for the inner definition of a defineChannel result", () => {
-    expect(isChannelDefinition(defineChannel().definition)).toBe(true);
+    expect(isChannelDefinition(defineChannel({ name: "status" }).definition)).toBe(true);
   });
 
   test("false for plain objects", () => {

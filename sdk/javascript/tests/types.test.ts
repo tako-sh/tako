@@ -64,6 +64,7 @@ describe("Types", () => {
 
     test("accepts channel definitions built with defineChannel", () => {
       const exp = defineChannel({
+        name: "chat",
         paramsSchema: (t) => t.Object({ roomId: t.String() }),
         auth: { verify: async () => true },
         handler: { msg: async (d: { text: string }) => d },

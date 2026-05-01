@@ -65,7 +65,7 @@ describe("tako Vite entry plugin", () => {
   test("externalizes tako.sh from SSR transform", () => {
     const plugin = tako();
     const result = plugin.config?.({}, { command: "build" });
-    expect(result).toMatchObject({ ssr: { external: ["tako.sh"] } });
+    expect(result).toMatchObject({ ssr: { external: ["tako.sh", "tako.sh/internal"] } });
   });
 
   test("binds to 127.0.0.1 with .test hosts in serve mode", () => {

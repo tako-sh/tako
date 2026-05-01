@@ -101,7 +101,7 @@ Generates:
 
 - **Typed secrets** — reads secret names from `.tako/secrets.json`, emits a `Secrets` interface and `secrets` export from `tako.gen.ts`.
 - **Runtime accessors** — emits `env`, `isDev`, `isProd`, `port`, `host`, `build`, `dataDir`, `appDir`, `logger` exports that wrap process state and the fd-3 bootstrap.
-- **JS definition stubs** — when `channels/` or `workflows/` already exists, scaffolds `demo.ts` in empty dirs and adds missing default `defineChannel(...)` / `defineWorkflow(...)` exports to files that do not have a default export yet.
+- **JS definition stubs** — when `channels/` or `workflows/` already exists, scaffolds `demo.ts` in empty dirs and adds missing default `defineChannel({ name: "<file-stem>" })` / `defineWorkflow(...)` exports to files that do not have a default export yet. Existing explicit channel names are not rewritten.
 
 Workflow and channel payload types flow from their module types directly (no typegen needed for `.enqueue(payload)` or `.publish({type, data})`).
 

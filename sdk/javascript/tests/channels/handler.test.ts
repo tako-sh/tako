@@ -8,6 +8,7 @@ function makeRegistry() {
   reg.register(
     "chat",
     defineChannel({
+      name: "chat",
       auth: { verify: async () => ({ subject: "u1" }) },
       handler: {
         msg: async (data: { text: string }, ctx) =>
@@ -72,7 +73,7 @@ describe("dispatchWsMessage", () => {
 
   test("rejects SSE channels (no handler on definition)", async () => {
     const reg = new ChannelRegistry();
-    reg.register("status", defineChannel());
+    reg.register("status", defineChannel({ name: "status" }));
     const res = await dispatchWsMessage(reg, {
       channel: "status",
       frame: { type: "ping", data: {} },
@@ -88,6 +89,7 @@ describe("dispatchWsMessage", () => {
     reg.register(
       "boom",
       defineChannel({
+        name: "boom",
         auth: { verify: async () => true },
         handler: {
           msg: async () => {

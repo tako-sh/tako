@@ -495,7 +495,9 @@ impl StubKind {
 
     fn default_export_line(self, stem: &str) -> String {
         match self {
-            Self::Channel => "export default defineChannel({}).$messageTypes<{}>();".to_string(),
+            Self::Channel => {
+                format!("export default defineChannel({{ name: {stem:?} }}).$messageTypes<{{}}>();")
+            }
             Self::Workflow => {
                 format!(
                     "export default defineWorkflow(\"{stem}\", {{ handler: async () => {{}} }});"
@@ -728,7 +730,10 @@ printf '%s\n' 'export interface TakoChannels {' '  "chat": { params: { roomId: s
         assert!(result.wrote_scaffolds);
         let channel = fs::read_to_string(dir.path().join("channels").join("demo.ts")).unwrap();
         assert!(channel.contains(r#"import { defineChannel } from "tako.sh";"#));
-        assert!(channel.contains(r#"export default defineChannel({}).$messageTypes<{}>();"#));
+        assert!(
+            channel
+                .contains(r#"export default defineChannel({ name: "demo" }).$messageTypes<{}>();"#)
+        );
 
         let workflow = fs::read_to_string(dir.path().join("workflows").join("demo.ts")).unwrap();
         assert!(workflow.contains(r#"import { defineWorkflow } from "tako.sh";"#));
@@ -753,7 +758,9 @@ printf '%s\n' 'export interface TakoChannels {' '  "chat": { params: { roomId: s
 
         assert!(result.wrote_scaffolds);
         let channel = fs::read_to_string(channels_dir.join("mission-log.ts")).unwrap();
-        assert!(channel.contains(r#"export default defineChannel({}).$messageTypes<{}>();"#));
+        assert!(channel.contains(
+            r#"export default defineChannel({ name: "mission-log" }).$messageTypes<{}>();"#
+        ));
         let workflow = fs::read_to_string(workflows_dir.join("send-email.ts")).unwrap();
         assert!(workflow.contains(
             r#"export default defineWorkflow("send-email", { handler: async () => {} });"#
@@ -785,7 +792,9 @@ printf '%s\n' 'export interface TakoChannels {' '  "chat": { params: { roomId: s
         let channel = fs::read_to_string(channels_dir.join("mission-log.ts")).unwrap();
         assert!(channel.starts_with("import { defineChannel } from \"tako.sh\";\n"));
         assert!(channel.contains("const pattern = \"mission-log/:base\";"));
-        assert!(channel.contains(r#"export default defineChannel({}).$messageTypes<{}>();"#));
+        assert!(channel.contains(
+            r#"export default defineChannel({ name: "mission-log" }).$messageTypes<{}>();"#
+        ));
 
         let workflow = fs::read_to_string(workflows_dir.join("send-email.ts")).unwrap();
         assert!(workflow.starts_with("import { defineWorkflow } from \"tako.sh\";\n"));
@@ -796,7 +805,7 @@ printf '%s\n' 'export interface TakoChannels {' '  "chat": { params: { roomId: s
     }
 
     #[test]
-    fn typegen_leaves_existing_default_exports_untouched() {
+    fn typegen_does_not_rewrite_existing_channel_names() {
         let dir = TempDir::new().unwrap();
         link_sdk_package(dir.path());
         let channels_dir = dir.path().join("channels");
@@ -809,7 +818,7 @@ printf '%s\n' 'export interface TakoChannels {' '  "chat": { params: { roomId: s
             .join("sdk/javascript/src/index.ts");
         let sdk_url = format!("file://{}", sdk_entry.display());
         let channel_src = format!(
-            "import {{ defineChannel }} from {sdk_url:?};\nexport default defineChannel({{}});\n"
+            "import {{ defineChannel }} from {sdk_url:?};\nexport default defineChannel({{ name: \"wrong\" }});\n"
         );
         let workflow_src = "export default async function run() {}\n";
         fs::write(channels_dir.join("demo.ts"), &channel_src).unwrap();
@@ -825,6 +834,24 @@ printf '%s\n' 'export interface TakoChannels {' '  "chat": { params: { roomId: s
         assert_eq!(
             fs::read_to_string(workflows_dir.join("demo.ts")).unwrap(),
             workflow_src
+        );
+    }
+
+    #[test]
+    fn typegen_does_not_normalize_multiline_channel_name_literals() {
+        let dir = TempDir::new().unwrap();
+        link_sdk_package(dir.path());
+        let channels_dir = dir.path().join("channels");
+        fs::create_dir_all(&channels_dir).unwrap();
+        let channel_src = "import { defineChannel } from \"tako.sh\";\nexport default defineChannel({\n  name: `custom-feed`,\n}).$messageTypes<{}>();\n";
+        fs::write(channels_dir.join("mission-log.ts"), channel_src).unwrap();
+
+        let result = write_typegen_support_files(dir.path()).unwrap();
+
+        assert!(!result.wrote_scaffolds);
+        assert_eq!(
+            fs::read_to_string(channels_dir.join("mission-log.ts")).unwrap(),
+            channel_src
         );
     }
 

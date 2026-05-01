@@ -380,7 +380,7 @@ Show version information (same as `--version` flag).
 
 ### tako typegen
 
-Generate typed accessors for the current project: `tako.gen.ts` for JS/TS apps (runtime state + typed `Secrets` interface) and `tako_secrets.go` for Go apps. For JS/TS projects, `tako.gen.ts` is written next to any existing copy if one is found, otherwise placed inside `src/` or `app/` when those directories exist, or at the project root. Legacy `tako.d.ts` files left over from the pre-v0-global design are removed on regeneration. If a JS/TS project already has `channels/` or `workflows/` directories, typegen also scaffolds `demo.ts` in empty dirs and adds missing default `defineChannel(...)` / `defineWorkflow(...)` exports to existing definition files that have no default export yet.
+Generate typed accessors for the current project: `tako.gen.ts` for JS/TS apps (runtime state + typed `Secrets` interface) and `tako_secrets.go` for Go apps. For JS/TS projects, `tako.gen.ts` is written next to any existing copy if one is found, otherwise placed inside `src/` or `app/` when those directories exist, or at the project root. Legacy `tako.d.ts` files left over from the pre-v0-global design are removed on regeneration. If a JS/TS project already has `channels/` or `workflows/` directories, typegen also scaffolds `demo.ts` in empty dirs and adds missing default `defineChannel(...)` / `defineWorkflow(...)` exports to existing definition files that have no default export yet. Generated channel stubs use the file stem as the initial channel `name`, but typegen does not rewrite existing explicit channel names.
 
 ### tako upgrade
 
@@ -1715,11 +1715,11 @@ Channel WebSocket transport uses JSON text frames:
 - server-to-client text frames are serialized `ChannelMessage` objects
 - client-to-server text frames are parsed as `ChannelPublishPayload` objects, routed through the channel's declared `handler`, and the handler's return value is fanned out to subscribers
 
-Channel routes are exact and flat: `channels/chat.ts` is served at `/channels/chat`. Dynamic values are query params validated against the channel's declared JSON Schema, for example `/channels/chat?roomId=room-123`.
+Channel routes are exact and flat: `defineChannel({ name: "chat", ... })` is served at `/channels/chat`. Dynamic values are query params validated against the channel's declared JSON Schema, for example `/channels/chat?roomId=room-123`.
 
 ### Authoring channels
 
-**JS/TypeScript** — file-based discovery: drop a file into `channels/<name>.ts` with a default export of `defineChannel(config?).$messageTypes<M>()`. The filename is the wire channel name. `paramsSchema` is a TypeBox schema that becomes both the TypeScript params type and the server-side JSON Schema used by `tako-server` before app auth. `.$messageTypes<M>()` is a type-level narrower that declares the message map; at runtime it returns the same export.
+**JS/TypeScript** — file-based discovery: drop a file into `channels/*.ts` with a default export of `defineChannel({ name: "<name>", ... }).$messageTypes<M>()`. The `name` property is the wire channel name and is the source of truth for the public route. Generated/scaffolded files use the file stem as the initial name, but users may choose a different explicit name; discovery rejects duplicate declared names. `paramsSchema` is a TypeBox schema that becomes both the TypeScript params type and the server-side JSON Schema used by `tako-server` before app auth. `.$messageTypes<M>()` is a type-level narrower that declares the message map; at runtime it returns the same export.
 
 ```ts
 // channels/chat.ts
@@ -1731,6 +1731,7 @@ type ChatMessages = {
 };
 
 export default defineChannel({
+  name: "chat",
   paramsSchema: (t) => t.Object({ roomId: t.String({ minLength: 1 }) }),
   auth: {
     headerName: "authorization",

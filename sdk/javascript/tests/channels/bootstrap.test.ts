@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { bootstrapChannels } from "../../src/channels/bootstrap";
 
@@ -30,7 +31,8 @@ describe("bootstrapChannels", () => {
     await writeFile(
       join(appDir, "channels", "status.ts"),
       `import { defineChannel } from "${sdkImportPath()}";
-       export default defineChannel({ auth: { verify: async () => true } });`,
+       export default defineChannel({
+  name: "status", auth: { verify: async () => true } });`,
       "utf8",
     );
     const { registry, channelCount } = await bootstrapChannels({ appDir });
@@ -38,12 +40,27 @@ describe("bootstrapChannels", () => {
     expect(registry.resolve("status")).not.toBeNull();
   });
 
+  test("registers channels by declared name even when file basename differs", async () => {
+    await mkdir(join(appDir, "channels"));
+    await writeFile(
+      join(appDir, "channels", "status.ts"),
+      `import { defineChannel } from "${sdkImportPath()}";
+       export default defineChannel({ name: "health" });`,
+      "utf8",
+    );
+    const { registry, channelCount } = await bootstrapChannels({ appDir });
+    expect(channelCount).toBe(1);
+    expect(registry.resolve("health")).not.toBeNull();
+    expect(registry.resolve("status")).toBeNull();
+  });
+
   test("returns a fresh registry each call", async () => {
     await mkdir(join(appDir, "channels"));
     await writeFile(
       join(appDir, "channels", "status.ts"),
       `import { defineChannel } from "${sdkImportPath()}";
-       export default defineChannel({ auth: { verify: async () => true } });`,
+       export default defineChannel({
+  name: "status", auth: { verify: async () => true } });`,
       "utf8",
     );
     const first = await bootstrapChannels({ appDir });
@@ -51,5 +68,30 @@ describe("bootstrapChannels", () => {
     expect(first.registry).not.toBe(second.registry);
     expect(first.registry.all.length).toBe(1);
     expect(second.registry.all.length).toBe(1);
+  });
+
+  test("workflow source imports use the declared channel name", async () => {
+    await mkdir(join(appDir, "channels"));
+    await mkdir(join(appDir, "workflows"));
+    await writeFile(
+      join(appDir, "channels", "mission-log.ts"),
+      `import { defineChannel } from "${sdkImportPath()}";
+       export default defineChannel({
+  name: "mission-log", paramsSchema: (t) => t.Object({ base: t.String() }) });`,
+      "utf8",
+    );
+    await writeFile(
+      join(appDir, "workflows", "uses-channel.ts"),
+      `import missionLog from "../channels/mission-log.ts";
+       export default function channelName() {
+         return missionLog({ base: "shackleton" }).name;
+       }`,
+      "utf8",
+    );
+
+    const workflowModule = (await import(
+      pathToFileURL(join(appDir, "workflows", "uses-channel.ts")).href
+    )) as { default: () => string };
+    expect(workflowModule.default()).toBe("mission-log?base=shackleton");
   });
 });

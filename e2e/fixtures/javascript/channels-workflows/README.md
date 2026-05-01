@@ -5,11 +5,14 @@ and workflows (enqueue + durable handler, via `defineWorkflow`).
 
 Flow:
 
-1. Client opens `GET /channels/demo` (handled by the Tako dev proxy).
-2. Client `POST /enqueue` with `{ message }` — the fetch handler enqueues
+1. Client opens `GET /channels/demo` with `Authorization: Bearer e2e`
+   (handled by the Tako dev proxy).
+2. Client `POST /publish` with `{ message }` - the fetch handler publishes
+   directly to the channel.
+3. Client `POST /enqueue` with `{ message }` - the fetch handler enqueues
    the `broadcast` workflow.
-3. `workflows/broadcast.ts` sleeps briefly then publishes to `demo`.
-4. Client receives the message over the SSE stream.
+4. `workflows/broadcast.ts` sleeps briefly then publishes to `demo`.
+5. Client receives both messages over the SSE stream without reconnecting.
 
-Used by both the CLI e2e suite (`e2e/cli/tests/channels-workflows.test.ts`)
-and the deploy/docker harness.
+Used by both the CLI dev e2e suite (`e2e/cli/tests/dev.test.ts`) and the
+deploy/docker harness.

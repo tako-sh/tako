@@ -220,3 +220,7 @@ export const logger = /* @__PURE__ */ createLogger("app");
  * ```
  */
 export const secrets = /* @__PURE__ */ loadSecrets<Secrets>();
+
+export interface TakoChannels {
+  "mission-log": { params: { base: string; }; messages: Record<string, unknown>; transport: "sse"; };
+}

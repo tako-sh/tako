@@ -39,3 +39,6 @@ After deploy, it runs universal runtime checks:
 - App root responds with valid HTML or JSON.
 - Static/public files (if present in release) are fetched over HTTP.
 - Compiled static assets (if present or referenced by HTML) are fetched over HTTP.
+- The `channels-workflows` fixture additionally opens a real SSE stream,
+  verifies direct channel publish delivery, enqueues a workflow, and verifies
+  the workflow-published event arrives on the same stream.

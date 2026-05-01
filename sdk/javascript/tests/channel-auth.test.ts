@@ -7,9 +7,15 @@ function newRegistry() {
 }
 
 describe("ChannelRegistry.register + resolve", () => {
-  test("resolves exact filename channel names", () => {
+  test("resolves exact registered channel names", () => {
     const reg = newRegistry();
-    reg.register("chat", defineChannel({ auth: { verify: async () => true } }));
+    reg.register(
+      "chat",
+      defineChannel({
+        name: "chat",
+        auth: { verify: async () => true },
+      }),
+    );
 
     const hit = reg.resolve("chat");
     expect(hit?.definition.channel).toBe("chat");
@@ -18,14 +24,20 @@ describe("ChannelRegistry.register + resolve", () => {
 
   test("returns null for unmatched channel", () => {
     const reg = newRegistry();
-    reg.register("chat", defineChannel({ auth: { verify: async () => true } }));
+    reg.register(
+      "chat",
+      defineChannel({
+        name: "chat",
+        auth: { verify: async () => true },
+      }),
+    );
     expect(reg.resolve("other")).toBeNull();
   });
 
   test("rejects duplicate channel names", () => {
     const reg = newRegistry();
-    reg.register("status", defineChannel());
-    expect(() => reg.register("status", defineChannel())).toThrow(/duplicate/);
+    reg.register("status", defineChannel({ name: "status" }));
+    expect(() => reg.register("status", defineChannel({ name: "status" }))).toThrow(/duplicate/);
   });
 });
 
@@ -42,7 +54,7 @@ describe("ChannelRegistry.authorize", () => {
 
   test("allows public channels without verify", async () => {
     const reg = newRegistry();
-    reg.register("status", defineChannel());
+    reg.register("status", defineChannel({ name: "status" }));
     const resp = await reg.authorize({
       channel: "status",
       operation: "subscribe",
@@ -56,6 +68,7 @@ describe("ChannelRegistry.authorize", () => {
     reg.register(
       "chat",
       defineChannel({
+        name: "chat",
         auth: { verify: async () => true },
         handler: { msg: async (data: { text: string }) => data },
       }),
@@ -75,6 +88,7 @@ describe("ChannelRegistry.authorize", () => {
     reg.register(
       "chat",
       defineChannel({
+        name: "chat",
         auth: {
           verify: async (input) => {
             seen = { params: input.params, operation: input.operation, header: input.header };
@@ -99,7 +113,13 @@ describe("ChannelRegistry.authorize", () => {
 
   test("rejects client publish on SSE channel (no handler)", async () => {
     const reg = newRegistry();
-    reg.register("status", defineChannel({ auth: { verify: async () => true } }));
+    reg.register(
+      "status",
+      defineChannel({
+        name: "status",
+        auth: { verify: async () => true },
+      }),
+    );
     const resp = await reg.authorize({
       channel: "status",
       operation: "publish",
@@ -113,6 +133,7 @@ describe("ChannelRegistry.authorize", () => {
     reg.register(
       "status",
       defineChannel({
+        name: "status",
         auth: { verify: async () => ({ subject: "user-42" }) },
       }),
     );
@@ -127,7 +148,13 @@ describe("ChannelRegistry.authorize", () => {
 
   test("denies when verify returns false", async () => {
     const reg = newRegistry();
-    reg.register("private", defineChannel({ auth: { verify: async () => false } }));
+    reg.register(
+      "private",
+      defineChannel({
+        name: "private",
+        auth: { verify: async () => false },
+      }),
+    );
     const resp = await reg.authorize({
       channel: "private",
       operation: "subscribe",

@@ -65,7 +65,7 @@ export default {
 
 ## Runtime state: `tako.gen.ts`
 
-`tako typegen` emits a project-local `tako.gen.ts` file (inside `src/`, `app/`, or project root — wherever fits the project's tsconfig). It exports typed runtime state and a typed `secrets` bag. When `channels/` or `workflows/` already exists, it also scaffolds empty definition dirs/files so they default-export `defineChannel(...)` / `defineWorkflow(...)` stubs. App code imports what it needs:
+`tako typegen` emits a project-local `tako.gen.ts` file (inside `src/`, `app/`, or project root - wherever fits the project's tsconfig). It exports typed runtime state and a typed `secrets` bag. When `channels/` or `workflows/` already exists, it also scaffolds empty definition dirs/files so they default-export `defineChannel({ name: "<file-stem>" })` / `defineWorkflow(...)` stubs. Generated channel stubs use the file stem as the initial name, but typegen does not rewrite existing explicit channel names. App code imports what it needs:
 
 ```typescript
 import { env, isDev, build, port, dataDir, logger, secrets } from "../tako.gen";
@@ -183,7 +183,7 @@ Durable pub-sub streams with SSE and WebSocket transport.
 
 ### Defining channels (file-based)
 
-Drop one file per channel in `channels/<name>.ts` that default-exports `defineChannel(config?).$messageTypes<M>()`. The filename is the wire channel name. Server code imports the file directly to publish.
+Drop one file per channel in `channels/*.ts` that default-exports `defineChannel({ name: "<name>", ... }).$messageTypes<M>()`. The `name` property is the wire channel name; generated files conventionally use the file stem, but discovery trusts the explicit name and rejects duplicate declared names. Server code imports the file directly to publish.
 
 ```typescript
 // channels/chat.ts
@@ -195,6 +195,7 @@ interface ChatMessages {
 }
 
 export default defineChannel({
+  name: "chat",
   paramsSchema: (t) => t.Object({ roomId: t.String({ minLength: 1 }) }),
   auth: {
     headerName: "authorization",
@@ -246,7 +247,7 @@ await chat({ roomId: "room1" }).publish({
 
 ### Subscribing / connecting (client-side)
 
-In the browser, use the `Channel` class from `tako.sh/client` with the channel filename and optional params. `subscribe()` returns an `EventSource`-shaped subscription; `connect()` returns a `WebSocket`-shaped socket.
+In the browser, use the `Channel` class from `tako.sh/client` with the declared channel name and optional params. `subscribe()` returns an `EventSource`-shaped subscription; `connect()` returns a `WebSocket`-shaped socket.
 
 ```typescript
 import { Channel } from "tako.sh/client";

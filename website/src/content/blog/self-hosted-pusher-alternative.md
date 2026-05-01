@@ -51,6 +51,7 @@ The Tako shape is similar in spirit but file-based — channel definitions live 
 import { defineChannel } from "tako.sh";
 
 export default defineChannel({
+  name: "chat",
   paramsSchema: (t) => t.Object({ roomId: t.String({ minLength: 1 }) }),
   auth: {
     headerName: "authorization",

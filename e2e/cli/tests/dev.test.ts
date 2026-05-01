@@ -1,5 +1,5 @@
 /**
- * E2E tests for `tako dev` — runs against real fixtures (bun, node, deno).
+ * E2E tests for `tako dev` - runs against real fixtures (bun, node, deno).
  * Skipped unless TAKO_DEV_E2E=1 is set.
  */
 import { describe, test, expect } from "bun:test";
@@ -7,9 +7,10 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, cpSync, symlinkSync } fro
 import { join, resolve } from "path";
 import { tmpdir } from "os";
 
-const SKIP = !process.env.TAKO_DEV_E2E;
+const SKIP = !process.env["TAKO_DEV_E2E"];
 const TAKO_BIN =
-  process.env.TAKO_BIN ?? resolve(import.meta.dirname, "..", "..", "..", "target", "debug", "tako");
+  process.env["TAKO_BIN"] ??
+  resolve(import.meta.dirname, "..", "..", "..", "target", "debug", "tako");
 const FIXTURES_DIR = resolve(import.meta.dirname, "..", "..", "fixtures", "javascript");
 const SDK_DIR = resolve(import.meta.dirname, "..", "..", "..", "sdk", "javascript");
 
@@ -47,6 +48,49 @@ function startDev(pd: string, lf: string) {
   });
 }
 
+function appUrl(baseUrl: string, path: string): string {
+  return new URL(path, baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`).toString();
+}
+
+async function postJson(baseUrl: string, path: string, body: unknown): Promise<Response> {
+  return await fetch(appUrl(baseUrl, path), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+    // @ts-ignore - Bun extension: skip TLS verification for the self-signed dev CA.
+    tls: { rejectUnauthorized: false },
+  });
+}
+
+async function collectSseUntil(
+  url: string,
+  expected: readonly string[],
+  ready: () => void,
+  signal: AbortSignal,
+): Promise<string> {
+  const resp = await fetch(url, {
+    headers: { accept: "text/event-stream", authorization: "Bearer e2e" },
+    signal,
+    // @ts-ignore - Bun extension: skip TLS verification for the self-signed dev CA.
+    tls: { rejectUnauthorized: false },
+  });
+  expect(resp.status).toBe(200);
+  expect(resp.headers.get("content-type") ?? "").toContain("text/event-stream");
+  ready();
+
+  const reader = resp.body!.getReader();
+  const decoder = new TextDecoder();
+  let received = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) return received;
+    received += decoder.decode(value, { stream: true });
+    if (expected.every((message) => received.includes(message))) {
+      return received;
+    }
+  }
+}
+
 /**
  * Wait for the dev server to be ready.
  * Returns the dev URL printed by `tako dev` (e.g. https://bun-e2e.test/).
@@ -58,7 +102,7 @@ async function waitForApp(lf: string, timeoutMs = 60_000): Promise<string> {
     const log = safeRead(lf);
     if (/App started/.test(log)) {
       const m = log.match(/^(https?:\/\/\S+)/m);
-      if (m) return m[1];
+      if (m?.[1]) return m[1];
     }
     await Bun.sleep(300);
   }
@@ -92,7 +136,7 @@ describe.skipIf(SKIP)("tako dev fixtures", () => {
 
         // Fixtures serve HTML at /.
         const resp = await fetch(devUrl, {
-          // @ts-ignore — Bun extension: skip TLS verification for the self-signed dev CA
+          // @ts-ignore - Bun extension: skip TLS verification for the self-signed dev CA.
           tls: { rejectUnauthorized: false },
         });
         expect(resp.status).toBe(200);
@@ -133,4 +177,51 @@ describe.skipIf(SKIP)("tako dev fixtures", () => {
       rmSync(tempDir, { recursive: true, force: true });
     }
   }, 90_000);
+
+  test("channels-workflows: streams direct and workflow publishes over SSE", async () => {
+    const { tempDir, pd, lf } = prepareFixture("channels-workflows");
+    const proc = startDev(pd, lf);
+    const abort = new AbortController();
+
+    try {
+      const devUrl = await waitForApp(lf);
+      const directMessage = `direct-${Date.now()}`;
+      const workflowMessage = `workflow-${Date.now()}`;
+      let markReady!: () => void;
+      const ready = new Promise<void>((resolve) => {
+        markReady = resolve;
+      });
+      const sse = collectSseUntil(
+        appUrl(devUrl, "/channels/demo"),
+        [directMessage, workflowMessage],
+        markReady,
+        abort.signal,
+      );
+
+      await ready;
+
+      const direct = await postJson(devUrl, "/publish", { message: directMessage });
+      expect(direct.status).toBe(200);
+      expect(await direct.json()).toMatchObject({ ok: true });
+
+      const workflow = await postJson(devUrl, "/enqueue", { message: workflowMessage });
+      expect(workflow.status).toBe(200);
+      expect(await workflow.json()).toMatchObject({ ok: true });
+
+      const received = await Promise.race([
+        sse,
+        Bun.sleep(20_000).then(() => {
+          throw new Error(`Timed out waiting for SSE messages.\nLog:\n${safeRead(lf)}`);
+        }),
+      ]);
+      expect(received).toContain(directMessage);
+      expect(received).toContain(workflowMessage);
+    } finally {
+      abort.abort();
+      try {
+        process.kill(proc.pid, "SIGKILL");
+      } catch {}
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  }, 120_000);
 });

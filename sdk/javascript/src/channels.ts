@@ -10,7 +10,7 @@ import type {
   ChannelSubscribeOptions,
   ChannelSubscription,
 } from "./types";
-import { bindChannelName, isChannelDefinition, type ChannelDefinition } from "./channels/meta";
+import { isChannelDefinition, type ChannelDefinition } from "./channels/meta";
 import { getChannelsConfig } from "./channels/configure";
 import { SseReader } from "./channels/sse-reader";
 
@@ -47,8 +47,7 @@ function channelBaseUrl(
   params: Record<string, unknown> = {},
 ): URL {
   const url = normalizeBaseUrl(baseUrl);
-  const segments = channel.split("/").map(encodeURIComponent).join("/");
-  url.pathname = `${TAKO_CHANNELS_BASE_PATH}/${segments}`;
+  url.pathname = `${TAKO_CHANNELS_BASE_PATH}/${encodeURIComponent(channel)}`;
   url.search = "";
   for (const [key, value] of Object.entries(params)) {
     if (value === undefined || value === null) continue;
@@ -319,7 +318,11 @@ export class ChannelRegistry {
     if (this.entries.some((e) => e.name === name)) {
       throw new Error(`duplicate channel '${name}'`);
     }
-    bindChannelName(definition, name);
+    if (definition.channel !== name) {
+      throw new Error(
+        `channel '${name}' registration received definition for '${definition.channel}'`,
+      );
+    }
     this.entries.push({ name, definition });
   }
 
@@ -327,7 +330,7 @@ export class ChannelRegistry {
     this.entries = [];
   }
 
-  /** Look up a discovered channel by its file basename (the kebab-case name). */
+  /** Look up a discovered channel by its declared channel name. */
   findByName(name: string): RegistryEntry | undefined {
     return this.entries.find((e) => e.name === name);
   }

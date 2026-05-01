@@ -181,6 +181,45 @@ require_http_ok() {
   fi
 }
 
+post_route_json() {
+  local server_host=$1
+  local route_host=$2
+  local route_path=$3
+  local json_body=$4
+  local description=$5
+  local headers_file="$TMP_ROOT/post_headers.tmp"
+  local body_file="$TMP_ROOT/post_body.tmp"
+  local status
+
+  status=$(curl -sS \
+    --http1.1 \
+    --connect-timeout 3 \
+    --max-time 10 \
+    -H "Host: ${route_host}" \
+    -H "X-Forwarded-Proto: https" \
+    -H "Forwarded: proto=https" \
+    -H "Connection: close" \
+    -H "Content-Type: application/json" \
+    -D "$headers_file" \
+    -o "$body_file" \
+    -w "%{http_code}" \
+    -d "$json_body" \
+    "http://${server_host}:8080${route_path}" || true)
+
+  if [[ ! "$status" =~ ^[0-9]+$ ]] || (( status < 200 || status >= 300 )); then
+    echo "$description failed for path '$route_path' (status=$status)" >&2
+    [[ -f "$headers_file" ]] && cat "$headers_file" >&2 || true
+    [[ -f "$body_file" ]] && cat "$body_file" >&2 || true
+    exit 1
+  fi
+
+  if ! jq -e '.ok == true' "$body_file" >/dev/null 2>&1; then
+    echo "$description did not return { ok: true }" >&2
+    cat "$body_file" >&2 || true
+    exit 1
+  fi
+}
+
 check_http_ok_optional() {
   local server_host=$1
   local route_host=$2
@@ -197,6 +236,93 @@ check_http_ok_optional() {
     [[ -f "$headers_file" ]] && cat "$headers_file" >&2 || true
     [[ -f "$body_file" ]] && cat "$body_file" >&2 || true
   fi
+}
+
+wait_for_file_text() {
+  local file=$1
+  local needle=$2
+  local description=$3
+
+  for _ in $(seq 1 80); do
+    if [[ -f "$file" ]] && grep -Fq "$needle" "$file"; then
+      return 0
+    fi
+    sleep 0.25
+  done
+
+  echo "Timed out waiting for $description: $needle" >&2
+  [[ -f "$file" ]] && cat "$file" >&2 || true
+  return 1
+}
+
+run_channels_workflows_checks() {
+  local server_host=$1
+  local route_host=$2
+  local events_file="$TMP_ROOT/channels-events-${server_host}.txt"
+  local headers_file="$TMP_ROOT/channels-headers-${server_host}.txt"
+  local stderr_file="$TMP_ROOT/channels-curl-${server_host}.err"
+  local direct_message="direct-${server_host}-$(date +%s%N)"
+  local workflow_message="workflow-${server_host}-$(date +%s%N)"
+  local sse_pid
+
+  echo "Running channel/workflow SSE checks for route: $route_host on $server_host"
+
+  rm -f "$events_file" "$headers_file" "$stderr_file"
+  curl -sS -N \
+    --http1.1 \
+    --connect-timeout 3 \
+    --max-time 30 \
+    -H "Host: ${route_host}" \
+    -H "X-Forwarded-Proto: https" \
+    -H "Forwarded: proto=https" \
+    -H "Authorization: Bearer e2e" \
+    -H "Accept: text/event-stream" \
+    -D "$headers_file" \
+    -o "$events_file" \
+    "http://${server_host}:8080/channels/demo" \
+    2>"$stderr_file" &
+  sse_pid=$!
+
+  cleanup_sse() {
+    kill "$sse_pid" >/dev/null 2>&1 || true
+    wait "$sse_pid" >/dev/null 2>&1 || true
+  }
+
+  for _ in $(seq 1 40); do
+    if [[ -f "$headers_file" ]] && grep -qi "content-type: text/event-stream" "$headers_file"; then
+      break
+    fi
+    if ! kill -0 "$sse_pid" >/dev/null 2>&1; then
+      echo "SSE connection exited before opening" >&2
+      [[ -f "$headers_file" ]] && cat "$headers_file" >&2 || true
+      [[ -f "$stderr_file" ]] && cat "$stderr_file" >&2 || true
+      cleanup_sse
+      exit 1
+    fi
+    sleep 0.25
+  done
+
+  if ! grep -qi "content-type: text/event-stream" "$headers_file"; then
+    echo "SSE connection did not return text/event-stream headers" >&2
+    [[ -f "$headers_file" ]] && cat "$headers_file" >&2 || true
+    [[ -f "$stderr_file" ]] && cat "$stderr_file" >&2 || true
+    cleanup_sse
+    exit 1
+  fi
+
+  post_route_json "$server_host" "$route_host" "/publish" "{\"message\":\"$direct_message\"}" "Direct channel publish"
+  post_route_json "$server_host" "$route_host" "/enqueue" "{\"message\":\"$workflow_message\"}" "Workflow enqueue"
+
+  if ! wait_for_file_text "$events_file" "$direct_message" "direct channel publish SSE event"; then
+    cleanup_sse
+    exit 1
+  fi
+  if ! wait_for_file_text "$events_file" "$workflow_message" "workflow channel publish SSE event"; then
+    cleanup_sse
+    exit 1
+  fi
+
+  cleanup_sse
 }
 
 run_universal_http_checks() {
@@ -438,6 +564,9 @@ CFG
   fi
 
   run_universal_http_checks "$server" "$ROUTE_HOST" "$APP_RELEASE_DIR"
+  if [[ "$FIXTURE_REL" == "e2e/fixtures/javascript/channels-workflows" ]]; then
+    run_channels_workflows_checks "$server" "$ROUTE_HOST"
+  fi
 
   echo "=== $server passed ==="
 done

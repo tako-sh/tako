@@ -5,5 +5,6 @@ interface Messages {
 }
 
 export default defineChannel({
+  name: "demo",
   auth: { verify: async () => true },
 }).$messageTypes<Messages>();

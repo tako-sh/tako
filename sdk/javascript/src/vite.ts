@@ -198,7 +198,7 @@ export function tako(): Plugin {
 
       // Exclude the SDK from Vite's SSR transform — it's a server-side
       // dependency with runtime dynamic imports Vite can't statically analyze.
-      config.ssr = { external: ["tako.sh"] };
+      config.ssr = { external: ["tako.sh", "tako.sh/internal"] };
 
       // Under the tako dev server, emit structured JSON log lines so the
       // parent process can render Vite output alongside other subprocess logs.
