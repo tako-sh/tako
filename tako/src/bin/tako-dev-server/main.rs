@@ -108,8 +108,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let ca = load_or_create_ca()?;
         let resolver = DevCertResolver::new(ca);
         let callbacks: Box<dyn TlsAccept + Send + Sync> = Box::new(resolver);
-        let mut tls = TlsSettings::with_callbacks(callbacks)?;
-        tls.enable_h2();
+        // Keep dev HTTPS on HTTP/1.1. The dev E2E path holds an SSE response
+        // open while issuing app requests through the same local proxy; the dev
+        // proxy does not need h2, and production enables it separately.
+        let tls = TlsSettings::with_callbacks(callbacks)?;
         svc.add_tls_with_settings(&listen, None, tls);
 
         server.add_service(svc);
