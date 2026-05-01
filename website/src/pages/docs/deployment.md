@@ -29,6 +29,8 @@ The installer:
 - starts and verifies the service
 - installs helpers needed for graceful reload and upgrade
 
+For GitHub-hosted release downloads, the installer uses `GH_TOKEN` when set, falling back to `GITHUB_TOKEN`.
+
 Set `TAKO_SSH_PUBKEY` to install an SSH public key non-interactively:
 
 ```bash
@@ -250,6 +252,8 @@ tako servers upgrade la
 ```
 
 Upgrade uses temporary process overlap and the management socket handoff so clients connect to the ready process.
+
+GitHub-backed upgrade metadata and remote archive downloads use `GH_TOKEN` when set, falling back to `GITHUB_TOKEN`.
 
 ## Data Layout
 

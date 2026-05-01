@@ -20,25 +20,56 @@ set -eu
 #   TAKO_REPO_OWNER         default: lilienblum
 #   TAKO_REPO_NAME          default: tako
 #   TAKO_RELEASE_TAG        default: latest
+#   GH_TOKEN/GITHUB_TOKEN   optional GitHub token for release downloads
 
 need_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+github_auth_header() {
+  url="$1"
+  case "$url" in
+    https://github.com/*|https://api.github.com/*|https://raw.githubusercontent.com/*)
+      github_token="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+      if [ -n "$github_token" ]; then
+        printf 'Authorization: Bearer %s\n' "$github_token"
+      fi
+      ;;
+  esac
+}
 
 download_file() {
   src="$1"
   dest="$2"
+  auth_header="$(github_auth_header "$src")"
   if need_cmd curl; then
-    curl -fsSL "$src" -o "$dest"
+    if [ -n "$auth_header" ]; then
+      curl -fsSL -H "$auth_header" "$src" -o "$dest"
+    else
+      curl -fsSL "$src" -o "$dest"
+    fi
   else
-    wget -qO "$dest" "$src"
+    if [ -n "$auth_header" ]; then
+      wget --header="$auth_header" -qO "$dest" "$src"
+    else
+      wget -qO "$dest" "$src"
+    fi
   fi
 }
 
 download_stdout() {
   url="$1"
+  auth_header="$(github_auth_header "$url")"
   if need_cmd curl; then
-    curl -fsSL "$url"
+    if [ -n "$auth_header" ]; then
+      curl -fsSL -H "$auth_header" "$url"
+    else
+      curl -fsSL "$url"
+    fi
   else
-    wget -qO- "$url"
+    if [ -n "$auth_header" ]; then
+      wget --header="$auth_header" -qO- "$url"
+    else
+      wget -qO- "$url"
+    fi
   fi
 }
 

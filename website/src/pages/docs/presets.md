@@ -101,6 +101,8 @@ Official preset definitions live in family manifests such as `presets/javascript
 
 `tako deploy` refreshes unpinned aliases from the official `master` branch on each deploy. If the refresh fails, it falls back to cached content.
 
+GitHub preset fetches use `GH_TOKEN` when set, falling back to `GITHUB_TOKEN`.
+
 Fetched manifests are cached locally for about one hour. Pinned aliases use the requested commit when available.
 
 ## Runtime Overrides

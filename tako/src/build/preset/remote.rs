@@ -224,16 +224,6 @@ fn remove_legacy_build_lock(project_dir: &Path) {
     }
 }
 
-fn apply_github_auth(builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-    let token = std::env::var("GITHUB_TOKEN")
-        .or_else(|_| std::env::var("GH_TOKEN"))
-        .ok();
-    match token {
-        Some(t) => builder.header("Authorization", format!("Bearer {t}")),
-        None => builder,
-    }
-}
-
 async fn fetch_preset_content_by_commit(
     repo: &str,
     path: &str,
@@ -241,7 +231,7 @@ async fn fetch_preset_content_by_commit(
 ) -> Result<String, String> {
     let url = format!("https://raw.githubusercontent.com/{repo}/{commit}/{path}");
     let client = reqwest::Client::new();
-    let response = apply_github_auth(client.get(url).header("User-Agent", "tako-cli"))
+    let response = crate::github::apply_auth(client.get(url).header("User-Agent", "tako-cli"))
         .send()
         .await
         .map_err(|_e| "Failed to fetch preset".to_string())?;
@@ -269,10 +259,11 @@ async fn fetch_github_branch_commit(repo: &str, branch: &str) -> Result<String, 
     };
     let url = format!("https://api.github.com/repos/{owner}/{repository}/git/ref/heads/{branch}");
     let client = reqwest::Client::new();
-    let response = apply_github_auth(client.get(url).header("User-Agent", "tako-cli"))
-        .send()
-        .await
-        .map_err(|_e| "Failed to fetch preset".to_string())?;
+    let response =
+        crate::github::apply_api_headers(client.get(url).header("User-Agent", "tako-cli"))
+            .send()
+            .await
+            .map_err(|_e| "Failed to fetch preset".to_string())?;
     if !response.status().is_success() {
         return Err("Failed to fetch preset".to_string());
     }

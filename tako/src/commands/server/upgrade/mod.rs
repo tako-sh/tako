@@ -169,12 +169,11 @@ fn verify_signed_server_checksum_manifest(manifest: &[u8], signature: &[u8]) -> 
 
 async fn fetch_release_bytes(url: &str) -> Result<Vec<u8>, String> {
     let client = reqwest::Client::new();
-    let response = client
-        .get(url)
-        .header("User-Agent", "tako-cli")
-        .send()
-        .await
-        .map_err(|e| format!("request failed for {url}: {e}"))?;
+    let response =
+        crate::github::apply_auth_for_url(client.get(url).header("User-Agent", "tako-cli"), url)
+            .send()
+            .await
+            .map_err(|e| format!("request failed for {url}: {e}"))?;
     if !response.status().is_success() {
         return Err(format!(
             "download failed for {url}: HTTP {}",
@@ -245,12 +244,19 @@ fn remote_binary_replace_command(url: &str, expected_sha256: &str) -> String {
     use crate::shell::shell_single_quote;
     let url_q = shell_single_quote(url);
     let sha_check = verify_downloaded_sha256_script("\"$archive\"", expected_sha256);
+    let auth_header_script = crate::github::remote_curl_auth_header_script("download_url");
     let script = format!(
         "set -eu; \
+         download_url={url_q}; \
+         {auth_header_script}; \
          tmp=$(mktemp -d); \
          archive=\"$tmp/tako-server.tar.zst\"; \
          trap 'rm -rf \"$tmp\"' EXIT; \
-         curl -fsSL {url_q} -o \"$archive\"; \
+         if [ -n \"$auth_header\" ]; then \
+           curl -fsSL -H \"$auth_header\" \"$download_url\" -o \"$archive\"; \
+         else \
+           curl -fsSL \"$download_url\" -o \"$archive\"; \
+         fi; \
          {sha_check}; \
          zstd -d \"$archive\" --stdout | tar -x -C \"$tmp\"; \
          bin=$(find \"$tmp\" -type f -name tako-server | head -n 1); \
@@ -765,6 +771,9 @@ mod tests {
         assert!(cmd.contains("then sh -c '"));
         assert!(cmd.contains("sudo sh -c '"));
         assert!(cmd.contains("curl -fsSL"));
+        assert!(cmd.contains("GH_TOKEN"));
+        assert!(cmd.contains("GITHUB_TOKEN"));
+        assert!(cmd.contains("Authorization: Bearer"));
         assert!(cmd.contains("sha256 mismatch"));
         assert!(cmd.contains("abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"));
         assert!(cmd.contains("install -m 0755"));

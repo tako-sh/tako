@@ -7,6 +7,7 @@ Repository scripts used by installers, CI checks, and local development workflow
 - `install-tako.sh`: POSIX installer for local `tako`, `tako-dev-server`, and `tako-dev-proxy`.
 - `install-tako-server.sh`: POSIX installer for `tako-server` on Linux hosts.
   - Both installers download assets from the rolling `latest` release (override with `TAKO_RELEASE_TAG`).
+  - GitHub-hosted downloads use `GH_TOKEN` when set, falling back to `GITHUB_TOKEN`.
   - Hosted installers require HTTPS download overrides by default; set `TAKO_ALLOW_INSECURE_DOWNLOAD_BASE=1` only for local test mirrors.
   - Supports systemd and OpenRC for normal install/start.
   - Supports install-refresh mode via `TAKO_RESTART_SERVICE=0` (refreshes binary/users without restarting service; service definition is updated only when a supported manager is active), used in build/container workflows before init/service managers are running.

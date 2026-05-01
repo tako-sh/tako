@@ -142,7 +142,7 @@ idle_timeout = 120
 - `nextjs` preset defaults `main = ".next/tako-entry.mjs"` and `dev = ["next", "dev"]`.
 - `vite` preset defaults `dev = ["vite", "dev"]` for projects using Vite as their dev server.
 - Presets may declare runtime-local overrides as nested sections (`[<preset>.<runtime>]`) inside the family manifest. Only the `dev` field can be overridden — `main`, `assets`, and `name` always come from the base section. For example, `presets/javascript.toml` overrides the `vite` and `tanstack-start` dev commands for Bun (`[vite.bun]`, `[tanstack-start.bun]`) because `bunx --bun` drops fds > 2, which breaks the fd-4 readiness handshake.
-- Official preset definitions live in the `tako-sh/presets` GitHub repo (overridable via the `PACKAGE_REPOSITORY_URL` env var for testing). Fetched branch manifests are cached locally for roughly one hour; on fetch failure, Tako falls back to any previously cached copy or the manifests embedded in the CLI binary.
+- Official preset definitions live in the `tako-sh/presets` GitHub repo (overridable via the `PACKAGE_REPOSITORY_URL` env var for testing). Fetched branch manifests are cached locally for roughly one hour; on fetch failure, Tako falls back to any previously cached copy or the manifests embedded in the CLI binary. GitHub preset fetches use `GH_TOKEN` when set, falling back to `GITHUB_TOKEN`.
 - Deploy restores local JS build caches from workspace-root `.turbo/` and app-root `.next/cache/` into the temporary build workspace when present, then excludes those cache directories from the final deploy artifact.
 - Runtime behavior (install commands, launch args, entrypoint resolution) lives in runtime plugins (`tako-runtime/src/plugins/`), not in presets.
 - `tako init` installs the `tako.sh` SDK via the selected runtime's package-manager `add` command.
@@ -295,6 +295,7 @@ Rolling release model:
 - `latest` is a single moving GitHub release updated by CI on each `master` push. There are no versioned releases and no stable/canary distinction; every build is a rolling build while Tako's protocol is v0.
 - CLI and server artifacts report `<base>-<sha7>` in `--version` output, where `<base>` is the package version (always `0.0.0`) and `<sha7>` is the 7-character source commit.
 - The npm-published SDK (`tako.sh`) uses `0.0.0-<sha7>` version strings and is published under the `latest` dist-tag on every push.
+- GitHub-backed update checks and release downloads use `GH_TOKEN` when set, falling back to `GITHUB_TOKEN`. Tokens are sent only as `Authorization: Bearer ...` request headers, not in URLs.
 
 ### Global options
 
@@ -655,6 +656,7 @@ Upgrade `tako-server` on one or all configured servers via service-manager reloa
 2. CLI installs the new server binary on the host.
    - CLI verifies the signed `tako-server-sha256s.txt` release manifest with an embedded public key, selects the expected SHA-256 for the target archive, and the remote host verifies that SHA-256 before extracting the archive into `/usr/local/bin/tako-server`
    - custom `TAKO_DOWNLOAD_BASE_URL` overrides must use `https://`; non-HTTPS overrides are rejected unless `TAKO_ALLOW_INSECURE_DOWNLOAD_BASE=1` is set explicitly for local testing
+   - CLI metadata downloads and remote host archive downloads use `GH_TOKEN` when set, falling back to `GITHUB_TOKEN`, for GitHub-hosted release URLs only
 3. CLI acquires the durable upgrade lock (`enter_upgrading`) and sets server mode to `upgrading`.
 4. CLI signals the primary service with:
    - `systemctl reload tako-server` on systemd hosts, or
@@ -1121,6 +1123,7 @@ Reference scripts in this repo:
 - `tako-server` downloads runtime binaries directly from upstream releases using download specs in runtime plugins (no external version manager dependency).
 - Supports zip and tar.gz archive formats with SHA-256 checksum verification.
 - Downloaded binaries are cached at `{data_dir}/runtimes/{tool}/{version}/`.
+- GitHub-backed runtime version checks and runtime downloads use `GH_TOKEN` when set, falling back to `GITHUB_TOKEN`.
 - Supports musl detection for Alpine and other musl-based systems.
 - If the runtime plugin has no download spec, the binary must be available on PATH.
 

@@ -36,6 +36,8 @@ Upgrade the local CLI:
 tako upgrade
 ```
 
+GitHub-backed update checks and release downloads use `GH_TOKEN` when set, falling back to `GITHUB_TOKEN`.
+
 ## `tako init`
 
 Create a project config and install the SDK.
@@ -237,6 +239,8 @@ tako servers setup-wildcard --env production
 tako servers implode la
 tako servers implode la --yes
 ```
+
+GitHub-backed server upgrade metadata and archive downloads use `GH_TOKEN` when set, falling back to `GITHUB_TOKEN`.
 
 `servers status` reads all configured servers and prints a snapshot of deployed apps. It can run from any directory.
 

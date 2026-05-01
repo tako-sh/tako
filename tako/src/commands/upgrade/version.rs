@@ -26,9 +26,7 @@ pub(crate) async fn fetch_latest_version() -> Result<String, Box<dyn std::error:
     let url =
         format!("https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/git/ref/tags/{LATEST_TAG}");
     let client = reqwest::Client::new();
-    let resp = client
-        .get(&url)
-        .header("User-Agent", "tako-cli")
+    let resp = crate::github::apply_api_headers(client.get(&url).header("User-Agent", "tako-cli"))
         .send()
         .await?
         .error_for_status()

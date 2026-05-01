@@ -1,6 +1,9 @@
 use std::io::{Cursor, Read};
 use std::path::{Component, Path, PathBuf};
+#[cfg(test)]
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
+use reqwest::header::{ACCEPT, AUTHORIZATION};
 use sha2::{Digest, Sha256};
 
 use crate::types::{DownloadDef, RuntimeDef};
@@ -160,9 +163,8 @@ pub async fn resolve_latest_version(def: &RuntimeDef) -> Result<String, String> 
         .timeout(std::time::Duration::from_secs(60))
         .build()
         .map_err(|e| format!("failed to build HTTP client: {e}"))?;
-    let response = client
-        .get(&url)
-        .header("User-Agent", "tako-server")
+    let response = client.get(&url).header("User-Agent", "tako-server");
+    let response = apply_github_api_headers(response)
         .send()
         .await
         .map_err(|e| format!("failed to fetch latest release for {repo}: {e}"))?;
@@ -208,6 +210,51 @@ fn validate_version_string(version: &str) -> Result<(), String> {
 }
 
 // ── Internals ──
+
+const GITHUB_API_VERSION_HEADER: &str = "X-GitHub-Api-Version";
+const GITHUB_API_VERSION: &str = "2022-11-28";
+
+fn github_token_from_env() -> Option<String> {
+    ["GH_TOKEN", "GITHUB_TOKEN"]
+        .iter()
+        .filter_map(|name| std::env::var(name).ok())
+        .map(|value| value.trim().to_string())
+        .find(|value| !value.is_empty())
+}
+
+fn apply_github_auth(builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    match github_token_from_env() {
+        Some(token) => builder.header(AUTHORIZATION, format!("Bearer {token}")),
+        None => builder,
+    }
+}
+
+fn apply_github_api_headers(builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    apply_github_auth(builder)
+        .header(ACCEPT, "application/vnd.github+json")
+        .header(GITHUB_API_VERSION_HEADER, GITHUB_API_VERSION)
+}
+
+fn apply_github_auth_for_url(
+    builder: reqwest::RequestBuilder,
+    url: &str,
+) -> reqwest::RequestBuilder {
+    if is_github_url(url) {
+        apply_github_auth(builder)
+    } else {
+        builder
+    }
+}
+
+fn is_github_url(url: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    matches!(
+        url.host_str(),
+        Some("api.github.com" | "github.com" | "raw.githubusercontent.com")
+    )
+}
 
 fn resolve_os() -> &'static str {
     match std::env::consts::OS {
@@ -310,9 +357,8 @@ async fn download_bytes_limited(url: &str, max_bytes: u64) -> Result<Vec<u8>, St
         .redirect(reqwest::redirect::Policy::limited(MAX_DOWNLOAD_REDIRECTS))
         .build()
         .map_err(|e| format!("failed to build HTTP client: {e}"))?;
-    let response = client
-        .get(url)
-        .header("User-Agent", "tako-server")
+    let response = client.get(url).header("User-Agent", "tako-server");
+    let response = apply_github_auth_for_url(response, url)
         .send()
         .await
         .map_err(|e| format!("download failed for {url}: {e}"))?;
@@ -685,6 +731,78 @@ fn validate_archive_symlink_target(link_rel_path: &Path, target: &Path) -> Resul
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    fn github_token_env_lock() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    fn preserve_token_envs() -> (Option<std::ffi::OsString>, Option<std::ffi::OsString>) {
+        (
+            std::env::var_os("GH_TOKEN"),
+            std::env::var_os("GITHUB_TOKEN"),
+        )
+    }
+
+    fn restore_token_envs(previous: (Option<std::ffi::OsString>, Option<std::ffi::OsString>)) {
+        match previous.0 {
+            Some(value) => unsafe { std::env::set_var("GH_TOKEN", value) },
+            None => unsafe { std::env::remove_var("GH_TOKEN") },
+        }
+        match previous.1 {
+            Some(value) => unsafe { std::env::set_var("GITHUB_TOKEN", value) },
+            None => unsafe { std::env::remove_var("GITHUB_TOKEN") },
+        }
+    }
+
+    #[test]
+    fn github_token_from_env_prefers_gh_token_over_github_token() {
+        let _lock = github_token_env_lock();
+        let previous = preserve_token_envs();
+        unsafe {
+            std::env::set_var("GH_TOKEN", "gh-token");
+            std::env::set_var("GITHUB_TOKEN", "github-token");
+        }
+
+        let token = github_token_from_env();
+
+        restore_token_envs(previous);
+        assert_eq!(token.as_deref(), Some("gh-token"));
+    }
+
+    #[test]
+    fn github_token_from_env_falls_back_when_gh_token_is_empty() {
+        let _lock = github_token_env_lock();
+        let previous = preserve_token_envs();
+        unsafe {
+            std::env::set_var("GH_TOKEN", " ");
+            std::env::set_var("GITHUB_TOKEN", "github-token");
+        }
+
+        let token = github_token_from_env();
+
+        restore_token_envs(previous);
+        assert_eq!(token.as_deref(), Some("github-token"));
+    }
+
+    #[test]
+    fn apply_github_auth_for_url_skips_non_github_urls() {
+        let _lock = github_token_env_lock();
+        let previous = preserve_token_envs();
+        unsafe {
+            std::env::set_var("GH_TOKEN", "secret");
+        }
+
+        let request = apply_github_auth_for_url(
+            reqwest::Client::new().get("https://downloads.example.com/runtime.tar.gz"),
+            "https://downloads.example.com/runtime.tar.gz",
+        )
+        .build()
+        .unwrap();
+
+        restore_token_envs(previous);
+        assert!(request.headers().get(AUTHORIZATION).is_none());
+    }
 
     #[test]
     fn apply_template_substitutes_all_variables() {

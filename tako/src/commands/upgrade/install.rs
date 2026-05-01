@@ -62,13 +62,12 @@ async fn download_and_install_inner(
 async fn download_archive(url: &str, dest: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let _t = output::timed(&format!("Download release archive from {url}"));
     let client = reqwest::Client::new();
-    let mut resp = client
-        .get(url)
-        .header("User-Agent", "tako-cli")
-        .send()
-        .await?
-        .error_for_status()
-        .map_err(|e| format!("download failed: {e}"))?;
+    let mut resp =
+        crate::github::apply_auth_for_url(client.get(url).header("User-Agent", "tako-cli"), url)
+            .send()
+            .await?
+            .error_for_status()
+            .map_err(|e| format!("download failed: {e}"))?;
 
     let total = resp.content_length().unwrap_or(0);
     tracing::debug!(
@@ -93,14 +92,13 @@ async fn download_archive(url: &str, dest: &Path) -> Result<(), Box<dyn std::err
 
 async fn fetch_sha256(url: &str) -> Result<String, String> {
     let client = reqwest::Client::new();
-    let resp = client
-        .get(url)
-        .header("User-Agent", "tako-cli")
-        .send()
-        .await
-        .map_err(|e| format!("{e}"))?
-        .error_for_status()
-        .map_err(|e| format!("{e}"))?;
+    let resp =
+        crate::github::apply_auth_for_url(client.get(url).header("User-Agent", "tako-cli"), url)
+            .send()
+            .await
+            .map_err(|e| format!("{e}"))?
+            .error_for_status()
+            .map_err(|e| format!("{e}"))?;
     let text = resp.text().await.map_err(|e| format!("{e}"))?;
     Ok(text.split_whitespace().next().unwrap_or("").to_string())
 }

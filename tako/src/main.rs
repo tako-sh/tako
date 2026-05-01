@@ -1,6 +1,7 @@
 mod cli;
 mod commands;
 mod dev_server_client;
+mod github;
 mod output;
 mod paths;
 pub mod shell;

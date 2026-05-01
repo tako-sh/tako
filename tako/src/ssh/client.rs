@@ -425,6 +425,13 @@ l4QMs5cmnWfrM0GQ==\n\
     }
 
     #[test]
+    fn run_with_root_or_sudo_preserves_github_token_env_when_allowed() {
+        let cmd = SshClient::run_with_root_or_sudo("echo ok");
+        assert!(cmd.contains("--preserve-env=GH_TOKEN,GITHUB_TOKEN"));
+        assert!(cmd.contains("sudo sh -c 'echo ok'"));
+    }
+
+    #[test]
     fn run_with_root_or_sudo_escapes_inner_single_quotes() {
         let cmd = SshClient::run_with_root_or_sudo("printf '%s' 'TOKEN=abc' > /etc/creds");
         // Inner single quotes must be escaped for the outer sh -c wrapper

@@ -13,7 +13,7 @@ impl SshClient {
     pub fn run_with_root_or_sudo(shell_script: &str) -> String {
         let escaped = shell_script.replace('\'', "'\\''");
         format!(
-            "if [ \"$(id -u)\" -eq 0 ]; then sh -c '{0}'; elif command -v sudo >/dev/null 2>&1; then sudo sh -c '{0}'; else echo \"error: this operation requires root privileges (run as root or install/configure sudo)\" >&2; exit 1; fi",
+            "if [ \"$(id -u)\" -eq 0 ]; then sh -c '{0}'; elif command -v sudo >/dev/null 2>&1; then if sudo -n --preserve-env=GH_TOKEN,GITHUB_TOKEN true >/dev/null 2>&1; then sudo --preserve-env=GH_TOKEN,GITHUB_TOKEN sh -c '{0}'; else sudo sh -c '{0}'; fi; else echo \"error: this operation requires root privileges (run as root or install/configure sudo)\" >&2; exit 1; fi",
             escaped
         )
     }
