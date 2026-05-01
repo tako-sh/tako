@@ -59,7 +59,29 @@ describe("SseReader", () => {
     expect(reader.lastEventId).toBe("7");
   });
 
-  test("retries with backoff after fetch failure", async () => {
+  test("does not retry fetch failures by default", async () => {
+    let calls = 0;
+    const errors: string[] = [];
+    const reader = new SseReader("http://x/channels/chat", {
+      fetch: async () => {
+        calls++;
+        throw new Error("net");
+      },
+      onMessage: () => {},
+      onError: (error) => errors.push(error.message),
+      backoffBaseMs: 1,
+      backoffMaxMs: 5,
+      jitter: 0,
+    });
+
+    await reader.start();
+    await reader.drain();
+
+    expect(calls).toBe(1);
+    expect(errors).toEqual(["net"]);
+  });
+
+  test("retries with backoff after fetch failure when retryOnDisconnect is enabled", async () => {
     let calls = 0;
     const reader = new SseReader("http://x/channels/chat", {
       fetch: async () => {
@@ -72,13 +94,14 @@ describe("SseReader", () => {
         });
       },
       onMessage: () => {},
+      retryOnDisconnect: true,
       backoffBaseMs: 1,
       backoffMaxMs: 5,
       jitter: 0,
     });
 
     await reader.start();
-    await reader.drain();
+    await reader.drain({ connections: 1 });
 
     expect(calls).toBe(2);
   });
@@ -100,7 +123,7 @@ describe("SseReader", () => {
         });
       },
       onMessage: () => {},
-      retryOnEnd: true,
+      retryOnDisconnect: true,
       backoffBaseMs: 1,
       backoffMaxMs: 1,
       jitter: 0,
@@ -110,5 +133,30 @@ describe("SseReader", () => {
     await reader.drain({ connections: 2 });
 
     expect(seen).toEqual([null, "7"]);
+  });
+
+  test("treats a clean stream end as reconnectable when retryOnDisconnect is enabled", async () => {
+    const errors: string[] = [];
+    let calls = 0;
+    const reader = new SseReader("http://x/channels/chat", {
+      fetch: async () => {
+        calls++;
+        return new Response("data: ok\n\n", {
+          headers: { "content-type": "text/event-stream" },
+        });
+      },
+      onMessage: () => {},
+      onError: (error) => errors.push(error.message),
+      retryOnDisconnect: true,
+      backoffBaseMs: 1,
+      backoffMaxMs: 1,
+      jitter: 0,
+    });
+
+    await reader.start();
+    await reader.drain({ connections: 2 });
+
+    expect(calls).toBe(2);
+    expect(errors).toContain("SSE stream disconnected; reconnecting.");
   });
 });

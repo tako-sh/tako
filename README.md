@@ -1,4 +1,4 @@
-<a href="https://tako.sh" target="_blank" rel="noopener"><img src="assets/readme-banner.svg" alt="Tako logo" /></a>
+<a href="https://tako.sh" target="_blank" rel="noopener"><img src="assets/readme-banner.svg" alt="Tako logo" height="50" /></a>
 
 [![npm: tako.sh](https://img.shields.io/npm/v/tako.sh?label=npm%3A%20tako.sh&color=9BC4B6)](https://www.npmjs.com/package/tako.sh)
 

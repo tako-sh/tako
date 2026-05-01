@@ -201,6 +201,7 @@ export class Channel {
     const readerOptions = {
       fetch: getChannelsConfig().fetch,
       onMessage: () => {},
+      retryOnDisconnect: true,
       ...(options.headers !== undefined && { headers: options.headers }),
     };
     const reader = new SseReader(url.toString(), readerOptions);

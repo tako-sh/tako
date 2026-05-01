@@ -487,37 +487,41 @@ pub struct RegisteredAppInfo {
     pub client_pid: Option<u32>,
 }
 
+pub struct RegisterAppRequest<'a> {
+    pub config_path: &'a str,
+    pub project_dir: &'a str,
+    pub app_name: &'a str,
+    pub variant: Option<&'a str>,
+    pub hosts: &'a [String],
+    pub command: &'a [String],
+    pub env: &'a std::collections::HashMap<String, String>,
+    pub readiness_failure_hint: Option<&'a str>,
+    pub worker_command: Option<&'a [String]>,
+}
+
 pub async fn register_app(
-    config_path: &str,
-    project_dir: &str,
-    app_name: &str,
-    variant: Option<&str>,
-    hosts: &[String],
-    command: &[String],
-    env: &std::collections::HashMap<String, String>,
-    readiness_failure_hint: Option<&str>,
-    worker_command: Option<&[String]>,
+    args: RegisterAppRequest<'_>,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let sock = socket_path()?;
     let stream = UnixStream::connect(&sock).await?;
     let mut c = LineClient::new(stream);
     let mut req = serde_json::json!({
         "type": "RegisterApp",
-        "config_path": config_path,
-        "project_dir": project_dir,
-        "app_name": app_name,
-        "hosts": hosts,
-        "command": command,
-        "env": env,
+        "config_path": args.config_path,
+        "project_dir": args.project_dir,
+        "app_name": args.app_name,
+        "hosts": args.hosts,
+        "command": args.command,
+        "env": args.env,
         "client_pid": std::process::id(),
     });
-    if let Some(v) = variant {
+    if let Some(v) = args.variant {
         req["variant"] = serde_json::Value::String(v.to_string());
     }
-    if let Some(hint) = readiness_failure_hint {
+    if let Some(hint) = args.readiness_failure_hint {
         req["readiness_failure_hint"] = serde_json::Value::String(hint.to_string());
     }
-    if let Some(wc) = worker_command {
+    if let Some(wc) = args.worker_command {
         req["worker_command"] = serde_json::json!(wc);
     }
     c.send_line(&req.to_string()).await?;

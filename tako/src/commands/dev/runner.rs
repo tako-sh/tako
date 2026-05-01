@@ -266,18 +266,20 @@ pub async fn run(
 
     let reg_hosts = hosts_state.lock().await.clone();
     let env_snapshot = env_state.lock().await.clone();
-    let reg_url = crate::dev_server_client::register_app(
-        &config_key,
-        &project_dir.to_string_lossy(),
-        &app_name,
-        variant.as_deref(),
-        &reg_hosts,
-        &cmd,
-        &env_snapshot,
-        readiness_failure_hint.as_deref(),
-        worker_command.as_deref(),
-    )
-    .await?;
+    let project_dir_display = project_dir.to_string_lossy();
+    let reg_url =
+        crate::dev_server_client::register_app(crate::dev_server_client::RegisterAppRequest {
+            config_path: &config_key,
+            project_dir: &project_dir_display,
+            app_name: &app_name,
+            variant: variant.as_deref(),
+            hosts: &reg_hosts,
+            command: &cmd,
+            env: &env_snapshot,
+            readiness_failure_hint: readiness_failure_hint.as_deref(),
+            worker_command: worker_command.as_deref(),
+        })
+        .await?;
     let initial_lan_enabled = crate::dev_server_client::info()
         .await
         .ok()
@@ -521,16 +523,19 @@ pub async fn run(
                 };
 
                 if hosts_changed {
+                    let project_dir_display = project_dir.to_string_lossy();
                     let reg_result = crate::dev_server_client::register_app(
-                        &config_key,
-                        &project_dir.to_string_lossy(),
-                        &app_name,
-                        variant.as_deref(),
-                        &new_hosts,
-                        &cmd,
-                        &new_env,
-                        readiness_failure_hint.as_deref(),
-                        worker_command.as_deref(),
+                        crate::dev_server_client::RegisterAppRequest {
+                            config_path: &config_key,
+                            project_dir: &project_dir_display,
+                            app_name: &app_name,
+                            variant: variant.as_deref(),
+                            hosts: &new_hosts,
+                            command: &cmd,
+                            env: &new_env,
+                            readiness_failure_hint: readiness_failure_hint.as_deref(),
+                            worker_command: worker_command.as_deref(),
+                        },
                     )
                     .await
                     .map_err(|e| e.to_string());

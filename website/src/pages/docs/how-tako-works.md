@@ -188,7 +188,9 @@ GET /channels/<name>
 
 For JavaScript/TypeScript apps, `<name>` is the explicit `name` property passed
 to `defineChannel({ name: "<name>", ... })`. SSE and WebSocket transports are supported,
-with bounded replay for reconnects.
+with bounded replay for reconnects. Browser clients retry indefinitely across
+network loss, laptop sleep, server restarts, and stream rotation, then resume
+from the last received message id while it remains inside the replay window.
 
 ## Local Development
 

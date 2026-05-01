@@ -64,6 +64,7 @@ export default defineChannel({
 - Dynamic values are typed query params from `paramsSchema`.
 - `auth` is optional — omit or set `false` for public channels. Declarative auth receives `{ header?, cookie?, params, channel, operation }`.
 - Call `.$messageTypes<T>()` to type the per-message-type payloads. Presence of a `handler` option (not shown) chooses transport: WebSocket when present, SSE otherwise.
+- Browser subscriptions keep reconnecting until closed. The SDK retries through network loss, laptop sleep, server restarts, and clean stream rotation, then resumes from the last received message id inside the bounded replay window.
 
 Publish by importing the channel wherever you need it:
 

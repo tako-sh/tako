@@ -310,6 +310,28 @@ describe("useChannel (ws)", () => {
     expect(result.current.status).toBe("open");
   });
 
+  test("reconnect resumes from the last received message id", async () => {
+    renderHook(() =>
+      useChannel("chat:1", {
+        transport: "ws",
+        webSocketFactory: factory,
+        baseUrl: "http://test",
+      }),
+    );
+
+    act(() => {
+      sockets[0]!.emitOpen();
+      sockets[0]!.emitMessage({ id: "m7", channel: "chat:1", type: "chat", data: "before" });
+      sockets[0]!.emitClose();
+    });
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 1500));
+    });
+
+    expect(sockets.at(-1)!.url).toBe("ws://test/channels/chat%3A1?last_message_id=m7");
+  });
+
   test("closes the socket on unmount and stops reconnecting", async () => {
     const { unmount } = renderHook(() =>
       useChannel("chat:1", {

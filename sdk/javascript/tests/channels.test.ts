@@ -132,13 +132,33 @@ describe("channels", () => {
 
     expect(subscription.transport).toBe("sse");
     expect(subscription.raw).toBeInstanceOf(SseReader);
-    await (subscription.raw as SseReader).drain();
+    await (subscription.raw as SseReader).drain({ connections: 1 });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(url).toBe("https://app.example.com/channels/chat?roomId=room-123");
     expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer t");
     expect(new Headers(init?.headers).get("Last-Event-ID")).toBe("7");
+  });
+
+  test("subscribe keeps fetch-based SSE alive after the stream ends", async () => {
+    const seen: Array<string | null> = [];
+    configureChannels({
+      fetch: mock((_url: string, init?: RequestInit) => {
+        seen.push(new Headers(init?.headers).get("Last-Event-ID"));
+        return Promise.resolve(
+          new Response(`id: ${seen.length}\ndata: hi\n\n`, {
+            headers: { "Content-Type": "text/event-stream" },
+          }),
+        );
+      }) as unknown as typeof fetch,
+    });
+
+    const channel = new Channel("chat");
+    const subscription = channel.subscribe({ baseUrl: "https://app.example.com" });
+    await (subscription.raw as SseReader).drain({ connections: 2 });
+
+    expect(seen).toEqual([null, "1"]);
   });
 
   test("connect targets the canonical websocket route with last_message_id", () => {

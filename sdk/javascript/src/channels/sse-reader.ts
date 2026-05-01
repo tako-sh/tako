@@ -14,7 +14,7 @@ export interface SseReaderOptions {
   backoffBaseMs?: number;
   backoffMaxMs?: number;
   jitter?: number;
-  retryOnEnd?: boolean;
+  retryOnDisconnect?: boolean;
 }
 
 interface DrainOptions {
@@ -113,22 +113,30 @@ export class SseReader {
     while (!this.#abort.signal.aborted) {
       try {
         await this.#connectOnce();
-        attempt = 0;
-        if (!this.#opts.retryOnEnd) {
-          this.#resolveStart?.();
-          return;
-        }
-      } catch (error) {
-        const err = asError(error);
-        this.#opts.onError?.(err);
-        this.dispatchEvent(new ErrorEvent("error", { error: err, message: err.message }));
         if (this.#abort.signal.aborted) {
           this.#resolveStart?.();
           return;
         }
-        attempt++;
-        await delay(backoff(attempt, this.#opts), this.#abort.signal);
-        continue;
+        if (!this.#opts.retryOnDisconnect) {
+          this.#resolveStart?.();
+          return;
+        }
+        attempt = 0;
+        const err = new Error("SSE stream disconnected; reconnecting.");
+        this.#opts.onError?.(err);
+        this.dispatchEvent(new ErrorEvent("error", { error: err, message: err.message }));
+      } catch (error) {
+        if (this.#abort.signal.aborted) {
+          this.#resolveStart?.();
+          return;
+        }
+        const err = asError(error);
+        this.#opts.onError?.(err);
+        this.dispatchEvent(new ErrorEvent("error", { error: err, message: err.message }));
+        if (!this.#opts.retryOnDisconnect) {
+          this.#resolveStart?.();
+          return;
+        }
       }
 
       attempt++;
@@ -285,15 +293,19 @@ function delay(ms: number, signal: AbortSignal): Promise<void> {
     return Promise.resolve();
   }
   return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    signal.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timer);
-        resolve();
-      },
-      { once: true },
-    );
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal.removeEventListener("abort", finish);
+      globalThis.removeEventListener?.("online", finish);
+      resolve();
+    };
+    timer = setTimeout(finish, ms);
+    signal.addEventListener("abort", finish, { once: true });
+    globalThis.addEventListener?.("online", finish, { once: true });
   });
 }
 

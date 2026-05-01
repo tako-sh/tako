@@ -220,11 +220,12 @@ export default defineChannel({
 }).$messageTypes<ChatMessages>();
 ```
 
-- Filename is the channel name. `channels/chat.ts` maps to `/channels/chat`.
+- The explicit `name` property is the channel name. `defineChannel({ name: "chat" })` maps to `/channels/chat`; generated files conventionally use the file stem as the initial name.
 - `paramsSchema` serializes to JSON Schema; tako-server validates query params before app auth.
 - `.$messageTypes<M>()` is a type-level narrower that declares the message map — runtime no-op. Omit for channels with no typed messages.
 - `auth` is optional. Omit or set `false` for public channels.
 - `handler` presence decides transport: present → WebSocket, absent → SSE (broadcast-only). SSE channels reject client POST publishes.
+- Browser clients reconnect until explicitly closed. Network loss, laptop sleep, server restarts, and clean stream rotation are transient; the SDK retries with bounded backoff, wakes early on the browser `online` event, and resumes from the last received message id while it remains inside the replay window.
 
 Auth return values: `false` deny · `true` allow anonymously · `{ subject }` allow with identity.
 

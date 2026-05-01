@@ -700,16 +700,21 @@ mod release_resolution_tests {
     use std::collections::HashMap;
 
     fn config_with(top: Option<&str>, env_release: Option<Option<&str>>) -> TakoToml {
-        let mut cfg = TakoToml::default();
-        cfg.release = top.map(String::from);
         let mut envs = HashMap::new();
-        let mut env_cfg = EnvConfig::default();
-        env_cfg.route = Some("api.example.com".into());
-        env_cfg.servers = vec!["la".into()];
-        env_cfg.release = env_release.map(|opt| opt.unwrap_or("").to_string());
-        envs.insert("production".to_string(), env_cfg);
-        cfg.envs = envs;
-        cfg
+        envs.insert(
+            "production".to_string(),
+            EnvConfig {
+                route: Some("api.example.com".into()),
+                servers: vec!["la".into()],
+                release: env_release.map(|opt| opt.unwrap_or("").to_string()),
+                ..Default::default()
+            },
+        );
+        TakoToml {
+            release: top.map(String::from),
+            envs,
+            ..Default::default()
+        }
     }
 
     #[test]

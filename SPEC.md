@@ -1710,6 +1710,8 @@ Channels keep a bounded replay window so reconnecting clients can resume across 
 - If no cursor is provided, Tako starts from the latest retained message
 - If the requested cursor is older than the retained replay window, Tako returns `410 Gone`
 
+Browser clients keep reconnecting until explicitly closed. Network loss, laptop sleep, server restarts, and clean stream rotation are treated as transient disconnects: the SDK retries with bounded exponential backoff and jitter, wakes early when the browser reports it is back online, and resumes from the last received message id.
+
 Channel WebSocket transport uses JSON text frames:
 
 - server-to-client text frames are serialized `ChannelMessage` objects

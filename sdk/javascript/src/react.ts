@@ -57,6 +57,24 @@ function reconnectDelay(attempt: number): number {
   return base + Math.random() * base * 0.3;
 }
 
+function scheduleReconnect(connect: () => void, delayMs: number): () => void {
+  let cancelled = false;
+  const run = () => {
+    if (cancelled) return;
+    cancelled = true;
+    clearTimeout(timer);
+    globalThis.removeEventListener?.("online", run);
+    connect();
+  };
+  const timer = setTimeout(run, delayMs);
+  globalThis.addEventListener?.("online", run, { once: true });
+  return () => {
+    cancelled = true;
+    clearTimeout(timer);
+    globalThis.removeEventListener?.("online", run);
+  };
+}
+
 function appendCapped<T>(buffer: ChannelMessage<T>[], msg: ChannelMessage<T>): ChannelMessage<T>[] {
   if (buffer.length < MAX_MESSAGES) return [...buffer, msg];
   return [...buffer.slice(buffer.length - MAX_MESSAGES + 1), msg];
@@ -138,10 +156,14 @@ export function useChannel<T = unknown>(
   handlerRef.current = options.onMessage;
 
   const socketRef = useRef<{ send(data: unknown): void } | null>(null);
+  const lastMessageIdRef = useRef<string | undefined>(
+    (options as ChannelConnectOptions).lastMessageId,
+  );
 
   const handleIncoming = useCallback((raw: string) => {
     try {
       const parsed = JSON.parse(raw) as ChannelMessage<T>;
+      lastMessageIdRef.current = parsed.id;
       setMessages((prev) => appendCapped(prev, parsed));
       const handler = handlerRef.current;
       if (handler) {
@@ -160,14 +182,19 @@ export function useChannel<T = unknown>(
     if (transport === "ws") {
       let disposed = false;
       let currentClose: (() => void) | null = null;
-      let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+      let cancelReconnect: (() => void) | null = null;
       let attempt = 0;
 
       const connect = () => {
         if (disposed) return;
 
         const channel = new Channel(name, "ws", optionsRef.current.params ?? {});
-        const conn = channel.connect(optionsRef.current as ChannelConnectOptions);
+        const currentOptions = optionsRef.current as ChannelConnectOptions;
+        const resumeFrom = lastMessageIdRef.current ?? currentOptions.lastMessageId;
+        const conn = channel.connect({
+          ...currentOptions,
+          ...(resumeFrom !== undefined && { lastMessageId: resumeFrom }),
+        });
         const target = conn.raw as EventTarget;
         socketRef.current = conn;
         currentClose = () => conn.close();
@@ -193,7 +220,7 @@ export function useChannel<T = unknown>(
           if (disposed) return;
           setStatus("connecting");
           const delay = reconnectDelay(attempt++);
-          reconnectTimer = setTimeout(connect, delay);
+          cancelReconnect = scheduleReconnect(connect, delay);
         };
 
         target.addEventListener("open", handleOpen);
@@ -206,7 +233,7 @@ export function useChannel<T = unknown>(
 
       return () => {
         disposed = true;
-        if (reconnectTimer) clearTimeout(reconnectTimer);
+        cancelReconnect?.();
         currentClose?.();
         socketRef.current = null;
       };
