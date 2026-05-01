@@ -4,15 +4,17 @@ export function normalizeCanonicalPath(pathname: string): string {
   }
 
   if (pathname.endsWith("/index.html")) {
-    return pathname.slice(0, -"/index.html".length) || "/";
+    const directoryPath = pathname.slice(0, -"/index.html".length);
+    return directoryPath.endsWith("/") ? directoryPath : `${directoryPath}/`;
   }
 
   if (pathname.endsWith(".html")) {
     return pathname.slice(0, -".html".length) || "/";
   }
 
-  if (pathname.length > 1 && pathname.endsWith("/")) {
-    return pathname.slice(0, -1);
+  const segment = pathname.split("/").pop() ?? "";
+  if (pathname.length > 1 && !pathname.endsWith("/") && !segment.includes(".")) {
+    return `${pathname}/`;
   }
 
   return pathname;
