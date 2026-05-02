@@ -62,26 +62,29 @@ async function postJson(baseUrl: string, path: string, body: unknown): Promise<R
   });
 }
 
-async function postJsonWhenReady(
-  baseUrl: string,
-  path: string,
-  body: unknown,
-  lf: string,
-): Promise<Response> {
+async function waitForHttpOk(baseUrl: string, lf: string, timeoutMs = 10_000): Promise<void> {
   let last: { status: number; body: string } | null = null;
+  const deadline = Date.now() + timeoutMs;
 
-  for (let i = 0; i < 20; i++) {
-    const response = await postJson(baseUrl, path, body);
-    if (![502, 503].includes(response.status)) {
-      return response;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(baseUrl, {
+        // @ts-ignore - Bun extension: skip TLS verification for the self-signed dev CA.
+        tls: { rejectUnauthorized: false },
+      });
+      if (response.status === 200) {
+        return;
+      }
+      last = { status: response.status, body: await response.text() };
+    } catch (error) {
+      last = { status: 0, body: String(error) };
     }
 
-    last = { status: response.status, body: await response.text() };
     await Bun.sleep(250);
   }
 
   throw new Error(
-    `POST ${path} never became ready. Last response: ${last?.status ?? "none"} ${
+    `App route never became ready. Last response: ${last?.status ?? "none"} ${
       last?.body ?? ""
     }\nLog:\n${safeRead(lf)}`,
   );
@@ -208,6 +211,8 @@ describe.skipIf(SKIP)("tako dev fixtures", () => {
 
     try {
       const devUrl = await waitForApp(lf);
+      await waitForHttpOk(devUrl, lf);
+
       const directMessage = `direct-${Date.now()}`;
       const workflowMessage = `workflow-${Date.now()}`;
       let markReady!: () => void;
@@ -223,16 +228,11 @@ describe.skipIf(SKIP)("tako dev fixtures", () => {
 
       await ready;
 
-      const direct = await postJsonWhenReady(devUrl, "/publish", { message: directMessage }, lf);
+      const direct = await postJson(devUrl, "/publish", { message: directMessage });
       expect(direct.status).toBe(200);
       expect(await direct.json()).toMatchObject({ ok: true });
 
-      const workflow = await postJsonWhenReady(
-        devUrl,
-        "/enqueue",
-        { message: workflowMessage },
-        lf,
-      );
+      const workflow = await postJson(devUrl, "/enqueue", { message: workflowMessage });
       expect(workflow.status).toBe(200);
       expect(await workflow.json()).toMatchObject({ ok: true });
 
