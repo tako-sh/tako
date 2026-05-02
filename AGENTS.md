@@ -118,7 +118,7 @@ Example: "Parse app name in `tako/src/app/name.rs:42`"
 - `commands/` - All CLI commands (init, dev, deploy, server, secret, status, logs)
 - `config/` - Configuration parsing and merging
 - `ssh/` - Remote server communication
-- `runtime/` - Runtime detection (Bun, Node, Deno)
+- `runtime/` - Runtime detection (Bun, Node)
 
 **SDK:**
 

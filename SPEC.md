@@ -20,7 +20,7 @@ Built in Rust (2024 edition). SDKs available for JavaScript/TypeScript (`tako.sh
 
 **Reliability:** Strong test coverage, graceful edge case handling, users can delete files/folders safely with recovery paths.
 
-**Extensibility:** Support multiple runtimes (Bun, Node, Deno, Go). Runtime-agnostic architecture.
+**Extensibility:** Support multiple runtimes (Bun, Node, Go). Runtime-agnostic architecture.
 
 ## Configuration
 
@@ -95,7 +95,7 @@ idle_timeout = 120
 
 1. `[vars]` - base
 2. `[vars.{environment}]` - environment-specific
-3. Auto-set by Tako at runtime: `ENV={environment}` in both dev and deploy, `TAKO_BUILD={version}` on deploys, `TAKO_DATA_DIR=<app data dir>` in both deploy and dev, plus runtime env vars (e.g. `NODE_ENV` for all JS runtimes, `BUN_ENV` for Bun, `DENO_ENV` for Deno)
+3. Auto-set by Tako at runtime: `ENV={environment}` in both dev and deploy, `TAKO_BUILD={version}` on deploys, `TAKO_DATA_DIR=<app data dir>` in both deploy and dev, plus runtime env vars (e.g. `NODE_ENV` for all JS runtimes, `BUN_ENV` for Bun)
 
 `ENV` is reserved. If you set `ENV` in `[vars]` or `[vars.{environment}]`, Tako ignores it and prints a warning. `LOG_LEVEL` (and any other log-verbosity env var your framework reads) is owned by you — set it in `[vars]` / `[vars.<env>]` if you want it per environment.
 
@@ -109,9 +109,9 @@ idle_timeout = 120
 - Renaming app identity (`name` or directory fallback) is treated as a different app; remove the previous deployment manually if needed.
 - `main` in `tako.toml` is an optional runtime entrypoint override written to deployed `app.json`. It accepts file paths and module specifiers (e.g. `@scope/pkg`).
 - If `main` is omitted in `tako.toml`, deploy/dev check the manifest main field (e.g. `package.json` `main`), then fall back to preset `main`.
-- For JS adapters (`bun`, `node`, `deno`), when preset `main` is `index.<ext>` or `src/index.<ext>` (`ext`: `ts`, `tsx`, `js`, `jsx`), deploy/dev resolve in this order: existing `index.<ext>`, then existing `src/index.<ext>`, then preset `main`.
+- For JS adapters (`bun`, `node`), when preset `main` is `index.<ext>` or `src/index.<ext>` (`ext`: `ts`, `tsx`, `js`, `jsx`), deploy/dev resolve in this order: existing `index.<ext>`, then existing `src/index.<ext>`, then preset `main`.
 - If neither `tako.toml main`, manifest main, nor preset `main` is set, deploy/dev fail with guidance.
-- Top-level `runtime` is optional; when set to `bun`, `node`, `deno`, or `go`, it overrides adapter detection for default preset selection in `tako deploy`/`tako dev`.
+- Top-level `runtime` is optional; when set to `bun`, `node`, or `go`, it overrides adapter detection for default preset selection in `tako deploy`/`tako dev`.
 - Top-level `runtime_version` is optional; when set (e.g. `"1.2.3"`), deploy uses it directly instead of auto-detecting with `<runtime> --version`. `tako init` pins the locally-installed version by default.
 - Top-level `package_manager` is optional; when set (e.g. `"npm"`, `"pnpm"`, `"yarn"`, `"bun"`), it overrides auto-detection from `package.json` `packageManager` field or lockfiles.
 - Top-level `preset` is optional. Presets are metadata-only (`name`, `main`, `assets`, `dev`) providing entrypoint, asset, and dev-command defaults. They do not contain build, install, or start commands.
@@ -153,7 +153,7 @@ idle_timeout = 120
 - `tako dev` resolves the dev command with this priority:
   1. `dev` in `tako.toml` (user override, e.g. `dev = ["custom", "cmd"]`)
   2. Preset `dev` command (e.g. vite preset uses `vite dev`)
-  3. Runtime default: JS runtimes run through the SDK dev entrypoint (`bun run node_modules/tako.sh/dist/entrypoints/bun-dev.mjs {main}`, or the `node-dev.mjs` / `deno-dev.mjs` equivalents), Go uses `go run .`
+  3. Runtime default: JS runtimes run through the SDK dev entrypoint (`bun run node_modules/tako.sh/dist/entrypoints/bun-dev.mjs {main}`, or the `node-dev.mjs` equivalent), Go uses `go run .`
 - `tako dev` marks an app running only after the app writes its bound loopback port to fd 4. Direct Vite dev commands (for example `vite` or `vite dev`) must use the `tako.sh/vite` plugin for fd-4 readiness; if the command looks like Vite and no readiness signal arrives, the CLI reports a Vite-specific plugin hint. Tako does not parse Vite stdout URLs as readiness.
 - The dev entrypoints host the HTTP server. Workflow workers run as a **separate, scale-to-zero subprocess** managed by tako-dev-server's embedded `WorkflowManager` — same architecture as production, but `workers: 0` with a 3s idle timeout so the worker only exists while there's real work. The SDK wraps `export default function fetch()` or `export default { fetch }` into a proper HTTP server on `PORT`; worker stdout/stderr is tee'd into the CLI log stream with `scope: "worker"`.
 - Process exit detection: `tako dev` polls `try_wait()` every 500ms to detect when the app process exits. On exit, the route goes idle (proxy stops forwarding) and the next HTTP request triggers a restart. A route is activated only after fd-4 readiness succeeds.
@@ -162,7 +162,7 @@ idle_timeout = 120
 - Deploy sends app vars + runtime vars to `tako-server` in the `deploy` command payload (non-secret env vars in `app.json`); secrets are sent separately and stored encrypted in SQLite. `tako-server` passes secrets to HTTP instances and workflow workers via fd 3 (file descriptor 3) at spawn time — the server writes secrets as JSON to a pipe and the child process reads fd 3 before any user code runs.
 - `[build]` section has `run` (build command), `install` (optional pre-build install command), `cwd` (optional working directory relative to project root), plus `include`/`exclude` for artifact filtering. `[build]` is a shortcut for a single-stage `[[build_stages]]` list.
 - `[build]` and `[[build_stages]]` are mutually exclusive: having both `build.run` and `[[build_stages]]` is an error. `[build].include`/`[build].exclude` cannot be used alongside `[[build_stages]]`; use per-stage `exclude` instead.
-- Build stage resolution precedence (first non-empty wins): `[[build_stages]]` → `[build]` (normalized to a single stage) → runtime default. The runtime default is the runtime plugin's build command: `bun/npm/pnpm/yarn run --if-present build` for JS runtimes, `deno task build 2>/dev/null || true` for Deno, and no default for Go. When nothing resolves, the build phase is a no-op.
+- Build stage resolution precedence (first non-empty wins): `[[build_stages]]` → `[build]` (normalized to a single stage) → runtime default. The runtime default is the runtime plugin's build command: `bun/npm/pnpm/yarn run --if-present build` for JS runtimes and no default for Go. When nothing resolves, the build phase is a no-op.
 - App-level custom build stages can be declared in `tako.toml` under `[[build_stages]]` (top-level array):
   - `name` (optional display label)
   - `cwd` (optional, relative to app root; `..` is allowed for monorepo traversal but guarded against escaping the workspace root)
@@ -350,13 +350,12 @@ Template behavior:
 - Writes the selected config file (default `./tako.toml`).
 - Prompts for required app `name` (default from selected-config parent directory-derived app name).
 - Prompts for required production route (`[envs.production].route`) with default `{name}.example.com`.
-- Detects adapter (`bun`, `node`, `deno`, `go`, fallback `unknown`) and prompts for runtime selection.
+- Detects adapter (`bun`, `node`, `go`, fallback `unknown`) and prompts for runtime selection.
 - After generating `tako.toml`, init installs the `tako.sh` SDK package via the selected runtime's package-manager `add` command (for JS: `bun add tako.sh`, etc.; for Go: `go get tako.sh`).
 - In interactive mode, init fetches runtime-family preset names from official family manifest files (`presets/<language>.toml`) and shows `Fetching presets...` while loading.
 - For built-in base adapters, init defaults to:
   - Bun: `bun`
   - Node: `node`
-  - Deno: `deno`
   - Go: `go`
 - Init prints the full "Detected" summary block only in verbose mode; default output keeps setup concise and action-oriented.
 - If no family presets are available after fetch, init skips preset selection and uses the runtime base preset.
@@ -487,7 +486,7 @@ Start (or connect to) a local development session for the current app, backed by
 
 - Loads from `[vars]` + `[vars.development]` in tako.toml
 - `ENV=development`
-- `NODE_ENV=development`, plus runtime-specific vars (`BUN_ENV=development` for Bun, `DENO_ENV=development` for Deno)
+- `NODE_ENV=development`, plus runtime-specific vars (`BUN_ENV=development` for Bun)
 
 ### tako dev stop [name] [--all]
 
@@ -923,7 +922,6 @@ When the stored desired instance count is `0`, rolling deploy still starts one w
 - tako-server derives the start command from the runtime plugin, resolving the SDK entrypoint from the app dir or parent dirs:
   - `bun`: `bun run <resolved-entrypoint> <app.json.main>`
   - `node`: `node --experimental-strip-types <resolved-entrypoint> <app.json.main>`
-  - `deno`: `deno run --allow-net --allow-env --allow-read --allow-write --node-modules-dir=auto <resolved-entrypoint> <app.json.main>`
   - `go`: `<app.json.main>` (compiled binary runs directly — no runtime binary or SDK entrypoint wrapper needed)
   - if the entrypoint is missing, warm-instance startup fails with an explicit error
 - Unknown runtime values in `app.json` are rejected with an explicit unsupported-runtime error.
@@ -1226,7 +1224,6 @@ HTTP instances and workflow workers receive the same app/runtime environment, ex
 | `TAKO_DATA_DIR`        | app + worker | Persistent app-owned runtime data directory                                             | Set by Tako in both dev and deploy; points to the app's `data/app` directory.                                                    |
 | `NODE_ENV`             | app + worker | Node.js convention env                                                                  | Set by runtime adapter / server (`development` or `production`).                                                                 |
 | `BUN_ENV`              | app + worker | Bun convention env                                                                      | Set by runtime adapter (`development` or `production`).                                                                          |
-| `DENO_ENV`             | app + worker | Deno convention env                                                                     | Set by runtime adapter (`development` or `production`).                                                                          |
 | `TAKO_BUILD`           | app + worker | Deployed build/version identifier                                                       | Written into release `app.json` by `tako deploy`; `tako-server` reads it from the manifest and passes it as an env var at spawn. |
 | _user-defined_         | app + worker | User config vars                                                                        | From `app.json` in the release dir. Secrets + internal token passed via fd 3 bootstrap envelope, not env vars.                   |
 
@@ -1670,7 +1667,7 @@ import { withTako } from "tako.sh/nextjs";
 
 ### Feature Overview
 
-- Internal fetch handler adapters for Bun/Node/Deno runtimes (used by entrypoint binaries)
+- Internal fetch handler adapters for Bun/Node runtimes (used by entrypoint binaries)
 - Go SDK with `tako.ListenAndServe()` for native http.Handler support
 - Deployed app serving over private TCP with `PORT`/`HOST`; `tako dev` also uses TCP (`PORT`)
 - Internal status endpoint (`Host: tako.internal` + `/status`)

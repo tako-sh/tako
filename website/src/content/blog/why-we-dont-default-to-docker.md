@@ -50,7 +50,7 @@ Tako runs your app as a process, not a container. When you run [`tako deploy`](/
 3. The result is compressed and sent to your server via SFTP
 4. The server installs production dependencies and starts your app directly
 
-No image builds. No registry. No container runtime. Your app runs under the same [runtime](/docs/how-tako-works) (Bun, Node, or Deno) in both development and production.
+No image builds. No registry. No container runtime. Your app runs under the same [runtime](/docs/how-tako-works) (Bun or Node) in both development and production.
 
 This means:
 
@@ -59,7 +59,7 @@ This means:
 - **Lower resource usage** — no Docker daemon, no overlay filesystem, no image layers
 - **True dev/prod parity** — [`tako dev`](/docs/development) uses the same runtime and SDK as production
 
-The tradeoff is intentional. We support a focused set of runtimes — currently [Bun, Node.js, and Deno](/docs/how-tako-works) — and optimize deeply for them, rather than supporting anything-in-a-container at the cost of speed.
+The tradeoff is intentional. We support a focused set of runtimes — currently [Bun and Node.js](/docs/how-tako-works) for JavaScript apps, plus Go — and optimize deeply for them, rather than supporting anything-in-a-container at the cost of speed.
 
 ## When Docker Is the Right Call
 

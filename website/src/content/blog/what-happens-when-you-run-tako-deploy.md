@@ -23,7 +23,7 @@ Build and preflight run as concurrent tasks. By the time your build finishes, th
 
 The compressed artifact ships to your server via SFTP, landing at `/opt/tako/apps/{app}/releases/{version}/`. If you're re-deploying the same version (common while debugging), Tako detects the existing directory and skips the upload entirely.
 
-Once extracted, the server runs a **PrepareRelease** phase: download the runtime binary ([Bun, Node, or Deno](/docs/how-tako-works)) if it isn't cached, then install production dependencies. This all happens _before_ any instance swap — dependency installation doesn't eat into your zero-downtime window.
+Once extracted, the server runs a **PrepareRelease** phase: download the runtime binary ([Bun or Node](/docs/how-tako-works)) if it isn't cached, then install production dependencies. This all happens _before_ any instance swap — dependency installation doesn't eat into your zero-downtime window.
 
 [Secrets](/blog/secrets-without-env-files) get a shortcut too. Tako hashes your encrypted secrets and compares against what the server already has. Same hash? Skip the transmission. Changed? They're included in the deploy command and delivered to each new instance via file descriptor 3 — never written to disk on the server.
 

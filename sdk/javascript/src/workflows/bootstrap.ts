@@ -2,7 +2,7 @@
  * Worker-process bootstrap.
  *
  * Called from each runtime's worker entrypoint (`bun-worker.ts`,
- * `node-worker.ts`, `deno-worker.ts`). Reads env vars set by tako-server,
+ * `node-worker.ts`). Reads env vars set by tako-server,
  * attaches the RPC client, discovers `workflows/`, and starts the worker
  * loop. The SDK never opens SQLite — tako-server owns the queue DB and
  * serves all state via the per-app enqueue socket.

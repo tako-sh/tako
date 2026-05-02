@@ -288,24 +288,6 @@ mod tests {
     }
 
     #[test]
-    fn deno_command_uses_entrypoint_path() {
-        let dir = TempDir::new().unwrap();
-        std::fs::write(
-            dir.path().join("app.json"),
-            r#"{"runtime":"deno","main":"server/main.ts","idle_timeout":300}"#,
-        )
-        .unwrap();
-
-        let cmd = command_for_release_dir(dir.path()).unwrap();
-        assert_eq!(cmd[0], "deno");
-        assert!(
-            cmd.iter()
-                .any(|a| a.contains("entrypoints/deno-server.mjs"))
-        );
-        assert_eq!(cmd.last().unwrap(), "server/main.ts");
-    }
-
-    #[test]
     fn errors_when_manifest_main_is_empty() {
         let dir = TempDir::new().unwrap();
         std::fs::write(
@@ -380,7 +362,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         std::fs::write(
             dir.path().join("app.json"),
-            r#"{"runtime":"deno","main":"index.ts","idle_timeout":300,"package_manager":"bun","package_manager_version":"1.3.11"}"#,
+            r#"{"runtime":"node","main":"index.ts","idle_timeout":300,"package_manager":"bun","package_manager_version":"1.3.11"}"#,
         )
         .unwrap();
 

@@ -173,7 +173,7 @@ pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>>
             }
             // Step 1: Runtime (pre-filled with detected value)
             1 => {
-                let adapters = [BuildAdapter::Bun, BuildAdapter::Node, BuildAdapter::Deno];
+                let adapters = [BuildAdapter::Bun, BuildAdapter::Node];
                 let default_index = adapters.iter().position(|a| *a == adapter).unwrap_or(0);
                 let options: Vec<(String, BuildAdapter)> =
                     adapters.iter().map(|&a| (a.id().to_string(), a)).collect();

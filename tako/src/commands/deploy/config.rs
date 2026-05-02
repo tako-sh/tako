@@ -234,7 +234,7 @@ pub(super) fn resolve_build_adapter(
     {
         return BuildAdapter::from_id(adapter_override).ok_or_else(|| {
             format!(
-                "Invalid runtime '{}'; expected one of: bun, node, deno, go",
+                "Invalid runtime '{}'; expected one of: bun, node, go",
                 adapter_override
             )
         });
@@ -392,12 +392,12 @@ mod tests {
         let temp = TempDir::new().unwrap();
         std::fs::write(temp.path().join("package.json"), r#"{"name":"demo"}"#).unwrap();
         let config = TakoToml {
-            runtime: Some("deno".to_string()),
+            runtime: Some("node".to_string()),
             ..Default::default()
         };
         assert_eq!(
             resolve_build_preset_ref(temp.path(), &config).unwrap(),
-            "deno"
+            "node"
         );
     }
 

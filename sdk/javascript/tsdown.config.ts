@@ -26,13 +26,10 @@ export default defineConfig([
       "gen-channel-types": "bin/gen-channel-types.ts",
       "entrypoints/bun-server": "src/tako/entrypoints/bun-server.ts",
       "entrypoints/node-server": "src/tako/entrypoints/node-server.ts",
-      "entrypoints/deno-server": "src/tako/entrypoints/deno-server.ts",
       "entrypoints/bun-worker": "src/tako/entrypoints/bun-worker.ts",
       "entrypoints/node-worker": "src/tako/entrypoints/node-worker.ts",
-      "entrypoints/deno-worker": "src/tako/entrypoints/deno-worker.ts",
       "entrypoints/bun-dev": "src/tako/entrypoints/bun-dev.ts",
       "entrypoints/node-dev": "src/tako/entrypoints/node-dev.ts",
-      "entrypoints/deno-dev": "src/tako/entrypoints/deno-dev.ts",
     },
   },
   {

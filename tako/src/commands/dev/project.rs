@@ -212,7 +212,7 @@ fn resolve_dev_build_adapter(project_dir: &Path, cfg: &TakoToml) -> Result<Build
     {
         return BuildAdapter::from_id(adapter_override).ok_or_else(|| {
             format!(
-                "Invalid runtime '{}'; expected one of: bun, node, deno, go",
+                "Invalid runtime '{}'; expected one of: bun, node, go",
                 adapter_override
             )
         });
@@ -308,16 +308,6 @@ pub(super) fn resolve_dev_worker_command(
             "node".to_string(),
             "--experimental-strip-types".to_string(),
             format!("{base}/node-worker.mjs"),
-        ]),
-        BuildAdapter::Deno => Some(vec![
-            "deno".to_string(),
-            "run".to_string(),
-            "--allow-net".to_string(),
-            "--allow-env".to_string(),
-            "--allow-read".to_string(),
-            "--allow-write".to_string(),
-            "--node-modules-dir=auto".to_string(),
-            format!("{base}/deno-worker.mjs"),
         ]),
         BuildAdapter::Go | BuildAdapter::Unknown => None,
     }

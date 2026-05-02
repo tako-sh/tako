@@ -560,12 +560,12 @@ fn parse_csv_list_trims_items_and_drops_empty_segments() {
 fn resolve_adapter_uses_existing_config_runtime() {
     use crate::config::TakoToml;
     let existing = TakoToml {
-        runtime: Some("deno".to_string()),
+        runtime: Some("node".to_string()),
         ..Default::default()
     };
     assert_eq!(
-        resolve_adapter(BuildAdapter::Node, Some(&existing)),
-        BuildAdapter::Deno
+        resolve_adapter(BuildAdapter::Bun, Some(&existing)),
+        BuildAdapter::Node
     );
 }
 

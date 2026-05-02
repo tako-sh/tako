@@ -19,7 +19,7 @@ Command-line tool for developing and deploying Tako apps.
 
 ### `tako init`
 
-Initialize a new Tako project. Auto-detects runtime (Go, Bun, Node, Deno) from project files (`go.mod`, `package.json`, `deno.json`).
+Initialize a new Tako project. Auto-detects runtime (Go, Bun, Node) from project files (`go.mod`, `package.json`).
 
 ```bash
 tako init

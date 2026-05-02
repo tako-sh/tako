@@ -14,17 +14,17 @@ Presets are small framework manifests. They give Tako defaults for three things:
 - `assets`: static asset directories copied into deployed `public/`
 - `dev`: the command used by `tako dev`
 
-Presets do not contain build commands, install commands, or production start commands. Runtime behavior lives in Tako's runtime plugins for Bun, Node, Deno, and Go.
+Presets do not contain build commands, install commands, or production start commands. Runtime behavior lives in Tako's runtime plugins for Bun, Node, and Go.
 
 ## Choosing a Preset
 
 Use a preset when it matches your framework:
 
-| Framework       | `runtime`                | `preset`         |
-| --------------- | ------------------------ | ---------------- |
-| TanStack Start  | `bun` or `node`          | `tanstack-start` |
-| Next.js         | `bun` or `node`          | `nextjs`         |
-| Vite dev server | `bun`, `node`, or `deno` | `vite`           |
+| Framework       | `runtime`       | `preset`         |
+| --------------- | --------------- | ---------------- |
+| TanStack Start  | `bun` or `node` | `tanstack-start` |
+| Next.js         | `bun` or `node` | `nextjs`         |
+| Vite dev server | `bun` or `node` | `vite`           |
 
 Example:
 
@@ -138,7 +138,6 @@ Current runtimes:
 
 - `bun`
 - `node`
-- `deno`
 - `go`
 
 For JavaScript runtimes, `package_manager` can override detection:

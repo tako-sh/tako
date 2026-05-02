@@ -1,7 +1,7 @@
 ---
 title: "The Fetch Handler Pattern: One Function, Every Runtime"
 date: "2026-04-06T11:48"
-description: "Why Tako chose the web-standard fetch handler as its universal app interface — and how the same export runs on Bun, Node, and Deno."
+description: "Why Tako chose the web-standard fetch handler as its universal app interface — and how the same export runs on Bun and Node."
 image: 8bc5d8514b34
 ---
 
@@ -13,7 +13,7 @@ export default function fetch(request: Request): Response {
 }
 ```
 
-That's a complete, deployable application. Same file runs on Bun, Node.js, and Deno. No framework, no adapter, no `createServer`. One function that takes a `Request` and returns a `Response` — both standard [Web APIs](https://developer.mozilla.org/en-US/docs/Web/API) that exist in every modern JavaScript runtime.
+That's a complete, deployable application. Same file runs on Bun and Node.js. No framework, no adapter, no `createServer`. One function that takes a `Request` and returns a `Response` — both standard [Web APIs](https://developer.mozilla.org/en-US/docs/Web/API) that exist in every modern JavaScript runtime.
 
 This is the interface Tako chose for everything. Your app is a fetch handler.
 
@@ -21,14 +21,14 @@ This is the interface Tako chose for everything. Your app is a fetch handler.
 
 Most Node.js frameworks invented their own request/response types before the web had standard ones. Express has `(req, res, next)`. Fastify has `(request, reply)`. Koa has `(ctx)`. Each one is a proprietary interface that locks your code to that framework's runtime model.
 
-| Pattern       | Interface                                           | Portable?                                         |
-| ------------- | --------------------------------------------------- | ------------------------------------------------- |
-| Express       | `(req: IncomingMessage, res: ServerResponse, next)` | Node.js only                                      |
-| Fastify       | `(request: FastifyRequest, reply: FastifyReply)`    | Node.js only                                      |
-| Koa           | `(ctx: Context)`                                    | Node.js only                                      |
-| **Web fetch** | `(request: Request) → Response`                     | **Bun, Node, Deno, Cloudflare Workers, browsers** |
+| Pattern       | Interface                                           | Portable?                                   |
+| ------------- | --------------------------------------------------- | ------------------------------------------- |
+| Express       | `(req: IncomingMessage, res: ServerResponse, next)` | Node.js only                                |
+| Fastify       | `(request: FastifyRequest, reply: FastifyReply)`    | Node.js only                                |
+| Koa           | `(ctx: Context)`                                    | Node.js only                                |
+| **Web fetch** | `(request: Request) → Response`                     | **Bun, Node, Cloudflare Workers, browsers** |
 
-The web fetch pattern won. Bun launched with `Bun.serve({ fetch })` as its primary API. Deno has `Deno.serve(fetch)`. Cloudflare Workers uses `export default { fetch }`. Frameworks like [Hono](https://hono.dev) and [Elysia](https://elysiajs.com) build on it natively — a Hono app is already a fetch handler, so it works with Tako out of the box:
+The web fetch pattern won. Bun launched with `Bun.serve({ fetch })` as its primary API. Cloudflare Workers uses `export default { fetch }`. Frameworks like [Hono](https://hono.dev) and [Elysia](https://elysiajs.com) build on it natively — a Hono app is already a fetch handler, so it works with Tako out of the box:
 
 ```typescript
 import { Hono } from "hono";
@@ -70,7 +70,7 @@ handler -> bridge: "Response"
 
 Incoming: the SDK reads the Node request's URL, method, headers, and body stream, then constructs a standard `Request`. Outgoing: it takes your `Response`, writes the status and headers back through Node's `ServerResponse`, and pipes the body. About 60 lines of adapter code that you never see.
 
-On Bun it's `Bun.serve({ fetch: handler })`. On Deno it's `Deno.serve(handler)`. Both runtimes natively speak fetch handlers, so the SDK just passes your function through.
+On Bun it's `Bun.serve({ fetch: handler })`. Node uses the SDK's small server bridge so your exported fetch handler keeps the same shape.
 
 ## What the SDK adds
 
@@ -101,7 +101,7 @@ Tako's [Vite plugin](/docs/presets) normalizes their output. After the framework
 
 ## The portability argument
 
-The fetch handler pattern isn't ours. It's the web platform's. If you ever move off Tako, your app is still a valid Bun server, a valid Deno server, or a valid Cloudflare Worker. Remove the SDK, add three lines of server binding code, and you're done.
+The fetch handler pattern isn't ours. It's the web platform's. If you ever move off Tako, your app is still a valid Bun server or Cloudflare Worker. Remove the SDK, add a small server binding, and you're done.
 
 This matters because deploy tools come and go. ([RIP Waypoint, RIP Nginx Unit.](/blog/tako-vs-coolify)) The web `Request`/`Response` API is an IETF standard backed by every major runtime. Betting on it means your app code outlives whatever infrastructure runs it.
 

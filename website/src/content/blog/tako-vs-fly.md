@@ -42,7 +42,7 @@ The biggest difference isn't technical, it's structural. Fly runs on Fly's hardw
 
 Fly's deploy input is an OCI image. You write a Dockerfile, they convert it into a micro-VM. It works, but it puts a whole layer of tooling between your source and the process that actually serves requests.
 
-Tako has [no Docker requirement](/blog/why-we-dont-default-to-docker). You build locally with whatever toolchain you'd use anyway, and [`tako deploy`](/docs/deployment) sends the artifact straight to the server over SFTP. The thing running on the box is literally `bun run` (or `node`, or `deno`, or your Go binary) — a native process managed by `tako-server`. Fewer layers, fewer things to debug when something goes sideways.
+Tako has [no Docker requirement](/blog/why-we-dont-default-to-docker). You build locally with whatever toolchain you'd use anyway, and [`tako deploy`](/docs/deployment) sends the artifact straight to the server over SFTP. The thing running on the box is literally `bun run` (or `node`, or your Go binary) — a native process managed by `tako-server`. Fewer layers, fewer things to debug when something goes sideways.
 
 ### Your own map
 

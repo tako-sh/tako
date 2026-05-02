@@ -5,7 +5,7 @@
 /**
  * Standard web `fetch` handler signature.
  *
- * Compatible with Cloudflare Workers, Deno Deploy, Bun, Node's undici-based
+ * Compatible with Cloudflare Workers, Bun, Node's undici-based
  * `Request`/`Response`, and other runtimes exposing the Fetch API. Tako
  * passes its secrets bag as the second argument.
  */

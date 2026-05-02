@@ -28,18 +28,6 @@ fn js_entrypoint_candidates() -> Vec<String> {
     .collect()
 }
 
-fn deno_entrypoint_candidates() -> Vec<String> {
-    let mut candidates = vec![
-        "main.ts".to_string(),
-        "main.tsx".to_string(),
-        "mod.ts".to_string(),
-        "src/main.ts".to_string(),
-        "src/mod.ts".to_string(),
-    ];
-    candidates.extend(js_entrypoint_candidates());
-    candidates
-}
-
 fn js_manifest_main() -> Option<ManifestMainDef> {
     Some(ManifestMainDef {
         file: "package.json".to_string(),
@@ -73,7 +61,6 @@ pub enum PackageManager {
     Npm,
     Pnpm,
     Yarn,
-    Deno,
 }
 
 impl PackageManager {
@@ -83,7 +70,6 @@ impl PackageManager {
             PackageManager::Npm => "npm",
             PackageManager::Pnpm => "pnpm",
             PackageManager::Yarn => "yarn",
-            PackageManager::Deno => "deno",
         }
     }
 }
@@ -107,7 +93,6 @@ pub fn find_js_project_root(project_dir: &Path) -> PathBuf {
         "pnpm-lock.yaml",
         "yarn.lock",
         "package-lock.json",
-        "deno.lock",
     ];
     let mut current = project_dir;
     loop {
@@ -148,10 +133,6 @@ pub fn detect_package_manager(project_dir: &Path) -> Option<PackageManager> {
     if project_dir.join("package-lock.json").is_file() {
         return Some(PackageManager::Npm);
     }
-    if project_dir.join("deno.lock").is_file() {
-        return Some(PackageManager::Deno);
-    }
-
     None
 }
 
@@ -181,7 +162,6 @@ fn resolve_pm(ctx: &PluginContext, default: PackageManager) -> PackageManager {
             "npm" => return PackageManager::Npm,
             "pnpm" => return PackageManager::Pnpm,
             "yarn" => return PackageManager::Yarn,
-            "deno" => return PackageManager::Deno,
             _ => {}
         }
     }
@@ -209,7 +189,6 @@ fn pm_install_production(pm: &PackageManager) -> String {
             "command -v yarn >/dev/null 2>&1 || npm install -g yarn 2>/dev/null; yarn install --production 2>/dev/null || true"
                 .to_string()
         }
-        PackageManager::Deno => "deno install --frozen 2>/dev/null || true".to_string(),
     }
 }
 
@@ -219,7 +198,6 @@ fn pm_install_dev(pm: &PackageManager) -> String {
         PackageManager::Npm => "npm install".to_string(),
         PackageManager::Pnpm => "pnpm install".to_string(),
         PackageManager::Yarn => "yarn install".to_string(),
-        PackageManager::Deno => "deno install || true".to_string(),
     }
 }
 
@@ -229,7 +207,6 @@ fn pm_add_command(pm: &PackageManager) -> String {
         PackageManager::Npm => "npm install {package}".to_string(),
         PackageManager::Pnpm => "pnpm add {package}".to_string(),
         PackageManager::Yarn => "yarn add {package}".to_string(),
-        PackageManager::Deno => "deno add {package}".to_string(),
     }
 }
 
@@ -239,7 +216,6 @@ fn pm_run_command(pm: &PackageManager) -> &'static str {
         PackageManager::Npm => "npm run",
         PackageManager::Pnpm => "pnpm run",
         PackageManager::Yarn => "yarn run",
-        PackageManager::Deno => "deno task",
     }
 }
 
@@ -249,14 +225,12 @@ fn pm_lockfiles(pm: &PackageManager) -> Vec<String> {
         PackageManager::Npm => vec!["package-lock.json".to_string()],
         PackageManager::Pnpm => vec!["pnpm-lock.yaml".to_string()],
         PackageManager::Yarn => vec!["yarn.lock".to_string()],
-        PackageManager::Deno => vec!["deno.lock".to_string()],
     }
 }
 
 fn pm_build_command(pm: &PackageManager) -> String {
     let run = pm_run_command(pm);
     match pm {
-        PackageManager::Deno => format!("{run} build 2>/dev/null || true"),
         PackageManager::Bun | PackageManager::Npm | PackageManager::Pnpm | PackageManager::Yarn => {
             format!("{run} --if-present build")
         }
@@ -282,20 +256,6 @@ fn js_dev_command_node() -> Vec<String> {
         "node".to_string(),
         "--experimental-strip-types".to_string(),
         "node_modules/tako.sh/dist/entrypoints/node-server.mjs".to_string(),
-        "{main}".to_string(),
-    ]
-}
-
-fn js_dev_command_deno() -> Vec<String> {
-    vec![
-        "deno".to_string(),
-        "run".to_string(),
-        "--allow-net".to_string(),
-        "--allow-env".to_string(),
-        "--allow-read".to_string(),
-        "--allow-write".to_string(),
-        "--node-modules-dir=auto".to_string(),
-        "node_modules/tako.sh/dist/entrypoints/deno-server.mjs".to_string(),
         "{main}".to_string(),
     ]
 }
@@ -358,26 +318,6 @@ fn download_def_for(id: &str) -> Option<DownloadDef> {
                 // so npm and corepack are available for installing package managers.
                 strip_components: Some(1),
                 all: true,
-                symlinks: vec![],
-            }),
-        }),
-        "deno" => Some(DownloadDef {
-            version_source: Some(VersionSourceDef {
-                source_type: "github_releases".into(),
-                repo: Some("denoland/deno".into()),
-                tag_prefix: Some("v".into()),
-            }),
-            url: Some("https://github.com/denoland/deno/releases/download/v{version}/deno-{arch}-{os}.zip".into()),
-            format: Some("zip".into()),
-            checksum_url: Some("https://github.com/denoland/deno/releases/download/v{version}/deno-{arch}-{os}.zip.sha256sum".into()),
-            checksum_format: Some("sha256".into()),
-            os_map: HashMap::from([("macos".into(), "apple-darwin".into()), ("linux".into(), "unknown-linux-gnu".into())]),
-            arch_map: HashMap::from([("x64".into(), "x86_64".into()), ("arm64".into(), "aarch64".into())]),
-            arch_variants: HashMap::new(),
-            extract: Some(ExtractDef {
-                binary: Some("deno".into()),
-                strip_components: Some(0),
-                all: false,
                 symlinks: vec![],
             }),
         }),
@@ -520,86 +460,6 @@ impl RuntimePlugin for NodePlugin {
     }
 }
 
-// ── Deno Plugin ────────────────────────────────────────────────────
-
-pub struct DenoPlugin;
-
-impl DenoPlugin {
-    fn build_def(&self, pm: &PackageManager) -> RuntimeDef {
-        let mut envs = js_production_envs();
-        envs.environments
-            .entry("production".to_string())
-            .or_default()
-            .insert("DENO_ENV".to_string(), "production".to_string());
-        envs.environments
-            .entry("development".to_string())
-            .or_default()
-            .insert("DENO_ENV".to_string(), "development".to_string());
-
-        RuntimeDef {
-            id: "deno".to_string(),
-            language: "javascript".to_string(),
-            entrypoint: EntrypointDef {
-                candidates: deno_entrypoint_candidates(),
-                manifest: None,
-            },
-            preset: PresetDef {
-                main: Some("main.ts".to_string()),
-                dev: js_dev_command_deno(),
-                watch: vec![],
-                start: vec![
-                    "{bin}".to_string(),
-                    "run".to_string(),
-                    "--allow-net".to_string(),
-                    "--allow-env".to_string(),
-                    "--allow-read".to_string(),
-                    "--allow-write".to_string(),
-                    "--node-modules-dir=auto".to_string(),
-                    "node_modules/tako.sh/dist/entrypoints/deno-server.mjs".to_string(),
-                    "{main}".to_string(),
-                ],
-                build: Some(pm_build_command(pm)),
-            },
-            server: ServerDef {
-                entrypoint_path: None,
-                launch_args: vec![
-                    "{bin}".to_string(),
-                    "run".to_string(),
-                    "--allow-net".to_string(),
-                    "--allow-env".to_string(),
-                    "--allow-read".to_string(),
-                    "--allow-write".to_string(),
-                    "--node-modules-dir=auto".to_string(),
-                    "node_modules/tako.sh/dist/entrypoints/deno-server.mjs".to_string(),
-                    "{main}".to_string(),
-                ],
-            },
-            envs,
-            package_manager: build_package_manager_def(pm),
-            download: download_def_for("deno"),
-        }
-    }
-}
-
-impl RuntimePlugin for DenoPlugin {
-    fn id(&self) -> &'static str {
-        "deno"
-    }
-
-    fn language(&self) -> &'static str {
-        "javascript"
-    }
-
-    fn runtime_def(&self, ctx: &PluginContext) -> RuntimeDef {
-        let pm = resolve_pm(ctx, PackageManager::Deno);
-        self.build_def(&pm)
-    }
-
-    fn default_runtime_def(&self) -> RuntimeDef {
-        self.build_def(&PackageManager::Deno)
-    }
-}
-
 // ── Tests ──────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -738,21 +598,9 @@ mod tests {
     }
 
     #[test]
-    fn deno_plugin_has_allow_write() {
-        let def = DenoPlugin.default_runtime_def();
-        assert!(
-            def.server
-                .launch_args
-                .contains(&"--allow-write".to_string())
-        );
-        assert!(def.preset.start.contains(&"--allow-write".to_string()));
-    }
-
-    #[test]
     fn all_plugins_have_download_def() {
         assert!(BunPlugin.default_runtime_def().download.is_some());
         assert!(NodePlugin.default_runtime_def().download.is_some());
-        assert!(DenoPlugin.default_runtime_def().download.is_some());
     }
 
     #[test]
@@ -760,7 +608,6 @@ mod tests {
         for def in [
             BunPlugin.default_runtime_def(),
             NodePlugin.default_runtime_def(),
-            DenoPlugin.default_runtime_def(),
         ] {
             assert!(
                 def.server.launch_args.contains(&"{main}".to_string()),
@@ -773,7 +620,7 @@ mod tests {
     #[test]
     fn runtime_def_for_uses_plugin() {
         // runtime_def_for(id, None) should return the plugin's default_runtime_def
-        for id in ["bun", "node", "deno"] {
+        for id in ["bun", "node"] {
             let def = crate::runtime_def_for(id, None).unwrap();
             let plugin = crate::plugin::plugin_for_id(id).unwrap();
             let plugin_def = plugin.default_runtime_def();

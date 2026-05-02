@@ -408,10 +408,10 @@ run = "bun run other"
 #[test]
 fn test_parse_runtime() {
     let toml = r#"
-runtime = "deno"
+runtime = "node"
 "#;
     let config = Config::parse(toml).unwrap();
-    assert_eq!(config.runtime, Some("deno".to_string()));
+    assert_eq!(config.runtime, Some("node".to_string()));
 }
 
 #[test]
@@ -858,7 +858,7 @@ runtime = "python"
     let err = Config::parse(unknown).unwrap_err();
     assert!(
         err.to_string()
-            .contains("runtime must be one of: bun, node, deno, go")
+            .contains("runtime must be one of: bun, node, go")
     );
 }
 

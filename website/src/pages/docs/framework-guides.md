@@ -76,4 +76,4 @@ runtime = "bun"
 main = "dist/server/index.js"
 ```
 
-Tako automatically runs your app with the correct runtime (Bun, Node.js, or Deno) based on your project configuration.
+Tako automatically runs your app with the correct runtime (Bun or Node.js) based on your project configuration.

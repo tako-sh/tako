@@ -199,7 +199,6 @@ It sets:
 - `TAKO_DATA_DIR`
 - `NODE_ENV=development` for JavaScript runtimes
 - `BUN_ENV=development` for Bun
-- `DENO_ENV=development` for Deno
 
 Secrets are read from `.tako/secrets.json` and delivered through the same runtime path used by production.
 

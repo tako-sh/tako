@@ -182,7 +182,7 @@ fn parse_official_alias_preset_content(
         return parse_group_preset_content(path, content, preset_name);
     }
     if BuildAdapter::from_id(alias).is_some() {
-        // Base runtime presets (bun, node, deno, go) may not have a section in
+        // Base runtime presets (bun, node, go) may not have a section in
         // the presets file — they use runtime defaults instead.
         return match parse_group_preset_content(path, content, alias) {
             Ok(preset) => Ok(preset),
@@ -326,7 +326,6 @@ mod tests {
             "presets/javascript.toml"
         );
         assert_eq!(official_alias_to_path("node"), "presets/javascript.toml");
-        assert_eq!(official_alias_to_path("deno"), "presets/javascript.toml");
         assert_eq!(official_alias_to_path("go"), "presets/go.toml");
     }
 
@@ -624,8 +623,8 @@ dev = ["vite", "dev"]
 [bun]
 dev = ["bunx", "--bun", "vite", "dev"]
 
-[deno]
-dev = ["deno", "task", "dev"]
+[node]
+dev = ["npm", "run", "dev"]
 "#;
         let preset = parse_preset(raw).unwrap();
         assert_eq!(preset.runtime_overrides.len(), 2);
@@ -639,8 +638,8 @@ dev = ["deno", "task", "dev"]
             ]
         );
         assert_eq!(
-            preset.runtime_overrides.get("deno").unwrap().dev,
-            vec!["deno".to_string(), "task".to_string(), "dev".to_string()],
+            preset.runtime_overrides.get("node").unwrap().dev,
+            vec!["npm".to_string(), "run".to_string(), "dev".to_string()],
         );
     }
 

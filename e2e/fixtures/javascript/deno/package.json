@@ -1,8 +1,0 @@
-{
-  "name": "deno-e2e",
-  "private": true,
-  "type": "module",
-  "dependencies": {
-    "tako.sh": "*"
-  }
-}

@@ -840,13 +840,6 @@ mod tests {
     }
 
     #[test]
-    fn extract_binary_name_handles_bare_name() {
-        let def = crate::runtime_def_for("deno", None).unwrap();
-        let name = extract_binary_name(&def).unwrap();
-        assert_eq!(name, "deno");
-    }
-
-    #[test]
     fn resolve_bin_returns_none_when_not_installed() {
         let dir = TempDir::new().unwrap();
         let mgr = DownloadManager::new(dir.path().to_path_buf());
@@ -1204,7 +1197,7 @@ mod tests {
 
     #[test]
     fn os_map_resolution_for_all_runtimes() {
-        for id in &["bun", "node", "deno"] {
+        for id in &["bun", "node"] {
             let def = crate::runtime_def_for(id, None).unwrap();
             let download = def.download.as_ref().unwrap();
             let os = resolve_os();
@@ -1217,7 +1210,7 @@ mod tests {
 
     #[test]
     fn arch_map_resolution_for_all_runtimes() {
-        for id in &["bun", "node", "deno"] {
+        for id in &["bun", "node"] {
             let def = crate::runtime_def_for(id, None).unwrap();
             let download = def.download.as_ref().unwrap();
             let arch = resolve_arch();

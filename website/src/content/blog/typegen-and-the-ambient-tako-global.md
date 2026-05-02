@@ -36,7 +36,7 @@ await sendEmail.enqueue({ to });
 await chat({ roomId }).publish({ type: "msg", data: { text, userId } });
 ```
 
-Same shape on Bun, Node, and Deno. No global install step, no runtime Proxy, no kebab↔camel rule to remember.
+Same shape on Bun and Node. No global install step, no runtime Proxy, no kebab↔camel rule to remember.
 
 ## What `tako typegen` generates
 
@@ -61,7 +61,7 @@ The file lands somewhere TypeScript's default `include` will find: next to an ex
 A few more guarantees:
 
 - **Redaction by default.** `String(secrets)` returns `"[REDACTED]"`. `JSON.stringify(secrets)` returns `"[REDACTED]"`. Log the whole object by accident and no values leak.
-- **Server-only.** The generated file is evaluated on the Node/Bun/Deno process that runs your entrypoint; the browser has its own universe. Browser code pulls from `tako.sh/client` or `tako.sh/react` instead.
+- **Server-only.** The generated file is evaluated on the Node/Bun process that runs your entrypoint; the browser has its own universe. Browser code pulls from `tako.sh/client` or `tako.sh/react` instead.
 - **Plain ES modules.** No `declare global`, no Proxy, no module augmentation. Rename-safe, tree-shakeable, jumps-to-definition, mocks cleanly in tests.
 
 ## Try it

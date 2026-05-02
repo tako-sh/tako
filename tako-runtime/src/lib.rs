@@ -11,14 +11,14 @@ pub use plugins::javascript::{
 
 /// Find the project root for the given runtime, starting from `project_dir`.
 ///
-/// For JS runtimes (bun/node/deno): walks up to find the lockfile root.
+/// For JS runtimes (bun/node): walks up to find the lockfile root.
 /// For other runtimes: returns `project_dir` unchanged.
 pub fn find_runtime_project_root(
     runtime_id: &str,
     project_dir: &std::path::Path,
 ) -> std::path::PathBuf {
     match runtime_id {
-        "bun" | "node" | "deno" => plugins::javascript::find_js_project_root(project_dir),
+        "bun" | "node" => plugins::javascript::find_js_project_root(project_dir),
         _ => project_dir.to_path_buf(),
     }
 }
@@ -28,7 +28,7 @@ pub use types::{
 };
 
 /// Known runtime IDs.
-pub const KNOWN_RUNTIME_IDS: &[&str] = &["bun", "node", "deno", "go"];
+pub const KNOWN_RUNTIME_IDS: &[&str] = &["bun", "node", "go"];
 
 #[cfg(test)]
 mod tests {
@@ -50,7 +50,7 @@ mod tests {
 
     #[test]
     fn plugin_provides_package_manager_for_js_runtimes() {
-        for &(runtime, package_manager) in &[("bun", "bun"), ("node", "pnpm"), ("deno", "deno")] {
+        for &(runtime, package_manager) in &[("bun", "bun"), ("node", "pnpm")] {
             let def = runtime_def_for(runtime, None)
                 .unwrap_or_else(|| panic!("missing runtime for {runtime}"));
             assert_eq!(def.package_manager.id, package_manager);

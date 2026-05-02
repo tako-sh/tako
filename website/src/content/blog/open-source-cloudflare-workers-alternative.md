@@ -19,20 +19,20 @@ export default function fetch(request: Request): Response {
 }
 ```
 
-Same `Request` in, same `Response` out — the interface is web-standard. If you've shipped a Worker, you've already written a Tako app. The [Tako SDK](/docs) handles the runtime bridging on Bun, Node, and Deno.
+Same `Request` in, same `Response` out — the interface is web-standard. If you've shipped a Worker, you've already written a Tako app. The [Tako SDK](/docs) handles the runtime bridging on Bun and Node.
 
 ## At a glance
 
 |                          | **Cloudflare Workers (Standard)**                            | **Tako**                             |
 | ------------------------ | ------------------------------------------------------------ | ------------------------------------ |
-| **Runtime**              | V8 isolate                                                   | Native process (Bun, Node, Deno, Go) |
+| **Runtime**              | V8 isolate                                                   | Native process (Bun, Node, Go)       |
 | **Cold start**           | ~5 ms                                                        | Tens of ms (`fork()` + app init)     |
 | **CPU time per request** | 30 s default, 5 min max                                      | Bounded by the box, not the platform |
 | **Memory per request**   | 128 MB                                                       | Bounded by the box, not the platform |
 | **Request body**         | 100 MB (Free/Pro)                                            | Configurable in the proxy            |
 | **Subrequests per req**  | 10,000 paid (50 free)                                        | No platform-imposed limit            |
 | **Script size**          | 10 MB gzipped (3 MB free)                                    | No platform-imposed limit            |
-| **Runtime APIs**         | Partial Node — some modules are stubs                        | Full Node / Bun / Deno / Go          |
+| **Runtime APIs**         | Partial Node — some modules are stubs                        | Full Node / Bun / Go                 |
 | **Pricing**              | $5/mo + $0.30 / M requests + $0.02 / M CPU-ms over allowance | Your VPS bill                        |
 | **Hardware**             | Cloudflare's global edge                                     | The VPS you rent (or own)            |
 | **Lock-in**              | Workers platform                                             | None — it's your box                 |
@@ -52,17 +52,17 @@ For workloads in that shape, Workers is excellent. Cloudflare earned that.
 
 ## Where Tako is different
 
-### Full Node, Bun, Deno, Go
+### Full Node, Bun, Go
 
 A Worker is a sandboxed JS runtime that implements a curated subset of Node — by design, since the goal is to fit inside a fast-starting isolate. That tradeoff works for a lot of apps, and not for others. If you reach for `child_process`, `cluster`, `vm`, or HTTP/2, those are stubs. Long-running CPU work and big memory footprints aren't really the target either.
 
 A [Tako app](/docs/how-tako-works) is a normal OS process, so the runtime is the whole runtime. Concretely, that means you can:
 
 - **Shell out to native binaries.** `ffmpeg` for video transcoding, `imagemagick` for image processing, `pandoc` for document conversion, `git` for repo operations. `child_process.spawn` works the same way it does on your laptop.
-- **Use embedded SQLite.** `bun:sqlite`, `better-sqlite3`, or Deno's `node:sqlite` — local, file-backed, fast, no network hop. Pair it with [`TAKO_DATA_DIR`](/docs/tako-toml) for persistence across deploys.
+- **Use embedded SQLite.** `bun:sqlite` or `better-sqlite3` — local, file-backed, fast, no network hop. Pair it with [`TAKO_DATA_DIR`](/docs/tako-toml) for persistence across deploys.
 - **Run heavy CPU work.** PDF generation, ML inference, image resizing, server-side rendering for long pages. No 30-second cap, no 128 MB ceiling.
 - **Hold persistent connections.** WebSocket pub/sub, SSE streams, long polling — all just open file descriptors on a long-lived process.
-- **Pick the runtime that fits.** Bun for speed and DX, Node for the ecosystem, Deno for the secure-by-default story, Go for a single static binary. All first-class in [`tako.toml`](/docs/tako-toml).
+- **Pick the runtime that fits.** Bun for speed and DX, Node for the ecosystem, Go for a single static binary. All first-class in [`tako.toml`](/docs/tako-toml).
 
 Whatever runs on your laptop runs on your server.
 
@@ -105,7 +105,7 @@ Tako is heading toward the same primitives — [durable channels](/blog/durable-
 
 Pick **Cloudflare Workers** if you want zero infrastructure, your code fits the V8-isolate model, and the bindings (KV, R2, D1, Durable Objects, AI) are doing real work for you.
 
-Pick **Tako** if you want the same fetch-handler DX without the per-request meter, and you'd rather run on hardware you control with full Node, Bun, Deno, or Go APIs available. Stick Cloudflare in front if you still want the edge.
+Pick **Tako** if you want the same fetch-handler DX without the per-request meter, and you'd rather run on hardware you control with full Node, Bun, or Go APIs available. Stick Cloudflare in front if you still want the edge.
 
 Both are reasonable. Same shape, different host.
 

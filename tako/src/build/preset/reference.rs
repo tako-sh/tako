@@ -302,8 +302,8 @@ mod tests {
             BuildAdapter::Node
         );
         assert_eq!(
-            infer_adapter_from_preset_reference("deno"),
-            BuildAdapter::Deno
+            infer_adapter_from_preset_reference("python"),
+            BuildAdapter::Unknown
         );
         assert_eq!(
             infer_adapter_from_preset_reference("github:owner/repo/presets/custom.toml"),

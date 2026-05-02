@@ -14,7 +14,7 @@ sources:
 
 Runtime SDK for JavaScript/TypeScript apps deployed with Tako.
 
-> **CRITICAL**: The `tako.sh` package is **required** — it provides the entrypoint binaries (`tako-bun`, `tako-node`, `tako-deno`) that tako-server launches to run your app. Tako v0 uses plain ES modules everywhere — no `Tako` global. Runtime state (env, secrets, logger, build info) is imported from a generated `tako.gen.ts` file; channels and workflows are imported from their own files.
+> **CRITICAL**: The `tako.sh` package is **required** — it provides the entrypoint binaries that tako-server launches to run your app. Tako v0 uses plain ES modules everywhere — no `Tako` global. Runtime state (env, secrets, logger, build info) is imported from a generated `tako.gen.ts` file; channels and workflows are imported from their own files.
 
 > **CRITICAL**: Framework helpers are opt-in. Use `tako.sh/vite` for Vite-based SSR frameworks (TanStack Start, Nuxt, SolidStart) and `tako.sh/nextjs` for Next.js standalone builds. Plain fetch-handler apps do not need either helper.
 

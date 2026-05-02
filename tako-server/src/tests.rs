@@ -420,18 +420,6 @@ fn node_runtime_uses_npm_install_script() {
     assert!(install.contains("npm"));
 }
 
-#[test]
-fn deno_runtime_embeds_deno_package_manager() {
-    let runtime = tako_runtime::runtime_def_for("deno", None).unwrap();
-    assert_eq!(runtime.package_manager.id, "deno");
-    assert!(
-        runtime
-            .package_manager
-            .lockfiles
-            .contains(&"deno.lock".to_string())
-    );
-}
-
 // Install flow tests are covered by e2e tests (e2e/fixtures/javascript/*).
 
 fn python3_ok() -> bool {

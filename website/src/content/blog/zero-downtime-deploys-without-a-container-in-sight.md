@@ -71,7 +71,7 @@ No request is ever dropped mid-response. The proxy tracks active connections per
 
 The CLI and server communicate over a unix socket at `/var/run/tako/tako.sock` using newline-delimited JSON. A deploy sends two commands:
 
-**`PrepareRelease`** — extracts the artifact, downloads the runtime (Bun, Node, Deno), and runs `npm ci` / `bun install`. This happens _before_ any instance swap, so dependency installation doesn't eat into your downtime window.
+**`PrepareRelease`** — extracts the artifact, downloads the runtime (Bun or Node), and runs `npm ci` / `bun install`. This happens _before_ any instance swap, so dependency installation doesn't eat into your downtime window.
 
 **`Deploy`** — carries the app name, version, release path, routes, and (optionally) secrets. This triggers the rolling update. Secrets are delivered to each new instance via file descriptor 3 — they never touch disk or environment variables. If the secrets hash hasn't changed since the last deploy, they're [skipped entirely](/blog/secrets-without-env-files).
 

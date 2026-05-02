@@ -307,7 +307,7 @@ pub(super) fn format_server_targets_summary(
 }
 
 pub(super) fn should_use_unified_js_target_process(runtime_tool: &str) -> bool {
-    matches!(runtime_tool, "bun" | "node" | "deno")
+    matches!(runtime_tool, "bun" | "node")
 }
 
 pub(super) fn shorten_commit(commit: &str) -> &str {
@@ -412,7 +412,6 @@ mod tests {
     fn should_use_unified_js_target_process_only_for_js_runtimes() {
         assert!(should_use_unified_js_target_process("bun"));
         assert!(should_use_unified_js_target_process("node"));
-        assert!(should_use_unified_js_target_process("deno"));
         assert!(!should_use_unified_js_target_process("go"));
     }
 

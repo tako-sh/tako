@@ -13,7 +13,7 @@ Tako takes a different path. We think there's a faster, simpler way to deploy we
 
 Dokku puts Docker at the center of everything. Every app runs in a container. Builds go through buildpacks (Heroku-style, Cloud Native Buildpacks, Nixpacks, or Dockerfiles). The deploy flow is: `git push` → build image → run container → route traffic via nginx.
 
-Tako skips the container layer entirely. Your app runs as a native process under its own runtime — Bun, Node.js, Deno, or Go. The deploy flow is: build locally → [SFTP the artifact](/docs/deployment) → start the process → route traffic via [Pingora](/blog/pingora-vs-caddy-vs-traefik).
+Tako skips the container layer entirely. Your app runs as a native process under its own runtime — Bun, Node.js, or Go. The deploy flow is: build locally → [SFTP the artifact](/docs/deployment) → start the process → route traffic via [Pingora](/blog/pingora-vs-caddy-vs-traefik).
 
 |                   | Dokku                            | Tako                                                |
 | ----------------- | -------------------------------- | --------------------------------------------------- |

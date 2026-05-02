@@ -4,7 +4,6 @@
   "description": "Official SDK for the Tako application platform",
   "keywords": [
     "bun",
-    "deno",
     "deployment",
     "node",
     "serverless",

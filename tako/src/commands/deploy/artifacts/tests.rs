@@ -450,7 +450,7 @@ fn save_package_manager_version_to_manifest_writes_version_to_app_json() {
     std::fs::create_dir_all(&workspace).unwrap();
     std::fs::write(
         workspace.join("app.json"),
-        r#"{"runtime":"deno","main":"index.ts","idle_timeout":300,"package_manager":"bun"}"#,
+        r#"{"runtime":"node","main":"index.ts","idle_timeout":300,"package_manager":"bun"}"#,
     )
     .unwrap();
 
@@ -469,8 +469,8 @@ fn extract_semver_from_version_output_handles_common_formats() {
         Some("1.3.11".to_string())
     );
     assert_eq!(
-        extract_semver_from_version_output("deno 2.7.6 (stable, release, aarch64-apple-darwin)"),
-        Some("2.7.6".to_string())
+        extract_semver_from_version_output("node v22.7.0"),
+        Some("22.7.0".to_string())
     );
     assert_eq!(
         extract_semver_from_version_output("v22.12.0"),

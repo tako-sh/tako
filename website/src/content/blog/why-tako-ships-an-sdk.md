@@ -31,7 +31,7 @@ Under the hood, the SDK handles everything between your code and the infrastruct
 | Health checks       | You build a `/health` endpoint                | Built-in `/status` endpoint with uptime, version, instance ID |
 | Secrets             | `.env` files or external secret managers      | Injected via fd 3 before your code runs, auto-redacted on log |
 | Graceful shutdown   | You handle `SIGTERM` yourself                 | SDK drains in-flight requests, then exits cleanly             |
-| Runtime portability | Locked to one runtime's HTTP API              | Same `fetch()` signature across Bun, Node, and Deno           |
+| Runtime portability | Locked to one runtime's HTTP API              | Same `fetch()` signature across Bun and Node                  |
 
 ## The Readiness Problem
 

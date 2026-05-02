@@ -70,9 +70,9 @@ export default function (request: Request): Response {
 }
 ```
 
-That export runs on Vercel Functions, Cloudflare Workers, Deno Deploy, and Bun natively. The interface is web-standard — `Request` and `Response` exist in every modern runtime. Frameworks like Hono and Elysia build on it directly, so a Hono app is already a fetch handler.
+That export runs on Vercel Functions, Cloudflare Workers, and Bun natively. The interface is web-standard — `Request` and `Response` exist in every modern runtime. Frameworks like Hono and Elysia build on it directly, so a Hono app is already a fetch handler.
 
-Tako uses [the same pattern](/blog/the-fetch-handler-pattern). Same export shape, same `Request`/`Response` objects. If your app already runs on Vercel, moving to Tako isn't a migration — it's picking a different host for code that was already portable. The [Tako SDK](/docs) handles the Node.js bridge automatically; on Bun and Deno it passes your handler straight through.
+Tako uses [the same pattern](/blog/the-fetch-handler-pattern). Same export shape, same `Request`/`Response` objects. If your app already runs on Vercel, moving to Tako isn't a migration — it's picking a different host for code that was already portable. The [Tako SDK](/docs) handles the Node.js bridge automatically; on Bun it passes your handler straight through.
 
 ## The cost case
 

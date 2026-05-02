@@ -34,7 +34,7 @@ Tako is a CLI deploy tool with a Rust [Pingora-based proxy](/blog/pingora-vs-cad
 
 | Heroku primitive       | Tako equivalent                                                                                                                                                               |
 | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Buildpacks             | [Presets](/docs/presets) + runtime auto-detection (Bun, Node, Deno, Go) — no Docker in the loop                                                                               |
+| Buildpacks             | [Presets](/docs/presets) + runtime auto-detection (Bun, Node, Go) — no Docker in the loop                                                                                     |
 | `git push heroku main` | `tako deploy` — build locally, ship via SFTP, rolling update                                                                                                                  |
 | Add-ons                | Bring-your-own services via [secrets](/docs/cli) and `TAKO_DATA_DIR`. Channels, queues, and image optimization are [on the platform roadmap](/blog/durable-channels-built-in) |
 | Release phase          | [`release` field in tako.toml](/blog/the-release-command-database-migrations-during-deploy) — runs on the leader server, blocks rollout on failure                            |

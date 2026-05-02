@@ -30,7 +30,7 @@ pub struct RuntimeDef {
 /// Package manager definition embedded in a runtime definition.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PackageManagerDef {
-    /// Binary/runtime package manager id (for example: "bun", "npm", "deno").
+    /// Binary/runtime package manager id (for example: "bun" or "npm").
     #[serde(default)]
     pub id: String,
 

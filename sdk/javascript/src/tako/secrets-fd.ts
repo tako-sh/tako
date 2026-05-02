@@ -10,10 +10,10 @@
  * `loadSecrets` re-export stays free of `node:fs` in consumer graphs.
  */
 
-import { closeSync, fstatSync, openSync, readFileSync } from "node:fs";
+import { closeSync, fstatSync, readFileSync } from "node:fs";
 import { injectBootstrap } from "./secrets";
 
-/** Bun + Node: read the envelope from the inherited fd 3 directly. */
+/** Read the envelope from the inherited fd 3 directly. */
 export function readViaInheritedFd(): string | null {
   try {
     // Guard against blocking on a non-Tako inherited fd (e.g. GitHub Actions).
@@ -25,21 +25,6 @@ export function readViaInheritedFd(): string | null {
   } catch {
     return null;
   }
-}
-
-/** Deno: open fd 3 via `/proc/self/fd/3` (Linux) or `/dev/fd/3` (macOS). */
-export function readViaProcSelfFd(): string | null {
-  for (const path of ["/proc/self/fd/3", "/dev/fd/3"]) {
-    try {
-      const fd = openSync(path, "r");
-      const data = readFileSync(fd, "utf-8");
-      closeSync(fd);
-      return data;
-    } catch {
-      // Try next path.
-    }
-  }
-  return null;
 }
 
 /** Run a reader, parse the JSON envelope, and populate token + secrets. */

@@ -74,4 +74,4 @@ Enqueue a multi-step durable workflow, publish to a live channel, send a `signal
 
 Tako's goal for Next.js is for it to feel like any other fetch handler: [`withTako()`](/docs/framework-guides#nextjs) in your config, a generated [`tako.gen.ts`](/blog/typegen-and-the-ambient-tako-global) for typed runtime state and secrets, and now `instrumentation.ts` for the piece the child-process model made awkward. No monkeypatching, no framework globals, no `TakoServer` wrapper object — just Next.js's own lifecycle hook calling one SDK function.
 
-Same backend primitives, same deploy flow, same SDK — [`tako deploy`](/docs/deployment) still rolls a Next.js app exactly like a Bun or Deno one. The [CLI reference](/docs/cli) and [framework guides](/docs/framework-guides) cover the rest.
+Same backend primitives, same deploy flow, same SDK — [`tako deploy`](/docs/deployment) still rolls a Next.js app exactly like any other Node/Bun app. The [CLI reference](/docs/cli) and [framework guides](/docs/framework-guides) cover the rest.

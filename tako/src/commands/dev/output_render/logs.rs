@@ -137,7 +137,7 @@ const SCOPE_PALETTE: &[(u8, u8, u8)] = &[
 
 static APP_RUNTIME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
-/// Record the project runtime (e.g. "bun", "node", "deno", "go") so the "app"
+/// Record the project runtime (e.g. "bun", "node", "go") so the "app"
 /// scope can be tinted with the runtime's brand color. Idempotent; first call wins.
 pub(in crate::commands::dev) fn set_app_runtime(runtime: impl Into<String>) {
     let _ = APP_RUNTIME.set(runtime.into());
@@ -186,7 +186,6 @@ fn runtime_gradient(runtime: &str) -> Option<&'static [(u8, u8, u8)]> {
     match runtime {
         "bun" => Some(&[(251, 240, 223), (244, 113, 181)]),
         "node" => Some(&[(60, 135, 58), (140, 200, 75)]),
-        "deno" => Some(&[(60, 200, 140), (112, 255, 175)]),
         "go" => Some(&[(0, 173, 216), (93, 201, 226)]),
         _ => None,
     }

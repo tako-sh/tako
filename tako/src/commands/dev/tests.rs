@@ -13,11 +13,11 @@ fn resolve_dev_preset_ref_uses_build_adapter_override_when_preset_is_missing() {
     let temp = TempDir::new().unwrap();
     std::fs::write(temp.path().join("package.json"), r#"{"name":"demo"}"#).unwrap();
     let cfg = TakoToml {
-        runtime: Some("deno".to_string()),
+        runtime: Some("node".to_string()),
         ..Default::default()
     };
 
-    assert_eq!(resolve_dev_preset_ref(temp.path(), &cfg).unwrap(), "deno");
+    assert_eq!(resolve_dev_preset_ref(temp.path(), &cfg).unwrap(), "node");
 }
 
 #[test]
@@ -355,18 +355,6 @@ fn resolve_dev_worker_command_node_uses_strip_types_and_worker_entrypoint() {
     assert!(
         cmd.iter()
             .any(|a| a.contains("entrypoints/node-worker.mjs"))
-    );
-}
-
-#[test]
-fn resolve_dev_worker_command_deno_points_at_deno_worker() {
-    let temp = TempDir::new().unwrap();
-    std::fs::create_dir_all(temp.path().join("workflows")).unwrap();
-    let cmd = resolve_dev_worker_command(temp.path(), BuildAdapter::Deno).unwrap();
-    assert_eq!(cmd[0], "deno");
-    assert!(
-        cmd.iter()
-            .any(|a| a.contains("entrypoints/deno-worker.mjs"))
     );
 }
 

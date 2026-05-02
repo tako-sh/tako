@@ -1,6 +1,6 @@
 //! Runtime version management via direct binary download.
 //!
-//! Downloads runtime binaries (bun, node, deno) directly from upstream releases
+//! Downloads runtime binaries directly from upstream releases
 //! using the `[download]` spec in runtime TOML definitions. Replaces the previous
 //! proto-based implementation.
 

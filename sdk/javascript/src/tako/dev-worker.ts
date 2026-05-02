@@ -1,5 +1,5 @@
 /**
- * Shared helper for dev entrypoints (bun-dev / node-dev / deno-dev) that
+ * Shared helper for dev entrypoints (bun-dev / node-dev) that
  * boot the workflow worker in the same process as the HTTP server.
  *
  * Worker-side logs (anything printed during `bootstrapWorker()`) are

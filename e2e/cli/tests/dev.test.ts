@@ -1,5 +1,5 @@
 /**
- * E2E tests for `tako dev` - runs against real fixtures (bun, node, deno).
+ * E2E tests for `tako dev` - runs against real fixtures.
  * Skipped unless TAKO_DEV_E2E=1 is set.
  */
 import { describe, test, expect } from "bun:test";
@@ -124,8 +124,6 @@ async function waitForAppPid(lf: string, timeoutMs = 30_000): Promise<number> {
 }
 
 describe.skipIf(SKIP)("tako dev fixtures", () => {
-  // Deno resolves node_modules differently (downloads from npm, ignores symlinks).
-  // Skip until we have a proper SDK install for deno fixtures.
   for (const runtime of ["bun", "node"]) {
     test(`${runtime}: starts and serves HTTP`, async () => {
       const { tempDir, pd, lf } = prepareFixture(runtime);

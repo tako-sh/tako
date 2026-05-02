@@ -114,10 +114,7 @@ fn resolve_js_preset_main_for_project(
     runtime_adapter: BuildAdapter,
     preset_main: &str,
 ) -> Option<String> {
-    if !matches!(
-        runtime_adapter,
-        BuildAdapter::Bun | BuildAdapter::Node | BuildAdapter::Deno
-    ) {
+    if !matches!(runtime_adapter, BuildAdapter::Bun | BuildAdapter::Node) {
         return None;
     }
 
@@ -511,13 +508,13 @@ mod tests {
     }
 
     #[test]
-    fn resolve_deploy_main_applies_index_fallback_for_deno() {
+    fn resolve_deploy_main_applies_index_fallback_for_node() {
         let temp = TempDir::new().unwrap();
         std::fs::write(temp.path().join("index.ts"), "export {};\n").unwrap();
 
         let resolved = resolve_deploy_main(
             temp.path(),
-            BuildAdapter::Deno,
+            BuildAdapter::Node,
             &TakoToml::default(),
             Some("src/index.ts"),
         )

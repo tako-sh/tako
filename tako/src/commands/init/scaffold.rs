@@ -57,7 +57,7 @@ pub(super) fn preset_default_main(
     group_presets: &[PresetDefinition],
 ) -> Option<String> {
     match preset_ref {
-        "bun" | "node" | "deno" => {
+        "bun" | "node" => {
             let def = adapter.runtime_def()?;
             def.preset.main
         }
@@ -170,7 +170,6 @@ pub(super) fn generate_template(params: &TemplateParams<'_>) -> String {
     let preset_example = match runtime {
         Some("bun") => "tanstack-start",
         Some("node") => "my-node-preset",
-        Some("deno") => "my-deno-preset",
         _ => "my-preset",
     };
     let preset_line = if let Some(preset_ref) = preset_ref {

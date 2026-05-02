@@ -87,7 +87,7 @@ preset = "tanstack-start"
 main = "dist/server/tako-entry.mjs"
 ```
 
-`runtime` selects the runtime plugin. Supported values are `bun`, `node`, `deno`, and `go`.
+`runtime` selects the runtime plugin. Supported values are `bun`, `node`, and `go`.
 
 `runtime_version` pins the runtime version used during deploy. If omitted, deploy runs `<runtime> --version` locally and falls back to `latest`.
 
@@ -192,7 +192,6 @@ Common runtime vars include:
 - `TAKO_DATA_DIR`
 - `NODE_ENV` for JavaScript runtimes
 - `BUN_ENV` for Bun
-- `DENO_ENV` for Deno
 
 Secrets do not live in `tako.toml`; use `tako secrets`.
 

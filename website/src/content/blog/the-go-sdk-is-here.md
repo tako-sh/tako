@@ -62,7 +62,7 @@ The Go SDK speaks the exact same [Tako protocol](/docs/how-tako-works) as the Ja
 | Graceful shutdown | Catches SIGTERM/SIGINT, drains in-flight requests for 10 seconds         |
 | Metadata          | `tako.InstanceID()`, `tako.Version()`, `tako.Uptime()` for observability |
 
-The server doesn't care whether the process behind the socket is Go, Bun, Node, or Deno. It just waits for `TAKO:READY`, probes `/status`, and routes traffic. One protocol, any language.
+The server doesn't care whether the process behind the socket is Go, Bun, or Node. It just waits for `TAKO:READY`, probes `/status`, and routes traffic. One protocol, focused runtimes.
 
 ## Type-Safe Secrets
 

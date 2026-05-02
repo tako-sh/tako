@@ -20,10 +20,6 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
   && npm install -g pnpm \
   && rm -rf /var/lib/apt/lists/*
 
-# Deno (for deno fixtures)
-RUN curl -fsSL https://deno.land/install.sh | sh \
-  && ln -s /root/.deno/bin/deno /usr/local/bin/deno
-
 # Go (for go fixtures)
 RUN ARCH="$(dpkg --print-architecture)" \
   && curl --fail --show-error --location --retry 5 --retry-all-errors --retry-delay 2 \

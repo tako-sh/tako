@@ -1,10 +1,8 @@
 /**
  * Creates a Tako entrypoint for any JS runtime.
  *
- * Each runtime-specific entrypoint (bun-server.ts, node-server.ts,
- * deno-server.ts) wires its own fd-reading impls for secrets and
- * readiness signaling, then calls `createEntrypoint` which handles the
- * runtime-agnostic boot flow.
+ * Each runtime-specific entrypoint calls `createEntrypoint` which handles
+ * the runtime-agnostic boot flow.
  *
  * CLI args (appended by tako-server):
  *   <main> --instance <id>
@@ -18,14 +16,6 @@ import { bootstrapChannels } from "../channels/bootstrap";
 import type { ChannelRegistry } from "../channels";
 import { initServerRuntime } from "./init";
 import type { FetchFunction, ReadyableFetchHandler, TakoStatus } from "../types";
-
-export interface EntrypointOptions {
-  /**
-   * How to signal the resolved port back to tako-server on an inherited
-   * fd. Default works for Bun and Node; Deno overrides via `/proc/self/fd`.
-   */
-  signalReadyPortOnFd?: (fd: number, port: number) => void;
-}
 
 /** Exported for tests and for runtime entrypoints that want the default impl. */
 export const signalReadyPortOnFd = writeViaInheritedFd;
@@ -56,9 +46,8 @@ function parseArgs(argv: string[]): ParsedArgs {
   return { main, instance };
 }
 
-export function createEntrypoint(options: EntrypointOptions = {}) {
-  const signalReadyOnFd = options.signalReadyPortOnFd ?? writeViaInheritedFd;
-  const signalReadyPort = (port: number): void => signalReadyOnFd(4, port);
+export function createEntrypoint() {
+  const signalReadyPort = (port: number): void => writeViaInheritedFd(4, port);
 
   const parsed = parseArgs(process.argv);
   const port = parseInt(process.env["PORT"] || "3000", 10);
