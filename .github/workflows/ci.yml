@@ -266,7 +266,12 @@ jobs:
 
       - name: Install D2
         if: steps.changes.outputs.website == 'true'
-        run: curl -fsSL https://d2lang.com/install.sh | sh -s --
+        env:
+          D2_VERSION: v0.7.1
+        run: |
+          curl -fsSLO "https://github.com/terrastruct/d2/releases/download/${D2_VERSION}/d2-${D2_VERSION}-linux-amd64.tar.gz"
+          tar -xzf "d2-${D2_VERSION}-linux-amd64.tar.gz"
+          sudo make -sC "d2-${D2_VERSION}" install
 
       - name: Typecheck website
         if: steps.changes.outputs.website == 'true'

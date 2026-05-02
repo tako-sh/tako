@@ -185,14 +185,18 @@ impl Routes {
             .collect()
     }
 
-    pub async fn wait_for_active(&self, app_id: &str, timeout: std::time::Duration) -> bool {
+    pub async fn wait_for_active_port(
+        &self,
+        app_id: &str,
+        timeout: std::time::Duration,
+    ) -> Option<u16> {
         let notify = {
             let apps = self.apps.lock().unwrap();
             let Some(r) = apps.get(app_id) else {
-                return false;
+                return None;
             };
             if r.active {
-                return true;
+                return Some(r.upstream_port);
             }
             r.notify.clone()
         };
@@ -204,7 +208,8 @@ impl Routes {
         notified.as_mut().enable();
         let _ = tokio::time::timeout(timeout, notified).await;
         let apps = self.apps.lock().unwrap();
-        apps.get(app_id).is_some_and(|r| r.active)
+        apps.get(app_id)
+            .and_then(|r| r.active.then_some(r.upstream_port))
     }
 
     /// Rebuild the compiled route table from all app_routes.
@@ -279,7 +284,7 @@ impl ProxyHttp for DevProxy {
             return crate::dev_channels::try_handle(session, &self.channels, &path, &method).await;
         }
 
-        let Some((app_id, port, active, _notify)) = self.routes.lookup(&hostname, &path) else {
+        let Some((app_id, mut port, active, _notify)) = self.routes.lookup(&hostname, &path) else {
             let mut header = ResponseHeader::build(421, None)?;
             header.insert_header("Content-Type", "text/plain")?;
             session
@@ -310,11 +315,11 @@ impl ProxyHttp for DevProxy {
         };
 
         if !active {
-            let ready = self
+            let ready_port = self
                 .routes
-                .wait_for_active(&app_id, std::time::Duration::from_secs(30))
+                .wait_for_active_port(&app_id, std::time::Duration::from_secs(30))
                 .await;
-            if !ready {
+            let Some(active_port) = ready_port else {
                 let mut header = ResponseHeader::build(503, None)?;
                 header.insert_header("Content-Type", "text/plain")?;
                 session
@@ -324,7 +329,8 @@ impl ProxyHttp for DevProxy {
                     .write_response_body(Some("Starting…".into()), true)
                     .await?;
                 return Ok(true);
-            }
+            };
+            port = active_port;
         }
 
         ctx.upstream_port = Some(port);
@@ -399,7 +405,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn routes_waits_for_active() {
+    async fn routes_waits_for_active_port() {
         let routes = Routes::default();
         routes.set_routes("app".to_string(), vec!["a.test".to_string()], 1234, false);
 
@@ -409,11 +415,29 @@ mod tests {
             r2.set_active("app", true);
         });
 
-        assert!(
+        assert_eq!(
             routes
-                .wait_for_active("app", std::time::Duration::from_secs(1))
-                .await
+                .wait_for_active_port("app", std::time::Duration::from_secs(1))
+                .await,
+            Some(1234)
         );
+    }
+
+    #[tokio::test]
+    async fn wait_for_active_port_returns_refreshed_port() {
+        let routes = Routes::default();
+        routes.set_routes("app".to_string(), vec!["app.test".to_string()], 0, false);
+
+        let r2 = routes.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            r2.activate_with_port("app", 4321);
+        });
+
+        let port = routes
+            .wait_for_active_port("app", std::time::Duration::from_secs(1))
+            .await;
+        assert_eq!(port, Some(4321));
     }
 
     #[test]
