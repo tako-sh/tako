@@ -1,6 +1,8 @@
 ---
+import { Image } from "astro:assets";
 import BaseLayout from "./BaseLayout.astro";
 import { createCanonicalUrl, normalizeCanonicalPath } from "../utils/canonical";
+import { BLOG_IMAGE_DIMENSIONS } from "../utils/blog-image-dimensions";
 
 const authors: Record<string, { name: string; link: string }> = {
   dan: { name: "Dan Lilienblum", link: "https://x.com/lilienblum" },
@@ -22,7 +24,8 @@ const date = Astro.props.date ?? "";
 const authorId = Astro.props.author ?? "";
 const { name: author, link: authorLink } = authors[authorId] ?? defaultAuthor;
 const rawImage = Astro.props.image ?? "";
-const image = rawImage ? `/assets/blog/${rawImage}.webp` : "";
+const image = rawImage ? `/assets/blog/${rawImage}.avif` : "";
+const imageDimensions = rawImage ? BLOG_IMAGE_DIMENSIONS[rawImage] : undefined;
 const imageAlt = Astro.props.imageAlt ?? title;
 const description = Astro.props.description ?? title;
 const slug = normalizeCanonicalPath(Astro.url.pathname).replace(/\/$/, "").replace(/^\/blog\//, "").replace(/^\//, "");
@@ -59,14 +62,27 @@ const formatted = date
       day: "numeric",
     })
   : "";
+
+if (rawImage && !imageDimensions) {
+  throw new Error(`Missing blog image dimensions for ${rawImage}`);
+}
 ---
 <BaseLayout title={`${title} - Tako Blog`} description={description} image={ogImage} type="article">
   {date && <meta slot="head" property="article:published_time" content={date} />}
   {author && <meta slot="head" property="article:author" content={author} />}
   <script is:inline slot="head" type="application/ld+json" set:html={jsonLd} />
   <section class={`blog-sheet ${image ? "has-hero" : ""}`}>
-    {image && (
-      <div class="blog-hero"><img src={image} alt={imageAlt} loading="eager" fetchpriority="high" /></div>
+    {image && imageDimensions && (
+      <div class="blog-hero">
+        <Image
+          src={image}
+          alt={imageAlt}
+          width={imageDimensions.width}
+          height={imageDimensions.height}
+          loading="eager"
+          fetchpriority="high"
+        />
+      </div>
     )}
     <div class="blog-top">
       <a href="/blog" class="blog-back">&larr; back</a>

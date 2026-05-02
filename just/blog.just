@@ -36,12 +36,12 @@ img file="":
     if [ "$cur_w" -gt "$max_w" ]; then
         sips --resampleWidth "$max_w" "$tmp_src" --out "$tmp_src" >/dev/null 2>&1
     fi
-    # Convert to webp
-    tmp=$(mktemp /tmp/blog-img-XXXXXX).webp
-    cwebp -q 85 "$tmp_src" -o "$tmp" >/dev/null 2>&1
+    # Convert to avif
+    tmp=$(mktemp /tmp/blog-img-XXXXXX).avif
+    avifenc -q 62 -s 4 "$tmp_src" "$tmp" >/dev/null 2>&1
     rm "$tmp_src"
     id=$(shasum -a 256 "$tmp" | cut -c1-12)
-    out="$root/website/public/assets/blog/${id}.webp"
+    out="$root/website/public/assets/blog/${id}.avif"
     mv "$tmp" "$out"
     rm "$src"
     # Find the most recent blog post and patch it

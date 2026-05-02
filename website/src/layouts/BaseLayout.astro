@@ -1,4 +1,5 @@
 ---
+import { Image } from "astro:assets";
 import NavLinks from "../components/NavLinks.astro";
 import StarIcon from "lucide-astro/Star";
 import PostHog from "../components/posthog.astro";
@@ -559,7 +560,7 @@ const pageStructuredData = structuredData
         <div class="container">
           <div class="header-inner">
             <a href="/" class="logo" aria-label="Tako home">
-              <img src="/assets/logo.svg" alt="" aria-hidden="true" />
+              <Image src="/assets/logo.svg" alt="" width={30} height={30} loading="eager" aria-hidden="true" />
               <span id="logo-text"></span>
             </a>
             <nav class="nav nav-links desktop-nav">

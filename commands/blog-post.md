@@ -42,7 +42,7 @@ image: 9q15scNA
 
 The `description` field is **required** — it populates `<meta name="description">`, Open Graph, Twitter cards, and the blog listing page. Write it as a standalone sentence that makes sense in search results and social shares. Keep it under 160 characters.
 
-Hero images go in `website/public/assets/blog/` as `.webp` files. The `image` field is just the ID (no extension). Use `just blog::img` to convert and import from Downloads. Landscape orientation (roughly 16:9). `just blog::img` handles resizing and conversion — it preserves the original aspect ratio and the site's layout displays the hero in a centered, boxed frame (max 640×360). The `image` field is optional — omit it if no image is available.
+Hero images go in `website/public/assets/blog/` as `.avif` files. The `image` field is just the ID (no extension). Use `just blog::img` to convert and import from Downloads. Landscape orientation (roughly 16:9). `just blog::img` handles resizing and conversion — it preserves the original aspect ratio and the site's layout displays the hero in a centered, boxed frame (max 640×360). The `image` field is optional — omit it if no image is available.
 
 Guidelines:
 
@@ -75,7 +75,7 @@ Combined with multi-server environments and Cloudflare Argo smart routing, Tako 
 
 ### Step 2b — Image prompt
 
-Add an HTML comment right after the frontmatter with a ChatGPT image generation prompt. The user will paste it into ChatGPT, download the result, then run `just blog::img` to convert to webp and import it.
+Add an HTML comment right after the frontmatter with a ChatGPT image generation prompt. The user will paste it into ChatGPT, download the result, then run `just blog::img` to convert to AVIF and import it.
 
 Format:
 
@@ -178,7 +178,7 @@ If the answer to "what moment?" is fuzzy, stop and pick one before writing the s
 
 After writing the post, copy the image prompt text (everything between the `<!-- IMAGE PROMPT` and `-->` markers, excluding the markers themselves) to the clipboard using `pbcopy`. Then remind the user to **attach `website/public/assets/logo.svg` as an image input** to the ChatGPT message alongside the pasted prompt — ChatGPT's image gen can't fetch URLs, so the SVG must be attached directly to ground the octopus on the real logo.
 
-After the user downloads the image, they run `just blog::img` which resizes (capped at 1400px wide, aspect ratio preserved), converts to webp, and outputs the hash ID to put in the `image:` frontmatter field.
+After the user downloads the image, they run `just blog::img` which resizes (capped at 1400px wide, aspect ratio preserved), converts to AVIF, and outputs the hash ID to put in the `image:` frontmatter field.
 
 ### Step 3 — Verify
 
