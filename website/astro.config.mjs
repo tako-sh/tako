@@ -13,21 +13,23 @@ const pagesRoot = fileURLToPath(new URL("./src/pages", import.meta.url));
 const contentRoot = fileURLToPath(new URL("./src/content", import.meta.url));
 const defaultLastModified = statSync(path.join(websiteRoot, "public")).mtime;
 
-function normalizeRoutePath(pathname) {
+function normalizeCanonicalPath(pathname) {
   if (pathname === "/" || pathname === "/index.html") {
     return "/";
   }
 
   if (pathname.endsWith("/index.html")) {
-    return pathname.slice(0, -"/index.html".length) || "/";
+    const directoryPath = pathname.slice(0, -"/index.html".length);
+    return directoryPath.endsWith("/") ? directoryPath : `${directoryPath}/`;
   }
 
   if (pathname.endsWith(".html")) {
     return pathname.slice(0, -".html".length) || "/";
   }
 
-  if (pathname.length > 1 && pathname.endsWith("/")) {
-    return pathname.slice(0, -1);
+  const segment = pathname.split("/").pop() ?? "";
+  if (pathname.length > 1 && !pathname.endsWith("/") && !segment.includes(".")) {
+    return `${pathname}/`;
   }
 
   return pathname;
@@ -63,7 +65,7 @@ function toRoutePath(filePath) {
     return routePath;
   }
 
-  return normalizeRoutePath(routePath);
+  return normalizeCanonicalPath(routePath);
 }
 
 const pageLastModified = new Map(
@@ -81,7 +83,10 @@ for (const filePath of walkFiles(contentRoot)) {
   const match = rel.match(/^(\w+)\/(.+)\.\w+$/);
   if (match) {
     const [, collection, slug] = match;
-    pageLastModified.set(`/${collection}/${slug}`, statSync(filePath).mtime);
+    pageLastModified.set(
+      normalizeCanonicalPath(`/${collection}/${slug}`),
+      statSync(filePath).mtime,
+    );
   }
 }
 
@@ -118,7 +123,7 @@ export default defineConfig({
     sitemap({
       serialize(item) {
         const itemUrl = new URL(item.url);
-        const pathname = normalizeRoutePath(itemUrl.pathname);
+        const pathname = normalizeCanonicalPath(itemUrl.pathname);
         itemUrl.pathname = pathname;
         return {
           ...item,
