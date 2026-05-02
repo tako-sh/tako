@@ -2,6 +2,7 @@
 import BaseLayout from "../layouts/BaseLayout.astro";
 import CopyButton from "../components/CopyButton.astro";
 import ChevronDownIcon from "lucide-astro/ChevronDown";
+import ExternalLinkIcon from "lucide-astro/ExternalLink";
 
 const homeStructuredData = {
   "@context": "https://schema.org",
@@ -62,6 +63,10 @@ const homeStructuredData = {
     </div>
     <div class="hero-actions">
       <a class="btn btn-primary" href="/docs/quickstart">get started</a>
+      <a class="cta-link hero-actions-link hero-demo-link" href="https://demo.tako.sh" target="_blank" rel="noopener noreferrer">
+        <span>live demo</span>
+        <ExternalLinkIcon class="hero-demo-icon" aria-hidden="true" focusable="false" />
+      </a>
       <a class="cta-link hero-actions-link" href="/docs">or read the docs &rarr;</a>
     </div>
   </section>
@@ -442,13 +447,43 @@ const homeStructuredData = {
   .hero-actions {
     display: flex;
     align-items: center;
-    gap: 18px;
+    gap: 10px 12px;
     flex-wrap: wrap;
     margin-top: 18px;
   }
 
   .hero-actions-link {
     font-size: 15px;
+  }
+
+  .hero-demo-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-height: 45px;
+    padding: 0 18px;
+    border: 1.5px solid rgba(47, 42, 68, 0.18);
+    border-radius: 999px;
+    background: rgba(255, 249, 244, 0.72);
+    box-shadow: inset 0 0 0 1px rgba(255, 249, 244, 0.55);
+    font-weight: 700;
+    opacity: 1;
+    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+  }
+
+  .hero-demo-link:hover {
+    transform: translateY(-1px);
+    border-color: rgba(155, 196, 182, 0.72);
+    background: rgba(219, 235, 230, 0.62);
+    color: var(--ink);
+    box-shadow: 0 5px 14px rgba(80, 113, 102, 0.14);
+  }
+
+  .hero-demo-icon {
+    width: 0.95em;
+    height: 0.95em;
+    stroke-width: 2.4;
   }
 
   .btn {
@@ -1049,6 +1084,25 @@ const homeStructuredData = {
 
     .hero-actions {
       margin-top: 4px;
+      gap: 8px 10px;
+    }
+
+    .hero-actions .btn-primary {
+      flex: 1 1 145px;
+      min-width: 145px;
+    }
+
+    .hero-demo-link {
+      flex: 1 1 145px;
+      min-width: 145px;
+    }
+
+    .hero-actions-link:not(.hero-demo-link) {
+      flex-basis: 100%;
+      margin-top: 0;
+      font-size: 14px;
+      opacity: 0.62;
+      text-align: center;
     }
 
     .workflow-link {

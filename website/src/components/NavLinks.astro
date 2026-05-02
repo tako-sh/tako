@@ -1,10 +1,15 @@
 ---
 import StarIcon from "lucide-astro/Star";
 import CloudIcon from "lucide-astro/Cloud";
+import ExternalLinkIcon from "lucide-astro/ExternalLink";
 ---
 
 <a href="/docs">docs</a>
 <a href="/blog">blog</a>
+<a href="https://demo.tako.sh" target="_blank" rel="noopener noreferrer" class="demo-link">
+  <span>demo</span>
+  <ExternalLinkIcon class="demo-icon" aria-hidden="true" focusable="false" />
+</a>
 <a href="https://www.youtube.com/watch?v=dQw4w9WgXcQ" target="_blank" rel="noopener noreferrer" class="cloud-link">
   <CloudIcon class="cloud-icon" aria-hidden="true" focusable="false" />
   <span>cloud</span>
