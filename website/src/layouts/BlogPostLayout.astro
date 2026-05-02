@@ -32,6 +32,8 @@ const slug = normalizeCanonicalPath(Astro.url.pathname).replace(/\/$/, "").repla
 const ogPath = `/assets/blog/og/${slug}.png`;
 const ogImage = new URL(ogPath, Astro.site).href;
 const canonicalURL = createCanonicalUrl(Astro.url.pathname, Astro.site).href;
+const markdownURL = new URL(`/blog/${slug}.md`, Astro.site).href;
+const jsonURL = new URL(`/blog/${slug}.json`, Astro.site).href;
 
 const jsonLd = JSON.stringify({
   "@context": "https://schema.org",
@@ -70,6 +72,8 @@ if (rawImage && !imageDimensions) {
 <BaseLayout title={`${title} - Tako Blog`} description={description} image={ogImage} type="article">
   {date && <meta slot="head" property="article:published_time" content={date} />}
   {author && <meta slot="head" property="article:author" content={author} />}
+  <link slot="head" rel="alternate" type="text/markdown" href={markdownURL} />
+  <link slot="head" rel="alternate" type="application/json" href={jsonURL} />
   <script is:inline slot="head" type="application/ld+json" set:html={jsonLd} />
   <section class={`blog-sheet ${image ? "has-hero" : ""}`}>
     {image && imageDimensions && (

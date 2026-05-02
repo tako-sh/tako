@@ -17,6 +17,8 @@ Astro static site deployed with Cloudflare Workers static assets.
 - `/install.sh`: `301` redirect to GitHub-hosted POSIX `sh` installer script for `tako`
 - `/install-server.sh`: `301` redirect to GitHub-hosted POSIX `sh` installer script for `tako-server`
 - `/server-install.sh`: alias for `/install-server.sh` (same redirect target)
+- `/blog/{slug}.md`: authored Markdown for a blog post
+- `/blog/{slug}.json`: structured blog post data, including frontmatter, headings, and Markdown
 
 Installer redirects are configured in `public/_redirects` (Cloudflare static assets redirects). Agent-discovery `Link` response headers (RFC 8288) are configured in `public/_headers`.
 
@@ -25,7 +27,7 @@ Installer redirects are configured in `public/_redirects` (Cloudflare static ass
 - `_headers` — RFC 8288 `Link` headers pointing agents at docs, `llms.txt`, and the sitemap
 - `public/.well-known/http-message-signatures-directory` — Web Bot Auth JWKS (Ed25519 public key)
 - `public/.well-known/agent-skills/` — Agent Skills Discovery v0.2.0 index + `SKILL.md` copies; regenerated from `sdk/javascript/skills/` by `scripts/sync-agent-skills.ts` on each build
-- `src/worker.ts` — serves markdown twins (`Content-Type: text/markdown`, `x-markdown-tokens`) when requests include `Accept: text/markdown`. Sibling `.md` files are emitted alongside each built HTML file by `scripts/emit-markdown.ts`.
+- Blog posts expose explicit `.md` and `.json` endpoints from `src/pages/blog/`.
 - WebMCP tools (`navigator.modelContext.provideContext`) registered in `src/layouts/BaseLayout.astro` — `navigateToDocs`, `searchDocs`, `getStartedCommand`, `getInstallCommand`. Feature-detected, silently no-ops in browsers without the API.
 
 ## Run Locally
