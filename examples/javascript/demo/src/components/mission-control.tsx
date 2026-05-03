@@ -46,19 +46,29 @@ export function MissionControl({
   const baseName = formatBaseName(tenantSlug);
 
   return (
-    <div className="flex h-dvh flex-col overflow-hidden antialiased">
+    <div
+      className="
+        flex min-h-dvh flex-col antialiased
+        lg:h-dvh lg:overflow-hidden
+      "
+    >
       <TopAppBar baseName={baseName} homeHref={`${rootOrigin}/`} />
-      <div className="flex flex-1 overflow-hidden">
+      <div
+        className="
+          flex flex-1
+          lg:overflow-hidden
+        "
+      >
         <main
           className="
-            relative flex flex-1 flex-col overflow-hidden
-            lg:flex-row
+            relative flex flex-1 flex-col
+            lg:flex-row lg:overflow-hidden
           "
         >
           <div
             className="
-              relative flex-1 space-y-6 overflow-y-auto p-5
-              md:p-8
+              relative flex-1 space-y-6 p-5
+              md:p-8 lg:overflow-y-auto
             "
           >
             <TenantHeader baseName={baseName} requests={inFlight} />

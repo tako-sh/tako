@@ -1,4 +1,11 @@
-import { ArrowRightIcon, CodeIcon, StackIcon, NetworkIcon, RadioIcon } from "@phosphor-icons/react";
+import {
+  ArrowRightIcon,
+  ArrowSquareOutIcon,
+  CodeIcon,
+  StackIcon,
+  NetworkIcon,
+  RadioIcon,
+} from "@phosphor-icons/react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -180,16 +187,19 @@ export function Landing({ rootHost }: Props) {
               icon={<StackIcon className="size-4" aria-hidden="true" />}
               label="Multi-tenancy"
               body="Every subdomain is an isolated tenant. Tako routes wildcard hosts to one app and exposes the tenant via Host."
+              sourcePath="tako.toml"
             />
             <Feature
               icon={<NetworkIcon className="size-4" aria-hidden="true" />}
               label="Durable workflows"
-              body="One supply request fans out into six resumable steps. Server crashes mid-launch? The workflow picks up where it left off."
+              body="One supply request fans out into five resumable steps. Server crashes mid-launch? The workflow picks up where it left off."
+              sourcePath="workflows/order-shipment.ts"
             />
             <Feature
               icon={<RadioIcon className="size-4" aria-hidden="true" />}
               label="Live channels"
               body="Workflow steps publish to a channel. Every connected client sees the stream — no polling, no reconnect logic in app code."
+              sourcePath="channels/mission-log.ts"
             />
           </div>
 
@@ -241,7 +251,20 @@ export function Landing({ rootHost }: Props) {
   );
 }
 
-function Feature({ icon, label, body }: { icon: React.ReactNode; label: string; body: string }) {
+function Feature({
+  icon,
+  label,
+  body,
+  sourcePath,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  body: string;
+  sourcePath: string;
+}) {
+  const sourceUrl = `${GITHUB_BASE}/${sourcePath}`;
+  const filename = sourcePath.split("/").pop() ?? sourcePath;
+
   return (
     <Card size="sm">
       <CardHeader>
@@ -264,6 +287,19 @@ function Feature({ icon, label, body }: { icon: React.ReactNode; label: string; 
       </CardHeader>
       <CardContent>
         <p className="text-xs/relaxed text-muted-foreground">{body}</p>
+        <a
+          href={sourceUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="
+            mt-3 inline-flex items-center gap-1 font-mono text-[10px]
+            tracking-widest text-primary/90 uppercase
+            hover:text-primary
+          "
+        >
+          {filename}
+          <ArrowSquareOutIcon className="size-3" aria-hidden="true" />
+        </a>
       </CardContent>
     </Card>
   );

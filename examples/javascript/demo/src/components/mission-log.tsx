@@ -13,9 +13,9 @@ export const MissionLog = memo(function MissionLog({ events, connected }: Props)
   return (
     <aside
       className="
-        relative flex h-72 w-full shrink-0 flex-col border-t border-border/50
-        bg-muted/30
-        lg:h-full lg:w-96 lg:border-t-0 lg:border-l lg:bg-card
+        relative flex min-h-80 w-full shrink-0 flex-col border-t
+        border-border/50 bg-muted/30
+        lg:h-full lg:min-h-0 lg:w-96 lg:border-t-0 lg:border-l lg:bg-card
       "
     >
       <header className="flex items-center justify-between px-4 pt-5 pb-3">

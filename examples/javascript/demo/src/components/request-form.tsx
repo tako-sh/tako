@@ -63,7 +63,11 @@ export const RequestForm = memo(function RequestForm({ tenantSlug, submitting, o
               variant="outline"
               disabled={submitting}
               onClick={() => onSubmit({ item: label })}
-              className="h-12 justify-center font-mono tracking-wider uppercase"
+              className="
+                h-12 min-w-0 justify-center font-mono text-[11px]
+                tracking-wider uppercase
+                sm:text-xs
+              "
             >
               {icon}
               {label}
