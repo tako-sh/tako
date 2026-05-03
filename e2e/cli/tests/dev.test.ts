@@ -90,6 +90,33 @@ async function waitForHttpOk(baseUrl: string, lf: string, timeoutMs = 10_000): P
   );
 }
 
+async function postJsonWhenReady(
+  baseUrl: string,
+  path: string,
+  body: unknown,
+  lf: string,
+  timeoutMs = 10_000,
+): Promise<Response> {
+  let last: { status: number; body: string } | null = null;
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const response = await postJson(baseUrl, path, body);
+    if (![502, 503].includes(response.status)) {
+      return response;
+    }
+
+    last = { status: response.status, body: await response.text() };
+    await Bun.sleep(250);
+  }
+
+  throw new Error(
+    `POST ${path} never became ready. Last response: ${last?.status ?? "none"} ${
+      last?.body ?? ""
+    }\nLog:\n${safeRead(lf)}`,
+  );
+}
+
 async function collectSseUntil(
   url: string,
   expected: readonly string[],
@@ -228,11 +255,16 @@ describe.skipIf(SKIP)("tako dev fixtures", () => {
 
       await ready;
 
-      const direct = await postJson(devUrl, "/publish", { message: directMessage });
+      const direct = await postJsonWhenReady(devUrl, "/publish", { message: directMessage }, lf);
       expect(direct.status).toBe(200);
       expect(await direct.json()).toMatchObject({ ok: true });
 
-      const workflow = await postJson(devUrl, "/enqueue", { message: workflowMessage });
+      const workflow = await postJsonWhenReady(
+        devUrl,
+        "/enqueue",
+        { message: workflowMessage },
+        lf,
+      );
       expect(workflow.status).toBe(200);
       expect(await workflow.json()).toMatchObject({ ok: true });
 
