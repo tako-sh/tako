@@ -42,7 +42,7 @@ image: 9q15scNA
 
 The `description` field is **required** — it populates `<meta name="description">`, Open Graph, Twitter cards, and the blog listing page. Write it as a standalone sentence that makes sense in search results and social shares. Keep it under 160 characters.
 
-Hero images go in `website/public/assets/blog/` as `.avif` files. The `image` field is just the ID (no extension). Use `just blog::img` to convert and import from Downloads. Landscape orientation (roughly 16:9). `just blog::img` handles resizing and conversion — it preserves the original aspect ratio and the site's layout displays the hero in a centered, boxed frame (max 640×360). The `image` field is optional — omit it if no image is available.
+Hero images go in `website/public/assets/blog/` as `.avif` files. The `image` field is just the ID (no extension). Generate the hero image directly, resize it to a maximum width of 1400px while preserving aspect ratio, convert it to AVIF with `avifenc -q 62 -s 4`, hash the AVIF with SHA-256, and use the first 12 hex characters as the `image` value. Landscape orientation (roughly 16:9). The site's layout displays the hero in a centered, boxed frame (max 640×360). The `image` field is optional only when image generation is unavailable or the post should intentionally ship without a hero.
 
 Guidelines:
 
@@ -65,7 +65,7 @@ Combined with multi-server environments and Cloudflare Argo smart routing, Tako 
 **Structure & content:**
 
 - **Title**: include the searchable phrase a developer would actually type — concrete nouns (tool names, technologies, actions) belong in the title, not just in the body. "Deploy Node.js without Docker" beats "We ditched the whale." Clever is fine when the clever title still contains the search phrase; lean clever in the opening paragraph, not in the title. "How to X" / "X vs Y" / "Why X does Y" shapes all work — pick whichever fits the post.
-- **Length**: 400-800 words. Say what needs to be said, then stop.
+- **Length**: 1,200-1,500 words. Go deep enough to be genuinely useful, then stop.
 - Short intro paragraph, 2-3 sections with h2 headings, brief closing.
 - Every claim about Tako must be verifiable from SPEC.md or source code.
 - Code examples when they clarify. Use real Tako commands/config, not pseudocode.
@@ -73,31 +73,22 @@ Combined with multi-server environments and Cloudflare Argo smart routing, Tako 
 - **Use tables for structured data.** When comparing tools, listing features, or presenting any data with multiple dimensions, use Markdown tables instead of prose or bullet lists. Tables are easier to scan and make comparisons obvious.
 - **Use D2 diagrams for architecture and flows.** When explaining how components connect, data flows, or multi-step processes, use ` ```d2 ` code blocks. D2 renders to inline SVG at build time via `astro-d2` (sketch mode, Shirley Temple theme). Keep diagrams simple — they should clarify, not overwhelm. Good uses: deploy pipelines, request routing, component relationships. Bad uses: anything that's clearer as a sentence.
 
-### Step 2b — Image prompt
+### Step 2b — Generate and import hero image
 
-Add an HTML comment right after the frontmatter with a ChatGPT image generation prompt. The user will paste it into ChatGPT, download the result, then run `just blog::img` to convert to AVIF and import it.
+Generate the hero image yourself using the image generation tool. Do not leave an `IMAGE PROMPT` comment in the post, do not copy anything to the clipboard, and do not ask the user to download or import the image manually. Use the prompt guidance below to create a post-specific image prompt, generate a wide illustration, convert it to AVIF, update the post's `image:` frontmatter with the generated ID, and keep the original generated source image in place unless the user explicitly asks to delete it.
 
-Format:
+Prompt scaffold:
 
-```markdown
----
-title: "Post Title"
-date: "YYYY-MM-DDTHH:MM"
-description: "SEO description here"
-image:
----
-
-<!-- IMAGE PROMPT (copy-paste this entire block into ChatGPT):
-
+```text
 Generate a wide illustration for a blog post hero image.
 
-Character: A small, simple octopus matching the attached logo image — flat, minimal, no outlines, soft pastel coral pink body with simple dot eyes and a small curved mouth. Not 3D, not shiny, not glossy. Expressive and full of personality — eyes can squint, widen, or glance; the mouth can grin, gasp, or smirk; tentacles are always doing something. Stylized, not realistic, and not hyper-kawaii either.
+Character: A small, simple octopus matching the Tako logo direction — flat, minimal, no outlines, soft pastel coral pink body with simple dot eyes and a small curved mouth. Not 3D, not shiny, not glossy. Expressive and full of personality — eyes can squint, widen, or glance; the mouth can grin, gasp, or smirk; tentacles are always doing something. Stylized, not realistic, and not hyper-kawaii either.
 
 Scene: [This is the most important section. Do not describe a "scene" — describe a STORY MOMENT, but describe it **purely visually, without naming any source**.
 
 The difference: a scene is decorative ("octopus holding three servers"). A story moment is a single frame from a larger narrative the viewer already half-knows — it arrives pre-loaded with tone, stakes, and meaning because the viewer's brain fills in the rest from memory.
 
-**CRITICAL — do not name any real-world source in the scene text.** ChatGPT's image guardrails reject prompts that name copyrighted films, shows, franchises, characters, mascots, living artists, trademarked worlds, or recognizable brand universes — even as "inspired by" or "in the style of." Pick the story moment in your head (and the post draft), then translate it into visual ingredients only: the setting, era, costumes, lighting, poses, props, weather, color of the light. If the reader wouldn't recognize the moment without the name, the description isn't vivid enough — add more specifics rather than bolting the name back on.
+**CRITICAL — do not name any real-world source in the scene text.** Image generation guardrails often reject prompts that name copyrighted films, shows, franchises, characters, mascots, living artists, trademarked worlds, or recognizable brand universes — even as "inspired by" or "in the style of." Pick the story moment in your head (and the post draft), then translate it into visual ingredients only: the setting, era, costumes, lighting, poses, props, weather, color of the light. If the reader wouldn't recognize the moment without the name, the description isn't vivid enough — add more specifics rather than bolting the name back on.
 
 Prefer references that live in public domain or genre-trope territory: classical myths (Atlas, Sisyphus, Icarus), pre-1928 paintings and woodblock prints, historical settings (medieval cathedral build, lighthouse in a storm, old switchboard room, 1960s mission control, a smoke-filled noir detective's office), and generic genre scenes (Formula 1 pit stop, safecracker at a vault dial, symphony conductor mid-downbeat, mountaineers on a summit). Avoid modern films, TV shows, animated features, comic universes, named fictional characters, and any specific living author or artist.
 
@@ -119,7 +110,6 @@ Style requirements:
 - Landscape orientation, roughly 16:9. The image will be displayed in a centered, boxed frame at about 640×360 — no cropping, the original aspect ratio is preserved, so compose the whole frame to be presentable.
 
 Output: a single image in widescreen landscape format.
--->
 ```
 
 The prompt should be specific to the post's topic — not generic. The #1 failure mode is a tidy but lifeless "object + object" composition where the octopus just stands next to some props. The fix is not more motion lines or a better pose — the fix is **telling a story**. A hero image works when it borrows a single frame from a recognizable genre moment and the image arrives pre-loaded with tone, stakes, and meaning. Without a story anchor you're just decorating; with one, you're telling.
@@ -132,7 +122,7 @@ The prompt should be specific to the post's topic — not generic. The #1 failur
 
 **Labels are the fastest bridge for vs-posts.** When a post title contains competitor names ("Tako vs PM2 + Nginx", "Tako vs Kamal", "Tako vs Docker"), those names exist in the world of the image — put them on visible labels: hand-lettered moving boxes, jerseys, clipboards, storefront signs, tool tags, luggage stickers. A labeled prop skips the metaphor hop entirely. The reader sees "PM2" on a box and the image's role in the post is unambiguous. Reserve pure-trope compositions (no labels) for posts where the subject is a concept (scale, security, workflows) rather than a named competitor.
 
-**Then describe it without naming it.** ChatGPT's image guardrails frequently reject prompts that name copyrighted films, characters, franchises, mascots, trademarked worlds, or living artists — including "inspired by" and "in the style of" phrasings. You'll see: _"the prompt may violate our guardrails concerning similarity to third-party content."_ The fix isn't to argue with the guardrail — it's to write the description so vividly in visual terms (setting, era, costumes, lighting, poses, props) that the reference lands through recognition of the visual grammar, not through the proper noun. The picks in the table below are intentionally trope- and public-domain-leaning so this is natural; if you find yourself reaching for a modern film or character, translate it to its setting + costume + prop + pose before writing the prompt.
+**Then describe it without naming it.** Image generation guardrails frequently reject prompts that name copyrighted films, characters, franchises, mascots, trademarked worlds, or living artists — including "inspired by" and "in the style of" phrasings. The fix isn't to argue with the guardrail — it's to write the description so vividly in visual terms (setting, era, costumes, lighting, poses, props) that the reference lands through recognition of the visual grammar, not through the proper noun. The picks in the table below are intentionally trope- and public-domain-leaning so this is natural; if you find yourself reaching for a modern film or character, translate it to its setting + costume + prop + pose before writing the prompt.
 
 **Safe tiers to pull from, in priority order:**
 
@@ -176,9 +166,19 @@ Again: the table is a nudge, not a box. A post about WebSocket channels might bo
 
 If the answer to "what moment?" is fuzzy, stop and pick one before writing the scene. If the squint test fails, pick a moment that shows the post's subject more literally. If the answer to "did I avoid naming anything?" is "no," strip the names and replace them with visual detail.
 
-After writing the post, copy the image prompt text (everything between the `<!-- IMAGE PROMPT` and `-->` markers, excluding the markers themselves) to the clipboard using `pbcopy`. Then remind the user to **attach `website/public/assets/logo.svg` as an image input** to the ChatGPT message alongside the pasted prompt — ChatGPT's image gen can't fetch URLs, so the SVG must be attached directly to ground the octopus on the real logo.
+After generating the image, locate the generated source file, copy it into the import workflow, and convert it the same way the old manual importer did:
 
-After the user downloads the image, they run `just blog::img` which resizes (capped at 1400px wide, aspect ratio preserved), converts to AVIF, and outputs the hash ID to put in the `image:` frontmatter field.
+```bash
+max_w=1400
+cur_w=$(sips -g pixelWidth "$tmp_src" | tail -1 | awk '{print $2}')
+if [ "$cur_w" -gt "$max_w" ]; then
+  sips --resampleWidth "$max_w" "$tmp_src" --out "$tmp_src" >/dev/null 2>&1
+fi
+avifenc -q 62 -s 4 "$tmp_src" "$tmp_avif" >/dev/null 2>&1
+id=$(shasum -a 256 "$tmp_avif" | cut -c1-12)
+```
+
+Move or copy the AVIF to `website/public/assets/blog/${id}.avif`, set `image: ${id}` in the post frontmatter, add its dimensions to `website/src/utils/blog-image-dimensions.ts`, and keep the generated source image in its original generated-images location unless the user explicitly asks to delete it.
 
 ### Step 3 — Verify
 
