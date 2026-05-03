@@ -17,7 +17,7 @@
     "lucide-astro": "^0.556.0"
   },
   "devDependencies": {
-    "@astrojs/check": "^0.9.8",
+    "@astrojs/check": "^0.9.9",
     "@resvg/resvg-js": "catalog:",
     "@tsconfig/strictest": "catalog:dev",
     "@types/bun": "catalog:dev",
