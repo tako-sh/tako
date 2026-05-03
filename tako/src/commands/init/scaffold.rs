@@ -244,6 +244,7 @@ name = "{app_name}"
 route = "{production_route}"
 
 # Development routes are optional; default is `{app_name}.test`.
+# External dev routes are treated as additional host aliases.
 # [envs.development]
 # route = "{app_name}.test"
 

@@ -194,7 +194,7 @@ from the last received message id while it remains inside the replay window.
 
 ## Local Development
 
-`tako dev` talks to a persistent `tako-dev-server` daemon. The daemon owns local HTTPS, `.test` DNS routing, app process lifecycle, logs, wake-on-request, and workflow workers.
+`tako dev` talks to a persistent `tako-dev-server` daemon. The daemon owns local HTTPS, `.test` DNS routing, app process lifecycle, logs, wake-on-request, and workflow workers. Development routes can also include external hostnames when another tool points those hosts at the dev proxy.
 
 Local app URLs are based on the app name:
 

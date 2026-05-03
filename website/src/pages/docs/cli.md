@@ -65,12 +65,12 @@ tako dev --var foo
 
 Interactive shortcuts:
 
-| Key      | Action                                 |
-| -------- | -------------------------------------- |
-| `r`      | Restart the app process.               |
-| `l`      | Toggle LAN mode with `.local` aliases. |
-| `b`      | Background the app and exit the CLI.   |
-| `Ctrl-C` | Stop the app and unregister routes.    |
+| Key      | Action                                                        |
+| -------- | ------------------------------------------------------------- |
+| `r`      | Restart the app process.                                      |
+| `l`      | Toggle LAN mode with `.local` aliases for managed dev routes. |
+| `b`      | Background the app and exit the CLI.                          |
+| `Ctrl-C` | Stop the app and unregister routes.                           |
 
 Subcommands:
 

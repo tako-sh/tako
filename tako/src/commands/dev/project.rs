@@ -24,11 +24,13 @@ pub(super) fn compute_display_routes(
         })
         .collect();
 
-    let mut out = if configured.is_empty() {
+    let has_managed_dev_route = configured.iter().any(|route| is_managed_dev_route(route));
+    let mut out = if configured.is_empty() || !has_managed_dev_route {
         vec![default_host.to_string()]
     } else {
-        configured
+        Vec::new()
     };
+    out.extend(configured);
 
     let mut seen = std::collections::HashSet::new();
     out.retain(|r| seen.insert(r.clone()));
@@ -121,9 +123,19 @@ pub(super) fn compute_dev_hosts(
         }
     }
 
+    if !out.iter().any(|route| is_managed_dev_route(route)) {
+        out.insert(0, default_host.to_string());
+    }
+
     let mut seen = std::collections::HashSet::new();
     out.retain(|r| seen.insert(r.clone()));
     Ok(out)
+}
+
+fn is_managed_dev_route(route: &str) -> bool {
+    let host = route.split('/').next().unwrap_or(route);
+    let host = host.strip_prefix("*.").unwrap_or(host);
+    host.ends_with(&format!(".{}", crate::dev::SHORT_DEV_DOMAIN))
 }
 
 #[cfg(test)]

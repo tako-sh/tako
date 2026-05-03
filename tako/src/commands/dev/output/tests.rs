@@ -336,6 +336,30 @@ fn format_lan_block_lists_concrete_routes_and_preserves_paths() {
 }
 
 #[test]
+fn format_lan_block_excludes_external_routes() {
+    let lines = format_lan_block(
+        &["app.test".to_string(), "tunnel.example.com".to_string()],
+        "http://192.168.1.2/ca.pem",
+    );
+    let plain = strip_ansi(&lines.join("\n"));
+
+    assert!(plain.contains("https://app.local"));
+    assert!(!plain.contains("tunnel.example.com.local"));
+}
+
+#[test]
+fn format_lan_block_has_no_reachable_routes_for_external_only_routes() {
+    let lines = format_lan_block(
+        &["tunnel.example.com".to_string()],
+        "http://192.168.1.2/ca.pem",
+    );
+    let plain = strip_ansi(&lines.join("\n"));
+
+    assert!(plain.contains("No routes are reachable on your local network"));
+    assert!(!plain.contains("tunnel.example.com.local"));
+}
+
+#[test]
 fn format_lan_block_shows_unreachable_message_when_only_wildcards() {
     // When every configured route is a wildcard, there is nothing mDNS can
     // advertise, so the header flips to "no routes are reachable" and the

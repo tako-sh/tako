@@ -43,7 +43,7 @@ fn format_qr_code(url: &str) -> Vec<String> {
 }
 
 /// Convert a `.test` / `.tako.test` route to its `.local` LAN equivalent.
-fn to_local_route(route: &str) -> String {
+fn to_local_route(route: &str) -> Option<String> {
     let (host, path) = split_route_pattern(route);
     let (wildcard, host) = if let Some(rest) = host.strip_prefix("*.") {
         ("*.", rest)
@@ -52,12 +52,11 @@ fn to_local_route(route: &str) -> String {
     };
     let base = host
         .strip_suffix(".tako.test")
-        .or_else(|| host.strip_suffix(".test"))
-        .unwrap_or(host);
-    match path {
+        .or_else(|| host.strip_suffix(".test"))?;
+    Some(match path {
         Some(path) => format!("{wildcard}{base}.local{path}"),
         None => format!("{wildcard}{base}.local"),
-    }
+    })
 }
 
 /// Render a LAN mode block: routes + QR code as a single visual unit.
@@ -71,14 +70,15 @@ pub(in crate::commands::dev) fn format_lan_block(hosts: &[String], ca_url: &str)
     // concrete subdomain needs its own record — so they are excluded from
     // the LAN route list (which would otherwise mislead the user into
     // trying an unreachable URL). Only concrete hostnames are listed.
-    let concrete_hosts: Vec<&String> = hosts
+    let concrete_hosts: Vec<String> = hosts
         .iter()
         .filter(|h| !split_route_pattern(h).0.starts_with("*."))
+        .filter_map(|h| to_local_route(h))
         .collect();
     let wildcard_host = hosts
         .iter()
         .map(|h| split_route_pattern(h).0)
-        .find(|h| h.starts_with("*."));
+        .find(|h| h.starts_with("*.") && to_local_route(h).is_some());
 
     if concrete_hosts.is_empty() {
         out.push(format!(
@@ -91,8 +91,7 @@ pub(in crate::commands::dev) fn format_lan_block(hosts: &[String], ca_url: &str)
             muted("Your app is now available on your local network at these routes")
         ));
         out.push(String::new());
-        for host in &concrete_hosts {
-            let local = to_local_route(host);
+        for local in &concrete_hosts {
             out.push(format!("  {url_color}https://{local}{RESET}"));
         }
     }

@@ -69,6 +69,8 @@ impl Drop for MdnsPublisher {
 ///
 /// Returns `None` for wildcard hostnames (`*.foo.test`) because mDNS cannot
 /// advertise wildcards — each concrete subdomain needs its own record.
+/// Returns `None` for external hostnames because Tako does not own their LAN
+/// DNS shape.
 pub(crate) fn to_mdns_hostname(hostname: &str) -> Option<String> {
     if hostname.starts_with("*.") {
         return None;
@@ -77,8 +79,7 @@ pub(crate) fn to_mdns_hostname(hostname: &str) -> Option<String> {
     // so stripping `.test` would leave a trailing `.tako`.
     let base = hostname
         .strip_suffix(".tako.test")
-        .or_else(|| hostname.strip_suffix(".test"))
-        .unwrap_or(hostname);
+        .or_else(|| hostname.strip_suffix(".test"))?;
     Some(format!("{base}.local"))
 }
 
@@ -149,8 +150,13 @@ mod tests {
     }
 
     #[test]
-    fn to_mdns_hostname_handles_bare_name() {
-        assert_eq!(to_mdns_hostname("myapp").as_deref(), Some("myapp.local"));
+    fn to_mdns_hostname_rejects_bare_name() {
+        assert_eq!(to_mdns_hostname("myapp"), None);
+    }
+
+    #[test]
+    fn to_mdns_hostname_rejects_external_hostname() {
+        assert_eq!(to_mdns_hostname("tunnel.example.com"), None);
     }
 
     #[test]

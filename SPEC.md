@@ -448,8 +448,8 @@ Start (or connect to) a local development session for the current app, backed by
 - `tako dev` ensures daemon TLS files exist at `{TAKO_HOME}/certs/fullchain.pem` and `{TAKO_HOME}/certs/privkey.pem` before spawning the daemon.
   - The daemon reuses existing TLS files when present.
 - `tako dev` listens on `127.0.0.1:47831` in HTTPS mode.
-- When `[envs.development].routes` is not configured, Tako registers `https://{app}.test:47831/` on non-macOS and `https://{app}.test/` on macOS. When the user configures explicit `routes`, those routes replace the default entirely — the default `{app}.test` host is not added, leaving that slug free for other apps. Both `.test` and `.tako.test` DNS zones resolve simultaneously (`.tako.test` remains available as a DNS fallback; the proxy still only routes hosts that are actually registered).
-  - In LAN mode, those same dev routes are additionally served via `.local` aliases (for example `app.test/api/*` also answers on `app.local/api/*`).
+- When `[envs.development].routes` is not configured, Tako registers `https://{app}.test:47831/` on non-macOS and `https://{app}.test/` on macOS. When the user configures explicit `.test`/`.tako.test` routes, those managed dev routes replace the default entirely — the default `{app}.test` host is not added, leaving that slug free for other apps. External development routes (for example a hostname forwarded by Cloudflare Tunnel) are additive: if no managed dev route is configured, Tako still registers the default `{app}.test` route alongside the external routes. Both `.test` and `.tako.test` DNS zones resolve simultaneously (`.tako.test` remains available as a DNS fallback; the proxy still only routes hosts that are actually registered).
+  - In LAN mode, managed `.test`/`.tako.test` dev routes are additionally served via `.local` aliases (for example `app.test/api/*` also answers on `app.local/api/*`). External development routes are routable by the local proxy but are not rewritten to `.local`, advertised with mDNS, or resolved by Tako DNS.
   - On macOS, Tako configures split DNS by writing `/etc/resolver/test` and `/etc/resolver/tako.test` (one-time sudo), pointing to a local DNS listener on `127.0.0.1:53535`. If `/etc/resolver/test` already exists and was not created by Tako, Tako skips it and warns about the conflict (`.tako.test` still works).
   - On Linux, systemd-resolved routes both `~test` and `~tako.test` to the local DNS listener.
   - The dev daemon answers `A` queries for active `*.test` and `*.tako.test` hosts.
@@ -467,9 +467,9 @@ Start (or connect to) a local development session for the current app, backed by
   - On macOS, Tako probes HTTPS for the app host via loopback and fails startup if that probe does not succeed.
   - If the daemon is reachable on `127.0.0.1:47831` but `https://{app}.test/` still fails, Tako reports a targeted hint that the local launchd dev proxy is not forwarding correctly.
   - `tako dev` uses routes from `[envs.development]` when configured; otherwise it defaults to `{app}.test`.
-    - Dev routes must be `{app}.test` (or `{app}.tako.test`) or a subdomain of either.
-    - Dev routing matches exact hostnames only; wildcard host entries are ignored.
-    - If configured dev routes contain no exact hostnames, `tako dev` fails with an invalid route error.
+    - Dev routes may use any valid hostname. Tako only manages DNS and `.local` LAN aliases for `.test` and `.tako.test` routes.
+    - Wildcard dev routes participate in proxy routing, but cannot be advertised with mDNS in LAN mode.
+    - If configured dev routes contain no managed `.test`/`.tako.test` routes, Tako keeps the default `{app}.test` route and treats the configured external routes as additional host aliases.
   - The HTTPS daemon listen port for `tako dev` is fixed at `47831`.
 
 **Local CA architecture:**
@@ -1043,7 +1043,7 @@ Apps specify routes at environment level (not per-server). Routes support:
 - `[envs.{env}]` accepts only route keys (`route`/`routes`); env vars belong in `[vars]` / `[vars.{env}]`
 - Each non-development environment must define `route` or `routes`
 - Empty route lists are invalid for non-development environments
-- Development routes must be `{app-name}.test` or `{app-name}.tako.test` (or a subdomain of either)
+- Development routes may use any valid hostname. Tako manages DNS and `.local` LAN aliases only for `.test` and `.tako.test` routes; external dev routes must be pointed at the dev proxy by the user.
 
 ### Multi-App Scenarios
 

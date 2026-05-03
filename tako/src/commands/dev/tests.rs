@@ -1051,6 +1051,13 @@ fn display_routes_variant_rewrites_base_domain_in_user_routes() {
 }
 
 #[test]
+fn display_routes_include_default_for_external_only_routes() {
+    let cfg = TakoToml::parse("[envs.development]\nroutes = [\"tunnel.example.com\"]\n").unwrap();
+    let routes = compute_display_routes(&cfg, "app.test", None);
+    assert_eq!(routes, vec!["app.test", "tunnel.example.com"]);
+}
+
+#[test]
 fn local_https_probe_host_uses_app_test_domain() {
     assert_eq!(
         local_https_probe_host("bun-example.test"),
@@ -1077,6 +1084,23 @@ fn explicit_routes_omit_default_host() {
     let cfg = TakoToml::parse("[envs.development]\nroutes = [\"api.app.test\"]\n").unwrap();
     let hosts = compute_dev_hosts("app", &cfg, "app.test", None).unwrap();
     assert_eq!(hosts, vec!["api.app.test"]);
+}
+
+#[test]
+fn external_only_routes_keep_default_host() {
+    let cfg = TakoToml::parse("[envs.development]\nroutes = [\"tunnel.example.com\"]\n").unwrap();
+    let hosts = compute_dev_hosts("app", &cfg, "app.test", None).unwrap();
+    assert_eq!(hosts, vec!["app.test", "tunnel.example.com"]);
+}
+
+#[test]
+fn external_routes_are_additive_to_explicit_dev_routes() {
+    let cfg = TakoToml::parse(
+        "[envs.development]\nroutes = [\"api.app.test\", \"tunnel.example.com\"]\n",
+    )
+    .unwrap();
+    let hosts = compute_dev_hosts("app", &cfg, "app.test", None).unwrap();
+    assert_eq!(hosts, vec!["api.app.test", "tunnel.example.com"]);
 }
 
 #[test]

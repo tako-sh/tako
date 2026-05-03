@@ -92,9 +92,9 @@ Check `[envs.development]`:
 routes = ["dashboard.test", "api.dashboard.test"]
 ```
 
-Development routes must be exact `.test` or `.tako.test` hosts for the app name, or subdomains of them. Wildcard dev routes are ignored.
+Development routes may use `.test`, `.tako.test`, or external hostnames. Tako only manages DNS for `.test` and `.tako.test`; external hostnames must be pointed at the dev proxy yourself. Wildcard dev routes participate in proxy routing, but cannot be advertised with mDNS in LAN mode.
 
-If no development route is configured, Tako uses `{app}.test`.
+If no development route is configured, Tako uses `{app}.test`. If only external development routes are configured, Tako keeps `{app}.test` and adds the external routes as host aliases.
 
 ## Deploy Says No Server Is Configured
 

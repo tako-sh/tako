@@ -216,7 +216,7 @@ Route patterns can be:
 - `example.com/api/*`
 - `*.example.com/admin/*`
 
-`development` is reserved for `tako dev`. It may define dev routes, but deploy ignores `servers` in that environment.
+`development` is reserved for `tako dev`. It may define dev routes, but deploy ignores `servers` in that environment. `.test` and `.tako.test` routes are managed by Tako's local DNS. External development routes are accepted as additional host aliases, but you must point those hostnames at the dev proxy yourself.
 
 `idle_timeout` is per-instance idle timeout in seconds. Default is `300`.
 

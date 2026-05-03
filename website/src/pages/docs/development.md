@@ -51,9 +51,9 @@ Use explicit dev routes when needed:
 routes = ["dashboard.test", "api.dashboard.test"]
 ```
 
-Configured dev routes replace the default route. Dev routes must be `{app}.test`, `{app}.tako.test`, or subdomains of those names. Wildcard dev routes are ignored because local dev routing matches exact hostnames.
+Configured `.test` and `.tako.test` routes replace the default route. External routes are additive: if you only configure external hostnames, Tako still keeps `{app}.test` and also routes those hostnames. External hostnames must be pointed at the dev proxy yourself, for example with a tunnel or DNS rule.
 
-Both `.test` and `.tako.test` resolve through Tako's local DNS. `.tako.test` remains available as a fallback zone.
+Both `.test` and `.tako.test` resolve through Tako's local DNS. `.tako.test` remains available as a fallback zone. Wildcard dev routes participate in proxy routing, but cannot be advertised with mDNS in LAN mode.
 
 ## Variants
 
@@ -181,9 +181,9 @@ On NixOS, Tako prints a `configuration.nix` snippet instead of applying imperati
 
 ## LAN Mode
 
-Press `l` in interactive mode to expose registered dev routes through `.local` aliases on the local network.
+Press `l` in interactive mode to expose registered `.test` and `.tako.test` dev routes through `.local` aliases on the local network.
 
-Concrete hostnames are advertised with mDNS. Wildcard routes cannot be advertised by mDNS, so Tako warns and suggests explicit subdomain routes.
+Concrete managed hostnames are advertised with mDNS. External routes are not rewritten to `.local` or advertised. Wildcard routes cannot be advertised by mDNS, so Tako warns and suggests explicit subdomain routes.
 
 ## Environment
 
