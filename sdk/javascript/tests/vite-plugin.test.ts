@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { tako } from "../src/vite";
+import { expectAsyncToThrow } from "./assertions";
 
 let rootDir = "";
 let originalPortEnv: string | undefined;
@@ -215,7 +216,8 @@ describe("tako Vite entry plugin", () => {
       },
     );
 
-    await expect(plugin.closeBundle?.()).rejects.toThrow(
+    await expectAsyncToThrow(
+      () => plugin.closeBundle?.(),
       "Could not choose a single server entry chunk",
     );
   });
@@ -237,12 +239,13 @@ describe("tako Vite entry plugin", () => {
       },
     );
 
-    await expect(plugin.closeBundle?.()).rejects.toThrow("Could not detect server entry chunk");
+    await expectAsyncToThrow(() => plugin.closeBundle?.(), "Could not detect server entry chunk");
   });
 
   test("fails when closeBundle runs before configResolved", async () => {
     const plugin = tako();
-    await expect(plugin.closeBundle?.()).rejects.toThrow(
+    await expectAsyncToThrow(
+      () => plugin.closeBundle?.(),
       "tako was not initialized by Vite configResolved hook.",
     );
   });
@@ -291,7 +294,7 @@ describe("tako Vite entry plugin", () => {
     );
     await plugin.closeBundle?.();
 
-    await expect(readText(".tako/build.json")).rejects.toThrow();
-    await expect(readText("dist/.tako-vite.json")).rejects.toThrow();
+    await expectAsyncToThrow(() => readText(".tako/build.json"));
+    await expectAsyncToThrow(() => readText("dist/.tako-vite.json"));
   });
 });

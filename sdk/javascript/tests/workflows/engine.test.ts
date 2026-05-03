@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { WorkflowsClient } from "../../src/workflows/rpc-client";
 import { WorkflowEngine } from "../../src/workflows/engine";
+import { expectAsyncToThrow } from "../assertions";
 
 function startStubServer(path: string, resp: unknown): Promise<Server> {
   return new Promise((resolve, reject) => {
@@ -63,7 +64,7 @@ describe("WorkflowEngine enqueue (RPC)", () => {
     delete process.env["TAKO_INTERNAL_SOCKET"];
     delete process.env["TAKO_APP_NAME"];
     try {
-      await expect(engine.enqueue("w", {})).rejects.toThrow(/RPC client/);
+      await expectAsyncToThrow(() => engine.enqueue("w", {}), /RPC client/);
     } finally {
       if (prevSock !== undefined) process.env["TAKO_INTERNAL_SOCKET"] = prevSock;
       if (prevApp !== undefined) process.env["TAKO_APP_NAME"] = prevApp;
@@ -192,6 +193,6 @@ export default defineWorkflow("media-job", { worker: "media", handler: async () 
   test("rejects files without a default function export", async () => {
     await writeFile(join(dir, "bad.mjs"), `export const foo = 1;`);
     const engine = new WorkflowEngine();
-    await expect(engine.discover(dir)).rejects.toThrow(/defineWorkflow.*or a plain function/);
+    await expectAsyncToThrow(() => engine.discover(dir), /defineWorkflow.*or a plain function/);
   });
 });

@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { discoverChannels } from "../../src/channels/discovery";
+import { expectAsyncToThrow } from "../assertions";
 
 let dir = "";
 
@@ -81,7 +82,8 @@ describe("discoverChannels", () => {
 
   test("throws when default export is not a channel definition", async () => {
     await writeChannel("bad.ts", `export default { foo: "bar" };`);
-    await expect(discoverChannels(join(dir, "channels"))).rejects.toThrow(
+    await expectAsyncToThrow(
+      () => discoverChannels(join(dir, "channels")),
       /must default-export a defineChannel/,
     );
   });
@@ -98,7 +100,8 @@ describe("discoverChannels", () => {
        export default defineChannel({ name: "updates" });`,
     );
 
-    await expect(discoverChannels(join(dir, "channels"))).rejects.toThrow(
+    await expectAsyncToThrow(
+      () => discoverChannels(join(dir, "channels")),
       /duplicate channel 'updates'/,
     );
   });
@@ -106,7 +109,8 @@ describe("discoverChannels", () => {
   test("nested directories are rejected", async () => {
     await mkdir(join(dir, "channels", "chat"));
     await writeFile(join(dir, "channels", "chat", "room.ts"), "export default {};", "utf8");
-    await expect(discoverChannels(join(dir, "channels"))).rejects.toThrow(
+    await expectAsyncToThrow(
+      () => discoverChannels(join(dir, "channels")),
       /nested channel directory/,
     );
   });

@@ -5,7 +5,7 @@ description: "A concrete walkthrough: scaffold a TanStack Start app, run tako in
 image: fd31b5e47c64
 ---
 
-[TanStack Start](https://tanstack.com/start) is a full-stack React framework with file-based routing, server functions, and a real SSR build. Most tutorials for it end with "now deploy to Netlify / Vercel / Cloudflare Workers." Those work, but they're not your only option. The SSR output is a Node-compatible fetch handler — which means a single Linux box with [Tako](/docs) on it is enough.
+[TanStack Start](https://tanstack.com/start/latest) is a full-stack React framework with file-based routing, server functions, and a real SSR build. Most tutorials for it end with "now deploy to Netlify / Vercel / Cloudflare Workers." Those work, but they're not your only option. The SSR output is a Node-compatible fetch handler — which means a single Linux box with [Tako](/docs) on it is enough.
 
 Here's the whole walkthrough. Total wall-clock time, assuming a server is already provisioned: about five minutes.
 

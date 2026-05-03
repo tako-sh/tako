@@ -4,6 +4,7 @@ import {
   getChannelsConfig,
   resetChannelsConfig,
 } from "../../src/channels/configure";
+import { expectAsyncToThrow } from "../assertions";
 
 describe("configureChannels", () => {
   test("token resolver is invoked per call", async () => {
@@ -31,7 +32,8 @@ describe("configureChannels", () => {
   test("missing token throws actionable error", async () => {
     resetChannelsConfig();
 
-    await expect(getChannelsConfig().resolveToken()).rejects.toThrow(
+    await expectAsyncToThrow(
+      () => getChannelsConfig().resolveToken(),
       /configureChannels\(\{ token \}\)/,
     );
   });
@@ -45,7 +47,7 @@ describe("configureChannels", () => {
   test("null token throws actionable error", async () => {
     configureChannels({ token: () => null });
 
-    await expect(getChannelsConfig().resolveToken()).rejects.toThrow(/returned null/);
+    await expectAsyncToThrow(() => getChannelsConfig().resolveToken(), /returned null/);
 
     resetChannelsConfig();
   });

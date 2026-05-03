@@ -3,6 +3,7 @@ import { Channel, ChannelRegistry } from "../src/channels";
 import { configureChannels, resetChannelsConfig } from "../src/channels/configure";
 import { SseReader } from "../src/channels/sse-reader";
 import { defineChannel } from "../src/channels/define";
+import { expectAsyncToThrow } from "./assertions";
 
 describe("channels", () => {
   afterEach(() => {
@@ -68,12 +69,14 @@ describe("channels", () => {
 
   test("publish without the server runtime points browser clients to websockets", async () => {
     const channel = new Channel("chat/room-123");
-    await expect(
-      channel.publish(
-        { type: "message", data: { text: "hi" } },
-        { baseUrl: "https://app.example.com" },
-      ),
-    ).rejects.toThrow(/connect\(\)\.send/);
+    await expectAsyncToThrow(
+      () =>
+        channel.publish(
+          { type: "message", data: { text: "hi" } },
+          { baseUrl: "https://app.example.com" },
+        ),
+      /connect\(\)\.send/,
+    );
   });
 
   test("subscribe opens the canonical SSE route", () => {
