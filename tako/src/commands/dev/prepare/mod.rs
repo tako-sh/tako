@@ -171,6 +171,7 @@ pub(super) async fn prepare(
         .unwrap_or_else(|| domain.clone());
 
     let mut env = compute_dev_env(&cfg);
+    inject_dev_allowed_hosts(&dev_hosts, &mut env);
     inject_dev_data_dir(&project_dir, &mut env).map_err(|e| e.to_string())?;
     inject_dev_secrets(&project_dir, &mut env).map_err(|e| e.to_string())?;
 

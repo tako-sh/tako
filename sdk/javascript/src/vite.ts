@@ -16,6 +16,7 @@ interface ViteEntryChunkLike {
 }
 
 const WRAPPED_ENTRY_FILE = "tako-entry.mjs";
+const TAKO_DEV_ALLOWED_HOSTS_ENV = "TAKO_DEV_ALLOWED_HOSTS";
 
 function toPosixPath(filePath: string): string {
   return filePath.replaceAll("\\", "/");
@@ -128,7 +129,10 @@ async function sendFetchResponse(res: ServerResponse, response: Response): Promi
   res.end(Buffer.from(await response.arrayBuffer()));
 }
 
-function mergeServeAllowedHosts(existing: unknown): true | string[] {
+function mergeServeAllowedHosts(
+  existing: unknown,
+  extraHosts = devAllowedHostsFromEnv(),
+): true | string[] {
   if (existing === true) {
     return true;
   }
@@ -136,13 +140,25 @@ function mergeServeAllowedHosts(existing: unknown): true | string[] {
   const merged = Array.isArray(existing)
     ? existing.filter((host): host is string => typeof host === "string")
     : [];
-  if (!merged.includes(".test")) {
-    merged.push(".test");
+
+  for (const host of [".test", ".tako.test", ...extraHosts]) {
+    if (!merged.includes(host)) {
+      merged.push(host);
+    }
   }
-  if (!merged.includes(".tako.test")) {
-    merged.push(".tako.test");
-  }
+
   return merged;
+}
+
+function devAllowedHostsFromEnv(): string[] {
+  const raw = process.env[TAKO_DEV_ALLOWED_HOSTS_ENV];
+  if (!raw) {
+    return [];
+  }
+  return raw
+    .split(",")
+    .map((host) => host.trim())
+    .filter(Boolean);
 }
 
 function isViteEntryChunk(chunk: unknown): chunk is ViteEntryChunkLike {
@@ -167,7 +183,7 @@ function isViteEntryChunk(chunk: unknown): chunk is ViteEntryChunkLike {
  * - In dev, swaps Vite's default logger for structured JSON lines so the
  *   tako dev server can render them alongside other subprocess logs.
  * - Under `tako dev`, reports the dev server's bound port back to the parent
- *   over fd 4 and adds `.test` / `.tako.test` to `server.allowedHosts`.
+ *   over fd 4 and adds configured dev route hosts to `server.allowedHosts`.
  * - On build, records the entry chunk filenames so the Tako runtime can find
  *   the generated entrypoint.
  *

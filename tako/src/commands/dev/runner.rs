@@ -471,12 +471,28 @@ pub async fn run(
                     }
                 };
 
-                let mut new_env = compute_dev_env(&cfg);
                 for warning in cfg.ignored_reserved_var_warnings() {
                     let _ = log_tx
                         .send(ScopedLog::warn("tako", format!("Validation: {}", warning)))
                         .await;
                 }
+
+                let new_hosts =
+                    match compute_dev_hosts(&app_name, &cfg, &domain, base_domain.as_deref()) {
+                        Ok(hosts) => hosts,
+                        Err(msg) => {
+                            let _ = log_tx
+                                .send(ScopedLog::error(
+                                    "tako",
+                                    format!("tako.toml invalid routes: {}", msg),
+                                ))
+                                .await;
+                            continue;
+                        }
+                    };
+
+                let mut new_env = compute_dev_env(&cfg);
+                inject_dev_allowed_hosts(&new_hosts, &mut new_env);
                 if let Err(msg) = inject_dev_data_dir(&project_dir, &mut new_env) {
                     let _ = log_tx
                         .send(ScopedLog::error(
@@ -501,20 +517,6 @@ pub async fn run(
                 let _ = crate::build::js::write_typegen_support_files(&project_dir);
 
                 *env_state.lock().await = new_env.clone();
-
-                let new_hosts =
-                    match compute_dev_hosts(&app_name, &cfg, &domain, base_domain.as_deref()) {
-                        Ok(hosts) => hosts,
-                        Err(msg) => {
-                            let _ = log_tx
-                                .send(ScopedLog::error(
-                                    "tako",
-                                    format!("tako.toml invalid routes: {}", msg),
-                                ))
-                                .await;
-                            continue;
-                        }
-                    };
                 let hosts_changed = {
                     let mut cur = hosts_state.lock().await;
                     let changed = *cur != new_hosts;

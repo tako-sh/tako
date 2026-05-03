@@ -8,6 +8,7 @@ use crate::config::TakoToml;
 use crate::validation::validate_dev_route;
 
 const TAKO_APP_DATA_DIR_ENV: &str = "TAKO_DATA_DIR";
+const TAKO_DEV_ALLOWED_HOSTS_ENV: &str = "TAKO_DEV_ALLOWED_HOSTS";
 
 pub(super) fn compute_display_routes(
     cfg: &TakoToml,
@@ -160,6 +161,43 @@ pub(super) fn compute_dev_env(cfg: &TakoToml) -> std::collections::HashMap<Strin
     env.insert("ENV".to_string(), "development".to_string());
     env.insert("TAKO_BUILD".to_string(), "dev".to_string());
     env
+}
+
+pub(super) fn inject_dev_allowed_hosts(
+    hosts: &[String],
+    env: &mut std::collections::HashMap<String, String>,
+) {
+    let mut allowed = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for route in hosts {
+        let Some(host) = allowed_host_from_route(route) else {
+            continue;
+        };
+        if seen.insert(host.clone()) {
+            allowed.push(host);
+        }
+    }
+
+    if !allowed.is_empty() {
+        env.insert(TAKO_DEV_ALLOWED_HOSTS_ENV.to_string(), allowed.join(","));
+    }
+}
+
+fn allowed_host_from_route(route: &str) -> Option<String> {
+    let host = route.split('/').next().unwrap_or(route).trim();
+    if host.is_empty() {
+        return None;
+    }
+
+    if let Some(suffix) = host.strip_prefix("*.") {
+        if suffix.is_empty() {
+            return None;
+        }
+        return Some(format!(".{suffix}"));
+    }
+
+    Some(host.to_string())
 }
 
 pub(super) fn dev_runtime_data_root(project_dir: &Path) -> PathBuf {

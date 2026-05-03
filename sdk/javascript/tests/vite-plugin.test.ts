@@ -8,6 +8,7 @@ import { expectAsyncToThrow } from "./assertions";
 
 let rootDir = "";
 let originalPortEnv: string | undefined;
+let originalAllowedHostsEnv: string | undefined;
 
 async function readText(relPath: string): Promise<string> {
   return await readFile(path.join(rootDir, relPath), "utf8");
@@ -16,7 +17,9 @@ async function readText(relPath: string): Promise<string> {
 describe("tako Vite entry plugin", () => {
   beforeEach(async () => {
     originalPortEnv = process.env.PORT;
+    originalAllowedHostsEnv = process.env.TAKO_DEV_ALLOWED_HOSTS;
     delete process.env.PORT;
+    delete process.env.TAKO_DEV_ALLOWED_HOSTS;
     rootDir = await mkdtemp(path.join(tmpdir(), "tako-vite-plugin-"));
   });
 
@@ -25,6 +28,11 @@ describe("tako Vite entry plugin", () => {
       delete process.env.PORT;
     } else {
       process.env.PORT = originalPortEnv;
+    }
+    if (originalAllowedHostsEnv === undefined) {
+      delete process.env.TAKO_DEV_ALLOWED_HOSTS;
+    } else {
+      process.env.TAKO_DEV_ALLOWED_HOSTS = originalAllowedHostsEnv;
     }
     if (rootDir) {
       await rm(rootDir, { recursive: true, force: true });
@@ -85,6 +93,23 @@ describe("tako Vite entry plugin", () => {
       plugin.config?.({ server: { allowedHosts: ["localhost"] } }, { command: "serve" }),
     ).toMatchObject({
       server: { allowedHosts: ["localhost", ".test", ".tako.test"] },
+    });
+  });
+
+  test("merges Tako dev route hosts into allowedHosts in serve mode", () => {
+    process.env.TAKO_DEV_ALLOWED_HOSTS = "app.test,tunnel.example.com,.preview.example.com";
+
+    const plugin = tako();
+    expect(plugin.config?.({}, { command: "serve" })).toMatchObject({
+      server: {
+        allowedHosts: [
+          ".test",
+          ".tako.test",
+          "app.test",
+          "tunnel.example.com",
+          ".preview.example.com",
+        ],
+      },
     });
   });
 

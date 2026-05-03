@@ -432,6 +432,24 @@ LOG_LEVEL = "debug"
     assert_eq!(env.get("LOG_LEVEL").map(String::as_str), Some("debug"));
 }
 
+#[test]
+fn inject_dev_allowed_hosts_exports_route_hosts_for_vite() {
+    let mut env = std::collections::HashMap::new();
+    let hosts = vec![
+        "app.test".to_string(),
+        "tunnel.example.com".to_string(),
+        "tunnel.example.com/api".to_string(),
+        "*.preview.example.com".to_string(),
+    ];
+
+    inject_dev_allowed_hosts(&hosts, &mut env);
+
+    assert_eq!(
+        env.get("TAKO_DEV_ALLOWED_HOSTS").map(String::as_str),
+        Some("app.test,tunnel.example.com,.preview.example.com")
+    );
+}
+
 #[tokio::test]
 async fn tcp_probe_detects_open_port() {
     let Ok(listener) = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await else {
