@@ -6,6 +6,7 @@ website:
     bun run --filter website build
     lychee \
         --root-dir website/dist \
+        --exclude 'demo\.tako\.sh' \
         --exclude 'pkg\.go\.dev' \
         --exclude 'npmjs\.com/package/tako\.sh' \
         --exclude 'x\.com/dhh' \
