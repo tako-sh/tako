@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use pingora_cache::cache_control::CacheControl;
 use pingora_cache::filters::{request_cacheable, resp_cacheable};
 use pingora_cache::{CacheKey, CacheMetaDefaults, RespCacheable};
@@ -107,6 +108,31 @@ pub(super) async fn create_text_response(
         .await?;
     session
         .write_response_body(Some(body.to_string().into()), true)
+        .await?;
+    Ok(true)
+}
+
+pub(super) fn production_error_body(status: u16) -> &'static str {
+    match status {
+        500 => "Internal Server Error",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        504 => "Gateway Timeout",
+        _ => "Internal Server Error",
+    }
+}
+
+pub(super) async fn create_production_error_response(
+    session: &mut Session,
+    status: u16,
+) -> Result<bool> {
+    let body = production_error_body(status);
+    let mut header = ResponseHeader::build(status, None)?;
+    insert_body_headers(&mut header, "text/plain", body)?;
+    header.insert_header("Cache-Control", "private, no-store")?;
+    session
+        .as_downstream_mut()
+        .write_error_response(header, Bytes::from_static(body.as_bytes()))
         .await?;
     Ok(true)
 }

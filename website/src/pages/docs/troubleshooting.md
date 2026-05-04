@@ -201,13 +201,9 @@ Host: tako.internal
 
 Use the SDK wrapper for your runtime so the endpoint and readiness protocol are installed.
 
-Health startup timeout is 30 seconds. If startup does not produce a healthy instance, deploy rolls back. For scale-to-zero cold starts, the proxy can return:
+Health startup timeout is 30 seconds. If startup does not produce a healthy instance, deploy rolls back. For scale-to-zero cold starts, production browser responses use generic `502 Bad Gateway`, `503 Service Unavailable`, or `504 Gateway Timeout` bodies.
 
-- `504 App startup timed out`
-- `502 App failed to start`
-- `503 App startup queue is full`
-
-Startup timeout diagnostics include captured startup stdout/stderr when the process produced output before readiness.
+Startup timeout diagnostics include captured startup stdout/stderr in logs when the process produced output before readiness.
 
 ## TLS Certificate Problems
 

@@ -6,8 +6,9 @@ pub(crate) use backend::BackendResolution;
 
 use super::TakoProxy;
 use super::request::{
-    build_proxy_cache_key, client_ip_from_session, insert_body_headers, is_effective_request_https,
-    path_looks_like_static_asset, request_host, request_is_proxy_cacheable, response_cacheability,
+    build_proxy_cache_key, client_ip_from_session, create_production_error_response,
+    insert_body_headers, is_effective_request_https, path_looks_like_static_asset, request_host,
+    request_is_proxy_cacheable, response_cacheability,
     should_assume_forwarded_private_request_https, should_redirect_http_request,
 };
 use crate::lb::Backend;
@@ -18,7 +19,7 @@ use pingora_cache::{CacheKey, RespCacheable};
 use pingora_core::prelude::*;
 use pingora_core::upstreams::peer::HttpPeer;
 use pingora_http::{RequestHeader, ResponseHeader};
-use pingora_proxy::{ProxyHttp, Session};
+use pingora_proxy::{FailToProxy, ProxyHttp, Session};
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
@@ -213,45 +214,20 @@ impl ProxyHttp for TakoProxy {
         let backend = match self.resolve_backend(&app_name).await {
             BackendResolution::Ready(backend) => backend,
             BackendResolution::StartupTimeout => {
-                let body = "App startup timed out";
-                let mut header = ResponseHeader::build(504, None)?;
-                insert_body_headers(&mut header, "text/plain", body)?;
-                session
-                    .write_response_header(Box::new(header), false)
-                    .await?;
-                session.write_response_body(Some(body.into()), true).await?;
-                return Ok(true);
+                tracing::warn!(app = %app_name, "App startup timed out");
+                return create_production_error_response(session, 504).await;
             }
             BackendResolution::StartupFailed => {
-                let body = "App failed to start";
-                let mut header = ResponseHeader::build(502, None)?;
-                insert_body_headers(&mut header, "text/plain", body)?;
-                session
-                    .write_response_header(Box::new(header), false)
-                    .await?;
-                session.write_response_body(Some(body.into()), true).await?;
-                return Ok(true);
+                tracing::warn!(app = %app_name, "App failed to start");
+                return create_production_error_response(session, 502).await;
             }
             BackendResolution::QueueFull => {
-                let body = "App startup queue is full";
-                let mut header = ResponseHeader::build(503, None)?;
-                header.insert_header("Retry-After", "1")?;
-                insert_body_headers(&mut header, "text/plain", body)?;
-                session
-                    .write_response_header(Box::new(header), false)
-                    .await?;
-                session.write_response_body(Some(body.into()), true).await?;
-                return Ok(true);
+                tracing::warn!(app = %app_name, "App startup queue is full");
+                return create_production_error_response(session, 503).await;
             }
             BackendResolution::Unavailable => {
-                let body = "No healthy backend";
-                let mut header = ResponseHeader::build(503, None)?;
-                insert_body_headers(&mut header, "text/plain", body)?;
-                session
-                    .write_response_header(Box::new(header), false)
-                    .await?;
-                session.write_response_body(Some(body.into()), true).await?;
-                return Ok(true);
+                tracing::warn!(app = %app_name, "No healthy backend");
+                return create_production_error_response(session, 503).await;
             }
             BackendResolution::AppMissing => {
                 self.load_balancer_cleanup(&app_name).await;
@@ -435,6 +411,41 @@ impl ProxyHttp for TakoProxy {
         _ctx: &mut Self::CTX,
     ) -> Result<Option<Duration>> {
         Ok(None)
+    }
+
+    async fn fail_to_proxy(
+        &self,
+        session: &mut Session,
+        e: &Error,
+        _ctx: &mut Self::CTX,
+    ) -> FailToProxy {
+        let status = match e.etype() {
+            ErrorType::HTTPStatus(code) if *code < 500 => *code,
+            ErrorType::HTTPStatus(code) => *code,
+            _ => match e.esource() {
+                ErrorSource::Downstream => match e.etype() {
+                    ErrorType::WriteError | ErrorType::ReadError | ErrorType::ConnectionClosed => 0,
+                    _ => 400,
+                },
+                ErrorSource::Upstream => 502,
+                ErrorSource::Internal | ErrorSource::Unset => 500,
+            },
+        };
+
+        if status >= 500 {
+            if let Err(error) = create_production_error_response(session, status).await {
+                tracing::error!("failed to send production {status} error response: {error}");
+            }
+        } else if status > 0
+            && let Err(error) = session.respond_error(status).await
+        {
+            tracing::error!("failed to send error response to downstream: {error}");
+        }
+
+        FailToProxy {
+            error_code: status,
+            can_reuse_downstream: false,
+        }
     }
 
     async fn logging(&self, session: &mut Session, _e: Option<&Error>, ctx: &mut Self::CTX) {

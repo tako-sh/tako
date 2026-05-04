@@ -212,6 +212,14 @@ fn response_cacheability_requires_explicit_cache_directives() {
 }
 
 #[test]
+fn production_error_bodies_are_generic_reason_phrases() {
+    assert_eq!(production_error_body(500), "Internal Server Error");
+    assert_eq!(production_error_body(502), "Bad Gateway");
+    assert_eq!(production_error_body(503), "Service Unavailable");
+    assert_eq!(production_error_body(504), "Gateway Timeout");
+}
+
+#[test]
 fn test_effective_request_https_prefers_transport_tls() {
     assert!(is_effective_request_https(true, None, None));
 }

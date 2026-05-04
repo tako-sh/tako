@@ -192,10 +192,10 @@ idle_timeout = 120
 - New app deploys start with desired instances `1` on each server. The first request after deploy hits a hot instance — no cold start. Opt into scale-to-zero with `tako scale 0 --env <environment>` from a project directory, or `tako scale 0 --server <server> --app <app>/<env>` outside one.
 - `tako scale` changes the desired instance count per targeted server, and that value persists across server restarts, deploys, and rollbacks.
 - Desired instances `0`: On-demand with scale-to-zero. Deploy keeps one warm instance running so the app is immediately reachable after deploy. Instances are stopped after idle timeout.
-  - Once scaled to zero, the next request triggers a cold start and waits for readiness up to startup timeout (default 30 seconds). If no healthy instance is ready before timeout, proxy returns `504 App startup timed out`.
-  - If cold start setup fails before readiness, proxy returns `502 App failed to start`.
+  - Once scaled to zero, the next request triggers a cold start and waits for readiness up to startup timeout (default 30 seconds). If no healthy instance is ready before timeout, proxy returns `504 Gateway Timeout` with a generic body.
+  - If cold start setup fails before readiness, proxy returns `502 Bad Gateway` with a generic body.
   - Startup timeout diagnostics include captured startup stdout/stderr when the process produced output before readiness.
-  - While a cold start is already in progress, requests are queued up to 1000 waiters per app (default). If the queue is full, proxy returns `503 App startup queue is full` with `Retry-After: 1`.
+  - While a cold start is already in progress, requests are queued up to 1000 waiters per app (default). If the queue is full, proxy returns `503 Service Unavailable` with a generic body.
   - If warm-instance startup fails during deploy, deploy fails.
 - Desired instances `N` (`N > 0`): keep at least `N` instances running on that server.
 - `idle_timeout`: Applies per-instance (default 300s / 5 minutes)
@@ -1150,6 +1150,7 @@ Reference scripts in this repo:
 - Proxy cache storage is in-memory with bounded LRU eviction (256 MiB total, 8 MiB per cached response body).
 - Per-IP rate limiting: maximum 2048 concurrent connections per client IP; excess requests receive `429`.
 - Maximum request body size: 128 MiB; larger requests receive `413`.
+- Production browser-facing `tako-server` 5xx responses use generic reason-phrase bodies such as `Internal Server Error`, `Bad Gateway`, `Service Unavailable`, or `Gateway Timeout`; detailed startup, proxy, channel storage, and static file diagnostics are written to server/app logs instead of response bodies.
 - No application path namespace is reserved at the edge proxy. Requests are routed strictly by configured routes.
 
 **`/opt/tako/config.json`** — server-level configuration:

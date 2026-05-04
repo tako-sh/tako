@@ -106,10 +106,9 @@ impl TakoProxy {
                 serde_json::json!({ "error": "Channel transport is not enabled" }),
             ),
             ChannelError::InvalidPath => (404, serde_json::json!({ "error": "Not found" })),
-            ChannelError::AuthUnavailable => (
-                503,
-                serde_json::json!({ "error": "Channel auth unavailable" }),
-            ),
+            ChannelError::AuthUnavailable => {
+                (503, serde_json::json!({ "error": "Service Unavailable" }))
+            }
             ChannelError::Storage(message) => {
                 tracing::error!("Channel storage error: {message}");
                 (500, serde_json::json!({ "error": "Internal Server Error" }))
@@ -207,6 +206,7 @@ impl TakoProxy {
         let backend = match self.resolve_backend(app_name).await {
             BackendResolution::Ready(backend) => backend,
             BackendResolution::StartupTimeout => {
+                tracing::warn!(app = %app_name, "Channel auth unavailable: app startup timed out");
                 return self
                     .write_channel_error(session, ChannelError::AuthUnavailable)
                     .await;
@@ -215,6 +215,7 @@ impl TakoProxy {
             | BackendResolution::QueueFull
             | BackendResolution::Unavailable
             | BackendResolution::AppMissing => {
+                tracing::warn!(app = %app_name, "Channel auth unavailable: backend unavailable");
                 return self
                     .write_channel_error(session, ChannelError::AuthUnavailable)
                     .await;
