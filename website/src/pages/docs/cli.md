@@ -120,7 +120,7 @@ tako logs --json
 
 `--env` defaults to `production`. `--days` defaults to `3` and applies to timestamped app log-file lines and server journal diagnostics. `--tail` streams continuously and conflicts with `--days`.
 
-Logs include app stdout/stderr plus `tako-server` lifecycle, health, and proxy diagnostics for the app's deployed routes. Remote fetch/connect failures are reported instead of being shown as empty logs.
+Logs include app stdout/stderr plus `tako-server` lifecycle, health, and proxy diagnostics for the app's deployed routes. JS/TS production HTTP entrypoints route `console.*`, uncaught exceptions, and unhandled rejections into the same app log stream. Remote fetch/connect failures are reported instead of being shown as empty logs.
 
 `--json` emits compact JSONL for agents and automation. Each stdout line is one log event with stable short keys.
 

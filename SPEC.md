@@ -561,7 +561,8 @@ View or stream logs from all servers in an environment.
 - Environment must exist in the selected config file.
 - Fetches from all mapped servers in parallel.
 - Includes app stdout/stderr plus `tako-server` lifecycle, health, and proxy diagnostics for the
-  app's deployed routes.
+  app's deployed routes. JS/TS production HTTP entrypoints route `console.*`, uncaught
+  exceptions, and unhandled rejections into the same app log stream before exiting.
 - Prefixes each line with `[server-name]` when multiple servers are present.
 - Remote fetch/connect failures are reported as command failures; they are not treated as empty logs.
 - `--json` emits compact JSONL for agents and automation: one log event per stdout line with

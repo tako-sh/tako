@@ -18,7 +18,7 @@ tako logs --env production --json
 tako deploy --verbose
 ```
 
-`tako logs` includes app output plus server health, lifecycle, and proxy diagnostics for deployed routes. Use `--json` for compact JSONL when an agent or script is inspecting logs.
+`tako logs` includes app output plus server health, lifecycle, and proxy diagnostics for deployed routes. JS/TS production HTTP entrypoints route `console.*`, uncaught exceptions, and unhandled rejections into the same app log stream. Use `--json` for compact JSONL when an agent or script is inspecting logs.
 
 Use `--ci` when reproducing a problem in automation. It disables prompts, colors, and spinners.
 

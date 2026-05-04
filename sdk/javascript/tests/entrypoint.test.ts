@@ -203,3 +203,25 @@ test("bun-server entrypoint bootstraps from fd 3 before creating the entrypoint"
   expect(createCall).toBeGreaterThanOrEqual(0);
   expect(bootstrapCall).toBeLessThan(createCall);
 });
+
+test("production HTTP entrypoints install fatal error logging before boot", async () => {
+  for (const entrypoint of ["bun-server.ts", "node-server.ts"]) {
+    const source = await readFile(
+      path.join(import.meta.dir, "..", "src", "tako", "entrypoints", entrypoint),
+      "utf8",
+    );
+
+    const stdioCall = source.indexOf('installStdioBridge("app");');
+    const errorCall = source.indexOf('installErrorHooks("app");');
+    const consoleCall = source.indexOf('installConsoleBridge("app");');
+    const createCall = source.indexOf("createEntrypoint();");
+
+    expect(stdioCall, entrypoint).toBeGreaterThanOrEqual(0);
+    expect(errorCall, entrypoint).toBeGreaterThanOrEqual(0);
+    expect(consoleCall, entrypoint).toBeGreaterThanOrEqual(0);
+    expect(createCall, entrypoint).toBeGreaterThanOrEqual(0);
+    expect(stdioCall, entrypoint).toBeLessThan(errorCall);
+    expect(errorCall, entrypoint).toBeLessThan(consoleCall);
+    expect(consoleCall, entrypoint).toBeLessThan(createCall);
+  }
+});

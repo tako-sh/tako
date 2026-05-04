@@ -221,7 +221,7 @@ tako releases ls --env production
 ```
 
 `servers status` works from any directory and reports all configured servers.
-`logs` includes app output plus server lifecycle, health, and proxy diagnostics for the app's deployed routes. Use `--json` for compact JSONL in agents and automation.
+`logs` includes app output plus server lifecycle, health, and proxy diagnostics for the app's deployed routes. JS/TS production HTTP entrypoints route `console.*`, uncaught exceptions, and unhandled rejections into the same app log stream. Use `--json` for compact JSONL in agents and automation.
 
 ## Rollback
 
