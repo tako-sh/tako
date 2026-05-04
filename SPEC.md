@@ -1421,7 +1421,7 @@ Active HTTP probing is the source of truth for instance health:
 - **Probe endpoint**: App's configured health check path (default: `/status`) with `Host: tako.internal`
 - **Transport**: Probes use the instance's private TCP endpoint.
 - **Process exit fast path**: Before each probe, `try_wait()` checks if the process has exited. If so, the instance is immediately marked dead without waiting for the probe timeout.
-- **Failure threshold**: 1 failure → mark dead, trigger replacement. After the first successful probe confirms the app is healthy, any single probe failure means something is genuinely wrong.
+- **Failure threshold**: 1 failure → mark dead, trigger replacement. After the first successful probe confirms the app is healthy, any single probe failure means the instance cannot satisfy the runtime health contract.
 - **Recovery**: Single successful probe resets failure count and restores to healthy
 
 #### Internal Probe Contract

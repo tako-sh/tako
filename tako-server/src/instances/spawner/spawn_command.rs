@@ -59,6 +59,18 @@ pub(super) fn build_instance_args(instance: &Instance) -> Vec<String> {
     vec!["--instance".to_string(), instance.id.clone()]
 }
 
+pub(super) fn app_child_parent_death_signal() -> Option<i32> {
+    #[cfg(target_os = "linux")]
+    {
+        Some(libc::SIGTERM)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
 /// Resolve a binary name against the app's PATH env, falling back to the bare name.
 fn resolve_binary_from_env(binary: &str, env: &HashMap<String, String>) -> String {
     // Already absolute — use as-is
@@ -138,6 +150,7 @@ fn build_child_command(
     #[cfg(unix)]
     unsafe {
         child_cmd.pre_exec(move || {
+            install_parent_death_signal(app_child_parent_death_signal())?;
             if let Some(fd) = secrets_fd {
                 if fd != 3 {
                     if libc::dup2(fd, 3) == -1 {
@@ -163,6 +176,33 @@ fn build_child_command(
     }
 
     Ok(child_cmd)
+}
+
+#[cfg(target_os = "linux")]
+fn install_parent_death_signal(signal: Option<i32>) -> std::io::Result<()> {
+    let Some(signal) = signal else {
+        return Ok(());
+    };
+
+    // SAFETY: This runs in the child after fork and before exec. `prctl`,
+    // `getppid`, and `_exit` are used only with plain integer arguments.
+    let result = unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, signal) };
+    if result == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    // If the parent died between fork and PR_SET_PDEATHSIG, avoid execing an
+    // immediately orphaned app process.
+    if unsafe { libc::getppid() } == 1 {
+        unsafe { libc::_exit(1) };
+    }
+
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn install_parent_death_signal(_signal: Option<i32>) -> std::io::Result<()> {
+    Ok(())
 }
 
 pub(super) fn should_retry_spawn_without_app_user(

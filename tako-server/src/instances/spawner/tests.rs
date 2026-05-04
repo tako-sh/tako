@@ -2,7 +2,7 @@ use super::super::AppConfig;
 use super::super::logger::noop_log_handle;
 use super::readiness::{format_startup_exit_error, truncate_chars, wait_for_ready};
 use super::spawn_command::{
-    build_instance_args, build_instance_env, create_bootstrap_pipe,
+    app_child_parent_death_signal, build_instance_args, build_instance_env, create_bootstrap_pipe,
     should_retry_spawn_without_app_user,
 };
 use super::*;
@@ -75,6 +75,18 @@ fn retries_spawn_without_app_user_only_for_permission_denied() {
         &other,
         Some((1001, 1001))
     ));
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn app_children_request_sigterm_when_server_dies() {
+    assert_eq!(app_child_parent_death_signal(), Some(libc::SIGTERM));
+}
+
+#[test]
+#[cfg(not(target_os = "linux"))]
+fn app_child_parent_death_signal_is_linux_only() {
+    assert_eq!(app_child_parent_death_signal(), None);
 }
 
 #[test]
@@ -469,6 +481,13 @@ async fn wait_for_ready_reads_port_from_fd4_pipe() {
         noop_log_handle(),
     );
     let instance = app.allocate_instance();
+    let child = tokio::process::Command::new("sleep")
+        .arg("60")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn test child");
+    instance.set_process(child);
 
     tokio::task::spawn_blocking(move || {
         let mut writer = std::fs::File::from(write_end);
@@ -483,6 +502,7 @@ async fn wait_for_ready_reads_port_from_fd4_pipe() {
 
     assert_eq!(instance.port(), Some(43123));
     assert_eq!(instance.state(), InstanceState::Ready);
+    let _ = instance.kill().await;
 }
 
 #[tokio::test]
@@ -506,6 +526,13 @@ async fn wait_for_ready_rejects_invalid_fd4_payload() {
         noop_log_handle(),
     );
     let instance = app.allocate_instance();
+    let child = tokio::process::Command::new("sleep")
+        .arg("60")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn test child");
+    instance.set_process(child);
 
     tokio::task::spawn_blocking(move || {
         let mut writer = std::fs::File::from(write_end);
@@ -514,6 +541,9 @@ async fn wait_for_ready_rejects_invalid_fd4_payload() {
     .await
     .unwrap();
 
-    let err = wait_for_ready(instance, Some(read_end)).await.unwrap_err();
+    let err = wait_for_ready(instance.clone(), Some(read_end))
+        .await
+        .unwrap_err();
     assert!(err.to_string().contains("invalid port"));
+    let _ = instance.kill().await;
 }

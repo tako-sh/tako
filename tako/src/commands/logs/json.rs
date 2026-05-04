@@ -93,6 +93,7 @@ fn tracing_json_record(server: &str, raw: &str) -> Option<Value> {
     copy_str_field(fields, &mut out, "old_instance", "old_inst");
     copy_field(fields, &mut out, "failures", "failures");
     copy_str_field(fields, &mut out, "reason", "reason");
+    copy_str_field(fields, &mut out, "detail", "detail");
 
     if let Some(status) = extract_status(msg) {
         out.insert("status".to_string(), json!(status));
@@ -297,7 +298,7 @@ mod tests {
 
     #[test]
     fn formats_instance_health_as_compact_json() {
-        let raw = r#"{"timestamp":"2026-05-04T07:03:55.000Z","level":"INFO","fields":{"message":"Instance is healthy","app":"demo/production","instance":"ieTkoBFI"}}"#;
+        let raw = r#"{"timestamp":"2026-05-04T07:03:55.000Z","level":"INFO","fields":{"message":"Instance is healthy","app":"demo/production","instance":"ieTkoBFI","reason":"connect_failed","detail":"Connection refused"}}"#;
         let line = format_json_line("prod", raw);
         let value: Value = serde_json::from_str(&line).unwrap();
 
@@ -305,6 +306,8 @@ mod tests {
         assert_eq!(value["event"], "instance_healthy");
         assert_eq!(value["app"], "demo/production");
         assert_eq!(value["inst"], "ieTkoBFI");
+        assert_eq!(value["reason"], "connect_failed");
+        assert_eq!(value["detail"], "Connection refused");
         assert!(value.get("route").is_none());
     }
 

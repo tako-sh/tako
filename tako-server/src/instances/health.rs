@@ -35,7 +35,7 @@ impl Default for HealthConfig {
             check_interval: crate::defaults::HEALTH_CHECK_INTERVAL,
             startup_check_interval: crate::defaults::HEALTH_STARTUP_CHECK_INTERVAL,
             unhealthy_threshold: 1, // 1 failure = unhealthy
-            dead_threshold: 1,      // 1 failure = dead (restart immediately)
+            dead_threshold: 1,      // 1 failure = dead/restart
             probe_timeout: crate::defaults::HEALTH_PROBE_TIMEOUT,
             max_probe_concurrency: 16,
         }
@@ -53,6 +53,31 @@ pub enum HealthEvent {
     Dead { app: String, instance_id: String },
     /// Instance recovered from unhealthy
     Recovered { app: String, instance_id: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HealthProbeFailure {
+    reason: &'static str,
+    detail: String,
+}
+
+impl HealthProbeFailure {
+    fn new(reason: &'static str, detail: impl Into<String>) -> Self {
+        Self {
+            reason,
+            detail: detail.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for HealthProbeFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.detail.is_empty() {
+            write!(f, "{}", self.reason)
+        } else {
+            write!(f, "{}: {}", self.reason, self.detail)
+        }
+    }
 }
 
 /// Tracks consecutive health check failures per instance
@@ -165,7 +190,7 @@ impl HealthChecker {
         };
 
         // Perform HTTP probe
-        let probe_success = probe_instance_health(
+        let probe_result = probe_instance_health(
             instance,
             &health_host,
             &health_path,
@@ -173,7 +198,7 @@ impl HealthChecker {
         )
         .await;
 
-        if probe_success {
+        if probe_result.is_ok() {
             // Reset failure count and record heartbeat
             self.failure_counts.remove(&instance_key);
             instance.record_heartbeat();
@@ -196,6 +221,7 @@ impl HealthChecker {
                 let _ = self.event_tx.send(event).await;
             }
         } else {
+            let failure = probe_result.expect_err("probe_result checked as error");
             // Increment failure count
             let mut failures = self.failure_counts.entry(instance_key.clone()).or_insert(0);
             *failures += 1;
@@ -205,6 +231,8 @@ impl HealthChecker {
                 app = %app.name(),
                 instance = %instance.id,
                 failures = failure_count,
+                reason = failure.reason,
+                detail = %failure.detail,
                 "Health check failed"
             );
 
@@ -226,6 +254,8 @@ impl HealthChecker {
                             app = %app.name(),
                             instance = %instance.id,
                             failures = failure_count,
+                            reason = failure.reason,
+                            detail = %failure.detail,
                             "Instance marked unhealthy"
                         );
                         Some(HealthEvent::Unhealthy {
@@ -238,6 +268,8 @@ impl HealthChecker {
                             app = %app.name(),
                             instance = %instance.id,
                             failures = failure_count,
+                            reason = failure.reason,
+                            detail = %failure.detail,
                             "Instance marked dead after {} consecutive failures",
                             failure_count
                         );
@@ -283,21 +315,21 @@ async fn probe_instance_health(
     health_host: &str,
     health_path: &str,
     probe_timeout: Duration,
-) -> bool {
+) -> Result<(), HealthProbeFailure> {
     let Some(endpoint) = instance.endpoint() else {
-        return false;
+        return Err(HealthProbeFailure::new(
+            "missing_endpoint",
+            "instance has no private upstream endpoint",
+        ));
     };
-    matches!(
-        probe_endpoint_tcp(
-            endpoint,
-            health_host,
-            health_path,
-            instance.internal_token(),
-            probe_timeout,
-        )
-        .await,
-        Ok(true)
+    probe_endpoint_tcp(
+        endpoint,
+        health_host,
+        health_path,
+        instance.internal_token(),
+        probe_timeout,
     )
+    .await
 }
 
 async fn probe_endpoint_tcp(
@@ -306,31 +338,45 @@ async fn probe_endpoint_tcp(
     health_path: &str,
     internal_token: &str,
     probe_timeout: Duration,
-) -> Result<bool, std::io::Error> {
+) -> Result<(), HealthProbeFailure> {
     use tokio::io::AsyncWriteExt;
 
     let mut socket = match timeout(probe_timeout, tokio::net::TcpStream::connect(endpoint)).await {
-        Ok(result) => result?,
-        Err(_) => return Ok(false),
+        Ok(Ok(socket)) => socket,
+        Ok(Err(error)) => {
+            return Err(HealthProbeFailure::new("connect_failed", error.to_string()));
+        }
+        Err(_) => {
+            return Err(HealthProbeFailure::new(
+                "connect_timeout",
+                format!("timed out after {:?}", probe_timeout),
+            ));
+        }
     };
     let request = format!(
         "GET {health_path} HTTP/1.1\r\nHost: {health_host}\r\n{INTERNAL_TOKEN_HEADER}: {internal_token}\r\nConnection: close\r\n\r\n"
     );
     match timeout(probe_timeout, socket.write_all(request.as_bytes())).await {
-        Ok(result) => result?,
-        Err(_) => return Ok(false),
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            return Err(HealthProbeFailure::new("write_failed", error.to_string()));
+        }
+        Err(_) => {
+            return Err(HealthProbeFailure::new(
+                "write_timeout",
+                format!("timed out after {:?}", probe_timeout),
+            ));
+        }
     }
 
-    let Some(response) = read_http_response_headers(&mut socket, probe_timeout).await? else {
-        return Ok(false);
-    };
-    Ok(http_response_is_internal_success(&response, internal_token))
+    let response = read_http_response_headers(&mut socket, probe_timeout).await?;
+    http_response_is_internal_success(&response, internal_token)
 }
 
 async fn read_http_response_headers(
     socket: &mut tokio::net::TcpStream,
     io_timeout: Duration,
-) -> Result<Option<String>, std::io::Error> {
+) -> Result<String, HealthProbeFailure> {
     use tokio::io::AsyncReadExt;
 
     let mut response = Vec::with_capacity(1024);
@@ -338,8 +384,16 @@ async fn read_http_response_headers(
 
     loop {
         let bytes_read = match timeout(io_timeout, socket.read(&mut chunk)).await {
-            Ok(result) => result?,
-            Err(_) => return Ok(None),
+            Ok(Ok(bytes_read)) => bytes_read,
+            Ok(Err(error)) => {
+                return Err(HealthProbeFailure::new("read_failed", error.to_string()));
+            }
+            Err(_) => {
+                return Err(HealthProbeFailure::new(
+                    "read_timeout",
+                    format!("timed out after {:?}", io_timeout),
+                ));
+            }
         };
 
         if bytes_read == 0 {
@@ -353,10 +407,13 @@ async fn read_http_response_headers(
     }
 
     if response.is_empty() {
-        return Ok(None);
+        return Err(HealthProbeFailure::new(
+            "empty_response",
+            "connection closed before response headers",
+        ));
     }
 
-    Ok(Some(String::from_utf8_lossy(&response).into_owned()))
+    Ok(String::from_utf8_lossy(&response).into_owned())
 }
 
 fn http_status_is_success(status_line: &str) -> bool {
@@ -374,19 +431,32 @@ fn http_status_is_success(status_line: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn http_response_is_internal_success(response: &str, expected_token: &str) -> bool {
+fn http_response_is_internal_success(
+    response: &str,
+    expected_token: &str,
+) -> Result<(), HealthProbeFailure> {
     let mut lines = response.lines();
     let status_line = lines.next().unwrap_or_default();
     if !http_status_is_success(status_line) {
-        return false;
+        return Err(HealthProbeFailure::new(
+            "bad_status",
+            status_line.to_string(),
+        ));
     }
 
-    lines
+    let has_token = lines
         .take_while(|line| !line.is_empty())
         .filter_map(|line| line.split_once(':'))
         .any(|(name, value)| {
             name.eq_ignore_ascii_case(INTERNAL_TOKEN_HEADER) && value.trim() == expected_token
-        })
+        });
+    if !has_token {
+        return Err(HealthProbeFailure::new(
+            "missing_internal_token",
+            "status response did not echo the expected internal token",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -571,7 +641,7 @@ mod tests {
 
         let healthy =
             probe_instance_health(&instance, "tako", "/status", Duration::from_millis(200)).await;
-        assert!(healthy);
+        assert!(healthy.is_ok());
     }
 
     #[tokio::test]
@@ -628,7 +698,57 @@ mod tests {
 
         let healthy =
             probe_instance_health(&instance, "tako", "/status", Duration::from_millis(200)).await;
-        assert!(healthy);
+        assert!(healthy.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_probe_reports_connect_failure_reason() {
+        let Ok(listener) = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await else {
+            return;
+        };
+        let port = listener.local_addr().expect("listener addr").port();
+        drop(listener);
+
+        let (tx, _rx) = mpsc::channel(16);
+        let app = App::new(AppConfig::default(), tx, noop_log_handle());
+        let instance = app.allocate_instance();
+        instance.set_port(port);
+
+        let failure =
+            probe_instance_health(&instance, "tako", "/status", Duration::from_millis(200))
+                .await
+                .expect_err("closed port should fail");
+
+        assert_eq!(failure.reason, "connect_failed");
+        assert!(failure.detail.contains("Connection refused"));
+    }
+
+    #[tokio::test]
+    async fn test_probe_reports_missing_internal_token_reason() {
+        let Ok(listener) = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await else {
+            return;
+        };
+        let port = listener.local_addr().expect("listener addr").port();
+
+        let (tx, _rx) = mpsc::channel(16);
+        let app = App::new(AppConfig::default(), tx, noop_log_handle());
+        let instance = app.allocate_instance();
+        instance.set_port(port);
+
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut request_buf = [0_u8; 2048];
+            let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut request_buf).await;
+            let response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+            let _ = tokio::io::AsyncWriteExt::write_all(&mut socket, response.as_bytes()).await;
+        });
+
+        let failure =
+            probe_instance_health(&instance, "tako", "/status", Duration::from_millis(200))
+                .await
+                .expect_err("response without echoed token should fail");
+
+        assert_eq!(failure.reason, "missing_internal_token");
     }
 
     #[tokio::test]
@@ -695,7 +815,8 @@ mod tests {
 
         checker.check_instance(&app, &instance).await;
 
-        // With threshold=1, a single probe failure should emit Dead.
+        // The SDK owns the internal health endpoint; one failed probe after a
+        // healthy startup means the instance cannot satisfy the runtime contract.
         let event = rx.try_recv().expect("should emit event");
         assert!(matches!(event, HealthEvent::Dead { .. }));
         assert_eq!(instance.state(), InstanceState::Stopped);
