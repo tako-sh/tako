@@ -207,6 +207,8 @@ Health startup timeout is 30 seconds. If startup does not produce a healthy inst
 - `502 App failed to start`
 - `503 App startup queue is full`
 
+Startup timeout diagnostics include captured startup stdout/stderr when the process produced output before readiness.
+
 ## TLS Certificate Problems
 
 For public hostnames, confirm DNS points to the server and port 80 is reachable for HTTP-01 challenges.

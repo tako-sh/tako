@@ -127,7 +127,7 @@ tako scale 1 --server la
 
 Desired count persists across deploys, rollbacks, and server restarts.
 
-When desired count is `0`, the app scales to zero after its idle timeout. The next request triggers a cold start. If startup succeeds, the queued request continues. If startup times out, the proxy returns `504 App startup timed out`.
+When desired count is `0`, the app scales to zero after its idle timeout. The next request triggers a cold start. If startup succeeds, the queued request continues. If startup times out, the proxy returns `504 App startup timed out`; diagnostics include captured startup stdout/stderr when available.
 
 ## Routing
 

@@ -577,6 +577,9 @@ pub enum InstanceError {
     #[error("Instance startup timeout")]
     StartupTimeout,
 
+    #[error("Instance startup timeout: {0}")]
+    StartupTimeoutWithDetail(String),
+
     #[error("Health check failed: {0}")]
     HealthCheckFailed(String),
 }

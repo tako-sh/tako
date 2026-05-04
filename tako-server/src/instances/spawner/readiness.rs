@@ -6,6 +6,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncBufReadExt;
 
+const STARTUP_TIMEOUT_OUTPUT_WAIT: Duration = Duration::from_secs(1);
+
 /// Wait for the SDK to report the bound port on fd 4.
 /// Sets the instance upstream once the port is learned.
 pub(super) async fn wait_for_ready(
@@ -75,6 +77,24 @@ async fn startup_exit_detail(instance: Arc<Instance>) -> String {
     }
 }
 
+pub(super) async fn startup_timeout_detail(instance: Arc<Instance>, timeout: Duration) -> String {
+    let Some(mut child) = instance.take_process() else {
+        return format!("exceeded {timeout:?} while waiting for fd 4 readiness");
+    };
+
+    let _ = child.start_kill();
+
+    match tokio::time::timeout(STARTUP_TIMEOUT_OUTPUT_WAIT, child.wait_with_output()).await {
+        Ok(Ok(output)) => format_startup_timeout_error(timeout, &output.stdout, &output.stderr),
+        Ok(Err(error)) => format!(
+            "exceeded {timeout:?} while waiting for fd 4 readiness; failed to read output: {error}"
+        ),
+        Err(_) => format!(
+            "exceeded {timeout:?} while waiting for fd 4 readiness; timed out reading startup output"
+        ),
+    }
+}
+
 pub(super) fn format_startup_exit_error(
     status: ExitStatus,
     stdout: &[u8],
@@ -99,6 +119,23 @@ pub(super) fn format_startup_exit_error(
 
     let preview = truncate_chars(&detail, 400);
     format!("Process exited during startup ({status_text}): {preview}")
+}
+
+fn format_startup_timeout_error(timeout: Duration, stdout: &[u8], stderr: &[u8]) -> String {
+    let stderr_text = String::from_utf8_lossy(stderr).trim().to_string();
+    let stdout_text = String::from_utf8_lossy(stdout).trim().to_string();
+    let detail = if !stderr_text.is_empty() {
+        stderr_text
+    } else {
+        stdout_text
+    };
+
+    if detail.is_empty() {
+        return format!("exceeded {timeout:?} while waiting for fd 4 readiness");
+    }
+
+    let preview = truncate_chars(&detail, 400);
+    format!("exceeded {timeout:?} while waiting for fd 4 readiness: {preview}")
 }
 
 pub(super) fn truncate_chars(value: &str, max_chars: usize) -> String {

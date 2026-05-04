@@ -6,7 +6,7 @@ mod spawn_command;
 
 use super::{App, Instance, InstanceError, InstanceEvent, InstanceState};
 use health_probe::probe_endpoint_tcp;
-use readiness::wait_for_ready;
+use readiness::{startup_timeout_detail, wait_for_ready};
 use spawn_command::{
     build_instance_args, build_instance_env, resolve_app_user, spawn_child_process,
 };
@@ -116,8 +116,9 @@ impl Spawner {
             }
             Err(_) => {
                 instance.set_state(InstanceState::Unhealthy);
-                let _ = instance.kill().await;
-                Err(InstanceError::StartupTimeout)
+                let detail = startup_timeout_detail(instance.clone(), config.startup_timeout).await;
+                instance.cleanup_upstream();
+                Err(InstanceError::StartupTimeoutWithDetail(detail))
             }
         }
     }

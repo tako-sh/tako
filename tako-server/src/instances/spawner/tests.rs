@@ -11,6 +11,7 @@ use std::collections::HashMap;
 #[cfg(unix)]
 use std::os::fd::{FromRawFd, OwnedFd};
 use std::process::ExitStatus;
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 #[test]
@@ -58,6 +59,35 @@ fn truncate_chars_adds_ellipsis_when_over_limit() {
     let truncated = truncate_chars(&text, 400);
     assert_eq!(truncated.len(), 403);
     assert!(truncated.ends_with("..."));
+}
+
+#[tokio::test]
+async fn spawn_timeout_reports_startup_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let (instance_tx, _instance_rx) = mpsc::channel(4);
+    let app = App::new(
+        AppConfig {
+            name: "test-app".to_string(),
+            path: dir.path().to_path_buf(),
+            command: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "echo startup boom >&2; sleep 0.2".to_string(),
+            ],
+            startup_timeout: Duration::from_millis(25),
+            ..Default::default()
+        },
+        instance_tx,
+        noop_log_handle(),
+    );
+
+    let spawner = Spawner::new();
+    let instance = app.allocate_instance();
+    let err = spawner.spawn(&app, instance).await.unwrap_err();
+
+    let message = err.to_string();
+    assert!(message.contains("Instance startup timeout"));
+    assert!(message.contains("startup boom"));
 }
 
 #[test]
