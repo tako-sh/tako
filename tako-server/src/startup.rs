@@ -99,7 +99,7 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     let standby = args.standby;
 
-    tracing::info!("Tako Server v{}", env!("CARGO_PKG_VERSION"));
+    tracing::info!("Tako Server v{}", crate::server_version());
     if standby {
         tracing::info!("Mode: standby");
     }
@@ -240,7 +240,7 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!("HTTPS enabled on port {}", args.tls_port);
     }
 
-    spawn_reload_signal_handlers(&rt, exe);
+    spawn_reload_signal_handlers(&rt, exe, state.clone());
 
     metrics::init(state.runtime_config().server_name.as_deref());
 
@@ -533,11 +533,18 @@ fn spawn_standby_monitor(rt: &Runtime, config: StandbyPromotionConfig) {
     });
 }
 
-fn spawn_reload_signal_handlers(rt: &Runtime, startup_exe: Option<PathBuf>) {
+fn spawn_reload_signal_handlers(
+    rt: &Runtime,
+    startup_exe: Option<PathBuf>,
+    state: Arc<ServerState>,
+) {
     #[cfg(unix)]
     {
         use crate::SIGNAL_PARENT_ON_READY_ENV;
+        use std::sync::atomic::{AtomicBool, Ordering};
         use tokio::signal::unix::{SignalKind, signal};
+
+        let shutdown_started = Arc::new(AtomicBool::new(false));
 
         rt.spawn(async move {
             let mut sighup = match signal(SignalKind::hangup()) {
@@ -583,6 +590,25 @@ fn spawn_reload_signal_handlers(rt: &Runtime, startup_exe: Option<PathBuf>) {
             sigusr1.recv().await;
             tracing::info!("SIGUSR1 received — new process ready, starting graceful drain");
             unsafe { libc::kill(libc::getpid(), libc::SIGTERM) };
+        });
+
+        let shutdown_state = state.clone();
+        let shutdown_started = shutdown_started.clone();
+        rt.spawn(async move {
+            let mut terminate = match signal(SignalKind::terminate()) {
+                Ok(signal) => signal,
+                Err(err) => {
+                    tracing::error!("Failed to register SIGTERM handler: {err}");
+                    return;
+                }
+            };
+            terminate.recv().await;
+            if shutdown_started.swap(true, Ordering::SeqCst) {
+                return;
+            }
+            shutdown_state
+                .shutdown_runtime(Duration::from_secs(120))
+                .await;
         });
     }
 }

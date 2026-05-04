@@ -23,6 +23,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tako_core::UpgradeMode;
 use tempfile::TempDir;
+use tracing_subscriber::layer::SubscriberExt as _;
 
 fn empty_challenge_tokens() -> ChallengeTokens {
     Arc::new(parking_lot::RwLock::new(HashMap::new()))
@@ -112,6 +113,56 @@ fn socket_ready(path: &Path) -> bool {
 #[test]
 fn default_server_log_filter_is_warn() {
     assert_eq!(super::DEFAULT_SERVER_LOG_FILTER, "warn");
+}
+
+#[derive(Clone)]
+struct SharedLogWriter(Arc<Mutex<Vec<u8>>>);
+
+struct SharedLogBuffer(Arc<Mutex<Vec<u8>>>);
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SharedLogWriter {
+    type Writer = SharedLogBuffer;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        SharedLogBuffer(self.0.clone())
+    }
+}
+
+impl std::io::Write for SharedLogBuffer {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn server_json_log_format_includes_release_identity_fields() {
+    let output = Arc::new(Mutex::new(Vec::new()));
+    let subscriber = tracing_subscriber::registry().with(
+        tracing_subscriber::fmt::layer()
+            .event_format(super::ServerJsonLogFormat::new("0.0.0-test123", 4242))
+            .with_writer(SharedLogWriter(output.clone())),
+    );
+
+    tracing::subscriber::with_default(subscriber, || {
+        tracing::warn!(answer = 42, ready = true, "hello");
+    });
+
+    let bytes = output.lock().unwrap().clone();
+    let line = String::from_utf8(bytes).unwrap();
+    let value: Value = serde_json::from_str(line.trim()).unwrap();
+
+    assert_eq!(value["level"], "WARN");
+    assert_eq!(value["server_version"], "0.0.0-test123");
+    assert_eq!(value["pid"], 4242);
+    assert_eq!(value["fields"]["message"], "hello");
+    assert_eq!(value["fields"]["answer"], 42);
+    assert_eq!(value["fields"]["ready"], true);
+    assert!(value.get("server_name").is_none());
 }
 
 #[test]

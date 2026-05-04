@@ -559,6 +559,29 @@ impl AppManager {
         Ok(())
     }
 
+    /// Stop every app instance owned by this server process.
+    pub async fn shutdown_all(&self) {
+        let apps: Vec<(String, Arc<App>)> = self
+            .apps
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .collect();
+
+        for (name, app) in apps {
+            app.set_state(AppState::Stopped);
+            for instance in app.get_instances() {
+                if let Err(error) = instance.kill().await {
+                    tracing::warn!(
+                        app = %name,
+                        instance = %instance.id,
+                        "Failed to stop instance during server shutdown: {error}"
+                    );
+                }
+                app.remove_instance(&instance.id);
+            }
+        }
+    }
+
     /// Get spawner for external use
     pub fn spawner(&self) -> Arc<Spawner> {
         self.spawner.clone()
@@ -693,6 +716,33 @@ mod tests {
         let apps = manager.list_apps();
         assert_eq!(apps.len(), 1);
         assert!(apps.contains(&"my-app".to_string()));
+    }
+
+    #[tokio::test]
+    async fn app_manager_shutdown_all_stops_registered_instances() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = AppManager::new(dir.path().to_path_buf());
+
+        let app = manager.register_app(AppConfig {
+            name: "my-app".to_string(),
+            version: "1.0.0".to_string(),
+            ..Default::default()
+        });
+
+        let instance = app.allocate_instance();
+        let child = tokio::process::Command::new("sleep")
+            .arg("60")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn test child");
+        instance.set_process(child);
+        assert!(instance.is_alive().await);
+
+        manager.shutdown_all().await;
+
+        assert!(app.get_instances().is_empty());
+        assert_eq!(app.state(), AppState::Stopped);
     }
 
     #[test]

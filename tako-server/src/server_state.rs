@@ -260,6 +260,12 @@ impl ServerState {
             .map_err(|error| StateStoreError::InvalidData(error.to_string()))
     }
 
+    pub(crate) async fn shutdown_runtime(&self, workflow_drain_timeout: Duration) {
+        tracing::info!("Shutting down managed app runtime");
+        self.workflows.shutdown_all(workflow_drain_timeout).await;
+        self.app_manager.shutdown_all().await;
+    }
+
     pub(crate) async fn reject_mutating_when_upgrading(&self, command: &str) -> Option<Response> {
         let mode = *self.server_mode.read().await;
         if mode == UpgradeMode::Upgrading {

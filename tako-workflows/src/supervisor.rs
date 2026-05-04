@@ -18,13 +18,12 @@ use std::ffi::OsString;
 use std::os::fd::{AsRawFd, RawFd};
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::time::timeout;
 
 /// After a worker crashes (non-zero exit before claiming any runs), refuse
 /// to respawn or accept enqueues until this window elapses. Gives the user
@@ -126,14 +125,13 @@ struct State {
 
 impl WorkerSupervisor {
     pub fn new(spec: WorkerSpec) -> Self {
-        Self {
-            spec,
-            state: Arc::new(Mutex::new(State {
-                children: Vec::new(),
-                shutting_down: false,
-                health: WorkerHealth::default(),
-            })),
-        }
+        let state = Arc::new(Mutex::new(State {
+            children: Vec::new(),
+            shutting_down: false,
+            health: WorkerHealth::default(),
+        }));
+        Self::spawn_reaper(Arc::downgrade(&state), spec.log_sink.clone());
+        Self { spec, state }
     }
 
     /// Launch all always-on workers. No-op when `workers == 0`
@@ -289,48 +287,62 @@ impl WorkerSupervisor {
 
     /// SIGTERM all children, wait for exit, SIGKILL after `drain_timeout`.
     pub async fn shutdown(&self, drain_timeout: Duration) {
-        let pids: Vec<u32> = {
+        let mut children: Vec<ChildEntry> = {
             let mut state = self.state.lock();
             state.shutting_down = true;
-            state
-                .children
-                .iter_mut()
-                .filter_map(|entry| entry.child.id())
-                .collect()
+            state.children.drain(..).collect()
         };
 
-        for pid in &pids {
+        for entry in &children {
             #[cfg(unix)]
             unsafe {
-                libc::kill(*pid as i32, libc::SIGTERM);
+                if let Some(pid) = entry.child.id() {
+                    libc::kill(pid as i32, libc::SIGTERM);
+                }
             }
             #[cfg(not(unix))]
-            let _ = pid;
+            let _ = entry;
         }
 
-        let state = self.state.clone();
-        let waited = timeout(drain_timeout, async move {
-            loop {
-                {
-                    let mut s = state.lock();
-                    s.children
-                        .retain_mut(|entry| matches!(entry.child.try_wait(), Ok(None)));
-                    if s.children.is_empty() {
-                        return;
-                    }
-                }
-                tokio::time::sleep(Duration::from_millis(50)).await;
+        let deadline = tokio::time::Instant::now() + drain_timeout;
+        loop {
+            children.retain_mut(|entry| matches!(entry.child.try_wait(), Ok(None)));
+            if children.is_empty() {
+                return;
             }
-        })
-        .await;
+            if tokio::time::Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
 
-        if waited.is_err() {
-            // Force-kill stragglers.
-            let mut state = self.state.lock();
-            for entry in state.children.iter_mut() {
+        if !children.is_empty() {
+            for entry in &mut children {
                 let _ = entry.child.start_kill();
             }
+            for entry in &mut children {
+                let _ = entry.child.wait().await;
+            }
         }
+    }
+
+    fn spawn_reaper(state: Weak<Mutex<State>>, log_sink: Option<WorkerLogSink>) {
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        handle.spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                let Some(state) = state.upgrade() else {
+                    break;
+                };
+                let mut state = state.lock();
+                Self::process_exits(&mut state, log_sink.as_ref());
+                if state.shutting_down && state.children.is_empty() {
+                    break;
+                }
+            }
+        });
     }
 
     /// Caller must hold `self.state` so the spawn + push is atomic with
@@ -564,6 +576,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shutdown_reaps_children_that_ignore_sigterm() {
+        let dir = tempdir().unwrap();
+        let spec = WorkerSpec {
+            app: "test".into(),
+            workers: 1,
+            concurrency: 1,
+            idle_timeout_ms: 0,
+            command: vec!["sh".into(), "-c".into(), "trap '' TERM; sleep 60".into()],
+            cwd: dir.path().into(),
+            env: HashMap::new(),
+            secrets: HashMap::new(),
+            log_sink: None,
+        };
+        let sup = WorkerSupervisor::new(spec);
+        sup.start().await.unwrap();
+        assert!(sup.is_running());
+        sup.shutdown(Duration::from_millis(50)).await;
+        assert_eq!(sup.state.lock().children.len(), 0);
+    }
+
+    #[tokio::test]
     async fn wake_respawns_missing_always_on_worker() {
         let dir = tempdir().unwrap();
         // Start with 1 always-on worker that sleeps briefly then exits.
@@ -658,6 +691,31 @@ mod tests {
         sup.wake().unwrap();
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(sup.check_startup_health().is_ok());
+    }
+
+    #[tokio::test]
+    async fn background_reaper_collects_clean_idle_exit_without_poll() {
+        let dir = tempdir().unwrap();
+        let spec = WorkerSpec {
+            app: "test".into(),
+            workers: 0,
+            concurrency: 1,
+            idle_timeout_ms: 0,
+            command: vec!["true".into()],
+            cwd: dir.path().into(),
+            env: HashMap::new(),
+            secrets: HashMap::new(),
+            log_sink: None,
+        };
+        let sup = WorkerSupervisor::new(spec);
+        sup.wake().unwrap();
+        for _ in 0..20 {
+            if sup.state.lock().children.is_empty() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        panic!("background reaper did not collect exited worker");
     }
 
     #[cfg(unix)]

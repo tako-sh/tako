@@ -35,9 +35,17 @@ use tako_workflows as workflows;
 
 use crate::boot::install_rustls_crypto_provider;
 use clap::Parser;
+use serde_json::{Map, Number, Value};
+use std::fmt;
 use std::path::Path;
+use tracing::field::{Field, Visit};
+use tracing::{Event, Subscriber};
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::fmt::FmtContext;
+use tracing_subscriber::fmt::format::{FormatEvent, FormatFields, Writer};
+use tracing_subscriber::fmt::time::{FormatTime, SystemTime};
 use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::util::SubscriberInitExt;
 
 pub(crate) use crate::release::is_private_local_hostname;
@@ -58,6 +66,120 @@ fn server_version() -> &'static str {
         }
     });
     &VERSION
+}
+
+#[derive(Clone)]
+struct ServerJsonLogFormat {
+    server_version: &'static str,
+    pid: u32,
+}
+
+impl ServerJsonLogFormat {
+    fn new(server_version: &'static str, pid: u32) -> Self {
+        Self {
+            server_version,
+            pid,
+        }
+    }
+}
+
+impl<S, N> FormatEvent<S, N> for ServerJsonLogFormat
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+    N: for<'a> FormatFields<'a> + 'static,
+{
+    fn format_event(
+        &self,
+        _ctx: &FmtContext<'_, S, N>,
+        mut writer: Writer<'_>,
+        event: &Event<'_>,
+    ) -> fmt::Result {
+        let mut timestamp = String::new();
+        SystemTime.format_time(&mut Writer::new(&mut timestamp))?;
+
+        let mut fields = Map::new();
+        event.record(&mut JsonFieldVisitor {
+            fields: &mut fields,
+        });
+
+        let mut entry = Map::new();
+        entry.insert("timestamp".to_string(), Value::String(timestamp));
+        entry.insert(
+            "level".to_string(),
+            Value::String(event.metadata().level().to_string()),
+        );
+        entry.insert(
+            "server_version".to_string(),
+            Value::String(self.server_version.to_string()),
+        );
+        entry.insert("pid".to_string(), Value::Number(Number::from(self.pid)));
+        entry.insert("fields".to_string(), Value::Object(fields));
+
+        let line = serde_json::to_string(&Value::Object(entry)).map_err(|_| fmt::Error)?;
+        writeln!(writer, "{line}")
+    }
+}
+
+struct JsonFieldVisitor<'a> {
+    fields: &'a mut Map<String, Value>,
+}
+
+impl JsonFieldVisitor<'_> {
+    fn insert(&mut self, field: &Field, value: Value) {
+        self.fields.insert(field.name().to_string(), value);
+    }
+}
+
+impl Visit for JsonFieldVisitor<'_> {
+    fn record_f64(&mut self, field: &Field, value: f64) {
+        if let Some(number) = Number::from_f64(value) {
+            self.insert(field, Value::Number(number));
+        } else {
+            self.insert(field, Value::String(value.to_string()));
+        }
+    }
+
+    fn record_i64(&mut self, field: &Field, value: i64) {
+        self.insert(field, Value::Number(Number::from(value)));
+    }
+
+    fn record_u64(&mut self, field: &Field, value: u64) {
+        self.insert(field, Value::Number(Number::from(value)));
+    }
+
+    fn record_i128(&mut self, field: &Field, value: i128) {
+        match i64::try_from(value) {
+            Ok(value) => self.record_i64(field, value),
+            Err(_) => self.insert(field, Value::String(value.to_string())),
+        }
+    }
+
+    fn record_u128(&mut self, field: &Field, value: u128) {
+        match u64::try_from(value) {
+            Ok(value) => self.record_u64(field, value),
+            Err(_) => self.insert(field, Value::String(value.to_string())),
+        }
+    }
+
+    fn record_bool(&mut self, field: &Field, value: bool) {
+        self.insert(field, Value::Bool(value));
+    }
+
+    fn record_str(&mut self, field: &Field, value: &str) {
+        self.insert(field, Value::String(value.to_string()));
+    }
+
+    fn record_bytes(&mut self, field: &Field, value: &[u8]) {
+        self.insert(field, Value::String(format!("{value:02x?}")));
+    }
+
+    fn record_error(&mut self, field: &Field, value: &(dyn std::error::Error + 'static)) {
+        self.insert(field, Value::String(value.to_string()));
+    }
+
+    fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
+        self.insert(field, Value::String(format!("{value:?}")));
+    }
 }
 
 /// Tako Server - Application runtime and proxy
@@ -156,6 +278,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing with a non-blocking writer so log I/O never stalls
     // Tokio worker threads (critical under high request volume / DDoS).
     let (non_blocking, _guard) = tracing_appender::non_blocking(std::io::stdout());
+
+    #[cfg(debug_assertions)]
     tracing_subscriber::registry()
         .with(
             EnvFilter::try_from_default_env()
@@ -165,6 +289,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             tracing_subscriber::fmt::layer()
                 .json()
                 .with_target(false)
+                .with_writer(non_blocking),
+        )
+        .init();
+
+    #[cfg(not(debug_assertions))]
+    tracing_subscriber::registry()
+        .with(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new(DEFAULT_SERVER_LOG_FILTER)),
+        )
+        .with(
+            tracing_subscriber::fmt::layer()
+                .event_format(ServerJsonLogFormat::new(
+                    server_version(),
+                    std::process::id(),
+                ))
                 .with_writer(non_blocking),
         )
         .init();
