@@ -1,3 +1,6 @@
+mod json;
+mod remote;
+
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -7,7 +10,10 @@ use crate::commands::project_context;
 use crate::commands::server;
 use crate::config::{ServersToml, TakoToml};
 use crate::output;
-use crate::ssh::SshClient;
+use json::JsonLogWriter;
+use json::format_json_lines;
+use remote::stream_remote_logs;
+use remote::{build_fetch_log_command, build_tail_log_command, collect_remote_log_bytes};
 use tracing::Instrument;
 
 const DIM: &str = "\x1b[2m";
@@ -17,16 +23,18 @@ pub fn run(
     requested_env: Option<&str>,
     tail: bool,
     days: u32,
+    json: bool,
     config_path: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(run_async(requested_env, tail, days, config_path))
+    rt.block_on(run_async(requested_env, tail, days, json, config_path))
 }
 
 async fn run_async(
     requested_env: Option<&str>,
     tail: bool,
     days: u32,
+    json: bool,
     config_path: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let context = project_context::resolve_existing(config_path)?;
@@ -62,55 +70,62 @@ async fn run_async(
 
     let colorize = output::is_interactive();
     let show_prefix = server_names.len() > 1;
+    let route_filters = tako_config.get_routes(&env).unwrap_or_default();
 
     if tail {
-        if requested_env.is_some() {
+        if requested_env.is_some() && !json {
             output::warning(&format!("Using {} environment", output::accent(&env)));
         }
         stream_logs(
             &server_names,
             &servers,
             &remote_app_name,
+            &route_filters,
             show_prefix,
             colorize,
+            json,
         )
         .await
     } else {
-        if requested_env.is_some() {
+        if requested_env.is_some() && !json {
             output::warning(&format!("Using {} environment", output::accent(&env)));
         }
-        output::hint(&format!(
-            "Showing logs for the last {days} days. Use {} to change",
-            output::strong("--days")
-        ));
+        if !json {
+            output::hint(&format!(
+                "Showing logs for the last {days} days. Use {} to change",
+                output::strong("--days")
+            ));
+        }
         fetch_logs(
             &server_names,
             &servers,
             &remote_app_name,
+            &route_filters,
             days,
             show_prefix,
             colorize,
+            json,
         )
         .await
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tail mode: stream to stdout with live dedup
-// ---------------------------------------------------------------------------
-
 async fn stream_logs(
     server_names: &[String],
     servers: &ServersToml,
     app_name: &str,
+    route_filters: &[String],
     show_prefix: bool,
     colorize: bool,
+    json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    output::info(&format!(
-        "Streaming logs for {} {}",
-        output::strong(app_name),
-        output::theme_muted("(Ctrl+c to stop)")
-    ));
+    if !json {
+        output::info(&format!(
+            "Streaming logs for {} {}",
+            output::strong(app_name),
+            output::theme_muted("(Ctrl+c to stop)")
+        ));
+    }
 
     let writer: Arc<Mutex<Box<dyn Write + Send>>> =
         Arc::new(Mutex::new(Box::new(std::io::stdout())));
@@ -124,6 +139,7 @@ async fn stream_logs(
         let host = server.host.clone();
         let port = server.port;
         let app_name = app_name.to_string();
+        let route_filters = route_filters.to_vec();
         let writer = writer.clone();
         let prefix = format_prefix(server_name, show_prefix, colorize);
         let name = server_name.to_string();
@@ -132,40 +148,39 @@ async fn stream_logs(
         tasks.push(tokio::spawn(
             async move {
                 let _t = output::timed(&format!("Stream logs ({host}:{port})"));
-                let mut ssh = SshClient::connect_to(&host, port).await?;
+                let log_cmd = build_tail_log_command(&app_name, &route_filters);
 
-                let log_cmd = format!(
-                    "tail -F /opt/tako/apps/{app}/logs/current.log 2>/dev/null \
-                 || sudo journalctl -u tako-server -f --no-pager -o cat 2>/dev/null \
-                 | grep --line-buffered '\"app\":\"{app}\"' \
-                 || echo 'No logs available'",
-                    app = app_name
-                );
-
-                let lw = Arc::new(Mutex::new(LogWriter::new(writer, prefix, colorize)));
-                let lw_out = lw.clone();
-                let lw_err = lw.clone();
-
-                let _ = ssh
-                    .exec_streaming(
-                        &log_cmd,
-                        move |data| {
-                            if let Ok(mut w) = lw_out.lock() {
+                if json {
+                    let lw = Arc::new(Mutex::new(JsonLogWriter::new(writer, name)));
+                    let sink = {
+                        let lw = lw.clone();
+                        Arc::new(move |data: &[u8]| {
+                            if let Ok(mut w) = lw.lock() {
                                 w.push(data);
                             }
-                        },
-                        move |data| {
-                            if let Ok(mut w) = lw_err.lock() {
+                        })
+                    };
+                    stream_remote_logs(&host, port, &log_cmd, sink).await?;
+
+                    if let Ok(mut w) = lw.lock() {
+                        w.flush();
+                    }
+                } else {
+                    let lw = Arc::new(Mutex::new(LogWriter::new(writer, prefix, colorize)));
+                    let sink = {
+                        let lw = lw.clone();
+                        Arc::new(move |data: &[u8]| {
+                            if let Ok(mut w) = lw.lock() {
                                 w.push(data);
                             }
-                        },
-                    )
-                    .await?;
+                        })
+                    };
+                    stream_remote_logs(&host, port, &log_cmd, sink).await?;
 
-                if let Ok(mut w) = lw.lock() {
-                    w.flush();
+                    if let Ok(mut w) = lw.lock() {
+                        w.flush();
+                    }
                 }
-                ssh.disconnect().await?;
                 Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
             }
             .instrument(span),
@@ -173,22 +188,24 @@ async fn stream_logs(
     }
 
     for t in tasks {
-        let _ = t.await;
+        match t.await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => return Err(format!("Failed to stream logs: {error}").into()),
+            Err(error) => return Err(format!("Failed to stream logs: {error}").into()),
+        }
     }
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// Non-tail mode: fetch → sort → dedup → pager
-// ---------------------------------------------------------------------------
 
 async fn fetch_logs(
     server_names: &[String],
     servers: &ServersToml,
     app_name: &str,
+    route_filters: &[String],
     days: u32,
     show_prefix: bool,
     colorize: bool,
+    json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let total = server_names.len();
     let progress_label = if total > 1 {
@@ -196,7 +213,7 @@ async fn fetch_logs(
     } else {
         "Fetching logs…".to_string()
     };
-    let phase = output::PhaseSpinner::start(&progress_label);
+    let phase = (!json).then(|| output::PhaseSpinner::start(&progress_label));
 
     let collected: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
     let done_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -210,66 +227,58 @@ async fn fetch_logs(
         let host = server.host.clone();
         let port = server.port;
         let app_name = app_name.to_string();
+        let route_filters = route_filters.to_vec();
         let server_name = server_name.to_string();
         let collected = collected.clone();
         let done_count = done_count.clone();
-        let phase_pb = phase.pb().cloned();
+        let phase_pb = phase.as_ref().and_then(|phase| phase.pb().cloned());
         let span = output::scope(&server_name);
 
-        tasks.push(tokio::spawn(async move {
-            let _t = output::timed(&format!("Fetch logs ({host}:{port}, last {days} days)"));
-            let mut ssh = SshClient::connect_to(&host, port).await?;
+        tasks.push(tokio::spawn(
+            async move {
+                let _t = output::timed(&format!("Fetch logs ({host}:{port}, last {days} days)"));
+                // Read app log files (primary) and server logs about this app (supplementary).
+                // Pipe through zstd if available on the server; falls back to raw output.
+                let log_cmd = build_fetch_log_command(&app_name, &route_filters, days);
 
-            // Read app log files (primary) and server logs about this app (supplementary).
-            // Pipe through zstd if available on the server; falls back to raw output.
-            let log_cmd = format!(
-                "{{ cat /opt/tako/apps/{app}/logs/previous.log /opt/tako/apps/{app}/logs/current.log 2>/dev/null; \
-                 sudo journalctl -u tako-server --since '{days} days ago' --no-pager -o cat 2>/dev/null \
-                 | grep '\"app\":\"{app}\"'; \
-                 }} | if command -v zstd >/dev/null 2>&1; then zstd -c; else cat; fi",
-                app = app_name,
-                days = days
-            );
+                let collector = Arc::new(Mutex::new(ByteCollector::new(server_name, collected)));
+                let bytes = collect_remote_log_bytes(&host, port, &log_cmd).await?;
 
-            let collector = Arc::new(Mutex::new(ByteCollector::new(
-                server_name,
-                collected,
-            )));
-            let c_out = collector.clone();
-
-            let _ = ssh
-                .exec_streaming(
-                    &log_cmd,
-                    move |data| {
-                        if let Ok(mut c) = c_out.lock() {
-                            c.push(data);
-                        }
-                    },
-                    move |_| {},
-                )
-                .await?;
-
-            if let Ok(c) = Arc::try_unwrap(collector) {
-                c.into_inner().unwrap().finish();
-            }
-            ssh.disconnect().await?;
-
-            if total > 1 {
-                let done = done_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                if let Some(ref pb) = phase_pb {
-                    pb.set_message(format!(
-                        "Fetching logs… {}",
-                        output::muted_progress(done, total)
-                    ));
+                if let Ok(mut c) = collector.lock() {
+                    c.push(&bytes);
                 }
-            }
 
-            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-        }.instrument(span)));
+                if let Ok(c) = Arc::try_unwrap(collector) {
+                    c.into_inner().unwrap().finish();
+                }
+
+                if total > 1 {
+                    let done = done_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                    if let Some(ref pb) = phase_pb {
+                        pb.set_message(format!(
+                            "Fetching logs… {}",
+                            output::muted_progress(done, total)
+                        ));
+                    }
+                }
+
+                Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+            }
+            .instrument(span),
+        ));
     }
 
+    let mut task_errors = Vec::new();
     for t in tasks {
-        let _ = t.await;
+        match t.await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => task_errors.push(error.to_string()),
+            Err(error) => task_errors.push(error.to_string()),
+        }
+    }
+
+    if !task_errors.is_empty() {
+        return Err(format!("Failed to fetch logs:\n{}", task_errors.join("\n")).into());
     }
 
     // Sort by timestamp across all servers.
@@ -280,16 +289,27 @@ async fn fetch_logs(
     lines.sort_by(|a, b| extract_timestamp(&a.1).cmp(extract_timestamp(&b.1)));
 
     if lines.is_empty() {
-        phase.finish("No logs found");
-        output::warning(&format!(
-            "No logs in the last {} days. Try {} to stream live logs.",
-            days,
-            output::strong("--tail")
-        ));
+        if let Some(phase) = phase {
+            phase.finish("No logs found");
+        }
+        if !json {
+            output::warning(&format!(
+                "No logs in the last {} days. Try {} to stream live logs.",
+                days,
+                output::strong("--tail")
+            ));
+        }
         return Ok(());
     }
 
-    phase.finish("Logs fetched");
+    if let Some(phase) = phase {
+        phase.finish("Logs fetched");
+    }
+
+    if json {
+        print!("{}", format_json_lines(&lines));
+        return Ok(());
+    }
 
     // Format and dedup.
     let formatted = format_and_dedup(&lines, show_prefix, colorize);
@@ -348,10 +368,6 @@ fn push_repeat(out: &mut String, count: u32, colorize: bool) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Line collection (non-tail)
-// ---------------------------------------------------------------------------
-
 /// Zstd magic number (first 4 bytes of any zstd frame).
 const ZSTD_MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
 
@@ -392,10 +408,6 @@ impl ByteCollector {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Streaming writer (tail mode)
-// ---------------------------------------------------------------------------
 
 struct LogWriter {
     buf: String,
@@ -465,10 +477,6 @@ impl LogWriter {
         let _ = writeln!(w, "{}{formatted}", self.prefix);
     }
 }
-
-// ---------------------------------------------------------------------------
-// Shared formatting
-// ---------------------------------------------------------------------------
 
 fn format_prefix(server: &str, show: bool, colorize: bool) -> String {
     if !show {
@@ -572,10 +580,6 @@ fn server_not_found_error(name: &str) -> Box<dyn std::error::Error> {
     )
     .into()
 }
-
-// ---------------------------------------------------------------------------
-// Server resolution
-// ---------------------------------------------------------------------------
 
 async fn resolve_log_server_names(
     tako_config: &TakoToml,

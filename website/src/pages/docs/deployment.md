@@ -215,11 +215,13 @@ If a wildcard route is deployed without DNS provider configuration, deploy fails
 ```bash
 tako logs --env production
 tako logs --env production --tail
+tako logs --env production --json
 tako servers status
 tako releases ls --env production
 ```
 
 `servers status` works from any directory and reports all configured servers.
+`logs` includes app output plus server lifecycle, health, and proxy diagnostics for the app's deployed routes. Use `--json` for compact JSONL in agents and automation.
 
 ## Rollback
 

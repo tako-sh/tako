@@ -108,16 +108,21 @@ Deploy validates config, builds locally, uploads artifacts, prepares releases on
 
 ## `tako logs`
 
-View remote app logs.
+View remote app logs and related server diagnostics.
 
 ```bash
 tako logs
 tako logs --env staging
 tako logs --days 7
 tako logs --tail
+tako logs --json
 ```
 
-`--env` defaults to `production`. `--days` defaults to `3`. `--tail` streams continuously and conflicts with `--days`.
+`--env` defaults to `production`. `--days` defaults to `3` and applies to timestamped app log-file lines and server journal diagnostics. `--tail` streams continuously and conflicts with `--days`.
+
+Logs include app stdout/stderr plus `tako-server` lifecycle, health, and proxy diagnostics for the app's deployed routes. Remote fetch/connect failures are reported instead of being shown as empty logs.
+
+`--json` emits compact JSONL for agents and automation. Each stdout line is one log event with stable short keys.
 
 ## `tako releases`
 

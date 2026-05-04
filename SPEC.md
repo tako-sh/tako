@@ -553,18 +553,24 @@ Status flow helpers:
 
 Alias: `tako servers info`.
 
-### tako logs [--env {environment}] [--tail] [--days {N}]
+### tako logs [--env {environment}] [--tail] [--days {N}] [--json]
 
 View or stream logs from all servers in an environment.
 
 - Environment defaults to `production`.
 - Environment must exist in the selected config file.
 - Fetches from all mapped servers in parallel.
+- Includes app stdout/stderr plus `tako-server` lifecycle, health, and proxy diagnostics for the
+  app's deployed routes.
 - Prefixes each line with `[server-name]` when multiple servers are present.
+- Remote fetch/connect failures are reported as command failures; they are not treated as empty logs.
+- `--json` emits compact JSONL for agents and automation: one log event per stdout line with
+  stable short keys and no human progress output on stdout.
 
 **History mode (default):**
 
 - Shows the last `N` days of logs (default: 3).
+- Applies `--days` to timestamped app log-file lines and server journal diagnostics.
 - Consecutive identical messages are deduplicated with "... and N more" suffix.
 - All lines across servers are sorted by timestamp.
 - Displays in `$PAGER` (default: `less -R`) if interactive, otherwise stdout.
