@@ -211,7 +211,7 @@ tako secrets key export
 tako secrets key export --env staging
 ```
 
-`derive` writes `keys/{env}` from a passphrase. `export` reads the key and copies it to the clipboard.
+`derive` writes the environment's cached key under Tako's data directory at `keys/{sha256(salt)[:16]}`. `export` reads that key and copies it to the clipboard.
 
 ## `tako servers`
 

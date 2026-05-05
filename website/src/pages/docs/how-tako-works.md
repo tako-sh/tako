@@ -160,7 +160,7 @@ tako servers setup-wildcard --env production
 
 ## Secrets
 
-Local secret source of truth is `.tako/secrets.json`. Values are encrypted per environment with AES-256-GCM, and keys live under `.tako/keys/{env}`.
+Local secret source of truth is `.tako/secrets.json`. Values are encrypted per environment with AES-256-GCM, and keys are cached under Tako's data directory as `keys/{sha256(salt)[:16]}`, where `salt` is the environment salt stored in `.tako/secrets.json`.
 
 Deploy sends secrets only when the server-side hash differs. Long-running app and worker processes receive secrets through fd 3 at spawn time, not through env vars. Release commands are one-shot and receive secrets as env vars.
 

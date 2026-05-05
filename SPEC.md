@@ -267,7 +267,7 @@ Each environment has a `salt` (base64-encoded Argon2id salt for key derivation) 
 
 Encryption keys are file-based:
 
-- Environment-specific keys: `keys/{env}`
+- Environment-specific keys are cached under Tako's data directory as `keys/{sha256(salt)[:16]}`, where `salt` is the environment salt stored in `.tako/secrets.json`.
 
 `tako` can derive/export these keys via `tako secrets key derive` and `tako secrets key export`.
 
@@ -734,7 +734,7 @@ Set/update secret for environment (defaults to production).
 
 When running in an interactive terminal, prompts for value with masked input. In non-interactive mode, reads a single line from stdin. Stores encrypted value locally in `.tako/secrets.json`.
 
-Uses the environment key at `keys/{env}` (creates it if missing).
+Uses the environment's cached key under Tako's data directory at `keys/{sha256(salt)[:16]}` (creates it if missing).
 
 When `--sync` is provided, immediately syncs secrets to all servers in the target environment after the local change, triggering a rolling restart of running instances.
 
@@ -767,7 +767,7 @@ Source of truth: local `.tako/secrets.json`.
 By default, sync processes all environments declared in `tako.toml`.
 When `--env` is provided, sync processes only that environment.
 
-For each target environment, sync decrypts with `keys/{env}`.
+For each target environment, sync decrypts with the cached key under Tako's data directory at `keys/{sha256(salt)[:16]}`.
 
 Shows a spinner with the total number of target servers while syncing, and reports the elapsed time on completion.
 
@@ -781,7 +781,7 @@ Sync flow helpers:
 
 Derive an encryption key from a passphrase (for sharing with teammates).
 
-Writes `keys/{env}`.
+Writes the environment's cached key under Tako's data directory at `keys/{sha256(salt)[:16]}`.
 
 When `--env` is omitted, `production` is used.
 
@@ -789,7 +789,7 @@ When `--env` is omitted, `production` is used.
 
 Export a key to clipboard.
 
-Reads `keys/{env}`.
+Reads the environment's cached key under Tako's data directory at `keys/{sha256(salt)[:16]}`.
 
 When `--env` is omitted, `production` is used.
 
