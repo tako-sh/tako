@@ -1,8 +1,8 @@
 use super::super::LogLevel;
 use super::*;
 use crate::commands::dev::output_render::{
-    extract_repo_slug, fit_scope, format_lan_block, format_panel_stacked, format_panel_wide,
-    progress_bar, vlen,
+    extract_repo_slug, fit_scope, format_lan_block, format_log_for_width, format_panel_stacked,
+    format_panel_wide, progress_bar, vlen,
 };
 use crate::output::LOGO_ROWS;
 use console::{measure_text_width, strip_ansi_codes, truncate_str};
@@ -74,6 +74,36 @@ fn format_log_aligns_continuation_lines_under_message_column() {
     assert_eq!(&lines[1][msg_col..], "line2");
     assert!(lines[2].starts_with(&" ".repeat(msg_col)));
     assert_eq!(&lines[2][msg_col..], "line3");
+}
+
+#[test]
+fn format_log_wraps_long_lines_under_message_column() {
+    let long_path = "/Users/dan/github/repobouncer/node_modules/tako.sh/package.json";
+    let log = ScopedLog {
+        timestamp: "12:34:56".to_string(),
+        level: LogLevel::Error,
+        scope: "vite".to_string(),
+        message: format!(r#"Error: "./runtime" is not exported from package {long_path}"#),
+        fields: None,
+        kind: None,
+    };
+    let plain = strip_ansi(&format_log_for_width(&log, 78));
+    let lines: Vec<&str> = plain.split('\n').collect();
+    assert!(lines.len() > 1, "expected wrapping, got {plain:?}");
+
+    let msg_col = lines[0]
+        .find("Error:")
+        .expect("first line contains message");
+    for line in lines.iter().skip(1) {
+        assert!(
+            line.starts_with(&" ".repeat(msg_col)),
+            "wrapped line should align under message column: {line:?}"
+        );
+        assert!(
+            measure_text_width(line) <= 78,
+            "renderer should wrap before terminal auto-wraps: {line:?}"
+        );
+    }
 }
 
 #[test]

@@ -1,5 +1,5 @@
 use super::super::{LogLevel, ScopedLog};
-use super::shared::{DIM, RESET, SCOPE_MAX, SCOPE_MIN, ansi_rgb, muted};
+use super::shared::{DIM, RESET, SCOPE_MAX, SCOPE_MIN, ansi_rgb, muted, terminal_cols, vlen};
 
 pub(in crate::commands::dev) fn fit_scope(scope: &str) -> String {
     let len = scope.len();
@@ -11,6 +11,10 @@ pub(in crate::commands::dev) fn fit_scope(scope: &str) -> String {
 }
 
 pub(in crate::commands::dev) fn format_log(log: &ScopedLog) -> String {
+    format_log_for_width(log, terminal_cols())
+}
+
+pub(in crate::commands::dev) fn format_log_for_width(log: &ScopedLog, cols: usize) -> String {
     if let Some(kind) = log.kind.as_deref() {
         let label = kind.replace('_', " ");
         return muted(&format!("──── {label} ────"));
@@ -37,14 +41,22 @@ pub(in crate::commands::dev) fn format_log(log: &ScopedLog) -> String {
         let pad_width = message_column_width(scope.len());
         let mut lines = log.message.split('\n');
         let first = lines.next().unwrap_or("");
+        let wrapped_first = wrap_message_line(first, fields_suffix.as_str(), pad_width, cols);
         let mut out = format!(
-            "{DIM}{} {:>5}{RESET} {rendered_scope} {DIM}{first}{fields_suffix}{RESET}",
-            log.timestamp, log.level
+            "{DIM}{} {:>5}{RESET} {rendered_scope} {DIM}{}{RESET}",
+            log.timestamp, log.level, wrapped_first[0]
         );
-        for line in lines {
+        for line in wrapped_first.iter().skip(1) {
             out.push('\n');
             out.push_str(&" ".repeat(pad_width));
             out.push_str(&format!("{DIM}{line}{RESET}"));
+        }
+        for line in lines {
+            for wrapped in wrap_message_line(line, "", pad_width, cols) {
+                out.push('\n');
+                out.push_str(&" ".repeat(pad_width));
+                out.push_str(&format!("{DIM}{wrapped}{RESET}"));
+            }
         }
         return out;
     }
@@ -54,16 +66,87 @@ pub(in crate::commands::dev) fn format_log(log: &ScopedLog) -> String {
     let pad_width = message_column_width(scope.len());
     let mut lines = log.message.split('\n');
     let first = lines.next().unwrap_or("");
+    let wrapped_first = wrap_message_line(first, fields_suffix.as_str(), pad_width, cols);
     let mut out = format!(
-        "{DIM}{}{RESET} {color}{:>5}{RESET} {rendered_scope} {first}{fields_suffix}",
-        log.timestamp, log.level
+        "{DIM}{}{RESET} {color}{:>5}{RESET} {rendered_scope} {}",
+        log.timestamp, log.level, wrapped_first[0]
     );
-    for line in lines {
+    for line in wrapped_first.iter().skip(1) {
         out.push('\n');
         out.push_str(&" ".repeat(pad_width));
         out.push_str(line);
     }
+    for line in lines {
+        for wrapped in wrap_message_line(line, "", pad_width, cols) {
+            out.push('\n');
+            out.push_str(&" ".repeat(pad_width));
+            out.push_str(&wrapped);
+        }
+    }
     out
+}
+
+fn wrap_message_line(line: &str, suffix: &str, pad_width: usize, cols: usize) -> Vec<String> {
+    let width = cols.saturating_sub(pad_width).max(20);
+    let mut wrapped = wrap_visible(line, width);
+    if suffix.is_empty() {
+        return wrapped;
+    }
+
+    if let Some(last) = wrapped.last_mut()
+        && vlen(last) + vlen(suffix) <= width
+    {
+        last.push_str(suffix);
+        return wrapped;
+    }
+
+    wrapped.push(suffix.to_string());
+    wrapped
+}
+
+fn wrap_visible(line: &str, width: usize) -> Vec<String> {
+    if line.is_empty() {
+        return vec![String::new()];
+    }
+
+    let mut out = Vec::new();
+    let mut remaining = line;
+    while vlen(remaining) > width {
+        let split = split_visible_prefix(remaining, width);
+        let split = split_at_last_space(&remaining[..split]).unwrap_or(split);
+        let (head, tail) = remaining.split_at(split);
+        out.push(head.trim_end().to_string());
+        remaining = tail.trim_start();
+        if remaining.is_empty() {
+            break;
+        }
+    }
+    if !remaining.is_empty() {
+        out.push(remaining.to_string());
+    }
+    out
+}
+
+fn split_visible_prefix(s: &str, max_width: usize) -> usize {
+    let mut width = 0;
+    let mut last = 0;
+    for (idx, ch) in s.char_indices() {
+        let ch_width = vlen(ch.encode_utf8(&mut [0; 4]));
+        if width + ch_width > max_width {
+            break;
+        }
+        width += ch_width;
+        last = idx + ch.len_utf8();
+    }
+    last.max(s.chars().next().map(char::len_utf8).unwrap_or(0))
+}
+
+fn split_at_last_space(s: &str) -> Option<usize> {
+    let idx = s
+        .char_indices()
+        .rev()
+        .find_map(|(idx, ch)| ch.is_whitespace().then_some(idx))?;
+    (idx > 0).then_some(idx)
 }
 
 /// Render `fields` as a dim trailing ` key=value` suffix. Skips globals that

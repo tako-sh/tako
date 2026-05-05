@@ -5,7 +5,7 @@ mod shared;
 
 pub(super) use lan::format_lan_block;
 #[cfg(test)]
-pub(super) use logs::fit_scope;
+pub(super) use logs::{fit_scope, format_log_for_width};
 pub(super) use logs::{format_log, set_app_runtime};
 pub(super) use panel::{format_header, format_keymap, format_panel};
 #[cfg(test)]
