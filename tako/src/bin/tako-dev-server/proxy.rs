@@ -235,6 +235,37 @@ impl Routes {
     }
 }
 
+fn is_managed_dev_hostname(hostname: &str) -> bool {
+    hostname
+        .strip_suffix(".tako.test")
+        .or_else(|| hostname.strip_suffix(".test"))
+        .is_some()
+}
+
+fn unknown_application_name(hostname: &str) -> &str {
+    // Strip the more specific suffix first so `app.tako.test` yields `app`, not `app.tako`.
+    hostname
+        .strip_suffix(".tako.test")
+        .or_else(|| hostname.strip_suffix(".test"))
+        .unwrap_or(hostname)
+}
+
+fn unknown_application_response_body(hostname: &str, routes: &Routes) -> String {
+    if !is_managed_dev_hostname(hostname) {
+        return "Misdirected Request".to_string();
+    }
+
+    let app_name = unknown_application_name(hostname);
+    let mut known = routes.all_display_routes();
+    known.sort();
+    let routes: Vec<String> = known.iter().map(|r| format!("  https://{r}")).collect();
+
+    format!(
+        "Unknown application \"{app_name}\". Known routes:\n{}",
+        routes.join("\n")
+    )
+}
+
 #[derive(Clone)]
 pub struct DevProxy {
     pub routes: Routes,
@@ -291,23 +322,9 @@ impl ProxyHttp for DevProxy {
                 .write_response_header(Box::new(header), false)
                 .await?;
 
-            // Strip the more specific suffix first so `app.tako.test` yields `app`, not `app.tako`.
-            let app_name = hostname
-                .strip_suffix(".tako.test")
-                .or_else(|| hostname.strip_suffix(".test"))
-                .unwrap_or(hostname.as_str());
-            let mut known = self.routes.all_display_routes();
-            known.sort();
-            let routes: Vec<String> = known.iter().map(|r| format!("  https://{r}")).collect();
             session
                 .write_response_body(
-                    Some(
-                        format!(
-                            "Unknown application \"{app_name}\". Known routes:\n{}",
-                            routes.join("\n")
-                        )
-                        .into(),
-                    ),
+                    Some(unknown_application_response_body(&hostname, &self.routes).into()),
                     true,
                 )
                 .await?;
@@ -561,6 +578,36 @@ mod tests {
         let mut display = routes.all_display_routes();
         display.sort();
         assert_eq!(display, vec!["app.test", "app.test/api"]);
+    }
+
+    #[test]
+    fn unknown_application_response_lists_routes_for_managed_hosts() {
+        let routes = Routes::default();
+        routes.set_routes("app".to_string(), vec!["app.test".to_string()], 3000, true);
+
+        assert_eq!(
+            unknown_application_response_body("missing.test", &routes),
+            "Unknown application \"missing\". Known routes:\n  https://app.test"
+        );
+        assert_eq!(
+            unknown_application_response_body("missing.tako.test", &routes),
+            "Unknown application \"missing\". Known routes:\n  https://app.test"
+        );
+    }
+
+    #[test]
+    fn unknown_application_response_hides_routes_for_lan_and_external_hosts() {
+        let routes = Routes::default();
+        routes.set_routes("app".to_string(), vec!["app.test".to_string()], 3000, true);
+
+        assert_eq!(
+            unknown_application_response_body("missing.local", &routes),
+            "Misdirected Request"
+        );
+        assert_eq!(
+            unknown_application_response_body("local-rb.affinehq.com", &routes),
+            "Misdirected Request"
+        );
     }
 
     #[test]

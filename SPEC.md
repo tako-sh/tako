@@ -471,6 +471,7 @@ Start (or connect to) a local development session for the current app, backed by
     - Dev routes may use any valid hostname. Tako only manages DNS and `.local` LAN aliases for `.test` and `.tako.test` routes.
     - Wildcard dev routes participate in proxy routing, but cannot be advertised with mDNS in LAN mode.
     - If configured dev routes contain no managed `.test`/`.tako.test` routes, Tako keeps the default `{app}.test` route and treats the configured external routes as additional host aliases.
+    - Unknown managed local DNS hosts (`.test` and `.tako.test`) return a helpful 421 response that lists registered dev routes. Unknown `.local` LAN hosts and unknown external hosts return a generic `Misdirected Request` 421 response and do not enumerate registered routes.
   - The HTTPS daemon listen port for `tako dev` is fixed at `47831`.
 
 **Local CA architecture:**

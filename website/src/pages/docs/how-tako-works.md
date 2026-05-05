@@ -194,7 +194,7 @@ from the last received message id while it remains inside the replay window.
 
 ## Local Development
 
-`tako dev` talks to a persistent `tako-dev-server` daemon. The daemon owns local HTTPS, `.test` DNS routing, app process lifecycle, logs, wake-on-request, and workflow workers. Development routes can also include external hostnames when another tool points those hosts at the dev proxy.
+`tako dev` talks to a persistent `tako-dev-server` daemon. The daemon owns local HTTPS, `.test` DNS routing, app process lifecycle, logs, wake-on-request, and workflow workers. Development routes can also include external hostnames when another tool points those hosts at the dev proxy. Unknown `.local` LAN hosts and unknown external hosts get a generic `Misdirected Request` 421 response without route details.
 
 Local app URLs are based on the app name:
 

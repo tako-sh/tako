@@ -53,6 +53,8 @@ routes = ["dashboard.test", "api.dashboard.test"]
 
 Configured `.test` and `.tako.test` routes replace the default route. External routes are additive: if you only configure external hostnames, Tako still keeps `{app}.test` and also routes those hostnames. External hostnames must be pointed at the dev proxy yourself, for example with a tunnel or DNS rule.
 
+Unknown managed local DNS hosts (`.test` and `.tako.test`) return a 421 response that lists registered dev routes. Unknown `.local` LAN hosts and unknown external hosts return a generic `Misdirected Request` 421 response without listing registered routes.
+
 For Vite apps using `tako.sh/vite`, Tako also passes configured dev route hostnames into Vite's `server.allowedHosts` list so the Vite dev server accepts tunneled or external Host headers without allowing every host. Under `tako dev`, the plugin also routes Vite-process `console.*`, stdout, and stderr through structured app log events so multi-line framework/runtime errors stay grouped in the CLI log stream.
 
 Both `.test` and `.tako.test` resolve through Tako's local DNS. `.tako.test` remains available as a fallback zone. Wildcard dev routes participate in proxy routing, but cannot be advertised with mDNS in LAN mode.

@@ -99,6 +99,8 @@ Development routes may use `.test`, `.tako.test`, or external hostnames. Tako on
 
 If no development route is configured, Tako uses `{app}.test`. If only external development routes are configured, Tako keeps `{app}.test` and adds the external routes as host aliases.
 
+Unknown managed local DNS hosts (`.test` and `.tako.test`) list registered dev routes in the 421 response. Unknown `.local` LAN hosts and unknown external hosts return a generic `Misdirected Request` 421 response without route details.
+
 ## Deploy Says No Server Is Configured
 
 Add and map a server:

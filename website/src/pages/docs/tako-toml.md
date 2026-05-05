@@ -216,7 +216,7 @@ Route patterns can be:
 - `example.com/api/*`
 - `*.example.com/admin/*`
 
-`development` is reserved for `tako dev`. It may define dev routes, but deploy ignores `servers` in that environment. `.test` and `.tako.test` routes are managed by Tako's local DNS. External development routes are accepted as additional host aliases, but you must point those hostnames at the dev proxy yourself.
+`development` is reserved for `tako dev`. It may define dev routes, but deploy ignores `servers` in that environment. `.test` and `.tako.test` routes are managed by Tako's local DNS. External development routes are accepted as additional host aliases, but you must point those hostnames at the dev proxy yourself. Unknown `.local` LAN hosts and unknown external hosts get a generic `Misdirected Request` 421 response without route details.
 
 `idle_timeout` is per-instance idle timeout in seconds. Default is `300`.
 
