@@ -139,6 +139,7 @@ On dev (`vite dev`), the plugin:
 
 - adds `.test`, `.tako.test`, and configured dev route hostnames to `server.allowedHosts`
 - binds Vite to `127.0.0.1:$PORT` with `strictPort: true` when `PORT` is provided
+- routes Vite-process `console.*`, stdout, and stderr through structured Tako app log events under `tako dev`
 
 Deploy entry resolution uses `main` from `tako.toml`, then preset top-level `main`.
 For Vite apps, point `tako.toml main` at the generated wrapper, for example:

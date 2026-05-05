@@ -5,10 +5,15 @@ import path from "node:path";
 
 import { tako } from "../src/vite";
 import { expectAsyncToThrow } from "./assertions";
+import { resetConsoleBridgeForTests } from "../src/tako/console-bridge";
+import { resetStdioBridgeForTests } from "../src/tako/stdio-bridge";
+import { resetLoggerOutputWriterForTests } from "../src/logger";
 
 let rootDir = "";
 let originalPortEnv: string | undefined;
 let originalAllowedHostsEnv: string | undefined;
+let originalStdoutWrite: typeof process.stdout.write;
+let originalStderrWrite: typeof process.stderr.write;
 
 async function readText(relPath: string): Promise<string> {
   return await readFile(path.join(rootDir, relPath), "utf8");
@@ -18,12 +23,22 @@ describe("tako Vite entry plugin", () => {
   beforeEach(async () => {
     originalPortEnv = process.env.PORT;
     originalAllowedHostsEnv = process.env.TAKO_DEV_ALLOWED_HOSTS;
+    originalStdoutWrite = process.stdout.write.bind(process.stdout);
+    originalStderrWrite = process.stderr.write.bind(process.stderr);
     delete process.env.PORT;
     delete process.env.TAKO_DEV_ALLOWED_HOSTS;
+    resetConsoleBridgeForTests();
+    resetStdioBridgeForTests();
+    resetLoggerOutputWriterForTests();
     rootDir = await mkdtemp(path.join(tmpdir(), "tako-vite-plugin-"));
   });
 
   afterEach(async () => {
+    resetConsoleBridgeForTests();
+    resetStdioBridgeForTests();
+    resetLoggerOutputWriterForTests();
+    process.stdout.write = originalStdoutWrite;
+    process.stderr.write = originalStderrWrite;
     if (originalPortEnv === undefined) {
       delete process.env.PORT;
     } else {
@@ -131,6 +146,41 @@ describe("tako Vite entry plugin", () => {
       expect(typeof result.customLogger?.info).toBe("function");
       expect(typeof result.customLogger?.warn).toBe("function");
       expect(typeof result.customLogger?.error).toBe("function");
+    } finally {
+      if (original === undefined) delete process.env.ENV;
+      else process.env.ENV = original;
+    }
+  });
+
+  test("installs app log bridges in development", async () => {
+    const writes: string[] = [];
+    const original = process.env.ENV;
+    process.env.ENV = "development";
+    process.stdout.write = ((chunk: unknown): boolean => {
+      writes.push(typeof chunk === "string" ? chunk : String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    process.stderr.write = ((chunk: unknown): boolean => {
+      writes.push(typeof chunk === "string" ? chunk : String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      const plugin = tako();
+      plugin.config?.({}, { command: "serve" });
+
+      process.stderr.write("Error: boom\n    at foo (x.ts:1:1)\n");
+      await new Promise<void>((resolve) => queueMicrotask(resolve));
+
+      const lines = writes
+        .flatMap((chunk) => chunk.split("\n"))
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatchObject({
+        level: "warn",
+        scope: "app",
+        msg: "Error: boom\n    at foo (x.ts:1:1)",
+      });
     } finally {
       if (original === undefined) delete process.env.ENV;
       else process.env.ENV = original;

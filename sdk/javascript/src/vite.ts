@@ -7,7 +7,9 @@ import type { ChannelRegistry } from "./channels";
 import { createLogger } from "./logger";
 import { handleTakoEndpoint } from "./tako/endpoints";
 import { initServerRuntime } from "./tako/init";
+import { installConsoleBridge } from "./tako/console-bridge";
 import { writeViaInheritedFd } from "./tako/readiness";
+import { installStdioBridge } from "./tako/stdio-bridge";
 
 interface ViteEntryChunkLike {
   type: "chunk";
@@ -219,6 +221,8 @@ export function tako(): Plugin {
       // Under the tako dev server, emit structured JSON log lines so the
       // parent process can render Vite output alongside other subprocess logs.
       if (process.env["ENV"] === "development") {
+        installStdioBridge("app");
+        installConsoleBridge("app");
         config.customLogger = createLogger("vite").toViteLogger();
       }
 

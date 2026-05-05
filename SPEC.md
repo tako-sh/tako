@@ -1659,6 +1659,7 @@ import { tako } from "tako.sh/vite";
 - It emits `<outDir>/tako-entry.mjs`, which normalizes the compiled server module to a default-exported fetch handler.
 - During `vite dev`, it adds `.test`, `.tako.test`, and configured dev route hostnames to `server.allowedHosts`.
 - During `vite dev`, when `PORT` is set, it binds Vite to `127.0.0.1:$PORT` with `strictPort: true`.
+- During `tako dev`, it routes Vite-process `console.*`, stdout, and stderr through structured Tako app log events so multi-line framework/runtime errors stay grouped in the CLI log stream.
 - Deploy does not read Vite metadata files.
 - To use the generated wrapper as deploy entry, set `main` in `tako.toml` to the generated file (for example `dist/server/tako-entry.mjs`) or define preset top-level `main`.
 
