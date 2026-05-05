@@ -2,19 +2,29 @@ FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends \
-    openssh-server \
-    bash \
-    ca-certificates \
-    curl \
-    git \
-    netcat-openbsd \
-    npm \
-    sudo \
-    xz-utils \
-    zstd \
-  && rm -rf /var/lib/apt/lists/*
+RUN set -eu; \
+  for attempt in 1 2 3 4 5; do \
+    rm -rf /var/lib/apt/lists/*; \
+    if apt-get -o Acquire::Retries=5 update \
+      && apt-get install -y --no-install-recommends \
+        openssh-server \
+        bash \
+        ca-certificates \
+        curl \
+        git \
+        netcat-openbsd \
+        npm \
+        sudo \
+        xz-utils \
+        zstd; then \
+      rm -rf /var/lib/apt/lists/*; \
+      exit 0; \
+    fi; \
+    if [ "$attempt" = "5" ]; then \
+      exit 1; \
+    fi; \
+    sleep $((attempt * 10)); \
+  done
 
 # Fake systemctl so the install script's systemd path works without real systemd
 COPY e2e/docker/server/fake-systemctl.sh /usr/local/bin/systemctl

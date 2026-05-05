@@ -10,6 +10,10 @@ use crate::scaling::{IdleConfig, IdleMonitor};
 use crate::socket::SocketServer;
 use crate::tls::{AcmeClient, AcmeConfig, CertManager, CertManagerConfig, ChallengeTokens};
 use crate::{Args, ServerRuntimeConfig, ServerState};
+#[cfg(unix)]
+use async_trait::async_trait;
+#[cfg(unix)]
+use pingora_core::server::{RunArgs, ShutdownSignal, ShutdownSignalWatch};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -240,7 +244,7 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!("HTTPS enabled on port {}", args.tls_port);
     }
 
-    spawn_reload_signal_handlers(&rt, exe, state.clone());
+    spawn_reload_signal_handlers(&rt, exe);
 
     metrics::init(state.runtime_config().server_name.as_deref());
 
@@ -254,9 +258,13 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     sd_notify_ready();
-    server.run_forever();
+    server.run(RunArgs {
+        shutdown_signal: Box::new(TakoShutdownSignalWatch::new(
+            state,
+            Duration::from_secs(120),
+        )),
+    });
 
-    #[allow(unreachable_code)]
     Ok(())
 }
 
@@ -533,18 +541,11 @@ fn spawn_standby_monitor(rt: &Runtime, config: StandbyPromotionConfig) {
     });
 }
 
-fn spawn_reload_signal_handlers(
-    rt: &Runtime,
-    startup_exe: Option<PathBuf>,
-    state: Arc<ServerState>,
-) {
+fn spawn_reload_signal_handlers(rt: &Runtime, startup_exe: Option<PathBuf>) {
     #[cfg(unix)]
     {
         use crate::SIGNAL_PARENT_ON_READY_ENV;
-        use std::sync::atomic::{AtomicBool, Ordering};
         use tokio::signal::unix::{SignalKind, signal};
-
-        let shutdown_started = Arc::new(AtomicBool::new(false));
 
         rt.spawn(async move {
             let mut sighup = match signal(SignalKind::hangup()) {
@@ -591,25 +592,68 @@ fn spawn_reload_signal_handlers(
             tracing::info!("SIGUSR1 received — new process ready, starting graceful drain");
             unsafe { libc::kill(libc::getpid(), libc::SIGTERM) };
         });
+    }
+}
 
-        let shutdown_state = state.clone();
-        let shutdown_started = shutdown_started.clone();
-        rt.spawn(async move {
-            let mut terminate = match signal(SignalKind::terminate()) {
-                Ok(signal) => signal,
-                Err(err) => {
-                    tracing::error!("Failed to register SIGTERM handler: {err}");
-                    return;
-                }
-            };
-            terminate.recv().await;
-            if shutdown_started.swap(true, Ordering::SeqCst) {
-                return;
+#[cfg(unix)]
+struct TakoShutdownSignalWatch {
+    state: Arc<ServerState>,
+    workflow_drain_timeout: Duration,
+}
+
+#[cfg(unix)]
+impl TakoShutdownSignalWatch {
+    fn new(state: Arc<ServerState>, workflow_drain_timeout: Duration) -> Self {
+        Self {
+            state,
+            workflow_drain_timeout,
+        }
+    }
+}
+
+#[cfg(unix)]
+#[async_trait]
+impl ShutdownSignalWatch for TakoShutdownSignalWatch {
+    async fn recv(&self) -> ShutdownSignal {
+        use tokio::signal::unix::{SignalKind, signal};
+
+        let mut graceful_upgrade = match signal(SignalKind::quit()) {
+            Ok(signal) => signal,
+            Err(err) => {
+                tracing::error!("Failed to register SIGQUIT handler: {err}");
+                return ShutdownSignal::FastShutdown;
             }
-            shutdown_state
-                .shutdown_runtime(Duration::from_secs(120))
-                .await;
-        });
+        };
+        let mut graceful_terminate = match signal(SignalKind::terminate()) {
+            Ok(signal) => signal,
+            Err(err) => {
+                tracing::error!("Failed to register SIGTERM handler: {err}");
+                return ShutdownSignal::FastShutdown;
+            }
+        };
+        let mut fast_shutdown = match signal(SignalKind::interrupt()) {
+            Ok(signal) => signal,
+            Err(err) => {
+                tracing::error!("Failed to register SIGINT handler: {err}");
+                return ShutdownSignal::FastShutdown;
+            }
+        };
+
+        tokio::select! {
+            _ = graceful_upgrade.recv() => ShutdownSignal::GracefulUpgrade,
+            _ = fast_shutdown.recv() => ShutdownSignal::FastShutdown,
+            _ = graceful_terminate.recv() => {
+                let drain = self.state.shutdown_runtime(self.workflow_drain_timeout);
+                tokio::pin!(drain);
+                loop {
+                    tokio::select! {
+                        _ = &mut drain => return ShutdownSignal::GracefulTerminate,
+                        _ = fast_shutdown.recv() => return ShutdownSignal::FastShutdown,
+                        _ = graceful_terminate.recv() => return ShutdownSignal::FastShutdown,
+                    }
+                }
+            }
+        }
     }
 }
 

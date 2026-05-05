@@ -271,6 +271,17 @@ fn wait_for_server_socket(socket_path: &std::path::Path, child: &mut Child) -> R
     Err("server socket never became available".to_string())
 }
 
+fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> Option<std::process::ExitStatus> {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        if let Ok(Some(status)) = child.try_wait() {
+            return Some(status);
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    None
+}
+
 impl Drop for TestServer {
     fn drop(&mut self) {
         if let Some(mut child) = self.child.take() {
@@ -955,6 +966,37 @@ mod server_info {
         unsafe {
             libc::kill(new_pid as i32, libc::SIGTERM);
         }
+    }
+
+    #[test]
+    fn test_sigterm_exits_after_shutdown_drain() {
+        if !require_localhost_bind() {
+            return;
+        }
+
+        let mut server = TestServer::start();
+        let pid = server
+            .child
+            .as_ref()
+            .expect("server child should be tracked")
+            .id();
+
+        unsafe {
+            libc::kill(pid as i32, libc::SIGTERM);
+        }
+
+        let child = server
+            .child
+            .as_mut()
+            .expect("server child should still be tracked");
+        let status = wait_for_child_exit(child, Duration::from_secs(15))
+            .expect("server should exit promptly after SIGTERM shutdown drain");
+        server.child = None;
+
+        assert!(
+            status.success(),
+            "SIGTERM shutdown should exit cleanly, got {status}"
+        );
     }
 
     #[test]

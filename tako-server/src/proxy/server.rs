@@ -7,6 +7,7 @@ use crate::tls::{
 use pingora_core::listeners::TcpSocketOptions;
 use pingora_core::listeners::tls::TlsSettings;
 use pingora_core::prelude::*;
+use pingora_core::server::configuration::ServerConf;
 use pingora_core::services::listening::Service as ListeningService;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -98,7 +99,7 @@ pub fn build_server_with_acme(
     cert_manager: Option<Arc<CertManager>>,
     cold_start: Arc<ColdStartManager>,
 ) -> Result<Server> {
-    let mut server = Server::new(None)?;
+    let mut server = Server::new_with_opt_and_conf(None, proxy_server_conf()?);
     server.bootstrap();
 
     let proxy = if let Some(tokens) = acme_tokens {
@@ -144,6 +145,18 @@ pub fn build_server_with_acme(
     }
 
     Ok(server)
+}
+
+fn proxy_server_conf() -> Result<ServerConf> {
+    let mut conf = ServerConf::new().ok_or_else(|| {
+        Error::explain(
+            ErrorType::ReadError,
+            "Failed to create default Pingora server configuration",
+        )
+    })?;
+    conf.grace_period_seconds = Some(0);
+    conf.graceful_shutdown_timeout_seconds = Some(5);
+    Ok(conf)
 }
 
 pub(crate) fn listener_socket_options() -> TcpSocketOptions {
