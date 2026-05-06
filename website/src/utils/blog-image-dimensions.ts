@@ -11,6 +11,7 @@ export const BLOG_IMAGE_DIMENSIONS: Record<string, { width: number; height: numb
   "3f05ea4212d7": { width: 1400, height: 933 },
   "402b4ee3a4e4": { width: 1400, height: 933 },
   "4b145b6a1bd7": { width: 1400, height: 788 },
+  "4629e6b31d2b": { width: 1400, height: 788 },
   "596d90391f86": { width: 1400, height: 788 },
   "6c18d3fdbea8": { width: 1400, height: 788 },
   "753b1404dea2": { width: 1400, height: 933 },
