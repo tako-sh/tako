@@ -3,9 +3,10 @@ use crate::instances::{
     App, AppConfig, RollingUpdateConfig, RollingUpdater, target_new_instances_for_build,
 };
 use crate::release::{
-    apply_release_runtime_to_config, ensure_app_runtime_data_dirs, inject_app_data_dir_env,
-    requested_deployment_identity, resolve_release_runtime_bin, validate_app_name,
-    validate_deploy_routes, validate_release_path_for_app, validate_release_version,
+    app_release_root, apply_release_runtime_to_config, ensure_app_runtime_data_dirs,
+    inject_app_data_dir_env, requested_deployment_identity, resolve_release_runtime_bin,
+    validate_app_name, validate_deploy_routes, validate_release_path_for_app,
+    validate_release_version,
 };
 use crate::socket::{AppState, Response};
 use std::collections::HashMap;
@@ -87,47 +88,59 @@ impl crate::ServerState {
             let _ = std::fs::set_permissions(&release_path, std::fs::Permissions::from_mode(0o750));
         }
 
-        let (app, deploy_config, is_new_app) =
-            if let Some(existing) = self.app_manager.get_app(app_name) {
-                let mut config = existing.config.read().clone();
-                config.version = version.to_string();
-                config.secrets = secrets;
-                if let Err(error) = apply_release_runtime_to_config(
-                    &mut config,
-                    release_path.clone(),
-                    runtime_bin_path.as_deref(),
-                ) {
-                    return Response::error(format!("Invalid app release: {}", error));
-                }
-                inject_app_data_dir_env(&mut config.env_vars, &data_paths);
-                existing.update_config(config.clone());
-                (existing, config, false)
-            } else {
-                let (name, environment) = requested_deployment_identity(app_name);
-                let config = AppConfig {
-                    name,
-                    environment,
-                    version: version.to_string(),
-                    secrets,
-                    min_instances: 1,
-                    max_instances: 4,
-                    ..Default::default()
-                };
-                let mut config = config;
-                if let Err(error) = apply_release_runtime_to_config(
-                    &mut config,
-                    release_path.clone(),
-                    runtime_bin_path.as_deref(),
-                ) {
-                    return Response::error(format!("Invalid app release: {}", error));
-                }
-                inject_app_data_dir_env(&mut config.env_vars, &data_paths);
-
-                let deploy_config = config.clone();
-                let app = self.app_manager.register_app(config);
-                self.load_balancer.register_app(app.clone());
-                (app, deploy_config, true)
+        let existing_app = self.app_manager.get_app(app_name);
+        let rollback_snapshot = if let Some(existing) = existing_app.as_ref() {
+            let previous_config = existing.config.read().clone();
+            let previous_routes = {
+                let route_table = self.routes.read().await;
+                route_table.routes_for_app(app_name)
             };
+            let previous_state = existing.state();
+            Some((previous_config, previous_routes, previous_state))
+        } else {
+            None
+        };
+
+        let (app, deploy_config, is_new_app) = if let Some(existing) = existing_app {
+            let mut config = existing.config.read().clone();
+            config.version = version.to_string();
+            config.secrets = secrets;
+            if let Err(error) = apply_release_runtime_to_config(
+                &mut config,
+                release_path.clone(),
+                runtime_bin_path.as_deref(),
+            ) {
+                return Response::error(format!("Invalid app release: {}", error));
+            }
+            inject_app_data_dir_env(&mut config.env_vars, &data_paths);
+            existing.update_config(config.clone());
+            (existing, config, false)
+        } else {
+            let (name, environment) = requested_deployment_identity(app_name);
+            let config = AppConfig {
+                name,
+                environment,
+                version: version.to_string(),
+                secrets,
+                min_instances: 1,
+                max_instances: 4,
+                ..Default::default()
+            };
+            let mut config = config;
+            if let Err(error) = apply_release_runtime_to_config(
+                &mut config,
+                release_path.clone(),
+                runtime_bin_path.as_deref(),
+            ) {
+                return Response::error(format!("Invalid app release: {}", error));
+            }
+            inject_app_data_dir_env(&mut config.env_vars, &data_paths);
+
+            let deploy_config = config.clone();
+            let app = self.app_manager.register_app(config);
+            self.load_balancer.register_app(app.clone());
+            (app, deploy_config, true)
+        };
 
         {
             let mut route_table = self.routes.write().await;
@@ -165,7 +178,22 @@ impl crate::ServerState {
                         }))
                     }
                     Err(e) => {
-                        app.set_state(AppState::Error);
+                        let error = e.to_string();
+                        if let Some((previous_config, previous_routes, previous_state)) =
+                            rollback_snapshot
+                        {
+                            self.restore_failed_rollout_snapshot(
+                                app_name,
+                                &app,
+                                previous_config,
+                                previous_routes,
+                                previous_state,
+                                error.clone(),
+                            )
+                            .await;
+                        } else {
+                            app.set_state(AppState::Error);
+                        }
                         Response::error(format!("Deploy failed: {}", e))
                     }
                 }
@@ -183,7 +211,22 @@ impl crate::ServerState {
                         }))
                     }
                     Err(e) => {
-                        app.set_state(AppState::Error);
+                        let error = e.to_string();
+                        if let Some((previous_config, previous_routes, previous_state)) =
+                            rollback_snapshot
+                        {
+                            self.restore_failed_rollout_snapshot(
+                                app_name,
+                                &app,
+                                previous_config,
+                                previous_routes,
+                                previous_state,
+                                error.clone(),
+                            )
+                            .await;
+                        } else {
+                            app.set_state(AppState::Error);
+                        }
                         Response::error(format!("Deploy failed: {}", e))
                     }
                 }
@@ -233,7 +276,24 @@ impl crate::ServerState {
                             }))
                         }
                     } else {
-                        app.set_state(previous_state);
+                        if let Some((previous_config, previous_routes, previous_state)) =
+                            rollback_snapshot
+                        {
+                            self.restore_failed_rollout_snapshot(
+                                app_name,
+                                &app,
+                                previous_config,
+                                previous_routes,
+                                previous_state,
+                                result
+                                    .error
+                                    .clone()
+                                    .unwrap_or_else(|| "Rolling update failed".to_string()),
+                            )
+                            .await;
+                        } else {
+                            app.set_state(previous_state);
+                        }
                         Response::error(
                             serde_json::json!({
                                 "status": "rollback",
@@ -246,7 +306,21 @@ impl crate::ServerState {
                     }
                 }
                 Err(e) => {
-                    app.set_state(AppState::Error);
+                    if let Some((previous_config, previous_routes, previous_state)) =
+                        rollback_snapshot
+                    {
+                        self.restore_failed_rollout_snapshot(
+                            app_name,
+                            &app,
+                            previous_config,
+                            previous_routes,
+                            previous_state,
+                            e.to_string(),
+                        )
+                        .await;
+                    } else {
+                        app.set_state(AppState::Error);
+                    }
                     Response::error(format!("Rolling update failed: {}", e))
                 }
             }
@@ -264,5 +338,41 @@ impl crate::ServerState {
                 Err(format!("Warm instance startup failed: {}", e))
             }
         }
+    }
+
+    async fn restore_failed_rollout_snapshot(
+        &self,
+        app_name: &str,
+        app: &Arc<App>,
+        previous_config: AppConfig,
+        previous_routes: Vec<String>,
+        previous_state: AppState,
+        error: String,
+    ) {
+        let previous_release_path =
+            app_release_root(&self.runtime.data_dir, app_name, &previous_config.version);
+        let previous_secrets = previous_config.secrets.clone();
+        app.update_config(previous_config);
+        app.set_state(previous_state);
+        app.set_last_error(format!("Rolling update failed: {error}"));
+        if let Err(e) = self.state_store.set_secrets(app_name, &previous_secrets) {
+            tracing::warn!(app = app_name, "Failed to restore previous secrets: {}", e);
+        }
+        {
+            let mut route_table = self.routes.write().await;
+            route_table.set_app_routes(app_name.to_string(), previous_routes);
+        }
+        self.persist_app_state(app_name).await;
+        let runtime_bin_path =
+            resolve_release_runtime_bin(&previous_release_path, &self.runtime.data_dir)
+                .await
+                .ok()
+                .flatten();
+        self.sync_app_workflows(
+            app_name,
+            &previous_release_path,
+            runtime_bin_path.as_deref(),
+        )
+        .await;
     }
 }

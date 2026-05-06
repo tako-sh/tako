@@ -233,7 +233,7 @@ fn build_app_log_command(log_dir: &str, days: u32) -> String {
         r#"substr($0,5,1)!="-" || substr($0,11,1)!="T" || substr($0,1,19) >= cutoff"#,
     );
     format!(
-        "if cutoff=$(date -u -d {since} '+%Y-%m-%dT%H:%M:%S' 2>/dev/null); then awk -v cutoff=\"$cutoff\" {awk} {log_dir}/previous.log {log_dir}/current.log 2>/dev/null; else cat {log_dir}/previous.log {log_dir}/current.log 2>/dev/null; fi"
+        "if cutoff=$(date -u -d {since} '+%Y-%m-%dT%H:%M:%S' 2>/dev/null); then for log_file in {log_dir}/previous.log {log_dir}/current.log; do test -f \"$log_file\" && awk -v cutoff=\"$cutoff\" {awk} \"$log_file\"; done; else for log_file in {log_dir}/previous.log {log_dir}/current.log; do test -f \"$log_file\" && cat \"$log_file\"; done; fi"
     )
 }
 
@@ -291,6 +291,9 @@ fn route_host_log_patterns(routes: &[String]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn journal_filter_matches_app_and_route_hosts() {
@@ -327,6 +330,37 @@ mod tests {
         assert!(command.contains("-e 'Host: demo.tako.sh:'"));
         assert!(command.contains("-e '.demo.tako.sh:'"));
         assert!(command.contains("zstd -c"));
+    }
+
+    #[test]
+    fn app_log_command_reads_current_when_previous_log_is_missing() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let log_dir =
+            std::env::temp_dir().join(format!("tako-log-command-{}-{unique}", std::process::id()));
+        fs::create_dir_all(&log_dir).unwrap();
+        fs::write(
+            log_dir.join("current.log"),
+            "2026-05-06T00:00:00.000Z [out] [test] current only\n",
+        )
+        .unwrap();
+
+        let command = build_app_log_command(&shell_single_quote(&log_dir.to_string_lossy()), 1);
+        let output = Command::new("sh").arg("-c").arg(command).output().unwrap();
+        let _ = fs::remove_dir_all(&log_dir);
+
+        assert!(
+            output.status.success(),
+            "command failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("current only"),
+            "stdout should include current.log: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
     }
 
     #[test]

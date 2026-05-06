@@ -137,6 +137,31 @@ detect_route_host() {
   ' "$toml_path"
 }
 
+detect_app_name() {
+  local toml_path=$1
+  awk '
+    $1 == "name" {
+      line = $0
+      sub(/^[^=]*=[[:space:]]*"/, "", line)
+      sub(/".*$/, "", line)
+      print line
+      exit
+    }
+  ' "$toml_path"
+}
+
+require_file_contains() {
+  local file=$1
+  local needle=$2
+  local description=$3
+
+  if ! grep -Fq "$needle" "$file"; then
+    echo "$description did not include expected text: $needle" >&2
+    cat "$file" >&2 || true
+    exit 1
+  fi
+}
+
 fetch_route_path() {
   local server_host=$1
   local route_host=$2
@@ -323,6 +348,51 @@ run_channels_workflows_checks() {
   fi
 
   cleanup_sse
+}
+
+run_cli_post_deploy_checks() {
+  local server_host=$1
+  local app_name=$2
+  local route_host=$3
+  local release_version=$4
+  local remote_app_name="${app_name}/production"
+  local status_log="$TMP_ROOT/status-${server_host}.log"
+  local releases_log="$TMP_ROOT/releases-${server_host}.log"
+  local logs_log="$TMP_ROOT/logs-${server_host}.log"
+  local log_marker="e2e-log-marker-${server_host}-$(date +%s%N)"
+  local remote_log_dir="/opt/tako/apps/${remote_app_name}/logs"
+  local remote_log_file="${remote_log_dir}/current.log"
+
+  echo "Running CLI post-deploy checks for $app_name on $server_host"
+
+  if ! HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci servers status >"$status_log" 2>&1; then
+    echo "tako servers status failed on $server_host" >&2
+    cat "$status_log" >&2 || true
+    exit 1
+  fi
+  require_file_contains "$status_log" "Server ssh" "tako servers status"
+  require_file_contains "$status_log" "$app_name" "tako servers status"
+  require_file_contains "$status_log" "production" "tako servers status"
+  require_file_contains "$status_log" "$route_host" "tako servers status"
+  require_file_contains "$status_log" "healthy" "tako servers status"
+
+  if ! HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --config "$PROJECT_DIR/tako.toml" releases ls --env production >"$releases_log" 2>&1; then
+    echo "tako releases ls failed on $server_host" >&2
+    cat "$releases_log" >&2 || true
+    exit 1
+  fi
+  require_file_contains "$releases_log" "$release_version" "tako releases ls"
+  require_file_contains "$releases_log" "[current]" "tako releases ls"
+
+  ssh_exec "$server_host" "mkdir -p '$remote_log_dir' && printf '%s [out] [e2e] ${log_marker}\n' \"\$(date -u '+%Y-%m-%dT%H:%M:%S.000Z')\" >> '$remote_log_file' && grep -F '$log_marker' '$remote_log_file' >/dev/null"
+
+  if ! HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" logs --env production --json --days 1 >"$logs_log" 2>&1; then
+    echo "tako logs failed on $server_host" >&2
+    cat "$logs_log" >&2 || true
+    exit 1
+  fi
+  require_file_contains "$logs_log" "$log_marker" "tako logs --json"
+  require_file_contains "$logs_log" '"src":"app"' "tako logs --json"
 }
 
 run_universal_http_checks() {
@@ -513,6 +583,11 @@ if [[ -z "$ROUTE_HOST" ]]; then
   echo "Could not resolve production route host from $PROJECT_DIR/tako.toml" >&2
   exit 1
 fi
+APP_NAME=$(detect_app_name "$PROJECT_DIR/tako.toml")
+if [[ -z "$APP_NAME" ]]; then
+  echo "Could not resolve app name from $PROJECT_DIR/tako.toml" >&2
+  exit 1
+fi
 
 for entry in "${SERVERS[@]}"; do
   server="${entry%%:*}"
@@ -549,6 +624,7 @@ CFG
     echo "Failed to resolve deployed release symlink on $server" >&2
     exit 1
   fi
+  CURRENT_VERSION=$(basename "$CURRENT_LINK")
 
   if ! ssh_exec "$server" "test -f '$CURRENT_LINK/app.json'" >/dev/null 2>&1; then
     echo "Missing app.json under $CURRENT_LINK on $server" >&2
@@ -567,6 +643,7 @@ CFG
   if [[ "$FIXTURE_REL" == "e2e/fixtures/javascript/channels-workflows" ]]; then
     run_channels_workflows_checks "$server" "$ROUTE_HOST"
   fi
+  run_cli_post_deploy_checks "$server" "$APP_NAME" "$ROUTE_HOST" "$CURRENT_VERSION"
 
   echo "=== $server passed ==="
 done
