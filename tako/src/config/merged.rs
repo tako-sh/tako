@@ -333,14 +333,14 @@ host = "5.6.7.8"
         let secrets_path = temp_dir.path().join("secrets.json");
         let secrets_json = r#"{
             "production": {
-                "salt": "dGVzdHNhbHQ=",
+                "key_id": "0123456789abcdef",
                 "secrets": {
                     "API_KEY": "prod-key",
                     "DB_URL": "postgres://prod"
                 }
             },
             "staging": {
-                "salt": "dGVzdHNhbHQy",
+                "key_id": "fedcba9876543210",
                 "secrets": {
                     "API_KEY": "staging-key",
                     "DB_URL": "postgres://staging"
@@ -492,14 +492,14 @@ host = "5.6.7.8"
         let secrets_path = temp_dir.path().join("secrets.json");
         let secrets_json = r#"{
             "production": {
-                "salt": "dGVzdHNhbHQ=",
+                "key_id": "0123456789abcdef",
                 "secrets": {
                     "API_KEY": "prod-key",
                     "DB_URL": "postgres://prod"
                 }
             },
             "staging": {
-                "salt": "dGVzdHNhbHQy",
+                "key_id": "fedcba9876543210",
                 "secrets": {
                     "API_KEY": "staging-key"
                 }

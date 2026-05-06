@@ -243,14 +243,14 @@ Per-environment encrypted secrets (JSON format, AES-256-GCM encryption):
 ```json
 {
   "production": {
-    "salt": "base64_encoded_argon2id_salt",
+    "key_id": "0123456789abcdef",
     "secrets": {
       "DATABASE_URL": "encrypted_value",
       "API_KEY": "encrypted_value"
     }
   },
   "staging": {
-    "salt": "base64_encoded_argon2id_salt",
+    "key_id": "fedcba9876543210",
     "secrets": {
       "DATABASE_URL": "encrypted_value_different"
     }
@@ -258,7 +258,7 @@ Per-environment encrypted secrets (JSON format, AES-256-GCM encryption):
 }
 ```
 
-Each environment has a `salt` (base64-encoded Argon2id salt for key derivation) and a `secrets` map. Secret names are plaintext; values encrypted with AES-256-GCM.
+Each environment has a `key_id` (16 hex characters) and a `secrets` map. Secret names are plaintext; values encrypted with AES-256-GCM.
 
 `tako init` ensures the app's `.tako/` directory stays ignored while `.tako/secrets.json` remains trackable:
 
@@ -267,9 +267,9 @@ Each environment has a `salt` (base64-encoded Argon2id salt for key derivation) 
 
 Encryption keys are file-based:
 
-- Environment-specific keys are cached under Tako's data directory as `keys/{sha256(salt)[:16]}`, where `salt` is the environment salt stored in `.tako/secrets.json`.
+- Environment-specific keys are cached under Tako's data directory as `keys/{key_id}`, where `key_id` is the environment key id stored in `.tako/secrets.json`.
 
-`tako` can derive/export these keys via `tako secrets key derive` and `tako secrets key export`.
+When the first secret is set for an environment, Tako generates a random local key. Keys are shared with other machines via `tako secrets key export` and `tako secrets key import`.
 
 ## Tako CLI Commands
 
@@ -730,11 +730,13 @@ Alias: `tako uninstall`.
 
 ### tako secrets set [--env {environment}] [--sync] {name}
 
-Set/update secret for environment (defaults to production).
+Set/update secret for an environment.
 
-When running in an interactive terminal, prompts for value with masked input. In non-interactive mode, reads a single line from stdin. Stores encrypted value locally in `.tako/secrets.json`.
+When `--env` is omitted in an interactive terminal, Tako opens an environment wizard. The first step shows the default environments (`development`, `production`), any environments already declared in `tako.toml` or `.tako/secrets.json`, and a `New environment` option. Choosing `New environment` prompts for the environment name in the next wizard step. In non-interactive mode, `--env` is required.
 
-Uses the environment's cached key under Tako's data directory at `keys/{sha256(salt)[:16]}` (creates it if missing).
+After the environment is resolved, Tako prompts for the secret value with masked input in an interactive terminal, or reads a single line from stdin in non-interactive mode. If the secret already exists in the selected environment during an interactive run, Tako asks for overwrite confirmation before prompting for the new value. Stores encrypted value locally in `.tako/secrets.json`. Tako does not write `.tako/secrets.json` until the environment wizard and value prompt have both completed.
+
+Uses the environment's cached key under Tako's data directory at `keys/{key_id}` (creates it if missing).
 
 When `--sync` is provided, immediately syncs secrets to all servers in the target environment after the local change, triggering a rolling restart of running instances.
 
@@ -767,7 +769,7 @@ Source of truth: local `.tako/secrets.json`.
 By default, sync processes all environments declared in `tako.toml`.
 When `--env` is provided, sync processes only that environment.
 
-For each target environment, sync decrypts with the cached key under Tako's data directory at `keys/{sha256(salt)[:16]}`.
+For each target environment, sync decrypts with the cached key under Tako's data directory at `keys/{key_id}`.
 
 Shows a spinner with the total number of target servers while syncing, and reports the elapsed time on completion.
 
@@ -777,21 +779,19 @@ Sync flow helpers:
 - Environments with no mapped servers are skipped with a warning.
 - Sync sends `update_secrets` to `tako-server`; it does not write remote `.env` files. Secrets updates reconcile the app's workflow runtime and rolling-restart HTTP instances so fresh processes receive the new values via fd 3.
 
-### tako secrets key derive [--env {environment}]
-
-Derive an encryption key from a passphrase (for sharing with teammates).
-
-Writes the environment's cached key under Tako's data directory at `keys/{sha256(salt)[:16]}`.
-
-When `--env` is omitted, `production` is used.
-
 ### tako secrets key export [--env {environment}]
 
-Export a key to clipboard.
+Export a self-contained key bundle to clipboard.
 
-Reads the environment's cached key under Tako's data directory at `keys/{sha256(salt)[:16]}`.
+Reads the environment's cached key under Tako's data directory at `keys/{key_id}` and copies a single exported key string to the clipboard. The string is base64url-encoded JSON containing `version`, `id`, and `key`, so it can be imported without specifying an environment.
 
-When `--env` is omitted, `production` is used.
+When `--env` is omitted in an interactive terminal, Tako opens the environment wizard. In non-interactive mode, `--env` is required.
+
+### tako secrets key import
+
+Import a self-contained exported key string.
+
+In interactive mode, prompts for the key with masked input. In non-interactive mode, reads a single line from stdin. Stores the key under Tako's data directory at `keys/{id}`. If the current project has an environment matching the imported `id`, reports that environment name; otherwise reports the imported id.
 
 ### tako deploy [--env {environment}] [--yes|-y]
 

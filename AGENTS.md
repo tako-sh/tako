@@ -34,6 +34,8 @@ Tako's protocol is v0: do not keep any legacy code, backward compatibility shims
 
 11. **Don't test against removed code or features** - Never write assertions that check a removed symbol, field, flag, message, or API is absent (e.g. `assert!(!output.contains("OLD_NAME"))`, `expect(...).not.toContain("deprecated-flag")`). Once the feature is gone from the code, it cannot reappear, and the test becomes dead weight that rots over time. Negative assertions are only valid when they encode a _current_ behavioral distinction (e.g. "in CI mode, ANSI colors are suppressed"; "NODE_ENV appears in ProcessEnv but not in TakoBaseEnv"). If you catch yourself adding `!contains(...)` for something that no longer exists anywhere in the codebase, delete the assertion instead.
 
+12. **Write polished user-facing copy on the first pass** - Treat every CLI prompt, success message, warning, error, docs example, and website UI string as product copy. Before implementing or finalizing user-facing text, read the whole flow as the user will see it and tighten it. Copy should be short, natural, specific, and action-oriented. Avoid redundant nouns, repeated context, implementation terms, and stiff phrases when the UI already supplies the object, environment, target, or state. Prefer familiar verbs users would say themselves (`Set`, `Updated`, `Replace`, `Remove`, `Try again`) over internal or abstract wording (`configured`, `environment`, `override`, `operation`, `proceed`). Good copy should usually answer: what happened, what needs attention, or what action is next, with no extra explanation unless it prevents a real mistake.
+
 ## Project Structure
 
 **Rust Crates:**

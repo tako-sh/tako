@@ -292,11 +292,11 @@ async fn run_async(
     }
     let build_groups = build_artifact_target_groups(&server_targets, use_unified_js_target_process);
 
-    // Resolve the secrets key now, before starting the task tree. If the key
-    // isn't cached yet, the passphrase prompt runs here against a clean
-    // terminal instead of being overpainted by the live viewport.
+    // Check the secrets key now, before starting the task tree, so missing-key
+    // errors are shown against a clean terminal instead of being overpainted by
+    // the live viewport.
     if !output::is_dry_run() {
-        crate::commands::secret::ensure_encryption_key_cached(&env, &secrets)?;
+        crate::commands::secret::ensure_secret_key_available(&env, &secrets)?;
     }
 
     let deploy_task_tree = should_use_deploy_task_tree()

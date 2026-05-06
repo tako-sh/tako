@@ -6,7 +6,7 @@ use super::super::{DIAMOND_OUTLINED, is_interactive, is_pretty, theme_muted};
 use super::select::raw_select;
 use super::text_field::TextField;
 use super::{
-    confirm_with_description, format_pretty_prompt_completion,
+    confirm_with_description, format_pretty_confirm_completion, format_pretty_prompt_completion,
     format_pretty_text_prompt_completion, is_wizard_back, wizard_back_error,
 };
 
@@ -311,8 +311,20 @@ impl Wizard {
     /// Accept a fully configured [`TextField`] builder and track the answer.
     pub fn text_field(&mut self, builder: TextField) -> io::Result<String> {
         let label = builder.label.to_string();
+        self.text_field_named(&label, builder)
+    }
+
+    /// Accept a fully configured [`TextField`] builder and track it under a
+    /// different wizard field label. This keeps navigation tied to a stable
+    /// field while allowing the visible prompt text to be dynamic.
+    pub fn text_field_named(
+        &mut self,
+        field_label: &str,
+        builder: TextField,
+    ) -> io::Result<String> {
+        let prompt_label = builder.label.to_string();
         let warning = builder.warning.map(str::to_string);
-        let first = self.prepare_prompt(&label);
+        let first = self.prepare_prompt(field_label);
         let footer_lines = self.trailing_block();
         loop {
             self.render();
@@ -325,10 +337,13 @@ impl Wizard {
             }
             match b.prompt() {
                 Ok(value) => {
-                    let completion =
-                        format_pretty_text_prompt_completion(&label, warning.as_deref(), &value);
+                    let completion = format_pretty_text_prompt_completion(
+                        &prompt_label,
+                        warning.as_deref(),
+                        &value,
+                    );
                     self.rendered_lines += completion.len();
-                    self.set_completed(&label, &value, completion);
+                    self.set_completed(field_label, &value, completion);
                     return Ok(value);
                 }
                 Err(e) if is_wizard_back(&e) => {
@@ -343,18 +358,34 @@ impl Wizard {
     }
 
     pub fn confirm(&mut self, prompt: &str) -> io::Result<bool> {
-        self.confirm_with_description(prompt, None)
+        self.confirm_default(prompt, prompt, true)
     }
 
-    pub fn confirm_with_description(
+    pub fn confirm_default(
         &mut self,
+        field_label: &str,
         prompt: &str,
-        description: Option<&str>,
+        default: bool,
     ) -> io::Result<bool> {
-        self.render();
-        match confirm_with_description(prompt, description, true) {
-            Err(e) if is_wizard_back(&e) => Err(wizard_back_error()),
-            result => result,
+        let first = self.prepare_prompt(field_label);
+        loop {
+            self.render();
+            match confirm_with_description(prompt, None, default) {
+                Ok(answer) => {
+                    let answer_text = if answer { "yes" } else { "no" };
+                    let completion = format_pretty_confirm_completion(prompt, default, answer_text);
+                    self.rendered_lines += completion.len();
+                    self.set_completed(field_label, answer_text, completion);
+                    return Ok(answer);
+                }
+                Err(e) if is_wizard_back(&e) => {
+                    if first {
+                        continue;
+                    }
+                    return Err(wizard_back_error());
+                }
+                Err(e) => return Err(e),
+            }
         }
     }
 
@@ -366,14 +397,8 @@ impl Wizard {
             return Ok(true);
         }
         match self.confirm("Looks good?") {
-            Ok(true) => {
-                // Confirm wrote its completion (3 lines).
-                self.rendered_lines += 3;
-                Ok(true)
-            }
+            Ok(true) => Ok(true),
             Ok(false) => {
-                // User said No. Confirm wrote its completion (3 lines).
-                self.rendered_lines += 3;
                 self.reset();
                 Ok(false)
             }

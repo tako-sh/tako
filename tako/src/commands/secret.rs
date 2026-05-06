@@ -1,7 +1,10 @@
 use crate::build::{self, PresetGroup, detect_build_adapter};
 use crate::config::TakoToml;
 use crate::output;
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as BASE64_URL};
 use clap::Subcommand;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::path::Path;
 use tako_core::Command;
 
@@ -39,7 +42,7 @@ pub enum SecretCommands {
         /// Secret name (uppercase, underscores)
         name: String,
 
-        /// Environment to set the secret for (defaults to production)
+        /// Environment to set the secret for
         #[arg(long)]
         env: Option<String>,
 
@@ -81,19 +84,15 @@ pub enum SecretCommands {
 
 #[derive(Subcommand)]
 pub enum SecretKeyCommands {
-    /// Derive a key from a passphrase (for sharing with teammates)
-    Derive {
-        /// Target environment (defaults to production when omitted)
+    /// Export a self-contained key bundle and copy it to clipboard
+    Export {
+        /// Target environment key
         #[arg(long)]
         env: Option<String>,
     },
 
-    /// Export the derived key as base64 and copy it to clipboard
-    Export {
-        /// Target environment key (defaults to production when omitted)
-        #[arg(long)]
-        env: Option<String>,
-    },
+    /// Import an exported key bundle from a prompt or stdin
+    Import,
 }
 
 pub fn run(
@@ -126,73 +125,420 @@ fn read_secret_value(prompt: &str) -> Result<String, Box<dyn std::error::Error>>
     Ok(value)
 }
 
+fn read_key_bundle() -> Result<String, Box<dyn std::error::Error>> {
+    use std::io::IsTerminal;
+
+    let value = if std::io::stdin().is_terminal() {
+        crate::output::password_field("Exported key")?
+    } else {
+        let mut value = String::new();
+        let bytes = std::io::stdin().read_line(&mut value)?;
+        if bytes == 0 {
+            return Err("No exported key provided on stdin".into());
+        }
+        value.trim_end_matches(['\r', '\n']).to_string()
+    };
+
+    if value.trim().is_empty() {
+        return Err("Exported key cannot be empty".into());
+    }
+
+    Ok(value.trim().to_string())
+}
+
 async fn run_async(
     cmd: SecretCommands,
     context: crate::commands::project_context::ProjectContext,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
         SecretCommands::Set { name, env, sync } => {
-            let env = super::helpers::resolve_env(env.as_deref());
-            set_secret(&context, &name, &env, sync).await
+            let Some(input) = resolve_secret_set_input(&context, env.as_deref(), &name)? else {
+                return Ok(());
+            };
+            set_secret(&context, &name, &input.env, &input.value, sync).await
         }
         SecretCommands::Rm { name, env, sync } => {
             remove_secret(&context, &name, env.as_deref(), sync).await
         }
         SecretCommands::Ls => list_secrets(&context).await,
         SecretCommands::Sync { env } => sync_secrets(&context, env.as_deref()).await,
-        SecretCommands::Key(SecretKeyCommands::Derive { env }) => {
-            derive_key(&context, env.as_deref()).await
-        }
         SecretCommands::Key(SecretKeyCommands::Export { env }) => {
-            export_key(&context, env.as_deref()).await
+            let env = resolve_secret_environment(&context, env.as_deref(), "Key environment")?;
+            export_key(&context, &env).await
+        }
+        SecretCommands::Key(SecretKeyCommands::Import) => import_key(&context).await,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SecretEnvironmentChoice {
+    Existing(String),
+    New,
+}
+
+struct SecretSetInput {
+    env: String,
+    value: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct ExportedKeyBundle {
+    version: u8,
+    id: String,
+    key: String,
+}
+
+fn encode_key_bundle(key_id: &str, key: &crate::crypto::EncryptionKey) -> String {
+    let bundle = ExportedKeyBundle {
+        version: 1,
+        id: key_id.to_string(),
+        key: key.to_base64(),
+    };
+    let json = serde_json::to_vec(&bundle).expect("serialize key bundle");
+    BASE64_URL.encode(json)
+}
+
+fn decode_key_bundle(
+    input: &str,
+) -> Result<(String, crate::crypto::EncryptionKey), Box<dyn std::error::Error>> {
+    let trimmed = input.trim();
+    let json = BASE64_URL
+        .decode(trimmed)
+        .map_err(|e| format!("Invalid key payload: {e}"))?;
+    let bundle: ExportedKeyBundle =
+        serde_json::from_slice(&json).map_err(|e| format!("Invalid key payload: {e}"))?;
+    if bundle.version != 1 {
+        return Err(format!("Unsupported key version: {}", bundle.version).into());
+    }
+    crate::crypto::KeyStore::for_key_id(&bundle.id)?;
+    let key = crate::crypto::EncryptionKey::from_base64(&bundle.key)?;
+    Ok((bundle.id, key))
+}
+
+fn secret_environment_options(
+    tako_config: &crate::config::TakoToml,
+    secrets: &crate::config::SecretsStore,
+) -> Vec<(String, SecretEnvironmentChoice)> {
+    let mut names = BTreeSet::new();
+    names.extend(tako_config.get_environment_names());
+    names.extend(secrets.environment_names());
+
+    let mut options = Vec::new();
+    for default_env in ["development", "production"] {
+        names.remove(default_env);
+        options.push((
+            default_env.to_string(),
+            SecretEnvironmentChoice::Existing(default_env.to_string()),
+        ));
+    }
+    options.extend(
+        names
+            .into_iter()
+            .map(|name| (name.clone(), SecretEnvironmentChoice::Existing(name))),
+    );
+    options.push(("New environment".to_string(), SecretEnvironmentChoice::New));
+    options
+}
+
+fn resolve_secret_environment(
+    context: &crate::commands::project_context::ProjectContext,
+    requested: Option<&str>,
+    label: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    if let Some(env) = requested {
+        crate::config::validate_environment_name(env)?;
+        return Ok(env.to_string());
+    }
+
+    if !output::is_interactive() {
+        return Err(
+            "Missing required environment. Pass --env or run interactively to choose one.".into(),
+        );
+    }
+
+    let tako_config = crate::config::TakoToml::load_from_file(&context.config_path)?;
+    let secrets = crate::config::SecretsStore::load_from_dir(&context.project_dir)?;
+    let mut wizard = output::Wizard::new().with_fields(&[("Environment", false), ("Name", true)]);
+
+    loop {
+        let choice = wizard.select(
+            "Environment",
+            label,
+            secret_environment_options(&tako_config, &secrets),
+            &[],
+            0,
+        )?;
+        match choice {
+            SecretEnvironmentChoice::Existing(env) => return Ok(env),
+            SecretEnvironmentChoice::New => loop {
+                wizard.set_visible("Name", true);
+                let name = wizard.input(
+                    "Name",
+                    None,
+                    Some("Use lowercase letters, numbers, and hyphens."),
+                )?;
+                match crate::config::validate_environment_name(&name) {
+                    Ok(()) => return Ok(name),
+                    Err(e) => {
+                        output::warning(&e.to_string());
+                        wizard.undo_last();
+                    }
+                }
+            },
         }
     }
+}
+
+fn secret_value_prompt(secrets: &crate::config::SecretsStore, name: &str, env: &str) -> String {
+    if secrets.contains(env, name) {
+        "Enter new value".to_string()
+    } else {
+        format!("Enter value for {}", name)
+    }
+}
+
+fn secret_override_prompt(name: &str) -> String {
+    format!("{} is already set. Replace it?", name)
+}
+
+fn confirm_secret_override(
+    secrets: &crate::config::SecretsStore,
+    name: &str,
+    env: &str,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    if !secrets.contains(env, name) || !output::is_interactive() {
+        return Ok(true);
+    }
+
+    let prompt = secret_override_prompt(name);
+    let confirmed = match output::confirm(&prompt, false) {
+        Ok(confirmed) => confirmed,
+        Err(e) if output::is_wizard_back(&e) => false,
+        Err(e) => return Err(e.into()),
+    };
+
+    if !confirmed {
+        output::operation_cancelled();
+    }
+
+    Ok(confirmed)
+}
+
+fn read_secret_value_in_wizard(
+    wizard: &mut output::Wizard,
+    secrets: &crate::config::SecretsStore,
+    name: &str,
+    env: &str,
+) -> std::io::Result<String> {
+    let prompt = secret_value_prompt(secrets, name, env);
+    wizard.text_field_named("Value", output::TextField::new(&prompt).password())
+}
+
+fn resolve_secret_set_input(
+    context: &crate::commands::project_context::ProjectContext,
+    requested_env: Option<&str>,
+    name: &str,
+) -> Result<Option<SecretSetInput>, Box<dyn std::error::Error>> {
+    let secrets = crate::config::SecretsStore::load_from_dir(&context.project_dir)?;
+
+    if let Some(env) = requested_env {
+        crate::config::validate_environment_name(env)?;
+        if !confirm_secret_override(&secrets, name, env)? {
+            return Ok(None);
+        }
+        let prompt = secret_value_prompt(&secrets, name, env);
+        return Ok(Some(SecretSetInput {
+            env: env.to_string(),
+            value: read_secret_value(&prompt)?,
+        }));
+    }
+
+    if !output::is_interactive() {
+        return Err(
+            "Missing required environment. Pass --env or run interactively to choose one.".into(),
+        );
+    }
+
+    let tako_config = crate::config::TakoToml::load_from_file(&context.config_path)?;
+    let mut wizard = output::Wizard::new().with_fields(&[
+        ("Environment", false),
+        ("Name", true),
+        ("Override", true),
+        ("Value", false),
+    ]);
+
+    'environment: loop {
+        wizard.set_visible("Name", false);
+        wizard.set_visible("Override", false);
+        wizard.set_visible("Value", false);
+        wizard.set_visible("Value", true);
+        let choice = wizard.select(
+            "Environment",
+            "Secret environment",
+            secret_environment_options(&tako_config, &secrets),
+            &[],
+            0,
+        )?;
+
+        match choice {
+            SecretEnvironmentChoice::Existing(env) => {
+                if secrets.contains(&env, name) {
+                    wizard.set_visible("Override", true);
+                    'override_existing: loop {
+                        let prompt = secret_override_prompt(name);
+                        match wizard.confirm_default("Override", &prompt, false) {
+                            Ok(true) => {}
+                            Ok(false) => {
+                                output::operation_cancelled();
+                                return Ok(None);
+                            }
+                            Err(e) if output::is_wizard_back(&e) => {
+                                wizard.undo_last();
+                                continue 'environment;
+                            }
+                            Err(e) => return Err(e.into()),
+                        }
+
+                        match read_secret_value_in_wizard(&mut wizard, &secrets, name, &env) {
+                            Ok(value) => {
+                                return Ok(Some(SecretSetInput { env, value }));
+                            }
+                            Err(e) if output::is_wizard_back(&e) => {
+                                wizard.undo_last();
+                                continue 'override_existing;
+                            }
+                            Err(e) => return Err(e.into()),
+                        }
+                    }
+                }
+
+                loop {
+                    match read_secret_value_in_wizard(&mut wizard, &secrets, name, &env) {
+                        Ok(value) => {
+                            return Ok(Some(SecretSetInput { env, value }));
+                        }
+                        Err(e) if output::is_wizard_back(&e) => {
+                            wizard.undo_last();
+                            continue 'environment;
+                        }
+                        Err(e) => return Err(e.into()),
+                    }
+                }
+            }
+            SecretEnvironmentChoice::New => {
+                wizard.set_visible("Name", true);
+                'name: loop {
+                    let env = match wizard.input(
+                        "Name",
+                        None,
+                        Some("Use lowercase letters, numbers, and hyphens."),
+                    ) {
+                        Ok(env) => env,
+                        Err(e) if output::is_wizard_back(&e) => {
+                            wizard.undo_last();
+                            continue 'environment;
+                        }
+                        Err(e) => return Err(e.into()),
+                    };
+
+                    if let Err(e) = crate::config::validate_environment_name(&env) {
+                        output::warning(&e.to_string());
+                        wizard.undo_last();
+                        continue 'name;
+                    }
+
+                    loop {
+                        if secrets.contains(&env, name) {
+                            wizard.set_visible("Override", true);
+                            'override_new: loop {
+                                let prompt = secret_override_prompt(name);
+                                match wizard.confirm_default("Override", &prompt, false) {
+                                    Ok(true) => {}
+                                    Ok(false) => {
+                                        output::operation_cancelled();
+                                        return Ok(None);
+                                    }
+                                    Err(e) if output::is_wizard_back(&e) => {
+                                        wizard.undo_last();
+                                        continue 'name;
+                                    }
+                                    Err(e) => return Err(e.into()),
+                                }
+
+                                match read_secret_value_in_wizard(&mut wizard, &secrets, name, &env)
+                                {
+                                    Ok(value) => {
+                                        return Ok(Some(SecretSetInput { env, value }));
+                                    }
+                                    Err(e) if output::is_wizard_back(&e) => {
+                                        wizard.undo_last();
+                                        continue 'override_new;
+                                    }
+                                    Err(e) => return Err(e.into()),
+                                }
+                            }
+                        }
+
+                        match read_secret_value_in_wizard(&mut wizard, &secrets, name, &env) {
+                            Ok(value) => {
+                                return Ok(Some(SecretSetInput { env, value }));
+                            }
+                            Err(e) if output::is_wizard_back(&e) => {
+                                wizard.undo_last();
+                                continue 'name;
+                            }
+                            Err(e) => return Err(e.into()),
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn environment_for_key_id(secrets: &crate::config::SecretsStore, key_id: &str) -> Option<String> {
+    secrets
+        .environment_names()
+        .into_iter()
+        .find(|env| secrets.get_key_id(env) == Some(key_id))
 }
 
 async fn set_secret(
     context: &crate::commands::project_context::ProjectContext,
     name: &str,
     env: &str,
+    value: &str,
     do_sync: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::config::SecretsStore;
     use crate::crypto::encrypt;
 
-    // Load secrets and ensure environment has a salt
+    // Load secrets and ensure environment has an in-memory key_id. Do not write
+    // secrets.json until every prompt in this flow has completed.
     let mut secrets = SecretsStore::load_from_dir(&context.project_dir)?;
-    secrets.ensure_env_salt(env)?;
-    secrets.save_to_dir(&context.project_dir)?;
+    secrets.ensure_env_key_id(env)?;
 
-    // Get the encryption key (prompts for passphrase if no local key)
-    let key = load_or_derive_key(env, &secrets)?;
-
-    // Check if secret exists
     let exists = secrets.contains(env, name);
 
-    // Prompt for value
-    let prompt = if exists {
-        format!("Enter new value for {} ({})", name, env)
-    } else {
-        format!("Enter value for {} ({})", name, env)
-    };
-
-    let value = read_secret_value(&prompt)?;
+    // Get or create the local encryption key only after the value prompt
+    // succeeds, so cancelled wizards do not touch secrets.json or key files.
+    let key = load_or_create_key_for_set(env, &secrets)?;
 
     // Encrypt and store
-    let encrypted = encrypt(&value, &key)?;
+    let encrypted = encrypt(value, &key)?;
     secrets.set(env, name, encrypted)?;
     secrets.save_to_dir(&context.project_dir)?;
     regenerate_types_after_secret_change(&context.project_dir, &context.config_path);
 
     if exists {
         output::success(&format!(
-            "Updated secret {} for environment {}",
+            "Updated {} in {}",
             output::strong(name),
             output::strong(env)
         ));
     } else {
         output::success(&format!(
-            "Set secret {} for environment {}",
+            "Set {} in {}",
             output::strong(name),
             output::strong(env)
         ));
@@ -458,7 +804,7 @@ async fn sync_secrets(
         // Get decrypted secrets for this environment
         let env_secrets = match secrets.get_env(env_name) {
             Some(encrypted_secrets) => {
-                let key = load_or_derive_key(env_name, &secrets)?;
+                let key = load_secret_key(env_name, &secrets)?;
                 let mut decrypted = std::collections::HashMap::new();
                 for (name, encrypted_value) in encrypted_secrets {
                     match decrypt(encrypted_value, &key) {
@@ -538,139 +884,116 @@ fn resolve_secret_sync_server_names(
     Ok(resolved)
 }
 
-async fn derive_key(
-    context: &crate::commands::project_context::ProjectContext,
-    target_env: Option<&str>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    use crate::config::SecretsStore;
-    let app_name = resolve_app_name(&context.config_path)?;
-    let env = super::helpers::resolve_env(target_env);
-
-    // Load secrets and ensure salt exists
-    let mut secrets = SecretsStore::load_from_dir(&context.project_dir)?;
-    let salt_b64 = secrets.ensure_env_salt(&env)?;
-    secrets.save_to_dir(&context.project_dir)?;
-
-    // Prompt for passphrase
-    let passphrase = prompt_for_passphrase("Secrets passphrase")?;
-
-    // Derive and store the key
-    let salt = crate::crypto::decode_salt(&salt_b64)?;
-    let key = crate::crypto::EncryptionKey::derive(&passphrase, &salt)?;
-    let key_store = crate::crypto::KeyStore::for_salt(&salt_b64)?;
-    key_store.save_key(&key)?;
-
-    output::success(&format!(
-        "Derived and stored key for {} ({}).",
-        output::strong(&app_name),
-        output::strong(&env),
-    ));
-
-    Ok(())
-}
-
 async fn export_key(
     context: &crate::commands::project_context::ProjectContext,
-    target_env: Option<&str>,
+    env: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let app_name = resolve_app_name(&context.config_path)?;
-    let env = super::helpers::resolve_env(target_env);
     let secrets = crate::config::SecretsStore::load_from_dir(&context.project_dir)?;
-    let salt_b64 = secrets
-        .get_salt(&env)
+    let key_id = secrets
+        .get_key_id(env)
         .ok_or_else(|| format!("No secrets configured for environment '{}'.", env))?;
-    let key_store = crate::crypto::KeyStore::for_salt(salt_b64)?;
+    let key_store = crate::crypto::KeyStore::for_key_id(key_id)?;
 
     if !key_store.key_exists() {
-        return Err(format!(
-            "No key found for '{}' ({}). Run 'tako secrets key derive --env {}' first.",
-            app_name, env, env
-        )
-        .into());
+        return Err(missing_secret_key_message(env).into());
     }
 
     let key = key_store.load_key()?;
-    copy_to_clipboard(&key.to_base64())?;
+    let bundle = encode_key_bundle(key_id, &key);
+    copy_to_clipboard(&bundle)?;
 
-    output::success(&format!(
-        "Copied key for {} ({}) to clipboard.",
-        output::strong(&app_name),
-        output::strong(&env),
-    ));
+    output::success("Key copied to clipboard.");
 
     Ok(())
 }
 
-/// Prompt for a passphrase with confirmation
-fn prompt_for_passphrase(prompt: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let passphrase = read_passphrase(prompt)?;
-    let confirm = crate::output::password_field("Confirm passphrase")?;
-    if passphrase != confirm {
-        return Err("Passphrases do not match".into());
-    }
-    Ok(passphrase)
-}
-
-/// Read a passphrase from interactive prompt or TAKO_PASSPHRASE env var.
-fn read_passphrase(prompt: &str) -> Result<String, Box<dyn std::error::Error>> {
-    // CI / non-interactive: accept passphrase from environment variable.
-    if let Ok(passphrase) = std::env::var("TAKO_PASSPHRASE") {
-        if passphrase.is_empty() {
-            return Err("TAKO_PASSPHRASE is set but empty".into());
+async fn import_key(
+    context: &crate::commands::project_context::ProjectContext,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let input = read_key_bundle()?;
+    let (key_id, key) = decode_key_bundle(&input)?;
+    let secrets = crate::config::SecretsStore::load_from_dir(&context.project_dir)?;
+    let env = environment_for_key_id(&secrets, &key_id);
+    if let Some(env) = &env
+        && let Some(encrypted_secrets) = secrets.get_env(env)
+    {
+        for (name, encrypted_value) in encrypted_secrets {
+            crate::crypto::decrypt(encrypted_value, &key).map_err(|_| {
+                format!(
+                    "Imported key does not decrypt {} for environment '{}'.",
+                    name, env
+                )
+            })?;
         }
-        return Ok(passphrase);
     }
 
-    let passphrase = crate::output::password_field(prompt)?;
-    if passphrase.is_empty() {
-        return Err("Passphrase cannot be empty".into());
+    let key_store = crate::crypto::KeyStore::for_key_id(&key_id)?;
+    key_store.save_key(&key)?;
+
+    if let Some(env) = env {
+        output::success(&format!("Imported {} key.", output::strong(&env)));
+    } else {
+        output::success(&format!("Imported key {}.", output::strong(&key_id)));
     }
-    Ok(passphrase)
+
+    Ok(())
 }
 
-/// Load a locally cached key, or prompt for passphrase and derive it.
-///
-/// This is the main key resolution function used by set, sync, deploy, and dev.
-/// The cache path is derived from the salt in `secrets.json`, so it's stable
-/// across app renames, `--name` overrides, and git worktrees.
-pub fn load_or_derive_key(
+fn missing_secret_key_message(env: &str) -> String {
+    format!("Missing key for {env}. Run tako secrets key import.")
+}
+
+fn key_store_for_env(
     env: &str,
     secrets: &crate::config::SecretsStore,
-) -> Result<crate::crypto::EncryptionKey, Box<dyn std::error::Error>> {
-    // No local key — need to derive from passphrase
-    let salt_b64 = secrets.get_salt(env).ok_or_else(|| {
+) -> Result<crate::crypto::KeyStore, Box<dyn std::error::Error>> {
+    let key_id = secrets.get_key_id(env).ok_or_else(|| {
         format!(
-            "No salt found for environment '{}'. This shouldn't happen — file a bug.",
+            "No key_id found for environment '{}'. This shouldn't happen — file a bug.",
             env
         )
     })?;
 
-    let key_store = crate::crypto::KeyStore::for_salt(salt_b64)?;
+    Ok(crate::crypto::KeyStore::for_key_id(key_id)?)
+}
 
-    // Return cached key if available
+/// Load a local environment key.
+pub fn load_secret_key(
+    env: &str,
+    secrets: &crate::config::SecretsStore,
+) -> Result<crate::crypto::EncryptionKey, Box<dyn std::error::Error>> {
+    let key_store = key_store_for_env(env, secrets)?;
     if key_store.key_exists() {
         return Ok(key_store.load_key()?);
     }
 
-    let salt = crate::crypto::decode_salt(salt_b64)?;
+    Err(missing_secret_key_message(env).into())
+}
 
-    let passphrase = read_passphrase("Secrets passphrase")?;
+fn load_or_create_key_for_set(
+    env: &str,
+    secrets: &crate::config::SecretsStore,
+) -> Result<crate::crypto::EncryptionKey, Box<dyn std::error::Error>> {
+    let key_store = key_store_for_env(env, secrets)?;
+    if key_store.key_exists() {
+        return Ok(key_store.load_key()?);
+    }
+    if secrets.get_env(env).is_some_and(|map| !map.is_empty()) {
+        return Err(missing_secret_key_message(env).into());
+    }
 
-    let key = crate::crypto::EncryptionKey::derive(&passphrase, &salt)?;
-
-    // Cache locally for future use
+    let key = crate::crypto::EncryptionKey::generate()?;
     key_store.save_key(&key)?;
 
     Ok(key)
 }
 
-/// Ensure the encryption key for `env` is resolved and cached on disk, so later
-/// decryption calls are silent no-ops. Call this *before* starting long-running
-/// rendering (e.g. the deploy task tree) so the passphrase prompt, if any, has a
-/// clean terminal.
+/// Ensure the encryption key for `env` is available before starting
+/// long-running rendering (e.g. the deploy task tree), so missing-key errors are
+/// shown against a clean terminal.
 ///
 /// Returns immediately if the env has no encrypted secrets (nothing to decrypt).
-pub fn ensure_encryption_key_cached(
+pub fn ensure_secret_key_available(
     env: &str,
     secrets: &crate::config::SecretsStore,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -678,7 +1001,7 @@ pub fn ensure_encryption_key_cached(
     if !has_secrets {
         return Ok(());
     }
-    let _ = load_or_derive_key(env, secrets)?;
+    let _ = load_secret_key(env, secrets)?;
     Ok(())
 }
 
@@ -823,47 +1146,173 @@ mod tests {
     }
 
     #[test]
-    fn ensure_encryption_key_cached_is_noop_when_env_has_no_secrets() {
+    fn ensure_secret_key_available_is_noop_when_env_has_no_secrets() {
         with_temp_tako_home(|| {
             let mut secrets = crate::config::SecretsStore::parse("{}").unwrap();
-            secrets.ensure_env_salt("production").unwrap();
-            // Env has a salt but no secrets: nothing to decrypt later, no prompt needed.
-            ensure_encryption_key_cached("production", &secrets)
+            secrets.ensure_env_key_id("production").unwrap();
+            // Env has a key_id but no secrets: nothing to decrypt later, no prompt needed.
+            ensure_secret_key_available("production", &secrets)
                 .expect("no-op when env has no secrets");
         });
     }
 
     #[test]
-    fn ensure_encryption_key_cached_is_noop_when_env_has_no_salt() {
+    fn ensure_secret_key_available_is_noop_when_env_has_no_key_id() {
         with_temp_tako_home(|| {
             let secrets = crate::config::SecretsStore::parse("{}").unwrap();
             // Env doesn't exist at all; skip without error.
-            ensure_encryption_key_cached("production", &secrets)
+            ensure_secret_key_available("production", &secrets)
                 .expect("no-op when env is not initialized");
         });
     }
 
     #[test]
-    fn ensure_encryption_key_cached_is_noop_when_key_already_cached() {
+    fn ensure_secret_key_available_is_noop_when_key_already_cached() {
         with_temp_tako_home(|| {
             let json = r#"{
                 "production": {
-                    "salt": "dGVzdHNhbHQxMjM0NTY3OA==",
+                    "key_id": "0123456789abcdef",
                     "secrets": {"DATABASE_URL": "opaque-encrypted-blob"}
                 }
             }"#;
             let secrets = crate::config::SecretsStore::parse(json).unwrap();
-            let salt_b64 = secrets.get_salt("production").unwrap();
-            let salt = crate::crypto::decode_salt(salt_b64).unwrap();
-            let key = crate::crypto::EncryptionKey::derive("correct-horse", &salt).unwrap();
-            let key_store = crate::crypto::KeyStore::for_salt(salt_b64).unwrap();
+            let key_id_b64 = secrets.get_key_id("production").unwrap();
+            let key = crate::crypto::EncryptionKey::generate().unwrap();
+            let key_store = crate::crypto::KeyStore::for_key_id(key_id_b64).unwrap();
             key_store.save_key(&key).unwrap();
 
             // With the key already on disk, this must not prompt — if it did, the
             // test would either hang or fail because stdin isn't a tty.
-            ensure_encryption_key_cached("production", &secrets)
+            ensure_secret_key_available("production", &secrets)
                 .expect("cached key should be used without prompting");
         });
+    }
+
+    #[test]
+    fn ensure_secret_key_available_errors_when_existing_secrets_have_no_key() {
+        with_temp_tako_home(|| {
+            let json = r#"{
+                "production": {
+                    "key_id": "0123456789abcdef",
+                    "secrets": {"DATABASE_URL": "opaque-encrypted-blob"}
+                }
+            }"#;
+            let secrets = crate::config::SecretsStore::parse(json).unwrap();
+            let err = ensure_secret_key_available("production", &secrets).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                "Missing key for production. Run tako secrets key import."
+            );
+        });
+    }
+
+    #[test]
+    fn load_or_create_key_for_set_creates_random_key_for_empty_env() {
+        with_temp_tako_home(|| {
+            let mut secrets = crate::config::SecretsStore::parse("{}").unwrap();
+            let key_id = secrets.ensure_env_key_id("development").unwrap();
+
+            let key = load_or_create_key_for_set("development", &secrets)
+                .expect("empty env should get a new local key");
+            let key_store = crate::crypto::KeyStore::for_key_id(&key_id).unwrap();
+            assert!(key_store.key_exists());
+            assert_eq!(key_store.load_key().unwrap().as_bytes(), key.as_bytes());
+        });
+    }
+
+    #[test]
+    fn secret_environment_options_show_defaults_then_existing_then_new() {
+        let tako_config = TakoToml::parse(
+            r#"
+[envs.staging]
+route = "staging.example.com"
+"#,
+        )
+        .unwrap();
+        let secrets = crate::config::SecretsStore::parse(
+            r#"{
+                "preview": {
+                    "key_id": "0123456789abcdef",
+                    "secrets": {}
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let labels: Vec<String> = secret_environment_options(&tako_config, &secrets)
+            .into_iter()
+            .map(|(label, _)| label)
+            .collect();
+
+        assert_eq!(
+            labels,
+            vec![
+                "development".to_string(),
+                "production".to_string(),
+                "preview".to_string(),
+                "staging".to_string(),
+                "New environment".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn key_bundle_round_trips_key_id_and_key() {
+        with_temp_tako_home(|| {
+            let key = crate::crypto::EncryptionKey::generate().unwrap();
+            let key_id = "0123456789abcdef";
+
+            let encoded = encode_key_bundle(key_id, &key);
+
+            let (decoded_id, decoded_key) = decode_key_bundle(&encoded).unwrap();
+            assert_eq!(decoded_id, key_id);
+            assert_eq!(decoded_key.as_bytes(), key.as_bytes());
+        });
+    }
+
+    #[test]
+    fn key_bundle_rejects_invalid_payload() {
+        let err = match decode_key_bundle("not-a-tako-key") {
+            Ok(_) => panic!("expected invalid payload to fail"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("Invalid key payload"));
+    }
+
+    #[test]
+    fn key_bundle_rejects_unsupported_version() {
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "version": 2,
+            "id": "0123456789abcdef",
+            "key": crate::crypto::EncryptionKey::generate().unwrap().to_base64(),
+        }))
+        .unwrap();
+        let encoded = BASE64_URL.encode(payload);
+
+        let err = match decode_key_bundle(&encoded) {
+            Ok(_) => panic!("expected unsupported version to fail"),
+            Err(err) => err,
+        };
+        assert_eq!(err.to_string(), "Unsupported key version: 2");
+    }
+
+    #[test]
+    fn environment_for_key_id_matches_environment_key_id() {
+        let secrets = crate::config::SecretsStore::parse(
+            r#"{
+                "development": {
+                    "key_id": "0123456789abcdef",
+                    "secrets": {}
+                }
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            environment_for_key_id(&secrets, "0123456789abcdef").as_deref(),
+            Some("development")
+        );
+        assert_eq!(environment_for_key_id(&secrets, "fedcba9876543210"), None);
     }
 
     #[test]

@@ -256,7 +256,7 @@ mod tests {
             secrets_dir.join("secrets.json"),
             r#"{
                 "development": {
-                    "salt": "dGVzdA==",
+                    "key_id": "0123456789abcdef",
                     "secrets": {
                         "DB_URL": "encrypted",
                         "API_KEY": "encrypted"

@@ -186,7 +186,7 @@ Manage encrypted project secrets.
 ```bash
 tako secrets set DATABASE_URL
 tako secrets set DATABASE_URL --env staging
-tako secrets set API_KEY --sync
+tako secrets set API_KEY --env development --sync
 tako secrets rm API_KEY
 tako secrets rm API_KEY --env staging --sync
 tako secrets ls
@@ -200,18 +200,19 @@ Aliases:
 - `rm`: `remove`, `delete`, `del`
 - `ls`: `list`, `show`
 
-Secret values are read from an interactive password prompt or stdin. `sync` sends local encrypted secrets to mapped servers after decrypting them locally.
+Secret values are read from an interactive password prompt or stdin. If a secret already exists in the selected environment, interactive runs ask before overwriting it. `sync` sends local encrypted secrets to mapped servers after decrypting them locally.
+
+When `set` or `key export` omit `--env` in an interactive terminal, Tako opens an environment picker with `development`, `production`, existing environments, and `New environment`. Non-interactive runs must pass `--env`.
 
 ### Secret Keys
 
 ```bash
-tako secrets key derive
-tako secrets key derive --env staging
 tako secrets key export
 tako secrets key export --env staging
+tako secrets key import
 ```
 
-`derive` writes the environment's cached key under Tako's data directory at `keys/{sha256(salt)[:16]}`. `export` reads that key and copies it to the clipboard.
+The first secret set for an environment creates a random local key under Tako's data directory at `keys/{key_id}`. `export` copies a single base64url key string to the clipboard. `import` prompts for that string (or reads stdin) and stores it by id, so `--env` is not needed for import. Without `--env`, `export` uses the environment picker interactively and fails non-interactively with guidance to pass `--env`.
 
 ## `tako servers`
 

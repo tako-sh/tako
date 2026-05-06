@@ -54,7 +54,6 @@ fn run_tako_with_stdin(args: &[&str], cwd: &Path, input: &str) -> std::process::
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_tako"));
     cmd.args(args)
         .current_dir(cwd)
-        .env("TAKO_PASSPHRASE", "test-passphrase")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -81,7 +80,6 @@ fn run_tako_with_env(
         .current_dir(cwd)
         .env("HOME", home)
         .env("TAKO_HOME", tako_home)
-        .env("TAKO_PASSPHRASE", "test-passphrase")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -101,7 +99,6 @@ fn run_tako_with_stdin_and_env(
         .current_dir(cwd)
         .env("HOME", home)
         .env("TAKO_HOME", tako_home)
-        .env("TAKO_PASSPHRASE", "test-passphrase")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -1051,10 +1048,102 @@ main = "index.ts"
             .expect("stored API_KEY value");
         assert!(!stored.is_empty(), "stored value should not be empty");
         assert_ne!(stored, "secret123", "stored value should be encrypted");
-        // Salt should be present
+        // Key id should be present.
         assert!(
-            parsed["production"]["salt"].as_str().is_some(),
-            "salt should be present"
+            parsed["production"]["key_id"].as_str().is_some(),
+            "key id should be present"
+        );
+    }
+
+    #[test]
+    fn test_secret_set_requires_env_when_non_interactive() {
+        let temp = TempDir::new().unwrap();
+        let project_dir = temp.path().to_path_buf();
+
+        write_secret_test_tako_toml(&project_dir);
+
+        let output =
+            run_tako_with_stdin(&["secrets", "set", "API_KEY"], &project_dir, "secret123\n");
+        let combined = format!("{}{}", stdout_str(&output), stderr_str(&output));
+
+        assert!(
+            !output.status.success(),
+            "secret set without env should fail non-interactively: {}",
+            combined
+        );
+        assert!(
+            combined.contains("Missing required environment"),
+            "expected missing environment error: {}",
+            combined
+        );
+        assert!(
+            !project_dir.join(".tako").join("secrets.json").exists(),
+            "secrets file should not be created before environment selection completes"
+        );
+    }
+
+    #[test]
+    fn test_secret_key_import_reads_bundle_from_stdin() {
+        use base64::{
+            Engine,
+            engine::general_purpose::{STANDARD as BASE64, URL_SAFE_NO_PAD as BASE64_URL},
+        };
+
+        let temp = TempDir::new().unwrap();
+        let project_dir = temp.path().to_path_buf();
+        let home = temp.path().join("home");
+        let tako_home = temp.path().join("tako-home");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&tako_home).unwrap();
+        write_secret_test_tako_toml(&project_dir);
+
+        let key_id = "0123456789abcdef";
+        fs::create_dir_all(project_dir.join(".tako")).unwrap();
+        fs::write(
+            project_dir.join(".tako").join("secrets.json"),
+            format!(
+                r#"{{
+  "production": {{
+    "key_id": "{key_id}",
+    "secrets": {{}}
+  }}
+}}"#
+            ),
+        )
+        .unwrap();
+
+        let raw_key = [7u8; 32];
+        let key_b64 = BASE64.encode(raw_key);
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "version": 1,
+            "id": key_id,
+            "key": key_b64,
+        }))
+        .unwrap();
+        let bundle = format!("{}\n", BASE64_URL.encode(payload));
+
+        let output = run_tako_with_stdin_and_env(
+            &["secrets", "key", "import"],
+            &project_dir,
+            &bundle,
+            &home,
+            &tako_home,
+        );
+        let combined = format!("{}{}", stdout_str(&output), stderr_str(&output));
+
+        assert!(
+            output.status.success(),
+            "key import should succeed: {}",
+            combined
+        );
+        assert!(
+            combined.contains("Imported production key."),
+            "expected matching env in import output: {}",
+            combined
+        );
+        assert_eq!(
+            fs::read_to_string(tako_home.join("keys").join(key_id)).expect("read imported key"),
+            key_b64
         );
     }
 

@@ -29,7 +29,7 @@ Some tools improve on this by integrating with external vaults — 1Password, AW
 
 ### Encrypted at rest
 
-When you run [`tako secrets set`](/docs/cli), Tako encrypts the value with **AES-256-GCM** before writing it to `.tako/secrets.json`. The encryption key is derived from a team passphrase using **Argon2id** (64 MiB memory, 3 iterations, 4 lanes) — the same KDF recommended by OWASP for password hashing.
+When you run [`tako secrets set`](/docs/cli), Tako encrypts the value with **AES-256-GCM** before writing it to `.tako/secrets.json`. The first secret set for an environment creates a random local key, cached under Tako's data directory.
 
 ```bash
 $ tako secrets set DATABASE_URL --env production
@@ -37,12 +37,12 @@ Enter value: ****
   Set secret DATABASE_URL for environment production
 ```
 
-The resulting file is safe to commit. It contains only encrypted blobs and a per-environment salt:
+The resulting file is safe to commit. It contains only encrypted blobs and a per-environment key id:
 
 ```json
 {
   "production": {
-    "salt": "base64_encoded_salt",
+    "key_id": "0123456789abcdef",
     "secrets": {
       "DATABASE_URL": "base64(nonce + ciphertext + GCM tag)",
       "STRIPE_KEY": "base64(nonce + ciphertext + GCM tag)"
@@ -51,19 +51,19 @@ The resulting file is safe to commit. It contains only encrypted blobs and a per
 }
 ```
 
-Secret names are visible (so you can list what exists without decrypting), but values are useless without the key. Each environment gets its own salt, so the same passphrase produces different keys for production and staging.
+Secret names are visible (so you can list what exists without decrypting), but values are useless without the matching local key. Each environment gets its own key id, so production and staging can be shared independently.
 
 ### Team sharing without a vault
 
 No external service required. When a new team member joins:
 
 1. They pull the repo (which includes `.tako/secrets.json`)
-2. They run `tako secrets key derive --env production`
-3. They enter the team passphrase
-4. Argon2id derives the same key from the same passphrase + salt
-5. The key is cached locally at `$TAKO_HOME/keys/` with `0600` permissions
+2. A teammate runs `tako secrets key export --env production`
+3. They send the single exported key string out of band
+4. The new team member runs `tako secrets key import`
+5. The key is cached locally at `$TAKO_HOME/keys/{key_id}` with `0600` permissions
 
-One passphrase, shared once. After that, every team member can encrypt and decrypt independently. For CI, set `TAKO_PASSPHRASE` as an environment variable or use `tako secrets key export` to copy the raw key.
+Share only the environment keys people need. For CI, import the exported key bundle into the runner's Tako data directory before decrypting or syncing secrets.
 
 ### fd 3 injection — secrets never hit disk on the server
 

@@ -82,7 +82,6 @@ ignore = "0.4"
 
 # Encryption for secrets
 aes-gcm = "0.10"
-argon2 = "0.5"
 getrandom = "0.4"
 libc = "0.2"
 

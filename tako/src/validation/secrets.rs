@@ -110,8 +110,8 @@ mod tests {
     #[test]
     fn deploy_validation_warns_when_target_env_has_extra_secret_names() {
         let mut secrets = SecretsStore::default();
-        secrets.ensure_env_salt("production").unwrap();
-        secrets.ensure_env_salt("staging").unwrap();
+        secrets.ensure_env_key_id("production").unwrap();
+        secrets.ensure_env_key_id("staging").unwrap();
         secrets
             .set("production", "API_KEY", "x".to_string())
             .unwrap();
@@ -135,8 +135,8 @@ mod tests {
     #[test]
     fn deploy_validation_passes_when_secret_names_match_between_envs() {
         let mut secrets = SecretsStore::default();
-        secrets.ensure_env_salt("production").unwrap();
-        secrets.ensure_env_salt("staging").unwrap();
+        secrets.ensure_env_key_id("production").unwrap();
+        secrets.ensure_env_key_id("staging").unwrap();
         secrets
             .set("production", "API_KEY", "x".to_string())
             .unwrap();

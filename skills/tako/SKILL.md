@@ -79,13 +79,13 @@ List all secret names.
 
 Sync secrets to servers.
 
-### `tako secrets key derive [--env <name>]`
-
-Derive a key from a passphrase.
-
 ### `tako secrets key export [--env <name>]`
 
-Export the encryption key.
+Export a base64url key string for the selected environment.
+
+### `tako secrets key import`
+
+Import a base64url key string. The string includes its id, so import does not take `--env`.
 
 ## Code Generation
 

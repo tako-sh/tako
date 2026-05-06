@@ -211,7 +211,7 @@ pub(super) fn decrypt_deploy_secrets(
         _ => return Ok(HashMap::new()),
     };
 
-    let key = super::super::secret::load_or_derive_key(env, secrets)?;
+    let key = super::super::secret::load_secret_key(env, secrets)?;
     let mut decrypted = HashMap::new();
     for (name, encrypted_value) in encrypted {
         let value = crate::crypto::decrypt(encrypted_value, &key)

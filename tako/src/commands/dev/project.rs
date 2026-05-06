@@ -238,7 +238,7 @@ pub(super) fn inject_dev_secrets(
         _ => return Ok(()),
     };
 
-    let key = crate::commands::secret::load_or_derive_key("development", &secrets)?;
+    let key = crate::commands::secret::load_secret_key("development", &secrets)?;
     for (name, encrypted_value) in encrypted {
         match crate::crypto::decrypt(encrypted_value, &key) {
             Ok(value) => {

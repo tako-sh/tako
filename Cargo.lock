@@ -5605,7 +5605,6 @@ name = "tako"
 version = "0.0.0"
 dependencies = [
  "aes-gcm 0.10.3",
- "argon2",
  "async-trait",
  "base64",
  "clap",
