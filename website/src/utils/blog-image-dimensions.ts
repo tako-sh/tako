@@ -27,6 +27,7 @@ export const BLOG_IMAGE_DIMENSIONS: Record<string, { width: number; height: numb
   "99ab641e1a36": { width: 1400, height: 933 },
   "9a637d413a53": { width: 1400, height: 933 },
   "9f084d40a13b": { width: 1400, height: 933 },
+  "9f0f8a4dfb9c": { width: 1400, height: 788 },
   a22179342d93: { width: 1400, height: 933 },
   b724049be8bd: { width: 1400, height: 933 },
   c4e0bec69aac: { width: 1400, height: 933 },
@@ -42,6 +43,7 @@ export const BLOG_IMAGE_DIMENSIONS: Record<string, { width: number; height: numb
   e763133fb3c7: { width: 1400, height: 788 },
   eaf36ad099f6: { width: 1400, height: 788 },
   eb13f2a490c3: { width: 1400, height: 788 },
+  f1cb5b380e9d: { width: 1400, height: 788 },
   f2216fe3649a: { width: 1400, height: 933 },
   fd31b5e47c64: { width: 1400, height: 788 },
 };
