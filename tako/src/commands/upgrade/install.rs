@@ -152,17 +152,38 @@ fn find_binary(dir: &Path, name: &str) -> Option<PathBuf> {
 
 fn install_binary(src: &Path, dest_dir: &Path, name: &str) -> Result<(), String> {
     let dest = dest_dir.join(name);
-    std::fs::copy(src, &dest)
-        .map_err(|e| format!("failed to install {name} to {}: {e}", dest.display()))?;
+    let tmp_dest = temporary_install_path(dest_dir, name);
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755))
-            .map_err(|e| format!("failed to set permissions on {name}: {e}"))?;
+    let result = (|| {
+        std::fs::copy(src, &tmp_dest)
+            .map_err(|e| format!("failed to stage {name} at {}: {e}", tmp_dest.display()))?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&tmp_dest, std::fs::Permissions::from_mode(0o755))
+                .map_err(|e| format!("failed to set permissions on {name}: {e}"))?;
+        }
+
+        std::fs::rename(&tmp_dest, &dest)
+            .map_err(|e| format!("failed to install {name} to {}: {e}", dest.display()))?;
+
+        Ok(())
+    })();
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp_dest);
     }
 
-    Ok(())
+    result
+}
+
+fn temporary_install_path(dest_dir: &Path, name: &str) -> PathBuf {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    dest_dir.join(format!(".{name}.tako-install-{}-{now}", std::process::id()))
 }
 
 pub(super) fn detect_platform() -> Result<(&'static str, &'static str), String> {
@@ -259,6 +280,35 @@ mod tests {
 
         let found = find_binary(&dir, "nonexistent");
         assert!(found.is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn install_binary_replaces_existing_destination_with_new_file() {
+        use std::os::unix::fs::MetadataExt;
+
+        let dir =
+            std::env::temp_dir().join(format!("tako-test-install-replace-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let dest_dir = dir.join("bin");
+        std::fs::create_dir_all(&dest_dir).unwrap();
+
+        let src = dir.join("src-tako");
+        let dest = dest_dir.join("tako");
+        std::fs::write(&src, b"new binary").unwrap();
+        std::fs::write(&dest, b"old binary").unwrap();
+        let old_inode = std::fs::metadata(&dest).unwrap().ino();
+
+        install_binary(&src, &dest_dir, "tako").unwrap();
+
+        assert_eq!(std::fs::read(&dest).unwrap(), b"new binary");
+        let new_inode = std::fs::metadata(&dest).unwrap().ino();
+        assert_ne!(
+            new_inode, old_inode,
+            "installed binary should be swapped in as a fresh file"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
