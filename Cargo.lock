@@ -3593,6 +3593,7 @@ checksum = "f8ed6a7761f76e3b9f92dfb0a60a6a6477c61024b775147ff0973a02653abaf2"
 dependencies = [
  "digest 0.10.7",
  "hmac 0.12.1",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -5624,6 +5625,7 @@ dependencies = [
  "notify",
  "notify-debouncer-mini",
  "openssl",
+ "pbkdf2 0.12.2",
  "pem",
  "pingora-core",
  "pingora-http",

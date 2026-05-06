@@ -210,9 +210,11 @@ When `set` or `key export` omit `--env` in an interactive terminal, Tako opens a
 tako secrets key export
 tako secrets key export --env staging
 tako secrets key import
+tako secrets key import --exported-key
+tako secrets key import --passphrase --env production
 ```
 
-The first secret set for an environment creates a random local key under Tako's data directory at `keys/{key_id}`. `export` copies a single base64url key string to the clipboard. `import` prompts for that string (or reads stdin) and stores it by id, so `--env` is not needed for import. Without `--env`, `export` uses the environment picker interactively and fails non-interactively with guidance to pass `--env`.
+The first secret set for an environment creates a random environment key. By default keys are stored under Tako's data directory at `keys/{key_id}`. On macOS, interactive key creation and import can store keys in Keychain as `Tako {key_id}` instead of a local file. `export` copies a single base64url key string to the clipboard. `import` asks for a key source interactively: `Exported key` or `Passphrase`. In non-interactive mode, pass `--exported-key` or `--passphrase --env <environment>`. Passphrase import derives the environment key from the passphrase and environment key id, creating that key id first when needed. Without `--env`, `export` uses the environment picker interactively and fails non-interactively with guidance to pass `--env`.
 
 ## `tako servers`
 

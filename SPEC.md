@@ -265,11 +265,12 @@ Each environment has a `key_id` (16 hex characters) and a `secrets` map. Secret 
 - inside a git repo, it updates the repo root `.gitignore` with app-relative rules
 - outside a git repo, it creates or updates `.gitignore` in the app directory
 
-Encryption keys are file-based:
+Encryption keys are stored outside the project:
 
-- Environment-specific keys are cached under Tako's data directory as `keys/{key_id}`, where `key_id` is the environment key id stored in `.tako/secrets.json`.
+- By default, environment-specific keys are cached under Tako's data directory as `keys/{key_id}`, where `key_id` is the environment key id stored in `.tako/secrets.json`.
+- On macOS, interactive key creation and key import offer `Use iCloud Keychain?`. Choosing yes stores the key as a synchronizable Keychain item named `Tako {key_id}` instead of writing a local key file. Tako reads keys from Keychain or from `keys/{key_id}`.
 
-When the first secret is set for an environment, Tako generates a random local key. Keys are shared with other machines via `tako secrets key export` and `tako secrets key import`.
+When the first secret is set for an environment, Tako generates a random environment key. Keys are shared with other machines via `tako secrets key export` and `tako secrets key import`. Teams that prefer a memorized shared secret can initialize an environment key with `tako secrets key import --passphrase --env {environment}` before setting secrets.
 
 ## Tako CLI Commands
 
@@ -736,7 +737,7 @@ When `--env` is omitted in an interactive terminal, Tako opens an environment wi
 
 After the environment is resolved, Tako prompts for the secret value with masked input in an interactive terminal, or reads a single line from stdin in non-interactive mode. If the secret already exists in the selected environment during an interactive run, Tako asks for overwrite confirmation before prompting for the new value. Stores encrypted value locally in `.tako/secrets.json`. Tako does not write `.tako/secrets.json` until the environment wizard and value prompt have both completed.
 
-Uses the environment's cached key under Tako's data directory at `keys/{key_id}` (creates it if missing).
+Uses the environment's cached key from Keychain or Tako's data directory at `keys/{key_id}`. If the environment has no key yet, Tako creates a random key. On macOS interactive runs, Tako can store the new key in Keychain instead of a local file.
 
 When `--sync` is provided, immediately syncs secrets to all servers in the target environment after the local change, triggering a rolling restart of running instances.
 
@@ -769,7 +770,7 @@ Source of truth: local `.tako/secrets.json`.
 By default, sync processes all environments declared in `tako.toml`.
 When `--env` is provided, sync processes only that environment.
 
-For each target environment, sync decrypts with the cached key under Tako's data directory at `keys/{key_id}`.
+For each target environment, sync decrypts with the cached key from Keychain or Tako's data directory at `keys/{key_id}`.
 
 Shows a spinner with the total number of target servers while syncing, and reports the elapsed time on completion.
 
@@ -783,15 +784,20 @@ Sync flow helpers:
 
 Export a self-contained key bundle to clipboard.
 
-Reads the environment's cached key under Tako's data directory at `keys/{key_id}` and copies a single exported key string to the clipboard. The string is base64url-encoded JSON containing `version`, `id`, and `key`, so it can be imported without specifying an environment.
+Reads the environment's cached key from Keychain or Tako's data directory at `keys/{key_id}` and copies a single exported key string to the clipboard. The string is base64url-encoded JSON containing `version`, `id`, and `key`, so it can be imported without specifying an environment.
 
 When `--env` is omitted in an interactive terminal, Tako opens the environment wizard. In non-interactive mode, `--env` is required.
 
-### tako secrets key import
+### tako secrets key import [--exported-key|--passphrase] [--env {environment}]
 
 Import a self-contained exported key string.
 
-In interactive mode, prompts for the key with masked input. In non-interactive mode, reads a single line from stdin. Stores the key under Tako's data directory at `keys/{id}`. If the current project has an environment matching the imported `id`, reports that environment name; otherwise reports the imported id.
+In interactive mode, asks for the key source:
+
+- `Exported key`: prompts for an exported key string with masked input. The payload contains the key id, so no environment is needed.
+- `Passphrase`: prompts for an environment and passphrase. Tako derives the environment key from the passphrase and the environment key id. If the environment does not have a key id yet, Tako creates one and saves it to `.tako/secrets.json` after the passphrase flow completes.
+
+In non-interactive mode, pass `--exported-key` or `--passphrase`. `--passphrase` also requires `--env`. Both sources read a single line from stdin. Imported keys are stored under Tako's data directory at `keys/{id}` by default. On macOS interactive runs, Tako can store the imported key in Keychain instead of a local file. If the current project has an environment matching the imported `id`, reports that environment name; otherwise reports the imported id.
 
 ### tako deploy [--env {environment}] [--yes|-y]
 

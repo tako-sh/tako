@@ -1123,7 +1123,7 @@ main = "index.ts"
         let bundle = format!("{}\n", BASE64_URL.encode(payload));
 
         let output = run_tako_with_stdin_and_env(
-            &["secrets", "key", "import"],
+            &["secrets", "key", "import", "--exported-key"],
             &project_dir,
             &bundle,
             &home,
@@ -1144,6 +1144,64 @@ main = "index.ts"
         assert_eq!(
             fs::read_to_string(tako_home.join("keys").join(key_id)).expect("read imported key"),
             key_b64
+        );
+    }
+
+    #[test]
+    fn test_secret_key_import_passphrase_initializes_environment_key() {
+        use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
+
+        let temp = TempDir::new().unwrap();
+        let project_dir = temp.path().to_path_buf();
+        let home = temp.path().join("home");
+        let tako_home = temp.path().join("tako-home");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&tako_home).unwrap();
+        write_secret_test_tako_toml(&project_dir);
+
+        let output = run_tako_with_stdin_and_env(
+            &[
+                "secrets",
+                "key",
+                "import",
+                "--passphrase",
+                "--env",
+                "production",
+            ],
+            &project_dir,
+            "correct horse battery staple\n",
+            &home,
+            &tako_home,
+        );
+        let combined = format!("{}{}", stdout_str(&output), stderr_str(&output));
+
+        assert!(
+            output.status.success(),
+            "passphrase import should succeed: {}",
+            combined
+        );
+        assert!(
+            combined.contains("Imported production key."),
+            "expected passphrase import success output: {}",
+            combined
+        );
+
+        let secrets_json: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(project_dir.join(".tako/secrets.json")).unwrap(),
+        )
+        .unwrap();
+        let key_id = secrets_json["production"]["key_id"]
+            .as_str()
+            .expect("production key id");
+        let expected_key = pbkdf2::pbkdf2_hmac_array::<sha2::Sha256, 32>(
+            b"correct horse battery staple",
+            format!("tako-secrets-v1:{key_id}").as_bytes(),
+            600_000,
+        );
+
+        assert_eq!(
+            fs::read_to_string(tako_home.join("keys").join(key_id)).expect("read imported key"),
+            BASE64.encode(expected_key)
         );
     }
 

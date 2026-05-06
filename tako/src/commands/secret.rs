@@ -91,8 +91,20 @@ pub enum SecretKeyCommands {
         env: Option<String>,
     },
 
-    /// Import an exported key bundle from a prompt or stdin
-    Import,
+    /// Import an exported key or passphrase from a prompt or stdin
+    Import {
+        /// Import an exported key bundle
+        #[arg(long, conflicts_with = "passphrase")]
+        exported_key: bool,
+
+        /// Import a passphrase-derived key
+        #[arg(long, conflicts_with = "exported_key")]
+        passphrase: bool,
+
+        /// Target environment for passphrase import
+        #[arg(long)]
+        env: Option<String>,
+    },
 }
 
 pub fn run(
@@ -146,6 +158,27 @@ fn read_key_bundle() -> Result<String, Box<dyn std::error::Error>> {
     Ok(value.trim().to_string())
 }
 
+fn read_passphrase() -> Result<String, Box<dyn std::error::Error>> {
+    use std::io::IsTerminal;
+
+    let value = if std::io::stdin().is_terminal() {
+        crate::output::password_field("Passphrase")?
+    } else {
+        let mut value = String::new();
+        let bytes = std::io::stdin().read_line(&mut value)?;
+        if bytes == 0 {
+            return Err("No passphrase provided on stdin".into());
+        }
+        value.trim_end_matches(['\r', '\n']).to_string()
+    };
+
+    if value.is_empty() {
+        return Err("Passphrase cannot be empty.".into());
+    }
+
+    Ok(value)
+}
+
 async fn run_async(
     cmd: SecretCommands,
     context: crate::commands::project_context::ProjectContext,
@@ -166,7 +199,11 @@ async fn run_async(
             let env = resolve_secret_environment(&context, env.as_deref(), "Key environment")?;
             export_key(&context, &env).await
         }
-        SecretCommands::Key(SecretKeyCommands::Import) => import_key(&context).await,
+        SecretCommands::Key(SecretKeyCommands::Import {
+            exported_key,
+            passphrase,
+            env,
+        }) => import_key(&context, exported_key, passphrase, env.as_deref()).await,
     }
 }
 
@@ -174,6 +211,12 @@ async fn run_async(
 enum SecretEnvironmentChoice {
     Existing(String),
     New,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeyImportSource {
+    ExportedKey,
+    Passphrase,
 }
 
 struct SecretSetInput {
@@ -213,6 +256,26 @@ fn decode_key_bundle(
     crate::crypto::KeyStore::for_key_id(&bundle.id)?;
     let key = crate::crypto::EncryptionKey::from_base64(&bundle.key)?;
     Ok((bundle.id, key))
+}
+
+fn resolve_key_import_source(
+    exported_key: bool,
+    passphrase: bool,
+) -> Result<KeyImportSource, Box<dyn std::error::Error>> {
+    match (exported_key, passphrase) {
+        (true, false) => Ok(KeyImportSource::ExportedKey),
+        (false, true) => Ok(KeyImportSource::Passphrase),
+        (true, true) => Err("Choose either --exported-key or --passphrase.".into()),
+        (false, false) if output::is_interactive() => Ok(output::select(
+            "Key source",
+            None,
+            vec![
+                ("Exported key".to_string(), KeyImportSource::ExportedKey),
+                ("Passphrase".to_string(), KeyImportSource::Passphrase),
+            ],
+        )?),
+        (false, false) => Err("Missing key source. Pass --exported-key or --passphrase.".into()),
+    }
 }
 
 fn secret_environment_options(
@@ -893,12 +956,9 @@ async fn export_key(
         .get_key_id(env)
         .ok_or_else(|| format!("No secrets configured for environment '{}'.", env))?;
     let key_store = crate::crypto::KeyStore::for_key_id(key_id)?;
-
-    if !key_store.key_exists() {
+    let Some(key) = key_store.load_key_optional()? else {
         return Err(missing_secret_key_message(env).into());
-    }
-
-    let key = key_store.load_key()?;
+    };
     let bundle = encode_key_bundle(key_id, &key);
     copy_to_clipboard(&bundle)?;
 
@@ -909,26 +969,35 @@ async fn export_key(
 
 async fn import_key(
     context: &crate::commands::project_context::ProjectContext,
+    exported_key: bool,
+    passphrase: bool,
+    requested_env: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let source = resolve_key_import_source(exported_key, passphrase)?;
+    match source {
+        KeyImportSource::ExportedKey => {
+            if requested_env.is_some() {
+                return Err("--env is only valid with --passphrase.".into());
+            }
+            import_exported_key(context).await
+        }
+        KeyImportSource::Passphrase => import_passphrase_key(context, requested_env).await,
+    }
+}
+
+async fn import_exported_key(
+    context: &crate::commands::project_context::ProjectContext,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let input = read_key_bundle()?;
     let (key_id, key) = decode_key_bundle(&input)?;
     let secrets = crate::config::SecretsStore::load_from_dir(&context.project_dir)?;
     let env = environment_for_key_id(&secrets, &key_id);
-    if let Some(env) = &env
-        && let Some(encrypted_secrets) = secrets.get_env(env)
-    {
-        for (name, encrypted_value) in encrypted_secrets {
-            crate::crypto::decrypt(encrypted_value, &key).map_err(|_| {
-                format!(
-                    "Imported key does not decrypt {} for environment '{}'.",
-                    name, env
-                )
-            })?;
-        }
+    if let Some(env) = &env {
+        validate_imported_key_for_env("Exported key", &secrets, env, &key)?;
     }
 
     let key_store = crate::crypto::KeyStore::for_key_id(&key_id)?;
-    key_store.save_key(&key)?;
+    save_key_with_storage_prompt(&key_store, &key, env.as_deref())?;
 
     if let Some(env) = env {
         output::success(&format!("Imported {} key.", output::strong(&env)));
@@ -939,8 +1008,52 @@ async fn import_key(
     Ok(())
 }
 
+async fn import_passphrase_key(
+    context: &crate::commands::project_context::ProjectContext,
+    requested_env: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if requested_env.is_none() && !output::is_interactive() {
+        return Err("Missing required environment. Pass --env with --passphrase.".into());
+    }
+
+    let env = resolve_secret_environment(context, requested_env, "Key environment")?;
+    let passphrase = read_passphrase()?;
+
+    let mut secrets = crate::config::SecretsStore::load_from_dir(&context.project_dir)?;
+    let key_id = secrets.ensure_env_key_id(&env)?;
+    let key = crate::crypto::derive_key_from_passphrase(&passphrase, &key_id)?;
+
+    validate_imported_key_for_env("Passphrase", &secrets, &env, &key)?;
+
+    let key_store = crate::crypto::KeyStore::for_key_id(&key_id)?;
+    save_key_with_storage_prompt(&key_store, &key, Some(&env))?;
+    secrets.save_to_dir(&context.project_dir)?;
+
+    output::success(&format!("Imported {} key.", output::strong(&env)));
+
+    Ok(())
+}
+
+fn validate_imported_key_for_env(
+    source: &str,
+    secrets: &crate::config::SecretsStore,
+    env: &str,
+    key: &crate::crypto::EncryptionKey,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(encrypted_secrets) = secrets.get_env(env) {
+        for encrypted_value in encrypted_secrets.values() {
+            crate::crypto::decrypt(encrypted_value, key)
+                .map_err(|_| format!("{source} does not decrypt {env} secrets."))?;
+        }
+    }
+
+    Ok(())
+}
+
 fn missing_secret_key_message(env: &str) -> String {
-    format!("Missing key for {env}. Run tako secrets key import.")
+    format!(
+        "Unable to decrypt {env} secrets. Run `tako secrets key import` to import an exported key or passphrase."
+    )
 }
 
 fn key_store_for_env(
@@ -963,8 +1076,8 @@ pub fn load_secret_key(
     secrets: &crate::config::SecretsStore,
 ) -> Result<crate::crypto::EncryptionKey, Box<dyn std::error::Error>> {
     let key_store = key_store_for_env(env, secrets)?;
-    if key_store.key_exists() {
-        return Ok(key_store.load_key()?);
+    if let Some(key) = key_store.load_key_optional()? {
+        return Ok(key);
     }
 
     Err(missing_secret_key_message(env).into())
@@ -975,17 +1088,62 @@ fn load_or_create_key_for_set(
     secrets: &crate::config::SecretsStore,
 ) -> Result<crate::crypto::EncryptionKey, Box<dyn std::error::Error>> {
     let key_store = key_store_for_env(env, secrets)?;
-    if key_store.key_exists() {
-        return Ok(key_store.load_key()?);
+    if let Some(key) = key_store.load_key_optional()? {
+        return Ok(key);
     }
     if secrets.get_env(env).is_some_and(|map| !map.is_empty()) {
         return Err(missing_secret_key_message(env).into());
     }
 
     let key = crate::crypto::EncryptionKey::generate()?;
-    key_store.save_key(&key)?;
+    save_key_with_storage_prompt(&key_store, &key, Some(env))?;
 
     Ok(key)
+}
+
+fn save_key_with_storage_prompt(
+    key_store: &crate::crypto::KeyStore,
+    key: &crate::crypto::EncryptionKey,
+    env: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if should_store_key_in_keychain(env)? {
+        key_store.save_key_to_keychain(key)?;
+    } else {
+        key_store.save_key(key)?;
+    }
+
+    Ok(())
+}
+
+fn should_store_key_in_keychain(env: Option<&str>) -> Result<bool, Box<dyn std::error::Error>> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::io::IsTerminal;
+
+        if !std::io::stdin().is_terminal() {
+            return Ok(false);
+        }
+
+        let hint = keychain_storage_hint(env);
+        Ok(output::confirm_with_description(
+            "Use iCloud Keychain?",
+            Some(&hint),
+            false,
+        )?)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = env;
+        Ok(false)
+    }
+}
+
+fn keychain_storage_hint(env: Option<&str>) -> String {
+    match env {
+        Some(env) => format!("Stores {env} key in Keychain, not a local file."),
+        None => "Stores this key in Keychain, not a local file.".to_string(),
+    }
 }
 
 /// Ensure the encryption key for `env` is available before starting
@@ -1201,9 +1359,17 @@ mod tests {
             let err = ensure_secret_key_available("production", &secrets).unwrap_err();
             assert_eq!(
                 err.to_string(),
-                "Missing key for production. Run tako secrets key import."
+                "Unable to decrypt production secrets. Run `tako secrets key import` to import an exported key or passphrase."
             );
         });
+    }
+
+    #[test]
+    fn missing_secret_key_message_names_environment_and_import_command() {
+        assert_eq!(
+            missing_secret_key_message("production"),
+            "Unable to decrypt production secrets. Run `tako secrets key import` to import an exported key or passphrase."
+        );
     }
 
     #[test]
@@ -1218,6 +1384,43 @@ mod tests {
             assert!(key_store.key_exists());
             assert_eq!(key_store.load_key().unwrap().as_bytes(), key.as_bytes());
         });
+    }
+
+    #[test]
+    fn keychain_storage_hint_names_known_environment() {
+        assert_eq!(
+            keychain_storage_hint(Some("development")),
+            "Stores development key in Keychain, not a local file."
+        );
+    }
+
+    #[test]
+    fn keychain_storage_hint_handles_unknown_environment() {
+        assert_eq!(
+            keychain_storage_hint(None),
+            "Stores this key in Keychain, not a local file."
+        );
+    }
+
+    #[test]
+    fn resolve_key_import_source_uses_explicit_flags() {
+        assert_eq!(
+            resolve_key_import_source(true, false).unwrap(),
+            KeyImportSource::ExportedKey
+        );
+        assert_eq!(
+            resolve_key_import_source(false, true).unwrap(),
+            KeyImportSource::Passphrase
+        );
+    }
+
+    #[test]
+    fn resolve_key_import_source_rejects_conflicting_flags() {
+        let err = resolve_key_import_source(true, true).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Choose either --exported-key or --passphrase."
+        );
     }
 
     #[test]

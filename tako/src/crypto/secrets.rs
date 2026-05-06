@@ -17,6 +17,16 @@ const NONCE_SIZE: usize = 12;
 /// Key id size in bytes (16 hex chars).
 const KEY_ID_SIZE: usize = 8;
 
+/// PBKDF2 iteration count for passphrase-derived environment keys.
+const PASSPHRASE_KDF_ROUNDS: u32 = 600_000;
+
+/// macOS Keychain service name for environment encryption keys.
+#[cfg(target_os = "macos")]
+const KEYCHAIN_SERVICE: &str = "Tako Secrets";
+
+#[cfg(target_os = "macos")]
+const KEYCHAIN_ITEM_NOT_FOUND: i32 = -25300;
+
 /// Encryption key for secrets
 #[derive(Clone)]
 pub struct EncryptionKey {
@@ -70,6 +80,29 @@ pub fn generate_key_id() -> String {
     let mut key_id = [0u8; KEY_ID_SIZE];
     getrandom::fill(&mut key_id).expect("operating system RNG unavailable");
     hex::encode(key_id)
+}
+
+/// Human-readable macOS Keychain label for an environment key.
+pub fn keychain_label_for_key_id(key_id: &str) -> String {
+    format!("Tako {key_id}")
+}
+
+/// Derive an environment key from a passphrase and environment key id.
+pub fn derive_key_from_passphrase(passphrase: &str, key_id: &str) -> Result<EncryptionKey> {
+    KeyStore::for_key_id(key_id)?;
+    if passphrase.is_empty() {
+        return Err(ConfigError::Validation(
+            "Passphrase cannot be empty.".to_string(),
+        ));
+    }
+
+    let salt = format!("tako-secrets-v1:{key_id}");
+    let key = pbkdf2::pbkdf2_hmac_array::<sha2::Sha256, KEY_SIZE>(
+        passphrase.as_bytes(),
+        salt.as_bytes(),
+        PASSPHRASE_KDF_ROUNDS,
+    );
+    EncryptionKey::from_bytes(&key)
 }
 
 /// Encrypt a plaintext string using AES-256-GCM
@@ -126,10 +159,13 @@ pub fn decrypt(encrypted: &str, key: &EncryptionKey) -> Result<String> {
 
 /// Key storage manager
 ///
-/// Caches encryption keys locally by environment key id.
+/// Stores encryption keys by environment key id.
 ///
-/// Path: `$TAKO_HOME/keys/{key_id}`
+/// File path: `$TAKO_HOME/keys/{key_id}`
 pub struct KeyStore {
+    /// Environment key id, when this store is tied to a project key.
+    key_id: Option<String>,
+
     /// Path to the key file
     key_path: PathBuf,
 }
@@ -149,13 +185,17 @@ impl KeyStore {
         })?;
 
         Ok(Self {
+            key_id: Some(key_id.to_string()),
             key_path: data_dir.join("keys").join(key_id),
         })
     }
 
     /// Create a key store with a custom path
     pub fn with_path(path: PathBuf) -> Self {
-        Self { key_path: path }
+        Self {
+            key_id: None,
+            key_path: path,
+        }
     }
 
     /// Get key file path
@@ -165,6 +205,29 @@ impl KeyStore {
 
     /// Load the encryption key from storage
     pub fn load_key(&self) -> Result<EncryptionKey> {
+        if let Some(key) = self.load_key_optional()? {
+            return Ok(key);
+        }
+
+        Err(ConfigError::FileRead(
+            self.key_path.clone(),
+            std::io::Error::new(std::io::ErrorKind::NotFound, "key not found"),
+        ))
+    }
+
+    /// Load the encryption key if it exists in Keychain or local file storage.
+    pub fn load_key_optional(&self) -> Result<Option<EncryptionKey>> {
+        if let Some(key) = self.load_keychain_key()? {
+            return Ok(Some(key));
+        }
+        if self.key_path.exists() {
+            return Ok(Some(self.load_file_key()?));
+        }
+
+        Ok(None)
+    }
+
+    fn load_file_key(&self) -> Result<EncryptionKey> {
         let encoded = fs::read_to_string(&self.key_path)
             .map_err(|e| ConfigError::FileRead(self.key_path.clone(), e))?;
         EncryptionKey::from_base64(encoded.trim())
@@ -205,9 +268,14 @@ impl KeyStore {
         Ok(())
     }
 
+    /// Save the encryption key to the user's iCloud-synchronizable Keychain.
+    pub fn save_key_to_keychain(&self, key: &EncryptionKey) -> Result<()> {
+        self.save_key_to_keychain_impl(key)
+    }
+
     /// Check if a key exists
     pub fn key_exists(&self) -> bool {
-        self.key_path.exists()
+        self.load_key_optional().is_ok_and(|key| key.is_some())
     }
 
     /// Delete the key
@@ -216,6 +284,87 @@ impl KeyStore {
             fs::remove_file(&self.key_path)
                 .map_err(|e| ConfigError::FileWrite(self.key_path.clone(), e))?;
         }
+        self.delete_keychain_key()?;
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn load_keychain_key(&self) -> Result<Option<EncryptionKey>> {
+        use security_framework::passwords::{PasswordOptions, generic_password};
+
+        let Some(key_id) = self.key_id.as_deref() else {
+            return Ok(None);
+        };
+
+        let mut options = PasswordOptions::new_generic_password(KEYCHAIN_SERVICE, key_id);
+        options.set_access_synchronized(None);
+
+        match generic_password(options) {
+            Ok(bytes) => {
+                let encoded = String::from_utf8(bytes).map_err(|e| {
+                    ConfigError::Encryption(format!("Invalid Keychain key encoding: {}", e))
+                })?;
+                Ok(Some(EncryptionKey::from_base64(encoded.trim())?))
+            }
+            Err(e) if e.code() == KEYCHAIN_ITEM_NOT_FOUND => Ok(None),
+            Err(e) => Err(ConfigError::Encryption(format!(
+                "Failed to read key from Keychain: {}",
+                e
+            ))),
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn load_keychain_key(&self) -> Result<Option<EncryptionKey>> {
+        Ok(None)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn save_key_to_keychain_impl(&self, key: &EncryptionKey) -> Result<()> {
+        use security_framework::passwords::{PasswordOptions, set_generic_password_options};
+
+        let key_id = self.key_id.as_deref().ok_or_else(|| {
+            ConfigError::Validation("Keychain storage requires a key id.".to_string())
+        })?;
+
+        let mut options = PasswordOptions::new_generic_password(KEYCHAIN_SERVICE, key_id);
+        options.set_access_synchronized(Some(true));
+        options.set_label(&keychain_label_for_key_id(key_id));
+
+        set_generic_password_options(key.to_base64().as_bytes(), options)
+            .map_err(|e| ConfigError::Encryption(format!("Failed to save key to Keychain: {}", e)))
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn save_key_to_keychain_impl(&self, _key: &EncryptionKey) -> Result<()> {
+        Err(ConfigError::Validation(
+            "Keychain storage is only available on macOS.".to_string(),
+        ))
+    }
+
+    #[cfg(target_os = "macos")]
+    fn delete_keychain_key(&self) -> Result<()> {
+        use security_framework::passwords::{PasswordOptions, delete_generic_password_options};
+
+        let Some(key_id) = self.key_id.as_deref() else {
+            return Ok(());
+        };
+
+        let mut options = PasswordOptions::new_generic_password(KEYCHAIN_SERVICE, key_id);
+        options.set_access_synchronized(None);
+
+        match delete_generic_password_options(options) {
+            Ok(()) => Ok(()),
+            Err(e) if e.code() == KEYCHAIN_ITEM_NOT_FOUND => Ok(()),
+            Err(e) => Err(ConfigError::Encryption(format!(
+                "Failed to delete key from Keychain: {}",
+                e
+            ))),
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn delete_keychain_key(&self) -> Result<()> {
         Ok(())
     }
 }
@@ -411,6 +560,34 @@ mod tests {
             let store2 = KeyStore::for_key_id(&key_id).unwrap();
             assert_eq!(store1.key_path(), store2.key_path());
         });
+    }
+
+    #[test]
+    fn test_keychain_label_uses_human_readable_key_id() {
+        assert_eq!(
+            keychain_label_for_key_id("0123456789abcdef"),
+            "Tako 0123456789abcdef"
+        );
+    }
+
+    #[test]
+    fn test_derive_key_from_passphrase_is_deterministic() {
+        let key_a =
+            derive_key_from_passphrase("correct horse battery staple", "0123456789abcdef").unwrap();
+        let key_b =
+            derive_key_from_passphrase("correct horse battery staple", "0123456789abcdef").unwrap();
+
+        assert_eq!(key_a.as_bytes(), key_b.as_bytes());
+    }
+
+    #[test]
+    fn test_derive_key_from_passphrase_is_scoped_by_key_id() {
+        let key_a =
+            derive_key_from_passphrase("correct horse battery staple", "0123456789abcdef").unwrap();
+        let key_b =
+            derive_key_from_passphrase("correct horse battery staple", "fedcba9876543210").unwrap();
+
+        assert_ne!(key_a.as_bytes(), key_b.as_bytes());
     }
 
     #[test]

@@ -160,7 +160,7 @@ tako servers setup-wildcard --env production
 
 ## Secrets
 
-Local secret source of truth is `.tako/secrets.json`. Values are encrypted per environment with AES-256-GCM. The first secret set for an environment creates a random local key under Tako's data directory as `keys/{key_id}`, using the key id stored in `.tako/secrets.json`. Exported keys are single base64url strings that can be imported on another machine.
+Local secret source of truth is `.tako/secrets.json`. Values are encrypted per environment with AES-256-GCM. The first secret set for an environment creates a random environment key, using the key id stored in `.tako/secrets.json`. By default keys are stored under Tako's data directory as `keys/{key_id}`. On macOS, interactive key creation and import can store keys in Keychain as `Tako {key_id}` instead of a local file. Exported keys are single base64url strings that can be imported on another machine. Passphrase import derives the environment key from a passphrase and the environment key id.
 
 Deploy sends secrets only when the server-side hash differs. Long-running app and worker processes receive secrets through fd 3 at spawn time, not through env vars. Release commands are one-shot and receive secrets as env vars.
 
