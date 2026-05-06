@@ -219,6 +219,12 @@ enum KeyImportSource {
     Passphrase,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeyStorageChoice {
+    LocalFile,
+    ICloudKeychain,
+}
+
 struct SecretSetInput {
     env: String,
     value: String,
@@ -1106,43 +1112,68 @@ fn save_key_with_storage_prompt(
     key: &crate::crypto::EncryptionKey,
     env: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if should_store_key_in_keychain(env)? {
-        key_store.save_key_to_keychain(key)?;
-    } else {
-        key_store.save_key(key)?;
+    let choice = resolve_key_storage_choice(env)?;
+    save_key_with_storage_choice(key_store, key, choice)?;
+
+    Ok(())
+}
+
+fn save_key_with_storage_choice(
+    key_store: &crate::crypto::KeyStore,
+    key: &crate::crypto::EncryptionKey,
+    choice: KeyStorageChoice,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match choice {
+        KeyStorageChoice::LocalFile => key_store.save_key(key)?,
+        KeyStorageChoice::ICloudKeychain => save_key_to_icloud_keychain(key_store, key)?,
     }
 
     Ok(())
 }
 
-fn should_store_key_in_keychain(env: Option<&str>) -> Result<bool, Box<dyn std::error::Error>> {
+fn save_key_to_icloud_keychain(
+    _key_store: &crate::crypto::KeyStore,
+    _key: &crate::crypto::EncryptionKey,
+) -> Result<(), Box<dyn std::error::Error>> {
+    Err(icloud_keychain_unavailable_message().into())
+}
+
+fn icloud_keychain_unavailable_message() -> &'static str {
+    "iCloud Keychain is unavailable: Tako's macOS helper is not installed. Upgrade or reinstall Tako, then try again."
+}
+
+fn resolve_key_storage_choice(
+    env: Option<&str>,
+) -> Result<KeyStorageChoice, Box<dyn std::error::Error>> {
     #[cfg(target_os = "macos")]
     {
         use std::io::IsTerminal;
 
         if !std::io::stdin().is_terminal() {
-            return Ok(false);
+            return Ok(KeyStorageChoice::LocalFile);
         }
 
         let hint = keychain_storage_hint(env);
-        Ok(output::confirm_with_description(
-            "Use iCloud Keychain?",
-            Some(&hint),
-            false,
-        )?)
+        let use_icloud =
+            output::confirm_with_description("Use iCloud Keychain?", Some(&hint), false)?;
+        if use_icloud {
+            Ok(KeyStorageChoice::ICloudKeychain)
+        } else {
+            Ok(KeyStorageChoice::LocalFile)
+        }
     }
 
     #[cfg(not(target_os = "macos"))]
     {
         let _ = env;
-        Ok(false)
+        Ok(KeyStorageChoice::LocalFile)
     }
 }
 
 fn keychain_storage_hint(env: Option<&str>) -> String {
     match env {
-        Some(env) => format!("Stores {env} key in Keychain, not a local file."),
-        None => "Stores this key in Keychain, not a local file.".to_string(),
+        Some(env) => format!("Syncs {env} key to your other Macs."),
+        None => "Syncs this key to your other Macs.".to_string(),
     }
 }
 
@@ -1387,10 +1418,37 @@ mod tests {
     }
 
     #[test]
+    fn i_cloud_keychain_choice_errors_when_helper_is_missing() {
+        with_temp_tako_home(|| {
+            let key_store = crate::crypto::KeyStore::for_key_id("0123456789abcdef").unwrap();
+            let key = crate::crypto::EncryptionKey::generate().unwrap();
+
+            let err =
+                save_key_with_storage_choice(&key_store, &key, KeyStorageChoice::ICloudKeychain)
+                    .unwrap_err();
+
+            assert_eq!(err.to_string(), icloud_keychain_unavailable_message());
+            assert!(!key_store.key_path().exists());
+        });
+    }
+
+    #[test]
+    fn local_file_choice_saves_key_to_disk() {
+        with_temp_tako_home(|| {
+            let key_store = crate::crypto::KeyStore::for_key_id("0123456789abcdef").unwrap();
+            let key = crate::crypto::EncryptionKey::generate().unwrap();
+
+            save_key_with_storage_choice(&key_store, &key, KeyStorageChoice::LocalFile).unwrap();
+
+            assert_eq!(key_store.load_key().unwrap().as_bytes(), key.as_bytes());
+        });
+    }
+
+    #[test]
     fn keychain_storage_hint_names_known_environment() {
         assert_eq!(
             keychain_storage_hint(Some("development")),
-            "Stores development key in Keychain, not a local file."
+            "Syncs development key to your other Macs."
         );
     }
 
@@ -1398,7 +1456,7 @@ mod tests {
     fn keychain_storage_hint_handles_unknown_environment() {
         assert_eq!(
             keychain_storage_hint(None),
-            "Stores this key in Keychain, not a local file."
+            "Syncs this key to your other Macs."
         );
     }
 

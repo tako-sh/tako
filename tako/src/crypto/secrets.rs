@@ -20,13 +20,6 @@ const KEY_ID_SIZE: usize = 8;
 /// PBKDF2 iteration count for passphrase-derived environment keys.
 const PASSPHRASE_KDF_ROUNDS: u32 = 600_000;
 
-/// macOS Keychain service name for environment encryption keys.
-#[cfg(target_os = "macos")]
-const KEYCHAIN_SERVICE: &str = "Tako Secrets";
-
-#[cfg(target_os = "macos")]
-const KEYCHAIN_ITEM_NOT_FOUND: i32 = -25300;
-
 /// Encryption key for secrets
 #[derive(Clone)]
 pub struct EncryptionKey {
@@ -163,9 +156,6 @@ pub fn decrypt(encrypted: &str, key: &EncryptionKey) -> Result<String> {
 ///
 /// File path: `$TAKO_HOME/keys/{key_id}`
 pub struct KeyStore {
-    /// Environment key id, when this store is tied to a project key.
-    key_id: Option<String>,
-
     /// Path to the key file
     key_path: PathBuf,
 }
@@ -185,17 +175,13 @@ impl KeyStore {
         })?;
 
         Ok(Self {
-            key_id: Some(key_id.to_string()),
             key_path: data_dir.join("keys").join(key_id),
         })
     }
 
     /// Create a key store with a custom path
     pub fn with_path(path: PathBuf) -> Self {
-        Self {
-            key_id: None,
-            key_path: path,
-        }
+        Self { key_path: path }
     }
 
     /// Get key file path
@@ -215,11 +201,8 @@ impl KeyStore {
         ))
     }
 
-    /// Load the encryption key if it exists in Keychain or local file storage.
+    /// Load the encryption key if it exists in local file storage.
     pub fn load_key_optional(&self) -> Result<Option<EncryptionKey>> {
-        if let Some(key) = self.load_keychain_key()? {
-            return Ok(Some(key));
-        }
         if self.key_path.exists() {
             return Ok(Some(self.load_file_key()?));
         }
@@ -268,11 +251,6 @@ impl KeyStore {
         Ok(())
     }
 
-    /// Save the encryption key to the user's iCloud-synchronizable Keychain.
-    pub fn save_key_to_keychain(&self, key: &EncryptionKey) -> Result<()> {
-        self.save_key_to_keychain_impl(key)
-    }
-
     /// Check if a key exists
     pub fn key_exists(&self) -> bool {
         self.load_key_optional().is_ok_and(|key| key.is_some())
@@ -284,87 +262,6 @@ impl KeyStore {
             fs::remove_file(&self.key_path)
                 .map_err(|e| ConfigError::FileWrite(self.key_path.clone(), e))?;
         }
-        self.delete_keychain_key()?;
-        Ok(())
-    }
-
-    #[cfg(target_os = "macos")]
-    fn load_keychain_key(&self) -> Result<Option<EncryptionKey>> {
-        use security_framework::passwords::{PasswordOptions, generic_password};
-
-        let Some(key_id) = self.key_id.as_deref() else {
-            return Ok(None);
-        };
-
-        let mut options = PasswordOptions::new_generic_password(KEYCHAIN_SERVICE, key_id);
-        options.set_access_synchronized(None);
-
-        match generic_password(options) {
-            Ok(bytes) => {
-                let encoded = String::from_utf8(bytes).map_err(|e| {
-                    ConfigError::Encryption(format!("Invalid Keychain key encoding: {}", e))
-                })?;
-                Ok(Some(EncryptionKey::from_base64(encoded.trim())?))
-            }
-            Err(e) if e.code() == KEYCHAIN_ITEM_NOT_FOUND => Ok(None),
-            Err(e) => Err(ConfigError::Encryption(format!(
-                "Failed to read key from Keychain: {}",
-                e
-            ))),
-        }
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    fn load_keychain_key(&self) -> Result<Option<EncryptionKey>> {
-        Ok(None)
-    }
-
-    #[cfg(target_os = "macos")]
-    fn save_key_to_keychain_impl(&self, key: &EncryptionKey) -> Result<()> {
-        use security_framework::passwords::{PasswordOptions, set_generic_password_options};
-
-        let key_id = self.key_id.as_deref().ok_or_else(|| {
-            ConfigError::Validation("Keychain storage requires a key id.".to_string())
-        })?;
-
-        let mut options = PasswordOptions::new_generic_password(KEYCHAIN_SERVICE, key_id);
-        options.set_access_synchronized(Some(true));
-        options.set_label(&keychain_label_for_key_id(key_id));
-
-        set_generic_password_options(key.to_base64().as_bytes(), options)
-            .map_err(|e| ConfigError::Encryption(format!("Failed to save key to Keychain: {}", e)))
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    fn save_key_to_keychain_impl(&self, _key: &EncryptionKey) -> Result<()> {
-        Err(ConfigError::Validation(
-            "Keychain storage is only available on macOS.".to_string(),
-        ))
-    }
-
-    #[cfg(target_os = "macos")]
-    fn delete_keychain_key(&self) -> Result<()> {
-        use security_framework::passwords::{PasswordOptions, delete_generic_password_options};
-
-        let Some(key_id) = self.key_id.as_deref() else {
-            return Ok(());
-        };
-
-        let mut options = PasswordOptions::new_generic_password(KEYCHAIN_SERVICE, key_id);
-        options.set_access_synchronized(None);
-
-        match delete_generic_password_options(options) {
-            Ok(()) => Ok(()),
-            Err(e) if e.code() == KEYCHAIN_ITEM_NOT_FOUND => Ok(()),
-            Err(e) => Err(ConfigError::Encryption(format!(
-                "Failed to delete key from Keychain: {}",
-                e
-            ))),
-        }
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    fn delete_keychain_key(&self) -> Result<()> {
         Ok(())
     }
 }
