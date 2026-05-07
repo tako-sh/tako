@@ -8,13 +8,13 @@ description: "Learn how Tako presets provide framework-specific defaults for ent
 
 # Presets
 
-Presets are small framework manifests. They give Tako defaults for three things:
+Presets are small framework manifests. They give Tako defaults for three fields:
 
-- `main`: the runtime entrypoint used after build
+- `main`: runtime entrypoint used after build
 - `assets`: static asset directories copied into deployed `public/`
-- `dev`: the command used by `tako dev`
+- `dev`: command used by `tako dev`
 
-Presets do not contain build commands, install commands, or production start commands. Runtime behavior lives in Tako's runtime plugins for Bun, Node, and Go.
+Presets do not contain build commands, install commands, production start commands, or runtime download rules. Runtime behavior lives in Tako's runtime plugins for Bun, Node, and Go.
 
 ## Choosing a Preset
 
@@ -40,7 +40,7 @@ runtime = "node"
 main = "server/index.mjs"
 ```
 
-## Built-In Presets
+## Built-In JavaScript Presets
 
 ### `tanstack-start`
 
@@ -69,7 +69,7 @@ dev = ["vite", "dev"]
 
 This preset is useful for dev-command defaults. It does not set a production `main`.
 
-## Runtime Selection
+## Runtime-Local Names
 
 Presets are runtime-local in `tako.toml`. Choose the runtime with the top-level `runtime` field and keep `preset` as the local alias:
 
@@ -95,15 +95,13 @@ preset = "tanstack-start@abc1234"
 
 ## Resolution and Caching
 
-Official preset definitions live in family manifests such as `presets/javascript.toml` and `presets/go.toml`.
+Official preset definitions live in family manifests such as `presets/javascript.toml` and `presets/go.toml`. Each preset is a section in the family manifest.
 
 `tako dev` prefers embedded or cached preset data so local development starts quickly and works offline when possible. It fetches from GitHub only when no local copy is available.
 
-`tako deploy` refreshes unpinned aliases from the official `master` branch on each deploy. If the refresh fails, it falls back to cached content.
+`tako deploy` refreshes unpinned aliases from the official `master` branch on each deploy. If the refresh fails, it falls back to cached content or the embedded manifest.
 
-GitHub preset fetches use `GH_TOKEN` when set, falling back to `GITHUB_TOKEN`.
-
-Fetched manifests are cached locally for about one hour. Pinned aliases use the requested commit when available.
+Fetched branch manifests are cached locally for about one hour. GitHub preset fetches use `GH_TOKEN` when set, falling back to `GITHUB_TOKEN`.
 
 ## Runtime Overrides
 
@@ -119,7 +117,9 @@ dev = ["bun", "--bun", "./node_modules/.bin/vite", "dev"]
 
 Only `dev` can be overridden in a runtime subtable. `name`, `main`, and `assets` always come from the base preset section.
 
-## Entrypoint Fallbacks
+Tako uses these overrides for cases where a runtime needs a slightly different dev command. For example, Bun uses explicit commands that preserve the fd-4 readiness handshake.
+
+## Entrypoint Resolution
 
 When Tako needs a runtime entrypoint, it checks:
 
@@ -132,7 +132,7 @@ If none of those produce an entrypoint, `tako dev` and `tako deploy` fail with g
 
 ## Runtime Plugins
 
-The runtime plugin decides how to install dependencies, launch the app, detect package managers, and resolve runtime downloads.
+The runtime plugin decides how to install dependencies, launch the app, detect package managers, download runtimes, and run default builds.
 
 Current runtimes:
 

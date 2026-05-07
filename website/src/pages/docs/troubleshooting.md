@@ -18,9 +18,44 @@ tako logs --env production --json
 tako deploy --verbose
 ```
 
-`tako logs` includes app output plus server health, lifecycle, and proxy diagnostics for deployed routes. JS/TS production HTTP entrypoints route `console.*`, uncaught exceptions, and unhandled rejections into the same app log stream. Use `--json` for compact JSONL when an agent or script is inspecting logs.
+Use `--ci` when reproducing a problem in automation. It disables prompts, colors, and spinners. Combine it with `--verbose` for deterministic detailed logs.
 
-Use `--ci` when reproducing a problem in automation. It disables prompts, colors, and spinners.
+## Missing `tako.toml`
+
+App-scoped commands read `./tako.toml` unless you pass `-c`:
+
+```bash
+tako deploy -c staging
+```
+
+If the config is missing, run:
+
+```bash
+tako init
+```
+
+The selected config file's parent directory is the app directory.
+
+## Config Parse or Validation Errors
+
+Run with the selected config explicitly:
+
+```bash
+tako deploy -c tako.staging.toml --verbose
+```
+
+Common validation issues:
+
+- unknown top-level key
+- both `route` and `routes` in one environment
+- non-development environment without routes
+- unsupported runtime
+- namespaced or `github:` preset in `tako.toml`
+- absolute asset or build paths
+- `..` in asset paths, build globs, or `[build].cwd`
+- `idle_timeout = 0`
+
+`[[build_stages]].cwd` may use `..` for monorepos, but only within the workspace root.
 
 ## `tako dev` Does Not Start
 
@@ -30,9 +65,7 @@ Run:
 tako doctor
 ```
 
-Doctor checks the dev daemon, DNS, loopback setup, and local proxy state.
-
-If the daemon is missing, run:
+Doctor checks the dev daemon, DNS, loopback setup, local proxy state, and port reachability. If the daemon is missing, start it with:
 
 ```bash
 tako dev
@@ -48,7 +81,7 @@ Check the URL first:
 https://{app}.test/
 ```
 
-On macOS, Tako always uses a portless URL. On Linux, Tako configures redirects so the same URL works.
+Tako uses a local root CA. The public cert is stored at `{TAKO_HOME}/ca/ca.crt`; the private key is stored beside it at `{TAKO_HOME}/ca/ca.key` with mode `0600`. The CA cert is installed into the system trust store when needed.
 
 Run:
 
@@ -60,8 +93,9 @@ Common causes:
 
 - root CA is not trusted yet
 - local DNS resolver setup is missing
+- the `127.77.0.1` loopback alias is missing
 - macOS launchd proxy is not loaded
-- port 80 or 443 forwarding is unavailable
+- Linux redirect rules are missing
 - another resolver owns `/etc/resolver/test`
 
 If `.test` conflicts with existing resolver config, try the `.tako.test` fallback route.
@@ -95,11 +129,17 @@ Check `[envs.development]`:
 routes = ["dashboard.test", "api.dashboard.test"]
 ```
 
-Development routes may use `.test`, `.tako.test`, or external hostnames. Tako only manages DNS for `.test` and `.tako.test`; external hostnames must be pointed at the dev proxy yourself. Wildcard dev routes participate in proxy routing, but cannot be advertised with mDNS in LAN mode.
+Development routes may use `.test`, `.tako.test`, or external hostnames. Tako only manages DNS for `.test` and `.tako.test`; external hostnames must be pointed at the dev proxy yourself.
 
 If no development route is configured, Tako uses `{app}.test`. If only external development routes are configured, Tako keeps `{app}.test` and adds the external routes as host aliases.
 
 Unknown managed local DNS hosts (`.test` and `.tako.test`) list registered dev routes in the 421 response. Unknown `.local` LAN hosts and unknown external hosts return a generic `Misdirected Request` 421 response without route details.
+
+## Dev Changes Do Not Restart the App
+
+`tako dev` watches `tako.toml`, `.tako/secrets.json`, `channels/`, and `workflows/`.
+
+It restarts the app when effective dev environment variables, secrets, channel definitions, or workflow definitions change. Route-only changes update proxy routing without restarting. Source hot reload is runtime-driven, for example by Vite or Bun watch scripts.
 
 ## Deploy Says No Server Is Configured
 
@@ -147,9 +187,7 @@ Fix by setting `main`:
 main = "dist/server/tako-entry.mjs"
 ```
 
-For TanStack Start, ensure `tako.sh/vite` emits `dist/server/tako-entry.mjs`.
-
-For Next.js, ensure `withTako()` emits `.next/tako-entry.mjs`.
+For TanStack Start, ensure `tako.sh/vite` emits `dist/server/tako-entry.mjs`. For Next.js, ensure `withTako()` emits `.next/tako-entry.mjs`.
 
 ## Production Deploy Asks for Confirmation
 
@@ -235,6 +273,12 @@ tako secrets sync --env production
 
 Deploy also sends secrets when the server hash differs. Secret values are delivered to long-running app and worker processes through fd 3 at spawn time, so existing processes need a restart to receive new values. `secrets sync` triggers the required refresh.
 
+## Secret Key Import or iCloud Keychain Fails
+
+By default, environment keys are stored under Tako's data directory as `keys/{key_id}`. On macOS, interactive key creation and import can store keys in iCloud Keychain through the signed `Tako.app` CLI.
+
+If you see an iCloud entitlement error, reinstall Tako with the macOS installer so `tako` points to the signed app bundle. Tako fails before writing a local key file or updating `.tako/secrets.json` when the signed entitlement is unavailable.
+
 ## Rollback Needed
 
 List releases:
@@ -267,24 +311,6 @@ tako servers status
 Deploy checks free space under `/opt/tako` before uploading artifacts.
 
 Free space or remove old data, then retry. Tako also prunes local artifact cache best-effort, but remote disk cleanup is an operator action.
-
-## Config Parse Errors
-
-Run with the selected config explicitly:
-
-```bash
-tako deploy -c tako.staging.toml --verbose
-```
-
-Common validation issues:
-
-- unknown top-level key
-- both `route` and `routes` in one environment
-- non-development environment without routes
-- unsupported runtime
-- namespaced preset in `tako.toml`
-- absolute asset or build paths
-- `idle_timeout = 0`
 
 ## Getting More Detail
 

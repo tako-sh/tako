@@ -22,7 +22,7 @@ tako [--version] [-v|--verbose] [--ci] [--dry-run] [-c|--config <CONFIG>] <comma
 | `--dry-run`               | Show planned side effects without performing them where supported.              |
 | `-c`, `--config <CONFIG>` | Select an app config file instead of `./tako.toml`; `.toml` suffix is optional. |
 
-App-scoped commands use the selected config file's parent directory as the app directory.
+App-scoped commands use the selected config file's parent directory as the app directory. `--dry-run` is supported by `deploy`, `servers add`, `servers rm`, and `delete`.
 
 ## Installation
 
@@ -49,7 +49,7 @@ tako init -c staging
 
 `init` detects the runtime, offers preset choices, writes `tako.toml`, updates `.gitignore`, pins the local runtime version when possible, and installs `tako.sh` through the selected package manager.
 
-If the config file already exists, interactive terminals ask before overwriting. Non-interactive runs leave it untouched.
+The generated config includes commented examples for runtime fields, routes, variables, `[build]`, `[[build_stages]]`, assets, dev commands, and idle scaling. If the config file already exists, interactive terminals ask before overwriting. Non-interactive runs leave it untouched.
 
 ## `tako dev`
 
@@ -57,8 +57,8 @@ Start or attach to a local development session.
 
 ```bash
 tako dev
-tako dev --variant foo
-tako dev --var foo
+tako dev --variant preview
+tako dev --var preview
 ```
 
 `--variant` changes the local hostname from `{app}.test` to `{app}-{variant}.test`.
@@ -92,6 +92,18 @@ tako doctor
 
 The report covers the dev daemon, local DNS, loopback setup, macOS dev proxy state, and port reachability. A missing dev daemon is reported as `not running` and exits successfully.
 
+## `tako typegen`
+
+Generate typed runtime and secret accessors.
+
+```bash
+tako typegen
+```
+
+JavaScript/TypeScript projects get `tako.gen.ts`. It exports runtime state, a typed `Secrets` interface, and helpers backed by `tako.sh/runtime`. Go projects get `tako_secrets.go`.
+
+If a JS/TS project already has `channels/` or `workflows/`, typegen can scaffold missing demo files and add default exports where needed. It does not rewrite explicit channel names.
+
 ## `tako deploy`
 
 Build and deploy an app to one environment.
@@ -102,7 +114,7 @@ tako deploy --env staging
 tako deploy --env production --yes
 ```
 
-`--env` defaults to `production`. Production deploys require confirmation unless `--yes` / `-y` is provided.
+`--env` defaults to `production`. Production deploys require confirmation unless `--yes` or `-y` is provided. `development` is reserved for `tako dev`.
 
 Deploy validates config, builds locally, uploads artifacts, prepares releases on each server, runs the release command on the leader when configured, and performs rolling update.
 
@@ -135,7 +147,7 @@ tako releases rollback abc1234
 tako releases rollback abc1234 --env staging --yes
 ```
 
-`ls` shows newest releases first and marks the current release. `rollback` performs the standard rolling-update flow using the selected release.
+`ls` shows newest releases first and marks the current release. `rollback` performs the standard rolling-update flow using the selected release, current routes, env, secrets, and desired scaling state.
 
 ## `tako scale`
 
@@ -158,6 +170,8 @@ tako scale 3 --app dashboard/production --server la
 
 When `--server` is omitted, `--env` is required and Tako scales every server listed in that environment. In a project directory, `--server` without `--env` defaults to `production`. Outside a project directory, pass `--app`.
 
+Desired counts are stored on the server and persist across deploys, rollbacks, and server restarts.
+
 ## `tako delete`
 
 Delete one deployed app target.
@@ -177,7 +191,9 @@ tako undeploy
 tako destroy
 ```
 
-Interactive mode can discover targets and prompt. Non-interactive mode requires `--yes`, `--env`, and `--server`.
+Interactive mode can discover targets and prompt. Non-interactive mode requires `--yes`, `--env`, and `--server`. `development` is reserved for `tako dev`.
+
+Delete sends the deployment id `{app}/{env}` to `tako-server`, drains the app, removes routes, and deletes `/opt/tako/apps/{app}/{env}`. Re-running delete for an absent target is safe.
 
 ## `tako secrets`
 
@@ -202,6 +218,8 @@ Aliases:
 
 Secret values are read from an interactive password prompt or stdin. If a secret already exists in the selected environment, interactive runs ask before overwriting it. `sync` sends local encrypted secrets to mapped servers after decrypting them locally.
 
+Remote secret updates do not write `.env` files. `tako-server` stores secrets encrypted in SQLite, then restarts workflow workers and rolls HTTP instances so fresh long-running processes receive secrets through fd 3.
+
 When `set` or `key export` omit `--env` in an interactive terminal, Tako opens an environment picker with `development`, `production`, existing environments, and `New environment`. Non-interactive runs must pass `--env`.
 
 ### Secret Keys
@@ -214,7 +232,11 @@ tako secrets key import --exported-key
 tako secrets key import --passphrase --env production
 ```
 
-The first secret set for an environment creates a random environment key. By default keys are stored under Tako's data directory at `keys/{key_id}`. On macOS, interactive key creation and import offer iCloud Keychain storage through the signed `Tako.app` CLI installed by the macOS installer. If the signed app entitlement is unavailable, Tako fails before writing a local key file or updating `.tako/secrets.json`. `export` requires macOS user authentication on macOS, then copies a single base64url key string to the clipboard. `import` asks for a key source interactively: `Exported key` or `Passphrase`. In non-interactive mode, pass `--exported-key` or `--passphrase --env <environment>`. Passphrase import derives the environment key from the passphrase and environment key id, creating that key id first when needed. Without `--env`, `export` uses the environment picker interactively and fails non-interactively with guidance to pass `--env`.
+The first secret set for an environment creates a random environment key. By default keys are stored under Tako's data directory at `keys/{key_id}`.
+
+On macOS, interactive key creation and import offer iCloud Keychain storage through the signed `Tako.app` CLI installed by the macOS installer. If the signed app entitlement is unavailable, Tako fails before writing a local key file or updating `.tako/secrets.json`.
+
+`export` requires macOS user authentication on macOS, then copies a single base64url key string to the clipboard. `import` asks for a key source interactively: `Exported key` or `Passphrase`. In non-interactive mode, pass `--exported-key` or `--passphrase --env <environment>`.
 
 ## `tako servers`
 
@@ -238,6 +260,7 @@ tako servers rm la
 tako servers remove la
 tako servers delete la
 tako servers status
+tako servers info
 tako servers restart la
 tako servers restart la --force
 tako servers upgrade
@@ -248,19 +271,11 @@ tako servers implode la
 tako servers implode la --yes
 ```
 
-GitHub-backed server upgrade metadata and archive downloads use `GH_TOKEN` when set, falling back to `GITHUB_TOKEN`.
-
 `servers status` reads all configured servers and prints a snapshot of deployed apps. It can run from any directory.
 
-## `tako typegen`
+`servers restart` performs a zero-downtime service-manager reload by default. `--force` performs a full restart. `servers upgrade` installs a new `tako-server` binary and reloads through the management socket handoff. GitHub-backed server upgrade metadata and archive downloads use `GH_TOKEN` when set, falling back to `GITHUB_TOKEN`.
 
-Generate typed runtime and secret accessors.
-
-```bash
-tako typegen
-```
-
-JavaScript/TypeScript projects get `tako.gen.ts`. Go projects get `tako_secrets.go`.
+`servers setup-wildcard` configures DNS-01 wildcard certificate support on mapped servers. `servers implode` removes `tako-server`, server-side data, services, sockets, and the local server entry.
 
 ## `tako version`
 
@@ -283,4 +298,4 @@ tako implode --yes
 tako uninstall --yes
 ```
 
-This is destructive for local Tako state.
+This removes local config/data, installed CLI binaries, and system-level local dev setup such as DNS, loopback redirects, trust-store entries, and launchd or systemd helper configuration.

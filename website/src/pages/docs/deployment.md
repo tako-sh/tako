@@ -8,7 +8,7 @@ description: "Guide to deploying apps with Tako on your own servers, including s
 
 # Deployment
 
-This guide covers the production path: installing `tako-server`, registering servers, mapping environments, deploying releases, scaling instances, syncing secrets, and operating day two.
+This guide covers the production path: installing `tako-server`, registering servers, mapping environments, deploying releases, scaling instances, syncing secrets, and operating the service.
 
 ## Install the Server
 
@@ -20,7 +20,7 @@ sudo sh -c "$(curl -fsSL https://tako.sh/install-server.sh)"
 
 The installer:
 
-- creates the `tako` service/SSH user
+- creates the `tako` SSH/service user
 - creates `tako-app` for app and worker processes
 - installs `tako-server` to `/usr/local/bin/tako-server`
 - installs systemd or OpenRC service files
@@ -81,6 +81,8 @@ routes = [
 ]
 ```
 
+`development` is reserved for `tako dev` and cannot be deployed.
+
 ## Deploy
 
 ```bash
@@ -89,7 +91,7 @@ tako deploy --env staging
 tako deploy --env production --yes
 ```
 
-`--env` defaults to `production`. Interactive production deploys require confirmation unless `--yes` / `-y` is set.
+`--env` defaults to `production`. Interactive production deploys require confirmation unless `--yes` or `-y` is set.
 
 Deploy builds locally, ships artifacts to every server in the environment, prepares the release, runs the release command if configured, then rolls traffic to the new build.
 
@@ -101,6 +103,13 @@ The deploy source root is the git root when available, otherwise the selected co
 
 Tako copies the source bundle into `.tako/build`, respecting `.gitignore`, symlinks local `node_modules` for build tools, runs configured build stages, verifies the runtime `main`, and archives the result.
 
+Build stage precedence:
+
+1. `[[build_stages]]`
+2. `[build]`
+3. runtime default
+4. no-op
+
 Always excluded from deploy artifacts:
 
 - `.git/`
@@ -110,7 +119,13 @@ Always excluded from deploy artifacts:
 
 Additional excludes come from `[build].exclude`, per-stage `exclude`, and `.gitignore`.
 
-Target artifacts are cached under `.tako/artifacts/` and validated by checksum and size before reuse.
+Target artifacts are cached under `.tako/artifacts/` and validated by checksum and size before reuse. Deploy verifies the resolved runtime `main` exists in the build workspace before packaging.
+
+## Runtime Preparation
+
+Servers receive prebuilt artifacts; they do not run app build steps. After extracting an artifact, `tako-server` runs the runtime plugin's production install command, downloads or resolves the pinned runtime version when needed, and prepares the release directory.
+
+Runtime definitions live in runtime plugins. Presets only supply metadata such as `main`, `assets`, and `dev`.
 
 ## Release Commands
 
@@ -146,6 +161,8 @@ The rolling target count comes from server-side desired instance state. Deploy d
 
 If desired instances are `0`, deploy still keeps one warm instance for the new build so the app is reachable immediately after deploy. Later it can idle down.
 
+If a new instance fails health checks, Tako kills the new process, keeps old instances serving, and reports the failure.
+
 ## Scaling
 
 Scale every server in an environment:
@@ -167,7 +184,7 @@ Outside a project directory:
 tako scale 2 --app dashboard/production --server la
 ```
 
-Desired counts persist across deploys, rollbacks, and server restarts.
+Desired counts persist across deploys, rollbacks, and server restarts. Scaling down drains in-flight requests before stopping excess instances.
 
 ## Secrets
 
@@ -186,6 +203,8 @@ tako secrets sync --env production
 ```
 
 Deploy compares a local secrets hash with the server's current hash. If unchanged, secrets are not resent. Fresh HTTP instances and workflow workers receive secrets through fd 3 at spawn time. Secret sync also refreshes workflow runtime and rolling-restarts HTTP instances so new processes receive updated values.
+
+Secrets are stored encrypted in server SQLite. They are not written as plaintext `.env` files.
 
 ## TLS
 
@@ -210,6 +229,8 @@ tako servers setup-wildcard --env production
 
 If a wildcard route is deployed without DNS provider configuration, deploy fails with guidance.
 
+If no matching certificate exists yet, Tako serves a fallback self-signed certificate so HTTPS can complete and routing can return a normal HTTP response.
+
 ## Logs and Status
 
 ```bash
@@ -221,6 +242,7 @@ tako releases ls --env production
 ```
 
 `servers status` works from any directory and reports all configured servers.
+
 `logs` includes app output plus server lifecycle, health, and proxy diagnostics for the app's deployed routes. JS/TS production HTTP entrypoints route `console.*`, uncaught exceptions, and unhandled rejections into the same app log stream. Use `--json` for compact JSONL in agents and automation.
 
 ## Rollback
@@ -255,6 +277,12 @@ tako servers upgrade la
 
 Upgrade uses temporary process overlap and the management socket handoff so clients connect to the ready process.
 
+Remove a server installation and all server-side data:
+
+```bash
+tako servers implode la
+```
+
 GitHub-backed upgrade metadata and remote archive downloads use `GH_TOKEN` when set, falling back to `GITHUB_TOKEN`.
 
 ## Data Layout
@@ -271,6 +299,8 @@ Production data lives under `/opt/tako`:
     {app}/{env}/
       current -> releases/{version}
       data/
+        app/
+        tako/
       logs/
       releases/{version}/
 ```
@@ -280,6 +310,8 @@ The management socket lives at:
 ```text
 /var/run/tako/tako.sock
 ```
+
+It is a symlink to the active PID-specific socket, which lets reloads hand off cleanly.
 
 ## Common Failure Behavior
 

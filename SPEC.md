@@ -153,14 +153,14 @@ idle_timeout = 120
 - `tako dev` resolves the dev command with this priority:
   1. `dev` in `tako.toml` (user override, e.g. `dev = ["custom", "cmd"]`)
   2. Preset `dev` command (e.g. vite preset uses `vite dev`)
-  3. Runtime default: JS runtimes run through the SDK dev entrypoint (`bun run node_modules/tako.sh/dist/entrypoints/bun-dev.mjs {main}`, or the `node-dev.mjs` equivalent), Go uses `go run .`
+  3. Runtime default: JS runtimes run through the SDK HTTP entrypoint (`bun run node_modules/tako.sh/dist/entrypoints/bun-server.mjs {main}`, or `node --experimental-strip-types node_modules/tako.sh/dist/entrypoints/node-server.mjs {main}`), Go uses `go run .`
 - `tako dev` marks an app running only after the app writes its bound loopback port to fd 4. Direct Vite dev commands (for example `vite` or `vite dev`) must use the `tako.sh/vite` plugin for fd-4 readiness; if the command looks like Vite and no readiness signal arrives, the CLI reports a Vite-specific plugin hint. Tako does not parse Vite stdout URLs as readiness.
 - The dev entrypoints host the HTTP server. Workflow workers run as a **separate, scale-to-zero subprocess** managed by tako-dev-server's embedded `WorkflowManager` — same architecture as production, but `workers: 0` with a 3s idle timeout so the worker only exists while there's real work. The SDK wraps `export default function fetch()` or `export default { fetch }` into a proper HTTP server on `PORT`; worker stdout/stderr is tee'd into the CLI log stream with `scope: "worker"`.
 - Process exit detection: `tako dev` polls `try_wait()` every 500ms to detect when the app process exits. On exit, the route goes idle (proxy stops forwarding) and the next HTTP request triggers a restart. A route is activated only after fd-4 readiness succeeds.
 - `tako dev` resolves unpinned official preset aliases from cached or embedded preset data when available and only fetches from the `master` branch as a last resort.
 - `tako deploy` resolves unpinned official preset aliases from the `master` branch on each deploy; if the refresh fails, it falls back to cached content.
 - Deploy sends app vars + runtime vars to `tako-server` in the `deploy` command payload (non-secret env vars in `app.json`); secrets are sent separately and stored encrypted in SQLite. `tako-server` passes secrets to HTTP instances and workflow workers via fd 3 (file descriptor 3) at spawn time — the server writes secrets as JSON to a pipe and the child process reads fd 3 before any user code runs.
-- `[build]` section has `run` (build command), `install` (optional pre-build install command), `cwd` (optional working directory relative to project root), plus `include`/`exclude` for artifact filtering. `[build]` is a shortcut for a single-stage `[[build_stages]]` list.
+- `[build]` section has `run` (build command), `install` (optional pre-build install command), `cwd` (optional working directory relative to project root; absolute paths and `..` are rejected), plus `include`/`exclude` for artifact filtering. `[build]` is a shortcut for a single-stage `[[build_stages]]` list.
 - `[build]` and `[[build_stages]]` are mutually exclusive: having both `build.run` and `[[build_stages]]` is an error. `[build].include`/`[build].exclude` cannot be used alongside `[[build_stages]]`; use per-stage `exclude` instead.
 - Build stage resolution precedence (first non-empty wins): `[[build_stages]]` → `[build]` (normalized to a single stage) → runtime default. The runtime default is the runtime plugin's build command: `bun/npm/pnpm/yarn run --if-present build` for JS runtimes and no default for Go. When nothing resolves, the build phase is a no-op.
 - App-level custom build stages can be declared in `tako.toml` under `[[build_stages]]` (top-level array):
@@ -344,7 +344,7 @@ Template behavior:
   - top-level `preset` only when a non-base preset is selected (for base adapter presets and custom mode, it remains commented/unset)
 - Updates `.gitignore` so the app's `.tako/*` stays ignored while `.tako/secrets.json` remains trackable (repo-root `.gitignore` when inside git, app-local `.gitignore` otherwise)
 - Includes commented examples/explanations for all supported `tako.toml` options:
-  - `name`, `main`, top-level `runtime`/`preset`/`assets`/`dev`, `[build]` (`run`, `install`, `include`, `exclude`), and `[[build_stages]]` (with per-stage `exclude`)
+  - `name`, `main`, top-level `runtime`/`preset`/`assets`/`dev`, `[build]` (`run`, `install`, `cwd`, `include`, `exclude`), and `[[build_stages]]` (with per-stage `cwd` and `exclude`)
   - `[vars]`
   - `[vars.<env>]`
   - `[envs.<env>]` route declarations (`route`/`routes`), server membership (`servers`), and idle scaling policy (`idle_timeout`)
@@ -442,10 +442,10 @@ Start (or connect to) a local development session for the current app, backed by
     - `b` background the app (hand off to daemon, CLI exits)
     - `Ctrl+c` stop the app and quit
   - When stdout is not a terminal (piped or redirected), `tako dev` falls back to plain `println`-style output with no color or raw mode.
-  - `tako dev` always watches `tako.toml` and:
-  - restarts the app when effective dev environment variables change
-  - updates dev routing when `[envs.development].route(s)` changes
-- Source hot-reload is runtime-driven (e.g. Bun watch/dev scripts); Tako does not watch source files for auto-restart.
+  - `tako dev` watches `tako.toml`, `.tako/secrets.json`, `channels/`, and `workflows/`.
+  - It restarts the app when effective dev environment variables, secrets, channel definitions, or workflow definitions change.
+  - It updates dev routing without restarting when `[envs.development].route(s)` changes.
+- Source hot-reload is runtime-driven (e.g. Bun watch/dev scripts); Tako does not watch arbitrary source files for auto-restart.
 - HTTPS is terminated by the local dev daemon using certificates issued by the local CA (SNI-based cert selection).
 - `tako dev` ensures daemon TLS files exist at `{TAKO_HOME}/certs/fullchain.pem` and `{TAKO_HOME}/certs/privkey.pem` before spawning the daemon.
   - The daemon reuses existing TLS files when present.
@@ -456,7 +456,7 @@ Start (or connect to) a local development session for the current app, backed by
   - On Linux, systemd-resolved routes both `~test` and `~tako.test` to the local DNS listener.
   - The dev daemon answers `A` queries for active `*.test` and `*.tako.test` hosts.
     - On macOS, it maps to a dedicated loopback address (`127.77.0.1`) used by the dev proxy.
-    - On non-macOS, it maps to `127.0.0.1`.
+    - On non-macOS, it maps to the dedicated loopback alias (`127.77.0.1`).
   - On macOS, `tako dev` automatically installs and repairs a launchd-managed dev proxy when missing (one-time sudo prompt):
     - Tako also installs a boot-time launchd helper that ensures the dedicated loopback alias (`127.77.0.1`) exists before the proxy is re-registered
     - launchd owns listening sockets only on `127.77.0.1`
@@ -477,8 +477,8 @@ Start (or connect to) a local development session for the current app, backed by
 
 **Local CA architecture:**
 
-- Root CA generated once on first run, private key stored in system keychain
-- Keychain storage for the CA private key is scoped per `{TAKO_HOME}` to avoid cross-home key/cert mismatches.
+- Root CA generated once on first run; the public cert is stored at `{TAKO_HOME}/ca/ca.crt`, the private key is stored beside it as `{TAKO_HOME}/ca/ca.key` with mode `0600`, and system trust is installed once via sudo.
+- The CA cert/key pair is scoped per `{TAKO_HOME}` to avoid cross-home key/cert mismatches.
 - Leaf certificates generated on-the-fly for each app domain
 - Public CA cert available at `{TAKO_HOME}/ca/ca.crt` (for `NODE_EXTRA_CA_CERTS`)
 - On first run (or whenever not yet trusted), `tako dev` installs the root CA into the system trust store (may prompt for your password)
@@ -647,7 +647,7 @@ Service-manager reload/restart behavior:
 - On systemd hosts, installer configures `KillMode=control-group` and `TimeoutStopSec=30min`, allowing all app processes in the service cgroup time to handle graceful shutdown before forced termination.
 - On OpenRC hosts, installer configures `retry="TERM/1800/KILL/5"` in the init script so restart/stop waits up to 30 minutes before forced termination.
 
-`tako-server` persists app runtime registration (app config and routes) in SQLite under the data directory and restores it on startup so app routing/config survives reloads, restarts, and crashes. Env vars are stored in `app.json` in the release directory; secrets are stored encrypted (AES-256-GCM) in the same SQLite database using a per-device key. Secrets are pushed to app instances via `POST /secrets` on `Host: tako.internal` over the instance's private TCP endpoint with the per-instance internal token header — they never touch disk as plaintext. Each deployed app also gets a persistent runtime data tree under `{data_dir}/apps/{app}/data/`:
+`tako-server` persists app runtime registration (app config and routes) in SQLite under the data directory and restores it on startup so app routing/config survives reloads, restarts, and crashes. Env vars are stored in `app.json` in the release directory; secrets are stored encrypted (AES-256-GCM) in the same SQLite database using a per-device key. Fresh app and worker processes receive secrets through the fd 3 bootstrap envelope at spawn time. Secret updates store the new encrypted values, then drain/restart workflow workers and roll HTTP instances so fresh processes receive the new values; secrets never touch disk as plaintext. Each deployed app also gets a persistent runtime data tree under `{data_dir}/apps/{app}/data/`:
 
 - `app/` — app-owned data exposed to the process as `TAKO_DATA_DIR`
 - `tako/` — Tako-owned per-app internal state
@@ -1087,7 +1087,7 @@ Apps specify routes at environment level (not per-server). Routes support:
 
 ### Installation
 
-Manual for v1. Users run a server setup script (or equivalent manual steps) to:
+Users run a server setup script (or equivalent manual steps) to:
 
 1. Create dedicated OS users: `tako` for SSH access and running `tako-server`, plus `tako-app` for app and worker processes
 2. Install `tako-server` to `/usr/local/bin/tako-server`
@@ -1159,7 +1159,7 @@ Reference scripts in this repo:
 - Maximum HTTP request body size: 128 MiB; larger requests receive `413`.
 - Maximum channel WebSocket frame payload size: 128 MiB; larger frames are rejected and the socket closes.
 - Production browser-facing `tako-server` 5xx responses use generic reason-phrase bodies such as `Internal Server Error`, `Bad Gateway`, `Service Unavailable`, or `Gateway Timeout`; detailed startup, proxy, channel storage, and static file diagnostics are written to server/app logs instead of response bodies.
-- No application path namespace is reserved at the edge proxy. Requests are routed strictly by configured routes.
+- After a request matches an app route, `/channels/<name>` is reserved for Tako channels. Other request paths are served as static assets when a matching file exists in `public/`, then proxied to the app.
 
 **`/opt/tako/config.json`** — server-level configuration:
 
@@ -1374,16 +1374,22 @@ Server-side validation on `deploy` and app-scoped commands:
 { "command": "routes" }
 ```
 
+- `inject_challenge_token` (test/support command for HTTP-01 challenge serving):
+
+```json
+{ "command": "inject_challenge_token", "token": "abc", "key_authorization": "abc.123" }
+```
+
 - `list_releases` (returns release/build history for an app):
 
 ```json
-{ "command": "list_releases", "app": "my-app" }
+{ "command": "list_releases", "app": "my-app/production" }
 ```
 
 - `rollback` (roll back an app to a previous release/build id):
 
 ```json
-{ "command": "rollback", "app": "my-app", "version": "abc1234" }
+{ "command": "rollback", "app": "my-app/production", "version": "abc1234" }
 ```
 
 - `stop` (stop a running app):
@@ -1407,7 +1413,7 @@ Server-side validation on `deploy` and app-scoped commands:
 - `delete` (remove app state/routes):
 
 ```json
-{ "command": "delete", "app": "my-app" }
+{ "command": "delete", "app": "my-app/production" }
 ```
 
 - `update_secrets` (update secrets for a deployed app; refreshes workflow workers and triggers rolling restart):
@@ -1592,7 +1598,7 @@ const dbUrl = secrets.DATABASE_URL;
 | `Env`     | TypeScript union of environment names declared in `tako.toml`, narrows `env === "staging"` checks at compile time |
 | `Secrets` | TypeScript interface of secret keys declared in `.tako/secrets.json`                                              |
 
-`secrets` redacts automatically on `JSON.stringify`, `console.log`, and `toString` (returns `"[REDACTED]"`); individual key access (`secrets.MY_KEY`) returns the value. The `Secrets` interface is regenerated from `.tako/secrets.json` on every `tako dev`, `tako deploy`, `tako typegen`, and `tako secret` change.
+`secrets` redacts automatically on `JSON.stringify`, `console.log`, and `toString` (returns `"[REDACTED]"`); individual key access (`secrets.MY_KEY`) returns the value. The `Secrets` interface is regenerated from `.tako/secrets.json` on every `tako dev`, `tako deploy`, `tako typegen`, and `tako secrets` change. Typegen prefers secret names from the `development` environment when present, then falls back to the union of all secret environments.
 
 Channels and workflows are not on the runtime context — they are regular ES modules you import from their files:
 
@@ -1604,7 +1610,7 @@ await sendEmail.enqueue({ to: "u@e.co" });
 await chat({ roomId: "r1" }).publish({ type: "msg", data: { text: "hi" } });
 ```
 
-The `tako.sh` package exports `defineChannel`, `defineWorkflow`, `signal`, `TakoError`, and `InferWorkflowPayload`. Server-only plumbing (`loadSecrets`, `createLogger`, `handleTakoEndpoint`, `initServerRuntime`, and the channel/workflow definition types) lives under `tako.sh/internal` and is intended for generated files (`tako.gen.ts`) and framework adapters. The `Channel` class is not exported from `tako.sh`: server code uses the accessor returned by `defineChannel(...).$messageTypes<M>()` (imported from your `channels/` file); browser code imports from `tako.sh/client` (or uses the `useChannel` hook from `tako.sh/react`). There is no `Tako` global.
+The `tako.sh` package exports `defineChannel`, `defineWorkflow`, `signal`, `TakoError`, and `InferWorkflowPayload`. Generated `tako.gen.ts` imports the browser-safe runtime helpers `createLogger` and `loadSecrets` from `tako.sh/runtime`. Server-adapter plumbing (`handleTakoEndpoint`, `initServerRuntime`, and the channel/workflow definition types) lives under `tako.sh/internal` and is intended for generated files and framework adapters. The `Channel` class is not exported from `tako.sh`: server code uses the accessor returned by `defineChannel(...).$messageTypes<M>()` (imported from your `channels/` file); browser code imports from `tako.sh/client` (or uses the `useChannel` hook from `tako.sh/react`). There is no `Tako` global.
 
 ### Go SDK
 
@@ -1690,6 +1696,8 @@ import { withTako } from "tako.sh/nextjs";
 - Deployed app serving over private TCP with `PORT`/`HOST`; `tako dev` also uses TCP (`PORT`)
 - Internal status endpoint (`Host: tako.internal` + `/status`)
 - Internal channel auth endpoint (`Host: tako.internal` + `POST /channels/authorize`)
+- Internal channel registry endpoint (`Host: tako.internal` + `GET /channels/registry`)
+- Internal WebSocket dispatch endpoint (`Host: tako.internal` + `POST /channels/dispatch`)
 - Public durable channel read/connect route at `GET /channels/<name>`
 - Graceful shutdown handling
 
@@ -1713,6 +1721,14 @@ Used for health checks during rolling updates and monitoring.
 **`POST /channels/authorize` with `Host: tako.internal`**
 
 Used by `tako-server` to ask the app SDK whether a channel operation is allowed and which lifecycle settings apply. The SDK returns `ok`, optional `subject`, optional `transport`, and channel lifecycle settings such as `replayWindowMs`, `inactivityTtlMs`, `keepaliveIntervalMs`, and `maxConnectionLifetimeMs`.
+
+**`GET /channels/registry` with `Host: tako.internal`**
+
+Used by `tako-server` to fetch the app's declared channel metadata for validation, auth, and transport selection.
+
+**`POST /channels/dispatch` with `Host: tako.internal`**
+
+Used by `tako-server` to dispatch incoming WebSocket frames to the app's declared channel handler before fan-out.
 
 ### Channels
 
@@ -1982,8 +1998,8 @@ Both work via sentinel exceptions caught by the worker. Useful for "this work is
 
 ### Drain on stop / delete
 
-- On `tako stop <app>`: tako-server drains the worker (SIGTERM, waits for in-flight, SIGKILL after 120s).
-- On `tako delete <app>`: drain first, then remove per-app data — in-flight runs get a chance to finish before the DB goes away.
+- When `tako-server` stops an app through the internal `stop` command, scale-down, rolling replacement, service shutdown, or delete flow, it drains the worker first (SIGTERM, waits for in-flight, SIGKILL after 120s).
+- On `tako delete`: drain first, then remove per-app data — in-flight runs get a chance to finish before the DB goes away.
 
 ### Communication model
 

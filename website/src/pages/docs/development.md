@@ -53,11 +53,11 @@ routes = ["dashboard.test", "api.dashboard.test"]
 
 Configured `.test` and `.tako.test` routes replace the default route. External routes are additive: if you only configure external hostnames, Tako still keeps `{app}.test` and also routes those hostnames. External hostnames must be pointed at the dev proxy yourself, for example with a tunnel or DNS rule.
 
+Both `.test` and `.tako.test` resolve through Tako's local DNS. `.tako.test` remains available as a fallback zone. Wildcard dev routes participate in proxy routing, but cannot be advertised with mDNS in LAN mode.
+
 Unknown managed local DNS hosts (`.test` and `.tako.test`) return a 421 response that lists registered dev routes. Unknown `.local` LAN hosts and unknown external hosts return a generic `Misdirected Request` 421 response without listing registered routes.
 
-For Vite apps using `tako.sh/vite`, Tako also passes configured dev route hostnames into Vite's `server.allowedHosts` list so the Vite dev server accepts tunneled or external Host headers without allowing every host. Under `tako dev`, the plugin also routes Vite-process `console.*`, stdout, and stderr through structured app log events so multi-line framework/runtime errors stay grouped in the CLI log stream.
-
-Both `.test` and `.tako.test` resolve through Tako's local DNS. `.tako.test` remains available as a fallback zone. Wildcard dev routes participate in proxy routing, but cannot be advertised with mDNS in LAN mode.
+For Vite apps using `tako.sh/vite`, Tako passes configured dev route hostnames into Vite's `server.allowedHosts` list so the Vite dev server accepts tunneled or external Host headers without allowing every host. Under `tako dev`, the plugin also routes Vite-process `console.*`, stdout, and stderr through structured app log events so multi-line framework/runtime errors stay grouped in the CLI log stream.
 
 ## Variants
 
@@ -88,6 +88,8 @@ Example override:
 dev = ["vite", "dev"]
 ```
 
+JavaScript runtime defaults use the SDK HTTP entrypoints (`bun-server.mjs` for Bun and `node-server.mjs` for Node). Go defaults to `go run .`.
+
 Vite dev commands must use the `tako.sh/vite` plugin so Vite can write readiness to fd 4. Tako does not parse Vite stdout URLs as readiness.
 
 ## Readiness
@@ -95,6 +97,19 @@ Vite dev commands must use the `tako.sh/vite` plugin so Vite can write readiness
 The app is considered running only after the process writes its bound loopback port to fd 4.
 
 Until then, routes are not activated. If the process exits, the route goes idle and the next request can wake it again.
+
+## Watches and Restarts
+
+`tako dev` watches:
+
+- `tako.toml`
+- `.tako/secrets.json`
+- `channels/`
+- `workflows/`
+
+It restarts the app when effective dev environment variables, secrets, channel definitions, or workflow definitions change. It updates dev routing without restarting when `[envs.development].route` or `[envs.development].routes` changes.
+
+Source hot reload is runtime-driven. Use your framework's dev server or watch mode for normal source edits.
 
 ## Logs and Status
 
@@ -146,11 +161,19 @@ tako dev list
 
 ## Local HTTPS
 
-Tako generates a local root CA on first use. The CA private key is stored in the system keychain, scoped per Tako home directory. The public CA certificate is available at:
+Tako generates a local root CA on first use. The public CA certificate is available at:
 
 ```text
 {TAKO_HOME}/ca/ca.crt
 ```
+
+The CA private key is stored beside it:
+
+```text
+{TAKO_HOME}/ca/ca.key
+```
+
+The key file is created with mode `0600`. The CA cert/key pair is scoped per `{TAKO_HOME}` to avoid cross-home mismatches.
 
 Tako installs the CA into the system trust store when needed. Before prompting for elevated access, it explains what will change.
 
@@ -177,7 +200,7 @@ If an existing `/etc/resolver/test` was not created by Tako, Tako leaves it alon
 
 On Linux, Tako uses:
 
-- the same dedicated loopback alias
+- the same dedicated loopback alias, `127.77.0.1`
 - iptables redirect rules for 443, 80, and 53
 - systemd-resolved routing for `~test` and `~tako.test`
 
@@ -204,7 +227,17 @@ It sets:
 - `NODE_ENV=development` for JavaScript runtimes
 - `BUN_ENV=development` for Bun
 
-Secrets are read from `.tako/secrets.json` and delivered through the same runtime path used by production.
+Secrets are read from `.tako/secrets.json` and delivered through the same runtime path used by production. Long-running app and worker processes receive secrets in the fd-3 bootstrap envelope.
+
+## Channels in Dev
+
+Channel definitions in `channels/` are discovered by the SDK. Public channel routes are served at:
+
+```text
+/channels/<name>
+```
+
+The dev server uses the same internal channel registry, authorization, and dispatch endpoints as production. Changes to channel definitions restart the app so the registry stays current.
 
 ## Workflows in Dev
 
