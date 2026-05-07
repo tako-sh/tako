@@ -36,7 +36,7 @@ import DocsLayout from "../../layouts/DocsLayout.astro";
   </p>
 
   <h2 id="remote-setup">Remote setup</h2>
-  <p>On each deployment host (as <code>root</code> or with <code>sudo</code>), install the runtime:</p>
+  <p>Connect your workstation and deployment host to the same Tailscale tailnet. On each host (as <code>root</code> or with <code>sudo</code>), install the runtime:</p>
   <Snippet code='sudo sh -c "$(curl -fsSL https://tako.sh/install-server.sh)"' lang="bash" />
 
   <p>Verify installation:</p>
@@ -44,7 +44,7 @@ import DocsLayout from "../../layouts/DocsLayout.astro";
 
   <h2 id="first-deployment">First deployment</h2>
   <p>From your developer machine, add the server you set up in <a href="#remote-setup">Remote setup</a> to Tako:</p>
-  <Snippet code="tako servers add <host-or-ip>" lang="bash" />
+  <Snippet code="tako servers add <magicdns-name>" lang="bash" />
 
   <p>Run the following commands from your app directory.</p>
   <p>Initialize Tako config:</p>

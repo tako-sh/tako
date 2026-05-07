@@ -36,6 +36,7 @@ tako dev
 Set up a deployment host:
 
 ```bash
+# Connect the host and your workstation to Tailscale first.
 sudo sh -c "$(curl -fsSL https://tako.sh/install-server.sh)"
 tako servers add <magicdns-name> --name production
 ```

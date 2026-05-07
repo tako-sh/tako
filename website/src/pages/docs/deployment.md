@@ -24,10 +24,13 @@ The installer:
 - creates `tako-app` for app and worker processes
 - installs `tako-server` to `/usr/local/bin/tako-server`
 - installs systemd or OpenRC service files
+- detects the host's Tailscale IP and binds remote management HTTP to port `9844`
 - configures privileged bind support and app-user switching, failing on non-systemd/OpenRC hosts if file capabilities cannot be granted
 - creates `/opt/tako` and `/var/run/tako`
 - starts and verifies the service
 - installs helpers needed for graceful reload and upgrade
+
+Normal service installs require Tailscale because Tako keeps server control traffic private by default. If detection is not possible, set `TAKO_MANAGEMENT_HOST` to the server's Tailscale IP.
 
 For GitHub-hosted release downloads, the installer uses `GH_TOKEN` when set, falling back to `GITHUB_TOKEN`.
 
@@ -315,7 +318,7 @@ The management socket lives at:
 
 It is a symlink to the active PID-specific socket, which lets reloads hand off cleanly.
 
-Each server also keeps a stable identity key at `/opt/tako/identity.key` and publishes its OpenSSH SHA-256 fingerprint through `hello` and `server_info`. Remote management requires Tailscale so Tako can keep server control traffic private by default; when enabled, the private HTTP RPC listener uses port `9844` on the Tailscale address.
+Each server also keeps a stable identity key at `/opt/tako/identity.key` and publishes its OpenSSH SHA-256 fingerprint through `hello` and `server_info`. Remote management requires Tailscale so Tako can keep server control traffic private by default; normal installs bind the private HTTP RPC listener to port `9844` on the Tailscale address.
 
 ## Common Failure Behavior
 

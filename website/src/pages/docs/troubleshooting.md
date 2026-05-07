@@ -172,6 +172,12 @@ tako servers add la.tailnet.ts.net --name la
 
 Use the server's Tailscale MagicDNS name so Tako can verify private management access before writing the server entry.
 
+## Server Installer Says Tailscale Is Required
+
+Remote management requires Tailscale so Tako can keep server control traffic private by default.
+
+Install and connect Tailscale on the server, then rerun the installer. If the installer cannot detect the address, set `TAKO_MANAGEMENT_HOST` to the server's Tailscale IP.
+
 ## Deploy Cannot Find `main`
 
 Tako resolves the runtime entrypoint in this order:

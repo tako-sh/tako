@@ -41,7 +41,7 @@ App-scoped commands read `./tako.toml` by default. Use `-c path/to/config` to se
 - Channel storage, workflow queues, and internal sockets
 - Prometheus metrics on localhost
 
-By default it uses `/opt/tako` for data and `/var/run/tako/tako.sock` for local management commands. When private remote management is enabled, it listens on the server's Tailscale address on port `9844`.
+By default it uses `/opt/tako` for data and `/var/run/tako/tako.sock` for local management commands. Normal server installs also bind private remote management to the server's Tailscale address on port `9844`.
 
 ### `tako.sh` SDK
 

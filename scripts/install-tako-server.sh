@@ -16,6 +16,8 @@ set -eu
 #   TAKO_USER               default: tako
 #   TAKO_HOME               default: /opt/tako
 #   TAKO_SOCKET             default: /var/run/tako/tako.sock
+#   TAKO_MANAGEMENT_HOST    Tailscale IP to bind remote management on (optional)
+#                           if unset, installer detects it with `tailscale ip -4`
 #   TAKO_SSH_PUBKEY         public key line to authorize for TAKO_USER (optional)
 #                           if unset, installer prompts in interactive terminals
 #
@@ -46,12 +48,15 @@ fi
 TAKO_USER="${TAKO_USER:-tako}"
 TAKO_HOME="${TAKO_HOME:-/opt/tako}"
 TAKO_SOCKET="${TAKO_SOCKET:-/var/run/tako/tako.sock}"
+TAKO_MANAGEMENT_HOST="${TAKO_MANAGEMENT_HOST:-}"
 TAKO_DOWNLOAD_BASE_URL="${TAKO_DOWNLOAD_BASE_URL:-}"
 TAKO_ALLOW_INSECURE_DOWNLOAD_BASE="${TAKO_ALLOW_INSECURE_DOWNLOAD_BASE:-}"
 TAKO_REPO_OWNER="${TAKO_REPO_OWNER:-lilienblum}"
 TAKO_REPO_NAME="${TAKO_REPO_NAME:-tako}"
 TAKO_RELEASE_TAG="${TAKO_RELEASE_TAG:-latest}"
 TAKO_RESTART_SERVICE="${TAKO_RESTART_SERVICE:-1}"
+TAKO_MANAGEMENT_REQUIRED_MESSAGE="Remote management requires Tailscale so Tako can keep server control traffic private by default."
+TAKO_MANAGEMENT_ARGS=""
 TAKO_SERVER_CAPABILITIES="cap_net_bind_service,cap_setuid,cap_setgid"
 TAKO_SERVER_INSTALL_REFRESH_HELPER="/usr/local/bin/tako-server-install-refresh"
 TAKO_SERVER_SERVICE_HELPER="/usr/local/bin/tako-server-service"
@@ -130,6 +135,113 @@ is_enabled() {
       return 1
       ;;
   esac
+}
+
+is_tailscale_ipv4() {
+  printf '%s\n' "$1" | awk -F. '
+    NF == 4 {
+      for (i = 1; i <= 4; i++) {
+        if ($i !~ /^[0-9]+$/ || $i < 0 || $i > 255) {
+          exit 1
+        }
+      }
+      if ($1 == 100 && $2 >= 64 && $2 <= 127) {
+        exit 0
+      }
+    }
+    { exit 1 }
+  '
+}
+
+is_tailscale_ipv6() {
+  lower="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  case "$lower" in
+    fd7a:115c:a1e0:*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+is_tailscale_ip() {
+  is_tailscale_ipv4 "$1" || is_tailscale_ipv6 "$1"
+}
+
+detect_tailscale_ip() {
+  if ! need_cmd tailscale; then
+    return 1
+  fi
+
+  for ip in $(tailscale ip -4 2>/dev/null || true); do
+    if is_tailscale_ip "$ip"; then
+      printf '%s\n' "$ip"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+configure_management_http() {
+  if [ -z "$TAKO_MANAGEMENT_HOST" ]; then
+    TAKO_MANAGEMENT_HOST="$(detect_tailscale_ip || true)"
+  fi
+
+  if [ -n "$TAKO_MANAGEMENT_HOST" ]; then
+    if ! is_tailscale_ip "$TAKO_MANAGEMENT_HOST"; then
+      echo "error: TAKO_MANAGEMENT_HOST must be this server's Tailscale IP (100.64.0.0/10 or fd7a:115c:a1e0::/48)." >&2
+      exit 1
+    fi
+    TAKO_MANAGEMENT_ARGS="--management-host $TAKO_MANAGEMENT_HOST"
+    echo "OK remote management bound to Tailscale address $TAKO_MANAGEMENT_HOST"
+    return
+  fi
+
+  if is_enabled "$TAKO_RESTART_SERVICE"; then
+    echo "error: $TAKO_MANAGEMENT_REQUIRED_MESSAGE" >&2
+    echo "Install and connect Tailscale on this server, then rerun the installer." >&2
+    echo "Or set TAKO_MANAGEMENT_HOST to this server's Tailscale IP." >&2
+    exit 1
+  fi
+
+  if [ "$SERVICE_MANAGER" != "none" ]; then
+    echo "warning: remote management was not configured; connect Tailscale before starting tako-server." >&2
+  fi
+}
+
+process_has_management_host() {
+  pid="$1"
+  host="$2"
+  case "$pid" in
+    ''|0|*[!0-9]*)
+      return 1
+      ;;
+  esac
+  if [ ! -r "/proc/$pid/cmdline" ]; then
+    return 1
+  fi
+
+  cmdline="$(tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+  case "$cmdline" in
+    *"--management-host $host"*|*"--management-host=$host"*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+systemd_main_pid() {
+  systemctl show -p MainPID --value tako-server 2>/dev/null || true
+}
+
+openrc_main_pid() {
+  if [ -r /run/tako-server.pid ]; then
+    sed -n '1p' /run/tako-server.pid 2>/dev/null || true
+  fi
 }
 
 require_secure_download_override() {
@@ -296,6 +408,7 @@ if is_enabled "$TAKO_RESTART_SERVICE" && [ "$SERVICE_MANAGER" = "none" ]; then
   exit 1
 fi
 
+configure_management_http
 
 maybe_prompt_ssh_pubkey() {
   is_valid_ssh_public_key() {
@@ -863,7 +976,7 @@ NoNewPrivileges=true
 AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecStart=/usr/local/bin/tako-server --socket $TAKO_SOCKET --data-dir $TAKO_HOME
+ExecStart=/usr/local/bin/tako-server --socket $TAKO_SOCKET --data-dir $TAKO_HOME $TAKO_MANAGEMENT_ARGS
 ExecReload=/bin/kill -HUP \$MAINPID
 Restart=always
 RestartSec=1
@@ -883,7 +996,7 @@ install_openrc_service_script() {
 description="Tako Server"
 
 command="/usr/local/bin/tako-server"
-command_args="--socket $TAKO_SOCKET --data-dir $TAKO_HOME"
+command_args="--socket $TAKO_SOCKET --data-dir $TAKO_HOME $TAKO_MANAGEMENT_ARGS"
 command_user="$TAKO_USER:$TAKO_USER"
 pidfile="/run/\${RC_SVCNAME}.pid"
 command_background="yes"
@@ -948,9 +1061,15 @@ if [ "$SERVICE_MANAGER" = "systemd" ]; then
   if is_enabled "$TAKO_RESTART_SERVICE"; then
     systemctl enable tako-server >/dev/null 2>&1 || true
     if systemctl is-active --quiet tako-server; then
-      # Service already running — graceful reload (SIGHUP) to pick up new binary
-      systemctl reload tako-server
-      echo "OK tako-server reloaded (SIGHUP)"
+      main_pid="$(systemd_main_pid)"
+      if [ -n "$TAKO_MANAGEMENT_ARGS" ] && ! process_has_management_host "$main_pid" "$TAKO_MANAGEMENT_HOST"; then
+        systemctl restart tako-server
+        echo "OK tako-server restarted with remote management"
+      else
+        # Service already running — graceful reload (SIGHUP) to pick up new binary.
+        systemctl reload tako-server
+        echo "OK tako-server reloaded (SIGHUP)"
+      fi
     else
       systemctl start tako-server
     fi
@@ -968,7 +1087,13 @@ elif [ "$SERVICE_MANAGER" = "openrc" ]; then
   rc-update add tako-server default >/dev/null 2>&1 || true
   if is_enabled "$TAKO_RESTART_SERVICE"; then
     if rc-service tako-server status >/dev/null 2>&1; then
-      rc-service tako-server reload || rc-service tako-server restart
+      main_pid="$(openrc_main_pid)"
+      if [ -n "$TAKO_MANAGEMENT_ARGS" ] && ! process_has_management_host "$main_pid" "$TAKO_MANAGEMENT_HOST"; then
+        rc-service tako-server restart
+        echo "OK tako-server restarted with remote management"
+      else
+        rc-service tako-server reload || rc-service tako-server restart
+      fi
     else
       rc-service tako-server start
     fi

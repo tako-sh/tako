@@ -1119,6 +1119,7 @@ Installer SSH key behavior:
 - Installer installs restricted maintenance helpers and scoped sudoers policy so the `tako` SSH user can perform non-interactive server upgrade/reload operations.
 - Installer supports systemd and OpenRC hosts.
 - Installer supports install-refresh mode (`TAKO_RESTART_SERVICE=0`) for build/image workflows without active init; in this mode, it refreshes binary/users and skips service-definition install/start.
+- For normal service installs, installer configures remote management on the server's Tailscale IP. It detects that address with `tailscale ip -4` or uses `TAKO_MANAGEMENT_HOST` when set. If no Tailscale IP is available, install fails with: `Remote management requires Tailscale so Tako can keep server control traffic private by default.`
 - Installer configures service capability support for privileged binds and app-user switching:
   - systemd: `AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID`, `CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID`
   - non-systemd/OpenRC hosts: installer applies `setcap cap_net_bind_service,cap_setuid,cap_setgid=+ep /usr/local/bin/tako-server`; install fails if the capability cannot be granted
@@ -1145,7 +1146,7 @@ Reference scripts in this repo:
 
 - HTTP: port 80
 - HTTPS: port 443
-- Remote management HTTP: port 9844 when enabled, bound only to a private Tailscale address
+- Remote management HTTP: port 9844, bound only to a private Tailscale address by normal server installs
 - Data: `/opt/tako`
 - Socket: `/var/run/tako/tako.sock`
 - ACME: Production Let's Encrypt
@@ -1180,7 +1181,7 @@ Reference scripts in this repo:
 
 **Server identity:** `tako-server` creates a stable Ed25519 identity at `{data_dir}/identity.key` and writes the public key to `{data_dir}/identity.pub`. The private key is mode `0600`, is preserved across restarts/upgrades, and is removed only by full server uninstall. `hello` and `server_info` include the OpenSSH SHA-256 fingerprint so the CLI can identify the server during add/probe flows.
 
-**Remote management:** Remote management requires Tailscale so Tako can keep server control traffic private by default. When configured, `tako-server` listens for private HTTP management traffic on port `9844` on the Tailscale address. The HTTP management API uses the same typed `Command -> Response` protocol as the Unix socket:
+**Remote management:** Remote management requires Tailscale so Tako can keep server control traffic private by default. Normal server installs configure `tako-server` to listen for private HTTP management traffic on port `9844` on the Tailscale address. The HTTP management API uses the same typed `Command -> Response` protocol as the Unix socket:
 
 - `POST /rpc` with JSON command bodies handles small management commands.
 - Before signed management auth is enrolled, HTTP `/rpc` only accepts `hello` and `server_info` probes; other commands return `management auth required`.

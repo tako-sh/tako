@@ -12,6 +12,7 @@ Repository scripts used by installers, CI checks, and local development workflow
   - Hosted installers require HTTPS download overrides by default; set `TAKO_ALLOW_INSECURE_DOWNLOAD_BASE=1` only for local test mirrors.
   - Supports systemd and OpenRC for normal install/start.
   - Supports install-refresh mode via `TAKO_RESTART_SERVICE=0` (refreshes binary/users without restarting service; service definition is updated only when a supported manager is active), used in build/container workflows before init/service managers are running.
+  - Detects the host's Tailscale IP with `tailscale ip -4` and configures remote management HTTP on port `9844` for normal service installs. Set `TAKO_MANAGEMENT_HOST` to the server's Tailscale IP to override detection. Normal service installs fail if no Tailscale IP is available.
   - Detects host architecture (`x86_64`/`aarch64`) and libc (`glibc`/`musl`) to download the matching server artifact.
   - Applies `setcap cap_net_bind_service,cap_setuid,cap_setgid=+ep` to `/usr/local/bin/tako-server` for non-root `:80/:443` binds and app-user switching; non-systemd/OpenRC installs fail if the capability cannot be granted.
   - Creates both `tako` (server) and `tako-app` (app process) users.
