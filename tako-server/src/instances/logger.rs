@@ -60,6 +60,7 @@ impl AppLogHandle {
         }
     }
 
+    #[cfg(test)]
     /// Number of lines dropped due to backpressure since the last reset.
     pub fn dropped_count(&self) -> u64 {
         self.dropped.load(Ordering::Relaxed)
@@ -280,6 +281,7 @@ async fn open_append(path: &Path) -> std::io::Result<tokio::fs::File> {
 
 /// Create a no-op log handle for tests. Entries are sent to a channel that is
 /// immediately dropped, so writes silently succeed without touching disk.
+#[cfg(test)]
 pub fn noop_log_handle() -> AppLogHandle {
     let (tx, _rx) = mpsc::channel(1);
     AppLogHandle {

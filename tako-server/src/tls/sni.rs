@@ -117,12 +117,6 @@ impl SniCertResolver {
         Ok(cached)
     }
 
-    /// Invalidate cached cert so the next handshake reloads from disk.
-    /// Called after ACME renewal writes new cert files.
-    pub fn invalidate(&self, cert_path: &std::path::Path) {
-        self.cache.remove(cert_path);
-    }
-
     /// Load certificate and key from files (cold path only)
     fn load_cert_and_key(
         cert_path: &std::path::Path,

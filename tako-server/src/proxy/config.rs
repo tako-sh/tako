@@ -72,18 +72,3 @@ impl Default for ProxyConfig {
         }
     }
 }
-
-impl ProxyConfig {
-    pub fn development() -> Self {
-        Self {
-            http_port: 8080,
-            https_port: 8443,
-            enable_https: true,
-            dev_mode: true,
-            cert_dir: PathBuf::from("./data/certs"),
-            redirect_http_to_https: true,
-            response_cache: Some(ResponseCacheConfig::default()),
-            metrics_port: Some(9898),
-        }
-    }
-}

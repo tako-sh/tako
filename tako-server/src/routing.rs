@@ -92,6 +92,7 @@ pub fn compile_routes(routes: &[RouteEntry]) -> Vec<CompiledRouteEntry> {
     compiled
 }
 
+#[cfg(test)]
 pub fn select_app_for_request_compiled(
     routes: &[CompiledRouteEntry],
     host: &str,
@@ -146,6 +147,7 @@ fn select_app_for_request(routes: &[RouteEntry], host: &str, path: &str) -> Opti
     best.map(|(e, _)| e.app.clone())
 }
 
+#[cfg(test)]
 fn route_matches(pattern: &str, host: &str, path: &str) -> bool {
     if pattern.is_empty() {
         return false;

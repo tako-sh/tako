@@ -288,12 +288,14 @@ impl HealthChecker {
         }
     }
 
+    #[cfg(test)]
     /// Get current failure count for an instance
     pub fn get_failure_count(&self, app_name: &str, instance_id: &str) -> u32 {
         let key = format!("{}:{}", app_name, instance_id);
         self.failure_counts.get(&key).map(|v| *v).unwrap_or(0)
     }
 
+    #[cfg(test)]
     /// Clear failure count for an instance (e.g., after restart)
     pub fn clear_failure_count(&self, app_name: &str, instance_id: &str) {
         let key = format!("{}:{}", app_name, instance_id);

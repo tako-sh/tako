@@ -95,23 +95,6 @@ pub(super) fn insert_body_headers(
     Ok(())
 }
 
-pub(super) async fn create_text_response(
-    session: &mut Session,
-    status: u16,
-    content_type: &str,
-    body: &str,
-) -> Result<bool> {
-    let mut header = ResponseHeader::build(status, None)?;
-    insert_body_headers(&mut header, content_type, body)?;
-    session
-        .write_response_header(Box::new(header), false)
-        .await?;
-    session
-        .write_response_body(Some(body.to_string().into()), true)
-        .await?;
-    Ok(true)
-}
-
 pub(super) fn production_error_body(status: u16) -> &'static str {
     match status {
         500 => "Internal Server Error",

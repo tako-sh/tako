@@ -70,8 +70,6 @@ pub struct AppConfig {
     pub health_check_path: String,
     /// Health check host header
     pub health_check_host: String,
-    /// Health check interval
-    pub health_check_interval: Duration,
     /// Startup timeout
     pub startup_timeout: Duration,
     /// Idle timeout (for on-demand scaling)
@@ -101,7 +99,6 @@ impl Default for AppConfig {
             max_instances: 4,
             health_check_path: "/status".to_string(),
             health_check_host: INTERNAL_STATUS_HOST.to_string(),
-            health_check_interval: crate::defaults::HEALTH_CHECK_INTERVAL,
             startup_timeout: Duration::from_secs(30),
             idle_timeout: crate::defaults::DEFAULT_IDLE_TIMEOUT,
         }
@@ -176,6 +173,7 @@ impl Instance {
         &self.build_version
     }
 
+    #[cfg(test)]
     pub fn port(&self) -> Option<u16> {
         self.endpoint().map(|endpoint| endpoint.port())
     }
@@ -185,13 +183,6 @@ impl Instance {
             .read()
             .as_ref()
             .map(|upstream| upstream.endpoint().addr())
-    }
-
-    pub fn bind_host(&self) -> Option<String> {
-        self.upstream
-            .read()
-            .as_ref()
-            .map(|upstream| upstream.bind_host().to_string())
     }
 
     pub fn internal_token(&self) -> &str {
@@ -204,10 +195,6 @@ impl Instance {
 
     pub fn set_port(&self, port: u16) {
         *self.upstream.write() = Some(PreparedInstanceNetwork::host_loopback(port));
-    }
-
-    pub fn set_upstream(&self, upstream: PreparedInstanceNetwork) {
-        *self.upstream.write() = Some(upstream);
     }
 
     pub fn set_process(&self, child: Child) {
@@ -341,8 +328,6 @@ pub struct App {
 pub enum InstanceEvent {
     Started { app: String, instance_id: String },
     Ready { app: String, instance_id: String },
-    Unhealthy { app: String, instance_id: String },
-    Stopped { app: String, instance_id: String },
 }
 
 impl App {
@@ -389,14 +374,6 @@ impl App {
         self.last_error.read().clone()
     }
 
-    /// Get a healthy instance for load balancing
-    pub fn get_healthy_instance(&self) -> Option<Arc<Instance>> {
-        self.instances
-            .iter()
-            .find(|entry| entry.value().state() == InstanceState::Healthy)
-            .map(|entry| entry.value().clone())
-    }
-
     /// Get all healthy instances
     pub fn get_healthy_instances(&self) -> Vec<Arc<Instance>> {
         self.instances
@@ -404,18 +381,6 @@ impl App {
             .filter(|entry| entry.value().state() == InstanceState::Healthy)
             .map(|entry| entry.value().clone())
             .collect()
-    }
-
-    /// Pick the healthy instance with the lowest externally provided load value.
-    pub fn get_least_loaded_healthy_instance<F>(&self, mut load_for: F) -> Option<Arc<Instance>>
-    where
-        F: FnMut(&str) -> u64,
-    {
-        self.instances
-            .iter()
-            .filter(|entry| entry.value().state() == InstanceState::Healthy)
-            .min_by_key(|entry| load_for(&entry.value().id))
-            .map(|entry| entry.value().clone())
     }
 
     /// Get instance by ID
@@ -429,14 +394,6 @@ impl App {
             .iter()
             .map(|entry| entry.value().clone())
             .collect()
-    }
-
-    /// Count instances by state
-    pub fn count_by_state(&self, state: InstanceState) -> usize {
-        self.instances
-            .iter()
-            .filter(|entry| entry.value().state() == state)
-            .count()
     }
 
     /// Allocate a new instance (doesn't start it yet)

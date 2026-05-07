@@ -18,13 +18,6 @@ pub(crate) async fn handle_instance_event(state: &ServerState, event: InstanceEv
                 update_instance_count_metric(&app, &app_ref);
             }
         }
-        InstanceEvent::Unhealthy { app, instance_id } => {
-            tracing::warn!(app = %app, instance = %instance_id, "Instance unhealthy");
-            replace_instance_if_needed(state, &app, &instance_id, "unhealthy").await;
-        }
-        InstanceEvent::Stopped { app, instance_id } => {
-            tracing::info!(app = %app, instance = %instance_id, "Instance stopped");
-        }
     }
 }
 

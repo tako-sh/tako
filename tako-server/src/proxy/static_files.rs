@@ -58,25 +58,14 @@ pub struct StaticFile {
     pub content_type: String,
     /// File size in bytes
     pub size: u64,
-    /// Last modified time
-    pub last_modified: SystemTime,
     /// ETag (based on size and modified time)
     pub etag: String,
     /// Cache-Control header value
     pub cache_control: String,
 }
 
-impl StaticFile {
-    /// Check if file has been modified since the given time
-    pub fn modified_since(&self, since: SystemTime) -> bool {
-        self.last_modified > since
-    }
-}
-
 /// Static file server for an app
 pub struct AppStaticServer {
-    /// App name
-    app_name: String,
     /// Root directory for static files
     root: PathBuf,
     /// Canonicalized root path for traversal checks
@@ -88,12 +77,11 @@ pub struct AppStaticServer {
 }
 
 impl AppStaticServer {
-    pub fn new(app_name: String, app_root: PathBuf, config: StaticConfig) -> Self {
+    pub fn new(app_root: PathBuf, config: StaticConfig) -> Self {
         let root = app_root.join(&config.public_dir);
         let root_canonical = root.canonicalize().ok();
 
         Self {
-            app_name,
             root,
             root_canonical,
             config,
@@ -235,7 +223,6 @@ impl AppStaticServer {
             path: target_path,
             content_type,
             size,
-            last_modified,
             etag,
             cache_control,
         })
@@ -276,11 +263,6 @@ impl AppStaticServer {
         format!("\"{}{}\"", size, modified_secs)
     }
 
-    /// Get app name
-    pub fn app_name(&self) -> &str {
-        &self.app_name
-    }
-
     /// Get root directory
     pub fn root(&self) -> &Path {
         &self.root
@@ -319,21 +301,12 @@ mod tests {
     }
 
     #[test]
-    fn test_app_static_server_creation() {
-        let temp = TempDir::new().unwrap();
-        let config = StaticConfig::default();
-        let server = AppStaticServer::new("test".to_string(), temp.path().to_path_buf(), config);
-
-        assert_eq!(server.app_name(), "test");
-    }
-
-    #[test]
     fn test_resolve_index_html() {
         let temp = TempDir::new().unwrap();
         create_test_files(temp.path());
 
         let config = StaticConfig::default();
-        let server = AppStaticServer::new("test".to_string(), temp.path().to_path_buf(), config);
+        let server = AppStaticServer::new(temp.path().to_path_buf(), config);
 
         assert!(server.is_available());
 
@@ -348,7 +321,7 @@ mod tests {
         create_test_files(temp.path());
 
         let config = StaticConfig::default();
-        let server = AppStaticServer::new("test".to_string(), temp.path().to_path_buf(), config);
+        let server = AppStaticServer::new(temp.path().to_path_buf(), config);
 
         let file = server.resolve("/style.css").unwrap();
         assert!(file.content_type.contains("text/css"));
@@ -360,7 +333,7 @@ mod tests {
         create_test_files(temp.path());
 
         let config = StaticConfig::default();
-        let server = AppStaticServer::new("test".to_string(), temp.path().to_path_buf(), config);
+        let server = AppStaticServer::new(temp.path().to_path_buf(), config);
 
         let file = server.resolve("/app.js").unwrap();
         assert!(file.content_type.contains("javascript"));
@@ -372,7 +345,7 @@ mod tests {
         create_test_files(temp.path());
 
         let config = StaticConfig::default();
-        let server = AppStaticServer::new("test".to_string(), temp.path().to_path_buf(), config);
+        let server = AppStaticServer::new(temp.path().to_path_buf(), config);
 
         let file = server.resolve("/logo.png").unwrap();
         assert_eq!(file.content_type, "image/png");
@@ -384,7 +357,7 @@ mod tests {
         create_test_files(temp.path());
 
         let config = StaticConfig::default();
-        let server = AppStaticServer::new("test".to_string(), temp.path().to_path_buf(), config);
+        let server = AppStaticServer::new(temp.path().to_path_buf(), config);
 
         let file = server.resolve("/assets/image.jpg").unwrap();
         assert_eq!(file.content_type, "image/jpeg");
@@ -396,7 +369,7 @@ mod tests {
         create_test_files(temp.path());
 
         let config = StaticConfig::default();
-        let server = AppStaticServer::new("test".to_string(), temp.path().to_path_buf(), config);
+        let server = AppStaticServer::new(temp.path().to_path_buf(), config);
 
         let result = server.resolve("/nonexistent.txt");
         assert!(matches!(result, Err(StaticFileError::NotFound(_))));
@@ -408,7 +381,7 @@ mod tests {
         create_test_files(temp.path());
 
         let config = StaticConfig::default();
-        let server = AppStaticServer::new("test".to_string(), temp.path().to_path_buf(), config);
+        let server = AppStaticServer::new(temp.path().to_path_buf(), config);
 
         let result = server.resolve("/../../../etc/passwd");
         assert!(matches!(result, Err(StaticFileError::PathTraversal(_))));
@@ -420,7 +393,7 @@ mod tests {
         create_test_files(temp.path());
 
         let config = StaticConfig::default();
-        let server = AppStaticServer::new("test".to_string(), temp.path().to_path_buf(), config);
+        let server = AppStaticServer::new(temp.path().to_path_buf(), config);
 
         let file = server.resolve("/index.html").unwrap();
         assert!(file.etag.starts_with('"'));
@@ -436,7 +409,7 @@ mod tests {
             cache_max_age: 7200,
             ..Default::default()
         };
-        let server = AppStaticServer::new("test".to_string(), temp.path().to_path_buf(), config);
+        let server = AppStaticServer::new(temp.path().to_path_buf(), config);
 
         let file = server.resolve("/index.html").unwrap();
         assert!(file.cache_control.contains("max-age=7200"));
@@ -446,7 +419,7 @@ mod tests {
     fn test_mime_types() {
         let temp = TempDir::new().unwrap();
         let config = StaticConfig::default();
-        let server = AppStaticServer::new("test".to_string(), temp.path().to_path_buf(), config);
+        let server = AppStaticServer::new(temp.path().to_path_buf(), config);
 
         // Test various MIME types
         assert!(server.get_mime_type("html").contains("text/html"));
@@ -469,7 +442,7 @@ mod tests {
             enabled: false,
             ..Default::default()
         };
-        let server = AppStaticServer::new("test".to_string(), temp.path().to_path_buf(), config);
+        let server = AppStaticServer::new(temp.path().to_path_buf(), config);
 
         assert!(!server.is_available());
     }

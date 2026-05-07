@@ -2,8 +2,7 @@ use super::boot::{
     install_rustls_crypto_provider, read_server_config, should_signal_parent_on_ready,
 };
 use super::release::{
-    resolve_release_runtime, should_use_self_signed_route_cert, validate_app_name,
-    validate_deploy_routes,
+    should_use_self_signed_route_cert, validate_app_name, validate_deploy_routes,
 };
 use super::{
     SIGNAL_PARENT_ON_READY_ENV, ServerRuntimeConfig, ServerState, extract_zstd_archive,
@@ -438,23 +437,6 @@ fn private_route_domains_prefer_self_signed_certs() {
 fn public_route_domains_do_not_prefer_self_signed_certs() {
     assert!(!should_use_self_signed_route_cert("api.example.com"));
     assert!(!should_use_self_signed_route_cert("example.com"));
-}
-
-#[test]
-fn resolve_release_runtime_requires_manifest() {
-    let temp = TempDir::new().unwrap();
-    let err = resolve_release_runtime(temp.path()).unwrap_err();
-    assert!(err.contains("failed to read deploy manifest"));
-}
-
-#[test]
-fn resolve_release_runtime_reads_manifest_runtime() {
-    let temp = TempDir::new().unwrap();
-    write_release_manifest(temp.path(), "bun", "index.ts", &[], None, 300);
-    assert_eq!(
-        resolve_release_runtime(temp.path()).unwrap(),
-        "bun".to_string()
-    );
 }
 
 #[test]

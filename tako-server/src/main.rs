@@ -1,6 +1,3 @@
-// This crate contains runtime components that are exercised indirectly in integration tests.
-#![allow(dead_code)]
-
 #[cfg(not(unix))]
 compile_error!("tako-server requires Unix (management commands use Unix sockets).");
 
@@ -17,7 +14,6 @@ mod lb;
 mod metrics;
 mod operations;
 mod paths;
-mod protocol;
 mod proxy;
 mod release;
 mod release_command;
@@ -35,16 +31,24 @@ use tako_workflows as workflows;
 
 use crate::boot::install_rustls_crypto_provider;
 use clap::Parser;
+#[cfg(any(not(debug_assertions), test))]
 use serde_json::{Map, Number, Value};
+#[cfg(any(not(debug_assertions), test))]
 use std::fmt;
 use std::path::Path;
+#[cfg(any(not(debug_assertions), test))]
 use tracing::field::{Field, Visit};
+#[cfg(any(not(debug_assertions), test))]
 use tracing::{Event, Subscriber};
 use tracing_subscriber::EnvFilter;
+#[cfg(any(not(debug_assertions), test))]
 use tracing_subscriber::fmt::FmtContext;
+#[cfg(any(not(debug_assertions), test))]
 use tracing_subscriber::fmt::format::{FormatEvent, FormatFields, Writer};
+#[cfg(any(not(debug_assertions), test))]
 use tracing_subscriber::fmt::time::{FormatTime, SystemTime};
 use tracing_subscriber::layer::SubscriberExt;
+#[cfg(any(not(debug_assertions), test))]
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::util::SubscriberInitExt;
 
@@ -68,12 +72,14 @@ fn server_version() -> &'static str {
     &VERSION
 }
 
+#[cfg(any(not(debug_assertions), test))]
 #[derive(Clone)]
 struct ServerJsonLogFormat {
     server_version: &'static str,
     pid: u32,
 }
 
+#[cfg(any(not(debug_assertions), test))]
 impl ServerJsonLogFormat {
     fn new(server_version: &'static str, pid: u32) -> Self {
         Self {
@@ -83,6 +89,7 @@ impl ServerJsonLogFormat {
     }
 }
 
+#[cfg(any(not(debug_assertions), test))]
 impl<S, N> FormatEvent<S, N> for ServerJsonLogFormat
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
@@ -120,16 +127,19 @@ where
     }
 }
 
+#[cfg(any(not(debug_assertions), test))]
 struct JsonFieldVisitor<'a> {
     fields: &'a mut Map<String, Value>,
 }
 
+#[cfg(any(not(debug_assertions), test))]
 impl JsonFieldVisitor<'_> {
     fn insert(&mut self, field: &Field, value: Value) {
         self.fields.insert(field.name().to_string(), value);
     }
 }
 
+#[cfg(any(not(debug_assertions), test))]
 impl Visit for JsonFieldVisitor<'_> {
     fn record_f64(&mut self, field: &Field, value: f64) {
         if let Some(number) = Number::from_f64(value) {

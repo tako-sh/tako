@@ -75,19 +75,9 @@ pub fn env_vars_from_release_dir(release_dir: &Path) -> Result<HashMap<String, S
     Ok(load_release_manifest(release_dir)?.env_vars)
 }
 
+#[cfg(test)]
 pub fn idle_timeout_secs_from_release_dir(release_dir: &Path) -> Result<u32, String> {
     Ok(load_release_manifest(release_dir)?.idle_timeout)
-}
-
-pub fn runtime_from_release_dir(release_dir: &Path) -> Result<String, String> {
-    let manifest = load_release_manifest(release_dir)?;
-    if manifest.runtime.trim().is_empty() {
-        return Err(format!(
-            "deploy manifest {} has empty runtime field",
-            release_dir.join("app.json").display()
-        ));
-    }
-    Ok(manifest.runtime)
 }
 
 /// Build the launch command from a manifest using the plugin system.
@@ -149,6 +139,7 @@ pub(crate) fn command_from_manifest(
 /// Determine the command to launch an app from its release directory.
 ///
 /// Release launch behavior is derived from deploy manifest (`app.json`) only.
+#[cfg(test)]
 pub fn command_for_release_dir(release_dir: &Path) -> Result<Vec<String>, String> {
     let manifest = load_release_manifest(release_dir)?;
     command_from_manifest(&manifest, release_dir, None)

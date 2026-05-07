@@ -54,10 +54,6 @@ impl SocketServer {
     }
 
     /// The stable symlink path (used as the configured socket path by callers)
-    pub fn symlink_path(&self) -> &Path {
-        &self.symlink_path
-    }
-
     /// Bind the pid-specific socket and atomically swap the stable symlink.
     ///
     /// This is intentionally **synchronous** so it can run before any async
@@ -134,6 +130,7 @@ impl SocketServer {
     }
 
     /// Start listening for commands (convenience wrapper: bind + serve).
+    #[cfg(test)]
     pub async fn run<F, Fut>(&self, handler: F) -> Result<(), std::io::Error>
     where
         F: Fn(Command) -> Fut + Send + Sync + 'static,

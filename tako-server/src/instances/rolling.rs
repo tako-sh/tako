@@ -37,8 +37,6 @@ pub struct RollingUpdateResult {
     pub old_instances: u32,
     /// Error message if failed
     pub error: Option<String>,
-    /// Whether a rollback occurred
-    pub rolled_back: bool,
 }
 
 /// Performs rolling updates on an app
@@ -133,7 +131,6 @@ impl RollingUpdater {
                             new_instances: 0,
                             old_instances: 0,
                             error: Some(format!("Health check failed: {}", e)),
-                            rolled_back: true,
                         });
                     }
                 }
@@ -172,7 +169,6 @@ impl RollingUpdater {
             new_instances: new_instances.len() as u32,
             old_instances: stopped_count,
             error: None,
-            rolled_back: false,
         })
     }
 
@@ -283,10 +279,8 @@ mod tests {
             new_instances: 3,
             old_instances: 3,
             error: None,
-            rolled_back: false,
         };
         assert!(result.success);
-        assert!(!result.rolled_back);
     }
 
     #[test]
@@ -296,10 +290,8 @@ mod tests {
             new_instances: 1,
             old_instances: 0,
             error: Some("Health check timeout".to_string()),
-            rolled_back: true,
         };
         assert!(!result.success);
-        assert!(result.rolled_back);
         assert!(result.error.is_some());
     }
 
@@ -445,11 +437,10 @@ mod tests {
             new_instances: 0,
             old_instances: 0,
             error: Some("New instance failed health check".to_string()),
-            rolled_back: true,
         };
 
         // After rollback, old instances should still be available
-        assert!(result.rolled_back);
+        assert!(!result.success);
         assert_eq!(app.get_healthy_instances().len(), 1);
     }
 

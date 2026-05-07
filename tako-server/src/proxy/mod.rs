@@ -12,8 +12,7 @@ mod service;
 mod static_files;
 
 pub use config::{ProxyConfig, ResponseCacheConfig};
-#[allow(unused_imports)]
-pub use server::{ProxyBuilder, TlsConfig, build_server, build_server_with_acme};
+pub use server::build_server_with_acme;
 #[allow(unused_imports)]
 pub use static_files::*;
 
@@ -121,11 +120,6 @@ impl TakoProxy {
             ip_tracker: IpRequestTracker::new(),
             channel_registry: Arc::new(ChannelRegistry::new()),
         }
-    }
-
-    /// Get config
-    pub fn config(&self) -> &ProxyConfig {
-        &self.config
     }
 }
 

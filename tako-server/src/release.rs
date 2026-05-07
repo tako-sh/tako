@@ -1,6 +1,4 @@
-use crate::app_command::{
-    command_from_manifest, load_release_manifest, runtime_from_release_dir, safe_subdir,
-};
+use crate::app_command::{command_from_manifest, load_release_manifest, safe_subdir};
 use crate::instances::AppConfig;
 use crate::socket::{AppState, BuildStatus, InstanceState, InstanceStatus};
 use std::collections::HashMap;
@@ -176,10 +174,6 @@ fn drop_privileges_if_root(cmd: &mut TokioCommand) {
         cmd.uid(uid);
         cmd.gid(gid);
     }
-}
-
-pub(crate) fn resolve_release_runtime(release_dir: &Path) -> Result<String, String> {
-    runtime_from_release_dir(release_dir)
 }
 
 pub(crate) async fn prepare_release_runtime(

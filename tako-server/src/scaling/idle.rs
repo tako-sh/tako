@@ -1,6 +1,8 @@
 //! Idle timeout management - stops instances after period of inactivity
 
-use crate::instances::{App, Instance};
+use crate::instances::App;
+#[cfg(test)]
+use crate::instances::Instance;
 use crate::socket::InstanceState;
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,8 +14,6 @@ use tokio::time::interval;
 pub struct IdleConfig {
     /// How often to check for idle instances
     pub check_interval: Duration,
-    /// Default idle timeout
-    pub default_timeout: Duration,
 }
 
 impl Default for IdleConfig {
@@ -25,7 +25,6 @@ impl Default for IdleConfig {
             } else {
                 crate::defaults::IDLE_CHECK_INTERVAL_RELEASE
             },
-            default_timeout: crate::defaults::DEFAULT_IDLE_TIMEOUT,
         }
     }
 }
@@ -119,6 +118,7 @@ impl IdleMonitor {
         }
     }
 
+    #[cfg(test)]
     /// Check if an instance should be stopped due to idle timeout
     pub fn should_stop_instance(
         &self,
@@ -154,7 +154,6 @@ mod tests {
         } else {
             assert_eq!(config.check_interval, Duration::from_secs(30));
         }
-        assert_eq!(config.default_timeout, Duration::from_secs(300));
     }
 
     #[tokio::test]

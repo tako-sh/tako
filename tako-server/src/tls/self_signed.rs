@@ -1,6 +1,8 @@
 //! Self-signed certificate generation for development
 
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::path::Path;
+use std::path::PathBuf;
 use thiserror::Error;
 
 /// Errors that can occur during self-signed cert generation
@@ -11,9 +13,6 @@ pub enum SelfSignedError {
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
-
-    #[error("Certificate generation not available: {0}")]
-    NotAvailable(String),
 }
 
 /// Self-signed certificate for development
@@ -23,8 +22,6 @@ pub struct SelfSignedCert {
     pub cert_path: PathBuf,
     /// Path to private key file (PEM)
     pub key_path: PathBuf,
-    /// Domain the cert was generated for
-    pub domain: String,
 }
 
 impl SelfSignedCert {
@@ -77,7 +74,6 @@ impl SelfSignedGenerator {
             return SelfSignedCert {
                 cert_path: self.cert_dir.join("localhost.crt"),
                 key_path: self.cert_dir.join("localhost.key"),
-                domain: domain.to_string(),
             };
         }
 
@@ -93,7 +89,6 @@ impl SelfSignedGenerator {
         SelfSignedCert {
             cert_path: domain_dir.join(format!("{}.crt", file_stem)),
             key_path: domain_dir.join(format!("{}.key", file_stem)),
-            domain: domain.to_string(),
         }
     }
 
@@ -175,6 +170,7 @@ impl SelfSignedGenerator {
         Ok(())
     }
 
+    #[cfg(test)]
     /// Get path to certificate directory
     pub fn cert_dir(&self) -> &Path {
         &self.cert_dir
@@ -191,7 +187,6 @@ mod tests {
         let cert = SelfSignedCert {
             cert_path: PathBuf::from("/nonexistent/cert.pem"),
             key_path: PathBuf::from("/nonexistent/key.pem"),
-            domain: "localhost".to_string(),
         };
         assert!(!cert.exists());
     }
@@ -210,7 +205,6 @@ mod tests {
 
         let cert = generator.get_or_create_localhost().unwrap();
         assert!(cert.exists());
-        assert_eq!(cert.domain, "localhost");
 
         // Verify files have content
         let cert_content = std::fs::read_to_string(&cert.cert_path).unwrap();
@@ -244,7 +238,6 @@ mod tests {
 
         let cert = generator.get_or_create_for_domain("example.test").unwrap();
         assert!(cert.exists());
-        assert_eq!(cert.domain, "example.test");
 
         let cert_content = std::fs::read_to_string(&cert.cert_path).unwrap();
         assert!(cert_content.contains("BEGIN CERTIFICATE"));

@@ -56,45 +56,9 @@ fn test_proxy_config_default() {
 }
 
 #[test]
-fn test_proxy_config_development() {
-    let config = ProxyConfig::development();
-    assert_eq!(config.http_port, 8080);
-    assert_eq!(config.https_port, 8443);
-    assert!(config.enable_https);
-    assert!(config.dev_mode);
-    assert!(config.redirect_http_to_https);
-    assert!(config.response_cache.is_some());
-}
-
-#[test]
 fn listener_socket_options_enable_reuseport() {
     let options = listener_socket_options();
     assert_eq!(options.so_reuseport, Some(true));
-}
-
-#[test]
-fn test_tls_config_development() {
-    let temp = TempDir::new().unwrap();
-    let tls_config = TlsConfig::development(temp.path().to_path_buf());
-
-    // Should be able to get localhost cert
-    let cert = tls_config.get_cert("localhost");
-    assert!(cert.is_some());
-
-    let cert = cert.unwrap();
-    assert!(cert.is_self_signed);
-    assert!(cert.cert_path.exists());
-    assert!(cert.key_path.exists());
-}
-
-#[test]
-fn test_tls_config_wildcard_localhost() {
-    let temp = TempDir::new().unwrap();
-    let tls_config = TlsConfig::development(temp.path().to_path_buf());
-
-    // Should get localhost cert for subdomains too
-    let cert = tls_config.get_cert("app.localhost");
-    assert!(cert.is_some());
 }
 
 #[test]
@@ -586,32 +550,4 @@ fn static_server_for_app_replaces_cached_server_when_root_changes() {
     let second = proxy.static_server_for_app("my-app", root_b.path());
 
     assert!(!Arc::ptr_eq(&first, &second));
-}
-
-#[test]
-fn test_proxy_builder() {
-    let manager = Arc::new(AppManager::new(PathBuf::from("/tmp/tako-test")));
-    let lb = Arc::new(LoadBalancer::new(manager));
-    let temp = TempDir::new().unwrap();
-
-    let builder = ProxyBuilder::new(lb)
-        .http_port(3000)
-        .https_port(3443)
-        .dev_mode()
-        .cert_dir(temp.path().to_path_buf());
-
-    assert_eq!(builder.config.http_port, 3000);
-    assert_eq!(builder.config.https_port, 3443);
-    assert!(builder.config.dev_mode);
-    assert!(builder.config.redirect_http_to_https);
-}
-
-#[test]
-fn test_proxy_builder_with_acme() {
-    let manager = Arc::new(AppManager::new(PathBuf::from("/tmp/tako-test")));
-    let lb = Arc::new(LoadBalancer::new(manager));
-    let tokens: ChallengeTokens = Arc::new(RwLock::new(HashMap::new()));
-
-    let builder = ProxyBuilder::new(lb).acme_tokens(tokens);
-    assert!(builder.acme_tokens.is_some());
 }

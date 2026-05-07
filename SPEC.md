@@ -1080,7 +1080,7 @@ Apps specify routes at environment level (not per-server). Routes support:
 1. Parse incoming request (Host header, path)
 2. Match against deployed apps' routes
 3. Select most specific match
-4. Route to app's load balancer (strategy: round-robin by default)
+4. Route to app's round-robin load balancer
 5. Return 404 if no match
 
 ## Tako Server

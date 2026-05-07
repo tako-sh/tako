@@ -189,11 +189,6 @@ impl ServerState {
         })
     }
 
-    /// Access the per-server workflow manager.
-    pub(crate) fn workflows(&self) -> Arc<crate::workflows::WorkflowManager> {
-        self.workflows.clone()
-    }
-
     pub(crate) fn app_manager(&self) -> Arc<AppManager> {
         self.app_manager.clone()
     }

@@ -44,6 +44,7 @@ impl SqliteStateStore {
         }
     }
 
+    #[cfg(test)]
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -303,6 +304,7 @@ impl SqliteStateStore {
         }
     }
 
+    #[cfg(test)]
     pub fn delete_secrets(&self, app: &str) -> Result<(), StateStoreError> {
         let conn = self.open_connection()?;
         conn.execute("DELETE FROM app_secrets WHERE app = ?1;", [app])

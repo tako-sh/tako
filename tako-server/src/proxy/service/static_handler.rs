@@ -29,7 +29,6 @@ impl TakoProxy {
         }
 
         let server = Arc::new(AppStaticServer::new(
-            app_name.to_string(),
             app_root.to_path_buf(),
             default_static_config().clone(),
         ));

@@ -1,10 +1,12 @@
 //! Instance spawner - spawns and monitors app processes
 
+#[cfg(test)]
 mod health_probe;
 mod readiness;
 mod spawn_command;
 
 use super::{App, Instance, InstanceError, InstanceEvent, InstanceState};
+#[cfg(test)]
 use health_probe::probe_endpoint_tcp;
 use readiness::{startup_timeout_detail, wait_for_ready};
 use spawn_command::{
@@ -12,6 +14,7 @@ use spawn_command::{
 };
 use std::path::PathBuf;
 use std::sync::Arc;
+#[cfg(test)]
 use std::time::Duration;
 use tokio::time::timeout;
 
@@ -123,6 +126,7 @@ impl Spawner {
         }
     }
 
+    #[cfg(test)]
     /// Run health check on an instance
     pub async fn health_check(&self, app: &App, instance: &Instance) -> bool {
         let (health_check_path, health_check_host) = {
@@ -142,6 +146,7 @@ impl Spawner {
         .await
     }
 
+    #[cfg(test)]
     async fn probe_health(
         &self,
         instance: &Instance,

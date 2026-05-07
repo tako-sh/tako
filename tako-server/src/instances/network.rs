@@ -18,10 +18,7 @@ impl UpstreamEndpoint {
         self.addr
     }
 
-    pub fn port(&self) -> u16 {
-        self.addr.port()
-    }
-
+    #[cfg(test)]
     pub fn bind_host(&self) -> &str {
         &self.bind_host
     }
@@ -42,6 +39,7 @@ impl PreparedInstanceNetwork {
         &self.endpoint
     }
 
+    #[cfg(test)]
     pub fn bind_host(&self) -> &str {
         self.endpoint.bind_host()
     }
