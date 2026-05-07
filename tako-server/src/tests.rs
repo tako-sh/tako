@@ -736,6 +736,7 @@ async fn server_info_command_reports_runtime_config() {
         standby: false,
         metrics_port: Some(9898),
         server_name: Some("test-server".to_string()),
+        server_identity: Some("SHA256:testidentity".to_string()),
     };
     let state = ServerState::new_with_runtime(
         temp.path().to_path_buf(),
@@ -766,6 +767,10 @@ async fn server_info_command_reports_runtime_config() {
     assert_eq!(data.get("http_port").and_then(Value::as_u64), Some(8080));
     assert_eq!(data.get("https_port").and_then(Value::as_u64), Some(8443));
     assert_eq!(data.get("no_acme").and_then(Value::as_bool), Some(true));
+    assert_eq!(
+        data.get("server_identity").and_then(Value::as_str),
+        Some("SHA256:testidentity")
+    );
 }
 
 #[tokio::test]

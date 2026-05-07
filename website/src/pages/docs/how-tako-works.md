@@ -8,7 +8,7 @@ description: "Learn how Tako handles local development, rolling deploys, TLS, he
 
 # How Tako Works
 
-Tako is a local development and self-hosted deployment platform. The local `tako` CLI builds your app, talks to your servers over SSH, and sends management commands to `tako-server`. The server runs the proxy, manages app processes, stores runtime state, handles TLS, and performs rolling updates.
+Tako is a local development and self-hosted deployment platform. The local `tako` CLI builds your app, uses Tailscale for private remote management, and keeps SSH for server setup and recovery. The server runs the proxy, manages app processes, stores runtime state, handles TLS, and performs rolling updates.
 
 The protocol is v0, so Tako keeps the system small and direct: runtime behavior lives in plugins, presets only provide framework metadata, and deployed apps are identified as `{app}/{env}` on each server.
 
@@ -41,7 +41,7 @@ App-scoped commands read `./tako.toml` by default. Use `-c path/to/config` to se
 - Channel storage, workflow queues, and internal sockets
 - Prometheus metrics on localhost
 
-By default it uses `/opt/tako` for data and `/var/run/tako/tako.sock` for management commands.
+By default it uses `/opt/tako` for data and `/var/run/tako/tako.sock` for local management commands. When private remote management is enabled, it listens on the server's Tailscale address on port `9844`.
 
 ### `tako.sh` SDK
 

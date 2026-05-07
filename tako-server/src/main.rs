@@ -9,8 +9,10 @@ mod boot;
 mod channels;
 mod channels_ws;
 mod defaults;
+mod identity;
 mod instances;
 mod lb;
+mod management_http;
 mod metrics;
 mod operations;
 mod paths;
@@ -236,6 +238,10 @@ pub struct Args {
     /// Prometheus metrics port (default: 9898, set to 0 to disable)
     #[arg(long, default_value_t = 9898)]
     pub metrics_port: u16,
+
+    /// Private host/IP to bind remote management HTTP on (port 9844).
+    #[arg(long)]
+    pub management_host: Option<String>,
 
     /// Extract a `.tar.zst` archive into a destination directory and exit.
     #[arg(long, hide = true)]

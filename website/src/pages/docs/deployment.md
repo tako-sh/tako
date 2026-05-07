@@ -292,6 +292,8 @@ Production data lives under `/opt/tako`:
 ```text
 /opt/tako/
   config.json
+  identity.key
+  identity.pub
   tako.db
   runtimes/
   certs/
@@ -312,6 +314,8 @@ The management socket lives at:
 ```
 
 It is a symlink to the active PID-specific socket, which lets reloads hand off cleanly.
+
+Each server also keeps a stable identity key at `/opt/tako/identity.key` and publishes its OpenSSH SHA-256 fingerprint through `hello` and `server_info`. Remote management requires Tailscale so Tako can keep server control traffic private by default; when enabled, the private HTTP RPC listener uses port `9844` on the Tailscale address.
 
 ## Common Failure Behavior
 

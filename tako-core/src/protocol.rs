@@ -306,6 +306,8 @@ pub struct HelloResponse {
     pub protocol_version: u32,
     pub server_version: String,
     pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub server_identity: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -336,6 +338,8 @@ pub struct ServerRuntimeInfo {
     pub metrics_port: Option<u16>,
     #[serde(default)]
     pub server_name: Option<String>,
+    #[serde(default)]
+    pub server_identity: Option<String>,
 }
 
 /// Response from the server
@@ -951,11 +955,16 @@ mod tests {
             standby: false,
             metrics_port: Some(9898),
             server_name: Some("la".to_string()),
+            server_identity: Some("SHA256:testidentity".to_string()),
         };
         let json = serde_json::to_string(&info).unwrap();
         let parsed: ServerRuntimeInfo = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.pid, 42);
         assert!(parsed.dns_provider.is_none());
         assert_eq!(parsed.server_name.as_deref(), Some("la"));
+        assert_eq!(
+            parsed.server_identity.as_deref(),
+            Some("SHA256:testidentity")
+        );
     }
 }

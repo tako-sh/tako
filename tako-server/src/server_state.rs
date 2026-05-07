@@ -29,6 +29,7 @@ pub struct ServerRuntimeConfig {
     pub(crate) standby: bool,
     pub(crate) metrics_port: Option<u16>,
     pub(crate) server_name: Option<String>,
+    pub(crate) server_identity: Option<String>,
 }
 
 impl ServerRuntimeConfig {
@@ -46,6 +47,7 @@ impl ServerRuntimeConfig {
             standby: false,
             metrics_port: Some(9898),
             server_name: None,
+            server_identity: None,
         }
     }
 
@@ -65,6 +67,7 @@ impl ServerRuntimeConfig {
             standby: self.standby,
             metrics_port: self.metrics_port,
             server_name: self.server_name.clone(),
+            server_identity: self.server_identity.clone(),
         }
     }
 }

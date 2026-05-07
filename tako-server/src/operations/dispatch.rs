@@ -19,6 +19,7 @@ impl crate::ServerState {
                         "release_history".to_string(),
                         "rollback".to_string(),
                     ],
+                    server_identity: self.runtime_config().server_identity.clone(),
                 };
 
                 if protocol_version != PROTOCOL_VERSION {

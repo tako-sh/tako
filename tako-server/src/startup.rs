@@ -2,6 +2,7 @@ use crate::boot::{
     PrimaryStatus, certificate_renewal_task, probe_primary_socket, read_server_config,
     sd_notify_ready,
 };
+use crate::identity::load_or_create_server_identity;
 use crate::instances::{HealthChecker, HealthConfig};
 use crate::metrics;
 use crate::proxy::{self, ProxyConfig};
@@ -114,6 +115,15 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     let data_dir = PathBuf::from(&data_dir_str);
     prepare_data_dir(&data_dir)?;
+    let server_identity = if standby {
+        None
+    } else {
+        Some(
+            load_or_create_server_identity(&data_dir)
+                .map_err(|e| format!("Failed to load server identity: {e}"))?
+                .fingerprint,
+        )
+    };
 
     if let Some(parent) = PathBuf::from(&socket).parent() {
         std::fs::create_dir_all(parent)?;
@@ -183,6 +193,7 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 .and_then(|h| h.into_string().ok())
                 .filter(|h| !h.is_empty())
         }),
+        server_identity,
     };
 
     let challenge_tokens_for_promote = challenge_tokens.clone();
@@ -205,6 +216,9 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     spawn_idle_monitoring(&rt, state.clone());
     spawn_certificate_renewals(&rt, &acme_client, args.renewal_interval_hours);
     spawn_management_socket(&rt, state.clone(), socket_listener);
+    if !standby {
+        spawn_management_http(&rt, state.clone(), args.management_host.clone());
+    }
 
     if standby {
         spawn_standby_monitor(
@@ -305,6 +319,18 @@ fn init_acme_client(rt: &Runtime, config: AcmeInitConfig) -> Option<Arc<AcmeClie
         }
         Some(client)
     }
+}
+
+fn spawn_management_http(rt: &Runtime, state: Arc<ServerState>, host: Option<String>) {
+    let Some(host) = host else {
+        return;
+    };
+
+    rt.spawn(async move {
+        if let Err(error) = crate::management_http::serve(host, state).await {
+            tracing::error!("Remote management HTTP stopped: {error}");
+        }
+    });
 }
 
 fn spawn_instance_event_bridge(rt: &Runtime, state: Arc<ServerState>) {
