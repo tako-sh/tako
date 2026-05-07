@@ -5,6 +5,7 @@ const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
 #[cfg(target_os = "macos")]
 const ERR_SEC_MISSING_ENTITLEMENT: i32 = -34018;
 
+#[cfg(target_os = "macos")]
 pub fn unavailable_message() -> &'static str {
     "iCloud Keychain requires the signed Tako app. Reinstall Tako and try again."
 }
@@ -24,15 +25,6 @@ pub fn save_key(
         .map_err(|e| keychain_error("save key to iCloud Keychain", e))?;
     update_key_metadata(id, usage_path)
         .map_err(|e| keychain_error("update iCloud Keychain key metadata", e))
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn save_key(
-    _id: &str,
-    _key: &crate::crypto::EncryptionKey,
-    _usage_path: Option<&Path>,
-) -> Result<(), String> {
-    Err(unavailable_message().to_string())
 }
 
 #[cfg(target_os = "macos")]
@@ -158,6 +150,7 @@ fn update_key_metadata(
     update_item(&search, &update)
 }
 
+#[cfg(target_os = "macos")]
 fn keychain_comment_for_usage_path(usage_path: Option<&Path>) -> Option<String> {
     let path = usage_path?;
     let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
@@ -184,6 +177,7 @@ fn keychain_error(action: &str, error: security_framework::base::Error) -> Strin
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
     #[test]
     fn unavailable_message_mentions_signed_app() {
         assert_eq!(
@@ -192,6 +186,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn keychain_comment_for_usage_path_formats_last_used_path() {
         let temp = tempfile::TempDir::new().unwrap();
@@ -204,6 +199,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn keychain_comment_for_usage_path_skips_missing_path() {
         assert_eq!(super::keychain_comment_for_usage_path(None), None);

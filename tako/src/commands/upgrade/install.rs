@@ -399,6 +399,7 @@ fn resolve_macos_app_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("Tako.app"))
 }
 
+#[cfg(target_os = "macos")]
 fn command_failure_detail(output: &std::process::Output) -> String {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let detail = stderr.trim();

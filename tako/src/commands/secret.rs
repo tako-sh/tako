@@ -222,6 +222,7 @@ enum KeyImportSource {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum KeyStorageChoice {
     LocalFile,
+    #[cfg(target_os = "macos")]
     ICloudKeychain,
 }
 
@@ -1127,8 +1128,12 @@ fn save_key_with_storage_choice(
     choice: KeyStorageChoice,
     usage_path: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(not(target_os = "macos"))]
+    let _ = usage_path;
+
     match choice {
         KeyStorageChoice::LocalFile => key_store.save_key(key)?,
+        #[cfg(target_os = "macos")]
         KeyStorageChoice::ICloudKeychain => {
             save_key_to_icloud_keychain(key_store, key, usage_path)?
         }
@@ -1137,6 +1142,7 @@ fn save_key_with_storage_choice(
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 fn save_key_to_icloud_keychain(
     key_store: &crate::crypto::KeyStore,
     key: &crate::crypto::EncryptionKey,
@@ -1176,6 +1182,7 @@ fn resolve_key_storage_choice(
     }
 }
 
+#[cfg(target_os = "macos")]
 fn keychain_storage_hint(env: Option<&str>) -> String {
     match env {
         Some(env) => format!("Syncs {env} key to your other Macs."),
@@ -1425,6 +1432,7 @@ mod tests {
         });
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn i_cloud_keychain_choice_errors_when_signed_app_is_unavailable() {
         with_temp_tako_home(|| {
@@ -1457,6 +1465,7 @@ mod tests {
         });
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn keychain_storage_hint_names_known_environment() {
         assert_eq!(
@@ -1465,6 +1474,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn keychain_storage_hint_handles_unknown_environment() {
         assert_eq!(
