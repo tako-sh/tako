@@ -341,11 +341,7 @@ mod tests {
         let log_dir =
             std::env::temp_dir().join(format!("tako-log-command-{}-{unique}", std::process::id()));
         fs::create_dir_all(&log_dir).unwrap();
-        fs::write(
-            log_dir.join("current.log"),
-            "2026-05-06T00:00:00.000Z [out] [test] current only\n",
-        )
-        .unwrap();
+        fs::write(log_dir.join("current.log"), "[out] [test] current only\n").unwrap();
 
         let command = build_app_log_command(&shell_single_quote(&log_dir.to_string_lossy()), 1);
         let output = Command::new("sh").arg("-c").arg(command).output().unwrap();
