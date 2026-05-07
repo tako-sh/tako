@@ -11,6 +11,7 @@ app="$2"
 bundle_id="${TAKO_BUNDLE_ID:-sh.tako.Tako}"
 bundle_name="${TAKO_BUNDLE_NAME:-Tako}"
 codesign_identity="${TAKO_CODESIGN_IDENTITY:-}"
+codesign_keychain="${TAKO_CODESIGN_KEYCHAIN:-}"
 team_id="${TAKO_APPLE_TEAM_ID:-}"
 keychain_group="${TAKO_KEYCHAIN_ACCESS_GROUP:-}"
 profile_base64="${TAKO_PROVISION_PROFILE_BASE64:-}"
@@ -63,6 +64,14 @@ elif [ -n "$profile_base64" ]; then
 fi
 
 if [ -n "$codesign_identity" ]; then
+  codesign_app() {
+    if [ -n "$codesign_keychain" ]; then
+      codesign --force --sign "$codesign_identity" --keychain "$codesign_keychain" "$@"
+    else
+      codesign --force --sign "$codesign_identity" "$@"
+    fi
+  }
+
   entitlements="$(mktemp)"
   trap 'rm -f "$entitlements"' EXIT
 
@@ -86,9 +95,9 @@ if [ -n "$codesign_identity" ]; then
 </dict>
 </plist>
 EOF
-    codesign --force --sign "$codesign_identity" --entitlements "$entitlements" "$app"
+    codesign_app --entitlements "$entitlements" "$app"
   else
-    codesign --force --sign "$codesign_identity" "$app"
+    codesign_app "$app"
     echo "warning: signed Tako.app without keychain entitlements; iCloud Keychain will be unavailable." >&2
   fi
 else

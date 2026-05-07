@@ -95,7 +95,10 @@ jobs:
             fi
           fi
           security list-keychains -d user -s "$keychain" login.keychain-db
+          security default-keychain -s "$keychain"
           security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain"
+          echo "TAKO_CODESIGN_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+          security find-identity -v -p codesigning "$keychain"
 
       - name: Sign macOS apps
         if: steps.builds.outputs.skipped != 'true'
