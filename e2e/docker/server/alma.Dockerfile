@@ -13,10 +13,6 @@ RUN dnf install -y \
     && dnf clean all \
     && rm -rf /var/cache/dnf
 
-# Fake systemctl so the install script's systemd path works without real systemd
-COPY e2e/docker/server/fake-systemctl.sh /usr/local/bin/systemctl
-RUN chmod +x /usr/local/bin/systemctl && mkdir -p /run/systemd/system
-
 # Pre-install tako-server (with dummy binary, installer creates user/service)
 COPY scripts/install-tako-server.sh /tmp/install-tako-server.sh
 RUN chmod +x /tmp/install-tako-server.sh \

@@ -24,7 +24,7 @@ The installer:
 - creates `tako-app` for app and worker processes
 - installs `tako-server` to `/usr/local/bin/tako-server`
 - installs systemd or OpenRC service files
-- configures privileged bind support and app-user switching
+- configures privileged bind support and app-user switching, failing on non-systemd/OpenRC hosts if file capabilities cannot be granted
 - creates `/opt/tako` and `/var/run/tako`
 - starts and verifies the service
 - installs helpers needed for graceful reload and upgrade

@@ -1120,7 +1120,7 @@ Installer SSH key behavior:
 - Installer supports install-refresh mode (`TAKO_RESTART_SERVICE=0`) for build/image workflows without active init; in this mode, it refreshes binary/users and skips service-definition install/start.
 - Installer configures service capability support for privileged binds and app-user switching:
   - systemd: `AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID`, `CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID`
-  - non-systemd hosts: installer applies `setcap cap_net_bind_service,cap_setuid,cap_setgid=+ep /usr/local/bin/tako-server` when available
+  - non-systemd/OpenRC hosts: installer applies `setcap cap_net_bind_service,cap_setuid,cap_setgid=+ep /usr/local/bin/tako-server`; install fails if the capability cannot be granted
 - Installer configures graceful stop semantics:
   - systemd: `KillMode=control-group`, `TimeoutStopSec=30min`
   - OpenRC: `retry="TERM/1800/KILL/5"`

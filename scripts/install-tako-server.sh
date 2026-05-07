@@ -263,24 +263,32 @@ EOF
 }
 
 ensure_privileged_bind_capability() {
-  if need_cmd setcap; then
-    if setcap "$TAKO_SERVER_CAPABILITIES=+ep" /usr/local/bin/tako-server; then
-      echo "OK granted required capabilities to /usr/local/bin/tako-server"
-      return
-    fi
-    if [ "$SERVICE_MANAGER" = "systemd" ]; then
-      echo "warning: failed to grant capabilities via setcap; systemd service will still use AmbientCapabilities." >&2
-      return
-    fi
-    echo "warning: failed to grant capabilities via setcap; non-root :80/:443 binds and app-user isolation may fail." >&2
+  if ! need_cmd setcap && [ "$SERVICE_MANAGER" != "systemd" ]; then
+    install_setcap_tool
+  fi
+
+  if ! need_cmd setcap; then
+    echo "warning: setcap not found; systemd service still sets required capabilities via AmbientCapabilities." >&2
     return
   fi
 
   if [ "$SERVICE_MANAGER" = "systemd" ]; then
-    echo "warning: setcap not found; systemd service still sets bind capability via AmbientCapabilities." >&2
+    if setcap "$TAKO_SERVER_CAPABILITIES=+ep" /usr/local/bin/tako-server; then
+      echo "OK granted required capabilities to /usr/local/bin/tako-server"
+      return
+    fi
+    echo "warning: failed to grant capabilities via setcap; systemd service still uses AmbientCapabilities." >&2
     return
   fi
-  echo "warning: setcap not found; non-root :80/:443 binds may fail." >&2
+
+  if setcap "$TAKO_SERVER_CAPABILITIES=+ep" /usr/local/bin/tako-server; then
+    echo "OK granted required capabilities to /usr/local/bin/tako-server"
+    return
+  fi
+
+  echo "error: failed to grant required capabilities to /usr/local/bin/tako-server" >&2
+  echo "Install setcap/libcap support, then rerun the installer." >&2
+  exit 1
 }
 
 if is_enabled "$TAKO_RESTART_SERVICE" && [ "$SERVICE_MANAGER" = "none" ]; then
@@ -420,6 +428,30 @@ install_pkgs() {
     zypper --non-interactive install "$@"
   else
     echo "error: unsupported package manager; install curl + ca-certificates + tar manually" >&2
+    exit 1
+  fi
+}
+
+install_setcap_tool() {
+  if need_cmd apt-get; then
+    install_pkgs libcap2-bin
+  elif need_cmd dnf; then
+    install_pkgs libcap
+  elif need_cmd yum; then
+    install_pkgs libcap
+  elif need_cmd pacman; then
+    install_pkgs libcap
+  elif need_cmd apk; then
+    install_pkgs libcap
+  elif need_cmd zypper; then
+    zypper --non-interactive install libcap-progs || zypper --non-interactive install libcap2
+  else
+    echo "error: unsupported package manager; install the setcap/libcap tools manually" >&2
+    exit 1
+  fi
+
+  if ! need_cmd setcap; then
+    echo "error: setcap not found after installing capability tools" >&2
     exit 1
   fi
 }

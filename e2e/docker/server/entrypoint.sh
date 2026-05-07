@@ -13,11 +13,11 @@ if command -v chpasswd >/dev/null 2>&1; then
   echo "tako:tako-e2e" | chpasswd
 fi
 
-mkdir -p /home/tako/.ssh /var/run/tako /opt/tako /usr/local/bin /run/sshd
+mkdir -p /home/tako/.ssh /var/run/tako /opt/tako /run/sshd
 chmod 700 /home/tako/.ssh
 cp /opt/e2e/keys/id_ed25519.pub /home/tako/.ssh/authorized_keys
 chmod 600 /home/tako/.ssh/authorized_keys
-chown -R tako:tako /home/tako/.ssh /var/run/tako /opt/tako /usr/local/bin || true
+chown -R tako:tako /home/tako/.ssh /var/run/tako /opt/tako || true
 
 cat > /etc/ssh/sshd_config <<'CFG'
 Port 22
@@ -33,12 +33,5 @@ AllowUsers tako
 Subsystem sftp internal-sftp
 PidFile /run/sshd.pid
 CFG
-
-cat > /usr/local/bin/tako-server <<'BIN'
-#!/bin/sh
-exec /home/tako/tako-server "$@"
-BIN
-chmod +x /usr/local/bin/tako-server
-chown tako:tako /usr/local/bin/tako-server
 
 exec /usr/sbin/sshd -D -e -f /etc/ssh/sshd_config
