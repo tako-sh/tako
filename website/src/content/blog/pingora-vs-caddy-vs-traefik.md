@@ -2,7 +2,7 @@
 title: "Pingora vs Caddy vs Traefik: Why We Built on Cloudflare's Proxy"
 date: "2026-04-04T14:13"
 description: "How we chose Pingora over Caddy and Traefik for Tako's proxy layer — and what it means for performance, memory, and architecture."
-image: 39bc4016ecb3
+image: e8b2740ac234
 ---
 
 When you build a deployment platform, the reverse proxy is one of the first decisions you make — and one of the hardest to change later. Every request your users serve flows through it. It terminates TLS, routes traffic, handles health checks, and manages connections to your app processes.

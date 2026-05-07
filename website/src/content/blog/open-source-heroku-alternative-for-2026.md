@@ -2,7 +2,7 @@
 title: "The Open Source Heroku Alternative for 2026"
 date: "2026-04-29T12:50"
 description: "Heroku-shaped DX — one CLI, release commands, review apps, scale-to-zero — on hardware you own. A 2026 tour of the open-source alternatives, and where Tako fits."
-image: 7621689b4bd4
+image: 758fae75e34c
 ---
 
 If you've recently typed "open source Heroku alternative" into a search bar, you know the shape of what you want. One CLI. A clean deploy flow. Releases. Add-ons. Review apps. Scale-to-zero idle dynos. No Kubernetes, no AWS console, no Terraform — just a tool that points at your code and gets it on the internet.

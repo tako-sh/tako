@@ -2,7 +2,7 @@
 title: "The Dev Daemon: Why tako dev Is Just a Client"
 date: "2026-04-13T06:36"
 description: "tako dev isn't a watcher script — it's a thin viewer attached to a persistent daemon that owns app processes, logs, routing, and TLS."
-image: 203a707e432a
+image: f36a4db00a2d
 ---
 
 Most "dev mode" commands are watcher scripts. They spawn your app as a child process, tail its stdout, and when you hit `Ctrl+c` everything dies together. The shell tab IS the dev environment.

@@ -2,7 +2,7 @@
 title: "Next.js instrumentation.ts meets initServerRuntime"
 date: "2026-04-24T13:48"
 description: "Drop a five-line instrumentation.ts into your Next.js app and Tako workflows, signals, and channel publishes light up inside routes and server actions — no ambient globals, no bootstrap glue."
-image: 06d309d2307c
+image: 747a4cd2df17
 ---
 
 Next.js ships a lifecycle hook called [`instrumentation.ts`](https://nextjs.org/docs/app/guides/instrumentation). We just exposed `initServerRuntime()` from `tako.sh/internal`. Snap them together and Tako's durable [workflows](/blog/durable-workflows-are-here), cross-process [signals](/blog/pause-a-workflow-until-a-human-clicks-approve), and [channel publishes](/blog/durable-channels-built-in) start working inside your Next.js routes and server actions. Five lines, one file.

@@ -2,7 +2,7 @@
 title: "Multi-Stage Builds for Monorepos"
 date: "2026-04-09T04:14"
 description: "How Tako's build stages let you deploy monorepo apps with shared packages — no Docker, no CI pipeline, just TOML."
-image: dab463c4c310
+image: 676e890933c4
 ---
 
 You have a monorepo. A shared UI library in `packages/ui`, an API app in `apps/api`, a web frontend in `apps/web`. Everything shares types, components, maybe a design system. It works great locally.

@@ -2,7 +2,7 @@
 title: "Secure Code Execution for AI Agents"
 date: "2026-04-16T10:00"
 description: "AI agents that run code need two security layers: a V8 sandbox for untrusted execution, and secure secret injection so credentials stay out of the isolate."
-image: 99ab641e1a36
+image: 82add43ee4cf
 ---
 
 AI agents that execute code are everywhere now — code interpreters, data analysis pipelines, automated fix-it bots, SQL generators. Running arbitrary code on a server sounds alarming, and it should: you need isolation. But there's a second problem most tutorials skip: the agent itself needs to be secure. Its API keys and database credentials are just as much at risk as the code it runs.

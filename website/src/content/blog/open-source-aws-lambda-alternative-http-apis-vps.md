@@ -2,7 +2,7 @@
 title: "The Open Source AWS Lambda Alternative for HTTP APIs on a VPS"
 date: "2026-05-06T06:41"
 description: "Compare AWS Lambda HTTP APIs with Tako: fetch handlers, native processes, scale-to-zero, and owned VPS pricing."
-image: 4629e6b31d2b
+image: 0fc512199ec4
 ---
 
 [AWS Lambda](https://aws.amazon.com/lambda/) is the default answer when someone says "serverless function." It made tiny deployable handlers feel normal, scales without you planning capacity first, and plugs into the rest of AWS like it was born there.

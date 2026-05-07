@@ -2,7 +2,7 @@
 title: "Tako vs Temporal"
 date: "2026-04-19T11:38"
 description: "Temporal defined the durable-workflow model for a generation of backends. Tako borrows the shape but runs it embedded in the per-app server — no cluster, no Cassandra, no Elasticsearch."
-image: 89a268b31540
+image: fd05510ccf49
 ---
 
 Before Inngest, before Trigger.dev, before any of the JavaScript-native step-function platforms, there was <a href="https://temporal.io" target="_blank" rel="noopener noreferrer">Temporal</a>. The Temporal team (and Cadence before it at Uber) effectively invented the durable-execution category: the idea that you can write ordinary code with sleeps, retries, and signals, and have the runtime persist every step so your business logic survives crashes, deploys, and week-long waits. Every workflow engine shipped since — including [Tako's](/blog/durable-workflows-are-here) — owes Temporal a debt.

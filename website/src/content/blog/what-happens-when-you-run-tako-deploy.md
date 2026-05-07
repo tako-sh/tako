@@ -2,7 +2,7 @@
 title: "What Happens When You Run tako deploy"
 date: "2026-04-12T05:40"
 description: "The full sequence from command to live traffic — build, upload, swap, drain — in about 10 seconds."
-image: 37446b55dc79
+image: 40a61319c723
 ---
 
 The whole thing takes about 10 seconds. You type the command, your terminal fills with a progress tree, and then it's done — new version live, zero requests dropped.

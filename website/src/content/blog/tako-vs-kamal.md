@@ -2,7 +2,7 @@
 title: "Tako vs Kamal"
 date: "2026-04-05T00:00"
 description: "How Tako and Kamal approach self-hosted deployment differently — Docker vs native processes, registries vs SFTP, and what each gets right."
-image: c6cf08bce0d2
+image: b111b39dbd57
 ---
 
 We love what <a href="https://x.com/dhh" target="_blank" rel="noopener noreferrer">DHH</a> and 37signals have done for self-hosted deployment. Kamal made "deploy to your own servers" cool again — and at 14k GitHub stars, it's the most prominent CLI deploy tool out there. If you're running apps on your own hardware, you've probably looked at it. We certainly did.

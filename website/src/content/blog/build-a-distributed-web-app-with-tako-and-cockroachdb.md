@@ -2,7 +2,7 @@
 title: "Build a Distributed Web App with Tako and CockroachDB"
 date: "2026-04-10T06:18"
 description: "Three VPS boxes, Tako for the app layer, CockroachDB for the data layer — a fully distributed stack running on hardware you own, with no managed plan underneath."
-image: a22179342d93
+image: f81c378820bd
 ---
 
 We've been telling the story of [building your own edge network on commodity hardware](/blog/build-your-own-edge-network-on-commodity-hardware) — three VPS boxes, [one `tako.toml`](/blog/one-config-many-servers), Cloudflare routing users to the nearest one. It's a nice story until your users start actually writing data. Because as soon as your database lives in one region, every query from Tokyo still round-trips to us-east-1 and the edge only got you halfway.

@@ -2,7 +2,7 @@
 title: "The Fetch Handler Pattern: One Function, Every Runtime"
 date: "2026-04-06T11:48"
 description: "Why Tako chose the web-standard fetch handler as its universal app interface — and how the same export runs on Bun and Node."
-image: 8bc5d8514b34
+image: ab1f856c29f9
 ---
 
 Here's a Tako app:

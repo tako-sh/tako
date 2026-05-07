@@ -2,7 +2,7 @@
 title: "Tako vs Inngest and Trigger.dev"
 date: "2026-04-16T00:47"
 description: "Inngest and Trigger.dev gave JavaScript a durable-step model worth copying. Tako ships the same primitives embedded in the server that already runs your app — no separate queue service, no per-run bill."
-image: 7be9245001bf
+image: fc35651d63c2
 ---
 
 Every app eventually grows a background-work problem, and for the past few years the best answer in JavaScript has been <a href="https://www.inngest.com" target="_blank" rel="noopener noreferrer">Inngest</a> or <a href="https://trigger.dev" target="_blank" rel="noopener noreferrer">Trigger.dev</a>. Both teams made durable steps, retries, crons, sleeps, and signals feel ordinary — you write async code, and the platform handles crashes, restarts, and "wait three days for a human to approve." That's a genuinely nice developer experience, and [Tako's new workflow engine](/blog/durable-workflows-are-here) borrows the shape of it on purpose.

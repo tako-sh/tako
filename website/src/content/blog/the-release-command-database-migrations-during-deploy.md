@@ -2,7 +2,7 @@
 title: "The Release Command: Database Migrations During tako deploy"
 date: "2026-04-27T13:59"
 description: "Tako now runs a one-shot release command on the leader server before the rolling update — the missing primitive for Prisma, Drizzle, and Rails migrations against a shared database."
-image: e763133fb3c7
+image: 1136e24f6f83
 ---
 
 Every team that runs a deploy tool against a real database hits the same wall. You ship code that expects a new column. The rolling update starts. Instance #1 boots on the new schema, instance #2 is still on the old one, and for thirty seconds your two-server cluster is serving requests against two different mental models of the table. Welcome to the migration race.

@@ -2,7 +2,7 @@
 title: "Deploy TanStack Start to a VPS in Five Minutes"
 date: "2026-04-29T12:44"
 description: "A concrete walkthrough: scaffold a TanStack Start app, run tako init and tako deploy, and watch the SSR bundle boot natively on Bun behind Pingora — no Docker, no edge platform."
-image: fd31b5e47c64
+image: da501b0d6381
 ---
 
 [TanStack Start](https://tanstack.com/start/latest) is a full-stack React framework with file-based routing, server functions, and a real SSR build. Most tutorials for it end with "now deploy to Netlify / Vercel / Cloudflare Workers." Those work, but they're not your only option. The SSR output is a Node-compatible fetch handler — which means a single Linux box with [Tako](/docs) on it is enough.

@@ -2,7 +2,7 @@
 title: "Tako vs Coolify: Dashboard vs CLI"
 date: "2026-04-06T11:29"
 description: "Coolify gives you a full web UI and manages everything in Docker. Tako gives you a CLI, native processes, and a Pingora proxy. Different tools for different people."
-image: d2191ec758d2
+image: 99bfa6f22d08
 ---
 
 [Coolify](https://coolify.io) is the most popular open-source self-hosted PaaS — 52k+ GitHub stars and growing. If you've ever searched "self-hosted Heroku," it's probably the first result. It gives you a polished web dashboard, one-click services, database management, and Docker-based deployment all in one package.

@@ -139,6 +139,7 @@
         "@types/react": "^19.2.14",
         "react": "^19.2.5",
         "satori": "catalog:",
+        "sharp": "^0.34.5",
         "typescript": "catalog:dev",
         "wrangler": "catalog:dev",
       },

@@ -2,7 +2,7 @@
 title: "Durable Channels, Built In"
 date: "2026-04-13T01:46"
 description: "Tako now ships durable WebSocket and SSE channels with replay, reconnection, and per-channel auth — no Pusher, no Redis, no sidecars."
-image: 753b1404dea2
+image: c61fe7054a9c
 ---
 
 Most apps need real-time eventually. A chat pane, a live dashboard, a collaborative cursor, a webhook fanning out to connected clients. The path there is depressingly familiar: stand up a Pusher account, or glue together Redis pub/sub and a WebSocket gateway, or pay Ably per connection. One more service, one more bill, one more thing to keep alive.

@@ -2,7 +2,7 @@
 title: "Tako vs Fly.io: The Self-Hosted Edge"
 date: "2026-04-11T15:33"
 description: "Fly.io gives you a beautiful CLI and 30+ regions on their hardware. Tako gives you the same feel on your own boxes. An honest comparison of two takes on the edge."
-image: 3f05ea4212d7
+image: 869741dfb914
 ---
 
 [Fly.io](https://fly.io) is one of our favorite developer platforms. A CLI that feels great, micro-VMs that boot fast enough to scale to zero, and 30+ regions you can scatter across with a single command. If you want "global" without thinking about servers, it's hard to beat.

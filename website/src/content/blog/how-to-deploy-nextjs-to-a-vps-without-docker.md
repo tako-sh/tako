@@ -2,7 +2,7 @@
 title: "How to Deploy Next.js to a VPS Without Docker"
 date: "2026-04-29T13:00"
 description: "A literal walkthrough — provision a $5 VPS, point a domain, and ship a Next.js app to it with tako init + tako deploy. HTTPS and zero-downtime rollouts, no Dockerfile in sight."
-image: 596d90391f86
+image: e67599ab52d4
 ---
 
 The two paths most Next.js deploy tutorials show: push to Vercel, or write a Dockerfile and ship the image somewhere. The first is the easiest thing in the world — until you want to actually own the box. The second works, but you've signed up for Dockerfiles, multi-stage builds, image registries, and a `docker-compose.yml` to run a process that fundamentally just needs Node and a port.

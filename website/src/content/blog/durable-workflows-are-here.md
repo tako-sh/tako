@@ -2,7 +2,7 @@
 title: "Durable Workflows Are Here"
 date: "2026-04-16T00:29"
 description: "Tako now ships a durable workflow engine — step checkpoints, retries, cron, sleep for days, and signal/waitFor — on your own VPS, no external queue service."
-image: 1d73331964b0
+image: 1097aa7ec8e5
 ---
 
 Every app eventually needs background work. Send an email after signup. Reindex a document when it changes. Charge a card, notify a webhook, fan out to three services, wait for a human to approve. That work doesn't belong in the HTTP path — it needs retries, scheduling, and progress that survives the process restarting mid-flight.

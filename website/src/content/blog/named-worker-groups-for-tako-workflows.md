@@ -2,7 +2,7 @@
 title: "Named Worker Groups for Tako Workflows"
 date: "2026-04-29T04:29"
 description: "Tako workflows now support named worker pools, so a slow image job in the media group can't starve auth-critical email or default work."
-image: dfeabc4221aa
+image: eef4025ddeaa
 ---
 
 Workflow queues have one classic failure mode: a slow job clogs the pipe and everything else waits behind it. A 30-second image resize lands in the queue, every worker grabs one, and the password-reset email that should have gone out in 200ms sits in `pending` while your users refresh their inbox.

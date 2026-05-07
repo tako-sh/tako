@@ -2,7 +2,7 @@
 title: "Build Your Own Edge Network on Commodity Hardware"
 date: "2026-04-07T04:51"
 description: "Three $5 VPS boxes in different regions, one tako.toml, and Cloudflare geo-steering. Your own global edge network on hardware you own."
-image: 9f084d40a13b
+image: 755f99939072
 ---
 
 Fly.io lets you scatter micro-VMs across 30+ regions with a single command. It's genuinely great. It's also someone else's hardware with someone else's pricing — and those micro-VMs come with [256 MB of RAM](/blog/your-5-dollar-vps-is-more-powerful-than-you-think).

@@ -2,7 +2,7 @@
 title: "How to Use Cloudflare Tunnel with Vite Local HTTPS Dev"
 date: "2026-05-06T07:42"
 description: "Expose a Vite app from tako dev through a stable Cloudflare Tunnel hostname without opening Vite's allowedHosts to the world."
-image: 9f0f8a4dfb9c
+image: 2f2df8e3df32
 ---
 
 Sometimes `.test` is exactly right. You want a local HTTPS hostname, secure cookies, service workers, OAuth callbacks, and no port juggling, so you run [`tako dev`](/docs/development) and open `https://my-app.test/`.

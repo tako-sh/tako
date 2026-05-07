@@ -2,7 +2,7 @@
 title: "Workflow Workers That Scale to Zero, Then Fail Loudly"
 date: "2026-04-19T11:38"
 description: "Tako's workflow workers spawn on enqueue, exit when idle, and mark the app unhealthy on non-zero exit before claim — so broken imports surface immediately instead of silently queuing."
-image: 13a88c15818a
+image: 2417b18e6b47
 ---
 
 Your workflow worker has a typo on line 3. It throws before it can claim a single run from the queue. The supervisor respawns it. It throws again. The queue fills up. Nothing runs. You find out hours later when someone asks why their password-reset email never arrived.

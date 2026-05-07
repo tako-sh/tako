@@ -2,7 +2,7 @@
 title: "One Config, Many Servers"
 date: "2026-04-05T14:04"
 description: "One tako.toml, two environments, three servers across regions — how Tako takes a side project all the way to a real production setup."
-image: e12303175ea2
+image: 5dc15ac9f3c7
 ---
 
 Your side project works. It's deployed on one VPS, it has real HTTPS, you're happy. Now someone actually depends on it, and the questions start piling up: where do I test changes before prod? Where does the second server go when the first one falls over? How do I point staging at a different database without duplicating the whole config?

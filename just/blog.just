@@ -1,17 +1,6 @@
-# Regenerate OG images for all blog posts
+# Build the website and emit blog OG endpoint images in dist/
 og:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    root="{{ source_directory() }}/.."
-    blog_dir="$root/website/src/content/blog"
-    mkdir -p "$root/website/public/assets/blog/og"
-    for post in "$blog_dir"/*.md; do
-        title=$(sed -n 's/^title: *"\{0,1\}\([^"]*\)"\{0,1\} *$/\1/p' "$post" | head -1)
-        slug=$(basename "$post" .md)
-        if [ -n "$title" ]; then
-            (cd "$root/website" && bun run scripts/generate-og.tsx "$title" "public/assets/blog/og/${slug}.png")
-        fi
-    done
+    cd "{{ source_directory() }}/../website" && bun run build
 
 # Import a local image as blog hero (from ~/Downloads, or specify filename)
 img file="":
@@ -19,15 +8,17 @@ img file="":
     set -euo pipefail
     root="{{ source_directory() }}/.."
     if [ -z "{{ file }}" ]; then
-        src=$(ls -t "$HOME/Downloads"/*.png 2>/dev/null | head -1)
-        if [ -z "$src" ]; then
+        shopt -s nullglob
+        downloads=("$HOME"/Downloads/*.png)
+        if [ ${#downloads[@]} -eq 0 ]; then
             echo "No .png found in ~/Downloads" >&2
             exit 1
         fi
+        src=$(ls -t "${downloads[@]}" | head -1)
     else
         src="$HOME/Downloads/{{ file }}"
     fi
-    mkdir -p "$root/website/public/assets/blog"
+    mkdir -p "$root/website/src/assets/blog"
     max_w=1400
     tmp_src=$(mktemp /tmp/blog-img-XXXXXX).png
     cp "$src" "$tmp_src"
@@ -36,13 +27,10 @@ img file="":
     if [ "$cur_w" -gt "$max_w" ]; then
         sips --resampleWidth "$max_w" "$tmp_src" --out "$tmp_src" >/dev/null 2>&1
     fi
-    # Convert to avif
-    tmp=$(mktemp /tmp/blog-img-XXXXXX).avif
-    avifenc -q 62 -s 4 "$tmp_src" "$tmp" >/dev/null 2>&1
-    rm "$tmp_src"
-    id=$(shasum -a 256 "$tmp" | cut -c1-12)
-    out="$root/website/public/assets/blog/${id}.avif"
-    mv "$tmp" "$out"
+    oxipng -o 4 --strip safe "$tmp_src"
+    id=$(shasum -a 256 "$tmp_src" | cut -c1-12)
+    out="$root/website/src/assets/blog/${id}.png"
+    mv "$tmp_src" "$out"
     rm "$src"
     # Find the most recent blog post and patch it
     blog_dir="$root/website/src/content/blog"

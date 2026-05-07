@@ -2,7 +2,7 @@
 title: "How to Deploy a Go Gin, Echo, or Chi App to a VPS Without Docker"
 date: "2026-05-03T13:27"
 description: "A concrete Go walkthrough: pass Gin, Echo, or Chi to tako.ListenAndServe, then deploy a native binary to a VPS without Docker."
-image: 4b145b6a1bd7
+image: aae315e9f037
 ---
 
 Go web apps already have the interface Tako wants: `http.Handler`. Gin can be served by `net/http`. Echo has a server-compatible handler. Chi is proudly built around the standard library. That means the path from framework router to VPS deploy is small enough to fit in one sentence: build your router, pass it to `tako.ListenAndServe`, run `tako deploy`.

@@ -2,7 +2,7 @@
 title: "Tako vs Dokku: Two Philosophies for Self-Hosted Deployment"
 date: "2026-04-04T14:32"
 description: "Dokku wraps everything in Docker. Tako runs your app directly. Here's how the two approaches compare — and when each one makes sense."
-image: e01929e19afd
+image: 6e6d653dcf57
 ---
 
 [Dokku](https://dokku.com) has been around since 2013. It's the original "mini-Heroku" — a `git push` and your app is live in a Docker container, complete with Heroku buildpacks, nginx routing, and a plugin ecosystem that covers databases, caching, and more. With ~32k GitHub stars and over a decade of production use, it's earned its reputation.

@@ -2,7 +2,7 @@
 title: "Typed WebSocket Channels in TypeScript: Params, Auth, and Reconnects"
 date: "2026-05-03T05:54"
 description: "Tako channels turn TypeBox params, auth, typed publish payloads, replay, and reconnects into one TypeScript WebSocket model."
-image: 82326ea20e74
+image: a5263b3d6adb
 ---
 
 WebSocket code usually starts clean and then quietly splits into five little protocols: one for route params, one for auth, one for publish payloads, one for replay, and one for reconnects. The types live in one place. Runtime validation lives somewhere else. The browser gets a different auth path because `new WebSocket()` cannot send custom headers.

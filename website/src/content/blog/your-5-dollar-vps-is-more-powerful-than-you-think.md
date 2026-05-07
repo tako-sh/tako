@@ -2,7 +2,7 @@
 title: "Your $5 VPS Is More Powerful Than You Think"
 date: "2026-04-07T04:38"
 description: "A $5 Hetzner box gives you 2 vCPUs, 4 GB RAM, and 20 TB bandwidth. Here's what cloud platforms charge for the same resources — and how Tako bridges the gap."
-image: 381ca63d4f64
+image: baa7089d6301
 ---
 
 Look at what a $5 Hetzner box actually gives you: 2 vCPUs, 4 GB of RAM, 40 GB of NVMe storage, and 20 TB of monthly bandwidth. That's a real machine. Now look at what cloud platforms charge for comparable resources.

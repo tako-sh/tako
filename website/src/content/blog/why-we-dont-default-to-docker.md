@@ -2,7 +2,7 @@
 title: "Why We Don't Default to Docker (and When You Should Still Use It)"
 date: "2026-03-22T12:00"
 description: "Why we skip the Docker rebuild loop — and when containers still make sense."
-image: f2216fe3649a
+image: 9970fc7ceab1
 ---
 
 You change one line of code. You run the deploy. Then you wait.

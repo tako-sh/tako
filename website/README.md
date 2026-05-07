@@ -50,3 +50,7 @@ curl -fsSL http://localhost:4321/install-server.sh | sudo sh
 bun run --cwd website build
 bun run --cwd website deploy
 ```
+
+## Blog Images
+
+Blog hero sources live in `src/assets/blog/` as PNG files referenced by the `image` frontmatter ID. `bun run build` optimizes those images with Astro and emits OG PNG endpoint files in `dist/assets/blog/og/`.

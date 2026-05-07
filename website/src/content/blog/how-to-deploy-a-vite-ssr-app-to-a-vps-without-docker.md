@@ -2,7 +2,7 @@
 title: "How to Deploy a Vite SSR App to a VPS Without Docker"
 date: "2026-05-06T07:43"
 description: "Build a Vite React SSR app, wrap the server bundle with tako.sh/vite, ship dist/client assets, and deploy to a VPS as a native process."
-image: f1cb5b380e9d
+image: cdeff33db1e3
 ---
 
 Vite's SSR story is refreshingly direct: make a browser build, make a server build, and run the server entry in production. Most tutorials finish by wrapping that in Express, a Dockerfile, or a hosted platform adapter.

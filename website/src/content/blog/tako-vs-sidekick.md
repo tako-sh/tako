@@ -2,7 +2,7 @@
 title: "Tako vs Sidekick"
 date: "2026-04-12T05:21"
 description: "Sidekick turns a VPS into a Docker-powered mini-PaaS. Tako skips Docker entirely. Here's how the two CLI deploy tools compare."
-image: cbf70201f3c5
+image: bd807fb514a9
 ---
 
 [Sidekick](https://github.com/MightyMoud/sidekick) markets itself as "your own Fly.io" — a Go CLI that turns a VPS into a mini-PaaS with Docker, Traefik, and automatic SSL. At 7.3k GitHub stars, it's one of the more popular tools in the self-hosted deploy space, and for good reason: `sidekick init` sets up a fresh Ubuntu box in about two minutes. That's a great pitch.

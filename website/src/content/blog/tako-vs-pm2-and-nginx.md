@@ -2,7 +2,7 @@
 title: "Tako vs PM2 + Nginx"
 date: "2026-04-21T01:34"
 description: "PM2 + Nginx is the quiet default for self-hosted Node — a stack of four tools glued together with shell scripts. Tako collapses it into one CLI."
-image: 6c18d3fdbea8
+image: fde56a5e241f
 ---
 
 Before Docker, before Kubernetes, before the whole self-hosted PaaS genre showed up, there was a stack that shipped a lot of Node apps: [PM2](https://github.com/Unitech/pm2) keeping processes alive, Nginx out front for TLS and routing, a `.env` file for secrets, and a small pile of shell scripts holding it all together. PM2 has 42k+ GitHub stars and over a decade of production use. Nginx powers a huge slice of the internet. The combo has been the quiet default for self-hosted Node.js for years, and plenty of production apps still run on it today.

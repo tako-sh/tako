@@ -2,7 +2,7 @@
 title: "tako typegen and the generated tako.gen.ts"
 date: "2026-04-18T01:01"
 description: "Tako generates a project-local tako.gen.ts with typed runtime state and a typed secrets bag — zero ambient globals, zero module augmentation, zero silent typos."
-image: 402b4ee3a4e4
+image: 75030c2f757f
 ---
 
 Most runtime config is reached through APIs that lie to you. `process.env` pretends every variable is a string and returns `undefined` when you typo a name. `process.env.DATBASE_URL` is a syntactically valid read that fails silently, then explodes somewhere downstream — usually at 2am, usually in production.

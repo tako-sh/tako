@@ -2,7 +2,7 @@
 title: "The Open Source Cloudflare Workers Alternative: Tako on Your Own VPS"
 date: "2026-04-27T14:04"
 description: "Same fetch handler model, same scale-to-zero feel — without V8 isolate constraints or per-request billing. Tako on your own VPS, with Cloudflare optional in front."
-image: 05b791c8070a
+image: b058f40e042d
 ---
 
 [Cloudflare Workers](https://workers.cloudflare.com/) is one of the most-loved deploy targets out there for a reason. V8 isolates that boot in under 5 ms. A `fetch` handler as the whole programming model. 200+ cities of presence, and a free tier generous enough to host a real project. We're fans.

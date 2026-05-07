@@ -2,7 +2,7 @@
 title: "How to Deploy a Bun Hono App to a VPS Without Docker"
 date: "2026-05-03T13:18"
 description: "A literal Bun + Hono walkthrough: export app.fetch, run tako init, and ship to a VPS with HTTPS and rolling deploys. No Dockerfile required."
-image: dccf295808ef
+image: ad66c5107af2
 ---
 
 [Hono](https://hono.dev) is a tiny web framework with a very useful property: a Hono app already speaks the web `fetch` shape. On Bun, that means your server can be one file that exports `fetch: app.fetch`. On [Tako](/docs), that also means your deploy target is just a Bun process behind Pingora, TLS, health checks, and rolling updates.

@@ -2,7 +2,7 @@
 title: "Why Tako Ships an SDK"
 date: "2026-04-04T12:00"
 description: "Most deploy tools stop at infrastructure. Tako's SDK gives your app readiness signaling, secret injection, and runtime abstraction — here's why."
-image: c4e0bec69aac
+image: 7f4bb724896c
 ---
 
 Most deploy tools are infrastructure-only. They move your code to a server, maybe configure a reverse proxy, and call it a day. What happens inside your app process is your problem.

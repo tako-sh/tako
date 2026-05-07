@@ -1,8 +1,12 @@
 ---
 import { Image } from "astro:assets";
+import type { ImageMetadata } from "astro";
 import BaseLayout from "./BaseLayout.astro";
 import { createCanonicalUrl, normalizeCanonicalPath } from "../utils/canonical";
-import { BLOG_IMAGE_DIMENSIONS } from "../utils/blog-image-dimensions";
+
+const blogImages = import.meta.glob<{ default: ImageMetadata }>("../assets/blog/*.png", {
+  eager: true,
+});
 
 const authors: Record<string, { name: string; link: string }> = {
   dan: { name: "Dan Lilienblum", link: "https://x.com/lilienblum" },
@@ -24,8 +28,7 @@ const date = Astro.props.date ?? "";
 const authorId = Astro.props.author ?? "";
 const { name: author, link: authorLink } = authors[authorId] ?? defaultAuthor;
 const rawImage = Astro.props.image ?? "";
-const image = rawImage ? `/assets/blog/${rawImage}.avif` : "";
-const imageDimensions = rawImage ? BLOG_IMAGE_DIMENSIONS[rawImage] : undefined;
+const image = rawImage ? blogImages[`../assets/blog/${rawImage}.png`]?.default : undefined;
 const imageAlt = Astro.props.imageAlt ?? title;
 const description = Astro.props.description ?? title;
 const slug = normalizeCanonicalPath(Astro.url.pathname).replace(/\/$/, "").replace(/^\/blog\//, "").replace(/^\//, "");
@@ -65,8 +68,8 @@ const formatted = date
     })
   : "";
 
-if (rawImage && !imageDimensions) {
-  throw new Error(`Missing blog image dimensions for ${rawImage}`);
+if (rawImage && !image) {
+  throw new Error(`Missing blog image asset for ${rawImage}`);
 }
 ---
 <BaseLayout title={`${title} - Tako Blog`} description={description} image={ogImage} type="article">
@@ -76,13 +79,11 @@ if (rawImage && !imageDimensions) {
   <link slot="head" rel="alternate" type="application/json" href={jsonURL} />
   <script is:inline slot="head" type="application/ld+json" set:html={jsonLd} />
   <section class={`blog-sheet ${image ? "has-hero" : ""}`}>
-    {image && imageDimensions && (
+    {image && (
       <div class="blog-hero">
         <Image
           src={image}
           alt={imageAlt}
-          width={imageDimensions.width}
-          height={imageDimensions.height}
           loading="eager"
           fetchpriority="high"
         />

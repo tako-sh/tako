@@ -2,7 +2,7 @@
 title: "LAN Mode: Hand Your App to a Phone in Three Seconds"
 date: "2026-04-13T06:33"
 description: "Press l in tako dev and your app is reachable from any phone or tablet on your Wi-Fi as myapp.local — real HTTPS, no ngrok, no port forwarding."
-image: 98ba3963a720
+image: 75e8f994d6cd
 ---
 
 You're building a responsive layout. You want to see how it looks on your actual phone, not Chrome's device emulator. The usual options are all bad: type your laptop's IP and a port number into your phone's browser, fight with self-signed cert warnings, or fire up an ngrok tunnel that broadcasts your half-built app to the public internet just so it can come back to a device three feet away.

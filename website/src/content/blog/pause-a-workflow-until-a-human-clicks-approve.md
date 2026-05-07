@@ -2,7 +2,7 @@
 title: "Pause a Workflow Until a Human Clicks Approve"
 date: "2026-04-21T01:27"
 description: "A walkthrough of step.waitFor + signal — an order-fulfillment workflow that parks for days waiting on admin approval, then resumes exactly where it left off."
-image: eaf36ad099f6
+image: ca29555feb14
 ---
 
 Some workflows can't finish on their own. An order over a certain amount needs a human to eyeball it. A new vendor needs compliance to sign off. A refund above some threshold needs a manager. The work is half-done, the rest depends on a click that might land in two minutes or two days.

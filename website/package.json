@@ -4,10 +4,10 @@
   "type": "module",
   "scripts": {
     "dev": "astro dev",
-    "build": "bun scripts/sync-agent-skills.ts && astro build",
+    "build": "bun ./scripts/sync-agent-skills.ts && astro build",
     "check": "astro check",
     "preview": "astro preview",
-    "deploy": "wrangler deploy"
+    "deploy": "bun run build && wrangler deploy"
   },
   "dependencies": {
     "@astrojs/rss": "^4.0.18",
@@ -24,6 +24,7 @@
     "@types/react": "^19.2.14",
     "react": "^19.2.5",
     "satori": "catalog:",
+    "sharp": "^0.34.5",
     "typescript": "catalog:dev",
     "wrangler": "catalog:dev"
   }
