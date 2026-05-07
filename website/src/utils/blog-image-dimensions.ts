@@ -22,6 +22,7 @@ export const BLOG_IMAGE_DIMENSIONS: Record<string, { width: number; height: numb
   "82326ea20e74": { width: 1400, height: 788 },
   "89a268b31540": { width: 1400, height: 933 },
   "8bc5d8514b34": { width: 1400, height: 933 },
+  e9bd5b3824d5: { width: 1400, height: 788 },
   "8f2cb3d41b80": { width: 1400, height: 933 },
   "98ba3963a720": { width: 1400, height: 933 },
   "99ab641e1a36": { width: 1400, height: 933 },

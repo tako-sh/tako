@@ -4,6 +4,7 @@
   "workspaces": {
     "": {
       "devDependencies": {
+        "@types/bun": "catalog:dev",
         "oxfmt": "0.47.0",
         "oxlint": "^1.62.0",
         "oxlint-tsgolint": "^0.22.1",
