@@ -40,6 +40,8 @@ Set `TAKO_SSH_PUBKEY` to install an SSH public key non-interactively:
 curl -fsSL https://tako.sh/install-server.sh | sudo TAKO_SSH_PUBKEY="$(cat ~/.ssh/id_ed25519.pub)" sh
 ```
 
+That key is authorized for `tako` SSH access and enrolled for signed remote management.
+
 ## Register the Server Locally
 
 Add each server to your local global config:
@@ -47,9 +49,12 @@ Add each server to your local global config:
 ```bash
 tako servers add la.tailnet.ts.net --name la
 tako servers add nyc.tailnet.ts.net --name nyc --description "New York"
+tako servers add la.tailnet.ts.net --name la --install --admin-user root
 ```
 
-The add command expects a Tailscale MagicDNS name or Tailscale IP. It verifies Tailscale resolution, `tako@host` SSH recovery access, private management HTTP, and the server target (`arch` and `libc`) before writing `config.toml`. Deploy requires that target metadata so it can choose the correct artifact.
+The add command expects a Tailscale MagicDNS name or Tailscale IP. It verifies Tailscale resolution, `tako@host` SSH recovery access, signed private management HTTP, and the server target (`arch` and `libc`) before writing `config.toml`. Deploy requires that target metadata so it can choose the correct artifact.
+
+Use `--install` when the host is new or `tako-server` needs repair. Tako connects as the admin SSH user, installs the server, enrolls the SSH key used for access, rechecks `tako@host`, verifies signed HTTP management, and only then saves the server locally. Without a host, `tako servers add` runs the same flow through an interactive wizard.
 
 List configured servers:
 
@@ -244,7 +249,7 @@ tako servers status
 tako releases ls --env production
 ```
 
-`servers status` works from any directory and reports all configured servers.
+`servers status` works from any directory and reports all configured servers through signed Tailscale HTTP management.
 
 `logs` includes app output plus server lifecycle, health, and proxy diagnostics for the app's deployed routes. JS/TS production HTTP entrypoints route `console.*`, uncaught exceptions, and unhandled rejections into the same app log stream. Use `--json` for compact JSONL in agents and automation.
 
@@ -318,7 +323,7 @@ The management socket lives at:
 
 It is a symlink to the active PID-specific socket, which lets reloads hand off cleanly.
 
-Each server also keeps a stable identity key at `/opt/tako/identity.key` and publishes its OpenSSH SHA-256 fingerprint through `hello` and `server_info`. Remote management requires Tailscale so Tako can keep server control traffic private by default; normal installs bind the private HTTP RPC listener to port `9844` on the Tailscale address.
+Each server also keeps a stable identity key at `/opt/tako/identity.key` and publishes its OpenSSH SHA-256 fingerprint through `hello` and `server_info`. Remote management requires Tailscale so Tako can keep server control traffic private by default; normal installs bind the private HTTP RPC listener to port `9844` on the Tailscale address. Signed HTTP management keys are stored in `/opt/tako/management-authorized-keys`.
 
 ## Common Failure Behavior
 

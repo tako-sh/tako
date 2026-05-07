@@ -247,9 +247,13 @@ Manage global server inventory.
 tako servers add
 tako servers add la.tailnet.ts.net --name la
 tako servers add la.tailnet.ts.net --name la --description "Los Angeles" --port 22
+tako servers add la.tailnet.ts.net --name la --install
+tako servers add la.tailnet.ts.net --name la --install --admin-user root
 ```
 
-Without `host`, `add` opens an interactive setup wizard. With `host`, `--name` is required. Use the server's Tailscale MagicDNS name or Tailscale IP. Normal add verifies Tailscale resolution, `tako@host` SSH recovery access, target metadata (`arch`, `libc`), and private management HTTP before writing `config.toml`.
+Without `host`, `add` opens an interactive setup wizard. With `host`, `--name` is required. Use the server's Tailscale MagicDNS name or Tailscale IP. Normal add verifies Tailscale resolution, `tako@host` SSH recovery access, target metadata (`arch`, `libc`), and signed private management HTTP before writing `config.toml`.
+
+Use `--install` to install or repair `tako-server` over SSH before adding the host. The admin user defaults to `root`; pass `--admin-user <user>` when the host requires a different privileged SSH user. The installer enrolls the SSH key used for access for both `tako` SSH recovery and signed HTTP management.
 
 Other server commands:
 
@@ -271,7 +275,7 @@ tako servers implode la
 tako servers implode la --yes
 ```
 
-`servers status` reads all configured servers and prints a snapshot of deployed apps. It can run from any directory.
+`servers status` reads all configured servers through signed Tailscale HTTP management and prints a snapshot of deployed apps. It can run from any directory.
 
 `servers restart` performs a zero-downtime service-manager reload by default. `--force` performs a full restart. `servers upgrade` installs a new `tako-server` binary and reloads through the management socket handoff. GitHub-backed server upgrade metadata and archive downloads use `GH_TOKEN` when set, falling back to `GITHUB_TOKEN`.
 

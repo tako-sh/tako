@@ -178,6 +178,24 @@ Remote management requires Tailscale so Tako can keep server control traffic pri
 
 Install and connect Tailscale on the server, then rerun the installer. If the installer cannot detect the address, set `TAKO_MANAGEMENT_HOST` to the server's Tailscale IP.
 
+## Server Add Cannot Verify Access
+
+`tako servers add` only writes `config.toml` after it can verify the server through Tailscale, SSH recovery access as `tako`, and signed HTTP management.
+
+Use the server's Tailscale MagicDNS name:
+
+```bash
+tako servers add la.tailnet.ts.net --name la
+```
+
+If the host is new or the server install is incomplete, let Tako install or repair it:
+
+```bash
+tako servers add la.tailnet.ts.net --name la --install --admin-user root
+```
+
+Check that your workstation and server are in the same tailnet, that `tako@la.tailnet.ts.net` works with your SSH key, and that the server was installed with the same key enrolled for management access.
+
 ## Deploy Cannot Find `main`
 
 Tako resolves the runtime entrypoint in this order:

@@ -43,6 +43,14 @@ App-scoped commands read `./tako.toml` by default. Use `-c path/to/config` to se
 
 By default it uses `/opt/tako` for data and `/var/run/tako/tako.sock` for local management commands. Normal server installs also bind private remote management to the server's Tailscale address on port `9844`.
 
+### Remote Management
+
+Remote management is private by default. Tako expects deployment hosts to be reachable through Tailscale MagicDNS or a Tailscale IP, and normal server installs bind the HTTP management listener only to that private address.
+
+Small management commands use the same typed protocol as the local Unix socket over `POST /rpc`. Unsigned `hello` and `server_info` probes let the CLI confirm it is talking to a Tako server. Every other HTTP RPC must be signed by an enrolled SSH key, including the key fingerprint, timestamp, nonce, and SSH signature.
+
+SSH remains part of the system, but only for setup and recovery. `tako servers add --install` can connect as an admin SSH user, install or repair `tako-server`, enroll the SSH key used for access, verify signed HTTP management, and then write the local server entry.
+
 ### `tako.sh` SDK
 
 Apps use the SDK to satisfy Tako's runtime contract. JavaScript and TypeScript apps export a Web Standard fetch handler. Go apps use the `tako` package around an `http.Handler`.
