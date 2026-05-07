@@ -176,7 +176,7 @@ The app-owned path is exposed as `TAKO_DATA_DIR`.
 
 ## Workflows and Channels
 
-Workflow queues and channel storage are owned by `tako-server`. SDKs communicate with the server through a per-app internal Unix socket using `TAKO_INTERNAL_SOCKET` and `TAKO_APP_NAME`.
+Workflow queues and channel storage are owned by `tako-server`. Production app and worker processes run as `tako-app` and communicate with the server through the group-accessible internal Unix socket using `TAKO_INTERNAL_SOCKET` and `TAKO_APP_NAME`.
 
 Workflows run in separate worker processes from HTTP instances. Workers can be always-on or scale-to-zero. Runs, steps, schedules, and event waiters are stored in SQLite under the app data directory.
 

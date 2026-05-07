@@ -13,12 +13,12 @@ Repository scripts used by installers, CI checks, and local development workflow
   - Supports systemd and OpenRC for normal install/start.
   - Supports install-refresh mode via `TAKO_RESTART_SERVICE=0` (refreshes binary/users without restarting service; service definition is updated only when a supported manager is active), used in build/container workflows before init/service managers are running.
   - Detects host architecture (`x86_64`/`aarch64`) and libc (`glibc`/`musl`) to download the matching server artifact.
-  - Applies `setcap cap_net_bind_service=+ep` to `/usr/local/bin/tako-server` when possible for non-root `:80/:443` binds.
+  - Applies `setcap cap_net_bind_service,cap_setuid,cap_setgid=+ep` to `/usr/local/bin/tako-server` when possible for non-root `:80/:443` binds and app-user switching.
   - Creates both `tako` (server) and `tako-app` (app process) users.
   - Installs restricted maintenance helpers (`/usr/local/bin/tako-server-install-refresh`, `/usr/local/bin/tako-server-service`) and a scoped sudoers policy so the `tako` SSH user can run upgrade/reload commands non-interactively.
   - If `TAKO_SSH_PUBKEY` is unset, prompts for a public key from the terminal (`/dev/tty`) when available, including common piped installs; invalid key lines are re-prompted. If key input cannot be read, installer tries the invoking sudo user's `~/.ssh/authorized_keys` first, then warns/skips if no valid key is found.
   - Installs service definitions based on host init system:
-    - systemd unit with `Type=notify`, `ExecReload=/bin/kill -HUP $MAINPID`, and capability bounding for `CAP_NET_BIND_SERVICE`.
+    - systemd unit with `Type=notify`, `ExecReload=/bin/kill -HUP $MAINPID`, and capability bounding for bind and app-user switching capabilities.
     - OpenRC init script with `reload` support and `retry="TERM/1800/KILL/5"` graceful-stop semantics.
   - Installs required runtime dependencies (including Unix-socket-capable `nc` with `-U` support, sqlite runtime libraries, Linux namespace networking tools `ip`/`iptables`/`sysctl`, and `proto`) via the host package manager when available.
   - Falls back to the official `proto` installer if not already present.

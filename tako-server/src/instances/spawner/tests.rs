@@ -3,7 +3,7 @@ use super::super::logger::noop_log_handle;
 use super::readiness::{format_startup_exit_error, truncate_chars, wait_for_ready};
 use super::spawn_command::{
     app_child_parent_death_signal, build_instance_args, build_instance_env, create_bootstrap_pipe,
-    should_retry_spawn_without_app_user,
+    spawn_child_process,
 };
 use super::*;
 use crate::instances::INTERNAL_TOKEN_HEADER;
@@ -30,6 +30,37 @@ fn resolve_app_user_returns_none_gracefully_for_missing_user() {
     // resolve_app_user looks up "tako-app"; on dev machines it won't exist.
     // Calling Spawner::new() must not panic regardless.
     let _spawner = Spawner::new();
+}
+
+#[test]
+#[cfg(unix)]
+fn spawn_child_process_returns_permission_denied_when_app_user_switch_fails() {
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let config = AppConfig {
+        path: dir.path().to_path_buf(),
+        command: vec!["sh".to_string(), "-c".to_string(), "exit 0".to_string()],
+        ..Default::default()
+    };
+    let result = spawn_child_process(
+        &config,
+        &HashMap::new(),
+        &[],
+        Some((0, 0)),
+        "token",
+        &HashMap::new(),
+    );
+
+    match result {
+        Ok((mut child, _)) => {
+            let _ = child.start_kill();
+            panic!("spawn unexpectedly retried as the service user");
+        }
+        Err(error) => assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied),
+    }
 }
 
 #[test]
@@ -88,23 +119,6 @@ async fn spawn_timeout_reports_startup_output() {
     let message = err.to_string();
     assert!(message.contains("Instance startup timeout"));
     assert!(message.contains("startup boom"));
-}
-
-#[test]
-#[cfg(unix)]
-fn retries_spawn_without_app_user_only_for_permission_denied() {
-    let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
-    let other = std::io::Error::from(std::io::ErrorKind::NotFound);
-
-    assert!(should_retry_spawn_without_app_user(
-        &denied,
-        Some((1001, 1001))
-    ));
-    assert!(!should_retry_spawn_without_app_user(&denied, None));
-    assert!(!should_retry_spawn_without_app_user(
-        &other,
-        Some((1001, 1001))
-    ));
 }
 
 #[test]

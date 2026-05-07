@@ -8,20 +8,12 @@ use tokio::process::Command;
 #[cfg(unix)]
 pub(super) fn resolve_app_user() -> Option<(u32, u32)> {
     use std::ffi::CString;
-    // Unprivileged service users cannot switch to another uid/gid without extra capabilities.
-    // In that case, run app processes as the current service user.
-    if unsafe { libc::geteuid() } != 0 {
-        tracing::debug!(
-            "Running as unprivileged user; app processes will run as current service user"
-        );
-        return None;
-    }
     let name = CString::new("tako-app").ok()?;
     // SAFETY: getpwnam is thread-safe when not modifying the passwd db.
     // The pointer is valid until the next call to getpwnam on this thread.
     let pw = unsafe { libc::getpwnam(name.as_ptr()) };
     if pw.is_null() {
-        tracing::debug!("tako-app user not found; app processes will run as current user");
+        tracing::warn!("tako-app user not found; app processes will run as current user");
         return None;
     }
     let uid = unsafe { (*pw).pw_uid };
@@ -124,7 +116,6 @@ fn build_child_command(
     env: &HashMap<String, String>,
     extra_args: &[String],
     app_user: Option<(u32, u32)>,
-    use_app_user: bool,
     secrets_fd: Option<RawFd>,
     readiness_fd: Option<RawFd>,
 ) -> std::io::Result<Command> {
@@ -134,7 +125,7 @@ fn build_child_command(
     child_cmd.args(&config.command[1..]).args(extra_args);
 
     #[cfg(unix)]
-    if use_app_user && let Some((uid, gid)) = app_user {
+    if let Some((uid, gid)) = app_user {
         child_cmd.uid(uid);
         child_cmd.gid(gid);
     }
@@ -151,6 +142,7 @@ fn build_child_command(
     unsafe {
         child_cmd.pre_exec(move || {
             install_parent_death_signal(app_child_parent_death_signal())?;
+            clear_ambient_capabilities()?;
             if let Some(fd) = secrets_fd {
                 if fd != 3 {
                     if libc::dup2(fd, 3) == -1 {
@@ -176,6 +168,28 @@ fn build_child_command(
     }
 
     Ok(child_cmd)
+}
+
+#[cfg(target_os = "linux")]
+fn clear_ambient_capabilities() -> std::io::Result<()> {
+    let result = unsafe {
+        libc::prctl(
+            libc::PR_CAP_AMBIENT,
+            libc::PR_CAP_AMBIENT_CLEAR_ALL,
+            0,
+            0,
+            0,
+        )
+    };
+    if result == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn clear_ambient_capabilities() -> std::io::Result<()> {
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -205,13 +219,6 @@ fn install_parent_death_signal(_signal: Option<i32>) -> std::io::Result<()> {
     Ok(())
 }
 
-pub(super) fn should_retry_spawn_without_app_user(
-    error: &std::io::Error,
-    app_user: Option<(u32, u32)>,
-) -> bool {
-    app_user.is_some() && error.kind() == std::io::ErrorKind::PermissionDenied
-}
-
 pub(super) fn spawn_child_process(
     config: &AppConfig,
     env: &HashMap<String, String>,
@@ -238,36 +245,9 @@ pub(super) fn spawn_child_process(
     #[cfg(not(unix))]
     let readiness_raw_fd = None;
 
-    let mut child_cmd = build_child_command(
-        config,
-        env,
-        extra_args,
-        app_user,
-        true,
-        raw_fd,
-        readiness_raw_fd,
-    )?;
-    let spawn_result = match child_cmd.spawn() {
-        Ok(child) => Ok(child),
-        Err(error) if should_retry_spawn_without_app_user(&error, app_user) => {
-            tracing::warn!(
-                error = %error,
-                "Failed to switch to tako-app user; retrying spawn as service user"
-            );
-            // Pipe is still valid — fork either failed or the child exited before reading.
-            let mut fallback = build_child_command(
-                config,
-                env,
-                extra_args,
-                app_user,
-                false,
-                raw_fd,
-                readiness_raw_fd,
-            )?;
-            fallback.spawn()
-        }
-        Err(error) => Err(error),
-    };
+    let mut child_cmd =
+        build_child_command(config, env, extra_args, app_user, raw_fd, readiness_raw_fd)?;
+    let spawn_result = child_cmd.spawn();
 
     match spawn_result {
         Ok(child) => {

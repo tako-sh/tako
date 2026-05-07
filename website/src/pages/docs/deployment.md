@@ -21,10 +21,10 @@ sudo sh -c "$(curl -fsSL https://tako.sh/install-server.sh)"
 The installer:
 
 - creates the `tako` service/SSH user
-- creates `tako-app` for process-separation setups
+- creates `tako-app` for app and worker processes
 - installs `tako-server` to `/usr/local/bin/tako-server`
 - installs systemd or OpenRC service files
-- configures privileged bind support for ports 80 and 443
+- configures privileged bind support and app-user switching
 - creates `/opt/tako` and `/var/run/tako`
 - starts and verifies the service
 - installs helpers needed for graceful reload and upgrade

@@ -52,6 +52,7 @@ TAKO_REPO_OWNER="${TAKO_REPO_OWNER:-lilienblum}"
 TAKO_REPO_NAME="${TAKO_REPO_NAME:-tako}"
 TAKO_RELEASE_TAG="${TAKO_RELEASE_TAG:-latest}"
 TAKO_RESTART_SERVICE="${TAKO_RESTART_SERVICE:-1}"
+TAKO_SERVER_CAPABILITIES="cap_net_bind_service,cap_setuid,cap_setgid"
 TAKO_SERVER_INSTALL_REFRESH_HELPER="/usr/local/bin/tako-server-install-refresh"
 TAKO_SERVER_SERVICE_HELPER="/usr/local/bin/tako-server-service"
 
@@ -263,15 +264,15 @@ EOF
 
 ensure_privileged_bind_capability() {
   if need_cmd setcap; then
-    if setcap cap_net_bind_service=+ep /usr/local/bin/tako-server; then
-      echo "OK granted CAP_NET_BIND_SERVICE to /usr/local/bin/tako-server"
+    if setcap "$TAKO_SERVER_CAPABILITIES=+ep" /usr/local/bin/tako-server; then
+      echo "OK granted required capabilities to /usr/local/bin/tako-server"
       return
     fi
     if [ "$SERVICE_MANAGER" = "systemd" ]; then
-      echo "warning: failed to grant CAP_NET_BIND_SERVICE via setcap; systemd service will still use AmbientCapabilities." >&2
+      echo "warning: failed to grant capabilities via setcap; systemd service will still use AmbientCapabilities." >&2
       return
     fi
-    echo "warning: failed to grant CAP_NET_BIND_SERVICE via setcap; non-root :80/:443 binds may fail." >&2
+    echo "warning: failed to grant capabilities via setcap; non-root :80/:443 binds and app-user isolation may fail." >&2
     return
   fi
 
@@ -669,7 +670,7 @@ if ! id -u "$TAKO_USER" >/dev/null 2>&1; then
   fi
 fi
 
-# Create optional `tako-app` user (used by privileged process-separation setups).
+# Create `tako-app` user for app and worker processes.
 if ! id -u "tako-app" >/dev/null 2>&1; then
   if need_cmd useradd; then
     useradd --system --no-create-home --shell /usr/sbin/nologin --gid "$TAKO_USER" "tako-app" 2>/dev/null || \
@@ -827,8 +828,8 @@ NotifyAccess=all
 User=$TAKO_USER
 Group=$TAKO_USER
 NoNewPrivileges=true
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/usr/local/bin/tako-server --socket $TAKO_SOCKET --data-dir $TAKO_HOME
 ExecReload=/bin/kill -HUP \$MAINPID
@@ -887,8 +888,8 @@ NotifyAccess=all
 User=$TAKO_USER
 Group=$TAKO_USER
 NoNewPrivileges=true
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/usr/local/bin/tako-server --standby --socket $TAKO_SOCKET --data-dir $TAKO_HOME --instance-port-offset 1000
 Restart=always

@@ -11,9 +11,8 @@
 //! the management-socket pattern so two tako-server processes can hand
 //! over cleanly during upgrade.
 //!
-//! Auth: filesystem permissions only (`chmod 0600`, owned by the service
-//! user). Same trust model as the mgmt socket — any process running as
-//! the service user can talk to it.
+//! Auth: filesystem permissions only (`chmod 0660`, owned by the service
+//! user/group so `tako-app` processes can connect).
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -129,7 +128,7 @@ pub fn spawn(
 
     let std_listener = std::os::unix::net::UnixListener::bind(&actual_path)?;
     std_listener.set_nonblocking(true)?;
-    let _ = std::fs::set_permissions(&actual_path, std::fs::Permissions::from_mode(0o600));
+    let _ = std::fs::set_permissions(&actual_path, std::fs::Permissions::from_mode(0o660));
 
     // Atomically swap symlink: write temp, rename over target.
     let temp_link = symlink_path.with_extension("tmp");
@@ -426,6 +425,19 @@ mod tests {
                 on_claimed: Arc::new(|| {}),
             })
         })
+    }
+
+    #[tokio::test]
+    async fn internal_socket_is_group_accessible_for_app_processes() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let sock = tmp.path().join("internal.sock");
+        let handle = spawn(&sock, lookup_for(Default::default()), None).unwrap();
+        let mode = std::fs::metadata(&sock).unwrap().permissions().mode() & 0o777;
+
+        handle.shutdown().await;
+        assert_eq!(mode, 0o660);
     }
 
     #[tokio::test]

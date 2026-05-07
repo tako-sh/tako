@@ -1089,7 +1089,7 @@ Apps specify routes at environment level (not per-server). Routes support:
 
 Manual for v1. Users run a server setup script (or equivalent manual steps) to:
 
-1. Create dedicated OS users: `tako` for SSH access and running `tako-server` (plus `tako-app` for optional privileged process-separation setups)
+1. Create dedicated OS users: `tako` for SSH access and running `tako-server`, plus `tako-app` for app and worker processes
 2. Install `tako-server` to `/usr/local/bin/tako-server`
 3. Install and enable a host service definition for `tako-server`:
    - systemd unit on systemd hosts
@@ -1114,13 +1114,13 @@ Installer SSH key behavior:
 - Installer detects host target (`arch` + `libc`) and downloads matching artifact name `tako-server-linux-{arch}-{libc}` (supported: `x86_64`/`aarch64` with `glibc`/`musl`).
 - Installer ensures `nc` (netcat) is available so CLI management commands can talk to `/var/run/tako/tako.sock`.
 - Installer ensures basic networking tools are available for server operation.
-- Installer creates both `tako` and `tako-app` OS users.
+- Installer creates both `tako` and `tako-app` OS users. `tako-server` runs as `tako`; app and worker processes run as `tako-app` when that user is present.
 - Installer installs restricted maintenance helpers and scoped sudoers policy so the `tako` SSH user can perform non-interactive server upgrade/reload operations.
 - Installer supports systemd and OpenRC hosts.
 - Installer supports install-refresh mode (`TAKO_RESTART_SERVICE=0`) for build/image workflows without active init; in this mode, it refreshes binary/users and skips service-definition install/start.
-- Installer configures service capability support for privileged binds:
-  - systemd: `AmbientCapabilities=CAP_NET_BIND_SERVICE`, `CapabilityBoundingSet=CAP_NET_BIND_SERVICE`
-  - non-systemd hosts: installer applies `setcap cap_net_bind_service=+ep /usr/local/bin/tako-server` when available
+- Installer configures service capability support for privileged binds and app-user switching:
+  - systemd: `AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID`, `CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID`
+  - non-systemd hosts: installer applies `setcap cap_net_bind_service,cap_setuid,cap_setgid=+ep /usr/local/bin/tako-server` when available
 - Installer configures graceful stop semantics:
   - systemd: `KillMode=control-group`, `TimeoutStopSec=30min`
   - OpenRC: `retry="TERM/1800/KILL/5"`
@@ -1418,7 +1418,7 @@ Server-side validation on `deploy` and app-scoped commands:
 
 **Instance communication model:**
 
-- App processes do not connect to the management socket.
+- App processes run as `tako-app` and do not connect to the management socket.
 - `tako-server` controls lifecycle directly (spawn/stop/rolling update). Startup readiness is signaled by the SDK via fd 4; ongoing health is verified via active HTTP probing.
 - App processes receive `PORT=0` and `HOST=127.0.0.1`, bind to an OS-assigned loopback port, and write the actual port to fd 4. The server then routes traffic and health probes to that endpoint.
 - Secrets are passed to instances via fd 3 (file descriptor 3) at spawn time. The server creates a pipe, writes JSON-serialized secrets to the write end, and the child process reads fd 3 at startup before any user code runs. EBADF on fd 3 means the process is not running under Tako (dev mode).
@@ -1989,7 +1989,7 @@ Both work via sentinel exceptions caught by the worker. Useful for "this work is
 
 - Single shared internal socket at `{tako_data_dir}/internal.sock` (symlink → `internal-{pid}.sock`, atomically swapped during upgrades for zero-downtime handoff — same pattern as the mgmt socket). Workflow RPCs and server-side channel publishes both land here, hence the role-neutral name.
 - Every command carries an `app` field so one socket routes for every deployed app.
-- Auth: filesystem permissions only (`chmod 0600`, owned by the service user).
+- Auth: filesystem permissions only (`chmod 0660`, owned by the service user/group so `tako-app` processes can connect).
 - SDKs read `TAKO_INTERNAL_SOCKET` and `TAKO_APP_NAME` env vars. HTTP instance and workflow worker spawners (tako-server in production and tako-dev-server in `tako dev`) share one env contract defined in `tako-core::instance_env::TakoRuntimeEnv` so the dev and prod runtimes can't drift. The SDK asserts the pair is set together at import time — a half-set env (one var without the other) is a platform bug and crashes the process on boot rather than silently failing at the first workflow enqueue or channel publish.
 - From any process: `EnqueueRun`, `Signal`, `ChannelPublish` (server-side publish goes straight to the channel store instead of round-tripping through the HTTPS proxy).
 - From worker processes: `ClaimRun`, `HeartbeatRun`, `SaveStep`, `CompleteRun`, `CancelRun`, `FailRun`, `DeferRun`, `WaitForEvent`, `RegisterSchedules`.

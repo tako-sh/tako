@@ -12,6 +12,7 @@ pub(super) const UPGRADE_SOCKET_WAIT_TIMEOUT: Duration = Duration::from_secs(120
 const UPGRADE_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const SERVER_BINARY_PATH: &str = "/usr/local/bin/tako-server";
 const SERVER_PREVIOUS_BINARY_PATH: &str = "/usr/local/bin/tako-server.prev";
+const SERVER_FILE_CAPABILITIES: &str = "cap_net_bind_service,cap_setuid,cap_setgid=+ep";
 
 const REPO_OWNER: &str = "lilienblum";
 const REPO_NAME: &str = "tako";
@@ -263,7 +264,7 @@ fn remote_binary_replace_command(url: &str, expected_sha256: &str) -> String {
          if [ -z \"$bin\" ]; then echo 'error: archive did not contain tako-server binary' >&2; exit 1; fi; \
          if [ -f {SERVER_BINARY_PATH} ]; then install -m 0755 {SERVER_BINARY_PATH} {SERVER_PREVIOUS_BINARY_PATH}; fi; \
          install -m 0755 \"$bin\" {SERVER_BINARY_PATH}; \
-         if command -v setcap >/dev/null 2>&1; then setcap cap_net_bind_service=+ep {SERVER_BINARY_PATH} 2>/dev/null || true; fi"
+         if command -v setcap >/dev/null 2>&1; then setcap {SERVER_FILE_CAPABILITIES} {SERVER_BINARY_PATH} 2>/dev/null || true; fi"
     );
     SshClient::run_with_root_or_sudo(&script)
 }
@@ -273,7 +274,7 @@ fn remote_restore_previous_binary_command() -> String {
         "set -eu; \
          if [ ! -f {SERVER_PREVIOUS_BINARY_PATH} ]; then echo 'error: previous tako-server binary not found' >&2; exit 1; fi; \
          install -m 0755 {SERVER_PREVIOUS_BINARY_PATH} {SERVER_BINARY_PATH}; \
-         if command -v setcap >/dev/null 2>&1; then setcap cap_net_bind_service=+ep {SERVER_BINARY_PATH} 2>/dev/null || true; fi"
+         if command -v setcap >/dev/null 2>&1; then setcap {SERVER_FILE_CAPABILITIES} {SERVER_BINARY_PATH} 2>/dev/null || true; fi"
     );
     SshClient::run_with_root_or_sudo(&script)
 }
@@ -722,6 +723,18 @@ mod tests {
             url,
             "http://example.test/releases/tako-server-linux-x86_64-glibc.tar.zst"
         );
+    }
+
+    #[test]
+    fn remote_binary_replace_preserves_app_user_switch_capabilities() {
+        let command = remote_binary_replace_command("https://example.com/tako.tar.zst", "a");
+        assert!(command.contains("cap_net_bind_service,cap_setuid,cap_setgid=+ep"));
+    }
+
+    #[test]
+    fn remote_restore_previous_binary_preserves_app_user_switch_capabilities() {
+        let command = remote_restore_previous_binary_command();
+        assert!(command.contains("cap_net_bind_service,cap_setuid,cap_setgid=+ep"));
     }
 
     #[test]

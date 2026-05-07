@@ -17,7 +17,7 @@ use tokio::time::timeout;
 
 /// Spawns and monitors app instances
 pub struct Spawner {
-    /// UID/GID of the `tako-app` user for process isolation when running privileged (Unix only)
+    /// UID/GID of the `tako-app` user for process isolation (Unix only).
     #[cfg(unix)]
     app_user: Option<(u32, u32)>,
     /// Path to the shared Tako internal socket. When present, injected into
