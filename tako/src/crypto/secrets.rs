@@ -77,7 +77,7 @@ pub fn generate_key_id() -> String {
 
 /// Human-readable macOS Keychain label for an environment key.
 pub fn keychain_label_for_key_id(key_id: &str) -> String {
-    format!("Tako {key_id}")
+    format!("Tako secrets key {key_id}")
 }
 
 /// Derive an environment key from a passphrase and environment key id.
@@ -213,11 +213,22 @@ impl KeyStore {
         ))
     }
 
-    /// Load the encryption key if it exists in local file storage.
+    /// Load the encryption key if it exists in iCloud Keychain or local file storage.
     pub fn load_key_optional(&self) -> Result<Option<EncryptionKey>> {
+        self.load_key_optional_with_usage_path(None)
+    }
+
+    /// Load the encryption key and record the project path when iCloud Keychain is used.
+    pub fn load_key_optional_with_usage_path(
+        &self,
+        usage_path: Option<&Path>,
+    ) -> Result<Option<EncryptionKey>> {
         if let Some(key_id) = self.key_id.as_deref()
             && let Some(key) = crate::keychain::load_key(key_id).map_err(ConfigError::Encryption)?
         {
+            if let Some(path) = usage_path {
+                crate::keychain::mark_key_used(key_id, path).map_err(ConfigError::Encryption)?;
+            }
             return Ok(Some(key));
         }
         if self.key_path.exists() {
@@ -480,10 +491,10 @@ mod tests {
     }
 
     #[test]
-    fn test_keychain_label_uses_human_readable_key_id() {
+    fn test_keychain_label_names_secrets_key() {
         assert_eq!(
             keychain_label_for_key_id("0123456789abcdef"),
-            "Tako 0123456789abcdef"
+            "Tako secrets key 0123456789abcdef"
         );
     }
 

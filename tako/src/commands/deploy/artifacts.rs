@@ -170,7 +170,8 @@ pub(super) async fn prepare_build_phase(
         app_dir,
         install_dir,
     );
-    let deploy_secrets = decrypt_deploy_secrets(&env, &secrets).map_err(|e| e.to_string())?;
+    let deploy_secrets =
+        decrypt_deploy_secrets(&env, &secrets, Some(&project_dir)).map_err(|e| e.to_string())?;
 
     let app_json_bytes = serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?;
 

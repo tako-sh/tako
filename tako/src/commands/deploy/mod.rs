@@ -296,7 +296,7 @@ async fn run_async(
     // errors are shown against a clean terminal instead of being overpainted by
     // the live viewport.
     if !output::is_dry_run() {
-        crate::commands::secret::ensure_secret_key_available(&env, &secrets)?;
+        crate::commands::secret::ensure_secret_key_available(&env, &secrets, Some(&project_dir))?;
     }
 
     let deploy_task_tree = should_use_deploy_task_tree()

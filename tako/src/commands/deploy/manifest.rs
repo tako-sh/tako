@@ -205,13 +205,14 @@ pub(super) fn build_deploy_archive_manifest(
 pub(super) fn decrypt_deploy_secrets(
     env: &str,
     secrets: &SecretsStore,
+    usage_path: Option<&Path>,
 ) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
     let encrypted = match secrets.get_env(env) {
         Some(s) if !s.is_empty() => s,
         _ => return Ok(HashMap::new()),
     };
 
-    let key = super::super::secret::load_secret_key(env, secrets)?;
+    let key = super::super::secret::load_secret_key(env, secrets, usage_path)?;
     let mut decrypted = HashMap::new();
     for (name, encrypted_value) in encrypted {
         let value = crate::crypto::decrypt(encrypted_value, &key)
@@ -264,7 +265,7 @@ mod tests {
     #[test]
     fn decrypt_deploy_secrets_returns_empty_for_no_secrets() {
         let secrets = SecretsStore::default();
-        let result = decrypt_deploy_secrets("production", &secrets).unwrap();
+        let result = decrypt_deploy_secrets("production", &secrets, None).unwrap();
         assert!(result.is_empty());
     }
 

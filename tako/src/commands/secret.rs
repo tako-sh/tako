@@ -590,7 +590,7 @@ async fn set_secret(
 
     // Get or create the local encryption key only after the value prompt
     // succeeds, so cancelled wizards do not touch secrets.json or key files.
-    let key = load_or_create_key_for_set(env, &secrets)?;
+    let key = load_or_create_key_for_set(env, &secrets, Some(&context.project_dir))?;
 
     // Encrypt and store
     let encrypted = encrypt(value, &key)?;
@@ -872,7 +872,7 @@ async fn sync_secrets(
         // Get decrypted secrets for this environment
         let env_secrets = match secrets.get_env(env_name) {
             Some(encrypted_secrets) => {
-                let key = load_secret_key(env_name, &secrets)?;
+                let key = load_secret_key(env_name, &secrets, Some(&context.project_dir))?;
                 let mut decrypted = std::collections::HashMap::new();
                 for (name, encrypted_value) in encrypted_secrets {
                     match decrypt(encrypted_value, &key) {
@@ -961,7 +961,7 @@ async fn export_key(
         .get_key_id(env)
         .ok_or_else(|| format!("No secrets configured for environment '{}'.", env))?;
     let key_store = crate::crypto::KeyStore::for_key_id(key_id)?;
-    let Some(key) = key_store.load_key_optional()? else {
+    let Some(key) = key_store.load_key_optional_with_usage_path(Some(&context.project_dir))? else {
         return Err(missing_secret_key_message(env).into());
     };
     crate::keychain::require_export_authentication()?;
@@ -1003,7 +1003,7 @@ async fn import_exported_key(
     }
 
     let key_store = crate::crypto::KeyStore::for_key_id(&key_id)?;
-    save_key_with_storage_prompt(&key_store, &key, env.as_deref())?;
+    save_key_with_storage_prompt(&key_store, &key, env.as_deref(), Some(&context.project_dir))?;
 
     if let Some(env) = env {
         output::success(&format!("Imported {} key.", output::strong(&env)));
@@ -1032,7 +1032,7 @@ async fn import_passphrase_key(
     validate_imported_key_for_env("Passphrase", &secrets, &env, &key)?;
 
     let key_store = crate::crypto::KeyStore::for_key_id(&key_id)?;
-    save_key_with_storage_prompt(&key_store, &key, Some(&env))?;
+    save_key_with_storage_prompt(&key_store, &key, Some(&env), Some(&context.project_dir))?;
     secrets.save_to_dir(&context.project_dir)?;
 
     output::success(&format!("Imported {} key.", output::strong(&env)));
@@ -1080,9 +1080,10 @@ fn key_store_for_env(
 pub fn load_secret_key(
     env: &str,
     secrets: &crate::config::SecretsStore,
+    usage_path: Option<&Path>,
 ) -> Result<crate::crypto::EncryptionKey, Box<dyn std::error::Error>> {
     let key_store = key_store_for_env(env, secrets)?;
-    if let Some(key) = key_store.load_key_optional()? {
+    if let Some(key) = key_store.load_key_optional_with_usage_path(usage_path)? {
         return Ok(key);
     }
 
@@ -1092,9 +1093,10 @@ pub fn load_secret_key(
 fn load_or_create_key_for_set(
     env: &str,
     secrets: &crate::config::SecretsStore,
+    usage_path: Option<&Path>,
 ) -> Result<crate::crypto::EncryptionKey, Box<dyn std::error::Error>> {
     let key_store = key_store_for_env(env, secrets)?;
-    if let Some(key) = key_store.load_key_optional()? {
+    if let Some(key) = key_store.load_key_optional_with_usage_path(usage_path)? {
         return Ok(key);
     }
     if secrets.get_env(env).is_some_and(|map| !map.is_empty()) {
@@ -1102,7 +1104,7 @@ fn load_or_create_key_for_set(
     }
 
     let key = crate::crypto::EncryptionKey::generate()?;
-    save_key_with_storage_prompt(&key_store, &key, Some(env))?;
+    save_key_with_storage_prompt(&key_store, &key, Some(env), usage_path)?;
 
     Ok(key)
 }
@@ -1111,9 +1113,10 @@ fn save_key_with_storage_prompt(
     key_store: &crate::crypto::KeyStore,
     key: &crate::crypto::EncryptionKey,
     env: Option<&str>,
+    usage_path: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let choice = resolve_key_storage_choice(env)?;
-    save_key_with_storage_choice(key_store, key, choice)?;
+    save_key_with_storage_choice(key_store, key, choice, usage_path)?;
 
     Ok(())
 }
@@ -1122,10 +1125,13 @@ fn save_key_with_storage_choice(
     key_store: &crate::crypto::KeyStore,
     key: &crate::crypto::EncryptionKey,
     choice: KeyStorageChoice,
+    usage_path: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match choice {
         KeyStorageChoice::LocalFile => key_store.save_key(key)?,
-        KeyStorageChoice::ICloudKeychain => save_key_to_icloud_keychain(key_store, key)?,
+        KeyStorageChoice::ICloudKeychain => {
+            save_key_to_icloud_keychain(key_store, key, usage_path)?
+        }
     }
 
     Ok(())
@@ -1134,11 +1140,12 @@ fn save_key_with_storage_choice(
 fn save_key_to_icloud_keychain(
     key_store: &crate::crypto::KeyStore,
     key: &crate::crypto::EncryptionKey,
+    usage_path: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let key_id = key_store
         .key_id()
         .ok_or("iCloud Keychain storage requires a key id.")?;
-    crate::keychain::save_key(key_id, key).map_err(Into::into)
+    crate::keychain::save_key(key_id, key, usage_path).map_err(Into::into)
 }
 
 fn resolve_key_storage_choice(
@@ -1184,12 +1191,13 @@ fn keychain_storage_hint(env: Option<&str>) -> String {
 pub fn ensure_secret_key_available(
     env: &str,
     secrets: &crate::config::SecretsStore,
+    usage_path: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let has_secrets = secrets.get_env(env).is_some_and(|map| !map.is_empty());
     if !has_secrets {
         return Ok(());
     }
-    let _ = load_secret_key(env, secrets)?;
+    let _ = load_secret_key(env, secrets, usage_path)?;
     Ok(())
 }
 
@@ -1339,7 +1347,7 @@ mod tests {
             let mut secrets = crate::config::SecretsStore::parse("{}").unwrap();
             secrets.ensure_env_key_id("production").unwrap();
             // Env has a key_id but no secrets: nothing to decrypt later, no prompt needed.
-            ensure_secret_key_available("production", &secrets)
+            ensure_secret_key_available("production", &secrets, None)
                 .expect("no-op when env has no secrets");
         });
     }
@@ -1349,7 +1357,7 @@ mod tests {
         with_temp_tako_home(|| {
             let secrets = crate::config::SecretsStore::parse("{}").unwrap();
             // Env doesn't exist at all; skip without error.
-            ensure_secret_key_available("production", &secrets)
+            ensure_secret_key_available("production", &secrets, None)
                 .expect("no-op when env is not initialized");
         });
     }
@@ -1371,7 +1379,7 @@ mod tests {
 
             // With the key already on disk, this must not prompt — if it did, the
             // test would either hang or fail because stdin isn't a tty.
-            ensure_secret_key_available("production", &secrets)
+            ensure_secret_key_available("production", &secrets, None)
                 .expect("cached key should be used without prompting");
         });
     }
@@ -1386,7 +1394,7 @@ mod tests {
                 }
             }"#;
             let secrets = crate::config::SecretsStore::parse(json).unwrap();
-            let err = ensure_secret_key_available("production", &secrets).unwrap_err();
+            let err = ensure_secret_key_available("production", &secrets, None).unwrap_err();
             assert_eq!(
                 err.to_string(),
                 "Unable to decrypt production secrets. Run `tako secrets key import` to import an exported key or passphrase."
@@ -1408,8 +1416,9 @@ mod tests {
             let mut secrets = crate::config::SecretsStore::parse("{}").unwrap();
             let key_id = secrets.ensure_env_key_id("development").unwrap();
 
-            let key = load_or_create_key_for_set("development", &secrets)
-                .expect("empty env should get a new local key");
+            let key =
+                load_or_create_key_for_set("development", &secrets, Some(Path::new("/tmp/tako")))
+                    .expect("empty env should get a new local key");
             let key_store = crate::crypto::KeyStore::for_key_id(&key_id).unwrap();
             assert!(key_store.key_exists());
             assert_eq!(key_store.load_key().unwrap().as_bytes(), key.as_bytes());
@@ -1422,9 +1431,13 @@ mod tests {
             let key_store = crate::crypto::KeyStore::for_key_id("0123456789abcdef").unwrap();
             let key = crate::crypto::EncryptionKey::generate().unwrap();
 
-            let err =
-                save_key_with_storage_choice(&key_store, &key, KeyStorageChoice::ICloudKeychain)
-                    .unwrap_err();
+            let err = save_key_with_storage_choice(
+                &key_store,
+                &key,
+                KeyStorageChoice::ICloudKeychain,
+                Some(Path::new("/tmp/tako")),
+            )
+            .unwrap_err();
 
             assert_eq!(err.to_string(), crate::keychain::unavailable_message());
             assert!(!key_store.key_path().exists());
@@ -1437,7 +1450,8 @@ mod tests {
             let key_store = crate::crypto::KeyStore::for_key_id("0123456789abcdef").unwrap();
             let key = crate::crypto::EncryptionKey::generate().unwrap();
 
-            save_key_with_storage_choice(&key_store, &key, KeyStorageChoice::LocalFile).unwrap();
+            save_key_with_storage_choice(&key_store, &key, KeyStorageChoice::LocalFile, None)
+                .unwrap();
 
             assert_eq!(key_store.load_key().unwrap().as_bytes(), key.as_bytes());
         });
