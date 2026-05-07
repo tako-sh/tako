@@ -29,6 +29,8 @@ pub fn confirm_with_description(
             terminal,
         };
         let hint = if default { "[Y/n]" } else { "[y/N]" };
+        // CodeQL[rust/cleartext-logging]: confirm prompts are user-facing stderr text;
+        // secret flows pass generic copy that omits secret values and names.
         eprint!("{} {} ", theme_accent(prompt), theme_muted(hint));
         let _ = std::io::Write::flush(&mut io::stderr());
         terminal::enable_raw_mode()?;

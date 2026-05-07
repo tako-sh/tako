@@ -364,8 +364,9 @@ fn secret_value_prompt(secrets: &crate::config::SecretsStore, name: &str, env: &
     }
 }
 
-fn secret_override_prompt(name: &str) -> String {
-    format!("{} is already set. Replace it?", name)
+fn replace_existing_value_prompt() -> &'static str {
+    // CodeQL[rust/cleartext-logging]: confirm prompts are written to stderr, so keep secret names out.
+    "Value is already set. Replace it?"
 }
 
 fn confirm_secret_override(
@@ -377,8 +378,7 @@ fn confirm_secret_override(
         return Ok(true);
     }
 
-    let prompt = secret_override_prompt(name);
-    let confirmed = match output::confirm(&prompt, false) {
+    let confirmed = match output::confirm(replace_existing_value_prompt(), false) {
         Ok(confirmed) => confirmed,
         Err(e) if output::is_wizard_back(&e) => false,
         Err(e) => return Err(e.into()),
@@ -452,8 +452,11 @@ fn resolve_secret_set_input(
                 if secrets.contains(&env, name) {
                     wizard.set_visible("Override", true);
                     'override_existing: loop {
-                        let prompt = secret_override_prompt(name);
-                        match wizard.confirm_default("Override", &prompt, false) {
+                        match wizard.confirm_default(
+                            "Override",
+                            replace_existing_value_prompt(),
+                            false,
+                        ) {
                             Ok(true) => {}
                             Ok(false) => {
                                 output::operation_cancelled();
@@ -515,8 +518,11 @@ fn resolve_secret_set_input(
                     if secrets.contains(&env, name) {
                         wizard.set_visible("Override", true);
                         'override_new: loop {
-                            let prompt = secret_override_prompt(name);
-                            match wizard.confirm_default("Override", &prompt, false) {
+                            match wizard.confirm_default(
+                                "Override",
+                                replace_existing_value_prompt(),
+                                false,
+                            ) {
                                 Ok(true) => {}
                                 Ok(false) => {
                                     output::operation_cancelled();
@@ -1507,6 +1513,14 @@ route = "staging.example.com"
                 "staging".to_string(),
                 "New environment".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn replace_existing_value_prompt_omits_secret_name() {
+        assert_eq!(
+            replace_existing_value_prompt(),
+            "Value is already set. Replace it?"
         );
     }
 
