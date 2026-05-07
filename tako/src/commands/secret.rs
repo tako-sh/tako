@@ -965,6 +965,7 @@ async fn export_key(
     let Some(key) = key_store.load_key_optional()? else {
         return Err(missing_secret_key_message(env).into());
     };
+    crate::keychain::require_export_authentication()?;
     let bundle = encode_key_bundle(key_id, &key);
     copy_to_clipboard(&bundle)?;
 
@@ -1132,14 +1133,13 @@ fn save_key_with_storage_choice(
 }
 
 fn save_key_to_icloud_keychain(
-    _key_store: &crate::crypto::KeyStore,
-    _key: &crate::crypto::EncryptionKey,
+    key_store: &crate::crypto::KeyStore,
+    key: &crate::crypto::EncryptionKey,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    Err(icloud_keychain_unavailable_message().into())
-}
-
-fn icloud_keychain_unavailable_message() -> &'static str {
-    "iCloud Keychain is unavailable: Tako's macOS helper is not installed. Upgrade or reinstall Tako, then try again."
+    let key_id = key_store
+        .key_id()
+        .ok_or("iCloud Keychain storage requires a key id.")?;
+    crate::keychain::save_key(key_id, key).map_err(Into::into)
 }
 
 fn resolve_key_storage_choice(
@@ -1418,7 +1418,7 @@ mod tests {
     }
 
     #[test]
-    fn i_cloud_keychain_choice_errors_when_helper_is_missing() {
+    fn i_cloud_keychain_choice_errors_when_signed_app_is_unavailable() {
         with_temp_tako_home(|| {
             let key_store = crate::crypto::KeyStore::for_key_id("0123456789abcdef").unwrap();
             let key = crate::crypto::EncryptionKey::generate().unwrap();
@@ -1427,7 +1427,7 @@ mod tests {
                 save_key_with_storage_choice(&key_store, &key, KeyStorageChoice::ICloudKeychain)
                     .unwrap_err();
 
-            assert_eq!(err.to_string(), icloud_keychain_unavailable_message());
+            assert_eq!(err.to_string(), crate::keychain::unavailable_message());
             assert!(!key_store.key_path().exists());
         });
     }

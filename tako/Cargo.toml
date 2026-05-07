@@ -95,7 +95,7 @@ qrcode = { version = "0.14", default-features = false }
 # macOS: inspect trust settings and evaluate trust via Security.framework
 # so local HTTPS checks match browser trust behavior without shelling out.
 [target.'cfg(target_os = "macos")'.dependencies]
-security-framework = "3.7"
+security-framework = { version = "3.7", features = ["OSX_10_15"] }
 
 
 [dev-dependencies]

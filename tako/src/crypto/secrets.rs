@@ -156,6 +156,9 @@ pub fn decrypt(encrypted: &str, key: &EncryptionKey) -> Result<String> {
 ///
 /// File path: `$TAKO_HOME/keys/{key_id}`
 pub struct KeyStore {
+    /// Environment key id, when this store is tied to a project key.
+    key_id: Option<String>,
+
     /// Path to the key file
     key_path: PathBuf,
 }
@@ -175,13 +178,22 @@ impl KeyStore {
         })?;
 
         Ok(Self {
+            key_id: Some(key_id.to_string()),
             key_path: data_dir.join("keys").join(key_id),
         })
     }
 
     /// Create a key store with a custom path
     pub fn with_path(path: PathBuf) -> Self {
-        Self { key_path: path }
+        Self {
+            key_id: None,
+            key_path: path,
+        }
+    }
+
+    /// Get key id when this store is tied to an environment key.
+    pub fn key_id(&self) -> Option<&str> {
+        self.key_id.as_deref()
     }
 
     /// Get key file path
@@ -203,6 +215,11 @@ impl KeyStore {
 
     /// Load the encryption key if it exists in local file storage.
     pub fn load_key_optional(&self) -> Result<Option<EncryptionKey>> {
+        if let Some(key_id) = self.key_id.as_deref()
+            && let Some(key) = crate::keychain::load_key(key_id).map_err(ConfigError::Encryption)?
+        {
+            return Ok(Some(key));
+        }
         if self.key_path.exists() {
             return Ok(Some(self.load_file_key()?));
         }
@@ -261,6 +278,9 @@ impl KeyStore {
         if self.key_path.exists() {
             fs::remove_file(&self.key_path)
                 .map_err(|e| ConfigError::FileWrite(self.key_path.clone(), e))?;
+        }
+        if let Some(key_id) = self.key_id.as_deref() {
+            crate::keychain::delete_key(key_id).map_err(ConfigError::Encryption)?;
         }
         Ok(())
     }

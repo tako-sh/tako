@@ -16,8 +16,129 @@ permissions:
   actions: read
 
 jobs:
+  sign-darwin:
+    name: Sign macOS app
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: macos-latest
+    environment: release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Find CI run
+        id: ci-run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -n "${{ github.event.workflow_run.id }}" ]; then
+            echo "run_id=${{ github.event.workflow_run.id }}" >> "$GITHUB_OUTPUT"
+          else
+            run_id=$(gh run list --workflow=ci.yml --commit="$GITHUB_SHA" --status=success --json databaseId -q '.[0].databaseId')
+            if [ -z "$run_id" ]; then
+              echo "::error::No successful CI run found for commit $GITHUB_SHA"
+              exit 1
+            fi
+            echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check if builds ran
+        id: builds
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          conclusion=$(gh api "repos/${{ github.repository }}/actions/runs/${{ steps.ci-run.outputs.run_id }}/jobs" \
+            --jq '.jobs[] | select(.name == "Build x86_64 (glibc)") | .conclusion')
+          if [ "$conclusion" = "skipped" ] || [ -z "$conclusion" ]; then
+            echo "Build jobs were skipped — skipping macOS signing"
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download macOS artifacts from CI
+        if: steps.builds.outputs.skipped != 'true'
+        uses: actions/download-artifact@v8
+        with:
+          run-id: ${{ steps.ci-run.outputs.run_id }}
+          github-token: ${{ github.token }}
+          pattern: bin-tako-darwin-*
+          path: raw
+
+      - name: Import macOS signing certificate
+        if: steps.builds.outputs.skipped != 'true'
+        env:
+          TAKO_CODESIGN_CERTIFICATE_BASE64: ${{ secrets.TAKO_CODESIGN_CERTIFICATE_BASE64 }}
+          TAKO_CODESIGN_CERTIFICATE_PASSWORD: ${{ secrets.TAKO_CODESIGN_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TAKO_CODESIGN_CERTIFICATE_BASE64}" ]; then
+            echo "::error::Missing secret TAKO_CODESIGN_CERTIFICATE_BASE64"
+            exit 1
+          fi
+          keychain_password="$(openssl rand -hex 24)"
+          keychain="$RUNNER_TEMP/tako-signing.keychain-db"
+          cert="$RUNNER_TEMP/tako-signing.p12"
+          if printf '%s' "$TAKO_CODESIGN_CERTIFICATE_BASE64" | base64 --decode > "$cert" 2>/dev/null; then
+            :
+          else
+            printf '%s' "$TAKO_CODESIGN_CERTIFICATE_BASE64" | base64 -D > "$cert"
+          fi
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$cert" -k "$keychain" -P "$TAKO_CODESIGN_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security list-keychains -d user -s "$keychain" login.keychain-db
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain"
+
+      - name: Sign macOS apps
+        if: steps.builds.outputs.skipped != 'true'
+        env:
+          TAKO_CODESIGN_IDENTITY: ${{ secrets.TAKO_CODESIGN_IDENTITY }}
+          TAKO_APPLE_TEAM_ID: ${{ secrets.TAKO_APPLE_TEAM_ID }}
+          TAKO_KEYCHAIN_ACCESS_GROUP: ${{ secrets.TAKO_KEYCHAIN_ACCESS_GROUP }}
+          TAKO_PROVISION_PROFILE_BASE64: ${{ secrets.TAKO_PROVISION_PROFILE_BASE64 }}
+        run: |
+          set -euo pipefail
+          for var in TAKO_CODESIGN_IDENTITY TAKO_APPLE_TEAM_ID TAKO_KEYCHAIN_ACCESS_GROUP TAKO_PROVISION_PROFILE_BASE64; do
+            if [ -z "${!var}" ]; then
+              echo "::error::Missing secret $var"
+              exit 1
+            fi
+          done
+          sh scripts/package-tako-app.sh \
+            raw/bin-tako-darwin-aarch64/tako \
+            raw/bin-tako-darwin-aarch64/Tako.app
+          sh scripts/package-tako-app.sh \
+            raw/bin-tako-darwin-x86_64/tako \
+            raw/bin-tako-darwin-x86_64/Tako.app
+          codesign --verify --verbose=4 raw/bin-tako-darwin-aarch64/Tako.app
+          codesign --verify --verbose=4 raw/bin-tako-darwin-x86_64/Tako.app
+
+      - name: Upload signed aarch64
+        if: steps.builds.outputs.skipped != 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: signed-bin-tako-darwin-aarch64
+          path: |
+            raw/bin-tako-darwin-aarch64/tako-dev-server
+            raw/bin-tako-darwin-aarch64/tako-dev-proxy
+            raw/bin-tako-darwin-aarch64/Tako.app
+          if-no-files-found: error
+
+      - name: Upload signed x86_64
+        if: steps.builds.outputs.skipped != 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: signed-bin-tako-darwin-x86_64
+          path: |
+            raw/bin-tako-darwin-x86_64/tako-dev-server
+            raw/bin-tako-darwin-x86_64/tako-dev-proxy
+            raw/bin-tako-darwin-x86_64/Tako.app
+          if-no-files-found: error
+
   publish-binaries:
     name: Publish binaries
+    needs: [sign-darwin]
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     environment: release
@@ -65,6 +186,13 @@ jobs:
           pattern: bin-*
           path: raw
 
+      - name: Download signed macOS artifacts
+        if: steps.builds.outputs.skipped != 'true'
+        uses: actions/download-artifact@v8
+        with:
+          pattern: signed-bin-tako-darwin-*
+          path: signed-raw
+
       - name: Package, sign, and publish
         if: steps.builds.outputs.skipped != 'true'
         env:
@@ -102,12 +230,14 @@ jobs:
 
           package_cli_darwin() {
             local arch=$1
-            local src="raw/bin-tako-darwin-${arch}"
+            local src="signed-raw/signed-bin-tako-darwin-${arch}"
             local name="tako-darwin-${arch}.tar.gz"
             local out="dist/${name}"
             tmpdir="$(mktemp -d)"
-            cp "$src/tako" "$src/tako-dev-server" "$src/tako-dev-proxy" "$tmpdir/"
-            tar -czf "$out" -C "$tmpdir" tako tako-dev-server tako-dev-proxy
+            cp "$src/tako-dev-server" "$src/tako-dev-proxy" "$tmpdir/"
+            cp -R "$src/Tako.app" "$tmpdir/"
+            chmod 0755 "$tmpdir/Tako.app/Contents/MacOS/tako"
+            tar -czf "$out" -C "$tmpdir" tako-dev-server tako-dev-proxy Tako.app
             (cd dist && sha256sum "$name") > "${out}.sha256"
             rm -rf "$tmpdir"
           }

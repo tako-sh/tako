@@ -8,10 +8,12 @@ set -eu
 #
 # What it does:
 # - downloads and installs `tako`, `tako-dev-server`, and `tako-dev-proxy` for your OS/architecture
+# - on macOS, installs `Tako.app` and symlinks `tako` to the signed CLI inside it
 # - installs binaries to ~/.local/bin by default
 #
 # Optional env vars:
 #   TAKO_INSTALL_DIR        default: $HOME/.local/bin
+#   TAKO_MACOS_APP_DIR      default: $HOME/Applications
 #   TAKO_URL                override archive URL (.tar.gz; optional)
 #   TAKO_DOWNLOAD_BASE_URL  override release download base URL (optional)
 #   TAKO_ALLOW_INSECURE_DOWNLOAD_BASE
@@ -119,6 +121,7 @@ if ! need_cmd tar; then
 fi
 
 TAKO_INSTALL_DIR="${TAKO_INSTALL_DIR:-$HOME/.local/bin}"
+TAKO_MACOS_APP_DIR="${TAKO_MACOS_APP_DIR:-$HOME/Applications}"
 TAKO_DOWNLOAD_BASE_URL="${TAKO_DOWNLOAD_BASE_URL:-}"
 TAKO_ALLOW_INSECURE_DOWNLOAD_BASE="${TAKO_ALLOW_INSECURE_DOWNLOAD_BASE:-}"
 TAKO_REPO_OWNER="${TAKO_REPO_OWNER:-lilienblum}"
@@ -195,10 +198,21 @@ else
 fi
 
 tar -xzf "$tmp_payload" -C "$tmp_extract"
-tmp_tako_bin="$(find "$tmp_extract" -type f -name tako | head -n 1 || true)"
-if [ -z "$tmp_tako_bin" ]; then
-  echo "error: archive did not contain a tako binary" >&2
-  exit 1
+tmp_tako_bin=""
+tmp_tako_app=""
+if [ "$os" = "darwin" ]; then
+  tmp_tako_app="$(find "$tmp_extract" -type d -name Tako.app | head -n 1 || true)"
+  if [ -z "$tmp_tako_app" ]; then
+    echo "error: archive did not contain Tako.app" >&2
+    exit 1
+  fi
+  tmp_tako_bin="$tmp_tako_app/Contents/MacOS/tako"
+else
+  tmp_tako_bin="$(find "$tmp_extract" -type f -name tako | head -n 1 || true)"
+  if [ -z "$tmp_tako_bin" ]; then
+    echo "error: archive did not contain a tako binary" >&2
+    exit 1
+  fi
 fi
 tmp_dev_server_bin="$(find "$tmp_extract" -type f -name tako-dev-server | head -n 1 || true)"
 if [ -z "$tmp_dev_server_bin" ]; then
@@ -210,18 +224,33 @@ if [ -z "$tmp_dev_proxy_bin" ]; then
   echo "error: archive did not contain a tako-dev-proxy binary" >&2
   exit 1
 fi
-
 mkdir -p "$TAKO_INSTALL_DIR"
 target_tako="$TAKO_INSTALL_DIR/tako"
 target_dev_server="$TAKO_INSTALL_DIR/tako-dev-server"
 target_dev_proxy="$TAKO_INSTALL_DIR/tako-dev-proxy"
-install -m 0755 "$tmp_tako_bin" "$target_tako"
 install -m 0755 "$tmp_dev_server_bin" "$target_dev_server"
 install -m 0755 "$tmp_dev_proxy_bin" "$target_dev_proxy"
 
-echo "OK installed tako to $target_tako"
 echo "OK installed tako-dev-server to $target_dev_server"
 echo "OK installed tako-dev-proxy to $target_dev_proxy"
+
+if [ "$os" = "darwin" ]; then
+  target_tako_app="$TAKO_MACOS_APP_DIR/Tako.app"
+  mkdir -p "$TAKO_MACOS_APP_DIR"
+  rm -rf "$target_tako_app"
+  if need_cmd ditto; then
+    ditto "$tmp_tako_app" "$target_tako_app"
+  else
+    cp -R "$tmp_tako_app" "$target_tako_app"
+  fi
+  chmod 0755 "$target_tako_app/Contents/MacOS/tako"
+  ln -sf "$target_tako_app/Contents/MacOS/tako" "$target_tako"
+  echo "OK installed Tako.app to $target_tako_app"
+  echo "OK linked tako to $target_tako"
+else
+  install -m 0755 "$tmp_tako_bin" "$target_tako"
+  echo "OK installed tako to $target_tako"
+fi
 
 case ":$PATH:" in
   *":$TAKO_INSTALL_DIR:"*)

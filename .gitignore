@@ -14,3 +14,4 @@ dist/
 .e2e-cache/
 .e2e-bin/
 .worktrees/
+.apple/

@@ -466,6 +466,12 @@ jobs:
           set -euo pipefail
           cargo build -p tako --bin tako --bin tako-dev-server --bin tako-dev-proxy --release --target aarch64-apple-darwin
           cargo build -p tako --bin tako --bin tako-dev-server --bin tako-dev-proxy --release --target x86_64-apple-darwin
+          sh scripts/package-tako-app.sh \
+            target/aarch64-apple-darwin/release/tako \
+            target/aarch64-apple-darwin/release/Tako.app
+          sh scripts/package-tako-app.sh \
+            target/x86_64-apple-darwin/release/tako \
+            target/x86_64-apple-darwin/release/Tako.app
 
       - name: Upload aarch64
         uses: actions/upload-artifact@v7
@@ -475,6 +481,7 @@ jobs:
             target/aarch64-apple-darwin/release/tako
             target/aarch64-apple-darwin/release/tako-dev-server
             target/aarch64-apple-darwin/release/tako-dev-proxy
+            target/aarch64-apple-darwin/release/Tako.app
           if-no-files-found: error
 
       - name: Upload x86_64
@@ -485,6 +492,7 @@ jobs:
             target/x86_64-apple-darwin/release/tako
             target/x86_64-apple-darwin/release/tako-dev-server
             target/x86_64-apple-darwin/release/tako-dev-proxy
+            target/x86_64-apple-darwin/release/Tako.app
           if-no-files-found: error
 
   e2e:

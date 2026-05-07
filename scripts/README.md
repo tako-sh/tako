@@ -4,7 +4,8 @@ Repository scripts used by installers, CI checks, and local development workflow
 
 ## Scripts
 
-- `install-tako.sh`: POSIX installer for local `tako`, `tako-dev-server`, and `tako-dev-proxy`.
+- `install-tako.sh`: POSIX installer for local `tako`, `tako-dev-server`, and `tako-dev-proxy`. On macOS it installs `Tako.app` and symlinks `tako` to the signed CLI inside the app bundle.
+- `package-tako-app.sh`: Packages the Rust `tako` binary as `Tako.app` for macOS signing and iCloud Keychain entitlements.
 - `install-tako-server.sh`: POSIX installer for `tako-server` on Linux hosts.
   - Both installers download assets from the rolling `latest` release (override with `TAKO_RELEASE_TAG`).
   - GitHub-hosted downloads use `GH_TOKEN` when set, falling back to `GITHUB_TOKEN`.

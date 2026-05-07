@@ -2,6 +2,7 @@ mod cli;
 mod commands;
 mod dev_server_client;
 mod github;
+mod keychain;
 mod output;
 mod paths;
 pub mod shell;
