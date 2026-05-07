@@ -86,7 +86,14 @@ jobs:
           security create-keychain -p "$keychain_password" "$keychain"
           security set-keychain-settings -lut 21600 "$keychain"
           security unlock-keychain -p "$keychain_password" "$keychain"
-          security import "$cert" -k "$keychain" -P "$TAKO_CODESIGN_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          if ! security import "$cert" -k "$keychain" -P "$TAKO_CODESIGN_CERTIFICATE_PASSWORD" -T /usr/bin/codesign; then
+            if [ -n "$TAKO_CODESIGN_CERTIFICATE_PASSWORD" ]; then
+              echo "Certificate import failed with TAKO_CODESIGN_CERTIFICATE_PASSWORD; retrying with an empty password"
+              security import "$cert" -k "$keychain" -P "" -T /usr/bin/codesign
+            else
+              exit 1
+            fi
+          fi
           security list-keychains -d user -s "$keychain" login.keychain-db
           security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain"
 
