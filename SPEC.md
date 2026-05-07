@@ -282,7 +282,7 @@ Install the CLI on your local machine:
 curl -fsSL https://tako.sh/install.sh | sh
 ```
 
-The hosted installer installs `tako`, `tako-dev-server`, and `tako-dev-proxy` from the same archive. On macOS, it installs `Tako.app` and symlinks `tako` to the signed CLI inside the app bundle.
+The hosted installer installs `tako`, `tako-dev-server`, and `tako-dev-proxy` from the same archive. On macOS, it installs `Tako.app`, verifies the signed app and helper binaries, and symlinks `tako` to the signed CLI inside the app bundle.
 
 Upgrade local CLI:
 
@@ -291,6 +291,7 @@ tako upgrade
 ```
 
 `tako upgrade` upgrades only the local CLI installation.
+On macOS, `tako upgrade` preserves the installer layout: it installs the verified `Tako.app` bundle atomically, keeps `tako` as a symlink to `Tako.app/Contents/MacOS/tako`, and installs `tako-dev-server` and `tako-dev-proxy` next to that symlink.
 
 Rolling release model:
 
@@ -391,7 +392,7 @@ Upgrade the local `tako` CLI binary to the latest available build.
 CLI upgrade strategy:
 
 - Homebrew install detection: runs `brew upgrade tako`
-- Default/fallback: downloads and runs hosted installer (`https://tako.sh/install.sh`) via `curl`/`wget`
+- Default/fallback: downloads the hosted CLI archive and installs it directly with the same layout as `scripts/install-tako.sh`
 
 ### tako dev [--variant {variant}]
 

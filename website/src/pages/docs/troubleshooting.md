@@ -277,7 +277,7 @@ Deploy also sends secrets when the server hash differs. Secret values are delive
 
 By default, environment keys are stored under Tako's data directory as `keys/{key_id}`. On macOS, interactive key creation and import can store keys in iCloud Keychain through the signed `Tako.app` CLI.
 
-If you see an iCloud entitlement error, reinstall Tako with the macOS installer so `tako` points to the signed app bundle. Tako fails before writing a local key file or updating `.tako/secrets.json` when the signed entitlement is unavailable.
+If you see an iCloud entitlement error, reinstall or upgrade Tako so `tako` points to the signed app bundle. Tako fails before writing a local key file or updating `.tako/secrets.json` when the signed entitlement is unavailable.
 
 ## Rollback Needed
 

@@ -37,6 +37,7 @@ tako upgrade
 ```
 
 GitHub-backed update checks and release downloads use `GH_TOKEN` when set, falling back to `GITHUB_TOKEN`.
+On macOS, `tako upgrade` preserves the signed `Tako.app` installation and keeps `tako` linked to the CLI inside the app bundle.
 
 ## `tako init`
 

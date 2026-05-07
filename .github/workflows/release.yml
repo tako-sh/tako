@@ -100,7 +100,7 @@ jobs:
           echo "TAKO_CODESIGN_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
           security find-identity -v -p codesigning "$keychain"
 
-      - name: Sign macOS apps
+      - name: Sign and package macOS artifacts
         if: steps.builds.outputs.skipped != 'true'
         env:
           TAKO_CODESIGN_IDENTITY: ${{ secrets.TAKO_CODESIGN_IDENTITY }}
@@ -115,14 +115,53 @@ jobs:
               exit 1
             fi
           done
-          sh scripts/package-tako-app.sh \
-            raw/bin-tako-darwin-aarch64/tako \
-            raw/bin-tako-darwin-aarch64/Tako.app
-          sh scripts/package-tako-app.sh \
-            raw/bin-tako-darwin-x86_64/tako \
-            raw/bin-tako-darwin-x86_64/Tako.app
-          codesign --verify --verbose=4 raw/bin-tako-darwin-aarch64/Tako.app
-          codesign --verify --verbose=4 raw/bin-tako-darwin-x86_64/Tako.app
+
+          codesign_binary() {
+            if [ -n "${TAKO_CODESIGN_KEYCHAIN:-}" ]; then
+              codesign --force --sign "$TAKO_CODESIGN_IDENTITY" --keychain "$TAKO_CODESIGN_KEYCHAIN" "$@"
+            else
+              codesign --force --sign "$TAKO_CODESIGN_IDENTITY" "$@"
+            fi
+          }
+
+          verify_archive() {
+            local archive=$1
+            local tmp
+            tmp="$(mktemp -d)"
+            tar -xzf "$archive" -C "$tmp"
+            codesign --verify --strict --deep --verbose=4 "$tmp/Tako.app"
+            codesign --verify --strict --verbose=4 "$tmp/Tako.app/Contents/MacOS/tako"
+            codesign --verify --strict --verbose=4 "$tmp/tako-dev-server"
+            codesign --verify --strict --verbose=4 "$tmp/tako-dev-proxy"
+            rm -rf "$tmp"
+          }
+
+          package_arch() {
+            local arch=$1
+            local src="raw/bin-tako-darwin-${arch}"
+            local name="tako-darwin-${arch}.tar.gz"
+            local out="signed-dist/${name}"
+            local tmp
+            sh scripts/package-tako-app.sh "$src/tako" "$src/Tako.app"
+            codesign_binary "$src/tako-dev-server"
+            codesign_binary "$src/tako-dev-proxy"
+            codesign --verify --strict --deep --verbose=4 "$src/Tako.app"
+            codesign --verify --strict --verbose=4 "$src/Tako.app/Contents/MacOS/tako"
+            codesign --verify --strict --verbose=4 "$src/tako-dev-server"
+            codesign --verify --strict --verbose=4 "$src/tako-dev-proxy"
+
+            mkdir -p signed-dist
+            tmp="$(mktemp -d)"
+            cp "$src/tako-dev-server" "$src/tako-dev-proxy" "$tmp/"
+            ditto "$src/Tako.app" "$tmp/Tako.app"
+            tar -czf "$out" -C "$tmp" tako-dev-server tako-dev-proxy Tako.app
+            (cd signed-dist && shasum -a 256 "$name") > "${out}.sha256"
+            verify_archive "$out"
+            rm -rf "$tmp"
+          }
+
+          package_arch aarch64
+          package_arch x86_64
 
       - name: Upload signed aarch64
         if: steps.builds.outputs.skipped != 'true'
@@ -130,9 +169,8 @@ jobs:
         with:
           name: signed-bin-tako-darwin-aarch64
           path: |
-            raw/bin-tako-darwin-aarch64/tako-dev-server
-            raw/bin-tako-darwin-aarch64/tako-dev-proxy
-            raw/bin-tako-darwin-aarch64/Tako.app
+            signed-dist/tako-darwin-aarch64.tar.gz
+            signed-dist/tako-darwin-aarch64.tar.gz.sha256
           if-no-files-found: error
 
       - name: Upload signed x86_64
@@ -141,9 +179,8 @@ jobs:
         with:
           name: signed-bin-tako-darwin-x86_64
           path: |
-            raw/bin-tako-darwin-x86_64/tako-dev-server
-            raw/bin-tako-darwin-x86_64/tako-dev-proxy
-            raw/bin-tako-darwin-x86_64/Tako.app
+            signed-dist/tako-darwin-x86_64.tar.gz
+            signed-dist/tako-darwin-x86_64.tar.gz.sha256
           if-no-files-found: error
 
   publish-binaries:
@@ -238,18 +275,12 @@ jobs:
             rm -rf "$tmpdir"
           }
 
-          package_cli_darwin() {
+          copy_cli_darwin() {
             local arch=$1
-            local src="signed-raw/signed-bin-tako-darwin-${arch}"
             local name="tako-darwin-${arch}.tar.gz"
-            local out="dist/${name}"
-            tmpdir="$(mktemp -d)"
-            cp "$src/tako-dev-server" "$src/tako-dev-proxy" "$tmpdir/"
-            cp -R "$src/Tako.app" "$tmpdir/"
-            chmod 0755 "$tmpdir/Tako.app/Contents/MacOS/tako"
-            tar -czf "$out" -C "$tmpdir" tako-dev-server tako-dev-proxy Tako.app
-            (cd dist && sha256sum "$name") > "${out}.sha256"
-            rm -rf "$tmpdir"
+            local src="signed-raw/signed-bin-tako-darwin-${arch}"
+            cp "$src/$name" "dist/$name"
+            cp "$src/$name.sha256" "dist/$name.sha256"
           }
 
           package_server x86_64 glibc
@@ -258,8 +289,8 @@ jobs:
           package_server aarch64 musl
           package_cli_linux x86_64
           package_cli_linux aarch64
-          package_cli_darwin aarch64
-          package_cli_darwin x86_64
+          copy_cli_darwin aarch64
+          copy_cli_darwin x86_64
 
           ls -la dist/
 

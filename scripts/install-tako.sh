@@ -8,7 +8,7 @@ set -eu
 #
 # What it does:
 # - downloads and installs `tako`, `tako-dev-server`, and `tako-dev-proxy` for your OS/architecture
-# - on macOS, installs `Tako.app` and symlinks `tako` to the signed CLI inside it
+# - on macOS, verifies `Tako.app`, installs it, and symlinks `tako` to the signed CLI inside it
 # - installs binaries to ~/.local/bin by default
 #
 # Optional env vars:
@@ -73,6 +73,30 @@ download_stdout() {
       wget -qO- "$url"
     fi
   fi
+}
+
+verify_macos_signature() {
+  path="$1"
+  if [ "$os" != "darwin" ]; then
+    return 0
+  fi
+  if ! need_cmd codesign; then
+    echo "error: codesign is required to verify macOS release artifacts" >&2
+    exit 1
+  fi
+  codesign --verify --strict --verbose=4 "$path"
+}
+
+verify_macos_app_signature() {
+  path="$1"
+  if [ "$os" != "darwin" ]; then
+    return 0
+  fi
+  if ! need_cmd codesign; then
+    echo "error: codesign is required to verify macOS release artifacts" >&2
+    exit 1
+  fi
+  codesign --verify --strict --deep --verbose=4 "$path"
 }
 
 is_enabled() {
@@ -207,6 +231,8 @@ if [ "$os" = "darwin" ]; then
     exit 1
   fi
   tmp_tako_bin="$tmp_tako_app/Contents/MacOS/tako"
+  verify_macos_app_signature "$tmp_tako_app"
+  verify_macos_signature "$tmp_tako_bin"
 else
   tmp_tako_bin="$(find "$tmp_extract" -type f -name tako | head -n 1 || true)"
   if [ -z "$tmp_tako_bin" ]; then
@@ -224,6 +250,8 @@ if [ -z "$tmp_dev_proxy_bin" ]; then
   echo "error: archive did not contain a tako-dev-proxy binary" >&2
   exit 1
 fi
+verify_macos_signature "$tmp_dev_server_bin"
+verify_macos_signature "$tmp_dev_proxy_bin"
 mkdir -p "$TAKO_INSTALL_DIR"
 target_tako="$TAKO_INSTALL_DIR/tako"
 target_dev_server="$TAKO_INSTALL_DIR/tako-dev-server"
@@ -243,7 +271,8 @@ if [ "$os" = "darwin" ]; then
   else
     cp -R "$tmp_tako_app" "$target_tako_app"
   fi
-  chmod 0755 "$target_tako_app/Contents/MacOS/tako"
+  verify_macos_app_signature "$target_tako_app"
+  verify_macos_signature "$target_tako_app/Contents/MacOS/tako"
   ln -sf "$target_tako_app/Contents/MacOS/tako" "$target_tako"
   echo "OK installed Tako.app to $target_tako_app"
   echo "OK linked tako to $target_tako"
