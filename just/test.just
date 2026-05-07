@@ -39,7 +39,7 @@ e2e fixture="":
     if [ -n "{{ fixture }}" ]; then
         ./e2e/run.sh "{{ fixture }}"
     else
-        for fixture in $(find e2e/fixtures -mindepth 2 -maxdepth 2 -type d | sort); do
+        for fixture in $(find e2e/fixtures -mindepth 3 -maxdepth 3 -type f -name tako.toml -exec dirname {} \; | sort); do
             ./e2e/run.sh "$fixture"
         done
     fi

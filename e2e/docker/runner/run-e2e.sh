@@ -99,6 +99,22 @@ wait_tako_socket() {
   return 1
 }
 
+wait_tako_management_http() {
+  local host=$1
+  for _ in $(seq 1 120); do
+    if curl -fsS -m 1 \
+      -H 'content-type: application/json' \
+      --data '{"command":"hello","protocol_version":0}' \
+      "http://${host}:9844/rpc" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.25
+  done
+  echo "tako-server management HTTP not ready: $host" >&2
+  ssh_exec "$host" "tail -n 120 /tmp/tako-server.log || true" >&2 || true
+  return 1
+}
+
 resolve_current_release_link() {
   local host=$1
   for _ in $(seq 1 20); do
@@ -488,8 +504,9 @@ start_tako_server() {
   ssh_exec "$host" "sudo sh -c 'set -eu; cp /home/tako/tako-server.next /usr/local/bin/tako-server; chown root:root /usr/local/bin/tako-server; chmod 0755 /usr/local/bin/tako-server; setcap cap_net_bind_service,cap_setuid,cap_setgid=+ep /usr/local/bin/tako-server; rm -f /home/tako/tako-server.next'"
   ssh_exec "$host" "sudo pkill -x tako-server >/dev/null 2>&1 || true"
   ssh_exec "$host" "sudo rm -f /var/run/tako/tako.sock"
-  ssh_exec "$host" "RUST_LOG=info nohup /usr/local/bin/tako-server --no-acme --port 8080 --tls-port 8443 --data-dir /opt/tako >/tmp/tako-server.log 2>&1 &"
+  ssh_exec "$host" "RUST_LOG=info nohup /usr/local/bin/tako-server --no-acme --port 8080 --tls-port 8443 --data-dir /opt/tako --management-host 0.0.0.0 >/tmp/tako-server.log 2>&1 &"
   wait_tako_socket "$host"
+  wait_tako_management_http "$host"
 }
 
 # Wait for SSH on all servers
