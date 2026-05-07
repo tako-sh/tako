@@ -329,32 +329,30 @@ fn resolve_secret_environment(
     let secrets = crate::config::SecretsStore::load_from_dir(&context.project_dir)?;
     let mut wizard = output::Wizard::new().with_fields(&[("Environment", false), ("Name", true)]);
 
-    loop {
-        let choice = wizard.select(
-            "Environment",
-            label,
-            secret_environment_options(&tako_config, &secrets),
-            &[],
-            0,
-        )?;
-        match choice {
-            SecretEnvironmentChoice::Existing(env) => return Ok(env),
-            SecretEnvironmentChoice::New => loop {
-                wizard.set_visible("Name", true);
-                let name = wizard.input(
-                    "Name",
-                    None,
-                    Some("Use lowercase letters, numbers, and hyphens."),
-                )?;
-                match crate::config::validate_environment_name(&name) {
-                    Ok(()) => return Ok(name),
-                    Err(e) => {
-                        output::warning(&e.to_string());
-                        wizard.undo_last();
-                    }
+    let choice = wizard.select(
+        "Environment",
+        label,
+        secret_environment_options(&tako_config, &secrets),
+        &[],
+        0,
+    )?;
+    match choice {
+        SecretEnvironmentChoice::Existing(env) => Ok(env),
+        SecretEnvironmentChoice::New => loop {
+            wizard.set_visible("Name", true);
+            let name = wizard.input(
+                "Name",
+                None,
+                Some("Use lowercase letters, numbers, and hyphens."),
+            )?;
+            match crate::config::validate_environment_name(&name) {
+                Ok(()) => return Ok(name),
+                Err(e) => {
+                    output::warning(&e.to_string());
+                    wizard.undo_last();
                 }
-            },
-        }
+            }
+        },
     }
 }
 
@@ -481,17 +479,15 @@ fn resolve_secret_set_input(
                     }
                 }
 
-                loop {
-                    match read_secret_value_in_wizard(&mut wizard, &secrets, name, &env) {
-                        Ok(value) => {
-                            return Ok(Some(SecretSetInput { env, value }));
-                        }
-                        Err(e) if output::is_wizard_back(&e) => {
-                            wizard.undo_last();
-                            continue 'environment;
-                        }
-                        Err(e) => return Err(e.into()),
+                match read_secret_value_in_wizard(&mut wizard, &secrets, name, &env) {
+                    Ok(value) => {
+                        return Ok(Some(SecretSetInput { env, value }));
                     }
+                    Err(e) if output::is_wizard_back(&e) => {
+                        wizard.undo_last();
+                        continue 'environment;
+                    }
+                    Err(e) => return Err(e.into()),
                 }
             }
             SecretEnvironmentChoice::New => {
@@ -516,48 +512,45 @@ fn resolve_secret_set_input(
                         continue 'name;
                     }
 
-                    loop {
-                        if secrets.contains(&env, name) {
-                            wizard.set_visible("Override", true);
-                            'override_new: loop {
-                                let prompt = secret_override_prompt(name);
-                                match wizard.confirm_default("Override", &prompt, false) {
-                                    Ok(true) => {}
-                                    Ok(false) => {
-                                        output::operation_cancelled();
-                                        return Ok(None);
-                                    }
-                                    Err(e) if output::is_wizard_back(&e) => {
-                                        wizard.undo_last();
-                                        continue 'name;
-                                    }
-                                    Err(e) => return Err(e.into()),
+                    if secrets.contains(&env, name) {
+                        wizard.set_visible("Override", true);
+                        'override_new: loop {
+                            let prompt = secret_override_prompt(name);
+                            match wizard.confirm_default("Override", &prompt, false) {
+                                Ok(true) => {}
+                                Ok(false) => {
+                                    output::operation_cancelled();
+                                    return Ok(None);
                                 }
+                                Err(e) if output::is_wizard_back(&e) => {
+                                    wizard.undo_last();
+                                    continue 'name;
+                                }
+                                Err(e) => return Err(e.into()),
+                            }
 
-                                match read_secret_value_in_wizard(&mut wizard, &secrets, name, &env)
-                                {
-                                    Ok(value) => {
-                                        return Ok(Some(SecretSetInput { env, value }));
-                                    }
-                                    Err(e) if output::is_wizard_back(&e) => {
-                                        wizard.undo_last();
-                                        continue 'override_new;
-                                    }
-                                    Err(e) => return Err(e.into()),
+                            match read_secret_value_in_wizard(&mut wizard, &secrets, name, &env) {
+                                Ok(value) => {
+                                    return Ok(Some(SecretSetInput { env, value }));
                                 }
+                                Err(e) if output::is_wizard_back(&e) => {
+                                    wizard.undo_last();
+                                    continue 'override_new;
+                                }
+                                Err(e) => return Err(e.into()),
                             }
                         }
+                    }
 
-                        match read_secret_value_in_wizard(&mut wizard, &secrets, name, &env) {
-                            Ok(value) => {
-                                return Ok(Some(SecretSetInput { env, value }));
-                            }
-                            Err(e) if output::is_wizard_back(&e) => {
-                                wizard.undo_last();
-                                continue 'name;
-                            }
-                            Err(e) => return Err(e.into()),
+                    match read_secret_value_in_wizard(&mut wizard, &secrets, name, &env) {
+                        Ok(value) => {
+                            return Ok(Some(SecretSetInput { env, value }));
                         }
+                        Err(e) if output::is_wizard_back(&e) => {
+                            wizard.undo_last();
+                            continue 'name;
+                        }
+                        Err(e) => return Err(e.into()),
                     }
                 }
             }

@@ -1156,7 +1156,8 @@ Reference scripts in this repo:
 - Cache key includes request host + URI so different route hosts are isolated.
 - Proxy cache storage is in-memory with bounded LRU eviction (256 MiB total, 8 MiB per cached response body).
 - Per-IP rate limiting: maximum 2048 concurrent connections per client IP; excess requests receive `429`.
-- Maximum request body size: 128 MiB; larger requests receive `413`.
+- Maximum HTTP request body size: 128 MiB; larger requests receive `413`.
+- Maximum channel WebSocket frame payload size: 128 MiB; larger frames are rejected and the socket closes.
 - Production browser-facing `tako-server` 5xx responses use generic reason-phrase bodies such as `Internal Server Error`, `Bad Gateway`, `Service Unavailable`, or `Gateway Timeout`; detailed startup, proxy, channel storage, and static file diagnostics are written to server/app logs instead of response bodies.
 - No application path namespace is reserved at the edge proxy. Requests are routed strictly by configured routes.
 
@@ -1733,6 +1734,7 @@ Channel WebSocket transport uses JSON text frames:
 
 - server-to-client text frames are serialized `ChannelMessage` objects
 - client-to-server text frames are parsed as `ChannelPublishPayload` objects, routed through the channel's declared `handler`, and the handler's return value is fanned out to subscribers
+- client-to-server frame payloads are capped at 128 MiB, matching the proxy request body limit
 
 Channel routes are exact and flat: `defineChannel({ name: "chat", ... })` is served at `/channels/chat`. Dynamic values are query params validated against the channel's declared JSON Schema, for example `/channels/chat?roomId=room-123`.
 

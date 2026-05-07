@@ -19,6 +19,13 @@ use tracing::Instrument;
 const DIM: &str = "\x1b[2m";
 const RESET: &str = "\x1b[0m";
 
+#[derive(Clone, Copy)]
+struct LogOutputOptions {
+    show_prefix: bool,
+    colorize: bool,
+    json: bool,
+}
+
 pub fn run(
     requested_env: Option<&str>,
     tail: bool,
@@ -70,6 +77,11 @@ async fn run_async(
 
     let colorize = output::is_interactive();
     let show_prefix = server_names.len() > 1;
+    let log_output = LogOutputOptions {
+        show_prefix,
+        colorize,
+        json,
+    };
     let route_filters = tako_config.get_routes(&env).unwrap_or_default();
 
     if tail {
@@ -102,9 +114,7 @@ async fn run_async(
             &remote_app_name,
             &route_filters,
             days,
-            show_prefix,
-            colorize,
-            json,
+            log_output,
         )
         .await
     }
@@ -203,9 +213,7 @@ async fn fetch_logs(
     app_name: &str,
     route_filters: &[String],
     days: u32,
-    show_prefix: bool,
-    colorize: bool,
-    json: bool,
+    output_options: LogOutputOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let total = server_names.len();
     let progress_label = if total > 1 {
@@ -213,7 +221,7 @@ async fn fetch_logs(
     } else {
         "Fetching logs…".to_string()
     };
-    let phase = (!json).then(|| output::PhaseSpinner::start(&progress_label));
+    let phase = (!output_options.json).then(|| output::PhaseSpinner::start(&progress_label));
 
     let collected: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
     let done_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -292,7 +300,7 @@ async fn fetch_logs(
         if let Some(phase) = phase {
             phase.finish("No logs found");
         }
-        if !json {
+        if !output_options.json {
             output::warning(&format!(
                 "No logs in the last {} days. Try {} to stream live logs.",
                 days,
@@ -306,13 +314,13 @@ async fn fetch_logs(
         phase.finish("Logs fetched");
     }
 
-    if json {
+    if output_options.json {
         print!("{}", format_json_lines(&lines));
         return Ok(());
     }
 
     // Format and dedup.
-    let formatted = format_and_dedup(&lines, show_prefix, colorize);
+    let formatted = format_and_dedup(&lines, output_options.show_prefix, output_options.colorize);
 
     // Show in pager or print directly.
     if output::is_interactive() {

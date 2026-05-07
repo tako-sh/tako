@@ -645,12 +645,10 @@ impl ShutdownSignalWatch for TakoShutdownSignalWatch {
             _ = graceful_terminate.recv() => {
                 let drain = self.state.shutdown_runtime(self.workflow_drain_timeout);
                 tokio::pin!(drain);
-                loop {
-                    tokio::select! {
-                        _ = &mut drain => return ShutdownSignal::GracefulTerminate,
-                        _ = fast_shutdown.recv() => return ShutdownSignal::FastShutdown,
-                        _ = graceful_terminate.recv() => return ShutdownSignal::FastShutdown,
-                    }
+                tokio::select! {
+                    _ = &mut drain => ShutdownSignal::GracefulTerminate,
+                    _ = fast_shutdown.recv() => ShutdownSignal::FastShutdown,
+                    _ = graceful_terminate.recv() => ShutdownSignal::FastShutdown,
                 }
             }
         }

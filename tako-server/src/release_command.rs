@@ -36,13 +36,23 @@ pub async fn run(
     cwd: &Path,
     env: &HashMap<String, String>,
 ) -> Result<ReleaseCommandOutcome, String> {
+    run_with_timeout(command_line, cwd, env, RELEASE_COMMAND_TIMEOUT).await
+}
+
+async fn run_with_timeout(
+    command_line: &str,
+    cwd: &Path,
+    env: &HashMap<String, String>,
+    timeout_duration: Duration,
+) -> Result<ReleaseCommandOutcome, String> {
     let mut cmd = TokioCommand::new("sh");
     cmd.args(["-c", command_line])
         .current_dir(cwd)
         .env_clear()
         .envs(env)
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
 
     let mut child = cmd
         .spawn()
@@ -62,7 +72,7 @@ pub async fn run(
         status.map_err(|e| format!("Failed to wait on release command: {e}"))
     };
 
-    match timeout(RELEASE_COMMAND_TIMEOUT, combined).await {
+    match timeout(timeout_duration, combined).await {
         Ok(Ok(status)) => Ok(ReleaseCommandOutcome {
             exit_code: status.code(),
             stdout,
@@ -141,6 +151,25 @@ mod tests {
             .unwrap();
         assert_eq!(outcome.exit_code, Some(1));
         assert!(outcome.stderr.contains("oops"));
+    }
+
+    #[tokio::test]
+    async fn timeout_stops_release_command_process() {
+        let dir = TempDir::new().unwrap();
+        let marker = dir.path().join("marker.txt");
+        let command = format!("sleep 0.2; touch {}", marker.display());
+        let outcome = run_with_timeout(
+            &command,
+            dir.path(),
+            &empty_env(),
+            Duration::from_millis(25),
+        )
+        .await
+        .unwrap();
+
+        assert!(outcome.timed_out);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!marker.exists());
     }
 
     #[tokio::test]

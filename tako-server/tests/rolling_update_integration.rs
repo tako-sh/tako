@@ -2,11 +2,35 @@ mod support;
 
 use std::collections::HashMap;
 use std::fs;
+use std::path::Path;
 use std::time::Duration;
 
-use support::{
-    TestServer, bun_ok, can_bind_local_ports, wait_for, write_bun_app, write_failing_bun_app,
-};
+use support::{TestServer, bun_ok, can_bind_local_ports, wait_for, write_bun_app};
+
+fn write_failing_bun_app(app_dir: &Path, message: &str) {
+    fs::create_dir_all(app_dir.join("src")).unwrap();
+    fs::create_dir_all(app_dir.join("node_modules/tako.sh/dist/entrypoints")).unwrap();
+    fs::write(
+        app_dir.join("package.json"),
+        r#"{"name":"test-app","scripts":{"dev":"bun src/index.ts"}}"#,
+    )
+    .unwrap();
+    fs::write(
+        app_dir.join("node_modules/tako.sh/dist/entrypoints/bun-server.mjs"),
+        "await import(process.argv[2]);",
+    )
+    .unwrap();
+    fs::write(
+        app_dir.join("app.json"),
+        r#"{"runtime":"bun","main":"src/index.ts","idle_timeout":300,"install":"true","start":["bun","{main}"]}"#,
+    )
+    .unwrap();
+    fs::write(
+        app_dir.join("src/index.ts"),
+        format!("throw new Error({message:?});\n"),
+    )
+    .unwrap();
+}
 
 #[test]
 fn rolling_update_deploy_updates_version_and_serves_new_code() {

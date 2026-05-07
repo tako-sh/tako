@@ -192,9 +192,7 @@ impl Routes {
     ) -> Option<u16> {
         let notify = {
             let apps = self.apps.lock().unwrap();
-            let Some(r) = apps.get(app_id) else {
-                return None;
-            };
+            let r = apps.get(app_id)?;
             if r.active {
                 return Some(r.upstream_port);
             }

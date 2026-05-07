@@ -359,28 +359,3 @@ pub fn write_bun_app(app_dir: &Path, body: &str) {
     .unwrap();
     fs::write(app_dir.join("src/index.ts"), bun_app_source(body)).unwrap();
 }
-
-pub fn write_failing_bun_app(app_dir: &Path, message: &str) {
-    fs::create_dir_all(app_dir.join("src")).unwrap();
-    fs::create_dir_all(app_dir.join("node_modules/tako.sh/dist/entrypoints")).unwrap();
-    fs::write(
-        app_dir.join("package.json"),
-        r#"{"name":"test-app","scripts":{"dev":"bun src/index.ts"}}"#,
-    )
-    .unwrap();
-    fs::write(
-        app_dir.join("node_modules/tako.sh/dist/entrypoints/bun-server.mjs"),
-        "await import(process.argv[2]);",
-    )
-    .unwrap();
-    fs::write(
-        app_dir.join("app.json"),
-        r#"{"runtime":"bun","main":"src/index.ts","idle_timeout":300,"install":"true","start":["bun","{main}"]}"#,
-    )
-    .unwrap();
-    fs::write(
-        app_dir.join("src/index.ts"),
-        format!("throw new Error({message:?});\n"),
-    )
-    .unwrap();
-}

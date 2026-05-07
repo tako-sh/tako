@@ -5,6 +5,7 @@ use openssl::sha::sha1;
 use pingora_http::{RequestHeader, ResponseHeader};
 
 const WEBSOCKET_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+const MAX_WEBSOCKET_FRAME_PAYLOAD_BYTES: u64 = crate::proxy::MAX_REQUEST_BODY_BYTES;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WebSocketFrame {
@@ -72,6 +73,11 @@ impl WebSocketFrameReader {
                 "invalid websocket control frame".to_string(),
             ));
         }
+        if payload_len > MAX_WEBSOCKET_FRAME_PAYLOAD_BYTES {
+            return Err(ChannelError::BadRequest(
+                "websocket frame too large".to_string(),
+            ));
+        }
 
         let mask = if masked {
             if self.buffer.len() < offset + 4 {
@@ -89,8 +95,10 @@ impl WebSocketFrameReader {
             None
         };
 
+        let payload_len = usize::try_from(payload_len)
+            .map_err(|_| ChannelError::BadRequest("websocket frame too large".to_string()))?;
         let total_len = offset
-            .checked_add(payload_len as usize)
+            .checked_add(payload_len)
             .ok_or_else(|| ChannelError::BadRequest("websocket frame too large".to_string()))?;
         if self.buffer.len() < total_len {
             return Ok(None);
@@ -263,6 +271,19 @@ mod tests {
         let frame = reader.next_frame().unwrap().unwrap();
         assert_eq!(frame.opcode, 0x1);
         assert_eq!(frame.payload, b"Hello".to_vec());
+    }
+
+    #[test]
+    fn websocket_reader_rejects_frames_above_proxy_body_limit() {
+        let mut reader = WebSocketFrameReader::default();
+        let too_large = MAX_WEBSOCKET_FRAME_PAYLOAD_BYTES + 1;
+        let mut frame = vec![0x81, 0xff];
+        frame.extend_from_slice(&too_large.to_be_bytes());
+        frame.extend_from_slice(&[0, 0, 0, 0]);
+        reader.extend(&frame);
+
+        let err = reader.next_frame().unwrap_err();
+        assert!(err.to_string().contains("too large"));
     }
 
     #[test]

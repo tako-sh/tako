@@ -244,7 +244,7 @@ release = ""
 
 `[envs.<env>].release` overrides the top-level command. An empty string clears the inherited command for that environment.
 
-The command runs as `sh -c` in the new release directory with normal app env, secrets, `TAKO_BUILD`, and `TAKO_DATA_DIR`. It has a 10-minute timeout. If it fails, deploy aborts and old instances keep serving.
+The command runs as `sh -c` in the new release directory with normal app env, secrets, `TAKO_BUILD`, and `TAKO_DATA_DIR`. It has a 10-minute timeout. If it fails or times out, deploy aborts, the timed-out process is killed, and old instances keep serving.
 
 ## Workflow Workers
 
