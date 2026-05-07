@@ -4,6 +4,18 @@ use tako_core::{Command, Response, ServerRuntimeInfo};
 
 use super::*;
 
+const MANAGEMENT_AUTH_KEYS_PATH: &str = "/opt/tako/management-authorized-keys";
+const INSTALL_SERVER_SCRIPT: &str = include_str!("../../../../scripts/install-tako-server.sh");
+const INSTALL_ENV_PASSTHROUGH: &[&str] = &[
+    "TAKO_SERVER_URL",
+    "TAKO_DOWNLOAD_BASE_URL",
+    "TAKO_ALLOW_INSECURE_DOWNLOAD_BASE",
+    "TAKO_REPO_OWNER",
+    "TAKO_REPO_NAME",
+    "TAKO_RELEASE_TAG",
+    "TAKO_MANAGEMENT_HOST",
+];
+
 impl SshClient {
     pub async fn tako_restart(&self) -> SshResult<()> {
         self.exec_checked(&Self::tako_restart_command()).await?;
@@ -186,6 +198,32 @@ impl SshClient {
         parse_ok_data_response(response_str)
     }
 
+    pub async fn enroll_management_key(&self) -> SshResult<()> {
+        let public_key = self.authenticated_public_key().ok_or_else(|| {
+            SshError::Authentication("No authenticated SSH key available to enroll".to_string())
+        })?;
+        let command = format!(
+            "sudo sh -c 'cat > {path} && chown tako:tako {path} && chmod 600 {path}'",
+            path = MANAGEMENT_AUTH_KEYS_PATH
+        );
+
+        self.exec_checked_with_stdin(&command, format!("{public_key}\n").as_bytes())
+            .await?;
+        Ok(())
+    }
+
+    pub async fn install_tako_server(&self) -> SshResult<()> {
+        let public_key = self.authenticated_public_key().ok_or_else(|| {
+            SshError::Authentication("No authenticated SSH key available for install".to_string())
+        })?;
+        let command =
+            Self::run_with_root_or_sudo(&format!("{} sh -s", install_server_env(public_key)));
+
+        self.exec_checked_with_stdin(&command, INSTALL_SERVER_SCRIPT.as_bytes())
+            .await?;
+        Ok(())
+    }
+
     pub async fn tako_enter_upgrading(&self, owner: &str) -> SshResult<()> {
         let cmd = Command::EnterUpgrading {
             owner: owner.to_string(),
@@ -241,6 +279,18 @@ impl SshClient {
     }
 }
 
+fn install_server_env(public_key: &str) -> String {
+    let mut assignments = vec![format!("TAKO_SSH_PUBKEY={}", shell_quote(public_key))];
+    for key in INSTALL_ENV_PASSTHROUGH {
+        if let Ok(value) = std::env::var(key)
+            && !value.is_empty()
+        {
+            assignments.push(format!("{key}={}", shell_quote(&value)));
+        }
+    }
+    assignments.join(" ")
+}
+
 fn parse_ok_unit_response(response_str: String) -> SshResult<()> {
     let response: Response =
         serde_json::from_str(&response_str).map_err(|e| SshError::CommandFailed(e.to_string()))?;
@@ -258,5 +308,31 @@ fn parse_ok_data_response<T: serde::de::DeserializeOwned>(response_str: String) 
             serde_json::from_value(data).map_err(|e| SshError::CommandFailed(e.to_string()))
         }
         Response::Error { message } => Err(SshError::CommandFailed(message)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn install_server_env_includes_authenticated_public_key() {
+        let env = install_server_env("ssh-ed25519 AAAA test@example");
+
+        assert!(env.contains("TAKO_SSH_PUBKEY='ssh-ed25519 AAAA test@example'"));
+    }
+
+    #[test]
+    fn install_server_env_passes_release_tag_override() {
+        let previous = std::env::var("TAKO_RELEASE_TAG").ok();
+        unsafe { std::env::set_var("TAKO_RELEASE_TAG", "v0.0.0-test") };
+
+        let env = install_server_env("ssh-ed25519 AAAA");
+
+        assert!(env.contains("TAKO_RELEASE_TAG='v0.0.0-test'"));
+        match previous {
+            Some(value) => unsafe { std::env::set_var("TAKO_RELEASE_TAG", value) },
+            None => unsafe { std::env::remove_var("TAKO_RELEASE_TAG") },
+        }
     }
 }

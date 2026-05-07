@@ -23,6 +23,8 @@ const TAKO_SERVER_SERVICE_HELPER: &str = "/usr/local/bin/tako-server-service";
 pub struct SshConfig {
     /// Remote hostname or IP
     pub host: String,
+    /// Remote SSH user
+    pub user: String,
     /// SSH port (default 22)
     pub port: u16,
     /// Connection timeout
@@ -34,8 +36,14 @@ pub struct SshConfig {
 impl SshConfig {
     /// Create config from server entry
     pub fn from_server(host: &str, port: u16) -> Self {
+        Self::for_user(host, port, "tako")
+    }
+
+    /// Create config for a specific SSH user.
+    pub fn for_user(host: &str, port: u16, user: &str) -> Self {
         Self {
             host: host.to_string(),
+            user: user.to_string(),
             port,
             timeout: Duration::from_secs(30),
             keys_dir: None,
@@ -130,6 +138,7 @@ pub struct SshClient {
     config: SshConfig,
     /// SSH session handle (public for SFTP access)
     pub handle: Option<Handle<SshHandler>>,
+    authenticated_public_key: Option<String>,
 
     tako_hello_checked: std::sync::atomic::AtomicBool,
 }
@@ -140,6 +149,7 @@ impl SshClient {
         Self {
             config,
             handle: None,
+            authenticated_public_key: None,
             tako_hello_checked: std::sync::atomic::AtomicBool::new(false),
         }
     }
@@ -166,8 +176,8 @@ impl SshClient {
     /// Connect to the remote server
     pub async fn connect(&mut self) -> SshResult<()> {
         let _t = crate::output::timed(&format!(
-            "SSH connect to {}:{}",
-            self.config.host, self.config.port
+            "SSH connect to {}@{}:{}",
+            self.config.user, self.config.host, self.config.port
         ));
         let ssh_config = Config {
             inactivity_timeout: Some(self.config.timeout),
@@ -229,6 +239,10 @@ impl SshClient {
     pub fn config(&self) -> &SshConfig {
         &self.config
     }
+
+    pub fn authenticated_public_key(&self) -> Option<&str> {
+        self.authenticated_public_key.as_deref()
+    }
 }
 
 impl Drop for SshClient {
@@ -273,8 +287,14 @@ l4QMs5cmnWfrM0GQ==\n\
     #[test]
     fn test_ssh_config_creation() {
         let config = SshConfig::from_server("example.com", 22);
-        assert_eq!(config.host, "example.com");
-        assert_eq!(config.port, 22);
+        assert_eq!(
+            (config.host.as_str(), config.user.as_str(), config.port),
+            ("example.com", "tako", 22)
+        );
+        assert_eq!(
+            SshConfig::for_user("example.com", 2222, "root").user,
+            "root"
+        );
     }
 
     #[test]

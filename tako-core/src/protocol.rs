@@ -8,7 +8,22 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
 
 pub const PROTOCOL_VERSION: u32 = 0;
+pub const MANAGEMENT_AUTH_NAMESPACE: &str = "tako-management-rpc-v0";
 const DEPLOYMENT_APP_ID_SEPARATOR: char = '/';
+
+pub fn management_auth_message(timestamp: &str, nonce: &str, body: &[u8]) -> Vec<u8> {
+    let mut message = Vec::with_capacity(
+        MANAGEMENT_AUTH_NAMESPACE.len() + timestamp.len() + nonce.len() + body.len() + 4,
+    );
+    message.extend_from_slice(MANAGEMENT_AUTH_NAMESPACE.as_bytes());
+    message.push(b'\n');
+    message.extend_from_slice(timestamp.as_bytes());
+    message.push(b'\n');
+    message.extend_from_slice(nonce.as_bytes());
+    message.push(b'\n');
+    message.extend_from_slice(body);
+    message
+}
 
 pub fn deployment_app_id(app_name: &str, env_name: &str) -> String {
     format!("{app_name}{DEPLOYMENT_APP_ID_SEPARATOR}{env_name}")
@@ -321,6 +336,8 @@ pub enum UpgradeMode {
 pub struct ServerRuntimeInfo {
     pub pid: u32,
     pub mode: UpgradeMode,
+    #[serde(default)]
+    pub process_started_at_unix_secs: Option<i64>,
     pub socket: String,
     pub data_dir: String,
     pub http_port: u16,
@@ -523,6 +540,16 @@ mod tests {
         let json = serde_json::to_string(&cmd).unwrap();
         assert!(json.contains("status"));
         assert!(json.contains("my-app"));
+    }
+
+    #[test]
+    fn management_auth_message_includes_context_and_body() {
+        let message = management_auth_message("1778220000", "abc123", br#"{"command":"list"}"#);
+
+        assert_eq!(
+            message,
+            b"tako-management-rpc-v0\n1778220000\nabc123\n{\"command\":\"list\"}"
+        );
     }
 
     #[test]
@@ -943,6 +970,7 @@ mod tests {
         let info = ServerRuntimeInfo {
             pid: 42,
             mode: UpgradeMode::Normal,
+            process_started_at_unix_secs: Some(1_778_220_000),
             socket: "/var/run/tako/tako.sock".to_string(),
             data_dir: "/var/lib/tako".to_string(),
             http_port: 80,

@@ -16,7 +16,7 @@ pub async fn prompt_to_add_server(
         return Ok(None);
     }
 
-    run_add_server_wizard(None, None, 22, true).await
+    run_add_server_wizard(None, None, 22, true, true, None).await
 }
 
 fn append_unique_suggestions(target: &mut Vec<String>, source: &[String]) {
@@ -42,11 +42,96 @@ struct WizardConnectionResult {
     server_name: Option<String>,
 }
 
+pub struct AddServerOptions<'a> {
+    pub name: Option<&'a str>,
+    pub description: Option<&'a str>,
+    pub port: u16,
+    pub no_test: bool,
+    pub pre_detected_target: Option<crate::config::ServerTarget>,
+    pub install_if_missing: bool,
+    pub admin_user: Option<&'a str>,
+}
+
+async fn check_tako_connection(host: &str, port: u16) -> Result<WizardConnectionResult, String> {
+    use crate::ssh::{SshClient, SshConfig};
+
+    let ssh_config = SshConfig::from_server(host, port);
+    let mut ssh = SshClient::new(ssh_config);
+    ssh.connect().await.map_err(|e| e.to_string())?;
+
+    let result = async {
+        let target = detect_server_target(&ssh)
+            .await
+            .map_err(|e| format!("Target detection failed: {e}"))?;
+        tracing::debug!("Detected target: {}", target.label());
+
+        let (installed, version, server_name) = match ssh.is_tako_installed().await {
+            Ok(true) => {
+                let ver = ssh.tako_version().await.ok().flatten();
+                let sn = ssh
+                    .tako_server_info()
+                    .await
+                    .ok()
+                    .and_then(|info| info.server_name);
+                (true, ver, sn)
+            }
+            Ok(false) => (false, None, None),
+            Err(_) => (false, None, None),
+        };
+
+        if installed {
+            ssh.enroll_management_key()
+                .await
+                .map_err(|e| format!("Management key enrollment failed: {e}"))?;
+        }
+
+        Ok(WizardConnectionResult {
+            target,
+            version,
+            installed,
+            server_name,
+        })
+    }
+    .await;
+
+    let disconnect = ssh.disconnect().await.map_err(|e| e.to_string());
+    match (result, disconnect) {
+        (Ok(info), Ok(())) => Ok(info),
+        (Ok(_), Err(error)) => Err(error),
+        (Err(error), _) => Err(error),
+    }
+}
+
+async fn install_tako_server_with_admin(
+    host: &str,
+    port: u16,
+    admin_user: &str,
+) -> Result<(), String> {
+    use crate::ssh::{SshClient, SshConfig};
+
+    let ssh_config = SshConfig::for_user(host, port, admin_user);
+    let mut ssh = SshClient::new(ssh_config);
+    ssh.connect().await.map_err(|e| e.to_string())?;
+
+    let result = ssh
+        .install_tako_server()
+        .await
+        .map_err(|e| format!("Install failed: {e}"));
+    let disconnect = ssh.disconnect().await.map_err(|e| e.to_string());
+    match (result, disconnect) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Ok(()), Err(error)) => Err(error),
+        (Err(error), _) => Err(error),
+    }
+}
+
 pub(super) async fn run_add_server_wizard(
     initial_name: Option<&str>,
     initial_description: Option<&str>,
     initial_port: u16,
     default_test_ssh: bool,
+    allow_install: bool,
+    admin_user_default: Option<&str>,
 ) -> Result<Option<String>, Box<dyn std::error::Error>> {
     use crate::config::{CliHistoryToml, ServersToml};
 
@@ -168,53 +253,51 @@ pub(super) async fn run_add_server_wizard(
     let mut detected_target: Option<crate::config::ServerTarget> = None;
 
     if default_test_ssh {
-        use crate::ssh::{SshClient, SshConfig};
-
-        let ssh_config = SshConfig::from_server(&host, port);
-        let mut ssh = SshClient::new(ssh_config);
-
         let host_span = output::scope(&host);
         let _t = output::timed(&format!("Test SSH connection to {host}:{port}"));
-        let result: Result<WizardConnectionResult, String> = output::with_spinner_async_err(
+        let mut result: Result<WizardConnectionResult, String> = output::with_spinner_async_err(
             "Connecting",
             "Connection successful",
             "Connection failed",
-            async {
-                ssh.connect().await.map_err(|e| e.to_string())?;
-
-                let target = detect_server_target(&ssh)
-                    .await
-                    .map_err(|e| format!("Target detection failed: {e}"))?;
-                tracing::debug!("Detected target: {}", target.label());
-
-                let (installed, version, server_name_from_info) =
-                    match ssh.is_tako_installed().await {
-                        Ok(true) => {
-                            let ver = ssh.tako_version().await.ok().flatten();
-                            let sn = ssh
-                                .tako_server_info()
-                                .await
-                                .ok()
-                                .and_then(|info| info.server_name);
-                            (true, ver, sn)
-                        }
-                        Ok(false) => (false, None, None),
-                        Err(_) => (false, None, None),
-                    };
-
-                ssh.disconnect().await.map_err(|e| e.to_string())?;
-
-                Ok(WizardConnectionResult {
-                    target,
-                    version,
-                    installed,
-                    server_name: server_name_from_info,
-                })
-            }
-            .instrument(host_span),
+            check_tako_connection(&host, port).instrument(host_span),
         )
         .await;
         drop(_t);
+
+        let needs_install = match &result {
+            Ok(info) => !info.installed,
+            Err(_) => true,
+        };
+        if allow_install && needs_install {
+            let should_install = output::confirm("Install tako-server now?", true)?;
+            if should_install {
+                let admin_user = output::TextField::new("Admin SSH user")
+                    .with_default(admin_user_default.unwrap_or("root"))
+                    .prompt()?;
+                let install_scope = output::scope(&host);
+                let _t = output::timed(&format!("Install tako-server on {host}:{port}"));
+                output::with_spinner_async_err(
+                    "Installing tako-server",
+                    "tako-server installed",
+                    "Install failed",
+                    install_tako_server_with_admin(&host, port, &admin_user)
+                        .instrument(install_scope),
+                )
+                .await?;
+                drop(_t);
+
+                let verify_scope = output::scope(&host);
+                let _t = output::timed(&format!("Verify tako-server on {host}:{port}"));
+                result = output::with_spinner_async_err(
+                    "Verifying install",
+                    "Install verified",
+                    "Verification failed",
+                    check_tako_connection(&host, port).instrument(verify_scope),
+                )
+                .await;
+                drop(_t);
+            }
+        }
 
         let _host_scope = output::scope(&host).entered();
         match result {
@@ -326,25 +409,34 @@ pub(super) async fn run_add_server_wizard(
     // SSH was already tested above; skip re-testing in add_server
     add_server(
         &host,
-        name_ref,
-        description_ref,
-        port,
-        true,
-        detected_target,
+        AddServerOptions {
+            name: name_ref,
+            description: description_ref,
+            port,
+            no_test: true,
+            pre_detected_target: detected_target,
+            install_if_missing: false,
+            admin_user: None,
+        },
     )
     .await
 }
 
 pub async fn add_server(
     host: &str,
-    name: Option<&str>,
-    description: Option<&str>,
-    port: u16,
-    no_test: bool,
-    pre_detected_target: Option<crate::config::ServerTarget>,
+    options: AddServerOptions<'_>,
 ) -> Result<Option<String>, Box<dyn std::error::Error>> {
     use crate::config::{ServerEntry, ServerTarget, ServersToml};
-    use crate::ssh::{SshClient, SshConfig};
+
+    let AddServerOptions {
+        name,
+        description,
+        port,
+        no_test,
+        pre_detected_target,
+        install_if_missing,
+        admin_user,
+    } = options;
 
     let mut servers = ServersToml::load()?;
     let normalized_description = description.and_then(|d| {
@@ -431,12 +523,6 @@ pub async fn add_server(
         .into());
     }
 
-    struct ConnectionResult {
-        target: ServerTarget,
-        version: Option<String>,
-        installed: bool,
-    }
-
     if output::is_dry_run() {
         output::dry_run_skip(&format!(
             "Add server {} (tako@{}:{})",
@@ -448,7 +534,7 @@ pub async fn add_server(
     }
 
     let mut detected_target: Option<ServerTarget> = pre_detected_target;
-    let should_verify_access = !no_test || detected_target.is_some();
+    let should_verify_access = install_if_missing || !no_test || detected_target.is_some();
     if should_verify_access {
         output::with_spinner_async_err(
             "Checking Tailscale",
@@ -460,40 +546,37 @@ pub async fn add_server(
     }
 
     // Test SSH connection unless skipped or already tested
-    if !no_test && detected_target.is_none() {
-        let ssh_config = SshConfig::from_server(host, port);
-        let mut ssh = SshClient::new(ssh_config);
-
-        let result: Result<ConnectionResult, String> = output::with_spinner_async_err(
+    if (!no_test || install_if_missing) && detected_target.is_none() {
+        let mut result = output::with_spinner_async_err(
             "Connecting",
             "Connection successful",
             "Connection failed",
-            async {
-                ssh.connect().await.map_err(|e| e.to_string())?;
-
-                let target = detect_server_target(&ssh)
-                    .await
-                    .map_err(|e| format!("Target detection failed: {e}"))?;
-
-                let (installed, version) = match ssh.is_tako_installed().await {
-                    Ok(true) => {
-                        let ver = ssh.tako_version().await.ok().flatten();
-                        (true, ver)
-                    }
-                    Ok(false) => (false, None),
-                    Err(_) => (false, None),
-                };
-
-                ssh.disconnect().await.map_err(|e| e.to_string())?;
-
-                Ok(ConnectionResult {
-                    target,
-                    version,
-                    installed,
-                })
-            },
+            check_tako_connection(host, port),
         )
         .await;
+
+        let needs_install = match &result {
+            Ok(info) => !info.installed,
+            Err(_) => true,
+        };
+        if install_if_missing && needs_install {
+            let admin_user = admin_user.unwrap_or("root");
+            output::with_spinner_async_err(
+                "Installing tako-server",
+                "tako-server installed",
+                "Install failed",
+                install_tako_server_with_admin(host, port, admin_user),
+            )
+            .await?;
+
+            result = output::with_spinner_async_err(
+                "Verifying install",
+                "Install verified",
+                "Verification failed",
+                check_tako_connection(host, port),
+            )
+            .await;
+        }
 
         {
             let _host_scope = output::scope(host).entered();
@@ -551,16 +634,32 @@ pub async fn add_server(
 }
 
 fn server_not_installed_message() -> &'static str {
-    "tako-server is not installed. Install it on the server, then try again."
+    "tako-server is not installed. Run `tako servers add --install` or install it on the server, then try again."
 }
 
 async fn verify_remote_management(
     host: &str,
 ) -> Result<crate::management_http::ManagementProbe, String> {
-    crate::management_http::probe(host).await.map_err(|error| {
+    let probe = crate::management_http::probe(host).await.map_err(|error| {
         tracing::debug!("Remote management probe failed: {error}");
         remote_management_unavailable_message()
-    })
+    })?;
+
+    let mut client = crate::management_http::ManagementClient::new(host)
+        .await
+        .map_err(|error| {
+            tracing::debug!("Remote management auth setup failed: {error}");
+            remote_management_unavailable_message()
+        })?;
+    client
+        .send(&tako_core::Command::List)
+        .await
+        .map_err(|error| {
+            tracing::debug!("Remote management signed probe failed: {error}");
+            remote_management_unavailable_message()
+        })?;
+
+    Ok(probe)
 }
 
 async fn verify_tailscale_host(host: &str) -> Result<(), String> {
@@ -660,50 +759,4 @@ fn record_server_history(host: &str, name: &str, port: u16) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_detected_arch_normalizes_supported_aliases() {
-        assert_eq!(parse_detected_arch("x86_64\n").unwrap(), "x86_64");
-        assert_eq!(parse_detected_arch("amd64\n").unwrap(), "x86_64");
-        assert_eq!(parse_detected_arch("arm64\n").unwrap(), "aarch64");
-    }
-
-    #[test]
-    fn parse_detected_arch_rejects_unknown_values() {
-        let err = parse_detected_arch("sparc\n").unwrap_err();
-        assert!(err.contains("Unsupported server architecture"));
-    }
-
-    #[test]
-    fn parse_detected_libc_normalizes_supported_aliases() {
-        assert_eq!(parse_detected_libc("glibc\n").unwrap(), "glibc");
-        assert_eq!(parse_detected_libc("GNU libc\n").unwrap(), "glibc");
-        assert_eq!(parse_detected_libc("musl\n").unwrap(), "musl");
-    }
-
-    #[test]
-    fn parse_detected_libc_rejects_unknown_values() {
-        let err = parse_detected_libc("uclibc\n").unwrap_err();
-        assert!(err.contains("Unsupported server libc"));
-    }
-
-    #[test]
-    fn remote_management_message_mentions_tailscale_without_endpoint_details() {
-        let message = remote_management_unavailable_message();
-
-        assert!(message.contains("requires Tailscale"));
-        assert!(message.contains("MagicDNS"));
-        assert!(!message.contains("endpoint"));
-        assert!(!message.contains("9844"));
-    }
-
-    #[test]
-    fn server_not_installed_message_is_actionable() {
-        let message = server_not_installed_message();
-
-        assert!(message.contains("tako-server is not installed"));
-        assert!(message.contains("try again"));
-    }
-}
+mod tests;

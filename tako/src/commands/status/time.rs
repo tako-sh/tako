@@ -1,5 +1,6 @@
 use time::OffsetDateTime;
 
+#[cfg(test)]
 pub(super) fn parse_uptime_since(line: &str) -> Option<OffsetDateTime> {
     let parts: Vec<&str> = line.split_whitespace().collect();
     if parts.len() < 2 {

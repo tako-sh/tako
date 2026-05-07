@@ -12,6 +12,7 @@ mod defaults;
 mod identity;
 mod instances;
 mod lb;
+mod management_auth;
 mod management_http;
 mod metrics;
 mod operations;

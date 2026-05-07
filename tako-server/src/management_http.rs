@@ -14,6 +14,7 @@ use tako_core::Command;
 use tokio::net::TcpListener;
 
 use crate::ServerState;
+use crate::management_auth::{ManagementAuthState, verify_signed_request};
 
 pub(crate) const MANAGEMENT_PORT: u16 = 9844;
 const MAX_RPC_BODY_BYTES: usize = 1024 * 1024;
@@ -26,17 +27,22 @@ pub(crate) async fn serve(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let listener = TcpListener::bind((host.as_str(), MANAGEMENT_PORT)).await?;
     let local_addr = listener.local_addr()?;
+    let auth_state = Arc::new(ManagementAuthState::default());
     tracing::info!(%local_addr, "Remote management HTTP listening");
 
     loop {
         let (stream, peer_addr) = listener.accept().await?;
         let io = TokioIo::new(stream);
         let state = state.clone();
+        let auth_state = auth_state.clone();
 
         tokio::spawn(async move {
             let service = service_fn(move |request| {
                 let state = state.clone();
-                async move { Ok::<_, Infallible>(handle_request(request, state, peer_addr).await) }
+                let auth_state = auth_state.clone();
+                async move {
+                    Ok::<_, Infallible>(handle_request(request, state, auth_state, peer_addr).await)
+                }
             });
 
             if let Err(error) = http1::Builder::new().serve_connection(io, service).await {
@@ -49,6 +55,7 @@ pub(crate) async fn serve(
 async fn handle_request(
     request: Request<Incoming>,
     state: Arc<ServerState>,
+    auth_state: Arc<ManagementAuthState>,
     peer_addr: SocketAddr,
 ) -> Response<ResponseBody> {
     if request.method() != Method::POST || request.uri().path() != "/rpc" {
@@ -58,10 +65,8 @@ async fn handle_request(
         );
     }
 
-    let collected = match Limited::new(request.into_body(), MAX_RPC_BODY_BYTES)
-        .collect()
-        .await
-    {
+    let (parts, body) = request.into_parts();
+    let collected = match Limited::new(body, MAX_RPC_BODY_BYTES).collect().await {
         Ok(collected) => collected,
         Err(error) if error.is::<LengthLimitError>() => {
             return json_response(
@@ -90,6 +95,20 @@ async fn handle_request(
         }
     };
 
+    if !command_is_public_probe(&command)
+        && let Err(error) = verify_signed_request(
+            &state.runtime_config().data_dir,
+            &auth_state,
+            &parts.headers,
+            &body,
+        )
+    {
+        return json_response(
+            StatusCode::UNAUTHORIZED,
+            &tako_core::Response::error(error.to_string()),
+        );
+    }
+
     let response = handle_rpc_command(state, command).await;
     let status = if response.is_ok() {
         StatusCode::OK
@@ -103,10 +122,6 @@ pub(crate) async fn handle_rpc_command(
     state: Arc<ServerState>,
     command: Command,
 ) -> tako_core::Response {
-    if !command_is_public_probe(&command) {
-        return tako_core::Response::error("management auth required");
-    }
-
     state.handle_command(command).await
 }
 
@@ -206,11 +221,9 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn rpc_rejects_non_probe_commands_until_auth_is_available() {
-        let response = handle_rpc_command(test_state(), Command::List).await;
-
-        assert_eq!(response.error_message(), Some("management auth required"));
+    #[test]
+    fn rpc_treats_non_probe_commands_as_private() {
+        assert!(!command_is_public_probe(&Command::List));
     }
 
     #[tokio::test]

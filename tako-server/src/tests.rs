@@ -725,6 +725,7 @@ async fn server_info_command_reports_runtime_config() {
     }));
     let runtime = ServerRuntimeConfig {
         pid: std::process::id(),
+        process_started_at_unix_secs: Some(1_778_220_000),
         socket: "/var/run/tako/tako-custom.sock".to_string(),
         data_dir: temp.path().to_path_buf(),
         http_port: 8080,

@@ -543,7 +543,7 @@ Show global deployment status from configured servers, with one server block per
 
 Shows server connectivity/service lines and per-build app blocks with heading lines in `app-name (environment) state` form.
 Each app block uses a tree connector (`┌` heading, `│` detail continuation, `└` final deployed line).
-Environment is inferred from deployed release metadata when available; otherwise app status uses `unknown`.
+Environment is inferred from the deployed app id (`app/env`); otherwise app status uses `unknown`.
 App state text is color-coded (`running` success, `idle` muted, `deploying`/`stopped` warning, `error` error).
 Each app block includes instance summary (`healthy/total`), build, and deployed timestamp (formatted in the user's current locale and local time, without timezone suffix).
 `tako servers status` prints a single snapshot and exits.
@@ -552,6 +552,7 @@ Status flow helpers:
 
 - `tako servers status` does not require `tako.toml` and can run from any directory.
 - Uses global server inventory from `config.toml`.
+- Queries each server through signed Tailscale HTTP remote management.
 - If no servers are configured and the terminal is interactive, status offers to run the add-server wizard.
 - If no deployed apps are found, status reports that explicitly.
 
@@ -590,7 +591,7 @@ Logs flow helpers:
 
 - For `production`, if no servers are configured and the terminal is interactive, logs offers to run the add-server wizard.
 
-### tako servers add [host] [--name {name}] [--description {text}] [--port {port}]
+### tako servers add [host] [--name {name}] [--description {text}] [--port {port}] [--install] [--admin-user {user}]
 
 Add server to global `config.toml` (`[[servers]]`).
 
@@ -609,7 +610,9 @@ During SSH checks, `tako servers add` also detects and stores target metadata (`
 
 If `--no-test` is used, SSH checks and target detection are skipped; deploy later fails for that server until target metadata is captured by re-adding the server with SSH checks enabled.
 
-If `tako-server` is not installed on the target, `tako` warns and expects the user to install it manually.
+If `--install` is used and `tako-server` is missing or `tako@host` is not available, `tako servers add` connects as the admin SSH user (default `root`, override with `--admin-user`) and runs the server installer over SSH. The installer authorizes the SSH public key that authenticated the admin connection for the `tako` user, then `servers add` rechecks `tako@host`, enrolls the same key for signed remote management, verifies signed HTTP access, and only then writes `config.toml`.
+
+In the interactive wizard, if `tako-server` is missing or `tako@host` cannot be reached, Tako asks whether to install now and prompts for the admin SSH user.
 
 ### tako servers rm [name]
 
@@ -1117,6 +1120,7 @@ Installer SSH key behavior:
 - Installer ensures basic networking tools are available for server operation.
 - Installer creates both `tako` and `tako-app` OS users. `tako-server` runs as `tako`; app and worker processes run as `tako-app` when that user is present.
 - Installer installs restricted maintenance helpers and scoped sudoers policy so the `tako` SSH user can perform non-interactive server upgrade/reload operations.
+- When the installer installs or accepts `TAKO_SSH_PUBKEY`, it also enrolls that public key for signed remote management in `/opt/tako/management-authorized-keys`.
 - Installer supports systemd and OpenRC hosts.
 - Installer supports install-refresh mode (`TAKO_RESTART_SERVICE=0`) for build/image workflows without active init; in this mode, it refreshes binary/users and skips service-definition install/start.
 - For normal service installs, installer configures remote management on the server's Tailscale IP. It detects that address with `tailscale ip -4` or uses `TAKO_MANAGEMENT_HOST` when set. If no Tailscale IP is available, install fails with: `Remote management requires Tailscale so Tako can keep server control traffic private by default.`
@@ -1184,10 +1188,11 @@ Reference scripts in this repo:
 **Remote management:** Remote management requires Tailscale so Tako can keep server control traffic private by default. Normal server installs configure `tako-server` to listen for private HTTP management traffic on port `9844` on the Tailscale address. The HTTP management API uses the same typed `Command -> Response` protocol as the Unix socket:
 
 - `POST /rpc` with JSON command bodies handles small management commands.
-- Before signed management auth is enrolled, HTTP `/rpc` only accepts `hello` and `server_info` probes; other commands return `management auth required`.
-- Future signed HTTP commands reuse the existing dispatcher; bulk deploy artifacts and logs use separate streaming endpoints instead of the JSON RPC path.
+- HTTP `/rpc` accepts unsigned `hello` and `server_info` probes. All other commands require a signed request from an enrolled SSH key. Requests include the enrolled key fingerprint, timestamp, nonce, and SSH signature over the RPC body plus Tako's management-auth context. Replayed nonces and stale timestamps are rejected.
+- Signed HTTP commands reuse the existing dispatcher; bulk deploy artifacts and logs use separate streaming endpoints instead of the JSON RPC path.
 - The Unix management socket remains the local server IPC path. SSH remains setup/recovery, not the normal remote management transport.
-- `tako servers add` expects the host to be the server's Tailscale MagicDNS name or Tailscale IP. It verifies the host resolves to a Tailscale address, verifies `tako@host` SSH recovery access, probes private HTTP management with `hello` and `server_info`, and refuses to write `config.toml` if any check fails.
+- `tako servers add` expects the host to be the server's Tailscale MagicDNS name or Tailscale IP. It verifies the host resolves to a Tailscale address, verifies `tako@host` SSH recovery access, enrolls the SSH key that authenticated that connection, probes private HTTP management with `hello` and `server_info`, verifies signed HTTP access, and refuses to write `config.toml` if any check fails.
+- `tako servers status` uses signed HTTP remote management for server/app status, routes, and release metadata. SSH is not used for normal status reads.
 
 ### Zero-Downtime Operation
 

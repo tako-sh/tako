@@ -7,7 +7,7 @@ use russh::keys::{Algorithm, PrivateKeyWithHashAlg, load_secret_key};
 use super::*;
 
 impl SshClient {
-    pub(super) async fn authenticate(&self, handle: &mut Handle<SshHandler>) -> SshResult<()> {
+    pub(super) async fn authenticate(&mut self, handle: &mut Handle<SshHandler>) -> SshResult<()> {
         let keys_dir = self.config.keys_directory();
 
         // id_dsa is obsolete (OpenSSH dropped support in 7.0) — don't try it.
@@ -26,10 +26,11 @@ impl SshClient {
             found_any_key_file = true;
 
             match self.try_key_auth(handle, &key_path).await {
-                Ok(true) => {
+                Ok(Some(public_key)) => {
+                    self.authenticated_public_key = Some(public_key);
                     return Ok(());
                 }
-                Ok(false) => {
+                Ok(None) => {
                     tracing::trace!("Key not accepted ({key_name})");
                 }
                 Err(e) => {
@@ -40,8 +41,11 @@ impl SshClient {
         }
 
         match self.try_agent_auth(handle).await {
-            Ok(true) => return Ok(()),
-            Ok(false) => {}
+            Ok(Some(public_key)) => {
+                self.authenticated_public_key = Some(public_key);
+                return Ok(());
+            }
+            Ok(None) => {}
             Err(e) => last_error = Some(e),
         }
 
@@ -54,14 +58,14 @@ impl SshClient {
         }
     }
 
-    async fn try_agent_auth(&self, handle: &mut Handle<SshHandler>) -> SshResult<bool> {
+    async fn try_agent_auth(&self, handle: &mut Handle<SshHandler>) -> SshResult<Option<String>> {
         #[cfg(unix)]
         {
             use russh::keys::agent::client::AgentClient;
 
             let mut agent = match AgentClient::connect_env().await {
                 Ok(agent) => agent,
-                Err(_) => return Ok(false),
+                Err(_) => return Ok(None),
             };
 
             let keys = agent.request_identities().await.map_err(|e| {
@@ -69,16 +73,22 @@ impl SshClient {
             })?;
 
             for identity in keys {
+                let public_key = identity.public_key().into_owned();
                 match handle
                     .authenticate_publickey_with(
-                        Self::ssh_user(),
-                        identity.public_key().into_owned(),
+                        self.config.user.as_str(),
+                        public_key.clone(),
                         None,
                         &mut agent,
                     )
                     .await
                 {
-                    Ok(result) if result.success() => return Ok(true),
+                    Ok(result) if result.success() => {
+                        return public_key
+                            .to_openssh()
+                            .map(Some)
+                            .map_err(|e| SshError::Authentication(e.to_string()));
+                    }
                     Ok(_) => continue,
                     Err(e) => {
                         return Err(SshError::Authentication(format!(
@@ -88,13 +98,13 @@ impl SshClient {
                 }
             }
 
-            Ok(false)
+            Ok(None)
         }
 
         #[cfg(not(unix))]
         {
             let _ = handle;
-            Ok(false)
+            Ok(None)
         }
     }
 
@@ -102,7 +112,7 @@ impl SshClient {
         &self,
         handle: &mut Handle<SshHandler>,
         key_path: &Path,
-    ) -> SshResult<bool> {
+    ) -> SshResult<Option<String>> {
         let key = match load_secret_key(key_path, None) {
             Ok(k) => k,
             Err(e) => {
@@ -150,16 +160,19 @@ impl SshClient {
 
         let auth_result = handle
             .authenticate_publickey(
-                Self::ssh_user(),
-                PrivateKeyWithHashAlg::new(Arc::new(key), hash_alg),
+                self.config.user.as_str(),
+                PrivateKeyWithHashAlg::new(Arc::new(key.clone()), hash_alg),
             )
             .await
             .map_err(|e| SshError::Authentication(e.to_string()))?;
 
-        Ok(auth_result.success())
-    }
+        if !auth_result.success() {
+            return Ok(None);
+        }
 
-    fn ssh_user() -> &'static str {
-        "tako"
+        key.public_key()
+            .to_openssh()
+            .map(Some)
+            .map_err(|e| SshError::Authentication(e.to_string()))
     }
 }

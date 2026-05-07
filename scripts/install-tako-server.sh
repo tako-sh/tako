@@ -60,6 +60,7 @@ TAKO_MANAGEMENT_ARGS=""
 TAKO_SERVER_CAPABILITIES="cap_net_bind_service,cap_setuid,cap_setgid"
 TAKO_SERVER_INSTALL_REFRESH_HELPER="/usr/local/bin/tako-server-install-refresh"
 TAKO_SERVER_SERVICE_HELPER="/usr/local/bin/tako-server-service"
+TAKO_MANAGEMENT_AUTH_KEYS="$TAKO_HOME/management-authorized-keys"
 
 need_cmd() { command -v "$1" >/dev/null 2>&1; }
 
@@ -859,6 +860,11 @@ if [ -n "${TAKO_SSH_PUBKEY:-}" ]; then
 
   chmod 600 "$auth_keys"
   chown -R "$TAKO_USER":"$TAKO_USER" "$home_dir/.ssh" 2>/dev/null || true
+
+  printf '%s\n' "$TAKO_SSH_PUBKEY" > "$TAKO_MANAGEMENT_AUTH_KEYS"
+  chmod 600 "$TAKO_MANAGEMENT_AUTH_KEYS"
+  chown "$TAKO_USER":"$TAKO_USER" "$TAKO_MANAGEMENT_AUTH_KEYS" 2>/dev/null || true
+  echo "OK enrolled SSH key for remote management"
 elif [ -f "$auth_keys" ] && [ -s "$auth_keys" ]; then
   echo "OK existing SSH key retained for '$TAKO_USER'"
 else

@@ -3,7 +3,7 @@ mod dns;
 mod upgrade;
 mod wizard;
 
-pub use wizard::{add_server, prompt_to_add_server};
+pub use wizard::{AddServerOptions, add_server, prompt_to_add_server};
 
 use crate::output;
 use clap::Subcommand;
@@ -26,6 +26,14 @@ pub enum ServerCommands {
         /// SSH port
         #[arg(long, default_value_t = 22)]
         port: u16,
+
+        /// Install or repair tako-server over SSH before adding the server
+        #[arg(long, conflicts_with = "no_test")]
+        install: bool,
+
+        /// SSH user to use for --install
+        #[arg(long, requires = "install")]
+        admin_user: Option<String>,
 
         /// Skip SSH connection test
         #[arg(long, hide = true)]
@@ -94,6 +102,8 @@ async fn run_async(cmd: ServerCommands) -> Result<(), Box<dyn std::error::Error>
             name,
             description,
             port,
+            install,
+            admin_user,
             no_test,
         } => {
             if let Some(host) = host {
@@ -105,11 +115,15 @@ async fn run_async(cmd: ServerCommands) -> Result<(), Box<dyn std::error::Error>
                 };
                 let _ = add_server(
                     &host,
-                    Some(name),
-                    description.as_deref(),
-                    port,
-                    no_test,
-                    None,
+                    AddServerOptions {
+                        name: Some(name),
+                        description: description.as_deref(),
+                        port,
+                        no_test,
+                        pre_detected_target: None,
+                        install_if_missing: install,
+                        admin_user: admin_user.as_deref(),
+                    },
                 )
                 .await?;
                 Ok(())
@@ -119,6 +133,8 @@ async fn run_async(cmd: ServerCommands) -> Result<(), Box<dyn std::error::Error>
                     description.as_deref(),
                     port,
                     !no_test,
+                    !no_test,
+                    admin_user.as_deref(),
                 )
                 .await?;
                 Ok(())

@@ -42,6 +42,47 @@ fn servers_add_parses_optional_description() {
 }
 
 #[test]
+fn servers_add_parses_install_admin_user() {
+    let cli = Cli::try_parse_from([
+        "tako",
+        "servers",
+        "add",
+        "example.com",
+        "--name",
+        "prod",
+        "--install",
+        "--admin-user",
+        "ubuntu",
+    ])
+    .unwrap();
+    let Commands::Servers(server::ServerCommands::Add {
+        install,
+        admin_user,
+        ..
+    }) = cli.command.expect("command")
+    else {
+        panic!("expected Servers::Add");
+    };
+    assert!(install);
+    assert_eq!(admin_user.as_deref(), Some("ubuntu"));
+}
+
+#[test]
+fn servers_add_install_conflicts_with_no_test() {
+    let res = Cli::try_parse_from([
+        "tako",
+        "servers",
+        "add",
+        "example.com",
+        "--name",
+        "prod",
+        "--install",
+        "--no-test",
+    ]);
+    assert!(res.is_err());
+}
+
+#[test]
 fn servers_add_rejects_user_flag() {
     let res = Cli::try_parse_from(["tako", "servers", "add", "example.com", "--user", "root"]);
     match res {

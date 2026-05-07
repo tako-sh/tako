@@ -173,6 +173,12 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     let runtime = ServerRuntimeConfig {
         pid: std::process::id(),
+        process_started_at_unix_secs: Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_secs() as i64)
+                .unwrap_or_default(),
+        ),
         socket: socket.clone(),
         data_dir: data_dir.clone(),
         http_port: args.port,

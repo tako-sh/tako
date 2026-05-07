@@ -1,61 +1,64 @@
-use super::time::{format_duration_human, parse_uptime_since};
+use super::time::format_duration_human;
 use super::{GlobalAppStatusResult, GlobalServerStatusResult, ServerStatusResult};
-use crate::config::TakoToml;
+use crate::management_http::{self, ManagementClient};
 use crate::output;
-use crate::shell::shell_single_quote;
-use crate::ssh::{SshClient, SshConfig};
-use tako_core::{AppStatus, Response};
+use tako_core::{AppStatus, Command, ListReleasesResponse, ReleaseInfo, Response, UpgradeMode};
 use time::OffsetDateTime;
 
+#[cfg(test)]
+use crate::config::TakoToml;
+
 pub(super) async fn query_global_server_status(
-    server_name: &str,
+    _server_name: &str,
     host: &str,
-    port: u16,
+    _port: u16,
 ) -> GlobalServerStatusResult {
     let _t = output::timed("Query status");
-    let config = SshConfig::from_server(host, port);
-    let mut client = SshClient::new(config);
-
-    if let Err(e) = client.connect().await {
-        return GlobalServerStatusResult {
-            service_status: "unknown".to_string(),
-            server_version: None,
-            server_uptime: None,
-            process_uptime: None,
-            routes: Vec::new(),
-            apps: Vec::new(),
-            error: Some(format!("SSH connect failed: {}", e)),
-        };
-    }
-
-    let service_status = match client.tako_status().await {
-        Ok(status) => {
-            tracing::debug!("Service status: {status}");
-            status
+    let probe = match management_http::probe(host).await {
+        Ok(probe) => probe,
+        Err(error) => {
+            return status_error(format!("Remote management failed: {error}"));
         }
-        Err(e) => {
-            let _ = client.disconnect().await;
-            return GlobalServerStatusResult {
-                service_status: "unknown".to_string(),
-                server_version: None,
-                server_uptime: None,
-                process_uptime: None,
-                routes: Vec::new(),
-                apps: Vec::new(),
-                error: Some(format!("Failed to check service: {}", e)),
-            };
+    };
+    let mut client = match ManagementClient::new(host).await {
+        Ok(client) => client,
+        Err(error) => {
+            return status_error(format!("Remote management auth failed: {error}"));
+        }
+    };
+    let info = match client.send(&Command::ServerInfo).await {
+        Ok(response) => {
+            match management_http::parse_ok_data::<tako_core::ServerRuntimeInfo>(
+                response,
+                "server_info",
+            ) {
+                Ok(info) => info,
+                Err(error) => {
+                    return status_error(format!("Remote management failed: {error}"));
+                }
+            }
+        }
+        Err(error) => {
+            return status_error(format!("Remote management failed: {error}"));
         }
     };
 
-    let ((server_version, server_uptime, process_uptime), routes) =
-        tokio::join!(fetch_version_and_uptimes(&client), fetch_routes(&client),);
+    let service_status = match info.mode {
+        UpgradeMode::Normal => "active".to_string(),
+        UpgradeMode::Upgrading => "upgrading".to_string(),
+    };
+    let server_version = Some(normalize_server_version(probe.hello.server_version));
+    let process_uptime = info
+        .process_started_at_unix_secs
+        .and_then(process_uptime_since);
+    let routes = fetch_routes(&mut client).await;
 
     let mut effective_service_status = service_status.clone();
     let mut apps = Vec::new();
     let mut error = None;
 
     if service_status == "active" || service_status == "unknown" {
-        match client.tako_list_apps().await {
+        match client.send(&Command::List).await {
             Ok(response) => match parse_list_apps_response(response) {
                 Ok(app_names) => {
                     tracing::debug!("Found {} app(s)", app_names.len());
@@ -67,7 +70,7 @@ pub(super) async fn query_global_server_status(
                         let (display_app_name, env_from_name) =
                             parse_remote_app_name(&remote_app_name);
                         let status = query_connected_app_status(
-                            &client,
+                            &mut client,
                             &effective_service_status,
                             server_version.clone(),
                             &remote_app_name,
@@ -80,17 +83,14 @@ pub(super) async fn query_global_server_status(
                                 .map(|app| app.version.clone());
 
                             let env_name = if let Some(app_version) = app_version {
-                                let (deployed_at, env) = fetch_app_deploy_info(
-                                    &client,
+                                build_status.deployed_at_unix_secs = fetch_app_deployed_at(
+                                    &mut client,
                                     &remote_app_name,
                                     &app_version,
-                                    server_name,
                                 )
                                 .await;
-                                build_status.deployed_at_unix_secs = deployed_at;
                                 env_from_name
                                     .clone()
-                                    .or(env)
                                     .unwrap_or_else(|| "unknown".to_string())
                             } else {
                                 env_from_name
@@ -111,17 +111,15 @@ pub(super) async fn query_global_server_status(
                 }
             },
             Err(e) => {
-                error = Some(format!("Socket query failed: {}", e));
+                error = Some(format!("Remote management query failed: {}", e));
             }
         }
     }
 
-    let _ = client.disconnect().await;
-
     GlobalServerStatusResult {
         service_status: effective_service_status,
         server_version,
-        server_uptime,
+        server_uptime: None,
         process_uptime,
         routes,
         apps,
@@ -129,71 +127,26 @@ pub(super) async fn query_global_server_status(
     }
 }
 
-async fn fetch_version_and_uptimes(
-    client: &SshClient,
-) -> (Option<String>, Option<String>, Option<String>) {
-    let pid = client.tako_server_info().await.ok().map(|info| info.pid);
-
-    let proc_stat_cmd = if let Some(pid) = pid {
-        format!(
-            "echo PROC:$(stat -c '%Y' /proc/{pid} 2>/dev/null || ps -o lstart= -p {pid} 2>/dev/null || echo -)"
-        )
-    } else {
-        "echo PROC:-".to_string()
-    };
-    let combined = format!(
-        "echo VER:$(tako-server --version 2>/dev/null || echo -); \
-         echo UP:$(uptime -s 2>/dev/null || echo -); \
-         {proc_stat_cmd}"
-    );
-
-    let output = match client.exec(&combined).await {
-        Ok(o) => o,
-        Err(_) => return (None, None, None),
-    };
-
-    let mut version = None;
-    let mut server_uptime = None;
-    let mut process_uptime = None;
-
-    for line in output.stdout.lines() {
-        let line = line.trim();
-        if let Some(val) = line.strip_prefix("VER:") {
-            let val = val.trim();
-            if val != "-" && !val.is_empty() {
-                version = Some(normalize_server_version(val.to_string()));
-            }
-        } else if let Some(val) = line.strip_prefix("UP:") {
-            let val = val.trim();
-            if val != "-"
-                && !val.is_empty()
-                && let Some(since) = parse_uptime_since(val)
-            {
-                let elapsed = OffsetDateTime::now_utc() - since;
-                server_uptime = Some(format_duration_human(elapsed.whole_seconds().max(0) as u64));
-            }
-        } else if let Some(val) = line.strip_prefix("PROC:") {
-            let val = val.trim();
-            if val != "-" && !val.is_empty() {
-                process_uptime = parse_process_start(val);
-            }
-        }
+fn status_error(message: String) -> GlobalServerStatusResult {
+    GlobalServerStatusResult {
+        service_status: "unknown".to_string(),
+        server_version: None,
+        server_uptime: None,
+        process_uptime: None,
+        routes: Vec::new(),
+        apps: Vec::new(),
+        error: Some(message),
     }
-
-    (version, server_uptime, process_uptime)
 }
 
-fn parse_process_start(val: &str) -> Option<String> {
-    if let Ok(epoch) = val.parse::<i64>() {
-        let now = OffsetDateTime::now_utc().unix_timestamp();
-        let secs = (now - epoch).max(0) as u64;
-        return Some(format_duration_human(secs));
-    }
-    None
+fn process_uptime_since(epoch: i64) -> Option<String> {
+    let now = OffsetDateTime::now_utc().unix_timestamp();
+    let secs = (now - epoch).max(0) as u64;
+    Some(format_duration_human(secs))
 }
 
-async fn fetch_routes(client: &SshClient) -> Vec<(String, String)> {
-    let Ok(response) = client.tako_routes().await else {
+async fn fetch_routes(client: &mut ManagementClient) -> Vec<(String, String)> {
+    let Ok(response) = client.send(&Command::Routes).await else {
         return Vec::new();
     };
 
@@ -256,7 +209,7 @@ pub(super) fn format_remote_app_label(app_name: &str) -> String {
 }
 
 async fn query_connected_app_status(
-    client: &SshClient,
+    client: &mut ManagementClient,
     service_status: &str,
     server_version: Option<String>,
     app_name: &str,
@@ -266,7 +219,12 @@ async fn query_connected_app_status(
     let mut error = None;
 
     if service_status == "active" {
-        match client.tako_app_status(app_name).await {
+        match client
+            .send(&Command::Status {
+                app: app_name.to_string(),
+            })
+            .await
+        {
             Ok(Response::Ok { data }) => match serde_json::from_value::<AppStatus>(data) {
                 Ok(status) => {
                     app_status = Some(status);
@@ -281,7 +239,7 @@ async fn query_connected_app_status(
                 }
             }
             Err(e) => {
-                error = Some(format!("Socket query failed: {}", e));
+                error = Some(format!("Remote management query failed: {}", e));
             }
         }
     }
@@ -293,6 +251,24 @@ async fn query_connected_app_status(
         deployed_at_unix_secs,
         error,
     }
+}
+
+async fn fetch_app_deployed_at(
+    client: &mut ManagementClient,
+    app_name: &str,
+    version: &str,
+) -> Option<i64> {
+    let response = client
+        .send(&Command::ListReleases {
+            app: app_name.to_string(),
+        })
+        .await
+        .ok()?;
+    let releases = parse_list_releases_response(response).ok()?;
+    releases
+        .into_iter()
+        .find(|release| release.version == version)
+        .and_then(|release| release.deployed_at_unix_secs)
 }
 
 pub(super) fn expand_status_by_running_builds(
@@ -359,53 +335,18 @@ pub(super) fn parse_list_apps_response(response: Response) -> Result<Vec<String>
     }
 }
 
-async fn fetch_app_deploy_info(
-    client: &SshClient,
-    app_name: &str,
-    version: &str,
-    server_name: &str,
-) -> (Option<i64>, Option<String>) {
-    let release_dir = format!("/opt/tako/apps/{}/releases/{}", app_name, version);
-    let release_toml = format!("{}/tako.toml", release_dir);
-    let dir_q = shell_single_quote(&release_dir);
-    let toml_q = shell_single_quote(&release_toml);
-
-    let cmd = format!(
-        "if [ -d {dir_q} ]; then \
-           (stat -c '%Y' {dir_q} 2>/dev/null || stat -f '%m' {dir_q} 2>/dev/null || echo -); \
-         else echo -; fi; \
-         echo '---TOML---'; \
-         if [ -f {toml_q} ]; then cat {toml_q}; fi"
-    );
-
-    let output = match client.exec(&cmd).await {
-        Ok(o) => o,
-        Err(_) => return (None, None),
-    };
-
-    let stdout = &output.stdout;
-    let (epoch_part, toml_part) = match stdout.split_once("---TOML---\n") {
-        Some((a, b)) => (a, b),
-        None => match stdout.split_once("---TOML---") {
-            Some((a, b)) => (a, b),
-            None => (stdout.as_str(), ""),
-        },
-    };
-
-    let deployed_at = epoch_part
-        .lines()
-        .next()
-        .and_then(|line| line.trim().parse::<i64>().ok());
-
-    let env_name = if toml_part.trim().is_empty() {
-        None
-    } else {
-        parse_server_env_from_tako_toml(toml_part, server_name)
-    };
-
-    (deployed_at, env_name)
+fn parse_list_releases_response(response: Response) -> Result<Vec<ReleaseInfo>, String> {
+    match response {
+        Response::Ok { data } => {
+            let parsed: ListReleasesResponse = serde_json::from_value(data)
+                .map_err(|e| format!("invalid list_releases response: {}", e))?;
+            Ok(parsed.releases)
+        }
+        Response::Error { message } => Err(format!("tako-server error (list_releases): {message}")),
+    }
 }
 
+#[cfg(test)]
 pub(super) fn parse_server_env_from_tako_toml(content: &str, server_name: &str) -> Option<String> {
     let config = TakoToml::parse(content).ok()?;
 

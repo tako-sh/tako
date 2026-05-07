@@ -39,6 +39,8 @@ Set up a deployment host:
 # Connect the host and your workstation to Tailscale first.
 sudo sh -c "$(curl -fsSL https://tako.sh/install-server.sh)"
 tako servers add <magicdns-name> --name production
+# Or install/repair over SSH while adding:
+tako servers add <magicdns-name> --name production --install
 ```
 
 Deploy your app:

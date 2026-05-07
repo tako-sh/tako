@@ -18,6 +18,7 @@ use tokio::sync::RwLock;
 #[derive(Debug, Clone)]
 pub struct ServerRuntimeConfig {
     pub(crate) pid: u32,
+    pub(crate) process_started_at_unix_secs: Option<i64>,
     pub(crate) socket: String,
     pub(crate) data_dir: PathBuf,
     pub(crate) http_port: u16,
@@ -36,6 +37,7 @@ impl ServerRuntimeConfig {
     pub(crate) fn for_defaults(data_dir: PathBuf) -> Self {
         Self {
             pid: std::process::id(),
+            process_started_at_unix_secs: None,
             socket: "/var/run/tako/tako.sock".to_string(),
             data_dir,
             http_port: 80,
@@ -55,6 +57,7 @@ impl ServerRuntimeConfig {
         ServerRuntimeInfo {
             pid: self.pid,
             mode,
+            process_started_at_unix_secs: self.process_started_at_unix_secs,
             socket: self.socket.clone(),
             data_dir: self.data_dir.to_string_lossy().to_string(),
             http_port: self.http_port,
