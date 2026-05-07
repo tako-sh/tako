@@ -3,9 +3,11 @@ mod commands;
 mod dev_server_client;
 mod github;
 mod keychain;
+mod management_http;
 mod output;
 mod paths;
 pub mod shell;
+mod tailscale;
 mod ui;
 
 // Internal modules (moved from tako-core)

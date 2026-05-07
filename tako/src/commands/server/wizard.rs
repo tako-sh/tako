@@ -225,10 +225,7 @@ pub(super) async fn run_add_server_wizard(
                     tracing::debug!("Server version: {ver}");
                 }
                 if !info.installed {
-                    output::warning("tako-server not installed");
-                    output::muted(
-                        "Install it on the server as root (see scripts/install-tako-server.sh), then re-run deploy.",
-                    );
+                    return Err(server_not_installed_message().into());
                 }
                 remote_server_name = info.server_name;
                 detected_target = Some(info.target);
@@ -451,6 +448,17 @@ pub async fn add_server(
     }
 
     let mut detected_target: Option<ServerTarget> = pre_detected_target;
+    let should_verify_access = !no_test || detected_target.is_some();
+    if should_verify_access {
+        output::with_spinner_async_err(
+            "Checking Tailscale",
+            "Tailscale ready",
+            "Tailscale required",
+            verify_tailscale_host(host),
+        )
+        .await?;
+    }
+
     // Test SSH connection unless skipped or already tested
     if !no_test && detected_target.is_none() {
         let ssh_config = SshConfig::from_server(host, port);
@@ -497,10 +505,7 @@ pub async fn add_server(
                         tracing::debug!("Server version: {ver}");
                     }
                     if !info.installed {
-                        output::warning("tako-server not installed");
-                        output::muted(
-                            "Install it on the server as root (see scripts/install-tako-server.sh), then re-run deploy.",
-                        );
+                        return Err(server_not_installed_message().into());
                     }
                     detected_target = Some(info.target);
                 }
@@ -513,6 +518,17 @@ pub async fn add_server(
         output::warning(
             "Skipped SSH test. Target metadata was not detected; deploy will fail for this server until it is re-added with SSH checks enabled.",
         );
+    }
+
+    if should_verify_access {
+        let probe = output::with_spinner_async_err(
+            "Checking server access",
+            "Server access verified",
+            "Server access failed",
+            verify_remote_management(host),
+        )
+        .await?;
+        trace_management_probe(host, &probe);
     }
 
     // Add the server
@@ -532,6 +548,43 @@ pub async fn add_server(
     record_server_history(host, &server_name, port);
 
     Ok(Some(server_name))
+}
+
+fn server_not_installed_message() -> &'static str {
+    "tako-server is not installed. Install it on the server, then try again."
+}
+
+async fn verify_remote_management(
+    host: &str,
+) -> Result<crate::management_http::ManagementProbe, String> {
+    crate::management_http::probe(host).await.map_err(|error| {
+        tracing::debug!("Remote management probe failed: {error}");
+        remote_management_unavailable_message()
+    })
+}
+
+async fn verify_tailscale_host(host: &str) -> Result<(), String> {
+    crate::tailscale::ensure_tailscale_host(host)
+        .await
+        .map_err(|_| remote_management_unavailable_message())
+}
+
+fn remote_management_unavailable_message() -> String {
+    format!(
+        "{} Connect this machine and the server to Tailscale, then run `tako servers add` with the server's MagicDNS name.",
+        crate::tailscale::required_message()
+    )
+}
+
+fn trace_management_probe(host: &str, probe: &crate::management_http::ManagementProbe) {
+    let identity = probe
+        .info
+        .server_identity
+        .as_ref()
+        .or(probe.hello.server_identity.as_ref())
+        .map(String::as_str)
+        .unwrap_or("unknown");
+    tracing::debug!(host, server_identity = identity, "Remote management ready");
 }
 
 const DETECT_LIBC_COMMAND: &str = "if command -v ldd >/dev/null 2>&1 && ldd --version 2>&1 | grep -qi musl; then echo musl; \
@@ -634,5 +687,23 @@ mod tests {
     fn parse_detected_libc_rejects_unknown_values() {
         let err = parse_detected_libc("uclibc\n").unwrap_err();
         assert!(err.contains("Unsupported server libc"));
+    }
+
+    #[test]
+    fn remote_management_message_mentions_tailscale_without_endpoint_details() {
+        let message = remote_management_unavailable_message();
+
+        assert!(message.contains("requires Tailscale"));
+        assert!(message.contains("MagicDNS"));
+        assert!(!message.contains("endpoint"));
+        assert!(!message.contains("9844"));
+    }
+
+    #[test]
+    fn server_not_installed_message_is_actionable() {
+        let message = server_not_installed_message();
+
+        assert!(message.contains("tako-server is not installed"));
+        assert!(message.contains("try again"));
     }
 }

@@ -37,14 +37,14 @@ Set up a deployment host:
 
 ```bash
 sudo sh -c "$(curl -fsSL https://tako.sh/install-server.sh)"
-tako servers add <host-or-ip>
+tako servers add <magicdns-name> --name production
 ```
 
 Deploy your app:
 
 ```bash
 tako init    # prompts for app name + production route, writes tako.toml, updates .gitignore for .tako/secrets.json
-tako servers add <host-or-ip>
+tako servers add <magicdns-name> --name production
 tako deploy
 ```
 

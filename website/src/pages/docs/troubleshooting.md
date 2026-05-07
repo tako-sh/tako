@@ -146,7 +146,7 @@ It restarts the app when effective dev environment variables, secrets, channel d
 Add and map a server:
 
 ```bash
-tako servers add 203.0.113.10 --name la
+tako servers add la.tailnet.ts.net --name la
 ```
 
 Then in `tako.toml`:
@@ -167,10 +167,10 @@ Re-add the server with SSH checks enabled:
 
 ```bash
 tako servers rm la
-tako servers add 203.0.113.10 --name la
+tako servers add la.tailnet.ts.net --name la
 ```
 
-Avoid `--no-test` unless you know the metadata is already present.
+Use the server's Tailscale MagicDNS name so Tako can verify private management access before writing the server entry.
 
 ## Deploy Cannot Find `main`
 

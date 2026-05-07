@@ -1178,7 +1178,7 @@ Reference scripts in this repo:
 - `dns.provider` — DNS provider for Let's Encrypt DNS-01 wildcard challenges (configured via `tako servers setup-wildcard`).
 - Written by the installer (server name) and CLI (DNS config). Read by `tako-server` at startup.
 
-**Server identity:** `tako-server` creates a stable Ed25519 identity at `{data_dir}/identity.key` and writes the public key to `{data_dir}/identity.pub`. The private key is mode `0600`, is preserved across restarts/upgrades, and is removed only by full server uninstall. `hello` and `server_info` include the OpenSSH SHA-256 fingerprint so the CLI can pin the server identity when adding a server and reject unexpected server swaps.
+**Server identity:** `tako-server` creates a stable Ed25519 identity at `{data_dir}/identity.key` and writes the public key to `{data_dir}/identity.pub`. The private key is mode `0600`, is preserved across restarts/upgrades, and is removed only by full server uninstall. `hello` and `server_info` include the OpenSSH SHA-256 fingerprint so the CLI can identify the server during add/probe flows.
 
 **Remote management:** Remote management requires Tailscale so Tako can keep server control traffic private by default. When configured, `tako-server` listens for private HTTP management traffic on port `9844` on the Tailscale address. The HTTP management API uses the same typed `Command -> Response` protocol as the Unix socket:
 
@@ -1186,6 +1186,7 @@ Reference scripts in this repo:
 - Before signed management auth is enrolled, HTTP `/rpc` only accepts `hello` and `server_info` probes; other commands return `management auth required`.
 - Future signed HTTP commands reuse the existing dispatcher; bulk deploy artifacts and logs use separate streaming endpoints instead of the JSON RPC path.
 - The Unix management socket remains the local server IPC path. SSH remains setup/recovery, not the normal remote management transport.
+- `tako servers add` expects the host to be the server's Tailscale MagicDNS name or Tailscale IP. It verifies the host resolves to a Tailscale address, verifies `tako@host` SSH recovery access, probes private HTTP management with `hello` and `server_info`, and refuses to write `config.toml` if any check fails.
 
 ### Zero-Downtime Operation
 

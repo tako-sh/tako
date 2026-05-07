@@ -28,7 +28,7 @@ pub enum ServerCommands {
         port: u16,
 
         /// Skip SSH connection test
-        #[arg(long)]
+        #[arg(long, hide = true)]
         no_test: bool,
     },
 

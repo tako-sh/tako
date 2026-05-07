@@ -12,7 +12,7 @@ This guide covers the production path: installing `tako-server`, registering ser
 
 ## Install the Server
 
-Run the server installer as root on each target host:
+Connect the host and your workstation to the same Tailscale tailnet, then run the server installer as root on each target host:
 
 ```bash
 sudo sh -c "$(curl -fsSL https://tako.sh/install-server.sh)"
@@ -42,11 +42,11 @@ curl -fsSL https://tako.sh/install-server.sh | sudo TAKO_SSH_PUBKEY="$(cat ~/.ss
 Add each server to your local global config:
 
 ```bash
-tako servers add 203.0.113.10 --name la
-tako servers add 203.0.113.11 --name nyc --description "New York"
+tako servers add la.tailnet.ts.net --name la
+tako servers add nyc.tailnet.ts.net --name nyc --description "New York"
 ```
 
-The add command verifies SSH, detects the server target (`arch` and `libc`), and stores it in `config.toml`. Deploy requires that target metadata so it can choose the correct artifact.
+The add command expects a Tailscale MagicDNS name or Tailscale IP. It verifies Tailscale resolution, `tako@host` SSH recovery access, private management HTTP, and the server target (`arch` and `libc`) before writing `config.toml`. Deploy requires that target metadata so it can choose the correct artifact.
 
 List configured servers:
 

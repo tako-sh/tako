@@ -245,12 +245,11 @@ Manage global server inventory.
 
 ```bash
 tako servers add
-tako servers add 203.0.113.10 --name la
-tako servers add 203.0.113.10 --name la --description "Los Angeles" --port 22
-tako servers add 203.0.113.10 --name la --no-test
+tako servers add la.tailnet.ts.net --name la
+tako servers add la.tailnet.ts.net --name la --description "Los Angeles" --port 22
 ```
 
-Without `host`, `add` opens an interactive setup wizard. With `host`, `--name` is required. SSH checks detect and store target metadata (`arch`, `libc`) unless `--no-test` is used.
+Without `host`, `add` opens an interactive setup wizard. With `host`, `--name` is required. Use the server's Tailscale MagicDNS name or Tailscale IP. Normal add verifies Tailscale resolution, `tako@host` SSH recovery access, target metadata (`arch`, `libc`), and private management HTTP before writing `config.toml`.
 
 Other server commands:
 

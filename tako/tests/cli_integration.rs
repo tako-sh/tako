@@ -648,6 +648,46 @@ mod server_commands {
     }
 
     #[test]
+    fn servers_add_rejects_non_tailscale_host_before_writing_config() {
+        let temp = TempDir::new().unwrap();
+        let project_dir = temp.path().join("project");
+        fs::create_dir_all(&project_dir).unwrap();
+
+        let home = temp.path().join("home");
+        let tako_home = temp.path().join("tako-home");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&tako_home).unwrap();
+
+        let out = run_tako_with_env(
+            &["servers", "add", "127.0.0.1", "--name", "local"],
+            &project_dir,
+            &home,
+            &tako_home,
+        );
+
+        assert!(
+            !out.status.success(),
+            "servers add should reject non-Tailscale hosts: {}{}",
+            stdout_str(&out),
+            stderr_str(&out)
+        );
+
+        let combined = format!("{}{}", stdout_str(&out), stderr_str(&out));
+        assert!(
+            combined.contains("Remote management requires Tailscale"),
+            "expected Tailscale guidance: {}",
+            combined
+        );
+
+        let config = fs::read_to_string(tako_home.join("config.toml")).unwrap_or_default();
+        assert!(
+            !config.contains("[[servers]]"),
+            "server should not be written after access failure: {}",
+            config
+        );
+    }
+
+    #[test]
     fn servers_add_persists_description() {
         let temp = TempDir::new().unwrap();
         let project_dir = temp.path().join("project");
