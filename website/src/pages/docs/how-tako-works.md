@@ -49,7 +49,7 @@ Remote management is private by default. Tako expects deployment hosts to be rea
 
 Small management commands use the same typed protocol as the local Unix socket over `POST /rpc`. Unsigned `hello` and `server_info` probes let the CLI confirm it is talking to a Tako server. Every other HTTP RPC must be signed by an enrolled SSH key, including the key fingerprint, timestamp, nonce, and SSH signature.
 
-SSH remains part of the system, but only for setup and recovery. `tako servers add --install` can connect as an admin SSH user, install or repair `tako-server`, enroll the SSH key used for access, verify signed HTTP management, and then write the local server entry.
+SSH remains part of the system, but only for setup and recovery. `tako servers add my-server` verifies `tako` SSH recovery access before saving the server, and can prompt to install or repair `tako-server` when needed. `tako servers add root@my-server` is a first-add shortcut for choosing the admin SSH user used by that install path.
 
 ### `tako.sh` SDK
 

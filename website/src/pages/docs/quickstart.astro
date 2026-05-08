@@ -36,16 +36,30 @@ import DocsLayout from "../../layouts/DocsLayout.astro";
   </p>
 
   <h2 id="remote-setup">Remote setup</h2>
-  <p>Connect your workstation and deployment host to the same Tailscale tailnet. On each host (as <code>root</code> or with <code>sudo</code>), install the runtime:</p>
-  <Snippet code='sudo sh -c "$(curl -fsSL https://tako.sh/install-server.sh)"' lang="bash" />
+  <p>
+    Remote deploys require <a href="https://tailscale.com/" target="_blank" rel="noopener noreferrer">Tailscale</a>.
+    Install it on your workstation and deployment host, then connect both to the same tailnet. Use the server's Tailscale
+    MagicDNS name, for example <code>my-server</code>.
+  </p>
+  <p>From your developer machine, add the server by MagicDNS name:</p>
+  <Snippet code="tako servers add my-server" lang="bash" />
+  <p>
+    Tako stores the MagicDNS name as the host and uses its first label as the server name. It checks Tailscale,
+    <code>tako</code> SSH recovery access, target metadata, and signed private management before saving the server in
+    your global <code>config.toml</code>.
+  </p>
+  <p>
+    If <code>tako-server</code> is missing or access needs repair, Tako asks whether to install now and which admin SSH
+    user to use. During install, Tako enrolls the SSH key used for access for signed management too.
+  </p>
 
-  <p>Verify installation:</p>
-  <Snippet code="tako-server --version" lang="bash" />
+  <p>Check remote access:</p>
+  <Snippet code="tako servers status" lang="bash" />
+
+  <p>Prefer installing from the host itself? Run the server installer as root, then add the host from your developer machine:</p>
+  <Snippet code='curl -fsSL https://tako.sh/install-server.sh | sudo TAKO_SSH_PUBKEY="$(cat ~/.ssh/id_ed25519.pub)" sh' lang="bash" />
 
   <h2 id="first-deployment">First deployment</h2>
-  <p>From your developer machine, add the server you set up in <a href="#remote-setup">Remote setup</a> to Tako:</p>
-  <Snippet code="tako servers add <magicdns-name>" lang="bash" />
-
   <p>Run the following commands from your app directory.</p>
   <p>Initialize Tako config:</p>
   <Snippet code="tako init" lang="bash" />

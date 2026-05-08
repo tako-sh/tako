@@ -42,6 +42,16 @@ fn servers_add_parses_optional_description() {
 }
 
 #[test]
+fn servers_add_accepts_admin_user_host_shorthand() {
+    let cli = Cli::try_parse_from(["tako", "servers", "add", "ubuntu@example.com"]).unwrap();
+    let Commands::Servers(server::ServerCommands::Add { host, .. }) = cli.command.expect("command")
+    else {
+        panic!("expected Servers::Add");
+    };
+    assert_eq!(host.as_deref(), Some("ubuntu@example.com"));
+}
+
+#[test]
 fn servers_add_parses_install_admin_user() {
     let cli = Cli::try_parse_from([
         "tako",

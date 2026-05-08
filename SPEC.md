@@ -591,13 +591,14 @@ Logs flow helpers:
 
 - For `production`, if no servers are configured and the terminal is interactive, logs offers to run the add-server wizard.
 
-### tako servers add [host] [--name {name}] [--description {text}] [--port {port}] [--install] [--admin-user {user}]
+### tako servers add [host|admin-user@host] [--name {name}] [--description {text}] [--port {port}] [--install] [--admin-user {user}]
 
 Add server to global `config.toml` (`[[servers]]`).
 
-- With `host`: adds directly from CLI args.
-- With `host`: `--name` is required (no implicit default to hostname).
+- With `host`: adds directly from CLI args and defaults the server name to the host's first DNS label (`my-server.tailnet.ts.net` becomes `my-server`). IP addresses and hosts that do not produce a valid server name require `--name`.
+- With `admin-user@host`: treats the prefix as the admin SSH user for install/repair and stores only `host`.
 - Without `host` (interactive terminal): launches a guided wizard (host, required server name, optional description, SSH port) with a final `Looks good?` confirmation. Choosing `No` restarts the wizard.
+- If the derived server name already exists, interactive mode prompts for another name. Non-interactive mode fails and asks for `--name`.
 - The add-server wizard supports `Tab` autocomplete suggestions for host/name/port from existing servers and persisted CLI history.
   - For name/port prompts, suggestions related to the selected host (and selected name for ports) are prioritized first, then global suggestions are shown.
 - Successful adds record host/name/port history in `history.toml` for future autocomplete.
@@ -610,9 +611,9 @@ During SSH checks, `tako servers add` also detects and stores target metadata (`
 
 If `--no-test` is used, SSH checks and target detection are skipped; deploy later fails for that server until target metadata is captured by re-adding the server with SSH checks enabled.
 
-If `--install` is used and `tako-server` is missing or `tako@host` is not available, `tako servers add` connects as the admin SSH user (default `root`, override with `--admin-user`) and runs the server installer over SSH. The installer authorizes the SSH public key that authenticated the admin connection for the `tako` user, then `servers add` rechecks `tako@host`, enrolls the same key for signed remote management, verifies signed HTTP access, and only then writes `config.toml`.
+If `--install` is used and `tako-server` is missing or `tako@host` is not available, `tako servers add` connects as the admin SSH user (default `root`, override with `--admin-user`) and runs the server installer over SSH. Passing `admin-user@host` is shorthand for setting that admin user and enabling install/repair when needed. The installer authorizes the SSH public key that authenticated the admin connection for the `tako` user, then `servers add` rechecks `tako@host`, enrolls the same key for signed remote management, verifies signed HTTP access, and only then writes `config.toml`.
 
-In the interactive wizard, if `tako-server` is missing or `tako@host` cannot be reached, Tako asks whether to install now and prompts for the admin SSH user.
+In the interactive wizard and direct host flow, if `tako-server` is missing or `tako@host` cannot be reached, Tako asks whether to install now and prompts for the admin SSH user.
 
 ### tako servers rm [name]
 
@@ -1191,7 +1192,7 @@ Reference scripts in this repo:
 - HTTP `/rpc` accepts unsigned `hello` and `server_info` probes. All other commands require a signed request from an enrolled SSH key. Requests include the enrolled key fingerprint, timestamp, nonce, and SSH signature over the RPC body plus Tako's management-auth context. Replayed nonces and stale timestamps are rejected.
 - Signed HTTP commands reuse the existing dispatcher; bulk deploy artifacts and logs use separate streaming endpoints instead of the JSON RPC path.
 - The Unix management socket remains the local server IPC path. SSH remains setup/recovery, not the normal remote management transport.
-- `tako servers add` expects the host to be the server's Tailscale MagicDNS name or Tailscale IP. It verifies the host resolves to a Tailscale address, verifies `tako@host` SSH recovery access, enrolls the SSH key that authenticated that connection, probes private HTTP management with `hello` and `server_info`, verifies signed HTTP access, and refuses to write `config.toml` if any check fails.
+- `tako servers add` expects the host to be the server's Tailscale MagicDNS name or Tailscale IP. MagicDNS hostnames default the local server name to the first DNS label; IP addresses require `--name`. It verifies the host resolves to a Tailscale address, verifies `tako@host` SSH recovery access, enrolls the SSH key that authenticated that connection, probes private HTTP management with `hello` and `server_info`, verifies signed HTTP access, and refuses to write `config.toml` if any check fails.
 - `tako servers status` uses signed HTTP remote management for server/app status, routes, and release metadata. SSH is not used for normal status reads.
 
 ### Zero-Downtime Operation

@@ -49,6 +49,7 @@ pub struct AddServerOptions<'a> {
     pub no_test: bool,
     pub pre_detected_target: Option<crate::config::ServerTarget>,
     pub install_if_missing: bool,
+    pub allow_install_prompt: bool,
     pub admin_user: Option<&'a str>,
 }
 
@@ -416,6 +417,7 @@ pub(super) async fn run_add_server_wizard(
             no_test: true,
             pre_detected_target: detected_target,
             install_if_missing: false,
+            allow_install_prompt: false,
             admin_user: None,
         },
     )
@@ -435,6 +437,7 @@ pub async fn add_server(
         no_test,
         pre_detected_target,
         install_if_missing,
+        allow_install_prompt,
         admin_user,
     } = options;
 
@@ -448,13 +451,27 @@ pub async fn add_server(
         }
     });
 
-    let server_name = name
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
+    let explicit_name = name.map(str::trim).filter(|value| !value.is_empty());
+    let mut server_name = explicit_name
+        .map(ToOwned::to_owned)
+        .or_else(|| default_server_name_from_host(host))
         .ok_or(
-            "Server name is required when adding with a host. Use --name <name>, or run 'tako servers add' to use the interactive wizard.",
-        )?
-        .to_string();
+            "Server name is required for this host. Use --name <name>, or run 'tako servers add' to use the interactive wizard.",
+        )?;
+
+    if servers.contains(&server_name) && explicit_name.is_none() && output::is_interactive() {
+        let suggested = next_available_server_name(&server_name, &servers);
+        server_name = output::TextField::new("Server name")
+            .with_default(&suggested)
+            .prompt()?
+            .trim()
+            .to_string();
+    }
+
+    let server_name = server_name.trim().to_string();
+    if server_name.is_empty() {
+        return Err("Server name is required.".into());
+    }
 
     // Check if host already exists
     if let Some(existing_name) = servers.find_by_host(host) {
@@ -576,6 +593,28 @@ pub async fn add_server(
                 check_tako_connection(host, port),
             )
             .await;
+        } else if allow_install_prompt && needs_install && output::is_interactive() {
+            let should_install = output::confirm("Install tako-server now?", true)?;
+            if should_install {
+                let admin_user = output::TextField::new("Admin SSH user")
+                    .with_default(admin_user.unwrap_or("root"))
+                    .prompt()?;
+                output::with_spinner_async_err(
+                    "Installing tako-server",
+                    "tako-server installed",
+                    "Install failed",
+                    install_tako_server_with_admin(host, port, &admin_user),
+                )
+                .await?;
+
+                result = output::with_spinner_async_err(
+                    "Verifying install",
+                    "Install verified",
+                    "Verification failed",
+                    check_tako_connection(host, port),
+                )
+                .await;
+            }
         }
 
         {
@@ -634,7 +673,51 @@ pub async fn add_server(
 }
 
 fn server_not_installed_message() -> &'static str {
-    "tako-server is not installed. Run `tako servers add --install` or install it on the server, then try again."
+    "tako-server is not installed. Run `tako servers add <admin-user>@<host>` or install it on the server, then try again."
+}
+
+fn default_server_name_from_host(host: &str) -> Option<String> {
+    let label = host
+        .trim()
+        .trim_end_matches('.')
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim();
+    if is_valid_default_server_name(label) {
+        Some(label.to_string())
+    } else {
+        None
+    }
+}
+
+fn next_available_server_name(base: &str, servers: &crate::config::ServersToml) -> String {
+    for index in 2.. {
+        let suffix = format!("-{index}");
+        let max_base_len = 63usize.saturating_sub(suffix.len());
+        let trimmed_base = base
+            .chars()
+            .take(max_base_len)
+            .collect::<String>()
+            .trim_end_matches('-')
+            .to_string();
+        let candidate = format!("{trimmed_base}{suffix}");
+        if !servers.contains(&candidate) {
+            return candidate;
+        }
+    }
+
+    unreachable!()
+}
+
+fn is_valid_default_server_name(name: &str) -> bool {
+    if name.is_empty() || name.len() > 63 || name.ends_with('-') {
+        return false;
+    }
+    name.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
 async fn verify_remote_management(

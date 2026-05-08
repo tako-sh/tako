@@ -38,16 +38,16 @@ Set up a deployment host:
 ```bash
 # Connect the host and your workstation to Tailscale first.
 sudo sh -c "$(curl -fsSL https://tako.sh/install-server.sh)"
-tako servers add <magicdns-name> --name production
+tako servers add my-server
 # Or install/repair over SSH while adding:
-tako servers add <magicdns-name> --name production --install
+tako servers add root@my-server
 ```
 
 Deploy your app:
 
 ```bash
 tako init    # prompts for app name + production route, writes tako.toml, updates .gitignore for .tako/secrets.json
-tako servers add <magicdns-name> --name production
+tako servers add my-server
 tako deploy
 ```
 

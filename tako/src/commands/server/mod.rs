@@ -12,10 +12,10 @@ use clap::Subcommand;
 pub enum ServerCommands {
     /// Add a new server
     Add {
-        /// Server host (IP or hostname). Omit to use the interactive setup wizard.
+        /// Server host. Use admin-user@host to install or repair with that SSH user.
         host: Option<String>,
 
-        /// Server name
+        /// Server name. Defaults to the host's first DNS label.
         #[arg(long)]
         name: Option<String>,
 
@@ -107,22 +107,21 @@ async fn run_async(cmd: ServerCommands) -> Result<(), Box<dyn std::error::Error>
             no_test,
         } => {
             if let Some(host) = host {
-                let Some(name) = name.as_deref() else {
-                    return Err(
-                        "Server name is required when adding with a host. Use --name <name>, or run 'tako servers add' to use the interactive wizard."
-                            .into(),
-                    );
-                };
+                let parsed_host = parse_add_host(&host);
+                let parsed_admin_user = parsed_host.admin_user.as_deref();
+                let admin_user = admin_user.as_deref().or(parsed_admin_user);
+                let install_if_missing = !no_test && (install || parsed_admin_user.is_some());
                 let _ = add_server(
-                    &host,
+                    &parsed_host.host,
                     AddServerOptions {
-                        name: Some(name),
+                        name: name.as_deref(),
                         description: description.as_deref(),
                         port,
                         no_test,
                         pre_detected_target: None,
-                        install_if_missing: install,
-                        admin_user: admin_user.as_deref(),
+                        install_if_missing,
+                        allow_install_prompt: !no_test && !install_if_missing,
+                        admin_user,
                     },
                 )
                 .await?;
@@ -193,4 +192,49 @@ async fn implode_server_cmd(
         .clone();
 
     crate::commands::implode::implode_server(&server_name, &server, assume_yes).await
+}
+
+struct ParsedAddHost {
+    host: String,
+    admin_user: Option<String>,
+}
+
+fn parse_add_host(input: &str) -> ParsedAddHost {
+    let trimmed = input.trim();
+    if let Some((user, host)) = trimmed.rsplit_once('@') {
+        let user = user.trim();
+        let host = host.trim();
+        if !user.is_empty() && !host.is_empty() && !user.contains('@') && !host.contains('@') {
+            return ParsedAddHost {
+                host: host.to_string(),
+                admin_user: Some(user.to_string()),
+            };
+        }
+    }
+
+    ParsedAddHost {
+        host: trimmed.to_string(),
+        admin_user: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_add_host_extracts_admin_user() {
+        let parsed = parse_add_host("ubuntu@my-server");
+
+        assert_eq!(parsed.host, "my-server");
+        assert_eq!(parsed.admin_user.as_deref(), Some("ubuntu"));
+    }
+
+    #[test]
+    fn parse_add_host_keeps_plain_host() {
+        let parsed = parse_add_host("my-server");
+
+        assert_eq!(parsed.host, "my-server");
+        assert_eq!(parsed.admin_user, None);
+    }
 }

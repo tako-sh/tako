@@ -615,7 +615,100 @@ mod server_commands {
     }
 
     #[test]
-    fn servers_add_with_host_requires_name() {
+    fn servers_add_with_hostname_derives_name() {
+        let temp = TempDir::new().unwrap();
+        let project_dir = temp.path().join("project");
+        fs::create_dir_all(&project_dir).unwrap();
+
+        let home = temp.path().join("home");
+        let tako_home = temp.path().join("tako-home");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&tako_home).unwrap();
+
+        let out = run_tako_with_env(
+            &["servers", "add", "my-server", "--no-test"],
+            &project_dir,
+            &home,
+            &tako_home,
+        );
+
+        assert!(
+            out.status.success(),
+            "servers add should derive a name from host: {}{}",
+            stdout_str(&out),
+            stderr_str(&out)
+        );
+
+        let config = fs::read_to_string(tako_home.join("config.toml")).unwrap();
+        assert!(config.contains("name = \"my-server\""), "{config}");
+        assert!(config.contains("host = \"my-server\""), "{config}");
+    }
+
+    #[test]
+    fn servers_add_with_magicdns_host_derives_short_name() {
+        let temp = TempDir::new().unwrap();
+        let project_dir = temp.path().join("project");
+        fs::create_dir_all(&project_dir).unwrap();
+
+        let home = temp.path().join("home");
+        let tako_home = temp.path().join("tako-home");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&tako_home).unwrap();
+
+        let out = run_tako_with_env(
+            &["servers", "add", "my-server.tailnet.ts.net", "--no-test"],
+            &project_dir,
+            &home,
+            &tako_home,
+        );
+
+        assert!(
+            out.status.success(),
+            "servers add should derive a short name from MagicDNS: {}{}",
+            stdout_str(&out),
+            stderr_str(&out)
+        );
+
+        let config = fs::read_to_string(tako_home.join("config.toml")).unwrap();
+        assert!(config.contains("name = \"my-server\""), "{config}");
+        assert!(
+            config.contains("host = \"my-server.tailnet.ts.net\""),
+            "{config}"
+        );
+    }
+
+    #[test]
+    fn servers_add_accepts_admin_user_host_shorthand() {
+        let temp = TempDir::new().unwrap();
+        let project_dir = temp.path().join("project");
+        fs::create_dir_all(&project_dir).unwrap();
+
+        let home = temp.path().join("home");
+        let tako_home = temp.path().join("tako-home");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&tako_home).unwrap();
+
+        let out = run_tako_with_env(
+            &["servers", "add", "ubuntu@my-server", "--no-test"],
+            &project_dir,
+            &home,
+            &tako_home,
+        );
+
+        assert!(
+            out.status.success(),
+            "servers add should accept admin-user@host: {}{}",
+            stdout_str(&out),
+            stderr_str(&out)
+        );
+
+        let config = fs::read_to_string(tako_home.join("config.toml")).unwrap();
+        assert!(config.contains("name = \"my-server\""), "{config}");
+        assert!(config.contains("host = \"my-server\""), "{config}");
+    }
+
+    #[test]
+    fn servers_add_with_ip_requires_name() {
         let temp = TempDir::new().unwrap();
         let project_dir = temp.path().join("project");
         fs::create_dir_all(&project_dir).unwrap();

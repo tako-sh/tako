@@ -43,3 +43,22 @@ fn server_not_installed_message_is_actionable() {
     assert!(message.contains("tako-server is not installed"));
     assert!(message.contains("try again"));
 }
+
+#[test]
+fn default_server_name_from_host_uses_magicdns_short_name() {
+    assert_eq!(
+        default_server_name_from_host("my-server.tailnet.ts.net").as_deref(),
+        Some("my-server")
+    );
+    assert_eq!(
+        default_server_name_from_host("my-server").as_deref(),
+        Some("my-server")
+    );
+}
+
+#[test]
+fn default_server_name_from_host_rejects_ips_and_invalid_names() {
+    assert_eq!(default_server_name_from_host("100.64.0.1"), None);
+    assert_eq!(default_server_name_from_host("fd7a:115c:a1e0::1"), None);
+    assert_eq!(default_server_name_from_host("-prod.tailnet.ts.net"), None);
+}
