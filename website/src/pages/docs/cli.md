@@ -9,18 +9,19 @@ description: "Complete CLI reference for Tako commands including init, dev, depl
 # CLI Reference
 
 ```bash
-tako [--version] [-v|--verbose] [--ci] [--dry-run] [-c|--config <CONFIG>] <command>
+tako [--version] [-v|--verbose] [--ci] [--dry-run] [-c|--config <CONFIG>] [--ssh-passphrase <PASSPHRASE>] <command>
 ```
 
 ## Global Options
 
-| Flag                      | Description                                                                     |
-| ------------------------- | ------------------------------------------------------------------------------- |
-| `--version`               | Print version and exit.                                                         |
-| `-v`, `--verbose`         | Show an append-only transcript with timestamps and debug detail.                |
-| `--ci`                    | Deterministic non-interactive output: no color, spinners, or prompts.           |
-| `--dry-run`               | Show planned side effects without performing them where supported.              |
-| `-c`, `--config <CONFIG>` | Select an app config file instead of `./tako.toml`; `.toml` suffix is optional. |
+| Flag                            | Description                                                                     |
+| ------------------------------- | ------------------------------------------------------------------------------- |
+| `--version`                     | Print version and exit.                                                         |
+| `-v`, `--verbose`               | Show an append-only transcript with timestamps and debug detail.                |
+| `--ci`                          | Deterministic non-interactive output: no color, spinners, or prompts.           |
+| `--dry-run`                     | Show planned side effects without performing them where supported.              |
+| `-c`, `--config <CONFIG>`       | Select an app config file instead of `./tako.toml`; `.toml` suffix is optional. |
+| `--ssh-passphrase <PASSPHRASE>` | Use this passphrase for encrypted local SSH keys.                               |
 
 App-scoped commands use the selected config file's parent directory as the app directory. `--dry-run` is supported by `deploy`, `servers add`, `servers rm`, and `delete`.
 
@@ -229,7 +230,7 @@ When `set` or `key export` omit `--env` in an interactive terminal, Tako opens a
 tako secrets key export
 tako secrets key export --env staging
 tako secrets key import
-tako secrets key import --exported-key
+tako secrets key import --env production
 tako secrets key import --passphrase --env production
 ```
 
@@ -237,7 +238,7 @@ The first secret set for an environment creates a random environment key. By def
 
 On macOS, interactive key creation and import offer iCloud Keychain storage through the signed `Tako.app` CLI installed by the macOS installer. If the signed app entitlement is unavailable, Tako fails before writing a local key file or updating `.tako/secrets.json`.
 
-`export` requires macOS user authentication on macOS, then copies a single base64url key string to the clipboard. `import` asks for a key source interactively: `Exported key` or `Passphrase`. In non-interactive mode, pass `--exported-key` or `--passphrase --env <environment>`.
+`export` requires macOS user authentication on macOS, then copies a single base64url key string to the clipboard. `import` asks for a key source interactively: `Exported key` or `Passphrase`. If an existing environment's secrets cannot be decrypted with the passphrase, interactive mode prompts again with `Invalid passphrase`; non-interactive mode fails without saving the key. In non-interactive mode, `import --env <environment>` reads an exported key from stdin by default; pass `--passphrase --env <environment>` to import a passphrase.
 
 ## `tako servers`
 
@@ -252,7 +253,7 @@ tako servers add la --install
 tako servers add la --install --admin-user root
 ```
 
-Without `host`, `add` opens an interactive setup wizard. With `host`, Tako defaults the local server name to the host's first DNS label; pass `--name` to override it. IP addresses and hosts that do not produce a valid name require `--name`. Use the server's Tailscale MagicDNS name or Tailscale IP. Normal add verifies Tailscale resolution, `tako@host` SSH recovery access, target metadata (`arch`, `libc`), and signed private management HTTP before writing `config.toml`.
+Without `host`, `add` opens an interactive setup wizard. With `host`, Tako defaults the local server name to the host's first DNS label; pass `--name` to override it. IP addresses and hosts that do not produce a valid name require `--name`. Use the server's Tailscale MagicDNS name or Tailscale IP. Normal add verifies Tailscale resolution, `tako@host` SSH recovery access, target metadata (`arch`, `libc`), and signed private management HTTP before writing `config.toml`. If a local SSH key is encrypted, interactive runs prompt for the passphrase; pass `--ssh-passphrase <PASSPHRASE>` for one-line commands.
 
 Use `--install` to install or repair `tako-server` over SSH before adding the host. The admin user defaults to `root`; pass `--admin-user <user>` when the host requires a different privileged SSH user. `user@host` is shorthand for setting that admin SSH user during first add. The installer enrolls the SSH key used for access for both `tako` SSH recovery and signed HTTP management.
 

@@ -51,7 +51,7 @@ const sorted = posts.sort((a, b) => new Date(b.data.date).getTime() - new Date(a
   .blog-list-sheet {
     border: 2px solid var(--line);
     border-radius: var(--panel-radius);
-    background: rgba(255, 255, 255, 0.8);
+    background: var(--panel);
     box-shadow: 0 18px 45px rgba(47, 42, 68, 0.1);
     padding: clamp(18px, 4vw, 36px);
     margin: 0 auto;
@@ -94,7 +94,7 @@ const sorted = posts.sort((a, b) => new Date(b.data.date).getTime() - new Date(a
     padding: 14px 16px;
     border: 1px solid var(--line);
     border-radius: 16px;
-    background: rgba(255, 255, 255, 0.6);
+    background: color-mix(in oklch, var(--panel-strong) 70%, transparent);
     transition: border-color 0.15s, background 0.15s;
   }
 

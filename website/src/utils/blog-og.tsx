@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, extname, isAbsolute, join } from "path";
 import React from "react";
 import satori from "satori";
+import sharp from "sharp";
 
 const ROOT = process.cwd();
 const FONT_CACHE = join(ROOT, "node_modules/.cache/fonts");
@@ -222,6 +223,14 @@ function plainCard(title: string, logoUri: string) {
   );
 }
 
+async function compressPng(png: Uint8Array): Promise<Uint8Array> {
+  const compressed = await sharp(png)
+    .png({ compressionLevel: 9, adaptiveFiltering: true })
+    .toBuffer();
+
+  return compressed.byteLength < png.byteLength ? compressed : png;
+}
+
 export async function renderOgImage(title: string, imageSource?: string): Promise<Uint8Array> {
   const [poppinsBold, plexMono] = await Promise.all([
     fetchFont("Poppins", 700),
@@ -250,7 +259,7 @@ export async function renderOgImage(title: string, imageSource?: string): Promis
   );
 
   const resvg = new Resvg(svg, { fitTo: { mode: "width", value: 1200 } });
-  return resvg.render().asPng();
+  return compressPng(resvg.render().asPng());
 }
 
 export async function generateOgImage(title: string, outputPath: string, imageSource?: string) {

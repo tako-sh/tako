@@ -101,8 +101,11 @@ const pageStructuredData = structuredData
         scroll-behavior: smooth;
       }
       :root {
-        --bg: #fff9f4;
-        --paper: #fffefc;
+        --bg: oklch(94.2% 0.018 72);
+        --paper: oklch(96.4% 0.014 72);
+        --panel: color-mix(in oklch, var(--paper) 78%, var(--bg));
+        --panel-strong: color-mix(in oklch, var(--paper) 90%, var(--bg));
+        --panel-glass: color-mix(in srgb, var(--paper) 78%, transparent);
         --ink: #2f2a44;
         --primary: #E88783;
         --primary-text: #c4605c;
@@ -213,7 +216,7 @@ const pageStructuredData = structuredData
       }
 
       .header.is-scrolled .header-inner {
-        background: rgba(255, 255, 255, 0.76);
+        background: var(--panel-glass);
         border-color: var(--line);
         backdrop-filter: blur(8px);
         -webkit-backdrop-filter: blur(8px);
@@ -477,7 +480,7 @@ const pageStructuredData = structuredData
       }
 
       .header.is-scrolled .hamburger {
-        background: rgba(255, 255, 255, 0.8);
+        background: var(--panel-glass);
         border-color: var(--line);
       }
 
@@ -520,7 +523,7 @@ const pageStructuredData = structuredData
         margin-top: 0;
         border: 2px solid transparent;
         border-radius: 20px;
-        background: rgba(255, 255, 255, 0.92);
+        background: color-mix(in srgb, var(--panel-strong) 94%, transparent);
         backdrop-filter: blur(8px);
         overflow: hidden;
         max-height: 0;

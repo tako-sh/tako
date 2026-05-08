@@ -54,7 +54,7 @@ tako servers add root@la
 
 The add command expects a Tailscale MagicDNS name or Tailscale IP. MagicDNS names default the local server name to the first DNS label; use `--name` to override it or when adding by IP address. It verifies Tailscale resolution, `tako@host` SSH recovery access, signed private management HTTP, and the server target (`arch` and `libc`) before writing `config.toml`. Deploy requires that target metadata so it can choose the correct artifact.
 
-Use `--install` when the host is new or `tako-server` needs repair. Tako connects as the admin SSH user, installs the server, enrolls the SSH key used for access, rechecks `tako@host`, verifies signed HTTP management, and only then saves the server locally. `user@host` is shorthand for setting the admin SSH user on first add. Without a host, `tako servers add` runs the same flow through an interactive wizard.
+Use `--install` when the host is new or `tako-server` needs repair. Tako connects as the admin SSH user, installs the server, enrolls the SSH key used for access, rechecks `tako@host`, verifies signed HTTP management, and only then saves the server locally. `user@host` is shorthand for setting the admin SSH user on first add. Without a host, `tako servers add` runs the same flow through an interactive wizard, including an SSH passphrase prompt when a default key is encrypted. For one-line commands, pass `--ssh-passphrase <PASSPHRASE>`.
 
 List configured servers:
 

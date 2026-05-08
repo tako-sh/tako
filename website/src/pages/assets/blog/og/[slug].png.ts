@@ -14,7 +14,7 @@ export async function GET({ props }: { props: { post: BlogPost } }): Promise<Res
 
   return new Response(body, {
     headers: {
-      "Cache-Control": "public, max-age=86400",
+      "Cache-Control": "public, max-age=604800",
       "Content-Type": "image/png",
     },
   });

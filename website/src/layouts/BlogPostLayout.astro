@@ -412,8 +412,9 @@ if (rawImage && !image) {
 
 <style is:global>
   .blog-sheet {
+    border: 2px solid var(--line);
     border-radius: var(--panel-radius);
-    background: rgba(255, 255, 255, 0.8);
+    background: var(--panel);
     box-shadow: 0 18px 45px rgba(47, 42, 68, 0.1);
     margin: 0 auto;
     overflow: hidden;
@@ -473,7 +474,7 @@ if (rawImage && !image) {
     align-items: center;
     padding: 7px 14px;
     border-radius: 999px;
-    background: rgba(255, 252, 248, 0.82);
+    background: var(--panel-glass);
     backdrop-filter: blur(10px);
     -webkit-backdrop-filter: blur(10px);
     color: var(--ink);
@@ -486,7 +487,7 @@ if (rawImage && !image) {
   }
 
   .blog-sheet.has-hero .blog-back:hover {
-    background: rgba(255, 252, 248, 0.95);
+    background: var(--panel-strong);
   }
 
   .blog-back:focus-visible {
@@ -649,7 +650,7 @@ if (rawImage && !image) {
     flex: 0 0 auto;
     border: 1px solid rgba(47, 42, 68, 0.12);
     border-radius: 999px;
-    background: rgba(255, 255, 255, 0.82);
+    background: var(--panel-glass);
     backdrop-filter: blur(6px);
     color: var(--ink);
     width: 44px;
@@ -740,7 +741,7 @@ if (rawImage && !image) {
     position: fixed;
     inset: 24px;
     border-radius: 24px;
-    background: rgba(255, 252, 248, 0.96);
+    background: var(--panel-strong);
     box-shadow: 0 30px 80px rgba(24, 21, 39, 0.28);
     overflow: hidden;
     display: flex;

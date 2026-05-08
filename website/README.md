@@ -53,4 +53,4 @@ bun run --cwd website deploy
 
 ## Blog Images
 
-Blog hero sources live in `src/assets/blog/` as PNG files referenced by the `image` frontmatter ID. `bun run build` optimizes those images with Astro and emits OG PNG endpoint files in `dist/assets/blog/og/`.
+Blog hero sources live in `src/assets/blog/` as PNG files referenced by the `image` frontmatter ID. `bun run build` optimizes those images with Astro and emits compressed OG PNG endpoint files in `dist/assets/blog/og/`.

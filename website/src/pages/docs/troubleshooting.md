@@ -194,7 +194,7 @@ If the host is new or the server install is incomplete, let Tako install or repa
 tako servers add root@la
 ```
 
-Check that your workstation and server are in the same tailnet, that `tako@la` works with your SSH key, and that the server was installed with the same key enrolled for management access.
+Check that your workstation and server are in the same tailnet, that `tako@la` works with your SSH key, and that the server was installed with the same key enrolled for management access. If your local SSH key is encrypted, use the interactive passphrase prompt or pass `--ssh-passphrase <PASSPHRASE>`.
 
 ## Deploy Cannot Find `main`
 

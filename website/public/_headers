@@ -17,3 +17,6 @@
 
 /blog/*.json
   Content-Type: application/json; charset=utf-8
+
+/assets/blog/og/*
+  Cache-Control: public, max-age=604800
