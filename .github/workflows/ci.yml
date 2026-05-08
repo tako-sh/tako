@@ -547,3 +547,4 @@ jobs:
           for fixture in $(find e2e/fixtures -mindepth 2 -maxdepth 2 -type d | sort); do
             ./e2e/run.sh "$fixture"
           done
+          ./e2e/run.sh examples/go/basic

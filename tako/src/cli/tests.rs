@@ -123,7 +123,6 @@ fn secrets_key_import_parses() {
     let cli = Cli::try_parse_from(["tako", "secrets", "key", "import"]).unwrap();
 
     let Some(Commands::Secrets(secret::SecretCommands::Key(SecretKeyCommands::Import {
-        exported_key,
         passphrase,
         env,
     }))) = cli.command
@@ -131,9 +130,25 @@ fn secrets_key_import_parses() {
         panic!("expected Secrets::Key::Import");
     };
 
-    assert!(!exported_key);
     assert!(!passphrase);
     assert_eq!(env, None);
+}
+
+#[test]
+fn secrets_key_import_parses_with_env() {
+    let cli =
+        Cli::try_parse_from(["tako", "secrets", "key", "import", "--env", "production"]).unwrap();
+
+    let Some(Commands::Secrets(secret::SecretCommands::Key(SecretKeyCommands::Import {
+        passphrase,
+        env,
+    }))) = cli.command
+    else {
+        panic!("expected Secrets::Key::Import");
+    };
+
+    assert!(!passphrase);
+    assert_eq!(env.as_deref(), Some("production"));
 }
 
 #[test]
@@ -150,7 +165,6 @@ fn secrets_key_import_passphrase_parses_with_env() {
     .unwrap();
 
     let Some(Commands::Secrets(secret::SecretCommands::Key(SecretKeyCommands::Import {
-        exported_key,
         passphrase,
         env,
     }))) = cli.command
@@ -158,7 +172,6 @@ fn secrets_key_import_passphrase_parses_with_env() {
         panic!("expected Secrets::Key::Import");
     };
 
-    assert!(!exported_key);
     assert!(passphrase);
     assert_eq!(env.as_deref(), Some("production"));
 }

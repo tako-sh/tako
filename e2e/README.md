@@ -18,6 +18,7 @@ From repo root:
 just e2e e2e/fixtures/javascript/bun
 just e2e e2e/fixtures/javascript/nextjs
 just e2e e2e/fixtures/javascript/tanstack-start
+just e2e examples/go/basic
 ```
 
 This runs the global e2e harness in `e2e/run.sh` against the fixture path.
@@ -39,6 +40,8 @@ After deploy, it runs universal runtime checks:
 - App root responds with valid HTML or JSON.
 - Static/public files (if present in release) are fetched over HTTP.
 - Compiled static assets (if present or referenced by HTML) are fetched over HTTP.
+- Fixtures with production secrets import the example passphrase and verify a
+  secret-backed response.
 - The `channels-workflows` fixture additionally opens a real SSE stream,
   verifies direct channel publish delivery, enqueues a workflow, and verifies
   the workflow-published event arrives on the same stream.

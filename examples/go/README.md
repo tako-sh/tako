@@ -20,8 +20,13 @@ go run .
 
 ## Secrets
 
-Each example has pre-configured encrypted secrets. Passphrase: `tako-example`
+Each example has pre-configured encrypted development and production secrets.
+Passphrase: `tako-example`
 
 ```bash
-tako -c examples/go/basic/tako.toml secrets list --env development
+printf '%s\n' 'tako-example' | \
+  tako -c examples/go/basic/tako.toml secrets key import --passphrase --env development
+tako -c examples/go/basic/tako.toml secrets list
 ```
+
+Import the `production` key the same way before deploying an example.

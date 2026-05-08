@@ -793,16 +793,16 @@ Reads the environment's cached key from iCloud Keychain through the signed `Tako
 
 When `--env` is omitted in an interactive terminal, Tako opens the environment wizard. In non-interactive mode, `--env` is required.
 
-### tako secrets key import [--exported-key|--passphrase] [--env {environment}]
+### tako secrets key import [--passphrase] [--env {environment}]
 
 Import a self-contained exported key string.
 
 In interactive mode, asks for the key source:
 
-- `Exported key`: prompts for an exported key string with masked input. The payload contains the key id, so no environment is needed.
-- `Passphrase`: prompts for an environment and passphrase. Tako derives the environment key from the passphrase and the environment key id. If the environment does not have a key id yet, Tako creates one and saves it to `.tako/secrets.json` after the passphrase flow completes.
+- `Exported key`: prompts for an exported key string with masked input. The payload contains the key id, so no environment is needed; `--env` can name the target environment and validates that the bundle matches it.
+- `Passphrase`: prompts for an environment and passphrase. Tako derives the environment key from the passphrase and the environment key id. If the environment does not have a key id yet, Tako creates one and saves it to `.tako/secrets.json` after the passphrase flow completes. If existing secrets cannot be decrypted with the passphrase, interactive mode prompts again with `Invalid passphrase`; non-interactive mode fails without saving the key.
 
-In non-interactive mode, pass `--exported-key` or `--passphrase`. `--passphrase` also requires `--env`. Both sources read a single line from stdin. Imported keys are stored under Tako's data directory at `keys/{id}` by default. On macOS interactive runs, Tako offers iCloud Keychain storage, which requires the signed `Tako.app` CLI. If the entitlement is unavailable, the import fails before writing the key or updating `.tako/secrets.json`. If the current project has an environment matching the imported `id`, reports that environment name; otherwise reports the imported id.
+In non-interactive mode, `tako secrets key import --env {environment}` reads a single exported key string from stdin by default. Omitting `--env` still imports the key and matches an existing environment by key id when possible. Pass `--passphrase --env {environment}` to import a passphrase from stdin. Imported keys are stored under Tako's data directory at `keys/{id}` by default. On macOS interactive runs, Tako offers iCloud Keychain storage, which requires the signed `Tako.app` CLI. If the entitlement is unavailable, the import fails before writing a local key file or updating `.tako/secrets.json`. If the current project has an environment matching the imported `id`, reports that environment name; otherwise reports the imported id.
 
 ### tako deploy [--env {environment}] [--yes|-y]
 

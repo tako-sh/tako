@@ -1,7 +1,8 @@
 use std::io;
 
 use super::super::{
-    ACCENT, bold, is_interactive, is_pretty, theme_accent, theme_dim, theme_muted, theme_warning,
+    ACCENT, bold, is_interactive, is_pretty, theme_accent, theme_dim, theme_error, theme_muted,
+    theme_warning,
 };
 use super::wizard_back_error;
 
@@ -101,6 +102,13 @@ impl<'a> TextField<'a> {
     }
 
     pub fn prompt(self) -> io::Result<String> {
+        self.prompt_validated(|_| Ok(()))
+    }
+
+    pub fn prompt_validated(
+        self,
+        mut validate: impl FnMut(&str) -> Result<(), String>,
+    ) -> io::Result<String> {
         if !is_interactive() {
             if self.password {
                 return Err(io::Error::new(
@@ -108,7 +116,7 @@ impl<'a> TextField<'a> {
                     "Password prompt requires an interactive terminal",
                 ));
             }
-            return match self.default {
+            let value = match self.default {
                 Some(value) => Ok(value.to_string()),
                 None => Err(io::Error::new(
                     io::ErrorKind::Unsupported,
@@ -117,44 +125,66 @@ impl<'a> TextField<'a> {
                         self.label
                     ),
                 )),
-            };
+            }?;
+            validate(&value)
+                .map_err(|message| io::Error::new(io::ErrorKind::InvalidInput, message))?;
+            return Ok(value);
         }
 
         // Verbose mode: single-line prompt with › separator, no screen erasing.
         if !is_pretty() {
-            if let Some(warning) = self.warning {
-                eprintln!("{} {}", bold(&theme_warning("!")), theme_warning(warning));
+            let mut error: Option<String> = None;
+            loop {
+                if let Some(warning) = self.warning {
+                    eprintln!("{} {}", bold(&theme_warning("!")), theme_warning(warning));
+                }
+                let active_error = error.as_deref();
+                if let Some(message) = active_error {
+                    eprintln!("{} {}", bold(&theme_error("✘")), theme_error(message));
+                }
+                let label = if active_error.is_some() {
+                    theme_error(self.label)
+                } else {
+                    theme_accent(self.label)
+                };
+                let display_label = match self.hint {
+                    Some(hint) => {
+                        let hint = format!("({hint})");
+                        let hint = if active_error.is_some() {
+                            theme_error(hint)
+                        } else {
+                            theme_muted(hint)
+                        };
+                        format!("{label} {hint}")
+                    }
+                    None => label,
+                };
+                let value = raw_text_input(
+                    &display_label,
+                    RawTextInputOptions {
+                        initial: if active_error.is_some() {
+                            None
+                        } else {
+                            self.default
+                        },
+                        suggestions: self.suggestions,
+                        password: self.password,
+                        placeholder_override: self.placeholder,
+                        required: self.required,
+                        trimmed: self.trimmed,
+                        use_separator: true, // use › separator
+                        error: active_error.is_some(),
+                    },
+                )?;
+                match validate(&value) {
+                    Ok(()) => return Ok(value),
+                    Err(message) => error = Some(message),
+                }
             }
-            let display_label = match self.hint {
-                Some(hint) => format!(
-                    "{} {}",
-                    theme_accent(self.label),
-                    theme_muted(format!("({hint})"))
-                ),
-                None => theme_accent(self.label),
-            };
-            let value = raw_text_input(
-                &display_label,
-                RawTextInputOptions {
-                    initial: self.default,
-                    suggestions: self.suggestions,
-                    password: self.password,
-                    placeholder_override: self.placeholder,
-                    required: self.required,
-                    trimmed: self.trimmed,
-                    use_separator: true, // use › separator
-                },
-            )?;
-            return Ok(value);
         }
 
         // Pretty mode: multi-line diamond design
         let term = console::Term::stderr();
-
-        for line in super::format_pretty_prompt_header(self.label, self.warning) {
-            eprintln!("{line}");
-        }
-
         let hint_lines = self
             .hint
             .map(|hint| vec![super::format_pretty_prompt_hint_line(hint)]);
@@ -164,7 +194,14 @@ impl<'a> TextField<'a> {
             + 1
             + footer_spacing
             + self.footer_lines.len();
-        {
+
+        let mut error: Option<String> = None;
+        loop {
+            let active_error = error.as_deref();
+            for line in super::format_pretty_prompt_header(self.label, self.warning, active_error) {
+                eprintln!("{line}");
+            }
+
             // Reserve space: blank for input, then hint lines, then key hints
             eprintln!();
             if let Some(lines) = &hint_lines {
@@ -184,69 +221,86 @@ impl<'a> TextField<'a> {
                 crossterm::cursor::MoveUp((1 + below_input_count) as u16),
                 crossterm::cursor::MoveToColumn(0)
             );
-        }
 
-        let value = match raw_text_input(
-            &super::format_pretty_prompt_input_prefix(true),
-            RawTextInputOptions {
-                initial: self.default,
-                suggestions: self.suggestions,
-                password: self.password,
-                placeholder_override: self.placeholder,
-                required: self.required,
-                trimmed: self.trimmed,
-                use_separator: false, // no › separator in pretty mode
-            },
-        ) {
-            Ok(v) => v,
-            Err(e) => {
-                let _ = crossterm::execute!(
-                    io::stderr(),
-                    crossterm::cursor::MoveDown(below_input_count as u16),
-                    crossterm::cursor::MoveToColumn(0)
-                );
-                let num_rows = pretty_text_prompt_active_lines(
-                    self.warning,
-                    self.hint,
-                    footer_spacing,
-                    self.footer_lines.len(),
-                );
-                let _ = term.clear_last_lines(num_rows);
-                if e.kind() == io::ErrorKind::Interrupted && !super::is_wizard_back(&e) {
-                    for line in super::format_pretty_cancelled_prompt(self.label) {
+            let value = match raw_text_input(
+                &super::format_pretty_prompt_input_prefix_for_status(true, active_error.is_some()),
+                RawTextInputOptions {
+                    initial: if active_error.is_some() {
+                        None
+                    } else {
+                        self.default
+                    },
+                    suggestions: self.suggestions,
+                    password: self.password,
+                    placeholder_override: self.placeholder,
+                    required: self.required,
+                    trimmed: self.trimmed,
+                    use_separator: false, // no › separator in pretty mode
+                    error: active_error.is_some(),
+                },
+            ) {
+                Ok(v) => v,
+                Err(e) => {
+                    let _ = crossterm::execute!(
+                        io::stderr(),
+                        crossterm::cursor::MoveDown(below_input_count as u16),
+                        crossterm::cursor::MoveToColumn(0)
+                    );
+                    let num_rows = pretty_text_prompt_active_lines(
+                        self.warning,
+                        active_error,
+                        self.hint,
+                        footer_spacing,
+                        self.footer_lines.len(),
+                    );
+                    let _ = term.clear_last_lines(num_rows);
+                    if e.kind() == io::ErrorKind::Interrupted && !super::is_wizard_back(&e) {
+                        for line in super::format_pretty_cancelled_prompt(self.label) {
+                            let _ = term.write_line(&line);
+                        }
+                    }
+                    return Err(e);
+                }
+            };
+
+            let validation = validate(&value);
+            let _ = crossterm::execute!(
+                io::stderr(),
+                crossterm::cursor::MoveDown(below_input_count as u16),
+                crossterm::cursor::MoveToColumn(0)
+            );
+
+            let num_rows = pretty_text_prompt_active_lines(
+                self.warning,
+                active_error,
+                self.hint,
+                footer_spacing,
+                self.footer_lines.len(),
+            );
+            let _ = term.clear_last_lines(num_rows);
+
+            match validation {
+                Ok(()) => {
+                    let done_value = if self.password {
+                        theme_muted("••••••").to_string()
+                    } else {
+                        value.clone()
+                    };
+                    for line in super::format_pretty_text_prompt_completion(
+                        self.label,
+                        self.warning,
+                        &done_value,
+                    ) {
                         let _ = term.write_line(&line);
                     }
+
+                    return Ok(value);
                 }
-                return Err(e);
+                Err(message) => {
+                    error = Some(message);
+                }
             }
-        };
-
-        let _ = crossterm::execute!(
-            io::stderr(),
-            crossterm::cursor::MoveDown(below_input_count as u16),
-            crossterm::cursor::MoveToColumn(0)
-        );
-
-        let num_rows = pretty_text_prompt_active_lines(
-            self.warning,
-            self.hint,
-            footer_spacing,
-            self.footer_lines.len(),
-        );
-        let _ = term.clear_last_lines(num_rows);
-
-        let done_value = if self.password {
-            theme_muted("••••••").to_string()
-        } else {
-            value.clone()
-        };
-        for line in
-            super::format_pretty_text_prompt_completion(self.label, self.warning, &done_value)
-        {
-            let _ = term.write_line(&line);
         }
-
-        Ok(value)
     }
 }
 
@@ -264,6 +318,7 @@ struct RawTextInputOptions<'a> {
     required: bool,
     trimmed: bool,
     use_separator: bool,
+    error: bool,
 }
 
 fn raw_text_input(prompt: &str, options: RawTextInputOptions<'_>) -> io::Result<String> {
@@ -283,6 +338,7 @@ fn raw_text_input(prompt: &str, options: RawTextInputOptions<'_>) -> io::Result<
         required,
         trimmed,
         use_separator,
+        error,
     } = options;
 
     let mut buf: Vec<char> = initial.unwrap_or("").chars().collect();
@@ -292,7 +348,7 @@ fn raw_text_input(prompt: &str, options: RawTextInputOptions<'_>) -> io::Result<
     // Placeholder: explicit override > first suggestion > dots for password
     let placeholder: Option<String> = if initial.is_some() {
         None
-    } else if password {
+    } else if password && !error {
         Some("••••••".to_string())
     } else if let Some(ph) = placeholder_override {
         Some(ph.to_string())
@@ -300,7 +356,11 @@ fn raw_text_input(prompt: &str, options: RawTextInputOptions<'_>) -> io::Result<
         suggestions.first().cloned()
     };
 
-    let separator = theme_muted("›");
+    let separator = if error {
+        theme_error("›")
+    } else {
+        theme_muted("›")
+    };
 
     // Find the best starts-with match for inline auto-suggest (fish-shell style).
     let sep_display_width: usize = if use_separator { 3 } else { 0 }; // " › " = 3
@@ -330,7 +390,11 @@ fn raw_text_input(prompt: &str, options: RawTextInputOptions<'_>) -> io::Result<
         let _ = crossterm::execute!(*out, Clear(ClearType::CurrentLine));
         if buf.is_empty() {
             if let Some(ph) = placeholder {
-                let dimmed = theme_dim(ph);
+                let dimmed = if error {
+                    theme_error(ph)
+                } else {
+                    theme_dim(ph)
+                };
                 if use_separator {
                     let _ = write!(out, "{prompt} {separator} {dimmed}");
                 } else {
@@ -347,6 +411,7 @@ fn raw_text_input(prompt: &str, options: RawTextInputOptions<'_>) -> io::Result<
             } else {
                 buf.iter().collect()
             };
+            let display = if error { theme_error(display) } else { display };
             if use_separator {
                 let _ = write!(out, "{prompt} {separator} {display}");
             } else {
@@ -354,7 +419,12 @@ fn raw_text_input(prompt: &str, options: RawTextInputOptions<'_>) -> io::Result<
             }
             // Show inline suggestion suffix dimmed (only when cursor is at end)
             if !suffix.is_empty() && pos == buf.len() {
-                let _ = write!(out, "{}", theme_dim(suffix));
+                let suffix = if error {
+                    theme_error(suffix)
+                } else {
+                    theme_dim(suffix)
+                };
+                let _ = write!(out, "{suffix}");
             }
         }
         // Position cursor: prompt_width + sep_width + chars-before-cursor
@@ -571,12 +641,17 @@ fn raw_text_input(prompt: &str, options: RawTextInputOptions<'_>) -> io::Result<
 
 fn pretty_text_prompt_active_lines(
     warning: Option<&str>,
+    error: Option<&str>,
     hint: Option<&str>,
     footer_spacing: usize,
     footer_lines: usize,
 ) -> usize {
-    // label + input + key hints + optional warning + optional hint + footer block
-    3 + warning.is_some() as usize + hint.is_some() as usize + footer_spacing + footer_lines
+    // label + input + key hints + optional warning/error + optional hint + footer block
+    3 + warning.is_some() as usize
+        + error.is_some() as usize
+        + hint.is_some() as usize
+        + footer_spacing
+        + footer_lines
 }
 
 /// Used internally by filter_suggestions tests — kept for test compatibility.

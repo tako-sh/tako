@@ -175,6 +175,21 @@ impl SecretsStore {
         Ok(env_secrets.key_id.clone())
     }
 
+    /// Initialize an environment with an existing key id.
+    pub fn set_env_key_id(&mut self, env: &str, key_id: &str) -> Result<()> {
+        validate_environment_name(env)?;
+        crate::crypto::KeyStore::for_key_id(key_id)?;
+
+        self.environments.insert(
+            env.to_string(),
+            EnvironmentSecrets {
+                key_id: key_id.to_string(),
+                secrets: HashMap::new(),
+            },
+        );
+        Ok(())
+    }
+
     /// Remove a secret from an environment
     pub fn remove(&mut self, env: &str, name: &str) -> Result<()> {
         let env_secrets = self

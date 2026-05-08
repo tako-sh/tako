@@ -197,6 +197,27 @@ fetch_route_path() {
     "http://${server_host}:8080${route_path}"
 }
 
+fetch_route_path_forwarded_https() {
+  local server_host=$1
+  local route_host=$2
+  local route_path=$3
+  local headers_file=$4
+  local body_file=$5
+
+  curl -sS \
+    --http1.1 \
+    --connect-timeout 3 \
+    --max-time 10 \
+    -H "Host: ${route_host}" \
+    -H "X-Forwarded-Proto: https" \
+    -H "Forwarded: proto=https" \
+    -H "Connection: close" \
+    -D "$headers_file" \
+    -o "$body_file" \
+    -w "%{http_code}" \
+    "http://${server_host}:8080${route_path}"
+}
+
 require_http_ok() {
   local server_host=$1
   local route_host=$2
@@ -259,6 +280,63 @@ post_route_json() {
     cat "$body_file" >&2 || true
     exit 1
   fi
+}
+
+fixture_has_secrets_for_env() {
+  local env_name=$1
+  [[ -f "$PROJECT_DIR/.tako/secrets.json" ]] && \
+    jq -e --arg env_name "$env_name" '.[$env_name].secrets | length > 0' \
+      "$PROJECT_DIR/.tako/secrets.json" >/dev/null 2>&1
+}
+
+import_fixture_secret_key() {
+  local env_name=$1
+  local import_log="$TMP_ROOT/secrets-import-${env_name}.log"
+
+  if ! fixture_has_secrets_for_env "$env_name"; then
+    return 0
+  fi
+
+  if ! printf '%s\n' "${TAKO_EXAMPLE_SECRET_PASSPHRASE:-tako-example}" | \
+    HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" \
+      --config "$PROJECT_DIR/tako.toml" secrets key import --passphrase --env "$env_name" \
+      >"$import_log" 2>&1; then
+    echo "Failed to import $env_name fixture secret key" >&2
+    cat "$import_log" >&2 || true
+    exit 1
+  fi
+}
+
+run_secret_checks() {
+  local server_host=$1
+  local route_host=$2
+  local headers_file="$TMP_ROOT/secret_headers.tmp"
+  local body_file="$TMP_ROOT/secret_body.tmp"
+  local status
+  local path
+
+  if ! fixture_has_secrets_for_env production; then
+    return 0
+  fi
+
+  echo "Running secret checks for route: $route_host on $server_host"
+
+  for path in /api/secret /secret /; do
+    status=$(
+      fetch_route_path_forwarded_https \
+        "$server_host" "$route_host" "$path" "$headers_file" "$body_file" || true
+    )
+    if [[ "$status" =~ ^[0-9]+$ ]] && (( status >= 200 && status < 400 )); then
+      if grep -Eq '"has_secret"[[:space:]]*:[[:space:]]*true|Secret check:[[:space:]]*present' "$body_file"; then
+        return 0
+      fi
+    fi
+  done
+
+  echo "Secret check did not find an injected secret response." >&2
+  [[ -f "$headers_file" ]] && cat "$headers_file" >&2 || true
+  [[ -f "$body_file" ]] && cat "$body_file" >&2 || true
+  exit 1
 }
 
 check_http_ok_optional() {
@@ -526,6 +604,12 @@ fi
 mkdir -p "$(dirname "$PROJECT_DIR")"
 cp -R "$FIXTURE_DIR" "$PROJECT_DIR"
 
+if [[ "$FIXTURE_REL" == examples/go/* ]]; then
+  # The committed examples point at a real demo server. E2E runs against the
+  # disposable server named "ssh" that is written below.
+  sed -i 's/^servers = .*/servers = ["ssh"]/' "$PROJECT_DIR/tako.toml"
+fi
+
 if [[ -f "$PROJECT_DIR/go.mod" ]]; then
   # ── Go fixture setup ─────────────────────────────────────────────
   # Copy the Go SDK source (go.mod + *.go + internal/) so the fixture's replace directive resolves.
@@ -606,6 +690,8 @@ if [[ -z "$APP_NAME" ]]; then
   exit 1
 fi
 
+import_fixture_secret_key production
+
 for entry in "${SERVERS[@]}"; do
   server="${entry%%:*}"
   libc="${entry##*:}"
@@ -657,6 +743,7 @@ CFG
   fi
 
   run_universal_http_checks "$server" "$ROUTE_HOST" "$APP_RELEASE_DIR"
+  run_secret_checks "$server" "$ROUTE_HOST"
   if [[ "$FIXTURE_REL" == "e2e/fixtures/javascript/channels-workflows" ]]; then
     run_channels_workflows_checks "$server" "$ROUTE_HOST"
   fi

@@ -75,18 +75,47 @@ fn format_pretty_prompt_warning_line(message: &str) -> String {
     format!("{} {}", bold(&theme_warning("!")), theme_warning(message))
 }
 
-fn format_pretty_prompt_header(label: &str, warning: Option<&str>) -> Vec<String> {
-    let diamond = theme_accent(DIAMOND_FILLED);
-    let mut lines = vec![format!("{diamond} {}", theme_accent(label))];
+fn format_pretty_prompt_error_line(message: &str) -> String {
+    format!("{} {}", bold(&theme_error("✘")), theme_error(message))
+}
+
+fn format_pretty_prompt_header(
+    label: &str,
+    warning: Option<&str>,
+    error: Option<&str>,
+) -> Vec<String> {
+    let has_error = error.is_some();
+    let diamond = if has_error {
+        theme_error(DIAMOND_FILLED)
+    } else {
+        theme_accent(DIAMOND_FILLED)
+    };
+    let label = if has_error {
+        theme_error(label)
+    } else {
+        theme_accent(label)
+    };
+    let mut lines = vec![format!("{diamond} {label}")];
     if let Some(warning_text) = warning {
         lines.push(format_pretty_prompt_warning_line(warning_text));
+    }
+    if let Some(error_text) = error {
+        lines.push(format_pretty_prompt_error_line(error_text));
     }
     lines
 }
 
 fn format_pretty_prompt_input_prefix(active: bool) -> String {
+    format_pretty_prompt_input_prefix_for_status(active, false)
+}
+
+fn format_pretty_prompt_input_prefix_for_status(active: bool, has_error: bool) -> String {
     let marker = if active {
-        theme_accent("›")
+        if has_error {
+            theme_error("›")
+        } else {
+            theme_accent("›")
+        }
     } else {
         theme_muted("›")
     };
@@ -207,6 +236,7 @@ mod tests {
         let lines = format_pretty_prompt_header(
             "Application name",
             Some("Name cannot be changed after the first deployment."),
+            None,
         );
 
         assert_eq!(
@@ -214,6 +244,19 @@ mod tests {
             vec![
                 "◆ Application name".to_string(),
                 "! Name cannot be changed after the first deployment.".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn pretty_prompt_header_places_error_below_label() {
+        let lines = format_pretty_prompt_header("Passphrase", None, Some("Invalid passphrase"));
+
+        assert_eq!(
+            lines,
+            vec![
+                "◆ Passphrase".to_string(),
+                "✘ Invalid passphrase".to_string(),
             ]
         );
     }

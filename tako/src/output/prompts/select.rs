@@ -85,7 +85,7 @@ pub(in crate::output) fn raw_select(
     let mut out = io::stderr();
 
     // Print prompt (before raw mode) — diamond style
-    for line in format_pretty_prompt_header(prompt, None) {
+    for line in format_pretty_prompt_header(prompt, None, None) {
         let _ = term.write_line(&line);
     }
 

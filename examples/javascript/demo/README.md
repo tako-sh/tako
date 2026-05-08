@@ -18,13 +18,16 @@ This mode works without a Tako runtime. It uses an in-process simulator that pub
 
 ## Run With Tako Dev Flow
 
-From the repository root:
+From the demo app directory:
 
 ```bash
-just tako examples/javascript/demo dev
+cd examples/javascript/demo
+tako dev
 ```
 
 Use this mode for the real Tako path: workflows are enqueued through the internal socket and events flow through the actual `mission-log` channel instead of the local simulator.
+
+Import demo secrets (dev, then prod): `printf '%s\n' 'eyJ2ZXJzaW9uIjoxLCJpZCI6IjlhYzhkYjk1N2MwZTQwNjEiLCJrZXkiOiI2WjhwazZnWElsN1A2ZGlNaTVDRFN0cEdXWmhUQVI5Tnp0RWR6RXZPUWxZPSJ9' | tako secrets key import --env development && printf '%s\n' 'eyJ2ZXJzaW9uIjoxLCJpZCI6IjJmMzJmMzFhZmQyMDQ1MmEiLCJrZXkiOiJWTVl0U2JXVmRuSXhISWV0dCtyS2ZiK3JPU0laYzNrUE1mS3ZSbUlqY2tJPSJ9' | tako secrets key import --env production`
 
 ## Build
 
@@ -37,7 +40,7 @@ bun run build
 
 - `tako.toml` sets `preset = "tanstack-start"` with `runtime = "bun"`.
 - Plain `bun run dev` uses an in-process simulator for the workflow.
-- `just tako examples/javascript/demo dev` uses real Tako channels + workflows.
+- `tako dev` uses real Tako channels + workflows.
 - Tenant is detected server-side from the `Host` header — no env var needed.
   - `artemis-prime.demo.tako.sh` → tenant `artemis-prime` (Mission Control view)
   - `demo.tako.sh` → no tenant (Landing view with base-name input)

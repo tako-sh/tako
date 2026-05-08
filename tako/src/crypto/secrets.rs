@@ -588,10 +588,34 @@ mod tests {
             .parent()
             .unwrap();
         let example_dirs = [
-            repo_root.join("examples/go/basic"),
-            repo_root.join("examples/go/gin"),
-            repo_root.join("examples/go/echo"),
-            repo_root.join("examples/go/chi"),
+            (
+                repo_root.join("examples/go/basic"),
+                [
+                    ("development", "b451c0de00000001"),
+                    ("production", "b451c0de00000002"),
+                ],
+            ),
+            (
+                repo_root.join("examples/go/gin"),
+                [
+                    ("development", "916c0de100000001"),
+                    ("production", "916c0de100000002"),
+                ],
+            ),
+            (
+                repo_root.join("examples/go/echo"),
+                [
+                    ("development", "ec0c0de100000001"),
+                    ("production", "ec0c0de100000002"),
+                ],
+            ),
+            (
+                repo_root.join("examples/go/chi"),
+                [
+                    ("development", "c810c0de00000001"),
+                    ("production", "c810c0de00000002"),
+                ],
+            ),
         ];
         let secrets_data = [
             ("API_KEY", "sk-example-key-12345"),
@@ -599,7 +623,7 @@ mod tests {
             ("EXAMPLE_SECRET", "hello-from-tako"),
         ];
 
-        for dir in &example_dirs {
+        for (dir, envs) in &example_dirs {
             let dir = dir.as_path();
             if !dir.exists() {
                 eprintln!("skipping {} (not found)", dir.display());
@@ -608,24 +632,31 @@ mod tests {
             let tako_dir = dir.join(".tako");
             std::fs::create_dir_all(&tako_dir).unwrap();
 
-            let key_id = generate_key_id();
-            let key = EncryptionKey::generate().unwrap();
+            let mut environments = serde_json::Map::new();
+            for (env_name, key_id) in envs {
+                let key = derive_key_from_passphrase("tako-example", key_id).unwrap();
 
-            let mut secrets_map = serde_json::Map::new();
-            for (name, value) in &secrets_data {
-                let encrypted = encrypt(value, &key).unwrap();
-                secrets_map.insert(name.to_string(), serde_json::Value::String(encrypted));
+                let mut secrets_map = serde_json::Map::new();
+                for (name, value) in &secrets_data {
+                    let encrypted = encrypt(value, &key).unwrap();
+                    secrets_map.insert(name.to_string(), serde_json::Value::String(encrypted));
+                }
+
+                environments.insert(
+                    env_name.to_string(),
+                    serde_json::json!({
+                        "key_id": key_id,
+                        "secrets": secrets_map
+                    }),
+                );
             }
 
-            let json = serde_json::json!({
-                "development": {
-                    "key_id": key_id,
-                    "secrets": secrets_map
-                }
-            });
-
             let path = tako_dir.join("secrets.json");
-            std::fs::write(&path, serde_json::to_string_pretty(&json).unwrap()).unwrap();
+            std::fs::write(
+                &path,
+                serde_json::to_string_pretty(&serde_json::Value::Object(environments)).unwrap(),
+            )
+            .unwrap();
             eprintln!("wrote {}", path.display());
         }
     }
