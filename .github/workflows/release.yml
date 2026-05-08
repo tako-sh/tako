@@ -118,9 +118,17 @@ jobs:
 
           codesign_binary() {
             if [ -n "${TAKO_CODESIGN_KEYCHAIN:-}" ]; then
-              codesign --force --sign "$TAKO_CODESIGN_IDENTITY" --keychain "$TAKO_CODESIGN_KEYCHAIN" "$@"
+              if [ -n "${TAKO_CODESIGN_PAGESIZE:-}" ]; then
+                codesign --force --pagesize "$TAKO_CODESIGN_PAGESIZE" --sign "$TAKO_CODESIGN_IDENTITY" --keychain "$TAKO_CODESIGN_KEYCHAIN" "$@"
+              else
+                codesign --force --sign "$TAKO_CODESIGN_IDENTITY" --keychain "$TAKO_CODESIGN_KEYCHAIN" "$@"
+              fi
             else
-              codesign --force --sign "$TAKO_CODESIGN_IDENTITY" "$@"
+              if [ -n "${TAKO_CODESIGN_PAGESIZE:-}" ]; then
+                codesign --force --pagesize "$TAKO_CODESIGN_PAGESIZE" --sign "$TAKO_CODESIGN_IDENTITY" "$@"
+              else
+                codesign --force --sign "$TAKO_CODESIGN_IDENTITY" "$@"
+              fi
             fi
           }
 
@@ -141,10 +149,14 @@ jobs:
             local src="raw/bin-tako-darwin-${arch}"
             local name="tako-darwin-${arch}.tar.gz"
             local out="signed-dist/${name}"
+            local pagesize=""
             local tmp
-            sh scripts/package-tako-app.sh "$src/tako" "$src/Tako.app"
-            codesign_binary "$src/tako-dev-server"
-            codesign_binary "$src/tako-dev-proxy"
+            if [ "$arch" = "aarch64" ]; then
+              pagesize=16384
+            fi
+            TAKO_CODESIGN_PAGESIZE="$pagesize" sh scripts/package-tako-app.sh "$src/tako" "$src/Tako.app"
+            TAKO_CODESIGN_PAGESIZE="$pagesize" codesign_binary "$src/tako-dev-server"
+            TAKO_CODESIGN_PAGESIZE="$pagesize" codesign_binary "$src/tako-dev-proxy"
             codesign --verify --strict --deep --verbose=4 "$src/Tako.app"
             codesign --verify --strict --verbose=4 "$src/Tako.app/Contents/MacOS/tako"
             codesign --verify --strict --verbose=4 "$src/tako-dev-server"

@@ -12,6 +12,7 @@ bundle_id="${TAKO_BUNDLE_ID:-sh.tako.Tako}"
 bundle_name="${TAKO_BUNDLE_NAME:-Tako}"
 codesign_identity="${TAKO_CODESIGN_IDENTITY:-}"
 codesign_keychain="${TAKO_CODESIGN_KEYCHAIN:-}"
+codesign_pagesize="${TAKO_CODESIGN_PAGESIZE:-}"
 team_id="${TAKO_APPLE_TEAM_ID:-}"
 keychain_group="${TAKO_KEYCHAIN_ACCESS_GROUP:-}"
 profile_base64="${TAKO_PROVISION_PROFILE_BASE64:-}"
@@ -66,9 +67,17 @@ fi
 if [ -n "$codesign_identity" ]; then
   codesign_app() {
     if [ -n "$codesign_keychain" ]; then
-      codesign --force --sign "$codesign_identity" --keychain "$codesign_keychain" "$@"
+      if [ -n "$codesign_pagesize" ]; then
+        codesign --force --pagesize "$codesign_pagesize" --sign "$codesign_identity" --keychain "$codesign_keychain" "$@"
+      else
+        codesign --force --sign "$codesign_identity" --keychain "$codesign_keychain" "$@"
+      fi
     else
-      codesign --force --sign "$codesign_identity" "$@"
+      if [ -n "$codesign_pagesize" ]; then
+        codesign --force --pagesize "$codesign_pagesize" --sign "$codesign_identity" "$@"
+      else
+        codesign --force --sign "$codesign_identity" "$@"
+      fi
     fi
   }
 
@@ -95,7 +104,7 @@ if [ -n "$codesign_identity" ]; then
 </dict>
 </plist>
 EOF
-    codesign_app --entitlements "$entitlements" "$app"
+    codesign_app --generate-entitlement-der --entitlements "$entitlements" "$app"
   else
     codesign_app "$app"
     echo "warning: signed Tako.app without keychain entitlements; iCloud Keychain will be unavailable." >&2
