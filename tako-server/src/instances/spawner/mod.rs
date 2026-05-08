@@ -70,7 +70,7 @@ impl Spawner {
             instance.internal_token(),
             &config.secrets,
         )
-        .map_err(InstanceError::from)?;
+        .map_err(InstanceError::SpawnError)?;
 
         instance.set_process(child);
         instance.set_state(InstanceState::Starting);

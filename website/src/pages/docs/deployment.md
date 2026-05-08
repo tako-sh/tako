@@ -25,7 +25,7 @@ The installer:
 - installs `tako-server` to `/usr/local/bin/tako-server`
 - installs systemd or OpenRC service files
 - detects the host's Tailscale IP and binds remote management HTTP to port `9844`
-- configures privileged bind support and app-user switching, failing on non-systemd/OpenRC hosts if file capabilities cannot be granted
+- configures privileged bind support, app-user switching, and app-process stop permissions, failing on non-systemd/OpenRC hosts if file capabilities cannot be granted
 - creates `/opt/tako` and `/var/run/tako`
 - starts and verifies the service
 - installs helpers needed for graceful reload and upgrade
@@ -244,6 +244,7 @@ If no matching certificate exists yet, Tako serves a fallback self-signed certif
 ```bash
 tako logs --env production
 tako logs --env production --tail
+tako logs --env production --diagnostics
 tako logs --env production --json
 tako servers status
 tako releases ls --env production
@@ -251,7 +252,7 @@ tako releases ls --env production
 
 `servers status` works from any directory and reports all configured servers through signed Tailscale HTTP management.
 
-`logs` includes app output plus server lifecycle, health, and proxy diagnostics for the app's deployed routes. JS/TS production HTTP entrypoints route `console.*`, uncaught exceptions, and unhandled rejections into the same app log stream. Use `--json` for compact JSONL in agents and automation.
+`logs` includes app output. JS/TS production HTTP entrypoints route `console.*`, uncaught exceptions, and unhandled rejections into the same app log stream. Use `--diagnostics` to also include server lifecycle, health, and proxy diagnostics for the app's deployed routes. Use `--json` for compact JSONL in agents and automation.
 
 ## Rollback
 

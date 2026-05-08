@@ -12,7 +12,7 @@ pub(super) const UPGRADE_SOCKET_WAIT_TIMEOUT: Duration = Duration::from_secs(120
 const UPGRADE_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const SERVER_BINARY_PATH: &str = "/usr/local/bin/tako-server";
 const SERVER_PREVIOUS_BINARY_PATH: &str = "/usr/local/bin/tako-server.prev";
-const SERVER_FILE_CAPABILITIES: &str = "cap_net_bind_service,cap_setuid,cap_setgid=+ep";
+const SERVER_FILE_CAPABILITIES: &str = "cap_net_bind_service,cap_setuid,cap_setgid,cap_kill=+ep";
 
 const REPO_OWNER: &str = "lilienblum";
 const REPO_NAME: &str = "tako";
@@ -728,13 +728,13 @@ mod tests {
     #[test]
     fn remote_binary_replace_preserves_app_user_switch_capabilities() {
         let command = remote_binary_replace_command("https://example.com/tako.tar.zst", "a");
-        assert!(command.contains("cap_net_bind_service,cap_setuid,cap_setgid=+ep"));
+        assert!(command.contains("cap_net_bind_service,cap_setuid,cap_setgid,cap_kill=+ep"));
     }
 
     #[test]
     fn remote_restore_previous_binary_preserves_app_user_switch_capabilities() {
         let command = remote_restore_previous_binary_command();
-        assert!(command.contains("cap_net_bind_service,cap_setuid,cap_setgid=+ep"));
+        assert!(command.contains("cap_net_bind_service,cap_setuid,cap_setgid,cap_kill=+ep"));
     }
 
     #[test]

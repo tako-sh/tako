@@ -235,7 +235,7 @@ impl RollingUpdater {
         }
 
         // Kill the instance
-        instance.kill().await?;
+        instance.kill().await.map_err(InstanceError::StopError)?;
         app.remove_instance(&instance.id);
 
         tracing::debug!(

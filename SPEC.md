@@ -559,16 +559,17 @@ Status flow helpers:
 
 Alias: `tako servers info`.
 
-### tako logs [--env {environment}] [--tail] [--days {N}] [--json]
+### tako logs [--env {environment}] [--tail] [--days {N}] [--diagnostics] [--json]
 
 View or stream logs from all servers in an environment.
 
 - Environment defaults to `production`.
 - Environment must exist in the selected config file.
 - Fetches from all mapped servers in parallel.
-- Includes app stdout/stderr plus `tako-server` lifecycle, health, and proxy diagnostics for the
-  app's deployed routes. JS/TS production HTTP entrypoints route `console.*`, uncaught
-  exceptions, and unhandled rejections into the same app log stream before exiting.
+- Includes app stdout/stderr by default. JS/TS production HTTP entrypoints route `console.*`,
+  uncaught exceptions, and unhandled rejections into the same app log stream before exiting.
+- `--diagnostics` also includes `tako-server` lifecycle, health, and proxy diagnostics for the
+  app's deployed routes.
 - Prefixes each line with `[server-name]` when multiple servers are present.
 - Remote fetch/connect failures are reported as command failures; they are not treated as empty logs.
 - `--json` emits compact JSONL for agents and automation: one log event per stdout line with
@@ -577,7 +578,8 @@ View or stream logs from all servers in an environment.
 **History mode (default):**
 
 - Shows the last `N` days of logs (default: 3).
-- Applies `--days` to timestamped app log-file lines and server journal diagnostics.
+- Applies `--days` to timestamped app log-file lines and to server diagnostics when
+  `--diagnostics` is set.
 - Consecutive identical messages are deduplicated with "... and N more" suffix.
 - All lines across servers are sorted by timestamp.
 - Displays in `$PAGER` (default: `less -R`) if interactive, otherwise stdout.
@@ -586,6 +588,7 @@ View or stream logs from all servers in an environment.
 
 - Streams logs continuously until interrupted (`Ctrl+c`).
 - `--tail` conflicts with `--days`.
+- Streams server diagnostics too when `--diagnostics` is set.
 - Consecutive identical messages are deduplicated with "... and N more" suffix.
 
 Logs flow helpers:
@@ -1126,9 +1129,9 @@ Installer SSH key behavior:
 - Installer supports systemd and OpenRC hosts.
 - Installer supports install-refresh mode (`TAKO_RESTART_SERVICE=0`) for build/image workflows without active init; in this mode, it refreshes binary/users and skips service-definition install/start.
 - For normal service installs, installer configures remote management on the server's Tailscale IP. It detects that address with `tailscale ip -4` or uses `TAKO_MANAGEMENT_HOST` when set. If no Tailscale IP is available, install fails with: `Remote management requires Tailscale so Tako can keep server control traffic private by default.`
-- Installer configures service capability support for privileged binds and app-user switching:
-  - systemd: `AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID`, `CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID`
-  - non-systemd/OpenRC hosts: installer applies `setcap cap_net_bind_service,cap_setuid,cap_setgid=+ep /usr/local/bin/tako-server`; install fails if the capability cannot be granted
+- Installer configures service capability support for privileged binds, app-user switching, and stopping app processes after switching users:
+  - systemd: `AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL`, `CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL`
+  - non-systemd/OpenRC hosts: installer applies `setcap cap_net_bind_service,cap_setuid,cap_setgid,cap_kill=+ep /usr/local/bin/tako-server`; install fails if the capability cannot be granted
 - Installer configures graceful stop semantics:
   - systemd: `KillMode=control-group`, `TimeoutStopSec=30min`
   - OpenRC: `retry="TERM/1800/KILL/5"`
@@ -1167,7 +1170,7 @@ Reference scripts in this repo:
 - Per-IP rate limiting: maximum 2048 concurrent connections per client IP; excess requests receive `429`.
 - Maximum HTTP request body size: 128 MiB; larger requests receive `413`.
 - Maximum channel WebSocket frame payload size: 128 MiB; larger frames are rejected and the socket closes.
-- Production browser-facing `tako-server` 5xx responses use generic reason-phrase bodies such as `Internal Server Error`, `Bad Gateway`, `Service Unavailable`, or `Gateway Timeout`; detailed startup, proxy, channel storage, and static file diagnostics are written to server/app logs instead of response bodies.
+- Production browser-facing `tako-server` 5xx responses use generic reason-phrase bodies such as `Internal Server Error`, `Bad Gateway`, `Service Unavailable`, or `Gateway Timeout`; detailed startup, proxy, channel storage, and static file diagnostics are written to server diagnostics and app logs instead of response bodies.
 - After a request matches an app route, `/channels/<name>` is reserved for Tako channels. Other request paths are served as static assets when a matching file exists in `public/`, then proxied to the app.
 
 **`/opt/tako/config.json`** — server-level configuration:

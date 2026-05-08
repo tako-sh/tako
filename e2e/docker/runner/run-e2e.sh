@@ -579,7 +579,7 @@ start_tako_server() {
   local host=$1
   local server_bin=$2
   scp_to "$server_bin" "$host" "/home/tako/tako-server.next"
-  ssh_exec "$host" "sudo sh -c 'set -eu; cp /home/tako/tako-server.next /usr/local/bin/tako-server; chown root:root /usr/local/bin/tako-server; chmod 0755 /usr/local/bin/tako-server; setcap cap_net_bind_service,cap_setuid,cap_setgid=+ep /usr/local/bin/tako-server; rm -f /home/tako/tako-server.next'"
+  ssh_exec "$host" "sudo sh -c 'set -eu; cp /home/tako/tako-server.next /usr/local/bin/tako-server; chown root:root /usr/local/bin/tako-server; chmod 0755 /usr/local/bin/tako-server; setcap cap_net_bind_service,cap_setuid,cap_setgid,cap_kill=+ep /usr/local/bin/tako-server; rm -f /home/tako/tako-server.next'"
   ssh_exec "$host" "sudo pkill -x tako-server >/dev/null 2>&1 || true"
   ssh_exec "$host" "sudo rm -f /var/run/tako/tako.sock"
   ssh_exec "$host" "RUST_LOG=info nohup /usr/local/bin/tako-server --no-acme --port 8080 --tls-port 8443 --data-dir /opt/tako --management-host 0.0.0.0 >/tmp/tako-server.log 2>&1 &"

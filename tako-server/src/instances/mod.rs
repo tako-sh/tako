@@ -509,7 +509,7 @@ impl AppManager {
         // Kill all instances
         let instances = app.get_instances();
         for instance in instances {
-            instance.kill().await?;
+            instance.kill().await.map_err(InstanceError::StopError)?;
             app.remove_instance(&instance.id);
         }
 
@@ -552,7 +552,10 @@ pub enum InstanceError {
     AppNotFound(String),
 
     #[error("Failed to spawn instance: {0}")]
-    SpawnError(#[from] std::io::Error),
+    SpawnError(std::io::Error),
+
+    #[error("Failed to stop instance: {0}")]
+    StopError(std::io::Error),
 
     #[error("Instance startup timeout")]
     StartupTimeout,
@@ -579,6 +582,13 @@ mod tests {
 
         instance.set_state(InstanceState::Healthy);
         assert_eq!(instance.state(), InstanceState::Healthy);
+    }
+
+    #[test]
+    fn stop_error_display_names_stop_failure() {
+        let error = InstanceError::StopError(std::io::Error::from_raw_os_error(1));
+
+        assert!(error.to_string().starts_with("Failed to stop instance:"));
     }
 
     #[test]
