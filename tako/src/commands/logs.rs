@@ -82,7 +82,6 @@ async fn run_async(
         colorize,
         json,
     };
-    let route_filters = tako_config.get_routes(&env).unwrap_or_default();
 
     if tail {
         if requested_env.is_some() && !json {
@@ -92,7 +91,6 @@ async fn run_async(
             &server_names,
             &servers,
             &remote_app_name,
-            &route_filters,
             show_prefix,
             colorize,
             json,
@@ -108,15 +106,7 @@ async fn run_async(
                 output::strong("--days")
             ));
         }
-        fetch_logs(
-            &server_names,
-            &servers,
-            &remote_app_name,
-            &route_filters,
-            days,
-            log_output,
-        )
-        .await
+        fetch_logs(&server_names, &servers, &remote_app_name, days, log_output).await
     }
 }
 
@@ -124,7 +114,6 @@ async fn stream_logs(
     server_names: &[String],
     servers: &ServersToml,
     app_name: &str,
-    route_filters: &[String],
     show_prefix: bool,
     colorize: bool,
     json: bool,
@@ -149,7 +138,6 @@ async fn stream_logs(
         let host = server.host.clone();
         let port = server.port;
         let app_name = app_name.to_string();
-        let route_filters = route_filters.to_vec();
         let writer = writer.clone();
         let prefix = format_prefix(server_name, show_prefix, colorize);
         let name = server_name.to_string();
@@ -158,7 +146,7 @@ async fn stream_logs(
         tasks.push(tokio::spawn(
             async move {
                 let _t = output::timed(&format!("Stream logs ({host}:{port})"));
-                let log_cmd = build_tail_log_command(&app_name, &route_filters);
+                let log_cmd = build_tail_log_command(&app_name);
 
                 if json {
                     let lw = Arc::new(Mutex::new(JsonLogWriter::new(writer, name)));
@@ -211,7 +199,6 @@ async fn fetch_logs(
     server_names: &[String],
     servers: &ServersToml,
     app_name: &str,
-    route_filters: &[String],
     days: u32,
     output_options: LogOutputOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -235,7 +222,6 @@ async fn fetch_logs(
         let host = server.host.clone();
         let port = server.port;
         let app_name = app_name.to_string();
-        let route_filters = route_filters.to_vec();
         let server_name = server_name.to_string();
         let collected = collected.clone();
         let done_count = done_count.clone();
@@ -245,9 +231,8 @@ async fn fetch_logs(
         tasks.push(tokio::spawn(
             async move {
                 let _t = output::timed(&format!("Fetch logs ({host}:{port}, last {days} days)"));
-                // Read app log files (primary) and server logs about this app (supplementary).
-                // Pipe through zstd if available on the server; falls back to raw output.
-                let log_cmd = build_fetch_log_command(&app_name, &route_filters, days);
+                // Read app log files and pipe through zstd if available on the server.
+                let log_cmd = build_fetch_log_command(&app_name, days);
 
                 let collector = Arc::new(Mutex::new(ByteCollector::new(server_name, collected)));
                 let bytes = collect_remote_log_bytes(&host, port, &log_cmd).await?;

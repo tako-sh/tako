@@ -194,7 +194,7 @@ idle_timeout = 120
 - Desired instances `0`: On-demand with scale-to-zero. Deploy keeps one warm instance running so the app is immediately reachable after deploy. Instances are stopped after idle timeout.
   - Once scaled to zero, the next request triggers a cold start and waits for readiness up to startup timeout (default 30 seconds). If no healthy instance is ready before timeout, proxy returns `504 Gateway Timeout` with a generic body.
   - If cold start setup fails before readiness, proxy returns `502 Bad Gateway` with a generic body.
-  - Startup timeout diagnostics include captured startup stdout/stderr when the process produced output before readiness.
+  - Startup timeout diagnostics are recorded in the app log stream, including captured startup stdout/stderr when the process produced output before readiness.
   - While a cold start is already in progress, requests are queued up to 1000 waiters per app (default). If the queue is full, proxy returns `503 Service Unavailable` with a generic body.
   - If warm-instance startup fails during deploy, deploy fails.
 - Desired instances `N` (`N > 0`): keep at least `N` instances running on that server.
@@ -559,17 +559,16 @@ Status flow helpers:
 
 Alias: `tako servers info`.
 
-### tako logs [--env {environment}] [--tail] [--days {N}] [--diagnostics] [--json]
+### tako logs [--env {environment}] [--tail] [--days {N}] [--json]
 
 View or stream logs from all servers in an environment.
 
 - Environment defaults to `production`.
 - Environment must exist in the selected config file.
 - Fetches from all mapped servers in parallel.
-- Includes app stdout/stderr by default. JS/TS production HTTP entrypoints route `console.*`,
-  uncaught exceptions, and unhandled rejections into the same app log stream before exiting.
-- `--diagnostics` also includes `tako-server` lifecycle, health, and proxy diagnostics for the
-  app's deployed routes.
+- Includes app stdout/stderr and app-scoped Tako server diagnostics from the app log files.
+  JS/TS production HTTP entrypoints route `console.*`, uncaught exceptions, and unhandled
+  rejections into the same app log stream before exiting.
 - Prefixes each line with `[server-name]` when multiple servers are present.
 - Remote fetch/connect failures are reported as command failures; they are not treated as empty logs.
 - `--json` emits compact JSONL for agents and automation: one log event per stdout line with
@@ -578,8 +577,7 @@ View or stream logs from all servers in an environment.
 **History mode (default):**
 
 - Shows the last `N` days of logs (default: 3).
-- Applies `--days` to timestamped app log-file lines and to server diagnostics when
-  `--diagnostics` is set.
+- Applies `--days` to timestamped app log-file lines.
 - Consecutive identical messages are deduplicated with "... and N more" suffix.
 - All lines across servers are sorted by timestamp.
 - Displays in `$PAGER` (default: `less -R`) if interactive, otherwise stdout.
@@ -588,7 +586,6 @@ View or stream logs from all servers in an environment.
 
 - Streams logs continuously until interrupted (`Ctrl+c`).
 - `--tail` conflicts with `--days`.
-- Streams server diagnostics too when `--diagnostics` is set.
 - Consecutive identical messages are deduplicated with "... and N more" suffix.
 
 Logs flow helpers:
@@ -1170,7 +1167,7 @@ Reference scripts in this repo:
 - Per-IP rate limiting: maximum 2048 concurrent connections per client IP; excess requests receive `429`.
 - Maximum HTTP request body size: 128 MiB; larger requests receive `413`.
 - Maximum channel WebSocket frame payload size: 128 MiB; larger frames are rejected and the socket closes.
-- Production browser-facing `tako-server` 5xx responses use generic reason-phrase bodies such as `Internal Server Error`, `Bad Gateway`, `Service Unavailable`, or `Gateway Timeout`; detailed startup, proxy, channel storage, and static file diagnostics are written to server diagnostics and app logs instead of response bodies.
+- Production browser-facing `tako-server` 5xx responses use generic reason-phrase bodies such as `Internal Server Error`, `Bad Gateway`, `Service Unavailable`, or `Gateway Timeout`; detailed app-scoped startup, proxy, channel storage, and static file diagnostics are recorded in the app log stream instead of returned in response bodies.
 - After a request matches an app route, `/channels/<name>` is reserved for Tako channels. Other request paths are served as static assets when a matching file exists in `public/`, then proxied to the app.
 
 **`/opt/tako/config.json`** — server-level configuration:
@@ -1233,6 +1230,9 @@ Reference scripts in this repo:
         └── releases/{version}/
             └── build files...
 ```
+
+App log files contain app stdout/stderr plus app-scoped Tako server diagnostics. Each app keeps
+`current.log` and the previous rotated file.
 
 ## Communication Protocol
 

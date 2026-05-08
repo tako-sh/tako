@@ -1081,8 +1081,7 @@ if [ "$SERVICE_MANAGER" = "systemd" ]; then
     fi
     systemctl --no-pager status tako-server || true
     if ! systemctl is-active --quiet tako-server; then
-      echo "error: tako-server failed to start. Recent logs:" >&2
-      journalctl -u tako-server --no-pager -n 60 >&2 || true
+      echo "error: tako-server failed to start; see service status above" >&2
       exit 1
     fi
   else

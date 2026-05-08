@@ -127,7 +127,7 @@ X-Tako-Internal-Token: <instance-token>
 
 The SDK implements the response automatically. During startup, probes run faster so cold-start readiness is detected quickly. After an instance is healthy, one failed probe marks it dead and triggers replacement.
 
-Production 5xx responses stay generic. Detailed startup, proxy, channel, and static-file diagnostics go to logs instead of browser response bodies.
+Production 5xx responses stay generic. Detailed app-scoped startup, proxy, channel, and static-file diagnostics are recorded in the app log stream instead of returned in browser response bodies.
 
 ## Scaling
 
@@ -174,5 +174,7 @@ Each deployed app has:
     app.json
     ...
 ```
+
+App log files contain app stdout/stderr plus app-scoped Tako server diagnostics. Each app keeps `current.log` and the previous rotated file.
 
 App registration, routes, desired scale, secrets, upgrade locks, and workflow state are persisted so reloads and restarts can recover cleanly.

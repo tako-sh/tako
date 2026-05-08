@@ -44,6 +44,8 @@ use tracing::field::{Field, Visit};
 #[cfg(any(not(debug_assertions), test))]
 use tracing::{Event, Subscriber};
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::Layer as _;
+use tracing_subscriber::filter::LevelFilter;
 #[cfg(any(not(debug_assertions), test))]
 use tracing_subscriber::fmt::FmtContext;
 #[cfg(any(not(debug_assertions), test))]
@@ -295,34 +297,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing with a non-blocking writer so log I/O never stalls
     // Tokio worker threads (critical under high request volume / DDoS).
     let (non_blocking, _guard) = tracing_appender::non_blocking(std::io::stdout());
+    let stdout_filter = || {
+        EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| EnvFilter::new(DEFAULT_SERVER_LOG_FILTER))
+    };
 
     #[cfg(debug_assertions)]
     tracing_subscriber::registry()
-        .with(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new(DEFAULT_SERVER_LOG_FILTER)),
-        )
+        .with(instances::app_log_tracing_layer().with_filter(LevelFilter::INFO))
         .with(
             tracing_subscriber::fmt::layer()
                 .json()
                 .with_target(false)
-                .with_writer(non_blocking),
+                .with_writer(non_blocking)
+                .with_filter(stdout_filter()),
         )
         .init();
 
     #[cfg(not(debug_assertions))]
     tracing_subscriber::registry()
-        .with(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new(DEFAULT_SERVER_LOG_FILTER)),
-        )
+        .with(instances::app_log_tracing_layer().with_filter(LevelFilter::INFO))
         .with(
             tracing_subscriber::fmt::layer()
                 .event_format(ServerJsonLogFormat::new(
                     server_version(),
                     std::process::id(),
                 ))
-                .with_writer(non_blocking),
+                .with_writer(non_blocking)
+                .with_filter(stdout_filter()),
         )
         .init();
 

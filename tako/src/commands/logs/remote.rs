@@ -206,25 +206,10 @@ async fn collect_remote_log_bytes_openssh(
     Ok(output.stdout)
 }
 
-pub(super) fn build_fetch_log_command(
-    app_name: &str,
-    route_filters: &[String],
-    days: u32,
-) -> String {
+pub(super) fn build_fetch_log_command(app_name: &str, days: u32) -> String {
     let log_dir = shell_single_quote(&format!("/opt/tako/apps/{app_name}/logs"));
     let app_logs = build_app_log_command(&log_dir, days);
-    let journal = build_journal_command(
-        &format!(
-            "--since {}",
-            shell_single_quote(&format!("{days} days ago"))
-        ),
-        app_name,
-        route_filters,
-        false,
-    );
-    format!(
-        "{{ {app_logs}; {journal}; }} | if command -v zstd >/dev/null 2>&1; then zstd -c; else cat; fi"
-    )
+    format!("{{ {app_logs}; }} | if command -v zstd >/dev/null 2>&1; then zstd -c; else cat; fi")
 }
 
 fn build_app_log_command(log_dir: &str, days: u32) -> String {
@@ -237,55 +222,9 @@ fn build_app_log_command(log_dir: &str, days: u32) -> String {
     )
 }
 
-pub(super) fn build_tail_log_command(app_name: &str, route_filters: &[String]) -> String {
+pub(super) fn build_tail_log_command(app_name: &str) -> String {
     let log_file = shell_single_quote(&format!("/opt/tako/apps/{app_name}/logs/current.log"));
-    let journal = build_journal_command("-f", app_name, route_filters, true);
-    format!("{{ tail -F {log_file} 2>/dev/null & {journal} & wait; }} || echo 'No logs available'")
-}
-
-fn build_journal_command(
-    time_args: &str,
-    app_name: &str,
-    route_filters: &[String],
-    line_buffered: bool,
-) -> String {
-    let grep = build_journal_filter(app_name, route_filters, line_buffered);
-    format!(
-        "(sudo -n journalctl -u tako-server {time_args} --no-pager -o cat 2>/dev/null || journalctl -u tako-server {time_args} --no-pager -o cat 2>/dev/null) | {grep}"
-    )
-}
-
-fn build_journal_filter(app_name: &str, route_filters: &[String], line_buffered: bool) -> String {
-    let mut patterns = vec![format!("\"app\":\"{app_name}\"")];
-    patterns.extend(route_host_log_patterns(route_filters));
-    patterns.sort();
-    patterns.dedup();
-
-    let mut parts = vec!["grep".to_string()];
-    if line_buffered {
-        parts.push("--line-buffered".to_string());
-    }
-    parts.push("-F".to_string());
-    for pattern in patterns {
-        parts.push("-e".to_string());
-        parts.push(shell_single_quote(&pattern));
-    }
-    parts.join(" ")
-}
-
-fn route_host_log_patterns(routes: &[String]) -> Vec<String> {
-    routes
-        .iter()
-        .filter_map(|route| route.split('/').next())
-        .filter(|host| !host.is_empty())
-        .map(|host| {
-            if let Some(suffix) = host.strip_prefix("*.") {
-                format!(".{suffix}:")
-            } else {
-                format!("Host: {host}:")
-            }
-        })
-        .collect()
+    format!("tail -F {log_file} 2>/dev/null || echo 'No logs available'")
 }
 
 #[cfg(test)]
@@ -296,39 +235,13 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn journal_filter_matches_app_and_route_hosts() {
-        let filter = build_journal_filter(
-            "demo/production",
-            &[
-                "demo.tako.sh".to_string(),
-                "*.demo.tako.sh".to_string(),
-                "demo.tako.sh/api/*".to_string(),
-            ],
-            false,
-        );
-
-        assert!(filter.contains("grep -F"));
-        assert!(filter.contains("-e '\"app\":\"demo/production\"'"));
-        assert!(filter.contains("-e 'Host: demo.tako.sh:'"));
-        assert!(filter.contains("-e '.demo.tako.sh:'"));
-    }
-
-    #[test]
-    fn fetch_log_command_includes_server_journal_route_diagnostics() {
-        let command = build_fetch_log_command(
-            "demo/production",
-            &["demo.tako.sh".to_string(), "*.demo.tako.sh".to_string()],
-            2,
-        );
+    fn fetch_log_command_reads_app_log_files() {
+        let command = build_fetch_log_command("demo/production", 2);
 
         assert!(command.contains("date -u -d '2 days ago' '+%Y-%m-%dT%H:%M:%S'"));
         assert!(command.contains("awk -v cutoff=\"$cutoff\""));
         assert!(command.contains("substr($0,1,19) >= cutoff"));
         assert!(command.contains("'/opt/tako/apps/demo/production/logs'/previous.log"));
-        assert!(command.contains("journalctl -u tako-server --since '2 days ago'"));
-        assert!(command.contains("-e '\"app\":\"demo/production\"'"));
-        assert!(command.contains("-e 'Host: demo.tako.sh:'"));
-        assert!(command.contains("-e '.demo.tako.sh:'"));
         assert!(command.contains("zstd -c"));
     }
 
@@ -360,16 +273,10 @@ mod tests {
     }
 
     #[test]
-    fn tail_log_command_streams_app_and_journal_logs() {
-        let command = build_tail_log_command(
-            "demo/production",
-            &["demo.tako.sh".to_string(), "*.demo.tako.sh".to_string()],
-        );
+    fn tail_log_command_streams_app_log_file() {
+        let command = build_tail_log_command("demo/production");
 
         assert!(command.contains("tail -F '/opt/tako/apps/demo/production/logs/current.log'"));
-        assert!(command.contains("journalctl -u tako-server -f --no-pager -o cat"));
-        assert!(command.contains("grep --line-buffered -F"));
-        assert!(command.contains("-e 'Host: demo.tako.sh:'"));
-        assert!(command.contains("& wait"));
+        assert!(command.contains("No logs available"));
     }
 }

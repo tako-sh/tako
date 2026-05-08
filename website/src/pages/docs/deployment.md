@@ -244,7 +244,6 @@ If no matching certificate exists yet, Tako serves a fallback self-signed certif
 ```bash
 tako logs --env production
 tako logs --env production --tail
-tako logs --env production --diagnostics
 tako logs --env production --json
 tako servers status
 tako releases ls --env production
@@ -252,7 +251,7 @@ tako releases ls --env production
 
 `servers status` works from any directory and reports all configured servers through signed Tailscale HTTP management.
 
-`logs` includes app output. JS/TS production HTTP entrypoints route `console.*`, uncaught exceptions, and unhandled rejections into the same app log stream. Use `--diagnostics` to also include server lifecycle, health, and proxy diagnostics for the app's deployed routes. Use `--json` for compact JSONL in agents and automation.
+`logs` includes app output and app-scoped Tako server diagnostics. JS/TS production HTTP entrypoints route `console.*`, uncaught exceptions, and unhandled rejections into the same app log stream. Use `--json` for compact JSONL in agents and automation.
 
 ## Rollback
 
@@ -315,6 +314,8 @@ Production data lives under `/opt/tako`:
       logs/
       releases/{version}/
 ```
+
+App log files contain app stdout/stderr plus app-scoped Tako server diagnostics. Each app keeps `current.log` and the previous rotated file.
 
 The management socket lives at:
 

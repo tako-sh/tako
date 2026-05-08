@@ -7,11 +7,17 @@
 //! A bounded mpsc channel provides backpressure: if the app logs faster than
 //! disk can absorb, lines are dropped rather than blocking the app process.
 
+use dashmap::DashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
+use tracing::field::{Field, Visit};
+use tracing::{Event, Level, Metadata, Subscriber};
+use tracing_subscriber::Layer;
+use tracing_subscriber::registry::LookupSpan;
 
 /// Default max size per log file (10 MB). Two files → 20 MB max per app.
 const DEFAULT_MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
@@ -21,6 +27,10 @@ const CHANNEL_CAPACITY: usize = 8192;
 
 /// Flush interval — writer flushes to disk at least this often.
 const FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+const SERVER_LOG_SOURCE: &str = "tako-server";
+
+static APP_LOG_REGISTRY: LazyLock<DashMap<String, AppLogHandle>> = LazyLock::new(DashMap::new);
 
 /// A single log entry from an instance pipe.
 pub struct LogEntry {
@@ -34,6 +44,7 @@ pub struct LogEntry {
 pub enum LogStream {
     Stdout,
     Stderr,
+    Server,
 }
 
 impl LogStream {
@@ -41,6 +52,7 @@ impl LogStream {
         match self {
             Self::Stdout => "out",
             Self::Stderr => "err",
+            Self::Server => "server",
         }
     }
 }
@@ -98,6 +110,152 @@ pub async fn log_pipe<R: tokio::io::AsyncRead + Unpin>(
 /// Spawn a per-app log writer and return the sender handle.
 pub fn spawn_app_logger(app_name: &str, log_dir: PathBuf) -> AppLogHandle {
     spawn_app_logger_with_max(app_name, log_dir, DEFAULT_MAX_FILE_BYTES)
+}
+
+/// Register an app log handle so app-scoped server tracing events can be
+/// written beside the app's stdout/stderr.
+pub fn register_app_logger(app_name: &str, handle: AppLogHandle) {
+    APP_LOG_REGISTRY.insert(app_name.to_string(), handle);
+}
+
+/// Remove an app log handle from the tracing registry.
+pub fn unregister_app_logger(app_name: &str) {
+    APP_LOG_REGISTRY.remove(app_name);
+}
+
+pub fn app_log_tracing_layer() -> AppLogTracingLayer {
+    AppLogTracingLayer
+}
+
+pub struct AppLogTracingLayer;
+
+impl<S> Layer<S> for AppLogTracingLayer
+where
+    S: Subscriber + for<'lookup> LookupSpan<'lookup>,
+{
+    fn on_event(&self, event: &Event<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
+        let metadata = event.metadata();
+        if !is_app_log_level(metadata.level()) || is_logger_metadata(metadata) {
+            return;
+        }
+
+        let mut fields = ServerEventFields::default();
+        event.record(&mut fields);
+
+        let Some(app_name) = fields.app.as_deref() else {
+            return;
+        };
+
+        let line = format_server_event_line(metadata.level().as_str(), &fields);
+        write_server_log_entry(app_name, line);
+    }
+}
+
+fn is_app_log_level(level: &Level) -> bool {
+    matches!(*level, Level::ERROR | Level::WARN | Level::INFO)
+}
+
+fn is_logger_metadata(metadata: &Metadata<'_>) -> bool {
+    let target = metadata.target();
+    let module_path = metadata.module_path().unwrap_or_default();
+
+    target.ends_with("instances::logger") || module_path.ends_with("instances::logger")
+}
+
+fn write_server_log_entry(app_name: &str, line: String) {
+    let Some(handle) = APP_LOG_REGISTRY.get(app_name) else {
+        return;
+    };
+
+    handle.try_send(LogEntry {
+        instance_id: SERVER_LOG_SOURCE.to_string(),
+        stream: LogStream::Server,
+        line,
+    });
+}
+
+#[derive(Default)]
+struct ServerEventFields {
+    app: Option<String>,
+    message: Option<String>,
+    fields: Vec<(String, String)>,
+}
+
+impl ServerEventFields {
+    fn record_field(&mut self, field: &Field, value: String) {
+        let value = normalize_log_value(value);
+        let name = field.name();
+        if name == "app" {
+            self.app = Some(value.clone());
+        } else if name == "message" {
+            self.message = Some(value.clone());
+        }
+
+        self.fields.push((name.to_string(), value));
+    }
+}
+
+impl Visit for ServerEventFields {
+    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+        self.record_field(field, normalize_debug_value(format!("{value:?}")));
+    }
+
+    fn record_str(&mut self, field: &Field, value: &str) {
+        self.record_field(field, value.to_string());
+    }
+
+    fn record_i64(&mut self, field: &Field, value: i64) {
+        self.record_field(field, value.to_string());
+    }
+
+    fn record_u64(&mut self, field: &Field, value: u64) {
+        self.record_field(field, value.to_string());
+    }
+
+    fn record_bool(&mut self, field: &Field, value: bool) {
+        self.record_field(field, value.to_string());
+    }
+
+    fn record_error(&mut self, field: &Field, value: &(dyn std::error::Error + 'static)) {
+        self.record_field(field, value.to_string());
+    }
+}
+
+fn normalize_debug_value(value: String) -> String {
+    value
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+        .unwrap_or(&value)
+        .to_string()
+}
+
+fn normalize_log_value(value: String) -> String {
+    value.replace('\r', "\\r").replace('\n', "\\n")
+}
+
+fn format_server_event_line(level: &str, fields: &ServerEventFields) -> String {
+    let mut line = level.to_string();
+    if let Some(message) = fields
+        .message
+        .as_deref()
+        .filter(|message| !message.is_empty())
+    {
+        line.push(' ');
+        line.push_str(message);
+    }
+
+    for (name, value) in &fields.fields {
+        if name == "app" || name == "message" {
+            continue;
+        }
+
+        line.push(' ');
+        line.push_str(name);
+        line.push('=');
+        line.push_str(value);
+    }
+
+    line
 }
 
 fn spawn_app_logger_with_max(
@@ -293,6 +451,86 @@ pub fn noop_log_handle() -> AppLogHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64 as TestAtomicU64, Ordering as TestOrdering};
+    use tracing_subscriber::prelude::*;
+
+    static NEXT_TEST_APP_ID: TestAtomicU64 = TestAtomicU64::new(0);
+
+    fn unique_app_name(prefix: &str) -> String {
+        let id = NEXT_TEST_APP_ID.fetch_add(1, TestOrdering::Relaxed);
+        format!("{prefix}-{id}")
+    }
+
+    #[test]
+    fn server_event_lines_include_message_and_fields() {
+        let fields = ServerEventFields {
+            app: Some("demo/production".into()),
+            message: Some("Instance ready".into()),
+            fields: vec![
+                ("message".into(), "Instance ready".into()),
+                ("app".into(), "demo/production".into()),
+                ("instance".into(), "abc123".into()),
+                ("requests".into(), "7".into()),
+            ],
+        };
+
+        assert_eq!(
+            format_server_event_line("INFO", &fields),
+            "INFO Instance ready instance=abc123 requests=7"
+        );
+    }
+
+    #[test]
+    fn server_event_fields_are_single_line() {
+        let fields = ServerEventFields {
+            app: Some("demo/production".into()),
+            message: Some("Startup failed".into()),
+            fields: vec![
+                ("message".into(), "Startup failed".into()),
+                ("app".into(), "demo/production".into()),
+                (
+                    "error".into(),
+                    normalize_log_value("line one\nline two".into()),
+                ),
+            ],
+        };
+
+        assert_eq!(
+            format_server_event_line("ERROR", &fields),
+            "ERROR Startup failed error=line one\\nline two"
+        );
+    }
+
+    #[tokio::test]
+    async fn tracing_layer_writes_app_scoped_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = unique_app_name("trace-app");
+        let handle = spawn_app_logger(&app, dir.path().to_path_buf());
+        register_app_logger(&app, handle.clone());
+
+        let subscriber = tracing_subscriber::registry().with(app_log_tracing_layer());
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!(
+                app = %app,
+                instance = "inst1",
+                requests = 3_u64,
+                "Instance ready"
+            );
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        unregister_app_logger(&app);
+        drop(handle);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let content = std::fs::read_to_string(dir.path().join("current.log")).unwrap();
+        assert!(content.contains("[server]"));
+        assert!(content.contains("[tako-server]"));
+        assert!(content.contains("WARN"));
+        assert!(content.contains("Instance ready"));
+        assert!(content.contains("instance=inst1"));
+        assert!(content.contains("requests=3"));
+    }
 
     #[tokio::test]
     async fn log_handle_sends_entries() {

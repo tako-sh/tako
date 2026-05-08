@@ -267,7 +267,7 @@ Use the SDK wrapper for your runtime so the endpoint and readiness protocol are 
 
 Health startup timeout is 30 seconds. If startup does not produce a healthy instance, deploy rolls back. For scale-to-zero cold starts, production browser responses use generic `502 Bad Gateway`, `503 Service Unavailable`, or `504 Gateway Timeout` bodies.
 
-Startup timeout diagnostics include captured startup stdout/stderr in logs when the process produced output before readiness.
+Startup timeout diagnostics are recorded in the app log stream. Logs also include captured startup stdout/stderr when the process produced output before readiness.
 
 ## TLS Certificate Problems
 

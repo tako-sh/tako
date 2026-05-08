@@ -9,7 +9,10 @@ mod rolling;
 mod spawner;
 
 pub use health::*;
-pub use logger::{AppLogHandle, LogStream, log_pipe, spawn_app_logger};
+pub use logger::{
+    AppLogHandle, LogStream, app_log_tracing_layer, log_pipe, register_app_logger,
+    spawn_app_logger, unregister_app_logger,
+};
 pub use network::*;
 pub use rolling::*;
 pub use spawner::*;
@@ -457,6 +460,7 @@ impl AppManager {
         let name = config.deployment_id();
         let log_dir = self.data_dir.join("apps").join(&name).join("logs");
         let log_handle = spawn_app_logger(&name, log_dir);
+        register_app_logger(&name, log_handle.clone());
         let app = Arc::new(App::new(config, self.event_tx.clone(), log_handle));
         self.apps.insert(name, app.clone());
         app
@@ -473,7 +477,11 @@ impl AppManager {
 
     /// Remove an app
     pub fn remove_app(&self, name: &str) -> Option<Arc<App>> {
-        self.apps.remove(name).map(|(_, v)| v)
+        let removed = self.apps.remove(name).map(|(_, v)| v);
+        if removed.is_some() {
+            unregister_app_logger(name);
+        }
+        removed
     }
 
     /// List all app names
