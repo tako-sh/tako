@@ -13,6 +13,21 @@ fn servers_add_defaults_to_tako_user() {
 }
 
 #[test]
+fn global_ssh_passphrase_parses_for_one_liners() {
+    let cli = Cli::try_parse_from([
+        "tako",
+        "servers",
+        "add",
+        "example.com",
+        "--ssh-passphrase",
+        "testpass",
+    ])
+    .unwrap();
+
+    assert_eq!(cli.ssh_passphrase.as_deref(), Some("testpass"));
+}
+
+#[test]
 fn servers_add_without_host_parses_for_wizard() {
     let cli = Cli::try_parse_from(["tako", "servers", "add"]).unwrap();
     let Commands::Servers(server::ServerCommands::Add { host, .. }) = cli.command.expect("command")

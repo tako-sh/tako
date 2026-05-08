@@ -1,8 +1,7 @@
-use std::io::IsTerminal;
 use std::path::Path;
 use std::sync::Arc;
 
-use russh::keys::{Algorithm, PrivateKeyWithHashAlg, load_secret_key};
+use russh::keys::{Algorithm, Error as KeyError, PrivateKeyWithHashAlg, load_secret_key};
 
 use super::*;
 
@@ -115,36 +114,30 @@ impl SshClient {
     ) -> SshResult<Option<String>> {
         let key = match load_secret_key(key_path, None) {
             Ok(k) => k,
-            Err(e) => {
-                let pass = std::env::var("TAKO_SSH_KEY_PASSPHRASE").ok().or_else(|| {
-                    if std::io::stdin().is_terminal() {
-                        crate::output::TextField::new(&format!(
-                            "SSH key passphrase for {}",
-                            key_path.display()
-                        ))
-                        .password()
-                        .optional()
-                        .prompt()
-                        .ok()
-                    } else {
-                        None
-                    }
-                });
-
-                match pass {
-                    Some(pass) => {
-                        load_secret_key(key_path, Some(&pass)).map_err(|e| SshError::KeyLoad {
-                            path: key_path.to_path_buf(),
-                            reason: e.to_string(),
-                        })?
-                    }
-                    None => {
-                        return Err(SshError::KeyLoad {
-                            path: key_path.to_path_buf(),
-                            reason: e.to_string(),
-                        });
-                    }
+            Err(KeyError::KeyIsEncrypted) => match self
+                .config
+                .key_passphrase
+                .clone()
+                .or_else(|| crate::ssh::key_passphrase_for_path(key_path))
+            {
+                Some(pass) => {
+                    load_secret_key(key_path, Some(&pass)).map_err(|e| SshError::KeyLoad {
+                        path: key_path.to_path_buf(),
+                        reason: e.to_string(),
+                    })?
                 }
+                None => {
+                    return Err(SshError::KeyLoad {
+                        path: key_path.to_path_buf(),
+                        reason: KeyError::KeyIsEncrypted.to_string(),
+                    });
+                }
+            },
+            Err(e) => {
+                return Err(SshError::KeyLoad {
+                    path: key_path.to_path_buf(),
+                    reason: e.to_string(),
+                });
             }
         };
 

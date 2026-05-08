@@ -19,7 +19,7 @@ use tako_core::Response;
 const TAKO_SERVER_SERVICE_HELPER: &str = "/usr/local/bin/tako-server-service";
 
 /// SSH connection configuration
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SshConfig {
     /// Remote hostname or IP
     pub host: String,
@@ -31,6 +31,24 @@ pub struct SshConfig {
     pub timeout: Duration,
     /// Path to SSH keys directory (default ~/.ssh)
     pub keys_dir: Option<PathBuf>,
+    /// Passphrase for encrypted local SSH private keys.
+    pub key_passphrase: Option<String>,
+}
+
+impl std::fmt::Debug for SshConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SshConfig")
+            .field("host", &self.host)
+            .field("user", &self.user)
+            .field("port", &self.port)
+            .field("timeout", &self.timeout)
+            .field("keys_dir", &self.keys_dir)
+            .field(
+                "key_passphrase",
+                &self.key_passphrase.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
 }
 
 impl SshConfig {
@@ -47,6 +65,7 @@ impl SshConfig {
             port,
             timeout: Duration::from_secs(30),
             keys_dir: None,
+            key_passphrase: super::configured_key_passphrase(),
         }
     }
 
@@ -493,7 +512,7 @@ l4QMs5cmnWfrM0GQ==\n\
 
     #[tokio::test]
     #[cfg(unix)]
-    async fn encrypted_keyfile_authenticates_with_passphrase_env_var() {
+    async fn encrypted_keyfile_authenticates_with_configured_passphrase() {
         use russh::Channel;
         use russh::keys::{Algorithm, PrivateKey};
         use russh::server::{Server as _, Session};
@@ -592,16 +611,14 @@ l4QMs5cmnWfrM0GQ==\n\
                 .expect("server failed");
         });
 
-        let prev_pass = std::env::var("TAKO_SSH_KEY_PASSPHRASE").ok();
         let prev_sock = std::env::var("SSH_AUTH_SOCK").ok();
-        // SAFETY: tests in this crate are not expected to rely on concurrent env var mutation.
-        unsafe { std::env::set_var("TAKO_SSH_KEY_PASSPHRASE", "testpass") };
         // Ensure we don't accidentally use an agent in this test.
         unsafe { std::env::remove_var("SSH_AUTH_SOCK") };
 
         let mut ssh_config = SshConfig::from_server("127.0.0.1", port);
         ssh_config.timeout = Duration::from_secs(5);
         ssh_config.keys_dir = Some(keys_dir.path().to_path_buf());
+        ssh_config.key_passphrase = Some("testpass".to_string());
 
         let mut ssh = SshClient::new(ssh_config);
         tokio::time::timeout(Duration::from_secs(10), ssh.connect())
@@ -612,10 +629,6 @@ l4QMs5cmnWfrM0GQ==\n\
 
         // Cleanup.
         server_task.abort();
-        match prev_pass {
-            Some(v) => unsafe { std::env::set_var("TAKO_SSH_KEY_PASSPHRASE", v) },
-            None => unsafe { std::env::remove_var("TAKO_SSH_KEY_PASSPHRASE") },
-        }
         match prev_sock {
             Some(v) => unsafe { std::env::set_var("SSH_AUTH_SOCK", v) },
             None => unsafe { std::env::remove_var("SSH_AUTH_SOCK") },

@@ -281,7 +281,9 @@ impl<'a> TextField<'a> {
 
             match validation {
                 Ok(()) => {
-                    let done_value = if self.password {
+                    let done_value = if self.password && value.is_empty() && !self.required {
+                        String::new()
+                    } else if self.password {
                         theme_muted("••••••").to_string()
                     } else {
                         value.clone()

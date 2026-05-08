@@ -49,6 +49,10 @@ pub struct Cli {
     #[arg(short = 'c', long, global = true, value_name = "CONFIG")]
     pub config: Option<std::path::PathBuf>,
 
+    /// Passphrase for encrypted local SSH private keys
+    #[arg(long, global = true, value_name = "PASSPHRASE")]
+    pub ssh_passphrase: Option<String>,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
@@ -192,6 +196,8 @@ pub enum Commands {
 
 impl Cli {
     pub fn run(self) -> Result<(), Box<dyn std::error::Error>> {
+        crate::ssh::set_key_passphrase(self.ssh_passphrase.clone());
+
         if self.version {
             println!("{}", display_version());
             return Ok(());

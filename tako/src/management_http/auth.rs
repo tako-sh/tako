@@ -1,11 +1,10 @@
-use std::io::IsTerminal;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use russh::keys::agent::client::AgentClient;
 use russh::keys::ssh_key::{self, SshSig};
-use russh::keys::{Algorithm, HashAlg, PrivateKey, PublicKey, load_secret_key};
+use russh::keys::{Algorithm, Error as KeyError, HashAlg, PrivateKey, PublicKey, load_secret_key};
 
 use super::ManagementError;
 
@@ -87,29 +86,16 @@ fn load_private_key(path: &Path) -> Result<PrivateKey, ManagementError> {
 
     match load_secret_key(path, None) {
         Ok(key) => Ok(key),
-        Err(error) => {
-            let passphrase = std::env::var("TAKO_SSH_KEY_PASSPHRASE").ok().or_else(|| {
-                if std::io::stdin().is_terminal() {
-                    crate::output::TextField::new(&format!(
-                        "SSH key passphrase for {}",
-                        path.display()
-                    ))
-                    .password()
-                    .optional()
-                    .prompt()
-                    .ok()
-                } else {
-                    None
-                }
-            });
-
-            let Some(passphrase) = passphrase else {
-                return Err(ManagementError::Message(error.to_string()));
+        Err(KeyError::KeyIsEncrypted) => {
+            let Some(passphrase) = crate::ssh::key_passphrase_for_path(path) else {
+                return Err(ManagementError::Message(
+                    KeyError::KeyIsEncrypted.to_string(),
+                ));
             };
-
             load_secret_key(path, Some(&passphrase))
                 .map_err(|error| ManagementError::Message(error.to_string()))
         }
+        Err(error) => Err(ManagementError::Message(error.to_string())),
     }
 }
 
@@ -204,6 +190,41 @@ fn signed_headers(
         nonce,
         signature,
     })
+}
+
+#[cfg(test)]
+mod passphrase_tests {
+    use super::*;
+
+    const ENCRYPTED_ED25519_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\n\
+b3BlbnNzaC1rZXktdjEAAAAACmFlczI1Ni1jdHIAAAAGYmNyeXB0AAAAGAAAABCRv2KPnI\n\
+IRphE01i7dWiijAAAAGAAAAAEAAAAzAAAAC3NzaC1lZDI1NTE5AAAAIBS7MYzXocRVMCqK\n\
+uxD+2gS1Q9ZtX7zYh74IFWEKRZ4OAAAAkEa8z/fYTNnkt7g2yLcFM8IQFw67+aUeTzC6V2\n\
+g+KleH6OSa4Q3cbBSMhWFkNY/IjTKNNg7P2XszrFMJblBkWokMvKgh3oGfJV4Axh3RZUsS\n\
+ep5Su4gT/9WhaF3n32sxVB3BhK8IDBQBfsXh+YLhP0bZFdN+jLffuAQlINtoFYY8/4vvsn\n\
+l4QMs5cmnWfrM0GQ==\n\
+-----END OPENSSH PRIVATE KEY-----\n";
+
+    struct PassphraseGuard;
+
+    impl Drop for PassphraseGuard {
+        fn drop(&mut self) {
+            crate::ssh::set_key_passphrase(None);
+        }
+    }
+
+    #[test]
+    fn load_private_key_uses_configured_passphrase() {
+        let _guard = PassphraseGuard;
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let key_path = temp.path().join("id_ed25519");
+        std::fs::write(&key_path, ENCRYPTED_ED25519_KEY).expect("write key");
+        crate::ssh::set_key_passphrase(Some("testpass".to_string()));
+
+        let key = load_private_key(&key_path).expect("load encrypted key");
+
+        assert_eq!(key.algorithm(), Algorithm::Ed25519);
+    }
 }
 
 fn current_timestamp() -> Result<String, ManagementError> {

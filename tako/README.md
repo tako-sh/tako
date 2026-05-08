@@ -53,7 +53,7 @@ Operational behavior highlights:
 - `tako deploy` writes `app.json` in the deployed app directory and `tako-server` uses it to resolve the runtime start command.
 - `tako releases ls` shows release/build history for the current app and environment with commit metadata when available.
 - `tako releases rollback <release-id>` rolls target servers back to a previous release id using the normal rolling-update path.
-- `tako servers add` expects a Tailscale MagicDNS name or Tailscale IP, verifies `tako@host` SSH recovery access, enrolls the authenticated SSH key for signed remote management, verifies private management HTTP, then stores detected target metadata (`arch`, `libc`) in each `[[servers]]` entry in `~/.tako/config.toml`. Use `--install` to install or repair `tako-server` over SSH before adding.
+- `tako servers add` expects a Tailscale MagicDNS name or Tailscale IP, verifies `tako@host` SSH recovery access, enrolls the authenticated SSH key for signed remote management, verifies private management HTTP, then stores detected target metadata (`arch`, `libc`) in each `[[servers]]` entry in `~/.tako/config.toml`. Use `--install` to install or repair `tako-server` over SSH before adding. Encrypted local SSH keys prompt interactively; pass `--ssh-passphrase` for one-line commands.
 - `tako deploy` requires valid target metadata for each selected server and does not probe targets during deploy.
 - New apps start with desired instance count `0`, and `tako deploy` still validates startup by briefly starting one warm instance; deploy fails if startup health checks fail.
 

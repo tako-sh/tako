@@ -249,6 +249,16 @@ pub(super) async fn run_add_server_wizard(
         }
     }
 
+    if crate::ssh::configured_key_passphrase().is_none()
+        && crate::ssh::default_key_needs_passphrase()
+    {
+        let passphrase = output::TextField::new("SSH passphrase")
+            .password()
+            .optional()
+            .prompt()?;
+        crate::ssh::set_key_passphrase(Some(passphrase));
+    }
+
     // --- SSH connection test ---
     let mut remote_server_name: Option<String> = None;
     let mut detected_target: Option<crate::config::ServerTarget> = None;
