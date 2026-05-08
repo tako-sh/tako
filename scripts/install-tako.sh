@@ -84,7 +84,7 @@ verify_macos_signature() {
     echo "error: codesign is required to verify macOS release artifacts" >&2
     exit 1
   fi
-  codesign --verify --strict --verbose=4 "$path"
+  codesign --verify --strict "$path"
 }
 
 verify_macos_app_signature() {
@@ -96,7 +96,7 @@ verify_macos_app_signature() {
     echo "error: codesign is required to verify macOS release artifacts" >&2
     exit 1
   fi
-  codesign --verify --strict --deep --verbose=4 "$path"
+  codesign --verify --strict --deep "$path"
 }
 
 is_enabled() {
@@ -197,7 +197,7 @@ tmp_payload="$(mktemp)"
 tmp_extract="$(mktemp -d)"
 trap 'rm -f "$tmp_payload"; rm -rf "$tmp_extract"' EXIT
 
-echo "Downloading tako CLI: $download_url"
+echo "Downloading tako CLI..."
 download_file "$download_url" "$tmp_payload"
 
 expected_sha=""
@@ -259,9 +259,6 @@ target_dev_proxy="$TAKO_INSTALL_DIR/tako-dev-proxy"
 install -m 0755 "$tmp_dev_server_bin" "$target_dev_server"
 install -m 0755 "$tmp_dev_proxy_bin" "$target_dev_proxy"
 
-echo "OK installed tako-dev-server to $target_dev_server"
-echo "OK installed tako-dev-proxy to $target_dev_proxy"
-
 if [ "$os" = "darwin" ]; then
   target_tako_app="$TAKO_MACOS_APP_DIR/Tako.app"
   mkdir -p "$TAKO_MACOS_APP_DIR"
@@ -274,17 +271,15 @@ if [ "$os" = "darwin" ]; then
   verify_macos_app_signature "$target_tako_app"
   verify_macos_signature "$target_tako_app/Contents/MacOS/tako"
   ln -sf "$target_tako_app/Contents/MacOS/tako" "$target_tako"
-  echo "OK installed Tako.app to $target_tako_app"
-  echo "OK linked tako to $target_tako"
+  echo "Installed Tako.app to $target_tako_app"
+  echo "Installed tako to $target_tako"
 else
   install -m 0755 "$tmp_tako_bin" "$target_tako"
-  echo "OK installed tako to $target_tako"
+  echo "Installed tako to $target_tako"
 fi
 
 case ":$PATH:" in
-  *":$TAKO_INSTALL_DIR:"*)
-    echo "OK '$TAKO_INSTALL_DIR' is on PATH"
-    ;;
+  *":$TAKO_INSTALL_DIR:"*) ;;
   *)
     echo "warning: '$TAKO_INSTALL_DIR' is not on PATH." >&2
     echo "warning: add it to your shell profile and restart your shell." >&2

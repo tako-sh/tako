@@ -42,7 +42,7 @@ import DocsLayout from "../../layouts/DocsLayout.astro";
     MagicDNS name, for example <code>my-server</code>.
   </p>
   <p>From your developer machine, add the server by MagicDNS name:</p>
-  <Snippet code="tako servers add my-server" lang="bash" />
+  <Snippet code="tako servers add admin-user@my-server" lang="bash" />
   <p>
     Tako stores the MagicDNS name as the host and uses its first label as the server name. It checks Tailscale,
     <code>tako</code> SSH recovery access, target metadata, and signed private management before saving the server in
@@ -56,8 +56,8 @@ import DocsLayout from "../../layouts/DocsLayout.astro";
   <p>Check remote access:</p>
   <Snippet code="tako servers status" lang="bash" />
 
-  <p>Prefer installing from the host itself? Run the server installer as root, then add the host from your developer machine:</p>
-  <Snippet code='curl -fsSL https://tako.sh/install-server.sh | sudo TAKO_SSH_PUBKEY="$(cat ~/.ssh/id_ed25519.pub)" sh' lang="bash" />
+  <p>Prefer installing from the host itself? Run the server installer as root, enter your workstation SSH public key when prompted, then add the host from your developer machine:</p>
+  <Snippet code='sudo sh -c "$(curl -fsSL https://tako.sh/install-server.sh)"' lang="bash" />
 
   <h2 id="first-deployment">First deployment</h2>
   <p>Run the following commands from your app directory.</p>

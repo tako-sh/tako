@@ -34,10 +34,10 @@ Normal service installs require Tailscale because Tako keeps server control traf
 
 For GitHub-hosted release downloads, the installer uses `GH_TOKEN` when set, falling back to `GITHUB_TOKEN`.
 
-Set `TAKO_SSH_PUBKEY` to install an SSH public key non-interactively:
+Set `TAKO_SSH_PUBKEY` to install your workstation SSH public key non-interactively:
 
 ```bash
-curl -fsSL https://tako.sh/install-server.sh | sudo TAKO_SSH_PUBKEY="$(cat ~/.ssh/id_ed25519.pub)" sh
+sudo env TAKO_SSH_PUBKEY="ssh-ed25519 AAAA... you@workstation" sh -c "$(curl -fsSL https://tako.sh/install-server.sh)"
 ```
 
 That key is authorized for `tako` SSH access and enrolled for signed remote management.
