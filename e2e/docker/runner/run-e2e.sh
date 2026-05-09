@@ -486,7 +486,7 @@ run_cli_post_deploy_checks() {
     exit 1
   fi
   require_file_contains "$logs_log" "$log_marker" "tako logs --json"
-  require_file_contains "$logs_log" '"src":"app"' "tako logs --json"
+  require_file_contains "$logs_log" '"source":"e2e"' "tako logs --json"
 }
 
 run_universal_http_checks() {
