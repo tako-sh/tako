@@ -76,7 +76,7 @@
     "@types/react-dom": "catalog:dev",
     "react": "catalog:",
     "react-dom": "catalog:",
-    "tsdown": "^0.21.10",
+    "tsdown": "^0.22.0",
     "typescript": "catalog:dev",
     "vite": "catalog:dev"
   },

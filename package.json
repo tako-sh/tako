@@ -9,28 +9,28 @@
     ],
     "catalog": {
       "@resvg/resvg-js": "^2.6.2",
-      "@tanstack/react-router": "^1.169.1",
-      "@tanstack/react-start": "1.167.61",
-      "react": "^19.2.5",
-      "react-dom": "^19.2.5",
+      "@tanstack/react-router": "^1.169.2",
+      "@tanstack/react-start": "1.167.65",
+      "react": "^19.2.6",
+      "react-dom": "^19.2.6",
       "satori": "^0.26.0",
-      "zod": "^4.4.2"
+      "zod": "^4.4.3"
     },
     "catalogs": {
       "dev": {
-        "@tailwindcss/vite": "^4.2.4",
+        "@tailwindcss/vite": "^4.3.0",
         "@tsconfig/strictest": "^2.0.0",
         "@types/react": "^19.0.8",
         "@types/react-dom": "^19.0.3",
         "@vitejs/plugin-react": "^6.0.1",
         "@types/bun": "^1.3.13",
-        "@types/node": "^25.6.0",
-        "astro": "^6.2.1",
+        "@types/node": "^25.6.2",
+        "astro": "^6.3.1",
         "eslint-plugin-better-tailwindcss": "^4.5.0",
-        "wrangler": "^4.87.0",
-        "tailwindcss": "^4.2.4",
+        "wrangler": "^4.90.0",
+        "tailwindcss": "^4.3.0",
         "typescript": "^6.0.3",
-        "vite": "^8.0.10"
+        "vite": "^8.0.11"
       }
     }
   },
@@ -42,8 +42,8 @@
   },
   "devDependencies": {
     "@types/bun": "catalog:dev",
-    "oxfmt": "0.47.0",
-    "oxlint": "^1.62.0",
+    "oxfmt": "0.48.0",
+    "oxlint": "^1.63.0",
     "oxlint-tsgolint": "^0.22.1"
   }
 }
