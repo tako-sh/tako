@@ -35,7 +35,7 @@ function toRelativeImportSpecifier(filePath: string): string {
 function renderWrappedEntrySource(compiledMain: string): string {
   const importSpecifier = toRelativeImportSpecifier(compiledMain);
   return `import entryModule, * as entryNamespace from ${JSON.stringify(importSpecifier)};
-import { handleTakoEndpoint } from "tako.sh/internal";
+import { handleTakoEndpoint, normalizeFetchResponse } from "tako.sh/internal";
 
 const fetchHandler =
   typeof entryModule === "function"
@@ -62,7 +62,7 @@ export default async function(request) {
     uptime_seconds: 0,
   });
   if (takoResponse) return takoResponse;
-  return fetchHandler(request);
+  return normalizeFetchResponse(await fetchHandler(request));
 };
 `;
 }

@@ -1,7 +1,8 @@
 mod json;
 mod remote;
+mod render;
 
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -14,16 +15,16 @@ use json::JsonLogWriter;
 use json::format_json_lines;
 use remote::stream_remote_logs;
 use remote::{build_fetch_log_command, build_tail_log_command, collect_remote_log_bytes};
+use render::{LogWriter, extract_timestamp, format_and_dedup, format_prefix};
 use tracing::Instrument;
 
-const DIM: &str = "\x1b[2m";
-const RESET: &str = "\x1b[0m";
-
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct LogOutputOptions {
     show_prefix: bool,
     colorize: bool,
+    page: bool,
     json: bool,
+    app_name: String,
 }
 
 pub fn run(
@@ -49,7 +50,7 @@ async fn run_async(
     let tako_config = TakoToml::load_from_file(&context.config_path)?;
     let mut servers = ServersToml::load()?;
 
-    let env = super::helpers::resolve_env(requested_env);
+    let env = super::helpers::resolve_env_silent(requested_env);
 
     let app_name = crate::app::require_app_name_from_config_path(&context.config_path)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()))?;
@@ -75,30 +76,34 @@ async fn run_async(
 
     let server_names = resolve_log_server_names(&tako_config, &mut servers, &env).await?;
 
-    let colorize = output::is_interactive();
+    let interactive_stdout = logs_stdout_is_interactive();
+    let colorize = interactive_stdout;
     let show_prefix = server_names.len() > 1;
     let log_output = LogOutputOptions {
         show_prefix,
         colorize,
+        page: interactive_stdout,
         json,
+        app_name: app_name.clone(),
     };
 
     if tail {
-        if requested_env.is_some() && !json {
-            output::warning(&format!("Using {} environment", output::accent(&env)));
+        if !json {
+            output::hint(&super::helpers::format_environment_notice(&env));
         }
         stream_logs(
             &server_names,
             &servers,
             &remote_app_name,
+            &app_name,
             show_prefix,
             colorize,
             json,
         )
         .await
     } else {
-        if requested_env.is_some() && !json {
-            output::warning(&format!("Using {} environment", output::accent(&env)));
+        if !json {
+            output::hint(&super::helpers::format_environment_notice(&env));
         }
         if !json {
             output::hint(&format!(
@@ -113,7 +118,8 @@ async fn run_async(
 async fn stream_logs(
     server_names: &[String],
     servers: &ServersToml,
-    app_name: &str,
+    remote_app_name: &str,
+    display_app_name: &str,
     show_prefix: bool,
     colorize: bool,
     json: bool,
@@ -121,7 +127,7 @@ async fn stream_logs(
     if !json {
         output::info(&format!(
             "Streaming logs for {} {}",
-            output::strong(app_name),
+            output::strong(display_app_name),
             output::theme_muted("(Ctrl+c to stop)")
         ));
     }
@@ -137,7 +143,8 @@ async fn stream_logs(
 
         let host = server.host.clone();
         let port = server.port;
-        let app_name = app_name.to_string();
+        let remote_app_name = remote_app_name.to_string();
+        let display_app_name = display_app_name.to_string();
         let writer = writer.clone();
         let prefix = format_prefix(server_name, show_prefix, colorize);
         let name = server_name.to_string();
@@ -146,10 +153,10 @@ async fn stream_logs(
         tasks.push(tokio::spawn(
             async move {
                 let _t = output::timed(&format!("Stream logs ({host}:{port})"));
-                let log_cmd = build_tail_log_command(&app_name);
+                let log_cmd = build_tail_log_command(&remote_app_name);
 
                 if json {
-                    let lw = Arc::new(Mutex::new(JsonLogWriter::new(writer, name)));
+                    let lw = Arc::new(Mutex::new(JsonLogWriter::new(writer, name, show_prefix)));
                     let sink = {
                         let lw = lw.clone();
                         Arc::new(move |data: &[u8]| {
@@ -164,7 +171,12 @@ async fn stream_logs(
                         w.flush();
                     }
                 } else {
-                    let lw = Arc::new(Mutex::new(LogWriter::new(writer, prefix, colorize)));
+                    let lw = Arc::new(Mutex::new(LogWriter::new(
+                        writer,
+                        prefix,
+                        display_app_name,
+                        colorize,
+                    )));
                     let sink = {
                         let lw = lw.clone();
                         Arc::new(move |data: &[u8]| {
@@ -300,15 +312,20 @@ async fn fetch_logs(
     }
 
     if output_options.json {
-        print!("{}", format_json_lines(&lines));
+        print!("{}", format_json_lines(&lines, output_options.show_prefix));
         return Ok(());
     }
 
     // Format and dedup.
-    let formatted = format_and_dedup(&lines, output_options.show_prefix, output_options.colorize);
+    let formatted = format_and_dedup(
+        &lines,
+        &output_options.app_name,
+        output_options.show_prefix,
+        output_options.colorize,
+    );
 
-    // Show in pager or print directly.
-    if output::is_interactive() {
+    // Show history in a pager for consistent search/navigation in interactive terminals.
+    if output_options.page {
         if let Some(mut child) = spawn_pager() {
             if let Some(ref mut stdin) = child.stdin {
                 let _ = stdin.write_all(formatted.as_bytes());
@@ -325,40 +342,12 @@ async fn fetch_logs(
     Ok(())
 }
 
-fn format_and_dedup(lines: &[(String, String)], show_prefix: bool, colorize: bool) -> String {
-    let mut out = String::new();
-    let mut last_key = String::new();
-    let mut repeat_count: u32 = 0;
-
-    for (server, raw) in lines {
-        let (key, formatted) = format_log_entry(raw, colorize);
-        if !key.is_empty() && key == last_key {
-            repeat_count += 1;
-        } else {
-            push_repeat(&mut out, repeat_count, colorize);
-            let prefix = format_prefix(server, show_prefix, colorize);
-            out.push_str(&prefix);
-            out.push_str(&formatted);
-            out.push('\n');
-            last_key = key;
-            repeat_count = 0;
-        }
-    }
-    push_repeat(&mut out, repeat_count, colorize);
-    out
+fn logs_stdout_is_interactive() -> bool {
+    should_page_logs(output::is_interactive(), std::io::stdout().is_terminal())
 }
 
-fn push_repeat(out: &mut String, count: u32, colorize: bool) {
-    if count > 0 {
-        // Indent to align with the message column (date + space + time + space = 20 chars).
-        if colorize {
-            out.push_str(&format!(
-                "                    {DIM}… and {count} more{RESET}\n"
-            ));
-        } else {
-            out.push_str(&format!("                    … and {count} more\n"));
-        }
-    }
+fn should_page_logs(interactive: bool, stdout_is_terminal: bool) -> bool {
+    interactive && stdout_is_terminal
 }
 
 /// Zstd magic number (first 4 bytes of any zstd frame).
@@ -402,168 +391,80 @@ impl ByteCollector {
     }
 }
 
-struct LogWriter {
-    buf: String,
-    writer: Arc<Mutex<Box<dyn Write + Send>>>,
-    prefix: String,
-    colorize: bool,
-    last_msg_key: String,
-    repeat_count: u32,
+#[derive(Debug, PartialEq, Eq)]
+struct PagerCommand {
+    program: String,
+    args: Vec<String>,
+    less_env: Option<String>,
 }
 
-impl LogWriter {
-    fn new(writer: Arc<Mutex<Box<dyn Write + Send>>>, prefix: String, colorize: bool) -> Self {
+impl PagerCommand {
+    fn new(program: impl Into<String>, args: impl IntoIterator<Item = impl Into<String>>) -> Self {
         Self {
-            buf: String::new(),
-            writer,
-            prefix,
-            colorize,
-            last_msg_key: String::new(),
-            repeat_count: 0,
+            program: program.into(),
+            args: args.into_iter().map(Into::into).collect(),
+            less_env: None,
         }
     }
 
-    fn push(&mut self, data: &[u8]) {
-        self.buf.push_str(&String::from_utf8_lossy(data));
-        while let Some(nl) = self.buf.find('\n') {
-            let line = self.buf[..nl].to_string();
-            self.buf = self.buf[nl + 1..].to_string();
-            self.process_line(&line);
+    fn default_less() -> Self {
+        Self {
+            program: "less".to_string(),
+            args: vec!["-R".to_string()],
+            less_env: Some("-R".to_string()),
         }
     }
 
-    fn process_line(&mut self, line: &str) {
-        let (key, formatted) = format_log_entry(line, self.colorize);
-        if !key.is_empty() && key == self.last_msg_key {
-            self.repeat_count += 1;
-        } else {
-            self.flush_repeat();
-            self.write_line(&formatted);
-            self.last_msg_key = key;
-            self.repeat_count = 0;
+    fn shell_with_raw_ansi(pager: &str) -> Self {
+        Self {
+            program: "sh".to_string(),
+            args: vec!["-c".to_string(), pager.to_string()],
+            less_env: Some("-R".to_string()),
         }
-    }
-
-    fn flush_repeat(&mut self) {
-        if self.repeat_count > 0 {
-            let msg = if self.colorize {
-                format!("         {DIM}… and {} more{RESET}", self.repeat_count)
-            } else {
-                format!("         … and {} more", self.repeat_count)
-            };
-            self.write_line(&msg);
-        }
-    }
-
-    fn flush(&mut self) {
-        if !self.buf.is_empty() {
-            let line = std::mem::take(&mut self.buf);
-            self.process_line(&line);
-        }
-        self.flush_repeat();
-    }
-
-    fn write_line(&self, formatted: &str) {
-        let Ok(mut w) = self.writer.lock() else {
-            return;
-        };
-        let _ = writeln!(w, "{}{formatted}", self.prefix);
     }
 }
 
-fn format_prefix(server: &str, show: bool, colorize: bool) -> String {
-    if !show {
-        return String::new();
-    }
-    if colorize {
-        format!("{DIM}[{server}]{RESET} ")
-    } else {
-        format!("[{server}] ")
-    }
-}
-
-fn format_log_entry(line: &str, colorize: bool) -> (String, String) {
-    if let Some((hms, level, message)) = parse_json_log(line) {
-        let key = format!("{level} {message}");
-        let formatted = if colorize {
-            let color = level_color(&level);
-            format!("{DIM}{hms}{RESET} {color}{level:>5}{RESET} {message}")
-        } else {
-            format!("{hms} {level:>5} {message}")
-        };
-        (key, formatted)
-    } else {
-        // Non-JSON line (e.g., from app log files): show as-is.
-        (String::new(), line.to_string())
-    }
-}
-
-/// Parse a JSON log line from tracing-subscriber `.json()` format.
-///
-/// Expected: `{"timestamp":"...","level":"INFO","fields":{"message":"...","app":"..."}}`
-fn parse_json_log(line: &str) -> Option<(String, String, String)> {
-    let v: serde_json::Value = serde_json::from_str(line).ok()?;
-    let timestamp = v["timestamp"].as_str()?;
-    let level = v["level"].as_str()?;
-    let fields = v.get("fields")?.as_object()?;
-    let message = fields.get("message").and_then(|m| m.as_str()).unwrap_or("");
-
-    // Collect structured fields (skip "message") into "key=value" pairs.
-    let mut parts = vec![message.to_string()];
-    for (k, val) in fields {
-        if k == "message" {
-            continue;
-        }
-        let v_str = val
-            .as_str()
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| val.to_string());
-        parts.push(format!("{k}={v_str}"));
-    }
-
-    let hms = if timestamp.len() >= 19 {
-        format!("{} {}", &timestamp[..10], &timestamp[11..19])
-    } else {
-        timestamp.to_string()
-    };
-
-    Some((hms, level.to_string(), parts.join(" ")))
-}
-
-fn extract_timestamp(line: &str) -> &str {
-    // JSON: look for "timestamp":"..." field.
-    if let Some(pos) = line.find("\"timestamp\":\"") {
-        let start = pos + 13;
-        if let Some(end) = line[start..].find('"') {
-            return &line[start..start + end];
-        }
-    }
-    // App log format: "2026-04-03T12:00:00.000Z [out] [inst-1] ..."
-    if line.len() >= 24 && line.as_bytes()[4] == b'-' && line.as_bytes()[10] == b'T' {
-        return &line[..24];
-    }
-    "\x7f" // sort unparseable lines last
-}
-
-fn level_color(level: &str) -> &'static str {
-    match level {
-        "DEBUG" | "TRACE" => "\x1b[38;2;140;207;255m",
-        "INFO" => "\x1b[38;2;155;217;179m",
-        "WARN" => "\x1b[38;2;234;211;156m",
-        "ERROR" => "\x1b[38;2;232;163;160m",
-        _ => "",
+fn pager_command(pager: Option<&str>) -> PagerCommand {
+    match pager.map(str::trim).filter(|pager| !pager.is_empty()) {
+        Some(pager) if is_diff_only_pager(pager) => PagerCommand::default_less(),
+        Some(pager) if is_less_pager(pager) => PagerCommand::shell_with_raw_ansi(pager),
+        Some(pager) => PagerCommand::new("sh", ["-c", pager]),
+        None => PagerCommand::default_less(),
     }
 }
 
 fn spawn_pager() -> Option<std::process::Child> {
-    let pager = std::env::var("PAGER").unwrap_or_else(|_| "less -R".to_string());
-    let parts: Vec<&str> = pager.split_whitespace().collect();
-    let (cmd, args) = parts.split_first()?;
-    Command::new(cmd)
-        .args(args)
-        .stdin(Stdio::piped())
-        .spawn()
-        .ok()
+    let pager = std::env::var("PAGER").ok();
+    spawn_pager_command(&pager_command(pager.as_deref()))
+        .or_else(|| spawn_pager_command(&PagerCommand::new("more", std::iter::empty::<&str>())))
+}
+
+fn spawn_pager_command(pager: &PagerCommand) -> Option<std::process::Child> {
+    let mut command = Command::new(&pager.program);
+    command.args(&pager.args).stdin(Stdio::piped());
+    if let Some(less_env) = &pager.less_env {
+        command.env("LESS", less_env);
+    }
+    command.spawn().ok()
+}
+
+fn is_diff_only_pager(pager: &str) -> bool {
+    pager_program_names(pager).any(|name| matches!(name, "delta" | "git-delta"))
+}
+
+fn is_less_pager(pager: &str) -> bool {
+    pager_program_names(pager).any(|name| name == "less")
+}
+
+fn pager_program_names(pager: &str) -> impl Iterator<Item = &str> {
+    pager.split_whitespace().filter_map(|token| {
+        if token.contains('=') {
+            return None;
+        }
+        std::path::Path::new(token)
+            .file_name()
+            .and_then(|name| name.to_str())
+    })
 }
 
 fn server_not_found_error(name: &str) -> Box<dyn std::error::Error> {
@@ -614,86 +515,6 @@ async fn resolve_log_server_names(
 mod tests {
     use super::*;
     use crate::config::ServerEntry;
-
-    #[test]
-    fn parse_json_log_info() {
-        let line = r#"{"timestamp":"2026-03-10T12:34:56.789012Z","level":"INFO","fields":{"message":"Instance is healthy","app":"bun-example","instance":"abc123"}}"#;
-        let (hms, level, msg) = parse_json_log(line).unwrap();
-        assert_eq!(hms, "2026-03-10 12:34:56");
-        assert_eq!(level, "INFO");
-        assert!(msg.contains("Instance is healthy"));
-        assert!(msg.contains("app=bun-example"));
-        assert!(msg.contains("instance=abc123"));
-    }
-
-    #[test]
-    fn parse_json_log_warn() {
-        let line = r#"{"timestamp":"2026-03-10T08:00:00.000Z","level":"WARN","fields":{"message":"timeout","app":"foo"}}"#;
-        let (hms, level, msg) = parse_json_log(line).unwrap();
-        assert_eq!(hms, "2026-03-10 08:00:00");
-        assert_eq!(level, "WARN");
-        assert!(msg.starts_with("timeout"));
-        assert!(msg.contains("app=foo"));
-    }
-
-    #[test]
-    fn parse_json_log_non_json() {
-        assert!(parse_json_log("just some random text").is_none());
-        assert!(parse_json_log("").is_none());
-    }
-
-    #[test]
-    fn dedup_consecutive_lines() {
-        let lines = vec![
-            (
-                "s1".to_string(),
-                r#"{"timestamp":"2026-03-10T12:00:00.000Z","level":"INFO","fields":{"message":"hello","app":"x"}}"#.to_string(),
-            ),
-            (
-                "s1".to_string(),
-                r#"{"timestamp":"2026-03-10T12:00:01.000Z","level":"INFO","fields":{"message":"hello","app":"x"}}"#.to_string(),
-            ),
-            (
-                "s1".to_string(),
-                r#"{"timestamp":"2026-03-10T12:00:02.000Z","level":"INFO","fields":{"message":"hello","app":"x"}}"#.to_string(),
-            ),
-            (
-                "s1".to_string(),
-                r#"{"timestamp":"2026-03-10T12:00:03.000Z","level":"WARN","fields":{"message":"different","app":"x"}}"#.to_string(),
-            ),
-        ];
-        let output = format_and_dedup(&lines, false, false);
-        let result: Vec<&str> = output.trim().lines().collect();
-        assert_eq!(result.len(), 3);
-        assert!(result[0].contains("hello"));
-        assert!(result[1].contains("… and 2 more"));
-        assert!(result[2].contains("different"));
-    }
-
-    #[test]
-    fn extract_timestamp_from_json() {
-        let line =
-            r#"{"timestamp":"2026-03-10T12:34:56.789Z","level":"INFO","fields":{"message":"hi"}}"#;
-        assert_eq!(extract_timestamp(line), "2026-03-10T12:34:56.789Z");
-    }
-
-    #[test]
-    fn extract_timestamp_from_app_log() {
-        let line = "2026-04-03T12:00:00.000Z [out] [inst-1] hello world";
-        assert_eq!(extract_timestamp(line), "2026-04-03T12:00:00.000Z");
-    }
-
-    #[test]
-    fn extract_timestamp_non_json() {
-        assert_eq!(extract_timestamp("random text"), "\x7f");
-    }
-
-    #[test]
-    fn sort_by_timestamp() {
-        let a = r#"{"timestamp":"2026-03-10T12:00:02.000Z","level":"INFO","fields":{"message":"second"}}"#;
-        let b = r#"{"timestamp":"2026-03-10T12:00:01.000Z","level":"INFO","fields":{"message":"first"}}"#;
-        assert!(extract_timestamp(b) < extract_timestamp(a));
-    }
 
     #[tokio::test]
     async fn resolve_log_server_names_uses_explicit_env_mapping() {
@@ -772,5 +593,53 @@ servers = ["solo"]
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].1, "hello");
         assert_eq!(result[1].1, "world");
+    }
+
+    #[test]
+    fn default_pager_preserves_ansi_colors() {
+        assert_eq!(pager_command(None), PagerCommand::default_less());
+        assert_eq!(pager_command(Some("   ")), PagerCommand::default_less());
+    }
+
+    #[test]
+    fn default_pager_ignores_less_quit_if_one_screen() {
+        let pager = pager_command(None);
+        assert_eq!(pager.less_env.as_deref(), Some("-R"));
+    }
+
+    #[test]
+    fn custom_pager_runs_as_shell_command() {
+        assert_eq!(
+            pager_command(Some("most -w")),
+            PagerCommand::new("sh", ["-c", "most -w"])
+        );
+    }
+
+    #[test]
+    fn less_pager_preserves_args_and_raw_ansi() {
+        assert_eq!(
+            pager_command(Some("less -S --pattern 'ERROR 5WHq7f05'")),
+            PagerCommand::shell_with_raw_ansi("less -S --pattern 'ERROR 5WHq7f05'")
+        );
+    }
+
+    #[test]
+    fn diff_only_pager_falls_back_to_less() {
+        assert_eq!(pager_command(Some("delta")), PagerCommand::default_less());
+        assert_eq!(
+            pager_command(Some("/opt/homebrew/bin/delta --dark")),
+            PagerCommand::default_less()
+        );
+        assert_eq!(
+            pager_command(Some("env DELTA_FEATURES=side-by-side delta")),
+            PagerCommand::default_less()
+        );
+    }
+
+    #[test]
+    fn pager_requires_interactive_stdout() {
+        assert!(should_page_logs(true, true));
+        assert!(!should_page_logs(true, false));
+        assert!(!should_page_logs(false, true));
     }
 }

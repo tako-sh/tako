@@ -124,7 +124,7 @@ These functions print in normal mode, no-op in verbose/CI. Use `output::is_prett
 
 ### Environment Context
 
-- **Environment**: only print it when it adds real clarity. Avoid redundant lines like `Using production environment` when the command already shows the environment in the main summary or task tree.
+- **Environment**: only print it when it adds real clarity. Avoid redundant lines like `Using production environment` when the command already shows the environment in the main summary or task tree. Read-only context should use `hint()` or be folded into the main sentence; reserve `warning()` for operations where the selected environment changes something significant. When an environment warning is needed, keep the environment name as plain text inside `warning()`.
 
 ## Spinners
 
@@ -374,8 +374,11 @@ Use `StepFlow` for known sequential phases:
 ### 4. Environment warning before destructive commands
 
 ```rust
-output::warning(&format!("Using {} environment", output::accent(&env_name)));
+output::warning(&format!("Using {env_name} environment"));
 ```
+
+Do not nest `accent()` or `strong()` inside `warning()` text. Warning lines own
+their color as a whole; nested emphasis creates mixed-color warning rows.
 
 ### 5. Accent for emphasis, not quotes
 
@@ -432,5 +435,5 @@ Human-facing CLI output goes to stderr. Structured data goes to stdout.
 11. **Fatal error**? → `error()` then return Err
 12. **Meaningful internal step** for debugging? → `tracing::debug!()` with `[scope]` prefix
 13. **Noisy/repetitive instrumentation**? → `tracing::trace!()` or `timed()`
-14. **Environment context** (auto-resolved)? → `warning()` with `accent()` env name
+14. **Environment context** (read-only)? → `hint()` with plain environment name; destructive context → `warning()`
 15. **Low-priority info**? → `muted()`

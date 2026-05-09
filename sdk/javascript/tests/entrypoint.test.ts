@@ -97,6 +97,38 @@ test("internal status uses TAKO_BUILD and instance arg for runtime identity", as
   }
 });
 
+test("normalizes framework response shims before returning to the runtime server", async () => {
+  const rootDir = await mkdtemp(path.join(tmpdir(), "tako-response-shim-"));
+  const entryModule = path.join(rootDir, "entry.mjs");
+
+  try {
+    await writeFile(
+      entryModule,
+      [
+        "const native = new Response('ok', { status: 203 });",
+        "const shim = Object.create(Response.prototype, {",
+        "  _response: { get: () => native },",
+        "});",
+        "export default () => shim;",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    process.argv = ["node", "entrypoint", entryModule, "--instance", "i-1"];
+
+    const { run } = createEntrypoint();
+    await run(async (handleRequest) => {
+      const response = await handleRequest(new Request("http://example.com/"));
+      expect(response.status).toBe(203);
+      expect(await response.text()).toBe("ok");
+      return 4321;
+    });
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 test("resolves relative main against process.cwd(), not the SDK module URL", async () => {
   // Regression test: production spawner passes `main` as a path relative to
   // the app cwd (e.g. "dist/server/tako-entry.mjs"). A naive `import(main)`

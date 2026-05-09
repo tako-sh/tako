@@ -56,6 +56,7 @@ export { createLogger } from "./logger";
 export type { Logger } from "./logger";
 
 export { handleTakoEndpoint } from "./tako/endpoints";
+export { normalizeFetchResponse } from "./tako/fetch-response";
 export type { TakoStatus } from "./types";
 
 export { initServerRuntime } from "./tako/init";

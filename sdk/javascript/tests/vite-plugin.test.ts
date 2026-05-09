@@ -83,7 +83,8 @@ describe("tako Vite entry plugin", () => {
     );
     expect(wrapper).toContain("export default async function");
     expect(wrapper).toContain("handleTakoEndpoint");
-    expect(wrapper).toContain("fetchHandler(request)");
+    expect(wrapper).toContain("normalizeFetchResponse(await fetchHandler(request))");
+    expect(wrapper).toContain('from "tako.sh/internal";');
   });
 
   test("externalizes tako.sh from SSR transform", () => {

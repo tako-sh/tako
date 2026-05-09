@@ -132,11 +132,11 @@ tako logs --tail
 tako logs --json
 ```
 
-`--env` defaults to `production`. `--days` defaults to `3` and applies to timestamped app log-file lines. `--tail` streams continuously and conflicts with `--days`.
+`--env` defaults to `production`. `--days` defaults to `3` and applies to timestamped app log-file lines. `--tail` streams continuously and conflicts with `--days`. History mode opens in `$PAGER` when interactive, with `less -R` as the default. Diff-only pagers such as `delta` fall back to `less -R`; piped output and `--json` write to stdout.
 
-Logs include app stdout/stderr and app-scoped Tako server diagnostics from the app log files. JS/TS production HTTP entrypoints route `console.*`, uncaught exceptions, and unhandled rejections into the same app log stream. Remote fetch/connect failures are reported instead of being shown as empty logs.
+Logs include app stdout/stderr and app-scoped Tako server diagnostics from the app log files. JS/TS production HTTP entrypoints route `console.*`, uncaught exceptions, and unhandled rejections into the same app log stream. Human-readable output formats log-file lines into timestamp, level, source, and message columns, with app process sources shown as `{instance}`, app-scoped server diagnostics shown as `tako`, and app stderr shown as `ERROR`; structured multiline logs, `fields.error.stack` values, and raw stderr object dumps stay inside one indented entry. Consecutive identical messages collapse to `└─ repeated N times through <timestamp>`; same-day repeats show `HH:MM:SS`, and `N` includes the first displayed row. Interactive terminals colorize levels and scopes and render trailing metadata fields such as `instance=...` as dim italic text. Remote fetch/connect failures are reported instead of being shown as empty logs.
 
-`--json` emits compact JSONL for agents and automation. Each stdout line is one log event with stable short keys.
+`--json` emits JSONL for agents and automation. Each stdout line is one log event; structured app/worker JSON records are preserved with `source` and `instance_id`, while raw app process output and app-scoped Tako diagnostics are wrapped into JSON records with a `level` field. `source` is the app instance id, worker name (`default` renders as `worker`), or `tako`; records include `server` only when logs come from multiple servers.
 
 ## `tako releases`
 

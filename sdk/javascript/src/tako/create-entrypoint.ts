@@ -11,6 +11,7 @@
 import { isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { handleTakoEndpoint } from "./endpoints";
+import { normalizeFetchResponse } from "./fetch-response";
 import { writeViaInheritedFd } from "./readiness";
 import { bootstrapChannels } from "../channels/bootstrap";
 import type { ChannelRegistry } from "../channels";
@@ -151,7 +152,7 @@ export function createEntrypoint() {
       }
 
       try {
-        return await userFetch(request, env);
+        return normalizeFetchResponse(await userFetch(request, env));
       } catch (err) {
         console.error("Error in user fetch handler:", err);
         return new Response(JSON.stringify({ error: "Internal Server Error" }), {

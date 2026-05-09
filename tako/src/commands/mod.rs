@@ -5,6 +5,7 @@ pub mod doctor;
 pub mod helpers;
 pub mod implode;
 pub mod init;
+mod log_style;
 pub mod logs;
 pub mod project_context;
 pub mod releases;

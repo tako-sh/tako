@@ -594,6 +594,7 @@ pub fn strong(value: &str) -> String {
 }
 
 /// Accent color only (no bold). Secondary emphasis.
+#[allow(dead_code)]
 pub fn accent(value: &str) -> String {
     theme_accent(value)
 }

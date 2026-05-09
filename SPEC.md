@@ -569,24 +569,39 @@ View or stream logs from all servers in an environment.
 - Includes app stdout/stderr and app-scoped Tako server diagnostics from the app log files.
   JS/TS production HTTP entrypoints route `console.*`, uncaught exceptions, and unhandled
   rejections into the same app log stream before exiting.
+- Human-readable output formats log-file lines into timestamp, level, source, and message
+  columns. App process sources render as `{instance}`; app-scoped server diagnostics
+  render as `tako`. App stderr renders as `ERROR`; structured app JSON logs are flattened into
+  the same view, with embedded newlines kept inside one log entry and indented under the
+  message column. Structured `fields.error.stack` values render as indented continuation
+  lines. Raw app stderr object dumps are grouped under the first stderr row when they are
+  split across physical log-file lines. Interactive terminals colorize levels and scopes,
+  and render trailing metadata fields such as `instance=...` as dim italic text.
 - Prefixes each line with `[server-name]` when multiple servers are present.
 - Remote fetch/connect failures are reported as command failures; they are not treated as empty logs.
-- `--json` emits compact JSONL for agents and automation: one log event per stdout line with
-  stable short keys and no human progress output on stdout.
+- `--json` emits JSONL for agents and automation: one log event per stdout line and no
+  human progress output on stdout. Structured app/worker JSON records are preserved and
+  annotated with `source` and `instance_id`; `source` is the app instance id, worker name
+  (`default` renders as `worker`), or `tako` for app-scoped server diagnostics. Raw app
+  process output and app-scoped Tako diagnostics are wrapped into JSON records with a
+  `level` field. When logs come from multiple servers, records also include `server`.
 
 **History mode (default):**
 
 - Shows the last `N` days of logs (default: 3).
 - Applies `--days` to timestamped app log-file lines.
-- Consecutive identical messages are deduplicated with "... and N more" suffix.
+- Consecutive identical messages are deduplicated with a `└─ repeated N times through <timestamp>`
+  marker. Same-day repeats show `HH:MM:SS`; `N` includes the first displayed row.
 - All lines across servers are sorted by timestamp.
-- Displays in `$PAGER` (default: `less -R`) if interactive, otherwise stdout.
+- Displays in `$PAGER` if interactive, with `less -R` as the default. Diff-only pagers such
+  as `delta` fall back to `less -R`; piped output and `--json` write stdout.
 
 **Streaming mode (`--tail`):**
 
 - Streams logs continuously until interrupted (`Ctrl+c`).
 - `--tail` conflicts with `--days`.
-- Consecutive identical messages are deduplicated with "... and N more" suffix.
+- Consecutive identical messages are deduplicated with a `└─ repeated N times through <timestamp>`
+  marker. Same-day repeats show `HH:MM:SS`; `N` includes the first displayed row.
 
 Logs flow helpers:
 

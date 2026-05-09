@@ -63,7 +63,8 @@ fn format_log_aligns_continuation_lines_under_message_column() {
         fields: None,
         kind: None,
     };
-    let plain = strip_ansi(&format_log(&log));
+    let rendered = format_log(&log);
+    let plain = strip_ansi(&rendered);
     let lines: Vec<&str> = plain.split('\n').collect();
     assert_eq!(lines.len(), 3);
 
@@ -125,7 +126,9 @@ fn format_log_appends_fields_as_key_value_suffix() {
         fields: Some(fields),
         kind: None,
     };
-    let plain = strip_ansi(&format_log(&log));
+    let rendered = format_log(&log);
+    assert!(rendered.contains("\x1b[2;3m"));
+    let plain = strip_ansi(&rendered);
     assert!(plain.contains("Step completed"));
     assert!(plain.contains("step=fetch"));
     assert!(plain.contains("ms=24"));

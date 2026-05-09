@@ -34,15 +34,25 @@ pub fn resolve_servers_for_env(
 }
 
 /// Resolve the target environment name, defaulting to "production".
-/// When the default is used (no explicit `--env`), prints a muted hint line.
+/// When the default is used (no explicit `--env`), prints a warning.
 pub fn resolve_env(requested: Option<&str>) -> String {
+    let env = resolve_env_silent(requested);
+    if requested.is_none() {
+        output::warning(&format_environment_notice(&env));
+    }
+    env
+}
+
+pub fn resolve_env_silent(requested: Option<&str>) -> String {
     if let Some(env) = requested {
         env.to_string()
     } else {
-        let env = "production";
-        output::warning(&format!("Using {} environment", output::accent(env)));
-        env.to_string()
+        "production".to_string()
     }
+}
+
+pub(crate) fn format_environment_notice(env: &str) -> String {
+    format!("Using {env} environment")
 }
 
 /// Validate that all resolved server names exist in the global servers config.
@@ -122,5 +132,19 @@ mod tests {
         let err =
             validate_server_names(&["missing".to_string()], &servers).expect_err("should fail");
         assert!(err.contains("missing"));
+    }
+
+    #[test]
+    fn environment_notice_has_plain_text_environment_name() {
+        assert_eq!(
+            format_environment_notice("production"),
+            "Using production environment"
+        );
+    }
+
+    #[test]
+    fn resolve_env_silent_defaults_to_production_without_output_side_effect() {
+        assert_eq!(resolve_env_silent(None), "production");
+        assert_eq!(resolve_env_silent(Some("staging")), "staging");
     }
 }
