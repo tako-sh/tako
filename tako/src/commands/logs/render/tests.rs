@@ -60,8 +60,25 @@ fn colorize_app_stderr_log_line() {
 
     assert!(formatted.contains("\x1b[2m2026-05-08 06:02:58\x1b[0m"));
     assert!(formatted.contains("\x1b[38;2;232;163;160mERROR\x1b[0m"));
-    assert!(formatted.contains("5WHq7f05"));
     assert!(formatted.contains(" boom"));
+    assert_eq!(
+        console::strip_ansi_codes(&formatted),
+        "2026-05-08 06:02:58 ERROR 5WHq7f05 boom"
+    );
+}
+
+#[test]
+fn colorize_app_instance_scope_with_app_runtime_color() {
+    crate::commands::log_style::set_app_runtime("bun");
+    let line = "2026-05-08T06:02:58.800Z [err] [5WHq7f05] boom";
+
+    let (_key, formatted) = format_log_entry(line, true);
+
+    assert!(formatted.contains("\x1b[38;2;251;240;223m5"));
+    assert_eq!(
+        console::strip_ansi_codes(&formatted),
+        "2026-05-08 06:02:58 ERROR 5WHq7f05 boom"
+    );
 }
 
 #[test]

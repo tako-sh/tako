@@ -48,6 +48,9 @@ async fn run_async(
     let context = project_context::resolve_existing(config_path)?;
 
     let tako_config = TakoToml::load_from_file(&context.config_path)?;
+    if let Some(runtime) = &tako_config.runtime {
+        super::log_style::set_app_runtime(runtime.clone());
+    }
     let mut servers = ServersToml::load()?;
 
     let env = super::helpers::resolve_env_silent(requested_env);

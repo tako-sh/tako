@@ -576,7 +576,8 @@ View or stream logs from all servers in an environment.
   message column. Structured `fields.error.stack` values render as indented continuation
   lines. Raw app stderr object dumps are grouped under the first stderr row when they are
   split across physical log-file lines. Interactive terminals colorize levels and scopes,
-  and render trailing metadata fields such as `instance=...` as dim italic text.
+  use the app runtime color for app process sources when known, and render trailing
+  metadata fields such as `instance=...` as dim italic text.
 - Prefixes each line with `[server-name]` when multiple servers are present.
 - Remote fetch/connect failures are reported as command failures; they are not treated as empty logs.
 - `--json` emits JSONL for agents and automation: one log event per stdout line and no

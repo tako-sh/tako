@@ -1,7 +1,9 @@
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
-use crate::commands::log_style::{DIM, RESET, render_compact_scope, render_metadata_suffix};
+use crate::commands::log_style::{
+    DIM, RESET, render_app_process_scope, render_compact_scope, render_metadata_suffix,
+};
 
 const MAX_RAW_BLOCK_LINES: usize = 200;
 
@@ -364,7 +366,7 @@ struct RenderedLogEntry {
 fn render_log_entry(line: &str, app_name: &str, colorize: bool) -> RenderedLogEntry {
     if let Some((hms, level, message)) = parse_json_log(line) {
         let key = format!("{level} {message}");
-        let formatted = format_level_row(&hms, &level, None, &message, colorize);
+        let formatted = format_level_row(&hms, &level, None, None, &message, colorize);
         RenderedLogEntry {
             key,
             formatted,
@@ -377,6 +379,7 @@ fn render_log_entry(line: &str, app_name: &str, colorize: bool) -> RenderedLogEn
             &entry.timestamp,
             &entry.level,
             Some(&entry.scope),
+            entry.app_process_scope.as_deref(),
             &entry.message,
             colorize,
         );
@@ -404,6 +407,7 @@ struct AppLogEntry {
     timestamp: String,
     level: String,
     scope: String,
+    app_process_scope: Option<String>,
     message: String,
 }
 
@@ -411,6 +415,7 @@ fn format_level_row(
     timestamp: &str,
     level: &str,
     scope: Option<&str>,
+    app_process_scope: Option<&str>,
     message: &str,
     colorize: bool,
 ) -> String {
@@ -434,7 +439,7 @@ fn format_level_row(
     let first = lines.next().unwrap_or_default();
     let mut out = match scope {
         Some(scope) => {
-            let scope_text = format_scope_column(scope, colorize);
+            let scope_text = format_scope_column(scope, app_process_scope, colorize);
             format!(
                 "{timestamp_text} {level_text} {scope_text} {}",
                 format_message_line(first, colorize)
@@ -483,14 +488,20 @@ fn leading_whitespace_width(line: &str) -> usize {
         .sum()
 }
 
-fn format_scope_column(scope: &str, colorize: bool) -> String {
+fn format_scope_column(scope: &str, app_process_scope: Option<&str>, colorize: bool) -> String {
     if !colorize {
         return scope.to_string();
     }
 
     scope
         .split(' ')
-        .map(render_compact_scope)
+        .map(|part| {
+            if Some(part) == app_process_scope {
+                render_app_process_scope(part)
+            } else {
+                render_compact_scope(part)
+            }
+        })
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -537,6 +548,8 @@ fn parse_app_log(line: &str, app_name: &str) -> Option<AppLogEntry> {
         timestamp,
         level: app_stream_level(parts.stream).to_string(),
         scope: app_log_scope(app_name, parts.stream, parts.instance),
+        app_process_scope: (parts.stream != "server" || parts.instance != "tako-server")
+            .then(|| parts.instance.to_string()),
         message: parts.message.to_string(),
     };
 

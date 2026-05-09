@@ -17,14 +17,17 @@ const SCOPE_PALETTE: &[(u8, u8, u8)] = &[
     (200, 180, 170),
 ];
 
-static APP_RUNTIME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+static APP_RUNTIME: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 pub(crate) fn set_app_runtime(runtime: impl Into<String>) {
-    let _ = APP_RUNTIME.set(runtime.into());
+    if let Ok(mut value) = APP_RUNTIME.lock() {
+        *value = Some(runtime.into());
+    }
 }
 
-fn app_runtime() -> Option<&'static str> {
-    APP_RUNTIME.get().map(String::as_str)
+fn app_runtime_gradient() -> Option<&'static [(u8, u8, u8)]> {
+    let runtime = APP_RUNTIME.lock().ok()?.clone()?;
+    runtime_gradient(&runtime)
 }
 
 /// Render a scope label with ANSI color. Known scopes get gradients; everything
@@ -54,11 +57,17 @@ pub(crate) fn render_compact_scope(raw: &str) -> String {
     render_scope(raw, raw)
 }
 
+pub(crate) fn render_app_process_scope(raw: &str) -> String {
+    app_runtime_gradient()
+        .map(|stops| apply_gradient(raw, raw, stops))
+        .unwrap_or_else(|| render_compact_scope(raw))
+}
+
 fn scope_gradient(scope: &str) -> Option<&'static [(u8, u8, u8)]> {
     match scope {
         "tako" => Some(&[(232, 135, 131), (240, 195, 160)]),
         "vite" => Some(&[(143, 90, 200), (189, 132, 230)]),
-        "app" => app_runtime().and_then(runtime_gradient),
+        "app" => app_runtime_gradient(),
         _ => None,
     }
 }
