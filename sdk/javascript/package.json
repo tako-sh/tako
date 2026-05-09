@@ -59,7 +59,7 @@
     }
   },
   "scripts": {
-    "build": "tsdown",
+    "build": "bun --bun tsdown",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
