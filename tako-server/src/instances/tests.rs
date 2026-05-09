@@ -163,6 +163,51 @@ fn test_get_healthy_instances() {
 }
 
 #[test]
+fn healthy_instance_count_ignores_non_healthy_instances() {
+    let (tx, _rx) = mpsc::channel(16);
+    let app = App::new(AppConfig::default(), tx, noop_log_handle());
+
+    let healthy = app.allocate_instance();
+    healthy.set_state(InstanceState::Healthy);
+    app.allocate_instance().set_state(InstanceState::Ready);
+    app.allocate_instance().set_state(InstanceState::Unhealthy);
+
+    assert_eq!(app.healthy_instance_count(), 1);
+}
+
+#[test]
+fn healthy_instance_at_returns_only_healthy_instances() {
+    let (tx, _rx) = mpsc::channel(16);
+    let app = App::new(AppConfig::default(), tx, noop_log_handle());
+
+    app.allocate_instance().set_state(InstanceState::Ready);
+    let healthy = app.allocate_instance();
+    healthy.set_state(InstanceState::Healthy);
+    app.allocate_instance().set_state(InstanceState::Unhealthy);
+
+    let selected = app
+        .healthy_instance_at(0)
+        .expect("one healthy instance should be selectable");
+
+    assert_eq!(selected.id, healthy.id);
+    assert!(app.healthy_instance_at(1).is_none());
+}
+
+#[test]
+fn has_starting_instance_detects_startup_states_without_snapshotting() {
+    let (tx, _rx) = mpsc::channel(16);
+    let app = App::new(AppConfig::default(), tx, noop_log_handle());
+
+    assert!(!app.has_starting_instance());
+
+    app.allocate_instance().set_state(InstanceState::Healthy);
+    assert!(!app.has_starting_instance());
+
+    app.allocate_instance().set_state(InstanceState::Ready);
+    assert!(app.has_starting_instance());
+}
+
+#[test]
 fn app_last_error_roundtrip() {
     let (tx, _rx) = mpsc::channel(1);
     let app = App::new(AppConfig::default(), tx, noop_log_handle());

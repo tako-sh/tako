@@ -137,9 +137,8 @@ impl ServerState {
         // same SQLite connection.
         {
             let data_dir = data_dir.clone();
-            let stores: Arc<
-                parking_lot::RwLock<HashMap<String, Arc<tako_channels::ChannelStore>>>,
-            > = Arc::new(parking_lot::RwLock::new(HashMap::new()));
+            let stores: parking_lot::RwLock<HashMap<String, Arc<tako_channels::ChannelStore>>> =
+                parking_lot::RwLock::new(HashMap::new());
             workflows.set_channel_publisher(std::sync::Arc::new(
                 move |app: &str, channel: &str, payload: serde_json::Value| {
                     let typed: tako_channels::ChannelPublishPayload =

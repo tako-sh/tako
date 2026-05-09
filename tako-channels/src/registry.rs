@@ -1,7 +1,6 @@
 use crate::ChannelDefinitionMeta;
 use parking_lot::RwLock;
 use std::collections::HashMap;
-use std::sync::Arc;
 
 /// Cache of channel metadata keyed by `(app, channel)`.
 ///
@@ -10,7 +9,7 @@ use std::sync::Arc;
 /// pool turns over.
 #[derive(Default)]
 pub struct ChannelRegistry {
-    by_app: RwLock<HashMap<String, Arc<HashMap<String, ChannelDefinitionMeta>>>>,
+    by_app: RwLock<HashMap<String, HashMap<String, ChannelDefinitionMeta>>>,
 }
 
 impl ChannelRegistry {
@@ -27,9 +26,7 @@ impl ChannelRegistry {
             .into_iter()
             .map(|definition| (definition.channel.clone(), definition))
             .collect();
-        self.by_app
-            .write()
-            .insert(app.to_string(), Arc::new(definitions));
+        self.by_app.write().insert(app.to_string(), definitions);
     }
 
     pub fn invalidate(&self, app: &str) {

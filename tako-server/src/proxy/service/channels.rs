@@ -222,26 +222,7 @@ impl TakoProxy {
             }
         };
 
-        let app = match self.lb.app_manager().get_app(&backend.app_name) {
-            Some(app) => app,
-            None => {
-                self.lb
-                    .request_completed(&backend.app_name, &backend.instance_id);
-                return self
-                    .write_channel_error(session, ChannelError::AuthUnavailable)
-                    .await;
-            }
-        };
-        let instance = match app.get_instance(&backend.instance_id) {
-            Some(instance) => instance,
-            None => {
-                self.lb
-                    .request_completed(&backend.app_name, &backend.instance_id);
-                return self
-                    .write_channel_error(session, ChannelError::AuthUnavailable)
-                    .await;
-            }
-        };
+        let instance = backend.instance();
 
         let operation = if session.as_downstream().is_upgrade_req() {
             ChannelOperation::Connect
@@ -250,13 +231,11 @@ impl TakoProxy {
         };
 
         let meta = match self
-            .channel_meta_for_app(app_name, &instance, &route.channel)
+            .channel_meta_for_app(app_name, instance, &route.channel)
             .await
         {
             Ok(meta) => meta,
             Err(error) => {
-                self.lb
-                    .request_completed(&backend.app_name, &backend.instance_id);
                 return self.write_channel_error(session, error).await;
             }
         };
@@ -265,8 +244,6 @@ impl TakoProxy {
         let params = match validate_query(&meta.params_schema, &params_query) {
             Ok(params) => params,
             Err(ParamsError::Invalid(message)) => {
-                self.lb
-                    .request_completed(&backend.app_name, &backend.instance_id);
                 return self
                     .write_channel_error(
                         session,
@@ -275,8 +252,6 @@ impl TakoProxy {
                     .await;
             }
             Err(ParamsError::InvalidSchema(message)) => {
-                self.lb
-                    .request_completed(&backend.app_name, &backend.instance_id);
                 return self
                     .write_channel_error(
                         session,
@@ -296,8 +271,6 @@ impl TakoProxy {
             && header.is_none()
             && cookie.is_none()
         {
-            self.lb
-                .request_completed(&backend.app_name, &backend.instance_id);
             return self
                 .write_channel_error(session, ChannelError::Unauthorized)
                 .await;
@@ -305,8 +278,6 @@ impl TakoProxy {
 
         if is_websocket {
             if session.req_header().method.as_str() != "GET" {
-                self.lb
-                    .request_completed(&backend.app_name, &backend.instance_id);
                 return self
                     .write_json_response(
                         session,
@@ -316,8 +287,6 @@ impl TakoProxy {
                     .await;
             }
             if meta.transport != Some(ChannelTransport::Ws) {
-                self.lb
-                    .request_completed(&backend.app_name, &backend.instance_id);
                 return self
                     .write_channel_error(session, ChannelError::Unsupported)
                     .await;
@@ -325,16 +294,12 @@ impl TakoProxy {
             let query_cursor = match parse_ws_last_message_id(session.req_header().uri.query()) {
                 Ok(cursor) => cursor,
                 Err(error) => {
-                    self.lb
-                        .request_completed(&backend.app_name, &backend.instance_id);
                     return self.write_channel_error(session, error).await;
                 }
             };
             let store = match self.channel_store_for_app(app_name) {
                 Ok(store) => store,
                 Err(error) => {
-                    self.lb
-                        .request_completed(&backend.app_name, &backend.instance_id);
                     tracing::error!("channel store unavailable for {app_name}: {error}");
                     return self
                         .write_channel_error(
@@ -347,8 +312,6 @@ impl TakoProxy {
 
             if use_first_frame_auth {
                 let Some(endpoint) = instance.endpoint() else {
-                    self.lb
-                        .request_completed(&backend.app_name, &backend.instance_id);
                     return self
                         .write_channel_error(session, ChannelError::AuthUnavailable)
                         .await;
@@ -359,8 +322,7 @@ impl TakoProxy {
                     params,
                     cookie,
                 };
-                self.lb
-                    .request_completed(&backend.app_name, &backend.instance_id);
+                drop(backend);
                 return self
                     .write_channel_websocket(
                         session,
@@ -373,7 +335,7 @@ impl TakoProxy {
             }
 
             let auth_result = authorize_channel_request(
-                &instance,
+                instance,
                 operation,
                 &route.channel,
                 params,
@@ -381,9 +343,6 @@ impl TakoProxy {
                 cookie,
             )
             .await;
-
-            self.lb
-                .request_completed(&backend.app_name, &backend.instance_id);
 
             let auth_result = match auth_result {
                 Ok(result) => result,
@@ -394,6 +353,7 @@ impl TakoProxy {
                     .write_channel_error(session, ChannelError::Unsupported)
                     .await;
             }
+            drop(backend);
             return self
                 .write_channel_websocket(
                     session,
@@ -406,16 +366,14 @@ impl TakoProxy {
         }
 
         let auth_result =
-            authorize_channel_request(&instance, operation, &route.channel, params, header, cookie)
+            authorize_channel_request(instance, operation, &route.channel, params, header, cookie)
                 .await;
-
-        self.lb
-            .request_completed(&backend.app_name, &backend.instance_id);
 
         let auth_result = match auth_result {
             Ok(result) => result,
             Err(error) => return self.write_channel_error(session, error).await,
         };
+        drop(backend);
 
         let store = match self.channel_store_for_app(app_name) {
             Ok(store) => store,

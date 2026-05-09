@@ -236,7 +236,7 @@ impl crate::ServerState {
             app.set_state(AppState::Deploying);
 
             let rolling_config = RollingUpdateConfig::default();
-            let updater = RollingUpdater::new(self.app_manager.spawner().clone(), rolling_config);
+            let updater = RollingUpdater::new(self.app_manager.spawner(), rolling_config);
             let target_new_instances = target_new_instances_for_build(
                 deploy_config.min_instances,
                 app.get_instances().len(),

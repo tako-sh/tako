@@ -323,7 +323,7 @@ impl ProxyHttp for TakoProxy {
 
         let backend = ctx
             .backend
-            .clone()
+            .as_ref()
             .ok_or_else(|| Error::new(ErrorType::ConnectNoRoute))?;
 
         let mut peer = if let Some(endpoint) = backend.endpoint() {
@@ -333,7 +333,8 @@ impl ProxyHttp for TakoProxy {
                 ErrorType::ConnectNoRoute,
                 format!(
                     "Missing upstream endpoint for app '{}' instance {}",
-                    backend.app_name, backend.instance_id
+                    backend.app_name,
+                    backend.instance_id()
                 ),
             ));
         };
@@ -367,11 +368,8 @@ impl ProxyHttp for TakoProxy {
         let _ = upstream_request.remove_header("Forwarded");
         let _ = upstream_request.remove_header("X-Tako-Internal-Token");
 
-        if let Some(ref backend) = ctx.backend
-            && let Some(app) = self.lb.app_manager().get_app(&backend.app_name)
-            && let Some(instance) = app.get_instance(&backend.instance_id)
-        {
-            instance.request_started();
+        if let Some(ref backend) = ctx.backend {
+            backend.request_started();
         }
 
         ctx.upstream_start = Some(Instant::now());
@@ -454,14 +452,7 @@ impl ProxyHttp for TakoProxy {
         }
 
         if let Some(ref backend) = ctx.backend {
-            self.lb
-                .request_completed(&backend.app_name, &backend.instance_id);
-
-            if let Some(app) = self.lb.app_manager().get_app(&backend.app_name)
-                && let Some(instance) = app.get_instance(&backend.instance_id)
-            {
-                instance.request_finished();
-            }
+            backend.request_finished();
         }
 
         let status = session

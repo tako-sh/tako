@@ -68,7 +68,7 @@ pub struct TakoProxy {
     /// Per-IP concurrent request limiter (DDoS mitigation)
     ip_tracker: IpRequestTracker,
     /// Channel metadata cache hydrated from app internal endpoints.
-    channel_registry: Arc<ChannelRegistry>,
+    channel_registry: ChannelRegistry,
 }
 
 impl TakoProxy {
@@ -92,7 +92,7 @@ impl TakoProxy {
             static_servers: SyncRwLock::new(HashMap::new()),
             channel_stores: SyncRwLock::new(HashMap::new()),
             ip_tracker: IpRequestTracker::new(),
-            channel_registry: Arc::new(ChannelRegistry::new()),
+            channel_registry: ChannelRegistry::new(),
         }
     }
 
@@ -118,7 +118,7 @@ impl TakoProxy {
             static_servers: SyncRwLock::new(HashMap::new()),
             channel_stores: SyncRwLock::new(HashMap::new()),
             ip_tracker: IpRequestTracker::new(),
-            channel_registry: Arc::new(ChannelRegistry::new()),
+            channel_registry: ChannelRegistry::new(),
         }
     }
 }

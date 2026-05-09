@@ -307,9 +307,7 @@ impl HealthChecker {
 /// been spawned but not yet observed Healthy by a probe. Drives the choice
 /// between fast and steady-state probe intervals.
 fn app_has_starting_instance(app: &App) -> bool {
-    app.get_instances()
-        .iter()
-        .any(|i| matches!(i.state(), InstanceState::Starting | InstanceState::Ready))
+    app.has_starting_instance()
 }
 
 async fn probe_instance_health(

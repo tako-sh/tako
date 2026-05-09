@@ -378,12 +378,37 @@ impl App {
     }
 
     /// Get all healthy instances
-    pub fn get_healthy_instances(&self) -> Vec<Arc<Instance>> {
+    #[cfg(test)]
+    pub(crate) fn get_healthy_instances(&self) -> Vec<Arc<Instance>> {
         self.instances
             .iter()
             .filter(|entry| entry.value().state() == InstanceState::Healthy)
             .map(|entry| entry.value().clone())
             .collect()
+    }
+
+    pub(crate) fn healthy_instance_count(&self) -> usize {
+        self.instances
+            .iter()
+            .filter(|entry| entry.value().state() == InstanceState::Healthy)
+            .count()
+    }
+
+    pub(crate) fn healthy_instance_at(&self, healthy_index: usize) -> Option<Arc<Instance>> {
+        self.instances
+            .iter()
+            .filter(|entry| entry.value().state() == InstanceState::Healthy)
+            .nth(healthy_index)
+            .map(|entry| entry.value().clone())
+    }
+
+    pub(crate) fn has_starting_instance(&self) -> bool {
+        self.instances.iter().any(|entry| {
+            matches!(
+                entry.value().state(),
+                InstanceState::Starting | InstanceState::Ready
+            )
+        })
     }
 
     /// Get instance by ID

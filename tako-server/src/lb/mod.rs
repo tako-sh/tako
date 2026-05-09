@@ -29,19 +29,22 @@ impl AppLoadBalancer {
 
     /// Get an instance to handle a request
     pub fn get_instance(&self) -> Option<Arc<Instance>> {
-        let healthy = self.app.get_healthy_instances();
-        if healthy.is_empty() {
+        let healthy_count = self.app.healthy_instance_count();
+        if healthy_count == 0 {
             return None;
         }
-        let idx = self.rr_counter.fetch_add(1, Ordering::Relaxed) % healthy.len();
-        Some(healthy[idx].clone())
+
+        let idx = self.rr_counter.fetch_add(1, Ordering::Relaxed) % healthy_count;
+        self.app
+            .healthy_instance_at(idx)
+            .or_else(|| self.app.healthy_instance_at(0))
     }
 }
 
 /// Global load balancer managing all apps
 pub struct LoadBalancer {
     /// Per-app load balancers
-    app_lbs: DashMap<String, Arc<AppLoadBalancer>>,
+    app_lbs: DashMap<String, AppLoadBalancer>,
     /// App manager reference
     app_manager: Arc<AppManager>,
 }
@@ -57,8 +60,7 @@ impl LoadBalancer {
     /// Register an app with the load balancer
     pub fn register_app(&self, app: Arc<App>) {
         let name = app.name();
-        let lb = Arc::new(AppLoadBalancer::new(app));
-        self.app_lbs.insert(name, lb);
+        self.app_lbs.insert(name, AppLoadBalancer::new(app));
     }
 
     /// Remove an app from the load balancer
@@ -73,15 +75,9 @@ impl LoadBalancer {
 
         Some(Backend {
             app_name: app_name.to_string(),
-            instance_id: instance.id.clone(),
             endpoint: instance.endpoint(),
+            instance,
         })
-    }
-
-    /// Mark request completed
-    pub fn request_completed(&self, _app_name: &str, _instance_id: &str) {
-        // Retained for proxy request lifecycle symmetry; round-robin does not
-        // need completion bookkeeping.
     }
 
     /// Get app manager
@@ -91,19 +87,44 @@ impl LoadBalancer {
 }
 
 /// A selected backend for a request
-#[derive(Debug, Clone)]
 pub struct Backend {
     /// App name
     pub app_name: String,
-    /// Instance ID
-    pub instance_id: String,
+    /// Selected instance for request accounting and channel auth.
+    instance: Arc<Instance>,
     /// Optional TCP endpoint for upstream proxying
-    pub endpoint: Option<SocketAddr>,
+    endpoint: Option<SocketAddr>,
+}
+
+impl std::fmt::Debug for Backend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Backend")
+            .field("app_name", &self.app_name)
+            .field("instance_id", &self.instance_id())
+            .field("endpoint", &self.endpoint)
+            .finish()
+    }
 }
 
 impl Backend {
     pub fn endpoint(&self) -> Option<SocketAddr> {
         self.endpoint
+    }
+
+    pub fn instance(&self) -> &Instance {
+        &self.instance
+    }
+
+    pub fn instance_id(&self) -> &str {
+        &self.instance.id
+    }
+
+    pub fn request_started(&self) {
+        self.instance.request_started();
+    }
+
+    pub fn request_finished(&self) {
+        self.instance.request_finished();
     }
 }
 
@@ -180,8 +201,31 @@ mod tests {
 
         let backend = lb.get_backend("my-app").unwrap();
         assert_eq!(backend.app_name, "my-app");
-        assert_eq!(backend.instance_id, instance.id);
+        assert_eq!(backend.instance_id(), instance.id);
         assert_eq!(backend.endpoint(), None);
+    }
+
+    #[tokio::test]
+    async fn backend_tracks_requests_on_selected_instance() {
+        let manager = Arc::new(AppManager::new(PathBuf::from("/tmp/tako-test")));
+        let lb = LoadBalancer::new(manager.clone());
+
+        let app = manager.register_app(AppConfig {
+            name: "my-app".to_string(),
+            ..Default::default()
+        });
+        lb.register_app(app.clone());
+
+        let instance = app.allocate_instance();
+        instance.set_state(InstanceState::Healthy);
+
+        let backend = lb.get_backend("my-app").unwrap();
+        backend.request_started();
+        assert_eq!(instance.requests_total(), 1);
+        assert_eq!(instance.in_flight(), 1);
+
+        backend.request_finished();
+        assert_eq!(instance.in_flight(), 0);
     }
 
     #[tokio::test]
@@ -250,8 +294,7 @@ mod tests {
 
         let start = Instant::now();
         for _ in 0..50_000 {
-            let backend = lb.get_backend("test-app").expect("backend should exist");
-            lb.request_completed("test-app", &backend.instance_id);
+            let _backend = lb.get_backend("test-app").expect("backend should exist");
         }
         assert!(
             start.elapsed() < Duration::from_secs(20),
