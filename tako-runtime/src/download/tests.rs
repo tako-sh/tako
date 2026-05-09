@@ -195,6 +195,42 @@ fn resolve_bin_returns_path_when_installed() {
 }
 
 #[test]
+fn temporary_install_dirs_are_unique_per_attempt() {
+    let dir = TempDir::new().unwrap();
+
+    let first = temporary_install_dir(dir.path(), "bun", "1.0.0");
+    let second = temporary_install_dir(dir.path(), "bun", "1.0.0");
+
+    assert_ne!(first, second);
+    assert_eq!(first.parent(), second.parent());
+}
+
+#[test]
+fn complete_install_keeps_existing_runtime_from_concurrent_winner() {
+    let dir = TempDir::new().unwrap();
+    let mgr = DownloadManager::new(dir.path().to_path_buf());
+    let def = crate::runtime_def_for("bun", None).unwrap();
+    let version_dir = dir.path().join("bun").join("1.0.0");
+    let tmp_dir = temporary_install_dir(dir.path(), "bun", "1.0.0");
+
+    std::fs::create_dir_all(&version_dir).unwrap();
+    std::fs::write(version_dir.join("bun"), "existing").unwrap();
+    std::fs::create_dir_all(&tmp_dir).unwrap();
+    std::fs::write(tmp_dir.join("bun"), "new").unwrap();
+
+    let path = mgr
+        .complete_install("bun", "1.0.0", &def, &tmp_dir, &version_dir, "bun")
+        .unwrap();
+
+    assert_eq!(path, version_dir.join("bun"));
+    assert_eq!(
+        std::fs::read_to_string(version_dir.join("bun")).unwrap(),
+        "existing"
+    );
+    assert!(!tmp_dir.exists());
+}
+
+#[test]
 fn zip_extraction_works() {
     use std::io::Write;
     let dir = TempDir::new().unwrap();

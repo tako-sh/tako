@@ -4,7 +4,8 @@ mod github;
 mod http;
 mod platform;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(test)]
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
@@ -20,6 +21,8 @@ use crate::types::RuntimeDef;
 pub struct DownloadManager {
     install_dir: PathBuf,
 }
+
+static NEXT_INSTALL_ATTEMPT: AtomicU64 = AtomicU64::new(1);
 
 impl DownloadManager {
     pub fn new(install_dir: PathBuf) -> Self {
@@ -78,11 +81,7 @@ impl DownloadManager {
         // Atomic install: extract to temp dir, then rename to final path.
         // Prevents partial/corrupted installs from concurrent deploys.
         let version_dir = self.install_dir.join(id).join(version);
-        let tmp_dir = self
-            .install_dir
-            .join(id)
-            .join(format!(".{version}.installing"));
-        let _ = std::fs::remove_dir_all(&tmp_dir);
+        let tmp_dir = temporary_install_dir(&self.install_dir, id, version);
         std::fs::create_dir_all(&tmp_dir)
             .map_err(|e| format!("failed to create {}: {e}", tmp_dir.display()))?;
 
@@ -134,18 +133,38 @@ impl DownloadManager {
             })?;
         }
 
-        // Atomic rename: move temp dir to final path.
-        // If the final path already exists (concurrent install won), that's fine.
-        let _ = std::fs::remove_dir_all(&version_dir);
-        std::fs::rename(&tmp_dir, &version_dir).map_err(|e| {
-            let _ = std::fs::remove_dir_all(&tmp_dir);
-            format!(
-                "failed to finalize install at {}: {e}",
-                version_dir.display()
-            )
-        })?;
+        self.complete_install(id, version, def, &tmp_dir, &version_dir, binary_name)
+    }
 
-        Ok(version_dir.join(binary_name))
+    fn complete_install(
+        &self,
+        id: &str,
+        version: &str,
+        def: &RuntimeDef,
+        tmp_dir: &Path,
+        version_dir: &Path,
+        binary_name: &str,
+    ) -> Result<PathBuf, String> {
+        if let Some(existing) = self.resolve_bin(id, version, def) {
+            let _ = std::fs::remove_dir_all(tmp_dir);
+            return Ok(existing);
+        }
+
+        match std::fs::rename(tmp_dir, version_dir) {
+            Ok(()) => Ok(version_dir.join(binary_name)),
+            Err(error) => {
+                if let Some(existing) = self.resolve_bin(id, version, def) {
+                    let _ = std::fs::remove_dir_all(tmp_dir);
+                    return Ok(existing);
+                }
+
+                let _ = std::fs::remove_dir_all(tmp_dir);
+                Err(format!(
+                    "failed to finalize install at {}: {error}",
+                    version_dir.display()
+                ))
+            }
+        }
     }
 }
 
@@ -215,6 +234,13 @@ fn validate_version_string(version: &str) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+fn temporary_install_dir(install_dir: &Path, id: &str, version: &str) -> PathBuf {
+    let attempt = NEXT_INSTALL_ATTEMPT.fetch_add(1, Ordering::Relaxed);
+    install_dir
+        .join(id)
+        .join(format!(".{version}.{attempt}.installing"))
 }
 
 fn apply_template(template: &str, version: &str, os: &str, arch: &str) -> String {
