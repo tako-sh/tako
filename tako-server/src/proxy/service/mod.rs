@@ -35,6 +35,7 @@ impl TakoProxy {
 
 pub struct RequestCtx {
     pub(super) backend: Option<Backend>,
+    pub(super) backend_request_started: bool,
     pub(super) is_https: bool,
     pub(super) matched_route_path: Option<String>,
     pub(super) request_timer: Option<RequestTimer>,
@@ -46,6 +47,26 @@ pub struct RequestCtx {
     pub(super) upstream_start: Option<Instant>,
 }
 
+impl RequestCtx {
+    pub(super) fn mark_backend_request_started(&mut self) {
+        if let Some(ref backend) = self.backend {
+            backend.request_started();
+            self.backend_request_started = true;
+        }
+    }
+
+    pub(super) fn finish_backend_request(&mut self) {
+        if !self.backend_request_started {
+            return;
+        }
+
+        if let Some(ref backend) = self.backend {
+            backend.request_finished();
+        }
+        self.backend_request_started = false;
+    }
+}
+
 #[async_trait]
 impl ProxyHttp for TakoProxy {
     type CTX = RequestCtx;
@@ -53,6 +74,7 @@ impl ProxyHttp for TakoProxy {
     fn new_ctx(&self) -> Self::CTX {
         RequestCtx {
             backend: None,
+            backend_request_started: false,
             is_https: false,
             matched_route_path: None,
             request_timer: None,
@@ -368,9 +390,7 @@ impl ProxyHttp for TakoProxy {
         let _ = upstream_request.remove_header("Forwarded");
         let _ = upstream_request.remove_header("X-Tako-Internal-Token");
 
-        if let Some(ref backend) = ctx.backend {
-            backend.request_started();
-        }
+        ctx.mark_backend_request_started();
 
         ctx.upstream_start = Some(Instant::now());
 
@@ -451,9 +471,7 @@ impl ProxyHttp for TakoProxy {
             self.ip_tracker.release(ip);
         }
 
-        if let Some(ref backend) = ctx.backend {
-            backend.request_finished();
-        }
+        ctx.finish_backend_request();
 
         let status = session
             .response_written()

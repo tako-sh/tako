@@ -30,6 +30,39 @@ fn test_tako_proxy_creation() {
     assert!(ctx.matched_route_path.is_none());
 }
 
+#[tokio::test]
+async fn proxy_context_finishes_only_requests_started_upstream() {
+    let manager = Arc::new(AppManager::new(PathBuf::from("/tmp/tako-test")));
+    let lb = Arc::new(LoadBalancer::new(manager.clone()));
+
+    let app = manager.register_app(AppConfig {
+        name: "test-app".to_string(),
+        ..Default::default()
+    });
+    lb.register_app(app.clone());
+
+    let instance = app.allocate_instance();
+    instance.set_state(InstanceState::Healthy);
+
+    let routes = Arc::new(tokio::sync::RwLock::new(RouteTable::default()));
+    let cold_start = Arc::new(ColdStartManager::new(
+        crate::scaling::ColdStartConfig::default(),
+    ));
+    let proxy = TakoProxy::new(lb.clone(), routes, ProxyConfig::default(), cold_start);
+
+    let mut ctx = proxy.new_ctx();
+    ctx.backend = lb.get_backend("test-app");
+    ctx.finish_backend_request();
+    assert_eq!(instance.in_flight(), 0);
+
+    ctx.mark_backend_request_started();
+    assert_eq!(instance.in_flight(), 1);
+    ctx.finish_backend_request();
+    assert_eq!(instance.in_flight(), 0);
+    ctx.finish_backend_request();
+    assert_eq!(instance.in_flight(), 0);
+}
+
 #[test]
 fn test_tako_proxy_with_acme() {
     let manager = Arc::new(AppManager::new(PathBuf::from("/tmp/tako-test")));
