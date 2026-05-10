@@ -223,13 +223,19 @@ impl KeyStore {
         &self,
         usage_path: Option<&Path>,
     ) -> Result<Option<EncryptionKey>> {
-        if let Some(key_id) = self.key_id.as_deref()
-            && let Some(key) = crate::keychain::load_key(key_id).map_err(ConfigError::Encryption)?
-        {
-            if let Some(path) = usage_path {
-                crate::keychain::mark_key_used(key_id, path).map_err(ConfigError::Encryption)?;
+        if let Some(key_id) = self.key_id.as_deref() {
+            match crate::keychain::load_key(key_id).map_err(ConfigError::Encryption) {
+                Ok(Some(key)) => {
+                    if let Some(path) = usage_path {
+                        crate::keychain::mark_key_used(key_id, path)
+                            .map_err(ConfigError::Encryption)?;
+                    }
+                    return Ok(Some(key));
+                }
+                Ok(None) => {}
+                Err(_error) if self.key_path.exists() => return Ok(Some(self.load_file_key()?)),
+                Err(error) => return Err(error),
             }
-            return Ok(Some(key));
         }
         if self.key_path.exists() {
             return Ok(Some(self.load_file_key()?));

@@ -80,7 +80,69 @@ pub(crate) fn ensure_app_runtime_data_dirs(
         .map_err(|e| format!("create app data dir {}: {e}", paths.app.display()))?;
     std::fs::create_dir_all(&paths.tako)
         .map_err(|e| format!("create tako data dir {}: {e}", paths.tako.display()))?;
+    prepare_app_runtime_data_permissions(&paths)
+        .map_err(|e| format!("prepare app data permissions {}: {e}", paths.root.display()))?;
     Ok(paths)
+}
+
+#[cfg(unix)]
+fn prepare_app_runtime_data_permissions(paths: &AppRuntimeDataPaths) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    const DATA_ROOT_MODE: u32 = 0o710;
+    const APP_DATA_DIR_MODE: u32 = 0o2770;
+    const TAKO_DATA_DIR_MODE: u32 = 0o700;
+
+    std::fs::set_permissions(&paths.root, std::fs::Permissions::from_mode(DATA_ROOT_MODE))?;
+    std::fs::set_permissions(
+        &paths.app,
+        std::fs::Permissions::from_mode(APP_DATA_DIR_MODE),
+    )?;
+    std::fs::set_permissions(
+        &paths.tako,
+        std::fs::Permissions::from_mode(TAKO_DATA_DIR_MODE),
+    )?;
+    repair_app_data_tree_permissions(&paths.app)
+}
+
+#[cfg(unix)]
+fn repair_app_data_tree_permissions(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let metadata = std::fs::symlink_metadata(path)?;
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() {
+        return Ok(());
+    }
+
+    if file_type.is_dir() {
+        set_permissions_if_allowed(path, 0o2770)?;
+        for entry in std::fs::read_dir(path)? {
+            repair_app_data_tree_permissions(&entry?.path())?;
+        }
+        return Ok(());
+    }
+
+    let current_mode = metadata.permissions().mode();
+    set_permissions_if_allowed(path, current_mode | 0o060)
+}
+
+#[cfg(unix)]
+fn set_permissions_if_allowed(path: &Path, mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    // App-created files may be owned by `tako-app`; the service user cannot
+    // chmod those, and they are already writable by their owner.
+    match std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(not(unix))]
+fn prepare_app_runtime_data_permissions(_paths: &AppRuntimeDataPaths) -> std::io::Result<()> {
+    Ok(())
 }
 
 pub(crate) fn inject_app_data_dir_env(
@@ -487,6 +549,45 @@ mod tests {
         let paths = ensure_app_runtime_data_dirs(temp.path(), "my-app").unwrap();
         assert!(paths.app.is_dir());
         assert!(paths.tako.is_dir());
+    }
+
+    #[cfg(unix)]
+    fn mode(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o7777
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn ensure_app_runtime_data_dirs_makes_app_data_group_writable() {
+        let temp = TempDir::new().unwrap();
+        let paths = ensure_app_runtime_data_dirs(temp.path(), "my-app").unwrap();
+
+        assert_eq!(mode(&paths.root), 0o710);
+        assert_eq!(mode(&paths.app), 0o2770);
+        assert_eq!(mode(&paths.tako), 0o700);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn ensure_app_runtime_data_dirs_repairs_existing_app_data_files() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = TempDir::new().unwrap();
+        let paths = app_runtime_data_paths(temp.path(), "my-app");
+        std::fs::create_dir_all(&paths.app).unwrap();
+        std::fs::create_dir_all(&paths.tako).unwrap();
+        let db_path = paths.app.join("mission.sqlite3");
+        let wal_path = paths.app.join("mission.sqlite3-wal");
+        std::fs::write(&db_path, "db").unwrap();
+        std::fs::write(&wal_path, "wal").unwrap();
+        std::fs::set_permissions(&db_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::set_permissions(&wal_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        ensure_app_runtime_data_dirs(temp.path(), "my-app").unwrap();
+
+        assert_eq!(mode(&db_path) & 0o660, 0o660);
+        assert_eq!(mode(&wal_path) & 0o660, 0o660);
     }
 
     #[test]

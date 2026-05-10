@@ -236,9 +236,9 @@ tako secrets key import --passphrase --env production
 
 The first secret set for an environment creates a random environment key. By default keys are stored under Tako's data directory at `keys/{key_id}`.
 
-On macOS, interactive key creation and import offer iCloud Keychain storage through the signed `Tako.app` CLI installed by the macOS installer. If the signed app entitlement is unavailable, Tako fails before writing a local key file or updating `.tako/secrets.json`.
+On macOS, interactive key creation and import offer iCloud Keychain storage through the signed `Tako.app` CLI installed by the macOS installer. If a local key file exists and iCloud Keychain is unavailable during a read, Tako uses the local key file. If the signed app entitlement is unavailable while saving to iCloud Keychain, Tako fails before writing a local key file or updating `.tako/secrets.json`.
 
-`export` requires macOS user authentication on macOS, then copies a single base64url key string to the clipboard. `import` asks for a key source interactively: `Exported key` or `Passphrase`. If an existing environment's secrets cannot be decrypted with the passphrase, interactive mode prompts again with `Invalid passphrase`; non-interactive mode fails without saving the key. In non-interactive mode, `import --env <environment>` reads an exported key from stdin by default; pass `--passphrase --env <environment>` to import a passphrase.
+`export` requires macOS user authentication when reading from Keychain, then copies a single base64url key string to the clipboard. `import` asks for a key source interactively: `Exported key` or `Passphrase`. If an existing environment's secrets cannot be decrypted with the passphrase, interactive mode prompts again with `Invalid passphrase`; non-interactive mode fails without saving the key. In non-interactive mode, `import --env <environment>` reads an exported key from stdin by default; pass `--passphrase --env <environment>` to import a passphrase.
 
 ## `tako servers`
 
