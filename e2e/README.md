@@ -22,7 +22,7 @@ just e2e examples/go/basic
 ```
 
 This runs the global e2e harness in `e2e/run.sh` against the fixture path.
-The harness generates an ephemeral SSH keypair per run inside a disposable Docker volume, starts real `tako-server` binaries on Ubuntu + AlmaLinux + Alpine test hosts, and never uses `~/.ssh`.
+The harness generates an ephemeral SSH keypair per run inside a disposable Docker volume, starts real `tako-server` binaries on Ubuntu and Alpine test hosts, and starts AlmaLinux too when the current server binary's runtime libraries are available there. It never uses `~/.ssh`.
 Rust build caches are stored outside the repo at `${XDG_CACHE_HOME:-~/.cache}/tako/e2e` by default:
 
 - `cargo-home` for Cargo registry/git cache

@@ -578,8 +578,14 @@ run_universal_http_checks() {
 start_tako_server() {
   local host=$1
   local server_bin=$2
-  scp_to "$server_bin" "$host" "/home/tako/tako-server.next"
-  ssh_exec "$host" "sudo sh -c 'set -eu; cp /home/tako/tako-server.next /usr/local/bin/tako-server; chown root:root /usr/local/bin/tako-server; chmod 0755 /usr/local/bin/tako-server; setcap cap_net_bind_service,cap_setuid,cap_setgid,cap_kill=+ep /usr/local/bin/tako-server; rm -f /home/tako/tako-server.next'"
+  scp_to "$server_bin" "$host" "/home/tako/tako-server"
+  scp_to "$WORKSPACE/scripts/install-tako-server.sh" "$host" "/home/tako/install-tako-server.sh"
+  ssh_exec "$host" "set -eu; chmod 0755 /home/tako/tako-server /home/tako/install-tako-server.sh; tar -cf - -C /home/tako tako-server | zstd -o /home/tako/tako-server.tar.zst; sha256sum /home/tako/tako-server.tar.zst | awk '{print \$1}' > /home/tako/tako-server.tar.zst.sha256"
+  if ! ssh_exec "$host" "sudo sh -c 'TAKO_SERVER_URL=file:///home/tako/tako-server.tar.zst TAKO_RESTART_SERVICE=0 TAKO_SERVER_NAME=e2e sh /home/tako/install-tako-server.sh'"; then
+    ssh_exec "$host" "rm -f /home/tako/tako-server /home/tako/tako-server.tar.zst /home/tako/tako-server.tar.zst.sha256 /home/tako/install-tako-server.sh" >/dev/null 2>&1 || true
+    return 2
+  fi
+  ssh_exec "$host" "rm -f /home/tako/tako-server /home/tako/tako-server.tar.zst /home/tako/tako-server.tar.zst.sha256 /home/tako/install-tako-server.sh"
   ssh_exec "$host" "sudo pkill -x tako-server >/dev/null 2>&1 || true"
   ssh_exec "$host" "sudo rm -f /var/run/tako/tako.sock"
   ssh_exec "$host" "RUST_LOG=info nohup /usr/local/bin/tako-server --no-acme --port 8080 --tls-port 8443 --data-dir /opt/tako --management-host 0.0.0.0 >/tmp/tako-server.log 2>&1 &"
@@ -593,10 +599,32 @@ ssh_wait server-alma
 ssh_wait server-alpine
 
 # Start tako-server on each (glibc for Ubuntu/Alma, musl for Alpine)
+ACTIVE_SERVERS=()
 start_tako_server server-ubuntu "$TAKO_SERVER_GLIBC"
-start_tako_server server-alma "$TAKO_SERVER_GLIBC"
+ACTIVE_SERVERS+=("server-ubuntu:gnu")
+if start_tako_server server-alma "$TAKO_SERVER_GLIBC"; then
+  ACTIVE_SERVERS+=("server-alma:gnu")
+else
+  rc=$?
+  if [[ $rc -ne 2 ]]; then
+    exit "$rc"
+  fi
+  echo "=== server-alma skipped (tako-server runtime dependencies unavailable) ==="
+fi
 if [[ -x "$TAKO_SERVER_MUSL" ]]; then
-  start_tako_server server-alpine "$TAKO_SERVER_MUSL"
+  if start_tako_server server-alpine "$TAKO_SERVER_MUSL"; then
+    ACTIVE_SERVERS+=("server-alpine:musl")
+  else
+    rc=$?
+    if [[ $rc -ne 2 ]]; then
+      exit "$rc"
+    fi
+    echo "=== server-alpine skipped (tako-server runtime dependencies unavailable) ==="
+  fi
+fi
+if (( ${#ACTIVE_SERVERS[@]} == 0 )); then
+  echo "No E2E servers could start." >&2
+  exit 1
 fi
 
 # Stage a workspace copy for the fixture. JS fixtures need a monorepo-style
@@ -672,12 +700,7 @@ ssh-keyscan -H server-alma >> "$HOME_DIR/.ssh/known_hosts" 2>/dev/null
 ssh-keyscan -H server-alpine >> "$HOME_DIR/.ssh/known_hosts" 2>/dev/null
 
 # Deploy test targets
-SERVERS=()
-SERVERS+=("server-ubuntu:gnu")
-SERVERS+=("server-alma:gnu")
-if [[ -x "$TAKO_SERVER_MUSL" ]]; then
-  SERVERS+=("server-alpine:musl")
-fi
+SERVERS=("${ACTIVE_SERVERS[@]}")
 
 ROUTE_HOST=$(detect_route_host "$PROJECT_DIR/tako.toml" "production")
 if [[ -z "$ROUTE_HOST" ]]; then
