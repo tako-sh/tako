@@ -1,10 +1,6 @@
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use hmac::{Hmac, Mac};
-use libvips::ops::{
-    ForeignKeep, ForeignPngFilter, ForeignWebpPreset, JpegsaveBufferOptions, PngsaveBufferOptions,
-    WebpsaveBufferOptions,
-};
 use libvips::{VipsApp, VipsImage, ops};
 use sha2::Sha256;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -514,39 +510,20 @@ fn encode_image(
 ) -> Result<Vec<u8>, ImageError> {
     let app = vips_app()?;
     app.error_clear();
-    match format {
-        OutputFormat::Png => ops::pngsave_buffer_with_opts(
-            image,
-            &PngsaveBufferOptions {
-                compression: 9,
-                filter: ForeignPngFilter::All,
-                keep: ForeignKeep::None,
-                ..PngsaveBufferOptions::default()
-            },
-        ),
-        OutputFormat::Jpeg => ops::jpegsave_buffer_with_opts(
-            image,
-            &JpegsaveBufferOptions {
-                q: i32::from(quality),
-                optimize_coding: true,
-                interlace: true,
-                keep: ForeignKeep::None,
-                ..JpegsaveBufferOptions::default()
-            },
-        ),
-        OutputFormat::Webp => ops::webpsave_buffer_with_opts(
-            image,
-            &WebpsaveBufferOptions {
-                q: i32::from(quality),
-                alpha_q: i32::from(quality),
-                smart_subsample: true,
-                preset: ForeignWebpPreset::Photo,
-                keep: ForeignKeep::None,
-                ..WebpsaveBufferOptions::default()
-            },
-        ),
-    }
-    .map_err(|_| vips_transform_error(app))
+    // Suffix options omit unset save fields; the generated option wrappers pass a
+    // default profile value that fails on some libvips builds.
+    let suffix = match format {
+        OutputFormat::Png => ".png[strip]".to_string(),
+        OutputFormat::Jpeg => {
+            format!(".jpg[Q={quality},optimize-coding=true,interlace=true,strip]")
+        }
+        OutputFormat::Webp => {
+            format!(".webp[Q={quality},alpha-q={quality},smart-subsample=true,preset=photo,strip]")
+        }
+    };
+    image
+        .image_write_to_buffer(&suffix)
+        .map_err(|_| vips_transform_error(app))
 }
 
 fn vips_transform_error(_app: &VipsApp) -> ImageError {
