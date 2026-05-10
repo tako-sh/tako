@@ -1,6 +1,8 @@
 use std::convert::Infallible;
+use std::io::ErrorKind;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full, LengthLimitError, Limited};
@@ -25,7 +27,9 @@ pub(crate) async fn serve(
     host: String,
     state: Arc<ServerState>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let listener = TcpListener::bind((host.as_str(), MANAGEMENT_PORT)).await?;
+    let listener =
+        bind_listener_with_retry(host.as_str(), MANAGEMENT_PORT, Duration::from_millis(250))
+            .await?;
     let local_addr = listener.local_addr()?;
     let auth_state = Arc::new(ManagementAuthState::default());
     tracing::info!(%local_addr, "Remote management HTTP listening");
@@ -49,6 +53,32 @@ pub(crate) async fn serve(
                 tracing::debug!(%peer_addr, %error, "Management HTTP connection ended");
             }
         });
+    }
+}
+
+async fn bind_listener_with_retry(
+    host: &str,
+    port: u16,
+    retry_delay: Duration,
+) -> std::io::Result<TcpListener> {
+    let mut logged_addr_in_use = false;
+
+    loop {
+        match TcpListener::bind((host, port)).await {
+            Ok(listener) => return Ok(listener),
+            Err(error) if error.kind() == ErrorKind::AddrInUse => {
+                if !logged_addr_in_use {
+                    tracing::warn!(
+                        host = %host,
+                        port,
+                        "Remote management HTTP port is still in use; retrying"
+                    );
+                    logged_addr_in_use = true;
+                }
+                tokio::time::sleep(retry_delay).await;
+            }
+            Err(error) => return Err(error),
+        }
     }
 }
 
@@ -157,6 +187,7 @@ mod tests {
     use crate::tls::{CertManager, CertManagerConfig};
     use parking_lot::RwLock;
     use std::collections::HashMap;
+    use std::time::Duration;
     use tako_core::PROTOCOL_VERSION;
     use tempfile::TempDir;
 
@@ -219,6 +250,35 @@ mod tests {
                 .and_then(serde_json::Value::as_str),
             Some("SHA256:testidentity")
         );
+    }
+
+    #[tokio::test]
+    async fn bind_listener_retries_until_reload_port_is_released() {
+        let occupied = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind occupied listener");
+        let port = occupied.local_addr().expect("occupied addr").port();
+
+        let bind_task = tokio::spawn(bind_listener_with_retry(
+            "127.0.0.1",
+            port,
+            Duration::from_millis(10),
+        ));
+
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(
+            !bind_task.is_finished(),
+            "bind should wait while the old reload process still owns the port"
+        );
+
+        drop(occupied);
+
+        let listener = tokio::time::timeout(Duration::from_secs(1), bind_task)
+            .await
+            .expect("bind retry should complete")
+            .expect("bind task should not panic")
+            .expect("bind retry should succeed");
+        assert_eq!(listener.local_addr().expect("new addr").port(), port);
     }
 
     #[test]

@@ -27,8 +27,8 @@ fn test_health_config_defaults() {
         config.startup_check_interval < config.check_interval,
         "startup probe must be faster than steady-state"
     );
-    assert_eq!(config.unhealthy_threshold, 1);
-    assert_eq!(config.dead_threshold, 1);
+    assert_eq!(config.unhealthy_threshold, 2);
+    assert_eq!(config.dead_threshold, 3);
     assert_eq!(config.probe_timeout, crate::defaults::HEALTH_PROBE_TIMEOUT);
     assert_eq!(config.max_probe_concurrency, 16);
 }
@@ -314,8 +314,16 @@ async fn test_check_instance_detects_process_exit() {
     assert_eq!(instance.state(), InstanceState::Stopped);
 }
 
+fn unused_loopback_port() -> u16 {
+    std::net::TcpListener::bind(("127.0.0.1", 0))
+        .expect("bind ephemeral port")
+        .local_addr()
+        .expect("local addr")
+        .port()
+}
+
 #[tokio::test]
-async fn test_single_probe_failure_triggers_dead() {
+async fn test_single_probe_failure_keeps_instance_serving() {
     let (tx, mut rx) = mpsc::channel(16);
     let config = HealthConfig::default();
     let checker = HealthChecker::new(config, tx);
@@ -329,7 +337,7 @@ async fn test_single_probe_failure_triggers_dead() {
     let instance = app.allocate_instance();
 
     // Set instance as Healthy with a port nobody is listening on.
-    instance.set_port(19999);
+    instance.set_port(unused_loopback_port());
     instance.set_state(InstanceState::Healthy);
 
     // Spawn a long-running process so is_alive() returns true, forcing
@@ -344,12 +352,56 @@ async fn test_single_probe_failure_triggers_dead() {
 
     checker.check_instance(&app, &instance).await;
 
-    // The SDK owns the internal health endpoint; one failed probe after a
-    // healthy startup means the instance cannot satisfy the runtime contract.
-    let event = rx.try_recv().expect("should emit event");
-    assert!(matches!(event, HealthEvent::Dead { .. }));
-    assert_eq!(instance.state(), InstanceState::Stopped);
+    assert!(rx.try_recv().is_err());
+    assert_eq!(instance.state(), InstanceState::Healthy);
+    assert_eq!(checker.get_failure_count(&app.name(), &instance.id), 1);
 
     // Clean up.
+    let _ = instance.kill().await;
+}
+
+#[tokio::test]
+async fn test_three_probe_failures_trigger_dead() {
+    let (tx, mut rx) = mpsc::channel(16);
+    let config = HealthConfig::default();
+    let checker = HealthChecker::new(config, tx);
+
+    let (app_tx, _app_rx) = mpsc::channel(16);
+    let app_config = AppConfig {
+        name: "test-app".to_string(),
+        ..Default::default()
+    };
+    let app = Arc::new(App::new(app_config, app_tx, noop_log_handle()));
+    let instance = app.allocate_instance();
+
+    instance.set_port(unused_loopback_port());
+    instance.set_state(InstanceState::Healthy);
+
+    let child = tokio::process::Command::new("sleep")
+        .arg("60")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    instance.set_process(child);
+
+    checker.check_instance(&app, &instance).await;
+    assert!(rx.try_recv().is_err());
+    assert_eq!(instance.state(), InstanceState::Healthy);
+
+    checker.check_instance(&app, &instance).await;
+    assert!(matches!(
+        rx.try_recv().expect("second failure should emit unhealthy"),
+        HealthEvent::Unhealthy { .. }
+    ));
+    assert_eq!(instance.state(), InstanceState::Unhealthy);
+
+    checker.check_instance(&app, &instance).await;
+    assert!(matches!(
+        rx.try_recv().expect("third failure should emit dead"),
+        HealthEvent::Dead { .. }
+    ));
+    assert_eq!(instance.state(), InstanceState::Stopped);
+
     let _ = instance.kill().await;
 }

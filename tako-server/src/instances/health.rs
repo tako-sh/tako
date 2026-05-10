@@ -34,8 +34,8 @@ impl Default for HealthConfig {
         Self {
             check_interval: crate::defaults::HEALTH_CHECK_INTERVAL,
             startup_check_interval: crate::defaults::HEALTH_STARTUP_CHECK_INTERVAL,
-            unhealthy_threshold: 1, // 1 failure = unhealthy
-            dead_threshold: 1,      // 1 failure = dead/restart
+            unhealthy_threshold: 2,
+            dead_threshold: 3,
             probe_timeout: crate::defaults::HEALTH_PROBE_TIMEOUT,
             max_probe_concurrency: 16,
         }

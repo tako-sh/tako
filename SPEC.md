@@ -1492,7 +1492,7 @@ Active HTTP probing is the source of truth for instance health:
 - **Probe endpoint**: App's configured health check path (default: `/status`) with `Host: <app>.tako`, where `<app>` is the base app name (for example `dashboard.tako`)
 - **Transport**: Probes use the instance's private TCP endpoint.
 - **Process exit fast path**: Before each probe, `try_wait()` checks if the process has exited. If so, the instance is immediately marked dead without waiting for the probe timeout.
-- **Failure threshold**: 1 failure → mark dead, trigger replacement. After the first successful probe confirms the app is healthy, any single probe failure means the instance cannot satisfy the runtime health contract.
+- **Failure threshold**: 1 failed probe is tolerated, 2 consecutive failures mark the instance unhealthy, and 3 consecutive failures mark it dead and trigger replacement. A successful probe resets the failure count.
 - **Recovery**: Single successful probe resets failure count and restores to healthy
 
 #### Internal Probe Contract
@@ -2104,6 +2104,6 @@ On every `RegisterApp`, the dev-server registers the app with its embedded `Work
 
 - Proxy throughput: Faster than Caddy, on par with Nginx
 - Cold start: ~100-500ms for on-demand instances
-- Health detection: <3s for failed instance detection
+- Health detection: immediate for exited processes; generally <10s for unresponsive health endpoints
 - Deploy time: <1 minute for rolling update of 3 instances
 - Memory: Minimal footprint with on-demand scaling

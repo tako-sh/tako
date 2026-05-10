@@ -237,6 +237,7 @@ impl RollingUpdater {
         // Kill the instance
         instance.kill().await.map_err(InstanceError::StopError)?;
         app.remove_instance(&instance.id);
+        crate::metrics::remove_instance_metrics(&app.name(), &instance.id);
 
         tracing::debug!(
             app = %app.name(),
@@ -252,6 +253,7 @@ impl RollingUpdater {
 mod tests {
     use super::*;
     use crate::instances::logger::noop_log_handle;
+    use prometheus::Encoder;
     use tokio::sync::mpsc;
 
     fn create_test_app(name: &str) -> Arc<App> {
@@ -317,6 +319,26 @@ mod tests {
     fn target_new_instances_uses_single_warm_instance_for_zero() {
         assert_eq!(target_new_instances_for_build(0, 5), 1);
         assert_eq!(target_new_instances_for_build(0, 0), 1);
+    }
+
+    fn gather_metrics_text() -> String {
+        let encoder = prometheus::TextEncoder::new();
+        let metric_families = prometheus::gather();
+        let mut buffer = Vec::new();
+        encoder
+            .encode(&metric_families, &mut buffer)
+            .expect("encode metrics");
+        String::from_utf8(buffer).expect("metrics are utf8")
+    }
+
+    fn has_instance_health_metric(metrics: &str, app: &str, instance: &str) -> bool {
+        let app_label = format!(r#"app="{app}""#);
+        let instance_label = format!(r#"instance="{instance}""#);
+        metrics.lines().any(|line| {
+            line.starts_with("tako_instance_health{")
+                && line.contains(&app_label)
+                && line.contains(&instance_label)
+        })
     }
 
     #[tokio::test]
@@ -386,6 +408,34 @@ mod tests {
 
         // Instance should be removed from app
         assert!(app.get_instance(&instance.id).is_none());
+    }
+
+    #[tokio::test]
+    async fn drain_and_stop_removes_instance_health_metric() {
+        let app = create_test_app("rolling-metrics-app");
+        let instance = app.allocate_instance();
+        instance.set_state(InstanceState::Healthy);
+
+        crate::metrics::init(Some("test-server"));
+        crate::metrics::set_instance_health(&app.name(), &instance.id, true);
+
+        assert!(
+            has_instance_health_metric(&gather_metrics_text(), &app.name(), &instance.id),
+            "test setup should create an instance health metric"
+        );
+
+        let spawner = Arc::new(Spawner::new());
+        let updater = RollingUpdater::new(spawner, RollingUpdateConfig::default());
+
+        updater
+            .drain_and_stop(&app, &instance)
+            .await
+            .expect("drain and stop");
+
+        assert!(
+            !has_instance_health_metric(&gather_metrics_text(), &app.name(), &instance.id),
+            "old instance health metric should be removed after rolling drain"
+        );
     }
 
     #[test]

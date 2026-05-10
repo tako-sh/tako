@@ -127,7 +127,7 @@ Host: dashboard.tako
 X-Tako-Internal-Token: <instance-token>
 ```
 
-The SDK implements the response automatically. During startup, probes run faster so cold-start readiness is detected quickly. After an instance is healthy, one failed probe marks it dead and triggers replacement.
+The SDK implements the response automatically. During startup, probes run faster so cold-start readiness is detected quickly. After an instance is healthy, Tako tolerates one failed probe, marks the instance unhealthy after two consecutive failures, and replaces it after three consecutive failures.
 
 Production 5xx responses stay generic. Detailed app-scoped startup, proxy, channel, and static-file diagnostics are recorded in the app log stream instead of returned in browser response bodies.
 
