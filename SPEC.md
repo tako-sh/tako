@@ -1135,6 +1135,7 @@ Installer SSH key behavior:
 - CLI SSH connections require host key verification against `~/.ssh/known_hosts` (or configured SSH keys directory); unknown/changed host keys are rejected.
 - Installer detects host target (`arch` + `libc`) and downloads matching artifact name `tako-server-linux-{arch}-{libc}` (supported: `x86_64`/`aarch64` with `glibc`/`musl`).
 - Installer ensures `nc` (netcat) is available so CLI management commands can talk to `/var/run/tako/tako.sock`.
+- Installer installs the host libvips runtime used by the built-in image optimizer before starting `tako-server`.
 - Installer ensures basic networking tools are available for server operation.
 - Installer creates both `tako` and `tako-app` OS users. `tako-server` runs as `tako`; app and worker processes run as `tako-app` when that user is present.
 - Installer installs restricted maintenance helpers and scoped sudoers policy so the `tako` SSH user can perform non-interactive server upgrade/reload operations.
@@ -1194,7 +1195,7 @@ Reference scripts in this repo:
 - `tako-server` verifies the signature over the source, width, quality, visibility, and expiration before fetching or decoding any source bytes. Tampered or expired image URLs are rejected.
 - Widths are limited to the fixed set `16, 32, 48, 64, 96, 128, 256, 384, 640, 750, 828, 1080, 1200, 1920, 2048, 3840`; quality must be `1..100`.
 - Sources may be local paths or signed `http`/`https` URLs. Local paths are resolved from the app's `public/` directory first, then fetched from the matched app backend. Remote URLs reject unsupported schemes, userinfo, fragments, recursive image optimizer URLs, private/local hosts and IPs, private/local DNS results, and redirects.
-- The optimizer enforces source byte and decoded image limits, preserves aspect ratio, and does not upscale. Current transforms accept JPEG and PNG sources and emit the same format.
+- The optimizer uses libvips for resize and encode work. It enforces source byte and decoded image limits, preserves aspect ratio, does not upscale, strips metadata from transformed output, and emits progressive optimized JPEGs for JPEG sources. Current transforms accept JPEG, PNG, and WebP sources by file signature, not `Content-Type` alone, and emit the same format.
 - Failed image optimizer responses use non-shared error caching (`Cache-Control: private, no-store`).
 
 **`/opt/tako/config.json`** — server-level configuration:

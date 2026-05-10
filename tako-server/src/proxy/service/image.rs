@@ -85,13 +85,14 @@ impl TakoProxy {
             }
         };
 
-        let transformed = match transform_image(
-            &source.bytes,
-            source.content_type.as_deref(),
+        let transformed = match transform_image_blocking(
+            source,
             verified.width,
             verified.quality,
-            &limits,
-        ) {
+            limits,
+        )
+        .await
+        {
             Ok(transformed) => transformed,
             Err(error) => {
                 let status = image_error_status(&error);
@@ -203,6 +204,25 @@ impl TakoProxy {
 struct ImageSourceBytes {
     bytes: Vec<u8>,
     content_type: Option<String>,
+}
+
+async fn transform_image_blocking(
+    source: ImageSourceBytes,
+    width: u32,
+    quality: u8,
+    limits: TransformLimits,
+) -> Result<tako_images::TransformedImage, ImageError> {
+    tokio::task::spawn_blocking(move || {
+        transform_image(
+            &source.bytes,
+            source.content_type.as_deref(),
+            width,
+            quality,
+            &limits,
+        )
+    })
+    .await
+    .map_err(|_| ImageError::TransformFailed)?
 }
 
 fn is_image_request_path(path: &str) -> bool {

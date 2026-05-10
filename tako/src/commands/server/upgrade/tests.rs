@@ -109,6 +109,8 @@ fn remote_binary_replace_command_uses_root_shell_wrapper_and_verifies_sha256() {
     assert!(cmd.contains("GH_TOKEN"));
     assert!(cmd.contains("GITHUB_TOKEN"));
     assert!(cmd.contains("Authorization: Bearer"));
+    assert!(cmd.contains("libvips42t64"));
+    assert!(cmd.contains("dnf install -y vips"));
     assert!(cmd.contains("sha256 mismatch"));
     assert!(cmd.contains("abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"));
     assert!(cmd.contains("install -m 0755"));

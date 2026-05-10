@@ -46,6 +46,9 @@ jobs:
         with:
           components: rustfmt
 
+      - name: Install libvips
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libvips-dev
+
       - name: Cache Rust artifacts
         uses: Swatinem/rust-cache@v2
 
@@ -300,7 +303,7 @@ jobs:
         shell: bash
     steps:
       - name: Install build deps
-        run: apt-get update && apt-get install -y --no-install-recommends cmake pkg-config libssl-dev
+        run: apt-get update && apt-get install -y --no-install-recommends cmake pkg-config libssl-dev libvips-dev
 
       - name: Checkout
         uses: actions/checkout@v6
@@ -340,27 +343,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-unknown-linux-musl
-
-      - name: Cache Rust artifacts
-        uses: Swatinem/rust-cache@v2
-
-      - name: Install musl toolchain
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
-
       - name: Build
-        env:
-          TAKO_BUILD_SHA: ${{ github.sha }}
-        run: cargo build -p tako-server --release --target x86_64-unknown-linux-musl
+        run: |
+          docker run --rm \
+            -e TAKO_BUILD_SHA="${{ github.sha }}" \
+            -v "$PWD":/workspace \
+            -w /workspace \
+            rust:1.89-alpine \
+            sh -lc 'apk add --no-cache build-base cmake perl pkgconfig vips-dev && cargo build -p tako-server --release'
 
       - name: Upload server binary
         uses: actions/upload-artifact@v7
         with:
           name: bin-tako-server-linux-x86_64-musl
-          path: target/x86_64-unknown-linux-musl/release/tako-server
+          path: target/release/tako-server
           if-no-files-found: error
 
   # aarch64 glibc — master only (for rolling release)
@@ -377,7 +373,7 @@ jobs:
         shell: bash
     steps:
       - name: Install build deps
-        run: apt-get update && apt-get install -y --no-install-recommends cmake pkg-config libssl-dev
+        run: apt-get update && apt-get install -y --no-install-recommends cmake pkg-config libssl-dev libvips-dev
 
       - name: Checkout
         uses: actions/checkout@v6
@@ -418,27 +414,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-unknown-linux-musl
-
-      - name: Cache Rust artifacts
-        uses: Swatinem/rust-cache@v2
-
-      - name: Install musl toolchain
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
-
       - name: Build
-        env:
-          TAKO_BUILD_SHA: ${{ github.sha }}
-        run: cargo build -p tako-server --release --target aarch64-unknown-linux-musl
+        run: |
+          docker run --rm \
+            -e TAKO_BUILD_SHA="${{ github.sha }}" \
+            -v "$PWD":/workspace \
+            -w /workspace \
+            rust:1.89-alpine \
+            sh -lc 'apk add --no-cache build-base cmake perl pkgconfig vips-dev && cargo build -p tako-server --release'
 
       - name: Upload server binary
         uses: actions/upload-artifact@v7
         with:
           name: bin-tako-server-linux-aarch64-musl
-          path: target/aarch64-unknown-linux-musl/release/tako-server
+          path: target/release/tako-server
           if-no-files-found: error
 
   # macOS builds — master only (for rolling release)

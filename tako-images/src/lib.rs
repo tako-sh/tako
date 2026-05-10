@@ -1,12 +1,14 @@
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use hmac::{Hmac, Mac};
-use image::codecs::jpeg::JpegEncoder;
-use image::imageops::FilterType;
-use image::{ImageFormat, ImageReader, Limits};
+use libvips::ops::{
+    ForeignKeep, ForeignPngFilter, ForeignWebpPreset, JpegsaveBufferOptions, PngsaveBufferOptions,
+    WebpsaveBufferOptions,
+};
+use libvips::{VipsApp, VipsImage, ops};
 use sha2::Sha256;
-use std::io::Cursor;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::sync::OnceLock;
 use std::time::Duration;
 use url::{Host, Url};
 
@@ -75,6 +77,7 @@ impl Default for TransformLimits {
 pub enum OutputFormat {
     Png,
     Jpeg,
+    Webp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -178,7 +181,7 @@ pub fn cache_control(visibility: ImageVisibility) -> &'static str {
 
 pub fn transform_image(
     source: &[u8],
-    source_content_type: Option<&str>,
+    _source_content_type: Option<&str>,
     width: u32,
     quality: u8,
     limits: &TransformLimits,
@@ -189,50 +192,30 @@ pub fn transform_image(
         return Err(ImageError::SourceTooLarge);
     }
 
-    let format = source_format(source, source_content_type)?;
-    let output_format = match format {
-        ImageFormat::Png => OutputFormat::Png,
-        ImageFormat::Jpeg => OutputFormat::Jpeg,
-        _ => return Err(ImageError::UnsupportedFormat),
-    };
-
-    let (source_width, source_height) = image_dimensions(source, format, limits)?;
+    let format = source_format(source)?;
+    let (source_width, source_height) = image_dimensions(source)?;
     enforce_dimension_limits(source_width, source_height, limits)?;
-
-    let mut reader = ImageReader::with_format(Cursor::new(source), format);
-    reader.limits(image_decode_limits(limits));
-    let decoded = reader.decode().map_err(decode_error)?;
 
     if source_width == 0 || source_height == 0 {
         return Err(ImageError::TransformFailed);
     }
 
     let target_width = width.min(source_width);
-    let target_height = (((source_height as u64) * (target_width as u64)
-        + (source_width as u64 / 2))
-        / source_width as u64)
-        .max(1) as u32;
-    let resized = decoded.resize_exact(target_width, target_height, FilterType::Lanczos3);
-
-    let mut bytes = Vec::new();
-    match output_format {
-        OutputFormat::Png => resized
-            .write_to(&mut Cursor::new(&mut bytes), ImageFormat::Png)
-            .map_err(|_| ImageError::TransformFailed)?,
-        OutputFormat::Jpeg => {
-            let rgb = resized.to_rgb8();
-            let encoder = JpegEncoder::new_with_quality(&mut bytes, quality);
-            rgb.write_with_encoder(encoder)
-                .map_err(|_| ImageError::TransformFailed)?;
-        }
-    }
+    let resized = if target_width == source_width {
+        autorotate_image(&read_image_header(source)?)?
+    } else {
+        thumbnail_image(source, target_width)?
+    };
+    let width = dimension_from_vips(resized.get_width())?;
+    let height = dimension_from_vips(resized.get_height())?;
+    let bytes = encode_image(&resized, format, quality)?;
 
     Ok(TransformedImage {
         bytes,
-        content_type: output_format.content_type(),
-        format: output_format,
-        width: target_width,
-        height: target_height,
+        content_type: format.content_type(),
+        format,
+        width,
+        height,
     })
 }
 
@@ -259,6 +242,7 @@ impl OutputFormat {
         match self {
             Self::Png => "image/png",
             Self::Jpeg => "image/jpeg",
+            Self::Webp => "image/webp",
         }
     }
 }
@@ -464,52 +448,26 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     diff == 0
 }
 
-fn source_format(
-    source: &[u8],
-    source_content_type: Option<&str>,
-) -> Result<ImageFormat, ImageError> {
-    if let Some(content_type) = source_content_type {
-        let mime = content_type
-            .split(';')
-            .next()
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase();
-        match mime.as_str() {
-            "image/png" => return Ok(ImageFormat::Png),
-            "image/jpeg" | "image/jpg" => return Ok(ImageFormat::Jpeg),
-            "image/webp" => return Ok(ImageFormat::WebP),
-            _ => return Err(ImageError::UnsupportedFormat),
-        }
+fn source_format(source: &[u8]) -> Result<OutputFormat, ImageError> {
+    if source.starts_with(&[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n']) {
+        return Ok(OutputFormat::Png);
+    }
+    if source.starts_with(&[0xff, 0xd8, 0xff]) {
+        return Ok(OutputFormat::Jpeg);
+    }
+    if source.len() >= 12 && &source[0..4] == b"RIFF" && &source[8..12] == b"WEBP" {
+        return Ok(OutputFormat::Webp);
     }
 
-    image::guess_format(source).map_err(|_| ImageError::UnsupportedFormat)
+    Err(ImageError::UnsupportedFormat)
 }
 
-fn image_dimensions(
-    source: &[u8],
-    format: ImageFormat,
-    limits: &TransformLimits,
-) -> Result<(u32, u32), ImageError> {
-    let mut reader = ImageReader::with_format(Cursor::new(source), format);
-    reader.limits(image_decode_limits(limits));
-    reader.into_dimensions().map_err(decode_error)
-}
-
-fn image_decode_limits(limits: &TransformLimits) -> Limits {
-    let mut decode_limits = Limits::default();
-    decode_limits.max_image_width = Some(limits.max_image_width);
-    decode_limits.max_image_height = Some(limits.max_image_height);
-    decode_limits.max_alloc = Some(limits.max_decoded_pixels.saturating_mul(4));
-    decode_limits
-}
-
-fn decode_error(error: image::ImageError) -> ImageError {
-    match error {
-        image::ImageError::Limits(_) => ImageError::ImageTooLarge,
-        image::ImageError::Unsupported(_) => ImageError::UnsupportedFormat,
-        _ => ImageError::TransformFailed,
-    }
+fn image_dimensions(source: &[u8]) -> Result<(u32, u32), ImageError> {
+    let image = read_image_header(source)?;
+    Ok((
+        dimension_from_vips(image.get_width())?,
+        dimension_from_vips(image.get_height())?,
+    ))
 }
 
 fn enforce_dimension_limits(
@@ -527,209 +485,96 @@ fn enforce_dimension_limits(
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use image::{ImageBuffer, ImageFormat, Rgba};
-    use std::io::Cursor;
+fn read_image_header(source: &[u8]) -> Result<VipsImage, ImageError> {
+    let app = vips_app()?;
+    app.error_clear();
+    VipsImage::new_from_buffer(source, "").map_err(|_| vips_transform_error(app))
+}
 
-    const SECRET: &str = "test-image-secret";
+fn autorotate_image(image: &VipsImage) -> Result<VipsImage, ImageError> {
+    let app = vips_app()?;
+    app.error_clear();
+    ops::autorot(image).map_err(|_| vips_transform_error(app))
+}
 
-    fn private_options() -> ImageUrlOptions {
-        ImageUrlOptions {
-            source: "/assets/avatar.png".to_string(),
-            width: 640,
-            quality: 75,
-            visibility: ImageVisibility::Private,
-            expires_at_unix_secs: Some(1_900_000_000),
-        }
-    }
+fn thumbnail_image(source: &[u8], width: u32) -> Result<VipsImage, ImageError> {
+    let app = vips_app()?;
+    app.error_clear();
+    ops::thumbnail_buffer(
+        source,
+        i32::try_from(width).map_err(|_| ImageError::InvalidWidth)?,
+    )
+    .map_err(|_| vips_transform_error(app))
+}
 
-    #[test]
-    fn signs_path_based_image_urls() {
-        let path = sign_image_path(SECRET, &private_options()).expect("sign path");
-
-        assert!(path.starts_with("/_tako/image/v1/private/640/75/1900000000/"));
-        assert!(!path.contains('?'));
-    }
-
-    #[test]
-    fn verifies_signed_private_path() {
-        let path = sign_image_path(SECRET, &private_options()).expect("sign path");
-
-        let verified = verify_image_path(SECRET, &path, 1_800_000_000).expect("verify path");
-
-        assert_eq!(verified.width, 640);
-        assert_eq!(verified.quality, 75);
-        assert_eq!(verified.visibility, ImageVisibility::Private);
-        assert_eq!(
-            verified.source,
-            ImageSource::LocalPath("/assets/avatar.png".to_string())
-        );
-        assert_eq!(verified.expires_at_unix_secs, Some(1_900_000_000));
-    }
-
-    #[test]
-    fn public_paths_do_not_require_an_expiration() {
-        let mut options = private_options();
-        options.visibility = ImageVisibility::Public;
-        options.expires_at_unix_secs = None;
-
-        let path = sign_image_path(SECRET, &options).expect("sign path");
-        let verified = verify_image_path(SECRET, &path, u64::MAX).expect("verify path");
-
-        assert_eq!(verified.visibility, ImageVisibility::Public);
-        assert_eq!(verified.expires_at_unix_secs, None);
-    }
-
-    #[test]
-    fn rejects_tampered_paths() {
-        let path = sign_image_path(SECRET, &private_options()).expect("sign path");
-        let tampered = path.replace("/640/", "/750/");
-
-        let err = verify_image_path(SECRET, &tampered, 1_800_000_000).unwrap_err();
-
-        assert_eq!(err, ImageError::InvalidSignature);
-    }
-
-    #[test]
-    fn rejects_expired_private_paths() {
-        let path = sign_image_path(SECRET, &private_options()).expect("sign path");
-
-        let err = verify_image_path(SECRET, &path, 1_900_000_001).unwrap_err();
-
-        assert_eq!(err, ImageError::Expired);
-    }
-
-    #[test]
-    fn rejects_widths_outside_the_allowed_set() {
-        let mut options = private_options();
-        options.width = 641;
-
-        let err = sign_image_path(SECRET, &options).unwrap_err();
-
-        assert_eq!(err, ImageError::InvalidWidth);
-    }
-
-    #[test]
-    fn rejects_invalid_quality() {
-        let mut options = private_options();
-        options.quality = 0;
-
-        let err = sign_image_path(SECRET, &options).unwrap_err();
-
-        assert_eq!(err, ImageError::InvalidQuality);
-    }
-
-    #[test]
-    fn rejects_recursive_local_sources() {
-        let mut options = private_options();
-        options.source = "/_tako/image/v1/private/640/75/-/sig/source".to_string();
-
-        let err = sign_image_path(SECRET, &options).unwrap_err();
-
-        assert_eq!(err, ImageError::InvalidSource);
-    }
-
-    #[test]
-    fn rejects_remote_sources_with_userinfo_or_fragments() {
-        for source in [
-            "https://user@example.com/avatar.png",
-            "https://example.com/avatar.png#fragment",
-        ] {
-            let mut options = private_options();
-            options.source = source.to_string();
-
-            let err = sign_image_path(SECRET, &options).unwrap_err();
-
-            assert_eq!(err, ImageError::InvalidSource);
-        }
-    }
-
-    #[test]
-    fn rejects_remote_sources_with_private_or_local_hosts() {
-        for source in [
-            "http://127.0.0.1/avatar.png",
-            "http://[::1]/avatar.png",
-            "http://localhost/avatar.png",
-            "http://assets.localhost/avatar.png",
-        ] {
-            let mut options = private_options();
-            options.source = source.to_string();
-
-            let err = sign_image_path(SECRET, &options).unwrap_err();
-
-            assert_eq!(err, ImageError::InvalidSource);
-        }
-    }
-
-    #[test]
-    fn cache_control_is_private_by_default_and_public_by_opt_in() {
-        assert_eq!(
-            cache_control(ImageVisibility::Private),
-            PRIVATE_CACHE_CONTROL
-        );
-        assert_eq!(cache_control(ImageVisibility::Public), PUBLIC_CACHE_CONTROL);
-    }
-
-    #[test]
-    fn resizes_png_without_upscaling() {
-        let img = ImageBuffer::from_fn(64, 32, |_x, _y| Rgba([255_u8, 0, 0, 255]));
-        let mut source = Cursor::new(Vec::new());
-        img.write_to(&mut source, ImageFormat::Png)
-            .expect("encode png");
-
-        let transformed = transform_image(
-            source.get_ref(),
-            Some("image/png"),
-            16,
-            80,
-            &TransformLimits::default(),
-        )
-        .expect("transform image");
-
-        assert_eq!(transformed.width, 16);
-        assert_eq!(transformed.height, 8);
-        assert_eq!(transformed.content_type, "image/png");
-        assert!(transformed.bytes.len() < source.get_ref().len());
-    }
-
-    #[test]
-    fn rejects_images_above_dimension_limits_before_transforming() {
-        let img = ImageBuffer::from_fn(64, 32, |_x, _y| Rgba([255_u8, 0, 0, 255]));
-        let mut source = Cursor::new(Vec::new());
-        img.write_to(&mut source, ImageFormat::Png)
-            .expect("encode png");
-
-        let err = transform_image(
-            source.get_ref(),
-            Some("image/png"),
-            16,
-            80,
-            &TransformLimits {
-                max_image_width: 32,
-                ..Default::default()
+fn encode_image(
+    image: &VipsImage,
+    format: OutputFormat,
+    quality: u8,
+) -> Result<Vec<u8>, ImageError> {
+    let app = vips_app()?;
+    app.error_clear();
+    match format {
+        OutputFormat::Png => ops::pngsave_buffer_with_opts(
+            image,
+            &PngsaveBufferOptions {
+                compression: 9,
+                filter: ForeignPngFilter::All,
+                keep: ForeignKeep::None,
+                ..PngsaveBufferOptions::default()
             },
-        )
-        .unwrap_err();
-
-        assert_eq!(err, ImageError::ImageTooLarge);
-    }
-
-    #[test]
-    fn rejects_source_bytes_above_limit() {
-        let err = transform_image(
-            &[0; 16],
-            Some("image/png"),
-            16,
-            75,
-            &TransformLimits {
-                max_source_bytes: 8,
-                ..Default::default()
+        ),
+        OutputFormat::Jpeg => ops::jpegsave_buffer_with_opts(
+            image,
+            &JpegsaveBufferOptions {
+                q: i32::from(quality),
+                optimize_coding: true,
+                interlace: true,
+                keep: ForeignKeep::None,
+                ..JpegsaveBufferOptions::default()
             },
-        )
-        .unwrap_err();
+        ),
+        OutputFormat::Webp => ops::webpsave_buffer_with_opts(
+            image,
+            &WebpsaveBufferOptions {
+                q: i32::from(quality),
+                alpha_q: i32::from(quality),
+                smart_subsample: true,
+                preset: ForeignWebpPreset::Photo,
+                keep: ForeignKeep::None,
+                ..WebpsaveBufferOptions::default()
+            },
+        ),
+    }
+    .map_err(|_| vips_transform_error(app))
+}
 
-        assert_eq!(err, ImageError::SourceTooLarge);
+fn vips_transform_error(_app: &VipsApp) -> ImageError {
+    #[cfg(test)]
+    if let Ok(error) = _app.error_buffer()
+        && !error.is_empty()
+    {
+        eprintln!("libvips error: {error}");
+    }
+    ImageError::TransformFailed
+}
+
+fn dimension_from_vips(value: i32) -> Result<u32, ImageError> {
+    u32::try_from(value).map_err(|_| ImageError::TransformFailed)
+}
+
+fn vips_app() -> Result<&'static VipsApp, ImageError> {
+    static APP: OnceLock<Result<VipsApp, ()>> = OnceLock::new();
+    match APP.get_or_init(|| {
+        let app = VipsApp::new("tako-images", false).map_err(|_| ())?;
+        app.cache_set_max(100);
+        app.cache_set_max_mem(128 * 1024 * 1024);
+        Ok(app)
+    }) {
+        Ok(app) => Ok(app),
+        Err(()) => Err(ImageError::TransformFailed),
     }
 }
+
+#[cfg(test)]
+mod tests;

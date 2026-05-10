@@ -45,6 +45,7 @@ Routing policy notes:
 From repository root:
 
 ```bash
+cargo test -p tako-images # requires libvips; macOS: brew install vips
 cargo run -p tako-server -- --help
 cargo test -p tako-server
 ```

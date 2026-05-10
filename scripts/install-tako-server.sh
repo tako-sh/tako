@@ -8,6 +8,7 @@ set -eu
 #
 # What it does:
 # - downloads and installs `tako-server`
+# - installs the libvips runtime used by the built-in image optimizer
 # - creates OS user `tako`
 # - configures a service manager (systemd or OpenRC) for `tako-server`
 # - installs maintenance helpers and sudoers for the tako service user
@@ -589,6 +590,32 @@ install_sqlite_runtime() {
   fi
 }
 
+install_libvips_runtime() {
+  if need_cmd apt-get; then
+    apt-get update -y
+    apt-get install -y libvips42t64 || apt-get install -y libvips42 || apt-get install -y libvips
+  elif need_cmd dnf; then
+    dnf install -y vips || {
+      dnf install -y epel-release
+      dnf install -y vips
+    }
+  elif need_cmd yum; then
+    yum install -y vips || {
+      yum install -y epel-release
+      yum install -y vips
+    }
+  elif need_cmd pacman; then
+    pacman -Sy --noconfirm vips
+  elif need_cmd apk; then
+    apk add --no-cache vips
+  elif need_cmd zypper; then
+    zypper --non-interactive install libvips42 || zypper --non-interactive install vips
+  else
+    echo "error: unsupported package manager; install libvips manually before starting tako-server" >&2
+    exit 1
+  fi
+}
+
 tako_home_dir() {
   _home=""
   if need_cmd getent; then
@@ -717,6 +744,7 @@ if ! need_cmd which; then
 fi
 ensure_nc
 install_sqlite_runtime
+install_libvips_runtime
 
 arch="$(uname -m)"
 case "$arch" in

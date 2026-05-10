@@ -135,7 +135,7 @@ Servers receive prebuilt artifacts; they do not run app build steps. After extra
 
 Runtime definitions live in runtime plugins. Presets only supply metadata such as `main`, `assets`, and `dev`.
 
-Signed image URLs created with `createImageUrl()` are served by `tako-server` from `/_tako/image/v1/...`. They are private by default (`private, max-age=86400`), reject extra query strings, and become long-cacheable public assets only when generated with `public: true`.
+Signed image URLs created with `createImageUrl()` are served by `tako-server` from `/_tako/image/v1/...`. They are private by default (`private, max-age=86400`), reject extra query strings, and become long-cacheable public assets only when generated with `public: true`. Server installs include the libvips runtime used for JPEG, PNG, and WebP transforms.
 
 ## Release Commands
 

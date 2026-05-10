@@ -241,13 +241,33 @@ fn verify_downloaded_sha256_script(path_expr: &str, expected_sha256: &str) -> St
     )
 }
 
+fn remote_install_libvips_runtime_script() -> &'static str {
+    "if command -v apt-get >/dev/null 2>&1; then \
+       apt-get update -y && (apt-get install -y libvips42t64 || apt-get install -y libvips42 || apt-get install -y libvips); \
+     elif command -v dnf >/dev/null 2>&1; then \
+       dnf install -y vips || (dnf install -y epel-release && dnf install -y vips); \
+     elif command -v yum >/dev/null 2>&1; then \
+       yum install -y vips || (yum install -y epel-release && yum install -y vips); \
+     elif command -v pacman >/dev/null 2>&1; then \
+       pacman -Sy --noconfirm vips; \
+     elif command -v apk >/dev/null 2>&1; then \
+       apk add --no-cache vips; \
+     elif command -v zypper >/dev/null 2>&1; then \
+       zypper --non-interactive install libvips42 || zypper --non-interactive install vips; \
+     else \
+       echo 'error: unsupported package manager; install libvips manually before upgrading tako-server' >&2; exit 1; \
+     fi"
+}
+
 fn remote_binary_replace_command(url: &str, expected_sha256: &str) -> String {
     use crate::shell::shell_single_quote;
     let url_q = shell_single_quote(url);
     let sha_check = verify_downloaded_sha256_script("\"$archive\"", expected_sha256);
     let auth_header_script = crate::github::remote_curl_auth_header_script("download_url");
+    let libvips_runtime = remote_install_libvips_runtime_script();
     let script = format!(
         "set -eu; \
+         {libvips_runtime}; \
          download_url={url_q}; \
          {auth_header_script}; \
          tmp=$(mktemp -d); \

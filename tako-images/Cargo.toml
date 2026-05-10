@@ -7,7 +7,7 @@ publish = false
 [dependencies]
 base64 = "0.22"
 hmac = "0.12"
-image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
+libvips = "1.7.4"
 sha2 = "0.10"
 thiserror = "2.0"
 url = "2.5"
