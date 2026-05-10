@@ -14,6 +14,7 @@ import { EMPTY_RETRIES, EMPTY_STEPS } from "./types";
 
 const l = logger.child("db");
 const db = openDb();
+export const RECORD_RETENTION_MS = 3 * 24 * 60 * 60 * 1000;
 
 function resolveDbPath(): string {
   return path.join(dataDir, "mission.sqlite3");
@@ -207,6 +208,28 @@ export function getBaseSnapshot(slug: string): BaseSnapshot {
     base,
     requests: requests.map(mapRequestRow),
   };
+}
+
+export function cleanupOldRecords(now = Date.now()): {
+  cutoff: number;
+  requestsDeleted: number;
+  basesDeleted: number;
+} {
+  const cutoff = now - RECORD_RETENTION_MS;
+  const requestsDeleted = db
+    .prepare("DELETE FROM supply_requests WHERE created_at < ?")
+    .run(cutoff).changes;
+  const basesDeleted = db
+    .prepare(
+      `DELETE FROM bases
+         WHERE created_at < ?
+           AND NOT EXISTS (
+             SELECT 1 FROM supply_requests WHERE supply_requests.base_slug = bases.slug
+           )`,
+    )
+    .run(cutoff).changes;
+
+  return { cutoff, requestsDeleted, basesDeleted };
 }
 
 function mapRequestRow(row: SupplyRequestRow): DbSupplyRequest {

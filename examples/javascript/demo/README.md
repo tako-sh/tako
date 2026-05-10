@@ -2,7 +2,7 @@
 
 A TanStack Start demo app that doubles as a live tour of Tako's primitives: **multi-tenancy**, **durable workflows**, and **channels**.
 
-Each moonbase is an isolated tenant (wildcard subdomain). Submitting a supply request enqueues a five-step sequential workflow (check → pack → load → ship → deliver) where the late steps occasionally throw and Tako retries them via `step.run`'s `retries` option. Every step publishes to the `mission-log` channel, so the right-rail log streams live to every connected client.
+Each moonbase is an isolated tenant (wildcard subdomain). Submitting a supply request enqueues a five-step sequential workflow (check → pack → load → ship → deliver) where the late steps occasionally throw and Tako retries them via `step.run`'s `retries` option. Every step publishes to the `mission-log` channel, so the right-rail log streams live to every connected client. A daily cron workflow deletes demo database records older than three days.
 
 Live at [demo.tako.sh](https://demo.tako.sh).
 
@@ -36,11 +36,19 @@ cd examples/javascript/demo
 bun run build
 ```
 
+## Test
+
+```bash
+cd examples/javascript/demo
+bun test
+```
+
 ## Notes
 
 - `tako.toml` sets `preset = "tanstack-start"` with `runtime = "bun"`.
 - Plain `bun run dev` uses an in-process simulator for the workflow.
 - `tako dev` uses real Tako channels + workflows.
+- The cleanup cron workflow runs daily and removes supply requests older than three days plus empty stale bases.
 - Tenant is detected server-side from the `Host` header — no env var needed.
   - `artemis-prime.demo.tako.sh` → tenant `artemis-prime` (Mission Control view)
   - `demo.tako.sh` → no tenant (Landing view with base-name input)
@@ -50,7 +58,9 @@ bun run build
 ## Files of interest
 
 - `workflows/order-shipment.ts` — five-step sequential workflow with `step.run` retries
+- `workflows/cleanup.ts` — daily scheduled cleanup for old demo DB rows
 - `channels/mission-log.ts` — pub/sub channel for live events
 - `src/routes/index.tsx` — route glue, server loader, local-mode simulator
+- `src/server/db.ts` — SQLite persistence and retention cleanup
 - `src/components/moonbase/` — all UI components (MissionControl, Landing, Sidebar, etc.)
 - `src/styles/app.css` — Tailwind v4 `@theme` with the Obsidian Observatory palette

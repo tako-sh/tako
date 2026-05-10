@@ -4,7 +4,8 @@
   "type": "module",
   "sideEffects": false,
   "scripts": {
-    "build": "bunx --bun vite build && tsc --noEmit"
+    "build": "bunx --bun vite build && tsc --noEmit",
+    "test": "bun test tests"
   },
   "dependencies": {
     "@base-ui/react": "^1.4.1",
