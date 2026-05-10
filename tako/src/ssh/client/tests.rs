@@ -228,8 +228,9 @@ fn install_server_script_installs_and_verifies_runtime_dependencies() {
     assert!(script.contains("install_missing_tako_server_runtime_deps"));
     assert!(script.contains("install_missing_tako_server_runtime_deps /usr/local/bin/tako-server"));
     assert!(script.contains("verify_tako_server_runtime_deps"));
-    assert!(script.contains("ldd /usr/local/bin/tako-server"));
+    assert!(script.contains("missing_runtime_libraries /usr/local/bin/tako-server"));
     assert!(script.contains("not found"));
+    assert!(script.contains("Error loading shared library"));
 
     let install_index = script
         .find("install -m 0755 \"$tmp_bin\" /usr/local/bin/tako-server")

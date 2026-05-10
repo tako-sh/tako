@@ -625,7 +625,14 @@ missing_runtime_libraries() {
     return
   fi
 
-  ldd "$_bin" 2>/dev/null | awk '/not found/ { print $1 }' || true
+  ldd "$_bin" 2>&1 | awk '
+    /not found/ { print $1 }
+    /Error loading shared library/ {
+      lib = $5
+      sub(/:$/, "", lib)
+      print lib
+    }
+  ' || true
 }
 
 install_missing_tako_server_runtime_deps() {
@@ -649,7 +656,7 @@ verify_tako_server_runtime_deps() {
     return
   fi
 
-  missing="$(ldd /usr/local/bin/tako-server 2>/dev/null | awk '/not found/ { print $1 }' || true)"
+  missing="$(missing_runtime_libraries /usr/local/bin/tako-server)"
   if [ -n "$missing" ]; then
     echo "error: tako-server is missing runtime libraries:" >&2
     printf '%s\n' "$missing" >&2
