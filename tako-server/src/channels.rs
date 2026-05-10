@@ -1,6 +1,6 @@
 pub use tako_channels::*;
 
-use crate::instances::{INTERNAL_STATUS_HOST, INTERNAL_TOKEN_HEADER, Instance};
+use crate::instances::{INTERNAL_TOKEN_HEADER, Instance, internal_app_host_for_app_id};
 use crate::release::app_runtime_data_paths;
 use std::path::{Path, PathBuf};
 
@@ -9,6 +9,7 @@ pub(crate) fn app_channels_db_path(data_dir: &Path, app_name: &str) -> PathBuf {
 }
 
 pub(crate) async fn authorize_channel_request(
+    app_name: &str,
     instance: &Instance,
     operation: ChannelOperation,
     channel: &str,
@@ -17,9 +18,10 @@ pub(crate) async fn authorize_channel_request(
     cookie: Option<String>,
 ) -> Result<ChannelAuthResponse, ChannelError> {
     let endpoint = instance.endpoint().ok_or(ChannelError::AuthUnavailable)?;
+    let internal_host = internal_app_host_for_app_id(app_name);
     tako_channels::authorize_channel_request(
         &endpoint.to_string(),
-        INTERNAL_STATUS_HOST,
+        &internal_host,
         INTERNAL_TOKEN_HEADER,
         instance.internal_token(),
         operation,
@@ -32,9 +34,11 @@ pub(crate) async fn authorize_channel_request(
 }
 
 pub(crate) async fn fetch_channel_registry(
+    app_name: &str,
     instance: &Instance,
 ) -> Result<Vec<ChannelDefinitionMeta>, ChannelError> {
     let endpoint = instance.endpoint().ok_or(ChannelError::AuthUnavailable)?;
+    let internal_host = internal_app_host_for_app_id(app_name);
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(2))
         .timeout(std::time::Duration::from_secs(5))
@@ -47,7 +51,7 @@ pub(crate) async fn fetch_channel_registry(
             endpoint,
             tako_channels::INTERNAL_CHANNEL_REGISTRY_PATH
         ))
-        .header("Host", INTERNAL_STATUS_HOST)
+        .header("Host", internal_host)
         .header(INTERNAL_TOKEN_HEADER, instance.internal_token())
         .send()
         .await

@@ -1,7 +1,7 @@
 //! Health checker - monitors instance health via HTTP probing
 //!
-//! Performs active HTTP health checks to internal host `tako` at `/status` on each
-//! instance.
+//! Performs active HTTP health checks to each app's internal `.tako` host at
+//! `/status` on each instance.
 //! This replaces passive heartbeat-only detection with active probing.
 
 use super::{App, INTERNAL_TOKEN_HEADER, Instance, InstanceState};

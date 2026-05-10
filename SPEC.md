@@ -1184,7 +1184,7 @@ Reference scripts in this repo:
 - Maximum HTTP request body size: 128 MiB; larger requests receive `413`.
 - Maximum channel WebSocket frame payload size: 128 MiB; larger frames are rejected and the socket closes.
 - Production browser-facing `tako-server` 5xx responses use generic reason-phrase bodies such as `Internal Server Error`, `Bad Gateway`, `Service Unavailable`, or `Gateway Timeout`; detailed app-scoped startup, proxy, channel storage, and static file diagnostics are recorded in the app log stream instead of returned in response bodies.
-- After a request matches an app route, `/channels/<name>` is reserved for Tako channels. Other request paths are served as static assets when a matching file exists in `public/`, then proxied to the app.
+- After a request matches an app route, `/_tako/*` is reserved for Tako-owned public endpoints. `/_tako/channels/<name>` serves durable channels. Other request paths are served as static assets when a matching file exists in `public/`, then proxied to the app.
 
 **`/opt/tako/config.json`** — server-level configuration:
 
@@ -1272,18 +1272,18 @@ App log files contain app stdout/stderr plus app-scoped Tako server diagnostics.
 
 HTTP instances and workflow workers receive the same app/runtime environment, except HTTP-only bind vars (`PORT`, `HOST`) and per-instance CLI args.
 
-| Name                   | Used by      | Meaning                                                                                 | Typical source                                                                                                                   |
-| ---------------------- | ------------ | --------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `ENV`                  | app + worker | Active environment name                                                                 | Set by Tako in both dev and deploy (`development`, `production`, `staging`, etc.).                                               |
-| `PORT`                 | app          | Listen port for HTTP server                                                             | `0` in both dev and deploy. The SDK binds to an OS-assigned port and reports it to Tako via fd 4.                                |
-| `HOST`                 | app          | Listen host for HTTP server                                                             | `127.0.0.1` in both dev and deploy.                                                                                              |
-| `TAKO_APP_NAME`        | app + worker | App identity used by the SDK to tag internal-socket RPCs                                | Set by both spawners (tako-server and tako-dev-server) from the deployed app name.                                               |
-| `TAKO_INTERNAL_SOCKET` | app + worker | Path to the shared internal unix socket for workflow enqueue/signal and channel publish | Set by both spawners. Together with `TAKO_APP_NAME` this must always be set as a pair; the SDK asserts this at boot.             |
-| `TAKO_DATA_DIR`        | app + worker | Persistent app-owned runtime data directory                                             | Set by Tako in both dev and deploy; points to the app's `data/app` directory.                                                    |
-| `NODE_ENV`             | app + worker | Node.js convention env                                                                  | Set by runtime adapter / server (`development` or `production`).                                                                 |
-| `BUN_ENV`              | app + worker | Bun convention env                                                                      | Set by runtime adapter (`development` or `production`).                                                                          |
-| `TAKO_BUILD`           | app + worker | Deployed build/version identifier                                                       | Written into release `app.json` by `tako deploy`; `tako-server` reads it from the manifest and passes it as an env var at spawn. |
-| _user-defined_         | app + worker | User config vars                                                                        | From `app.json` in the release dir. Secrets + internal token passed via fd 3 bootstrap envelope, not env vars.                   |
+| Name                   | Used by      | Meaning                                                                                 | Typical source                                                                                                                                                 |
+| ---------------------- | ------------ | --------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ENV`                  | app + worker | Active environment name                                                                 | Set by Tako in both dev and deploy (`development`, `production`, `staging`, etc.).                                                                             |
+| `PORT`                 | app          | Listen port for HTTP server                                                             | `0` in both dev and deploy. The SDK binds to an OS-assigned port and reports it to Tako via fd 4.                                                              |
+| `HOST`                 | app          | Listen host for HTTP server                                                             | `127.0.0.1` in both dev and deploy.                                                                                                                            |
+| `TAKO_APP_NAME`        | app + worker | App identity used by the SDK to tag internal-socket RPCs                                | Set by both spawners (tako-server and tako-dev-server). In deploy this is the deployment id (`{app}/{env}`); internal HTTP hosts use the base `{app}` segment. |
+| `TAKO_INTERNAL_SOCKET` | app + worker | Path to the shared internal unix socket for workflow enqueue/signal and channel publish | Set by both spawners. Together with `TAKO_APP_NAME` this must always be set as a pair; the SDK asserts this at boot.                                           |
+| `TAKO_DATA_DIR`        | app + worker | Persistent app-owned runtime data directory                                             | Set by Tako in both dev and deploy; points to the app's `data/app` directory.                                                                                  |
+| `NODE_ENV`             | app + worker | Node.js convention env                                                                  | Set by runtime adapter / server (`development` or `production`).                                                                                               |
+| `BUN_ENV`              | app + worker | Bun convention env                                                                      | Set by runtime adapter (`development` or `production`).                                                                                                        |
+| `TAKO_BUILD`           | app + worker | Deployed build/version identifier                                                       | Written into release `app.json` by `tako deploy`; `tako-server` reads it from the manifest and passes it as an env var at spawn.                               |
+| _user-defined_         | app + worker | User config vars                                                                        | From `app.json` in the release dir. Secrets + internal token passed via fd 3 bootstrap envelope, not env vars.                                                 |
 
 **Instance identity (CLI args, not env vars):** `tako-server` passes per-instance identity to the SDK entrypoint as command-line arguments:
 
@@ -1300,7 +1300,7 @@ The SDK parses this from `process.argv` (JS) or `os.Args` (Go) at startup and ex
 }
 ```
 
-The SDK reads fd 3 once at startup and closes it. The envelope travels on a pipe (rather than env vars or argv) so neither the token nor secrets inherit into subprocesses the app spawns. The token authenticates `Host: tako.internal` requests (health probes, channel auth callbacks). Secrets populate the `secrets` export from the generated `tako.gen.ts`. The pipe is always present — in dev mode with no secrets, the envelope is `{"token": "...", "secrets": {}}`.
+The SDK reads fd 3 once at startup and closes it. The envelope travels on a pipe (rather than env vars or argv) so neither the token nor secrets inherit into subprocesses the app spawns. The token authenticates `Host: <app>.tako` requests (health probes, channel auth callbacks). Secrets populate the `secrets` export from the generated `tako.gen.ts`. The pipe is always present — in dev mode with no secrets, the envelope is `{"token": "...", "secrets": {}}`.
 
 ### Messages (JSON over Unix Socket)
 
@@ -1477,7 +1477,7 @@ Server-side validation on `deploy` and app-scoped commands:
 Active HTTP probing is the source of truth for instance health:
 
 - **Probe interval**: 1 second steady-state, dropped to 100 ms while any instance is still in startup (Starting/Ready, not yet Healthy). The fast startup tier collapses cold-start probe slack from up to 1 s to ~100 ms without paying high-frequency probes at steady state.
-- **Probe endpoint**: App's configured health check path (default: `/status`) with `Host: tako.internal`
+- **Probe endpoint**: App's configured health check path (default: `/status`) with `Host: <app>.tako`, where `<app>` is the base app name (for example `dashboard.tako`)
 - **Transport**: Probes use the instance's private TCP endpoint.
 - **Process exit fast path**: Before each probe, `try_wait()` checks if the process has exited. If so, the instance is immediately marked dead without waiting for the probe timeout.
 - **Failure threshold**: 1 failure → mark dead, trigger replacement. After the first successful probe confirms the app is healthy, any single probe failure means the instance cannot satisfy the runtime health contract.
@@ -1489,7 +1489,7 @@ Tako-server performs health checks against the deployed app process:
 
 ```
 GET /status
-Host: tako.internal
+Host: dashboard.tako
 X-Tako-Internal-Token: <instance-token>
 ```
 
@@ -1506,7 +1506,7 @@ Expected response:
 }
 ```
 
-The SDK wrappers implement this endpoint automatically. The edge proxy does not reserve or bypass `Host: tako.internal` routes.
+The SDK wrappers implement this endpoint automatically. The edge proxy does not reserve or bypass `Host: <app>.tako` routes.
 The expected response includes the same `X-Tako-Internal-Token` header value. The SDK wrappers enforce and echo this token automatically.
 
 ### Prometheus Metrics
@@ -1687,20 +1687,20 @@ For frameworks that manage their own server (e.g. Fiber on fasthttp), use `tako.
 
 #### Exports
 
-| Export                                                                                              | Purpose                                                                                              |
-| --------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `tako.ListenAndServe(handler)`                                                                      | Wraps an `http.Handler` with Tako protocol support (fd 4 readiness, `Host: tako.internal` handling). |
-| `tako.Listener()`                                                                                   | Returns a bound `net.Listener` for frameworks that own their own server loop.                        |
-| `tako.InstanceID()` / `tako.Version()` / `tako.Uptime()`                                            | Runtime identity helpers (empty strings in dev mode).                                                |
-| `tako.GetSecret(name)`                                                                              | Low-level secret accessor. Prefer the typed `Secrets` struct from `tako typegen`.                    |
-| `tako.AllowChannel(grant)` / `tako.RejectChannel()`                                                 | Channel auth helpers for `ChannelDefinition` callbacks.                                              |
-| `tako.Channel`, `tako.ChannelRegistry`, `tako.Channels`, `tako.ChannelTransport`, and related types | Channel authoring surface mirrored from `tako.sh/internal`.                                          |
+| Export                                                                                              | Purpose                                                                                           |
+| --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `tako.ListenAndServe(handler)`                                                                      | Wraps an `http.Handler` with Tako protocol support (fd 4 readiness, `Host: <app>.tako` handling). |
+| `tako.Listener()`                                                                                   | Returns a bound `net.Listener` for frameworks that own their own server loop.                     |
+| `tako.InstanceID()` / `tako.Version()` / `tako.Uptime()`                                            | Runtime identity helpers (empty strings in dev mode).                                             |
+| `tako.GetSecret(name)`                                                                              | Low-level secret accessor. Prefer the typed `Secrets` struct from `tako typegen`.                 |
+| `tako.AllowChannel(grant)` / `tako.RejectChannel()`                                                 | Channel auth helpers for `ChannelDefinition` callbacks.                                           |
+| `tako.Channel`, `tako.ChannelRegistry`, `tako.Channels`, `tako.ChannelTransport`, and related types | Channel authoring surface mirrored from `tako.sh/internal`.                                       |
 
 #### Key Differences from JS SDK
 
 - Go compiles to a native binary — no runtime download needed on the server.
 - The compiled binary runs directly (`launch_args: ["{main}"]`), no SDK entrypoint wrapper. The `tako` package wires up the protocol from inside the user's own binary.
-- `tako.ListenAndServe()` handles the full protocol: CLI arg parsing (`--instance`), TCP serving, `Host: tako.internal` endpoint interception, graceful shutdown on `SIGTERM`/`SIGINT` with a 10s drain window.
+- `tako.ListenAndServe()` handles the full protocol: CLI arg parsing (`--instance`), TCP serving, `Host: <app>.tako` endpoint interception, graceful shutdown on `SIGTERM`/`SIGINT` with a 10s drain window.
 - Deploy auto-injects `GOOS=linux` and `GOARCH` for cross-compilation to the target server.
 - Default build: `CGO_ENABLED=0 go build -o app .` producing a static binary.
 - Secrets: `tako.GetSecret("name")` provides access to Tako-managed secrets. Run `tako typegen` to generate a typed `Secrets` struct in `tako_secrets.go`.
@@ -1736,16 +1736,16 @@ import { withTako } from "tako.sh/nextjs";
 - Internal fetch handler adapters for Bun/Node runtimes (used by entrypoint binaries)
 - Go SDK with `tako.ListenAndServe()` for native http.Handler support
 - Deployed app serving over private TCP with `PORT`/`HOST`; `tako dev` also uses TCP (`PORT`)
-- Internal status endpoint (`Host: tako.internal` + `/status`)
-- Internal channel auth endpoint (`Host: tako.internal` + `POST /channels/authorize`)
-- Internal channel registry endpoint (`Host: tako.internal` + `GET /channels/registry`)
-- Internal WebSocket dispatch endpoint (`Host: tako.internal` + `POST /channels/dispatch`)
-- Public durable channel read/connect route at `GET /channels/<name>`
+- Internal status endpoint (`Host: <app>.tako` + `/status`)
+- Internal channel auth endpoint (`Host: <app>.tako` + `POST /channels/authorize`)
+- Internal channel registry endpoint (`Host: <app>.tako` + `GET /channels/registry`)
+- Internal WebSocket dispatch endpoint (`Host: <app>.tako` + `POST /channels/dispatch`)
+- Public durable channel read/connect route at `GET /_tako/channels/<name>`
 - Graceful shutdown handling
 
 ### Built-in Endpoints
 
-**`GET /status` with `Host: tako.internal`**
+**`GET /status` with `Host: <app>.tako`**
 
 ```json
 {
@@ -1760,15 +1760,15 @@ import { withTako } from "tako.sh/nextjs";
 
 Used for health checks during rolling updates and monitoring.
 
-**`POST /channels/authorize` with `Host: tako.internal`**
+**`POST /channels/authorize` with `Host: <app>.tako`**
 
 Used by `tako-server` to ask the app SDK whether a channel operation is allowed and which lifecycle settings apply. The SDK returns `ok`, optional `subject`, optional `transport`, and channel lifecycle settings such as `replayWindowMs`, `inactivityTtlMs`, `keepaliveIntervalMs`, and `maxConnectionLifetimeMs`.
 
-**`GET /channels/registry` with `Host: tako.internal`**
+**`GET /channels/registry` with `Host: <app>.tako`**
 
 Used by `tako-server` to fetch the app's declared channel metadata for validation, auth, and transport selection.
 
-**`POST /channels/dispatch` with `Host: tako.internal`**
+**`POST /channels/dispatch` with `Host: <app>.tako`**
 
 Used by `tako-server` to dispatch incoming WebSocket frames to the app's declared channel handler before fan-out.
 
@@ -1776,8 +1776,8 @@ Used by `tako-server` to dispatch incoming WebSocket frames to the app's declare
 
 Channels are Tako-owned durable pub-sub streams on public app routes:
 
-- `GET /channels/<name>` with `Accept: text/event-stream` serves SSE with replay + live tail
-- `GET /channels/<name>` with `Upgrade: websocket` upgrades to WebSocket
+- `GET /_tako/channels/<name>` with `Accept: text/event-stream` serves SSE with replay + live tail
+- `GET /_tako/channels/<name>` with `Upgrade: websocket` upgrades to WebSocket
 
 Channels keep a bounded replay window so reconnecting clients can resume across disconnects and `tako-server` reloads. They are not a permanent history API.
 
@@ -1794,7 +1794,7 @@ Channel WebSocket transport uses JSON text frames:
 - client-to-server text frames are parsed as `ChannelPublishPayload` objects, routed through the channel's declared `handler`, and the handler's return value is fanned out to subscribers
 - client-to-server frame payloads are capped at 128 MiB, matching the proxy request body limit
 
-Channel routes are exact and flat: `defineChannel({ name: "chat", ... })` is served at `/channels/chat`. Dynamic values are query params validated against the channel's declared JSON Schema, for example `/channels/chat?roomId=room-123`.
+Channel routes are exact and flat: `defineChannel({ name: "chat", ... })` is served at `/_tako/channels/chat`. Dynamic values are query params validated against the channel's declared JSON Schema, for example `/_tako/channels/chat?roomId=room-123`.
 
 ### Authoring channels
 

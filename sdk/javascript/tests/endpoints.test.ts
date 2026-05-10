@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   TAKO_INTERNAL_CHANNELS_AUTHORIZE_PATH,
   TAKO_INTERNAL_CHANNELS_DISPATCH_PATH,
@@ -13,10 +13,19 @@ import { defineChannel } from "../src/channels/define";
 
 describe("handleTakoEndpoint", () => {
   injectBootstrap({ token: "test-token", secrets: {} });
+  const previousAppName = process.env["TAKO_APP_NAME"];
 
   let channels: ChannelRegistry;
   beforeEach(() => {
+    process.env["TAKO_APP_NAME"] = "test-app";
     channels = new ChannelRegistry();
+  });
+  afterEach(() => {
+    if (previousAppName === undefined) {
+      delete process.env["TAKO_APP_NAME"];
+    } else {
+      process.env["TAKO_APP_NAME"] = previousAppName;
+    }
   });
 
   const mockStatus: TakoStatus = {
@@ -48,7 +57,7 @@ describe("handleTakoEndpoint", () => {
 
   describe("internal host /status", () => {
     test("returns status JSON", async () => {
-      const request = new Request("http://tako.internal/status", {
+      const request = new Request("http://test-app.tako/status", {
         headers: { [TAKO_INTERNAL_TOKEN_HEADER]: "test-token" },
       });
       const response = await handleTakoEndpoint(request, mockStatus, channels);
@@ -67,7 +76,7 @@ describe("handleTakoEndpoint", () => {
         ...mockStatus,
         status: "draining",
       };
-      const request = new Request("http://tako.internal/status", {
+      const request = new Request("http://test-app.tako/status", {
         headers: { [TAKO_INTERNAL_TOKEN_HEADER]: "test-token" },
       });
       const response = await handleTakoEndpoint(request, unhealthyStatus, channels);
@@ -77,7 +86,7 @@ describe("handleTakoEndpoint", () => {
     });
 
     test("returns 403 without the internal token header", async () => {
-      const request = new Request("http://tako.internal/status");
+      const request = new Request("http://test-app.tako/status");
       const response = await handleTakoEndpoint(request, mockStatus, channels);
 
       expect(response).not.toBeNull();
@@ -85,13 +94,33 @@ describe("handleTakoEndpoint", () => {
     });
 
     test("returns status for internal host with explicit port", async () => {
-      const request = new Request("http://tako.internal:3000/status", {
+      const request = new Request("http://test-app.tako:3000/status", {
         headers: { [TAKO_INTERNAL_TOKEN_HEADER]: "test-token" },
       });
       const response = await handleTakoEndpoint(request, mockStatus, channels);
 
       expect(response).not.toBeNull();
       expect(response!.status).toBe(200);
+    });
+
+    test("uses the base app segment when TAKO_APP_NAME is a deployment id", async () => {
+      process.env["TAKO_APP_NAME"] = "test-app/production";
+      const request = new Request("http://test-app.tako/status", {
+        headers: { [TAKO_INTERNAL_TOKEN_HEADER]: "test-token" },
+      });
+      const response = await handleTakoEndpoint(request, mockStatus, channels);
+
+      expect(response).not.toBeNull();
+      expect(response!.status).toBe(200);
+    });
+
+    test("returns null for a different app-scoped internal host", async () => {
+      const request = new Request("http://other-app.tako/status", {
+        headers: { [TAKO_INTERNAL_TOKEN_HEADER]: "test-token" },
+      });
+      const response = await handleTakoEndpoint(request, mockStatus, channels);
+
+      expect(response).toBeNull();
     });
 
     test("returns status for loopback host with valid token", async () => {
@@ -107,7 +136,7 @@ describe("handleTakoEndpoint", () => {
 
   describe("internal host unknown paths", () => {
     test("returns 404 for unknown paths on internal host", async () => {
-      const request = new Request("http://tako.internal/unknown", {
+      const request = new Request("http://test-app.tako/unknown", {
         headers: { [TAKO_INTERNAL_TOKEN_HEADER]: "test-token" },
       });
       const response = await handleTakoEndpoint(request, mockStatus, channels);
@@ -138,7 +167,7 @@ describe("handleTakoEndpoint", () => {
         }),
       );
 
-      const request = new Request(`http://tako.internal${TAKO_INTERNAL_CHANNELS_AUTHORIZE_PATH}`, {
+      const request = new Request(`http://test-app.tako${TAKO_INTERNAL_CHANNELS_AUTHORIZE_PATH}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -181,7 +210,7 @@ describe("handleTakoEndpoint", () => {
         }),
       );
 
-      const request = new Request(`http://tako.internal${TAKO_INTERNAL_CHANNELS_AUTHORIZE_PATH}`, {
+      const request = new Request(`http://test-app.tako${TAKO_INTERNAL_CHANNELS_AUTHORIZE_PATH}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -204,7 +233,7 @@ describe("handleTakoEndpoint", () => {
     });
 
     test("returns 404 when no channel definition matches", async () => {
-      const request = new Request(`http://tako.internal${TAKO_INTERNAL_CHANNELS_AUTHORIZE_PATH}`, {
+      const request = new Request(`http://test-app.tako${TAKO_INTERNAL_CHANNELS_AUTHORIZE_PATH}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -244,7 +273,7 @@ describe("handleTakoEndpoint", () => {
         }),
       );
 
-      const request = new Request(`http://tako.internal${TAKO_INTERNAL_CHANNELS_AUTHORIZE_PATH}`, {
+      const request = new Request(`http://test-app.tako${TAKO_INTERNAL_CHANNELS_AUTHORIZE_PATH}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -283,7 +312,7 @@ describe("handleTakoEndpoint", () => {
         }),
       );
 
-      const request = new Request(`http://tako.internal${TAKO_INTERNAL_CHANNELS_DISPATCH_PATH}`, {
+      const request = new Request(`http://test-app.tako${TAKO_INTERNAL_CHANNELS_DISPATCH_PATH}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -307,7 +336,7 @@ describe("handleTakoEndpoint", () => {
     });
 
     test("returns reject for unknown channel", async () => {
-      const request = new Request(`http://tako.internal${TAKO_INTERNAL_CHANNELS_DISPATCH_PATH}`, {
+      const request = new Request(`http://test-app.tako${TAKO_INTERNAL_CHANNELS_DISPATCH_PATH}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -328,7 +357,7 @@ describe("handleTakoEndpoint", () => {
     });
 
     test("rejects non-POST methods", async () => {
-      const request = new Request(`http://tako.internal${TAKO_INTERNAL_CHANNELS_DISPATCH_PATH}`, {
+      const request = new Request(`http://test-app.tako${TAKO_INTERNAL_CHANNELS_DISPATCH_PATH}`, {
         method: "GET",
         headers: { [TAKO_INTERNAL_TOKEN_HEADER]: "test-token" },
       });
@@ -350,7 +379,7 @@ describe("handleTakoEndpoint", () => {
       );
       channels.register("status", defineChannel({ name: "status" }));
 
-      const request = new Request(`http://tako.internal${TAKO_INTERNAL_CHANNELS_REGISTRY_PATH}`, {
+      const request = new Request(`http://test-app.tako${TAKO_INTERNAL_CHANNELS_REGISTRY_PATH}`, {
         headers: { [TAKO_INTERNAL_TOKEN_HEADER]: "test-token" },
       });
       const response = await handleTakoEndpoint(request, mockStatus, channels);
@@ -376,7 +405,7 @@ describe("handleTakoEndpoint", () => {
     });
 
     test("rejects non-GET methods", async () => {
-      const request = new Request(`http://tako.internal${TAKO_INTERNAL_CHANNELS_REGISTRY_PATH}`, {
+      const request = new Request(`http://test-app.tako${TAKO_INTERNAL_CHANNELS_REGISTRY_PATH}`, {
         method: "POST",
         headers: { [TAKO_INTERNAL_TOKEN_HEADER]: "test-token" },
       });

@@ -5,7 +5,7 @@ and workflows (enqueue + durable handler, via `defineWorkflow`).
 
 Flow:
 
-1. Client opens `GET /channels/demo` with `Authorization: Bearer e2e`
+1. Client opens `GET /_tako/channels/demo` with `Authorization: Bearer e2e`
    (handled by the Tako dev proxy).
 2. Client `POST /publish` with `{ message }` - the fetch handler publishes
    directly to the channel.

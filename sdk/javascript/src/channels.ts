@@ -25,7 +25,7 @@ export function setChannelSocketPublisher(fn: ChannelSocketPublisher | null): vo
   socketPublisher = fn;
 }
 
-export const TAKO_CHANNELS_BASE_PATH = "/channels";
+export const TAKO_CHANNELS_BASE_PATH = "/_tako/channels";
 const DEFAULT_CHANNEL_REPLAY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_CHANNEL_INACTIVITY_TTL_MS = 0;
 const DEFAULT_CHANNEL_KEEPALIVE_INTERVAL_MS = 25 * 1000;

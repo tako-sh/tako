@@ -14,4 +14,4 @@ just e2e e2e/fixtures/javascript/bun
 
 - This fixture is source-only (no local build step, no `dist` requirement).
 - `tako.toml main` points at `index.ts`, and `tako-server` launches it through the Tako SDK wrapper.
-- The app root returns minimal HTML (`<h1>Tako app</h1>`), and internal health is handled via `Host: tako.internal` + `/status`.
+- The app root returns minimal HTML (`<h1>Tako app</h1>`), and internal health is handled via `Host: bun-e2e.tako` + `/status`.

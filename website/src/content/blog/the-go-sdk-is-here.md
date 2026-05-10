@@ -57,7 +57,7 @@ The Go SDK speaks the exact same [Tako protocol](/docs/how-tako-works) as the Ja
 | Concern           | What the SDK does                                                        |
 | ----------------- | ------------------------------------------------------------------------ |
 | Readiness         | Signals `TAKO:READY:<port>` to stdout when the server is actually bound  |
-| Health checks     | Intercepts `Host: tako.internal` with `/status` endpoint automatically   |
+| Health checks     | Intercepts `Host: <app>.tako` with `/status` endpoint automatically      |
 | Secrets           | Reads from fd 3 at init — before your code runs                          |
 | Graceful shutdown | Catches SIGTERM/SIGINT, drains in-flight requests for 10 seconds         |
 | Metadata          | `tako.InstanceID()`, `tako.Version()`, `tako.Uptime()` for observability |
@@ -105,7 +105,7 @@ tako.Channels.Register("chat", tako.ChannelDefinition{
 })
 ```
 
-Typed params, per-channel auth callbacks, and transport selection are wired up through the same protocol the proxy already speaks. Clients connect to the exact channel name plus query params, for example `/channels/chat?roomId=lobby`.
+Typed params, per-channel auth callbacks, and transport selection are wired up through the same protocol the proxy already speaks. Clients connect to the exact channel name plus query params, for example `/_tako/channels/chat?roomId=lobby`.
 
 ## Getting Started
 

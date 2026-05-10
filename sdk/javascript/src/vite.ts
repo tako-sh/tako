@@ -5,7 +5,7 @@ import type { Plugin, ResolvedConfig, UserConfig } from "vite";
 import { bootstrapChannels } from "./channels/bootstrap";
 import type { ChannelRegistry } from "./channels";
 import { createLogger } from "./logger";
-import { handleTakoEndpoint } from "./tako/endpoints";
+import { TAKO_INTERNAL_HOST_SUFFIX, handleTakoEndpoint } from "./tako/endpoints";
 import { initServerRuntime } from "./tako/init";
 import { installConsoleBridge } from "./tako/console-bridge";
 import { writeViaInheritedFd } from "./tako/readiness";
@@ -19,6 +19,11 @@ interface ViteEntryChunkLike {
 
 const WRAPPED_ENTRY_FILE = "tako-entry.mjs";
 const TAKO_DEV_ALLOWED_HOSTS_ENV = "TAKO_DEV_ALLOWED_HOSTS";
+
+function statusAppName(fallback: string): string {
+  const [appName = ""] = (process.env["TAKO_APP_NAME"] || fallback).split("/");
+  return appName || fallback;
+}
 
 function toPosixPath(filePath: string): string {
   return filePath.replaceAll("\\", "/");
@@ -53,9 +58,10 @@ if (!fetchHandler) {
 }
 
 export default async function(request) {
+  const [appName = ""] = (process.env.TAKO_APP_NAME ?? "app").split("/");
   const takoResponse = await handleTakoEndpoint(request, {
     status: "healthy",
-    app: process.env.TAKO_APP_NAME ?? "app",
+    app: appName || "app",
     version: process.env.TAKO_BUILD ?? "unknown",
     instance_id: process.env.TAKO_INSTANCE_ID ?? "unknown",
     pid: process.pid,
@@ -258,7 +264,7 @@ export function tako(): Plugin {
 
       server.middlewares.use((req: IncomingMessage, res: ServerResponse, next: () => void) => {
         const host = (req.headers.host ?? "").split(":")[0] ?? "";
-        if (host !== "tako.internal") {
+        if (!host.endsWith(TAKO_INTERNAL_HOST_SUFFIX)) {
           next();
           return;
         }
@@ -268,7 +274,7 @@ export function tako(): Plugin {
               fetchReq,
               {
                 status: "healthy",
-                app: "dev",
+                app: statusAppName("dev"),
                 version: process.env["TAKO_BUILD"] ?? "dev",
                 instance_id: process.env["TAKO_INSTANCE_ID"] ?? "dev",
                 pid: process.pid,

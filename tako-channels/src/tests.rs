@@ -3,24 +3,27 @@ use super::*;
 #[test]
 fn parse_channel_route_rejects_invalid_paths() {
     assert!(matches!(
-        parse_channel_route("/channels/"),
+        parse_channel_route("/_tako/channels/"),
         Err(ChannelError::InvalidPath)
     ));
     assert!(matches!(
-        parse_channel_route("/channels/chat/messages"),
+        parse_channel_route("/_tako/channels/chat/messages"),
         Err(ChannelError::InvalidPath)
     ));
+    assert!(parse_channel_route("/channels/chat").unwrap().is_none());
 }
 
 #[test]
 fn parse_channel_route_accepts_exact_channel_names() {
-    let route = parse_channel_route("/channels/chat").unwrap().unwrap();
+    let route = parse_channel_route("/_tako/channels/chat")
+        .unwrap()
+        .unwrap();
     assert_eq!(route.channel, "chat");
 }
 
 #[test]
 fn parse_channel_route_decodes_percent_encoded_segment() {
-    let route = parse_channel_route("/channels/chat%3Aroom-123")
+    let route = parse_channel_route("/_tako/channels/chat%3Aroom-123")
         .unwrap()
         .unwrap();
     assert_eq!(route.channel, "chat:room-123");

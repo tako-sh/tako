@@ -93,7 +93,7 @@ describe("channels", () => {
     expect(subscription.transport).toBe("sse");
     expect(subscription.raw).toEqual({
       kind: "eventsource",
-      url: "https://app.example.com/channels/chat?roomId=room-123",
+      url: "https://app.example.com/_tako/channels/chat?roomId=room-123",
       close: expect.any(Function),
     });
     expect(eventSourceFactory).toHaveBeenCalledTimes(1);
@@ -110,7 +110,7 @@ describe("channels", () => {
     });
 
     expect(eventSourceFactory).toHaveBeenCalledWith(
-      "https://app.example.com/channels/chat%2Froom-123",
+      "https://app.example.com/_tako/channels/chat%2Froom-123",
       {},
     );
   });
@@ -139,7 +139,7 @@ describe("channels", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0]!;
-    expect(url).toBe("https://app.example.com/channels/chat?roomId=room-123");
+    expect(url).toBe("https://app.example.com/_tako/channels/chat?roomId=room-123");
     expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer t");
     expect(new Headers(init?.headers).get("Last-Event-ID")).toBe("7");
   });
@@ -179,7 +179,7 @@ describe("channels", () => {
     expect(connection.transport).toBe("ws");
     expect(connection.raw).toEqual({
       kind: "websocket",
-      url: "wss://app.example.com/channels/chat?roomId=room-123&last_message_id=42",
+      url: "wss://app.example.com/_tako/channels/chat?roomId=room-123&last_message_id=42",
       send,
       close,
     });
@@ -214,7 +214,7 @@ describe("channels", () => {
 
     expect(connection.raw).toBeInstanceOf(MockWebSocket);
     expect((connection.raw as MockWebSocket).url).toBe(
-      "wss://app.example.com/channels/chat?roomId=room-123",
+      "wss://app.example.com/_tako/channels/chat?roomId=room-123",
     );
   });
 

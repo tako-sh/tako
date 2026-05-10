@@ -247,7 +247,7 @@ describe.skipIf(SKIP)("tako dev fixtures", () => {
         markReady = resolve;
       });
       const sse = collectSseUntil(
-        appUrl(devUrl, "/channels/demo"),
+        appUrl(devUrl, "/_tako/channels/demo"),
         [directMessage, workflowMessage],
         markReady,
         abort.signal,

@@ -10,8 +10,8 @@ Package name: `tako.sh`
 - File-based channel definitions via `defineChannel` in `channels/*.ts` (default-exported handle)
 - File-based workflow definitions via `defineWorkflow` in `workflows/<name>.ts` (default-exported handle with `.enqueue`)
 - Vite plugin for SSR framework builds
-- Built-in internal status endpoint (`GET /status` on `Host: tako.internal`)
-- Built-in internal channel auth + dispatch endpoints on `Host: tako.internal`
+- Built-in internal status endpoint (`GET /status` on `Host: <app>.tako`)
+- Built-in internal channel auth + dispatch endpoints on `Host: <app>.tako`
 
 The `tako.sh` package's named exports are the definition helpers (`defineChannel`, `defineWorkflow`), the workflow `signal` function, `TakoError`, and types (`InferWorkflowPayload`, `TakoErrorCode`, `EnqueueOptions`, `WorkflowOpts`). There is no `Tako` global — channels and workflows are plain ES modules that you import where you use them.
 

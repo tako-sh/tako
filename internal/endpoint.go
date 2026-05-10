@@ -9,11 +9,11 @@ import (
 )
 
 const internalTokenHeader = "x-tako-internal-token"
-const internalHost = "tako.internal"
+const internalHostSuffix = ".tako"
 const internalChannelAuthorizePath = "/channels/authorize"
 const internalChannelRegistryPath = "/channels/registry"
 
-// StatusResponse is the JSON shape returned by GET /status on Host: tako.internal.
+// StatusResponse is the JSON shape returned by GET /status on Host: <app>.tako.
 type StatusResponse struct {
 	Status        string `json:"status"`
 	InstanceID    string `json:"instance_id"`
@@ -22,8 +22,9 @@ type StatusResponse struct {
 	UptimeSeconds int64  `json:"uptime_seconds"`
 }
 
-// EndpointHandler intercepts Host: tako.internal requests for internal endpoints.
+// EndpointHandler intercepts Host: <app>.tako requests for internal endpoints.
 type EndpointHandler struct {
+	appName       string
 	startTime     time.Time
 	instanceID    string
 	version       string
@@ -32,8 +33,9 @@ type EndpointHandler struct {
 }
 
 // NewEndpointHandler creates a handler that intercepts Tako internal requests.
-func NewEndpointHandler(instanceID, version, internalToken string, userApp http.Handler) *EndpointHandler {
+func NewEndpointHandler(appName, instanceID, version, internalToken string, userApp http.Handler) *EndpointHandler {
 	return &EndpointHandler{
+		appName:       appName,
 		startTime:     time.Now(),
 		instanceID:    instanceID,
 		version:       version,
@@ -44,7 +46,7 @@ func NewEndpointHandler(instanceID, version, internalToken string, userApp http.
 
 // ServeHTTP dispatches to internal endpoints or the user's app.
 func (h *EndpointHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if normalizeHost(r.Host) == internalHost {
+	if normalizeHost(r.Host) == h.internalHost() {
 		h.handleInternal(w, r)
 		return
 	}
@@ -53,7 +55,7 @@ func (h *EndpointHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (h *EndpointHandler) handleInternal(w http.ResponseWriter, r *http.Request) {
 	// Verify internal token when set (production mode).
-	// In dev mode (no token), all Host:tako.internal requests are allowed.
+	// In dev mode (no token), all Host:<app>.tako requests are allowed.
 	if h.internalToken != "" {
 		if r.Header.Get(internalTokenHeader) != h.internalToken {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -131,4 +133,17 @@ func normalizeHost(host string) string {
 	}
 	parts := strings.Split(host, ":")
 	return parts[0]
+}
+
+func (h *EndpointHandler) internalHost() string {
+	appName := strings.TrimSpace(strings.ToLower(h.appName))
+	if appName == "" {
+		appName = "app"
+	} else if baseAppName, _, ok := strings.Cut(appName, "/"); ok {
+		appName = baseAppName
+		if appName == "" {
+			appName = "app"
+		}
+	}
+	return appName + internalHostSuffix
 }

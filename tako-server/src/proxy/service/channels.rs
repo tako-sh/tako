@@ -55,7 +55,7 @@ impl TakoProxy {
             return Ok(meta);
         }
 
-        let defs = fetch_channel_registry(instance).await?;
+        let defs = fetch_channel_registry(app_name, instance).await?;
         self.channel_registry.install(app_name, defs);
         self.channel_registry
             .get(app_name, channel)
@@ -318,6 +318,7 @@ impl TakoProxy {
                 };
                 let auth_mode = ChannelWebSocketAuth::FirstFrame {
                     endpoint: endpoint.to_string(),
+                    internal_host: crate::instances::internal_app_host_for_app_id(app_name),
                     internal_token: instance.internal_token().to_string(),
                     params,
                     cookie,
@@ -335,6 +336,7 @@ impl TakoProxy {
             }
 
             let auth_result = authorize_channel_request(
+                app_name,
                 instance,
                 operation,
                 &route.channel,
@@ -365,9 +367,16 @@ impl TakoProxy {
                 .await;
         }
 
-        let auth_result =
-            authorize_channel_request(instance, operation, &route.channel, params, header, cookie)
-                .await;
+        let auth_result = authorize_channel_request(
+            app_name,
+            instance,
+            operation,
+            &route.channel,
+            params,
+            header,
+            cookie,
+        )
+        .await;
 
         let auth_result = match auth_result {
             Ok(result) => result,

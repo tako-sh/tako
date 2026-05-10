@@ -105,7 +105,13 @@ func ListenAndServe(handler http.Handler) error {
 	}
 
 	cfg := config()
-	wrapped := internal.NewEndpointHandler(cfg.InstanceID, cfg.Version, cfg.InternalToken, handler)
+	wrapped := internal.NewEndpointHandler(
+		cfg.AppName,
+		cfg.InstanceID,
+		cfg.Version,
+		cfg.InternalToken,
+		handler,
+	)
 
 	srv := &http.Server{Handler: wrapped}
 

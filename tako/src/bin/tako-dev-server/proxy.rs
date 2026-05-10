@@ -308,7 +308,7 @@ impl ProxyHttp for DevProxy {
         });
 
         // Intercept channel requests before normal routing.
-        if path.starts_with("/channels/") {
+        if path.starts_with(tako_channels::CHANNELS_BASE_PATH) {
             let method = session.req_header().method.as_str().to_string();
             return crate::dev_channels::try_handle(session, &self.channels, &path, &method).await;
         }

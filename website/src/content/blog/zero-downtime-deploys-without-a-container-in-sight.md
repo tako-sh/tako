@@ -49,7 +49,7 @@ Tako uses an explicit readiness signal. The [SDK](/docs) handles this automatica
 
 Your app can also define a `ready()` hook for custom initialization logic — the SDK won't signal readiness until it completes. This means traffic only reaches instances that are genuinely ready to serve.
 
-Once ready, the server probes every 1 second with a request to the SDK's built-in `/status` endpoint (using the internal `Host: tako` header). One failed probe marks the instance unhealthy and pulls it from the load balancer.
+Once ready, the server probes every 1 second with a request to the SDK's built-in `/status` endpoint (using the internal `Host: <app>.tako` header). One failed probe marks the instance unhealthy and pulls it from the load balancer.
 
 ## Connection draining
 

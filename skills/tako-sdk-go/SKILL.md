@@ -43,7 +43,7 @@ func main() {
 This is a complete Tako app. `ListenAndServe` handles:
 
 - Binding to the correct address (from Tako environment or `0.0.0.0:3000`)
-- Intercepting `Host: tako.internal` requests for health checks and channel auth
+- Intercepting `Host: <app>.tako` requests for health checks and channel auth
 - Graceful shutdown on SIGTERM/SIGINT (10-second grace period)
 
 ## API
@@ -86,7 +86,7 @@ app := fiber.New()
 app.Listener(ln)
 ```
 
-**Important:** When using `Listener()` directly, your app must handle the Tako protocol itself (health checks on `Host: tako.internal`, secrets endpoint). Most apps should use `ListenAndServe` instead.
+**Important:** When using `Listener()` directly, your app must handle the Tako protocol itself (health checks on `Host: <app>.tako`, secrets endpoint). Most apps should use `ListenAndServe` instead.
 
 ### `tako.InstanceID() string`
 
@@ -146,8 +146,8 @@ Run `tako typegen` after adding or removing secrets.
 
 The SDK transparently handles these — you don't interact with them directly:
 
-- `GET /status` on `Host: tako.internal` — health check (returns JSON with status, instance_id, version, pid, uptime_seconds)
-- `POST /channels/authorize` on `Host: tako.internal` — channel auth callback for `tako-server`
+- `GET /status` on `Host: <app>.tako` — health check (returns JSON with status, instance_id, version, pid, uptime_seconds)
+- `POST /channels/authorize` on `Host: <app>.tako` — channel auth callback for `tako-server`
 - Token authentication via `x-tako-internal-token` header (required in production, skipped in dev)
 - Secrets are read from fd 3 at process startup (Tako runtime ABI), not via HTTP
 
@@ -186,5 +186,5 @@ http.Serve(ln, mux)
 tako.ListenAndServe(mux)
 
 // or if you need Listener (Fiber), the framework must handle
-// Host: tako.internal requests itself — this is an advanced path
+// Host: <app>.tako requests itself — this is an advanced path
 ```

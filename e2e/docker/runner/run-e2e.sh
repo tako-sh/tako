@@ -398,7 +398,7 @@ run_channels_workflows_checks() {
     -H "Accept: text/event-stream" \
     -D "$headers_file" \
     -o "$events_file" \
-    "http://${server_host}:8080/channels/demo" \
+    "http://${server_host}:8080/_tako/channels/demo" \
     2>"$stderr_file" &
   sse_pid=$!
 

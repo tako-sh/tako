@@ -97,7 +97,7 @@ describe("useChannel (sse)", () => {
         baseUrl: "http://test",
       }),
     );
-    expect(es!.url).toBe("http://test/channels/chat?roomId=r1&limit=10");
+    expect(es!.url).toBe("http://test/_tako/channels/chat?roomId=r1&limit=10");
   });
 
   test("appends messages on incoming events", () => {
@@ -260,7 +260,7 @@ describe("useChannel (ws)", () => {
         baseUrl: "http://test",
       }),
     );
-    expect(sockets[0]!.url).toBe("ws://test/channels/chat?roomId=r1");
+    expect(sockets[0]!.url).toBe("ws://test/_tako/channels/chat?roomId=r1");
   });
 
   test("send() forwards to the underlying socket", () => {
@@ -329,7 +329,7 @@ describe("useChannel (ws)", () => {
       await new Promise((r) => setTimeout(r, 1500));
     });
 
-    expect(sockets.at(-1)!.url).toBe("ws://test/channels/chat%3A1?last_message_id=m7");
+    expect(sockets.at(-1)!.url).toBe("ws://test/_tako/channels/chat%3A1?last_message_id=m7");
   });
 
   test("closes the socket on unmount and stops reconnecting", async () => {

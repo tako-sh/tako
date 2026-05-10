@@ -13,7 +13,7 @@ import (
 // Bootstrap is the envelope delivered on fd 3 by tako-server.
 //
 // The token is the per-instance internal auth token used for
-// Host:tako.internal traffic. Secrets are the user-configured secrets
+// Host:<app>.tako traffic. Secrets are the user-configured secrets
 // for this app. The envelope rides a pipe (not env/args) so neither
 // value inherits into subprocesses the app spawns.
 type Bootstrap struct {

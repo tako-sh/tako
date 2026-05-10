@@ -86,6 +86,27 @@ fn test_instance_internal_token_is_stable() {
 }
 
 #[test]
+fn app_config_defaults_internal_host_to_app_scoped_tako_host() {
+    let (tx, _rx) = mpsc::channel(16);
+    let app = App::new(
+        AppConfig {
+            name: "demo".to_string(),
+            version: "v1".to_string(),
+            ..Default::default()
+        },
+        tx,
+        noop_log_handle(),
+    );
+
+    assert_eq!(app.config.read().health_check_host, "demo.tako");
+}
+
+#[test]
+fn internal_app_host_for_deployment_id_uses_base_app_name() {
+    assert_eq!(internal_app_host_for_app_id("demo/production"), "demo.tako");
+}
+
+#[test]
 fn test_instance_port_round_trips() {
     let instance = Instance::new("test-1".to_string(), "v1".to_string(), noop_log_handle());
     assert_eq!(instance.port(), None);

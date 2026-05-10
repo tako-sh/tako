@@ -22,7 +22,7 @@ function mockFetchStream(chunks: string[]): typeof fetch {
 describe("SseReader", () => {
   test("dispatches messages assembled from data lines", async () => {
     const messages: string[] = [];
-    const reader = new SseReader("http://x/channels/chat", {
+    const reader = new SseReader("http://x/_tako/channels/chat", {
       fetch: mockFetchStream(["data: hello\n\n", "data: world\n\n"]),
       headers: { Authorization: "Bearer t" },
       onMessage: (message) => messages.push(message.data),
@@ -36,7 +36,7 @@ describe("SseReader", () => {
 
   test("joins multiple data lines with newlines", async () => {
     const messages: string[] = [];
-    const reader = new SseReader("http://x/channels/chat", {
+    const reader = new SseReader("http://x/_tako/channels/chat", {
       fetch: mockFetchStream(["event: note\ndata: hello\ndata: world\n\n"]),
       onMessage: (message) => messages.push(`${message.type}:${message.data}`),
     });
@@ -48,7 +48,7 @@ describe("SseReader", () => {
   });
 
   test("tracks lastEventId from id lines", async () => {
-    const reader = new SseReader("http://x/channels/chat", {
+    const reader = new SseReader("http://x/_tako/channels/chat", {
       fetch: mockFetchStream(["id: 7\ndata: a\n\n"]),
       onMessage: () => {},
     });
@@ -62,7 +62,7 @@ describe("SseReader", () => {
   test("does not retry fetch failures by default", async () => {
     let calls = 0;
     const errors: string[] = [];
-    const reader = new SseReader("http://x/channels/chat", {
+    const reader = new SseReader("http://x/_tako/channels/chat", {
       fetch: async () => {
         calls++;
         throw new Error("net");
@@ -83,7 +83,7 @@ describe("SseReader", () => {
 
   test("retries with backoff after fetch failure when retryOnDisconnect is enabled", async () => {
     let calls = 0;
-    const reader = new SseReader("http://x/channels/chat", {
+    const reader = new SseReader("http://x/_tako/channels/chat", {
       fetch: async () => {
         calls++;
         if (calls === 1) {
@@ -109,7 +109,7 @@ describe("SseReader", () => {
   test("sends Last-Event-ID on retry", async () => {
     const seen: Array<string | null> = [];
     let calls = 0;
-    const reader = new SseReader("http://x/channels/chat", {
+    const reader = new SseReader("http://x/_tako/channels/chat", {
       fetch: async (_url, init) => {
         calls++;
         seen.push(new Headers(init?.headers).get("Last-Event-ID"));
@@ -138,7 +138,7 @@ describe("SseReader", () => {
   test("treats a clean stream end as reconnectable when retryOnDisconnect is enabled", async () => {
     const errors: string[] = [];
     let calls = 0;
-    const reader = new SseReader("http://x/channels/chat", {
+    const reader = new SseReader("http://x/_tako/channels/chat", {
       fetch: async () => {
         calls++;
         return new Response("data: ok\n\n", {

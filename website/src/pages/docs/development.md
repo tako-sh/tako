@@ -234,7 +234,7 @@ Secrets are read from `.tako/secrets.json` and delivered through the same runtim
 Channel definitions in `channels/` are discovered by the SDK. Public channel routes are served at:
 
 ```text
-/channels/<name>
+/_tako/channels/<name>
 ```
 
 The dev server uses the same internal channel registry, authorization, and dispatch endpoints as production. Changes to channel definitions restart the app so the registry stays current.

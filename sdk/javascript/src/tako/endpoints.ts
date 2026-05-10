@@ -1,7 +1,7 @@
 /**
  * Tako Internal Endpoints
  *
- * These endpoints are handled by the SDK automatically on Host: tako.internal.
+ * These endpoints are handled by the SDK automatically on Host: <app>.tako.
  *
  * - GET  /status — Health/status check
  * - POST /channels/authorize — Channel auth callback
@@ -12,13 +12,18 @@ import type { ChannelAuthorizeInput, TakoStatus } from "../types";
 import { dispatchWsMessage } from "../channels/handler";
 import { getInternalToken } from "./secrets";
 
-export const TAKO_INTERNAL_HOST = "tako.internal";
+export const TAKO_INTERNAL_HOST_SUFFIX = ".tako";
 export const TAKO_INTERNAL_STATUS_PATH = "/status";
 export const TAKO_INTERNAL_CHANNELS_AUTHORIZE_PATH = "/channels/authorize";
 export const TAKO_INTERNAL_CHANNELS_DISPATCH_PATH = "/channels/dispatch";
 export const TAKO_INTERNAL_CHANNELS_REGISTRY_PATH = "/channels/registry";
 export const TAKO_INTERNAL_TOKEN_HEADER = "x-tako-internal-token";
 const LOOPBACK_INTERNAL_HOSTS = new Set(["127.0.0.1", "localhost", "0.0.0.0"]);
+
+function baseAppName(value: string): string {
+  const [appName = ""] = value.trim().toLowerCase().split("/");
+  return appName.length > 0 ? appName : "app";
+}
 
 function normalizeHost(value: string | null): string | null {
   if (!value) {
@@ -32,11 +37,30 @@ function normalizeHost(value: string | null): string | null {
   return host;
 }
 
+export function internalAppHost(appName: string): string {
+  return `${baseAppName(appName)}${TAKO_INTERNAL_HOST_SUFFIX}`;
+}
+
+function runtimeAppName(): string | null {
+  const processLike = globalThis as typeof globalThis & {
+    process?: { env?: Record<string, string | undefined> };
+  };
+  const appName = processLike.process?.env?.["TAKO_APP_NAME"]?.trim();
+  return appName && appName.length > 0 ? appName : null;
+}
+
 function isInternalHost(host: string | null): boolean {
   if (!host) {
     return false;
   }
-  return host === TAKO_INTERNAL_HOST || LOOPBACK_INTERNAL_HOSTS.has(host);
+  if (LOOPBACK_INTERNAL_HOSTS.has(host)) {
+    return true;
+  }
+  const appName = runtimeAppName();
+  if (appName) {
+    return host === internalAppHost(appName);
+  }
+  return host.endsWith(TAKO_INTERNAL_HOST_SUFFIX) && host.length > TAKO_INTERNAL_HOST_SUFFIX.length;
 }
 
 function internalToken(): string | null {
@@ -45,7 +69,7 @@ function internalToken(): string | null {
 
 // CodeQL[js/stack-trace-exposure]: body may carry `err.message` (not stack)
 // from user handler exceptions via DispatchResult. This endpoint is gated on
-// Host: tako.internal + internal token — only the tako-server infra reaches
+// Host: <app>.tako + internal token — only the tako-server infra reaches
 // it, and the server uses the error string for operator logging, never
 // forwarding it to external WS clients.
 function internalResponse(
@@ -189,7 +213,7 @@ async function handleChannelDispatch(
 }
 
 /**
- * GET /status on Host: tako.internal — Full status information
+ * GET /status on Host: <app>.tako — Full status information
  */
 function handleStatus(status: TakoStatus, token: string): Response {
   return internalResponse(status, 200, token);

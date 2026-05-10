@@ -13,14 +13,14 @@
       "type": "framework",
       "description": "tako.sh Go SDK: ListenAndServe for http.Handler, Listener for custom servers, typed secrets via tako typegen, metadata helpers.",
       "url": "https://tako.sh/.well-known/agent-skills/tako-sdk-go/SKILL.md",
-      "sha256": "9e01e0e1ef13832f787a638cee4760f439e8934e19de32df76d9e9714ab5afc9"
+      "sha256": "becd96458367d5689b1c9c85dc3416beb16ec322087c82394ea61cf4f66fca95"
     },
     {
       "name": "tako-sdk-js",
       "type": "framework",
       "description": "tako.sh SDK: fetch handler interface, generated tako.gen.ts for runtime state + typed secrets, defineChannel/defineWorkflow, Vite and Next.js adapters.",
       "url": "https://tako.sh/.well-known/agent-skills/tako-sdk-js/SKILL.md",
-      "sha256": "efb195fddced66c8b2f4fa71fb213d740a7d0f4f7aa78ba2db6ea0489081c708"
+      "sha256": "c011ed7aa2006036d2988187457d34de6fed75edc1e060a0341b8becdb500fcc"
     }
   ]
 }

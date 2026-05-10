@@ -10,7 +10,7 @@
  * module is imported.
  *
  * The token is kept in module scope and used by the SDK to authenticate
- * server-issued `Host: tako.internal` requests — it is not exposed to
+ * server-issued `Host: <app>.tako` requests — it is not exposed to
  * user code, and it does NOT leak to processes the app spawns (unlike
  * an env var would).
  *

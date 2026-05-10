@@ -117,17 +117,20 @@ func TestFullProtocol(t *testing.T) {
 	configOnce = syncOnce()
 	origArgs := os.Args
 	origBuild := os.Getenv("TAKO_BUILD")
+	origAppName := os.Getenv("TAKO_APP_NAME")
 	os.Args = []string{"test", "--instance", "full1234"}
 	origPort := os.Getenv("PORT")
 	origHost := os.Getenv("HOST")
 	origBootstrap := bootstrap
 	bootstrap = &internal.Bootstrap{Token: "test-token", Secrets: map[string]string{}}
 	os.Setenv("TAKO_BUILD", "v3")
+	os.Setenv("TAKO_APP_NAME", "demo")
 	os.Setenv("HOST", "127.0.0.1")
 	os.Setenv("PORT", "0")
 	defer func() {
 		os.Args = origArgs
 		setOrUnset("TAKO_BUILD", origBuild)
+		setOrUnset("TAKO_APP_NAME", origAppName)
 		setOrUnset("PORT", origPort)
 		setOrUnset("HOST", origHost)
 		bootstrap = origBootstrap
@@ -145,7 +148,7 @@ func TestFullProtocol(t *testing.T) {
 	defer ln.Close()
 
 	cfg := config()
-	wrapped := internal.NewEndpointHandler(cfg.InstanceID, cfg.Version, cfg.InternalToken, userHandler)
+	wrapped := internal.NewEndpointHandler(cfg.AppName, cfg.InstanceID, cfg.Version, cfg.InternalToken, userHandler)
 	go http.Serve(ln, wrapped)
 	time.Sleep(10 * time.Millisecond)
 
@@ -154,7 +157,7 @@ func TestFullProtocol(t *testing.T) {
 
 	// Health check (with token)
 	req, _ := http.NewRequest("GET", "http://"+addr+"/status", nil)
-	req.Host = "tako.internal"
+	req.Host = "demo.tako"
 	req.Header.Set("x-tako-internal-token", "test-token")
 	resp, err := client.Do(req)
 	if err != nil {

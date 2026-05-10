@@ -60,7 +60,7 @@ func main() {
 
 The important line is the last one. In a typical Gin quickstart you would call `r.Run()`. On Tako, hand the router to `tako.ListenAndServe(r)` instead.
 
-Gin's engine works with the standard `net/http` server shape, so Tako can wrap it the same way it wraps a plain `http.ServeMux`. The wrapper binds the port Tako gives the process, writes readiness back to Tako, intercepts internal `Host: tako.internal` status checks, and drains in-flight requests during rolling deploys.
+Gin's engine works with the standard `net/http` server shape, so Tako can wrap it the same way it wraps a plain `http.ServeMux`. The wrapper binds the port Tako gives the process, writes readiness back to Tako, intercepts internal `Host: <app>.tako` status checks, and drains in-flight requests during rolling deploys.
 
 Run it directly once if you want a local smoke test:
 

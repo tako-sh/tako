@@ -260,7 +260,7 @@ Tako probes:
 
 ```http
 GET /status
-Host: tako.internal
+Host: <app>.tako
 ```
 
 Use the SDK wrapper for your runtime so the endpoint and readiness protocol are installed.

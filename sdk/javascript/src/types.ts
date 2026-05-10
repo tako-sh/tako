@@ -186,7 +186,7 @@ export interface ChannelSocket {
 
 /**
  * Response body from the Tako SDK's built-in `/status` endpoint
- * (served on the `tako.internal` host).
+ * (served on the `<app>.tako` internal host).
  */
 export interface TakoStatus {
   /** Current lifecycle state of the instance. */

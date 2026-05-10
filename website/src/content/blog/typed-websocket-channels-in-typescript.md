@@ -45,7 +45,7 @@ export default defineChannel({
 }).$messageTypes<ChatMessages>();
 ```
 
-TypeBox matters here because it gives Tako both sides of the shape. Per the [TypeBox docs](https://github.com/sinclairzx81/typebox), a schema is a JSON Schema object that can also infer a TypeScript type. Tako uses that JSON Schema to validate `/channels/chat?roomId=lobby` before asking your app to authorize anything, while TypeScript uses the same declaration to type `params.roomId` in your callback.
+TypeBox matters here because it gives Tako both sides of the shape. Per the [TypeBox docs](https://github.com/sinclairzx81/typebox), a schema is a JSON Schema object that can also infer a TypeScript type. Tako uses that JSON Schema to validate `/_tako/channels/chat?roomId=lobby` before asking your app to authorize anything, while TypeScript uses the same declaration to type `params.roomId` in your callback.
 
 No handler means SSE: broadcast-only, replayable, simple. A handler means WebSocket: clients can send JSON frames, each frame routes through the matching handler, and the handler's return value is what gets fanned out. See [How Tako Works](/docs/how-tako-works) for the protocol view.
 
@@ -78,7 +78,7 @@ store: "SQLite replay window" {
   style.fill: "#E88783"
 }
 
-browser -> proxy: "GET /channels/chat?roomId=lobby\nUpgrade: websocket"
+browser -> proxy: "GET /_tako/channels/chat?roomId=lobby\nUpgrade: websocket"
 browser -> proxy: "first frame: tako.auth + lastMessageId"
 proxy -> app: "POST /channels/authorize"
 app -> proxy: "ok + subject + lifecycle"

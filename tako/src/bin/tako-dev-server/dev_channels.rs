@@ -191,7 +191,7 @@ mod tests {
 
     #[test]
     fn parse_subscribe_path() {
-        let route = parse_channel_route("/channels/demo-broadcast")
+        let route = parse_channel_route("/_tako/channels/demo-broadcast")
             .unwrap()
             .unwrap();
         assert_eq!(route.channel, "demo-broadcast");
@@ -199,7 +199,7 @@ mod tests {
 
     #[test]
     fn parse_rejects_nested_channel_path() {
-        assert!(parse_channel_route("/channels/demo-broadcast/messages").is_err());
+        assert!(parse_channel_route("/_tako/channels/demo-broadcast/messages").is_err());
     }
 
     #[test]
@@ -209,7 +209,7 @@ mod tests {
 
     #[test]
     fn parse_returns_error_for_empty_channel_path() {
-        assert!(parse_channel_route("/channels/").is_err());
+        assert!(parse_channel_route("/_tako/channels/").is_err());
     }
 
     #[test]

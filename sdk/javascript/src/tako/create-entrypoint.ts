@@ -47,6 +47,11 @@ function parseArgs(argv: string[]): ParsedArgs {
   return { main, instance };
 }
 
+function statusAppName(): string {
+  const [appName = ""] = (process.env["TAKO_APP_NAME"] || "app").split("/");
+  return appName || "app";
+}
+
 export function createEntrypoint() {
   const signalReadyPort = (port: number): void => writeViaInheritedFd(4, port);
 
@@ -60,7 +65,7 @@ export function createEntrypoint() {
   function getStatus(): TakoStatus {
     return {
       status: currentStatus,
-      app: "app",
+      app: statusAppName(),
       version: process.env["TAKO_BUILD"] || "unknown",
       instance_id: parsed.instance,
       pid: process.pid,

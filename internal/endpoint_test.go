@@ -10,10 +10,10 @@ import (
 )
 
 func TestStatusEndpoint(t *testing.T) {
-	handler := NewEndpointHandler("test1234", "v1.0", "", http.NotFoundHandler())
+	handler := NewEndpointHandler("demo/production", "test1234", "v1.0", "", http.NotFoundHandler())
 
 	req := httptest.NewRequest(http.MethodGet, "/status", nil)
-	req.Host = "tako.internal"
+	req.Host = "demo.tako"
 	w := httptest.NewRecorder()
 
 	handler.ServeHTTP(w, req)
@@ -36,12 +36,25 @@ func TestStatusEndpoint(t *testing.T) {
 	}
 }
 
+func TestInternalHostUsesBaseAppSegment(t *testing.T) {
+	handler := NewEndpointHandler("demo/production", "test1234", "v1.0", "", http.NotFoundHandler())
+
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	req.Host = "demo-production.tako"
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("deployment-id-shaped host: status = %d, want 404 from user app", w.Code)
+	}
+}
+
 func TestTokenVerification(t *testing.T) {
-	handler := NewEndpointHandler("test1234", "v1.0", "secret-token", http.NotFoundHandler())
+	handler := NewEndpointHandler("demo", "test1234", "v1.0", "secret-token", http.NotFoundHandler())
 
 	// Valid token → 200 + token echoed back
 	req := httptest.NewRequest(http.MethodGet, "/status", nil)
-	req.Host = "tako.internal"
+	req.Host = "demo.tako"
 	req.Header.Set("x-tako-internal-token", "secret-token")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
@@ -55,7 +68,7 @@ func TestTokenVerification(t *testing.T) {
 
 	// Wrong token → 401
 	req2 := httptest.NewRequest(http.MethodGet, "/status", nil)
-	req2.Host = "tako.internal"
+	req2.Host = "demo.tako"
 	req2.Header.Set("x-tako-internal-token", "wrong")
 	w2 := httptest.NewRecorder()
 	handler.ServeHTTP(w2, req2)
@@ -66,7 +79,7 @@ func TestTokenVerification(t *testing.T) {
 
 	// Missing token → 401
 	req3 := httptest.NewRequest(http.MethodGet, "/status", nil)
-	req3.Host = "tako.internal"
+	req3.Host = "demo.tako"
 	w3 := httptest.NewRecorder()
 	handler.ServeHTTP(w3, req3)
 
@@ -77,10 +90,10 @@ func TestTokenVerification(t *testing.T) {
 
 func TestNoTokenInDevMode(t *testing.T) {
 	// Empty token (dev mode) → no auth required
-	handler := NewEndpointHandler("test1234", "v1.0", "", http.NotFoundHandler())
+	handler := NewEndpointHandler("demo", "test1234", "v1.0", "", http.NotFoundHandler())
 
 	req := httptest.NewRequest(http.MethodGet, "/status", nil)
-	req.Host = "tako.internal"
+	req.Host = "demo.tako"
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -89,9 +102,28 @@ func TestNoTokenInDevMode(t *testing.T) {
 	}
 }
 
+func TestDifferentAppTakoHostPassthrough(t *testing.T) {
+	called := false
+	userApp := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.Write([]byte("user response"))
+	})
+	handler := NewEndpointHandler("demo", "test1234", "v1.0", "secret-token", userApp)
+
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	req.Host = "other.tako"
+	req.Header.Set("x-tako-internal-token", "secret-token")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if !called {
+		t.Fatal("user app should be called for a different app-scoped .tako host")
+	}
+}
+
 func TestChannelAuthorizeEndpoint(t *testing.T) {
 	called := false
-	handler := NewEndpointHandler("test1234", "v1.0", "secret-token", http.NotFoundHandler())
+	handler := NewEndpointHandler("demo", "test1234", "v1.0", "secret-token", http.NotFoundHandler())
 	Channels.Clear()
 	defer Channels.Clear()
 
@@ -133,7 +165,7 @@ func TestChannelAuthorizeEndpoint(t *testing.T) {
 		"params":{"roomId":"room-123"},
 		"header":{"scheme":"Bearer","value":"test"}
 	}`))
-	req.Host = "tako.internal"
+	req.Host = "demo.tako"
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-tako-internal-token", "secret-token")
 	w := httptest.NewRecorder()
@@ -170,7 +202,7 @@ func TestChannelAuthorizeEndpoint(t *testing.T) {
 }
 
 func TestChannelAuthorizeEndpointRejectsVerifyDenial(t *testing.T) {
-	handler := NewEndpointHandler("test1234", "v1.0", "secret-token", http.NotFoundHandler())
+	handler := NewEndpointHandler("demo", "test1234", "v1.0", "secret-token", http.NotFoundHandler())
 	Channels.Clear()
 	defer Channels.Clear()
 
@@ -185,7 +217,7 @@ func TestChannelAuthorizeEndpointRejectsVerifyDenial(t *testing.T) {
 		"params":{},
 		"header":{"scheme":"Bearer","value":"test"}
 	}`))
-	req.Host = "tako.internal"
+	req.Host = "demo.tako"
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-tako-internal-token", "secret-token")
 	w := httptest.NewRecorder()
@@ -198,7 +230,7 @@ func TestChannelAuthorizeEndpointRejectsVerifyDenial(t *testing.T) {
 }
 
 func TestChannelRegistryEndpoint(t *testing.T) {
-	handler := NewEndpointHandler("test1234", "v1.0", "secret-token", http.NotFoundHandler())
+	handler := NewEndpointHandler("demo", "test1234", "v1.0", "secret-token", http.NotFoundHandler())
 	Channels.Clear()
 	defer Channels.Clear()
 
@@ -209,7 +241,7 @@ func TestChannelRegistryEndpoint(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/channels/registry", nil)
-	req.Host = "tako.internal"
+	req.Host = "demo.tako"
 	req.Header.Set("x-tako-internal-token", "secret-token")
 	w := httptest.NewRecorder()
 
@@ -241,7 +273,7 @@ func TestNonTakoHostPassthrough(t *testing.T) {
 		w.Write([]byte("user response"))
 	})
 
-	handler := NewEndpointHandler("test1234", "v1.0", "", userApp)
+	handler := NewEndpointHandler("demo", "test1234", "v1.0", "", userApp)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "example.com"

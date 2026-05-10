@@ -6,6 +6,8 @@ import (
 
 // Config holds runtime configuration parsed from CLI args and env vars.
 type Config struct {
+	// AppName is the Tako app identity from TAKO_APP_NAME.
+	AppName string
 	// InstanceID is the 8-char instance identifier assigned by tako-server.
 	InstanceID string
 	// Version is the deploy version string from TAKO_BUILD.
@@ -14,7 +16,7 @@ type Config struct {
 	Host string
 	// Port is the TCP port to listen on. Defaults to "3000".
 	Port string
-	// InternalToken authenticates Host:tako.internal requests from tako-server.
+	// InternalToken authenticates Host:<app>.tako requests from tako-server.
 	// Delivered on the fd 3 bootstrap envelope. Empty in dev mode (no auth required).
 	InternalToken string
 }
@@ -44,6 +46,7 @@ func ParseConfigFrom(args []string, getenv func(string) string, bootstrap *Boots
 	}
 
 	cfg.Version = getenv("TAKO_BUILD")
+	cfg.AppName = getenv("TAKO_APP_NAME")
 	if host := getenv("HOST"); host != "" {
 		cfg.Host = host
 	}

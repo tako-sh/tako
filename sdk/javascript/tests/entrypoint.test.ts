@@ -70,6 +70,8 @@ test("internal status uses TAKO_BUILD and instance arg for runtime identity", as
 
   try {
     process.env["TAKO_BUILD"] = "build-123";
+    process.env["TAKO_APP_NAME"] = "entry-app/production";
+    process.env["TAKO_INTERNAL_SOCKET"] = path.join(rootDir, "internal.sock");
     injectBootstrap({ token: "token-123", secrets: {} });
     await writeFile(entryModule, 'export default () => new Response("ok");\n', "utf8");
 
@@ -78,20 +80,24 @@ test("internal status uses TAKO_BUILD and instance arg for runtime identity", as
     const { run } = createEntrypoint();
     await run(async (handleRequest) => {
       const response = await handleRequest(
-        new Request("http://tako.internal/status", {
+        new Request("http://entry-app.tako/status", {
           headers: { "x-tako-internal-token": "token-123" },
         }),
       );
       const body = (await response.json()) as {
+        app: string;
         version: string;
         instance_id: string;
       };
+      expect(body.app).toBe("entry-app");
       expect(body.version).toBe("build-123");
       expect(body.instance_id).toBe("i-1");
       return 4321;
     });
   } finally {
     delete process.env["TAKO_BUILD"];
+    delete process.env["TAKO_APP_NAME"];
+    delete process.env["TAKO_INTERNAL_SOCKET"];
     injectBootstrap({ token: null, secrets: {} });
     await rm(rootDir, { recursive: true, force: true });
   }

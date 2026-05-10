@@ -294,6 +294,8 @@ const host = process.env.HOST ?? "127.0.0.1";
 const bootstrap = JSON.parse(readFileSync(3, "utf-8"));
 closeSync(3);
 const internalToken = bootstrap.token;
+const internalAppName = (process.env.TAKO_APP_NAME ?? "app").split("/")[0] || "app";
+const internalHost = `${{internalAppName}}.tako`;
 if (!internalToken) {{
   throw new Error("bootstrap envelope on fd 3 did not provide a token");
 }}
@@ -313,7 +315,7 @@ const server = Bun.serve({{
   fetch(req) {{
     const url = new URL(req.url);
     const requestHost = (req.headers.get("host") ?? url.host).split(":")[0]?.toLowerCase();
-    if (requestHost === "tako.internal" && url.pathname === "/status") {{
+    if (requestHost === internalHost && url.pathname === "/status") {{
       if (req.headers.get("x-tako-internal-token") !== internalToken) {{
         return new Response(JSON.stringify({{ error: "forbidden" }}), {{
           status: 403,

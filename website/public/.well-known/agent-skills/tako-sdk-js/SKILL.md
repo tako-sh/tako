@@ -220,7 +220,7 @@ export default defineChannel({
 }).$messageTypes<ChatMessages>();
 ```
 
-- The explicit `name` property is the channel name. `defineChannel({ name: "chat" })` maps to `/channels/chat`; generated files conventionally use the file stem as the initial name.
+- The explicit `name` property is the channel name. `defineChannel({ name: "chat" })` maps to `/_tako/channels/chat`; generated files conventionally use the file stem as the initial name.
 - `paramsSchema` serializes to JSON Schema; tako-server validates query params before app auth.
 - `.$messageTypes<M>()` is a type-level narrower that declares the message map — runtime no-op. Omit for channels with no typed messages.
 - `auth` is optional. Omit or set `false` for public channels.
@@ -343,12 +343,12 @@ One connection, one buffer, any number of consumers.
 
 ### Network routes
 
-| Direction     | Method | Path                  | Transport                        |
-| ------------- | ------ | --------------------- | -------------------------------- |
-| Subscribe     | GET    | `/channels/<name>`    | SSE (`text/event-stream`)        |
-| Connect       | GET    | `/channels/<name>`    | WebSocket (`Upgrade: websocket`) |
-| Publish       | WS     | `/channels/<name>`    | JSON text frame                  |
-| Auth callback | POST   | `/channels/authorize` | Internal (`Host: tako.internal`) |
+| Direction     | Method | Path                     | Transport                        |
+| ------------- | ------ | ------------------------ | -------------------------------- |
+| Subscribe     | GET    | `/_tako/channels/<name>` | SSE (`text/event-stream`)        |
+| Connect       | GET    | `/_tako/channels/<name>` | WebSocket (`Upgrade: websocket`) |
+| Publish       | WS     | `/_tako/channels/<name>` | JSON text frame                  |
+| Auth callback | POST   | `/channels/authorize`    | Internal (`Host: <app>.tako`)    |
 
 ## Workflows
 

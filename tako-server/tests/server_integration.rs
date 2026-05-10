@@ -378,7 +378,7 @@ Bun.serve({
   fetch(request) {
     const url = new URL(request.url);
     const requestHost = (request.headers.get("host") ?? url.host).split(":")[0]?.toLowerCase();
-    if (requestHost === "tako.internal" && url.pathname === "/status") {
+    if (requestHost === "test-app.tako" && url.pathname === "/status") {
       if (request.headers.get("x-tako-internal-token") !== internalToken) {
         return new Response(JSON.stringify({ error: "forbidden" }), {
           status: 403,
@@ -458,7 +458,7 @@ mod health_check {
     }
 
     #[test]
-    fn test_internal_status_host_is_not_exposed_by_proxy() {
+    fn test_app_scoped_internal_status_host_is_not_exposed_by_proxy() {
         if !require_localhost_bind() {
             return;
         }
@@ -467,7 +467,7 @@ mod health_check {
 
         let response = server
             .http_get_with_host_and_headers(
-                "tako.internal",
+                "test-app.tako",
                 "/status",
                 &[("X-Forwarded-Proto", "https")],
             )
@@ -570,7 +570,7 @@ Bun.serve({
   async fetch(request) {
     const url = new URL(request.url);
     const requestHost = (request.headers.get("host") ?? url.host).split(":")[0]?.toLowerCase();
-    if (requestHost === "tako.internal" && url.pathname === "/status") {
+    if (requestHost === "chat-app.tako" && url.pathname === "/status") {
       if (request.headers.get("x-tako-internal-token") !== internalToken) {
         return new Response(JSON.stringify({ error: "forbidden" }), {
           status: 403,
@@ -585,7 +585,7 @@ Bun.serve({
       });
     }
 
-    if (requestHost === "tako.internal" && url.pathname === "/channels/authorize") {
+    if (requestHost === "chat-app.tako" && url.pathname === "/channels/authorize") {
       if (request.headers.get("x-tako-internal-token") !== internalToken) {
         return new Response(JSON.stringify({ error: "forbidden" }), {
           status: 403,
@@ -618,7 +618,7 @@ Bun.serve({
       }), { headers: { "Content-Type": "application/json" } });
     }
 
-    if (requestHost === "tako.internal" && url.pathname === "/channels/registry") {
+    if (requestHost === "chat-app.tako" && url.pathname === "/channels/registry") {
       if (request.headers.get("x-tako-internal-token") !== internalToken) {
         return new Response(JSON.stringify({ error: "forbidden" }), {
           status: 403,
@@ -678,7 +678,7 @@ Bun.serve({
         let events = server
             .http_get_with_host_and_headers(
                 "chat-app.localhost",
-                "/channels/chat?roomId=room-123",
+                "/_tako/channels/chat?roomId=room-123",
                 &[
                     ("X-Forwarded-Proto", "https"),
                     ("Authorization", "Bearer good"),
@@ -696,7 +696,7 @@ Bun.serve({
         let denied = server
             .http_get_with_host_and_headers(
                 "chat-app.localhost",
-                "/channels/chat?roomId=room-123",
+                "/_tako/channels/chat?roomId=room-123",
                 &[
                     ("X-Forwarded-Proto", "https"),
                     ("Accept", "text/event-stream"),
@@ -724,7 +724,7 @@ Bun.serve({
         let events = server
             .http_get_with_host_and_headers(
                 "chat-app.localhost",
-                "/channels/chat?roomId=room-123",
+                "/_tako/channels/chat?roomId=room-123",
                 &[
                     ("X-Forwarded-Proto", "https"),
                     ("Authorization", "Bearer good"),
@@ -785,7 +785,8 @@ Bun.serve({
     }
 
     fn publish_via_websocket(server: &TestServer, text: &str) -> String {
-        let (mut stream, handshake) = websocket_connect(server, "/channels/chat?roomId=room-123");
+        let (mut stream, handshake) =
+            websocket_connect(server, "/_tako/channels/chat?roomId=room-123");
         assert!(
             handshake.starts_with("HTTP/1.1 101") || handshake.starts_with("HTTP/1.0 101"),
             "expected websocket upgrade response: {handshake}"
@@ -855,8 +856,10 @@ Bun.serve({
 
         publish_via_websocket(&server, "hello ws");
 
-        let (mut stream, handshake) =
-            websocket_connect(&server, "/channels/chat?roomId=room-123&last_message_id=0");
+        let (mut stream, handshake) = websocket_connect(
+            &server,
+            "/_tako/channels/chat?roomId=room-123&last_message_id=0",
+        );
         assert!(
             handshake.starts_with("HTTP/1.1 101") || handshake.starts_with("HTTP/1.0 101"),
             "expected websocket upgrade response: {handshake}"

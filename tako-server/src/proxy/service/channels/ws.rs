@@ -15,6 +15,7 @@ pub(super) enum ChannelWebSocketAuth {
     Authorized(ChannelAuthResponse),
     FirstFrame {
         endpoint: String,
+        internal_host: String,
         internal_token: String,
         params: serde_json::Value,
         cookie: Option<String>,
@@ -71,6 +72,7 @@ impl TakoProxy {
             ChannelWebSocketAuth::Authorized(auth) => (auth, query_after),
             ChannelWebSocketAuth::FirstFrame {
                 endpoint,
+                internal_host,
                 internal_token,
                 params,
                 cookie,
@@ -122,7 +124,7 @@ impl TakoProxy {
 
                 let auth = match tako_channels::authorize_channel_request(
                     &endpoint,
-                    crate::instances::INTERNAL_STATUS_HOST,
+                    &internal_host,
                     crate::instances::INTERNAL_TOKEN_HEADER,
                     &internal_token,
                     ChannelOperation::Connect,

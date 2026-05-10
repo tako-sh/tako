@@ -125,7 +125,7 @@ Example: "Parse app name in `tako/src/app/name.rs:42`"
 **SDK:**
 
 - Runtime-agnostic fetch handler interface
-- Built-in status endpoint (`Host: tako.internal`, `/status`) for health checks
+- Built-in status endpoint (`Host: <app>.tako`, `/status`) for health checks
 - Optional config reload support
 
 ## When Making Changes

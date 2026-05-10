@@ -10,7 +10,7 @@ use crate::{
 /// Authorize a channel operation by calling the app's internal endpoint.
 ///
 /// `endpoint` is the app's `host:port` (e.g. `127.0.0.1:3000`).
-/// `internal_host` is the Host header for internal requests (e.g. `tako.internal`).
+/// `internal_host` is the Host header for internal requests (e.g. `app.tako`).
 /// `internal_token` is the shared secret for the internal token header.
 #[allow(clippy::too_many_arguments)]
 pub async fn authorize_channel_request(

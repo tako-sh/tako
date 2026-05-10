@@ -88,14 +88,14 @@ proxy: Tako Proxy {style.fill: "#E88783"; style.font-size: 16}
 app: Your App {style.fill: "#FFF9F4"; style.stroke: "#2F2A44"; style.font-size: 16}
 store: SQLite replay {style.fill: "#E88783"; style.font-size: 16}
 
-client -> proxy: "GET /channels/chat/42"
+client -> proxy: "GET /_tako/channels/chat?roomId=42"
 proxy -> app: "POST /channels/authorize"
 app -> proxy: "ok + subject"
 proxy -> store: "replay from Last-Event-ID"
 proxy -> client: "SSE / WebSocket stream"
 ```
 
-The Tako proxy owns `/channels/<name>` directly. Your app never holds the socket — it only answers an auth question per connection. When `tako-server` upgrades or your app rolls, the proxy keeps the stream open and re-asks for auth on reconnect. That's the part that's hard to do yourself with a hand-rolled WebSocket gateway, and it's the same job Pusher and Ably charge you to do at the edge.
+The Tako proxy owns `/_tako/channels/<name>` directly. Your app never holds the socket — it only answers an auth question per connection. When `tako-server` upgrades or your app rolls, the proxy keeps the stream open and re-asks for auth on reconnect. That's the part that's hard to do yourself with a hand-rolled WebSocket gateway, and it's the same job Pusher and Ably charge you to do at the edge.
 
 ## What Tako doesn't do (yet)
 

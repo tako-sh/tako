@@ -233,7 +233,7 @@ describe("tako Vite entry plugin", () => {
     ).not.toThrow();
   });
 
-  test("configureServer installs a middleware that handles tako.internal requests", async () => {
+  test("configureServer installs a middleware for app-scoped .tako requests", async () => {
     const plugin = tako();
     plugin.config?.({}, { command: "serve" });
 

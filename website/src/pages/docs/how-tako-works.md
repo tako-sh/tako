@@ -95,7 +95,7 @@ routes = [
 servers = ["la", "nyc"]
 ```
 
-The proxy matches by host and path, then chooses the most specific route. Exact hosts beat wildcards, and longer paths beat shorter paths. After a request matches an app route, `/channels/<name>` is reserved for Tako channels. Static asset paths with file extensions are served directly from `public/` when present; everything else is proxied to an app instance.
+The proxy matches by host and path, then chooses the most specific route. Exact hosts beat wildcards, and longer paths beat shorter paths. After a request matches an app route, `/_tako/*` is reserved for Tako-owned public endpoints, including `/_tako/channels/<name>`. Static asset paths with file extensions are served directly from `public/` when present; everything else is proxied to an app instance.
 
 Unmatched production routes return `404`. In local dev, unknown managed `.test` and `.tako.test` hosts return a helpful `421` that lists registered dev routes.
 
@@ -108,10 +108,10 @@ Deployed instances bind to loopback only. Tako sets:
 - `ENV=<environment>`
 - `TAKO_BUILD=<version>`
 - `TAKO_DATA_DIR=<persistent app data dir>`
-- `TAKO_APP_NAME=<deployment id>`
+- `TAKO_APP_NAME=<deployment app id>`
 - `TAKO_INTERNAL_SOCKET=<shared internal socket>`
 
-The app binds an OS-assigned port and writes that port to fd 4. `tako-server` then routes traffic and health probes to the private TCP endpoint.
+The app binds an OS-assigned port and writes that port to fd 4. `tako-server` then routes traffic and health probes to the private TCP endpoint. Internal HTTP probes use `Host: <app>.tako`, where `<app>` is the base app name.
 
 Secrets and the per-instance internal token arrive through fd 3 as JSON before user code runs. Secrets are not written to a release `.env` file and are not inherited by subprocesses through environment variables.
 
@@ -121,7 +121,7 @@ Tako uses active health probes as the source of truth:
 
 ```http
 GET /status
-Host: tako.internal
+Host: dashboard.tako
 X-Tako-Internal-Token: <instance-token>
 ```
 
@@ -154,7 +154,7 @@ Local development uses a Tako development CA. The cert is stored at `{TAKO_HOME}
 
 ## Workflows And Channels
 
-Channels are durable pub-sub streams at `/channels/<name>` on your app routes. SSE clients receive replay plus live messages. WebSocket clients can also send frames that route through declared channel handlers.
+Channels are durable pub-sub streams at `/_tako/channels/<name>` on your app routes. SSE clients receive replay plus live messages. WebSocket clients can also send frames that route through declared channel handlers.
 
 Workflows are durable background runs stored in a per-app SQLite queue. `tako-server` owns the database, cron ticker, leases, and worker supervision. SDKs only talk to the internal socket. Workers are separate from HTTP instances so background dependencies and long-running work do not affect request serving.
 

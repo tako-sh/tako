@@ -25,7 +25,8 @@ pub(crate) use types::{
     DEFAULT_KEEPALIVE_INTERVAL_MS, DEFAULT_MAX_CONNECTION_LIFETIME_MS, DEFAULT_REPLAY_WINDOW_MS,
 };
 
-pub const CHANNELS_BASE_PATH: &str = "/channels/";
+pub const TAKO_PUBLIC_BASE_PATH: &str = "/_tako";
+pub const CHANNELS_BASE_PATH: &str = "/_tako/channels/";
 pub const INTERNAL_CHANNEL_AUTH_PATH: &str = "/channels/authorize";
 pub const INTERNAL_CHANNEL_DISPATCH_PATH: &str = "/channels/dispatch";
 pub const INTERNAL_CHANNEL_REGISTRY_PATH: &str = "/channels/registry";

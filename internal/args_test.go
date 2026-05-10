@@ -10,11 +10,16 @@ func TestParseConfigFromArgsAndEnv(t *testing.T) {
 		switch key {
 		case "TAKO_BUILD":
 			return "v1.0"
+		case "TAKO_APP_NAME":
+			return "demo"
 		default:
 			return ""
 		}
 	}, &Bootstrap{Token: "tok-xyz"})
 
+	if cfg.AppName != "demo" {
+		t.Errorf("AppName = %q, want %q", cfg.AppName, "demo")
+	}
 	if cfg.InstanceID != "abcd1234" {
 		t.Errorf("InstanceID = %q, want %q", cfg.InstanceID, "abcd1234")
 	}

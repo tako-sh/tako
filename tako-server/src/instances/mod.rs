@@ -36,8 +36,22 @@ fn now_unix_millis() -> u64 {
         .as_millis() as u64
 }
 
-pub const INTERNAL_STATUS_HOST: &str = "tako.internal";
+pub const INTERNAL_HOST_SUFFIX: &str = ".tako";
+const LEGACY_INTERNAL_STATUS_HOST: &str = "tako.internal";
 pub const INTERNAL_TOKEN_HEADER: &str = "X-Tako-Internal-Token";
+
+pub fn internal_app_host(app_name: &str) -> String {
+    let app_name = app_name.trim();
+    let app_name = if app_name.is_empty() { "app" } else { app_name };
+    format!("{app_name}{INTERNAL_HOST_SUFFIX}")
+}
+
+pub fn internal_app_host_for_app_id(app_id: &str) -> String {
+    let app_name = tako_core::split_deployment_app_id(app_id)
+        .map(|(name, _)| name)
+        .unwrap_or(app_id);
+    internal_app_host(app_name)
+}
 
 /// Generate a short random instance ID
 fn generate_instance_id() -> String {
@@ -86,6 +100,18 @@ impl AppConfig {
         }
         tako_core::deployment_app_id(&self.name, &self.environment)
     }
+
+    fn internal_host(&self) -> String {
+        internal_app_host(&self.name)
+    }
+
+    fn apply_internal_defaults(&mut self) {
+        if self.health_check_host.is_empty()
+            || self.health_check_host == LEGACY_INTERNAL_STATUS_HOST
+        {
+            self.health_check_host = self.internal_host();
+        }
+    }
 }
 
 impl Default for AppConfig {
@@ -101,7 +127,7 @@ impl Default for AppConfig {
             min_instances: 1,
             max_instances: 4,
             health_check_path: "/status".to_string(),
-            health_check_host: INTERNAL_STATUS_HOST.to_string(),
+            health_check_host: LEGACY_INTERNAL_STATUS_HOST.to_string(),
             startup_timeout: Duration::from_secs(30),
             idle_timeout: crate::defaults::DEFAULT_IDLE_TIMEOUT,
         }
@@ -335,10 +361,11 @@ pub enum InstanceEvent {
 
 impl App {
     pub fn new(
-        config: AppConfig,
+        mut config: AppConfig,
         instance_tx: mpsc::Sender<InstanceEvent>,
         log_handle: AppLogHandle,
     ) -> Self {
+        config.apply_internal_defaults();
         Self {
             config: RwLock::new(config),
             instances: DashMap::new(),
@@ -443,7 +470,8 @@ impl App {
     }
 
     /// Update configuration (for reloads/deploys)
-    pub fn update_config(&self, config: AppConfig) {
+    pub fn update_config(&self, mut config: AppConfig) {
+        config.apply_internal_defaults();
         *self.config.write() = config;
     }
 }

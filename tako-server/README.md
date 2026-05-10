@@ -9,7 +9,7 @@ Rust crate for the remote Tako runtime and proxy.
 - Terminate HTTP/HTTPS traffic and proxy upstream.
 - Redirect HTTP traffic to HTTPS (except ACME challenge checks).
 - Cache proxied `GET`/`HEAD` upstream responses in-memory when response cache directives explicitly allow caching.
-- Perform health probing using `Host: tako.internal` + `/status` against each app instance.
+- Perform health probing using `Host: <app>.tako` + `/status` against each app instance.
 - Perform active health probing.
 - Serve management commands over Unix socket.
 - Report per-build runtime status (multiple concurrently running builds during rollout).
@@ -17,7 +17,7 @@ Rust crate for the remote Tako runtime and proxy.
 - Validate app ids, release ids, and deploy paths at the management socket boundary.
 - Persist app runtime registration (config/routes + release metadata) to SQLite and restore it on restart.
 - Read non-secret env vars from release `app.json` and secrets from encrypted SQLite state, then push secrets to instances over the internal HTTP endpoint.
-- Serve durable channel pub-sub over `GET /channels/<name>` using SSE or WebSocket negotiation, with a bounded per-app replay window stored locally.
+- Serve durable channel pub-sub over `GET /_tako/channels/<name>` using SSE or WebSocket negotiation, with a bounded per-app replay window stored locally.
 - Persist server upgrade mode in SQLite and reject mutating commands while upgrading.
 - Use a single-owner durable upgrade lock so only one upgrade controller can enter upgrading mode at a time.
 - Expose `server_info`, `enter_upgrading`, and `exit_upgrading` management commands for upgrade orchestration.
