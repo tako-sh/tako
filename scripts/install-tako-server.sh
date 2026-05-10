@@ -616,6 +616,20 @@ install_libvips_runtime() {
   fi
 }
 
+verify_tako_server_runtime_deps() {
+  if ! need_cmd ldd; then
+    return
+  fi
+
+  missing="$(ldd /usr/local/bin/tako-server 2>/dev/null | awk '/not found/ { print $1 }' || true)"
+  if [ -n "$missing" ]; then
+    echo "error: tako-server is missing runtime libraries:" >&2
+    printf '%s\n' "$missing" >&2
+    echo "Install the missing packages, then rerun the installer." >&2
+    exit 1
+  fi
+}
+
 tako_home_dir() {
   _home=""
   if need_cmd getent; then
@@ -827,6 +841,7 @@ if [ -z "$tmp_bin" ]; then
 fi
 
 install -m 0755 "$tmp_bin" /usr/local/bin/tako-server
+verify_tako_server_runtime_deps
 ensure_privileged_bind_capability
 
 # Create `tako` user.

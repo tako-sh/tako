@@ -5,7 +5,8 @@ use tako_core::{Command, Response, ServerRuntimeInfo};
 use super::*;
 
 const MANAGEMENT_AUTH_KEYS_PATH: &str = "/opt/tako/management-authorized-keys";
-const INSTALL_SERVER_SCRIPT: &str = include_str!("../../../../scripts/install-tako-server.sh");
+pub(super) const INSTALL_SERVER_SCRIPT: &str =
+    include_str!("../../../../scripts/install-tako-server.sh");
 const INSTALL_ENV_PASSTHROUGH: &[&str] = &[
     "TAKO_SERVER_URL",
     "TAKO_DOWNLOAD_BASE_URL",

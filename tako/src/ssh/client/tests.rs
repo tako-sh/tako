@@ -214,6 +214,16 @@ fn tako_service_status_command_supports_openrc() {
     assert!(command.contains("echo inactive"));
 }
 
+#[test]
+fn install_server_script_installs_and_verifies_runtime_dependencies() {
+    let script = super::tako::INSTALL_SERVER_SCRIPT;
+    assert!(script.contains("install_libvips_runtime"));
+    assert!(script.contains("libvips42t64"));
+    assert!(script.contains("verify_tako_server_runtime_deps"));
+    assert!(script.contains("ldd /usr/local/bin/tako-server"));
+    assert!(script.contains("not found"));
+}
+
 #[tokio::test]
 async fn connect_to_unreachable_host_fails_quickly() {
     let mut cfg = SshConfig::from_server("10.255.255.1", 22);

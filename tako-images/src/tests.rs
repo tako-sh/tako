@@ -1,8 +1,12 @@
 use super::*;
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use image::{ImageBuffer, ImageFormat, Rgb, Rgba};
 use std::io::Cursor;
 
 const SECRET: &str = "test-image-secret";
+const WEBP_64X32: &str =
+    "UklGRjYAAABXRUJQVlA4ICoAAAAQAwCdASpAACAAPpFIn0ulpCKhpAgAsBIJaQAAH2A8tGAA/vjO9XgAAAA=";
 
 fn private_options() -> ImageUrlOptions {
     ImageUrlOptions {
@@ -206,13 +210,10 @@ fn jpeg_output_is_progressive_for_web_delivery() {
 
 #[test]
 fn resizes_webp_and_preserves_webp_output() {
-    let img = ImageBuffer::from_fn(64, 32, |_x, _y| Rgba([32_u8, 96, 160, 255]));
-    let mut source = Cursor::new(Vec::new());
-    img.write_to(&mut source, ImageFormat::WebP)
-        .expect("encode webp");
+    let source = BASE64_STANDARD.decode(WEBP_64X32).expect("decode webp");
 
     let transformed = transform_image(
-        source.get_ref(),
+        &source,
         Some("image/webp"),
         16,
         80,

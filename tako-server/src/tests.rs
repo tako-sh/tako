@@ -1348,8 +1348,10 @@ async fn sync_app_workflows_injects_release_env_and_app_data_dir_into_worker() {
     let captured = (0..50)
         .find_map(|_| {
             let value = std::fs::read_to_string(&env_capture).ok();
-            if value.is_some() {
-                return value;
+            if let Some(value) = value
+                && !value.trim().is_empty()
+            {
+                return Some(value);
             }
             std::thread::sleep(Duration::from_millis(10));
             None

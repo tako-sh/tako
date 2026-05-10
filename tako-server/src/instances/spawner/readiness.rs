@@ -121,7 +121,11 @@ pub(super) fn format_startup_exit_error(
     format!("Process exited during startup ({status_text}): {preview}")
 }
 
-fn format_startup_timeout_error(timeout: Duration, stdout: &[u8], stderr: &[u8]) -> String {
+pub(super) fn format_startup_timeout_error(
+    timeout: Duration,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> String {
     let stderr_text = String::from_utf8_lossy(stderr).trim().to_string();
     let stdout_text = String::from_utf8_lossy(stdout).trim().to_string();
     let detail = if !stderr_text.is_empty() {

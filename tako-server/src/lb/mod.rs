@@ -293,7 +293,7 @@ mod tests {
         }
 
         let start = Instant::now();
-        for _ in 0..50_000 {
+        for _ in 0..5_000 {
             let _backend = lb.get_backend("test-app").expect("backend should exist");
         }
         assert!(

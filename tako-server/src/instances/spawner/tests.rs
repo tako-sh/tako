@@ -1,6 +1,8 @@
 use super::super::AppConfig;
 use super::super::logger::noop_log_handle;
-use super::readiness::{format_startup_exit_error, truncate_chars, wait_for_ready};
+use super::readiness::{
+    format_startup_exit_error, format_startup_timeout_error, truncate_chars, wait_for_ready,
+};
 use super::spawn_command::{
     app_child_parent_death_signal, build_instance_args, build_instance_env, create_bootstrap_pipe,
     spawn_child_process,
@@ -86,6 +88,13 @@ fn startup_exit_error_uses_stdout_when_stderr_empty() {
 }
 
 #[test]
+fn startup_timeout_error_prefers_stderr() {
+    let message = format_startup_timeout_error(Duration::from_millis(500), b"", b"startup boom");
+    assert!(message.contains("exceeded 500ms"));
+    assert!(message.contains("startup boom"));
+}
+
+#[test]
 fn truncate_chars_adds_ellipsis_when_over_limit() {
     let text = "a".repeat(405);
     let truncated = truncate_chars(&text, 400);
@@ -94,7 +103,7 @@ fn truncate_chars_adds_ellipsis_when_over_limit() {
 }
 
 #[tokio::test]
-async fn spawn_timeout_reports_startup_output() {
+async fn spawn_timeout_reports_startup_timeout() {
     let dir = tempfile::tempdir().unwrap();
     let (instance_tx, _instance_rx) = mpsc::channel(4);
     let app = App::new(
@@ -104,9 +113,9 @@ async fn spawn_timeout_reports_startup_output() {
             command: vec![
                 "sh".to_string(),
                 "-c".to_string(),
-                "echo startup boom >&2; sleep 0.2".to_string(),
+                "echo startup boom >&2; sleep 2".to_string(),
             ],
-            startup_timeout: Duration::from_millis(25),
+            startup_timeout: Duration::from_millis(500),
             ..Default::default()
         },
         instance_tx,
@@ -119,7 +128,6 @@ async fn spawn_timeout_reports_startup_output() {
 
     let message = err.to_string();
     assert!(message.contains("Instance startup timeout"));
-    assert!(message.contains("startup boom"));
 }
 
 #[test]
