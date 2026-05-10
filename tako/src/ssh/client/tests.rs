@@ -225,9 +225,19 @@ fn install_server_script_installs_and_verifies_runtime_dependencies() {
     let script = super::tako::INSTALL_SERVER_SCRIPT;
     assert!(script.contains("install_libvips_runtime"));
     assert!(script.contains("libvips42t64"));
+    assert!(script.contains("install_missing_tako_server_runtime_deps"));
+    assert!(script.contains("install_missing_tako_server_runtime_deps /usr/local/bin/tako-server"));
     assert!(script.contains("verify_tako_server_runtime_deps"));
     assert!(script.contains("ldd /usr/local/bin/tako-server"));
     assert!(script.contains("not found"));
+
+    let install_index = script
+        .find("install -m 0755 \"$tmp_bin\" /usr/local/bin/tako-server")
+        .unwrap();
+    let runtime_deps_index = script
+        .find("install_missing_tako_server_runtime_deps /usr/local/bin/tako-server")
+        .unwrap();
+    assert!(install_index < runtime_deps_index);
 }
 
 #[tokio::test]

@@ -595,14 +595,17 @@ install_libvips_runtime() {
     apt-get update -y
     apt-get install -y libvips42t64 || apt-get install -y libvips42 || apt-get install -y libvips
   elif need_cmd dnf; then
-    dnf install -y vips || {
+    dnf install -y libvips || dnf install -y vips || {
       dnf install -y epel-release
-      dnf install -y vips
+      if need_cmd dnf config-manager; then
+        dnf config-manager --set-enabled crb || true
+      fi
+      dnf install -y libvips || dnf install -y vips
     }
   elif need_cmd yum; then
-    yum install -y vips || {
+    yum install -y libvips || yum install -y vips || {
       yum install -y epel-release
-      yum install -y vips
+      yum install -y libvips || yum install -y vips
     }
   elif need_cmd pacman; then
     pacman -Sy --noconfirm vips
@@ -613,6 +616,31 @@ install_libvips_runtime() {
   else
     echo "error: unsupported package manager; install libvips manually before starting tako-server" >&2
     exit 1
+  fi
+}
+
+missing_runtime_libraries() {
+  _bin="$1"
+  if ! need_cmd ldd; then
+    return
+  fi
+
+  ldd "$_bin" 2>/dev/null | awk '/not found/ { print $1 }' || true
+}
+
+install_missing_tako_server_runtime_deps() {
+  _bin="$1"
+  if ! need_cmd ldd; then
+    return
+  fi
+
+  missing="$(missing_runtime_libraries "$_bin")"
+  if [ -z "$missing" ]; then
+    return
+  fi
+
+  if printf '%s\n' "$missing" | grep -Eq '^libvips(\.|$)'; then
+    install_libvips_runtime
   fi
 }
 
@@ -758,7 +786,6 @@ if ! need_cmd which; then
 fi
 ensure_nc
 install_sqlite_runtime
-install_libvips_runtime
 
 arch="$(uname -m)"
 case "$arch" in
@@ -841,6 +868,7 @@ if [ -z "$tmp_bin" ]; then
 fi
 
 install -m 0755 "$tmp_bin" /usr/local/bin/tako-server
+install_missing_tako_server_runtime_deps /usr/local/bin/tako-server
 verify_tako_server_runtime_deps
 ensure_privileged_bind_capability
 
