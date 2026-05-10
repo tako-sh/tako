@@ -24,6 +24,12 @@ fn can_bind_unix_socket() -> bool {
     std::os::unix::net::UnixListener::bind(socket_path).is_ok()
 }
 
+#[cfg(unix)]
+fn ssh_auth_sock_test_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
 #[test]
 fn test_ssh_config_creation() {
     let config = SshConfig::from_server("example.com", 22);
@@ -342,6 +348,7 @@ async fn encrypted_keyfile_authenticates_with_configured_passphrase() {
             .expect("server failed");
     });
 
+    let _ssh_auth_sock_guard = ssh_auth_sock_test_lock().lock().await;
     let prev_sock = std::env::var("SSH_AUTH_SOCK").ok();
     // Ensure we don't accidentally use an agent in this test.
     unsafe { std::env::remove_var("SSH_AUTH_SOCK") };
@@ -460,6 +467,7 @@ async fn ssh_agent_authenticates_when_no_key_files_exist() {
         .await
         .expect("add identity");
 
+    let _ssh_auth_sock_guard = ssh_auth_sock_test_lock().lock().await;
     // Point SSH_AUTH_SOCK at the test agent so SshClient can find it.
     let prev_sock = std::env::var("SSH_AUTH_SOCK").ok();
     // SAFETY: tests in this crate are not expected to rely on concurrent env var mutation.
