@@ -125,7 +125,7 @@ import { defineWorkflow } from "${defineUrl}";
 export default defineWorkflow("send-email", {
   retries: 4,
   schedule: "*/5 * * * *",
-  handler: async (payload, step) => payload.to,
+  handler: async (payload, ctx) => payload.to,
 });
 `,
     );

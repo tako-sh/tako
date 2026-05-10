@@ -386,9 +386,16 @@ export default defineWorkflow<{ userId: string; to: string }>("send-email", {
   concurrency: 10, // max parallel runs per worker (default 10)
   timeoutMs: 30_000, // handler timeout (default Infinity)
   backoff: { base: 1_000, max: 3_600_000 }, // exponential backoff
-  handler: async (payload, step) => {
-    const user = await step.run("fetch-user", () => db.users.find(payload.userId));
-    await step.run("send", () => sendEmail(user, payload.to));
+  handler: async (payload, ctx) => {
+    ctx.logger.info("send-email started");
+    const user = await ctx.run("fetch-user", (step) => {
+      step.logger.info("fetching user");
+      return db.users.find(payload.userId);
+    });
+    await ctx.run("send", (step) => {
+      step.logger.info("sending email");
+      return sendEmail(user, payload.to);
+    });
   },
 });
 ```
@@ -411,26 +418,39 @@ await sendEmail.enqueue(payload, {
 
 No typegen is needed for workflow enqueue typing — the types flow from the workflow module itself.
 
-### Step API (`step`)
+### Workflow context (`ctx`)
 
-| Member                         | Description                                                               |
-| ------------------------------ | ------------------------------------------------------------------------- |
-| `step.run(name, fn, opts?)`    | Memoized step — replays stored result on retry instead of re-executing    |
-| `step.sleep(name, durationMs)` | Durable sleep — short sleeps inline, long sleeps (≥30s) defer the run     |
-| `step.waitFor<T>(name, opts?)` | Park until `signal(name)` arrives or timeout; returns `T \| null`         |
-| `step.bail(reason?)`           | End cleanly as `cancelled` (no retries)                                   |
-| `step.fail(error)`             | End as `dead` immediately (no retries)                                    |
-| `step.runId`                   | The id of the current run                                                 |
-| `step.workflowName`            | The name of the current workflow                                          |
-| `step.attempt`                 | The current run attempt number (1-indexed; bumps on each run-level retry) |
+The handler's second argument is the workflow context. Use `ctx` in examples.
 
-`step.run` options:
+| Member                        | Description                                                               |
+| ----------------------------- | ------------------------------------------------------------------------- |
+| `ctx.run(name, fn, opts?)`    | Memoized step — replays stored result on retry instead of re-executing    |
+| `ctx.sleep(name, durationMs)` | Durable sleep — short sleeps inline, long sleeps (≥30s) defer the run     |
+| `ctx.waitFor<T>(name, opts?)` | Park until `signal(name)` arrives or timeout; returns `T \| null`         |
+| `ctx.bail(reason?)`           | End cleanly as `cancelled` (no retries)                                   |
+| `ctx.fail(error)`             | End as `dead` immediately (no retries)                                    |
+| `ctx.logger`                  | Workflow-scoped logger                                                    |
+| `ctx.runId`                   | The id of the current run                                                 |
+| `ctx.workflowName`            | The name of the current workflow                                          |
+| `ctx.attempt`                 | The current run attempt number (1-indexed; bumps on each run-level retry) |
+
+`ctx.run` options:
 
 - `retries?: number` — in-step retry attempts (default 0)
 - `backoff?: { base?, max? }` — in-step backoff
 - `retry: false` — any throw inside `fn` immediately fails the run
 
-`step.waitFor` options:
+The `ctx.run(name, fn, opts?)` callback receives a step context named `step`.
+
+| Member              | Description                                |
+| ------------------- | ------------------------------------------ |
+| `step.logger`       | Step-scoped logger (`<workflow>:<step>`)   |
+| `step.stepName`     | The current step name                      |
+| `step.runId`        | The id of the current run                  |
+| `step.workflowName` | The name of the current workflow           |
+| `step.attempt`      | The current run attempt number (1-indexed) |
+
+`ctx.waitFor` options:
 
 - `timeout?: number` — ms until the step resolves to `null` (default: park indefinitely)
 
@@ -447,8 +467,8 @@ await signal("approval:order-abc", { approved: true });
 `pending → running → succeeded | cancelled | dead`
 
 - Throwing a regular error triggers the run-level retry path (exponential backoff).
-- `step.bail()` → `cancelled`, no retries.
-- `step.fail()` → `dead`, no retries.
+- `ctx.bail()` → `cancelled`, no retries.
+- `ctx.fail()` → `dead`, no retries.
 
 ### tako.toml configuration
 

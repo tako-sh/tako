@@ -62,17 +62,17 @@ export default defineWorkflow("daily-digest", {
   schedule: "0 9 * * *",
   retries: 4,
   backoff: { base: 10_000, max: 15 * 60_000 },
-  handler: async (_payload, step) => {
-    const digestDate = await step.run("digest-date", async () =>
+  handler: async (_payload, ctx) => {
+    const digestDate = await ctx.run("digest-date", async () =>
       new Date().toISOString().slice(0, 10),
     );
 
-    const targets = await step.run("prepare-targets", async () =>
+    const targets = await ctx.run("prepare-targets", async () =>
       db.digestSend.createMissingForDate(digestDate),
     );
 
     for (const target of targets) {
-      await step.run(
+      await ctx.run(
         `send:${target.id}`,
         () =>
           mailer.sendDigest(target.email, {
@@ -83,7 +83,7 @@ export default defineWorkflow("daily-digest", {
       );
     }
 
-    await step.run("mark-complete", () => db.digestRun.markComplete(digestDate));
+    await ctx.run("mark-complete", () => db.digestRun.markComplete(digestDate));
   },
 });
 ```
@@ -109,17 +109,17 @@ There are two retry layers in the example.
 
 `retries: 4` on the workflow means the whole handler gets up to four retries after the first attempt. If the handler throws, the run goes back to `pending` with exponential backoff and jitter. When the retry budget is exhausted, the run moves to `dead`.
 
-`step.run(..., { retries: 3 })` is smaller. It retries that one side effect before the error escapes to the run-level retry policy. That is useful for a flaky mail API where a quick retry is often enough, while still keeping the whole workflow durable if the process crashes.
+`ctx.run(..., { retries: 3 })` is smaller. It retries that one side effect before the error escapes to the run-level retry policy. That is useful for a flaky mail API where a quick retry is often enough, while still keeping the whole workflow durable if the process crashes.
 
-The checkpoint is the important part. `step.run("prepare-targets", ...)` stores its result in the `steps` table. On the next attempt, Tako returns the stored result and skips the database write. `step.run("send:<id>", ...)` does the same for each recipient that already finished.
+The checkpoint is the important part. `ctx.run("prepare-targets", ...)` stores its result in the `steps` table. On the next attempt, Tako returns the stored result and skips the database write. `ctx.run("send:<id>", ...)` does the same for each recipient that already finished.
 
-| Practice                             | Why it matters                                                                                              |
-| ------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
-| Use stable step names                | A retried run can find completed work by name.                                                              |
-| Make side effects idempotent         | Workflows are at-least-once if a worker dies after the side effect but before the checkpoint RPC completes. |
-| Put dedupe in your domain too        | The mailer's `idempotencyKey` or a DB unique key protects the outside world.                                |
-| Use `step.fail` for permanent errors | Skip retries when the input can never succeed.                                                              |
-| Use `step.bail` for obsolete work    | End cleanly when the job is no longer needed.                                                               |
+| Practice                            | Why it matters                                                                                              |
+| ----------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| Use stable step names               | A retried run can find completed work by name.                                                              |
+| Make side effects idempotent        | Workflows are at-least-once if a worker dies after the side effect but before the checkpoint RPC completes. |
+| Put dedupe in your domain too       | The mailer's `idempotencyKey` or a DB unique key protects the outside world.                                |
+| Use `ctx.fail` for permanent errors | Skip retries when the input can never succeed.                                                              |
+| Use `ctx.bail` for obsolete work    | End cleanly when the job is no longer needed.                                                               |
 
 The contract is honest: durable execution cannot make arbitrary side effects exactly-once. Tako gives you first-write-wins checkpoints, run dedupe, retries, and lease recovery; your step body should still use upserts, idempotency keys, and stable business identifiers.
 

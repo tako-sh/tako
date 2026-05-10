@@ -20,10 +20,10 @@ import { defineWorkflow } from "tako.sh";
 export default defineWorkflow<{ key: string }>("process-image", {
   worker: "media",
   retries: 4,
-  handler: async (payload, step) => {
-    const buf = await step.run("download", () => s3.get(payload.key));
-    await step.run("resize", () => sharp(buf).resize(1024).toBuffer());
-    await step.run("upload", () => s3.put(`thumb/${payload.key}`, buf));
+  handler: async (payload, ctx) => {
+    const buf = await ctx.run("download", () => s3.get(payload.key));
+    await ctx.run("resize", () => sharp(buf).resize(1024).toBuffer());
+    await ctx.run("upload", () => s3.put(`thumb/${payload.key}`, buf));
   },
 });
 ```

@@ -158,7 +158,7 @@ Local development uses a Tako development CA. The cert is stored at `{TAKO_HOME}
 
 Channels are durable pub-sub streams at `/_tako/channels/<name>` on your app routes. SSE clients receive replay plus live messages. WebSocket clients can also send frames that route through declared channel handlers.
 
-Workflows are durable background runs stored in a per-app SQLite queue. `tako-server` owns the database, cron ticker, leases, and worker supervision. SDKs only talk to the internal socket. Workers are separate from HTTP instances so background dependencies and long-running work do not affect request serving.
+Workflows are durable background runs stored in a per-app SQLite queue. `tako-server` owns the database, cron ticker, leases, and worker supervision. SDKs only talk to the internal socket. Workers are separate from HTTP instances so background dependencies and long-running work do not affect request serving. JS workflow handlers receive a `ctx` object for durable steps, waits, early exits, and workflow-scoped logging; each `ctx.run(...)` callback receives its own step context.
 
 ## Persistence
 

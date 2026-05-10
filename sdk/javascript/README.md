@@ -113,8 +113,12 @@ import { defineWorkflow } from "tako.sh";
 export default defineWorkflow<{ userId: string }>("send-email", {
   retries: 4,
   schedule: "0 9 * * *",
-  handler: async (payload, step) => {
-    await step.run("send", () => sendEmail(payload.userId));
+  handler: async (payload, ctx) => {
+    ctx.logger.info("send-email started");
+    await ctx.run("send", (step) => {
+      step.logger.info("calling mailer");
+      return sendEmail(payload.userId);
+    });
   },
 });
 ```
@@ -129,7 +133,7 @@ import sendEmail from "./workflows/send-email";
 await sendEmail.enqueue({ userId: "u1" });
 ```
 
-To wake a parked `step.waitFor`, import `signal` from `tako.sh` and call it with the matching event name:
+To wake a parked `ctx.waitFor`, import `signal` from `tako.sh` and call it with the matching event name:
 
 ```ts
 import { signal } from "tako.sh";

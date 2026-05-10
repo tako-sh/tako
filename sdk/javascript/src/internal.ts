@@ -23,6 +23,7 @@ export type {
   WorkflowDefinition,
   WorkflowHandler,
   WorkflowContext,
+  WorkflowStepContext,
   WorkflowOpts,
   WorkflowRuntimeOpts,
 } from "./workflows";

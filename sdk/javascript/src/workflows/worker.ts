@@ -22,19 +22,25 @@ import {
   WaitSignal,
   type StepRunOptions,
   type StepWaitOptions,
+  type WorkflowStepContext,
 } from "./step";
 import type { Run, StepState } from "./types";
 
 export type WorkflowHandler<P = unknown> = (
   payload: P,
-  step: WorkflowContext,
+  ctx: WorkflowContext,
 ) => Promise<void> | void;
 
 export interface WorkflowContext {
   readonly runId: string;
   readonly workflowName: string;
   readonly attempt: number;
-  run<T>(name: string, fn: () => Promise<T> | T, opts?: StepRunOptions): Promise<T>;
+  readonly logger: Logger;
+  run<T>(
+    name: string,
+    fn: (step: WorkflowStepContext) => Promise<T> | T,
+    opts?: StepRunOptions,
+  ): Promise<T>;
   sleep(name: string, durationMs: number): Promise<void>;
   waitFor<T = unknown>(name: string, opts?: StepWaitOptions): Promise<T | null>;
   /** End the run cleanly as `cancelled` (no retries). For "this work
@@ -201,6 +207,7 @@ export class Worker {
 
   private async execute(run: Run): Promise<void> {
     const runLog = this.log.child(`worker:${run.name}`, { runId: run.id });
+    const contextLog = this.log.child(run.name, { runId: run.id, workflow: run.name });
     const reg = this.registry.get(run.name);
     if (!reg) {
       runLog.error("Workflow failed", { error: `no handler registered for '${run.name}'` });
@@ -215,11 +222,19 @@ export class Worker {
     }
 
     const stepState: StepState = { ...run.stepState };
-    const step: WorkflowContext = {
+    const createStepContext = (stepName: string): WorkflowStepContext => ({
+      runId: run.id,
+      workflowName: run.name,
+      stepName,
+      attempt: run.attempts,
+      logger: contextLog.child(`${run.name}:${stepName}`, { step: stepName }),
+    });
+    const context: WorkflowContext = {
       runId: run.id,
       workflowName: run.name,
       attempt: run.attempts,
-      ...createStepAPI(this.client, run.id, this.workerId, stepState, runLog),
+      logger: contextLog,
+      ...createStepAPI(this.client, run.id, this.workerId, stepState, runLog, createStepContext),
       bail: (reason?: string): never => {
         throw new BailSignal(reason);
       },
@@ -238,7 +253,7 @@ export class Worker {
 
     runLog.info("Workflow started", { attempt: run.attempts, payload: run.payload });
     try {
-      await reg.handler(run.payload, step);
+      await reg.handler(run.payload, context);
       await this.client.complete(run.id, this.workerId);
       runLog.info("Workflow completed");
     } catch (err) {

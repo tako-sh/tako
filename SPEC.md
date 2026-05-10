@@ -1896,7 +1896,7 @@ Params are URL-encoded automatically. `publish` payloads are type-checked agains
 
 Tako's workflow engine runs durable background work alongside an app's HTTP
 instances — retries with exponential backoff, delayed/cron schedules, and
-multi-step workflows whose progress survives process restarts via `step.run`
+multi-step workflows whose progress survives process restarts via `ctx.run`
 checkpoints. It positions Tako for the "backend of your backend" use case
 (image processing, email, reindexing, LLM calls) without requiring a separate
 queue service.
@@ -1907,7 +1907,7 @@ queue service.
   registered handler in the Go worker binary).
 - **run** — one execution of a workflow (the row in the queue that gets
   claimed, retried, completed, or moved to dead).
-- **step** — a memoized portion inside a run via `step.run(name, fn)`.
+- **step** — a memoized portion inside a run via `ctx.run(name, fn)`.
 
 ### Architecture
 
@@ -1915,7 +1915,7 @@ queue service.
 - **Tables**:
   - `runs` — one row per run (status, attempts, lease, payload).
   - `steps` — one row per completed step `(run_id, name, result)`. First-write-wins via `INSERT OR IGNORE` so duplicate saves after a retried RPC don't overwrite.
-  - `event_waiters` — runs parked on `step.waitFor`, indexed by `event_name` for fast lookup on `signal`.
+  - `event_waiters` — runs parked on `ctx.waitFor`, indexed by `event_name` for fast lookup on `signal`.
   - `schedules`, `leader_leases` — cron infrastructure.
 - **tako-server (Rust)** — owns the DB, exposes the per-app unix socket, runs the cron ticker, and supervises the worker subprocess. The ticker also calls `reclaim_expired()` every second: any run stuck in `status='running'` past its `lease_until` is moved back to `pending` and the supervisor is woken so a fresh worker picks it up. This is how runs recover from a worker that died mid-execution (SIGKILL, OOM, host crash, server-level restart without graceful drain).
 - **Worker process (JS or Go)** — loads user code, claims runs, executes handlers. Separate from HTTP instances so heavy workflow deps don't bloat the request-serving process.
@@ -1951,7 +1951,7 @@ If a JS app has a `workflows/` directory (or a Go app declares a worker binary) 
 
 ### Authoring workflows
 
-**JS/TypeScript** — file-based discovery: drop a file into `workflows/<name>.ts` with a default export from `defineWorkflow<P>(name, opts)`. The `opts.handler` function's second argument is the step context (`step`) — call `step.run`/`step.sleep`/`step.waitFor`/`step.bail`/`step.fail` as needed, and read `step.runId` / `step.workflowName` / `step.attempt` (the 1-indexed run attempt, bumped on each run-level retry) for context:
+**JS/TypeScript** — file-based discovery: drop a file into `workflows/<name>.ts` with a default export from `defineWorkflow<P>(name, opts)`. The `opts.handler` function's second argument is the workflow context (`ctx`) — call `ctx.run`/`ctx.sleep`/`ctx.waitFor`/`ctx.bail`/`ctx.fail` as needed, use `ctx.logger` for workflow-scoped logs, and read `ctx.runId` / `ctx.workflowName` / `ctx.attempt` (the 1-indexed run attempt, bumped on each run-level retry) for context:
 
 ```ts
 // workflows/send-email.ts
@@ -1962,9 +1962,16 @@ type SendEmailPayload = { userId: string };
 export default defineWorkflow<SendEmailPayload>("send-email", {
   retries: 4,
   schedule: "0 9 * * *",
-  handler: async (payload, step) => {
-    const user = await step.run("fetch-user", () => db.users.find(payload.userId));
-    await step.run("send", () => mailer.send(user.email));
+  handler: async (payload, ctx) => {
+    ctx.logger.info("send-email started");
+    const user = await ctx.run("fetch-user", (step) => {
+      step.logger.info("fetching user");
+      return db.users.find(payload.userId);
+    });
+    await ctx.run("send", (step) => {
+      step.logger.info("sending email");
+      return mailer.send(user.email);
+    });
   },
 }); // 9am daily
 ```
@@ -1995,7 +2002,7 @@ Each workflow module's default export is a typed handle: `.enqueue(payload, opts
 
 ### Step checkpointing
 
-`step.run(name, fn, opts?)` persists `fn`'s return value as one row in the `steps` table keyed by `(run_id, name)`. On retry, previously-completed steps return their stored value instead of re-executing.
+`ctx.run(name, fn, opts?)` persists `fn`'s return value as one row in the `steps` table keyed by `(run_id, name)`. On retry, previously-completed steps return their stored value instead of re-executing. The step callback receives a step context (`step`) with `step.logger` scoped to the workflow and step name, plus `step.runId`, `step.workflowName`, `step.stepName`, and `step.attempt`.
 
 Per-step options:
 
@@ -2007,22 +2014,22 @@ Per-step options:
 
 If the worker crashes between `fn` returning and the SaveStep RPC completing, `fn` runs again on the next claim. The window is one RPC (~1ms) but it's real. **Make step bodies idempotent**: Stripe idempotency keys, `db.users.upsert` not `create`, dedup keys on outbound webhooks. This contract matches every workflow engine in the industry — it's the cost of durability without two-phase commit.
 
-### Durable `step.sleep`
+### Durable `ctx.sleep`
 
-`step.sleep(name, ms)` waits until the wake time. Short waits (< 30s) run inline; longer waits **defer the run** via `DeferRun` — the worker exits the handler, the run goes back to `pending` with `run_at = wakeAt`, the supervisor wakes the worker on schedule. Crash-safe across days.
+`ctx.sleep(name, ms)` waits until the wake time. Short waits (< 30s) run inline; longer waits **defer the run** via `DeferRun` — the worker exits the handler, the run goes back to `pending` with `run_at = wakeAt`, the supervisor wakes the worker on schedule. Crash-safe across days.
 
 ### Events: `signal` / `waitFor`
 
-`step.waitFor(name, { timeout })` parks the run waiting for a named event. The handler exits, the run goes to `pending` with no `run_at`, an `event_waiters` row is inserted, and the worker can release.
+`ctx.waitFor(name, { timeout })` parks the run waiting for a named event. The handler exits, the run goes to `pending` with no `run_at`, an `event_waiters` row is inserted, and the worker can release.
 
 `signal(name, payload?)` from `tako.sh` (or the equivalent internal-socket call in Go) wakes every parked waiter with matching name. The payload is materialized as the waiter's step result and the run is set runnable. `signal` is runtime-guarded: calling it from browser code (where the workflow runtime is not installed) throws a `TakoError("TAKO_UNAVAILABLE")` instead of silently no-oping.
 
 ```ts
 // Worker handler — pause until approval arrives
-const decision = await step.waitFor<{ approved: boolean }>(`approval:order-${payload.id}`, {
+const decision = await ctx.waitFor<{ approved: boolean }>(`approval:order-${payload.id}`, {
   timeout: 7 * 24 * 3600 * 1000,
 });
-if (decision === null) step.bail("approval timed out");
+if (decision === null) ctx.bail("approval timed out");
 ```
 
 ```ts
@@ -2033,10 +2040,10 @@ await signal(`approval:order-abc`, { approved: true });
 
 Routing is by event name only — embed any selectors in the name. No JSON predicates server-side.
 
-### Early exit: `step.bail` / `step.fail`
+### Early exit: `ctx.bail` / `ctx.fail`
 
-- `step.bail(reason?)` — end the run cleanly. Status: `cancelled`. No retries.
-- `step.fail(error)` — end the run with failure. Status: `dead`. No retries (skips the run-level retry budget).
+- `ctx.bail(reason?)` — end the run cleanly. Status: `cancelled`. No retries.
+- `ctx.fail(error)` — end the run with failure. Status: `dead`. No retries (skips the run-level retry budget).
 
 Both work via sentinel exceptions caught by the worker. Useful for "this work isn't needed anymore" (bail) and "this is permanently broken, don't bother retrying" (fail).
 

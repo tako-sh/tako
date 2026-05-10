@@ -239,9 +239,8 @@ describe("Worker", () => {
         client,
         workerId: "w1",
         registry: registry({
-          // eslint-disable-next-line @typescript-eslint/unbound-method -- `run` is a bound closure
-          greet: async (_p, { run }) => {
-            await run("fetch", () => "ok");
+          greet: async (_p, ctx) => {
+            await ctx.run("fetch", () => "ok");
           },
         }),
       });
@@ -264,6 +263,62 @@ describe("Worker", () => {
     expect(find("Workflow completed")).toMatchObject({ level: "info", scope: "worker:greet" });
   });
 
+  test("passes scoped loggers to workflow and step contexts", async () => {
+    const writes: string[] = [];
+    const originalWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((chunk: unknown): boolean => {
+      writes.push(typeof chunk === "string" ? chunk : String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+
+    let id = "";
+    try {
+      const worker = new Worker({
+        client,
+        workerId: "w1",
+        registry: registry({
+          cleanup: async (_p, ctx) => {
+            expect(ctx.runId).toBe(id);
+            expect(ctx.workflowName).toBe("cleanup");
+            expect(ctx.attempt).toBe(1);
+            ctx.logger.info("workflow cleanup");
+            await ctx.run("delete-temp", (step) => {
+              expect(step.runId).toBe(id);
+              expect(step.workflowName).toBe("cleanup");
+              expect(step.stepName).toBe("delete-temp");
+              expect(step.attempt).toBe(1);
+              step.logger.info("step cleanup");
+              return "ok";
+            });
+          },
+        }),
+      });
+      id = mock.seed({ name: "cleanup" });
+      await worker.processOnce();
+    } finally {
+      process.stdout.write = originalWrite;
+    }
+
+    const lines = writes
+      .flatMap((c) => c.split("\n"))
+      .filter((l) => l.length > 0)
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+
+    const workflowLog = lines.find((l) => l["msg"] === "workflow cleanup");
+    expect(workflowLog).toMatchObject({
+      level: "info",
+      scope: "cleanup",
+      fields: { runId: id, workflow: "cleanup" },
+    });
+
+    const stepLog = lines.find((l) => l["msg"] === "step cleanup");
+    expect(stepLog).toMatchObject({
+      level: "info",
+      scope: "cleanup:delete-temp",
+      fields: { runId: id, workflow: "cleanup", step: "delete-temp" },
+    });
+  });
+
   test("emits Step cached on replay and Workflow cancelled on bail", async () => {
     const writes: string[] = [];
     const originalWrite = process.stdout.write.bind(process.stdout);
@@ -280,12 +335,11 @@ describe("Worker", () => {
         baseBackoffMs: 1,
         maxBackoffMs: 2,
         registry: registry({
-          // eslint-disable-next-line @typescript-eslint/unbound-method -- bound closures
-          quit: async (_p, { run, bail }) => {
-            await run("prep", () => "v");
+          quit: async (_p, ctx) => {
+            await ctx.run("prep", () => "v");
             pass += 1;
             if (pass === 1) throw new Error("retry");
-            bail("done");
+            ctx.bail("done");
           },
         }),
       });
@@ -309,16 +363,15 @@ describe("Worker", () => {
     expect(cancelled!["fields"]).toMatchObject({ reason: "done" });
   });
 
-  test("step.run memoizes across retries", async () => {
+  test("ctx.run memoizes across retries", async () => {
     const runs: Record<string, number> = { a: 0, b: 0 };
     let forceFail = true;
-    // eslint-disable-next-line @typescript-eslint/unbound-method -- `run` is a bound closure, not a class method
-    const handler: WorkflowHandler = async (_payload, { run }) => {
-      const v = await run("a", () => {
+    const handler: WorkflowHandler = async (_payload, ctx) => {
+      const v = await ctx.run("a", () => {
         runs.a += 1;
         return "user-1";
       });
-      await run("b", () => {
+      await ctx.run("b", () => {
         runs.b += 1;
         if (forceFail) throw new Error("fail-b");
         return v;

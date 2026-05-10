@@ -9,11 +9,11 @@ Every app eventually needs background work. Send an email after signup. Reindex 
 
 The usual answer is another service. Inngest, Temporal, BullMQ on top of Redis, SQS and a Lambda, a cron entry on some random box. One more vendor, one more bill, one more thing to keep alive at 3am.
 
-Tako now ships this as a built-in primitive. A full durable workflow engine runs next to your app — same server, same config, same deploy — and the SDK gives you `step.run`, `step.sleep`, `step.waitFor`, and cron out of the box.
+Tako now ships this as a built-in primitive. A full durable workflow engine runs next to your app — same server, same config, same deploy — and the SDK gives you `ctx.run`, `ctx.sleep`, `ctx.waitFor`, and cron out of the box.
 
 ## Step checkpoints that survive crashes
 
-The core idea is `step.run` — wrap a side effect, give it a name, and Tako persists its return value. If the worker crashes or restarts, the next attempt skips completed steps and resumes at the first unfinished one:
+The core idea is `ctx.run` — wrap a side effect, give it a name, and Tako persists its return value. If the worker crashes or restarts, the next attempt skips completed steps and resumes at the first unfinished one:
 
 ```ts
 // workflows/fulfill-order.ts
@@ -21,12 +21,12 @@ import { defineWorkflow } from "tako.sh";
 
 export default defineWorkflow("fulfill-order", {
   retries: 4,
-  handler: async (payload, step) => {
-    const charge = await step.run("charge", () =>
+  handler: async (payload, ctx) => {
+    const charge = await ctx.run("charge", () =>
       stripe.charges.create({ amount: payload.total, source: payload.token }),
     );
-    const label = await step.run("ship", () => easypost.shipments.create({ to: payload.address }));
-    await step.run("email", () => mailer.send(payload.email, { charge, tracking: label.id }));
+    const label = await ctx.run("ship", () => easypost.shipments.create({ to: payload.address }));
+    await ctx.run("email", () => mailer.send(payload.email, { charge, tracking: label.id }));
   },
 });
 ```
@@ -37,18 +37,18 @@ Each step is one row in a per-app SQLite queue at `{tako_data_dir}/apps/<app>/ru
 
 Two primitives turn "workflow" into "long-running business process."
 
-`step.sleep(3 * 24 * 3600 * 1000)` pauses the run for three days. Short waits run inline; longer ones park the run — the worker exits, the row goes back to `pending` with a wake-up time, and the supervisor resumes on schedule. Crash-safe across reboots.
+`ctx.sleep(3 * 24 * 3600 * 1000)` pauses the run for three days. Short waits run inline; longer ones park the run — the worker exits, the row goes back to `pending` with a wake-up time, and the supervisor resumes on schedule. Crash-safe across reboots.
 
-`step.waitFor(name, { timeout })` parks the run waiting for a named event, then anywhere else in your code, `signal(name, payload)` wakes it:
+`ctx.waitFor(name, { timeout })` parks the run waiting for a named event, then anywhere else in your code, `signal(name, payload)` wakes it:
 
 ```ts
 // Worker — block the run until approval arrives
 export default defineWorkflow("approve-order", {
-  handler: async (payload, step) => {
-    const decision = await step.waitFor(`approval:order-${payload.id}`, {
+  handler: async (payload, ctx) => {
+    const decision = await ctx.waitFor(`approval:order-${payload.id}`, {
       timeout: 7 * 24 * 3600 * 1000,
     });
-    if (decision === null) step.bail("approval timed out");
+    if (decision === null) ctx.bail("approval timed out");
   },
 });
 
@@ -66,7 +66,7 @@ Pass `schedule` to `defineWorkflow`. Tako runs a leader-elected ticker that enqu
 ```ts
 export default defineWorkflow("daily-job", {
   schedule: "0 9 * * *",
-  handler: async (payload, step) => {
+  handler: async (payload, ctx) => {
     // daily job body
   },
 }); // 9am daily

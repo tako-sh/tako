@@ -16,4 +16,4 @@ export type {
 export type { WorkflowContext, WorkflowHandler } from "./worker";
 export { defineWorkflow, isWorkflowDefinition, isWorkflowExport } from "./define";
 export type { WorkflowDefinition, WorkflowExport } from "./define";
-export type { StepRunOptions, StepWaitOptions } from "./step";
+export type { StepRunOptions, StepWaitOptions, WorkflowStepContext } from "./step";

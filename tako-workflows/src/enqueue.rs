@@ -331,7 +331,7 @@ impl RunsDb {
     }
 
     /// Reschedule a run for later without bumping attempts (for durable
-    /// `step.sleep` and `step.waitFor` parking). When `wake_at_ms` is None
+    /// `ctx.sleep` and `ctx.waitFor` parking). When `wake_at_ms` is None
     /// the run is parked indefinitely (waiting for an event).
     pub fn defer(
         &self,

@@ -71,8 +71,12 @@ function requireRuntime(): WorkflowRuntime {
  *   {
  *     retries: 4,
  *     schedule: "0 9 * * *",
- *     handler: async (payload, step) => {
- *       await step.run("send", () => sendEmail(payload.userId));
+ *     handler: async (payload, ctx) => {
+ *       ctx.logger.info("sending email");
+ *       await ctx.run("send", (step) => {
+ *         step.logger.info("calling mailer");
+ *         return sendEmail(payload.userId);
+ *       });
  *     },
  *   },
  * );
@@ -102,7 +106,7 @@ export function defineWorkflow<P = unknown>(
 }
 
 /**
- * Wake every workflow run parked on `step.waitFor(event)` with a payload.
+ * Wake every workflow run parked on `ctx.waitFor(event)` with a payload.
  * Call from any server-side context — an HTTP handler, a webhook receiver,
  * a cron tick, another workflow. Returns the number of waiters woken.
  *

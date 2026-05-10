@@ -102,7 +102,13 @@ describe("Types", () => {
       const opts = {
         retries: 4,
         worker: "media",
-        handler: async (_payload: { imageId: string }) => {},
+        handler: async (_payload: { imageId: string }, ctx) => {
+          ctx.logger.info("processing image");
+          await ctx.run("resize", (step) => {
+            step.logger.info("resizing", { stepName: step.stepName });
+            return step.workflowName;
+          });
+        },
       } satisfies WorkflowOpts<{ imageId: string }>;
       const workflow = defineWorkflow("process-image", opts);
 

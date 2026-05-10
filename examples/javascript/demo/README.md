@@ -2,7 +2,7 @@
 
 A TanStack Start demo app that doubles as a live tour of Tako's primitives: **multi-tenancy**, **durable workflows**, and **channels**.
 
-Each moonbase is an isolated tenant (wildcard subdomain). Submitting a supply request enqueues a five-step sequential workflow (check → pack → load → ship → deliver) where the late steps occasionally throw and Tako retries them via `step.run`'s `retries` option. Every step publishes to the `mission-log` channel, so the right-rail log streams live to every connected client. A daily cron workflow deletes demo database records older than three days.
+Each moonbase is an isolated tenant (wildcard subdomain). Submitting a supply request enqueues a five-step sequential workflow (check → pack → load → ship → deliver) where the late steps occasionally throw and Tako retries them via `ctx.run`'s `retries` option. Every step publishes to the `mission-log` channel, so the right-rail log streams live to every connected client. A daily cron workflow deletes demo database records older than three days.
 
 Live at [demo.tako.sh](https://demo.tako.sh).
 
@@ -57,7 +57,7 @@ bun test
 
 ## Files of interest
 
-- `workflows/order-shipment.ts` — five-step sequential workflow with `step.run` retries
+- `workflows/order-shipment.ts` — five-step sequential workflow with `ctx.run` retries
 - `workflows/cleanup.ts` — daily scheduled cleanup for old demo DB rows
 - `channels/mission-log.ts` — pub/sub channel for live events
 - `src/routes/index.tsx` — route glue, server loader, local-mode simulator

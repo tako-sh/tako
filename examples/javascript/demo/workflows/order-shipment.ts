@@ -1,7 +1,6 @@
 import { defineWorkflow } from "tako.sh";
 import missionLog from "../channels/mission-log";
 import { applyMissionEventToRequest } from "../src/server/db";
-import { logger } from "../src/tako.gen";
 import type {
   MissionChannelUpdate,
   MissionLogEvent,
@@ -30,7 +29,6 @@ const STEP_TIMINGS: Record<Step, number> = {
 const MAX_ATTEMPTS = 3;
 const FAIL_CHANCE = 0.45;
 const RETRY_CAPABLE: ReadonlySet<Step> = new Set(["ship", "deliver"]);
-const workflowLogger = logger.child("order-shipment");
 
 function shouldStepFail(requestId: string, step: Step, attempt: number): boolean {
   if (!RETRY_CAPABLE.has(step)) return false;
@@ -46,7 +44,7 @@ function shouldStepFail(requestId: string, step: Step, attempt: number): boolean
 
 export default defineWorkflow<OrderShipmentPayload>("order-shipment", {
   retries: MAX_ATTEMPTS - 1,
-  handler: async (payload, step) => {
+  handler: async (payload, ctx) => {
     const { requestId, base, item } = payload;
     const channel = missionLog({ base });
 
@@ -66,11 +64,11 @@ export default defineWorkflow<OrderShipmentPayload>("order-shipment", {
         const update: MissionChannelUpdate = { request, event: full };
         await channel.publish({ type: "update", data: update });
       } catch (err) {
-        workflowLogger.error("channel publish failed", { error: err, requestId, step: full.step });
+        ctx.logger.error("channel publish failed", { error: err, requestId, step: full.step });
       }
     }
 
-    await step.run("received", () =>
+    await ctx.run("received", () =>
       emit("received", {
         source: base,
         level: "info",
@@ -79,8 +77,8 @@ export default defineWorkflow<OrderShipmentPayload>("order-shipment", {
     );
 
     for (const stepName of PIPELINE_STEPS) {
-      await step.run(stepName, async () => {
-        const attempt = step.attempt;
+      await ctx.run(stepName, async () => {
+        const attempt = ctx.attempt;
         await emit(`${stepName}-running-${attempt}`, {
           source: base,
           level: "info",
@@ -111,7 +109,7 @@ export default defineWorkflow<OrderShipmentPayload>("order-shipment", {
       });
     }
 
-    await step.run("complete", () =>
+    await ctx.run("complete", () =>
       emit("complete", {
         source: base,
         level: "info",

@@ -11,16 +11,16 @@ The difference is what comes with the durability.
 
 ## At a glance
 
-|                       | **Temporal**                                           | **Tako**                                 |
-| --------------------- | ------------------------------------------------------ | ---------------------------------------- |
-| **Deployment model**  | Cluster (Frontend, History, Matching, Worker)          | Embedded in `tako-server`                |
-| **Persistence**       | Cassandra, MySQL, or PostgreSQL                        | Per-app SQLite file                      |
-| **Visibility**        | Elasticsearch (advanced) or DB (basic)                 | Rows in the same SQLite file             |
-| **Workers**           | Separate fleet, any language                           | Subprocess, scale-to-zero                |
-| **Durable primitive** | `workflow.sleep`, `workflow.waitForSignal`, activities | `step.run`, `step.sleep`, `step.waitFor` |
-| **Billing (cloud)**   | $50 per million Actions                                | None — runs on your VPS                  |
-| **Open source**       | Yes, MIT (~19.7k stars)                                | Yes, part of Tako                        |
-| **Languages**         | Go, Java, TypeScript, Python, PHP, .NET, Ruby          | TypeScript and Go                        |
+|                       | **Temporal**                                           | **Tako**                              |
+| --------------------- | ------------------------------------------------------ | ------------------------------------- |
+| **Deployment model**  | Cluster (Frontend, History, Matching, Worker)          | Embedded in `tako-server`             |
+| **Persistence**       | Cassandra, MySQL, or PostgreSQL                        | Per-app SQLite file                   |
+| **Visibility**        | Elasticsearch (advanced) or DB (basic)                 | Rows in the same SQLite file          |
+| **Workers**           | Separate fleet, any language                           | Subprocess, scale-to-zero             |
+| **Durable primitive** | `workflow.sleep`, `workflow.waitForSignal`, activities | `ctx.run`, `ctx.sleep`, `ctx.waitFor` |
+| **Billing (cloud)**   | $50 per million Actions                                | None — runs on your VPS               |
+| **Open source**       | Yes, MIT (~19.7k stars)                                | Yes, part of Tako                     |
+| **Languages**         | Go, Java, TypeScript, Python, PHP, .NET, Ruby          | TypeScript and Go                     |
 
 ## What Temporal gets right
 
@@ -70,11 +70,11 @@ One binary, one file, one socket. [`tako deploy`](/blog/what-happens-when-you-ru
 
 ### Same vocabulary, smaller surface
 
-Tako's [SDK primitives](/docs/tako-toml) — `step.run` for memoized side effects, `step.sleep` for durable waits, `step.waitFor` paired with `signal`, and cron via `schedule` — cover retries, long waits, human approvals, fan-out, and scheduled jobs. That's the working set of what most apps need from a workflow engine. We deliberately skipped child workflows, queries, versioning APIs, and history replay knobs. If your system design genuinely needs those, Temporal is the correct tool.
+Tako's [SDK primitives](/docs/tako-toml) — `ctx.run` for memoized side effects, `ctx.sleep` for durable waits, `ctx.waitFor` paired with `signal`, and cron via `schedule` — cover retries, long waits, human approvals, fan-out, and scheduled jobs. That's the working set of what most apps need from a workflow engine. We deliberately skipped child workflows, queries, versioning APIs, and history replay knobs. If your system design genuinely needs those, Temporal is the correct tool.
 
 ### No per-Action meter
 
-Temporal Cloud bills per Action — roughly every workflow start, signal, activity completion, and heartbeat. At $50 per million Actions, pricing is fair and predictable for the platform it is. But it's a meter that runs on every `step.run` equivalent, forever. Tako's workflow engine runs on the [$5 VPS](/blog/your-5-dollar-vps-is-more-powerful-than-you-think) you were going to pay for anyway. The marginal cost of one more workflow run is the CPU it uses.
+Temporal Cloud bills per Action — roughly every workflow start, signal, activity completion, and heartbeat. At $50 per million Actions, pricing is fair and predictable for the platform it is. But it's a meter that runs on every durable-step equivalent, forever. Tako's workflow engine runs on the [$5 VPS](/blog/your-5-dollar-vps-is-more-powerful-than-you-think) you were going to pay for anyway. The marginal cost of one more workflow run is the CPU it uses.
 
 ## Different ambitions
 

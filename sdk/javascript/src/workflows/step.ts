@@ -1,16 +1,16 @@
 /**
  * Step API + workflow control signals.
  *
- * `step.run(name, fn, opts?)` memoizes fn's result in the run's steps
+ * `ctx.run(name, fn, opts?)` memoizes fn's result in the run's steps
  * table. On retry, completed steps return their stored value instead of
  * re-executing. Per-step `retries`/`backoff`/`retry: false` options control
  * in-step retry behavior independent of the run-level retry budget.
  *
- * `step.sleep(name, durationMs)` waits durably. Short sleeps are
+ * `ctx.sleep(name, durationMs)` waits durably. Short sleeps are
  * inline; long sleeps (≥INLINE_SLEEP_THRESHOLD_MS) defer the run via
  * `client.defer` so the worker can release.
  *
- * `step.waitFor(name, opts?)` parks the run until a matching
+ * `ctx.waitFor(name, opts?)` parks the run until a matching
  * `workflowsEngine.signal(eventName, payload)` (from `tako.sh/internal`) arrives or the timeout fires.
  * Resumption hydrates the event payload as the step's result.
  *
@@ -48,9 +48,21 @@ export interface StepWaitOptions {
 }
 
 interface StepAPI {
-  run<T>(name: string, fn: () => Promise<T> | T, opts?: StepRunOptions): Promise<T>;
+  run<T>(
+    name: string,
+    fn: (step: WorkflowStepContext) => Promise<T> | T,
+    opts?: StepRunOptions,
+  ): Promise<T>;
   sleep(name: string, durationMs: number): Promise<void>;
   waitFor<T = unknown>(name: string, opts?: StepWaitOptions): Promise<T | null>;
+}
+
+export interface WorkflowStepContext {
+  readonly runId: RunId;
+  readonly workflowName: string;
+  readonly stepName: string;
+  readonly attempt: number;
+  readonly logger: Logger;
 }
 
 /** Sentinel: end the run cleanly as `cancelled`. */
@@ -93,9 +105,14 @@ export function createStepAPI(
   workerId: string,
   stepState: StepState,
   log: Logger,
+  createContext: (stepName: string) => WorkflowStepContext,
 ): StepAPI {
   return {
-    async run<T>(name: string, fn: () => Promise<T> | T, opts?: StepRunOptions): Promise<T> {
+    async run<T>(
+      name: string,
+      fn: (step: WorkflowStepContext) => Promise<T> | T,
+      opts?: StepRunOptions,
+    ): Promise<T> {
       if (Object.prototype.hasOwnProperty.call(stepState, name)) {
         log.debug("Step cached", { step: name });
         return stepState[name] as T;
@@ -107,9 +124,10 @@ export function createStepAPI(
 
       let lastErr: unknown;
       const startedAt = Date.now();
+      const context = createContext(name);
       for (let attempt = 1; attempt <= attempts; attempt++) {
         try {
-          const result = await fn();
+          const result = await fn(context);
           stepState[name] = result as unknown;
           await client.saveStep(runId, workerId, name, result ?? null);
           log.info("Step completed", { step: name, ms: Date.now() - startedAt });

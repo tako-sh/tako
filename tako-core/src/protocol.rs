@@ -224,8 +224,8 @@ pub enum Command {
         finalize: bool,
     },
 
-    /// Worker: park the run for later resumption (durable `step.sleep` /
-    /// `step.waitFor`). When `wake_at_ms` is None the run is parked until a
+    /// Worker: park the run for later resumption (durable `ctx.sleep` /
+    /// `ctx.waitFor`). When `wake_at_ms` is None the run is parked until a
     /// matching `Signal` arrives. Does not consume retry budget.
     DeferRun {
         app: String,

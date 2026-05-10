@@ -279,6 +279,8 @@ Fields:
 - `workers`: always-on worker process count. `0` means scale to zero.
 - `concurrency`: max parallel runs per worker. Default is `10`.
 
+JS workflow handlers receive a `ctx` object for `ctx.run`, `ctx.sleep`, `ctx.waitFor`, `ctx.bail`, `ctx.fail`, and workflow-scoped logging. Each `ctx.run(...)` callback receives a step context with a step-scoped logger.
+
 Precedence for default workers:
 
 1. built-in defaults
