@@ -235,6 +235,7 @@ mod tests {
         write_authorized_key(temp.path(), &key);
         let body = br#"{"command":"list"}"#;
         let timestamp = now_secs();
+        // CodeQL[rust/hard-coded-cryptographic-value]: fixed nonce is a test fixture, not production auth.
         let headers = signed_headers(&key, &timestamp, "nonce123456789012", body);
 
         verify_signed_request(temp.path(), &ManagementAuthState::default(), &headers, body)
@@ -248,6 +249,7 @@ mod tests {
         write_authorized_key(temp.path(), &key);
         let body = br#"{"command":"list"}"#;
         let timestamp = now_secs();
+        // CodeQL[rust/hard-coded-cryptographic-value]: fixed nonce is required to test replay rejection.
         let headers = signed_headers(&key, &timestamp, "nonce123456789012", body);
         let state = ManagementAuthState::default();
 
@@ -263,6 +265,7 @@ mod tests {
         let key = test_key();
         let body = br#"{"command":"list"}"#;
         let timestamp = now_secs();
+        // CodeQL[rust/hard-coded-cryptographic-value]: fixed nonce is a test fixture, not production auth.
         let headers = signed_headers(&key, &timestamp, "nonce123456789012", body);
 
         let err =

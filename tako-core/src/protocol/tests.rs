@@ -12,6 +12,7 @@ fn test_command_serialization() {
 
 #[test]
 fn management_auth_message_includes_context_and_body() {
+    // CodeQL[rust/hard-coded-cryptographic-value]: fixed nonce keeps this protocol fixture deterministic.
     let message = management_auth_message("1778220000", "abc123", br#"{"command":"list"}"#);
 
     assert_eq!(

@@ -136,6 +136,7 @@ impl<'a> TextField<'a> {
             let mut error: Option<String> = None;
             loop {
                 if let Some(warning) = self.warning {
+                    // CodeQL[rust/cleartext-logging]: prompt warnings are UI copy; password input is masked below.
                     eprintln!("{} {}", bold(&theme_warning("!")), theme_warning(warning));
                 }
                 let active_error = error.as_deref();

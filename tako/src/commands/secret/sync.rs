@@ -43,6 +43,7 @@ pub(super) async fn list_secrets(
         let discrepancy_names: Vec<&str> = discrepancies.iter().map(|d| d.name.as_str()).collect();
 
         for name in &all_names {
+            // CodeQL[rust/cleartext-logging]: list output shows secret names only, never values.
             eprint!("{:<30}", name);
             for env in &all_envs {
                 if secrets.contains(env, name) {
