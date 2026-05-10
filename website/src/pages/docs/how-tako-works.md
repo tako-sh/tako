@@ -95,7 +95,9 @@ routes = [
 servers = ["la", "nyc"]
 ```
 
-The proxy matches by host and path, then chooses the most specific route. Exact hosts beat wildcards, and longer paths beat shorter paths. After a request matches an app route, `/_tako/*` is reserved for Tako-owned public endpoints, including `/_tako/channels/<name>`. Static asset paths with file extensions are served directly from `public/` when present; everything else is proxied to an app instance.
+The proxy matches by host and path, then chooses the most specific route. Exact hosts beat wildcards, and longer paths beat shorter paths. After a request matches an app route, `/_tako/*` is reserved for Tako-owned public endpoints, including `/_tako/channels/<name>` and signed optimized image URLs under `/_tako/image/v1/...`. Static asset paths with file extensions are served directly from `public/` when present; everything else is proxied to an app instance.
+
+Server-side JavaScript can call `createImageUrl(source, { width, quality?, public? })` from `tako.sh` to create path-based signed image URLs. Image URLs are private by default and use browser-only caching (`private, max-age=86400`). Public images require `public: true` and use long immutable public cache headers. Optimizer URLs do not accept query strings.
 
 Unmatched production routes return `404`. In local dev, unknown managed `.test` and `.tako.test` hosts return a helpful `421` that lists registered dev routes.
 
@@ -113,7 +115,7 @@ Deployed instances bind to loopback only. Tako sets:
 
 The app binds an OS-assigned port and writes that port to fd 4. `tako-server` then routes traffic and health probes to the private TCP endpoint. Internal HTTP probes use `Host: <app>.tako`, where `<app>` is the base app name.
 
-Secrets and the per-instance internal token arrive through fd 3 as JSON before user code runs. Secrets are not written to a release `.env` file and are not inherited by subprocesses through environment variables.
+Secrets, the per-instance internal token, and the app image signing secret arrive through fd 3 as JSON before user code runs. Secrets and signing material are not written to a release `.env` file and are not inherited by subprocesses through environment variables.
 
 ## Health Checks
 

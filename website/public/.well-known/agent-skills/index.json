@@ -20,7 +20,7 @@
       "type": "framework",
       "description": "tako.sh SDK: fetch handler interface, generated tako.gen.ts for runtime state + typed secrets, defineChannel/defineWorkflow, Vite and Next.js adapters.",
       "url": "https://tako.sh/.well-known/agent-skills/tako-sdk-js/SKILL.md",
-      "sha256": "c011ed7aa2006036d2988187457d34de6fed75edc1e060a0341b8becdb500fcc"
+      "sha256": "e400c5c8b11ee01ce180e900580915bd9349186fb163c4d44fbc4434842e0acc"
     }
   ]
 }

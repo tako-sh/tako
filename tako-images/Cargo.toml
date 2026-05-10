@@ -1,0 +1,16 @@
+[package]
+name = "tako-images"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+[dependencies]
+base64 = "0.22"
+hmac = "0.12"
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
+sha2 = "0.10"
+thiserror = "2.0"
+url = "2.5"
+
+[dev-dependencies]
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }

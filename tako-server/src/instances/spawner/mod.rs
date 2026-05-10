@@ -69,6 +69,7 @@ impl Spawner {
             app_user,
             instance.internal_token(),
             &config.secrets,
+            &config.image_secret,
         )
         .map_err(InstanceError::SpawnError)?;
 

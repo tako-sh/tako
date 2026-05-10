@@ -1,5 +1,6 @@
 mod backend;
 mod channels;
+mod image;
 mod static_handler;
 
 pub(crate) use backend::BackendResolution;
@@ -212,6 +213,21 @@ impl ProxyHttp for TakoProxy {
         };
         let app_name = route_match.app;
         ctx.matched_route_path = route_match.path;
+
+        let matched_route_path = ctx.matched_route_path.clone();
+        if self
+            .try_handle_image_request(
+                session,
+                ctx,
+                &app_name,
+                &path,
+                &host,
+                matched_route_path.as_deref(),
+            )
+            .await?
+        {
+            return Ok(true);
+        }
 
         if self
             .try_handle_channel_request(session, ctx, &app_name, &path, &host)

@@ -53,15 +53,15 @@ export default {
 
 ## Package Exports
 
-| Import path        | Purpose                                                     | Key exports                                                                      |
-| ------------------ | ----------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| `tako.sh`          | Server-side authoring + runtime                             | `defineChannel`, `defineWorkflow`, `signal`, `TakoError`, `InferWorkflowPayload` |
-| `tako.sh/client`   | Browser-safe channel client                                 | `Channel`                                                                        |
-| `tako.sh/react`    | React hook for channels                                     | `useChannel`                                                                     |
-| `tako.sh/vite`     | Vite plugin for SSR builds                                  | `tako()` plugin function                                                         |
-| `tako.sh/nextjs`   | Next.js standalone adapter + wrapper                        | `withTako()`, `createNextjsAdapter()`, `createNextjsFetchHandler()`              |
-| `tako.sh/runtime`  | Browser-safe subset consumed by the generated `tako.gen.ts` | `loadSecrets`, `createLogger`, `Logger`                                          |
-| `tako.sh/internal` | Server-only plumbing for framework-adapter boot             | `handleTakoEndpoint`, `initServerRuntime`, channel/workflow define helpers       |
+| Import path        | Purpose                                                     | Key exports                                                                                        |
+| ------------------ | ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `tako.sh`          | Server-side authoring + runtime                             | `defineChannel`, `defineWorkflow`, `signal`, `createImageUrl`, `TakoError`, `InferWorkflowPayload` |
+| `tako.sh/client`   | Browser-safe channel client                                 | `Channel`                                                                                          |
+| `tako.sh/react`    | React hook for channels                                     | `useChannel`                                                                                       |
+| `tako.sh/vite`     | Vite plugin for SSR builds                                  | `tako()` plugin function                                                                           |
+| `tako.sh/nextjs`   | Next.js standalone adapter + wrapper                        | `withTako()`, `createNextjsAdapter()`, `createNextjsFetchHandler()`                                |
+| `tako.sh/runtime`  | Browser-safe subset consumed by the generated `tako.gen.ts` | `loadSecrets`, `createLogger`, `Logger`                                                            |
+| `tako.sh/internal` | Server-only plumbing for framework-adapter boot             | `handleTakoEndpoint`, `initServerRuntime`, channel/workflow define helpers                         |
 
 ## Runtime state: `tako.gen.ts`
 
@@ -101,6 +101,23 @@ export default function fetch(request: Request) {
 - Is typed — the `Secrets` interface in `tako.gen.ts` lists every key present in `.tako/secrets.json`
 
 The generated file is server-only. In the browser, use `tako.sh/client` or `tako.sh/react`.
+
+## Images
+
+Server-side JavaScript can create signed optimized image URLs with `createImageUrl`:
+
+```typescript
+import { createImageUrl } from "tako.sh";
+
+const url = createImageUrl("/avatars/u_123.png", { width: 256 });
+const publicUrl = createImageUrl("/assets/hero.jpg", {
+  width: 1200,
+  quality: 80,
+  public: true,
+});
+```
+
+The helper uses the app image signing secret from the fd-3 bootstrap. It returns a path under `/_tako/image/v1/...` with no query string. Private URLs are the default and use browser-only caching; pass `public: true` only for non-user-specific images that can be shared by public caches.
 
 ## Vite Plugin
 

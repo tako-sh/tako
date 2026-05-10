@@ -9,6 +9,7 @@ members = [
   "tako-server",
   "tako-spawn",
   "tako-workflows",
+  "tako-images",
 ]
 
 [workspace.package]

@@ -1,11 +1,13 @@
 use crate::instances::AppConfig;
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use openssl::symm::{Cipher, decrypt_aead, encrypt_aead};
 use rusqlite::OptionalExtension;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tako_core::UpgradeMode;
 
-pub const STATE_SCHEMA_VERSION: i32 = 2;
+pub const STATE_SCHEMA_VERSION: i32 = 3;
 
 #[derive(Debug, Clone)]
 pub struct PersistedApp {
@@ -93,6 +95,11 @@ impl SqliteStateStore {
         let secret_key = format!("{name}/{environment}");
         conn.execute("DELETE FROM app_secrets WHERE app = ?1;", [&secret_key])
             .map_err(StateStoreError::from)?;
+        conn.execute(
+            "DELETE FROM app_image_secrets WHERE app = ?1;",
+            [&secret_key],
+        )
+        .map_err(StateStoreError::from)?;
         conn.execute(
             "DELETE FROM apps WHERE name = ?1 AND environment = ?2;",
             rusqlite::params![name, environment],
@@ -304,6 +311,49 @@ impl SqliteStateStore {
         }
     }
 
+    pub fn get_or_create_image_secret(&self, app: &str) -> Result<String, StateStoreError> {
+        let conn = self.open_connection()?;
+        if let Some(secret) = self.get_image_secret_on(&conn, app)? {
+            return Ok(secret);
+        }
+
+        let secret = generate_image_secret()?;
+        let encrypted = encrypt_blob(&self.encryption_key, secret.as_bytes())?;
+        conn.execute(
+            "INSERT INTO app_image_secrets (app, encrypted_data)
+             VALUES (?1, ?2)
+             ON CONFLICT(app) DO NOTHING;",
+            rusqlite::params![app, encrypted],
+        )
+        .map_err(StateStoreError::from)?;
+
+        self.get_image_secret_on(&conn, app)?
+            .ok_or_else(|| StateStoreError::InvalidData("missing image secret".to_string()))
+    }
+
+    fn get_image_secret_on(
+        &self,
+        conn: &rusqlite::Connection,
+        app: &str,
+    ) -> Result<Option<String>, StateStoreError> {
+        let blob: Option<Vec<u8>> = conn
+            .query_row(
+                "SELECT encrypted_data FROM app_image_secrets WHERE app = ?1;",
+                [app],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(StateStoreError::from)?;
+
+        let Some(encrypted) = blob else {
+            return Ok(None);
+        };
+        let plaintext = decrypt_blob(&self.encryption_key, &encrypted)?;
+        String::from_utf8(plaintext)
+            .map(Some)
+            .map_err(|e| StateStoreError::InvalidData(format!("decode image secret: {e}")))
+    }
+
     #[cfg(test)]
     pub fn delete_secrets(&self, app: &str) -> Result<(), StateStoreError> {
         let conn = self.open_connection()?;
@@ -363,6 +413,16 @@ impl SqliteStateStore {
             .map_err(StateStoreError::from)?;
         }
 
+        if from_version < 3 {
+            tx.execute_batch(
+                "CREATE TABLE IF NOT EXISTS app_image_secrets (
+                    app TEXT NOT NULL PRIMARY KEY,
+                    encrypted_data BLOB NOT NULL
+                );",
+            )
+            .map_err(StateStoreError::from)?;
+        }
+
         self.ensure_default_rows_on(&tx)?;
         tx.execute_batch(&format!("PRAGMA user_version = {STATE_SCHEMA_VERSION};"))
             .map_err(StateStoreError::from)?;
@@ -403,6 +463,11 @@ impl SqliteStateStore {
             CREATE TABLE IF NOT EXISTS app_secrets (
                 app TEXT NOT NULL PRIMARY KEY,
                 encrypted_data BLOB NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS app_image_secrets (
+                app TEXT NOT NULL PRIMARY KEY,
+                encrypted_data BLOB NOT NULL
             );",
         )
         .map_err(StateStoreError::from)?;
@@ -424,6 +489,13 @@ impl SqliteStateStore {
 
         Ok(())
     }
+}
+
+fn generate_image_secret() -> Result<String, StateStoreError> {
+    let mut bytes = [0u8; 32];
+    openssl::rand::rand_bytes(&mut bytes)
+        .map_err(|e| StateStoreError::Sqlite(format!("generate image secret: {e}")))?;
+    Ok(URL_SAFE_NO_PAD.encode(bytes))
 }
 
 fn encrypt_blob(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, StateStoreError> {

@@ -23,15 +23,17 @@
 
 export interface BootstrapEnvelope {
   token: string | null;
+  imageSecret?: string | null;
   secrets: Record<string, string>;
 }
 
-let bootstrap: BootstrapEnvelope = { token: null, secrets: {} };
+let bootstrap: BootstrapEnvelope = { token: null, imageSecret: null, secrets: {} };
 
 /** Low-level: replace the whole bootstrap state (tests + fd-reader init). */
 export function injectBootstrap(next: BootstrapEnvelope): void {
   bootstrap = {
     token: next.token,
+    imageSecret: next.imageSecret ?? null,
     secrets: Object.assign(Object.create(null), next.secrets ?? {}),
   };
 }
@@ -39,6 +41,11 @@ export function injectBootstrap(next: BootstrapEnvelope): void {
 /** Returns the internal auth token, or `null` when running outside Tako. */
 export function getInternalToken(): string | null {
   return bootstrap.token;
+}
+
+/** Returns the app-scoped image signing secret, or `null` outside Tako. */
+export function getImageSecret(): string | null {
+  return bootstrap.imageSecret ?? null;
 }
 
 /**

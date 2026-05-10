@@ -227,6 +227,29 @@ fn set_and_get_secrets_round_trip() {
 }
 
 #[test]
+fn get_or_create_image_secret_generates_and_reuses_app_secret() {
+    let (_temp, store) = temp_store();
+    store.init().unwrap();
+
+    let first = store.get_or_create_image_secret("my-app").unwrap();
+    let second = store.get_or_create_image_secret("my-app").unwrap();
+
+    assert_eq!(first, second);
+    assert!(first.len() >= 32);
+}
+
+#[test]
+fn get_or_create_image_secret_is_scoped_per_app() {
+    let (_temp, store) = temp_store();
+    store.init().unwrap();
+
+    let first = store.get_or_create_image_secret("my-app").unwrap();
+    let second = store.get_or_create_image_secret("other-app").unwrap();
+
+    assert_ne!(first, second);
+}
+
+#[test]
 fn get_secrets_returns_empty_when_not_set() {
     let (_temp, store) = temp_store();
     store.init().unwrap();
@@ -302,7 +325,7 @@ fn secrets_encrypted_with_wrong_key_cannot_be_read() {
 }
 
 #[test]
-fn migrate_v1_to_v2_adds_secrets_table() {
+fn migrate_v1_to_current_adds_secret_tables() {
     let temp = TempDir::new().unwrap();
     let db_path = temp.path().join("state.sqlite3");
 
@@ -341,22 +364,25 @@ fn migrate_v1_to_v2_adds_secrets_table() {
             .unwrap();
     }
 
-    // Open with current code — should migrate to v2
+    // Open with current code — should migrate to the latest schema.
     let store = SqliteStateStore::new(db_path, TEST_KEY);
     store.init().unwrap();
 
-    // Verify migration: app_secrets table exists and works
+    // Verify migration: app_secrets table exists and works.
     let secrets = HashMap::from([("KEY".to_string(), "value".to_string())]);
     store.set_secrets("test-app", &secrets).unwrap();
     let loaded = store.get_secrets("test-app").unwrap();
     assert_eq!(loaded.get("KEY"), Some(&"value".to_string()));
+
+    let image_secret = store.get_or_create_image_secret("test-app").unwrap();
+    assert!(!image_secret.is_empty());
 
     // Verify version bumped
     let conn = store.open_connection().unwrap();
     let version: i32 = conn
         .query_row("PRAGMA user_version;", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 2);
+    assert_eq!(version, STATE_SCHEMA_VERSION);
 }
 
 #[test]

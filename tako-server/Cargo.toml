@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 tako-channels = { path = "../tako-channels" }
 tako-core = { path = "../tako-core" }
+tako-images = { path = "../tako-images" }
 tako-runtime = { path = "../tako-runtime" }
 tako-socket = { path = "../tako-socket" }
 tako-spawn = { path = "../tako-spawn" }

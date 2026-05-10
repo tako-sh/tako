@@ -1,22 +1,29 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { getInternalToken, injectBootstrap, loadSecrets } from "../src/tako/secrets";
+import {
+  getImageSecret,
+  getInternalToken,
+  injectBootstrap,
+  loadSecrets,
+} from "../src/tako/secrets";
 import { initBootstrapFromFd } from "../src/tako/secrets-fd";
 
 describe("initBootstrapFromFd", () => {
   beforeEach(() => {
     // Reset the module-level store between tests.
-    injectBootstrap({ token: null, secrets: {} });
+    injectBootstrap({ token: null, secrets: {}, imageSecret: null });
   });
 
   test("parses envelope and exposes token + secrets", () => {
     const envelope = JSON.stringify({
       token: "tok-abc",
+      image_secret: "img-secret",
       secrets: { DATABASE_URL: "postgres://x", API_KEY: "sk-123" },
     });
 
     initBootstrapFromFd(() => envelope);
 
     expect(getInternalToken()).toBe("tok-abc");
+    expect(getImageSecret()).toBe("img-secret");
     const secrets = loadSecrets();
     expect(secrets["DATABASE_URL"]).toBe("postgres://x");
     expect(secrets["API_KEY"]).toBe("sk-123");
@@ -36,5 +43,6 @@ describe("initBootstrapFromFd", () => {
     initBootstrapFromFd(() => envelope);
 
     expect(getInternalToken()).toBe("only-token");
+    expect(getImageSecret()).toBeNull();
   });
 });

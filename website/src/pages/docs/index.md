@@ -31,6 +31,7 @@ Tako is built to make local development smooth and production deploys boring (th
 - Remote production routes are HTTPS by default (HTTP redirects to HTTPS).
 - Subdomains? Custom path routes? Done.
 - Serves static files from your app's `public` folder.
+- Serves signed optimized image URLs with private-by-default caching.
 - Secrets and variables per environment. Scoped and ready.
 - Runtime status and log inspection via CLI.
 

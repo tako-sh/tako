@@ -52,6 +52,7 @@ fn spawn_child_process_returns_permission_denied_when_app_user_switch_fails() {
         Some((0, 0)),
         "token",
         &HashMap::new(),
+        "",
     );
 
     match result {
@@ -174,7 +175,8 @@ fn bootstrap_pipe_envelope_has_token_and_secrets() {
     ]);
     let token = "test-token-abc";
 
-    let (read_end, writer) = create_bootstrap_pipe(token, &secrets).expect("create pipe");
+    let (read_end, writer) =
+        create_bootstrap_pipe(token, &secrets, Some("img-secret")).expect("create pipe");
 
     let mut buf = String::new();
     let fd = read_end.into_raw_fd();
@@ -190,6 +192,7 @@ fn bootstrap_pipe_envelope_has_token_and_secrets() {
         Some("postgres://x")
     );
     assert_eq!(parsed["secrets"]["API_KEY"].as_str(), Some("sk-123"));
+    assert_eq!(parsed["image_secret"].as_str(), Some("img-secret"));
 }
 
 #[test]
@@ -201,7 +204,7 @@ fn bootstrap_pipe_is_created_even_with_empty_secrets() {
     let secrets: HashMap<String, String> = HashMap::new();
     let token = "still-has-a-token";
 
-    let (read_end, writer) = create_bootstrap_pipe(token, &secrets).expect("create pipe");
+    let (read_end, writer) = create_bootstrap_pipe(token, &secrets, None).expect("create pipe");
 
     let mut buf = String::new();
     let fd = read_end.into_raw_fd();

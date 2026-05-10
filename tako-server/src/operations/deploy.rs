@@ -72,6 +72,10 @@ impl crate::ServerState {
         } else {
             self.state_store.get_secrets(app_name).unwrap_or_default()
         };
+        let image_secret = match self.state_store.get_or_create_image_secret(app_name) {
+            Ok(secret) => secret,
+            Err(e) => return Response::error(format!("Failed to prepare image service: {}", e)),
+        };
         let mut release_env = env_vars.clone();
         inject_app_data_dir_env(&mut release_env, &data_paths);
         release_env.extend(secrets.clone());
@@ -105,6 +109,7 @@ impl crate::ServerState {
             let mut config = existing.config.read().clone();
             config.version = version.to_string();
             config.secrets = secrets;
+            config.image_secret = image_secret.clone();
             if let Err(error) = apply_release_runtime_to_config(
                 &mut config,
                 release_path.clone(),
@@ -122,6 +127,7 @@ impl crate::ServerState {
                 environment,
                 version: version.to_string(),
                 secrets,
+                image_secret: image_secret.clone(),
                 min_instances: 1,
                 max_instances: 4,
                 ..Default::default()

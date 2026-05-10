@@ -1184,7 +1184,18 @@ Reference scripts in this repo:
 - Maximum HTTP request body size: 128 MiB; larger requests receive `413`.
 - Maximum channel WebSocket frame payload size: 128 MiB; larger frames are rejected and the socket closes.
 - Production browser-facing `tako-server` 5xx responses use generic reason-phrase bodies such as `Internal Server Error`, `Bad Gateway`, `Service Unavailable`, or `Gateway Timeout`; detailed app-scoped startup, proxy, channel storage, and static file diagnostics are recorded in the app log stream instead of returned in response bodies.
-- After a request matches an app route, `/_tako/*` is reserved for Tako-owned public endpoints. `/_tako/channels/<name>` serves durable channels. Other request paths are served as static assets when a matching file exists in `public/`, then proxied to the app.
+- After a request matches an app route, `/_tako/*` is reserved for Tako-owned public endpoints. `/_tako/channels/<name>` serves durable channels. `/_tako/image/v1/...` serves signed optimized images. Other request paths are served as static assets when a matching file exists in `public/`, then proxied to the app.
+
+**Signed image optimization:**
+
+- Each deployed app has a stable app-scoped image signing secret stored encrypted in server state. App server processes receive it through the fd 3 bootstrap envelope as `image_secret`; it is not exposed as an environment variable.
+- JavaScript server code can call `createImageUrl(source, { width, quality?, public? })` from `tako.sh`. The SDK returns a path-only signed URL under `/_tako/image/v1/...` with no query string. Optimizer requests that add a query string are rejected. `quality` defaults to `75`.
+- Image URLs are private by default. Private URLs include an expiration and responses use `Cache-Control: private, max-age=86400`, so browser caches may reuse them but shared caches must not. Passing `public: true` creates a stable URL without expiration and responses use `Cache-Control: public, max-age=31536000, immutable`.
+- `tako-server` verifies the signature over the source, width, quality, visibility, and expiration before fetching or decoding any source bytes. Tampered or expired image URLs are rejected.
+- Widths are limited to the fixed set `16, 32, 48, 64, 96, 128, 256, 384, 640, 750, 828, 1080, 1200, 1920, 2048, 3840`; quality must be `1..100`.
+- Sources may be local paths or signed `http`/`https` URLs. Local paths are resolved from the app's `public/` directory first, then fetched from the matched app backend. Remote URLs reject unsupported schemes, userinfo, fragments, recursive image optimizer URLs, private/local hosts and IPs, private/local DNS results, and redirects.
+- The optimizer enforces source byte and decoded image limits, preserves aspect ratio, and does not upscale. Current transforms accept JPEG and PNG sources and emit the same format.
+- Failed image optimizer responses use non-shared error caching (`Cache-Control: private, no-store`).
 
 **`/opt/tako/config.json`** — server-level configuration:
 
