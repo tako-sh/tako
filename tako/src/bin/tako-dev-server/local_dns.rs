@@ -5,7 +5,7 @@
 use std::net::{Ipv4Addr, SocketAddr};
 
 use hickory_proto::{
-    op::{Message, MessageType, ResponseCode},
+    op::{Message, ResponseCode},
     rr::{DNSClass, Name, RData, Record, RecordType, rdata::A},
 };
 
@@ -46,7 +46,7 @@ fn is_dev_host(host: &str) -> bool {
 
 fn parse_dns_query(packet: &[u8]) -> Option<ParsedDnsQuery> {
     let request = Message::from_vec(packet).ok()?;
-    let query = request.queries().first()?.clone();
+    let query = request.queries.first()?.clone();
     let qname = query
         .name()
         .to_ascii()
@@ -79,20 +79,17 @@ fn response_with_record(
 
 fn build_dns_response(packet: &[u8], loopback_ip: Ipv4Addr) -> Option<Vec<u8>> {
     let q = parse_dns_query(packet)?;
-    let mut response = Message::new();
+    let mut response = Message::response(q.request.metadata.id, q.request.metadata.op_code);
     let in_zone = is_dev_host(&q.qname);
 
-    response.set_id(q.request.id());
-    response.set_message_type(MessageType::Response);
-    response.set_op_code(q.request.op_code());
-    response.set_recursion_desired(q.request.recursion_desired());
-    response.set_authoritative(true);
-    if let Some(query) = q.request.queries().first() {
+    response.metadata.recursion_desired = q.request.metadata.recursion_desired;
+    response.metadata.authoritative = true;
+    if let Some(query) = q.request.queries.first() {
         response.add_query(query.clone());
     }
 
     if !in_zone {
-        response.set_response_code(ResponseCode::Refused);
+        response.metadata.response_code = ResponseCode::Refused;
         return response.to_vec().ok();
     }
 
