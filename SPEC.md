@@ -1414,7 +1414,7 @@ Response:
 }
 ```
 
-The server validates the app name and release version, acquires the per-app deploy lock, derives env from release `app.json`, injects `TAKO_BUILD`, `TAKO_DATA_DIR`, stored server-side secrets, and parent `PATH`, then runs `sh -c "<command_line>"` in the release directory. The `vars` and `secrets` fields are present in the v0 wire shape but are not the source of truth for execution env. Success returns exit metadata; non-zero exit or timeout returns an error response with a stderr tail.
+The server validates the app name and release version, acquires the per-app deploy lock, derives base env from release `app.json`, overlays command `vars`, injects `TAKO_BUILD`, `TAKO_DATA_DIR`, command `secrets`, and parent `PATH`, then runs `sh -c "<command_line>"` in the release directory. Deploy sends the freshly decrypted secrets in the `run_release` payload so first deploys and secret rotations run against the same env the new HTTP instances will receive. Success returns exit metadata; non-zero exit or timeout returns an error response with a stderr tail.
 
 Server-side validation on `deploy` and app-scoped commands:
 

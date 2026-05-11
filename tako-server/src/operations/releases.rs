@@ -5,6 +5,7 @@ use crate::release::{
     validate_release_path_for_app,
 };
 use crate::socket::Response;
+use std::collections::HashMap;
 use tako_core::{ListReleasesResponse, ReleaseInfo};
 
 impl crate::ServerState {
@@ -41,6 +42,8 @@ impl crate::ServerState {
         version: &str,
         path: &str,
         command_line: &str,
+        vars: HashMap<String, String>,
+        secrets: HashMap<String, String>,
     ) -> Response {
         use crate::release_command;
 
@@ -72,7 +75,6 @@ impl crate::ServerState {
             Ok(vars) => vars,
             Err(error) => return Response::error(format!("Invalid app release: {}", error)),
         };
-        let secrets = self.state_store.get_secrets(app_name).unwrap_or_default();
         let data_paths = match ensure_app_runtime_data_dirs(&self.runtime.data_dir, app_name) {
             Ok(paths) => paths,
             Err(error) => {
@@ -81,6 +83,7 @@ impl crate::ServerState {
         };
 
         let mut env = env_vars;
+        env.extend(vars);
         inject_app_data_dir_env(&mut env, &data_paths);
         env.insert("TAKO_BUILD".to_string(), version.to_string());
         env.extend(secrets);

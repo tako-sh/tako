@@ -152,7 +152,7 @@ Override or clear it per environment:
 release = ""
 ```
 
-The release command runs only on the leader server, inside the new release directory, after production dependency install and before rolling update. It receives app env, secrets, `TAKO_BUILD`, and `TAKO_DATA_DIR`.
+The release command runs only on the leader server, inside the new release directory, after production dependency install and before rolling update. It receives app env, the secrets resolved for that deploy, `TAKO_BUILD`, and `TAKO_DATA_DIR`.
 
 If the command fails or times out after 10 minutes, deploy aborts on every server. Timed-out release commands are killed. The old release keeps serving.
 

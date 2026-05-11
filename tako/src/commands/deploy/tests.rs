@@ -9,7 +9,7 @@ fn deploy_config_paths_are_derived_from_remote_base() {
         version: "v1".to_string(),
         remote_base: "/opt/tako/apps/my-app".to_string(),
         routes: vec![],
-        env_vars: HashMap::new(),
+        secrets: HashMap::new(),
         secrets_hash: String::new(),
         main: "index.ts".to_string(),
         use_unified_target_process: false,
@@ -19,6 +19,43 @@ fn deploy_config_paths_are_derived_from_remote_base() {
     assert_eq!(cfg.release_dir(), "/opt/tako/apps/my-app/releases/v1");
     assert_eq!(cfg.current_link(), "/opt/tako/apps/my-app/current");
     assert_eq!(cfg.shared_dir(), "/opt/tako/apps/my-app/shared");
+}
+
+#[test]
+fn release_command_payload_includes_deploy_secrets() {
+    let cfg = DeployConfig {
+        app_name: "my-app/production".to_string(),
+        version: "v1".to_string(),
+        remote_base: "/opt/tako/apps/my-app/production".to_string(),
+        routes: vec![],
+        secrets: HashMap::from([("DATABASE_URL".to_string(), "postgres://new".to_string())]),
+        secrets_hash: String::new(),
+        main: "index.ts".to_string(),
+        use_unified_target_process: false,
+        release_command: Some("bun run migrate".to_string()),
+        leader_server: "prod".to_string(),
+    };
+
+    let Some(tako_core::Command::RunRelease {
+        app,
+        version,
+        path,
+        command_line,
+        secrets,
+        ..
+    }) = cfg.release_command_payload("/opt/tako/apps/my-app/production/releases/v1")
+    else {
+        panic!("expected run_release command payload");
+    };
+
+    assert_eq!(app, "my-app/production");
+    assert_eq!(version, "v1");
+    assert_eq!(path, "/opt/tako/apps/my-app/production/releases/v1");
+    assert_eq!(command_line, "bun run migrate");
+    assert_eq!(
+        secrets.get("DATABASE_URL").map(String::as_str),
+        Some("postgres://new")
+    );
 }
 
 #[test]

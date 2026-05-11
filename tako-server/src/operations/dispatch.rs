@@ -42,8 +42,8 @@ impl crate::ServerState {
                 version,
                 path,
                 command_line,
-                vars: _,
-                secrets: _,
+                vars,
+                secrets,
             } => {
                 if let Err(msg) = validate_app_name(&app) {
                     return Response::error(msg);
@@ -51,7 +51,8 @@ impl crate::ServerState {
                 if let Err(msg) = validate_release_version(&version) {
                     return Response::error(msg);
                 }
-                self.run_release(&app, &version, &path, &command_line).await
+                self.run_release(&app, &version, &path, &command_line, vars, secrets)
+                    .await
             }
             Command::Deploy {
                 app,

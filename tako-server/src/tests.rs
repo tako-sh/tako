@@ -2091,12 +2091,14 @@ async fn run_release_executes_command_in_release_dir() {
     )
     .unwrap();
 
-    // Seed secrets for the app so the run_release handler can pick them up.
+    // Seed stale secrets for the app. The release command must use the
+    // command payload, because deploy sends fresh secrets before Deploy stores
+    // them in the state DB.
     state
         .state_store
         .set_secrets(
             "my-app/production",
-            &HashMap::from([("DATABASE_URL".to_string(), "postgres://x".to_string())]),
+            &HashMap::from([("DATABASE_URL".to_string(), "postgres://old".to_string())]),
         )
         .unwrap();
 
@@ -2107,7 +2109,7 @@ async fn run_release_executes_command_in_release_dir() {
             path: release_dir.to_string_lossy().to_string(),
             command_line: "printf %s \"$NODE_ENV-$DATABASE_URL\" > out.txt".to_string(),
             vars: HashMap::new(),
-            secrets: HashMap::new(),
+            secrets: HashMap::from([("DATABASE_URL".to_string(), "postgres://new".to_string())]),
         })
         .await;
 
@@ -2118,7 +2120,7 @@ async fn run_release_executes_command_in_release_dir() {
     assert_eq!(data.get("exit_code").and_then(|v| v.as_i64()), Some(0));
 
     let written = std::fs::read_to_string(release_dir.join("out.txt")).unwrap();
-    assert_eq!(written, "production-postgres://x");
+    assert_eq!(written, "production-postgres://new");
 }
 
 // CodeQL[rust/cleartext-logging]: hardcoded fixture secrets in tests; set_secrets encrypts at rest and update_secrets logs only app name.

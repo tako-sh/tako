@@ -52,7 +52,7 @@ struct DeployConfig {
     version: String,
     remote_base: String,
     routes: Vec<String>,
-    env_vars: HashMap<String, String>,
+    secrets: HashMap<String, String>,
     /// SHA-256 hash of the decrypted secrets for this deploy.
     secrets_hash: String,
     main: String,
@@ -149,6 +149,18 @@ impl DeployConfig {
 
     fn shared_dir(&self) -> String {
         format!("{}/shared", self.remote_base)
+    }
+
+    fn release_command_payload(&self, release_dir: &str) -> Option<tako_core::Command> {
+        let command_line = self.release_command.as_ref()?;
+        Some(tako_core::Command::RunRelease {
+            app: self.app_name.clone(),
+            version: self.version.clone(),
+            path: release_dir.to_string(),
+            command_line: command_line.clone(),
+            vars: HashMap::new(),
+            secrets: self.secrets.clone(),
+        })
     }
 }
 
@@ -434,7 +446,7 @@ async fn run_async(
         version: version.clone(),
         remote_base: format!("/opt/tako/apps/{}", deployment_app_name),
         routes: routes.clone(),
-        env_vars: deploy_secrets,
+        secrets: deploy_secrets,
         secrets_hash,
         main: manifest_main,
         use_unified_target_process: use_unified_js_target_process,

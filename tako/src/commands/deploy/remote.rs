@@ -473,9 +473,9 @@ async fn run_release_command_step(
     release_tx: Option<&ReleaseCommandSender>,
     release_rx: Option<ReleaseCommandReceiver>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let Some(command_line) = &config.release_command else {
+    if config.release_command.is_none() {
         return Ok(());
-    };
+    }
 
     let is_leader = server_name == config.leader_server;
 
@@ -487,14 +487,9 @@ async fn run_release_command_step(
         if let Some(task_tree) = task_tree {
             task_tree.mark_release_step_running(server_name);
         }
-        let cmd = Command::RunRelease {
-            app: config.app_name.clone(),
-            version: config.version.clone(),
-            path: release_dir.to_string(),
-            command_line: command_line.clone(),
-            vars: std::collections::HashMap::new(),
-            secrets: std::collections::HashMap::new(),
-        };
+        let cmd = config
+            .release_command_payload(release_dir)
+            .expect("release command is present");
         let json = serde_json::to_string(&cmd)
             .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
         let response_text = ssh
@@ -673,7 +668,7 @@ pub(super) async fn deploy_to_server(
         // Resolve secrets before the starting step to keep it fast.
         let deploy_secrets = match query_remote_secrets_hash(&ssh, &config.app_name).await {
             Some(remote_hash) if remote_hash == config.secrets_hash => None,
-            _ => Some(config.env_vars.clone()),
+            _ => Some(config.secrets.clone()),
         };
 
         let start_result = if let Some(task_tree) = &task_tree {

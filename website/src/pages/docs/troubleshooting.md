@@ -252,7 +252,7 @@ tako deploy --env production --verbose
 tako logs --env production
 ```
 
-The release command runs in the new release directory with app env, secrets, `TAKO_BUILD`, and `TAKO_DATA_DIR`. It has a 10-minute timeout; timed-out release commands are killed before deploy aborts.
+The release command runs in the new release directory with app env, the secrets resolved for that deploy, `TAKO_BUILD`, and `TAKO_DATA_DIR`. It has a 10-minute timeout; timed-out release commands are killed before deploy aborts.
 
 ## App Fails Health Checks
 
