@@ -200,7 +200,7 @@ Merge order:
 
 Tako sets `ENV` in dev and deploy. `ENV` is reserved; if you set it in `[vars]`, Tako ignores it and prints a warning.
 
-Common runtime vars include `ENV`, `TAKO_DATA_DIR`, `TAKO_BUILD` on deploy, `NODE_ENV` for JavaScript runtimes, and `BUN_ENV` for Bun.
+Common runtime vars include `ENV`, `TAKO_DATA_DIR`, `TAKO_BUILD` on deploy, `NODE_ENV` for JavaScript runtimes, and `BUN_ENV` for Bun. Production app and worker processes do not inherit arbitrary `tako-server` service environment variables; set required app vars in `tako.toml`.
 
 Secrets do not live in `tako.toml`; use `tako secrets`.
 
@@ -255,7 +255,7 @@ release = ""
 
 `[envs.<env>].release` overrides the top-level command. An empty string clears the inherited command for that environment.
 
-The command runs as `sh -c` in the new release directory with app env, secrets, `TAKO_BUILD`, and `TAKO_DATA_DIR`. It has a 10-minute timeout. If it fails or times out, deploy aborts, the timed-out process is killed, and old instances keep serving.
+The command runs as `sh -c` in the new release directory with app env, secrets, `TAKO_BUILD`, `TAKO_DATA_DIR`, and `PATH`. It has a 10-minute timeout. If it fails or times out, deploy aborts, the timed-out process is killed, and old instances keep serving.
 
 ## Workflow Workers
 

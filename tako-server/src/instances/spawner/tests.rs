@@ -66,6 +66,39 @@ fn spawn_child_process_returns_permission_denied_when_app_user_switch_fails() {
     }
 }
 
+#[tokio::test]
+#[cfg(unix)]
+async fn spawn_child_process_does_not_inherit_server_env() {
+    let parent_secret = EnvGuard::set("TAKO_SERVER_PARENT_SECRET", "should-not-leak");
+    let dir = tempfile::tempdir().unwrap();
+    let config = AppConfig {
+        path: dir.path().to_path_buf(),
+        command: vec![
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            "printf %s \"${TAKO_SERVER_PARENT_SECRET:-missing}\"".to_string(),
+        ],
+        ..Default::default()
+    };
+    let (child, readiness_fd) = spawn_child_process(
+        &config,
+        &HashMap::new(),
+        &[],
+        None,
+        "token",
+        &HashMap::new(),
+        "",
+    )
+    .unwrap();
+    drop(readiness_fd);
+
+    let output = child.wait_with_output().await.unwrap();
+
+    drop(parent_secret);
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "missing");
+}
+
 #[test]
 #[cfg(unix)]
 fn startup_exit_error_prefers_stderr_and_includes_status() {
@@ -352,6 +385,32 @@ fn build_instance_args_never_includes_socket_flag() {
     assert!(!args.contains(&"--socket".to_string()));
     assert!(args.contains(&"--instance".to_string()));
     assert_eq!(args.len(), 2);
+}
+
+#[cfg(unix)]
+struct EnvGuard {
+    name: &'static str,
+    previous: Option<std::ffi::OsString>,
+}
+
+#[cfg(unix)]
+impl EnvGuard {
+    fn set(name: &'static str, value: &str) -> Self {
+        let previous = std::env::var_os(name);
+        unsafe { std::env::set_var(name, value) };
+        Self { name, previous }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        if let Some(value) = self.previous.take() {
+            unsafe { std::env::set_var(self.name, value) };
+        } else {
+            unsafe { std::env::remove_var(self.name) };
+        }
+    }
 }
 
 #[tokio::test]

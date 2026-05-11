@@ -305,16 +305,9 @@ pub(crate) async fn prepare_release_runtime(
         && let Some(install_cmd) = &def.package_manager.install
     {
         tracing::info!(runtime = %runtime, install_dir = %install_dir.display(), "Running production install: {}", install_cmd);
-        let mut cmd = TokioCommand::new("sh");
-        cmd.args(["-c", install_cmd.as_str()])
-            .current_dir(&install_dir)
-            .envs(&install_env);
-        #[cfg(unix)]
-        drop_privileges_if_root(&mut cmd);
-        let output = cmd
-            .output()
-            .await
-            .map_err(|e| format!("Failed to run production install: {e}"))?;
+        let output =
+            run_production_install_command(install_cmd.as_str(), &install_dir, &install_env)
+                .await?;
         if !output.status.success() {
             return Err(format_process_failure(
                 "production install",
@@ -326,6 +319,28 @@ pub(crate) async fn prepare_release_runtime(
     }
 
     Ok(runtime_bin)
+}
+
+async fn run_production_install_command(
+    install_cmd: &str,
+    install_dir: &Path,
+    install_env: &HashMap<String, String>,
+) -> Result<std::process::Output, String> {
+    let mut cmd = TokioCommand::new("sh");
+    cmd.args(["-c", install_cmd])
+        .current_dir(install_dir)
+        .env_clear();
+    for key in ["PATH", "HOME"] {
+        if let Ok(value) = std::env::var(key) {
+            cmd.env(key, value);
+        }
+    }
+    cmd.envs(install_env);
+    #[cfg(unix)]
+    drop_privileges_if_root(&mut cmd);
+    cmd.output()
+        .await
+        .map_err(|e| format!("Failed to run production install: {e}"))
 }
 
 pub(crate) async fn resolve_release_runtime_bin(
@@ -603,5 +618,50 @@ mod tests {
             env.get(TAKO_APP_DATA_DIR_ENV).map(String::as_str),
             Some("/tmp/app/data/app")
         );
+    }
+
+    #[tokio::test]
+    async fn production_install_command_does_not_inherit_server_env() {
+        let parent_secret = EnvGuard::set("TAKO_SERVER_PARENT_SECRET", "should-not-leak");
+        let temp = TempDir::new().unwrap();
+        let mut env = HashMap::new();
+        if let Ok(path) = std::env::var("PATH") {
+            env.insert("PATH".to_string(), path);
+        }
+
+        let output = run_production_install_command(
+            "printf %s \"${TAKO_SERVER_PARENT_SECRET:-missing}\"",
+            temp.path(),
+            &env,
+        )
+        .await
+        .unwrap();
+
+        drop(parent_secret);
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "missing");
+    }
+
+    struct EnvGuard {
+        name: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl EnvGuard {
+        fn set(name: &'static str, value: &str) -> Self {
+            let previous = std::env::var_os(name);
+            unsafe { std::env::set_var(name, value) };
+            Self { name, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(value) = self.previous.take() {
+                unsafe { std::env::set_var(self.name, value) };
+            } else {
+                unsafe { std::env::remove_var(self.name) };
+            }
+        }
     }
 }

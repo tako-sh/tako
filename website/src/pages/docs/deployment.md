@@ -131,7 +131,7 @@ Target artifacts are cached under `.tako/artifacts/` and validated by checksum a
 
 ## Runtime Preparation
 
-Servers receive prebuilt artifacts; they do not run app build steps. After extracting an artifact, `tako-server` runs the runtime plugin's production install command, downloads or resolves the pinned runtime version when needed, and prepares the release directory.
+Servers receive prebuilt artifacts; they do not run app build steps. After extracting an artifact, `tako-server` runs the runtime plugin's production install command, downloads or resolves the pinned runtime version when needed, and prepares the release directory. Production install receives the release env plus minimal process env (`PATH`, `HOME` when available), not arbitrary `tako-server` service environment variables.
 
 Runtime definitions live in runtime plugins. Presets only supply metadata such as `main`, `assets`, and `dev`.
 
@@ -152,7 +152,7 @@ Override or clear it per environment:
 release = ""
 ```
 
-The release command runs only on the leader server, inside the new release directory, after production dependency install and before rolling update. It receives app env, the secrets resolved for that deploy, `TAKO_BUILD`, and `TAKO_DATA_DIR`.
+The release command runs only on the leader server, inside the new release directory, after production dependency install and before rolling update. It receives app env, the secrets resolved for that deploy, `TAKO_BUILD`, `TAKO_DATA_DIR`, and `PATH`.
 
 If the command fails or times out after 10 minutes, deploy aborts on every server. Timed-out release commands are killed. The old release keeps serving.
 

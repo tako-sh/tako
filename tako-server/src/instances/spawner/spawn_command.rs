@@ -131,8 +131,13 @@ fn build_child_command(
         child_cmd.gid(gid);
     }
 
+    child_cmd.current_dir(&config.path).env_clear();
+    for key in ["PATH", "HOME"] {
+        if let Ok(value) = std::env::var(key) {
+            child_cmd.env(key, value);
+        }
+    }
     child_cmd
-        .current_dir(&config.path)
         .envs(env)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

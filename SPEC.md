@@ -912,7 +912,7 @@ Deploy flow helpers:
 - Deploy target app path is the selected config file's parent directory relative to the source bundle root.
 - Build uses a build dir: copies project from source root into `.tako/build` (respecting `.gitignore`), symlinks `node_modules/` from the original tree (build tools read but don't modify), runs build commands in the build dir, then archives the result excluding `node_modules/`.
 - These paths are always force-excluded from the deploy archive: `.git/`, `.tako/`, `.env*`, `node_modules/`. Additional exclusions come from `[build].exclude` and `.gitignore`.
-- Servers receive prebuilt artifacts and do not run app build steps during deploy. After extracting the artifact, `tako-server` runs the runtime plugin's production install command (e.g. `bun install --production`) before starting instances.
+- Servers receive prebuilt artifacts and do not run app build steps during deploy. After extracting the artifact, `tako-server` runs the runtime plugin's production install command (e.g. `bun install --production`) before starting instances. Production install runs with the release env plus minimal process env (`PATH`, `HOME` when available); it does not inherit arbitrary `tako-server` service environment variables.
 - Build logic runs in the build dir against the resolved stage list (precedence: `[[build_stages]]` → `[build]` → runtime default). Each stage runs `install` then `run` in declaration order.
 - Deploy uses `runtime_version` from `tako.toml` when set. Otherwise it resolves runtime version by running `<tool> --version` directly, falling back to `latest`.
 - Artifact include precedence: in simple build mode, `build.include` -> `**/*`. In multi-stage mode, `**/*` is used (stages control output via `exclude` patterns only).
@@ -1282,7 +1282,7 @@ App log files contain app stdout/stderr plus app-scoped Tako server diagnostics.
 
 ### Environment Variables for Apps
 
-HTTP instances and workflow workers receive the same app/runtime environment, except HTTP-only bind vars (`PORT`, `HOST`) and per-instance CLI args.
+HTTP instances and workflow workers receive the same app/runtime environment, except HTTP-only bind vars (`PORT`, `HOST`) and per-instance CLI args. In production, spawned app and worker processes start from a cleared service environment; Tako preserves only minimal process env (`PATH`, `HOME` when available) before applying the app/runtime variables below.
 
 | Name                   | Used by      | Meaning                                                                                 | Typical source                                                                                                                                                 |
 | ---------------------- | ------------ | --------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |

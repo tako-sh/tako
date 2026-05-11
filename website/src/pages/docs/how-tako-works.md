@@ -115,6 +115,8 @@ Deployed instances bind to loopback only. Tako sets:
 
 The app binds an OS-assigned port and writes that port to fd 4. `tako-server` then routes traffic and health probes to the private TCP endpoint. Internal HTTP probes use `Host: <app>.tako`, where `<app>` is the base app name.
 
+In production, app and worker processes do not inherit arbitrary `tako-server` service environment variables. Tako preserves only minimal process env (`PATH`, `HOME` when available), then applies the app/runtime vars above.
+
 Secrets, the per-instance internal token, and the app image signing secret arrive through fd 3 as JSON before user code runs. Secrets and signing material are not written to a release `.env` file and are not inherited by subprocesses through environment variables.
 
 ## Health Checks
