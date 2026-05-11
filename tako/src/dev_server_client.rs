@@ -750,10 +750,8 @@ pub async fn subscribe_logs(
                         break;
                     }
                 }
-                Some("LogsTruncated") => {
-                    if tx.send(LogStreamEntry::Truncated).is_err() {
-                        break;
-                    }
+                Some("LogsTruncated") if tx.send(LogStreamEntry::Truncated).is_err() => {
+                    break;
                 }
                 _ => {}
             }

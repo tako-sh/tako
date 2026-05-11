@@ -516,33 +516,28 @@ fn raw_text_input(prompt: &str, options: RawTextInputOptions<'_>) -> io::Result<
                 }
                 // Backspace
                 KeyCode::Backspace
-                    if modifiers.contains(KeyModifiers::SUPER)
-                        || modifiers.contains(KeyModifiers::ALT) =>
-                {
+                    if (modifiers.contains(KeyModifiers::SUPER)
+                        || modifiers.contains(KeyModifiers::ALT))
                     // Word/line delete backward
-                    if pos > 0 {
-                        let old_pos = pos;
-                        while pos > 0 && buf[pos - 1].is_whitespace() {
-                            pos -= 1;
-                        }
-                        while pos > 0 && !buf[pos - 1].is_whitespace() {
-                            pos -= 1;
-                        }
-                        buf.drain(pos..old_pos);
-                        suggestion_idx = None;
-                    }
-                }
-                KeyCode::Backspace => {
-                    if pos > 0 {
+                    && pos > 0 =>
+                {
+                    let old_pos = pos;
+                    while pos > 0 && buf[pos - 1].is_whitespace() {
                         pos -= 1;
-                        buf.remove(pos);
-                        suggestion_idx = None;
                     }
+                    while pos > 0 && !buf[pos - 1].is_whitespace() {
+                        pos -= 1;
+                    }
+                    buf.drain(pos..old_pos);
+                    suggestion_idx = None;
                 }
-                KeyCode::Delete => {
-                    if pos < buf.len() {
-                        buf.remove(pos);
-                    }
+                KeyCode::Backspace if pos > 0 => {
+                    pos -= 1;
+                    buf.remove(pos);
+                    suggestion_idx = None;
+                }
+                KeyCode::Delete if pos < buf.len() => {
+                    buf.remove(pos);
                 }
                 // Cursor movement
                 KeyCode::Left

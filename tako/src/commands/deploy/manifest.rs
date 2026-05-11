@@ -96,10 +96,8 @@ pub(super) fn normalize_main_path(value: &str, source: &str) -> Result<String, S
 fn js_entrypoint_extension_for_index_paths(main: &str) -> Option<&str> {
     let extension = if let Some(value) = main.strip_prefix("index.") {
         value
-    } else if let Some(value) = main.strip_prefix("src/index.") {
-        value
     } else {
-        return None;
+        main.strip_prefix("src/index.")?
     };
 
     if matches!(extension, "ts" | "tsx" | "js" | "jsx") {

@@ -64,7 +64,7 @@ fn hms_from_unix_millis(ts: i64) -> String {
     let dt = OffsetDateTime::from_unix_timestamp_nanos((ts as i128) * 1_000_000)
         .unwrap_or_else(|_| OffsetDateTime::now_utc())
         .to_offset(local_offset());
-    hms_timestamp(dt.hour() as u8, dt.minute() as u8, dt.second() as u8)
+    hms_timestamp(dt.hour(), dt.minute(), dt.second())
 }
 
 impl<'de> Deserialize<'de> for ScopedLog {
@@ -94,7 +94,7 @@ impl ScopedLog {
     pub fn at(level: LogLevel, scope: impl Into<String>, message: impl Into<String>) -> Self {
         let now = OffsetDateTime::now_utc().to_offset(local_offset());
         Self {
-            timestamp: hms_timestamp(now.hour() as u8, now.minute() as u8, now.second() as u8),
+            timestamp: hms_timestamp(now.hour(), now.minute(), now.second()),
             level,
             scope: scope.into(),
             message: message.into(),

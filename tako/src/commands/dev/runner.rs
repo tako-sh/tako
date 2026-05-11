@@ -170,41 +170,35 @@ pub async fn run(
                             ref config_path,
                             ref status,
                             ..
-                        } => {
-                            if config_path == &config_key && status == "stopped" {
-                                let _ = event_tx
-                                    .send(DevEvent::ExitWithMessage(
-                                        "stopped by another client".to_string(),
-                                    ))
-                                    .await;
-                                let _ = should_exit_tx.send(true);
-                                break;
-                            }
+                        } if config_path == &config_key && status == "stopped" => {
+                            let _ = event_tx
+                                .send(DevEvent::ExitWithMessage(
+                                    "stopped by another client".to_string(),
+                                ))
+                                .await;
+                            let _ = should_exit_tx.send(true);
+                            break;
                         }
                         DevServerEvent::ClientConnected {
                             ref config_path,
                             client_id,
                             ..
-                        } => {
-                            if config_path == &config_key {
-                                let _ = event_tx
-                                    .send(DevEvent::ClientConnected {
-                                        is_self: false,
-                                        client_id,
-                                    })
-                                    .await;
-                            }
+                        } if config_path == &config_key => {
+                            let _ = event_tx
+                                .send(DevEvent::ClientConnected {
+                                    is_self: false,
+                                    client_id,
+                                })
+                                .await;
                         }
                         DevServerEvent::ClientDisconnected {
                             ref config_path,
                             client_id,
                             ..
-                        } => {
-                            if config_path == &config_key {
-                                let _ = event_tx
-                                    .send(DevEvent::ClientDisconnected { client_id })
-                                    .await;
-                            }
+                        } if config_path == &config_key => {
+                            let _ = event_tx
+                                .send(DevEvent::ClientDisconnected { client_id })
+                                .await;
                         }
                         DevServerEvent::AppLaunching {
                             ref config_path, ..
