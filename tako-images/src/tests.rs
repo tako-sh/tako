@@ -589,6 +589,31 @@ fn applies_exif_orientation_when_no_resize_needed() {
 }
 
 #[test]
+fn strips_source_metadata_after_applying_orientation() {
+    let img = ImageBuffer::from_fn(32, 16, |_x, _y| Rgb([255_u8, 0, 0]));
+    let mut source = Cursor::new(Vec::new());
+    img.write_to(&mut source, ImageFormat::Jpeg)
+        .expect("encode jpeg");
+    let source = jpeg_with_private_metadata(source.get_ref(), 6);
+    assert_contains_bytes(&source, PRIVATE_XMP_MARKER);
+    assert_contains_bytes(&source, b"Exif\0\0");
+
+    for format in [OutputFormat::Avif, OutputFormat::Webp] {
+        let transformed = transform_image(
+            &source,
+            Some("image/jpeg"),
+            transform_options(format, 32, 80),
+            &TransformLimits::default(),
+        )
+        .expect("transform image");
+
+        assert_eq!(transformed.width, 16);
+        assert_eq!(transformed.height, 32);
+        assert_no_private_metadata(&transformed.bytes);
+    }
+}
+
+#[test]
 fn rejects_images_above_dimension_limits_before_transforming() {
     let img = ImageBuffer::from_fn(64, 32, |_x, _y| Rgba([255_u8, 0, 0, 255]));
     let mut source = Cursor::new(Vec::new());
@@ -673,6 +698,41 @@ fn is_avif(bytes: &[u8]) -> bool {
         && bytes[8..].windows(4).any(|brand| brand == b"avif")
 }
 
+const PRIVATE_XMP_MARKER: &[u8] = b"tako-private-xmp-marker";
+
+fn assert_no_private_metadata(bytes: &[u8]) {
+    for marker in [
+        b"Exif\0\0".as_slice(),
+        b"Exif".as_slice(),
+        b"EXIF".as_slice(),
+        b"XMP ".as_slice(),
+        b"ICCP".as_slice(),
+        b"http://ns.adobe.com/xap/1.0/".as_slice(),
+        PRIVATE_XMP_MARKER,
+    ] {
+        assert!(
+            !contains_bytes(bytes, marker),
+            "transformed image retained metadata marker {marker:?}"
+        );
+    }
+}
+
+fn assert_contains_bytes(bytes: &[u8], marker: &[u8]) {
+    assert!(
+        contains_bytes(bytes, marker),
+        "test fixture is missing metadata marker {marker:?}"
+    );
+}
+
+fn contains_bytes(bytes: &[u8], marker: &[u8]) -> bool {
+    bytes.windows(marker.len()).any(|window| window == marker)
+}
+
+fn jpeg_with_private_metadata(jpeg: &[u8], orientation: u16) -> Vec<u8> {
+    let jpeg = jpeg_with_exif_orientation(jpeg, orientation);
+    jpeg_with_xmp_packet(&jpeg)
+}
+
 fn jpeg_with_exif_orientation(jpeg: &[u8], orientation: u16) -> Vec<u8> {
     assert!(jpeg.starts_with(&[0xff, 0xd8]));
 
@@ -695,6 +755,25 @@ fn jpeg_with_exif_orientation(jpeg: &[u8], orientation: u16) -> Vec<u8> {
     output.extend_from_slice(&[0xff, 0xe1]);
     output.extend_from_slice(&segment_len.to_be_bytes());
     output.extend_from_slice(&exif);
+    output.extend_from_slice(&jpeg[2..]);
+    output
+}
+
+fn jpeg_with_xmp_packet(jpeg: &[u8]) -> Vec<u8> {
+    assert!(jpeg.starts_with(&[0xff, 0xd8]));
+
+    let mut xmp = Vec::new();
+    xmp.extend_from_slice(b"http://ns.adobe.com/xap/1.0/\0");
+    xmp.extend_from_slice(br#"<?xpacket begin=""?><x:xmpmeta xmlns:x="adobe:ns:meta/">"#);
+    xmp.extend_from_slice(PRIVATE_XMP_MARKER);
+    xmp.extend_from_slice(br#"</x:xmpmeta><?xpacket end="w"?>"#);
+
+    let segment_len = u16::try_from(xmp.len() + 2).expect("xmp segment fits");
+    let mut output = Vec::with_capacity(jpeg.len() + xmp.len() + 4);
+    output.extend_from_slice(&jpeg[..2]);
+    output.extend_from_slice(&[0xff, 0xe1]);
+    output.extend_from_slice(&segment_len.to_be_bytes());
+    output.extend_from_slice(&xmp);
     output.extend_from_slice(&jpeg[2..]);
     output
 }

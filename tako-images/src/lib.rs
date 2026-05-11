@@ -22,6 +22,7 @@ const ALLOWED_DIMENSIONS: &[u32] = &[
 ];
 const DEFAULT_WIDTH: u32 = 1200;
 const DEFAULT_QUALITY: u8 = 75;
+const STRIP_SOURCE_METADATA: &str = "strip";
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -836,14 +837,14 @@ fn encode_image(
     app.error_clear();
     match format {
         OutputFormat::Avif => {
-            let suffix = format!(".avif[Q={quality},compression=av1,strip]");
+            let suffix = format!(".avif[Q={quality},compression=av1,{STRIP_SOURCE_METADATA}]");
             image
                 .image_write_to_buffer(&suffix)
                 .map_err(|_| vips_transform_error(app))
         }
         OutputFormat::Webp => {
             let suffix = format!(
-                ".webp[Q={quality},alpha-q={quality},smart-subsample=true,preset=photo,strip]"
+                ".webp[Q={quality},alpha-q={quality},smart-subsample=true,preset=photo,{STRIP_SOURCE_METADATA}]"
             );
             image
                 .image_write_to_buffer(&suffix)
