@@ -569,7 +569,7 @@ fn rejects_content_type_spoofed_unsupported_bytes() {
 
 #[test]
 fn applies_exif_orientation_when_no_resize_needed() {
-    let img = ImageBuffer::from_fn(16, 8, |_x, _y| Rgb([255_u8, 0, 0]));
+    let img = ImageBuffer::from_fn(32, 16, |_x, _y| Rgb([255_u8, 0, 0]));
     let mut source = Cursor::new(Vec::new());
     img.write_to(&mut source, ImageFormat::Jpeg)
         .expect("encode jpeg");
@@ -578,13 +578,13 @@ fn applies_exif_orientation_when_no_resize_needed() {
     let transformed = transform_image(
         &source,
         Some("image/jpeg"),
-        transform_options(OutputFormat::Avif, 16, 80),
+        transform_options(OutputFormat::Avif, 32, 80),
         &TransformLimits::default(),
     )
     .expect("transform image");
 
-    assert_eq!(transformed.width, 8);
-    assert_eq!(transformed.height, 16);
+    assert_eq!(transformed.width, 16);
+    assert_eq!(transformed.height, 32);
     assert_eq!(transformed.content_type, "image/avif");
 }
 
