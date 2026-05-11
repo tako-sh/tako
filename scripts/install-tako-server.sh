@@ -593,7 +593,16 @@ install_sqlite_runtime() {
 install_libvips_runtime() {
   if need_cmd apt-get; then
     apt-get update -y
-    apt-get install -y libvips42t64 || apt-get install -y libvips42 || apt-get install -y libvips
+    apt_avif_encoder_pkg=
+    if apt-cache show libheif-plugin-aomenc >/dev/null 2>&1; then
+      apt_avif_encoder_pkg=libheif-plugin-aomenc
+    fi
+    for apt_vips_pkg in libvips42t64 libvips42 libvips; do
+      if apt-get install -y "$apt_vips_pkg" $apt_avif_encoder_pkg; then
+        return
+      fi
+    done
+    return 1
   elif need_cmd dnf; then
     dnf install -y libvips || dnf install -y vips || {
       dnf install -y epel-release

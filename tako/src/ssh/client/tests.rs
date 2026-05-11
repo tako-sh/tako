@@ -225,6 +225,8 @@ fn install_server_script_installs_and_verifies_runtime_dependencies() {
     let script = super::tako::INSTALL_SERVER_SCRIPT;
     assert!(script.contains("install_libvips_runtime"));
     assert!(script.contains("libvips42t64"));
+    assert!(script.contains("libheif-plugin-aomenc"));
+    assert!(script.contains("apt-get install -y \"$apt_vips_pkg\" $apt_avif_encoder_pkg"));
     assert!(script.contains("install_missing_tako_server_runtime_deps"));
     assert!(script.contains("install_missing_tako_server_runtime_deps /usr/local/bin/tako-server"));
     assert!(script.contains("verify_tako_server_runtime_deps"));
