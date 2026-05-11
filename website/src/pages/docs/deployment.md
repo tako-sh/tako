@@ -135,7 +135,7 @@ Servers receive prebuilt artifacts; they do not run app build steps. After extra
 
 Runtime definitions live in runtime plugins. Presets only supply metadata such as `main`, `assets`, and `dev`.
 
-Signed image URLs created with `createImageUrl()` are served by `tako-server` from `/_tako/image/v1/...`. They are private by default (`private, max-age=86400`), reject extra query strings, and become long-cacheable public assets only when generated with `public: true`. Server installs include the libvips runtime used for JPEG, PNG, and WebP transforms.
+Signed image URLs created with `createImageUrl()` are served by `tako-server` from `/_tako/image/v1/<payload>.<signature>`. They are private by default with maximum width `1200`, a 7-day SDK expiration, and browser-only cache (`private, max-age=604800`), reject extra query strings, and can sign a private-only `browserCacheMaxAgeSeconds` override. They become long-cacheable public assets only when generated with `public: true`. Images emit AVIF by default when `format` is omitted, or WebP when requested with `format: "webp"`. `width` is a maximum; heightless output width is `min(width, originalWidth)`. Optional `height`, `fit`, and `crop` options support contain, center-cover, and smart-cover thumbnails without upscaling; `height` requires an explicit `width`. Server installs include the libvips runtime used for JPEG, PNG, WebP, and AVIF source transforms.
 
 ## Release Commands
 

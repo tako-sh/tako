@@ -14,7 +14,7 @@ sources:
 
 Runtime SDK for JavaScript/TypeScript apps deployed with Tako.
 
-> **CRITICAL**: The `tako.sh` package is **required** — it provides the entrypoint binaries that tako-server launches to run your app. Tako v0 uses plain ES modules everywhere — no `Tako` global. Runtime state (env, secrets, logger, build info) is imported from a generated `tako.gen.ts` file; channels and workflows are imported from their own files.
+> **CRITICAL**: The `tako.sh` package is **required** — it provides the entrypoint binaries that tako-server launches to run your app. Tako v0 uses plain ES modules everywhere — no `Tako` global. Runtime state (env, secrets, logger, build info) is accessed through the generated `tako` object from `tako.gen.ts`; channels and workflows are imported from their own files.
 
 > **CRITICAL**: Framework helpers are opt-in. Use `tako.sh/vite` for Vite-based SSR frameworks (TanStack Start, Nuxt, SolidStart) and `tako.sh/nextjs` for Next.js standalone builds. Plain fetch-handler apps do not need either helper.
 
@@ -65,38 +65,44 @@ export default {
 
 ## Runtime state: `tako.gen.ts`
 
-`tako typegen` emits a project-local `tako.gen.ts` file (inside `src/`, `app/`, or project root - wherever fits the project's tsconfig). It exports typed runtime state and a typed `secrets` bag. When `channels/` or `workflows/` already exists, it also scaffolds empty definition dirs/files so they default-export `defineChannel({ name: "<file-stem>" })` / `defineWorkflow(...)` stubs. Generated channel stubs use the file stem as the initial name, but typegen does not rewrite existing explicit channel names. App code imports what it needs:
+`tako typegen` emits a project-local `tako.gen.ts` file (inside `src/`, `app/`, or project root - wherever fits the project's tsconfig). It exports a typed `tako` runtime object and a typed `tako.secrets` bag. When `channels/` or `workflows/` already exists, it also scaffolds empty definition dirs/files so they default-export `defineChannel({ name: "<file-stem>" })` / `defineWorkflow(...)` stubs. Generated channel stubs use the file stem as the initial name, but typegen does not rewrite existing explicit channel names. App code imports `tako` for project runtime state:
 
 ```typescript
-import { env, isDev, build, port, dataDir, logger, secrets } from "../tako.gen";
+import { tako } from "../tako.gen";
 
 export default function fetch(request: Request) {
-  logger.info("request", { env, build });
-  return new Response(`env=${env} build=${build} db=${secrets.DATABASE_URL ? "ok" : "missing"}`);
+  tako.logger.info("request", { env: tako.env, build: tako.build });
+  return new Response(
+    `env=${tako.env} build=${tako.build} db=${tako.secrets.DATABASE_URL ? "ok" : "missing"}`,
+  );
 }
 ```
 
 ### Surface
 
-| Export    | Description                                                        |
-| --------- | ------------------------------------------------------------------ |
-| `env`     | `ENV` value (`"development"`, `"production"`, ...)                 |
-| `isDev`   | `true` when `env === "development"`                                |
-| `isProd`  | `true` when `env === "production"`                                 |
-| `port`    | Port assigned to this app instance                                 |
-| `host`    | Host/address Tako bound this app instance to                       |
-| `build`   | Build identifier (from `TAKO_BUILD`)                               |
-| `dataDir` | Persistent app-owned data directory — writes survive restarts      |
-| `appDir`  | Directory the app is running from (equivalent to `process.cwd()`)  |
-| `secrets` | Typed secret bag (interface regenerated from `.tako/secrets.json`) |
-| `logger`  | Structured JSON logger (`logger.info(...)`)                        |
+| Export         | Description                                                        |
+| -------------- | ------------------------------------------------------------------ |
+| `tako`         | Frozen runtime object with env, ports, paths, logger, and secrets  |
+| `tako.env`     | `ENV` value (`"development"`, `"production"`, ...)                 |
+| `tako.isDev`   | `true` when `tako.env === "development"`                           |
+| `tako.isProd`  | `true` when `tako.env === "production"`                            |
+| `tako.port`    | Port assigned to this app instance                                 |
+| `tako.host`    | Host/address Tako bound this app instance to                       |
+| `tako.build`   | Build identifier (from `TAKO_BUILD`)                               |
+| `tako.dataDir` | Persistent app-owned data directory — writes survive restarts      |
+| `tako.appDir`  | Directory the app is running from (equivalent to `process.cwd()`)  |
+| `tako.secrets` | Typed secret bag (interface regenerated from `.tako/secrets.json`) |
+| `tako.logger`  | Structured JSON logger (`tako.logger.info(...)`)                   |
+| `Env`          | TypeScript union of configured environment names                   |
+| `Secrets`      | TypeScript interface of secret names                               |
+| `TakoRuntime`  | TypeScript type of the generated `tako` object                     |
 
 ### Secrets
 
-`secrets` is a Proxy that:
+`tako.secrets` is a Proxy that:
 
 - Reads from a mutable store populated via fd 3 at startup (before user module is imported)
-- Individual access works: `secrets.MY_KEY` returns the string value
+- Individual access works: `tako.secrets.MY_KEY` returns the string value
 - Resists bulk serialization: `toString()`, `toJSON()` return `"[REDACTED]"`
 - Is typed — the `Secrets` interface in `tako.gen.ts` lists every key present in `.tako/secrets.json`
 
@@ -109,7 +115,19 @@ Server-side JavaScript can create signed optimized image URLs with `createImageU
 ```typescript
 import { createImageUrl } from "tako.sh";
 
+const photo = createImageUrl("/photos/p_123.jpg");
 const url = createImageUrl("/avatars/u_123.png", { width: 256 });
+const webpUrl = createImageUrl("/avatars/u_123.png", {
+  width: 256,
+  format: "webp",
+});
+const chatImage = createImageUrl("/messages/m_456/photo.jpg", {
+  width: 1200,
+  height: 800,
+  fit: "cover",
+  crop: "smart",
+  browserCacheMaxAgeSeconds: 2_592_000,
+});
 const publicUrl = createImageUrl("/assets/hero.jpg", {
   width: 1200,
   quality: 80,
@@ -117,7 +135,7 @@ const publicUrl = createImageUrl("/assets/hero.jpg", {
 });
 ```
 
-The helper uses the app image signing secret from the fd-3 bootstrap. It returns a path under `/_tako/image/v1/...` with no query string. Private URLs are the default and use browser-only caching; pass `public: true` only for non-user-specific images that can be shared by public caches.
+The helper uses the app image signing secret from the fd-3 bootstrap. It returns a path under `/_tako/image/v1/<payload>.<signature>` with no query string. Private URLs are the default and use maximum width `1200`, quality `75`, a 7-day expiration, and 7-day browser-only caching when options are omitted. Use `browserCacheMaxAgeSeconds` only on private URLs when you need a different browser cache max-age. Output defaults to AVIF by omitting `format`; pass `format: "webp"` only when you need a WebP fallback. Tako never upscales: heightless output width is `min(width, originalWidth)`. Pass optional `height` with an explicit `width` to request a bounded box: `fit` defaults to `"cover"`, `crop` defaults to `"center"`, `crop: "smart"` uses libvips attention cropping, and `fit: "contain"` rejects crop. Pass `public: true` only for non-user-specific images that can be shared by public caches; public image options do not accept browser cache or expiration settings.
 
 ## Vite Plugin
 
@@ -518,11 +536,11 @@ export default withTako({});
 ### 3. HIGH: Serializing the secrets object
 
 ```typescript
-import { secrets } from "../tako.gen";
+import { tako } from "../tako.gen";
 
 // WRONG — bulk access is redacted
-console.log(JSON.stringify(secrets)); // "[REDACTED]"
+console.log(JSON.stringify(tako.secrets)); // "[REDACTED]"
 
 // CORRECT — access individual secrets by name
-const dbUrl = secrets.DATABASE_URL;
+const dbUrl = tako.secrets.DATABASE_URL;
 ```

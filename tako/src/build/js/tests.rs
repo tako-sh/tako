@@ -15,6 +15,18 @@ fn write_types_creates_tako_gen_with_no_secrets() {
 }
 
 #[test]
+fn write_types_exports_tako_runtime_object() {
+    let dir = TempDir::new().unwrap();
+    write_types(dir.path()).unwrap();
+
+    let content = fs::read_to_string(dir.path().join("tako.gen.ts")).unwrap();
+    assert!(content.contains("export const tako = /* @__PURE__ */ Object.freeze({"));
+    assert!(content.contains("  env,\n  isDev,\n  isProd,"));
+    assert!(content.contains("  dataDir,\n  appDir,\n  logger,\n  secrets,"));
+    assert!(content.contains("} as const);"));
+}
+
+#[test]
 fn write_types_imports_from_browser_safe_runtime_entry() {
     // The generated file gets bundled into client chunks by TanStack
     // Start / Next.js / any isomorphic framework. Importing from
@@ -44,6 +56,29 @@ fn write_types_guards_process_env_reads_for_browser_bundlers() {
     assert!(!content.contains("= process.env.HOST"));
     assert!(!content.contains("= process.env.TAKO_BUILD"));
     assert!(!content.contains("= process.env.TAKO_DATA_DIR"));
+}
+
+#[test]
+fn write_types_emits_plain_runtime_env_global_augmentations() {
+    let dir = TempDir::new().unwrap();
+    write_types(dir.path()).unwrap();
+    let content = fs::read_to_string(dir.path().join("tako.gen.ts")).unwrap();
+
+    assert!(
+        content.contains("/* prettier-ignore-start */\n/* oxlint-disable */\n/* eslint-disable */")
+    );
+    assert!(!content.contains("__takoRuntimeEnvBrand"));
+    assert!(!content.contains("interface TakoRuntimeEnv"));
+    assert!(content.contains("interface ProcessEnv {"));
+    assert!(content.contains("interface ImportMetaEnv {"));
+    assert_eq!(content.matches("readonly ENV: Env;").count(), 2);
+    assert_eq!(content.matches("readonly PORT: string;").count(), 2);
+    assert_eq!(content.matches("readonly HOST: string;").count(), 2);
+    assert_eq!(content.matches("readonly TAKO_BUILD: string;").count(), 2);
+    assert_eq!(
+        content.matches("readonly TAKO_DATA_DIR: string;").count(),
+        2
+    );
 }
 
 #[test]

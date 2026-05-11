@@ -26,29 +26,60 @@ import {
 } from "./step";
 import type { Run, StepState } from "./types";
 
+/**
+ * Function that executes one workflow run.
+ *
+ * The payload type `P` is inferred from `defineWorkflow<P>(...)` and flows into
+ * `.enqueue(payload)`.
+ */
 export type WorkflowHandler<P = unknown> = (
   payload: P,
   ctx: WorkflowContext,
 ) => Promise<void> | void;
 
+/**
+ * Runtime context passed to each workflow handler.
+ */
 export interface WorkflowContext {
+  /** Unique id for the current workflow run. */
   readonly runId: string;
+  /** Name used when the workflow was registered with `defineWorkflow`. */
   readonly workflowName: string;
+  /** Current run attempt, starting at 1. */
   readonly attempt: number;
+  /** Logger scoped to this workflow run. */
   readonly logger: Logger;
+  /**
+   * Execute and memoize a durable step.
+   *
+   * On retry, completed steps return their stored result without calling `fn`.
+   */
   run<T>(
     name: string,
     fn: (step: WorkflowStepContext) => Promise<T> | T,
     opts?: StepRunOptions,
   ): Promise<T>;
+  /**
+   * Durably sleep for `durationMs`.
+   */
   sleep(name: string, durationMs: number): Promise<void>;
+  /**
+   * Park the run until `signal(name, payload)` wakes it or the optional timeout
+   * elapses.
+   */
   waitFor<T = unknown>(name: string, opts?: StepWaitOptions): Promise<T | null>;
-  /** End the run cleanly as `cancelled` (no retries). For "this work
-   *  isn't needed anymore" cases. To exit successfully early, just
-   *  `return` from the handler. */
+  /**
+   * End the run cleanly as `cancelled` with no retries.
+   *
+   * Use this for work that is no longer needed. To exit successfully early,
+   * just `return` from the handler.
+   */
   bail(reason?: string): never;
-  /** End the run as `dead` immediately (no retries). For permanent
-   *  errors that won't get better with retries. */
+  /**
+   * End the run as `dead` immediately with no retries.
+   *
+   * Use this for permanent errors that will not improve with retry.
+   */
   fail(error: Error | string): never;
 }
 

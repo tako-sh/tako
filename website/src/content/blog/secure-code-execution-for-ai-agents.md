@@ -68,20 +68,20 @@ pipe -> agent: "read at startup, close fd"
 agent -> isolate: "run untrusted code (no secrets)"
 ```
 
-The SDK reads fd 3 once at startup and closes it. By the time your code creates an isolate, the file descriptor is gone. The sandbox has nothing to steal. Your agent code imports a typed `secrets` bag from the generated `tako.gen.ts`:
+The SDK reads fd 3 once at startup and closes it. By the time your code creates an isolate, the file descriptor is gone. The sandbox has nothing to steal. Your agent code imports typed secrets through the generated `tako` object:
 
 ```ts
-import { secrets } from "../tako.gen";
+import { tako } from "../tako.gen";
 
 // Available to your agent's own code:
-const llm = new Anthropic({ apiKey: secrets.ANTHROPIC_KEY });
+const llm = new Anthropic({ apiKey: tako.secrets.ANTHROPIC_KEY });
 
-// What happens if sandboxed code tries to log it:
-console.log(secrets.ANTHROPIC_KEY); // "[REDACTED]"
-JSON.stringify(secrets); // "[REDACTED]"
+// Bulk logging redacts the secret bag:
+console.log(tako.secrets); // "[REDACTED]"
+JSON.stringify(tako.secrets); // "[REDACTED]"
 ```
 
-The SDK wraps secrets in a Proxy that redacts on `toString()` and `toJSON()`, so even accidental logging doesn't leak values. And since secrets never land in `process.env`, they're not visible to code running inside the isolate at all. See the [secrets docs](/docs) for the full fd 3 flow.
+The SDK wraps secrets in a Proxy that redacts on bulk logging and `toJSON()`. Individual reads like `tako.secrets.ANTHROPIC_KEY` return the actual value for trusted app code, so do not pass those values into untrusted code. And since secrets never land in `process.env`, they're not visible to code running inside the isolate at all. See the [secrets docs](/docs) for the full fd 3 flow.
 
 ## What the two layers cover
 

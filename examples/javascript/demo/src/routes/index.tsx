@@ -4,7 +4,7 @@ import { getRequest } from "@tanstack/react-start/server";
 import { useChannel } from "tako.sh/react";
 import { startTransition, useCallback, useMemo, useState } from "react";
 import { z } from "zod";
-import { logger } from "../tako.gen";
+import { tako } from "../tako.gen";
 import missionLog from "../../channels/mission-log";
 import orderShipment from "../../workflows/order-shipment";
 import { Landing } from "../components/landing";
@@ -20,7 +20,7 @@ import { createRequest, getBaseSnapshot } from "@/server/db";
 
 const EVENT_HISTORY_LIMIT = 80;
 const REQUEST_HISTORY_LIMIT = 50;
-const routeLogger = logger.child("moonbase-route");
+const routeLogger = tako.logger.child("moonbase-route");
 
 const supplyRequestSchema = z.object({
   requestId: z.uuid(),

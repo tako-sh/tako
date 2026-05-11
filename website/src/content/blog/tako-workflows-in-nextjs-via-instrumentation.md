@@ -23,7 +23,7 @@ parent -> runtime: boot hook (only here)
 child -> runtime: installed by instrumentation.ts
 ```
 
-Without a boot step on the child side, calling `defineWorkflow(...).enqueue(payload)`, `signal(event, payload)`, or `channel.publish(...)` from inside a route throws `TakoError("TAKO_UNAVAILABLE", "Workflow runtime not installed. ...")`. Everything else — typed [`secrets`](/blog/secrets-without-env-files), [`env`](/blog/typegen-and-the-ambient-tako-global), `logger`, `tako.gen.ts` imports — already works, because those are static imports that don't depend on process-level state.
+Without a boot step on the child side, calling `defineWorkflow(...).enqueue(payload)`, `signal(event, payload)`, or `channel.publish(...)` from inside a route throws `TakoError("TAKO_UNAVAILABLE", "Workflow runtime not installed. ...")`. Everything else — typed [`tako.secrets`](/blog/secrets-without-env-files), [`tako.env`](/blog/typegen-and-the-ambient-tako-global), `tako.logger`, `tako.gen.ts` imports — already works, because those are static imports that don't depend on process-level state.
 
 ## What `initServerRuntime()` does
 

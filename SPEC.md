@@ -384,7 +384,7 @@ Show version information (same as `--version` flag).
 
 ### tako typegen
 
-Generate typed accessors for the current project: `tako.gen.ts` for JS/TS apps (runtime state + typed `Secrets` interface) and `tako_secrets.go` for Go apps. For JS/TS projects, `tako.gen.ts` is written next to any existing copy if one is found, otherwise placed inside `src/` or `app/` when those directories exist, or at the project root. Legacy `tako.d.ts` files left over from the pre-v0-global design are removed on regeneration. If a JS/TS project already has `channels/` or `workflows/` directories, typegen also scaffolds `demo.ts` in empty dirs and adds missing default `defineChannel(...)` / `defineWorkflow(...)` exports to existing definition files that have no default export yet. Generated channel stubs use the file stem as the initial channel `name`, but typegen does not rewrite existing explicit channel names.
+Generate typed accessors for the current project: `tako.gen.ts` for JS/TS apps (typed `tako` runtime object + typed `Secrets` interface) and `tako_secrets.go` for Go apps. For JS/TS projects, `tako.gen.ts` is written next to any existing copy if one is found, otherwise placed inside `src/` or `app/` when those directories exist, or at the project root. Legacy `tako.d.ts` files left over from the pre-v0-global design are removed on regeneration. If a JS/TS project already has `channels/` or `workflows/` directories, typegen also scaffolds `demo.ts` in empty dirs and adds missing default `defineChannel(...)` / `defineWorkflow(...)` exports to existing definition files that have no default export yet. Generated channel stubs use the file stem as the initial channel `name`, but typegen does not rewrite existing explicit channel names.
 
 ### tako upgrade
 
@@ -1190,12 +1190,12 @@ Reference scripts in this repo:
 **Signed image optimization:**
 
 - Each deployed app has a stable app-scoped image signing secret stored encrypted in server state. App server processes receive it through the fd 3 bootstrap envelope as `image_secret`; it is not exposed as an environment variable.
-- JavaScript server code can call `createImageUrl(source, { width, quality?, public? })` from `tako.sh`. The SDK returns a path-only signed URL under `/_tako/image/v1/...` with no query string. Optimizer requests that add a query string are rejected. `quality` defaults to `75`.
-- Image URLs are private by default. Private URLs include an expiration and responses use `Cache-Control: private, max-age=86400`, so browser caches may reuse them but shared caches must not. Passing `public: true` creates a stable URL without expiration and responses use `Cache-Control: public, max-age=31536000, immutable`.
-- `tako-server` verifies the signature over the source, width, quality, visibility, and expiration before fetching or decoding any source bytes. Tampered or expired image URLs are rejected.
-- Widths are limited to the fixed set `16, 32, 48, 64, 96, 128, 256, 384, 640, 750, 828, 1080, 1200, 1920, 2048, 3840`; quality must be `1..100`.
+- JavaScript server code can call `createImageUrl(source, opts?)` from `tako.sh`; omitted `opts` signs a private AVIF image URL with maximum width `1200`, quality `75`, 7-day expiration, and 7-day browser-only cache. Supported options are `{ width?, height?, fit?, crop?, quality?, format?, public? }`, where `format` may only be `"webp"` because AVIF is the default when `format` is omitted. Private image options also accept `expiresInSeconds?` and `browserCacheMaxAgeSeconds?`; public image options do not. `width` defaults to `1200` for heightless requests and is a maximum, so heightless output width is `min(width, originalWidth)`. `height` requires an explicit `width`, and `fit` / `crop` are valid only when `height` is set. `fit` is `"cover"` or `"contain"` and defaults to `"cover"` with `height`; `crop` is `"center"` or `"smart"` and defaults to `"center"` for cover fits. `fit: "contain"` rejects `crop`. The SDK returns a path-only signed URL in the form `/_tako/image/v1/<payload>.<signature>` with no query string. `payload` is compact base64url JSON using short keys: `s` source, optional `w` maximum width, optional `h` maximum height, optional `fit` contain mode, optional `crop` smart mode, optional `q` quality, optional `f: "webp"` fallback output format, optional `e` private expiration, optional `c` private browser cache max-age in seconds, and optional `pub: true` for public images. Default width is omitted from heightless payloads. Optimizer requests that add a query string are rejected. `quality` defaults to `75`, and output defaults to AVIF. The only output formats are `avif` and `webp`.
+- Image URLs are private by default. Private URLs include an expiration; the SDK default is 7 days. Private responses use `Cache-Control: private, max-age=604800` by default, so browser caches may reuse them for 7 days but shared caches must not. Private URLs can override that browser max-age with signed `browserCacheMaxAgeSeconds`; the default is omitted from the payload. Passing `public: true` creates a stable URL without expiration or browser cache controls and responses use `Cache-Control: public, max-age=31536000, immutable`.
+- `tako-server` verifies the signature over the encoded payload before fetching or decoding any source bytes. Tampered or expired image URLs are rejected.
+- Widths and heights are limited to the fixed set `16, 32, 48, 64, 96, 128, 256, 384, 640, 750, 828, 1080, 1200, 1920, 2048, 3840`; quality must be `1..100`.
 - Sources may be local paths or signed `http`/`https` URLs. Local paths are resolved from the app's `public/` directory first, then fetched from the matched app backend. Remote URLs reject unsupported schemes, userinfo, fragments, recursive image optimizer URLs, private/local hosts and IPs, private/local DNS results, and redirects.
-- The optimizer uses libvips for resize and encode work. It enforces source byte and decoded image limits, preserves aspect ratio, does not upscale, strips metadata from transformed output, and emits progressive optimized JPEGs for JPEG sources. Current transforms accept JPEG, PNG, and WebP sources by file signature, not `Content-Type` alone, and emit the same format.
+- The optimizer uses libvips for resize, crop, and encode work. It enforces source byte and decoded image limits, preserves aspect ratio, does not upscale, and strips metadata from transformed output. Heightless requests downscale to at most `width`. `fit: "contain"` fits inside the requested box without upscaling. `fit: "cover"` fills as much of the requested box as possible without upscaling, then center-crops or attention-crops for `crop: "smart"`. Current transforms accept JPEG, PNG, WebP, and AVIF sources by file signature, not `Content-Type` alone, and emit AVIF by default or WebP when requested.
 - Failed image optimizer responses use non-shared error caching (`Cache-Control: private, no-store`).
 
 **`/opt/tako/config.json`** — server-level configuration:
@@ -1312,7 +1312,7 @@ The SDK parses this from `process.argv` (JS) or `os.Args` (Go) at startup and ex
 }
 ```
 
-The SDK reads fd 3 once at startup and closes it. The envelope travels on a pipe (rather than env vars or argv) so neither the token nor secrets inherit into subprocesses the app spawns. The token authenticates `Host: <app>.tako` requests (health probes, channel auth callbacks). Secrets populate the `secrets` export from the generated `tako.gen.ts`. The pipe is always present — in dev mode with no secrets, the envelope is `{"token": "...", "secrets": {}}`.
+The SDK reads fd 3 once at startup and closes it. The envelope travels on a pipe (rather than env vars or argv) so neither the token nor secrets inherit into subprocesses the app spawns. The token authenticates `Host: <app>.tako` requests (health probes, channel auth callbacks). Secrets populate `tako.secrets` from the generated `tako.gen.ts`. The pipe is always present — in dev mode with no secrets, the envelope is `{"token": "...", "secrets": {}}`.
 
 ### Messages (JSON over Unix Socket)
 
@@ -1628,31 +1628,33 @@ export default function fetch(request: Request): Response | Promise<Response> {
 
 ### Runtime context (`tako.gen.ts`)
 
-Tako v0 does not install any global. `tako typegen` emits a project-local `tako.gen.ts` file (placed inside `src/`/`app/` when those dirs exist, otherwise at the project root) that exports typed runtime state and a typed secrets bag. App code imports what it needs:
+Tako v0 does not install any global. `tako typegen` emits a project-local `tako.gen.ts` file (placed inside `src/`/`app/` when those dirs exist, otherwise at the project root) that exports a typed `tako` runtime object and a typed secrets bag. App code imports `tako` for project-specific runtime state:
 
 ```typescript
-import { env, isDev, port, dataDir, build, logger, secrets } from "../tako.gen";
+import { tako } from "../tako.gen";
 
-logger.info("boot", { env, build });
-const dbUrl = secrets.DATABASE_URL;
+tako.logger.info("boot", { env: tako.env, build: tako.build });
+const dbUrl = tako.secrets.DATABASE_URL;
 ```
 
-| Export    | Description                                                                                                       |
-| --------- | ----------------------------------------------------------------------------------------------------------------- |
-| `env`     | `ENV` value (`"development"`, `"production"`, ...)                                                                |
-| `isDev`   | `true` when `env === "development"`                                                                               |
-| `isProd`  | `true` when `env === "production"`                                                                                |
-| `port`    | Port assigned to this app instance                                                                                |
-| `host`    | Host/address Tako bound this app instance to                                                                      |
-| `build`   | Build identifier injected at deploy time (`"dev"` under `tako dev`)                                               |
-| `dataDir` | Persistent app-owned data directory — writes survive restarts                                                     |
-| `appDir`  | Directory the app is running from (equivalent to `process.cwd()`)                                                 |
-| `secrets` | Typed secret bag — redacts automatically on bulk serialize                                                        |
-| `logger`  | Structured JSON logger (`logger.info(...)`) bound to `source: "app"`                                              |
-| `Env`     | TypeScript union of environment names declared in `tako.toml`, narrows `env === "staging"` checks at compile time |
-| `Secrets` | TypeScript interface of secret keys declared in `.tako/secrets.json`                                              |
+| Export        | Description                                                                                                            |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `tako`        | Frozen runtime object containing the generated app state, logger, and secrets                                          |
+| `env`         | `ENV` value (`"development"`, `"production"`, ...); also available as `tako.env`                                       |
+| `isDev`       | `true` when `env === "development"`; also available as `tako.isDev`                                                    |
+| `isProd`      | `true` when `env === "production"`; also available as `tako.isProd`                                                    |
+| `port`        | Port assigned to this app instance; also available as `tako.port`                                                      |
+| `host`        | Host/address Tako bound this app instance to; also available as `tako.host`                                            |
+| `build`       | Build identifier injected at deploy time (`"dev"` under `tako dev`); also available as `tako.build`                    |
+| `dataDir`     | Persistent app-owned data directory — writes survive restarts; also available as `tako.dataDir`                        |
+| `appDir`      | Directory the app is running from (equivalent to `process.cwd()`); also available as `tako.appDir`                     |
+| `secrets`     | Typed secret bag — redacts automatically on bulk serialize; also available as `tako.secrets`                           |
+| `logger`      | Structured JSON logger (`logger.info(...)`) bound to `source: "app"`; also available as `tako.logger`                  |
+| `Env`         | TypeScript union of environment names declared in `tako.toml`, narrows `tako.env === "staging"` checks at compile time |
+| `Secrets`     | TypeScript interface of secret keys declared in `.tako/secrets.json`                                                   |
+| `TakoRuntime` | TypeScript type of the generated `tako` runtime object                                                                 |
 
-`secrets` redacts automatically on `JSON.stringify`, `console.log`, and `toString` (returns `"[REDACTED]"`); individual key access (`secrets.MY_KEY`) returns the value. The `Secrets` interface is regenerated from `.tako/secrets.json` on every `tako dev`, `tako deploy`, `tako typegen`, and `tako secrets` change. Typegen prefers secret names from the `development` environment when present, then falls back to the union of all secret environments.
+`tako.secrets` redacts automatically on `JSON.stringify`, `console.log`, and `toString` (returns `"[REDACTED]"`); individual key access (`tako.secrets.MY_KEY`) returns the value. The `Secrets` interface is regenerated from `.tako/secrets.json` on every `tako dev`, `tako deploy`, `tako typegen`, and `tako secrets` change. Typegen prefers secret names from the `development` environment when present, then falls back to the union of all secret environments.
 
 Channels and workflows are not on the runtime context — they are regular ES modules you import from their files:
 

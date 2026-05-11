@@ -17,27 +17,29 @@ import (
 	"time"
 )
 
-// Env vars set by tako-server when it spawns the app/worker process.
 const (
+	// WorkflowSocketEnv is the environment variable containing the workflow RPC socket path.
 	WorkflowSocketEnv = "TAKO_WORKFLOW_SOCKET"
-	AppNameEnv        = "TAKO_APP_NAME"
+	// AppNameEnv is the environment variable containing the current Tako app name.
+	AppNameEnv = "TAKO_APP_NAME"
 )
 
 // EnqueueOpts controls per-enqueue behavior. Nil fields fall back to
 // server-side defaults (runAt = now, maxAttempts = 3, no dedup).
 type EnqueueOpts struct {
-	// Default: now.
+	// RunAt schedules the run for a future time. Nil means now.
 	RunAt *time.Time
-	// Default: 3 (1 initial attempt + 2 retries).
+	// MaxAttempts is the total run-level attempt budget. Nil means the server default.
 	MaxAttempts *uint32
-	// If set, collapses this enqueue onto any existing non-terminal run
-	// with the same key. Used for cron idempotency.
+	// UniqueKey deduplicates against an existing non-terminal run with the same key.
 	UniqueKey *string
 }
 
 // EnqueueResult is the server's response.
 type EnqueueResult struct {
-	ID           string
+	// ID is the workflow run id.
+	ID string
+	// Deduplicated is true when an existing run was reused for the enqueue request.
 	Deduplicated bool
 }
 
@@ -76,6 +78,7 @@ func ClientFromEnv() (*Client, error) {
 	return NewClient(sock, app), nil
 }
 
+// Enqueue dispatches a run of the named workflow through this client.
 func (c *Client) Enqueue(ctx context.Context, name string, payload any, opts EnqueueOpts) (*EnqueueResult, error) {
 	if payload == nil {
 		payload = struct{}{}
@@ -113,20 +116,30 @@ func (c *Client) RegisterSchedules(ctx context.Context, schedules []ScheduleSpec
 
 // ScheduleSpec is one workflow+cron pair sent on worker startup.
 type ScheduleSpec struct {
+	// Name is the workflow name.
 	Name string `json:"name"`
+	// Cron is a 5-field cron expression.
 	Cron string `json:"cron"`
 }
 
 // Run is the server-returned run payload from ClaimRun.
 type Run struct {
-	ID          string          `json:"id"`
-	Name        string          `json:"name"`
-	Payload     json.RawMessage `json:"payload"`
-	Status      string          `json:"status"`
-	Attempts    uint32          `json:"attempts"`
-	MaxAttempts uint32          `json:"max_attempts"`
-	RunAtMs     int64           `json:"run_at_ms"`
-	StepState   map[string]any  `json:"step_state"`
+	// ID is the workflow run id.
+	ID string `json:"id"`
+	// Name is the workflow name.
+	Name string `json:"name"`
+	// Payload is the raw JSON payload passed to the handler.
+	Payload json.RawMessage `json:"payload"`
+	// Status is the current run status.
+	Status string `json:"status"`
+	// Attempts is the number of attempts already made.
+	Attempts uint32 `json:"attempts"`
+	// MaxAttempts is the total run-level attempt budget.
+	MaxAttempts uint32 `json:"max_attempts"`
+	// RunAtMs is the scheduled run time in Unix milliseconds.
+	RunAtMs int64 `json:"run_at_ms"`
+	// StepState contains persisted step results for this run.
+	StepState map[string]any `json:"step_state"`
 }
 
 // Claim atomically claims the oldest eligible run and bumps attempts.

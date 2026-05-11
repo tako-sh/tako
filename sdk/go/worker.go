@@ -18,11 +18,15 @@ type Handler func(ctx *WorkflowContext, payload json.RawMessage) error
 
 // WorkflowContext is passed to handlers during execution.
 type WorkflowContext struct {
-	RunID        string
+	// RunID is the unique id for the current workflow run.
+	RunID string
+	// WorkflowName is the registered workflow name.
 	WorkflowName string
-	Attempts     uint32
-	Step         *StepAPI
-	ctx          context.Context
+	// Attempts is the number of attempts already made for this run.
+	Attempts uint32
+	// Step exposes checkpointed step helpers for this run.
+	Step *StepAPI
+	ctx  context.Context
 }
 
 // Done returns the context's cancellation channel.
@@ -79,13 +83,14 @@ type StepAPI struct {
 type StepRunOpts struct {
 	// Retries is the in-step retry budget (default 0 = no internal retries).
 	Retries uint32
-	// Backoff between in-step retries.
+	// Backoff configures in-step retry delays.
 	Backoff struct {
-		Base time.Duration // default 1s
-		Max  time.Duration // default 30s
+		// Base is the initial retry delay. Zero means 1s.
+		Base time.Duration
+		// Max is the retry delay cap. Zero means 30s.
+		Max time.Duration
 	}
-	// NoRetry: when true, any error from fn fails the run immediately (no
-	// in-step retries, no run-level retries).
+	// NoRetry fails the run immediately on any fn error, skipping in-step and run-level retries.
 	NoRetry bool
 }
 
@@ -245,7 +250,7 @@ type workflowConfig struct {
 // WorkflowOption configures a registered workflow.
 type WorkflowOption func(*workflowConfig)
 
-// WithMaxAttempts sets the run-level retry budget.
+// WithMaxAttempts sets the total run-level attempt budget.
 func WithMaxAttempts(n uint32) WorkflowOption {
 	return func(c *workflowConfig) { c.maxAttempts = n }
 }

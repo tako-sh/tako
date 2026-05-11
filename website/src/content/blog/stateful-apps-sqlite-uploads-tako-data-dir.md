@@ -30,7 +30,7 @@ That directory persists across:
 
 It's only cleaned up when you explicitly delete the app.
 
-Your code reaches it through `dataDir` from `tako.gen.ts`. Under the hood, Tako sets `TAKO_DATA_DIR`; most app code should use the typed helper instead of reading the environment variable directly.
+Your code reaches it through `tako.dataDir` from `tako.gen.ts`. Under the hood, Tako sets `TAKO_DATA_DIR`; most app code should use the typed helper instead of reading the environment variable directly.
 
 ## SQLite without a managed database
 
@@ -41,9 +41,9 @@ Tako's data directory is that place.
 ```typescript
 import { Database } from "bun:sqlite";
 import { join } from "path";
-import { dataDir } from "../tako.gen";
+import { tako } from "../tako.gen";
 
-const db = new Database(join(dataDir, "app.db"));
+const db = new Database(join(tako.dataDir, "app.db"));
 db.run(`
   CREATE TABLE IF NOT EXISTS notes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -72,9 +72,9 @@ The same pattern applies to any file-based storage:
 ```typescript
 import { writeFile, mkdir } from "fs/promises";
 import { join } from "path";
-import { dataDir } from "../tako.gen";
+import { tako } from "../tako.gen";
 
-const uploadsDir = join(dataDir, "uploads");
+const uploadsDir = join(tako.dataDir, "uploads");
 await mkdir(uploadsDir, { recursive: true });
 
 export default async function fetch(req: Request) {
@@ -92,11 +92,11 @@ Uploaded files persist across deploys. New releases start, old ones drain — th
 
 ## Dev/prod parity
 
-In development, `tako dev` uses `.tako/data/app/` inside your project directory. Same `dataDir` helper, same code path, different location. No mocking, no special cases.
+In development, `tako dev` uses `.tako/data/app/` inside your project directory. Same `tako.dataDir` helper, same code path, different location. No mocking, no special cases.
 
 If you want a clean local state, delete `.tako/data/app/` — the same reasoning applies in production: the data persists until you intentionally clear it.
 
-Run `tako typegen` and the generated `tako.gen.ts` exports `dataDir` as a typed value alongside your secrets, so your editor knows it's always available.
+Run `tako typegen` and the generated `tako.gen.ts` exports `tako.dataDir` as a typed value alongside your secrets, so your editor knows it's always available.
 
 ## Where this doesn't replace managed infrastructure
 

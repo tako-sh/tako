@@ -27,28 +27,74 @@ export interface ChannelConfig<
   Params,
   Messages,
 > extends ChannelLifecycleConfig {
+  /**
+   * Wire name for the channel. Use a stable kebab-case name, usually matching
+   * the filename in `channels/<name>.ts`.
+   */
   name: string;
+  /**
+   * TypeBox schema for query params required to bind this channel.
+   *
+   * Omit for an unparameterized channel.
+   */
   paramsSchema?: (t: typeof Type) => ParamsSchema extends TSchema ? ParamsSchema : TSchema;
+  /**
+   * Authorization policy for subscribe, publish, and connect operations.
+   *
+   * Omit or set to `false` for a public channel.
+   */
   auth?: false | ChannelAuthConfig<Params>;
+  /**
+   * Optional WebSocket message handlers. Presence of a handler map makes the
+   * channel connectable over WebSocket; otherwise browser subscribers use SSE.
+   */
   handler?: { [T in keyof Messages]?: MessageHandler<Messages[T], Params> };
 }
 
+/**
+ * Bound channel handle returned by {@link defineChannel}.
+ *
+ * Parameterized channels return this after calling the exported channel with
+ * params. Unparameterized channels export the handle directly.
+ */
 export interface ChannelHandle<Params, Messages> {
   readonly __params?: Params;
+  /** Channel name plus encoded params, useful for logging and diagnostics. */
   readonly name: string;
+  /**
+   * Publish a typed message to current channel subscribers.
+   */
   publish<T extends keyof Messages & string>(
     message: { type: T; data: Messages[T] },
     options?: ChannelPublishOptions,
   ): Promise<ChannelMessage<Messages[T]>>;
+  /**
+   * Subscribe to messages with the default browser transport.
+   */
   subscribe(options?: ChannelSubscribeOptions): ChannelSubscription;
+  /**
+   * Open a WebSocket connection. Present only when the channel has handlers.
+   */
   connect?(options?: ChannelConnectOptions): ChannelSocket;
 }
 
+/**
+ * Metadata attached to every channel export for Tako's discovery pass.
+ */
 export interface ChannelExportMeta<Params, Messages> {
   readonly definition: ChannelDefinition<Params, Messages>;
+  /**
+   * Narrow the message map for this channel without changing runtime behavior.
+   */
   $messageTypes<NewMessages>(): ChannelExport<Params, NewMessages>;
 }
 
+/**
+ * Public shape exported from a `channels/<name>.ts` file.
+ *
+ * Channels with params are callable and return a {@link ChannelHandle}; channels
+ * without params are already bound handles.
+ */
 export type ChannelExport<Params, Messages> = (Record<string, never> extends Params
   ? ChannelHandle<Params, Messages>
   : (params: Params) => ChannelHandle<Params, Messages>) &
@@ -136,6 +182,26 @@ function attachMeta<P, M, T extends object>(
   return target as T & ChannelExportMeta<P, M>;
 }
 
+/**
+ * Define a typed realtime channel.
+ *
+ * Put one default export in each `channels/*.ts` file. The optional
+ * `paramsSchema` controls the typed params needed to bind the channel, `auth`
+ * controls subscribe/publish/connect authorization, and `handler` enables
+ * WebSocket messages.
+ *
+ * @example
+ * ```ts
+ * import { defineChannel } from "tako.sh";
+ *
+ * type Messages = { msg: { text: string } };
+ *
+ * export default defineChannel({
+ *   name: "chat",
+ *   paramsSchema: (t) => t.Object({ roomId: t.String() }),
+ * }).$messageTypes<Messages>();
+ * ```
+ */
 export function defineChannel<
   ParamsSchema extends TSchema | undefined = undefined,
   Params = ParamsSchema extends TSchema ? Static<ParamsSchema> : Record<string, never>,

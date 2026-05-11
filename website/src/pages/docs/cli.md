@@ -102,7 +102,7 @@ Generate typed runtime and secret accessors.
 tako typegen
 ```
 
-JavaScript/TypeScript projects get `tako.gen.ts`. It exports runtime state, a typed `Secrets` interface, and helpers backed by `tako.sh/runtime`. Go projects get `tako_secrets.go`.
+JavaScript/TypeScript projects get `tako.gen.ts`. It exports the typed `tako` runtime object, a typed `Secrets` interface, and helpers backed by `tako.sh/runtime`. Go projects get `tako_secrets.go`.
 
 If a JS/TS project already has `channels/` or `workflows/`, typegen can scaffold missing demo files and add default exports where needed. It does not rewrite explicit channel names.
 

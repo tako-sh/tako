@@ -9,12 +9,16 @@
 
 import type { WorkflowHandler } from "./worker";
 
+/** Unique id for a workflow run. */
 export type RunId = string;
 
+/** Lifecycle state for a workflow run. */
 export type RunStatus = "pending" | "running" | "succeeded" | "cancelled" | "dead";
 
+/** Persisted memoized step results for a workflow run. */
 export type StepState = Record<string, unknown>;
 
+/** Wire shape used to enqueue a workflow run. */
 export interface RunSpec {
   /**
    * Workflow name — the filename stem of the handler file.
@@ -38,25 +42,37 @@ export interface RunSpec {
   uniqueKey?: string | null;
 }
 
+/** Server-owned record for one workflow execution. */
 export interface Run {
+  /** Unique run id. */
   id: RunId;
+  /** Workflow name. */
   name: string;
+  /** JSON-serializable payload passed to the workflow handler. */
   payload: unknown;
+  /** Current run status. */
   status: RunStatus;
+  /** Number of attempts already made. */
   attempts: number;
+  /** Retry count after the first attempt. */
   retries: number;
   /** Unix ms. */
   runAt: number;
   /** Unix ms; null for non-running runs. */
   leaseUntil: number | null;
+  /** Worker id currently holding the lease, or null when not running. */
   workerId: string | null;
+  /** Last error message for failed attempts. */
   lastError: string | null;
+  /** Persisted durable step results. */
   stepState: StepState;
   /** Unix ms. */
   createdAt: number;
+  /** Enqueue deduplication key, when provided. */
   uniqueKey: string | null;
 }
 
+/** Workflow definition options passed to `defineWorkflow`. */
 export interface WorkflowOpts<P = unknown> {
   /** Workflow body. The payload type flows into `.enqueue(payload)`. */
   handler: WorkflowHandler<P>;

@@ -15,7 +15,7 @@ use std::path::Path;
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tako_images::{
-    IMAGE_BASE_PATH, ImageError, ImageSource, TransformLimits, cache_control,
+    IMAGE_BASE_PATH, ImageError, ImageSource, TransformLimits, TransformOptions, cache_control,
     ip_is_private_or_local, transform_image, verify_image_path,
 };
 use tokio::io::AsyncReadExt;
@@ -87,8 +87,14 @@ impl TakoProxy {
 
         let transformed = match transform_image_blocking(
             source,
-            verified.width,
-            verified.quality,
+            TransformOptions {
+                format: verified.format,
+                width: verified.width,
+                height: verified.height,
+                fit: verified.fit,
+                crop: verified.crop,
+                quality: verified.quality,
+            },
             limits,
         )
         .await
@@ -103,7 +109,9 @@ impl TakoProxy {
         let mut header = ResponseHeader::build(200, None)?;
         header.insert_header("Content-Type", transformed.content_type)?;
         header.insert_header("Content-Length", transformed.bytes.len().to_string())?;
-        header.insert_header("Cache-Control", cache_control(verified.visibility))?;
+        let cache_control_header =
+            cache_control(verified.visibility, verified.private_browser_cache_max_age);
+        header.insert_header("Cache-Control", cache_control_header.as_ref())?;
         header.insert_header("ETag", image_etag(path, transformed.content_type))?;
         session
             .write_response_header(Box::new(header), false)
@@ -208,16 +216,14 @@ struct ImageSourceBytes {
 
 async fn transform_image_blocking(
     source: ImageSourceBytes,
-    width: u32,
-    quality: u8,
+    options: TransformOptions,
     limits: TransformLimits,
 ) -> Result<tako_images::TransformedImage, ImageError> {
     tokio::task::spawn_blocking(move || {
         transform_image(
             &source.bytes,
             source.content_type.as_deref(),
-            width,
-            quality,
+            options,
             &limits,
         )
     })
@@ -425,7 +431,10 @@ fn image_error_status(error: &ImageError) -> u16 {
         ImageError::InvalidUrl
         | ImageError::InvalidSource
         | ImageError::InvalidWidth
-        | ImageError::InvalidQuality => 400,
+        | ImageError::InvalidHeight
+        | ImageError::InvalidResize
+        | ImageError::InvalidQuality
+        | ImageError::InvalidBrowserCacheMaxAge => 400,
         ImageError::InvalidSignature | ImageError::Expired => 403,
         ImageError::SourceTooLarge | ImageError::ImageTooLarge => 413,
         ImageError::UnsupportedFormat => 415,
@@ -467,9 +476,7 @@ mod tests {
 
     #[test]
     fn identifies_image_request_paths() {
-        assert!(is_image_request_path(
-            "/_tako/image/v1/private/640/75/-/sig/src"
-        ));
+        assert!(is_image_request_path("/_tako/image/v1/payload.sig"));
         assert!(!is_image_request_path("/_tako/image"));
         assert!(!is_image_request_path("/_tako/channels/chat"));
     }

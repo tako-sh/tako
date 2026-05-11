@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import path from "node:path";
-import { dataDir, logger } from "../tako.gen";
+import { tako } from "../tako.gen";
 
 import type {
   BaseSnapshot,
@@ -12,12 +12,12 @@ import type {
 } from "./types";
 import { EMPTY_RETRIES, EMPTY_STEPS } from "./types";
 
-const l = logger.child("db");
+const l = tako.logger.child("db");
 const db = openDb();
 export const RECORD_RETENTION_MS = 3 * 24 * 60 * 60 * 1000;
 
 function resolveDbPath(): string {
-  return path.join(dataDir, "mission.sqlite3");
+  return path.join(tako.dataDir, "mission.sqlite3");
 }
 
 function openDb(): Database {
