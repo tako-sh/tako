@@ -88,7 +88,7 @@ pub fn compile_routes(routes: &[RouteEntry]) -> Vec<CompiledRouteEntry> {
     }
 
     // Most specific first. Keep stable order for ties.
-    compiled.sort_by(|a, b| b.specificity.cmp(&a.specificity));
+    compiled.sort_by_key(|entry| std::cmp::Reverse(entry.specificity));
     compiled
 }
 

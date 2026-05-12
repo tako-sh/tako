@@ -6,22 +6,45 @@ const GH_TOKEN_ENV: &str = "GH_TOKEN";
 const GITHUB_TOKEN_ENV: &str = "GITHUB_TOKEN";
 
 pub(crate) fn token_from_env() -> Option<String> {
-    [GH_TOKEN_ENV, GITHUB_TOKEN_ENV]
-        .iter()
-        .filter_map(|name| std::env::var(name).ok())
-        .map(|value| value.trim().to_string())
+    let gh_token = std::env::var(GH_TOKEN_ENV).ok();
+    let github_token = std::env::var(GITHUB_TOKEN_ENV).ok();
+    token_from_values([gh_token.as_deref(), github_token.as_deref()])
+}
+
+fn token_from_values<'a>(values: impl IntoIterator<Item = Option<&'a str>>) -> Option<String> {
+    values
+        .into_iter()
+        .flatten()
+        .map(str::trim)
         .find(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 pub(crate) fn apply_auth(builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-    match token_from_env() {
+    let token = token_from_env();
+    apply_auth_with_token(builder, token.as_deref())
+}
+
+fn apply_auth_with_token(
+    builder: reqwest::RequestBuilder,
+    token: Option<&str>,
+) -> reqwest::RequestBuilder {
+    match token.map(str::trim).filter(|value| !value.is_empty()) {
         Some(token) => builder.header(AUTHORIZATION, format!("Bearer {token}")),
         None => builder,
     }
 }
 
 pub(crate) fn apply_api_headers(builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-    apply_auth(builder)
+    let token = token_from_env();
+    apply_api_headers_with_token(builder, token.as_deref())
+}
+
+fn apply_api_headers_with_token(
+    builder: reqwest::RequestBuilder,
+    token: Option<&str>,
+) -> reqwest::RequestBuilder {
+    apply_auth_with_token(builder, token)
         .header(ACCEPT, "application/vnd.github+json")
         .header(API_VERSION_HEADER, API_VERSION)
 }
@@ -30,8 +53,17 @@ pub(crate) fn apply_auth_for_url(
     builder: reqwest::RequestBuilder,
     url: &str,
 ) -> reqwest::RequestBuilder {
+    let token = token_from_env();
+    apply_auth_for_url_with_token(builder, url, token.as_deref())
+}
+
+fn apply_auth_for_url_with_token(
+    builder: reqwest::RequestBuilder,
+    url: &str,
+    token: Option<&str>,
+) -> reqwest::RequestBuilder {
     if is_github_url(url) {
-        apply_auth(builder)
+        apply_auth_with_token(builder, token)
     } else {
         builder
     }
@@ -64,69 +96,27 @@ mod tests {
     use super::*;
     use reqwest::header::HeaderValue;
 
-    fn preserve_token_envs() -> (Option<std::ffi::OsString>, Option<std::ffi::OsString>) {
-        (
-            std::env::var_os(GH_TOKEN_ENV),
-            std::env::var_os(GITHUB_TOKEN_ENV),
-        )
-    }
-
-    fn restore_token_envs(previous: (Option<std::ffi::OsString>, Option<std::ffi::OsString>)) {
-        match previous.0 {
-            Some(value) => unsafe { std::env::set_var(GH_TOKEN_ENV, value) },
-            None => unsafe { std::env::remove_var(GH_TOKEN_ENV) },
-        }
-        match previous.1 {
-            Some(value) => unsafe { std::env::set_var(GITHUB_TOKEN_ENV, value) },
-            None => unsafe { std::env::remove_var(GITHUB_TOKEN_ENV) },
-        }
-    }
-
     #[test]
     fn token_from_env_prefers_gh_token_over_github_token() {
-        let _lock = crate::paths::test_tako_home_env_lock();
-        let previous = preserve_token_envs();
-        unsafe {
-            std::env::set_var(GH_TOKEN_ENV, "gh-token");
-            std::env::set_var(GITHUB_TOKEN_ENV, "github-token");
-        }
-
-        let token = token_from_env();
-
-        restore_token_envs(previous);
+        let token = token_from_values([Some("gh-token"), Some("github-token")]);
         assert_eq!(token.as_deref(), Some("gh-token"));
     }
 
     #[test]
     fn token_from_env_falls_back_when_gh_token_is_empty() {
-        let _lock = crate::paths::test_tako_home_env_lock();
-        let previous = preserve_token_envs();
-        unsafe {
-            std::env::set_var(GH_TOKEN_ENV, " ");
-            std::env::set_var(GITHUB_TOKEN_ENV, "github-token");
-        }
-
-        let token = token_from_env();
-
-        restore_token_envs(previous);
+        let token = token_from_values([Some(" "), Some("github-token")]);
         assert_eq!(token.as_deref(), Some("github-token"));
     }
 
     #[test]
     fn apply_api_headers_sets_auth_and_github_headers() {
-        let _lock = crate::paths::test_tako_home_env_lock();
-        let previous = preserve_token_envs();
-        unsafe {
-            std::env::set_var(GH_TOKEN_ENV, "secret");
-            std::env::remove_var(GITHUB_TOKEN_ENV);
-        }
+        let request = apply_api_headers_with_token(
+            reqwest::Client::new().get("https://api.github.com/rate_limit"),
+            Some("secret"),
+        )
+        .build()
+        .unwrap();
 
-        let request =
-            apply_api_headers(reqwest::Client::new().get("https://api.github.com/rate_limit"))
-                .build()
-                .unwrap();
-
-        restore_token_envs(previous);
         assert_eq!(
             request.headers().get(AUTHORIZATION).unwrap(),
             HeaderValue::from_static("Bearer secret")
@@ -143,20 +133,14 @@ mod tests {
 
     #[test]
     fn apply_auth_for_url_does_not_authenticate_non_github_urls() {
-        let _lock = crate::paths::test_tako_home_env_lock();
-        let previous = preserve_token_envs();
-        unsafe {
-            std::env::set_var(GH_TOKEN_ENV, "secret");
-        }
-
-        let request = apply_auth_for_url(
+        let request = apply_auth_for_url_with_token(
             reqwest::Client::new().get("https://downloads.example.com/tako.tar.gz"),
             "https://downloads.example.com/tako.tar.gz",
+            Some("secret"),
         )
         .build()
         .unwrap();
 
-        restore_token_envs(previous);
         assert!(request.headers().get(AUTHORIZATION).is_none());
     }
 }

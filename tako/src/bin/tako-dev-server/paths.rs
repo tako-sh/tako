@@ -21,15 +21,21 @@ pub fn tako_data_dir() -> Result<PathBuf, std::io::Error> {
 /// Returns the override directory when `TAKO_HOME` is set or running from a
 /// debug source checkout. Returns `None` when the XDG split should be used.
 fn tako_home_override() -> Option<PathBuf> {
-    if let Ok(v) = std::env::var("TAKO_HOME")
+    let tako_home = std::env::var("TAKO_HOME").ok();
+    let current_exe = std::env::current_exe().ok();
+    tako_home_override_from(tako_home.as_deref(), current_exe.as_deref())
+}
+
+fn tako_home_override_from(tako_home: Option<&str>, current_exe: Option<&Path>) -> Option<PathBuf> {
+    if let Some(v) = tako_home
         && !v.trim().is_empty()
     {
         return Some(PathBuf::from(v));
     }
 
     if cfg!(debug_assertions)
-        && let Ok(exe) = std::env::current_exe()
-        && let Some(dev_home) = dev_tako_home_from_exe(&exe)
+        && let Some(exe) = current_exe
+        && let Some(dev_home) = dev_tako_home_from_exe(exe)
     {
         return Some(dev_home);
     }
@@ -90,15 +96,9 @@ mod tests {
     }
 
     #[test]
-    fn tako_data_dir_respects_env_override() {
+    fn tako_home_override_returns_some_when_env_set() {
         let temp = TempDir::new().unwrap();
-        unsafe {
-            std::env::set_var("TAKO_HOME", temp.path());
-        }
-        let got = tako_data_dir().unwrap();
-        unsafe {
-            std::env::remove_var("TAKO_HOME");
-        }
+        let got = tako_home_override_from(temp.path().to_str(), None).unwrap();
         assert_eq!(got, temp.path());
     }
 }

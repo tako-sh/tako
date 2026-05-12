@@ -72,7 +72,6 @@ pub fn create_payload_pipe(
 mod tests {
     use super::*;
     use std::io::Read;
-    use std::os::fd::IntoRawFd;
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
@@ -112,9 +111,7 @@ mod tests {
         // and here assert that the payload round-trips end-to-end.
         let (read_end, writer) = create_payload_pipe(b"hello".to_vec()).expect("create pipe");
 
-        let fd = read_end.into_raw_fd();
-        // SAFETY: fd just came from into_raw_fd.
-        let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
+        let mut file = std::fs::File::from(read_end);
         let mut buf = String::new();
         file.read_to_string(&mut buf).expect("read");
         assert_eq!(buf, "hello");
@@ -190,11 +187,9 @@ mod tests {
             "create_payload_pipe blocked on pipe write"
         );
 
-        let fd = read_end.into_raw_fd();
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
-            // SAFETY: fd just came from into_raw_fd.
-            let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
+            let mut file = std::fs::File::from(read_end);
             let mut buf = Vec::new();
             let result = file.read_to_end(&mut buf).map(|_| buf);
             let _ = tx.send(result);

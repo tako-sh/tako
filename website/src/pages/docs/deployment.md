@@ -105,7 +105,7 @@ After extraction, `tako-server`:
 - stores secrets when they changed
 - starts workflow supervision for the release
 
-Production install receives the release env plus minimal process env (`PATH`, `HOME` when available). It does not inherit arbitrary `tako-server` service env vars.
+Production install receives the release env plus minimal process env (`PATH`, `HOME` when available). It does not inherit arbitrary `tako-server` service env vars. When `tako-server` is root, production install runs as `tako-app`; if `tako-app` cannot be resolved, install fails instead of running as root.
 
 ## Release Commands
 

@@ -200,6 +200,8 @@ For JS apps, make sure the deploy artifact includes the lockfile and package met
 
 Production install runs from a cleared `tako-server` service environment. Tako preserves only `PATH` and `HOME` when available, then applies release env. Put required app configuration in `[vars]`, `[vars.<env>]`, or secrets.
 
+If the server reports that `tako-app` cannot be resolved, repair the server install so the `tako-app` OS user exists. A root `tako-server` will not run production install as root.
+
 ## Release Command Fails
 
 Run with verbose output:

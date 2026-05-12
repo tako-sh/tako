@@ -1,5 +1,5 @@
 use super::archive::{extract_tar_gz, extract_zip};
-use super::github::{apply_github_auth_for_url, github_token_from_env};
+use super::github::{apply_github_auth_for_url_with_token, github_token_from_values};
 use super::platform::{resolve_arch, resolve_os};
 use super::*;
 use reqwest::header::AUTHORIZATION;
@@ -10,75 +10,28 @@ use tempfile::TempDir;
 
 use crate::DownloadDef;
 
-fn github_token_env_lock() -> MutexGuard<'static, ()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
-}
-
-fn preserve_token_envs() -> (Option<std::ffi::OsString>, Option<std::ffi::OsString>) {
-    (
-        std::env::var_os("GH_TOKEN"),
-        std::env::var_os("GITHUB_TOKEN"),
-    )
-}
-
-fn restore_token_envs(previous: (Option<std::ffi::OsString>, Option<std::ffi::OsString>)) {
-    match previous.0 {
-        Some(value) => unsafe { std::env::set_var("GH_TOKEN", value) },
-        None => unsafe { std::env::remove_var("GH_TOKEN") },
-    }
-    match previous.1 {
-        Some(value) => unsafe { std::env::set_var("GITHUB_TOKEN", value) },
-        None => unsafe { std::env::remove_var("GITHUB_TOKEN") },
-    }
-}
-
 #[test]
 fn github_token_from_env_prefers_gh_token_over_github_token() {
-    let _lock = github_token_env_lock();
-    let previous = preserve_token_envs();
-    unsafe {
-        std::env::set_var("GH_TOKEN", "gh-token");
-        std::env::set_var("GITHUB_TOKEN", "github-token");
-    }
-
-    let token = github_token_from_env();
-
-    restore_token_envs(previous);
+    let token = github_token_from_values([Some("gh-token"), Some("github-token")]);
     assert_eq!(token.as_deref(), Some("gh-token"));
 }
 
 #[test]
 fn github_token_from_env_falls_back_when_gh_token_is_empty() {
-    let _lock = github_token_env_lock();
-    let previous = preserve_token_envs();
-    unsafe {
-        std::env::set_var("GH_TOKEN", " ");
-        std::env::set_var("GITHUB_TOKEN", "github-token");
-    }
-
-    let token = github_token_from_env();
-
-    restore_token_envs(previous);
+    let token = github_token_from_values([Some(" "), Some("github-token")]);
     assert_eq!(token.as_deref(), Some("github-token"));
 }
 
 #[test]
 fn apply_github_auth_for_url_skips_non_github_urls() {
-    let _lock = github_token_env_lock();
-    let previous = preserve_token_envs();
-    unsafe {
-        std::env::set_var("GH_TOKEN", "secret");
-    }
-
-    let request = apply_github_auth_for_url(
+    let request = apply_github_auth_for_url_with_token(
         reqwest::Client::new().get("https://downloads.example.com/runtime.tar.gz"),
         "https://downloads.example.com/runtime.tar.gz",
+        Some("secret"),
     )
     .build()
     .unwrap();
 
-    restore_token_envs(previous);
     assert!(request.headers().get(AUTHORIZATION).is_none());
 }
 

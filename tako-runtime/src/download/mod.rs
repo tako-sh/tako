@@ -6,8 +6,6 @@ mod platform;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-#[cfg(test)]
-use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use archive::extract_archive;
 use checksum::verify_checksum;

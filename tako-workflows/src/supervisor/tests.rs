@@ -213,7 +213,6 @@ async fn background_reaper_collects_clean_idle_exit_without_poll() {
 #[test]
 fn bootstrap_pipe_envelope_has_token_and_secrets() {
     use std::io::Read;
-    use std::os::fd::{FromRawFd, IntoRawFd};
 
     let secrets = HashMap::from([
         ("DATABASE_URL".to_string(), "postgres://x".to_string()),
@@ -224,9 +223,7 @@ fn bootstrap_pipe_envelope_has_token_and_secrets() {
     let (read_end, writer) = create_bootstrap_pipe(token, &secrets).expect("create pipe");
 
     let mut buf = String::new();
-    let fd = read_end.into_raw_fd();
-    // SAFETY: fd was just handed over by into_raw_fd; File::from_raw_fd owns it.
-    let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
+    let mut file = std::fs::File::from(read_end);
     file.read_to_string(&mut buf).expect("read pipe");
     writer.join().expect("writer thread").expect("write ok");
 
@@ -243,7 +240,6 @@ fn bootstrap_pipe_envelope_has_token_and_secrets() {
 #[test]
 fn bootstrap_pipe_is_always_created_even_with_empty_secrets() {
     use std::io::Read;
-    use std::os::fd::{FromRawFd, IntoRawFd};
 
     let secrets: HashMap<String, String> = HashMap::new();
     let token = "still-has-a-token";
@@ -251,8 +247,7 @@ fn bootstrap_pipe_is_always_created_even_with_empty_secrets() {
     let (read_end, writer) = create_bootstrap_pipe(token, &secrets).expect("create pipe");
 
     let mut buf = String::new();
-    let fd = read_end.into_raw_fd();
-    let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
+    let mut file = std::fs::File::from(read_end);
     file.read_to_string(&mut buf).expect("read pipe");
     writer.join().expect("writer thread").expect("write ok");
 

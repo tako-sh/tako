@@ -102,6 +102,14 @@ fn gather_user_targets() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     let data_dir = crate::paths::tako_data_dir()?;
     let binaries = find_tako_binaries();
 
+    Ok(gather_user_targets_from(config_dir, data_dir, binaries))
+}
+
+fn gather_user_targets_from(
+    config_dir: PathBuf,
+    data_dir: PathBuf,
+    binaries: Vec<PathBuf>,
+) -> Vec<PathBuf> {
     let mut targets = Vec::new();
 
     if config_dir.exists() {
@@ -114,7 +122,7 @@ fn gather_user_targets() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
         targets.push(bin);
     }
 
-    Ok(targets)
+    targets
 }
 
 /// Find Tako binaries in the same directory as the running executable.

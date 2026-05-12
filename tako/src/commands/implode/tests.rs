@@ -3,42 +3,24 @@ use tempfile::TempDir;
 
 #[test]
 fn gather_user_targets_includes_existing_dirs() {
-    let _lock = crate::paths::test_tako_home_env_lock();
-    let previous = std::env::var_os("TAKO_HOME");
-
     let tmp = TempDir::new().unwrap();
-    unsafe { std::env::set_var("TAKO_HOME", tmp.path()) };
 
-    let targets = gather_user_targets().unwrap();
+    let targets =
+        gather_user_targets_from(tmp.path().to_path_buf(), tmp.path().to_path_buf(), vec![]);
     assert!(targets.iter().any(|p| p == tmp.path()));
     // TAKO_HOME override makes config_dir == data_dir, so only one entry
     let dir_targets: Vec<_> = targets.iter().filter(|p| p.is_dir()).collect();
     assert_eq!(dir_targets.len(), 1);
-
-    match previous {
-        Some(v) => unsafe { std::env::set_var("TAKO_HOME", v) },
-        None => unsafe { std::env::remove_var("TAKO_HOME") },
-    }
 }
 
 #[test]
 fn gather_user_targets_empty_when_nothing_exists() {
-    let _lock = crate::paths::test_tako_home_env_lock();
-    let previous = std::env::var_os("TAKO_HOME");
-
-    unsafe { std::env::set_var("TAKO_HOME", "/tmp/tako-implode-test-nonexistent") };
-
-    let targets = gather_user_targets().unwrap();
+    let missing = TempDir::new().unwrap().path().join("missing");
+    let targets = gather_user_targets_from(missing.clone(), missing.clone(), vec![]);
     assert!(
-        !targets
-            .iter()
-            .any(|p| p.starts_with("/tmp/tako-implode-test-nonexistent"))
+        !targets.iter().any(|p| p.starts_with(&missing)),
+        "missing TAKO_HOME targets should not be collected"
     );
-
-    match previous {
-        Some(v) => unsafe { std::env::set_var("TAKO_HOME", v) },
-        None => unsafe { std::env::remove_var("TAKO_HOME") },
-    }
 }
 
 #[test]

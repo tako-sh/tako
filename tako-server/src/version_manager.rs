@@ -77,7 +77,10 @@ pub(crate) async fn install_and_resolve(
     let install_dir = runtimes_dir(data_dir);
 
     // Ensure install dir has correct ownership when running as root.
-    ensure_install_dir_ownership(&install_dir);
+    if let Err(e) = ensure_install_dir_ownership(&install_dir) {
+        tracing::warn!(tool, error = %e, "Failed to prepare runtime install directory");
+        return None;
+    }
 
     let mgr = tako_runtime::DownloadManager::new(install_dir);
 
@@ -103,32 +106,25 @@ pub(crate) async fn install_and_resolve(
 
 /// When running as root, ensure the install directory is owned by the `tako` service user
 /// so that runtime binaries are accessible by the service.
-fn ensure_install_dir_ownership(install_dir: &Path) {
+fn ensure_install_dir_ownership(install_dir: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
-        if unsafe { libc::geteuid() } != 0 {
-            return;
+        if !crate::unix::is_root() {
+            return Ok(());
         }
-        if let Err(e) = std::fs::create_dir_all(install_dir) {
-            tracing::warn!(error = %e, "Failed to create runtimes directory");
-            return;
-        }
-        use std::ffi::CString;
-        let Ok(name) = CString::new("tako") else {
-            return;
-        };
-        let pw = unsafe { libc::getpwnam(name.as_ptr()) };
-        if pw.is_null() {
-            return;
-        }
-        let dir = CString::new(install_dir.to_string_lossy().as_ref()).unwrap_or_default();
-        unsafe {
-            libc::chown(dir.as_ptr(), (*pw).pw_uid, (*pw).pw_gid);
+        std::fs::create_dir_all(install_dir)?;
+        match crate::unix::lookup_user_ids("tako")? {
+            Some((uid, gid)) => crate::unix::chown_path(install_dir, uid, gid),
+            None => {
+                tracing::warn!("tako user not found; runtime install directory owner unchanged");
+                Ok(())
+            }
         }
     }
     #[cfg(not(unix))]
     {
         let _ = install_dir;
+        Ok(())
     }
 }
 

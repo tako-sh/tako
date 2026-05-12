@@ -28,6 +28,7 @@ mod socket;
 mod startup;
 mod state_store;
 mod tls;
+mod unix;
 mod version_manager;
 
 use tako_workflows as workflows;

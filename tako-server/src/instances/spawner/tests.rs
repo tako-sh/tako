@@ -10,8 +10,6 @@ use super::spawn_command::{
 use super::*;
 use crate::instances::INTERNAL_TOKEN_HEADER;
 use std::collections::HashMap;
-#[cfg(unix)]
-use std::os::fd::{FromRawFd, OwnedFd};
 use std::process::ExitStatus;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -25,10 +23,12 @@ fn test_spawner_creation() {
 #[test]
 #[cfg(unix)]
 fn resolve_app_user_returns_none_gracefully_for_missing_user() {
-    use std::ffi::CString;
-    let name = CString::new("this-user-definitely-does-not-exist-tako-test").unwrap();
-    let pw = unsafe { libc::getpwnam(name.as_ptr()) };
-    assert!(pw.is_null(), "expected nonexistent user to return null");
+    assert!(
+        crate::unix::lookup_user_ids("this-user-definitely-does-not-exist-tako-test")
+            .unwrap()
+            .is_none(),
+        "expected nonexistent user to return none"
+    );
     // resolve_app_user looks up "tako-app"; on dev machines it won't exist.
     // Calling Spawner::new() must not panic regardless.
     let _spawner = Spawner::new();
@@ -36,8 +36,31 @@ fn resolve_app_user_returns_none_gracefully_for_missing_user() {
 
 #[test]
 #[cfg(unix)]
+fn app_user_for_spawn_fails_closed_for_root_lookup_error() {
+    let err = app_user_for_spawn(&Err("lookup failed".to_string()), true).unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::Other);
+    assert!(err.to_string().contains("lookup failed"));
+}
+
+#[test]
+#[cfg(unix)]
+fn app_user_for_spawn_fails_closed_for_root_missing_user() {
+    let err = app_user_for_spawn(&Ok(None), true).unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::Other);
+    assert!(err.to_string().contains("refusing to spawn"));
+}
+
+#[test]
+#[cfg(unix)]
+fn app_user_for_spawn_falls_back_for_non_root_lookup_error() {
+    let app_user = app_user_for_spawn(&Err("lookup failed".to_string()), false).unwrap();
+    assert_eq!(app_user, None);
+}
+
+#[test]
+#[cfg(unix)]
 fn spawn_child_process_returns_permission_denied_when_app_user_switch_fails() {
-    if unsafe { libc::geteuid() } == 0 {
+    if crate::unix::is_root() {
         return;
     }
 
@@ -208,7 +231,6 @@ fn build_instance_env_only_has_app_vars() {
 #[cfg(unix)]
 fn bootstrap_pipe_envelope_has_token_and_secrets() {
     use std::io::Read;
-    use std::os::fd::IntoRawFd;
 
     let secrets = HashMap::from([
         ("DATABASE_URL".to_string(), "postgres://x".to_string()),
@@ -220,9 +242,7 @@ fn bootstrap_pipe_envelope_has_token_and_secrets() {
         create_bootstrap_pipe(token, &secrets, Some("img-secret")).expect("create pipe");
 
     let mut buf = String::new();
-    let fd = read_end.into_raw_fd();
-    // SAFETY: fd was just handed over by into_raw_fd; File::from_raw_fd owns it now.
-    let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
+    let mut file = std::fs::File::from(read_end);
     file.read_to_string(&mut buf).expect("read pipe");
     writer.join().expect("writer thread").expect("write ok");
 
@@ -240,7 +260,6 @@ fn bootstrap_pipe_envelope_has_token_and_secrets() {
 #[cfg(unix)]
 fn bootstrap_pipe_is_created_even_with_empty_secrets() {
     use std::io::Read;
-    use std::os::fd::IntoRawFd;
 
     let secrets: HashMap<String, String> = HashMap::new();
     let token = "still-has-a-token";
@@ -248,8 +267,7 @@ fn bootstrap_pipe_is_created_even_with_empty_secrets() {
     let (read_end, writer) = create_bootstrap_pipe(token, &secrets, None).expect("create pipe");
 
     let mut buf = String::new();
-    let fd = read_end.into_raw_fd();
-    let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
+    let mut file = std::fs::File::from(read_end);
     file.read_to_string(&mut buf).expect("read pipe");
     writer.join().expect("writer thread").expect("write ok");
 
@@ -577,13 +595,8 @@ async fn health_check_reads_response_headers_across_multiple_chunks() {
 #[tokio::test]
 #[cfg(unix)]
 async fn wait_for_ready_reads_port_from_fd4_pipe() {
-    use std::io::Write;
-
-    let mut fds = [0i32; 2];
-    assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
-
-    let read_end = unsafe { OwnedFd::from_raw_fd(fds[0]) };
-    let write_end = unsafe { OwnedFd::from_raw_fd(fds[1]) };
+    let (read_end, writer) =
+        tako_spawn::create_payload_pipe(b"43123\n".to_vec()).expect("create pipe");
 
     let (instance_tx, _instance_rx) = mpsc::channel(4);
     let app = App::new(
@@ -603,16 +616,10 @@ async fn wait_for_ready_reads_port_from_fd4_pipe() {
         .expect("spawn test child");
     instance.set_process(child);
 
-    tokio::task::spawn_blocking(move || {
-        let mut writer = std::fs::File::from(write_end);
-        writer.write_all(b"43123\n").unwrap();
-    })
-    .await
-    .unwrap();
-
     wait_for_ready(instance.clone(), Some(read_end))
         .await
         .unwrap();
+    writer.join().expect("writer thread").expect("write ok");
 
     assert_eq!(instance.port(), Some(43123));
     assert_eq!(instance.state(), InstanceState::Ready);
@@ -622,13 +629,8 @@ async fn wait_for_ready_reads_port_from_fd4_pipe() {
 #[tokio::test]
 #[cfg(unix)]
 async fn wait_for_ready_rejects_invalid_fd4_payload() {
-    use std::io::Write;
-
-    let mut fds = [0i32; 2];
-    assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
-
-    let read_end = unsafe { OwnedFd::from_raw_fd(fds[0]) };
-    let write_end = unsafe { OwnedFd::from_raw_fd(fds[1]) };
+    let (read_end, writer) =
+        tako_spawn::create_payload_pipe(b"not-a-port\n".to_vec()).expect("create pipe");
 
     let (instance_tx, _instance_rx) = mpsc::channel(4);
     let app = App::new(
@@ -648,16 +650,10 @@ async fn wait_for_ready_rejects_invalid_fd4_payload() {
         .expect("spawn test child");
     instance.set_process(child);
 
-    tokio::task::spawn_blocking(move || {
-        let mut writer = std::fs::File::from(write_end);
-        writer.write_all(b"not-a-port\n").unwrap();
-    })
-    .await
-    .unwrap();
-
     let err = wait_for_ready(instance.clone(), Some(read_end))
         .await
         .unwrap_err();
+    writer.join().expect("writer thread").expect("write ok");
     assert!(err.to_string().contains("invalid port"));
     let _ = instance.kill().await;
 }

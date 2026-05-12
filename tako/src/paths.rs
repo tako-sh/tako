@@ -62,15 +62,21 @@ pub fn tako_cache_dir() -> Result<PathBuf, std::io::Error> {
 /// Returns the override directory when `TAKO_HOME` is set or running from a
 /// debug source checkout. Returns `None` when the XDG split should be used.
 fn tako_home_override() -> Option<PathBuf> {
-    if let Ok(v) = std::env::var("TAKO_HOME")
+    let tako_home = std::env::var("TAKO_HOME").ok();
+    let current_exe = std::env::current_exe().ok();
+    tako_home_override_from(tako_home.as_deref(), current_exe.as_deref())
+}
+
+fn tako_home_override_from(tako_home: Option<&str>, current_exe: Option<&Path>) -> Option<PathBuf> {
+    if let Some(v) = tako_home
         && !v.trim().is_empty()
     {
         return Some(PathBuf::from(v));
     }
 
     if cfg!(debug_assertions)
-        && let Ok(exe) = std::env::current_exe()
-        && let Some(dev_home) = dev_tako_home_from_exe(&exe)
+        && let Some(exe) = current_exe
+        && let Some(dev_home) = dev_tako_home_from_exe(exe)
     {
         return Some(dev_home);
     }
@@ -111,7 +117,7 @@ pub fn dev_tako_home_from_exe(exe_path: &Path) -> Option<PathBuf> {
 }
 
 #[cfg(test)]
-pub(crate) fn test_tako_home_env_lock() -> MutexGuard<'static, ()> {
+pub fn test_tako_home_env_lock() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
         .lock()
@@ -160,87 +166,29 @@ mod tests {
     }
 
     #[test]
-    fn tako_config_dir_respects_env_override() {
-        let _lock = test_tako_home_env_lock();
-        let previous = std::env::var_os("TAKO_HOME");
-        let temp = TempDir::new().unwrap();
-        unsafe {
-            std::env::set_var("TAKO_HOME", temp.path());
-        }
-        let got = tako_config_dir().unwrap();
-        match previous {
-            Some(value) => unsafe { std::env::set_var("TAKO_HOME", value) },
-            None => unsafe { std::env::remove_var("TAKO_HOME") },
-        }
-        assert_eq!(got, temp.path());
-    }
-
-    #[test]
-    fn tako_data_dir_respects_env_override() {
-        let _lock = test_tako_home_env_lock();
-        let previous = std::env::var_os("TAKO_HOME");
-        let temp = TempDir::new().unwrap();
-        unsafe {
-            std::env::set_var("TAKO_HOME", temp.path());
-        }
-        let got = tako_data_dir().unwrap();
-        match previous {
-            Some(value) => unsafe { std::env::set_var("TAKO_HOME", value) },
-            None => unsafe { std::env::remove_var("TAKO_HOME") },
-        }
-        assert_eq!(got, temp.path());
-    }
-
-    #[test]
-    fn tako_cache_dir_respects_env_override() {
-        let _lock = test_tako_home_env_lock();
-        let previous = std::env::var_os("TAKO_HOME");
-        let temp = TempDir::new().unwrap();
-        unsafe {
-            std::env::set_var("TAKO_HOME", temp.path());
-        }
-        let got = tako_cache_dir().unwrap();
-        match previous {
-            Some(value) => unsafe { std::env::set_var("TAKO_HOME", value) },
-            None => unsafe { std::env::remove_var("TAKO_HOME") },
-        }
-        assert_eq!(got, temp.path());
-    }
-
-    #[test]
     fn tako_home_override_returns_some_when_env_set() {
-        let _lock = test_tako_home_env_lock();
-        let previous = std::env::var_os("TAKO_HOME");
         let temp = TempDir::new().unwrap();
-        unsafe {
-            std::env::set_var("TAKO_HOME", temp.path());
-        }
-        let got = tako_home_override();
-        match previous {
-            Some(value) => unsafe { std::env::set_var("TAKO_HOME", value) },
-            None => unsafe { std::env::remove_var("TAKO_HOME") },
-        }
+        let got = tako_home_override_from(temp.path().to_str(), None);
         assert_eq!(got, Some(temp.path().to_path_buf()));
     }
 
     #[test]
     fn tako_home_override_returns_none_when_env_unset_and_not_debug_exe() {
-        let _lock = test_tako_home_env_lock();
-        let previous = std::env::var_os("TAKO_HOME");
-        unsafe {
-            std::env::remove_var("TAKO_HOME");
-        }
-        // In test builds (debug_assertions = true), this will return
-        // Some if the test binary is under target/. That's expected
-        // because tests run from target/debug/deps/.
-        let got = tako_home_override();
-        match previous {
-            Some(value) => unsafe { std::env::set_var("TAKO_HOME", value) },
-            None => unsafe { std::env::remove_var("TAKO_HOME") },
-        }
-        // In test context (debug build from target/), override should be Some.
+        let got = tako_home_override_from(None, Some(Path::new("/usr/local/bin/tako")));
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    fn tako_home_override_uses_debug_exe_checkout_when_env_unset() {
+        let got =
+            tako_home_override_from(None, Some(Path::new("/Users/me/proj/target/debug/tako")));
         if cfg!(debug_assertions) {
-            assert!(got.is_some());
+            assert_eq!(
+                got.as_deref(),
+                Some(Path::new("/Users/me/proj/local-dev/.tako"))
+            );
+        } else {
+            assert_eq!(got, None);
         }
     }
 }

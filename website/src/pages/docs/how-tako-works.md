@@ -122,7 +122,7 @@ App instances bind to private TCP on loopback. Tako sets:
 
 The SDK binds an OS-assigned port and reports it to Tako on fd 4. `tako-server` then routes traffic to that private endpoint.
 
-In production, app and worker processes start from a cleared service environment. Tako preserves only minimal process env (`PATH` and `HOME` when available), then applies app/runtime vars. Secrets, internal auth tokens, and image signing material arrive through fd 3 as a bootstrap JSON envelope, not through env vars.
+In production, app and worker processes start from a cleared service environment. Tako preserves only minimal process env (`PATH` and `HOME` when available), then applies app/runtime vars. Secrets, internal auth tokens, and image signing material arrive through fd 3 as a bootstrap JSON envelope, not through env vars. When `tako-server` is root, production install and app processes run as `tako-app`; if `tako-app` cannot be resolved, Tako fails instead of running app code as root. `tako dev` uses the same bootstrap path for app processes.
 
 ## Health And Scale
 

@@ -22,7 +22,7 @@ use tokio::time::timeout;
 pub struct Spawner {
     /// UID/GID of the `tako-app` user for process isolation (Unix only).
     #[cfg(unix)]
-    app_user: Option<(u32, u32)>,
+    app_user: Result<Option<(u32, u32)>, String>,
     /// Path to the shared Tako internal socket. When present, injected into
     /// every spawned instance as `TAKO_INTERNAL_SOCKET` so workflow `.enqueue()`
     /// and channel `.publish()` from app code work. `None` in tests.
@@ -33,7 +33,7 @@ impl Spawner {
     pub fn new() -> Self {
         Self {
             #[cfg(unix)]
-            app_user: resolve_app_user(),
+            app_user: resolve_app_user().map_err(|error| error.to_string()),
             internal_socket: None,
         }
     }
@@ -60,7 +60,11 @@ impl Spawner {
         let env = build_instance_env(&config, &instance, self.internal_socket.as_deref());
         let extra_args = build_instance_args(&instance);
 
-        let app_user = self.app_user;
+        #[cfg(unix)]
+        let app_user = app_user_for_spawn(&self.app_user, crate::unix::is_root())
+            .map_err(InstanceError::SpawnError)?;
+        #[cfg(not(unix))]
+        let app_user = None;
 
         let (child, readiness_fd) = spawn_child_process(
             &config,
@@ -169,6 +173,33 @@ impl Spawner {
             .await,
             Ok(true)
         )
+    }
+}
+
+#[cfg(unix)]
+fn app_user_for_spawn(
+    app_user: &Result<Option<(u32, u32)>, String>,
+    is_root: bool,
+) -> std::io::Result<Option<(u32, u32)>> {
+    match app_user {
+        Ok(Some(user)) => Ok(Some(*user)),
+        Ok(None) if is_root => Err(std::io::Error::other(
+            "tako-app user not found; refusing to spawn app process as root",
+        )),
+        Ok(None) => {
+            tracing::warn!("tako-app user not found; app processes will run as current user");
+            Ok(None)
+        }
+        Err(error) if is_root => Err(std::io::Error::other(format!(
+            "failed to resolve tako-app user: {error}"
+        ))),
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "Failed to resolve tako-app user; app processes will run as current user"
+            );
+            Ok(None)
+        }
     }
 }
 

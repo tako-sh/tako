@@ -6,20 +6,17 @@ use std::path::Path;
 use tokio::process::Command;
 
 #[cfg(unix)]
-pub(super) fn resolve_app_user() -> Option<(u32, u32)> {
-    use std::ffi::CString;
-    let name = CString::new("tako-app").ok()?;
-    // SAFETY: getpwnam is thread-safe when not modifying the passwd db.
-    // The pointer is valid until the next call to getpwnam on this thread.
-    let pw = unsafe { libc::getpwnam(name.as_ptr()) };
-    if pw.is_null() {
-        tracing::warn!("tako-app user not found; app processes will run as current user");
-        return None;
+pub(super) fn resolve_app_user() -> std::io::Result<Option<(u32, u32)>> {
+    match crate::unix::lookup_user_ids("tako-app")? {
+        Some((uid, gid)) => {
+            tracing::info!(uid, gid, "Resolved tako-app user for app process isolation");
+            Ok(Some((uid, gid)))
+        }
+        None => {
+            tracing::warn!("tako-app user not found");
+            Ok(None)
+        }
     }
-    let uid = unsafe { (*pw).pw_uid };
-    let gid = unsafe { (*pw).pw_gid };
-    tracing::info!(uid, gid, "Resolved tako-app user for app process isolation");
-    Some((uid, gid))
 }
 
 pub(super) fn build_instance_env(

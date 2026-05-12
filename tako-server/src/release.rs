@@ -218,23 +218,36 @@ fn derive_build_state(instances: &[InstanceStatus]) -> AppState {
 }
 
 #[cfg(unix)]
-fn resolve_app_user_for_install() -> Option<(u32, u32)> {
-    use std::ffi::CString;
-    let name = CString::new("tako-app").ok()?;
-    let pw = unsafe { libc::getpwnam(name.as_ptr()) };
-    if pw.is_null() {
-        return None;
-    }
-    Some(unsafe { ((*pw).pw_uid, (*pw).pw_gid) })
+fn resolve_app_user_for_install() -> std::io::Result<Option<(u32, u32)>> {
+    crate::unix::lookup_user_ids("tako-app")
 }
 
 #[cfg(unix)]
-fn drop_privileges_if_root(cmd: &mut TokioCommand) {
-    if unsafe { libc::geteuid() } == 0
-        && let Some((uid, gid)) = resolve_app_user_for_install()
+fn drop_privileges_if_root(cmd: &mut TokioCommand) -> Result<(), String> {
+    if let Some((uid, gid)) =
+        app_user_for_install(resolve_app_user_for_install(), crate::unix::is_root())?
     {
         cmd.uid(uid);
         cmd.gid(gid);
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn app_user_for_install(
+    lookup: std::io::Result<Option<(u32, u32)>>,
+    is_root: bool,
+) -> Result<Option<(u32, u32)>, String> {
+    if !is_root {
+        return Ok(None);
+    }
+
+    match lookup.map_err(|e| format!("Failed to resolve tako-app user: {e}"))? {
+        Some(user) => Ok(Some(user)),
+        None => {
+            Err("tako-app user not found; refusing to run production install as root".to_string())
+        }
     }
 }
 
@@ -337,7 +350,7 @@ async fn run_production_install_command(
     }
     cmd.envs(install_env);
     #[cfg(unix)]
-    drop_privileges_if_root(&mut cmd);
+    drop_privileges_if_root(&mut cmd)?;
     cmd.output()
         .await
         .map_err(|e| format!("Failed to run production install: {e}"))
@@ -640,6 +653,29 @@ mod tests {
         drop(parent_secret);
         assert!(output.status.success());
         assert_eq!(String::from_utf8_lossy(&output.stdout), "missing");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn app_user_for_install_fails_closed_for_root_lookup_error() {
+        let err =
+            app_user_for_install(Err(std::io::Error::other("lookup failed")), true).unwrap_err();
+        assert!(err.contains("lookup failed"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn app_user_for_install_fails_closed_for_root_missing_user() {
+        let err = app_user_for_install(Ok(None), true).unwrap_err();
+        assert!(err.contains("refusing to run production install as root"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn app_user_for_install_ignores_lookup_error_when_not_root() {
+        let app_user =
+            app_user_for_install(Err(std::io::Error::other("lookup failed")), false).unwrap();
+        assert_eq!(app_user, None);
     }
 
     struct EnvGuard {
