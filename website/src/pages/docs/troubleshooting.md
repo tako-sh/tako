@@ -14,142 +14,38 @@ Start with these commands:
 tako doctor
 tako servers status
 tako logs --env production
-tako logs --env production --json
 tako deploy --verbose
 ```
 
-Use `--ci` when reproducing a problem in automation. It disables prompts, colors, and spinners. Combine it with `--verbose` for deterministic detailed logs.
-
-## Missing `tako.toml`
-
-App-scoped commands read `./tako.toml` unless you pass `-c`:
+Use `--ci` for deterministic output in automation and `--json` for machine-readable logs:
 
 ```bash
-tako deploy -c staging
+tako logs --env production --json
 ```
 
-If the config is missing, run:
+## Config Not Found
+
+App-scoped commands read `./tako.toml` by default.
 
 ```bash
-tako init
+tako deploy -c path/to/app.toml
 ```
 
-The selected config file's parent directory is the app directory.
+If the config path has no `.toml` suffix, Tako adds it. The selected config file's parent directory is the app directory.
 
-## Config Parse or Validation Errors
+## Invalid App Name
 
-Run with the selected config explicitly:
-
-```bash
-tako deploy -c tako.staging.toml --verbose
-```
-
-Common validation issues:
-
-- unknown top-level key
-- both `route` and `routes` in one environment
-- non-development environment without routes
-- unsupported runtime
-- namespaced or `github:` preset in `tako.toml`
-- absolute asset or build paths
-- `..` in asset paths, build globs, or `[build].cwd`
-- `idle_timeout = 0`
-
-`[[build_stages]].cwd` may use `..` for monorepos, but only within the workspace root.
-
-## `tako dev` Does Not Start
-
-Run:
-
-```bash
-tako doctor
-```
-
-Doctor checks the dev daemon, DNS, loopback setup, local proxy state, and port reachability. If the daemon is missing, start it with:
-
-```bash
-tako dev
-```
-
-If daemon startup fails, Tako reports the last lines from `{TAKO_HOME}/dev-server.log`.
-
-## Local HTTPS Fails
-
-Check the URL first:
-
-```text
-https://{app}.test/
-```
-
-Tako uses a local root CA. The public cert is stored at `{TAKO_HOME}/ca/ca.crt`; the private key is stored beside it at `{TAKO_HOME}/ca/ca.key` with mode `0600`. The CA cert is installed into the system trust store when needed.
-
-Run:
-
-```bash
-tako doctor
-```
-
-Common causes:
-
-- root CA is not trusted yet
-- local DNS resolver setup is missing
-- the `127.77.0.1` loopback alias is missing
-- macOS launchd proxy is not loaded
-- Linux redirect rules are missing
-- another resolver owns `/etc/resolver/test`
-
-If `.test` conflicts with existing resolver config, try the `.tako.test` fallback route.
-
-## Vite Dev App Never Becomes Ready
-
-Tako waits for fd-4 readiness. It does not parse Vite stdout URLs.
-
-Use the Vite plugin:
-
-```ts
-import { tako } from "tako.sh/vite";
-
-export default {
-  plugins: [tako()],
-};
-```
-
-If your `dev` command runs Vite directly, keep it as an array:
+App names must start with a lowercase letter and contain only lowercase letters, numbers, and hyphens.
 
 ```toml
-dev = ["vite", "dev"]
+name = "dashboard"
 ```
 
-## Dev Route Is Not Registered
+If `name` is omitted, Tako derives the name from the selected config file's parent directory. Set `name` explicitly before deploying long-lived apps so renames do not create new server-side app identities.
 
-Check `[envs.development]`:
+## Environment Not Found
 
-```toml
-[envs.development]
-routes = ["dashboard.test", "api.dashboard.test"]
-```
-
-Development routes may use `.test`, `.tako.test`, or external hostnames. Tako only manages DNS for `.test` and `.tako.test`; external hostnames must be pointed at the dev proxy yourself.
-
-If no development route is configured, Tako uses `{app}.test`. If only external development routes are configured, Tako keeps `{app}.test` and adds the external routes as host aliases.
-
-Unknown managed local DNS hosts (`.test` and `.tako.test`) list registered dev routes in the 421 response. Unknown `.local` LAN hosts and unknown external hosts return a generic `Misdirected Request` 421 response without route details.
-
-## Dev Changes Do Not Restart the App
-
-`tako dev` watches `tako.toml`, `.tako/secrets.json`, `channels/`, and `workflows/`.
-
-It restarts the app when effective dev environment variables, secrets, channel definitions, or workflow definitions change. Route-only changes update proxy routing without restarting. Source hot reload is runtime-driven, for example by Vite or Bun watch scripts.
-
-## Deploy Says No Server Is Configured
-
-Add and map a server:
-
-```bash
-tako servers add la
-```
-
-Then in `tako.toml`:
+Deploy, logs, releases, delete, and scale all resolve an environment.
 
 ```toml
 [envs.production]
@@ -157,153 +53,285 @@ route = "dashboard.example.com"
 servers = ["la"]
 ```
 
-If exactly one server exists and production has no server mapping, interactive deploy can offer to write it for you.
+`production` is the default. `development` is reserved for `tako dev` and cannot be deployed.
 
-## Deploy Fails With Missing Target Metadata
+## Route Problems
 
-Deploy requires `arch` and `libc` metadata in `config.toml`.
+Use either `route` or `routes`, not both:
 
-Re-add the server with SSH checks enabled:
-
-```bash
-tako servers rm la
-tako servers add la
+```toml
+[envs.production]
+routes = [
+  "example.com",
+  "*.example.com/admin/*",
+  "example.com/api/*",
+]
 ```
 
-Use the server's Tailscale MagicDNS name so Tako can verify private management access before writing the server entry.
+Non-development environments must define at least one route.
 
-## Server Installer Says Tailscale Is Required
+If two apps claim the same route on a server, deploy fails during route conflict checks. Use `tako servers status` to see what is already deployed.
 
-Remote management requires Tailscale so Tako can keep server control traffic private by default.
+## No Servers Configured
 
-Install and connect Tailscale on the server, then rerun the installer. If the installer cannot detect the address, set `TAKO_MANAGEMENT_HOST` to the server's Tailscale IP.
-
-## Server Add Cannot Verify Access
-
-`tako servers add` only writes `config.toml` after it can verify the server through Tailscale, SSH recovery access as `tako`, and signed HTTP management.
-
-Use the server's Tailscale MagicDNS name:
+Add a server:
 
 ```bash
-tako servers add la
+tako servers add host.example.com --name la
 ```
 
-If the host is new or the server install is incomplete, let Tako install or repair it:
+If the server is not installed:
 
 ```bash
-tako servers add root@la
+tako servers add ubuntu@host.example.com --install --name la
 ```
 
-Check that your workstation and server are in the same tailnet, that `tako@la` works with your SSH key, and that the server was installed with the same key enrolled for management access. If your local SSH key is encrypted, use the interactive passphrase prompt or pass `--ssh-passphrase <PASSPHRASE>`.
+Then map the environment:
 
-## Deploy Cannot Find `main`
+```toml
+[envs.production]
+route = "dashboard.example.com"
+servers = ["la"]
+```
 
-Tako resolves the runtime entrypoint in this order:
+## Missing Target Metadata
 
-1. `main` in `tako.toml`
-2. manifest main such as `package.json` `main`
-3. preset `main`
-4. JavaScript index fallback for supported index-style presets
+Deploy requires `arch` and `libc` metadata for every target server. `tako servers add` records it after a successful SSH check.
 
-Fix by setting `main`:
+Repair by re-adding the server with checks enabled:
+
+```bash
+tako servers add host.example.com --name la
+```
+
+Avoid `--no-test` unless you know deploy will not target that server yet.
+
+## SSH Auth Problems
+
+`servers add`, deploy upload, install, and logs use SSH. If your local private key is encrypted, pass:
+
+```bash
+tako --ssh-passphrase "$PASSPHRASE" servers add host.example.com --name la
+```
+
+For remote management HTTP, Tako signs requests with local SSH keys or ssh-agent keys. `servers add --install` enrolls the key that authenticated the admin SSH connection.
+
+## Remote Management Fails
+
+`tako servers status` uses remote management HTTP on port `9844`. Public probes are `hello` and `server_info`; other RPCs require signed headers.
+
+Check:
+
+- the host is reachable over your private network
+- `tako-server` is running
+- the management key was enrolled
+- your local SSH key or ssh-agent can sign requests
+
+Run:
+
+```bash
+tako servers status --verbose
+```
+
+## Deploy Confirmation Surprises
+
+Interactive production deploy prompts only when the environment is implicit:
+
+```bash
+tako deploy
+```
+
+These skip the prompt because the target is explicit:
+
+```bash
+tako deploy --env production
+tako deploy --env production --yes
+```
+
+## Build Fails
+
+Check the build config:
+
+```toml
+[build]
+install = "bun install"
+run = "bun run build"
+```
+
+For monorepos, use `cwd` or `[[build_stages]]`.
+
+```toml
+[[build_stages]]
+name = "web"
+cwd = "packages/web"
+run = "bun run build"
+```
+
+`[build]` and `[[build_stages]]` are mutually exclusive when `[build].run` is set. `[build].include` and `[build].exclude` cannot be used with `[[build_stages]]`.
+
+## Missing `main`
+
+Deploy and dev need a runtime entrypoint. Set it explicitly when detection cannot find one:
 
 ```toml
 main = "dist/server/tako-entry.mjs"
 ```
 
-For TanStack Start, ensure `tako.sh/vite` emits `dist/server/tako-entry.mjs`. For Next.js, ensure `withTako()` emits `.next/tako-entry.mjs`.
+Tako checks top-level `main`, manifest metadata such as `package.json` `main`, then preset/runtime defaults.
 
-## Production Deploy Asks for Confirmation
+For Vite/TanStack Start, ensure `tako.sh/vite` is installed so the deploy wrapper is emitted. For Next.js, use `withTako()` from `tako.sh/nextjs`.
 
-Production deploys prompt by default:
+## Runtime Version Problems
 
-```bash
-tako deploy --env production --yes
-```
-
-Use `--ci` in automation so missing prompts become explicit errors.
-
-## Another Deploy Is Already Running
-
-Tako serializes deploys per app and environment on each server.
-
-Wait for the running deploy to finish, then retry:
-
-```bash
-tako deploy --env production
-```
-
-If `tako-server` restarted during an old deploy, retrying is safe. In-memory deploy locks are cleared by restart.
-
-## Release Command Failed
-
-Release commands run once on the leader server before rolling update:
+Pin the runtime version when auto-detection is not what you want:
 
 ```toml
-release = "bun run db:migrate"
+runtime = "bun"
+runtime_version = "1.2.3"
 ```
 
-On failure, deploy aborts before traffic shifts and old instances keep serving.
+Without a pin, deploy runs `<runtime> --version` locally and falls back to `latest`.
 
-Debug with:
+## Production Install Fails
+
+Servers run production install after extracting the artifact. The command comes from the runtime plugin and package manager.
+
+For JS apps, make sure the deploy artifact includes the lockfile and package metadata needed by the selected package manager.
+
+Production install runs from a cleared `tako-server` service environment. Tako preserves only `PATH` and `HOME` when available, then applies release env. Put required app configuration in `[vars]`, `[vars.<env>]`, or secrets.
+
+## Release Command Fails
+
+Run with verbose output:
 
 ```bash
 tako deploy --env production --verbose
+```
+
+The release command runs once on the leader server after extract and production install, before rolling update. It receives app env, deploy secrets, `TAKO_BUILD`, `TAKO_DATA_DIR`, and `PATH` when absent from the release env. It starts from a cleared service environment.
+
+Failures, non-zero exits, and 10-minute timeouts abort deploy. Old instances keep serving.
+
+## App Does Not Become Healthy
+
+Tako waits for the SDK to write its bound port to fd 4, then probes `/status` with `Host: <app>.tako`.
+
+Check:
+
+- the app imports and uses the Tako SDK entrypoint or Go SDK
+- the app does not bind its own fixed public port
+- startup does not block before the server begins listening
+- secrets and required env vars are configured
+
+Use logs:
+
+```bash
 tako logs --env production
 ```
 
-The release command runs in the new release directory with app env, the secrets resolved for that deploy, `TAKO_BUILD`, `TAKO_DATA_DIR`, and `PATH`. It has a 10-minute timeout; timed-out release commands are killed before deploy aborts.
+Startup timeout diagnostics include captured startup stdout/stderr when available.
 
-## App Fails Health Checks
+## Scale-To-Zero Cold Starts
 
-Tako probes:
+When desired instances are `0`, the next request wakes the app. If readiness does not happen before the startup timeout, the proxy returns `504`. If startup setup fails, it returns `502`.
 
-```http
-GET /status
-Host: <app>.tako
-```
-
-Use the SDK wrapper for your runtime so the endpoint and readiness protocol are installed.
-
-Health startup timeout is 30 seconds. If startup does not produce a healthy instance, deploy rolls back. For scale-to-zero cold starts, production browser responses use generic `502 Bad Gateway`, `503 Service Unavailable`, or `504 Gateway Timeout` bodies.
-
-Startup timeout diagnostics are recorded in the app log stream. Logs also include captured startup stdout/stderr when the process produced output before readiness.
-
-## TLS Certificate Problems
-
-For public hostnames, confirm DNS points to the server and port 80 is reachable for HTTP-01 challenges.
-
-For wildcard routes, configure DNS-01:
+Increase desired instances to keep the app hot:
 
 ```bash
-tako servers setup-wildcard --env production
+tako scale 1 --env production
 ```
 
-If no matching certificate exists yet, Tako serves a fallback self-signed certificate so HTTPS can complete and routing can return a normal HTTP response.
+## Local `.test` Does Not Resolve
 
-## Secrets Are Missing in Production
-
-List local secrets:
+Run:
 
 ```bash
-tako secrets ls
+tako doctor
 ```
 
-Sync to servers:
+On macOS, Tako manages `/etc/resolver/test`, `/etc/resolver/tako.test`, a local DNS listener, and a launchd-managed loopback proxy. If `/etc/resolver/test` already exists and was not created by Tako, `.tako.test` remains available as a fallback.
+
+On Linux, Tako configures systemd-resolved and loopback redirect rules. On NixOS, it prints a configuration snippet instead of making imperative changes.
+
+## Local HTTPS Shows Certificate Errors
+
+Tako creates a local root CA per `{TAKO_HOME}` and installs it into system trust. The CA files are:
+
+```text
+{TAKO_HOME}/ca/ca.crt
+{TAKO_HOME}/ca/ca.key
+```
+
+Run `tako doctor` and then `tako dev` again to repair trust setup.
+
+## Vite Dev Never Starts
+
+Use `tako.sh/vite` in your Vite config. Tako does not parse Vite stdout URLs as readiness; the plugin is responsible for the fd-4 readiness handshake.
+
+For Bun, built-in presets use:
+
+```toml
+dev = ["bun", "--bun", "./node_modules/.bin/vite", "dev"]
+```
+
+This avoids shims that drop file descriptors above 2.
+
+## LAN Mode Does Not Show Wildcards
+
+mDNS cannot advertise wildcard records. LAN mode advertises concrete `.local` hostnames only.
+
+Add explicit development routes for devices that need mDNS discovery:
+
+```toml
+[envs.development]
+routes = ["api.app.test"]
+```
+
+## Wildcard Certificates Fail
+
+Configure DNS-01 support:
 
 ```bash
+tako servers setup-wildcard
+```
+
+The command currently applies to all configured servers. It accepts `--env`, but that flag does not filter targets.
+
+Credentials are written to `/opt/tako/dns-credentials.env`, and the provider is stored in `/opt/tako/config.json`.
+
+## Logs Are Empty
+
+Check that the environment maps to the server where the app is deployed:
+
+```toml
+[envs.production]
+servers = ["la"]
+```
+
+Fetch more history:
+
+```bash
+tako logs --env production --days 14
+```
+
+Stream live logs:
+
+```bash
+tako logs --env production --tail
+```
+
+## Secrets Missing At Runtime
+
+Set and sync:
+
+```bash
+tako secrets set DATABASE_URL --env production
 tako secrets sync --env production
 ```
 
-Deploy also sends secrets when the server hash differs. Secret values are delivered to long-running app and worker processes through fd 3 at spawn time, so existing processes need a restart to receive new values. `secrets sync` triggers the required refresh.
+Then redeploy or let the sync trigger fresh processes. App and worker processes receive secrets through fd 3 at startup; a running process does not mutate its in-memory secret bag.
 
-## Secret Key Import or iCloud Keychain Fails
-
-By default, environment keys are stored under Tako's data directory as `keys/{key_id}`. On macOS, interactive key creation and import can store keys in iCloud Keychain through the signed `Tako.app` CLI. If a local key file exists and iCloud Keychain is unavailable during a read, Tako uses the local key file.
-
-If you see an iCloud entitlement error while saving a key to iCloud Keychain, reinstall or upgrade Tako so `tako` points to the signed app bundle. Tako fails before writing a local key file or updating `.tako/secrets.json` when the signed entitlement is unavailable.
-
-## Rollback Needed
+## Roll Back
 
 List releases:
 
@@ -317,32 +345,20 @@ Roll back:
 tako releases rollback abc1234 --env production --yes
 ```
 
-Rollback uses the current routes, env, secrets, and desired scaling state, then performs rolling update.
+Rollback uses the normal rolling-update path and keeps current routes, env, secrets, and scaling config.
 
-## Server Status Is Empty
+## Reset Local Dev State
 
-Run:
-
-```bash
-tako servers ls
-tako servers status
-```
-
-`servers status` reads global `config.toml`; it does not require a project directory. If no servers are configured, add one with `tako servers add`.
-
-## Disk Space Failure
-
-Deploy checks free space under `/opt/tako` before uploading artifacts.
-
-Free space or remove old data, then retry. Tako also prunes local artifact cache best-effort, but remote disk cleanup is an operator action.
-
-## Getting More Detail
-
-Use:
+Stop registered dev apps:
 
 ```bash
-tako <command> --verbose
-tako <command> --ci --verbose
+tako dev stop --all
 ```
 
-Verbose mode shows timestamps and debug lines. CI verbose mode keeps output deterministic for logs.
+Remove local Tako data and dev system configuration:
+
+```bash
+tako implode
+```
+
+`tako implode` may require sudo for platform services, resolver files, trust-store entries, proxy services, and loopback aliases.

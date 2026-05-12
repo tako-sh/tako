@@ -8,7 +8,9 @@ description: "Complete tako.toml reference covering routes, runtime settings, bu
 
 # `tako.toml` Reference
 
-`tako.toml` is the project config for app identity, runtime selection, builds, routes, environment variables, workflow workers, and deployment targets. App-scoped commands read `./tako.toml` by default. Pass `-c` or `--config <CONFIG>` to choose another file; if the path has no `.toml` suffix, Tako adds it. The selected config file's parent directory is the app directory.
+`tako.toml` is the project config for app identity, runtime selection, presets, builds, routes, environment variables, workflow workers, release commands, and deployment targets.
+
+App-scoped commands read `./tako.toml` by default. Use `-c` or `--config <CONFIG>` to choose another file. If the value has no `.toml` suffix, Tako appends it. The selected config file's parent directory is the app directory.
 
 ## Complete Example
 
@@ -18,6 +20,7 @@ runtime = "bun"
 runtime_version = "1.2.3"
 package_manager = "bun"
 preset = "tanstack-start"
+main = "dist/server/tako-entry.mjs"
 dev = ["vite", "dev"]
 assets = ["dist/client"]
 release = "bun run db:migrate"
@@ -63,7 +66,22 @@ workers = 2
 workers = 4
 ```
 
-Use either `[build]` or `[[build_stages]]`; do not use both in one config.
+Use either `[build]` or `[[build_stages]]`, not both:
+
+```toml
+[[build_stages]]
+name = "shared-ui"
+cwd = "packages/ui"
+install = "bun install"
+run = "bun run build"
+exclude = ["**/*.map"]
+
+[[build_stages]]
+name = "web"
+cwd = "packages/web"
+run = "bun run build"
+exclude = ["dist/**/*.map"]
+```
 
 ## App Identity
 
@@ -73,7 +91,13 @@ name = "dashboard"
 
 `name` is optional but recommended. If omitted, Tako derives the app name from the selected config file's parent directory.
 
-Names must start with a lowercase letter and use only lowercase letters, numbers, and hyphens. Remote deployments use `{name}/{env}` as the server-side deployment id. Renaming an app creates a new deployment identity, so delete the old deployment separately if needed.
+Names must:
+
+- start with a lowercase letter
+- contain only lowercase letters, numbers, and hyphens
+- be DNS-hostname friendly
+
+Remote deployments are stored as `{app}/{env}`. Renaming `name` creates a new deployment identity; remove the old deployment manually when needed.
 
 ## Runtime Fields
 
@@ -83,42 +107,109 @@ runtime_version = "1.2.3"
 package_manager = "pnpm"
 preset = "tanstack-start"
 main = "dist/server/tako-entry.mjs"
+dev = ["vite", "dev"]
+assets = ["dist/client"]
 ```
 
-`runtime` selects the runtime plugin. Supported values are `bun`, `node`, and `go`.
+| Field             | Meaning                                                                   |
+| ----------------- | ------------------------------------------------------------------------- |
+| `runtime`         | Optional runtime override: `bun`, `node`, or `go`.                        |
+| `runtime_version` | Optional pinned runtime version used by deploy.                           |
+| `package_manager` | Optional JS package manager override: `bun`, `npm`, `pnpm`, or `yarn`.    |
+| `preset`          | Optional runtime-local preset alias such as `tanstack-start` or `nextjs`. |
+| `main`            | Optional runtime entrypoint override.                                     |
+| `dev`             | Optional command override for `tako dev`.                                 |
+| `assets`          | Extra asset directories copied into deployed `public/`.                   |
 
-`runtime_version` pins the runtime version used by deploy. If omitted, deploy runs `<runtime> --version` locally and falls back to `latest`.
+When `main` is omitted, Tako checks manifest metadata such as `package.json` `main`, then preset defaults, then runtime defaults. JS runtimes also look for common index files such as `index.ts`, `index.js`, and `src/index.ts`.
 
-`package_manager` overrides JavaScript package-manager detection. If omitted, Tako checks `package.json` `packageManager`, then lockfiles.
+`runtime_version` is used directly when set. Otherwise deploy runs `<runtime> --version` locally and falls back to `latest`.
 
-`preset` provides framework defaults for `main`, `assets`, and `dev`. Presets are metadata only; install commands, launch arguments, runtime downloads, and production behavior live in runtime plugins.
+## Presets
 
-`main` overrides the runtime entrypoint. If omitted, Tako checks the manifest main field, then preset main, then JavaScript index fallbacks where applicable.
+Presets provide framework defaults for `main`, `assets`, and `dev`. They do not contain build commands, production start commands, install commands, or runtime download rules.
 
-## Dev Command
+Supported runtime-local aliases include:
+
+- `vite`
+- `tanstack-start`
+- `nextjs`
+
+Pinned aliases can include a commit:
 
 ```toml
-dev = ["vite", "dev"]
+preset = "tanstack-start@abc1234"
 ```
 
-`dev` overrides the command used by `tako dev`. Resolution order:
+Do not include runtime namespaces in `tako.toml` presets. Use `runtime = "bun"` plus `preset = "tanstack-start"`, not `preset = "javascript/tanstack-start"`.
 
-1. top-level `dev`
-2. preset `dev`
-3. runtime default
+## Variables
 
-JavaScript runtime defaults run through the SDK HTTP entrypoints:
+```toml
+[vars]
+API_URL = "https://api.example.com"
 
-- Bun: `bun-server.mjs`
-- Node: `node-server.mjs`
+[vars.production]
+API_URL = "https://api.example.com"
+```
 
-Go defaults to `go run .`.
+Variables merge in this order:
 
-Direct Vite dev commands must use the `tako.sh/vite` plugin so Vite can signal readiness to Tako over fd 4. Tako does not parse Vite stdout URLs as readiness.
+1. `[vars]`
+2. `[vars.<environment>]`
+3. Tako-derived vars and runtime vars
 
-## Builds
+Tako sets `ENV` automatically and ignores user-defined `ENV` values with a warning. Other names, including framework log-level variables, are user-owned.
 
-Use `[build]` for one stage:
+Common runtime vars:
+
+- `ENV`
+- `TAKO_BUILD` on deploy
+- `TAKO_DATA_DIR`
+- `NODE_ENV` for JS runtimes
+- `BUN_ENV` for Bun
+- `PORT=0` and `HOST=127.0.0.1` for HTTP processes
+- `TAKO_APP_NAME`
+- `TAKO_INTERNAL_SOCKET`
+
+In production, app and worker processes do not inherit arbitrary `tako-server` service env vars. Tako preserves only minimal process env (`PATH`, `HOME` when available), then applies app/runtime vars.
+
+Secrets are not configured in `tako.toml`. Use `tako secrets` commands; local encrypted secret metadata lives in `.tako/secrets.json`.
+
+## Environments
+
+```toml
+[envs.production]
+route = "dashboard.example.com"
+servers = ["la", "nyc"]
+idle_timeout = 300
+release = "bun run db:migrate"
+```
+
+| Field          | Meaning                                                   |
+| -------------- | --------------------------------------------------------- |
+| `route`        | Single route pattern. Mutually exclusive with `routes`.   |
+| `routes`       | Multiple route patterns. Mutually exclusive with `route`. |
+| `servers`      | Server names from global `config.toml`.                   |
+| `idle_timeout` | Per-instance idle timeout in seconds. Default: `300`.     |
+| `release`      | Environment-specific release command override.            |
+
+Non-development environments must define `route` or `routes`. `development` is reserved for `tako dev`; deploy ignores `servers` there.
+
+Routes can be exact hosts, wildcard hosts, or host plus path prefix:
+
+```toml
+routes = [
+  "example.com",
+  "www.example.com",
+  "*.example.com/admin/*",
+  "example.com/api/*",
+]
+```
+
+## Build
+
+Simple build mode:
 
 ```toml
 [build]
@@ -133,35 +224,28 @@ Fields:
 
 - `install`: optional command run before `run`
 - `run`: build command
-- `cwd`: optional working directory relative to the app root; absolute paths and `..` are rejected
+- `cwd`: working directory relative to the project root; absolute paths and `..` are rejected
 - `include`: artifact include globs
 - `exclude`: artifact exclude globs
 
-Use `[[build_stages]]` for multiple stages:
+Multi-stage build mode:
 
 ```toml
 [[build_stages]]
 name = "shared-ui"
-cwd = "../packages/ui"
+cwd = "packages/ui"
 install = "bun install"
 run = "bun run build"
 exclude = ["**/*.map"]
-
-[[build_stages]]
-name = "web"
-cwd = "."
-run = "bun run build"
 ```
 
 Stage fields:
 
 - `name`: optional display label
-- `cwd`: optional working directory relative to the app root; `..` is allowed for monorepos but guarded so it cannot escape the workspace root
-- `install`: optional command run before `run`
+- `cwd`: relative stage working directory; `..` is allowed for monorepos but guarded against escaping the workspace root
+- `install`: optional preparatory command
 - `run`: required command
-- `exclude`: optional artifact exclude globs for that stage
-
-`[build]` and `[[build_stages]]` are mutually exclusive when `[build].run` is set. `[build].include` and `[build].exclude` cannot be used with `[[build_stages]]`; use per-stage `exclude` instead.
+- `exclude`: stage-specific artifact excludes
 
 Build stage precedence:
 
@@ -170,77 +254,7 @@ Build stage precedence:
 3. runtime default
 4. no-op
 
-Deploy copies the source bundle into `.tako/build`, respecting `.gitignore`, symlinks local `node_modules`, runs build commands there, merges assets into `public/`, verifies `main`, and archives the result without `node_modules`.
-
-## Assets
-
-```toml
-assets = ["dist/client"]
-```
-
-Asset roots are preset `assets` plus top-level `assets`, deduplicated in order. They are merged into the deployed app's `public/` directory after build. Later entries overwrite earlier files.
-
-Asset paths must be relative. Absolute paths and `..` are rejected.
-
-## Environment Variables
-
-```toml
-[vars]
-API_URL = "https://api.example.com"
-
-[vars.production]
-API_URL = "https://api.example.com"
-```
-
-Merge order:
-
-1. `[vars]`
-2. `[vars.<environment>]`
-3. Tako runtime vars
-
-Tako sets `ENV` in dev and deploy. `ENV` is reserved; if you set it in `[vars]`, Tako ignores it and prints a warning.
-
-Common runtime vars include `ENV`, `TAKO_DATA_DIR`, `TAKO_BUILD` on deploy, `NODE_ENV` for JavaScript runtimes, and `BUN_ENV` for Bun. Production app and worker processes do not inherit arbitrary `tako-server` service environment variables; set required app vars in `tako.toml`.
-
-Secrets do not live in `tako.toml`; use `tako secrets`.
-
-## Environments and Routes
-
-```toml
-[envs.production]
-route = "dashboard.example.com"
-servers = ["la", "nyc"]
-idle_timeout = 300
-
-[envs.preview]
-routes = ["preview.example.com", "example.com/preview/*"]
-```
-
-Each non-development environment must define `route` or `routes`, not both.
-
-Route patterns can be:
-
-- `api.example.com`
-- `*.example.com`
-- `example.com/api/*`
-- `*.example.com/admin/*`
-
-`development` is reserved for `tako dev`. It may define dev routes, but deploy ignores `servers` in that environment. `.test` and `.tako.test` routes are managed by Tako's local DNS. External development routes are accepted as host aliases, but you must point those hostnames at the dev proxy yourself.
-
-`idle_timeout` is per-instance idle timeout in seconds. The default is `300`. `idle_timeout = 0` is rejected.
-
-## Server Membership
-
-```toml
-[envs.production]
-servers = ["la", "nyc"]
-```
-
-Environment server names refer to global servers in `config.toml`, managed by `tako servers add`, `tako servers rm`, and `tako servers ls`.
-
-The same server can host multiple environments. Each environment deploys to its own identity and path under `/opt/tako/apps/{app}/{env}`.
-
-`[servers.<name>]` in `tako.toml` is not server inventory. It currently supports workflow overrides only. Add and remove machines through `tako servers`.
+`[build]` and `[[build_stages]]` are mutually exclusive when `[build].run` is set. `[build].include` and `[build].exclude` cannot be used with `[[build_stages]]`; use per-stage `exclude`.
 
 ## Release Command
 
@@ -251,11 +265,13 @@ release = "bun run db:migrate"
 release = ""
 ```
 
-`release` runs once on the leader server after artifact extraction and production dependency install, before rolling update.
+Top-level `release` runs once on the leader server, after artifact extract and production install, before rolling update. The leader is the first server listed in `[envs.<env>].servers`.
 
-`[envs.<env>].release` overrides the top-level command. An empty string clears the inherited command for that environment.
+`[envs.<env>].release` overrides the top-level value. An empty string clears the inherited command for that environment.
 
-The command runs as `sh -c` in the new release directory with app env, secrets, `TAKO_BUILD`, `TAKO_DATA_DIR`, and `PATH`. It has a 10-minute timeout. If it fails or times out, deploy aborts, the timed-out process is killed, and old instances keep serving.
+The command runs as `sh -c` in the new release directory. It receives app env, secrets for that deploy, `TAKO_BUILD`, `TAKO_DATA_DIR`, and `PATH` when no app/release env already supplied it. It runs from a cleared service environment and has a 10-minute timeout.
+
+If the release command fails or times out, deploy aborts, cleans up the partial release directory, and leaves old instances serving.
 
 ## Workflow Workers
 
@@ -265,10 +281,10 @@ workers = 0
 concurrency = 10
 
 [workflows.email]
-workers = 2
+workers = 1
 
 [servers.la.workflows]
-workers = 1
+workers = 2
 
 [servers.la.workflows.email]
 workers = 4
@@ -276,35 +292,43 @@ workers = 4
 
 Fields:
 
-- `workers`: always-on worker process count. `0` means scale to zero.
-- `concurrency`: max parallel runs per worker. Default is `10`.
+- `workers`: always-on worker processes. `0` means scale-to-zero. Default: `0`.
+- `concurrency`: max parallel runs per worker. Default: `10`.
 
-JS workflow handlers receive a `ctx` object for `ctx.run`, `ctx.sleep`, `ctx.waitFor`, `ctx.bail`, `ctx.fail`, and workflow-scoped logging. Each `ctx.run(...)` callback receives a step context with a step-scoped logger.
-
-Precedence for default workers:
+Precedence for unnamed workflows:
 
 1. built-in defaults
 2. `[workflows]`
 3. `[servers.<name>.workflows]`
 
-Precedence for a named worker group:
+Precedence for `worker: "email"`:
 
 1. built-in defaults
 2. `[workflows]`
-3. `[workflows.<group>]`
+3. `[workflows.email]`
 4. `[servers.<name>.workflows]`
-5. `[servers.<name>.workflows.<group>]`
+5. `[servers.<name>.workflows.email]`
 
-## Validation Notes
+## Server Overrides
 
-Tako rejects:
+The project config can contain per-server workflow overrides under `[servers.<name>]`. Server inventory itself is not stored here; it lives in global `config.toml` managed by `tako servers add`.
 
-- unknown top-level keys
-- empty `main`, `runtime`, or `preset`
-- unsupported `runtime` values
-- namespaced or `github:` preset references in `tako.toml`
-- absolute asset paths, build globs, or `[build].cwd`
-- `..` in asset paths, build globs, or `[build].cwd`
-- non-development environments without routes
-- both `route` and `routes` in one environment
-- `idle_timeout = 0`
+```toml
+[servers.la.workflows]
+workers = 2
+```
+
+## Deploy Artifact Rules
+
+Deploy packages from the git root when available, otherwise from the app directory. The selected config file's parent directory becomes the app subdirectory within that source root.
+
+Tako always excludes:
+
+- `.git/`
+- `.tako/`
+- `.env*`
+- `node_modules/`
+
+Additional excludes come from config and `.gitignore`.
+
+Assets from presets and top-level `assets` are merged into app `public/` after build. Later entries overwrite earlier ones.

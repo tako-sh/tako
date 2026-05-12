@@ -6,9 +6,9 @@ current: development
 description: "Learn how tako dev provides trusted HTTPS, custom .test domains, hot reload, variants, and a persistent local background daemon."
 ---
 
-# Local Development with Tako
+# Local Development With Tako
 
-`tako dev` runs your app behind trusted local HTTPS on a `.test` hostname:
+`tako dev` runs your app behind trusted local HTTPS and a real hostname:
 
 ```bash
 tako dev
@@ -20,113 +20,61 @@ Default URL:
 https://{app}.test/
 ```
 
-The app name comes from `name` in `tako.toml`, or from the selected config file's parent directory.
+The app name comes from `name` in `tako.toml`, or from the selected config file's parent directory when `name` is omitted.
 
-## How It Works
+## What Starts
 
-`tako dev` is a client for a persistent local daemon called `tako-dev-server`.
+`tako dev` is a client for a persistent local daemon:
 
-When you run it, the CLI:
+1. It ensures local DNS, TLS, and proxy prerequisites are ready.
+2. It starts `tako-dev-server` when needed.
+3. It registers the selected config file with the daemon.
+4. It starts the app process and waits for fd-4 readiness.
+5. It streams logs and status into your terminal.
 
-1. starts the daemon if needed
-2. registers the selected config file
-3. resolves runtime, preset, env, routes, and dev command
-4. starts or attaches to the app process
-5. streams logs and lifecycle events
+Running `tako dev` again for the same config attaches to the existing session when the app is running or idle.
 
-The selected config file is the unique app key. Running `tako dev` again from the same config attaches to the existing session when possible.
+## Routes
 
-## Hostnames and Routes
-
-If `[envs.development]` is not configured, Tako registers:
+Default managed route:
 
 ```text
 https://{app}.test/
 ```
 
-Use explicit dev routes when needed:
+Configure development routes in `tako.toml`:
 
 ```toml
 [envs.development]
-routes = ["dashboard.test", "api.dashboard.test"]
+routes = [
+  "app.test",
+  "api.app.test/api/*",
+  "dev.example.com"
+]
 ```
 
-Configured `.test` and `.tako.test` routes replace the default route. External routes are additive: if you only configure external hostnames, Tako still keeps `{app}.test` and also routes those hostnames. External hostnames must be pointed at the dev proxy yourself, for example with a tunnel or DNS rule.
+Managed local DNS applies to `.test` and `.tako.test` routes. External routes are still routable by the local proxy but are not resolved by Tako DNS or advertised in LAN mode.
 
-Both `.test` and `.tako.test` resolve through Tako's local DNS. `.tako.test` remains available as a fallback zone. Wildcard dev routes participate in proxy routing, but cannot be advertised with mDNS in LAN mode.
-
-Unknown managed local DNS hosts (`.test` and `.tako.test`) return a 421 response that lists registered dev routes. Unknown `.local` LAN hosts and unknown external hosts return a generic `Misdirected Request` 421 response without listing registered routes.
-
-For Vite apps using `tako.sh/vite`, Tako passes configured dev route hostnames into Vite's `server.allowedHosts` list so the Vite dev server accepts tunneled or external Host headers without allowing every host. Under `tako dev`, the plugin also routes Vite-process `console.*`, stdout, and stderr through structured app log events so multi-line framework/runtime errors stay grouped in the CLI log stream.
+If explicit managed `.test` or `.tako.test` routes are configured, they replace the default `{app}.test` route. If only external routes are configured, Tako keeps the default managed route and adds the external routes.
 
 ## Variants
-
-Run multiple variants of the same app:
 
 ```bash
 tako dev --variant preview
 tako dev --var preview
 ```
 
-The hostname becomes:
+Variants create a DNS-specific session such as:
 
 ```text
 https://{app}-preview.test/
 ```
 
-## Dev Command Resolution
-
-Tako chooses the dev command in this order:
-
-1. `dev` in `tako.toml`
-2. preset `dev`
-3. runtime default
-
-Example override:
-
-```toml
-dev = ["vite", "dev"]
-```
-
-JavaScript runtime defaults use the SDK HTTP entrypoints (`bun-server.mjs` for Bun and `node-server.mjs` for Node). Go defaults to `go run .`.
-
-Vite dev commands must use the `tako.sh/vite` plugin so Vite can write readiness to fd 4. Tako does not parse Vite stdout URLs as readiness.
-
-## Readiness
-
-The app is considered running only after the process writes its bound loopback port to fd 4.
-
-Until then, routes are not activated. If the process exits, the route goes idle and the next request can wake it again.
-
-## Watches and Restarts
-
-`tako dev` watches:
-
-- `tako.toml`
-- `.tako/secrets.json`
-- `channels/`
-- `workflows/`
-
-It restarts the app when effective dev environment variables, secrets, channel definitions, or workflow definitions change. It updates dev routing without restarting when `[envs.development].route` or `[envs.development].routes` changes.
-
-Source hot reload is runtime-driven. Use your framework's dev server or watch mode for normal source edits.
-
-## Logs and Status
-
-Interactive `tako dev` prints a normal terminal log stream. It does not use an alternate screen.
-
-Log lines are formatted with:
-
-- timestamp
-- level
-- scope
-- message
-
-Common scopes are `tako`, `app`, and `worker`.
-
-Shared logs are stored under Tako's home directory so attached sessions can replay previous output and follow new output.
+Use variants when you need two local copies of the same app shape reachable at different hostnames.
 
 ## Keyboard Shortcuts
+
+In an interactive terminal:
 
 | Key      | Action                                     |
 | -------- | ------------------------------------------ |
@@ -135,124 +83,175 @@ Shared logs are stored under Tako's home directory so attached sessions can repl
 | `b`      | Background the app and exit the CLI.       |
 | `Ctrl-C` | Stop the app, unregister routes, and exit. |
 
-## Backgrounding
+No alternate screen is used, so normal terminal scrollback, search, selection, and clickable links keep working.
 
-Press `b` to leave the app running under the daemon. Later, run:
+## Idle And Wake
 
-```bash
-tako dev
+The app starts immediately when `tako dev` starts. If there are no attached CLI clients for 30 minutes, the daemon can stop the process and keep routes registered as idle.
+
+The next HTTP request wakes the app, waits for readiness, and then forwards the request.
+
+Idle shutdown is suppressed while requests are in flight.
+
+## Readiness
+
+Tako sets:
+
+```text
+PORT=0
+HOST=127.0.0.1
+ENV=development
+TAKO_DATA_DIR=...
+TAKO_APP_NAME=...
+TAKO_INTERNAL_SOCKET=...
 ```
 
-to attach again.
+The SDK binds an OS-assigned loopback port and writes the actual port to fd 4. A route becomes active only after this readiness handshake succeeds.
 
-After 30 minutes with no attached CLI clients, the app can become idle. The next HTTP request wakes it.
+For Vite dev commands, use the `tako.sh/vite` plugin. Tako does not parse Vite stdout URLs as readiness; if a Vite-looking command never reports readiness, the CLI shows a Vite-specific plugin hint.
 
-## Stop and List
+## Dev Commands
 
-```bash
-tako dev stop
-tako dev stop dashboard
-tako dev stop --all
-tako dev ls
-tako dev list
+Tako resolves the dev command in this order:
+
+1. top-level `dev` in `tako.toml`
+2. preset `dev`
+3. runtime default
+
+Examples:
+
+```toml
+dev = ["vite", "dev"]
 ```
 
-`stop` without a name stops the app for the selected config file.
+JavaScript runtime defaults run through the SDK HTTP entrypoints:
 
-## Local HTTPS
+- Bun: `bun run node_modules/tako.sh/dist/entrypoints/bun-server.mjs {main}`
+- Node: `node --experimental-strip-types node_modules/tako.sh/dist/entrypoints/node-server.mjs {main}`
 
-Tako generates a local root CA on first use. The public CA certificate is available at:
+Go defaults to:
+
+```bash
+go run .
+```
+
+Source hot reload belongs to the runtime or framework dev server. Tako watches configuration and platform definition files, not every source file.
+
+## Watched Files
+
+`tako dev` watches:
+
+- `tako.toml`
+- `.tako/secrets.json`
+- `channels/`
+- `workflows/`
+
+It restarts the app when effective environment variables, secrets, channel definitions, or workflow definitions change. It updates dev routing without restarting when `[envs.development].route` or `routes` changes.
+
+## Logs
+
+Interactive logs render as:
+
+```text
+hh:mm:ss LEVEL [scope] message
+```
+
+Common scopes:
+
+- `tako`: local dev daemon
+- `app`: app process
+- `worker`: workflow worker
+
+App lifecycle changes appear inline in the stream. Attached sessions replay the shared log file, then follow new lines.
+
+Dev logs live under:
+
+```text
+{TAKO_HOME}/dev/logs/{app}-{hash}.jsonl
+```
+
+## Local TLS
+
+Tako creates a local root CA once per `{TAKO_HOME}`. The public cert and private key are stored at:
 
 ```text
 {TAKO_HOME}/ca/ca.crt
-```
-
-The CA private key is stored beside it:
-
-```text
 {TAKO_HOME}/ca/ca.key
 ```
 
-The key file is created with mode `0600`. The CA cert/key pair is scoped per `{TAKO_HOME}` to avoid cross-home mismatches.
+The private key is written with mode `0600`. On first run, or when trust is missing, Tako explains why elevated access is needed and installs the CA into the system trust store.
 
-Tako installs the CA into the system trust store when needed. Before prompting for elevated access, it explains what will change.
+The daemon uses SNI to issue local leaf certificates for app domains.
 
-Leaf certificates are generated on demand for app hostnames and selected by SNI.
+## Local DNS And Proxy
 
-## macOS Networking
+### macOS
 
-On macOS, Tako uses:
+Tako writes split-DNS resolver files for:
 
-- a dedicated loopback alias: `127.77.0.1`
-- a launchd-managed dev proxy for `:80` and `:443`
-- split DNS resolver files for `.test` and `.tako.test`
-- a local DNS listener on `127.0.0.1:53535`
+- `/etc/resolver/test`
+- `/etc/resolver/tako.test`
 
-The public app URL is portless:
+They point at the local DNS listener on `127.0.0.1:53535`.
+
+Tako also installs a launchd-managed socket-activated proxy on `127.77.0.1`:
+
+- `127.77.0.1:443 -> 127.0.0.1:47831`
+- `127.77.0.1:80 -> 127.0.0.1:47830`
+
+The user-facing URL has no explicit port on macOS.
+
+### Linux
+
+Tako configures systemd-resolved for `~test` and `~tako.test`, a loopback alias `127.77.0.1`, and local redirect rules for portless HTTPS. On NixOS, it prints a `configuration.nix` snippet instead of changing the system imperatively.
+
+Non-macOS default URLs include the daemon HTTPS port when needed:
 
 ```text
-https://dashboard.test/
+https://{app}.test:47831/
 ```
-
-If an existing `/etc/resolver/test` was not created by Tako, Tako leaves it alone and warns. `.tako.test` still works as a fallback.
-
-## Linux Networking
-
-On Linux, Tako uses:
-
-- the same dedicated loopback alias, `127.77.0.1`
-- iptables redirect rules for 443, 80, and 53
-- systemd-resolved routing for `~test` and `~tako.test`
-
-On NixOS, Tako prints a `configuration.nix` snippet instead of applying imperative setup.
 
 ## LAN Mode
 
-Press `l` in interactive mode to expose registered `.test` and `.tako.test` dev routes through `.local` aliases on the local network.
+Press `l` in `tako dev` to expose managed routes as `.local` aliases on your LAN.
 
-Concrete managed hostnames are advertised with mDNS. External routes are not rewritten to `.local` or advertised. Wildcard routes cannot be advertised by mDNS, so Tako warns and suggests explicit subdomain routes.
+Concrete hostnames are advertised with mDNS. Wildcard routes cannot be advertised because mDNS does not support wildcard records. The proxy can still match them for clients that resolve those names some other way.
 
-## Environment
+External routes are not rewritten to `.local`, advertised with mDNS, or resolved by Tako DNS.
 
-`tako dev` loads:
+## Dev Subcommands
 
-1. `[vars]`
-2. `[vars.development]`
-3. runtime vars
-
-It sets:
-
-- `ENV=development`
-- `TAKO_DATA_DIR`
-- `NODE_ENV=development` for JavaScript runtimes
-- `BUN_ENV=development` for Bun
-
-Secrets are read from `.tako/secrets.json` and delivered through the same runtime path used by production. Long-running app and worker processes receive secrets in the fd-3 bootstrap envelope.
-
-## Channels in Dev
-
-Channel definitions in `channels/` are discovered by the SDK. Public channel routes are served at:
-
-```text
-/_tako/channels/<name>
+```bash
+tako dev stop
+tako dev stop my-app
+tako dev stop --all
+tako dev ls
 ```
 
-The dev server uses the same internal channel registry, authorization, and dispatch endpoints as production. Changes to channel definitions restart the app so the registry stays current.
+`stop` unregisters routes and stops processes. `ls` lists registered dev apps. `list` is an alias for `ls`.
 
-## Workflows in Dev
+## Workflows In Dev
 
-Dev mode uses the same workflow architecture as production. The dev daemon owns the runs database and spawns a worker subprocess on demand.
+`tako dev` uses the same architecture as production: the dev daemon owns the run queue and spawns a separate worker process on demand.
 
-Workers are scale-to-zero in dev, with a short idle timeout. Code edits are picked up on the next enqueue because the worker is spawned fresh.
+Dev workers are scale-to-zero with a short idle timeout. They load fresh code on the next enqueue, so workflow edits do not require restarting the entire dev session.
 
-If a worker crashes before claiming work, enqueues fail loudly for a short unhealthy window instead of silently queueing work that cannot run.
+If a worker exits non-zero before claiming work, the app is marked unhealthy for a short window and enqueue returns a visible error instead of silently queueing work that cannot run.
 
-## Diagnostics
+## Troubleshooting
 
-Run:
+Useful commands:
 
 ```bash
 tako doctor
+tako dev --verbose
+tako dev stop --all
 ```
 
-It checks the daemon, local DNS, loopback alias, macOS proxy state, and port reachability. If the daemon is not running, doctor reports that and exits successfully.
+If daemon startup fails, Tako reports the last lines from:
+
+```text
+{TAKO_HOME}/dev-server.log
+```
+
+If a `.test` route does not resolve, check that the local CA, DNS listener, and platform proxy setup are healthy with `tako doctor`.

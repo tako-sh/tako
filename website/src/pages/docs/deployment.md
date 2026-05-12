@@ -8,86 +8,46 @@ description: "Guide to deploying apps with Tako on your own servers, including s
 
 # Deployment
 
-This guide covers the production path: installing `tako-server`, registering servers, mapping environments, deploying releases, scaling instances, syncing secrets, and operating the service.
+Tako deploys prebuilt local artifacts to your own servers. The CLI builds and uploads; `tako-server` extracts, installs production dependencies, starts app processes, manages TLS, and rolls instances forward without stopping old traffic first.
 
-## Install the Server
+## Server Setup
 
-Connect the host and your workstation to the same Tailscale tailnet, then run the server installer as root on each target host:
+Install `tako-server` on each host:
 
 ```bash
 sudo sh -c "$(curl -fsSL https://tako.sh/install-server.sh)"
 ```
 
-The installer:
-
-- creates the `tako` SSH/service user
-- creates `tako-app` for app and worker processes
-- installs `tako-server` to `/usr/local/bin/tako-server`
-- installs systemd or OpenRC service files
-- detects the host's Tailscale IP and binds remote management HTTP to port `9844`
-- configures privileged bind support, app-user switching, and app-process stop permissions, failing on non-systemd/OpenRC hosts if file capabilities cannot be granted
-- creates `/opt/tako` and `/var/run/tako`
-- starts and verifies the service
-- installs helpers needed for graceful reload and upgrade
-
-Normal service installs require Tailscale because Tako keeps server control traffic private by default. If detection is not possible, set `TAKO_MANAGEMENT_HOST` to the server's Tailscale IP.
-
-For GitHub-hosted release downloads, the installer uses `GH_TOKEN` when set, falling back to `GITHUB_TOKEN`.
-
-Set `TAKO_SSH_PUBKEY` to install your workstation SSH public key non-interactively:
+Then register the server locally:
 
 ```bash
-sudo env TAKO_SSH_PUBKEY="ssh-ed25519 AAAA... you@workstation" sh -c "$(curl -fsSL https://tako.sh/install-server.sh)"
+tako servers add host.example.com --name la
 ```
 
-That key is authorized for `tako` SSH access and enrolled for signed remote management.
-
-## Register the Server Locally
-
-Add each server to your local global config:
+If the server is not installed yet, `servers add` can install or repair it:
 
 ```bash
-tako servers add la
-tako servers add nyc --description "New York"
-tako servers add root@la
+tako servers add ubuntu@host.example.com --install --name la
 ```
 
-The add command expects a Tailscale MagicDNS name or Tailscale IP. MagicDNS names default the local server name to the first DNS label; use `--name` to override it or when adding by IP address. It verifies Tailscale resolution, `tako@host` SSH recovery access, signed private management HTTP, and the server target (`arch` and `libc`) before writing `config.toml`. Deploy requires that target metadata so it can choose the correct artifact.
+The global server inventory is stored in the platform config directory, not in the project. Each server entry includes host, port, optional description, and detected target metadata (`arch`, `libc`).
 
-Use `--install` when the host is new or `tako-server` needs repair. Tako connects as the admin SSH user, installs the server, enrolls the SSH key used for access, rechecks `tako@host`, verifies signed HTTP management, and only then saves the server locally. `user@host` is shorthand for setting the admin SSH user on first add. Without a host, `tako servers add` runs the same flow through an interactive wizard, including an SSH passphrase prompt when a default key is encrypted. For one-line commands, pass `--ssh-passphrase <PASSPHRASE>`.
+## Configure Environments
 
-List configured servers:
-
-```bash
-tako servers ls
-```
-
-## Configure the Project
-
-Map an environment to one or more servers:
+Map project environments to server names in `tako.toml`:
 
 ```toml
-name = "dashboard"
-runtime = "bun"
-preset = "tanstack-start"
-
 [envs.production]
 route = "dashboard.example.com"
 servers = ["la", "nyc"]
+idle_timeout = 300
+
+[envs.staging]
+route = "staging.example.com"
+servers = ["staging"]
 ```
 
-Each non-development environment must define `route` or `routes`.
-
-Routes can be exact hosts, wildcard hosts, or host plus path:
-
-```toml
-[envs.production]
-routes = [
-  "dashboard.example.com",
-  "example.com/app/*",
-  "*.example.com/admin/*"
-]
-```
+The deployment identity on each server is `{app}/{env}`. One physical server can host multiple environments for the same app because each environment gets a separate identity and filesystem path.
 
 `development` is reserved for `tako dev` and cannot be deployed.
 
@@ -99,241 +59,188 @@ tako deploy --env staging
 tako deploy --env production --yes
 ```
 
-`--env` defaults to `production`. Interactive production deploys require confirmation unless `--yes` or `-y` is set.
+`--env` defaults to `production`. Interactive production deploys ask for confirmation only when the environment is implicit. Passing `--env production` or `--yes` makes the target explicit and skips the prompt.
 
-Deploy builds locally, ships artifacts to every server in the environment, prepares the release, runs the release command if configured, then rolls traffic to the new build.
+Deploy requires:
 
-If `[envs.production].servers` is empty and exactly one global server is configured, deploy can select it and write it into `tako.toml`. Otherwise, declare `servers` explicitly.
+- a declared target environment
+- `route` or `routes`
+- valid server names
+- target metadata for every server
+- available secret keys for the target environment
 
-## Build and Artifact Contract
+If production has no server mapping and exactly one global server exists, interactive deploy can write that server into `[envs.production].servers`.
 
-The deploy source root is the git root when available, otherwise the selected config file's parent directory.
+## Build And Artifact
 
-Tako copies the source bundle into `.tako/build`, respecting `.gitignore`, symlinks local `node_modules` for build tools, runs configured build stages, verifies the runtime `main`, and archives the result.
+The deploy source root is the git root when available, otherwise the selected config file's parent directory. The selected config file's parent directory becomes the app subdirectory inside that source root.
 
-Build stage precedence:
+Tako copies the source tree into `.tako/build`, respects `.gitignore`, links `node_modules` from the original tree, runs build stages, merges assets into `public/`, verifies `main`, writes `app.json`, and archives the result.
 
-1. `[[build_stages]]`
-2. `[build]`
-3. runtime default
-4. no-op
-
-Always excluded from deploy artifacts:
+Always excluded:
 
 - `.git/`
 - `.tako/`
 - `.env*`
 - `node_modules/`
 
-Additional excludes come from `[build].exclude`, per-stage `exclude`, and `.gitignore`.
+Deploy artifacts are cached under `.tako/artifacts/`. Cache keys include source hash, target label, preset source/commit, build commands, include/exclude patterns, asset roots, and app subdirectory. Cached artifacts are checksum/size verified before reuse.
 
-Target artifacts are cached under `.tako/artifacts/` and validated by checksum and size before reuse. Deploy verifies the resolved runtime `main` exists in the build workspace before packaging.
+Version naming:
 
-## Runtime Preparation
+- clean git tree: `{commit}`
+- dirty git tree: `{commit}_{source_hash8}`
+- no git commit: `nogit_{source_hash8}`
 
-Servers receive prebuilt artifacts; they do not run app build steps. After extracting an artifact, `tako-server` runs the runtime plugin's production install command, downloads or resolves the pinned runtime version when needed, and prepares the release directory. Production install receives the release env plus minimal process env (`PATH`, `HOME` when available), not arbitrary `tako-server` service environment variables.
+## Server Preparation
 
-Runtime definitions live in runtime plugins. Presets only supply metadata such as `main`, `assets`, and `dev`.
+Servers receive prebuilt artifacts. They do not run app build steps.
 
-Signed image URLs created with `createImageUrl()` are served by `tako-server` from `/_tako/image/v1/<payload>.<signature>`. They are private by default with maximum width `1200`, a 7-day SDK expiration, and browser-only cache (`private, max-age=604800`), reject extra query strings, and can sign a private-only `browserCacheMaxAgeSeconds` override. They become long-cacheable public assets only when generated with `public: true`. Images emit AVIF by default when `format` is omitted, or WebP when requested with `format: "webp"`. `width` is a maximum; heightless output width is `min(width, originalWidth)`. Optional `height`, `fit`, and `crop` options support contain, center-cover, and smart-cover thumbnails without upscaling; `height` requires an explicit `width`. EXIF orientation is applied to pixels before output is encoded, but source metadata such as EXIF, XMP, ICC profiles, and comments is stripped. Server installs include the libvips runtime used for JPEG, PNG, WebP, and AVIF source transforms.
+After extraction, `tako-server`:
+
+- reads `app.json`
+- downloads or resolves the pinned runtime when needed
+- runs the runtime plugin's production install command
+- prepares app data directories
+- stores secrets when they changed
+- starts workflow supervision for the release
+
+Production install receives the release env plus minimal process env (`PATH`, `HOME` when available). It does not inherit arbitrary `tako-server` service env vars.
 
 ## Release Commands
 
-Use `release` for work that must happen once before traffic shifts:
+Configure a release command when you need migrations or cache preparation before the rolling update:
 
 ```toml
 release = "bun run db:migrate"
 ```
 
-Override or clear it per environment:
+Override or clear per environment:
 
 ```toml
 [envs.staging]
 release = ""
 ```
 
-The release command runs only on the leader server, inside the new release directory, after production dependency install and before rolling update. It receives app env, the secrets resolved for that deploy, `TAKO_BUILD`, `TAKO_DATA_DIR`, and `PATH`.
+The release command runs once on the leader server, after extract and production install, before rolling update. The leader is the first server listed for the environment. Followers wait for the leader result.
 
-If the command fails or times out after 10 minutes, deploy aborts on every server. Timed-out release commands are killed. The old release keeps serving.
+The command runs as `sh -c` in the new release directory. It receives app env, deploy secrets, `TAKO_BUILD`, `TAKO_DATA_DIR`, and `PATH` if not already present in the app/release env. It starts from a cleared service environment and has a 10-minute timeout.
+
+If the command fails or times out, deploy aborts on every server. Partial release directories are cleaned up and old instances keep serving.
 
 ## Rolling Updates
 
-On each server, Tako:
+For each server, Tako replaces instances with this pattern:
 
-1. starts a new instance
-2. waits for health
-3. adds it to the load balancer
-4. drains an old instance
-5. repeats until the target count is replaced
-6. updates the `current` symlink
+1. Start one new instance.
+2. Wait for fd-4 readiness and health checks.
+3. Add the new instance to the load balancer.
+4. Drain one old instance.
+5. Stop the drained instance.
+6. Repeat until the release is active.
+7. Update the `current` symlink.
+8. Clean up old releases older than 30 days.
 
-The rolling target count comes from server-side desired instance state. Deploy does not reset it.
-
-If desired instances are `0`, deploy still keeps one warm instance for the new build so the app is reachable immediately after deploy. Later it can idle down.
-
-If a new instance fails health checks, Tako kills the new process, keeps old instances serving, and reports the failure.
+Rollback on failure keeps old instances serving. If some servers succeed and others fail, the CLI reports partial failures at the end.
 
 ## Scaling
-
-Scale every server in an environment:
 
 ```bash
 tako scale 2 --env production
 tako scale 0 --env production
-```
-
-Scale one server:
-
-```bash
 tako scale 3 --env production --server la
 ```
 
-Outside a project directory:
+Desired instance count is stored on each server as runtime state. It persists across deploys, rollbacks, and restarts.
 
-```bash
-tako scale 2 --app dashboard/production --server la
-```
+New apps start with desired instances `1`. Scaling to `0` enables scale-to-zero. Deploy still starts one warm instance for the new release, then idle shutdown can stop it after `idle_timeout`.
 
-Desired counts persist across deploys, rollbacks, and server restarts. Scaling down drains in-flight requests before stopping excess instances.
+Cold starts wait for readiness up to the startup timeout. If no healthy instance is ready, the proxy returns `504`. If startup setup fails, it returns `502`. If too many requests are waiting for a cold start, it returns `503`.
 
 ## Secrets
 
-Set local encrypted secrets:
-
 ```bash
 tako secrets set DATABASE_URL --env production
-tako secrets set API_KEY --env staging
-```
-
-Sync them to servers:
-
-```bash
-tako secrets sync
 tako secrets sync --env production
 ```
 
-Deploy compares a local secrets hash with the server's current hash. If unchanged, secrets are not resent. Fresh HTTP instances and workflow workers receive secrets through fd 3 at spawn time. Secret sync also refreshes workflow runtime and rolling-restarts HTTP instances so new processes receive updated values.
+Local secrets are encrypted in `.tako/secrets.json`. Deploy decrypts the target environment's secrets locally, compares the remote secrets hash, and only sends secrets when the server needs them.
 
-Secrets are stored encrypted in server SQLite. They are not written as plaintext `.env` files.
+On the server, secrets are encrypted in SQLite. Fresh app and worker processes receive them through fd 3, not through release files.
 
-## TLS
-
-Public routes use Let's Encrypt automatically. Certificates renew 30 days before expiry.
-
-Private and local hostnames use self-signed certificates:
-
-- `localhost`
-- `*.localhost`
-- single-label hosts
-- `.local`
-- `.test`
-- `.invalid`
-- `.example`
-- `.home.arpa`
-
-Wildcard routes require DNS-01 configuration:
+Secret changes can be synced after deploy:
 
 ```bash
-tako servers setup-wildcard --env production
+tako secrets sync --env production
 ```
 
-If a wildcard route is deployed without DNS provider configuration, deploy fails with guidance.
+`tako-server` stores the new secrets, drains/restarts workflow workers, and rolls HTTP instances so fresh processes receive updated values.
 
-If no matching certificate exists yet, Tako serves a fallback self-signed certificate so HTTPS can complete and routing can return a normal HTTP response.
+## TLS And Wildcards
 
-## Logs and Status
+Tako issues certificates automatically. Exact hosts use HTTP-01. Wildcard hostnames require DNS-01 through lego.
+
+Configure DNS-01 credentials:
 
 ```bash
+tako servers setup-wildcard
+```
+
+The command currently applies DNS configuration to all configured servers. It accepts `--env`, but that flag does not filter targets.
+
+Credentials are stored on the server at:
+
+```text
+/opt/tako/dns-credentials.env
+```
+
+The provider name is persisted in:
+
+```text
+/opt/tako/config.json
+```
+
+## Remote Management
+
+`tako-server` exposes management RPC over HTTP on port `9844` for Tailscale-reachable operations. `hello` and `server_info` are public probes. Other RPCs require SSH-key-signed headers, a fresh timestamp, and a non-replayed nonce.
+
+SSH remains part of deployment for upload, setup, recovery, and log access.
+
+## Logs And Status
+
+```bash
+tako servers status
 tako logs --env production
 tako logs --env production --tail
 tako logs --env production --json
-tako servers status
-tako releases ls --env production
 ```
 
-`servers status` works from any directory and reports all configured servers through signed Tailscale HTTP management.
+`servers status` queries all configured servers and shows service state plus deployed app/build status. `logs` fetches app stdout/stderr and app-scoped server diagnostics from environment servers.
 
-`logs` includes app output and app-scoped Tako server diagnostics. JS/TS production HTTP entrypoints route `console.*`, uncaught exceptions, and unhandled rejections into the same app log stream. Use `--json` for compact JSONL in agents and automation.
-
-## Rollback
+## Release History And Rollback
 
 ```bash
 tako releases ls --env production
 tako releases rollback abc1234 --env production --yes
 ```
 
-Rollback reuses the selected release, current routes, env, secrets, and desired scaling state, then performs the standard rolling-update flow.
+Release history is grouped by release id and sorted newest-first. Rollback reuses the same rolling-update path as deploy and keeps current routes, env, secrets, and scale settings.
 
-## Server Maintenance
-
-Graceful reload:
+## Delete A Deployment
 
 ```bash
-tako servers restart la
+tako delete --env production --server la
 ```
 
-Full restart:
+Delete removes one app/environment/server target. It stops and drains processes, removes app state/routes, and deletes `/opt/tako/apps/{app}/{env}`.
 
-```bash
-tako servers restart la --force
-```
+Interactive mode can discover the target. Non-interactive mode requires `--yes`, `--env`, and `--server`.
 
-Upgrade all servers or one server:
+## Upgrade Servers
 
 ```bash
 tako servers upgrade
 tako servers upgrade la
 ```
 
-Upgrade uses temporary process overlap and the management socket handoff so clients connect to the ready process.
-
-Remove a server installation and all server-side data:
-
-```bash
-tako servers implode la
-```
-
-GitHub-backed upgrade metadata and remote archive downloads use `GH_TOKEN` when set, falling back to `GITHUB_TOKEN`.
-
-## Data Layout
-
-Production data lives under `/opt/tako`:
-
-```text
-/opt/tako/
-  config.json
-  identity.key
-  identity.pub
-  tako.db
-  runtimes/
-  certs/
-  apps/
-    {app}/{env}/
-      current -> releases/{version}
-      data/
-        app/
-        tako/
-      logs/
-      releases/{version}/
-```
-
-App log files contain app stdout/stderr plus app-scoped Tako server diagnostics. Each app keeps `current.log` and the previous rotated file.
-
-The management socket lives at:
-
-```text
-/var/run/tako/tako.sock
-```
-
-It is a symlink to the active PID-specific socket, which lets reloads hand off cleanly.
-
-Each server also keeps a stable identity key at `/opt/tako/identity.key` and publishes its OpenSSH SHA-256 fingerprint through `hello` and `server_info`. Remote management requires Tailscale so Tako can keep server control traffic private by default; normal installs bind the private HTTP RPC listener to port `9844` on the Tailscale address. Signed HTTP management keys are stored in `/opt/tako/management-authorized-keys`.
-
-## Common Failure Behavior
-
-- insufficient disk space fails before upload
-- missing server target metadata fails before deploy
-- concurrent deploys for the same app fail immediately
-- failed release commands abort before traffic shifts
-- failed warm startup keeps old instances serving
-- failed partial releases are cleaned up automatically
+Server upgrade verifies signed checksums, installs the new binary, enters upgrade mode, reloads the service, waits for the new primary process, and exits upgrade mode. If readiness fails after binary replacement, the previous binary is restored.

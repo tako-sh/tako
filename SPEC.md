@@ -722,9 +722,9 @@ Alias: `tako servers uninstall`.
 
 ### tako servers setup-wildcard [-e|--env ENV]
 
-Configure DNS-01 wildcard certificate support on all servers.
+Configure DNS-01 wildcard certificate support on all configured servers.
 
-1. Loads all configured servers (or servers for `--env` if specified).
+1. Loads all configured servers. The `--env` flag is accepted by the command but does not currently filter the target server list.
 2. Runs an interactive wizard prompting for DNS provider and credentials.
 3. Verifies credentials locally against the provider API.
 4. Applies the configuration to all servers in parallel:
@@ -831,7 +831,7 @@ Deploy target environment must be declared in `tako.toml` (`[envs.<name>]`) and 
 
 `development` is reserved for `tako dev` and cannot be used with `tako deploy`.
 
-In interactive terminals, deploying to `production` requires an explicit confirmation unless `--yes` (or `-y`) is provided.
+In interactive terminals, deploying to `production` requires an explicit confirmation when the environment is implicit. Passing `--env production`, `--yes`, or `-y` skips that confirmation because the target is explicit.
 
 Deploy flow helpers:
 
@@ -1272,6 +1272,12 @@ App log files contain app stdout/stderr plus app-scoped Tako server diagnostics.
 - PID-specific socket path: `/var/run/tako/tako-{pid}.sock` (created by active server; symlink updated atomically on ready)
 - Used by: CLI for deploy/delete/status/routes commands
 
+**Remote management HTTP:**
+
+- `tako-server` also listens for management RPC over HTTP on port `9844` for Tailscale-reachable server status and deploy operations.
+- Only `hello` and `server_info` are public probes. All other RPCs require SSH-key-signed headers, a fresh timestamp, and a non-replayed nonce against the server's `management-authorized-keys` file.
+- Management RPC request bodies are capped at 1 MiB.
+
 **App instance upstream transport:**
 
 - TCP over loopback
@@ -1414,7 +1420,7 @@ Response:
 }
 ```
 
-The server validates the app name and release version, acquires the per-app deploy lock, derives base env from release `app.json`, overlays command `vars`, injects `TAKO_BUILD`, `TAKO_DATA_DIR`, command `secrets`, and parent `PATH`, then runs `sh -c "<command_line>"` in the release directory. Deploy sends the freshly decrypted secrets in the `run_release` payload so first deploys and secret rotations run against the same env the new HTTP instances will receive. Success returns exit metadata; non-zero exit or timeout returns an error response with a stderr tail.
+The server validates the app name and release version, acquires the per-app deploy lock, derives base env from release `app.json`, overlays command `vars`, injects `TAKO_BUILD`, `TAKO_DATA_DIR`, and command `secrets`, then runs `sh -c "<command_line>"` in the release directory from a cleared service environment. Parent `PATH` is inserted only when the app/release env did not already provide it. Deploy sends the freshly decrypted secrets in the `run_release` payload so first deploys and secret rotations run against the same env the new HTTP instances will receive. Success returns exit metadata; non-zero exit or timeout returns an error response with a stderr tail.
 
 Server-side validation on `deploy` and app-scoped commands:
 
@@ -1666,7 +1672,7 @@ await sendEmail.enqueue({ to: "u@e.co" });
 await chat({ roomId: "r1" }).publish({ type: "msg", data: { text: "hi" } });
 ```
 
-The `tako.sh` package exports `defineChannel`, `defineWorkflow`, `signal`, `TakoError`, and `InferWorkflowPayload`. Generated `tako.gen.ts` imports the browser-safe runtime helpers `createLogger` and `loadSecrets` from `tako.sh/runtime`. Server-adapter plumbing (`handleTakoEndpoint`, `initServerRuntime`, and the channel/workflow definition types) lives under `tako.sh/internal` and is intended for generated files and framework adapters. The `Channel` class is not exported from `tako.sh`: server code uses the accessor returned by `defineChannel(...).$messageTypes<M>()` (imported from your `channels/` file); browser code imports from `tako.sh/client` (or uses the `useChannel` hook from `tako.sh/react`). There is no `Tako` global.
+The `tako.sh` package exports `defineChannel`, `defineWorkflow`, `signal`, `createImageUrl`, the image URL option types, `TakoError`, and `InferWorkflowPayload`. Generated `tako.gen.ts` imports the browser-safe runtime helpers `createLogger` and `loadSecrets` from `tako.sh/runtime`. Server-adapter plumbing (`handleTakoEndpoint`, `initServerRuntime`, and the channel/workflow definition types) lives under `tako.sh/internal` and is intended for generated files and framework adapters. The `Channel` class is not exported from `tako.sh`: server code uses the accessor returned by `defineChannel(...).$messageTypes<M>()` (imported from your `channels/` file); browser code imports from `tako.sh/client` (or uses the `useChannel` hook from `tako.sh/react`). There is no `Tako` global.
 
 ### Go SDK
 
