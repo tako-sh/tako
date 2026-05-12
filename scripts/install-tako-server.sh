@@ -604,12 +604,12 @@ install_libvips_runtime() {
     done
     return 1
   elif need_cmd dnf; then
-    dnf install -y libvips || dnf install -y vips || {
+    dnf install -y vips || {
       dnf install -y epel-release
       if need_cmd dnf config-manager; then
         dnf config-manager --set-enabled crb || true
       fi
-      dnf install -y libvips || dnf install -y vips
+      dnf install -y vips
     }
   elif need_cmd yum; then
     yum install -y libvips || yum install -y vips || {
@@ -884,7 +884,6 @@ if [ -z "$tmp_bin" ]; then
 fi
 
 install -m 0755 "$tmp_bin" /usr/local/bin/tako-server
-install_libvips_runtime
 install_missing_tako_server_runtime_deps /usr/local/bin/tako-server
 verify_tako_server_runtime_deps
 ensure_privileged_bind_capability

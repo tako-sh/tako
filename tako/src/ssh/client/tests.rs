@@ -227,7 +227,8 @@ fn install_server_script_installs_and_verifies_runtime_dependencies() {
     assert!(script.contains("libvips42t64"));
     assert!(script.contains("libheif-plugin-aomenc"));
     assert!(script.contains("apt-get install -y \"$apt_vips_pkg\" $apt_avif_encoder_pkg"));
-    assert!(script.contains("\ninstall_libvips_runtime\n"));
+    assert!(script.contains("dnf install -y vips || {"));
+    assert!(!script.contains("dnf install -y libvips"));
     assert!(script.contains("install_missing_tako_server_runtime_deps"));
     assert!(script.contains("install_missing_tako_server_runtime_deps /usr/local/bin/tako-server"));
     assert!(script.contains("verify_tako_server_runtime_deps"));
@@ -241,9 +242,10 @@ fn install_server_script_installs_and_verifies_runtime_dependencies() {
     let runtime_deps_index = script
         .find("install_missing_tako_server_runtime_deps /usr/local/bin/tako-server")
         .unwrap();
-    let libvips_index = script.find("\ninstall_libvips_runtime\n").unwrap();
-    assert!(install_index < libvips_index);
-    assert!(libvips_index < runtime_deps_index);
+    assert!(install_index < runtime_deps_index);
+
+    let between_install_and_runtime_check = &script[install_index..runtime_deps_index];
+    assert!(!between_install_and_runtime_check.contains("install_libvips_runtime"));
 }
 
 #[tokio::test]
