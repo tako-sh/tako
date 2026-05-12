@@ -81,15 +81,15 @@ fn write_js_workflow_scaffold(release_dir: &Path) {
 }
 
 fn write_js_workflow_scaffold_at(release_dir: &Path, app_dir: &str) {
-    let app_root = if app_dir.is_empty() {
+    let app_path = if app_dir.is_empty() {
         release_dir.to_path_buf()
     } else {
         release_dir.join(app_dir)
     };
-    std::fs::create_dir_all(app_root.join("workflows")).unwrap();
-    std::fs::create_dir_all(app_root.join("node_modules/tako.sh/dist/entrypoints")).unwrap();
+    std::fs::create_dir_all(app_path.join("src").join("workflows")).unwrap();
+    std::fs::create_dir_all(app_path.join("node_modules/tako.sh/dist/entrypoints")).unwrap();
     std::fs::write(
-        app_root.join("node_modules/tako.sh/dist/entrypoints/bun-worker.mjs"),
+        app_path.join("node_modules/tako.sh/dist/entrypoints/bun-worker.mjs"),
         "export default {};",
     )
     .unwrap();
@@ -1043,7 +1043,7 @@ async fn restore_from_state_store_restarts_internal_socket_for_apps_with_workflo
         .join("releases")
         .join("v1");
     write_js_workflow_scaffold(&release_dir);
-    assert!(release_dir.join("workflows").is_dir());
+    assert!(release_dir.join("src").join("workflows").is_dir());
     assert!(
         release_dir
             .join("node_modules")
@@ -1242,6 +1242,62 @@ async fn sync_app_workflows_restarts_existing_entry_and_stops_removed_workflows(
         !state.workflows.has(app_id),
         "deploying a release without workflows/ should stop the old workflow runtime"
     );
+}
+
+#[tokio::test]
+async fn sync_app_workflows_uses_manifest_app_root() {
+    let temp = TempDir::new().unwrap();
+    let cert_manager = Arc::new(CertManager::new(CertManagerConfig {
+        cert_dir: temp.path().join("certs"),
+        ..Default::default()
+    }));
+    let state = ServerState::new(
+        temp.path().to_path_buf(),
+        cert_manager,
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+
+    for (index, (app_root, workflows_dir)) in [(".", "workflows"), ("app", "app/workflows")]
+        .into_iter()
+        .enumerate()
+    {
+        let app_id = format!("workflow-app-{index}/production");
+        let release = temp
+            .path()
+            .join("apps")
+            .join(format!("workflow-app-{index}"))
+            .join("production")
+            .join("releases")
+            .join("v1");
+        std::fs::create_dir_all(release.join(workflows_dir)).unwrap();
+        std::fs::create_dir_all(release.join("node_modules/tako.sh/dist/entrypoints")).unwrap();
+        std::fs::write(
+            release.join("node_modules/tako.sh/dist/entrypoints/bun-worker.mjs"),
+            "export default {};",
+        )
+        .unwrap();
+        std::fs::write(
+            release.join("app.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "runtime": "bun",
+                "main": "index.js",
+                "idle_timeout": 300,
+                "env_vars": {
+                    "TAKO_APP_ROOT": app_root
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        state.sync_app_workflows(&app_id, &release, None).await;
+        assert!(
+            state.workflows.has(&app_id),
+            "release with TAKO_APP_ROOT={app_root:?} should register workflows"
+        );
+    }
 }
 
 #[tokio::test]

@@ -79,7 +79,7 @@ In a plain queue model, the answer usually lives in your application code. Make 
 What Tako adds is a workflow-level checkpoint:
 
 ```ts
-// workflows/send-welcome-email.ts
+// src/workflows/send-welcome-email.ts
 import { defineWorkflow } from "tako.sh";
 
 type Payload = { userId: string };

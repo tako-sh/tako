@@ -85,7 +85,7 @@ impl TakoProxy {
             }
         };
 
-        let transformed = match transform_image_blocking(
+        let response = match transform_image_blocking(
             source,
             TransformOptions {
                 format: verified.format,
@@ -99,20 +99,31 @@ impl TakoProxy {
         )
         .await
         {
-            Ok(transformed) => transformed,
-            Err(error) => {
+            TransformImageOutcome::Transformed(transformed) => {
+                ImageResponseBody::from_transformed(transformed)
+            }
+            TransformImageOutcome::Failed(error, source) => {
+                match image_response_body_from_transform_error(error, source) {
+                    Ok(response) => response,
+                    Err(error) => {
+                        let status = image_error_status(&error);
+                        return write_image_error(session, status, image_error_body(status)).await;
+                    }
+                }
+            }
+            TransformImageOutcome::Unavailable(error) => {
                 let status = image_error_status(&error);
                 return write_image_error(session, status, image_error_body(status)).await;
             }
         };
 
         let mut header = ResponseHeader::build(200, None)?;
-        header.insert_header("Content-Type", transformed.content_type)?;
-        header.insert_header("Content-Length", transformed.bytes.len().to_string())?;
+        header.insert_header("Content-Type", response.content_type.as_str())?;
+        header.insert_header("Content-Length", response.bytes.len().to_string())?;
         let cache_control_header =
             cache_control(verified.visibility, verified.private_browser_cache_max_age);
         header.insert_header("Cache-Control", cache_control_header.as_ref())?;
-        header.insert_header("ETag", image_etag(path, transformed.content_type))?;
+        header.insert_header("ETag", image_etag(path, response.content_type.as_str()))?;
         session
             .write_response_header(Box::new(header), false)
             .await?;
@@ -121,7 +132,7 @@ impl TakoProxy {
             session.write_response_body(None, true).await?;
         } else {
             session
-                .write_response_body(Some(Bytes::from(transformed.bytes)), true)
+                .write_response_body(Some(Bytes::from(response.bytes)), true)
                 .await?;
         }
         Ok(true)
@@ -214,21 +225,75 @@ struct ImageSourceBytes {
     content_type: Option<String>,
 }
 
+#[derive(Debug)]
+struct ImageResponseBody {
+    bytes: Vec<u8>,
+    content_type: String,
+}
+
+impl ImageResponseBody {
+    fn from_transformed(transformed: tako_images::TransformedImage) -> Self {
+        Self {
+            bytes: transformed.bytes,
+            content_type: transformed.content_type.to_string(),
+        }
+    }
+}
+
+enum TransformImageOutcome {
+    Transformed(tako_images::TransformedImage),
+    Failed(ImageError, ImageSourceBytes),
+    Unavailable(ImageError),
+}
+
 async fn transform_image_blocking(
     source: ImageSourceBytes,
     options: TransformOptions,
     limits: TransformLimits,
-) -> Result<tako_images::TransformedImage, ImageError> {
-    tokio::task::spawn_blocking(move || {
+) -> TransformImageOutcome {
+    match tokio::task::spawn_blocking(move || {
         transform_image(
             &source.bytes,
             source.content_type.as_deref(),
             options,
             &limits,
         )
+        .map(TransformImageOutcome::Transformed)
+        .unwrap_or_else(|error| TransformImageOutcome::Failed(error, source))
     })
     .await
-    .map_err(|_| ImageError::TransformFailed)?
+    {
+        Ok(outcome) => outcome,
+        Err(_) => TransformImageOutcome::Unavailable(ImageError::TransformFailed),
+    }
+}
+
+fn image_response_body_from_transform_error(
+    error: ImageError,
+    source: ImageSourceBytes,
+) -> Result<ImageResponseBody, ImageError> {
+    if error != ImageError::TransformFailed {
+        return Err(error);
+    }
+    let content_type = source
+        .content_type
+        .filter(|content_type| is_image_content_type(content_type))
+        .ok_or(ImageError::TransformFailed)?;
+
+    Ok(ImageResponseBody {
+        bytes: source.bytes,
+        content_type,
+    })
+}
+
+fn is_image_content_type(content_type: &str) -> bool {
+    let Some(media_type) = content_type.split(';').next().map(str::trim) else {
+        return false;
+    };
+    media_type.len() > "image/".len()
+        && media_type
+            .get(.."image/".len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("image/"))
 }
 
 fn is_image_request_path(path: &str) -> bool {
@@ -492,6 +557,60 @@ mod tests {
     fn image_request_queries_are_rejected() {
         assert!(image_request_has_query(Some("cache_bust=1")));
         assert!(!image_request_has_query(None));
+    }
+
+    #[test]
+    fn transform_failure_falls_back_to_original_image_source() {
+        let source = ImageSourceBytes {
+            bytes: vec![1, 2, 3],
+            content_type: Some("image/jpeg".to_string()),
+        };
+
+        let response =
+            image_response_body_from_transform_error(ImageError::TransformFailed, source).unwrap();
+
+        assert_eq!(response.bytes, vec![1, 2, 3]);
+        assert_eq!(response.content_type, "image/jpeg");
+    }
+
+    #[test]
+    fn transform_failure_fallback_accepts_content_type_parameters() {
+        let source = ImageSourceBytes {
+            bytes: vec![4, 5, 6],
+            content_type: Some("image/webp; charset=binary".to_string()),
+        };
+
+        let response =
+            image_response_body_from_transform_error(ImageError::TransformFailed, source).unwrap();
+
+        assert_eq!(response.bytes, vec![4, 5, 6]);
+        assert_eq!(response.content_type, "image/webp; charset=binary");
+    }
+
+    #[test]
+    fn transform_failure_without_image_content_type_stays_error() {
+        let source = ImageSourceBytes {
+            bytes: b"<html></html>".to_vec(),
+            content_type: Some("text/html".to_string()),
+        };
+
+        let err = image_response_body_from_transform_error(ImageError::TransformFailed, source)
+            .unwrap_err();
+
+        assert_eq!(err, ImageError::TransformFailed);
+    }
+
+    #[test]
+    fn non_transform_image_errors_do_not_fallback() {
+        let source = ImageSourceBytes {
+            bytes: vec![1, 2, 3],
+            content_type: Some("image/png".to_string()),
+        };
+
+        let err = image_response_body_from_transform_error(ImageError::UnsupportedFormat, source)
+            .unwrap_err();
+
+        assert_eq!(err, ImageError::UnsupportedFormat);
     }
 
     #[test]

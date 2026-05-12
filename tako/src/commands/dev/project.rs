@@ -333,8 +333,8 @@ fn resolve_runtime_default_dev_command(
 }
 
 /// Build the command that spawns the workflow worker subprocess in dev.
-/// Returns `None` when the project has no `workflows/` directory (nothing
-/// to run) or the runtime isn't JS (only JS workflows are supported).
+/// Returns `None` when the project has no configured workflows directory
+/// (nothing to run) or the runtime isn't JS (only JS workflows are supported).
 ///
 /// The worker entrypoint path mirrors production: it lives in the linked
 /// SDK under `node_modules/tako.sh/dist/entrypoints/{runtime}-worker.mjs`.
@@ -342,9 +342,13 @@ fn resolve_runtime_default_dev_command(
 /// `TAKO_INTERNAL_SOCKET` from env.
 pub(super) fn resolve_dev_worker_command(
     project_dir: &Path,
+    app_root: &str,
     runtime_adapter: BuildAdapter,
 ) -> Option<Vec<String>> {
-    if !project_dir.join("workflows").is_dir() {
+    if !crate::build::js::js_app_root_dir(project_dir, app_root)
+        .join("workflows")
+        .is_dir()
+    {
         return None;
     }
     let base = "node_modules/tako.sh/dist/entrypoints";

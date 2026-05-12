@@ -11,7 +11,7 @@ Flow:
    directly to the channel.
 3. Client `POST /enqueue` with `{ message }` - the fetch handler enqueues
    the `broadcast` workflow.
-4. `workflows/broadcast.ts` sleeps briefly then publishes to `demo`.
+4. `src/workflows/broadcast.ts` sleeps briefly then publishes to `demo`.
 5. Client receives both messages over the SSE stream without reconnecting.
 
 Used by both the CLI dev e2e suite (`e2e/cli/tests/dev.test.ts`) and the

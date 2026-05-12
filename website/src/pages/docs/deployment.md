@@ -75,7 +75,7 @@ If production has no server mapping and exactly one global server exists, intera
 
 The deploy source root is the git root when available, otherwise the selected config file's parent directory. The selected config file's parent directory becomes the app subdirectory inside that source root.
 
-Tako copies the source tree into `.tako/build`, respects `.gitignore`, links `node_modules` from the original tree, runs build stages, merges assets into `public/`, verifies `main`, writes `app.json`, and archives the result.
+Tako copies the source tree into `.tako/build`, respects `.gitignore`, links `node_modules` from the original tree, runs build stages, merges assets into `public/`, verifies `main`, writes `app.json`, and archives the result. For JavaScript apps, `app.json` also carries `TAKO_APP_ROOT` so deployed app and worker processes discover channels and workflows from the configured `app_root`.
 
 Always excluded:
 

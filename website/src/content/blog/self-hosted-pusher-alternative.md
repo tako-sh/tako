@@ -47,7 +47,7 @@ channel.bind("msg", (data) => console.log(data));
 The Tako shape is similar in spirit but file-based — channel definitions live next to your app code and the proxy discovers them at deploy time:
 
 ```ts
-// channels/chat.ts
+// src/channels/chat.ts
 import { defineChannel } from "tako.sh";
 
 export default defineChannel({
@@ -122,4 +122,4 @@ Pick **Pusher or Ably** if you need presence today, want to outsource the operat
 
 Pick **Tako Channels** if you'd rather not pay per connection, you already run a VPS (or want to), and you want real-time as a primitive of the same server that's [serving your HTTP traffic](/blog/pingora-vs-caddy-vs-traefik), [holding your secrets](/blog/secrets-without-env-files), and [running your workflows](/blog/durable-workflows-are-here). One binary, one bill, and the connections are free.
 
-`tako init`, drop a file in `channels/`, `tako dev`, and you have a real-time feature running locally over [real HTTPS](/blog/local-dev-with-real-https) in about a minute. [Start with the docs →](/docs)
+`tako init`, drop a file in `src/channels/`, `tako dev`, and you have a real-time feature running locally over [real HTTPS](/blog/local-dev-with-real-https) in about a minute. [Start with the docs →](/docs)

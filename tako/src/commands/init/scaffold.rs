@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use crate::build::{BuildAdapter, PresetDefinition};
+use crate::config::DEFAULT_JS_APP_ROOT;
 
 pub(super) fn parse_csv_list(value: &str) -> Vec<String> {
     value
@@ -49,6 +50,23 @@ pub(super) fn infer_default_main_entrypoint(project_dir: &Path, adapter: BuildAd
     }
 
     "index.ts".to_string()
+}
+
+pub(super) fn detect_js_app_root(project_dir: &Path) -> String {
+    for candidate in [DEFAULT_JS_APP_ROOT, "app", "."] {
+        let dir = if candidate == "." {
+            project_dir.to_path_buf()
+        } else {
+            project_dir.join(candidate)
+        };
+        if dir.join("tako.gen.ts").is_file()
+            || dir.join("channels").is_dir()
+            || dir.join("workflows").is_dir()
+        {
+            return candidate.to_string();
+        }
+    }
+    DEFAULT_JS_APP_ROOT.to_string()
 }
 
 pub(super) fn preset_default_main(
@@ -121,6 +139,7 @@ pub(super) fn sdk_install_command(runtime: BuildAdapter, project_dir: &Path) -> 
 
 pub(super) struct TemplateParams<'a> {
     pub(super) app_name: &'a str,
+    pub(super) app_root: Option<&'a str>,
     pub(super) main: Option<&'a str>,
     pub(super) production_route: &'a str,
     pub(super) runtime: Option<&'a str>,
@@ -134,6 +153,7 @@ pub(super) struct TemplateParams<'a> {
 pub(super) fn generate_template(params: &TemplateParams<'_>) -> String {
     let TemplateParams {
         app_name,
+        app_root,
         main,
         production_route,
         runtime,
@@ -143,6 +163,23 @@ pub(super) fn generate_template(params: &TemplateParams<'_>) -> String {
         assets,
         excludes,
     } = params;
+    let app_root = app_root
+        .map(str::trim)
+        .filter(|root| !root.is_empty() && *root != "src");
+    let app_root_block = if let Some(app_root) = app_root {
+        format!(
+            r#"
+# JavaScript app root, relative to this file.
+# Tako writes `tako.gen.ts` here and discovers `channels/` and `workflows/` inside it.
+# Use "." if those files live next to `tako.toml`.
+# `main`, `assets`, and build paths stay relative to this file.
+app_root = "{}"
+"#,
+            app_root
+        )
+    } else {
+        String::new()
+    };
     let main_line = if let Some(main) = main {
         format!(
             "# Required: runtime entrypoint used by `tako dev` and `tako deploy` (relative to project root).\nmain = \"{}\"",
@@ -203,6 +240,7 @@ pub(super) fn generate_template(params: &TemplateParams<'_>) -> String {
 # Keep it unique per server. Renaming creates a new app path.
 # If you rename it, delete the old deployment manually with `tako delete`.
 name = "{app_name}"
+{app_root_block}
 {main_line}
 
 # Build runtime and preset selection for runtime/build lifecycle defaults.

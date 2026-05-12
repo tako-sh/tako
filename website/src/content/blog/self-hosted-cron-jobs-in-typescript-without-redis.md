@@ -49,13 +49,13 @@ That separation matters. The SDK never opens SQLite, so your app code does not c
 
 ## Write The Scheduled Workflow
 
-Create a file under `workflows/`. The filename and workflow name match; flat files are discovered by the worker.
+Create a file under `src/workflows/`. The filename and workflow name match; flat files are discovered by the worker.
 
 ```ts
-// workflows/daily-digest.ts
+// src/workflows/daily-digest.ts
 import { defineWorkflow } from "tako.sh";
-import { db } from "../src/db";
-import { mailer } from "../src/mailer";
+import { db } from "../db";
+import { mailer } from "../mailer";
 
 export default defineWorkflow("daily-digest", {
   // 9:00 UTC every day.
@@ -127,7 +127,7 @@ The contract is honest: durable execution cannot make arbitrary side effects exa
 
 For most cron jobs, the best worker is no worker at all until the clock fires.
 
-Scale-to-zero is the default when an app has a `workflows/` directory:
+Scale-to-zero is the default when an app has a `src/workflows/` directory:
 
 ```toml
 # tako.toml
@@ -156,7 +156,7 @@ To try it locally:
 tako dev
 ```
 
-Edit `workflows/daily-digest.ts`, trigger a manual enqueue from a server route if you want to test immediately, and watch the worker logs in the same terminal stream as the HTTP app. When the scheduled time arrives, the dev server uses the same architecture as production: server-owned queue, internal socket, supervised worker.
+Edit `src/workflows/daily-digest.ts`, trigger a manual enqueue from a server route if you want to test immediately, and watch the worker logs in the same terminal stream as the HTTP app. When the scheduled time arrives, the dev server uses the same architecture as production: server-owned queue, internal socket, supervised worker.
 
 To ship it:
 

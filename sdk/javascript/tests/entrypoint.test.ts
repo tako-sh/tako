@@ -8,9 +8,17 @@ import { tmpdir } from "node:os";
 import { createEntrypoint, signalReadyPortOnFd } from "../src/tako/create-entrypoint";
 
 const originalArgv = [...process.argv];
+const originalCwd = process.cwd();
+const originalAppRoot = process.env.TAKO_APP_ROOT;
 
 afterEach(() => {
   process.argv = [...originalArgv];
+  process.chdir(originalCwd);
+  if (originalAppRoot === undefined) {
+    delete process.env.TAKO_APP_ROOT;
+  } else {
+    process.env.TAKO_APP_ROOT = originalAppRoot;
+  }
 });
 
 test("createEntrypoint returns run function and config", () => {
@@ -47,6 +55,7 @@ test("createEntrypoint awaits optional ready hook before starting server", async
       "utf8",
     );
 
+    process.chdir(rootDir);
     process.argv = ["node", "entrypoint", entryModule, "--instance", "i-1"];
 
     const { run } = createEntrypoint();
@@ -75,6 +84,7 @@ test("internal status uses TAKO_BUILD and instance arg for runtime identity", as
     injectBootstrap({ token: "token-123", secrets: {} });
     await writeFile(entryModule, 'export default () => new Response("ok");\n', "utf8");
 
+    process.chdir(rootDir);
     process.argv = ["node", "entrypoint", entryModule, "--instance", "i-1"];
 
     const { run } = createEntrypoint();
@@ -121,6 +131,7 @@ test("normalizes framework response shims before returning to the runtime server
       "utf8",
     );
 
+    process.chdir(rootDir);
     process.argv = ["node", "entrypoint", entryModule, "--instance", "i-1"];
 
     const { run } = createEntrypoint();

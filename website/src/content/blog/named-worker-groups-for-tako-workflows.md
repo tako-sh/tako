@@ -14,7 +14,7 @@ That's head-of-line blocking. The fix is the same one every queue ends up shippi
 You assign a workflow to a named pool with one option:
 
 ```ts
-// workflows/process-image.ts
+// src/workflows/process-image.ts
 import { defineWorkflow } from "tako.sh";
 
 export default defineWorkflow<{ key: string }>("process-image", {

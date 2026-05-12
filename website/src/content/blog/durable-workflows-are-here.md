@@ -16,7 +16,7 @@ Tako now ships this as a built-in primitive. A full durable workflow engine runs
 The core idea is `ctx.run` — wrap a side effect, give it a name, and Tako persists its return value. If the worker crashes or restarts, the next attempt skips completed steps and resumes at the first unfinished one:
 
 ```ts
-// workflows/fulfill-order.ts
+// src/workflows/fulfill-order.ts
 import { defineWorkflow } from "tako.sh";
 
 export default defineWorkflow("fulfill-order", {
@@ -99,8 +99,8 @@ concurrency = 10
 
 ## Same server, same deploy
 
-Workflows ship with your app. No external queue to provision, no extra auth tokens, no network hop to a SaaS. Your handlers live in `workflows/*.ts`, they get [secrets on fd 3](/blog/secrets-without-env-files) like your HTTP code, they [deploy](/blog/what-happens-when-you-run-tako-deploy) with everything else, and they keep running across rolling updates.
+Workflows ship with your app. No external queue to provision, no extra auth tokens, no network hop to a SaaS. Your handlers live in `src/workflows/*.ts` by default, they get [secrets on fd 3](/blog/secrets-without-env-files) like your HTTP code, they [deploy](/blog/what-happens-when-you-run-tako-deploy) with everything else, and they keep running across rolling updates.
 
-Run `tako init`, drop a file into `workflows/`, `tako dev` boots the worker in-process for unified logs, and `tako deploy` sends the whole thing to your servers. Check [the docs](/docs/tako-toml) for the full config surface, or the [CLI reference](/docs/cli) for the commands.
+Run `tako init`, drop a file into `src/workflows/`, `tako dev` boots the worker in-process for unified logs, and `tako deploy` sends the whole thing to your servers. Check [the docs](/docs/tako-toml) for the full config surface, or the [CLI reference](/docs/cli) for the commands.
 
 Durable is finally just a keyword.

@@ -10,6 +10,14 @@ just test::cli
 
 Requires the `tako` binary to be built first (`cargo build -p tako`).
 
+## Native Image Dependency
+
+Install libvips before running image-related server builds or tests locally: macOS `brew install vips`; Debian/Ubuntu `sudo apt-get update && sudo apt-get install -y --no-install-recommends libvips-dev libheif-plugin-aomenc`.
+
+Homebrew's `vips` formula includes the codec libraries Tako needs for JPEG, PNG, WebP, and AVIF transforms. Debian/Ubuntu split the AVIF encoder into `libheif-plugin-aomenc`, so install that alongside `libvips-dev`.
+
+Homebrew supplies native macOS libraries. Deploy E2E builds Linux `tako-server` binaries, so missing `libvips.so`, `libglib-2.0.so`, or `libgobject-2.0.so` during that link step means the Linux build environment needs libvips too.
+
 ## Docker E2E Fixtures
 
 From repo root:

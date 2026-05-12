@@ -22,7 +22,7 @@ pub enum Request {
         readiness_failure_hint: Option<String>,
         /// Command to spawn the workflow worker subprocess on demand (first
         /// `program`, rest are args). Present iff the project has a
-        /// `workflows/` directory — the client resolves the runtime-specific
+        /// configured workflows directory — the client resolves the runtime-specific
         /// entrypoint (e.g. `bun run .../bun-worker.mjs`) and hands it over
         /// so the daemon doesn't need to re-do runtime detection. Omitted
         /// when there are no workflows to run.

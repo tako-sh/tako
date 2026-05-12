@@ -147,7 +147,11 @@ describe("init wizard interaction", () => {
     await term.waitForText("runtime", { timeout: 5000 });
     term.press("\r");
 
-    // Step 3: Build preset — accept default when preset discovery is available.
+    // Step 3: JavaScript app root — accept default
+    await term.waitForText("App root", { timeout: 5000 });
+    term.press("\r");
+
+    // Step 4: Build preset — accept default when preset discovery is available.
     await term.waitFor(
       (screen) => screen.includes("Choose a build preset:") || screen.includes("Production route"),
       { timeout: 5000, label: "waitFor preset options or production route" },
@@ -156,11 +160,11 @@ describe("init wizard interaction", () => {
       term.press("\r");
     }
 
-    // Step 4: Production route — accept the default
+    // Step 5: Production route — accept the default
     await term.waitForText("Production route", { timeout: 5000 });
     term.press("\r");
 
-    // Step 5: Confirmation — "Looks good?"
+    // Step 6: Confirmation — "Looks good?"
     await term.waitForText("Looks good", { timeout: 5000 });
     term.press("\r");
 
@@ -172,6 +176,7 @@ describe("init wizard interaction", () => {
 
     const toml = await readFile(join(tempDir, "tako.toml"), "utf-8");
     expect(toml).toContain('name = "wizard-test"');
+    expect(toml).not.toMatch(/^app_root\s*=/m);
     expect(toml).toContain("[envs.production]");
     expect(toml).toContain("route =");
   });
@@ -187,6 +192,9 @@ describe("init wizard interaction", () => {
     await term.waitForText("Choose a runtime:", { timeout: 5000 });
     term.press("\r");
 
+    await term.waitForText("App root", { timeout: 5000 });
+    term.press("\r");
+
     // Handle optional build preset step
     await term.waitFor(
       (screen) => screen.includes("Choose a build preset:") || screen.includes("Production route"),
@@ -200,11 +208,11 @@ describe("init wizard interaction", () => {
     await term.waitForText("Production route", { timeout: 5000 });
     expect(countRowsContaining(term, "Application name")).toBe(1);
 
-    // Esc back: route -> preset (if present) or runtime
+    // Esc back: route -> preset (if present) or app root
     term.press("\x1b");
     await term.waitFor(
       (screen) =>
-        (screen.includes("◆ Choose a build preset:") || screen.includes("◆ Choose a runtime:")) &&
+        (screen.includes("◆ Choose a build preset:") || screen.includes("◆ App root")) &&
         screen.includes("◇ Production route") &&
         !screen.includes("◆ Production route"),
       { timeout: 5000, label: "waitFor previous step to reactivate" },
@@ -212,22 +220,37 @@ describe("init wizard interaction", () => {
 
     expect(countRowsContaining(term, "Application name")).toBe(1);
 
-    // Esc back again: if we were on preset, go to runtime; then to application name
+    // Esc back again: if we were on preset, go to app root.
     if (hasPresetStep) {
       term.press("\x1b");
       await term.waitFor(
-        (screen) =>
-          screen.includes("◆ Choose a runtime:") && !screen.includes("◆ Choose a build preset:"),
-        { timeout: 5000, label: "waitFor runtime to reactivate" },
+        (screen) => screen.includes("◆ App root") && !screen.includes("◆ Choose a build preset:"),
+        { timeout: 5000, label: "waitFor app root to reactivate" },
       );
       expect(countRowsContaining(term, "Application name")).toBe(1);
     }
+
+    await term.waitFor(
+      (screen) => screen.includes("◆ App root") && !screen.includes("◆ Choose a build preset:"),
+      { timeout: 5000, label: "waitFor app root to reactivate" },
+    );
+    expect(countRowsContaining(term, "Application name")).toBe(1);
+
+    term.press("\x1b");
+    await term.waitFor(
+      (screen) =>
+        screen.includes("◆ Choose a runtime:") &&
+        screen.includes("◇ App root") &&
+        !screen.includes("◆ App root"),
+      { timeout: 5000, label: "waitFor runtime to reactivate" },
+    );
 
     term.press("\x1b");
     await term.waitFor(
       (screen) =>
         screen.includes("◆ Application name") &&
         screen.includes("◇ Choose a runtime:") &&
+        screen.includes("◇ App root") &&
         screen.includes("◇ Production route") &&
         !screen.includes("◆ Choose a runtime:"),
       { timeout: 5000, label: "waitFor application name to reactivate" },
@@ -246,6 +269,8 @@ describe("init wizard interaction", () => {
     await term.waitForText("Application name", { timeout: 5000 });
     term.press("\r");
     await term.waitForText("runtime", { timeout: 5000 });
+    term.press("\r");
+    await term.waitForText("App root", { timeout: 5000 });
     term.press("\r");
     await term.waitFor(
       (screen) => screen.includes("Choose a build preset:") || screen.includes("Production route"),
@@ -332,8 +357,10 @@ function findRowContaining(term: TakoTerminal, text: string): number | null {
 }
 
 function countRowsContaining(term: TakoTerminal, text: string): number {
-  const fullText = term.fullText();
-  return fullText.split("\n").filter((line) => line.includes(text)).length;
+  return term
+    .screenText()
+    .split("\n")
+    .filter((line) => line.includes(text)).length;
 }
 
 function findCharInRow(term: TakoTerminal, row: number, char: string): number | null {

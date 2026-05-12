@@ -884,6 +884,7 @@ if [ -z "$tmp_bin" ]; then
 fi
 
 install -m 0755 "$tmp_bin" /usr/local/bin/tako-server
+install_libvips_runtime
 install_missing_tako_server_runtime_deps /usr/local/bin/tako-server
 verify_tako_server_runtime_deps
 ensure_privileged_bind_capability

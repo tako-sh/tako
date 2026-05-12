@@ -913,6 +913,46 @@ main = "   "
     assert!(err.to_string().contains("main cannot be empty"));
 }
 
+#[test]
+fn test_parse_app_root() {
+    let toml = r#"
+app_root = "app/server"
+"#;
+    let config = Config::parse(toml).unwrap();
+    assert_eq!(config.app_root.as_deref(), Some("app/server"));
+    assert_eq!(config.js_app_root(), "app/server");
+}
+
+#[test]
+fn test_js_app_root_defaults_to_src() {
+    let config = Config::default();
+    assert_eq!(config.js_app_root(), "src");
+}
+
+#[test]
+fn test_validate_app_root_rejects_empty_absolute_and_parent_paths() {
+    let empty = r#"
+app_root = ""
+"#;
+    let err = Config::parse(empty).unwrap_err();
+    assert!(err.to_string().contains("'app_root' cannot be empty"));
+
+    let absolute = r#"
+app_root = "/tmp/app"
+"#;
+    let err = Config::parse(absolute).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("'app_root' must be a relative path")
+    );
+
+    let parent = r#"
+app_root = "../app"
+"#;
+    let err = Config::parse(parent).unwrap_err();
+    assert!(err.to_string().contains("'app_root' must not contain '..'"));
+}
+
 // ==================== Helper Method Tests ====================
 
 #[test]

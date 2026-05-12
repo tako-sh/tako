@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+pub const DEFAULT_JS_APP_ROOT: &str = "src";
+
 /// Root configuration from tako.toml
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Config {
@@ -23,6 +25,10 @@ pub struct Config {
     /// Custom dev command override (e.g. `["vite", "dev"]`).
     #[serde(default)]
     pub dev: Vec<String>,
+
+    /// JavaScript app root, relative to the config file.
+    /// `tako.gen.ts`, `channels/`, and `workflows/` live under this directory.
+    pub app_root: Option<String>,
 
     /// Runtime entrypoint override relative to project root
     pub main: Option<String>,

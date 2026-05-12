@@ -36,6 +36,8 @@ tako init -c staging
 
 Creates a `tako.toml` template, updates `.gitignore`, prompts for app name and production route, detects runtime, and installs the `tako.sh` SDK with the selected runtime's package manager.
 
+For JS projects, init prompts for `app_root`; the generated config omits it when the selected root is the default `src`.
+
 If the config file already exists, interactive mode asks before overwriting. Non-interactive mode leaves the file untouched and exits with `Operation cancelled`.
 
 ## `tako dev`
@@ -173,7 +175,7 @@ Subcommands:
 - `ls`, `list`, `show`: list secret names
 - `sync`: push local encrypted secrets to deployed servers
 
-Secret values are prompted with masked input in interactive mode or read from stdin in non-interactive mode. After changes, Tako regenerates typed secret accessors best-effort.
+Secret values are prompted with masked input in interactive mode or read from stdin in non-interactive mode. After changes, Tako refreshes generated files best-effort.
 
 ### Secret Keys
 
@@ -226,18 +228,18 @@ Aliases:
 
 `servers setup-wildcard` currently applies DNS configuration to all configured servers. The command accepts `--env`, but it does not filter the target server list.
 
-## `tako typegen`
+## `tako gen`
 
 ```bash
-tako typegen
+tako gen
 ```
 
 Generates typed project runtime support:
 
-- JS/TS: `tako.gen.ts`, plus channel/workflow stubs when relevant
+- JS/TS: `<app_root>/tako.gen.ts`, plus channel/workflow stubs under `<app_root>/channels/` and `<app_root>/workflows/` when relevant
 - Go: `tako_secrets.go`
 
-For JS/TS projects, legacy `tako.d.ts` files are removed when regenerating.
+For JS/TS projects, `app_root` comes from `tako.toml` and defaults to `src`. Legacy `tako.d.ts` files are removed when regenerating.
 
 ## `tako upgrade`
 

@@ -65,7 +65,7 @@ export default {
 
 ## Runtime state: `tako.gen.ts`
 
-`tako typegen` emits a project-local `tako.gen.ts` file (inside `src/`, `app/`, or project root - wherever fits the project's tsconfig). It exports a typed `tako` runtime object and a typed `tako.secrets` bag. When `channels/` or `workflows/` already exists, it also scaffolds empty definition dirs/files so they default-export `defineChannel({ name: "<file-stem>" })` / `defineWorkflow(...)` stubs. Generated channel stubs use the file stem as the initial name, but typegen does not rewrite existing explicit channel names. App code imports `tako` for project runtime state:
+`tako gen` emits `<app_root>/tako.gen.ts`, where `app_root` comes from `tako.toml` and defaults to `src`. It exports a typed `tako` runtime object and a typed `tako.secrets` bag. When `<app_root>/channels/` or `<app_root>/workflows/` already exists, it also scaffolds empty definition dirs/files so they default-export `defineChannel({ name: "<file-stem>" })` / `defineWorkflow(...)` stubs. Generated channel stubs use the file stem as the initial name, but `tako gen` does not rewrite existing explicit channel names. App code imports `tako` for project runtime state:
 
 ```typescript
 import { tako } from "../tako.gen";
@@ -218,10 +218,10 @@ Durable pub-sub streams with SSE and WebSocket transport.
 
 ### Defining channels (file-based)
 
-Drop one file per channel in `channels/*.ts` that default-exports `defineChannel({ name: "<name>", ... }).$messageTypes<M>()`. The `name` property is the wire channel name; generated files conventionally use the file stem, but discovery trusts the explicit name and rejects duplicate declared names. Server code imports the file directly to publish.
+Drop one file per channel in `<app_root>/channels/*.ts` that default-exports `defineChannel({ name: "<name>", ... }).$messageTypes<M>()`. The `name` property is the wire channel name; generated files conventionally use the file stem, but discovery trusts the explicit name and rejects duplicate declared names. Server code imports the file directly to publish.
 
 ```typescript
-// channels/chat.ts
+// <app_root>/channels/chat.ts
 import { defineChannel } from "tako.sh";
 
 interface ChatMessages {
@@ -391,10 +391,10 @@ Durable background tasks with retries, schedules, and step checkpointing.
 
 ### Authoring workflows
 
-Drop a file in `workflows/<name>.ts` with a default export. The first arg is the workflow name (conventionally the kebab-case file basename), the second is a `WorkflowOpts` object with `handler` plus optional runtime settings:
+Drop a file in `<app_root>/workflows/<name>.ts` with a default export. The first arg is the workflow name (conventionally the kebab-case file basename), the second is a `WorkflowOpts` object with `handler` plus optional runtime settings:
 
 ```typescript
-// workflows/send-email.ts
+// <app_root>/workflows/send-email.ts
 import { defineWorkflow } from "tako.sh";
 
 export default defineWorkflow<{ userId: string; to: string }>("send-email", {
@@ -434,7 +434,7 @@ await sendEmail.enqueue(payload, {
 });
 ```
 
-No typegen is needed for workflow enqueue typing — the types flow from the workflow module itself.
+No generated file is needed for workflow enqueue typing — the types flow from the workflow module itself.
 
 ### Workflow context (`ctx`)
 
@@ -507,7 +507,7 @@ workers = 4
 
 - `workers = 0` — scale-to-zero: worker spawned on first enqueue/cron tick, exits after 300s idle.
 - Precedence for `worker: "email"`: `[servers.<name>.workflows.email]` > `[servers.<name>.workflows]` > `[workflows.email]` > `[workflows]` > defaults.
-- If a `workflows/` directory exists but no workflow config exists, the app is implicitly scale-to-zero on every server.
+- If `<app_root>/workflows/` exists but no workflow config exists, the app is implicitly scale-to-zero on every server.
 
 ## Common Mistakes
 

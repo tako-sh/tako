@@ -21,7 +21,7 @@ function sdkImportPath(): string {
 
 describe("bootstrapChannels", () => {
   test("no-op when channels/ does not exist", async () => {
-    const { registry, channelCount } = await bootstrapChannels({ appDir });
+    const { registry, channelCount } = await bootstrapChannels({ appDir, appRoot: "." });
     expect(channelCount).toBe(0);
     expect(registry.resolve("x")).toBeNull();
   });
@@ -35,7 +35,7 @@ describe("bootstrapChannels", () => {
   name: "status", auth: { verify: async () => true } });`,
       "utf8",
     );
-    const { registry, channelCount } = await bootstrapChannels({ appDir });
+    const { registry, channelCount } = await bootstrapChannels({ appDir, appRoot: "." });
     expect(channelCount).toBe(1);
     expect(registry.resolve("status")).not.toBeNull();
   });
@@ -48,7 +48,7 @@ describe("bootstrapChannels", () => {
        export default defineChannel({ name: "health" });`,
       "utf8",
     );
-    const { registry, channelCount } = await bootstrapChannels({ appDir });
+    const { registry, channelCount } = await bootstrapChannels({ appDir, appRoot: "." });
     expect(channelCount).toBe(1);
     expect(registry.resolve("health")).not.toBeNull();
     expect(registry.resolve("status")).toBeNull();
@@ -63,8 +63,8 @@ describe("bootstrapChannels", () => {
   name: "status", auth: { verify: async () => true } });`,
       "utf8",
     );
-    const first = await bootstrapChannels({ appDir });
-    const second = await bootstrapChannels({ appDir });
+    const first = await bootstrapChannels({ appDir, appRoot: "." });
+    const second = await bootstrapChannels({ appDir, appRoot: "." });
     expect(first.registry).not.toBe(second.registry);
     expect(first.registry.all.length).toBe(1);
     expect(second.registry.all.length).toBe(1);
@@ -93,5 +93,20 @@ describe("bootstrapChannels", () => {
       pathToFileURL(join(appDir, "workflows", "uses-channel.ts")).href
     )) as { default: () => string };
     expect(workflowModule.default()).toBe("mission-log?base=shackleton");
+  });
+
+  test("discovers channels under the configured app root", async () => {
+    await mkdir(join(appDir, "src", "channels"), { recursive: true });
+    await writeFile(
+      join(appDir, "src", "channels", "status.ts"),
+      `import { defineChannel } from "${sdkImportPath()}";
+       export default defineChannel({ name: "status" });`,
+      "utf8",
+    );
+
+    const { registry, channelCount } = await bootstrapChannels({ appDir, appRoot: "src" });
+
+    expect(channelCount).toBe(1);
+    expect(registry.resolve("status")).not.toBeNull();
   });
 });

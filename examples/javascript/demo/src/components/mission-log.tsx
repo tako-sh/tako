@@ -50,7 +50,7 @@ export const MissionLog = memo(function MissionLog({ events, connected }: Props)
         <Info
           label="channels"
           description="Every workflow step writes to this feed. A single channel fans events out to all clients watching this moonbase."
-          sourcePath="channels/mission-log.ts"
+          sourcePath="src/channels/mission-log.ts"
         />
       </div>
 

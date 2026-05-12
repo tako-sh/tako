@@ -9,7 +9,7 @@ Secrets are easy until a second laptop shows up.
 
 One machine has the production database URL. Another needs to deploy. CI needs the same key for release builds. A teammate joins and asks where the Stripe token lives. The usual answer is a `.env` file, a password manager note, a Slack message you promise to delete, or a vault service that is technically correct and operationally one more thing.
 
-We already wrote about [why Tako does not inject secrets through `.env` files](/blog/secrets-without-env-files). That post covered the runtime side: AES-256-GCM at rest, fd 3 at spawn time, and typed accessors from `tako typegen`.
+We already wrote about [why Tako does not inject secrets through `.env` files](/blog/secrets-without-env-files). That post covered the runtime side: AES-256-GCM at rest, fd 3 at spawn time, and typed accessors from `tako gen`.
 
 This is the other half: sharing the keys that decrypt those secrets. Tako secrets now have stable per-environment key IDs, self-contained key export/import, passphrase-derived keys, and optional iCloud Keychain storage on macOS. The goal is boring on purpose: encrypted project state can live in git, while the key material follows the people and machines that are allowed to use it.
 

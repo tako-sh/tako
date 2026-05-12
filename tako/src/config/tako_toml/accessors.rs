@@ -5,6 +5,18 @@ use std::path::Path;
 const RESERVED_DERIVED_ENV_VARS: &[&str] = &["ENV"];
 
 impl Config {
+    /// JavaScript app root relative to the config file.
+    ///
+    /// Tako writes `tako.gen.ts` here and discovers `channels/` and
+    /// `workflows/` inside it.
+    pub fn js_app_root(&self) -> &str {
+        self.app_root
+            .as_deref()
+            .map(str::trim)
+            .filter(|root| !root.is_empty())
+            .unwrap_or(DEFAULT_JS_APP_ROOT)
+    }
+
     /// Return the effective workflows config for unnamed workflows on a
     /// given server.
     ///

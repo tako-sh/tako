@@ -29,8 +29,8 @@ pub(super) struct DevSession {
     pub cmd: Vec<String>,
     pub readiness_failure_hint: Option<String>,
     /// Command to spawn the workflow worker subprocess on demand. `None`
-    /// when the project ships no `workflows/` directory or the runtime
-    /// doesn't support workflows.
+    /// when the project ships no configured workflows directory or the
+    /// runtime doesn't support workflows.
     pub worker_command: Option<Vec<String>>,
     pub dev_hosts: Vec<String>,
     pub env: HashMap<String, String>,
@@ -77,7 +77,11 @@ pub(super) async fn prepare(
     .map_err(|e| format!("Failed to resolve deploy entrypoint: {}", e))?;
 
     if runtime_adapter.preset_group() == PresetGroup::Js {
-        let _ = js::write_typegen_support_files(&project_dir);
+        let _ = js::write_generated_files_for_adapter_and_app_root(
+            &project_dir,
+            runtime_adapter,
+            cfg.js_app_root(),
+        );
     }
 
     let runtime_name = build_preset.name.clone();
@@ -171,12 +175,19 @@ pub(super) async fn prepare(
         .unwrap_or_else(|| domain.clone());
 
     let mut env = compute_dev_env(&cfg);
+    if runtime_adapter.preset_group() == PresetGroup::Js {
+        env.insert("TAKO_APP_ROOT".to_string(), cfg.js_app_root().to_string());
+    }
     inject_dev_allowed_hosts(&dev_hosts, &mut env);
     inject_dev_data_dir(&project_dir, &mut env).map_err(|e| e.to_string())?;
     inject_dev_secrets(&project_dir, &mut env).map_err(|e| e.to_string())?;
 
     if runtime_adapter.preset_group() == PresetGroup::Js {
-        let _ = crate::build::js::write_typegen_support_files(&project_dir);
+        let _ = crate::build::js::write_generated_files_for_adapter_and_app_root(
+            &project_dir,
+            runtime_adapter,
+            cfg.js_app_root(),
+        );
     }
 
     let cmd = resolve_dev_run_command(
@@ -189,7 +200,8 @@ pub(super) async fn prepare(
     )
     .map_err(|e| format!("Invalid dev start command: {}", e))?;
     let readiness_failure_hint = readiness_failure_hint_for_dev_command(&cmd);
-    let worker_command = resolve_dev_worker_command(&project_dir, runtime_adapter);
+    let worker_command =
+        resolve_dev_worker_command(&project_dir, cfg.js_app_root(), runtime_adapter);
 
     // Start (or connect to) the dev server daemon.
     if let Err(e) = crate::dev_server_client::ensure_running(&listen_addr, daemon_dns_ip).await {

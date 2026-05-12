@@ -1,5 +1,5 @@
-import broadcast from "./workflows/broadcast";
-import demo from "./channels/demo";
+import broadcast from "./src/workflows/broadcast";
+import demo from "./src/channels/demo";
 
 export default async function fetch(request: Request): Promise<Response> {
   const url = new URL(request.url);

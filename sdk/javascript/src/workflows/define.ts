@@ -13,7 +13,7 @@ export interface WorkflowDefinition<P = unknown> {
 }
 
 /**
- * The default export from a `workflows/<name>.ts` file. `.enqueue(payload)`
+ * The default export from a `<app_root>/workflows/<name>.ts` file. `.enqueue(payload)`
  * schedules a run; `.definition` holds the discovery metadata.
  */
 export interface WorkflowExport<P = unknown> {
@@ -63,7 +63,7 @@ function requireRuntime(): WorkflowRuntime {
  *
  * @example
  * ```ts
- * // workflows/send-email.ts
+ * // <app_root>/workflows/send-email.ts
  * import { defineWorkflow } from "tako.sh";
  *
  * export default defineWorkflow<{ userId: string }>(

@@ -57,9 +57,9 @@ bun test
 
 ## Files of interest
 
-- `workflows/order-shipment.ts` — five-step sequential workflow with `ctx.run` retries
-- `workflows/cleanup.ts` — daily scheduled cleanup for old demo DB rows
-- `channels/mission-log.ts` — pub/sub channel for live events
+- `src/workflows/order-shipment.ts` — five-step sequential workflow with `ctx.run` retries
+- `src/workflows/cleanup.ts` — daily scheduled cleanup for old demo DB rows
+- `src/channels/mission-log.ts` — pub/sub channel for live events
 - `src/routes/index.tsx` — route glue, server loader, local-mode simulator
 - `src/server/db.ts` — SQLite persistence and retention cleanup
 - `src/components/moonbase/` — all UI components (MissionControl, Landing, Sidebar, etc.)

@@ -49,7 +49,7 @@ Scale-to-zero is the default. Nothing to configure for a typical app:
 name = "my-app"
 ```
 
-A workflow file in `workflows/` is enough — `tako dev` and `tako deploy` pick it up automatically. To pin workers up in production:
+A workflow file in `src/workflows/` is enough — `tako dev` and `tako deploy` pick it up automatically. To pin workers up in production:
 
 ```toml
 [workflows]

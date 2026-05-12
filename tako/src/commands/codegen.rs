@@ -25,9 +25,12 @@ pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>>
 
     match adapter.preset_group() {
         PresetGroup::Js => {
-            let result =
-                build::js::write_typegen_support_files_for_adapter(&ctx.project_dir, adapter)?;
-            match (result.wrote_runtime_types, result.wrote_scaffolds) {
+            let result = build::js::write_generated_files_for_adapter_and_app_root(
+                &ctx.project_dir,
+                adapter,
+                tako_config.js_app_root(),
+            )?;
+            match (result.wrote_runtime_module, result.wrote_scaffolds) {
                 (true, true) => output::success("Generated tako.gen.ts and channel/workflow stubs"),
                 (true, false) => output::success("Generated tako.gen.ts"),
                 (false, true) => output::success("Generated channel/workflow stubs"),
@@ -37,7 +40,7 @@ pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>>
             }
         }
         PresetGroup::Go => {
-            let written = build::go::write_types(&ctx.project_dir)?;
+            let written = build::go::write_secret_accessors(&ctx.project_dir)?;
             if written {
                 output::success("Generated tako_secrets.go");
             } else {

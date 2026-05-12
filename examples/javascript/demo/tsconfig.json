@@ -1,6 +1,6 @@
 {
   "extends": "@tsconfig/strictest/tsconfig.json",
-  "include": ["src/**/*.ts", "src/**/*.tsx", "workflows/**/*.ts"],
+  "include": ["src/**/*.ts", "src/**/*.tsx"],
   "compilerOptions": {
     "target": "ES2022",
     "jsx": "react-jsx",

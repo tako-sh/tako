@@ -94,7 +94,7 @@ export function createEntrypoint() {
       const result = await bootstrapChannels({ appDir: process.cwd() });
       channels = result.registry;
     } catch (err) {
-      console.error("Failed to load channels/ directory:", err);
+      console.error("Failed to load channels directory:", err);
       process.exit(1);
     }
 

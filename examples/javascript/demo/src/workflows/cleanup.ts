@@ -1,5 +1,5 @@
 import { defineWorkflow } from "tako.sh";
-import { cleanupOldRecords, RECORD_RETENTION_MS } from "../src/server/db";
+import { cleanupOldRecords, RECORD_RETENTION_MS } from "../server/db";
 
 export default defineWorkflow<Record<string, never>>("cleanup", {
   schedule: "@daily",

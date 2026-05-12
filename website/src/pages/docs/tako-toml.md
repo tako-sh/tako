@@ -117,9 +117,12 @@ assets = ["dist/client"]
 | `runtime_version` | Optional pinned runtime version used by deploy.                           |
 | `package_manager` | Optional JS package manager override: `bun`, `npm`, `pnpm`, or `yarn`.    |
 | `preset`          | Optional runtime-local preset alias such as `tanstack-start` or `nextjs`. |
+| `app_root`        | JS-only app source root for `tako.gen.ts`, `channels/`, and `workflows/`. |
 | `main`            | Optional runtime entrypoint override.                                     |
 | `dev`             | Optional command override for `tako dev`.                                 |
 | `assets`          | Extra asset directories copied into deployed `public/`.                   |
+
+`app_root` is relative to `tako.toml` and defaults to `src`. Use `app_root = "."` when JavaScript app files live next to `tako.toml`. It controls where Tako writes `tako.gen.ts` and where it discovers `channels/` and `workflows/`; it does not change `main`, `assets`, build paths, or deploy packaging roots.
 
 When `main` is omitted, Tako checks manifest metadata such as `package.json` `main`, then preset defaults, then runtime defaults. JS runtimes also look for common index files such as `index.ts`, `index.js`, and `src/index.ts`.
 
@@ -166,6 +169,7 @@ Common runtime vars:
 - `ENV`
 - `TAKO_BUILD` on deploy
 - `TAKO_DATA_DIR`
+- `TAKO_APP_ROOT` for JS apps
 - `NODE_ENV` for JS runtimes
 - `BUN_ENV` for Bun
 - `PORT=0` and `HOST=127.0.0.1` for HTTP processes

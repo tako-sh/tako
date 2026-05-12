@@ -1,7 +1,7 @@
 ---
 name: tako
 description: >-
-  Tako CLI commands: init, dev, deploy, secrets, typegen, scale, logs,
+  Tako CLI commands: init, dev, deploy, secrets, gen, scale, logs,
   rollback, servers, doctor. Includes output design patterns for interactive
   and plain modes.
 type: framework
@@ -89,21 +89,21 @@ Import a base64url key string. The string includes its id, so import does not ta
 
 ## Code Generation
 
-### `tako typegen`
+### `tako gen`
 
-Generate typed accessors from local project files. Outputs to `tako.gen.ts`.
+Refresh generated project files from local project state.
 
 ```bash
-tako typegen
+tako gen
 ```
 
 Generates:
 
 - **Typed secrets** — reads secret names from `.tako/secrets.json`, emits a `Secrets` interface and `secrets` export from `tako.gen.ts`.
 - **Runtime accessors** — emits `env`, `isDev`, `isProd`, `port`, `host`, `build`, `dataDir`, `appDir`, `logger` exports that wrap process state and the fd-3 bootstrap.
-- **JS definition stubs** — when `channels/` or `workflows/` already exists, scaffolds `demo.ts` in empty dirs and adds missing default `defineChannel({ name: "<file-stem>" })` / `defineWorkflow(...)` exports to files that do not have a default export yet. Existing explicit channel names are not rewritten.
+- **JS definition stubs** — when `<app_root>/channels/` or `<app_root>/workflows/` already exists, scaffolds `demo.ts` in empty dirs and adds missing default `defineChannel({ name: "<file-stem>" })` / `defineWorkflow(...)` exports to files that do not have a default export yet. Existing explicit channel names are not rewritten.
 
-Workflow and channel payload types flow from their module types directly (no typegen needed for `.enqueue(payload)` or `.publish({type, data})`).
+Workflow and channel payload types flow from their module types directly (no generated file needed for `.enqueue(payload)` or `.publish({type, data})`).
 
 Re-run after adding/removing secrets or workflow files. `tako dev` and `tako deploy` run it automatically.
 

@@ -1,14 +1,14 @@
 import { defineWorkflow } from "tako.sh";
 import missionLog from "../channels/mission-log";
-import { applyMissionEventToRequest } from "../src/server/db";
+import { applyMissionEventToRequest } from "../server/db";
 import type {
   MissionChannelUpdate,
   MissionLogEvent,
   Step,
   StepStatus,
   WorkflowStep,
-} from "../src/server/types";
-import { PIPELINE_STEPS } from "../src/server/types";
+} from "../server/types";
+import { PIPELINE_STEPS } from "../server/types";
 
 export type { MissionLogEvent, StepStatus, WorkflowStep };
 

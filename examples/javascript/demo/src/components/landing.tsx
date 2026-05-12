@@ -193,13 +193,13 @@ export function Landing({ rootHost }: Props) {
               icon={<NetworkIcon className="size-4" aria-hidden="true" />}
               label="Durable workflows"
               body="One supply request fans out into five resumable steps. Server crashes mid-launch? The workflow picks up where it left off."
-              sourcePath="workflows/order-shipment.ts"
+              sourcePath="src/workflows/order-shipment.ts"
             />
             <Feature
               icon={<RadioIcon className="size-4" aria-hidden="true" />}
               label="Live channels"
               body="Workflow steps publish to a channel. Every connected client sees the stream — no polling, no reconnect logic in app code."
-              sourcePath="channels/mission-log.ts"
+              sourcePath="src/channels/mission-log.ts"
             />
           </div>
 

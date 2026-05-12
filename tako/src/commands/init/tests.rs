@@ -5,8 +5,8 @@ use super::{
 use crate::build::{BuildAdapter, PresetDefinition};
 use crate::commands::init::presets::normalize_group_preset_definitions;
 use crate::commands::init::scaffold::{
-    TemplateParams, generate_template, infer_default_main_entrypoint, parse_csv_list,
-    preset_default_main, sdk_install_command,
+    TemplateParams, detect_js_app_root, generate_template, infer_default_main_entrypoint,
+    parse_csv_list, preset_default_main, sdk_install_command,
 };
 use tempfile::TempDir;
 
@@ -14,6 +14,7 @@ use tempfile::TempDir;
 fn init_template_keeps_only_minimal_options_uncommented() {
     let rendered = generate_template(&TemplateParams {
         app_name: "demo-app",
+        app_root: Some("src"),
         main: Some("server/index.mjs"),
         production_route: "demo-app.example.com",
         runtime: Some("bun"),
@@ -40,6 +41,10 @@ fn init_template_keeps_only_minimal_options_uncommented() {
     assert!(
         rendered.contains("\nname = \"demo-app\"\n"),
         "expected app name to be uncommented in minimal template"
+    );
+    assert!(
+        !rendered.contains("app_root"),
+        "expected default JavaScript app root to be omitted"
     );
     assert!(
         !rendered.contains("# name = \"demo-app\""),
@@ -95,6 +100,7 @@ fn init_template_keeps_only_minimal_options_uncommented() {
 fn init_template_includes_reference_link_and_option_examples() {
     let rendered = generate_template(&TemplateParams {
         app_name: "demo-app",
+        app_root: Some("src"),
         main: Some("server/index.mjs"),
         production_route: "demo-app.example.com",
         runtime: Some("bun"),
@@ -210,6 +216,7 @@ fn infer_default_main_entrypoint_skips_nonexistent_package_json_main() {
 fn init_template_can_omit_main_when_preset_provides_default() {
     let rendered = generate_template(&TemplateParams {
         app_name: "demo-app",
+        app_root: Some("src"),
         main: None,
         production_route: "demo-app.example.com",
         runtime: Some("bun"),
@@ -224,9 +231,53 @@ fn init_template_can_omit_main_when_preset_provides_default() {
 }
 
 #[test]
+fn init_template_omits_app_root_when_not_javascript() {
+    let rendered = generate_template(&TemplateParams {
+        app_name: "demo-app",
+        app_root: None,
+        main: Some("main.go"),
+        production_route: "demo-app.example.com",
+        runtime: Some("go"),
+        runtime_version: None,
+        package_manager: None,
+        preset_ref: None,
+        assets: &[],
+        excludes: &[],
+    });
+
+    assert!(!rendered.contains("app_root"));
+}
+
+#[test]
+fn init_template_writes_non_default_app_root() {
+    let rendered = generate_template(&TemplateParams {
+        app_name: "demo-app",
+        app_root: Some("app"),
+        main: Some("server/index.mjs"),
+        production_route: "demo-app.example.com",
+        runtime: Some("bun"),
+        runtime_version: None,
+        package_manager: None,
+        preset_ref: None,
+        assets: &[],
+        excludes: &[],
+    });
+
+    assert!(
+        rendered.contains("# JavaScript app root, relative to this file."),
+        "expected template to describe non-default app_root"
+    );
+    assert!(
+        rendered.contains("\napp_root = \"app\"\n"),
+        "expected non-default JavaScript app root to be written"
+    );
+}
+
+#[test]
 fn init_template_uses_prompted_production_route() {
     let rendered = generate_template(&TemplateParams {
         app_name: "demo-app",
+        app_root: Some("src"),
         main: Some("server/index.mjs"),
         production_route: "api.demo-app.com",
         runtime: Some("bun"),
@@ -244,6 +295,7 @@ fn init_template_uses_prompted_production_route() {
 fn init_template_can_leave_preset_unset() {
     let rendered = generate_template(&TemplateParams {
         app_name: "demo-app",
+        app_root: Some("src"),
         main: None,
         production_route: "demo-app.example.com",
         runtime: Some("node"),
@@ -261,6 +313,7 @@ fn init_template_can_leave_preset_unset() {
 fn init_template_writes_selected_build_adapter() {
     let rendered = generate_template(&TemplateParams {
         app_name: "demo-app",
+        app_root: Some("src"),
         main: None,
         production_route: "demo-app.example.com",
         runtime: Some("bun"),
@@ -277,6 +330,7 @@ fn init_template_writes_selected_build_adapter() {
 fn init_template_writes_runtime_local_preset_reference() {
     let rendered = generate_template(&TemplateParams {
         app_name: "demo-app",
+        app_root: Some("src"),
         main: None,
         production_route: "demo-app.example.com",
         runtime: Some("bun"),
@@ -294,6 +348,7 @@ fn init_template_writes_runtime_local_preset_reference() {
 fn init_template_pins_runtime_version_when_provided() {
     let rendered = generate_template(&TemplateParams {
         app_name: "demo-app",
+        app_root: Some("src"),
         main: None,
         production_route: "demo-app.example.com",
         runtime: Some("bun"),
@@ -311,6 +366,7 @@ fn init_template_pins_runtime_version_when_provided() {
 fn init_template_comments_runtime_version_when_absent() {
     let rendered = generate_template(&TemplateParams {
         app_name: "demo-app",
+        app_root: Some("src"),
         main: None,
         production_route: "demo-app.example.com",
         runtime: Some("bun"),
@@ -322,6 +378,37 @@ fn init_template_comments_runtime_version_when_absent() {
     });
     assert!(rendered.contains("# runtime_version = \"1.0.0\""));
     assert!(!rendered.contains("\nruntime_version = \""));
+}
+
+#[test]
+fn detect_js_app_root_prefers_existing_src_tako_files() {
+    let temp = TempDir::new().unwrap();
+    std::fs::create_dir_all(temp.path().join("src").join("workflows")).unwrap();
+
+    assert_eq!(detect_js_app_root(temp.path()), "src");
+}
+
+#[test]
+fn detect_js_app_root_preserves_root_level_tako_files() {
+    let temp = TempDir::new().unwrap();
+    std::fs::create_dir_all(temp.path().join("channels")).unwrap();
+
+    assert_eq!(detect_js_app_root(temp.path()), ".");
+}
+
+#[test]
+fn detect_js_app_root_preserves_existing_app_tako_files() {
+    let temp = TempDir::new().unwrap();
+    std::fs::create_dir_all(temp.path().join("app").join("workflows")).unwrap();
+
+    assert_eq!(detect_js_app_root(temp.path()), "app");
+}
+
+#[test]
+fn detect_js_app_root_defaults_to_src_for_new_projects() {
+    let temp = TempDir::new().unwrap();
+
+    assert_eq!(detect_js_app_root(temp.path()), "src");
 }
 
 #[test]

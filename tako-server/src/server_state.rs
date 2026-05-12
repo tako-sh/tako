@@ -286,8 +286,8 @@ impl ServerState {
     ///
     /// Deploys, restores, and secret rotations all funnel through here so the
     /// worker runtime follows the current release and its current secrets. If a
-    /// new release drops `workflows/`, any previously managed worker is drained
-    /// and removed.
+    /// new release drops the configured workflows directory, any previously
+    /// managed worker is drained and removed.
     pub(crate) async fn sync_app_workflows(
         &self,
         app_name: &str,
@@ -322,7 +322,16 @@ impl ServerState {
         let mut worker_env = manifest.env_vars;
         inject_app_data_dir_env(&mut worker_env, &data_paths);
 
-        let workflows_dir = app_path.join("workflows");
+        let js_app_root = worker_env
+            .get("TAKO_APP_ROOT")
+            .map(String::as_str)
+            .filter(|root| !root.trim().is_empty())
+            .unwrap_or("src");
+        let workflows_dir = if js_app_root == "." {
+            app_path.join("workflows")
+        } else {
+            app_path.join(js_app_root).join("workflows")
+        };
         if !workflows_dir.is_dir() {
             return;
         }

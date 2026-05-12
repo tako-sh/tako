@@ -28,6 +28,14 @@ fn global_ssh_passphrase_parses_for_one_liners() {
 }
 
 #[test]
+fn gen_parses() {
+    let cli = Cli::try_parse_from(["tako", "gen"]).unwrap();
+    let Commands::Gen = cli.command.expect("command") else {
+        panic!("expected Commands::Gen");
+    };
+}
+
+#[test]
 fn servers_add_without_host_parses_for_wizard() {
     let cli = Cli::try_parse_from(["tako", "servers", "add"]).unwrap();
     let Commands::Servers(server::ServerCommands::Add { host, .. }) = cli.command.expect("command")

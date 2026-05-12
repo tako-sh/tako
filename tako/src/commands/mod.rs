@@ -1,3 +1,4 @@
+pub mod codegen;
 pub mod delete;
 pub mod deploy;
 pub mod dev;
@@ -13,5 +14,4 @@ pub mod scale;
 pub mod secret;
 pub mod server;
 pub mod status;
-pub mod typegen;
 pub mod upgrade;

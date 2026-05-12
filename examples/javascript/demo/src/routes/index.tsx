@@ -5,8 +5,8 @@ import { useChannel } from "tako.sh/react";
 import { startTransition, useCallback, useMemo, useState } from "react";
 import { z } from "zod";
 import { tako } from "../tako.gen";
-import missionLog from "../../channels/mission-log";
-import orderShipment from "../../workflows/order-shipment";
+import missionLog from "../channels/mission-log";
+import orderShipment from "../workflows/order-shipment";
 import { Landing } from "../components/landing";
 import { MissionControl } from "../components/mission-control";
 import {

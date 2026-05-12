@@ -240,7 +240,11 @@ async fn run_async(
     let source_root = source_bundle_root(&project_dir, preflight_runtime_adapter.id());
 
     if preflight_runtime_adapter.preset_group() == PresetGroup::Js {
-        let _ = js::write_types(&project_dir);
+        let _ = js::write_tako_gen_module_for_adapter_and_app_root(
+            &project_dir,
+            preflight_runtime_adapter,
+            tako_config.js_app_root(),
+        );
     }
 
     let _bun_lockfile_checked = if should_run_bun_lockfile_preflight(preflight_runtime_adapter) {

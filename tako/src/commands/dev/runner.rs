@@ -128,6 +128,7 @@ pub async fn run(
         interactive,
     } = session;
 
+    let app_root_dir = crate::build::js::js_app_root_dir(&project_dir, cfg.js_app_root());
     let hosts_state = Arc::new(tokio::sync::Mutex::new(dev_hosts.clone()));
     let env_state = Arc::new(tokio::sync::Mutex::new(env));
 
@@ -364,8 +365,13 @@ pub async fn run(
     }
 
     let (cfg_tx, cfg_rx) = mpsc::channel::<watcher::WatchChange>(8);
-    let _cfg_handle =
-        watcher::ConfigWatcher::new(project_dir.clone(), config_path.clone(), cfg_tx)?.start()?;
+    let _cfg_handle = watcher::ConfigWatcher::new(
+        project_dir.clone(),
+        app_root_dir.clone(),
+        config_path.clone(),
+        cfg_tx,
+    )?
+    .start()?;
 
     if verbose && !interactive {
         println!(
@@ -471,6 +477,24 @@ pub async fn run(
                         .await;
                 }
 
+                if change == watcher::WatchChange::GeneratedFile {
+                    if let Err(err) =
+                        crate::build::js::write_generated_files_for_adapter_and_app_root(
+                            &project_dir,
+                            crate::build::detect_build_adapter(&project_dir),
+                            cfg.js_app_root(),
+                        )
+                    {
+                        let _ = log_tx
+                            .send(ScopedLog::warn(
+                                "tako",
+                                format!("Failed to refresh generated files: {err}"),
+                            ))
+                            .await;
+                    }
+                    continue;
+                }
+
                 let new_hosts =
                     match compute_dev_hosts(&app_name, &cfg, &domain, base_domain.as_deref()) {
                         Ok(hosts) => hosts,
@@ -486,6 +510,11 @@ pub async fn run(
                     };
 
                 let mut new_env = compute_dev_env(&cfg);
+                if crate::build::detect_build_adapter(&project_dir).preset_group()
+                    == crate::build::PresetGroup::Js
+                {
+                    new_env.insert("TAKO_APP_ROOT".to_string(), cfg.js_app_root().to_string());
+                }
                 inject_dev_allowed_hosts(&new_hosts, &mut new_env);
                 if let Err(msg) = inject_dev_data_dir(&project_dir, &mut new_env) {
                     let _ = log_tx
@@ -508,7 +537,11 @@ pub async fn run(
                         .await;
                 }
 
-                let _ = crate::build::js::write_typegen_support_files(&project_dir);
+                let _ = crate::build::js::write_generated_files_for_adapter_and_app_root(
+                    &project_dir,
+                    crate::build::detect_build_adapter(&project_dir),
+                    cfg.js_app_root(),
+                );
 
                 *env_state.lock().await = new_env.clone();
                 let hosts_changed = {
@@ -549,6 +582,7 @@ pub async fn run(
                         watcher::WatchChange::Secrets => "Secrets changed, restarting…",
                         watcher::WatchChange::Channels => "channels/ changed, restarting…",
                         watcher::WatchChange::Workflows => "workflows/ changed, restarting…",
+                        watcher::WatchChange::GeneratedFile => unreachable!(),
                     };
                     let _ = log_tx.send(ScopedLog::info("tako", restart_reason)).await;
                     let _ = crate::dev_server_client::restart_app(&config_key).await;

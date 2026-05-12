@@ -6,16 +6,16 @@ use std::fs;
 use std::path::Path;
 
 use crate::app::resolve_app_name;
-use crate::build::js;
-use crate::build::{BuildAdapter, PresetDefinition, detect_build_adapter};
+use crate::build::{BuildAdapter, PresetDefinition, PresetGroup, detect_build_adapter, go, js};
 use crate::config::TakoToml;
 use crate::output;
 use presets::{build_preset_selection_options, fetch_group_presets_for_adapter};
 use project::{display_config_path_for_prompt, ensure_project_gitignore_tracks_secrets};
 
 use scaffold::{
-    TemplateParams, detect_local_runtime_version, generate_template, infer_default_main_entrypoint,
-    parse_csv_list, preset_default_main, sanitize_route, sdk_install_command,
+    TemplateParams, detect_js_app_root, detect_local_runtime_version, generate_template,
+    infer_default_main_entrypoint, parse_csv_list, preset_default_main, sanitize_route,
+    sdk_install_command,
 };
 
 pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>> {
@@ -72,6 +72,7 @@ pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>>
         .with_fields(&[
             ("Application name", false),
             ("Runtime", false),
+            ("App root", true),
             ("Build preset", false),
             ("Entrypoint", true), // subsection — hidden until custom preset
             ("Assets", true),     // subsection
@@ -93,6 +94,10 @@ pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>>
         .unwrap_or(detected_adapter);
     let mut selected_preset: Option<String> = existing.as_ref().and_then(|c| c.preset.clone());
     let mut main_entry: Option<String> = existing.as_ref().and_then(|c| c.main.clone());
+    let mut app_root = existing
+        .as_ref()
+        .and_then(|c| c.app_root.as_ref().map(|root| root.trim().to_string()))
+        .unwrap_or_else(|| detect_js_app_root(&project_dir));
     let mut assets: Vec<String> = existing
         .as_ref()
         .map(|c| c.assets.clone())
@@ -119,6 +124,10 @@ pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>>
             wizard.set("Application name", &app_name);
         }
         wizard.set("Runtime", adapter.id());
+        if adapter.preset_group() == PresetGroup::Js {
+            wizard.set_visible("App root", true);
+            wizard.set("App root", &app_root);
+        }
         if let Some(ref preset) = selected_preset {
             wizard.set("Build preset", preset);
         } else {
@@ -196,8 +205,10 @@ pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>>
                 ) {
                     Ok(a) => {
                         adapter = a;
+                        let js_runtime = adapter.preset_group() == PresetGroup::Js;
+                        wizard.set_visible("App root", js_runtime);
                         step_history.push(1);
-                        step = 2;
+                        step = if js_runtime { 2 } else { 3 };
                     }
                     Err(e) if output::is_wizard_back(&e) => {
                         if let Some(prev) = step_history.pop() {
@@ -209,8 +220,42 @@ pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>>
                     Err(e) => return Err(e.into()),
                 }
             }
-            // Step 2: Build preset + compute derived state
+            // Step 2: JavaScript app root
             2 => {
+                let default_app_root = if app_root.trim().is_empty() {
+                    detect_js_app_root(&project_dir)
+                } else {
+                    app_root.clone()
+                };
+                match wizard.input(
+                    "App root",
+                    Some(&default_app_root),
+                    Some(
+                        "JS root for tako.gen.ts, channels/, and workflows/ (use . for project root).",
+                    ),
+                ) {
+                    Ok(v) => {
+                        let trimmed = v.trim();
+                        app_root = if trimmed.is_empty() {
+                            default_app_root
+                        } else {
+                            trimmed.to_string()
+                        };
+                        step_history.push(2);
+                        step = 3;
+                    }
+                    Err(e) if output::is_wizard_back(&e) => {
+                        if let Some(prev) = step_history.pop() {
+                            step = prev;
+                        } else {
+                            return Ok(());
+                        }
+                    }
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            // Step 3: Build preset + compute derived state
+            3 => {
                 let mut prompted_for_preset = false;
                 let group_presets = match &group_presets_cache {
                     Some((cached, presets)) if *cached == adapter => presets.clone(),
@@ -267,13 +312,13 @@ pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>>
                     .and_then(|preset| preset_default_main(preset, adapter, &group_presets));
                 let inferred_main = adapter.infer_main_entrypoint(&project_dir);
 
-                push_history_if_interactive(&mut step_history, 2, prompted_for_preset);
+                push_history_if_interactive(&mut step_history, 3, prompted_for_preset);
 
                 if is_custom {
                     wizard.set_visible("Entrypoint", true);
                     wizard.set_visible("Assets", true);
                     wizard.set_visible("Exclude", true);
-                    step = 3; // entrypoint prompt
+                    step = 4; // entrypoint prompt
                 } else if let Some(ref inferred) = inferred_main {
                     main_entry = if preset_dm.as_deref() == Some(inferred.as_str()) {
                         None
@@ -283,22 +328,22 @@ pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>>
                     wizard.set_visible("Entrypoint", false);
                     wizard.set_visible("Assets", false);
                     wizard.set_visible("Exclude", false);
-                    step = 6; // skip to production route
+                    step = 7; // skip to production route
                 } else if preset_dm.is_some() {
                     main_entry = None;
                     wizard.set_visible("Entrypoint", false);
                     wizard.set_visible("Assets", false);
                     wizard.set_visible("Exclude", false);
-                    step = 6;
+                    step = 7;
                 } else {
                     wizard.set_visible("Entrypoint", true);
                     wizard.set_visible("Assets", false);
                     wizard.set_visible("Exclude", false);
-                    step = 3; // need entrypoint prompt
+                    step = 4; // need entrypoint prompt
                 }
             }
-            // Step 3: Entrypoint
-            3 => {
+            // Step 4: Entrypoint
+            4 => {
                 let default_main = main_entry
                     .clone()
                     .or_else(|| existing.as_ref().and_then(|c| c.main.clone()))
@@ -307,11 +352,11 @@ pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>>
                 match wizard.input("Entrypoint", Some(&default_main), None) {
                     Ok(v) => {
                         main_entry = Some(v);
-                        step_history.push(3);
+                        step_history.push(4);
                         if is_custom {
-                            step = 4;
+                            step = 5;
                         } else {
-                            step = 6;
+                            step = 7;
                         }
                     }
                     Err(e) if output::is_wizard_back(&e) => {
@@ -324,8 +369,8 @@ pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>>
                     Err(e) => return Err(e.into()),
                 }
             }
-            // Step 4: Assets (custom only)
-            4 => {
+            // Step 5: Assets (custom only)
+            5 => {
                 let existing_assets = existing
                     .as_ref()
                     .map(|c| c.assets.clone())
@@ -353,8 +398,8 @@ pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>>
                             wizard.set("Assets", &collected.join(", "));
                         }
                         assets = collected;
-                        step_history.push(4);
-                        step = 5;
+                        step_history.push(5);
+                        step = 6;
                     }
                     Err(e) if output::is_wizard_back(&e) => {
                         if let Some(prev) = step_history.pop() {
@@ -366,8 +411,8 @@ pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>>
                     Err(e) => return Err(e.into()),
                 }
             }
-            // Step 5: Excludes (custom only)
-            5 => {
+            // Step 6: Excludes (custom only)
+            6 => {
                 let existing_excludes = existing
                     .as_ref()
                     .map(|c| c.build.exclude.clone())
@@ -395,32 +440,6 @@ pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>>
                             wizard.set("Exclude", &collected.join(", "));
                         }
                         excludes = collected;
-                        step_history.push(5);
-                        step = 6;
-                    }
-                    Err(e) if output::is_wizard_back(&e) => {
-                        if let Some(prev) = step_history.pop() {
-                            step = prev;
-                        } else {
-                            return Ok(());
-                        }
-                    }
-                    Err(e) => return Err(e.into()),
-                }
-            }
-            // Step 6: Production route
-            6 => {
-                let default_route = if !production_route.is_empty() {
-                    production_route.clone()
-                } else {
-                    existing
-                        .as_ref()
-                        .and_then(|c| c.envs.get("production").and_then(|e| e.route.clone()))
-                        .unwrap_or_else(|| format!("{}.example.com", app_name.trim()))
-                };
-                match wizard.input("Production route", Some(&default_route), None) {
-                    Ok(v) => {
-                        production_route = v;
                         step_history.push(6);
                         step = 7;
                     }
@@ -434,7 +453,33 @@ pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>>
                     Err(e) => return Err(e.into()),
                 }
             }
-            // Step 7: Confirm
+            // Step 7: Production route
+            7 => {
+                let default_route = if !production_route.is_empty() {
+                    production_route.clone()
+                } else {
+                    existing
+                        .as_ref()
+                        .and_then(|c| c.envs.get("production").and_then(|e| e.route.clone()))
+                        .unwrap_or_else(|| format!("{}.example.com", app_name.trim()))
+                };
+                match wizard.input("Production route", Some(&default_route), None) {
+                    Ok(v) => {
+                        production_route = v;
+                        step_history.push(7);
+                        step = 8;
+                    }
+                    Err(e) if output::is_wizard_back(&e) => {
+                        if let Some(prev) = step_history.pop() {
+                            step = prev;
+                        } else {
+                            return Ok(());
+                        }
+                    }
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            // Step 8: Confirm
             _ => match wizard.finish() {
                 Ok(true) => break,
                 Ok(false) => {
@@ -469,8 +514,14 @@ pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>>
     });
 
     // Generate tako.toml
+    let app_root_for_toml = if adapter.preset_group() == PresetGroup::Js {
+        Some(app_root.trim())
+    } else {
+        None
+    };
     let template = generate_template(&TemplateParams {
         app_name: app_name.trim(),
+        app_root: app_root_for_toml,
         main: main_entry.as_deref().map(str::trim),
         production_route: &sanitize_route(&production_route),
         runtime: Some(adapter.id()),
@@ -481,6 +532,7 @@ pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>>
         excludes: &excludes,
     });
 
+    let parsed_template = TakoToml::parse(&template)?;
     fs::write(&tako_toml_path, template)?;
     ensure_project_gitignore_tracks_secrets(&project_dir)?;
 
@@ -488,8 +540,10 @@ pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>>
         .file_name()
         .unwrap_or_default()
         .to_string_lossy();
-    if js::write_types(&project_dir)? {
-        output::success(&format!("Created {config_name} and tako.gen.ts"));
+    if let Some(generated_file) =
+        write_init_generated_file(&project_dir, adapter, parsed_template.js_app_root())?
+    {
+        output::success(&format!("Created {config_name} and {generated_file}"));
     } else {
         output::success(&format!("Created {config_name}"));
     }
@@ -565,6 +619,30 @@ fn ensure_pnpm(project_dir: &Path) {
         .status();
 }
 
+fn write_init_generated_file(
+    project_dir: &Path,
+    adapter: BuildAdapter,
+    app_root: &str,
+) -> Result<Option<&'static str>, Box<dyn std::error::Error>> {
+    match adapter.preset_group() {
+        PresetGroup::Js => {
+            if js::write_tako_gen_module_for_adapter_and_app_root(project_dir, adapter, app_root)? {
+                Ok(Some("tako.gen.ts"))
+            } else {
+                Ok(None)
+            }
+        }
+        PresetGroup::Go => {
+            if go::write_secret_accessors(project_dir)? {
+                Ok(Some("tako_secrets.go"))
+            } else {
+                Ok(None)
+            }
+        }
+        PresetGroup::Unknown => Ok(None),
+    }
+}
+
 fn resolve_adapter(detected_adapter: BuildAdapter, existing: Option<&TakoToml>) -> BuildAdapter {
     let preferred = existing
         .and_then(|c| c.runtime.as_deref())
@@ -612,6 +690,15 @@ fn run_non_interactive(
         .unwrap_or_else(|| format!("{}.example.com", app_name.trim()));
 
     let runtime_version = detect_local_runtime_version(adapter.id());
+    let app_root = if adapter.preset_group() == PresetGroup::Js {
+        Some(
+            existing
+                .and_then(|c| c.app_root.as_ref().map(|root| root.trim().to_string()))
+                .unwrap_or_else(|| detect_js_app_root(project_dir)),
+        )
+    } else {
+        None
+    };
 
     let detected_pm = tako_runtime::detect_package_manager(project_dir);
     let pm_for_toml = detected_pm.map(|pm| pm.id().to_string()).filter(|pm_id| {
@@ -623,6 +710,7 @@ fn run_non_interactive(
 
     let template = generate_template(&TemplateParams {
         app_name: app_name.trim(),
+        app_root: app_root.as_deref(),
         main: main.as_deref().map(str::trim),
         production_route: &sanitize_route(&production_route),
         runtime: Some(adapter.id()),
@@ -633,11 +721,14 @@ fn run_non_interactive(
         excludes: &[],
     });
 
+    let parsed_template = TakoToml::parse(&template)?;
     fs::write(tako_toml_path, template)?;
     ensure_project_gitignore_tracks_secrets(project_dir)?;
 
-    if js::write_types(project_dir)? {
-        output::success("Created tako.toml and tako.gen.ts");
+    if let Some(generated_file) =
+        write_init_generated_file(project_dir, adapter, parsed_template.js_app_root())?
+    {
+        output::success(&format!("Created tako.toml and {generated_file}"));
     } else {
         output::success("Created tako.toml");
     }

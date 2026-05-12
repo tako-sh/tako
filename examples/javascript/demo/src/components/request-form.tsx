@@ -43,7 +43,7 @@ export const RequestForm = memo(function RequestForm({ tenantSlug, submitting, o
           <Info
             label="durable workflows"
             description="Each dispatch enqueues a workflow that fans out into 5 resumable steps. Launch and landing can fail — Tako retries them until the delivery lands."
-            sourcePath="workflows/order-shipment.ts"
+            sourcePath="src/workflows/order-shipment.ts"
           />
         </div>
       </CardHeader>

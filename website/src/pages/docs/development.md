@@ -143,10 +143,11 @@ Source hot reload belongs to the runtime or framework dev server. Tako watches c
 
 - `tako.toml`
 - `.tako/secrets.json`
-- `channels/`
-- `workflows/`
+- `<app_root>/tako.gen.ts`
+- `<app_root>/channels/`
+- `<app_root>/workflows/`
 
-It restarts the app when effective environment variables, secrets, channel definitions, or workflow definitions change. It updates dev routing without restarting when `[envs.development].route` or `routes` changes.
+For JavaScript apps, `app_root` comes from `tako.toml` and defaults to `src`. If `tako.gen.ts` is deleted during `tako dev`, Tako recreates it. The app restarts when effective environment variables, secrets, channel definitions, or workflow definitions change. It updates dev routing without restarting when `[envs.development].route` or `routes` changes.
 
 ## Logs
 

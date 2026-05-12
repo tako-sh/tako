@@ -252,7 +252,7 @@ export function tako(): Plugin {
       // publish to channels during `tako dev` without boot-time setup.
       initServerRuntime();
 
-      // Discover channel definitions from `<appDir>/channels/` once at startup.
+      // Discover channel definitions from `<appRoot>/channels/` once at startup.
       // The registry feeds the internal channel-auth/dispatch endpoints.
       let channelsPromise: Promise<ChannelRegistry> | null = null;
       const getChannels = (): Promise<ChannelRegistry> => {

@@ -16,7 +16,7 @@ Tako's [durable workflow engine](/blog/durable-workflows-are-here) gives you a p
 Imagine an order-fulfillment workflow. Charge the card, run a fraud check, **wait for an admin to approve high-value orders**, then ship.
 
 ```ts
-// workflows/fulfill-order.ts
+// src/workflows/fulfill-order.ts
 import { defineWorkflow } from "tako.sh";
 
 export default defineWorkflow<{ orderId: string }>("fulfill-order", {
@@ -89,4 +89,4 @@ signal -> worker2: "wake"
 
 While the run is parked, your VPS isn't holding anything open for it. The worker process is gone. tako-server can restart, the host can reboot, you can [redeploy](/blog/what-happens-when-you-run-tako-deploy) — the row stays in SQLite, the event waiter stays indexed, and `signal` will still find it three days from now. The 7-day `timeout` is just a safety valve; if it fires first, `waitFor` returns `null` and the workflow takes the cleanup path via `ctx.bail`.
 
-The same primitive covers webhook callbacks, multi-step onboarding flows that wait on user input, payment-confirmation hops, and anything else where the next step is "the world tells us something happened." One file, one default export, no external queue, no cron polling. Drop it in `workflows/`, run [`tako dev`](/docs/development), and the [embedded scale-to-zero worker](/blog/workflow-workers-scale-to-zero) wires up the rest.
+The same primitive covers webhook callbacks, multi-step onboarding flows that wait on user input, payment-confirmation hops, and anything else where the next step is "the world tells us something happened." One file, one default export, no external queue, no cron polling. Drop it in `src/workflows/`, run [`tako dev`](/docs/development), and the [embedded scale-to-zero worker](/blog/workflow-workers-scale-to-zero) wires up the rest.

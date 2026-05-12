@@ -29,7 +29,7 @@ export interface ChannelConfig<
 > extends ChannelLifecycleConfig {
   /**
    * Wire name for the channel. Use a stable kebab-case name, usually matching
-   * the filename in `channels/<name>.ts`.
+   * the filename in `<app_root>/channels/<name>.ts`.
    */
   name: string;
   /**
@@ -90,7 +90,7 @@ export interface ChannelExportMeta<Params, Messages> {
 }
 
 /**
- * Public shape exported from a `channels/<name>.ts` file.
+ * Public shape exported from a `<app_root>/channels/<name>.ts` file.
  *
  * Channels with params are callable and return a {@link ChannelHandle}; channels
  * without params are already bound handles.
@@ -185,7 +185,7 @@ function attachMeta<P, M, T extends object>(
 /**
  * Define a typed realtime channel.
  *
- * Put one default export in each `channels/*.ts` file. The optional
+ * Put one default export in each `<app_root>/channels/*.ts` file. The optional
  * `paramsSchema` controls the typed params needed to bind the channel, `auth`
  * controls subscribe/publish/connect authorization, and `handler` enables
  * WebSocket messages.

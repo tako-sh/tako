@@ -45,6 +45,7 @@ impl Config {
         let package_manager = parse_optional_string(&raw, "package_manager")?;
         let preset = parse_optional_string(&raw, "preset")?;
         let dev = parse_string_array(&raw, "dev")?.unwrap_or_default();
+        let app_root = parse_optional_string(&raw, "app_root")?;
         let assets = parse_string_array(&raw, "assets")?.unwrap_or_default();
         let release = parse_optional_string(&raw, "release")?;
         let build = parse_build_config(&raw)?;
@@ -58,6 +59,7 @@ impl Config {
             package_manager,
             preset,
             dev,
+            app_root,
             assets,
             release,
             build,

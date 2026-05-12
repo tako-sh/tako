@@ -1,5 +1,5 @@
 import { defineChannel } from "tako.sh";
-import type { MissionChannelUpdate } from "../src/server/types";
+import type { MissionChannelUpdate } from "../server/types";
 
 export default defineChannel({
   name: "mission-log",

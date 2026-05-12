@@ -1,5 +1,5 @@
 /**
- * Filesystem discovery for workflows/ directory.
+ * Filesystem discovery for the configured workflows directory.
  *
  * Each `<name>.(ts|tsx|js|mjs|mts)` file becomes a workflow named `<name>`.
  * The default export must be either:

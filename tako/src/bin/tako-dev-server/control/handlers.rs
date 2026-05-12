@@ -49,6 +49,7 @@ fn build_worker_env(
     app: &str,
     project_dir: &std::path::Path,
     internal_socket: &std::path::Path,
+    app_root: Option<&str>,
 ) -> std::collections::HashMap<String, String> {
     let mut env = std::collections::HashMap::new();
     env.insert(
@@ -68,6 +69,9 @@ fn build_worker_env(
             .to_string_lossy()
             .to_string(),
     );
+    if let Some(app_root) = app_root {
+        env.insert("TAKO_APP_ROOT".into(), app_root.to_string());
+    }
     env
 }
 
@@ -229,7 +233,7 @@ pub(crate) async fn handle_client(
                 // Everything before the await must happen under the
                 // `std::sync::Mutex` guard; scope the guard so the
                 // compiler sees it dropped before we `await` below.
-                let (url, workflows, internal_socket, worker_log_buffer) = {
+                let (url, workflows, internal_socket, worker_log_buffer, worker_app_root) = {
                     let mut s = state.lock().unwrap();
                     s.cancel_idle_exit();
                     let old_hosts = s
@@ -312,11 +316,16 @@ pub(crate) async fn handle_client(
                         format!("https://{}:{}/", host, public_port)
                     };
                     let worker_log_buffer = s.apps.get(&config_path).map(|a| a.log_buffer.clone());
+                    let worker_app_root = s
+                        .apps
+                        .get(&config_path)
+                        .and_then(|a| a.env.get("TAKO_APP_ROOT").cloned());
                     (
                         url,
                         s.workflows.clone(),
                         s.internal_socket.clone(),
                         worker_log_buffer,
+                        worker_app_root,
                     )
                 };
 
@@ -337,6 +346,7 @@ pub(crate) async fn handle_client(
                 {
                     let app = app_name.clone();
                     let cwd = std::path::PathBuf::from(&project_dir);
+                    let app_root = worker_app_root.clone();
                     let cmd_os: Vec<std::ffi::OsString> =
                         worker_cmd.iter().map(std::ffi::OsString::from).collect();
                     let log_sink: Option<tako_workflows::WorkerLogSink> =
@@ -347,7 +357,7 @@ pub(crate) async fn handle_client(
                             }) as tako_workflows::WorkerLogSink
                         });
                     let spec_fn = move |_db_path: std::path::PathBuf| tako_workflows::WorkerSpec {
-                        env: build_worker_env(&app, &cwd, &socket),
+                        env: build_worker_env(&app, &cwd, &socket, app_root.as_deref()),
                         app: app.clone(),
                         workers: 0,
                         concurrency: 500,

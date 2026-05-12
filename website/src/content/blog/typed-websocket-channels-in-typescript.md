@@ -11,10 +11,10 @@ Tako channels try to make that feel like one model instead. You define a channel
 
 ## The channel is the contract
 
-A JavaScript or TypeScript channel is a default export from `channels/*.ts`. The `name` is the wire route, `paramsSchema` is a TypeBox schema, `auth.verify` decides access, and `handler` makes the channel bidirectional over WebSocket.
+A JavaScript or TypeScript channel is a default export from `src/channels/*.ts` by default. The `name` is the wire route, `paramsSchema` is a TypeBox schema, `auth.verify` decides access, and `handler` makes the channel bidirectional over WebSocket.
 
 ```ts
-// channels/chat.ts
+// src/channels/chat.ts
 import { defineChannel } from "tako.sh";
 
 type ChatMessages = {

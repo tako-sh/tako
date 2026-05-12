@@ -60,6 +60,9 @@ impl Config {
         for asset_path in &self.assets {
             validate_asset_path(asset_path)?;
         }
+        if let Some(app_root) = &self.app_root {
+            validate_relative_dir(app_root, "app_root")?;
+        }
         for worker_name in self.workflows.groups.keys() {
             validate_workflow_worker_name(worker_name)?;
         }
@@ -176,6 +179,7 @@ pub(super) fn validate_top_level_keys(raw: &toml::Value) -> Result<()> {
                 | "package_manager"
                 | "preset"
                 | "dev"
+                | "app_root"
                 | "main"
                 | "assets"
                 | "release"

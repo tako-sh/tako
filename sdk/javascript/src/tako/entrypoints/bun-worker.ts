@@ -3,7 +3,7 @@
  * Tako Bun Worker Entrypoint — run via `bunx tako-worker`.
  *
  * Spawned by tako-server as a separate process from HTTP instances.
- * Loads `workflows/*.ts` from the app directory and runs the task loop.
+ * Loads workflows from the configured JavaScript app root and runs the task loop.
  * All queue state lives in tako-server via the per-app enqueue socket —
  * the SDK itself touches no SQLite.
  */

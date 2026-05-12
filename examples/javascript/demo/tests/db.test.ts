@@ -27,7 +27,7 @@ afterAll(async () => {
 
 describe("cleanupOldRecords", () => {
   test("cleanup workflow is scheduled daily", async () => {
-    const workflow = await import("../workflows/cleanup");
+    const workflow = await import("../src/workflows/cleanup");
 
     expect(workflow.default.definition.name).toBe("cleanup");
     expect(workflow.default.definition.opts.schedule).toBe("@daily");

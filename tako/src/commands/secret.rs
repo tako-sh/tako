@@ -14,10 +14,10 @@ pub use key::{ensure_secret_key_available, load_secret_key};
 use key::{export_key, import_key, load_or_create_key_for_set};
 use sync::{list_secrets, sync_secrets};
 
-/// Regenerate typed accessors (`tako.gen.ts` for JS/TS, `tako_secrets.go` for
-/// Go) after a secret change. Best-effort — a typegen failure doesn't block
+/// Refresh generated files (`tako.gen.ts` for JS/TS, `tako_secrets.go` for
+/// Go) after a secret change. Best-effort — a generation failure doesn't block
 /// the secret write itself.
-fn regenerate_types_after_secret_change(project_dir: &Path, config_path: &Path) {
+fn refresh_generated_files_after_secret_change(project_dir: &Path, config_path: &Path) {
     let tako_config = match TakoToml::load_from_file(config_path) {
         Ok(cfg) => cfg,
         Err(_) => return,
@@ -31,10 +31,14 @@ fn regenerate_types_after_secret_change(project_dir: &Path, config_path: &Path) 
         .unwrap_or_else(|| detect_build_adapter(project_dir));
     match adapter.preset_group() {
         PresetGroup::Js => {
-            let _ = build::js::write_types_for_adapter(project_dir, adapter);
+            let _ = build::js::write_tako_gen_module_for_adapter_and_app_root(
+                project_dir,
+                adapter,
+                tako_config.js_app_root(),
+            );
         }
         PresetGroup::Go => {
-            let _ = build::go::write_types(project_dir);
+            let _ = build::go::write_secret_accessors(project_dir);
         }
         PresetGroup::Unknown => {}
     }
@@ -481,7 +485,7 @@ async fn set_secret(
     let encrypted = encrypt(value, &key)?;
     secrets.set(env, name, encrypted)?;
     secrets.save_to_dir(&context.project_dir)?;
-    regenerate_types_after_secret_change(&context.project_dir, &context.config_path);
+    refresh_generated_files_after_secret_change(&context.project_dir, &context.config_path);
 
     if exists {
         output::success(&format!(
@@ -563,7 +567,7 @@ async fn remove_secret(
     }
 
     secrets.save_to_dir(&context.project_dir)?;
-    regenerate_types_after_secret_change(&context.project_dir, &context.config_path);
+    refresh_generated_files_after_secret_change(&context.project_dir, &context.config_path);
 
     if do_sync {
         // Sync to the specific env if provided, otherwise all environments

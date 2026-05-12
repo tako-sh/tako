@@ -96,7 +96,7 @@ In development, `tako dev` uses `.tako/data/app/` inside your project directory.
 
 If you want a clean local state, delete `.tako/data/app/` — the same reasoning applies in production: the data persists until you intentionally clear it.
 
-Run `tako typegen` and the generated `tako.gen.ts` exports `tako.dataDir` as a typed value alongside your secrets, so your editor knows it's always available.
+Run `tako gen` and the generated `tako.gen.ts` exports `tako.dataDir` as a typed value alongside your secrets, so your editor knows it's always available.
 
 ## Where this doesn't replace managed infrastructure
 

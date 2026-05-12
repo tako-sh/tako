@@ -248,7 +248,7 @@ interface RegistryEntry {
 }
 
 /**
- * Handle returned by the default export of a `channels/<name>.ts` file
+ * Handle returned by the default export of a `<app_root>/channels/<name>.ts` file
  * (unparameterized) or by invoking a parameterized channel with its params.
  */
 export interface ChannelHandle {

@@ -3,13 +3,14 @@
  *
  * Called from each runtime's worker entrypoint (`bun-worker.ts`,
  * `node-worker.ts`). Reads env vars set by tako-server,
- * attaches the RPC client, discovers `workflows/`, and starts the worker
+ * attaches the RPC client, discovers `<appRoot>/workflows/`, and starts the worker
  * loop. The SDK never opens SQLite — tako-server owns the queue DB and
  * serves all state via the per-app enqueue socket.
  *
  * Env vars (set by tako-server when it spawns the worker):
  *   TAKO_INTERNAL_SOCKET       — path to the shared Tako internal unix socket
  *   TAKO_APP_NAME              — app name the worker belongs to
+ *   TAKO_APP_ROOT              — JS app root for workflows discovery
  *   TAKO_WORKFLOW_WORKER       — optional worker group to load
  *   TAKO_WORKER_CONCURRENCY    — max parallel tasks per worker (default 10)
  *   TAKO_WORKER_IDLE_TIMEOUT_MS — scale-to-zero idle timeout; 0 = never
@@ -28,10 +29,13 @@ import {
 import { setWorkflowRuntime } from "./define";
 import { workflowsEngine } from "./engine";
 import { WorkflowsClient } from "./rpc-client";
+import { resolveAppRootDir } from "../tako/app-root";
 
 export interface WorkerBootstrapOptions {
-  /** Directory containing the `workflows/` subdir. Defaults to `process.cwd()`. */
+  /** Project directory. Defaults to `process.cwd()`. */
   appDir?: string;
+  /** JavaScript app source root relative to `appDir`. Defaults to `TAKO_APP_ROOT` or `src`. */
+  appRoot?: string;
 }
 
 export interface WorkerBootstrapResult {
@@ -73,7 +77,7 @@ export async function bootstrapWorker(
     signal: (event, payload) => workflowsEngine.signal(event, payload),
   });
 
-  const workflowsDir = join(appDir, WORKFLOWS_DIRNAME);
+  const workflowsDir = join(resolveAppRootDir(appDir, opts.appRoot), WORKFLOWS_DIRNAME);
   const count = await workflowsEngine.discover(
     workflowsDir,
     workflowWorker === undefined ? {} : { worker: workflowWorker },

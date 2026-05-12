@@ -23,7 +23,7 @@ parent -> runtime: boot hook (only here)
 child -> runtime: installed by instrumentation.ts
 ```
 
-Without a boot step on the child side, calling `defineWorkflow(...).enqueue(payload)`, `signal(event, payload)`, or `channel.publish(...)` from inside a route throws `TakoError("TAKO_UNAVAILABLE", "Workflow runtime not installed. ...")`. Everything else — typed [`tako.secrets`](/blog/secrets-without-env-files), [`tako.env`](/blog/typegen-and-the-ambient-tako-global), `tako.logger`, `tako.gen.ts` imports — already works, because those are static imports that don't depend on process-level state.
+Without a boot step on the child side, calling `defineWorkflow(...).enqueue(payload)`, `signal(event, payload)`, or `channel.publish(...)` from inside a route throws `TakoError("TAKO_UNAVAILABLE", "Workflow runtime not installed. ...")`. Everything else — typed [`tako.secrets`](/blog/secrets-without-env-files), [`tako.env`](/blog/tako-gen-and-the-generated-tako-gen-ts), `tako.logger`, `tako.gen.ts` imports — already works, because those are static imports that don't depend on process-level state.
 
 ## What `initServerRuntime()` does
 
@@ -72,6 +72,6 @@ Enqueue a multi-step durable workflow, publish to a live channel, send a `signal
 
 ## The bigger picture
 
-Tako's goal for Next.js is for it to feel like any other fetch handler: [`withTako()`](/docs/framework-guides#nextjs) in your config, a generated [`tako.gen.ts`](/blog/typegen-and-the-ambient-tako-global) for typed runtime state and secrets, and now `instrumentation.ts` for the piece the child-process model made awkward. No monkeypatching, no framework globals, no `TakoServer` wrapper object — just Next.js's own lifecycle hook calling one SDK function.
+Tako's goal for Next.js is for it to feel like any other fetch handler: [`withTako()`](/docs/framework-guides#nextjs) in your config, a generated [`tako.gen.ts`](/blog/tako-gen-and-the-generated-tako-gen-ts) for typed runtime state and secrets, and now `instrumentation.ts` for the piece the child-process model made awkward. No monkeypatching, no framework globals, no `TakoServer` wrapper object — just Next.js's own lifecycle hook calling one SDK function.
 
 Same backend primitives, same deploy flow, same SDK — [`tako deploy`](/docs/deployment) still rolls a Next.js app exactly like any other Node/Bun app. The [CLI reference](/docs/cli) and [framework guides](/docs/framework-guides) cover the rest.

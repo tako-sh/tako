@@ -1,5 +1,5 @@
 ---
-title: "tako typegen and the generated tako.gen.ts"
+title: "tako gen and the generated tako.gen.ts"
 date: "2026-04-18T01:01"
 description: "Tako generates a project-local tako.gen.ts with a typed tako runtime object and typed secrets bag — no app global, no silent typos."
 image: 75030c2f757f
@@ -7,7 +7,7 @@ image: 75030c2f757f
 
 Most runtime config is reached through APIs that lie to you. `process.env` pretends every variable is a string and returns `undefined` when you typo a name. `process.env.DATBASE_URL` is a syntactically valid read that fails silently, then explodes somewhere downstream — usually at 2am, usually in production.
 
-Tako's JavaScript SDK ships a different shape. `tako typegen` writes a `tako.gen.ts` file into your project with a typed `tako` object for every secret, runtime value, and log handle you'll reach for. No app global, no guessing — just ES modules.
+Tako's JavaScript SDK ships a different shape. `tako gen` writes a `tako.gen.ts` file into your project with a typed `tako` object for every secret, runtime value, and log handle you'll reach for. No app global, no guessing — just ES modules.
 
 ## What the generated file gives you
 
@@ -38,17 +38,17 @@ await chat({ roomId }).publish({ type: "msg", data: { text, userId } });
 
 Same shape on Bun and Node. No global install step, no kebab↔camel rule to remember.
 
-## What `tako typegen` generates
+## What `tako gen` generates
 
-[`tako typegen`](/docs/cli) scans your project and writes a single file:
+[`tako gen`](/docs/cli) scans your project and writes a single file:
 
-| Source                           | What typegen emits                                                                                             |
+| Source                           | What `tako gen` emits                                                                                          |
 | -------------------------------- | -------------------------------------------------------------------------------------------------------------- |
 | `.tako/secrets.json` (encrypted) | `interface Secrets { readonly DATABASE_URL: string; ... }` + `tako.secrets`                                    |
 | Runtime env                      | `tako.env`, `tako.isDev`, `tako.isProd`, `tako.port`, `tako.host`, `tako.build`, `tako.dataDir`, `tako.appDir` |
 | App infra                        | `tako.logger` (structured JSON logger bound to `source: "app"`)                                                |
 
-Secret names are plaintext in [`.tako/secrets.json`](/blog/secrets-without-env-files) — the values aren't — so typegen emits the type surface without ever touching your encryption key. When you add a secret with `tako secrets set`, typegen picks it up and rewrites `tako.gen.ts` on the next `tako dev`, `tako deploy`, or `tako typegen`.
+Secret names are plaintext in [`.tako/secrets.json`](/blog/secrets-without-env-files) — the values aren't — so `tako gen` emits the type surface without ever touching your encryption key. When you add a secret with `tako secrets set`, the generated file picks it up on the next `tako dev`, `tako deploy`, or `tako gen`.
 
 The file lands somewhere TypeScript's default `include` will find: next to an existing copy if you have one, or inside `src/` or `app/` if those directories exist, or at the project root. No `tsconfig.json` edits needed.
 
@@ -66,14 +66,14 @@ A few more guarantees:
 
 ## Try it
 
-`tako typegen` runs automatically during [`tako init`](/docs/cli), [`tako dev`](/docs/development), [`tako deploy`](/docs/deployment), and `tako secrets ...`. Most of the time you don't think about it. When you want types updated manually:
+`tako gen` runs automatically during [`tako init`](/docs/cli), [`tako dev`](/docs/development), [`tako deploy`](/docs/deployment), and `tako secrets ...`. Most of the time you don't think about it. When you want types updated manually:
 
 ```bash
 tako secrets set STRIPE_KEY --env production
-tako typegen
+tako gen
 # Generated tako.gen.ts
 ```
 
-For Go apps, typegen emits a `tako_secrets.go` with a typed `Secrets` struct — same idea, same compile-time catch. See [the Go SDK post](/blog/the-go-sdk-is-here) for the shape of that side.
+For Go apps, `tako gen` emits a `tako_secrets.go` with a typed `Secrets` struct — same idea, same compile-time catch. See [the Go SDK post](/blog/the-go-sdk-is-here) for the shape of that side.
 
-Typed runtime config isn't a new idea. Getting it for secrets and runtime state with zero ceremony — no app global, just a `.ts` file you import — is what `tako typegen` is for.
+Typed runtime config isn't a new idea. Getting it for secrets and runtime state with zero ceremony — no app global, just a `.ts` file you import — is what `tako gen` is for.

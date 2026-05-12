@@ -169,8 +169,8 @@ pub enum Commands {
         yes: bool,
     },
 
-    /// Generate typed secret accessors (tako.gen.ts for JS, tako_secrets.go for Go)
-    Typegen,
+    /// Refresh generated Tako files
+    Gen,
 
     /// Show version information
     Version,
@@ -245,7 +245,7 @@ impl Cli {
             Commands::Releases(cmd) => releases::run(cmd, self.config.as_deref()),
             Commands::Upgrade => upgrade::run(),
             Commands::Implode { yes } => commands::implode::run(yes),
-            Commands::Typegen => commands::typegen::run(self.config.as_deref()),
+            Commands::Gen => commands::codegen::run(self.config.as_deref()),
             Commands::Deploy { env, yes } => {
                 commands::deploy::run(env.as_deref(), yes, self.config.as_deref())
             }

@@ -2,7 +2,7 @@
  * Shared types for Tako's durable workflow engine.
  *
  * Vocabulary:
- *   workflow — a named handler (the thing you write in `workflows/*.ts`)
+ *   workflow — a named handler (the thing you write in `<app_root>/workflows/*.ts`)
  *   run      — one execution of a workflow (the row in the queue)
  *   step     — a memoized portion inside a run (via `ctx.run`)
  */
@@ -22,7 +22,7 @@ export type StepState = Record<string, unknown>;
 export interface RunSpec {
   /**
    * Workflow name — the filename stem of the handler file.
-   * @example "send-welcome" // workflows/send-welcome.ts
+   * @example "send-welcome" // <app_root>/workflows/send-welcome.ts
    */
   name: string;
   /** JSON-serializable user payload. */

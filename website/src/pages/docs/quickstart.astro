@@ -14,6 +14,9 @@ import DocsLayout from "../../layouts/DocsLayout.astro";
   <p>Verify installation:</p>
   <Snippet code="tako --version" lang="bash" />
 
+  <p>If you install Tako another way and use signed image optimization locally on macOS:</p>
+  <Snippet code="brew install vips" lang="bash" />
+
   <p>From your app directory:</p>
 
   <ul>
@@ -50,7 +53,8 @@ import DocsLayout from "../../layouts/DocsLayout.astro";
   </p>
   <p>
     If <code>tako-server</code> is missing or access needs repair, Tako asks whether to install now and which admin SSH
-    user to use. During install, Tako enrolls the SSH key used for access for signed management too.
+    user to use. During install, Tako enrolls the SSH key used for access for signed management and installs the
+    libvips runtime used by the image optimizer.
   </p>
 
   <p>Check remote access:</p>

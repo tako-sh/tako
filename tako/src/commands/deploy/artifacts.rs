@@ -5,7 +5,7 @@ mod runtime_version;
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 
-use crate::build::{BuildAdapter, BuildCache, BuildExecutor, BuildPreset};
+use crate::build::{BuildAdapter, BuildCache, BuildExecutor, BuildPreset, PresetGroup};
 use crate::config::TakoToml;
 use crate::output;
 
@@ -154,6 +154,14 @@ pub(super) async fn prepare_build_phase(
             tako_runtime::detect_package_manager(&runtime_proj_root).map(|pm| pm.id().to_string())
         });
 
+    let mut runtime_env_vars = HashMap::new();
+    if runtime_adapter.preset_group() == PresetGroup::Js {
+        runtime_env_vars.insert(
+            "TAKO_APP_ROOT".to_string(),
+            tako_config.js_app_root().to_string(),
+        );
+    }
+
     let manifest = build_deploy_archive_manifest(
         &app_name,
         &env,
@@ -165,7 +173,7 @@ pub(super) async fn prepare_build_phase(
         git_commit_message.clone(),
         git_dirty,
         tako_config.get_merged_vars(&env),
-        HashMap::new(),
+        runtime_env_vars,
         secrets.get_env(&env),
         app_dir,
         install_dir,

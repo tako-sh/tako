@@ -91,7 +91,7 @@ pipe -> app: "read + close"
 
 Your app reads fd 3 once at startup, parses the JSON, and the pipe is closed. The secrets exist only in process memory — never written to disk on the server, never in environment variables, never visible in `/proc/<pid>/environ` or `ps auxe`.
 
-The [Tako SDK](/docs) handles this automatically. In JavaScript, `tako typegen` emits a project-local `tako.gen.ts` that exports a typed `tako.secrets` bag. Your app imports the generated runtime object:
+The [Tako SDK](/docs) handles this automatically. In JavaScript, `tako gen` emits a project-local `tako.gen.ts` that exports a typed `tako.secrets` bag. Your app imports the generated runtime object:
 
 ```typescript
 // tako.gen.ts is populated from fd 3 before your code runs
@@ -105,9 +105,9 @@ JSON.stringify(tako.secrets); // "[REDACTED]"
 
 The SDK wraps secrets in a Proxy that redacts on `toString()` and `toJSON()` — so accidental logging never leaks values. In Go, it's the same idea with thread-safe accessors.
 
-### Typed secrets with `tako typegen`
+### Typed secrets with `tako gen`
 
-Run [`tako typegen`](/docs/cli) and Tako reads your encrypted secrets file to generate type definitions — without decrypting the values (remember, names are plaintext).
+Run [`tako gen`](/docs/cli) and Tako reads your encrypted secrets file to generate type definitions — without decrypting the values (remember, names are plaintext).
 
 **TypeScript** gets a `tako.gen.ts` that exports a typed `Secrets` interface and `tako.secrets`:
 
