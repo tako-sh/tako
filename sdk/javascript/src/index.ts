@@ -112,6 +112,7 @@ export type {
   WorkflowStepContext,
 } from "./workflows";
 export { TakoError, type TakoErrorCode } from "./tako/error";
+export { imageUrl, type ImageUrlOptions } from "./images";
 
 /**
  * Extract the payload type from a workflow definition.

@@ -3,6 +3,7 @@ import { isIP } from "node:net";
 import { getImageSecret } from "./tako/secrets";
 
 const IMAGE_BASE_PATH = "/_tako/image/v1";
+const PUBLIC_IMAGE_BASE_PATH = "/_tako/image";
 const DEFAULT_PRIVATE_EXPIRATION_SECONDS = 604_800;
 const DEFAULT_PRIVATE_BROWSER_CACHE_MAX_AGE_SECONDS = 604_800;
 const MAX_PRIVATE_BROWSER_CACHE_MAX_AGE_SECONDS = 31_536_000;
@@ -152,6 +153,45 @@ export type PublicImageUrlOptions = BaseImageUrlOptions &
  */
 export type CreateImageUrlOptions = PrivateImageUrlOptions | PublicImageUrlOptions;
 
+export interface ImageUrlOptions {
+  /**
+   * Maximum output width. Defaults to `1200`.
+   */
+  width?: number;
+  /**
+   * Output quality from 1 to 100. Defaults to `75`.
+   */
+  quality?: number;
+  /**
+   * Explicit output format. Omit to let Tako choose from the browser's Accept
+   * header and the app's configured formats.
+   */
+  format?: "avif" | "webp";
+}
+
+/**
+ * Build an unsigned optimizer URL for public local or allowlisted remote images.
+ *
+ * This helper is browser-safe. The server still validates the source against
+ * `[images].local_patterns` or `[images].remote_patterns` before fetching it.
+ */
+export function imageUrl(source: string, opts: ImageUrlOptions = {}): string {
+  validatePublicSource(source);
+  const width = validateWidth(opts.width ?? DEFAULT_WIDTH);
+  const quality = opts.quality === undefined ? undefined : validateQuality(opts.quality);
+  const format = validatePublicFormat(opts.format);
+  const params = new URLSearchParams();
+  params.set("src", source);
+  params.set("w", String(width));
+  if (quality !== undefined && quality !== DEFAULT_QUALITY) {
+    params.set("q", String(quality));
+  }
+  if (format !== undefined) {
+    params.set("f", format);
+  }
+  return `${PUBLIC_IMAGE_BASE_PATH}?${params.toString()}`;
+}
+
 /**
  * Create a signed path-only URL for Tako's image optimizer.
  *
@@ -291,6 +331,16 @@ function validateFormat(format: string | undefined): "avif" | "webp" {
   return "webp";
 }
 
+function validatePublicFormat(format: string | undefined): "avif" | "webp" | undefined {
+  if (format === undefined) {
+    return undefined;
+  }
+  if (format !== "avif" && format !== "webp") {
+    throw new Error(`unsupported image format: ${format}`);
+  }
+  return format;
+}
+
 function validateFit(fit: string): ImageFit {
   if (fit !== "cover" && fit !== "contain") {
     throw new Error(`unsupported image fit: ${fit}`);
@@ -354,6 +404,39 @@ function validateSource(source: string): void {
     throw new Error("invalid image source");
   }
   if (hostnameIsPrivateOrLocal(url.hostname)) {
+    throw new Error("invalid image source");
+  }
+}
+
+function validatePublicSource(source: string): void {
+  if (
+    source.length === 0 ||
+    source.length > 2048 ||
+    source.includes("\0") ||
+    source.includes("\r") ||
+    source.includes("\n") ||
+    source.includes("#")
+  ) {
+    throw new Error("invalid image source");
+  }
+
+  if (source.startsWith("/")) {
+    if (source.startsWith("//") || source.startsWith(PUBLIC_IMAGE_BASE_PATH)) {
+      throw new Error("invalid image source");
+    }
+    return;
+  }
+
+  let url: URL;
+  try {
+    url = new URL(source);
+  } catch {
+    throw new Error("invalid image source");
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error("invalid image source");
+  }
+  if (url.username || url.password || url.hash) {
     throw new Error("invalid image source");
   }
 }
