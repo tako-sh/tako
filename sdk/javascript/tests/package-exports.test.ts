@@ -46,6 +46,17 @@ describe("package exports", () => {
     });
   });
 
+  test("declares the server-only export", () => {
+    const packageJson = JSON.parse(
+      readFileSync(resolve(import.meta.dirname, "..", "package.json"), "utf8"),
+    );
+
+    expect(packageJson.exports["./server"]).toEqual({
+      types: "./dist/server.d.mts",
+      import: "./dist/server.mjs",
+    });
+  });
+
   test("declares the /react export", () => {
     const packageJson = JSON.parse(
       readFileSync(resolve(import.meta.dirname, "..", "package.json"), "utf8"),

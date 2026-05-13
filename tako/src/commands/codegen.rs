@@ -30,12 +30,12 @@ pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>>
                 adapter,
                 tako_config.js_app_root(),
             )?;
-            match (result.wrote_runtime_module, result.wrote_scaffolds) {
-                (true, true) => output::success("Generated tako.gen.ts and channel/workflow stubs"),
-                (true, false) => output::success("Generated tako.gen.ts"),
+            match (result.wrote_declarations, result.wrote_scaffolds) {
+                (true, true) => output::success("Generated tako.d.ts and channel/workflow stubs"),
+                (true, false) => output::success("Generated tako.d.ts"),
                 (false, true) => output::success("Generated channel/workflow stubs"),
                 (false, false) => {
-                    output::success("tako.gen.ts and channel/workflow stubs are up to date")
+                    output::success("tako.d.ts and channel/workflow stubs are up to date")
                 }
             }
         }

@@ -15,6 +15,7 @@ import {
 } from "./meta";
 import type {
   ChannelConnectOptions,
+  ChannelLiveTransport,
   ChannelMessage,
   ChannelPublishOptions,
   ChannelSocket,
@@ -48,8 +49,47 @@ export interface ChannelConfig<
    * Optional WebSocket message handlers. Presence of a handler map makes the
    * channel connectable over WebSocket; otherwise browser subscribers use SSE.
    */
-  handler?: { [T in keyof Messages]?: MessageHandler<Messages[T], Params> };
+  handler?: ChannelHandlerMap<Params, Messages> | undefined;
 }
+
+type ChannelHandlerMap<Params, Messages> = {
+  [T in keyof Messages]?: MessageHandler<Messages[T], Params>;
+};
+
+type ConfigMessageHandler<Data, Params> = {
+  handle(data: Data, ctx: ChannelHandlerContext<Params>): Data | void | Promise<Data | void>;
+}["handle"];
+
+type ConfigChannelHandlerMap<Params> = Record<string, ConfigMessageHandler<unknown, Params>>;
+
+type ChannelConfigWithParams<ParamsSchema extends TSchema> = Omit<
+  ChannelConfig<ParamsSchema, Static<ParamsSchema>, Record<string, unknown>>,
+  "handler" | "paramsSchema"
+> & {
+  paramsSchema: (t: typeof Type) => ParamsSchema;
+  handler?: ConfigChannelHandlerMap<Static<ParamsSchema>> | undefined;
+};
+
+type ChannelConfigWithoutParams = Omit<
+  ChannelConfig<undefined, Record<string, never>, Record<string, unknown>>,
+  "handler" | "paramsSchema"
+> & {
+  paramsSchema?: undefined;
+  handler?: ConfigChannelHandlerMap<Record<string, never>> | undefined;
+};
+
+type AnyChannelConfig = ChannelLifecycleConfig & {
+  name: string;
+  paramsSchema?: ((t: typeof Type) => TSchema) | undefined;
+  auth?:
+    | false
+    | {
+        headerName?: string | false;
+        cookieName?: string;
+        verify: unknown;
+      };
+  handler?: Record<string, unknown> | undefined;
+};
 
 /**
  * Bound channel handle returned by {@link defineChannel}.
@@ -57,8 +97,13 @@ export interface ChannelConfig<
  * Parameterized channels return this after calling the exported channel with
  * params. Unparameterized channels export the handle directly.
  */
-export interface ChannelHandle<Params, Messages> {
+export type ChannelHandle<
+  Params,
+  Messages,
+  Transport extends ChannelLiveTransport = ChannelLiveTransport,
+> = {
   readonly __params?: Params;
+  readonly __messages?: Messages;
   /** Channel name plus encoded params, useful for logging and diagnostics. */
   readonly name: string;
   /**
@@ -75,18 +120,23 @@ export interface ChannelHandle<Params, Messages> {
   /**
    * Open a WebSocket connection. Present only when the channel has handlers.
    */
-  connect?(options?: ChannelConnectOptions): ChannelSocket;
-}
+} & (Transport extends "ws"
+  ? { connect(options?: ChannelConnectOptions): ChannelSocket }
+  : { readonly connect?: never });
 
 /**
  * Metadata attached to every channel export for Tako's discovery pass.
  */
-export interface ChannelExportMeta<Params, Messages> {
+export interface ChannelExportMeta<
+  Params,
+  Messages,
+  Transport extends ChannelLiveTransport = ChannelLiveTransport,
+> {
   readonly definition: ChannelDefinition<Params, Messages>;
   /**
    * Narrow the message map for this channel without changing runtime behavior.
    */
-  $messageTypes<NewMessages>(): ChannelExport<Params, NewMessages>;
+  $messageTypes<NewMessages>(): ChannelExport<Params, NewMessages, Transport>;
 }
 
 /**
@@ -95,10 +145,14 @@ export interface ChannelExportMeta<Params, Messages> {
  * Channels with params are callable and return a {@link ChannelHandle}; channels
  * without params are already bound handles.
  */
-export type ChannelExport<Params, Messages> = (Record<string, never> extends Params
-  ? ChannelHandle<Params, Messages>
-  : (params: Params) => ChannelHandle<Params, Messages>) &
-  ChannelExportMeta<Params, Messages>;
+export type ChannelExport<
+  Params,
+  Messages,
+  Transport extends ChannelLiveTransport = ChannelLiveTransport,
+> = (Record<string, never> extends Params
+  ? ChannelHandle<Params, Messages, Transport>
+  : (params: Params) => ChannelHandle<Params, Messages, Transport>) &
+  ChannelExportMeta<Params, Messages, Transport>;
 
 function lifecycle(config: ChannelLifecycleConfig): ChannelLifecycleConfig {
   return {
@@ -131,7 +185,10 @@ function encodeQueryValue(value: unknown): string {
   return JSON.stringify(value);
 }
 
-function makeHandle<P, M>(definition: ChannelDefinition<P, M>, params: P): ChannelHandle<P, M> {
+function makeHandle<P, M, Transport extends ChannelLiveTransport>(
+  definition: ChannelDefinition<P, M>,
+  params: P,
+): ChannelHandle<P, M, Transport> {
   const query = encodeParams(params as Record<string, unknown>);
   const makeChannel = () =>
     new Channel(definition.channel, definition.transport, params as Record<string, unknown>);
@@ -158,13 +215,13 @@ function makeHandle<P, M>(definition: ChannelDefinition<P, M>, params: P): Chann
       configurable: true,
     });
   }
-  return handle as ChannelHandle<P, M>;
+  return handle as ChannelHandle<P, M, Transport>;
 }
 
-function attachMeta<P, M, T extends object>(
+function attachMeta<P, M, Transport extends ChannelLiveTransport, T extends object>(
   target: T,
   definition: ChannelDefinition<P, M>,
-): T & ChannelExportMeta<P, M> {
+): T & ChannelExportMeta<P, M, Transport> {
   Object.defineProperty(target, "definition", {
     value: definition,
     writable: false,
@@ -173,13 +230,13 @@ function attachMeta<P, M, T extends object>(
   });
   Object.defineProperty(target, "$messageTypes", {
     value: function messageTypesNarrow<NewM>() {
-      return this as unknown as ChannelExport<P, NewM>;
+      return this as unknown as ChannelExport<P, NewM, Transport>;
     },
     writable: false,
     enumerable: false,
     configurable: false,
   });
-  return target as T & ChannelExportMeta<P, M>;
+  return target as T & ChannelExportMeta<P, M, Transport>;
 }
 
 /**
@@ -202,42 +259,64 @@ function attachMeta<P, M, T extends object>(
  * }).$messageTypes<Messages>();
  * ```
  */
-export function defineChannel<
-  ParamsSchema extends TSchema | undefined = undefined,
-  Params = ParamsSchema extends TSchema ? Static<ParamsSchema> : Record<string, never>,
-  Messages = Record<string, unknown>,
->(config: ChannelConfig<ParamsSchema, Params, Messages>): ChannelExport<Params, Messages> {
+export function defineChannel<ParamsSchema extends TSchema>(
+  config: ChannelConfigWithParams<ParamsSchema> & {
+    handler: ConfigChannelHandlerMap<Static<ParamsSchema>>;
+  },
+): ChannelExport<Static<ParamsSchema>, Record<string, unknown>, "ws">;
+export function defineChannel<ParamsSchema extends TSchema>(
+  config: ChannelConfigWithParams<ParamsSchema> & { handler?: undefined },
+): ChannelExport<Static<ParamsSchema>, Record<string, unknown>, "sse">;
+export function defineChannel(
+  config: ChannelConfigWithoutParams & {
+    handler: ConfigChannelHandlerMap<Record<string, never>>;
+  },
+): ChannelExport<Record<string, never>, Record<string, unknown>, "ws">;
+export function defineChannel(
+  config: ChannelConfigWithoutParams & { handler?: undefined },
+): ChannelExport<Record<string, never>, Record<string, unknown>, "sse">;
+export function defineChannel(input: unknown): unknown {
+  const config = input as AnyChannelConfig;
   const schema = config.paramsSchema?.(Type) ?? Type.Object({});
-  const auth: ChannelDefinition<Params, Messages>["auth"] =
+  const auth: ChannelDefinition<unknown, Record<string, unknown>>["auth"] =
     config.auth === undefined || config.auth === false
       ? false
       : {
           headerName:
             config.auth.headerName === undefined ? "authorization" : config.auth.headerName,
           ...(config.auth.cookieName !== undefined && { cookieName: config.auth.cookieName }),
-          verify: config.auth.verify,
+          verify: config.auth.verify as ChannelAuthConfig<unknown>["verify"],
         };
-  const definition: ChannelDefinition<Params, Messages> = {
+  const definition: ChannelDefinition<unknown, Record<string, unknown>> = {
     type: CHANNEL_SYMBOL,
     channel: config.name,
     paramsSchema: schema,
     auth,
     hasParams: config.paramsSchema !== undefined,
-    ...(config.handler !== undefined && { handler: config.handler, transport: "ws" as const }),
+    ...(config.handler !== undefined
+      ? {
+          handler: config.handler as NonNullable<
+            ChannelDefinition<unknown, Record<string, unknown>>["handler"]
+          >,
+          transport: "ws" as const,
+        }
+      : {}),
     ...lifecycle(config),
   };
 
   if (definition.hasParams) {
-    const callable = (params: Params) => makeHandle(definition, params);
-    return attachMeta(callable, definition) as unknown as ChannelExport<Params, Messages>;
+    const callable = (params: unknown) => makeHandle(definition, params);
+    return attachMeta(callable, definition);
   }
 
-  const handle = makeHandle(definition, {} as Params);
-  return attachMeta(handle, definition) as unknown as ChannelExport<Params, Messages>;
+  const handle = makeHandle(definition, {});
+  return attachMeta(handle, definition);
 }
 
 /** Narrow `value` to a `ChannelExport` produced by `defineChannel`. */
-export function isChannelExport(value: unknown): value is ChannelExport<unknown, unknown> {
+export function isChannelExport(
+  value: unknown,
+): value is ChannelExport<unknown, unknown, ChannelLiveTransport> {
   return isChannelExportMeta(value);
 }
 

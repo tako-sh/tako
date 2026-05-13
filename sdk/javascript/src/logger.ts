@@ -63,7 +63,7 @@ function expandErrors(fields: Fields): Fields {
  * and per-call fields. `Error` values in `fields` are serialized to
  * `{ name, message, stack }` automatically.
  *
- * Obtain an instance with {@link createLogger} or import `logger` from the generated `tako.gen.ts`.
+ * Obtain an instance with {@link createLogger} or import `tako.logger` from `tako.sh`.
  */
 export class Logger {
   static #globals: Fields = autoPopulate();

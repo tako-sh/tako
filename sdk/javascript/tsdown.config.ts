@@ -20,6 +20,7 @@ export default defineConfig([
     entry: {
       index: "src/index.ts",
       runtime: "src/runtime.ts",
+      server: "src/server.ts",
       vite: "src/vite.ts",
       internal: "src/internal.ts",
       nextjs: "src/nextjs/index.ts",

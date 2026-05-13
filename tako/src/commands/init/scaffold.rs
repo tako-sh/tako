@@ -59,7 +59,8 @@ pub(super) fn detect_js_app_root(project_dir: &Path) -> String {
         } else {
             project_dir.join(candidate)
         };
-        if dir.join("tako.gen.ts").is_file()
+        if dir.join("tako.d.ts").is_file()
+            || dir.join("tako.gen.ts").is_file()
             || dir.join("channels").is_dir()
             || dir.join("workflows").is_dir()
         {
@@ -170,7 +171,7 @@ pub(super) fn generate_template(params: &TemplateParams<'_>) -> String {
         format!(
             r#"
 # JavaScript app root, relative to this file.
-# Tako writes `tako.gen.ts` here and discovers `channels/` and `workflows/` inside it.
+# Tako discovers `channels/` and `workflows/` inside it.
 # Use "." if those files live next to `tako.toml`.
 # `main`, `assets`, and build paths stay relative to this file.
 app_root = "{}"

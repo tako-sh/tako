@@ -230,9 +230,7 @@ pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>>
                 match wizard.input(
                     "App root",
                     Some(&default_app_root),
-                    Some(
-                        "JS root for tako.gen.ts, channels/, and workflows/ (use . for project root).",
-                    ),
+                    Some("JS root for channels/ and workflows/ (use . for project root)."),
                 ) {
                     Ok(v) => {
                         let trimmed = v.trim();
@@ -626,8 +624,9 @@ fn write_init_generated_file(
 ) -> Result<Option<&'static str>, Box<dyn std::error::Error>> {
     match adapter.preset_group() {
         PresetGroup::Js => {
-            if js::write_tako_gen_module_for_adapter_and_app_root(project_dir, adapter, app_root)? {
-                Ok(Some("tako.gen.ts"))
+            if js::write_tako_declarations_for_adapter_and_app_root(project_dir, adapter, app_root)?
+            {
+                Ok(Some("tako.d.ts"))
             } else {
                 Ok(None)
             }

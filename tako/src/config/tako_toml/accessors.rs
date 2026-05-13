@@ -7,8 +7,7 @@ const RESERVED_DERIVED_ENV_VARS: &[&str] = &["ENV"];
 impl Config {
     /// JavaScript app root relative to the config file.
     ///
-    /// Tako writes `tako.gen.ts` here and discovers `channels/` and
-    /// `workflows/` inside it.
+    /// Tako discovers `channels/` and `workflows/` inside it.
     pub fn js_app_root(&self) -> &str {
         self.app_root
             .as_deref()

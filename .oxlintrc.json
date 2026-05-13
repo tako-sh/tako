@@ -3,5 +3,5 @@
   "options": {
     "typeAware": true
   },
-  "ignorePatterns": ["routeTree.gen.ts", "e2e/fixtures", "website/src/components/posthog.astro"]
+  "ignorePatterns": ["e2e/fixtures", "website/src/components/posthog.astro"]
 }

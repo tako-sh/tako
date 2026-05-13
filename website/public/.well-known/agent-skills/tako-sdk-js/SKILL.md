@@ -1,7 +1,7 @@
 ---
 name: tako-sdk
 description: >-
-  tako.sh SDK: fetch handler interface, generated tako.gen.ts for runtime state + typed secrets,
+  tako.sh SDK: fetch handler interface, tako runtime object, generated tako.d.ts type augmentation,
   defineChannel/defineWorkflow, Vite and Next.js adapters.
 type: framework
 library: tako.sh
@@ -14,7 +14,7 @@ sources:
 
 Runtime SDK for JavaScript/TypeScript apps deployed with Tako.
 
-> **CRITICAL**: The `tako.sh` package is **required** — it provides the entrypoint binaries that tako-server launches to run your app. Tako v0 uses plain ES modules everywhere — no `Tako` global. Runtime state (env, secrets, logger, build info) is accessed through the generated `tako` object from `tako.gen.ts`; channels and workflows are imported from their own files.
+> **CRITICAL**: The `tako.sh` package is **required** — it provides the entrypoint binaries that tako-server launches to run your app. Tako v0 uses plain ES modules everywhere — no `Tako` global. Runtime state (env, secrets, logger, build info) is accessed through the `tako` object from `tako.sh`; channels and workflows are imported from their own files.
 
 > **CRITICAL**: Framework helpers are opt-in. Use `tako.sh/vite` for Vite-based SSR frameworks (TanStack Start, Nuxt, SolidStart) and `tako.sh/nextjs` for Next.js standalone builds. Plain fetch-handler apps do not need either helper.
 
@@ -53,22 +53,23 @@ export default {
 
 ## Package Exports
 
-| Import path        | Purpose                                                     | Key exports                                                                                        |
-| ------------------ | ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `tako.sh`          | Server-side authoring + runtime                             | `defineChannel`, `defineWorkflow`, `signal`, `createImageUrl`, `TakoError`, `InferWorkflowPayload` |
-| `tako.sh/client`   | Browser-safe channel client                                 | `Channel`                                                                                          |
-| `tako.sh/react`    | React hook for channels                                     | `useChannel`                                                                                       |
-| `tako.sh/vite`     | Vite plugin for SSR builds                                  | `tako()` plugin function                                                                           |
-| `tako.sh/nextjs`   | Next.js standalone adapter + wrapper                        | `withTako()`, `createNextjsAdapter()`, `createNextjsFetchHandler()`                                |
-| `tako.sh/runtime`  | Browser-safe subset consumed by the generated `tako.gen.ts` | `loadSecrets`, `createLogger`, `Logger`                                                            |
-| `tako.sh/internal` | Server-only plumbing for framework-adapter boot             | `handleTakoEndpoint`, `initServerRuntime`, channel/workflow define helpers                         |
+| Import path        | Purpose                                         | Key exports                                                                                              |
+| ------------------ | ----------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `tako.sh`          | Isomorphic runtime + authoring helpers          | `tako`, `defineChannel`, `defineWorkflow`, `signal`, `TakoError`, `InferChannel`, `InferWorkflowPayload` |
+| `tako.sh/server`   | Server-only app helpers                         | `createImageUrl` and image URL option types                                                              |
+| `tako.sh/client`   | Browser-safe channel client                     | `Channel`                                                                                                |
+| `tako.sh/react`    | React hook for channels                         | `useChannel`                                                                                             |
+| `tako.sh/vite`     | Vite plugin for SSR builds                      | `tako()` plugin function                                                                                 |
+| `tako.sh/nextjs`   | Next.js standalone adapter + wrapper            | `withTako()`, `createNextjsAdapter()`, `createNextjsFetchHandler()`                                      |
+| `tako.sh/runtime`  | Browser-safe runtime internals                  | `loadSecrets`, `createLogger`, `Logger`                                                                  |
+| `tako.sh/internal` | Server-only plumbing for framework-adapter boot | `handleTakoEndpoint`, `initServerRuntime`, channel/workflow define helpers                               |
 
-## Runtime state: `tako.gen.ts`
+## Runtime state: `tako.sh` + `tako.d.ts`
 
-`tako gen` emits `<app_root>/tako.gen.ts`, where `app_root` comes from `tako.toml` and defaults to `src`. It exports a typed `tako` runtime object and a typed `tako.secrets` bag. When `<app_root>/channels/` or `<app_root>/workflows/` already exists, it also scaffolds empty definition dirs/files so they default-export `defineChannel({ name: "<file-stem>" })` / `defineWorkflow(...)` stubs. Generated channel stubs use the file stem as the initial name, but `tako gen` does not rewrite existing explicit channel names. App code imports `tako` for project runtime state:
+`tako generate` emits a project-local `tako.d.ts` that augments `tako.sh` with typed environment names, typed `tako.secrets` keys, channel metadata inferred from channel exports, and runtime env globals. It keeps an existing declaration in `app/`, `src/`, or the project root; otherwise it uses an existing legacy `tako.gen.ts` location, then `app/`, then `src/`, then the project root. `tako gen` and `tako g` are aliases. When `<app_root>/channels/` or `<app_root>/workflows/` already exists, it also scaffolds empty definition dirs/files so they default-export `defineChannel({ name: "<file-stem>" })` / `defineWorkflow(...)` stubs. Generated channel stubs use the file stem as the initial name, but `tako generate` does not rewrite existing explicit channel names. Generated `TakoChannels` entries use the declared channel name as the key and `import("tako.sh").InferChannel<typeof import("./channels/<file>").default>` for params, messages, and transport. App code imports `tako` from `tako.sh` for project runtime state:
 
 ```typescript
-import { tako } from "../tako.gen";
+import { tako } from "tako.sh";
 
 export default function fetch(request: Request) {
   tako.logger.info("request", { env: tako.env, build: tako.build });
@@ -94,8 +95,8 @@ export default function fetch(request: Request) {
 | `tako.secrets` | Typed secret bag (interface regenerated from `.tako/secrets.json`) |
 | `tako.logger`  | Structured JSON logger (`tako.logger.info(...)`)                   |
 | `Env`          | TypeScript union of configured environment names                   |
-| `Secrets`      | TypeScript interface of secret names                               |
-| `TakoRuntime`  | TypeScript type of the generated `tako` object                     |
+| `TakoSecrets`  | TypeScript interface of secret names                               |
+| `TakoRuntime`  | TypeScript type of the exported `tako` object                      |
 
 ### Secrets
 
@@ -104,16 +105,16 @@ export default function fetch(request: Request) {
 - Reads from a mutable store populated via fd 3 at startup (before user module is imported)
 - Individual access works: `tako.secrets.MY_KEY` returns the string value
 - Resists bulk serialization: `toString()`, `toJSON()` return `"[REDACTED]"`
-- Is typed — the `Secrets` interface in `tako.gen.ts` lists every key present in `.tako/secrets.json`
+- Is typed — the `TakoSecrets` interface augmentation in `tako.d.ts` lists every key present in `.tako/secrets.json`
 
-The generated file is server-only. In the browser, use `tako.sh/client` or `tako.sh/react`.
+The generated declaration file is type-only and is not imported by app code. In the browser, use `tako.sh/client` or `tako.sh/react`.
 
 ## Images
 
-Server-side JavaScript can create signed optimized image URLs with `createImageUrl`:
+Server-side JavaScript can create signed optimized image URLs with `createImageUrl`. In isomorphic frameworks, call it inside a loader/server function and pass the signed URL string to components:
 
 ```typescript
-import { createImageUrl } from "tako.sh";
+import { createImageUrl } from "tako.sh/server";
 
 const photo = createImageUrl("/photos/p_123.jpg");
 const url = createImageUrl("/avatars/u_123.png", { width: 256 });
@@ -536,7 +537,7 @@ export default withTako({});
 ### 3. HIGH: Serializing the secrets object
 
 ```typescript
-import { tako } from "../tako.gen";
+import { tako } from "tako.sh";
 
 // WRONG — bulk access is redacted
 console.log(JSON.stringify(tako.secrets)); // "[REDACTED]"

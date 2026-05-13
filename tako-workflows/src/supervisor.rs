@@ -53,7 +53,7 @@ pub struct WorkerSpec {
     pub env: HashMap<String, String>,
     /// Secrets to hand the worker via fd 3. Mirror of the HTTP
     /// instance's runtime ABI — the SDK reads JSON from fd 3 at startup
-    /// and populates the `secrets` export on `tako.gen.ts`.
+    /// and populates `tako.secrets` from `tako.sh`.
     #[cfg_attr(not(unix), allow(dead_code))]
     pub secrets: HashMap<String, String>,
     /// Optional per-line log sink. When `Some`, the supervisor pipes

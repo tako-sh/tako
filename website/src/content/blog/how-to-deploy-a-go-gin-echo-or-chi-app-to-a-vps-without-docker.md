@@ -296,14 +296,14 @@ The app is now a native Go process on your VPS, managed by Tako. Future deploys 
 
 The code stays normal Go. Tako handles the deployment chores around it:
 
-| Usual VPS chore                 | What happens with Tako                                                              |
-| ------------------------------- | ----------------------------------------------------------------------------------- |
-| Write a `Dockerfile`            | Skip it; deploy the compiled Go binary                                              |
-| Push an image registry artifact | Skip it; Tako uploads a compressed release artifact over SFTP                       |
-| Configure Nginx and Certbot     | Skip it; `tako-server` handles HTTPS routing and certificates                       |
-| Poll logs over SSH              | Use [`tako logs`](/docs/cli#tako-logs)                                              |
-| Copy `.env` files               | Use [`tako secrets`](/docs/cli#tako-secrets) and typed Go accessors from `tako gen` |
-| Restart processes by hand       | Deploys and scaling commands manage instances                                       |
+| Usual VPS chore                 | What happens with Tako                                                                   |
+| ------------------------------- | ---------------------------------------------------------------------------------------- |
+| Write a `Dockerfile`            | Skip it; deploy the compiled Go binary                                                   |
+| Push an image registry artifact | Skip it; Tako uploads a compressed release artifact over SFTP                            |
+| Configure Nginx and Certbot     | Skip it; `tako-server` handles HTTPS routing and certificates                            |
+| Poll logs over SSH              | Use [`tako logs`](/docs/cli#tako-logs)                                                   |
+| Copy `.env` files               | Use [`tako secrets`](/docs/cli#tako-secrets) and typed Go accessors from `tako generate` |
+| Restart processes by hand       | Deploys and scaling commands manage instances                                            |
 
 If you want to see complete working versions, the [Tako GitHub repo](https://github.com/lilienblum/tako/tree/master/examples/go) includes Gin, Echo, Chi, and plain `net/http` examples. The [Go SDK launch post](/blog/the-go-sdk-is-here) goes deeper on secrets, metadata helpers, channels, and why `http.Handler` is the right interface.
 

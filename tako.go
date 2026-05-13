@@ -18,7 +18,7 @@
 // # Secrets
 //
 // Secrets are accessed via a generated Secrets struct in tako_secrets.go.
-// Run `tako gen` to generate it from your project's secret definitions:
+// Run `tako generate` to generate it from your project's secret definitions:
 //
 //	db := Secrets.DatabaseUrl()
 //	key := Secrets.ApiKey()
@@ -236,7 +236,7 @@ func Uptime() time.Duration {
 // Secrets are loaded from fd 3 at process startup in both dev and production.
 // If a secret is not defined, GetSecret returns an empty string.
 //
-// Run `tako gen` to generate the Secrets struct:
+// Run `tako generate` to generate the Secrets struct:
 //
 //	// Generated in tako_secrets.go — use this:
 //	db := Secrets.DatabaseUrl()

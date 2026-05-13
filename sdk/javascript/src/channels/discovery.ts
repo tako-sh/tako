@@ -7,6 +7,7 @@ const VALID_EXTS = new Set([".ts", ".tsx", ".js", ".mjs", ".mts"]);
 
 export interface DiscoveredChannel {
   name: string;
+  fileStem: string;
   definition: ChannelDefinition;
 }
 
@@ -49,7 +50,7 @@ export async function discoverChannels(dir: string): Promise<DiscoveredChannel[]
     }
     seenNames.set(definition.channel, entry.name);
 
-    found.push({ name: definition.channel, definition });
+    found.push({ name: definition.channel, fileStem: parsed.name, definition });
   }
 
   return found;

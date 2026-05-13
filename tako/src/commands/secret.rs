@@ -14,7 +14,7 @@ pub use key::{ensure_secret_key_available, load_secret_key};
 use key::{export_key, import_key, load_or_create_key_for_set};
 use sync::{list_secrets, sync_secrets};
 
-/// Refresh generated files (`tako.gen.ts` for JS/TS, `tako_secrets.go` for
+/// Refresh generated files (`tako.d.ts` for JS/TS, `tako_secrets.go` for
 /// Go) after a secret change. Best-effort — a generation failure doesn't block
 /// the secret write itself.
 fn refresh_generated_files_after_secret_change(project_dir: &Path, config_path: &Path) {
@@ -31,7 +31,7 @@ fn refresh_generated_files_after_secret_change(project_dir: &Path, config_path: 
         .unwrap_or_else(|| detect_build_adapter(project_dir));
     match adapter.preset_group() {
         PresetGroup::Js => {
-            let _ = build::js::write_tako_gen_module_for_adapter_and_app_root(
+            let _ = build::js::write_tako_declarations_for_adapter_and_app_root(
                 project_dir,
                 adapter,
                 tako_config.js_app_root(),

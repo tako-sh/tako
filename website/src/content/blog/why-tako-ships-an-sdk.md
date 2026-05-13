@@ -68,10 +68,10 @@ The new instance writes `TAKO:READY:<port>` to stdout only after it has read sec
 
 Secrets deserve special mention. Tako encrypts secrets with AES-256-GCM and [stores them in your repo](/docs/cli). At deploy time, the server passes them to your app through file descriptor 3 — not environment variables, not files on disk.
 
-The SDK reads fd 3 _before importing your code_, then exposes secrets through a `Proxy` that redacts itself. `tako gen` emits a project-local `tako.gen.ts` with typed `tako.secrets`:
+The SDK reads fd 3 _before importing your code_, then exposes secrets through a `Proxy` that redacts itself. `tako generate` emits a project-local `tako.d.ts` that types `tako.secrets` from `tako.sh`:
 
 ```typescript
-import { tako } from "../tako.gen";
+import { tako } from "tako.sh";
 
 tako.secrets.DATABASE_URL; // → "postgres://..."
 console.log(tako.secrets); // → "[REDACTED]"

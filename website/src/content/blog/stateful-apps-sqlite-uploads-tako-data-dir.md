@@ -30,7 +30,7 @@ That directory persists across:
 
 It's only cleaned up when you explicitly delete the app.
 
-Your code reaches it through `tako.dataDir` from `tako.gen.ts`. Under the hood, Tako sets `TAKO_DATA_DIR`; most app code should use the typed helper instead of reading the environment variable directly.
+Your code reaches it through `tako.dataDir` from `tako.sh`. Under the hood, Tako sets `TAKO_DATA_DIR`; most app code should use the typed helper instead of reading the environment variable directly.
 
 ## SQLite without a managed database
 
@@ -41,7 +41,7 @@ Tako's data directory is that place.
 ```typescript
 import { Database } from "bun:sqlite";
 import { join } from "path";
-import { tako } from "../tako.gen";
+import { tako } from "tako.sh";
 
 const db = new Database(join(tako.dataDir, "app.db"));
 db.run(`
@@ -72,7 +72,7 @@ The same pattern applies to any file-based storage:
 ```typescript
 import { writeFile, mkdir } from "fs/promises";
 import { join } from "path";
-import { tako } from "../tako.gen";
+import { tako } from "tako.sh";
 
 const uploadsDir = join(tako.dataDir, "uploads");
 await mkdir(uploadsDir, { recursive: true });
@@ -96,7 +96,7 @@ In development, `tako dev` uses `.tako/data/app/` inside your project directory.
 
 If you want a clean local state, delete `.tako/data/app/` — the same reasoning applies in production: the data persists until you intentionally clear it.
 
-Run `tako gen` and the generated `tako.gen.ts` exports `tako.dataDir` as a typed value alongside your secrets, so your editor knows it's always available.
+Run `tako generate` and the generated `tako.d.ts` keeps `tako.dataDir` and your secrets typed, so your editor knows what's available.
 
 ## Where this doesn't replace managed infrastructure
 

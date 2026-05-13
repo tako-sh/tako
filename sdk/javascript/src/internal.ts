@@ -2,8 +2,7 @@
  * tako.sh/internal — server-only plumbing.
  *
  * Two audiences:
- *   - The generated `tako.gen.ts` file, which pulls `loadSecrets` and
- *     `createLogger` from here.
+ *   - Framework/runtime code that needs low-level bootstrap helpers.
  *   - Framework-adapter authors wiring Tako into a new host (custom Vite
  *     plugin, Next.js middleware, edge adapter), who use
  *     `handleTakoEndpoint` to answer Tako's internal protocol requests.

@@ -14,8 +14,8 @@
  * user code, and it does NOT leak to processes the app spawns (unlike
  * an env var would).
  *
- * Secrets are exposed through the `secrets` proxy exported from the
- * generated `tako.gen.ts`. Its `toString`/`toJSON`/inspect return
+ * Secrets are exposed through the `tako.secrets` proxy exported from
+ * `tako.sh`. Its `toString`/`toJSON`/inspect return
  * `[REDACTED]` and its property descriptors are non-enumerable, so
  * bulk-spread (`{ ...secrets }`) returns an empty object — individual
  * access via `secrets.KEY` still works through the `get` trap.
@@ -49,10 +49,10 @@ export function getImageSecret(): string | null {
 }
 
 /**
- * Build the proxy-backed accessor that becomes the `secrets` export in
- * `tako.gen.ts`. The generated file passes its project-specific `Secrets`
- * interface as `T` so individual key access (`secrets.FOO`) is typed as
- * a readonly field — `secrets.FOO = "x"` is a compile error.
+ * Build the proxy-backed accessor that becomes `tako.secrets`. The generated
+ * `tako.d.ts` file augments `TakoSecrets` so individual key access
+ * (`tako.secrets.FOO`) is typed as a readonly field — `tako.secrets.FOO = "x"`
+ * is a compile error.
  */
 export function loadSecrets<T = Record<string, string>>(): Readonly<T> {
   return new Proxy(Object.create(null) as Record<string, string>, {

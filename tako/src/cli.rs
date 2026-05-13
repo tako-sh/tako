@@ -170,7 +170,8 @@ pub enum Commands {
     },
 
     /// Refresh generated Tako files
-    Gen,
+    #[command(visible_aliases = ["gen", "g"])]
+    Generate,
 
     /// Show version information
     Version,
@@ -245,7 +246,7 @@ impl Cli {
             Commands::Releases(cmd) => releases::run(cmd, self.config.as_deref()),
             Commands::Upgrade => upgrade::run(),
             Commands::Implode { yes } => commands::implode::run(yes),
-            Commands::Gen => commands::codegen::run(self.config.as_deref()),
+            Commands::Generate => commands::codegen::run(self.config.as_deref()),
             Commands::Deploy { env, yes } => {
                 commands::deploy::run(env.as_deref(), yes, self.config.as_deref())
             }

@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import path from "node:path";
-import { tako } from "../tako.gen";
+import { tako } from "tako.sh";
 
 import type {
   BaseSnapshot,

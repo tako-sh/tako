@@ -6,21 +6,21 @@
       "type": "framework",
       "description": "Tako CLI commands: init, dev, deploy, secrets, gen, scale, logs, rollback, servers, doctor. Includes output design patterns for interactive and plain modes.",
       "url": "https://tako.sh/.well-known/agent-skills/tako/SKILL.md",
-      "sha256": "0bb459b844554e7ff7ccc0f0ae46b7d1f4b8556534ce55749ee5a1f84e72a669"
+      "sha256": "dcb03b458e7f7a256d965a5c71cb994e35a41e9e938974afea24df0dbeeb8917"
     },
     {
       "name": "tako-sdk-go",
       "type": "framework",
-      "description": "tako.sh Go SDK: ListenAndServe for http.Handler, Listener for custom servers, typed secrets via tako gen, metadata helpers.",
+      "description": "tako.sh Go SDK: ListenAndServe for http.Handler, Listener for custom servers, typed secrets via tako generate, metadata helpers.",
       "url": "https://tako.sh/.well-known/agent-skills/tako-sdk-go/SKILL.md",
-      "sha256": "1165bd5c3b1e0e319165cac81926cf2ac16c87a1aa5569cea6d45dd064a3d49b"
+      "sha256": "80fe79a28f4ab632b460e012b711858282c5ededc3bb8afa56c05a1b62c5d095"
     },
     {
       "name": "tako-sdk-js",
       "type": "framework",
-      "description": "tako.sh SDK: fetch handler interface, generated tako.gen.ts for runtime state + typed secrets, defineChannel/defineWorkflow, Vite and Next.js adapters.",
+      "description": "tako.sh SDK: fetch handler interface, tako runtime object, generated tako.d.ts type augmentation, defineChannel/defineWorkflow, Vite and Next.js adapters.",
       "url": "https://tako.sh/.well-known/agent-skills/tako-sdk-js/SKILL.md",
-      "sha256": "97d24a4ccedd43f424e23b653ec6cd98db7df8753ee6a242585a46ea17a9a6b8"
+      "sha256": "ebb56d308bb09e521e17440d0cc5ba2d3e561db694315e3c7531ac9806162d9c"
     }
   ]
 }

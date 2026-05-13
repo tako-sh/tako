@@ -9,14 +9,14 @@ Images are sneaky infrastructure.
 
 Your app starts with a few uploads in `public/`, object storage, or a CDN bucket. Then someone wants avatars cropped square, gallery photos capped at a sensible width, WebP fallbacks for older clients, private message attachments, and cache headers that do not accidentally make a user's photo reusable in the wrong place. Suddenly "show this image" has become a second platform.
 
-Tako now ships that image service in the app boundary you already own. Keep originals wherever your app keeps images; server-side TypeScript can call `createImageUrl()` from [`tako.sh`](/blog/why-tako-ships-an-sdk), hand the signed path to the browser, and let `tako-server` verify, resize, encode, and cache the response under `/_tako/image/v1/...`. Storage stays yours. Transformation and policy move into Tako. No separate optimizer service. No query-string soup.
+Tako now ships that image service in the app boundary you already own. Keep originals wherever your app keeps images; server-side TypeScript can call `createImageUrl()` from `tako.sh/server`, hand the signed path to the browser, and let `tako-server` verify, resize, encode, and cache the response under `/_tako/image/v1/...`. Storage stays yours. Transformation and policy move into Tako. No separate optimizer service. No query-string soup.
 
 ## One helper signs the contract
 
 The smallest version is deliberately boring:
 
 ```ts
-import { createImageUrl } from "tako.sh";
+import { createImageUrl } from "tako.sh/server";
 
 const photo = createImageUrl("/photos/p_123.jpg");
 ```
@@ -136,7 +136,7 @@ vips -> browser: "AVIF or WebP + cache headers"
 
 Image optimization sits in the same awkward place as secrets, WebSocket channels, and workflows: too app-specific to be pure infrastructure, too operational to copy into every route handler. The app knows which source image to show, whether it is private, and which crop makes sense. The platform should own signature verification, SSRF protection, byte limits, resize math, cache headers, and the actual image transform.
 
-That split is why `createImageUrl()` is a small SDK helper instead of a framework component. You can call it from a Hono handler, a TanStack Start loader, a Next.js server component, or plain fetch-handler code. The browser only gets a path. The proxy does the heavy work after the request matches your route, alongside the other reserved `/_tako/*` endpoints described in [How Tako Works](/docs/how-tako-works).
+That split is why `createImageUrl()` is a small server-only SDK helper instead of a framework component. You can call it from a Hono handler, a TanStack Start server function, a Next.js server component, or plain fetch-handler code. The browser only gets a path. The proxy does the heavy work after the request matches your route, alongside the other reserved `/_tako/*` endpoints described in [How Tako Works](/docs/how-tako-works).
 
 It also keeps deployment simple. If you can deploy the app with [`tako deploy`](/docs/cli), the optimizer comes with it. Sources in `public/` are served locally when present; other local paths can be fetched from the matched app backend. Remote image sources are allowed only through the signed URL contract, with unsupported schemes, userinfo, fragments, local/private hosts, local/private DNS results, recursive optimizer URLs, and redirects rejected before transform work happens.
 

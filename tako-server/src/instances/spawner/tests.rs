@@ -222,7 +222,7 @@ fn build_instance_env_only_has_app_vars() {
     assert_eq!(env.get("HOST").map(String::as_str), Some("127.0.0.1"));
     assert!(env.contains_key("PORT"));
     // Secrets + internal token travel on fd 3, not env. Guard the secret
-    // case so `secrets.FOO` (from `tako.gen.ts`) can't be accidentally
+    // case so `tako.secrets.FOO` can't be accidentally
     // replaced by `process.env.FOO` from a leaked var.
     assert!(!env.contains_key("SECRET"));
 }

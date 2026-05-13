@@ -27,7 +27,7 @@ pub struct Config {
     pub dev: Vec<String>,
 
     /// JavaScript app root, relative to the config file.
-    /// `tako.gen.ts`, `channels/`, and `workflows/` live under this directory.
+    /// `channels/` and `workflows/` live under this directory.
     pub app_root: Option<String>,
 
     /// Runtime entrypoint override relative to project root

@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
-import { createImageUrl } from "../src/images";
+import { createImageUrl } from "../src/server";
 import { injectBootstrap } from "../src/tako/secrets";
 
 describe("createImageUrl", () => {

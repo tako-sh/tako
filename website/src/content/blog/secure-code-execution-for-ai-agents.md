@@ -68,10 +68,10 @@ pipe -> agent: "read at startup, close fd"
 agent -> isolate: "run untrusted code (no secrets)"
 ```
 
-The SDK reads fd 3 once at startup and closes it. By the time your code creates an isolate, the file descriptor is gone. The sandbox has nothing to steal. Your agent code imports typed secrets through the generated `tako` object:
+The SDK reads fd 3 once at startup and closes it. By the time your code creates an isolate, the file descriptor is gone. The sandbox has nothing to steal. Your agent code imports typed secrets through the `tako` object from `tako.sh`:
 
 ```ts
-import { tako } from "../tako.gen";
+import { tako } from "tako.sh";
 
 // Available to your agent's own code:
 const llm = new Anthropic({ apiKey: tako.secrets.ANTHROPIC_KEY });

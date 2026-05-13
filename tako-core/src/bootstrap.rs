@@ -2,7 +2,7 @@
 //!
 //! The SDK reads a JSON object `{"token": ..., "secrets": {...}}` from
 //! the inherited read end of a pipe at startup and uses it to populate
-//! the `secrets` export on `tako.gen.ts` and the internal auth token used
+//! `tako.secrets` from `tako.sh` and the internal auth token used
 //! by `Host: <app>.tako` RPCs.
 //!
 //! This module is the server-side contract. Both spawners — `tako-server`
