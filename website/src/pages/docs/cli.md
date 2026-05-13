@@ -3,7 +3,7 @@ layout: ../../layouts/DocsLayout.astro
 title: "Tako CLI reference for local development and self-hosted deploys - Tako Docs"
 heading: CLI Reference
 current: cli
-description: "Complete CLI reference for Tako commands including init, dev, deploy, servers, secrets, status, logs, and global flags."
+description: "Complete CLI reference for Tako commands including init, dev, deploy, servers, secrets, storage, status, logs, and global flags."
 ---
 
 # CLI Reference
@@ -25,7 +25,7 @@ tako [--version] [-v|--verbose] [--ci] [--dry-run] [-c|--config <CONFIG>] [--ssh
 
 Status, progress, prompts, and logs go to stderr. Command results and machine-readable data go to stdout.
 
-App-scoped commands treat the selected config file's parent directory as the app directory.
+App-scoped commands treat the selected config file's parent directory as the app directory. That includes `init`, `dev`, `logs`, `deploy`, `releases`, `delete`, `secrets`, `storage`, `generate`, and project-context `scale`.
 
 ## `tako init`
 

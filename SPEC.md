@@ -380,7 +380,7 @@ Config selection is global for app-scoped commands:
 - project directory: parent directory of the selected config file
 
 App-scoped commands that honor `-c/--config`: `init`, `dev`, `logs`, `deploy`, `releases`,
-`delete`, `secrets`, `generate`, and `scale` when it is using project context.
+`delete`, `secrets`, `storage`, `generate`, and `scale` when it is using project context.
 
 ### tako init
 
