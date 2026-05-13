@@ -53,20 +53,20 @@ export default {
 
 ## Package Exports
 
-| Import path        | Purpose                                         | Key exports                                                                                              |
-| ------------------ | ----------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `tako.sh`          | Isomorphic runtime + authoring helpers          | `tako`, `defineChannel`, `defineWorkflow`, `signal`, `TakoError`, `InferChannel`, `InferWorkflowPayload` |
-| `tako.sh/server`   | Server-only app helpers                         | `createImageUrl` and image URL option types                                                              |
-| `tako.sh/client`   | Browser-safe channel client                     | `Channel`                                                                                                |
-| `tako.sh/react`    | React hook for channels                         | `useChannel`                                                                                             |
-| `tako.sh/vite`     | Vite plugin for SSR builds                      | `tako()` plugin function                                                                                 |
-| `tako.sh/nextjs`   | Next.js standalone adapter + wrapper            | `withTako()`, `createNextjsAdapter()`, `createNextjsFetchHandler()`                                      |
-| `tako.sh/runtime`  | Browser-safe runtime internals                  | `loadSecrets`, `createLogger`, `Logger`                                                                  |
-| `tako.sh/internal` | Server-only plumbing for framework-adapter boot | `handleTakoEndpoint`, `initServerRuntime`, channel/workflow define helpers                               |
+| Import path        | Purpose                                         | Key exports                                                                      |
+| ------------------ | ----------------------------------------------- | -------------------------------------------------------------------------------- |
+| `tako.sh`          | Isomorphic runtime + authoring helpers          | `tako`, `imageUrl`, channels, workflows, storage URL option types, runtime types |
+| `tako.sh/server`   | Server-only runtime re-export                   | `tako`, `TakoRuntime`                                                            |
+| `tako.sh/client`   | Browser-safe channel client                     | `Channel`                                                                        |
+| `tako.sh/react`    | React hook for channels                         | `useChannel`                                                                     |
+| `tako.sh/vite`     | Vite plugin for SSR builds                      | `tako()` plugin function                                                         |
+| `tako.sh/nextjs`   | Next.js standalone adapter + wrapper            | `withTako()`, `createNextjsAdapter()`, `createNextjsFetchHandler()`              |
+| `tako.sh/runtime`  | Browser-safe runtime internals                  | `loadSecrets`, `createLogger`, `Logger`                                          |
+| `tako.sh/internal` | Server-only plumbing for framework-adapter boot | `handleTakoEndpoint`, `initServerRuntime`, channel/workflow define helpers       |
 
 ## Runtime state: `tako.sh` + `tako.d.ts`
 
-`tako generate` emits a project-local `tako.d.ts` that augments `tako.sh` with typed environment names, typed `tako.secrets` keys, channel metadata inferred from channel exports, and runtime env globals. It keeps an existing declaration in `app/`, `src/`, or the project root; otherwise it uses an existing legacy `tako.gen.ts` location, then `app/`, then `src/`, then the project root. `tako gen` and `tako g` are aliases. When `<app_root>/channels/` or `<app_root>/workflows/` already exists, it also scaffolds empty definition dirs/files so they default-export `defineChannel({ name: "<file-stem>" })` / `defineWorkflow(...)` stubs. Generated channel stubs use the file stem as the initial name, but `tako generate` does not rewrite existing explicit channel names. Generated `TakoChannels` entries use the declared channel name as the key and `import("tako.sh").InferChannel<typeof import("./channels/<file>").default>` for params, messages, and transport. App code imports `tako` from `tako.sh` for project runtime state:
+`tako generate` emits a project-local `tako.d.ts` that augments `tako.sh` with typed environment names, typed `tako.secrets` keys, typed `tako.storages` names, channel metadata inferred from channel exports, and runtime env globals. It keeps an existing declaration in `app/`, `src/`, or the project root; otherwise it uses an existing legacy `tako.gen.ts` location, then `app/`, then `src/`, then the project root. `tako gen` and `tako g` are aliases. When `<app_root>/channels/` or `<app_root>/workflows/` already exists, it also scaffolds empty definition dirs/files so they default-export `defineChannel({ name: "<file-stem>" })` / `defineWorkflow(...)` stubs. Generated channel stubs use the file stem as the initial name, but `tako generate` does not rewrite existing explicit channel names. Generated `TakoChannels` entries use the declared channel name as the key and `import("tako.sh").InferChannel<typeof import("./channels/<file>").default>` for params, messages, and transport. App code imports `tako` from `tako.sh` for project runtime state:
 
 ```typescript
 import { tako } from "tako.sh";
@@ -81,22 +81,24 @@ export default function fetch(request: Request) {
 
 ### Surface
 
-| Export         | Description                                                        |
-| -------------- | ------------------------------------------------------------------ |
-| `tako`         | Frozen runtime object with env, ports, paths, logger, and secrets  |
-| `tako.env`     | `ENV` value (`"development"`, `"production"`, ...)                 |
-| `tako.isDev`   | `true` when `tako.env === "development"`                           |
-| `tako.isProd`  | `true` when `tako.env === "production"`                            |
-| `tako.port`    | Port assigned to this app instance                                 |
-| `tako.host`    | Host/address Tako bound this app instance to                       |
-| `tako.build`   | Build identifier (from `TAKO_BUILD`)                               |
-| `tako.dataDir` | Persistent app-owned data directory — writes survive restarts      |
-| `tako.appDir`  | Directory the app is running from (equivalent to `process.cwd()`)  |
-| `tako.secrets` | Typed secret bag (interface regenerated from `.tako/secrets.json`) |
-| `tako.logger`  | Structured JSON logger (`tako.logger.info(...)`)                   |
-| `Env`          | TypeScript union of configured environment names                   |
-| `TakoSecrets`  | TypeScript interface of secret names                               |
-| `TakoRuntime`  | TypeScript type of the exported `tako` object                      |
+| Export          | Description                                                                 |
+| --------------- | --------------------------------------------------------------------------- |
+| `tako`          | Frozen runtime object with env, ports, paths, logger, secrets, and storages |
+| `tako.env`      | `ENV` value (`"development"`, `"production"`, ...)                          |
+| `tako.isDev`    | `true` when `tako.env === "development"`                                    |
+| `tako.isProd`   | `true` when `tako.env === "production"`                                     |
+| `tako.port`     | Port assigned to this app instance                                          |
+| `tako.host`     | Host/address Tako bound this app instance to                                |
+| `tako.build`    | Build identifier (from `TAKO_BUILD`)                                        |
+| `tako.dataDir`  | Persistent app-owned data directory — writes survive restarts               |
+| `tako.appDir`   | Directory the app is running from (equivalent to `process.cwd()`)           |
+| `tako.secrets`  | Typed secret bag (interface regenerated from `.tako/secrets.json`)          |
+| `tako.storages` | Typed storage bag (interface regenerated from `.tako/storages.json`)        |
+| `tako.logger`   | Structured JSON logger (`tako.logger.info(...)`)                            |
+| `Env`           | TypeScript union of configured environment names                            |
+| `TakoSecrets`   | TypeScript interface of secret names                                        |
+| `TakoStorages`  | TypeScript interface of storage names                                       |
+| `TakoRuntime`   | TypeScript type of the exported `tako` object                               |
 
 ### Secrets
 
@@ -111,32 +113,46 @@ The generated declaration file is type-only and is not imported by app code. In 
 
 ## Images
 
-Server-side JavaScript can create signed optimized image URLs with `createImageUrl`. In isomorphic frameworks, call it inside a loader/server function and pass the signed URL string to components:
+JavaScript can create public optimized image URLs with `imageUrl`:
 
 ```typescript
-import { createImageUrl } from "tako.sh/server";
+import { imageUrl } from "tako.sh";
 
-const photo = createImageUrl("/photos/p_123.jpg");
-const url = createImageUrl("/avatars/u_123.png", { width: 256 });
-const webpUrl = createImageUrl("/avatars/u_123.png", {
-  width: 256,
+const photo = imageUrl("/photos/p_123.jpg");
+const url = imageUrl("/avatars/u_123.png", { width: 640 });
+const webpUrl = imageUrl("https://cdn.example.com/uploads/avatars/u_123.png", {
+  width: 640,
   format: "webp",
-});
-const chatImage = createImageUrl("/messages/m_456/photo.jpg", {
-  width: 1200,
-  height: 800,
-  fit: "cover",
-  crop: "smart",
-  browserCacheMaxAgeSeconds: 2_592_000,
-});
-const publicUrl = createImageUrl("/assets/hero.jpg", {
-  width: 1200,
-  quality: 80,
-  public: true,
 });
 ```
 
-The helper uses the app image signing secret from the fd-3 bootstrap. It returns a path under `/_tako/image/v1/<payload>.<signature>` with no query string. Private URLs are the default and use maximum width `1200`, quality `75`, a 7-day expiration, and 7-day browser-only caching when options are omitted. Use `browserCacheMaxAgeSeconds` only on private URLs when you need a different browser cache max-age. Output defaults to AVIF by omitting `format`; pass `format: "webp"` only when you need a WebP fallback. Tako never upscales: heightless output width is `min(width, originalWidth)`. Pass optional `height` with an explicit `width` to request a bounded box: `fit` defaults to `"cover"`, `crop` defaults to `"center"`, `crop: "smart"` uses libvips attention cropping, and `fit: "contain"` rejects crop. Pass `public: true` only for non-user-specific images that can be shared by public caches; public image options do not accept browser cache or expiration settings.
+The helper returns `/_tako/image?src=...&w=...` and is synchronous. Width must be one of `320, 640, 960, 1200, 1920`; quality is `1..100`; format is `avif` or `webp`. Local public paths are available by default. Remote URLs must match `[images].remote_patterns` in `tako.toml`. The server verifies the app's configured image guardrails before fetching or transforming.
+
+## Storage
+
+Attach S3-compatible storage with the CLI, then use `tako.storages.<name>` from server-side app code:
+
+```bash
+tako storage add uploads \
+  --provider r2 \
+  --bucket app-uploads \
+  --endpoint https://<account>.r2.cloudflarestorage.com \
+  --region auto
+```
+
+```typescript
+import { tako } from "tako.sh";
+
+const downloadUrl = await tako.storages.uploads.createDownloadUrl("receipts/r_123.png", {
+  expiresInSeconds: 3600,
+});
+
+const uploadUrl = await tako.storages.uploads.createUploadUrl("avatars/u_123.png", {
+  contentType: "image/png",
+});
+```
+
+Storage URLs are private by default and signed with SigV4. `createImageUrl(key, { public: true, width })` uses the storage `public_base_url` and the public image optimizer. Private storage image transforms are not implemented yet; use `createDownloadUrl` for private direct object URLs.
 
 ## Vite Plugin
 
