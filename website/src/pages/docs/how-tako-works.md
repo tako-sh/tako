@@ -24,6 +24,7 @@ The CLI can:
 - run trusted local HTTPS with `tako dev`
 - build and deploy with `tako deploy`
 - manage encrypted local secrets
+- attach encrypted object storage bindings
 - register, upgrade, and inspect servers
 - read logs, releases, status, and scale settings
 
@@ -42,7 +43,7 @@ Tako apps use SDKs to speak the runtime protocol:
 - JavaScript and TypeScript apps export a Web Standard fetch handler and run through SDK entrypoints for Bun or Node.
 - Go apps call `tako.ListenAndServe()` or `tako.Listener()` and compile to a native binary.
 
-The SDK writes its bound loopback port to fd 4 when ready. It reads secrets, internal auth, and image signing material from fd 3 before user code runs.
+The SDK writes its bound loopback port to fd 4 when ready. It reads internal auth, secrets, and storage bindings from fd 3 before user code runs.
 
 ## App Identity
 
@@ -111,7 +112,7 @@ routes = [
 
 The proxy selects the most specific match by host and path. Static asset requests are served directly from the deployed `public/` directory when possible, then unmatched paths are proxied to the app. Unmatched hosts return `404`.
 
-`/_tako/*` is reserved for Tako-owned public endpoints after a request has matched an app route. This includes durable channels and signed image optimization.
+`/_tako/*` is reserved for Tako-owned public endpoints after a request has matched an app route. This includes durable channels and public image optimization.
 
 ## TLS
 
@@ -146,7 +147,19 @@ Non-secret variables come from `[vars]`, `[vars.<env>]`, and Tako runtime variab
 
 HTTP instances and workflow workers receive the same app/runtime environment except for HTTP-only bind variables such as `PORT` and `HOST`.
 
-Secrets are encrypted locally in `.tako/secrets.json`, with keys stored outside the repo. On deploy, secrets are stored encrypted in server SQLite and delivered to fresh app and worker processes through fd 3, not environment variables. Secret updates roll HTTP instances and restart workflow workers so new processes receive the latest values.
+Secrets are encrypted locally in `.tako/secrets.json`, with keys stored outside the repo. Storage credentials are encrypted locally in `.tako/storages.json` with the same environment-key mechanism. On deploy, secrets and storage bindings are stored encrypted in server SQLite and delivered to fresh app and worker processes through fd 3, not environment variables. Secret updates roll HTTP instances and restart workflow workers so new processes receive the latest values.
+
+## Images And Storage
+
+Public image optimization uses CDN-friendly query URLs:
+
+```text
+/_tako/image?src=/assets/hero.jpg&w=1200
+```
+
+Local public paths are available by default. Remote images must match `[images].remote_patterns` in `tako.toml`, and widths, qualities, and formats must match the app's configured guardrails.
+
+Object storage bindings are attached with `tako storage add` and exposed to JavaScript apps as `tako.storages.<name>`. The SDK can create private signed download/upload URLs, and can build public optimized image URLs for storage objects when the binding has a `public_base_url`.
 
 ## Channels And Workflows
 

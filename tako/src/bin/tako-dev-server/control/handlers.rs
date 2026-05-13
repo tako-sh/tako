@@ -310,7 +310,7 @@ pub(crate) async fn handle_client(
                             client_pid,
                             readiness_failure_hint,
                             bootstrap_token,
-                            storages: (*storages).clone(),
+                            storages,
                         },
                     );
 

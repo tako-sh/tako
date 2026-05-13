@@ -1,7 +1,7 @@
 ---
 name: tako
 description: >-
-  Tako CLI commands: init, dev, deploy, secrets, gen, scale, logs,
+  Tako CLI commands: init, dev, deploy, secrets, storage, gen, scale, logs,
   rollback, servers, doctor. Includes output design patterns for interactive
   and plain modes.
 type: framework
@@ -87,6 +87,24 @@ Export a base64url key string for the selected environment.
 
 Import a base64url key string. The string includes its id, so import does not take `--env`.
 
+## Storage
+
+### `tako storage add <name>`
+
+Attach S3-compatible storage to the app. Credentials are encrypted in `.tako/storages.json` and synced on deploy.
+
+```bash
+tako storage add uploads \
+  --env production \
+  --provider r2 \
+  --bucket app-uploads \
+  --endpoint https://<account>.r2.cloudflarestorage.com \
+  --region auto \
+  --public-base-url https://cdn.example.com/uploads
+```
+
+Use `--access-key-id` and `--secret-access-key` for non-interactive runs; otherwise Tako prompts. `--force-path-style` signs path-style URLs. `--public-base-url` enables public storage image URLs through the SDK.
+
 ## Code Generation
 
 ### `tako generate`
@@ -102,12 +120,13 @@ Aliases: `tako gen`, `tako g`.
 Generates:
 
 - **Typed secrets** — reads secret names from `.tako/secrets.json` and emits a `TakoSecrets` augmentation in `tako.d.ts` for `tako.secrets` from `tako.sh`.
+- **Typed storages** — reads storage names from `.tako/storages.json` and emits a `TakoStorages` augmentation for `tako.storages`.
 - **Runtime types** — augments `tako.sh` with environment names, channel metadata inferred from channel exports, and runtime env globals. App runtime values come from `tako.sh`.
 - **JS definition stubs** — when `<app_root>/channels/` or `<app_root>/workflows/` already exists, scaffolds `demo.ts` in empty dirs and adds missing default `defineChannel({ name: "<file-stem>" })` / `defineWorkflow(...)` exports to files that do not have a default export yet. Existing explicit channel names are not rewritten.
 
 Workflow and channel payload types flow from their module types directly (no generated file needed for `.enqueue(payload)` or `.publish({type, data})`).
 
-Re-run after adding/removing secrets or workflow files. `tako dev` and `tako deploy` run it automatically.
+Re-run after adding/removing secrets, storages, or workflow files. `tako dev` and `tako deploy` run it automatically.
 
 ## Deployment
 

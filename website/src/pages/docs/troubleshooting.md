@@ -315,21 +315,23 @@ SSE clients resume with `Last-Event-ID`; WebSocket clients resume with `last_mes
 
 ## Image URLs Fail
 
-`createImageUrl()` signs path-only URLs under:
+Public optimized image URLs use:
 
 ```text
-/_tako/image/v1/<payload>.<signature>
+/_tako/image?src=/assets/hero.jpg&w=1200
 ```
 
 Failures commonly come from:
 
-- expired private URL
-- tampered payload or signature
-- unsupported size, quality, fit, crop, or format
+- missing `src` or `w`
+- duplicate or unknown query params
+- unsupported width, quality, or format
+- local path blocked by `[images].local_patterns`
+- remote URL not matching `[images].remote_patterns`
 - remote source with redirects, private IPs, unsupported schemes, userinfo, or fragments
 - source bytes exceeding optimizer limits
 
-Image optimizer failures return non-shared error caching and detailed diagnostics go to app logs.
+Image optimizer failures return non-shared error caching and detailed diagnostics go to app logs. If a storage image URL fails, check that `tako storage add` configured the right environment and that `--public-base-url` is set when using `createImageUrl(..., { public: true })`.
 
 ## Logs Are Hard To Read
 

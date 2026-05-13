@@ -193,11 +193,12 @@ Tako watches:
 
 - `tako.toml`
 - `.tako/secrets.json`
+- `.tako/storages.json`
 - `<app_root>/channels/`
 - `<app_root>/workflows/`
 - locations that may contain `tako.d.ts`: `app/`, `src/`, and project root
 
-Tako restarts the app when effective dev environment variables, secrets, channel definitions, or workflow definitions change. Route changes under `[envs.development]` update routing without restarting the app.
+Tako restarts the app when effective dev environment variables, secrets, storage bindings, channel definitions, or workflow definitions change. Route changes under `[envs.development]` update routing without restarting the app.
 
 ## App Root And Generated Files
 
@@ -211,7 +212,7 @@ Default: `src`.
 
 Use `app_root = "."` when `channels/`, `workflows/`, or `tako.d.ts` live next to `tako.toml`.
 
-`tako dev`, `tako deploy`, `tako generate`, and secret changes regenerate `tako.d.ts` as needed. The generated file augments `tako.sh` with project environment names, secret keys, channel metadata, workflow metadata, and runtime env globals.
+`tako dev`, `tako deploy`, `tako generate`, and secret changes regenerate `tako.d.ts` as needed. The generated file augments `tako.sh` with project environment names, secret keys, storage binding names, channel metadata, workflow metadata, and runtime env globals.
 
 ## Environment Variables
 
@@ -246,7 +247,31 @@ import { tako } from "tako.sh";
 const db = tako.secrets.DATABASE_URL;
 ```
 
-The fd-3 bootstrap envelope is present in dev even when no secrets exist. It carries internal auth, the app image signing secret, and the secrets object.
+The fd-3 bootstrap envelope is present in dev even when no secrets exist. It carries internal auth, the secrets object, and storage bindings.
+
+## Storage In Dev
+
+Storage bindings are read from `.tako/storages.json` and exposed through the SDK:
+
+```ts
+import { tako } from "tako.sh";
+
+const uploadUrl = await tako.storages.uploads.createUploadUrl("avatars/u_123.png", {
+  contentType: "image/png",
+});
+```
+
+Development uses the `development` storage bindings when present. If none exist, `tako generate` falls back to the union of storage names from other environments for type generation.
+
+## Images In Dev
+
+Public optimized images are served at:
+
+```text
+/_tako/image?src=/assets/hero.jpg&w=1200
+```
+
+Local image sources are allowed by default. Remote image sources must match `[images].remote_patterns` in `tako.toml`.
 
 ## Channels In Dev
 

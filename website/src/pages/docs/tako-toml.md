@@ -26,6 +26,12 @@ dev = ["vite", "dev"]
 assets = ["dist/client"]
 release = "bun run db:migrate"
 
+[images]
+remote_patterns = ["https://cdn.example.com/uploads/**"]
+sizes = [320, 640, 960, 1200, 1920]
+qualities = [75]
+formats = ["avif", "webp"]
+
 [build]
 install = "bun install"
 run = "bun run build"
@@ -229,6 +235,29 @@ Common Tako variables include:
 | `BUN_ENV`       | Set for Bun.                                    |
 
 Secrets do not live in `tako.toml`; use `tako secrets`.
+
+## Images
+
+```toml
+[images]
+remote_patterns = ["https://cdn.example.com/uploads/**"]
+# local_patterns = ["/images/**"]
+# sizes = [320, 640, 960, 1200, 1920]
+# qualities = [75]
+# formats = ["avif", "webp"]
+```
+
+Public image URLs use `/_tako/image?src=...&w=...`. Local public paths are allowed by default with `local_patterns = ["/**"]`; setting `local_patterns` replaces that default. Remote images are denied unless their full URL matches `remote_patterns`.
+
+Patterns are glob-like strings, not regular expressions. `*` matches one path segment, `**` matches the rest of a path, and remote hosts may use a leading wildcard such as `https://*.example.com/uploads/**`. Remote patterns without a protocol use `https://`.
+
+| Field             | Type     | Meaning                                           |
+| ----------------- | -------- | ------------------------------------------------- |
+| `local_patterns`  | string[] | Optional local path allowlist. Defaults to `/**`. |
+| `remote_patterns` | string[] | Remote URL allowlist. Defaults to empty.          |
+| `sizes`           | number[] | Allowed public optimizer widths.                  |
+| `qualities`       | number[] | Allowed public optimizer qualities.               |
+| `formats`         | string[] | Allowed output formats: `avif`, `webp`.           |
 
 ## Environments
 

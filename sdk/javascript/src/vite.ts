@@ -188,7 +188,7 @@ function isViteEntryChunk(chunk: unknown): chunk is ViteEntryChunkLike {
  *
  * Responsibilities:
  * - Marks SDK server entries as SSR-external so Vite doesn't try to bundle
- *   server-only modules (secrets, workflow RPC, image signing, etc.).
+ *   server-only modules (secrets, workflow RPC, storage signing, etc.).
  * - In dev, swaps Vite's default logger for structured JSON lines so the
  *   tako dev server can render them alongside other subprocess logs.
  * - Under `tako dev`, reports the dev server's bound port back to the parent

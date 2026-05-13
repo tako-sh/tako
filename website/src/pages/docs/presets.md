@@ -10,7 +10,7 @@ description: "Learn how Tako presets provide framework-specific defaults for ent
 
 Presets are small framework manifests. They help Tako choose the deployed entrypoint, static asset roots, and local dev command for common frameworks.
 
-Presets are deliberately limited. Runtime plugins, not presets, define production install commands, start commands, runtime downloads, package-manager behavior, and runtime environment variables.
+Presets are deliberately limited. Runtime plugins, not presets, define production install commands, start commands, runtime downloads, package-manager behavior, runtime environment variables, image optimizer allowlists, and storage bindings.
 
 ## What Presets Can Set
 

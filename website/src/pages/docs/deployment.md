@@ -146,6 +146,7 @@ Built target artifacts are cached under `.tako/artifacts/`. Cache entries are ve
 - runtime version
 - non-secret environment variables
 - JS `app_root`
+- public image optimizer config
 - environment idle timeout
 - release metadata such as commit message and dirty state
 
@@ -226,6 +227,34 @@ tako secrets key import --env production
 Deploy compares a server secrets hash before sending secrets. If hashes match, secrets are omitted and the server keeps its current encrypted values. If they differ, deploy sends decrypted secrets over the signed management path and `tako-server` stores them encrypted in SQLite.
 
 Fresh HTTP instances and workflow workers receive secrets through fd 3. Secret syncs trigger worker restart and HTTP rolling restart.
+
+## Storage
+
+Attach object storage before deploy:
+
+```bash
+tako storage add uploads \
+  --env production \
+  --provider r2 \
+  --bucket app-uploads \
+  --endpoint https://<account>.r2.cloudflarestorage.com \
+  --region auto
+```
+
+Local storage credentials are encrypted in `.tako/storages.json`. Deploy decrypts the selected environment's storage bindings locally, sends them over the signed management path, and `tako-server` stores them encrypted in SQLite.
+
+Fresh HTTP instances and workflow workers receive storage bindings through fd 3 alongside secrets. In JavaScript apps, use `tako.storages.<name>.createDownloadUrl`, `createUploadUrl`, and `createImageUrl`.
+
+## Images
+
+Public optimized images are configured in `tako.toml`:
+
+```toml
+[images]
+remote_patterns = ["https://cdn.example.com/uploads/**"]
+```
+
+The optimizer endpoint is `/_tako/image?src=...&w=...`. Local public paths are available by default. Remote URLs must match the configured allowlist, and widths, qualities, and formats must match the configured guardrails.
 
 ## TLS And Routes
 

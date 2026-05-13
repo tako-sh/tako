@@ -49,7 +49,7 @@ tako gen -c apps/web/tako.production
 
 Refreshes generated files for the current project:
 
-- JS/TS: `tako.d.ts` with typed runtime metadata, environment names, secrets, channels, and workflow metadata.
+- JS/TS: `tako.d.ts` with typed runtime metadata, environment names, secrets, storages, channels, and workflow metadata.
 - Go: `tako_secrets.go` with typed secret accessors.
 
 For JS/TS projects, generation keeps an existing `tako.d.ts` location in `app/`, `src/`, or the project root. It removes legacy `tako.gen.ts` on regeneration. If `<app_root>/channels/` or `<app_root>/workflows/` exists, it can scaffold missing default exports and `demo.ts` files in empty directories.
@@ -278,6 +278,34 @@ tako secrets key import --passphrase --env production
 | `secrets key export [--env ENV]`            | Copy a self-contained key bundle.                   |
 | `secrets key import [--env ENV]`            | Import an exported key bundle from prompt or stdin. |
 | `secrets key import --passphrase --env ENV` | Import a passphrase-derived environment key.        |
+
+## `tako storage`
+
+Attach S3-compatible object storage to the current app:
+
+```bash
+tako storage add uploads \
+  --env production \
+  --provider r2 \
+  --bucket app-uploads \
+  --endpoint https://<account>.r2.cloudflarestorage.com \
+  --region auto \
+  --public-base-url https://cdn.example.com/uploads
+```
+
+| Option                | Meaning                                                       |
+| --------------------- | ------------------------------------------------------------- |
+| `--env ENV`           | Environment to attach. Defaults to `production`.              |
+| `--provider s3\|r2`   | Storage provider. Defaults to `s3`.                           |
+| `--bucket NAME`       | Bucket name. Required.                                        |
+| `--endpoint URL`      | HTTPS S3-compatible endpoint. Required.                       |
+| `--region REGION`     | Signing region. Defaults to `auto`.                           |
+| `--access-key-id KEY` | Access key id. Prompts when omitted in interactive terminals. |
+| `--secret-access-key` | Secret access key. Prompts when omitted in interactive runs.  |
+| `--force-path-style`  | Sign path-style URLs instead of virtual-hosted bucket URLs.   |
+| `--public-base-url`   | Public base URL used by `public: true` SDK helpers.           |
+
+The command writes encrypted credentials to `.tako/storages.json`. Deploy syncs storage bindings with the app release; there is no separate storage sync command.
 
 ## `tako upgrade`
 
