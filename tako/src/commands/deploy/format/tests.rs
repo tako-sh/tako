@@ -38,6 +38,7 @@ fn deploy_progress_helpers_render_preparing_and_single_line_server_results() {
         host: "example.com".to_string(),
         port: 2222,
         description: None,
+        ..Default::default()
     };
     assert_eq!(
         format_server_deploy_success("prod", &server),
@@ -55,6 +56,7 @@ fn deploy_overview_lines_include_primary_target_host_when_single_server() {
         host: "localhost".to_string(),
         port: 2222,
         description: None,
+        ..Default::default()
     };
     let lines = format_deploy_overview_lines("bun", "production", 1, Some(("testbed", &server)));
     assert_eq!(lines.len(), 3);
@@ -73,7 +75,7 @@ fn deploy_overview_lines_include_server_count_for_multi_target() {
 
 #[test]
 fn deploy_summary_lines_keep_urls_literal_and_contiguous() {
-    let lines = format_deploy_summary_lines(
+    let lines = format_deploy_summary_lines_with_https_port(
         "Release",
         "20260330",
         &[
@@ -81,6 +83,7 @@ fn deploy_summary_lines_keep_urls_literal_and_contiguous() {
             "app.test/bun".to_string(),
             "*.app.test".to_string(),
         ],
+        None,
     );
 
     assert_eq!(
@@ -107,8 +110,22 @@ fn deploy_summary_lines_keep_urls_literal_and_contiguous() {
 }
 
 #[test]
+fn deploy_summary_lines_include_non_default_https_port() {
+    let lines = format_deploy_summary_lines_with_https_port(
+        "Release",
+        "20260330",
+        &["app.test".to_string(), "app.test/bun".to_string()],
+        Some(8443),
+    );
+
+    assert_eq!(lines[1].value, "https://app.test:8443");
+    assert_eq!(lines[2].value, "https://app.test:8443/bun");
+}
+
+#[test]
 fn deploy_summary_lines_support_non_url_primary_field() {
-    let lines = format_deploy_summary_lines("App", "bun", &["app.test".to_string()]);
+    let lines =
+        format_deploy_summary_lines_with_https_port("App", "bun", &["app.test".to_string()], None);
 
     assert_eq!(
         lines,

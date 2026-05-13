@@ -3,6 +3,7 @@ pub(super) struct WizardConnectionResult {
     pub(super) version: Option<String>,
     pub(super) installed: bool,
     pub(super) server_name: Option<String>,
+    pub(super) public_ports: Option<super::ServerPublicPorts>,
 }
 
 pub(super) async fn check_tako_connection(
@@ -21,18 +22,19 @@ pub(super) async fn check_tako_connection(
             .map_err(|e| format!("Target detection failed: {e}"))?;
         tracing::debug!("Detected target: {}", target.label());
 
-        let (installed, version, server_name) = match ssh.is_tako_installed().await {
+        let (installed, version, server_name, public_ports) = match ssh.is_tako_installed().await {
             Ok(true) => {
                 let ver = ssh.tako_version().await.ok().flatten();
-                let sn = ssh
-                    .tako_server_info()
-                    .await
-                    .ok()
-                    .and_then(|info| info.server_name);
-                (true, ver, sn)
+                let info = ssh.tako_server_info().await.ok();
+                let sn = info.as_ref().and_then(|info| info.server_name.clone());
+                let public_ports = info.map(|info| super::ServerPublicPorts {
+                    http_port: info.http_port,
+                    https_port: info.https_port,
+                });
+                (true, ver, sn, public_ports)
             }
-            Ok(false) => (false, None, None),
-            Err(_) => (false, None, None),
+            Ok(false) => (false, None, None, None),
+            Err(_) => (false, None, None, None),
         };
 
         if installed {
@@ -46,6 +48,7 @@ pub(super) async fn check_tako_connection(
             version,
             installed,
             server_name,
+            public_ports,
         })
     }
     .await;
@@ -62,6 +65,7 @@ pub(super) async fn install_tako_server_with_admin(
     host: &str,
     port: u16,
     admin_user: &str,
+    public_ports: Option<super::ServerPublicPorts>,
 ) -> Result<(), String> {
     use crate::ssh::{SshClient, SshConfig};
 
@@ -70,7 +74,7 @@ pub(super) async fn install_tako_server_with_admin(
     ssh.connect().await.map_err(|e| e.to_string())?;
 
     let result = ssh
-        .install_tako_server()
+        .install_tako_server(public_ports.map(Into::into))
         .await
         .map_err(|e| format!("Install failed: {e}"));
     let disconnect = ssh.disconnect().await.map_err(|e| e.to_string());

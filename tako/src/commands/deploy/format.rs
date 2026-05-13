@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::config::ServerEntry;
+use crate::config::{ServerEntry, ServersToml};
 use crate::output;
 
 use super::task_tree::ArtifactBuildGroup;
@@ -29,10 +29,11 @@ pub(super) fn format_preflight_complete_message(server_names: &[String]) -> Stri
     }
 }
 
-pub(super) fn format_deploy_summary_lines(
+pub(super) fn format_deploy_summary_lines_with_https_port(
     primary_label: &str,
     primary_value: &str,
     routes: &[String],
+    https_port: Option<u16>,
 ) -> Vec<SummaryLine> {
     let mut lines = vec![SummaryLine {
         label: primary_label.to_string(),
@@ -41,20 +42,30 @@ pub(super) fn format_deploy_summary_lines(
     if let Some((first_route, remaining_routes)) = routes.split_first() {
         lines.push(SummaryLine {
             label: "Routes".to_string(),
-            value: format_route_url(first_route),
+            value: format_route_url_with_https_port(first_route, https_port),
         });
         for route in remaining_routes {
             lines.push(SummaryLine {
                 label: String::new(),
-                value: format_route_url(route),
+                value: format_route_url_with_https_port(route, https_port),
             });
         }
     }
     lines
 }
 
-pub(super) fn print_deploy_summary(primary_label: &str, primary_value: &str, routes: &[String]) {
-    let lines = format_deploy_summary_lines(primary_label, primary_value, routes);
+pub(super) fn print_deploy_summary_with_https_port(
+    primary_label: &str,
+    primary_value: &str,
+    routes: &[String],
+    https_port: Option<u16>,
+) {
+    let lines = format_deploy_summary_lines_with_https_port(
+        primary_label,
+        primary_value,
+        routes,
+        https_port,
+    );
     let max_label_width = lines.iter().map(|l| l.label.len()).max().unwrap_or(0);
     for line in lines {
         let padded_label = format!("{:<width$}", line.label, width = max_label_width);
@@ -67,8 +78,27 @@ pub(super) fn print_deploy_summary(primary_label: &str, primary_value: &str, rou
     }
 }
 
-pub(super) fn format_route_url(route: &str) -> String {
-    format!("https://{route}")
+pub(super) fn format_route_url_with_https_port(route: &str, https_port: Option<u16>) -> String {
+    let Some(port) = https_port.filter(|port| *port != 443) else {
+        return format!("https://{route}");
+    };
+    let (host, path) = route.split_once('/').unwrap_or((route, ""));
+    if path.is_empty() {
+        format!("https://{host}:{port}")
+    } else {
+        format!("https://{host}:{port}/{path}")
+    }
+}
+
+pub(super) fn common_https_port_for_servers(
+    server_names: &[String],
+    servers: &ServersToml,
+) -> Option<u16> {
+    let mut ports = server_names
+        .iter()
+        .filter_map(|name| servers.get(name).map(|server| server.https_port));
+    let first = ports.next()?;
+    ports.all(|port| port == first).then_some(first)
 }
 
 pub(super) fn format_build_stages_summary_for_output(

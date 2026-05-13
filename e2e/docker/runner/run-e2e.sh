@@ -588,7 +588,7 @@ start_tako_server() {
   ssh_exec "$host" "rm -f /home/tako/tako-server /home/tako/tako-server.tar.zst /home/tako/tako-server.tar.zst.sha256 /home/tako/install-tako-server.sh"
   ssh_exec "$host" "sudo pkill -x tako-server >/dev/null 2>&1 || true"
   ssh_exec "$host" "sudo rm -f /var/run/tako/tako.sock"
-  ssh_exec "$host" "RUST_LOG=info nohup /usr/local/bin/tako-server --no-acme --port 8080 --tls-port 8443 --data-dir /opt/tako --management-host 0.0.0.0 >/tmp/tako-server.log 2>&1 &"
+  ssh_exec "$host" "RUST_LOG=info nohup /usr/local/bin/tako-server --no-acme --http-port 8080 --https-port 8443 --data-dir /opt/tako --management-host 0.0.0.0 >/tmp/tako-server.log 2>&1 &"
   wait_tako_socket "$host"
   wait_tako_management_http "$host"
 }

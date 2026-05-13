@@ -17,6 +17,30 @@ pub(super) fn should_redirect_http_request(
     redirect_http_to_https && !is_effective_https
 }
 
+pub(super) fn https_redirect_host(host: &str, https_port: u16) -> String {
+    let host_without_port = strip_host_port(host);
+    if https_port == 443 {
+        host_without_port.to_string()
+    } else {
+        format!("{host_without_port}:{https_port}")
+    }
+}
+
+fn strip_host_port(host: &str) -> &str {
+    if let Some(end) = host.find(']')
+        && host.starts_with('[')
+    {
+        return &host[..=end];
+    }
+
+    match host.rsplit_once(':') {
+        Some((name, port)) if !name.contains(':') && port.chars().all(|c| c.is_ascii_digit()) => {
+            name
+        }
+        _ => host,
+    }
+}
+
 pub(super) fn is_request_forwarded_https(
     x_forwarded_proto: Option<&str>,
     forwarded: Option<&str>,

@@ -8,8 +8,8 @@ pub(crate) use backend::BackendResolution;
 use super::TakoProxy;
 use super::request::{
     build_proxy_cache_key, client_ip_from_session, create_production_error_response,
-    insert_body_headers, is_effective_request_https, path_looks_like_static_asset, request_host,
-    request_is_proxy_cacheable, response_cacheability,
+    https_redirect_host, insert_body_headers, is_effective_request_https,
+    path_looks_like_static_asset, request_host, request_is_proxy_cacheable, response_cacheability,
     should_assume_forwarded_private_request_https, should_redirect_http_request,
 };
 use crate::lb::Backend;
@@ -183,7 +183,8 @@ impl ProxyHttp for TakoProxy {
                     .path_and_query()
                     .map(|pq| pq.as_str())
                     .unwrap_or(&path);
-                let redirect_url = format!("https://{}{}", host, path_and_query);
+                let redirect_host = https_redirect_host(&host, self.config.https_port);
+                let redirect_url = format!("https://{}{}", redirect_host, path_and_query);
                 let body = "Redirecting to HTTPS";
 
                 let mut header = ResponseHeader::build(307, None)?;

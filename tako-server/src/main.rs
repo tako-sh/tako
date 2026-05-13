@@ -209,12 +209,12 @@ pub struct Args {
     pub socket: Option<String>,
 
     /// HTTP port
-    #[arg(long, default_value_t = 80)]
-    pub port: u16,
+    #[arg(long = "http-port", default_value_t = 80)]
+    pub http_port: u16,
 
     /// HTTPS port
-    #[arg(long, default_value_t = 443)]
-    pub tls_port: u16,
+    #[arg(long = "https-port", default_value_t = 443)]
+    pub https_port: u16,
 
     /// Use Let's Encrypt staging environment
     #[arg(long)]

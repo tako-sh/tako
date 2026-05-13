@@ -373,6 +373,7 @@ mod tests {
                 host: "prod.example.com".to_string(),
                 port: 22,
                 description: None,
+                ..Default::default()
             },
         );
 

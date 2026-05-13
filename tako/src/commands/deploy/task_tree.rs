@@ -6,7 +6,9 @@ use crate::config::ServerTarget;
 use crate::output;
 use crate::ui::{TaskItemState, TaskState, TaskTreeSession, TreeNode, TreeTextTone};
 
-use super::format::{SummaryLine, format_build_plan_target_label, format_deploy_summary_lines};
+use super::format::{
+    SummaryLine, format_build_plan_target_label, format_deploy_summary_lines_with_https_port,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ArtifactBuildGroup {
@@ -343,9 +345,15 @@ impl DeployTaskTreeController {
         self.refresh_locked(&state);
     }
 
-    pub(super) fn set_success_summary(&self, version: &str, routes: &[String]) {
+    pub(super) fn set_success_summary(
+        &self,
+        version: &str,
+        routes: &[String],
+        https_port: Option<u16>,
+    ) {
         let mut state = self.state.lock().unwrap();
-        state.success_lines = format_deploy_summary_lines("Release", version, routes);
+        state.success_lines =
+            format_deploy_summary_lines_with_https_port("Release", version, routes, https_port);
         self.refresh_locked(&state);
     }
 

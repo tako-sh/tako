@@ -153,6 +153,15 @@ pub(super) async fn list_servers() -> Result<(), Box<dyn std::error::Error>> {
         {
             output::bullet(&format!("{} {desc}", output::theme_muted("Description")));
         }
+
+        if entry.http_port != 80 || entry.https_port != 443 {
+            output::bullet(&format!(
+                "{} HTTP {}, HTTPS {}",
+                output::theme_muted("Public ports"),
+                entry.http_port,
+                entry.https_port
+            ));
+        }
     }
     Ok(())
 }

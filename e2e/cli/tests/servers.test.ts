@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { TakoTerminal } from "../helpers/terminal";
-import { mkdtemp, rm } from "node:fs/promises";
+import { TakoTerminal, run } from "../helpers/terminal";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -25,6 +25,43 @@ function spawnServerAdd() {
 }
 
 describe("server add wizard", () => {
+  test("servers add stores and lists custom public ports", async () => {
+    const { exitCode, screen } = await run(
+      [
+        "servers",
+        "add",
+        "127.0.0.1",
+        "--name",
+        "edge",
+        "--no-test",
+        "--http-port",
+        "8080",
+        "--https-port",
+        "8443",
+      ],
+      {
+        cwd: tempDir,
+        env: { HOME: tempDir, TAKO_HOME: takoHome },
+      },
+    );
+
+    expect(exitCode).toBe(0);
+    expect(screen).toContain("Added server");
+
+    const config = await readFile(join(takoHome, "config.toml"), "utf8");
+    expect(config).toContain('name = "edge"');
+    expect(config).toContain("http_port = 8080");
+    expect(config).toContain("https_port = 8443");
+
+    const ls = await run(["servers", "ls"], {
+      cwd: tempDir,
+      env: { HOME: tempDir, TAKO_HOME: takoHome },
+    });
+    expect(ls.exitCode).toBe(0);
+    expect(ls.screen).toContain("Public ports");
+    expect(ls.screen).toContain("HTTP 8080, HTTPS 8443");
+  });
+
   test("Ctrl+C collapses an optional prompt without leaving its hint behind", async () => {
     const term = spawnServerAdd();
 

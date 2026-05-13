@@ -326,6 +326,7 @@ servers = ["solo"]
             host: "127.0.0.1".to_string(),
             port: 22,
             description: None,
+            ..Default::default()
         },
     );
 
@@ -344,6 +345,7 @@ fn resolve_secret_sync_server_names_returns_empty_for_unmapped_non_production() 
             host: "127.0.0.1".to_string(),
             port: 22,
             description: None,
+            ..Default::default()
         },
     );
 

@@ -442,6 +442,7 @@ fn deploy_task_tree_success_summary_appends_release_and_routes() {
     controller.set_success_summary(
         "20260330",
         &["app.test".to_string(), "*.app.test".to_string()],
+        None,
     );
 
     let lines = ui::render_plain_lines(&build_deploy_tree(&controller.snapshot()));

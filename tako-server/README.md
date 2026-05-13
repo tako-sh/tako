@@ -33,6 +33,7 @@ Routing policy notes:
 ## Key Runtime Paths
 
 - Socket: `/var/run/tako/tako.sock`
+- Public HTTP/HTTPS: `--http-port` and `--https-port` (defaults: `80` and `443`)
 - Remote management HTTP: `9844` on the configured Tailscale address
 - Data root: `/opt/tako`
 - State DB: `/opt/tako/tako.db`
@@ -59,8 +60,8 @@ Example local run:
 ```bash
 cargo run -p tako-server -- \
   --socket /tmp/tako.sock \
-  --port 8080 \
-  --tls-port 8443 \
+  --http-port 8080 \
+  --https-port 8443 \
   --data-dir /tmp/tako-data \
   --management-host 100.64.0.10 \
   --no-acme

@@ -145,9 +145,9 @@ impl TestServer {
             socket_path.to_string_lossy().as_ref(),
             "--data-dir",
             data_dir.path().to_string_lossy().as_ref(),
-            "--port",
+            "--http-port",
             &http_port.to_string(),
-            "--tls-port",
+            "--https-port",
             &tls_port.to_string(),
             "--no-acme",
         ])

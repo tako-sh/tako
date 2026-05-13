@@ -27,6 +27,30 @@ fn parse_detected_libc_rejects_unknown_values() {
 }
 
 #[test]
+fn public_ports_from_cli_defaults_omitted_pair_member() {
+    assert_eq!(
+        public_ports_from_cli(Some(8080), None).unwrap(),
+        Some(ServerPublicPorts {
+            http_port: 8080,
+            https_port: 443,
+        })
+    );
+    assert_eq!(
+        public_ports_from_cli(None, Some(8443)).unwrap(),
+        Some(ServerPublicPorts {
+            http_port: 80,
+            https_port: 8443,
+        })
+    );
+}
+
+#[test]
+fn public_ports_from_cli_rejects_invalid_values() {
+    assert!(public_ports_from_cli(Some(0), Some(8443)).is_err());
+    assert!(public_ports_from_cli(Some(8080), Some(8080)).is_err());
+}
+
+#[test]
 fn remote_management_message_mentions_tailscale_without_endpoint_details() {
     let message = remote_management_unavailable_message();
 

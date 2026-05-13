@@ -109,8 +109,8 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!("Mode: standby");
     }
     tracing::info!("Socket: {}", socket);
-    tracing::info!("HTTP port: {}", args.port);
-    tracing::info!("HTTPS port: {}", args.tls_port);
+    tracing::info!("HTTP port: {}", args.http_port);
+    tracing::info!("HTTPS port: {}", args.https_port);
     tracing::info!("Data directory: {}", data_dir_str);
 
     let data_dir = PathBuf::from(&data_dir_str);
@@ -181,8 +181,8 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         ),
         socket: socket.clone(),
         data_dir: data_dir.clone(),
-        http_port: args.port,
-        https_port: args.tls_port,
+        http_port: args.http_port,
+        https_port: args.https_port,
         no_acme: args.no_acme,
         acme_staging: args.acme_staging,
         renewal_interval_hours: args.renewal_interval_hours,
@@ -245,8 +245,8 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let proxy_config = ProxyConfig {
-        http_port: args.port,
-        https_port: args.tls_port,
+        http_port: args.http_port,
+        https_port: args.https_port,
         enable_https: true,
         dev_mode: cfg!(debug_assertions),
         cert_dir,
@@ -259,9 +259,9 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         },
     };
 
-    tracing::info!("Starting HTTP proxy on port {}", args.port);
+    tracing::info!("Starting HTTP proxy on port {}", args.http_port);
     if proxy_config.enable_https {
-        tracing::info!("HTTPS enabled on port {}", args.tls_port);
+        tracing::info!("HTTPS enabled on port {}", args.https_port);
     }
 
     spawn_reload_signal_handlers(&rt, exe);

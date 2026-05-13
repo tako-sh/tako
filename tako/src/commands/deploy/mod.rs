@@ -32,10 +32,11 @@ use config::{
     resolve_effective_build_adapter, run_bun_lockfile_preflight, should_run_bun_lockfile_preflight,
 };
 use format::{
-    format_build_plan_target_label, format_parallel_deploy_step, format_partial_failure_error,
-    format_preflight_complete_message, format_server_deploy_failure, format_server_deploy_success,
-    format_server_not_found_error, format_server_targets_summary, format_servers_summary,
-    print_deploy_summary, should_use_per_server_spinners, should_use_unified_js_target_process,
+    common_https_port_for_servers, format_build_plan_target_label, format_parallel_deploy_step,
+    format_partial_failure_error, format_preflight_complete_message, format_server_deploy_failure,
+    format_server_deploy_success, format_server_not_found_error, format_server_targets_summary,
+    format_servers_summary, print_deploy_summary_with_https_port, should_use_per_server_spinners,
+    should_use_unified_js_target_process,
 };
 use preflight::{check_wildcard_dns_support, run_server_preflight_checks};
 use remote::deploy_to_server;
@@ -331,7 +332,8 @@ async fn run_async(
         if output::is_pretty() {
             eprintln!();
         }
-        print_deploy_summary("App", &app_name, &routes);
+        let https_port = common_https_port_for_servers(&server_names, &servers);
+        print_deploy_summary_with_https_port("App", &app_name, &routes, https_port);
         return Ok(());
     }
 
@@ -599,13 +601,15 @@ async fn run_async(
     // ===== Summary =====
     if errors.is_empty() {
         if let Some(task_tree) = &deploy_task_tree {
-            task_tree.set_success_summary(&version, &routes);
+            let https_port = common_https_port_for_servers(&server_names, &servers);
+            task_tree.set_success_summary(&version, &routes, https_port);
             task_tree.finalize();
         } else {
             if output::is_pretty() {
                 eprintln!();
             }
-            print_deploy_summary("Release", &version, &routes);
+            let https_port = common_https_port_for_servers(&server_names, &servers);
+            print_deploy_summary_with_https_port("Release", &version, &routes, https_port);
         }
 
         Ok(())

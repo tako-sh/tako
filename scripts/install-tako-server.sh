@@ -17,6 +17,8 @@ set -eu
 #   TAKO_USER               default: tako
 #   TAKO_HOME               default: /opt/tako
 #   TAKO_SOCKET             default: /var/run/tako/tako.sock
+#   TAKO_HTTP_PORT          public HTTP port for tako-server (default: 80)
+#   TAKO_HTTPS_PORT         public HTTPS port for tako-server (default: 443)
 #   TAKO_MANAGEMENT_HOST    Tailscale IP to bind remote management on (optional)
 #                           if unset, installer detects it with `tailscale ip -4`
 #   TAKO_SSH_PUBKEY         public key line to authorize for TAKO_USER (optional)
@@ -49,6 +51,8 @@ fi
 TAKO_USER="${TAKO_USER:-tako}"
 TAKO_HOME="${TAKO_HOME:-/opt/tako}"
 TAKO_SOCKET="${TAKO_SOCKET:-/var/run/tako/tako.sock}"
+TAKO_HTTP_PORT="${TAKO_HTTP_PORT:-}"
+TAKO_HTTPS_PORT="${TAKO_HTTPS_PORT:-}"
 TAKO_MANAGEMENT_HOST="${TAKO_MANAGEMENT_HOST:-}"
 TAKO_DOWNLOAD_BASE_URL="${TAKO_DOWNLOAD_BASE_URL:-}"
 TAKO_ALLOW_INSECURE_DOWNLOAD_BASE="${TAKO_ALLOW_INSECURE_DOWNLOAD_BASE:-}"
@@ -58,12 +62,60 @@ TAKO_RELEASE_TAG="${TAKO_RELEASE_TAG:-latest}"
 TAKO_RESTART_SERVICE="${TAKO_RESTART_SERVICE:-1}"
 TAKO_MANAGEMENT_REQUIRED_MESSAGE="Remote management requires Tailscale so Tako can keep server control traffic private by default."
 TAKO_MANAGEMENT_ARGS=""
+TAKO_PUBLIC_PORT_ARGS=""
 TAKO_SERVER_CAPABILITIES="cap_net_bind_service,cap_setuid,cap_setgid,cap_kill"
 TAKO_SERVER_INSTALL_REFRESH_HELPER="/usr/local/bin/tako-server-install-refresh"
 TAKO_SERVER_SERVICE_HELPER="/usr/local/bin/tako-server-service"
 TAKO_MANAGEMENT_AUTH_KEYS="$TAKO_HOME/management-authorized-keys"
 
 need_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+usage() {
+  cat <<EOF
+Usage: install-tako-server.sh [--http-port PORT] [--https-port PORT]
+
+Options:
+  --http-port PORT    Public HTTP port for tako-server (default: 80)
+  --https-port PORT   Public HTTPS port for tako-server (default: 443)
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --http-port)
+      shift
+      if [ "$#" -eq 0 ]; then
+        echo "error: --http-port requires a value" >&2
+        exit 1
+      fi
+      TAKO_HTTP_PORT="$1"
+      ;;
+    --http-port=*)
+      TAKO_HTTP_PORT="${1#--http-port=}"
+      ;;
+    --https-port)
+      shift
+      if [ "$#" -eq 0 ]; then
+        echo "error: --https-port requires a value" >&2
+        exit 1
+      fi
+      TAKO_HTTPS_PORT="$1"
+      ;;
+    --https-port=*)
+      TAKO_HTTPS_PORT="${1#--https-port=}"
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "error: unknown argument: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+  shift
+done
 
 github_auth_header() {
   url="$1"
@@ -236,6 +288,52 @@ process_has_management_host() {
   esac
 }
 
+cmdline_arg_value() {
+  _cmdline="$1"
+  _arg="$2"
+  printf '%s\n' "$_cmdline" | awk -v arg="$_arg" '
+    {
+      for (i = 1; i <= NF; i++) {
+        if ($i == arg && (i + 1) <= NF) {
+          print $(i + 1)
+          exit
+        }
+        prefix = arg "="
+        if (index($i, prefix) == 1) {
+          print substr($i, length(prefix) + 1)
+          exit
+        }
+      }
+    }
+  '
+}
+
+process_has_public_ports() {
+  pid="$1"
+  http_port="$2"
+  https_port="$3"
+  case "$pid" in
+    ''|0|*[!0-9]*)
+      return 1
+      ;;
+  esac
+  if [ ! -r "/proc/$pid/cmdline" ]; then
+    return 1
+  fi
+
+  cmdline="$(tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+  running_http="$(cmdline_arg_value "$cmdline" "--http-port")"
+  if [ -z "$running_http" ]; then
+    running_http="$(cmdline_arg_value "$cmdline" "--port")"
+  fi
+  running_https="$(cmdline_arg_value "$cmdline" "--https-port")"
+  if [ -z "$running_https" ]; then
+    running_https="$(cmdline_arg_value "$cmdline" "--tls-port")"
+  fi
+
+  [ "${running_http:-80}" = "$http_port" ] && [ "${running_https:-443}" = "$https_port" ]
+}
+
 systemd_main_pid() {
   systemctl show -p MainPID --value tako-server 2>/dev/null || true
 }
@@ -310,6 +408,88 @@ detect_service_manager() {
 }
 
 SERVICE_MANAGER="$(detect_service_manager)"
+
+existing_service_arg_value() {
+  _arg="$1"
+  for _file in /etc/systemd/system/tako-server.service /etc/init.d/tako-server; do
+    if [ -r "$_file" ]; then
+      _value="$(cmdline_arg_value "$(sed -n 's/.*ExecStart=//p; s/^command_args="\([^"]*\)".*/\1/p' "$_file" 2>/dev/null)" "$_arg")"
+      if [ -n "$_value" ]; then
+        printf '%s\n' "$_value"
+        return 0
+      fi
+    fi
+  done
+  return 1
+}
+
+existing_http_port() {
+  existing_service_arg_value "--http-port" || existing_service_arg_value "--port" || true
+}
+
+existing_https_port() {
+  existing_service_arg_value "--https-port" || existing_service_arg_value "--tls-port" || true
+}
+
+prompt_with_default() {
+  label="$1"
+  default="$2"
+  answer=""
+  if [ -t 0 ] && [ -t 1 ]; then
+    printf '%s [%s]: ' "$label" "$default"
+    IFS= read -r answer || answer=""
+  elif [ -r /dev/tty ] && [ -w /dev/tty ] && (printf '' > /dev/tty) 2>/dev/null; then
+    printf '%s [%s]: ' "$label" "$default" > /dev/tty
+    IFS= read -r answer < /dev/tty || answer=""
+  fi
+  if [ -z "$answer" ]; then
+    answer="$default"
+  fi
+  printf '%s\n' "$answer"
+}
+
+validate_port_value() {
+  label="$1"
+  value="$2"
+  case "$value" in
+    ''|*[!0-9]*)
+      echo "error: $label must be between 1 and 65535" >&2
+      exit 1
+      ;;
+  esac
+  if [ "$value" -lt 1 ] || [ "$value" -gt 65535 ]; then
+    echo "error: $label must be between 1 and 65535" >&2
+    exit 1
+  fi
+}
+
+configure_public_ports() {
+  default_http="$(existing_http_port)"
+  default_https="$(existing_https_port)"
+  default_http="${default_http:-80}"
+  default_https="${default_https:-443}"
+
+  if [ -z "$TAKO_HTTP_PORT" ]; then
+    TAKO_HTTP_PORT="$(prompt_with_default "HTTP port" "$default_http")"
+  fi
+  if [ -z "$TAKO_HTTPS_PORT" ]; then
+    TAKO_HTTPS_PORT="$(prompt_with_default "HTTPS port" "$default_https")"
+  fi
+
+  validate_port_value "HTTP port" "$TAKO_HTTP_PORT"
+  validate_port_value "HTTPS port" "$TAKO_HTTPS_PORT"
+  if [ "$TAKO_HTTP_PORT" = "$TAKO_HTTPS_PORT" ]; then
+    echo "error: HTTP and HTTPS ports must differ" >&2
+    exit 1
+  fi
+
+  if [ "$TAKO_HTTP_PORT" != "80" ]; then
+    echo "warning: ACME HTTP-01 needs public port 80. Forward port 80 to Tako, or use DNS-01/manual certificates." >&2
+  fi
+
+  TAKO_PUBLIC_PORT_ARGS="--http-port $TAKO_HTTP_PORT --https-port $TAKO_HTTPS_PORT"
+  echo "OK public ports: HTTP $TAKO_HTTP_PORT, HTTPS $TAKO_HTTPS_PORT"
+}
 
 install_upgrade_helpers() {
   cat > "$TAKO_SERVER_INSTALL_REFRESH_HELPER" <<'EOF'
@@ -1053,6 +1233,8 @@ maybe_prompt_server_name() {
 
 maybe_prompt_server_name
 
+configure_public_ports
+
 install_systemd_service_unit() {
   mkdir -p /etc/systemd/system
   cat > /etc/systemd/system/tako-server.service <<EOF
@@ -1069,7 +1251,7 @@ NoNewPrivileges=true
 AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecStart=/usr/local/bin/tako-server --socket $TAKO_SOCKET --data-dir $TAKO_HOME $TAKO_MANAGEMENT_ARGS
+ExecStart=/usr/local/bin/tako-server --socket $TAKO_SOCKET --data-dir $TAKO_HOME $TAKO_PUBLIC_PORT_ARGS $TAKO_MANAGEMENT_ARGS
 ExecReload=/bin/kill -HUP \$MAINPID
 Restart=always
 RestartSec=1
@@ -1089,7 +1271,7 @@ install_openrc_service_script() {
 description="Tako Server"
 
 command="/usr/local/bin/tako-server"
-command_args="--socket $TAKO_SOCKET --data-dir $TAKO_HOME $TAKO_MANAGEMENT_ARGS"
+command_args="--socket $TAKO_SOCKET --data-dir $TAKO_HOME $TAKO_PUBLIC_PORT_ARGS $TAKO_MANAGEMENT_ARGS"
 command_user="$TAKO_USER:$TAKO_USER"
 pidfile="/run/\${RC_SVCNAME}.pid"
 command_background="yes"
@@ -1129,7 +1311,7 @@ NoNewPrivileges=true
 AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecStart=/usr/local/bin/tako-server --standby --socket $TAKO_SOCKET --data-dir $TAKO_HOME --instance-port-offset 1000
+ExecStart=/usr/local/bin/tako-server --standby --socket $TAKO_SOCKET --data-dir $TAKO_HOME $TAKO_PUBLIC_PORT_ARGS --instance-port-offset 1000
 Restart=always
 RestartSec=1
 KillMode=mixed
@@ -1155,9 +1337,9 @@ if [ "$SERVICE_MANAGER" = "systemd" ]; then
     systemctl enable tako-server >/dev/null 2>&1 || true
     if systemctl is-active --quiet tako-server; then
       main_pid="$(systemd_main_pid)"
-      if [ -n "$TAKO_MANAGEMENT_ARGS" ] && ! process_has_management_host "$main_pid" "$TAKO_MANAGEMENT_HOST"; then
+      if { [ -n "$TAKO_MANAGEMENT_ARGS" ] && ! process_has_management_host "$main_pid" "$TAKO_MANAGEMENT_HOST"; } || ! process_has_public_ports "$main_pid" "$TAKO_HTTP_PORT" "$TAKO_HTTPS_PORT"; then
         systemctl restart tako-server
-        echo "OK tako-server restarted with remote management"
+        echo "OK tako-server restarted with updated service settings"
       else
         # Service already running — graceful reload (SIGHUP) to pick up new binary.
         systemctl reload tako-server
@@ -1180,9 +1362,9 @@ elif [ "$SERVICE_MANAGER" = "openrc" ]; then
   if is_enabled "$TAKO_RESTART_SERVICE"; then
     if rc-service tako-server status >/dev/null 2>&1; then
       main_pid="$(openrc_main_pid)"
-      if [ -n "$TAKO_MANAGEMENT_ARGS" ] && ! process_has_management_host "$main_pid" "$TAKO_MANAGEMENT_HOST"; then
+      if { [ -n "$TAKO_MANAGEMENT_ARGS" ] && ! process_has_management_host "$main_pid" "$TAKO_MANAGEMENT_HOST"; } || ! process_has_public_ports "$main_pid" "$TAKO_HTTP_PORT" "$TAKO_HTTPS_PORT"; then
         rc-service tako-server restart
-        echo "OK tako-server restarted with remote management"
+        echo "OK tako-server restarted with updated service settings"
       else
         rc-service tako-server reload || rc-service tako-server restart
       fi

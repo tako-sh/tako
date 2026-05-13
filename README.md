@@ -41,6 +41,8 @@ sudo sh -c "$(curl -fsSL https://tako.sh/install-server.sh)"
 tako servers add my-server
 # Or install/repair over SSH while adding:
 tako servers add root@my-server
+# Custom public ports:
+tako servers add root@my-server --http-port 8080 --https-port 8443
 ```
 
 Deploy your app:

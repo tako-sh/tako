@@ -1,6 +1,6 @@
 use super::request::{
-    forwarded_header_has_proto, forwarded_header_proto_is_https, is_request_forwarded_https,
-    strip_route_prefix_for_static_lookup, x_forwarded_proto_is_https,
+    forwarded_header_has_proto, forwarded_header_proto_is_https, https_redirect_host,
+    is_request_forwarded_https, strip_route_prefix_for_static_lookup, x_forwarded_proto_is_https,
 };
 use super::server::{create_tls_settings, listener_socket_options};
 use super::*;
@@ -123,6 +123,19 @@ fn test_create_tls_settings_no_cert() {
 #[test]
 fn test_should_redirect_http_request_when_http_and_enabled() {
     assert!(should_redirect_http_request(false, true));
+}
+
+#[test]
+fn https_redirect_host_replaces_public_http_port() {
+    assert_eq!(
+        https_redirect_host("example.com:8080", 8443),
+        "example.com:8443"
+    );
+    assert_eq!(https_redirect_host("example.com:8080", 443), "example.com");
+    assert_eq!(
+        https_redirect_host("[fd7a:115c:a1e0::1]:8080", 8443),
+        "[fd7a:115c:a1e0::1]:8443"
+    );
 }
 
 #[test]

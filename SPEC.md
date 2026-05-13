@@ -212,6 +212,8 @@ Global user-level settings and server inventory. Stored in the platform config d
 name = "la"
 host = "1.2.3.4"
 port = 22                 # Optional, defaults to 22
+http_port = 80            # Optional public HTTP port, defaults to 80
+https_port = 443          # Optional public HTTPS port, defaults to 443
 arch = "x86_64"
 libc = "glibc"
 
@@ -223,7 +225,7 @@ libc = "musl"
 ```
 
 `[[servers]]` entries are managed by `tako servers add/rm/ls`. All names and hosts must be globally unique.
-Detected server build target metadata is stored directly in each `[[servers]]` entry (`arch`, `libc`).
+Detected server build target metadata (`arch`, `libc`) and public proxy ports (`http_port`, `https_port`) are stored directly in each `[[servers]]` entry.
 
 **SSH authentication:**
 
@@ -610,29 +612,30 @@ Logs flow helpers:
 
 - For `production`, if no servers are configured and the terminal is interactive, logs offers to run the add-server wizard.
 
-### tako servers add [host|admin-user@host] [--name {name}] [--description {text}] [--port {port}] [--install] [--admin-user {user}]
+### tako servers add [host|admin-user@host] [--name {name}] [--description {text}] [--port {ssh-port}] [--http-port {port}] [--https-port {port}] [--install] [--admin-user {user}]
 
 Add server to global `config.toml` (`[[servers]]`).
 
 - With `host`: adds directly from CLI args and defaults the server name to the host's first DNS label (`my-server.tailnet.ts.net` becomes `my-server`). IP addresses and hosts that do not produce a valid server name require `--name`.
 - With `admin-user@host`: treats the prefix as the admin SSH user for install/repair and stores only `host`.
-- Without `host` (interactive terminal): launches a guided wizard (host, SSH port, optional SSH passphrase when a default key is encrypted, required server name, optional description) with a final `Looks good?` confirmation. Choosing `No` restarts the wizard.
+- Without `host` (interactive terminal): launches a guided wizard (host, SSH port, optional SSH passphrase when a default key is encrypted, install HTTP/HTTPS ports when installing, required server name, optional description) with a final `Looks good?` confirmation. Choosing `No` restarts the wizard.
 - If the derived server name already exists, interactive mode prompts for another name. Non-interactive mode fails and asks for `--name`.
 - The add-server wizard supports `Tab` autocomplete suggestions for host/name/port from existing servers and persisted CLI history.
   - For name/port prompts, suggestions related to the selected host (and selected name for ports) are prioritized first, then global suggestions are shown.
-- Successful adds record host/name/port history in `history.toml` for future autocomplete.
+- Successful adds record host/name/SSH-port history in `history.toml` for future autocomplete.
 - `--description` stores optional human-readable metadata in `config.toml` (shown in `tako servers ls`).
-- Re-running with the same name/host/port is idempotent (reports already configured and succeeds).
+- `--http-port` and `--https-port` set the public proxy ports used when `servers add` installs `tako-server`; omitted values default to `80` and `443`. They are distinct from `--port`, which remains the SSH port.
+- Re-running with the same name/host/SSH-port/public-port tuple is idempotent (reports already configured and succeeds).
 
 Tests SSH connection before adding. Connects as the `tako` user.
 
-During SSH checks, `tako servers add` also detects and stores target metadata (`arch`, `libc`) in the matching `[[servers]]` entry in `config.toml`.
+During SSH checks, `tako servers add` also detects and stores target metadata (`arch`, `libc`) and the running public proxy ports (`http_port`, `https_port`) in the matching `[[servers]]` entry in `config.toml`.
 
 If `--no-test` is used, SSH checks and target detection are skipped; deploy later fails for that server until target metadata is captured by re-adding the server with SSH checks enabled.
 
-If `--install` is used and `tako-server` is missing or `tako@host` is not available, `tako servers add` connects as the admin SSH user (default `root`, override with `--admin-user`) and runs the server installer over SSH. Passing `admin-user@host` is shorthand for setting that admin user and enabling install/repair when needed. The installer authorizes the SSH public key that authenticated the admin connection for the `tako` user, then `servers add` rechecks `tako@host`, enrolls the same key for signed remote management, verifies signed HTTP access, and only then writes `config.toml`.
+If `--install` is used and `tako-server` is missing or `tako@host` is not available, `tako servers add` connects as the admin SSH user (default `root`, override with `--admin-user`) and runs the server installer over SSH. Passing `admin-user@host` is shorthand for setting that admin user and enabling install/repair when needed. Interactive installs prompt for editable HTTP and HTTPS port fields prefilled with `80` and `443` unless `--http-port`/`--https-port` were passed. The installer authorizes the SSH public key that authenticated the admin connection for the `tako` user, then `servers add` rechecks `tako@host`, enrolls the same key for signed remote management, verifies signed HTTP access, and only then writes `config.toml`.
 
-In the interactive wizard and direct host flow, if `tako-server` is missing or `tako@host` cannot be reached, Tako asks whether to install now and prompts for the admin SSH user.
+In the interactive wizard and direct host flow, if `tako-server` is missing or `tako@host` cannot be reached, Tako asks whether to install now, prompts for public HTTP/HTTPS ports, and prompts for the admin SSH user.
 
 ### tako servers rm [name]
 
@@ -1128,6 +1131,12 @@ Recommended: run the hosted installer script on the server (as root):
 sudo sh -c "$(curl -fsSL https://tako.sh/install-server.sh)"
 ```
 
+Custom public proxy ports can be supplied as installer args:
+
+```bash
+curl -fsSL https://tako.sh/install-server.sh | sudo sh -s -- --http-port 8080 --https-port 8443
+```
+
 Installer SSH key behavior:
 
 - If `TAKO_SSH_PUBKEY` is set, installer uses it and skips prompting.
@@ -1144,6 +1153,8 @@ Installer SSH key behavior:
 - When the installer installs or accepts `TAKO_SSH_PUBKEY`, it also enrolls that public key for signed remote management in `/opt/tako/management-authorized-keys`.
 - Installer supports systemd and OpenRC hosts.
 - Installer supports install-refresh mode (`TAKO_RESTART_SERVICE=0`) for build/image workflows without active init; in this mode, it refreshes binary/users and skips service-definition install/start.
+- Installer writes `tako-server --http-port {port} --https-port {port}` into the host service definition. Interactive installs prompt for `HTTP port [80]:` and `HTTPS port [443]:`; non-interactive installs use defaults unless `--http-port`/`--https-port` or `TAKO_HTTP_PORT`/`TAKO_HTTPS_PORT` are provided. Reinstalls use the existing service ports as prompt defaults when present.
+- If service public ports change, installer performs a full service restart so the service manager command line takes effect. Otherwise, active services use the normal zero-downtime reload path.
 - For normal service installs, installer configures remote management on the server's Tailscale IP. It detects that address with `tailscale ip -4` or uses `TAKO_MANAGEMENT_HOST` when set. If no Tailscale IP is available, install fails with: `Remote management requires Tailscale so Tako can keep server control traffic private by default.`
 - Installer configures service capability support for privileged binds, app-user switching, and stopping app processes after switching users:
   - systemd: `AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL`, `CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL`
@@ -1167,7 +1178,7 @@ Reference scripts in this repo:
 - Supports musl detection for Alpine and other musl-based systems.
 - If the runtime plugin has no download spec, the binary must be available on PATH.
 
-**Default behavior (no configuration file needed):**
+**Default behavior (no custom installer ports needed):**
 
 - HTTP: port 80
 - HTTPS: port 443
@@ -1178,6 +1189,7 @@ Reference scripts in this repo:
 - Renewal check interval: Every 12 hours (renews certificates 30 days before expiry)
 - HTTP requests redirect to HTTPS (`307`, non-cacheable) by default.
 - Exception: `/.well-known/acme-challenge/*` stays on HTTP.
+- When HTTPS uses a non-default public port, deploy summaries include that port in printed route URLs and HTTP redirects target the configured HTTPS port.
 - Forwarded requests for private/local hostnames (`localhost`, `*.localhost`, single-label hosts, and reserved suffixes like `*.local`) are treated as already HTTPS when proxy proto metadata is missing, so local dev proxy setups do not enter redirect loops.
 - Upstream response caching is enabled at the edge proxy for `GET`/`HEAD` requests (websocket upgrades are excluded).
 - Cache admission follows response headers (`Cache-Control` / `Expires`) with no implicit TTL defaults; responses without explicit cache directives are not stored.
@@ -1280,6 +1292,12 @@ App log files contain app stdout/stderr plus app-scoped Tako server diagnostics.
 - `tako-server` also listens for management RPC over HTTP on port `9844` for Tailscale-reachable server status and deploy operations.
 - Only `hello` and `server_info` are public probes. All other RPCs require SSH-key-signed headers, a fresh timestamp, and a non-replayed nonce against the server's `management-authorized-keys` file.
 - Management RPC request bodies are capped at 1 MiB.
+
+**Public proxy listeners:**
+
+- `tako-server --http-port {port}` controls the public HTTP listener.
+- `tako-server --https-port {port}` controls the public HTTPS listener.
+- The installer owns these args in normal service installs; `tako servers add --install --http-port {port} --https-port {port}` passes them through to the remote installer.
 
 **App instance upstream transport:**
 
@@ -1588,7 +1606,7 @@ This requires OpenSSL (not rustls) for callback support.
 - For private/local route hostnames (`localhost`, `*.localhost`, single-label hosts, and reserved suffixes such as `*.local`, `*.test`, `*.invalid`, `*.example`, `*.home.arpa`), Tako skips ACME and generates a self-signed certificate during deploy.
 - If no certificate exists yet for an SNI hostname, Tako serves a fallback self-signed default certificate so TLS handshakes still complete.
 - Automatic renewal 30 days before expiry
-- HTTP-01 challenge (port 80)
+- HTTP-01 challenge uses the public HTTP port. Let's Encrypt reaches port 80, so custom HTTP ports require external port-80 forwarding, DNS-01, or manual certificates.
 - Zero-downtime renewal
 - DNS-01 challenges are supported for wildcard certificates via the [`lego`](https://go-acme.github.io/lego/) ACME client, which `tako-server` downloads and installs on-demand. Credentials are stored on the server at `/opt/tako/dns-credentials.env` and the provider name is persisted in `/opt/tako/config.json`. Run `tako servers setup-wildcard` to configure DNS credentials before deploying wildcard routes.
 

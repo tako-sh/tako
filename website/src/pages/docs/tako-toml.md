@@ -315,7 +315,7 @@ Precedence for `worker: "email"`:
 
 ## Server Overrides
 
-The project config can contain per-server workflow overrides under `[servers.<name>]`. Server inventory itself is not stored here; it lives in global `config.toml` managed by `tako servers add`.
+The project config can contain per-server workflow overrides under `[servers.<name>]`. Server inventory itself is not stored here; it lives in global `config.toml` managed by `tako servers add`, including host, SSH port, detected public HTTP/HTTPS ports, and target metadata.
 
 ```toml
 [servers.la.workflows]

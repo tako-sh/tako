@@ -22,6 +22,8 @@ host = "1.2.3.4"
     let server = config.get("la").unwrap();
     assert_eq!(server.host, "1.2.3.4");
     assert_eq!(server.port, 22);
+    assert_eq!(server.http_port, 80);
+    assert_eq!(server.https_port, 443);
 }
 
 #[test]
@@ -31,6 +33,8 @@ fn test_parse_server_with_all_fields() {
 name = "production"
 host = "prod.example.com"
 port = 2222
+http_port = 8080
+https_port = 8443
 description = "Primary production server"
 "#;
     let config = ServersToml::parse(toml).unwrap();
@@ -38,6 +42,8 @@ description = "Primary production server"
 
     assert_eq!(server.host, "prod.example.com");
     assert_eq!(server.port, 2222);
+    assert_eq!(server.http_port, 8080);
+    assert_eq!(server.https_port, 8443);
     assert_eq!(
         server.description.as_deref(),
         Some("Primary production server")
@@ -98,6 +104,29 @@ arch = "x86_64"
 }
 
 #[test]
+fn test_parse_rejects_invalid_public_ports() {
+    let toml = r#"
+[[servers]]
+name = "la"
+host = "1.2.3.4"
+http_port = 0
+https_port = 8443
+"#;
+    let err = ServersToml::parse(toml).unwrap_err();
+    assert!(err.to_string().contains("HTTP port"));
+
+    let toml = r#"
+[[servers]]
+name = "nyc"
+host = "5.6.7.8"
+http_port = 8080
+https_port = 8080
+"#;
+    let err = ServersToml::parse(toml).unwrap_err();
+    assert!(err.to_string().contains("must differ"));
+}
+
+#[test]
 fn test_target_normalization_accepts_common_aliases() {
     assert_eq!(
         ServerTarget::normalize_arch("amd64").as_deref(),
@@ -147,6 +176,8 @@ host = "1.2.3.4"
 fn test_default_values() {
     let entry = ServerEntry::default();
     assert_eq!(entry.port, 22);
+    assert_eq!(entry.http_port, 80);
+    assert_eq!(entry.https_port, 443);
 }
 
 // ==================== Validation Tests ====================
@@ -247,6 +278,7 @@ fn test_add_server() {
                 host: "1.2.3.4".to_string(),
                 port: 22,
                 description: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -405,6 +437,8 @@ fn test_update_server() {
             ServerEntry {
                 host: "1.2.3.4".to_string(),
                 port: 22,
+                http_port: 80,
+                https_port: 443,
                 description: None,
             },
         )
@@ -416,6 +450,8 @@ fn test_update_server() {
             ServerEntry {
                 host: "5.6.7.8".to_string(),
                 port: 2222,
+                http_port: 8080,
+                https_port: 8443,
                 description: None,
             },
         )
@@ -424,6 +460,8 @@ fn test_update_server() {
     let server = config.get("la").unwrap();
     assert_eq!(server.host, "5.6.7.8");
     assert_eq!(server.port, 2222);
+    assert_eq!(server.http_port, 8080);
+    assert_eq!(server.https_port, 8443);
 }
 
 #[test]
@@ -458,6 +496,8 @@ fn test_save_and_load() {
             ServerEntry {
                 host: "1.2.3.4".to_string(),
                 port: 2222,
+                http_port: 8080,
+                https_port: 8443,
                 description: Some("west coast".to_string()),
             },
         )
@@ -483,6 +523,8 @@ fn test_save_and_load() {
 
     config.save_to_file(&path).unwrap();
     let written = fs::read_to_string(&path).unwrap();
+    assert!(written.contains("http_port = 8080"));
+    assert!(written.contains("https_port = 8443"));
     assert!(written.contains("arch = \"x86_64\""));
     assert!(written.contains("libc = \"glibc\""));
     assert!(!written.contains("[server_targets."));
@@ -493,6 +535,8 @@ fn test_save_and_load() {
     let la = loaded.get("la").unwrap();
     assert_eq!(la.host, "1.2.3.4");
     assert_eq!(la.port, 2222);
+    assert_eq!(la.http_port, 8080);
+    assert_eq!(la.https_port, 8443);
     assert_eq!(la.description.as_deref(), Some("west coast"));
     let la_target = loaded.get_target("la").unwrap();
     assert_eq!(la_target.arch, "x86_64");
@@ -501,6 +545,8 @@ fn test_save_and_load() {
     let nyc = loaded.get("nyc").unwrap();
     assert_eq!(nyc.host, "5.6.7.8");
     assert_eq!(nyc.port, 22); // default
+    assert_eq!(nyc.http_port, 80);
+    assert_eq!(nyc.https_port, 443);
     assert!(loaded.get_target("nyc").is_none());
 }
 

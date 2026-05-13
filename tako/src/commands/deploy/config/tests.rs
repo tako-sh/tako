@@ -255,6 +255,7 @@ fn resolve_deploy_servers_prefers_explicit_mapping() {
             host: "127.0.0.1".to_string(),
             port: 22,
             description: None,
+            ..Default::default()
         },
     );
 
@@ -276,6 +277,7 @@ fn resolve_deploy_servers_require_explicit_mapping() {
             host: "127.0.0.1".to_string(),
             port: 22,
             description: None,
+            ..Default::default()
         },
     );
 
@@ -309,6 +311,7 @@ fn resolve_deploy_servers_errors_for_non_production_without_mapping() {
             host: "127.0.0.1".to_string(),
             port: 22,
             description: None,
+            ..Default::default()
         },
     );
 
@@ -363,6 +366,7 @@ async fn resolve_deploy_servers_with_setup_persists_single_server_mapping() {
             host: "127.0.0.1".to_string(),
             port: 22,
             description: None,
+            ..Default::default()
         },
     );
 
@@ -402,6 +406,7 @@ async fn resolve_deploy_servers_with_setup_requires_interactive_selection_when_m
             host: "10.0.0.1".to_string(),
             port: 22,
             description: None,
+            ..Default::default()
         },
     );
     servers.servers.insert(
@@ -410,6 +415,7 @@ async fn resolve_deploy_servers_with_setup_requires_interactive_selection_when_m
             host: "10.0.0.2".to_string(),
             port: 22,
             description: Some("backup".to_string()),
+            ..Default::default()
         },
     );
 
@@ -434,6 +440,7 @@ fn resolve_deploy_server_targets_requires_metadata_for_each_server() {
             host: "10.0.0.1".to_string(),
             port: 22,
             description: None,
+            ..Default::default()
         },
     );
 
@@ -452,6 +459,7 @@ fn resolve_deploy_server_targets_rejects_invalid_values() {
             host: "10.0.0.1".to_string(),
             port: 22,
             description: None,
+            ..Default::default()
         },
     );
     servers.server_targets.insert(

@@ -29,6 +29,8 @@ The CLI:
 
 Status and deploy operations use signed remote management over Tailscale-reachable HTTP. SSH is still used for setup, upload, install, recovery, and log file access.
 
+Production `tako-server` listens on public HTTP/HTTPS ports from its service args, defaulting to `80` and `443`. The installer and `tako servers add --install` can set custom public ports, which are stored in the global server inventory after probing `server_info`.
+
 ### Runtime Plugins
 
 Runtime plugins define how an app builds, installs production dependencies, starts, and sets runtime environment variables. Built-in runtimes are Bun, Node, and Go.

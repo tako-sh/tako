@@ -192,6 +192,7 @@ tako secrets key import --passphrase --env production
 ```bash
 tako servers add host.example.com --name la
 tako servers add ubuntu@host.example.com --install
+tako servers add ubuntu@host.example.com --install --http-port 8080 --https-port 8443
 tako servers rm la
 tako servers ls
 tako servers status
@@ -224,7 +225,7 @@ Aliases:
 - `servers status`: `info`
 - `servers implode`: `uninstall`
 
-`servers add` tests SSH as the `tako` user and stores detected target metadata (`arch`, `libc`). With `--install`, or `admin-user@host`, it can install or repair `tako-server` before adding the server.
+`servers add` tests SSH as the `tako` user and stores detected target metadata (`arch`, `libc`) plus the server's public HTTP/HTTPS ports. With `--install`, or `admin-user@host`, it can install or repair `tako-server` before adding the server. Install flows prompt for HTTP and HTTPS ports with `80` and `443` prefilled unless `--http-port` and `--https-port` are passed.
 
 `servers setup-wildcard` currently applies DNS configuration to all configured servers. The command accepts `--env`, but it does not filter the target server list.
 

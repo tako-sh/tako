@@ -31,24 +31,132 @@ pub async fn prompt_to_add_server(
         return Ok(None);
     }
 
-    run_add_server_wizard(None, None, 22, true, true, None).await
+    run_add_server_wizard(None, None, 22, None, true, true, None).await
 }
 
 pub struct AddServerOptions<'a> {
     pub name: Option<&'a str>,
     pub description: Option<&'a str>,
     pub port: u16,
+    pub public_ports: Option<ServerPublicPorts>,
     pub no_test: bool,
     pub pre_detected_target: Option<crate::config::ServerTarget>,
+    pub pre_detected_public_ports: Option<ServerPublicPorts>,
     pub install_if_missing: bool,
     pub allow_install_prompt: bool,
     pub admin_user: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServerPublicPorts {
+    pub http_port: u16,
+    pub https_port: u16,
+}
+
+impl Default for ServerPublicPorts {
+    fn default() -> Self {
+        Self {
+            http_port: 80,
+            https_port: 443,
+        }
+    }
+}
+
+impl From<ServerPublicPorts> for crate::ssh::ServerInstallPorts {
+    fn from(value: ServerPublicPorts) -> Self {
+        Self {
+            http_port: value.http_port,
+            https_port: value.https_port,
+        }
+    }
+}
+
+pub(super) fn public_ports_from_cli(
+    http_port: Option<u16>,
+    https_port: Option<u16>,
+) -> Result<Option<ServerPublicPorts>, String> {
+    if http_port.is_none() && https_port.is_none() {
+        return Ok(None);
+    }
+
+    let ports = ServerPublicPorts {
+        http_port: http_port.unwrap_or(80),
+        https_port: https_port.unwrap_or(443),
+    };
+    validate_public_ports(ports)?;
+    Ok(Some(ports))
+}
+
+fn validate_public_ports(ports: ServerPublicPorts) -> Result<(), String> {
+    if ports.http_port == 0 {
+        return Err("HTTP port must be between 1 and 65535.".to_string());
+    }
+    if ports.https_port == 0 {
+        return Err("HTTPS port must be between 1 and 65535.".to_string());
+    }
+    if ports.http_port == ports.https_port {
+        return Err("HTTP and HTTPS ports must differ.".to_string());
+    }
+    Ok(())
+}
+
+fn parse_prompt_port(label: &str, value: &str) -> Result<u16, String> {
+    let port = value
+        .trim()
+        .parse::<u16>()
+        .map_err(|_| format!("{label} must be between 1 and 65535."))?;
+    if port == 0 {
+        return Err(format!("{label} must be between 1 and 65535."));
+    }
+    Ok(port)
+}
+
+fn prompt_public_ports(
+    initial: Option<ServerPublicPorts>,
+) -> Result<ServerPublicPorts, Box<dyn std::error::Error>> {
+    let initial = initial.unwrap_or_default();
+    loop {
+        let http_default = initial.http_port.to_string();
+        let https_default = initial.https_port.to_string();
+        let http_port = output::TextField::new("HTTP port")
+            .with_default(&http_default)
+            .prompt_validated(|value| parse_prompt_port("HTTP port", value).map(|_| ()))?;
+        let http_port = parse_prompt_port("HTTP port", &http_port)?;
+
+        let https_port = output::TextField::new("HTTPS port")
+            .with_default(&https_default)
+            .prompt_validated(|value| parse_prompt_port("HTTPS port", value).map(|_| ()))?;
+        let https_port = parse_prompt_port("HTTPS port", &https_port)?;
+
+        let ports = ServerPublicPorts {
+            http_port,
+            https_port,
+        };
+        match validate_public_ports(ports) {
+            Ok(()) => return Ok(ports),
+            Err(message) if output::is_interactive() => output::warning(&message),
+            Err(message) => return Err(message.into()),
+        }
+    }
+}
+
+fn install_public_ports(
+    requested: Option<ServerPublicPorts>,
+) -> Result<ServerPublicPorts, Box<dyn std::error::Error>> {
+    if let Some(ports) = requested {
+        Ok(ports)
+    } else if output::is_interactive() {
+        prompt_public_ports(requested)
+    } else {
+        Ok(ServerPublicPorts::default())
+    }
 }
 
 pub(super) async fn run_add_server_wizard(
     initial_name: Option<&str>,
     initial_description: Option<&str>,
     initial_port: u16,
+    initial_public_ports: Option<ServerPublicPorts>,
     default_test_ssh: bool,
     allow_install: bool,
     admin_user_default: Option<&str>,
@@ -181,6 +289,7 @@ pub(super) async fn run_add_server_wizard(
     // --- SSH connection test ---
     let mut remote_server_name: Option<String> = None;
     let mut detected_target: Option<crate::config::ServerTarget> = None;
+    let mut detected_public_ports: Option<ServerPublicPorts> = initial_public_ports;
 
     if default_test_ssh {
         let host_span = output::scope(&host);
@@ -201,6 +310,7 @@ pub(super) async fn run_add_server_wizard(
         if allow_install && needs_install {
             let should_install = output::confirm("Install tako-server now?", true)?;
             if should_install {
+                let public_ports = install_public_ports(initial_public_ports)?;
                 let admin_user = output::TextField::new("Admin SSH user")
                     .with_default(admin_user_default.unwrap_or("root"))
                     .prompt()?;
@@ -210,11 +320,12 @@ pub(super) async fn run_add_server_wizard(
                     "Installing tako-server",
                     "tako-server installed",
                     "Install failed",
-                    install_tako_server_with_admin(&host, port, &admin_user)
+                    install_tako_server_with_admin(&host, port, &admin_user, Some(public_ports))
                         .instrument(install_scope),
                 )
                 .await?;
                 drop(_t);
+                detected_public_ports = Some(public_ports);
 
                 let verify_scope = output::scope(&host);
                 let _t = output::timed(&format!("Verify tako-server on {host}:{port}"));
@@ -242,6 +353,7 @@ pub(super) async fn run_add_server_wizard(
                 }
                 remote_server_name = info.server_name;
                 detected_target = Some(info.target);
+                detected_public_ports = info.public_ports.or(detected_public_ports);
             }
             Err(e) => {
                 return Err(e.into());
@@ -343,8 +455,10 @@ pub(super) async fn run_add_server_wizard(
             name: name_ref,
             description: description_ref,
             port,
+            public_ports: initial_public_ports,
             no_test: true,
             pre_detected_target: detected_target,
+            pre_detected_public_ports: detected_public_ports,
             install_if_missing: false,
             allow_install_prompt: false,
             admin_user: None,
@@ -363,8 +477,10 @@ pub async fn add_server(
         name,
         description,
         port,
+        public_ports,
         no_test,
         pre_detected_target,
+        pre_detected_public_ports,
         install_if_missing,
         allow_install_prompt,
         admin_user,
@@ -402,6 +518,8 @@ pub async fn add_server(
         return Err("Server name is required.".into());
     }
 
+    let mut resolved_public_ports = pre_detected_public_ports.or(public_ports);
+
     // Check if host already exists
     if let Some(existing_name) = servers.find_by_host(host) {
         let existing_name = existing_name.to_string();
@@ -411,20 +529,32 @@ pub async fn add_server(
             .ok_or_else(|| format!("Server '{}' vanished during lookup", existing_name))?;
 
         if existing_name == server_name && existing.port == port {
-            if normalized_description.is_some()
-                && existing.description.as_deref() != normalized_description.as_deref()
-            {
+            let desired_public_ports = resolved_public_ports.unwrap_or(ServerPublicPorts {
+                http_port: existing.http_port,
+                https_port: existing.https_port,
+            });
+            let description_changed = normalized_description.is_some()
+                && existing.description.as_deref() != normalized_description.as_deref();
+            let public_ports_changed = desired_public_ports.http_port != existing.http_port
+                || desired_public_ports.https_port != existing.https_port;
+
+            if description_changed || public_ports_changed {
+                let desired_description = normalized_description
+                    .clone()
+                    .or_else(|| existing.description.clone());
                 servers.update(
                     &existing_name,
                     ServerEntry {
                         host: existing.host,
                         port: existing.port,
-                        description: normalized_description.clone(),
+                        http_port: desired_public_ports.http_port,
+                        https_port: desired_public_ports.https_port,
+                        description: desired_description,
                     },
                 )?;
                 servers.save()?;
                 output::success(&format!(
-                    "Updated description for server {} (tako@{}:{})",
+                    "Updated server {} (tako@{}:{})",
                     output::strong(&server_name),
                     host,
                     port
@@ -507,13 +637,15 @@ pub async fn add_server(
         };
         if install_if_missing && needs_install {
             let admin_user = admin_user.unwrap_or("root");
+            let install_ports = install_public_ports(public_ports)?;
             output::with_spinner_async_err(
                 "Installing tako-server",
                 "tako-server installed",
                 "Install failed",
-                install_tako_server_with_admin(host, port, admin_user),
+                install_tako_server_with_admin(host, port, admin_user, Some(install_ports)),
             )
             .await?;
+            resolved_public_ports = Some(install_ports);
 
             result = output::with_spinner_async_err(
                 "Verifying install",
@@ -525,6 +657,7 @@ pub async fn add_server(
         } else if allow_install_prompt && needs_install && output::is_interactive() {
             let should_install = output::confirm("Install tako-server now?", true)?;
             if should_install {
+                let install_ports = install_public_ports(public_ports)?;
                 let admin_user = output::TextField::new("Admin SSH user")
                     .with_default(admin_user.unwrap_or("root"))
                     .prompt()?;
@@ -532,9 +665,10 @@ pub async fn add_server(
                     "Installing tako-server",
                     "tako-server installed",
                     "Install failed",
-                    install_tako_server_with_admin(host, port, &admin_user),
+                    install_tako_server_with_admin(host, port, &admin_user, Some(install_ports)),
                 )
                 .await?;
+                resolved_public_ports = Some(install_ports);
 
                 result = output::with_spinner_async_err(
                     "Verifying install",
@@ -559,6 +693,7 @@ pub async fn add_server(
                         return Err(server_not_installed_message().into());
                     }
                     detected_target = Some(info.target);
+                    resolved_public_ports = info.public_ports.or(resolved_public_ports);
                 }
                 Err(e) => {
                     return Err(e.into());
@@ -579,13 +714,20 @@ pub async fn add_server(
             verify_remote_management(host),
         )
         .await?;
+        resolved_public_ports = Some(ServerPublicPorts {
+            http_port: probe.info.http_port,
+            https_port: probe.info.https_port,
+        });
         trace_management_probe(host, &probe);
     }
 
     // Add the server
+    let resolved_public_ports = resolved_public_ports.unwrap_or_default();
     let entry = ServerEntry {
         host: host.to_string(),
         port,
+        http_port: resolved_public_ports.http_port,
+        https_port: resolved_public_ports.https_port,
         description: normalized_description.clone(),
     };
 

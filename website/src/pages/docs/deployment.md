@@ -18,6 +18,12 @@ Install `tako-server` on each host:
 sudo sh -c "$(curl -fsSL https://tako.sh/install-server.sh)"
 ```
 
+Custom public proxy ports can be supplied during install:
+
+```bash
+curl -fsSL https://tako.sh/install-server.sh | sudo sh -s -- --http-port 8080 --https-port 8443
+```
+
 Then register the server locally:
 
 ```bash
@@ -30,7 +36,9 @@ If the server is not installed yet, `servers add` can install or repair it:
 tako servers add ubuntu@host.example.com --install --name la
 ```
 
-The global server inventory is stored in the platform config directory, not in the project. Each server entry includes host, port, optional description, and detected target metadata (`arch`, `libc`).
+Interactive installs ask for HTTP and HTTPS ports with `80` and `443` prefilled. Non-interactive installs use those defaults unless `--http-port` and `--https-port` are passed.
+
+The global server inventory is stored in the platform config directory, not in the project. Each server entry includes host, SSH port, public HTTP/HTTPS ports, optional description, and detected target metadata (`arch`, `libc`).
 
 ## Configure Environments
 

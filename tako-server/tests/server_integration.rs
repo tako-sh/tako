@@ -240,9 +240,9 @@ fn spawn_test_server(
         .arg(socket_path)
         .arg("--data-dir")
         .arg(data_dir)
-        .arg("--port")
+        .arg("--http-port")
         .arg(http_port.to_string())
-        .arg("--tls-port")
+        .arg("--https-port")
         .arg(tls_port.to_string())
         .arg("--no-acme")
         .arg("--metrics-port")
@@ -448,7 +448,7 @@ mod health_check {
             "expected 307 response: {response}"
         );
         assert!(
-            response.contains("Location: https://localhost/"),
+            response.contains(&format!("Location: https://localhost:{}/", server.tls_port)),
             "expected https location header: {response}"
         );
         assert!(

@@ -27,6 +27,14 @@ pub enum ServerCommands {
         #[arg(long, default_value_t = 22)]
         port: u16,
 
+        /// Public HTTP port used by tako-server installs
+        #[arg(long)]
+        http_port: Option<u16>,
+
+        /// Public HTTPS port used by tako-server installs
+        #[arg(long)]
+        https_port: Option<u16>,
+
         /// Install or repair tako-server over SSH before adding the server
         #[arg(long, conflicts_with = "no_test")]
         install: bool,
@@ -102,10 +110,13 @@ async fn run_async(cmd: ServerCommands) -> Result<(), Box<dyn std::error::Error>
             name,
             description,
             port,
+            http_port,
+            https_port,
             install,
             admin_user,
             no_test,
         } => {
+            let public_ports = wizard::public_ports_from_cli(http_port, https_port)?;
             if let Some(host) = host {
                 let parsed_host = parse_add_host(&host);
                 let parsed_admin_user = parsed_host.admin_user.as_deref();
@@ -117,8 +128,10 @@ async fn run_async(cmd: ServerCommands) -> Result<(), Box<dyn std::error::Error>
                         name: name.as_deref(),
                         description: description.as_deref(),
                         port,
+                        public_ports,
                         no_test,
                         pre_detected_target: None,
+                        pre_detected_public_ports: None,
                         install_if_missing,
                         allow_install_prompt: !no_test && !install_if_missing,
                         admin_user,
@@ -131,6 +144,7 @@ async fn run_async(cmd: ServerCommands) -> Result<(), Box<dyn std::error::Error>
                     name.as_deref(),
                     description.as_deref(),
                     port,
+                    public_ports,
                     !no_test,
                     !no_test,
                     admin_user.as_deref(),

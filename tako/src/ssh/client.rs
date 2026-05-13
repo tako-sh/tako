@@ -5,6 +5,8 @@ mod exec;
 mod filesystem;
 mod tako;
 
+pub use tako::ServerInstallPorts;
+
 use super::error::{SshError, SshResult};
 use russh::Disconnect;
 use russh::client::{self, Config, Handle, Handler};

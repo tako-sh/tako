@@ -74,6 +74,14 @@ pub struct ServerEntry {
     #[serde(default = "default_ssh_port")]
     pub port: u16,
 
+    /// Public HTTP proxy port (default: 80).
+    #[serde(default = "default_http_port")]
+    pub http_port: u16,
+
+    /// Public HTTPS proxy port (default: 443).
+    #[serde(default = "default_https_port")]
+    pub https_port: u16,
+
     /// Optional human-readable server description.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -83,11 +91,21 @@ fn default_ssh_port() -> u16 {
     22
 }
 
+fn default_http_port() -> u16 {
+    80
+}
+
+fn default_https_port() -> u16 {
+    443
+}
+
 impl Default for ServerEntry {
     fn default() -> Self {
         Self {
             host: String::new(),
             port: default_ssh_port(),
+            http_port: default_http_port(),
+            https_port: default_https_port(),
             description: None,
         }
     }
@@ -156,11 +174,11 @@ impl ServersToml {
                         ))
                     })?;
 
-                let port = server_value
-                    .get("port")
-                    .and_then(|v| v.as_integer())
-                    .map(|p| p as u16)
-                    .unwrap_or_else(default_ssh_port);
+                let port = parse_port_field(server_value, name, "port", default_ssh_port())?;
+                let http_port =
+                    parse_port_field(server_value, name, "http_port", default_http_port())?;
+                let https_port =
+                    parse_port_field(server_value, name, "https_port", default_https_port())?;
 
                 let description = server_value
                     .get("description")
@@ -191,6 +209,8 @@ impl ServersToml {
                 let entry = ServerEntry {
                     host: host.to_string(),
                     port,
+                    http_port,
+                    https_port,
                     description,
                 };
 
@@ -249,6 +269,24 @@ impl ServersToml {
             if entry.port == 0 {
                 return Err(ConfigError::Validation(format!(
                     "Server '{}' has invalid port 0",
+                    name
+                )));
+            }
+            if entry.http_port == 0 {
+                return Err(ConfigError::Validation(format!(
+                    "Server '{}' has invalid HTTP port 0",
+                    name
+                )));
+            }
+            if entry.https_port == 0 {
+                return Err(ConfigError::Validation(format!(
+                    "Server '{}' has invalid HTTPS port 0",
+                    name
+                )));
+            }
+            if entry.http_port == entry.https_port {
+                return Err(ConfigError::Validation(format!(
+                    "Server '{}' HTTP and HTTPS ports must differ",
                     name
                 )));
             }
@@ -312,6 +350,18 @@ impl ServersToml {
             table.insert("host".to_string(), toml::Value::String(entry.host.clone()));
             if entry.port != default_ssh_port() {
                 table.insert("port".to_string(), toml::Value::Integer(entry.port as i64));
+            }
+            if entry.http_port != default_http_port() {
+                table.insert(
+                    "http_port".to_string(),
+                    toml::Value::Integer(entry.http_port as i64),
+                );
+            }
+            if entry.https_port != default_https_port() {
+                table.insert(
+                    "https_port".to_string(),
+                    toml::Value::Integer(entry.https_port as i64),
+                );
             }
             if let Some(description) = &entry.description
                 && !description.trim().is_empty()
@@ -438,6 +488,29 @@ impl ServersToml {
     pub fn is_empty(&self) -> bool {
         self.servers.is_empty()
     }
+}
+
+fn parse_port_field(
+    server_value: &toml::Value,
+    server_name: &str,
+    field: &str,
+    default: u16,
+) -> Result<u16> {
+    let Some(value) = server_value.get(field) else {
+        return Ok(default);
+    };
+    let raw = value.as_integer().ok_or_else(|| {
+        ConfigError::Validation(format!(
+            "Server '{}' field '{}' must be an integer",
+            server_name, field
+        ))
+    })?;
+    u16::try_from(raw).map_err(|_| {
+        ConfigError::Validation(format!(
+            "Server '{}' field '{}' must be between 0 and 65535",
+            server_name, field
+        ))
+    })
 }
 
 /// Validate server name format

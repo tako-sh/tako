@@ -78,6 +78,7 @@ mod tests {
                 host: "127.0.0.1".to_string(),
                 port: 22,
                 description: None,
+                ..Default::default()
             },
         );
         servers

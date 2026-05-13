@@ -86,6 +86,12 @@ If the server is not installed:
 tako servers add ubuntu@host.example.com --install --name la
 ```
 
+If the host cannot use public `80`/`443`, pass custom proxy ports during install:
+
+```bash
+tako servers add ubuntu@host.example.com --install --name la --http-port 8080 --https-port 8443
+```
+
 Then map the environment:
 
 ```toml
@@ -115,6 +121,8 @@ tako --ssh-passphrase "$PASSPHRASE" servers add host.example.com --name la
 ```
 
 For remote management HTTP, Tako signs requests with local SSH keys or ssh-agent keys. `servers add --install` enrolls the key that authenticated the admin SSH connection.
+
+Custom public HTTP ports do not change remote management; management still uses private port `9844` over Tailscale.
 
 ## Remote Management Fails
 
