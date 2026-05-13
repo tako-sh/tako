@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use tako_images::ImagesConfig;
 
 pub const DEFAULT_JS_APP_ROOT: &str = "src";
 
@@ -70,6 +71,10 @@ pub struct Config {
     /// [servers.*] sections - per-app-per-server configuration.
     #[serde(default)]
     pub servers: ServersConfig,
+
+    /// [images] section - public image optimizer allowlists and variants.
+    #[serde(default)]
+    pub images: ImagesConfig,
 }
 
 /// Backward-compatible alias.

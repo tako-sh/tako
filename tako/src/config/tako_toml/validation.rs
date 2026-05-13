@@ -74,6 +74,9 @@ impl Config {
                 }
             }
         }
+        self.images.validate().map_err(|error| {
+            ConfigError::Validation(format!("invalid [images] configuration: {error}"))
+        })?;
         if let Some(cwd) = &self.build.cwd {
             validate_relative_dir(cwd, "build.cwd")?;
         }
@@ -186,6 +189,7 @@ pub(super) fn validate_top_level_keys(raw: &toml::Value) -> Result<()> {
                 | "build"
                 | "build_stages"
                 | "workflows"
+                | "images"
                 | "vars"
                 | "envs"
                 | "servers"

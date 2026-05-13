@@ -221,6 +221,7 @@ pub(crate) async fn handle_client(
                 hosts,
                 command,
                 env,
+                images,
                 client_pid,
                 readiness_failure_hint,
                 worker_command,
@@ -322,6 +323,7 @@ pub(crate) async fn handle_client(
                         upstream_port,
                         false,
                         image_secret,
+                        (*images).clone(),
                     );
                     if let Some(ref mut mdns) = s.mdns {
                         for host in &old_hosts {

@@ -17,6 +17,8 @@ pub enum Request {
         command: Vec<String>,
         env: std::collections::HashMap<String, String>,
         #[serde(default)]
+        images: Box<tako_images::ImagesConfig>,
+        #[serde(default)]
         client_pid: Option<u32>,
         #[serde(default)]
         readiness_failure_hint: Option<String>,
@@ -326,6 +328,7 @@ mod tests {
                 "NODE_ENV".to_string(),
                 "development".to_string(),
             )]),
+            images: Box::default(),
             client_pid: Some(1234),
             readiness_failure_hint: Some("install the adapter".to_string()),
             worker_command: Some(vec![

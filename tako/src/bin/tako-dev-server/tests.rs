@@ -313,6 +313,7 @@ fn insert_test_app(state: &Arc<Mutex<State>>, project_dir: &str, name: &str) {
         3000,
         true,
         "dev-image-secret".to_string(),
+        tako_images::ImagesConfig::default(),
     );
 }
 

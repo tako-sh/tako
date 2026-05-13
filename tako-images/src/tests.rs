@@ -383,6 +383,110 @@ fn cache_control_is_private_by_default_and_public_by_opt_in() {
 }
 
 #[test]
+fn verifies_public_local_image_requests_with_default_config() {
+    let verified = verify_public_image_request(
+        "/_tako/image",
+        Some("src=%2Fassets%2Favatar.png&w=640"),
+        Some("image/avif,image/webp"),
+        &ImagesConfig::default(),
+    )
+    .expect("verify public image");
+
+    assert_eq!(
+        verified.source,
+        ImageSource::LocalPath("/assets/avatar.png".to_string())
+    );
+    assert_eq!(verified.width, 640);
+    assert_eq!(verified.quality, 75);
+    assert_eq!(verified.format, OutputFormat::Avif);
+    assert_eq!(verified.visibility, ImageVisibility::Public);
+}
+
+#[test]
+fn public_local_patterns_override_default_local_access() {
+    let config = ImagesConfig {
+        local_patterns: Some(vec!["/images/**".to_string()]),
+        ..Default::default()
+    };
+
+    verify_public_image_request(
+        "/_tako/image",
+        Some("src=%2Fimages%2Favatar.png&w=640"),
+        None,
+        &config,
+    )
+    .expect("matching local pattern");
+
+    let err = verify_public_image_request(
+        "/_tako/image",
+        Some("src=%2Fassets%2Favatar.png&w=640"),
+        None,
+        &config,
+    )
+    .unwrap_err();
+
+    assert_eq!(err, ImageError::InvalidSignature);
+}
+
+#[test]
+fn verifies_public_remote_image_requests_against_remote_patterns() {
+    let config = ImagesConfig {
+        remote_patterns: vec![
+            "https://cdn.example.com/uploads/**".to_string(),
+            "*.assets.example.com/images/*".to_string(),
+        ],
+        ..Default::default()
+    };
+
+    let verified = verify_public_image_request(
+        "/_tako/image",
+        Some("src=https%3A%2F%2Fcdn.example.com%2Fuploads%2Favatar.jpg%3Fv%3D1&w=960&f=webp"),
+        Some("image/avif"),
+        &config,
+    )
+    .expect("matching remote pattern");
+
+    assert_eq!(
+        verified.source,
+        ImageSource::RemoteUrl("https://cdn.example.com/uploads/avatar.jpg?v=1".to_string())
+    );
+    assert_eq!(verified.format, OutputFormat::Webp);
+
+    let err = verify_public_image_request(
+        "/_tako/image",
+        Some("src=https%3A%2F%2Fevil.example.com%2Fuploads%2Favatar.jpg&w=960"),
+        None,
+        &config,
+    )
+    .unwrap_err();
+
+    assert_eq!(err, ImageError::InvalidSignature);
+}
+
+#[test]
+fn public_image_requests_reject_unbounded_variants() {
+    for query in [
+        "src=%2Favatar.png&w=641",
+        "src=%2Favatar.png&w=0640",
+        "src=%2Favatar.png&w=640&q=80",
+        "src=%2Favatar.png&w=640&q=75&q=75",
+        "src=%2Favatar.png&w=640&x=1",
+        "src=%2Favatar.png&w=640&f=jpeg",
+    ] {
+        assert!(
+            verify_public_image_request(
+                "/_tako/image",
+                Some(query),
+                None,
+                &ImagesConfig::default()
+            )
+            .is_err(),
+            "expected query to fail: {query}"
+        );
+    }
+}
+
+#[test]
 fn resizes_png_to_avif() {
     let img = ImageBuffer::from_fn(64, 32, |_x, _y| Rgba([255_u8, 0, 0, 255]));
     let mut source = Cursor::new(Vec::new());

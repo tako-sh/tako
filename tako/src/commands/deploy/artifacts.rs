@@ -175,6 +175,7 @@ pub(super) async fn prepare_build_phase(
         tako_config.get_merged_vars(&env),
         runtime_env_vars,
         secrets.get_env(&env),
+        tako_config.images.clone(),
         app_dir,
         install_dir,
     );

@@ -271,6 +271,7 @@ pub async fn run(
             hosts: &reg_hosts,
             command: &cmd,
             env: &env_snapshot,
+            images: &cfg.images,
             readiness_failure_hint: readiness_failure_hint.as_deref(),
             worker_command: worker_command.as_deref(),
         })
@@ -555,6 +556,7 @@ pub async fn run(
                             hosts: &new_hosts,
                             command: &cmd,
                             env: &new_env,
+                            images: &cfg.images,
                             readiness_failure_hint: readiness_failure_hint.as_deref(),
                             worker_command: worker_command.as_deref(),
                         },

@@ -81,6 +81,8 @@ pub struct AppConfig {
     pub secrets: HashMap<String, String>,
     /// App-scoped secret used to sign optimized image URLs.
     pub image_secret: String,
+    /// Public image optimizer configuration from app.json.
+    pub images: tako_images::ImagesConfig,
     /// Minimum instances (0 = on-demand)
     pub min_instances: u32,
     /// Maximum instances
@@ -127,6 +129,7 @@ impl Default for AppConfig {
             env_vars: HashMap::new(),
             secrets: HashMap::new(),
             image_secret: String::new(),
+            images: tako_images::ImagesConfig::default(),
             min_instances: 1,
             max_instances: 4,
             health_check_path: "/status".to_string(),

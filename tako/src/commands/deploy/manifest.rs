@@ -14,6 +14,8 @@ pub(super) struct DeployArchiveManifest {
     pub(super) idle_timeout: u32,
     pub(super) env_vars: BTreeMap<String, String>,
     pub(super) secret_names: Vec<String>,
+    #[serde(default)]
+    pub(super) images: tako_images::ImagesConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) package_manager: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -168,6 +170,7 @@ pub(super) fn build_deploy_archive_manifest(
     app_env_vars: HashMap<String, String>,
     runtime_env_vars: HashMap<String, String>,
     env_secrets: Option<&HashMap<String, String>>,
+    images: tako_images::ImagesConfig,
     app_dir: String,
     install_dir: String,
 ) -> DeployArchiveManifest {
@@ -191,6 +194,7 @@ pub(super) fn build_deploy_archive_manifest(
         idle_timeout,
         env_vars,
         secret_names,
+        images,
         package_manager,
         package_manager_version: None,
         commit_message,
@@ -282,6 +286,7 @@ mod tests {
             HashMap::new(),
             HashMap::new(),
             None,
+            tako_images::ImagesConfig::default(),
             String::new(),
             String::new(),
         );
@@ -342,6 +347,7 @@ mod tests {
             app_env_vars,
             runtime_env_vars,
             Some(&secrets),
+            tako_images::ImagesConfig::default(),
             String::new(),
             String::new(),
         );

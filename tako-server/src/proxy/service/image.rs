@@ -1,8 +1,6 @@
 use super::{BackendResolution, RequestCtx};
 use crate::instances::internal_app_host_for_app_id;
-use crate::proxy::request::{
-    create_production_error_response, insert_body_headers, static_lookup_paths,
-};
+use crate::proxy::request::{insert_body_headers, static_lookup_paths};
 use crate::proxy::{StaticFileError, TakoProxy};
 use bytes::Bytes;
 use pingora_core::prelude::*;
@@ -15,8 +13,9 @@ use std::path::Path;
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tako_images::{
-    IMAGE_BASE_PATH, ImageError, ImageSource, TransformLimits, TransformOptions, cache_control,
-    ip_is_private_or_local, transform_image, verify_image_path,
+    IMAGE_BASE_PATH, ImageError, ImageSource, PUBLIC_IMAGE_BASE_PATH, TransformLimits,
+    TransformOptions, cache_control, ip_is_private_or_local, transform_image, verify_image_path,
+    verify_public_image_request,
 };
 use tokio::io::AsyncReadExt;
 use tokio::net::lookup_host;
@@ -37,10 +36,6 @@ impl TakoProxy {
         if !is_image_request_path(path) {
             return Ok(false);
         }
-        if image_request_has_query(session.req_header().uri.query()) {
-            return write_image_error(session, 400, "Bad Request").await;
-        }
-
         let method = session.req_header().method.as_str().to_string();
         if method != "GET" && method != "HEAD" {
             return write_image_error(session, 405, "Method Not Allowed").await;
@@ -49,16 +44,27 @@ impl TakoProxy {
         let Some(app) = self.lb.app_manager().get_app(app_name) else {
             return write_image_error(session, 404, "Not Found").await;
         };
-        let (app_root, image_secret) = {
+        let (app_root, image_secret, images) = {
             let config = app.config.read();
-            (config.path.clone(), config.image_secret.clone())
+            (
+                config.path.clone(),
+                config.image_secret.clone(),
+                config.images.clone(),
+            )
         };
-        if image_secret.is_empty() {
-            return create_production_error_response(session, 503).await;
-        }
 
-        let now = unix_now_secs();
-        let verified = match verify_image_path(&image_secret, path, now) {
+        let accept = session
+            .req_header()
+            .headers
+            .get("accept")
+            .and_then(|value| value.to_str().ok());
+        let verified = match verify_image_request(
+            path,
+            session.req_header().uri.query(),
+            accept,
+            &image_secret,
+            &images,
+        ) {
             Ok(verified) => verified,
             Err(error) => {
                 let status = image_error_status(&error);
@@ -297,12 +303,29 @@ fn is_image_content_type(content_type: &str) -> bool {
 }
 
 fn is_image_request_path(path: &str) -> bool {
-    path.strip_prefix(IMAGE_BASE_PATH)
-        .is_some_and(|rest| rest.starts_with('/'))
+    path == PUBLIC_IMAGE_BASE_PATH
+        || path
+            .strip_prefix(IMAGE_BASE_PATH)
+            .is_some_and(|rest| rest.starts_with('/'))
 }
 
-fn image_request_has_query(query: Option<&str>) -> bool {
-    query.is_some()
+fn verify_image_request(
+    path: &str,
+    query: Option<&str>,
+    accept: Option<&str>,
+    image_secret: &str,
+    images: &tako_images::ImagesConfig,
+) -> Result<tako_images::VerifiedImageRequest, ImageError> {
+    if path == PUBLIC_IMAGE_BASE_PATH {
+        return verify_public_image_request(path, query, accept, images);
+    }
+    if query.is_some() {
+        return Err(ImageError::InvalidUrl);
+    }
+    if image_secret.is_empty() {
+        return Err(ImageError::InvalidSignature);
+    }
+    verify_image_path(image_secret, path, unix_now_secs())
 }
 
 async fn fetch_remote_image_source(
@@ -541,8 +564,9 @@ mod tests {
 
     #[test]
     fn identifies_image_request_paths() {
+        assert!(is_image_request_path("/_tako/image"));
         assert!(is_image_request_path("/_tako/image/v1/payload.sig"));
-        assert!(!is_image_request_path("/_tako/image"));
+        assert!(!is_image_request_path("/_tako/image/v1"));
         assert!(!is_image_request_path("/_tako/channels/chat"));
     }
 
@@ -554,9 +578,17 @@ mod tests {
     }
 
     #[test]
-    fn image_request_queries_are_rejected() {
-        assert!(image_request_has_query(Some("cache_bust=1")));
-        assert!(!image_request_has_query(None));
+    fn signed_image_request_queries_are_rejected() {
+        let err = verify_image_request(
+            "/_tako/image/v1/payload.sig",
+            Some("cache_bust=1"),
+            None,
+            "secret",
+            &tako_images::ImagesConfig::default(),
+        )
+        .unwrap_err();
+
+        assert_eq!(err, ImageError::InvalidUrl);
     }
 
     #[test]

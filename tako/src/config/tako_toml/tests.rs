@@ -80,6 +80,57 @@ workers = 4
 }
 
 #[test]
+fn parses_images_config() {
+    let toml = r#"
+name = "app"
+
+[images]
+local_patterns = ["/images/**"]
+remote_patterns = ["cdn.example.com/uploads/**", "https://assets.example.com/*"]
+sizes = [320, 640]
+qualities = [75, 90]
+formats = ["avif", "webp"]
+"#;
+
+    let config = Config::parse(toml).unwrap();
+
+    assert_eq!(
+        config.images.local_patterns,
+        Some(vec!["/images/**".to_string()])
+    );
+    assert_eq!(
+        config.images.remote_patterns,
+        vec![
+            "cdn.example.com/uploads/**".to_string(),
+            "https://assets.example.com/*".to_string()
+        ]
+    );
+    assert_eq!(config.images.sizes, vec![320, 640]);
+    assert_eq!(config.images.qualities, vec![75, 90]);
+    assert_eq!(
+        config.images.formats,
+        vec![
+            tako_images::OutputFormat::Avif,
+            tako_images::OutputFormat::Webp
+        ]
+    );
+}
+
+#[test]
+fn rejects_invalid_images_config() {
+    let toml = r#"
+name = "app"
+
+[images]
+remote_patterns = ["ftp://cdn.example.com/**"]
+"#;
+
+    let err = Config::parse(toml).unwrap_err();
+
+    assert!(format!("{err}").contains("[images]"), "{err}");
+}
+
+#[test]
 fn test_workflows_for_server_falls_back_to_top_level() {
     let toml = r#"
 [workflows]

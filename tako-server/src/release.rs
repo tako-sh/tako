@@ -173,6 +173,7 @@ pub(crate) fn apply_release_runtime_to_config(
     let manifest = load_release_manifest(&release_path)?;
     config.command = command_from_manifest(&manifest, &release_path, runtime_bin)?;
     config.env_vars = manifest.env_vars;
+    config.images = manifest.images;
     config.idle_timeout = Duration::from_secs(u64::from(manifest.idle_timeout));
     config.path = safe_subdir(&release_path, &manifest.app_dir)
         .map_err(|e| format!("Invalid app_dir in manifest: {e}"))?;

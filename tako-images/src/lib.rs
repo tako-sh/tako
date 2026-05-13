@@ -11,6 +11,7 @@ use std::time::Duration;
 use url::{Host, Url};
 
 pub const IMAGE_BASE_PATH: &str = "/_tako/image/v1";
+pub const PUBLIC_IMAGE_BASE_PATH: &str = "/_tako/image";
 pub const DEFAULT_PRIVATE_BROWSER_CACHE_MAX_AGE: Duration = Duration::from_secs(604_800);
 pub const MAX_PRIVATE_BROWSER_CACHE_MAX_AGE: Duration = Duration::from_secs(31_536_000);
 pub const PUBLIC_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
@@ -23,6 +24,9 @@ const ALLOWED_DIMENSIONS: &[u32] = &[
 const DEFAULT_WIDTH: u32 = 1200;
 const DEFAULT_QUALITY: u8 = 75;
 const STRIP_SOURCE_METADATA: &str = "strip";
+const DEFAULT_PUBLIC_WIDTHS: &[u32] = &[320, 640, 960, 1200, 1920];
+const DEFAULT_PUBLIC_QUALITIES: &[u8] = &[75];
+const DEFAULT_PUBLIC_FORMATS: &[OutputFormat] = &[OutputFormat::Avif, OutputFormat::Webp];
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -85,7 +89,58 @@ impl Default for TransformLimits {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct ImagesConfig {
+    pub local_patterns: Option<Vec<String>>,
+    pub remote_patterns: Vec<String>,
+    pub sizes: Vec<u32>,
+    pub qualities: Vec<u8>,
+    pub formats: Vec<OutputFormat>,
+}
+
+impl Default for ImagesConfig {
+    fn default() -> Self {
+        Self {
+            local_patterns: None,
+            remote_patterns: Vec::new(),
+            sizes: DEFAULT_PUBLIC_WIDTHS.to_vec(),
+            qualities: DEFAULT_PUBLIC_QUALITIES.to_vec(),
+            formats: DEFAULT_PUBLIC_FORMATS.to_vec(),
+        }
+    }
+}
+
+impl ImagesConfig {
+    pub fn validate(&self) -> Result<(), ImageError> {
+        let default_local_patterns = ["/**".to_string()];
+        validate_pattern_list(
+            self.local_patterns
+                .as_deref()
+                .unwrap_or(&default_local_patterns),
+            true,
+        )?;
+        validate_pattern_list(&self.remote_patterns, false)?;
+        if self.sizes.is_empty() || self.sizes.contains(&0) {
+            return Err(ImageError::InvalidWidth);
+        }
+        if self.qualities.is_empty()
+            || self
+                .qualities
+                .iter()
+                .any(|quality| !(1..=100).contains(quality))
+        {
+            return Err(ImageError::InvalidQuality);
+        }
+        if self.formats.is_empty() {
+            return Err(ImageError::UnsupportedFormat);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum OutputFormat {
     Avif,
     Webp,
@@ -240,6 +295,44 @@ pub fn verify_image_path(
     })
 }
 
+pub fn verify_public_image_request(
+    path: &str,
+    query: Option<&str>,
+    accept: Option<&str>,
+    config: &ImagesConfig,
+) -> Result<VerifiedImageRequest, ImageError> {
+    if path != PUBLIC_IMAGE_BASE_PATH {
+        return Err(ImageError::InvalidUrl);
+    }
+    config.validate()?;
+    let query = query.ok_or(ImageError::InvalidUrl)?;
+    let params = parse_public_query(query)?;
+    let source = parse_source(&params.source)?;
+    validate_public_source_allowed(&source, config)?;
+    let width = parse_public_width(&params.width, config)?;
+    let quality = match params.quality {
+        Some(value) => parse_public_quality(&value, config)?,
+        None => DEFAULT_QUALITY,
+    };
+    let format = match params.format {
+        Some(value) => parse_public_format(&value, config)?,
+        None => negotiate_public_format(accept, config)?,
+    };
+
+    Ok(VerifiedImageRequest {
+        source,
+        format,
+        width,
+        height: None,
+        fit: None,
+        crop: None,
+        quality,
+        visibility: ImageVisibility::Public,
+        expires_at_unix_secs: None,
+        private_browser_cache_max_age: None,
+    })
+}
+
 pub fn cache_control(
     visibility: ImageVisibility,
     private_browser_cache_max_age: Option<Duration>,
@@ -386,6 +479,13 @@ struct ParsedPath {
     signature: String,
 }
 
+struct PublicQuery {
+    source: String,
+    width: String,
+    quality: Option<String>,
+    format: Option<String>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ImagePayload {
@@ -475,6 +575,237 @@ fn parse_path(path: &str) -> Result<ParsedPath, ImageError> {
         private_browser_cache_max_age,
         signature: signature.to_string(),
     })
+}
+
+fn parse_public_query(query: &str) -> Result<PublicQuery, ImageError> {
+    let mut source = None;
+    let mut width = None;
+    let mut quality = None;
+    let mut format = None;
+    for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+        match key.as_ref() {
+            "src" if source.is_none() => source = Some(value.into_owned()),
+            "w" if width.is_none() => width = Some(value.into_owned()),
+            "q" if quality.is_none() => quality = Some(value.into_owned()),
+            "f" if format.is_none() => format = Some(value.into_owned()),
+            "src" | "w" | "q" | "f" => return Err(ImageError::InvalidUrl),
+            _ => return Err(ImageError::InvalidUrl),
+        }
+    }
+    Ok(PublicQuery {
+        source: source.ok_or(ImageError::InvalidSource)?,
+        width: width.ok_or(ImageError::InvalidWidth)?,
+        quality,
+        format,
+    })
+}
+
+fn parse_public_width(value: &str, config: &ImagesConfig) -> Result<u32, ImageError> {
+    let width = parse_strict_u32(value).ok_or(ImageError::InvalidWidth)?;
+    if config.sizes.contains(&width) {
+        Ok(width)
+    } else {
+        Err(ImageError::InvalidWidth)
+    }
+}
+
+fn parse_public_quality(value: &str, config: &ImagesConfig) -> Result<u8, ImageError> {
+    let quality = parse_strict_u8(value).ok_or(ImageError::InvalidQuality)?;
+    if config.qualities.contains(&quality) {
+        Ok(quality)
+    } else {
+        Err(ImageError::InvalidQuality)
+    }
+}
+
+fn parse_public_format(value: &str, config: &ImagesConfig) -> Result<OutputFormat, ImageError> {
+    let format = match value {
+        "avif" => OutputFormat::Avif,
+        "webp" => OutputFormat::Webp,
+        _ => return Err(ImageError::UnsupportedFormat),
+    };
+    if config.formats.contains(&format) {
+        Ok(format)
+    } else {
+        Err(ImageError::UnsupportedFormat)
+    }
+}
+
+fn negotiate_public_format(
+    accept: Option<&str>,
+    config: &ImagesConfig,
+) -> Result<OutputFormat, ImageError> {
+    if let Some(accept) = accept {
+        if accept_contains(accept, "image/avif") && config.formats.contains(&OutputFormat::Avif) {
+            return Ok(OutputFormat::Avif);
+        }
+        if accept_contains(accept, "image/webp") && config.formats.contains(&OutputFormat::Webp) {
+            return Ok(OutputFormat::Webp);
+        }
+    }
+    config
+        .formats
+        .first()
+        .copied()
+        .ok_or(ImageError::UnsupportedFormat)
+}
+
+fn accept_contains(accept: &str, media_type: &str) -> bool {
+    accept
+        .split(',')
+        .filter_map(|part| part.split(';').next())
+        .any(|part| part.trim().eq_ignore_ascii_case(media_type))
+}
+
+fn parse_strict_u32(value: &str) -> Option<u32> {
+    if value.is_empty() || (value.len() > 1 && value.starts_with('0')) {
+        return None;
+    }
+    value.parse().ok()
+}
+
+fn parse_strict_u8(value: &str) -> Option<u8> {
+    if value.is_empty() || (value.len() > 1 && value.starts_with('0')) {
+        return None;
+    }
+    value.parse().ok()
+}
+
+fn validate_public_source_allowed(
+    source: &ImageSource,
+    config: &ImagesConfig,
+) -> Result<(), ImageError> {
+    match source {
+        ImageSource::LocalPath(path) => {
+            let default_patterns = ["/**".to_string()];
+            let patterns = config
+                .local_patterns
+                .as_deref()
+                .unwrap_or(&default_patterns);
+            if patterns
+                .iter()
+                .any(|pattern| path_pattern_matches(pattern, path))
+            {
+                Ok(())
+            } else {
+                Err(ImageError::InvalidSignature)
+            }
+        }
+        ImageSource::RemoteUrl(url) => {
+            if config
+                .remote_patterns
+                .iter()
+                .any(|pattern| remote_pattern_matches(pattern, url))
+            {
+                Ok(())
+            } else {
+                Err(ImageError::InvalidSignature)
+            }
+        }
+    }
+}
+
+fn validate_pattern_list(patterns: &[String], local: bool) -> Result<(), ImageError> {
+    for pattern in patterns {
+        if pattern.trim() != pattern || pattern.is_empty() {
+            return Err(ImageError::InvalidSource);
+        }
+        if local {
+            if !pattern.starts_with('/') || pattern.starts_with("//") || pattern.contains('?') {
+                return Err(ImageError::InvalidSource);
+            }
+        } else {
+            validate_remote_pattern(pattern)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_remote_pattern(pattern: &str) -> Result<(), ImageError> {
+    let normalized = normalize_remote_pattern(pattern);
+    let parsed = Url::parse(&normalized).map_err(|_| ImageError::InvalidSource)?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err(ImageError::InvalidSource);
+    }
+    if parsed.username() != "" || parsed.password().is_some() || parsed.fragment().is_some() {
+        return Err(ImageError::InvalidSource);
+    }
+    let host = parsed.host_str().ok_or(ImageError::InvalidSource)?;
+    if host.is_empty() || host.contains('*') && !host.starts_with("*.") {
+        return Err(ImageError::InvalidSource);
+    }
+    Ok(())
+}
+
+fn normalize_remote_pattern(pattern: &str) -> String {
+    if pattern.contains("://") {
+        pattern.to_string()
+    } else {
+        format!("https://{pattern}")
+    }
+}
+
+fn remote_pattern_matches(pattern: &str, source: &str) -> bool {
+    let Ok(pattern_url) = Url::parse(&normalize_remote_pattern(pattern)) else {
+        return false;
+    };
+    let Ok(source_url) = Url::parse(source) else {
+        return false;
+    };
+    if pattern_url.scheme() != source_url.scheme() {
+        return false;
+    }
+    let Some(pattern_host) = pattern_url.host_str() else {
+        return false;
+    };
+    let Some(source_host) = source_url.host_str() else {
+        return false;
+    };
+    if !host_pattern_matches(pattern_host, source_host) {
+        return false;
+    }
+    path_pattern_matches(pattern_url.path(), source_url.path())
+}
+
+fn host_pattern_matches(pattern: &str, host: &str) -> bool {
+    let pattern = pattern.trim_end_matches('.').to_ascii_lowercase();
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    if let Some(suffix) = pattern.strip_prefix("*.") {
+        return host.ends_with(&format!(".{suffix}")) && host != suffix;
+    }
+    pattern == host
+}
+
+fn path_pattern_matches(pattern: &str, path: &str) -> bool {
+    if pattern == "/**" {
+        return path.starts_with('/');
+    }
+    let pattern_parts = split_path_segments(pattern);
+    let path_parts = split_path_segments(path);
+    path_segments_match(&pattern_parts, &path_parts)
+}
+
+fn split_path_segments(path: &str) -> Vec<&str> {
+    path.trim_start_matches('/')
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect()
+}
+
+fn path_segments_match(pattern: &[&str], path: &[&str]) -> bool {
+    match pattern.split_first() {
+        None => path.is_empty(),
+        Some((segment, [])) if *segment == "**" => true,
+        Some((segment, rest)) if *segment == "**" => {
+            (0..=path.len()).any(|index| path_segments_match(rest, &path[index..]))
+        }
+        Some((segment, rest)) if *segment == "*" => {
+            !path.is_empty() && path_segments_match(rest, &path[1..])
+        }
+        Some((segment, rest)) => {
+            !path.is_empty() && *segment == path[0] && path_segments_match(rest, &path[1..])
+        }
+    }
 }
 
 fn encode_payload(payload: &ImagePayload) -> Result<String, ImageError> {
@@ -588,7 +919,10 @@ fn parse_source(source: &str) -> Result<ImageSource, ImageError> {
     }
 
     if source.starts_with('/') {
-        if source.starts_with("//") || source.starts_with(IMAGE_BASE_PATH) {
+        if source.starts_with("//")
+            || source.starts_with(IMAGE_BASE_PATH)
+            || source.starts_with(PUBLIC_IMAGE_BASE_PATH)
+        {
             return Err(ImageError::InvalidSource);
         }
         return Ok(ImageSource::LocalPath(source.to_string()));

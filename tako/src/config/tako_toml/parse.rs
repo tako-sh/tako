@@ -51,6 +51,7 @@ impl Config {
         let build = parse_build_config(&raw)?;
         let build_stages = parse_build_stages(&raw)?;
         let workflows = parse_workflows_config(&raw, "workflows")?.unwrap_or_default();
+        let images = parse_images_config(&raw)?;
         let mut config = Config {
             name,
             main,
@@ -65,6 +66,7 @@ impl Config {
             build,
             build_stages,
             workflows,
+            images,
             ..Config::default()
         };
 
@@ -118,6 +120,13 @@ impl Config {
         config.validate()?;
         Ok(config)
     }
+}
+
+fn parse_images_config(raw: &toml::Value) -> Result<tako_images::ImagesConfig> {
+    let Some(value) = raw.get("images") else {
+        return Ok(tako_images::ImagesConfig::default());
+    };
+    toml::from_str(&toml::to_string(value)?).map_err(ConfigError::TomlParse)
 }
 
 fn parse_server_config(value: &toml::Value) -> Result<ServerConfig> {

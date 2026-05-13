@@ -495,6 +495,7 @@ pub struct RegisterAppRequest<'a> {
     pub hosts: &'a [String],
     pub command: &'a [String],
     pub env: &'a std::collections::HashMap<String, String>,
+    pub images: &'a tako_images::ImagesConfig,
     pub readiness_failure_hint: Option<&'a str>,
     pub worker_command: Option<&'a [String]>,
 }
@@ -513,6 +514,7 @@ pub async fn register_app(
         "hosts": args.hosts,
         "command": args.command,
         "env": args.env,
+        "images": args.images,
         "client_pid": std::process::id(),
     });
     if let Some(v) = args.variant {

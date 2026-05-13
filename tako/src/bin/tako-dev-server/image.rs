@@ -9,8 +9,9 @@ use pingora_proxy::Session;
 use reqwest::{Client, ClientBuilder, Url, redirect::Policy};
 use sha2::{Digest, Sha256};
 use tako_images::{
-    IMAGE_BASE_PATH, ImageError, ImageSource, TransformLimits, TransformOptions, cache_control,
-    ip_is_private_or_local, transform_image, verify_image_path,
+    IMAGE_BASE_PATH, ImageError, ImageSource, PUBLIC_IMAGE_BASE_PATH, TransformLimits,
+    TransformOptions, cache_control, ip_is_private_or_local, transform_image, verify_image_path,
+    verify_public_image_request,
 };
 use tokio::net::lookup_host;
 use tokio::time::timeout;
@@ -20,8 +21,10 @@ use crate::proxy::RouteTarget;
 const IMAGE_ERROR_CACHE_CONTROL: &str = "private, no-store";
 
 pub(crate) fn is_image_request_path(path: &str) -> bool {
-    path.strip_prefix(IMAGE_BASE_PATH)
-        .is_some_and(|rest| rest.starts_with('/'))
+    path == PUBLIC_IMAGE_BASE_PATH
+        || path
+            .strip_prefix(IMAGE_BASE_PATH)
+            .is_some_and(|rest| rest.starts_with('/'))
 }
 
 pub(crate) async fn try_handle(
@@ -34,23 +37,23 @@ pub(crate) async fn try_handle(
     if !is_image_request_path(path) {
         return Ok(false);
     }
-    if session.req_header().uri.query().is_some() {
-        return write_image_error(session, 400, "Bad Request").await;
-    }
     if method != "GET" && method != "HEAD" {
         return write_image_error(session, 405, "Method Not Allowed").await;
     }
-    if target.image_secret.is_empty() {
-        return write_image_error(session, 503, "Service Unavailable").await;
-    }
 
-    let verified = match verify_image_path(&target.image_secret, path, unix_now_secs()) {
-        Ok(verified) => verified,
-        Err(error) => {
-            let status = image_error_status(&error);
-            return write_image_error(session, status, image_error_body(status)).await;
-        }
-    };
+    let accept = session
+        .req_header()
+        .headers
+        .get("accept")
+        .and_then(|value| value.to_str().ok());
+    let verified =
+        match verify_image_request(path, session.req_header().uri.query(), accept, target) {
+            Ok(verified) => verified,
+            Err(error) => {
+                let status = image_error_status(&error);
+                return write_image_error(session, status, image_error_body(status)).await;
+            }
+        };
 
     let limits = TransformLimits::default();
     let source =
@@ -103,6 +106,24 @@ pub(crate) async fn try_handle(
     }
 
     Ok(true)
+}
+
+fn verify_image_request(
+    path: &str,
+    query: Option<&str>,
+    accept: Option<&str>,
+    target: &RouteTarget,
+) -> Result<tako_images::VerifiedImageRequest, ImageError> {
+    if path == PUBLIC_IMAGE_BASE_PATH {
+        return verify_public_image_request(path, query, accept, &target.images);
+    }
+    if query.is_some() {
+        return Err(ImageError::InvalidUrl);
+    }
+    if target.image_secret.is_empty() {
+        return Err(ImageError::InvalidSignature);
+    }
+    verify_image_path(&target.image_secret, path, unix_now_secs())
 }
 
 struct ImageSourceBytes {
@@ -361,8 +382,9 @@ mod tests {
 
     #[test]
     fn identifies_image_request_paths() {
+        assert!(is_image_request_path("/_tako/image"));
         assert!(is_image_request_path("/_tako/image/v1/payload.sig"));
-        assert!(!is_image_request_path("/_tako/image"));
+        assert!(!is_image_request_path("/_tako/image/v1"));
         assert!(!is_image_request_path("/_tako/channels/chat"));
     }
 

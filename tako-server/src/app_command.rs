@@ -40,6 +40,8 @@ pub(crate) struct ReleaseManifest {
     #[serde(default)]
     pub env_vars: HashMap<String, String>,
     #[serde(default)]
+    pub images: tako_images::ImagesConfig,
+    #[serde(default)]
     pub runtime_version: Option<String>,
     #[serde(default)]
     pub package_manager: Option<String>,
