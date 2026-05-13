@@ -238,10 +238,9 @@ pub(super) fn run_local_build(
 
 pub(super) fn summarize_build_stages(custom_stages: &[BuildStage]) -> Vec<String> {
     let mut labels = Vec::new();
-    let mut stage_number = 1;
-    for stage in custom_stages {
+    for (stage_number, stage) in custom_stages.iter().enumerate() {
+        let stage_number = stage_number + 1;
         labels.push(format_stage_label(stage_number, stage.name.as_deref()));
-        stage_number += 1;
     }
     labels
 }

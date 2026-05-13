@@ -93,7 +93,7 @@ impl BuildCache {
         }
 
         // Sort by creation time (newest first)
-        builds.sort_by(|a, b| b.created.cmp(&a.created));
+        builds.sort_by_key(|build| std::cmp::Reverse(build.created));
 
         Ok(builds)
     }

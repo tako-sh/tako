@@ -48,7 +48,7 @@ impl SshClient {
                 Some(ChannelMsg::Data { data }) => {
                     stdout.extend_from_slice(&data);
                 }
-                Some(ChannelMsg::ExtendedData { data, ext }) if ext == 1 => {
+                Some(ChannelMsg::ExtendedData { data, ext: 1 }) => {
                     stderr.extend_from_slice(&data);
                 }
                 Some(ChannelMsg::ExitStatus { exit_status }) => {
@@ -124,7 +124,7 @@ impl SshClient {
                 Some(ChannelMsg::Data { data }) => {
                     on_stdout(&data);
                 }
-                Some(ChannelMsg::ExtendedData { data, ext }) if ext == 1 => {
+                Some(ChannelMsg::ExtendedData { data, ext: 1 }) => {
                     on_stderr(&data);
                 }
                 Some(ChannelMsg::ExitStatus { exit_status }) => {
