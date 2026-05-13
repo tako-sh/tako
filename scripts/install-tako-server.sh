@@ -771,6 +771,7 @@ install_sqlite_runtime() {
 }
 
 install_libvips_runtime() {
+  echo "Installing libvips runtime"
   if need_cmd apt-get; then
     apt-get update -y
     apt_avif_encoder_pkg=
@@ -1030,7 +1031,9 @@ trap 'rm -f "$tmp_payload"; rm -rf "$tmp_extract"' EXIT
 
 echo "Downloading tako-server: $download_url"
 download_file "$download_url" "$tmp_payload"
+echo "OK downloaded tako-server"
 
+echo "Verifying tako-server checksum"
 expected_sha=""
 expected_sha="$(download_stdout "$sha_url" 2>/dev/null | awk '{print $1}' || true)"
 
@@ -1048,7 +1051,9 @@ else
   echo "error: could not fetch SHA256 ($sha_url); aborting install" >&2
   exit 1
 fi
+echo "OK verified tako-server checksum"
 
+echo "Extracting tako-server"
 case "$download_url" in
   *.tar.zst|file://*.tar.zst)
     zstd -d "$tmp_payload" --stdout | tar -x -C "$tmp_extract"
@@ -1064,6 +1069,7 @@ if [ -z "$tmp_bin" ]; then
 fi
 
 install -m 0755 "$tmp_bin" /usr/local/bin/tako-server
+echo "OK installed tako-server binary"
 install_missing_tako_server_runtime_deps /usr/local/bin/tako-server
 verify_tako_server_runtime_deps
 ensure_privileged_bind_capability
@@ -1095,13 +1101,15 @@ fi
 
 install_upgrade_helpers
 
-mkdir -p "$TAKO_HOME" "$(dirname "$TAKO_SOCKET")"
-chown -R "$TAKO_USER":"$TAKO_USER" "$TAKO_HOME" "$(dirname "$TAKO_SOCKET")" 2>/dev/null || true
+socket_dir="$(dirname "$TAKO_SOCKET")"
+mkdir -p "$TAKO_HOME" "$socket_dir"
+chown "$TAKO_USER":"$TAKO_USER" "$TAKO_HOME" "$socket_dir" 2>/dev/null || true
 # 0o710: owner (tako) full; group (tako, contains tako-app) traverse-only so
 # sandboxed app processes can descend into runtimes/ and releases/ to exec
 # binaries; world none. Must not be 0o700 — that returns ENOENT on execve.
 chmod 0710 "$TAKO_HOME"
-chmod 0700 "$(dirname "$TAKO_SOCKET")"
+chmod 0700 "$socket_dir"
+echo "OK prepared data and socket directories"
 
 maybe_prompt_ssh_pubkey
 
@@ -1338,14 +1346,17 @@ if [ "$SERVICE_MANAGER" = "systemd" ]; then
     if systemctl is-active --quiet tako-server; then
       main_pid="$(systemd_main_pid)"
       if { [ -n "$TAKO_MANAGEMENT_ARGS" ] && ! process_has_management_host "$main_pid" "$TAKO_MANAGEMENT_HOST"; } || ! process_has_public_ports "$main_pid" "$TAKO_HTTP_PORT" "$TAKO_HTTPS_PORT"; then
+        echo "Restarting tako-server service"
         systemctl restart tako-server
         echo "OK tako-server restarted with updated service settings"
       else
         # Service already running — graceful reload (SIGHUP) to pick up new binary.
+        echo "Reloading tako-server service"
         systemctl reload tako-server
         echo "OK tako-server reloaded (SIGHUP)"
       fi
     else
+      echo "Starting tako-server service"
       systemctl start tako-server
     fi
     systemctl --no-pager status tako-server || true
@@ -1363,12 +1374,15 @@ elif [ "$SERVICE_MANAGER" = "openrc" ]; then
     if rc-service tako-server status >/dev/null 2>&1; then
       main_pid="$(openrc_main_pid)"
       if { [ -n "$TAKO_MANAGEMENT_ARGS" ] && ! process_has_management_host "$main_pid" "$TAKO_MANAGEMENT_HOST"; } || ! process_has_public_ports "$main_pid" "$TAKO_HTTP_PORT" "$TAKO_HTTPS_PORT"; then
+        echo "Restarting tako-server service"
         rc-service tako-server restart
         echo "OK tako-server restarted with updated service settings"
       else
+        echo "Reloading tako-server service"
         rc-service tako-server reload || rc-service tako-server restart
       fi
     else
+      echo "Starting tako-server service"
       rc-service tako-server start
     fi
     rc-service tako-server status || true

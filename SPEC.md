@@ -1140,6 +1140,9 @@ Users run a server setup script (or equivalent manual steps) to:
 4. Create and permissions required directories:
    - Data dir: `/opt/tako`
    - Socket dir: `/var/run/tako`
+5. Prepare only installer-managed ownership:
+   - The installer sets ownership/mode on the data root, socket root, and files it writes directly.
+   - The installer does not recursively change ownership under deployed app releases; deploy-time release creation owns those trees.
 
 Recommended: run the hosted installer script on the server (as root):
 
@@ -1165,6 +1168,7 @@ Installer SSH key behavior:
 - Installer installs the host libvips runtime used by the built-in image optimizer before starting `tako-server`.
 - Installer ensures basic networking tools are available for server operation.
 - Installer creates both `tako` and `tako-app` OS users. `tako-server` runs as `tako`; app and worker processes run as `tako-app`. If a root `tako-server` cannot resolve `tako-app`, it refuses to run production install or spawn app processes as root.
+- Installer prepares the `/opt/tako` and `/var/run/tako` roots without recursively traversing existing app releases.
 - Installer installs restricted maintenance helpers and scoped sudoers policy so the `tako` SSH user can perform non-interactive server upgrade/reload operations.
 - When the installer installs or accepts `TAKO_SSH_PUBKEY`, it also enrolls that public key for signed remote management in `/opt/tako/management-authorized-keys`.
 - Installer supports systemd and OpenRC hosts.

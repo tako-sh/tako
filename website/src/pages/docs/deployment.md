@@ -42,6 +42,7 @@ The installer:
 - creates `tako-app` for app and worker processes
 - installs `tako-server` to `/usr/local/bin/tako-server`
 - creates `/opt/tako` and `/var/run/tako`
+- prepares those roots without recursively traversing existing app releases
 - installs systemd or OpenRC service files
 - installs libvips for image optimization
 - configures private Tailscale remote management
