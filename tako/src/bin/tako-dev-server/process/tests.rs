@@ -57,6 +57,8 @@ async fn readiness_times_out_when_route_becomes_active_without_fd4_signal() {
                 pid: None,
                 client_pid: None,
                 readiness_failure_hint: Some("custom readiness hint".to_string()),
+                bootstrap_token: "dev-token".to_string(),
+                image_secret: "dev-image-secret".to_string(),
             },
         );
         s.routes.set_routes(
@@ -87,6 +89,51 @@ async fn readiness_times_out_when_route_becomes_active_without_fd4_signal() {
     .expect_err("route activation must not replace fd 4 readiness");
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn spawn_app_exposes_bootstrap_envelope_on_fd3() {
+    let tmp = tempfile::tempdir().unwrap();
+    let bootstrap_out = tmp.path().join("bootstrap.json");
+    let image_secret = "dev-image-secret".repeat(16 * 1024);
+    let mut env = std::collections::HashMap::new();
+    env.insert(
+        "BOOTSTRAP_OUT".to_string(),
+        bootstrap_out.display().to_string(),
+    );
+    let app = RuntimeApp {
+        project_dir: tmp.path().display().to_string(),
+        name: "bootstrap-test".to_string(),
+        variant: None,
+        hosts: vec!["bootstrap-test.test".to_string()],
+        upstream_port: 0,
+        is_idle: false,
+        command: vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "cat <&3 > \"$BOOTSTRAP_OUT\"; printf '54321\\n' >&4".to_string(),
+        ],
+        env,
+        log_buffer: crate::state::LogBuffer::new(),
+        pid: None,
+        client_pid: None,
+        readiness_failure_hint: None,
+        bootstrap_token: "dev-token".to_string(),
+        image_secret: image_secret.clone(),
+    };
+
+    let (mut child, readiness_fd) = spawn_app(&app.project_dir, &app, None).await.unwrap();
+    let port = wait_for_readiness(readiness_fd.expect("readiness fd")).await;
+    assert_eq!(port, Some(54321));
+    let status = child.wait().await.unwrap();
+    assert!(status.success());
+
+    let raw = std::fs::read_to_string(bootstrap_out).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(parsed["token"], "dev-token");
+    assert_eq!(parsed["image_secret"], image_secret);
+    assert_eq!(parsed["secrets"], serde_json::json!({}));
+}
+
 #[test]
 fn readiness_failure_message_uses_client_hint() {
     let app = RuntimeApp {
@@ -102,6 +149,8 @@ fn readiness_failure_message_uses_client_hint() {
         pid: None,
         client_pid: None,
         readiness_failure_hint: Some("custom readiness hint".to_string()),
+        bootstrap_token: "dev-token".to_string(),
+        image_secret: "dev-image-secret".to_string(),
     };
 
     assert_eq!(readiness_failure_message(&app), "custom readiness hint");

@@ -299,6 +299,19 @@ fn create_readiness_pipe() -> std::io::Result<(OwnedFd, OwnedFd)> {
     Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
 }
 
+#[cfg(unix)]
+fn create_bootstrap_pipe(
+    token: &str,
+    image_secret: &str,
+) -> std::io::Result<(OwnedFd, std::thread::JoinHandle<std::io::Result<()>>)> {
+    let bytes = tako_core::bootstrap::envelope_bytes(
+        token,
+        &std::collections::HashMap::new(),
+        (!image_secret.is_empty()).then_some(image_secret),
+    );
+    tako_spawn::create_payload_pipe(bytes)
+}
+
 /// Read the bound port from the app's readiness pipe (fd 4).
 ///
 /// Returns the port when the SDK writes `{port}\n`, or `None` if the pipe
@@ -390,6 +403,11 @@ async fn spawn_app(
     let readiness_pipe = create_readiness_pipe().ok();
     #[cfg(unix)]
     let write_raw: Option<std::os::fd::RawFd> = readiness_pipe.as_ref().map(|(_, w)| w.as_raw_fd());
+    #[cfg(unix)]
+    let (bootstrap_read, bootstrap_writer) =
+        create_bootstrap_pipe(&app.bootstrap_token, &app.image_secret)?;
+    #[cfg(unix)]
+    let bootstrap_raw: std::os::fd::RawFd = bootstrap_read.as_raw_fd();
 
     let mut cmd = tokio::process::Command::new(&app.command[0]);
     if app.command.len() > 1 {
@@ -408,6 +426,13 @@ async fn spawn_app(
         cmd.pre_exec(move || {
             #[cfg(target_os = "linux")]
             libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+            // Expose the read end of the bootstrap pipe as fd 3 in the child.
+            if bootstrap_raw != 3 {
+                if libc::dup2(bootstrap_raw, 3) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                libc::close(bootstrap_raw);
+            }
             // Expose the write end of the readiness pipe as fd 4 in the child.
             if let Some(fd) = write_raw {
                 if fd != 4 {
@@ -435,6 +460,13 @@ async fn spawn_app(
     }
 
     let mut child = cmd.spawn()?;
+    #[cfg(unix)]
+    {
+        drop(bootstrap_read);
+        bootstrap_writer
+            .join()
+            .map_err(|_| std::io::Error::other("bootstrap writer thread panicked"))??;
+    }
 
     // Keep the read end; dropping the write end (OwnedFd) closes it in the parent
     // so the parent gets EOF when the child closes its copy.
@@ -504,7 +536,10 @@ pub(crate) fn forward_child_log_line(
 pub(crate) async fn handle_wake_on_request(state: Arc<Mutex<State>>, host: String, path: String) {
     let app_info: Option<(String, state::RuntimeApp, Option<std::path::PathBuf>)> = {
         let mut s = state.lock().unwrap();
-        if s.routes.lookup(&host, &path).is_some_and(|(_, _, a, _)| a) {
+        if s.routes
+            .lookup(&host, &path)
+            .is_some_and(|target| target.active)
+        {
             return;
         }
         let internal_socket = s.internal_socket.clone();

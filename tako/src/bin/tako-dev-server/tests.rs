@@ -303,13 +303,16 @@ fn insert_test_app(state: &Arc<Mutex<State>>, project_dir: &str, name: &str) {
             pid: None,
             client_pid: None,
             readiness_failure_hint: None,
+            bootstrap_token: "dev-token".to_string(),
+            image_secret: "dev-image-secret".to_string(),
         },
     );
-    s.routes.set_routes(
+    s.routes.set_routes_with_image_secret(
         format!("reg:{config_path}"),
         vec![format!("{name}.test")],
         3000,
         true,
+        "dev-image-secret".to_string(),
     );
 }
 
@@ -835,6 +838,8 @@ fn kill_all_app_processes_sends_sigterm_to_tracked_pids() {
                 pid: Some(pid),
                 client_pid: None,
                 readiness_failure_hint: None,
+                bootstrap_token: "dev-token".to_string(),
+                image_secret: "dev-image-secret".to_string(),
             },
         );
     }
@@ -1095,6 +1100,8 @@ async fn unregister_app_kills_running_process() {
                 pid: Some(pid),
                 client_pid: None,
                 readiness_failure_hint: None,
+                bootstrap_token: "dev-token".to_string(),
+                image_secret: "dev-image-secret".to_string(),
             },
         );
     }
@@ -1181,6 +1188,8 @@ async fn wake_on_request_spawns_exactly_one_process() {
                 pid: None,
                 client_pid: None,
                 readiness_failure_hint: None,
+                bootstrap_token: "dev-token".to_string(),
+                image_secret: "dev-image-secret".to_string(),
             },
         );
         s.routes.set_routes(
@@ -1293,6 +1302,8 @@ fn runtime_app_with_env(
         pid: None,
         client_pid: None,
         readiness_failure_hint: None,
+        bootstrap_token: "dev-token".to_string(),
+        image_secret: "dev-image-secret".to_string(),
     }
 }
 

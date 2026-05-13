@@ -50,8 +50,8 @@ export async function renderOgPng({ tenantSlug }: OgInput): Promise<Uint8Array> 
   const { oxanium, plexMono } = await loadFonts();
 
   const slug = tenantSlug !== null ? sanitizeTenantSlug(tenantSlug) : null;
-  const headline = slug ? prettifyTenantSlug(slug) : "Moonbase Supply Desk";
-  const eyebrow = slug ? "Moonbase Supply Desk" : "A multi-tenant Tako demo";
+  const headline = slug ? prettifyTenantSlug(slug) : "Planetary Supply Desk";
+  const eyebrow = slug ? "Planetary Supply Desk" : "A multi-tenant Tako demo";
   const footer = slug ? `${slug}.demo.tako.sh` : "demo.tako.sh";
   const statusLine = slug ? "online · mission control" : "";
 

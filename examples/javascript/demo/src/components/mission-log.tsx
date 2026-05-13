@@ -49,7 +49,7 @@ export const MissionLog = memo(function MissionLog({ events, connected }: Props)
       <div className="mx-4 mb-2 rounded-md bg-muted/40 p-3">
         <Info
           label="channels"
-          description="Every workflow step writes to this feed. A single channel fans events out to all clients watching this moonbase."
+          description="Every workflow step writes to this feed. A single channel fans events out to all clients watching this base."
           sourcePath="src/channels/mission-log.ts"
         />
       </div>

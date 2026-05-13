@@ -1,5 +1,6 @@
 use std::sync::{Arc, Mutex};
 
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use tokio::io::{AsyncReadExt, BufReader};
 use tokio::net::UnixStream;
 
@@ -40,10 +41,16 @@ fn sanitize_app_name(name: &str) -> String {
     }
 }
 
+fn generate_dev_secret() -> Result<String, getrandom::Error> {
+    let mut bytes = [0_u8; 32];
+    getrandom::fill(&mut bytes)?;
+    Ok(URL_SAFE_NO_PAD.encode(bytes))
+}
+
 /// Build the env map injected into a dev-mode workflow worker child process.
 /// The supervisor runs with `env_clear()`, so anything the worker needs at
 /// runtime must be named here — most notably `TAKO_DATA_DIR`, which the SDK
-/// surfaces as the `dataDir` export on `tako.gen.ts` (and `process.env.TAKO_DATA_DIR`) and is required
+/// surfaces as `tako.dataDir` from `tako.sh` (and `process.env.TAKO_DATA_DIR`) and is required
 /// whenever app code opens files under the per-app data directory.
 fn build_worker_env(
     app: &str,
@@ -221,6 +228,22 @@ pub(crate) async fn handle_client(
                 let app_name = sanitize_app_name(&app_name);
                 let route_id = format!("reg:{}", config_path);
 
+                let existing_bootstrap = {
+                    let s = state.lock().unwrap();
+                    s.apps
+                        .get(&config_path)
+                        .map(|app| (app.bootstrap_token.clone(), app.image_secret.clone()))
+                };
+                let (bootstrap_token, image_secret) = match existing_bootstrap {
+                    Some(pair) => pair,
+                    None => (
+                        generate_dev_secret()
+                            .map_err(|e| format!("failed to generate dev bootstrap token: {e}"))?,
+                        generate_dev_secret()
+                            .map_err(|e| format!("failed to generate dev image secret: {e}"))?,
+                    ),
+                };
+
                 {
                     let s = state.lock().unwrap();
                     if let Some(existing) = s.apps.get(&config_path)
@@ -288,11 +311,18 @@ pub(crate) async fn handle_client(
                             pid: None,
                             client_pid,
                             readiness_failure_hint,
+                            bootstrap_token,
+                            image_secret: image_secret.clone(),
                         },
                     );
 
-                    s.routes
-                        .set_routes(route_id, hosts.clone(), upstream_port, false);
+                    s.routes.set_routes_with_image_secret(
+                        route_id,
+                        hosts.clone(),
+                        upstream_port,
+                        false,
+                        image_secret,
+                    );
                     if let Some(ref mut mdns) = s.mdns {
                         for host in &old_hosts {
                             mdns.unpublish(split_route_pattern(host).0);

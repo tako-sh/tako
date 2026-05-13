@@ -7,6 +7,7 @@ import type { ChannelRegistry } from "./channels";
 import { createLogger } from "./logger";
 import { TAKO_INTERNAL_HOST_SUFFIX, handleTakoEndpoint } from "./tako/endpoints";
 import { initServerRuntime } from "./tako/init";
+import { initBootstrapFromFd, readViaInheritedFd } from "./tako/secrets-fd";
 import { installConsoleBridge } from "./tako/console-bridge";
 import { writeViaInheritedFd } from "./tako/readiness";
 import { installStdioBridge } from "./tako/stdio-bridge";
@@ -186,8 +187,8 @@ function isViteEntryChunk(chunk: unknown): chunk is ViteEntryChunkLike {
  * Vite plugin that wires a project up to the Tako build/dev pipeline.
  *
  * Responsibilities:
- * - Marks `tako.sh` as SSR-external so Vite doesn't try to bundle server-only
- *   modules (secrets, workflow RPC, etc.).
+ * - Marks SDK server entries as SSR-external so Vite doesn't try to bundle
+ *   server-only modules (secrets, workflow RPC, image signing, etc.).
  * - In dev, swaps Vite's default logger for structured JSON lines so the
  *   tako dev server can render them alongside other subprocess logs.
  * - Under `tako dev`, reports the dev server's bound port back to the parent
@@ -222,7 +223,7 @@ export function tako(): Plugin {
 
       // Exclude the SDK from Vite's SSR transform — it's a server-side
       // dependency with runtime dynamic imports Vite can't statically analyze.
-      config.ssr = { external: ["tako.sh", "tako.sh/internal"] };
+      config.ssr = { external: ["tako.sh", "tako.sh/server", "tako.sh/internal"] };
 
       // Under the tako dev server, emit structured JSON log lines so the
       // parent process can render Vite output alongside other subprocess logs.
@@ -247,8 +248,12 @@ export function tako(): Plugin {
       resolvedConfig = config;
     },
     configureServer(server) {
+      // Read the same fd bootstrap used by server entrypoints so dev SSR can
+      // sign image URLs and authenticate internal SDK requests.
+      initBootstrapFromFd(readViaInheritedFd);
+
       // Wire up the same server-runtime install used by the production
-      // entrypoint — so user server fns can `signal()`, `.enqueue()`, and
+      // entrypoint so user server fns can `signal()`, `.enqueue()`, and
       // publish to channels during `tako dev` without boot-time setup.
       initServerRuntime();
 

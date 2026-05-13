@@ -81,6 +81,15 @@ struct AppRoute {
     upstream_port: u16,
     active: bool,
     notify: Arc<Notify>,
+    image_secret: String,
+}
+
+#[derive(Clone)]
+pub(crate) struct RouteTarget {
+    pub(crate) app_id: String,
+    pub(crate) upstream_port: u16,
+    pub(crate) active: bool,
+    pub(crate) image_secret: String,
 }
 
 #[derive(Clone, Default)]
@@ -95,12 +104,24 @@ pub struct Routes {
 
 impl Routes {
     /// Register (or replace) all routes for an app.
+    #[cfg(test)]
     pub fn set_routes(
         &self,
         app_id: String,
         routes: Vec<String>,
         upstream_port: u16,
         active: bool,
+    ) {
+        self.set_routes_with_image_secret(app_id, routes, upstream_port, active, String::new());
+    }
+
+    pub fn set_routes_with_image_secret(
+        &self,
+        app_id: String,
+        routes: Vec<String>,
+        upstream_port: u16,
+        active: bool,
+        image_secret: String,
     ) {
         {
             let mut ar = self.app_routes.lock().unwrap();
@@ -113,9 +134,11 @@ impl Routes {
             upstream_port,
             active,
             notify: Arc::new(Notify::new()),
+            image_secret: image_secret.clone(),
         });
         entry.upstream_port = upstream_port;
         entry.active = active;
+        entry.image_secret = image_secret;
         if active {
             entry.notify.notify_waiters();
         }
@@ -151,7 +174,7 @@ impl Routes {
     }
 
     /// Find the best matching route for a (host, path) pair.
-    pub fn lookup(&self, host: &str, path: &str) -> Option<(String, u16, bool, Arc<Notify>)> {
+    pub fn lookup(&self, host: &str, path: &str) -> Option<RouteTarget> {
         let app_id = {
             let compiled = self.compiled.lock().unwrap();
             let mut found = None;
@@ -171,7 +194,12 @@ impl Routes {
         };
         let apps = self.apps.lock().unwrap();
         let r = apps.get(&app_id)?.clone();
-        Some((app_id, r.upstream_port, r.active, r.notify))
+        Some(RouteTarget {
+            app_id,
+            upstream_port: r.upstream_port,
+            active: r.active,
+            image_secret: r.image_secret,
+        })
     }
 
     /// All route patterns across all apps, for error pages.
@@ -313,7 +341,7 @@ impl ProxyHttp for DevProxy {
             return crate::dev_channels::try_handle(session, &self.channels, &path, &method).await;
         }
 
-        let Some((app_id, mut port, active, _notify)) = self.routes.lookup(&hostname, &path) else {
+        let Some(mut target) = self.routes.lookup(&hostname, &path) else {
             let mut header = ResponseHeader::build(421, None)?;
             header.insert_header("Content-Type", "text/plain")?;
             session
@@ -329,10 +357,10 @@ impl ProxyHttp for DevProxy {
             return Ok(true);
         };
 
-        if !active {
+        if !target.active {
             let ready_port = self
                 .routes
-                .wait_for_active_port(&app_id, std::time::Duration::from_secs(30))
+                .wait_for_active_port(&target.app_id, std::time::Duration::from_secs(30))
                 .await;
             let Some(active_port) = ready_port else {
                 let mut header = ResponseHeader::build(503, None)?;
@@ -345,10 +373,16 @@ impl ProxyHttp for DevProxy {
                     .await?;
                 return Ok(true);
             };
-            port = active_port;
+            target.upstream_port = active_port;
+            target.active = true;
         }
 
-        ctx.upstream_port = Some(port);
+        if crate::image::is_image_request_path(&path) {
+            let method = session.req_header().method.as_str().to_string();
+            return crate::image::try_handle(session, &target, &path, &hostname, &method).await;
+        }
+
+        ctx.upstream_port = Some(target.upstream_port);
         Ok(false)
     }
 
@@ -397,10 +431,10 @@ mod tests {
 
         let hit = routes.lookup("foo.app.test", "/");
         assert!(hit.is_some());
-        let (app_id, port, active, _) = hit.unwrap();
-        assert_eq!(app_id, "app");
-        assert_eq!(port, 3000);
-        assert!(active);
+        let hit = hit.unwrap();
+        assert_eq!(hit.app_id, "app");
+        assert_eq!(hit.upstream_port, 3000);
+        assert!(hit.active);
 
         // Unrelated host should not match.
         assert!(routes.lookup("foo.other.test", "/").is_none());
@@ -414,9 +448,9 @@ mod tests {
 
         routes.activate_with_port("app", 54321);
 
-        let (_, port, active, _) = routes.lookup("app.test", "/").unwrap();
-        assert_eq!(port, 54321);
-        assert!(active);
+        let hit = routes.lookup("app.test", "/").unwrap();
+        assert_eq!(hit.upstream_port, 54321);
+        assert!(hit.active);
     }
 
     #[tokio::test]
@@ -469,16 +503,16 @@ mod tests {
         // /api/users → api app
         let hit = routes.lookup("app.test", "/api/users");
         assert!(hit.is_some());
-        let (app_id, port, _, _) = hit.unwrap();
-        assert_eq!(app_id, "api");
-        assert_eq!(port, 3001);
+        let hit = hit.unwrap();
+        assert_eq!(hit.app_id, "api");
+        assert_eq!(hit.upstream_port, 3001);
 
         // / → web app
         let hit = routes.lookup("app.test", "/");
         assert!(hit.is_some());
-        let (app_id, port, _, _) = hit.unwrap();
-        assert_eq!(app_id, "web");
-        assert_eq!(port, 3002);
+        let hit = hit.unwrap();
+        assert_eq!(hit.app_id, "web");
+        assert_eq!(hit.upstream_port, 3002);
     }
 
     #[test]
@@ -498,10 +532,10 @@ mod tests {
         );
 
         let hit = routes.lookup("app.test", "/api/health").unwrap();
-        assert_eq!(hit.0, "exact");
+        assert_eq!(hit.app_id, "exact");
 
         let hit = routes.lookup("app.test", "/api/other").unwrap();
-        assert_eq!(hit.0, "wildcard");
+        assert_eq!(hit.app_id, "wildcard");
     }
 
     #[test]
@@ -521,10 +555,10 @@ mod tests {
         );
 
         let hit = routes.lookup("api.app.test", "/").unwrap();
-        assert_eq!(hit.0, "exact");
+        assert_eq!(hit.app_id, "exact");
 
         let hit = routes.lookup("other.app.test", "/").unwrap();
-        assert_eq!(hit.0, "wildcard");
+        assert_eq!(hit.app_id, "wildcard");
     }
 
     #[test]
@@ -533,8 +567,8 @@ mod tests {
         routes.set_routes("app".to_string(), vec!["app.test".to_string()], 3000, true);
 
         let hit = routes.lookup("app.local", "/").unwrap();
-        assert_eq!(hit.0, "app");
-        assert_eq!(hit.1, 3000);
+        assert_eq!(hit.app_id, "app");
+        assert_eq!(hit.upstream_port, 3000);
     }
 
     #[test]
@@ -548,8 +582,8 @@ mod tests {
         );
 
         let hit = routes.lookup("foo.app.local", "/api/health").unwrap();
-        assert_eq!(hit.0, "app");
-        assert_eq!(hit.1, 3000);
+        assert_eq!(hit.app_id, "app");
+        assert_eq!(hit.upstream_port, 3000);
     }
 
     #[test]

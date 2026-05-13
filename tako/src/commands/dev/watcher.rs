@@ -15,7 +15,7 @@ pub enum WatchChange {
     Secrets,
     Channels,
     Workflows,
-    GeneratedFile,
+    GeneratedDeclarations,
 }
 
 /// Handle that keeps the watcher alive
@@ -71,6 +71,11 @@ impl ConfigWatcher {
         if watched_workflows.is_dir() {
             let _ = watch_path(&debouncer, &watched_workflows, RecursiveMode::NonRecursive);
         }
+        for dir in crate::build::js::generated_declaration_parent_dirs(&self.project_dir) {
+            if dir != self.project_dir && dir.is_dir() {
+                let _ = watch_path(&debouncer, &dir, RecursiveMode::NonRecursive);
+            }
+        }
 
         let changed_tx = self.changed_tx.clone();
         let project_dir = self.project_dir.clone();
@@ -117,6 +122,17 @@ impl ConfigWatcher {
                                     );
                                 }
                             }
+                            for dir in
+                                crate::build::js::generated_declaration_parent_dirs(&project_dir)
+                            {
+                                if dir != project_dir && event.path == dir && dir.is_dir() {
+                                    let _ = watch_path(
+                                        &debouncer_for_thread,
+                                        &dir,
+                                        RecursiveMode::NonRecursive,
+                                    );
+                                }
+                            }
                             if let Some(change) =
                                 classify_path(&project_dir, &app_root, &config_path, &event.path)
                             {
@@ -159,8 +175,8 @@ fn classify_path(
     if path == project_dir.join(".tako").join("secrets.json") {
         return Some(WatchChange::Secrets);
     }
-    if path == app_root.join("tako.gen.ts") {
-        return Some(WatchChange::GeneratedFile);
+    if crate::build::js::is_generated_declaration_path(project_dir, path) {
+        return Some(WatchChange::GeneratedDeclarations);
     }
 
     let channels_dir = app_root.join("channels");
@@ -181,7 +197,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn relevant_paths_include_config_secrets_channels_workflows_and_generated_file() {
+    fn relevant_paths_include_config_secrets_channels_workflows_and_generated_declarations() {
         let project_dir = PathBuf::from("/tmp/demo");
         let app_root = PathBuf::from("/tmp/demo/src");
         let config_path = project_dir.join("tako.toml");
@@ -231,9 +247,45 @@ mod tests {
                 &project_dir,
                 &app_root,
                 &config_path,
-                &app_root.join("tako.gen.ts")
+                &project_dir.join("tako.d.ts")
             ),
-            Some(WatchChange::GeneratedFile)
+            Some(WatchChange::GeneratedDeclarations)
+        );
+        assert_eq!(
+            classify_path(
+                &project_dir,
+                &app_root,
+                &config_path,
+                &project_dir.join("app").join("tako.d.ts")
+            ),
+            Some(WatchChange::GeneratedDeclarations)
+        );
+        assert_eq!(
+            classify_path(
+                &project_dir,
+                &app_root,
+                &config_path,
+                &project_dir.join("src").join("tako.d.ts")
+            ),
+            Some(WatchChange::GeneratedDeclarations)
+        );
+        assert_eq!(
+            classify_path(
+                &project_dir,
+                &app_root,
+                &config_path,
+                &project_dir.join("client").join("tako.d.ts")
+            ),
+            None
+        );
+        assert_eq!(
+            classify_path(
+                &project_dir,
+                &app_root,
+                &config_path,
+                &app_root.join("tako.d.ts")
+            ),
+            Some(WatchChange::GeneratedDeclarations)
         );
         assert_eq!(
             classify_path(

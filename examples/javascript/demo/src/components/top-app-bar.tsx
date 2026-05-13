@@ -47,9 +47,9 @@ export const TopAppBar = memo(function TopAppBar({ baseName, homeHref = "/" }: P
               sm:inline
             "
           >
-            MOONBASE_SUPPLY_DESK
+            PLANETARY_SUPPLY_DESK
           </span>
-          <span className="sm:hidden">MOONBASE</span>
+          <span className="sm:hidden">SUPPLY</span>
         </a>
         {baseName ? (
           <div

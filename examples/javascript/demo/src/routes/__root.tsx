@@ -5,11 +5,11 @@ import appCss from "../styles/app.css?url";
 export const Route = createRootRoute({
   head: () => ({
     meta: [
-      { title: "Moonbase Supply Desk — Tako demo" },
+      { title: "Planetary Supply Desk — Tako demo" },
       {
         name: "description",
         content:
-          "A Tako demo: each moonbase is an isolated tenant. Supply requests run through a durable workflow with a live mission log.",
+          "A Tako demo: each planet base is an isolated tenant. Supply requests run through a durable workflow with a live mission log and optimized images.",
       },
     ],
     links: [

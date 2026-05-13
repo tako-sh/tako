@@ -4,6 +4,7 @@
   "type": "module",
   "sideEffects": false,
   "scripts": {
+    "dev": "vite dev",
     "build": "bunx --bun vite build && tsc --noEmit",
     "test": "bun test tests"
   },

@@ -228,18 +228,22 @@ Aliases:
 
 `servers setup-wildcard` currently applies DNS configuration to all configured servers. The command accepts `--env`, but it does not filter the target server list.
 
-## `tako gen`
+## `tako generate`
 
 ```bash
-tako gen
+tako generate
 ```
 
 Generates typed project runtime support:
 
-- JS/TS: `<app_root>/tako.gen.ts`, plus channel/workflow stubs under `<app_root>/channels/` and `<app_root>/workflows/` when relevant
+- JS/TS: `tako.d.ts` with typed runtime metadata, plus channel/workflow stubs under `<app_root>/channels/` and `<app_root>/workflows/` when relevant
 - Go: `tako_secrets.go`
 
-For JS/TS projects, `app_root` comes from `tako.toml` and defaults to `src`. Legacy `tako.d.ts` files are removed when regenerating.
+Aliases: `tako gen`, `tako g`.
+
+For JS/TS projects, `tako.d.ts` keeps its existing `app/`, `src/`, or root location. When created for the first time, Tako uses an existing legacy `tako.gen.ts` location when present, otherwise `app/`, then `src/`, then the project root.
+
+For JS/TS projects, legacy `tako.gen.ts` files are removed when regenerating.
 
 ## `tako upgrade`
 

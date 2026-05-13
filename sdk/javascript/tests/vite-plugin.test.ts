@@ -87,10 +87,12 @@ describe("tako Vite entry plugin", () => {
     expect(wrapper).toContain('from "tako.sh/internal";');
   });
 
-  test("externalizes tako.sh from SSR transform", () => {
+  test("externalizes SDK server entries from SSR transform", () => {
     const plugin = tako();
     const result = plugin.config?.({}, { command: "build" });
-    expect(result).toMatchObject({ ssr: { external: ["tako.sh", "tako.sh/internal"] } });
+    expect(result).toMatchObject({
+      ssr: { external: ["tako.sh", "tako.sh/server", "tako.sh/internal"] },
+    });
   });
 
   test("binds to 127.0.0.1 with .test hosts in serve mode", () => {
@@ -223,6 +225,17 @@ describe("tako Vite entry plugin", () => {
     expect(listeners).toHaveLength(1);
     // Firing the listener should not throw (writeViaInheritedFd catches fd errors silently)
     expect(() => listeners[0]!()).not.toThrow();
+  });
+
+  test("configureServer bootstraps fd secrets before server runtime setup", async () => {
+    const source = await readFile(path.join(import.meta.dir, "../src/vite.ts"), "utf8");
+
+    const bootstrapCall = source.indexOf("initBootstrapFromFd(readViaInheritedFd);");
+    const runtimeCall = source.indexOf("initServerRuntime();");
+
+    expect(bootstrapCall).toBeGreaterThanOrEqual(0);
+    expect(runtimeCall).toBeGreaterThanOrEqual(0);
+    expect(bootstrapCall).toBeLessThan(runtimeCall);
   });
 
   test("configureServer handles null httpServer gracefully", () => {

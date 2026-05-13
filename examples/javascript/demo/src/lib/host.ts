@@ -44,7 +44,7 @@ export function sanitizeTenantSlug(raw: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9-]/g, "")
     .slice(0, 48);
-  return cleaned.length > 0 ? cleaned : "moonbase";
+  return cleaned.length > 0 ? cleaned : "base";
 }
 
 export function prettifyTenantSlug(slug: string): string {

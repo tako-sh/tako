@@ -145,6 +145,8 @@ pub struct RuntimeApp {
     pub pid: Option<u32>,
     pub client_pid: Option<u32>,
     pub readiness_failure_hint: Option<String>,
+    pub bootstrap_token: String,
+    pub image_secret: String,
 }
 
 // ---------------------------------------------------------------------------

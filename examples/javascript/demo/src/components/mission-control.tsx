@@ -8,6 +8,7 @@ import {
 import { memo } from "react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent } from "@/components/ui/card";
+import type { PlanetBase } from "@/lib/bases";
 import { Info } from "./info";
 import { InFlightFeed } from "./InFlightFeed";
 import { MissionLog } from "./mission-log";
@@ -25,6 +26,7 @@ const RESOURCES: { label: string; icon: React.ReactNode }[] = [
 type Props = {
   tenantSlug: string;
   rootOrigin: string;
+  baseVisual: PlanetBase | null;
   inFlight: InFlightRequest[];
   events: MissionLogEvent[];
   submitting: boolean;
@@ -36,6 +38,7 @@ type Props = {
 export function MissionControl({
   tenantSlug,
   rootOrigin,
+  baseVisual,
   inFlight,
   events,
   submitting,
@@ -67,11 +70,11 @@ export function MissionControl({
         >
           <div
             className="
-              relative flex-1 space-y-6 p-5
-              md:p-8 lg:overflow-y-auto
+              relative flex-1 space-y-5 p-4
+              md:p-6 lg:overflow-y-auto xl:p-8
             "
           >
-            <TenantHeader baseName={baseName} requests={inFlight} />
+            <TenantHeader baseName={baseName} baseVisual={baseVisual} requests={inFlight} />
             {submitError ? (
               <Alert variant="destructive">
                 <WarningIcon />
@@ -90,9 +93,11 @@ export function MissionControl({
 
 const TenantHeader = memo(function TenantHeader({
   baseName,
+  baseVisual,
   requests,
 }: {
   baseName: string;
+  baseVisual: PlanetBase | null;
   requests: InFlightRequest[];
 }) {
   const resources = RESOURCES.map(({ label, icon }) => ({
@@ -102,8 +107,42 @@ const TenantHeader = memo(function TenantHeader({
   }));
 
   return (
-    <Card>
-      <CardContent className="flex flex-col gap-4">
+    <Card
+      className="
+        gap-0 py-0
+        lg:grid lg:grid-cols-[minmax(14rem,0.9fr)_minmax(20rem,1.1fr)]
+      "
+    >
+      {baseVisual ? (
+        <div
+          className="
+            relative aspect-16/7 min-h-36 overflow-hidden border-b
+            border-border/50
+            sm:min-h-40 lg:aspect-auto lg:min-h-0 lg:border-r lg:border-b-0
+          "
+        >
+          <img
+            src={baseVisual.image.hero}
+            alt={`${baseVisual.name} supply base on ${baseVisual.world}`}
+            className="absolute inset-0 size-full object-cover"
+          />
+          <div className="absolute inset-0 bg-linear-to-t from-card via-card/20 to-transparent" />
+          <div className="absolute inset-x-0 bottom-0 p-4">
+            <div className="min-w-0">
+              <div
+                className="
+                  mb-1 font-mono text-[10px] tracking-[0.22em]
+                  text-primary uppercase
+                "
+              >
+                {baseVisual.world} visual
+              </div>
+              <p className="max-w-lg text-xs/relaxed text-muted-foreground">{baseVisual.summary}</p>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      <CardContent className="flex flex-col gap-4 py-4">
         <div className="flex items-start justify-between gap-5">
           <div className="min-w-0">
             <h2
@@ -119,7 +158,7 @@ const TenantHeader = memo(function TenantHeader({
           <div
             className="
               hidden max-w-xs shrink-0
-              lg:block
+              xl:block
             "
           >
             <Info
@@ -130,10 +169,10 @@ const TenantHeader = memo(function TenantHeader({
           </div>
         </div>
 
-        <div className="border-t border-border/50 pt-4">
+        <div className="border-t border-border/50 pt-3">
           <h4
             className="
-              mb-3 font-mono text-[11px] tracking-widest text-muted-foreground
+              mb-2 font-mono text-[11px] tracking-widest text-muted-foreground
               uppercase
             "
           >
@@ -142,7 +181,7 @@ const TenantHeader = memo(function TenantHeader({
           <div
             className="
               grid grid-cols-2 gap-3
-              sm:grid-cols-4
+              sm:grid-cols-4 lg:grid-cols-2 xl:grid-cols-4
             "
           >
             {resources.map(({ label, icon, count }) => (

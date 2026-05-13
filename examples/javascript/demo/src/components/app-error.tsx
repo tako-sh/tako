@@ -27,7 +27,7 @@ export function AppErrorPage({ reset }: ErrorComponentProps) {
               md:text-4xl
             "
           >
-            This moonbase could not load.
+            This base could not load.
           </h1>
           <p className="mb-8 max-w-lg text-sm/relaxed text-muted-foreground">
             The request failed before the command deck could render. Try again in a moment.

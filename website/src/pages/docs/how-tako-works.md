@@ -175,7 +175,7 @@ Workflows are durable background runs stored in per-app SQLite under the app dat
 
 Workers are separate from HTTP instances. They can run scale-to-zero by default and wake on enqueue or cron ticks.
 
-JavaScript workflow files live under `<app_root>/workflows/`; JavaScript channel files live under `<app_root>/channels/`. `app_root` is configured in `tako.toml` and defaults to `src`.
+JavaScript workflow files live under `<app_root>/workflows/`; JavaScript channel files live under `<app_root>/channels/`. `app_root` is configured in `tako.toml` and defaults to `src`. Generated `tako.d.ts` channel metadata references those channel modules so params, messages, and transport stay inferred from the `defineChannel` export.
 
 Channels are durable pub-sub streams under:
 
@@ -187,13 +187,13 @@ SSE channels are broadcast-only. WebSocket channels can accept client frames, ru
 
 ## Image Optimization
 
-Server-side JavaScript can call `createImageUrl(source, opts?)` from `tako.sh` to create signed image URLs under:
+Server-side JavaScript can call `createImageUrl(source, opts?)` from `tako.sh/server` to create signed image URLs under:
 
 ```text
 /_tako/image/v1/<payload>.<signature>
 ```
 
-Private AVIF URLs are the default. Public URLs require `public: true`. The optimizer verifies signatures before reading sources, rejects unsafe remote sources, uses libvips, avoids upscaling, strips source metadata from transformed output, and supports JPEG, PNG, WebP, and AVIF inputs. If resize or encode work fails after a verified image source has loaded, Tako serves the original image bytes instead.
+Private AVIF URLs are the default. Public URLs require `public: true`. In isomorphic frameworks, sign images inside a loader/server function and pass the signed URL string to components. The optimizer verifies signatures before reading sources, rejects unsafe remote sources, uses libvips, avoids upscaling, strips source metadata from transformed output, and supports JPEG, PNG, WebP, and AVIF inputs. The same signed URL path works in `tako dev` and deploys. If resize or encode work fails after a verified image source has loaded, Tako serves the original image bytes instead.
 
 ## State
 

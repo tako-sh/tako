@@ -461,6 +461,17 @@ pub async fn run(
                     let _ = should_exit_tx.send(true);
                     return;
                 }
+                if change == watcher::WatchChange::GeneratedDeclarations {
+                    if let Err(err) = crate::build::js::write_generated_files(&project_dir) {
+                        let _ = log_tx
+                            .send(ScopedLog::warn(
+                                "tako",
+                                format!("Failed to regenerate tako.d.ts: {err}"),
+                            ))
+                            .await;
+                    }
+                    continue;
+                }
                 let cfg = match load_dev_tako_toml(&config_path) {
                     Ok(c) => c,
                     Err(e) => {
@@ -475,24 +486,6 @@ pub async fn run(
                     let _ = log_tx
                         .send(ScopedLog::warn("tako", format!("Validation: {}", warning)))
                         .await;
-                }
-
-                if change == watcher::WatchChange::GeneratedFile {
-                    if let Err(err) =
-                        crate::build::js::write_generated_files_for_adapter_and_app_root(
-                            &project_dir,
-                            crate::build::detect_build_adapter(&project_dir),
-                            cfg.js_app_root(),
-                        )
-                    {
-                        let _ = log_tx
-                            .send(ScopedLog::warn(
-                                "tako",
-                                format!("Failed to refresh generated files: {err}"),
-                            ))
-                            .await;
-                    }
-                    continue;
                 }
 
                 let new_hosts =
@@ -582,7 +575,7 @@ pub async fn run(
                         watcher::WatchChange::Secrets => "Secrets changed, restarting…",
                         watcher::WatchChange::Channels => "channels/ changed, restarting…",
                         watcher::WatchChange::Workflows => "workflows/ changed, restarting…",
-                        watcher::WatchChange::GeneratedFile => unreachable!(),
+                        watcher::WatchChange::GeneratedDeclarations => unreachable!(),
                     };
                     let _ = log_tx.send(ScopedLog::info("tako", restart_reason)).await;
                     let _ = crate::dev_server_client::restart_app(&config_key).await;

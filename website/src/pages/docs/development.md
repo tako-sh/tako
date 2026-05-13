@@ -110,6 +110,8 @@ The SDK binds an OS-assigned loopback port and writes the actual port to fd 4. A
 
 For Vite dev commands, use the `tako.sh/vite` plugin. Tako does not parse Vite stdout URLs as readiness; if a Vite-looking command never reports readiness, the CLI shows a Vite-specific plugin hint.
 
+The same plugin reads Tako's fd 3 bootstrap before Vite SSR runs, so server code can sign image optimizer URLs with `createImageUrl()` from `tako.sh/server` during `tako dev`.
+
 ## Dev Commands
 
 Tako resolves the dev command in this order:
@@ -143,11 +145,11 @@ Source hot reload belongs to the runtime or framework dev server. Tako watches c
 
 - `tako.toml`
 - `.tako/secrets.json`
-- `<app_root>/tako.gen.ts`
 - `<app_root>/channels/`
 - `<app_root>/workflows/`
+- parent directories that can contain `tako.d.ts` (`app/`, `src/`, and the project root)
 
-For JavaScript apps, `app_root` comes from `tako.toml` and defaults to `src`. If `tako.gen.ts` is deleted during `tako dev`, Tako recreates it. The app restarts when effective environment variables, secrets, channel definitions, or workflow definitions change. It updates dev routing without restarting when `[envs.development].route` or `routes` changes.
+For JavaScript apps, `app_root` comes from `tako.toml` and defaults to `src`. Tako recreates `tako.d.ts` if the generated JS/TS declaration file is removed or edited. The app restarts when effective environment variables, secrets, channel definitions, or workflow definitions change. It updates dev routing without restarting when `[envs.development].route` or `routes` changes.
 
 ## Logs
 
