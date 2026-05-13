@@ -10,15 +10,13 @@ pub(super) async fn download_and_install(
     url: &str,
     install_dir: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let tmp_base = std::env::temp_dir();
-    let tmp_dir = tmp_base.join(format!("tako-upgrade-{}", std::process::id()));
-    std::fs::create_dir_all(&tmp_dir)?;
+    let tmp_dir = create_upgrade_temp_dir()?;
 
-    let result = download_and_install_inner(url, install_dir, &tmp_dir).await;
+    download_and_install_inner(url, install_dir, tmp_dir.path()).await
+}
 
-    let _ = std::fs::remove_dir_all(&tmp_dir);
-
-    result
+fn create_upgrade_temp_dir() -> Result<tempfile::TempDir, std::io::Error> {
+    tempfile::Builder::new().prefix("tako-upgrade-").tempdir()
 }
 
 async fn download_and_install_inner(
@@ -533,6 +531,26 @@ mod tests {
         let (os, arch) = detect_platform().unwrap();
         assert!(os == "darwin" || os == "linux");
         assert!(arch == "x86_64" || arch == "aarch64");
+    }
+
+    #[test]
+    fn upgrade_temp_dir_is_unique_and_removed_on_drop() {
+        let first = create_upgrade_temp_dir().unwrap();
+        let second = create_upgrade_temp_dir().unwrap();
+
+        assert_ne!(first.path(), second.path());
+        assert!(
+            first
+                .path()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("tako-upgrade-")
+        );
+
+        let first_path = first.path().to_path_buf();
+        drop(first);
+        assert!(!first_path.exists());
     }
 
     #[test]

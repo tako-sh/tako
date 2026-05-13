@@ -8,6 +8,7 @@ set -eu
 #
 # What it does:
 # - downloads and installs `tako`, `tako-dev-server`, and `tako-dev-proxy` for your OS/architecture
+# - verifies the release archive with its SHA-256 checksum before extraction
 # - on macOS, verifies `Tako.app`, installs it, and symlinks `tako` to the signed CLI inside it
 # - on macOS, installs libvips with Homebrew when Homebrew is available
 # - installs binaries to ~/.local/bin by default
@@ -201,7 +202,7 @@ else
   require_secure_download_override "$download_url"
 fi
 case "$download_url" in
-  *.tar.gz|file://*.tar.gz) ;;
+  *.tar.gz) ;;
   *)
     echo "error: TAKO_URL must point to a .tar.gz archive" >&2
     exit 1
@@ -217,24 +218,36 @@ echo "Downloading tako CLI..."
 download_file "$download_url" "$tmp_payload"
 
 expected_sha=""
-expected_sha="$(download_stdout "$sha_url" 2>/dev/null | awk '{print $1}' || true)"
+sha_text="$(download_stdout "$sha_url" 2>/dev/null || true)"
+expected_sha="$(printf '%s\n' "$sha_text" | awk 'NR == 1 {print $1}')"
 
-if [ -n "$expected_sha" ]; then
-  if need_cmd sha256sum; then
-    actual="$(sha256sum "$tmp_payload" | awk '{print $1}')"
-  elif need_cmd shasum; then
-    actual="$(shasum -a 256 "$tmp_payload" | awk '{print $1}')"
-  else
-    echo "warning: sha256 tool not found; skipping integrity check" >&2
-    actual=""
-  fi
-
-  if [ -n "$actual" ] && [ "$actual" != "$expected_sha" ]; then
-    echo "error: sha256 mismatch (expected=$expected_sha actual=$actual)" >&2
+if [ -z "$expected_sha" ]; then
+  echo "error: SHA256 checksum unavailable for $sha_url" >&2
+  exit 1
+fi
+if [ "${#expected_sha}" -ne 64 ]; then
+  echo "error: invalid SHA256 checksum from $sha_url" >&2
+  exit 1
+fi
+case "$expected_sha" in
+  *[!0123456789abcdefABCDEF]*)
+    echo "error: invalid SHA256 checksum from $sha_url" >&2
     exit 1
-  fi
+    ;;
+esac
+
+if need_cmd sha256sum; then
+  actual="$(sha256sum "$tmp_payload" | awk '{print $1}')"
+elif need_cmd shasum; then
+  actual="$(shasum -a 256 "$tmp_payload" | awk '{print $1}')"
 else
-  echo "warning: could not fetch SHA256 ($sha_url); skipping integrity check" >&2
+  echo "error: sha256 tool not found; cannot verify release archive" >&2
+  exit 1
+fi
+
+if [ "$actual" != "$expected_sha" ]; then
+  echo "error: sha256 mismatch (expected=$expected_sha actual=$actual)" >&2
+  exit 1
 fi
 
 tar -xzf "$tmp_payload" -C "$tmp_extract"

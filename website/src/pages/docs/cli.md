@@ -252,7 +252,7 @@ For JS/TS projects, legacy `tako.gen.ts` files are removed when regenerating.
 tako upgrade
 ```
 
-Upgrades the local CLI installation. On macOS it preserves the app-bundle layout and symlinked CLI path.
+Upgrades the local CLI installation. Downloaded archives are SHA-256 verified before extraction. On macOS it preserves the app-bundle layout and symlinked CLI path.
 
 ## `tako version`
 
