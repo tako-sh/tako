@@ -746,13 +746,17 @@ fn normalize_remote_pattern(pattern: &str) -> String {
 }
 
 fn remote_pattern_matches(pattern: &str, source: &str) -> bool {
+    let has_explicit_scheme = pattern.contains("://");
     let Ok(pattern_url) = Url::parse(&normalize_remote_pattern(pattern)) else {
         return false;
     };
     let Ok(source_url) = Url::parse(source) else {
         return false;
     };
-    if pattern_url.scheme() != source_url.scheme() {
+    if has_explicit_scheme && pattern_url.scheme() != source_url.scheme() {
+        return false;
+    }
+    if !matches!(source_url.scheme(), "http" | "https") {
         return false;
     }
     let Some(pattern_host) = pattern_url.host_str() else {

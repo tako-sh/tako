@@ -247,9 +247,9 @@ remote_patterns = ["https://cdn.example.com/uploads/**"]
 # formats = ["avif", "webp"]
 ```
 
-Public image URLs use `/_tako/image?src=...&w=...`. Local public paths are allowed by default with `local_patterns = ["/**"]`; setting `local_patterns` replaces that default. Remote images are denied unless their full URL matches `remote_patterns`.
+Public image URLs use `/_tako/image?src=...&w=...`. Local public paths are allowed by default with `local_patterns = ["/**"]`; setting `local_patterns` replaces that default. Remote images are denied unless their URL matches `remote_patterns`; patterns without a protocol allow both `http` and `https`.
 
-Patterns are glob-like strings, not regular expressions. `*` matches one path segment, `**` matches the rest of a path, and remote hosts may use a leading wildcard such as `https://*.example.com/uploads/**`. Remote patterns without a protocol use `https://`.
+Patterns are glob-like strings, not regular expressions. `*` matches one path segment, `**` matches the rest of a path, and remote hosts may use a leading wildcard such as `https://*.example.com/uploads/**`. Remote patterns without a protocol allow both `http` and `https`.
 
 | Field             | Type     | Meaning                                           |
 | ----------------- | -------- | ------------------------------------------------- |

@@ -271,7 +271,7 @@ Public optimized images are served at:
 /_tako/image?src=/assets/hero.jpg&w=1200
 ```
 
-Local image sources are allowed by default. Remote image sources must match `[images].remote_patterns` in `tako.toml`.
+Local image sources are allowed by default. Remote image sources must match `[images].remote_patterns` in `tako.toml`; protocol-less remote patterns allow both `http` and `https`.
 
 ## Channels In Dev
 

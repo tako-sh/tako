@@ -157,7 +157,7 @@ Public image optimization uses CDN-friendly query URLs:
 /_tako/image?src=/assets/hero.jpg&w=1200
 ```
 
-Local public paths are available by default. Remote images must match `[images].remote_patterns` in `tako.toml`, and widths, qualities, and formats must match the app's configured guardrails.
+Local public paths are available by default. Remote images must match `[images].remote_patterns` in `tako.toml`, protocol-less remote patterns allow both `http` and `https`, and widths, qualities, and formats must match the app's configured guardrails.
 
 Object storage bindings are attached with `tako storage add` and exposed to JavaScript apps as `tako.storages.<name>`. The SDK can create private signed download/upload URLs, and can build public optimized image URLs for storage objects when the binding has a `public_base_url`.
 

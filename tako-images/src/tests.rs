@@ -464,6 +464,30 @@ fn verifies_public_remote_image_requests_against_remote_patterns() {
 }
 
 #[test]
+fn protocol_less_remote_patterns_allow_http_and_https_sources() {
+    let config = ImagesConfig {
+        remote_patterns: vec!["cdn.example.com/uploads/**".to_string()],
+        ..Default::default()
+    };
+
+    verify_public_image_request(
+        "/_tako/image",
+        Some("src=https%3A%2F%2Fcdn.example.com%2Fuploads%2Favatar.jpg&w=960"),
+        None,
+        &config,
+    )
+    .expect("protocol-less pattern should match https");
+
+    verify_public_image_request(
+        "/_tako/image",
+        Some("src=http%3A%2F%2Fcdn.example.com%2Fuploads%2Favatar.jpg&w=960"),
+        None,
+        &config,
+    )
+    .expect("protocol-less pattern should match http");
+}
+
+#[test]
 fn public_image_requests_reject_unbounded_variants() {
     for query in [
         "src=%2Favatar.png&w=641",
