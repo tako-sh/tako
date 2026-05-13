@@ -501,7 +501,7 @@ fn create_bootstrap_pipe(
     std::os::fd::OwnedFd,
     std::thread::JoinHandle<std::io::Result<()>>,
 )> {
-    let bytes = tako_core::bootstrap::envelope_bytes(token, secrets, None);
+    let bytes = tako_core::bootstrap::envelope_bytes(token, secrets);
     tako_spawn::create_payload_pipe(bytes)
 }
 

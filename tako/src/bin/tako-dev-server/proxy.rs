@@ -81,7 +81,6 @@ struct AppRoute {
     upstream_port: u16,
     active: bool,
     notify: Arc<Notify>,
-    image_secret: String,
     images: tako_images::ImagesConfig,
 }
 
@@ -90,7 +89,6 @@ pub(crate) struct RouteTarget {
     pub(crate) app_id: String,
     pub(crate) upstream_port: u16,
     pub(crate) active: bool,
-    pub(crate) image_secret: String,
     pub(crate) images: tako_images::ImagesConfig,
 }
 
@@ -114,23 +112,21 @@ impl Routes {
         upstream_port: u16,
         active: bool,
     ) {
-        self.set_routes_with_image_secret(
+        self.set_routes_with_images(
             app_id,
             routes,
             upstream_port,
             active,
-            String::new(),
             tako_images::ImagesConfig::default(),
         );
     }
 
-    pub fn set_routes_with_image_secret(
+    pub fn set_routes_with_images(
         &self,
         app_id: String,
         routes: Vec<String>,
         upstream_port: u16,
         active: bool,
-        image_secret: String,
         images: tako_images::ImagesConfig,
     ) {
         {
@@ -144,12 +140,10 @@ impl Routes {
             upstream_port,
             active,
             notify: Arc::new(Notify::new()),
-            image_secret: image_secret.clone(),
             images: images.clone(),
         });
         entry.upstream_port = upstream_port;
         entry.active = active;
-        entry.image_secret = image_secret;
         entry.images = images;
         if active {
             entry.notify.notify_waiters();
@@ -210,7 +204,6 @@ impl Routes {
             app_id,
             upstream_port: r.upstream_port,
             active: r.active,
-            image_secret: r.image_secret,
             images: r.images,
         })
     }

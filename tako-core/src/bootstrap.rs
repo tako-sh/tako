@@ -13,26 +13,14 @@
 
 use std::collections::HashMap;
 
-/// Serialize a Tako bootstrap envelope (`{token, secrets, image_secret?}`) to the JSON
-/// bytes that go onto fd 3. Infallible for the concrete input types:
-/// `&str` and `HashMap<String, String>` both serialize without error.
-pub fn envelope_bytes(
-    token: &str,
-    secrets: &HashMap<String, String>,
-    image_secret: Option<&str>,
-) -> Vec<u8> {
-    let mut envelope = serde_json::json!({
+/// Serialize a Tako bootstrap envelope (`{token, secrets}`) to the JSON bytes
+/// that go onto fd 3. Infallible for the concrete input types: `&str` and
+/// `HashMap<String, String>` both serialize without error.
+pub fn envelope_bytes(token: &str, secrets: &HashMap<String, String>) -> Vec<u8> {
+    let envelope = serde_json::json!({
         "token": token,
         "secrets": secrets,
     });
-    if let Some(image_secret) = image_secret
-        && let Some(obj) = envelope.as_object_mut()
-    {
-        obj.insert(
-            "image_secret".to_string(),
-            serde_json::Value::String(image_secret.to_string()),
-        );
-    }
     serde_json::to_vec(&envelope).expect("string/string map always serializes")
 }
 
@@ -44,16 +32,15 @@ mod tests {
     fn envelope_bytes_produces_token_and_secrets_object() {
         let secrets =
             HashMap::from([("DATABASE_URL".to_string(), "postgres://host/db".to_string())]);
-        let bytes = envelope_bytes("tok-abc", &secrets, Some("img-secret"));
+        let bytes = envelope_bytes("tok-abc", &secrets);
         let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(parsed["token"], "tok-abc");
         assert_eq!(parsed["secrets"]["DATABASE_URL"], "postgres://host/db");
-        assert_eq!(parsed["image_secret"], "img-secret");
     }
 
     #[test]
     fn envelope_bytes_with_empty_secrets_still_emits_object() {
-        let bytes = envelope_bytes("tok-xyz", &HashMap::new(), None);
+        let bytes = envelope_bytes("tok-xyz", &HashMap::new());
         let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(parsed["token"], "tok-xyz");
         assert!(
@@ -71,12 +58,11 @@ mod tests {
         // SDK requires. This test pins the shape so a future refactor
         // can't silently drop the outer object.
         let secrets = HashMap::from([("K".to_string(), "V".to_string())]);
-        let bytes = envelope_bytes("T", &secrets, Some("I"));
+        let bytes = envelope_bytes("T", &secrets);
         let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let obj = parsed.as_object().expect("top level must be object");
-        assert_eq!(obj.len(), 3, "exactly token + secrets + image_secret keys");
+        assert_eq!(obj.len(), 2, "exactly token + secrets keys");
         assert!(obj.contains_key("token"));
         assert!(obj.contains_key("secrets"));
-        assert!(obj.contains_key("image_secret"));
     }
 }

@@ -58,7 +58,6 @@ async fn readiness_times_out_when_route_becomes_active_without_fd4_signal() {
                 client_pid: None,
                 readiness_failure_hint: Some("custom readiness hint".to_string()),
                 bootstrap_token: "dev-token".to_string(),
-                image_secret: "dev-image-secret".to_string(),
             },
         );
         s.routes.set_routes(
@@ -94,7 +93,6 @@ async fn readiness_times_out_when_route_becomes_active_without_fd4_signal() {
 async fn spawn_app_exposes_bootstrap_envelope_on_fd3() {
     let tmp = tempfile::tempdir().unwrap();
     let bootstrap_out = tmp.path().join("bootstrap.json");
-    let image_secret = "dev-image-secret".repeat(16 * 1024);
     let mut env = std::collections::HashMap::new();
     env.insert(
         "BOOTSTRAP_OUT".to_string(),
@@ -118,7 +116,6 @@ async fn spawn_app_exposes_bootstrap_envelope_on_fd3() {
         client_pid: None,
         readiness_failure_hint: None,
         bootstrap_token: "dev-token".to_string(),
-        image_secret: image_secret.clone(),
     };
 
     let (mut child, readiness_fd) = spawn_app(&app.project_dir, &app, None).await.unwrap();
@@ -130,7 +127,6 @@ async fn spawn_app_exposes_bootstrap_envelope_on_fd3() {
     let raw = std::fs::read_to_string(bootstrap_out).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(parsed["token"], "dev-token");
-    assert_eq!(parsed["image_secret"], image_secret);
     assert_eq!(parsed["secrets"], serde_json::json!({}));
 }
 
@@ -150,7 +146,6 @@ fn readiness_failure_message_uses_client_hint() {
         client_pid: None,
         readiness_failure_hint: Some("custom readiness hint".to_string()),
         bootstrap_token: "dev-token".to_string(),
-        image_secret: "dev-image-secret".to_string(),
     };
 
     assert_eq!(readiness_failure_message(&app), "custom readiness hint");

@@ -304,16 +304,13 @@ fn insert_test_app(state: &Arc<Mutex<State>>, project_dir: &str, name: &str) {
             client_pid: None,
             readiness_failure_hint: None,
             bootstrap_token: "dev-token".to_string(),
-            image_secret: "dev-image-secret".to_string(),
         },
     );
-    s.routes.set_routes_with_image_secret(
+    s.routes.set_routes(
         format!("reg:{config_path}"),
         vec![format!("{name}.test")],
         3000,
         true,
-        "dev-image-secret".to_string(),
-        tako_images::ImagesConfig::default(),
     );
 }
 
@@ -840,7 +837,6 @@ fn kill_all_app_processes_sends_sigterm_to_tracked_pids() {
                 client_pid: None,
                 readiness_failure_hint: None,
                 bootstrap_token: "dev-token".to_string(),
-                image_secret: "dev-image-secret".to_string(),
             },
         );
     }
@@ -1102,7 +1098,6 @@ async fn unregister_app_kills_running_process() {
                 client_pid: None,
                 readiness_failure_hint: None,
                 bootstrap_token: "dev-token".to_string(),
-                image_secret: "dev-image-secret".to_string(),
             },
         );
     }
@@ -1190,7 +1185,6 @@ async fn wake_on_request_spawns_exactly_one_process() {
                 client_pid: None,
                 readiness_failure_hint: None,
                 bootstrap_token: "dev-token".to_string(),
-                image_secret: "dev-image-secret".to_string(),
             },
         );
         s.routes.set_routes(
@@ -1304,7 +1298,6 @@ fn runtime_app_with_env(
         client_pid: None,
         readiness_failure_hint: None,
         bootstrap_token: "dev-token".to_string(),
-        image_secret: "dev-image-secret".to_string(),
     }
 }
 

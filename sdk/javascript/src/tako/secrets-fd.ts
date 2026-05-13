@@ -52,16 +52,10 @@ export function initBootstrapFromFd(reader: () => string | null): void {
   }
   const envelope = parsed as {
     token: string;
-    image_secret?: unknown;
     secrets: Record<string, string>;
   };
-  if (envelope.image_secret !== undefined && typeof envelope.image_secret !== "string") {
-    console.error("Tako: bootstrap image_secret on fd 3 must be a string when present");
-    process.exit(1);
-  }
   injectBootstrap({
     token: envelope.token,
-    imageSecret: envelope.image_secret ?? null,
     secrets: envelope.secrets,
   });
 }

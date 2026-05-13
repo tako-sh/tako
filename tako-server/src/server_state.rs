@@ -431,13 +431,6 @@ impl ServerState {
                 tracing::warn!(app = %app_name, "Failed to read secrets: {}", e);
                 HashMap::new()
             });
-            config.image_secret = self
-                .state_store
-                .get_or_create_image_secret(&app_name)
-                .unwrap_or_else(|e| {
-                    tracing::warn!(app = %app_name, "Failed to prepare image service: {}", e);
-                    String::new()
-                });
 
             let app = self.app_manager.register_app(config.clone());
             self.load_balancer.register_app(app.clone());

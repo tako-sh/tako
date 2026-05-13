@@ -227,29 +227,6 @@ fn set_and_get_secrets_round_trip() {
 }
 
 #[test]
-fn get_or_create_image_secret_generates_and_reuses_app_secret() {
-    let (_temp, store) = temp_store();
-    store.init().unwrap();
-
-    let first = store.get_or_create_image_secret("my-app").unwrap();
-    let second = store.get_or_create_image_secret("my-app").unwrap();
-
-    assert_eq!(first, second);
-    assert!(first.len() >= 32);
-}
-
-#[test]
-fn get_or_create_image_secret_is_scoped_per_app() {
-    let (_temp, store) = temp_store();
-    store.init().unwrap();
-
-    let first = store.get_or_create_image_secret("my-app").unwrap();
-    let second = store.get_or_create_image_secret("other-app").unwrap();
-
-    assert_ne!(first, second);
-}
-
-#[test]
 fn get_secrets_returns_empty_when_not_set() {
     let (_temp, store) = temp_store();
     store.init().unwrap();
@@ -373,9 +350,6 @@ fn migrate_v1_to_current_adds_secret_tables() {
     store.set_secrets("test-app", &secrets).unwrap();
     let loaded = store.get_secrets("test-app").unwrap();
     assert_eq!(loaded.get("KEY"), Some(&"value".to_string()));
-
-    let image_secret = store.get_or_create_image_secret("test-app").unwrap();
-    assert!(!image_secret.is_empty());
 
     // Verify version bumped
     let conn = store.open_connection().unwrap();

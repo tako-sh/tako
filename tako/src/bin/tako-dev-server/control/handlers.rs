@@ -233,16 +233,12 @@ pub(crate) async fn handle_client(
                     let s = state.lock().unwrap();
                     s.apps
                         .get(&config_path)
-                        .map(|app| (app.bootstrap_token.clone(), app.image_secret.clone()))
+                        .map(|app| app.bootstrap_token.clone())
                 };
-                let (bootstrap_token, image_secret) = match existing_bootstrap {
-                    Some(pair) => pair,
-                    None => (
-                        generate_dev_secret()
-                            .map_err(|e| format!("failed to generate dev bootstrap token: {e}"))?,
-                        generate_dev_secret()
-                            .map_err(|e| format!("failed to generate dev image secret: {e}"))?,
-                    ),
+                let bootstrap_token = match existing_bootstrap {
+                    Some(token) => token,
+                    None => generate_dev_secret()
+                        .map_err(|e| format!("failed to generate dev bootstrap token: {e}"))?,
                 };
 
                 {
@@ -313,16 +309,14 @@ pub(crate) async fn handle_client(
                             client_pid,
                             readiness_failure_hint,
                             bootstrap_token,
-                            image_secret: image_secret.clone(),
                         },
                     );
 
-                    s.routes.set_routes_with_image_secret(
+                    s.routes.set_routes_with_images(
                         route_id,
                         hosts.clone(),
                         upstream_port,
                         false,
-                        image_secret,
                         (*images).clone(),
                     );
                     if let Some(ref mut mdns) = s.mdns {

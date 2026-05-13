@@ -11,11 +11,10 @@ use sha2::{Digest, Sha256};
 use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
 use std::sync::OnceLock;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use tako_images::{
-    IMAGE_BASE_PATH, ImageError, ImageSource, PUBLIC_IMAGE_BASE_PATH, TransformLimits,
-    TransformOptions, cache_control, ip_is_private_or_local, transform_image, verify_image_path,
-    verify_public_image_request,
+    ImageError, ImageSource, PUBLIC_IMAGE_BASE_PATH, TransformLimits, TransformOptions,
+    cache_control, ip_is_private_or_local, transform_image, verify_public_image_request,
 };
 use tokio::io::AsyncReadExt;
 use tokio::net::lookup_host;
@@ -44,13 +43,9 @@ impl TakoProxy {
         let Some(app) = self.lb.app_manager().get_app(app_name) else {
             return write_image_error(session, 404, "Not Found").await;
         };
-        let (app_root, image_secret, images) = {
+        let (app_root, images) = {
             let config = app.config.read();
-            (
-                config.path.clone(),
-                config.image_secret.clone(),
-                config.images.clone(),
-            )
+            (config.path.clone(), config.images.clone())
         };
 
         let accept = session
@@ -58,19 +53,14 @@ impl TakoProxy {
             .headers
             .get("accept")
             .and_then(|value| value.to_str().ok());
-        let verified = match verify_image_request(
-            path,
-            session.req_header().uri.query(),
-            accept,
-            &image_secret,
-            &images,
-        ) {
-            Ok(verified) => verified,
-            Err(error) => {
-                let status = image_error_status(&error);
-                return write_image_error(session, status, image_error_body(status)).await;
-            }
-        };
+        let verified =
+            match verify_image_request(path, session.req_header().uri.query(), accept, &images) {
+                Ok(verified) => verified,
+                Err(error) => {
+                    let status = image_error_status(&error);
+                    return write_image_error(session, status, image_error_body(status)).await;
+                }
+            };
 
         let limits = TransformLimits::default();
         let source = match self
@@ -304,28 +294,15 @@ fn is_image_content_type(content_type: &str) -> bool {
 
 fn is_image_request_path(path: &str) -> bool {
     path == PUBLIC_IMAGE_BASE_PATH
-        || path
-            .strip_prefix(IMAGE_BASE_PATH)
-            .is_some_and(|rest| rest.starts_with('/'))
 }
 
 fn verify_image_request(
     path: &str,
     query: Option<&str>,
     accept: Option<&str>,
-    image_secret: &str,
     images: &tako_images::ImagesConfig,
 ) -> Result<tako_images::VerifiedImageRequest, ImageError> {
-    if path == PUBLIC_IMAGE_BASE_PATH {
-        return verify_public_image_request(path, query, accept, images);
-    }
-    if query.is_some() {
-        return Err(ImageError::InvalidUrl);
-    }
-    if image_secret.is_empty() {
-        return Err(ImageError::InvalidSignature);
-    }
-    verify_image_path(image_secret, path, unix_now_secs())
+    verify_public_image_request(path, query, accept, images)
 }
 
 async fn fetch_remote_image_source(
@@ -542,13 +519,6 @@ fn image_error_body(status: u16) -> &'static str {
     }
 }
 
-fn unix_now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
 fn image_etag(path: &str, content_type: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(path.as_bytes());
@@ -565,8 +535,6 @@ mod tests {
     #[test]
     fn identifies_image_request_paths() {
         assert!(is_image_request_path("/_tako/image"));
-        assert!(is_image_request_path("/_tako/image/v1/payload.sig"));
-        assert!(!is_image_request_path("/_tako/image/v1"));
         assert!(!is_image_request_path("/_tako/channels/chat"));
     }
 
@@ -575,20 +543,6 @@ mod tests {
         assert_eq!(image_error_status(&ImageError::InvalidSignature), 403);
         assert_eq!(image_error_status(&ImageError::SourceTooLarge), 413);
         assert_eq!(image_error_status(&ImageError::UnsupportedFormat), 415);
-    }
-
-    #[test]
-    fn signed_image_request_queries_are_rejected() {
-        let err = verify_image_request(
-            "/_tako/image/v1/payload.sig",
-            Some("cache_bust=1"),
-            None,
-            "secret",
-            &tako_images::ImagesConfig::default(),
-        )
-        .unwrap_err();
-
-        assert_eq!(err, ImageError::InvalidUrl);
     }
 
     #[test]

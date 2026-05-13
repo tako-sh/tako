@@ -1,6 +1,6 @@
 use std::net::{IpAddr, SocketAddr};
 use std::sync::OnceLock;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use bytes::Bytes;
 use pingora_core::Result;
@@ -9,9 +9,8 @@ use pingora_proxy::Session;
 use reqwest::{Client, ClientBuilder, Url, redirect::Policy};
 use sha2::{Digest, Sha256};
 use tako_images::{
-    IMAGE_BASE_PATH, ImageError, ImageSource, PUBLIC_IMAGE_BASE_PATH, TransformLimits,
-    TransformOptions, cache_control, ip_is_private_or_local, transform_image, verify_image_path,
-    verify_public_image_request,
+    ImageError, ImageSource, PUBLIC_IMAGE_BASE_PATH, TransformLimits, TransformOptions,
+    cache_control, ip_is_private_or_local, transform_image, verify_public_image_request,
 };
 use tokio::net::lookup_host;
 use tokio::time::timeout;
@@ -22,9 +21,6 @@ const IMAGE_ERROR_CACHE_CONTROL: &str = "private, no-store";
 
 pub(crate) fn is_image_request_path(path: &str) -> bool {
     path == PUBLIC_IMAGE_BASE_PATH
-        || path
-            .strip_prefix(IMAGE_BASE_PATH)
-            .is_some_and(|rest| rest.starts_with('/'))
 }
 
 pub(crate) async fn try_handle(
@@ -114,16 +110,7 @@ fn verify_image_request(
     accept: Option<&str>,
     target: &RouteTarget,
 ) -> Result<tako_images::VerifiedImageRequest, ImageError> {
-    if path == PUBLIC_IMAGE_BASE_PATH {
-        return verify_public_image_request(path, query, accept, &target.images);
-    }
-    if query.is_some() {
-        return Err(ImageError::InvalidUrl);
-    }
-    if target.image_secret.is_empty() {
-        return Err(ImageError::InvalidSignature);
-    }
-    verify_image_path(&target.image_secret, path, unix_now_secs())
+    verify_public_image_request(path, query, accept, &target.images)
 }
 
 struct ImageSourceBytes {
@@ -360,13 +347,6 @@ fn image_error_body(status: u16) -> &'static str {
     }
 }
 
-fn unix_now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
 fn image_etag(path: &str, content_type: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(path.as_bytes());
@@ -383,8 +363,6 @@ mod tests {
     #[test]
     fn identifies_image_request_paths() {
         assert!(is_image_request_path("/_tako/image"));
-        assert!(is_image_request_path("/_tako/image/v1/payload.sig"));
-        assert!(!is_image_request_path("/_tako/image/v1"));
         assert!(!is_image_request_path("/_tako/channels/chat"));
     }
 
