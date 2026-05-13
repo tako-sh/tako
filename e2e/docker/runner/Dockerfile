@@ -8,6 +8,7 @@ RUN apt-get update \
     jq \
     ca-certificates \
     git \
+    libvips42 \
   && rm -rf /var/lib/apt/lists/*
 
 ENV BUN_INSTALL=/root/.bun
