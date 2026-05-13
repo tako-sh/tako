@@ -14,6 +14,7 @@ test("tako.sh exports the app runtime object", async () => {
   expect(typeof mod.tako).toBe("object");
   expect(typeof mod.tako.logger.info).toBe("function");
   expect(mod.tako.secrets.toString()).toBe("[REDACTED]");
+  expect(typeof mod.tako.storages).toBe("object");
 });
 
 test("tako.sh named runtime exports match the app runtime object", async () => {
@@ -25,6 +26,7 @@ test("tako.sh named runtime exports match the app runtime object", async () => {
   expect(mod.tako.dataDir).toBe(mod.dataDir);
   expect(mod.tako.logger).toBe(mod.logger);
   expect(mod.tako.secrets).toBe(mod.secrets);
+  expect(mod.tako.storages).toBe(mod.storages);
 });
 
 test("tako.sh/runtime bundles cleanly for the browser (no node:* specifiers)", async () => {

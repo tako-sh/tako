@@ -2,7 +2,7 @@
  * Server-only fd-pipe reader for the Tako bootstrap envelope.
  *
  * Tako spawns each app process with a pipe on fd 3 containing a JSON
- * envelope `{"token": ..., "secrets": {...}}`. Server/worker entrypoints
+ * envelope `{"token": ..., "secrets": {...}, "storages": {...}}`. Server/worker entrypoints
  * call `initBootstrapFromFd(reader)` at startup — before the user's
  * module is imported — to populate the pure `secrets.ts` state.
  *
@@ -45,17 +45,25 @@ export function initBootstrapFromFd(reader: () => string | null): void {
     typeof (parsed as { token?: unknown }).token !== "string" ||
     typeof (parsed as { secrets?: unknown }).secrets !== "object" ||
     (parsed as { secrets: unknown }).secrets === null ||
-    Array.isArray((parsed as { secrets: unknown }).secrets)
+    Array.isArray((parsed as { secrets: unknown }).secrets) ||
+    ("storages" in parsed &&
+      (typeof (parsed as { storages?: unknown }).storages !== "object" ||
+        (parsed as { storages?: unknown }).storages === null ||
+        Array.isArray((parsed as { storages?: unknown }).storages)))
   ) {
-    console.error("Tako: bootstrap on fd 3 must be {token: string, secrets: object}");
+    console.error(
+      "Tako: bootstrap on fd 3 must be {token: string, secrets: object, storages?: object}",
+    );
     process.exit(1);
   }
   const envelope = parsed as {
     token: string;
     secrets: Record<string, string>;
+    storages?: Record<string, unknown>;
   };
   injectBootstrap({
     token: envelope.token,
     secrets: envelope.secrets,
+    storages: envelope.storages,
   });
 }

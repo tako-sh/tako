@@ -100,6 +100,41 @@ fn read_secret_names(project_dir: &Path) -> Vec<String> {
     names_set.into_iter().collect()
 }
 
+/// Read storage binding names from `.tako/storages.json` for the "development"
+/// environment. Falls back to all bindings across environments.
+fn read_storage_names(project_dir: &Path) -> Vec<String> {
+    let storages_path = project_dir.join(".tako").join("storages.json");
+    let Ok(content) = fs::read_to_string(&storages_path) else {
+        return Vec::new();
+    };
+
+    let Ok(parsed): Result<serde_json::Value, _> = serde_json::from_str(&content) else {
+        return Vec::new();
+    };
+
+    let Some(envs) = parsed.as_object() else {
+        return Vec::new();
+    };
+
+    if let Some(dev) = envs.get("development")
+        && let Some(storages) = dev.get("storages").and_then(|s| s.as_object())
+    {
+        let mut names: Vec<String> = storages.keys().cloned().collect();
+        names.sort();
+        return names;
+    }
+
+    let mut names_set = std::collections::BTreeSet::new();
+    for env_value in envs.values() {
+        if let Some(storages) = env_value.get("storages").and_then(|s| s.as_object()) {
+            for name in storages.keys() {
+                names_set.insert(name.clone());
+            }
+        }
+    }
+    names_set.into_iter().collect()
+}
+
 fn ts_property_name(name: &str) -> String {
     let mut chars = name.chars();
     let Some(first) = chars.next() else {
@@ -163,6 +198,28 @@ fn build_secrets_block(names: &[String]) -> String {
         ));
         out.push_str(&format!(
             "    readonly {}: string;\n",
+            ts_property_name(name)
+        ));
+    }
+    out.push_str("  }\n\n");
+    out
+}
+
+fn build_storages_block(names: &[String]) -> String {
+    if names.is_empty() {
+        return "  /**\n   * Project-specific object storage bindings from `.tako/storages.json`.\n   *\n   * No storages are currently configured for this project. After you add one,\n   * this interface is regenerated with typed readonly bindings.\n   */\n  export interface TakoStorages {}\n\n".to_string();
+    }
+
+    let mut out = String::from(
+        "  /**\n   * Project-specific object storage bindings from `.tako/storages.json`.\n   *\n   * Values are injected by Tako at runtime. App code uses `tako.storages.<name>`\n   * to create signed upload/download URLs.\n   */\n  export interface TakoStorages {\n",
+    );
+    for name in names {
+        out.push_str(&format!(
+            "    /** Storage `{name}`. Read it with `tako.storages.{}`. */\n",
+            ts_property_name(name)
+        ));
+        out.push_str(&format!(
+            "    readonly {}: import(\"tako.sh\").TakoStorage;\n",
             ts_property_name(name)
         ));
     }
@@ -253,6 +310,7 @@ declare global {
 /// Build the full `tako.d.ts` content.
 fn build_declarations(
     secret_names: &[String],
+    storage_names: &[String],
     env_names: &[String],
     channel_types: &str,
 ) -> String {
@@ -261,6 +319,7 @@ fn build_declarations(
     out.push_str("declare module \"tako.sh\" {\n");
     out.push_str(&build_type_registry_block(env_names));
     out.push_str(&build_secrets_block(secret_names));
+    out.push_str(&build_storages_block(storage_names));
     if !channel_types.trim().is_empty() {
         push_indented_block(&mut out, channel_types, 2);
         out.push('\n');
@@ -299,9 +358,10 @@ fn write_tako_declarations_for_adapter_with_bun(
     bun: &OsStr,
 ) -> std::io::Result<bool> {
     let secret_names = read_secret_names(project_dir);
+    let storage_names = read_storage_names(project_dir);
     let env_names = read_env_names(project_dir);
     let channel_types = generate_channel_types_with_bun(project_dir, app_root, bun)?;
-    let content = build_declarations(&secret_names, &env_names, &channel_types);
+    let content = build_declarations(&secret_names, &storage_names, &env_names, &channel_types);
     let path = resolve_declaration_path(project_dir);
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()

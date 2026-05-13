@@ -1,13 +1,13 @@
 /**
- * Secrets + internal-auth-token proxy store. Pure, isomorphic-safe — the
+ * Secrets + storage + internal-auth-token proxy store. Pure, isomorphic-safe — the
  * fd-pipe reader that actually populates this state lives in
  * `./secrets-fd.ts` so that `tako.sh/internal` can re-export
  * `loadSecrets` without dragging `node:fs` into consumer graphs.
  *
  * Tako spawns each app process with a pipe on fd 3 containing a JSON
- * envelope `{"token": ..., "secrets": {...}}`. Server/worker entrypoints
- * read the envelope and call `injectBootstrap(...)` before the user's
- * module is imported.
+ * envelope `{"token": ..., "secrets": {...}, "storages": {...}}`.
+ * Server/worker entrypoints read the envelope and call `injectBootstrap(...)`
+ * before the user's module is imported.
  *
  * The token is kept in module scope and used by the SDK to authenticate
  * server-issued `Host: <app>.tako` requests — it is not exposed to
@@ -24,21 +24,34 @@
 export interface BootstrapEnvelope {
   token: string | null;
   secrets: Record<string, string>;
+  storages?: Record<string, unknown> | undefined;
 }
 
-let bootstrap: BootstrapEnvelope = { token: null, secrets: {} };
+interface BootstrapState {
+  token: string | null;
+  secrets: Record<string, string>;
+  storages: Record<string, unknown>;
+}
+
+let bootstrap: BootstrapState = { token: null, secrets: {}, storages: {} };
 
 /** Low-level: replace the whole bootstrap state (tests + fd-reader init). */
 export function injectBootstrap(next: BootstrapEnvelope): void {
   bootstrap = {
     token: next.token,
     secrets: Object.assign(Object.create(null), next.secrets ?? {}),
+    storages: Object.assign(Object.create(null), next.storages ?? {}),
   };
 }
 
 /** Returns the internal auth token, or `null` when running outside Tako. */
 export function getInternalToken(): string | null {
   return bootstrap.token;
+}
+
+/** Returns storage binding payloads injected by Tako at process startup. */
+export function getStorageBindings(): Record<string, unknown> {
+  return bootstrap.storages;
 }
 
 /**

@@ -189,6 +189,26 @@ fn write_tako_declarations_with_secrets_generate_typed_interface_augmentation() 
 }
 
 #[test]
+fn write_tako_declarations_with_storages_generate_typed_interface_augmentation() {
+    let dir = TempDir::new().unwrap();
+    let tako_dir = dir.path().join(".tako");
+    fs::create_dir_all(&tako_dir).unwrap();
+    fs::write(
+        tako_dir.join("storages.json"),
+        r#"{"development":{"key_id":"0123456789abcdef","storages":{"uploads":{"provider":"r2","bucket":"app-uploads","endpoint":"https://abc.r2.cloudflarestorage.com","region":"auto","access_key_id":"x","secret_access_key":"y"},"profile-images":{"provider":"s3","bucket":"images","endpoint":"https://s3.amazonaws.com","region":"us-east-1","access_key_id":"x","secret_access_key":"y"}}}}"#,
+    )
+    .unwrap();
+
+    let written = write_tako_declarations(dir.path()).unwrap();
+    assert!(written);
+
+    let content = fs::read_to_string(dir.path().join("tako.d.ts")).unwrap();
+    assert!(content.contains("export interface TakoStorages {"));
+    assert!(content.contains("readonly uploads: import(\"tako.sh\").TakoStorage;"));
+    assert!(content.contains("readonly \"profile-images\": import(\"tako.sh\").TakoStorage;"));
+}
+
+#[test]
 #[cfg(unix)]
 fn write_tako_declarations_include_takochannels_augmentation_when_channels_present() {
     let dir = TempDir::new().unwrap();

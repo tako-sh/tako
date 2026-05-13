@@ -16,6 +16,7 @@
  */
 
 import { createLogger } from "./logger";
+import { loadStorages } from "./storage";
 import { loadSecrets } from "./tako/secrets";
 
 /**
@@ -33,6 +34,11 @@ export interface TakoTypeRegistry {}
  * generated `tako.d.ts` file.
  */
 export interface TakoChannels {}
+
+/**
+ * Project-specific storage bindings. Augmented by the generated `tako.d.ts` file.
+ */
+export interface TakoStorages {}
 
 /** Environments declared in `tako.toml`, plus `development` and `production`. */
 export type Env = TakoTypeRegistry extends { Env: infer T extends string }
@@ -86,6 +92,9 @@ export const logger = createLogger("app");
 /** Tako-managed secrets, typed by project-specific `tako.d.ts` declarations. */
 export const secrets = loadSecrets<TakoSecretBag>();
 
+/** Tako-managed object storages, typed by project-specific `tako.d.ts` declarations. */
+export const storages = loadStorages<TakoStorages>();
+
 /** Primary app runtime surface. */
 export const tako = Object.freeze({
   env,
@@ -98,6 +107,7 @@ export const tako = Object.freeze({
   appDir,
   logger,
   secrets,
+  storages,
 } as const);
 
 /** Type of the exported {@link tako} runtime object. */
@@ -113,6 +123,14 @@ export type {
 } from "./workflows";
 export { TakoError, type TakoErrorCode } from "./tako/error";
 export { imageUrl, type ImageUrlOptions } from "./images";
+export type {
+  CreateDownloadUrlOptions,
+  CreateImageUrlOptions,
+  CreateUploadUrlOptions,
+  TakoStorage,
+  TakoStorageBag,
+  TakoStorageBinding,
+} from "./storage";
 
 /**
  * Extract the payload type from a workflow definition.

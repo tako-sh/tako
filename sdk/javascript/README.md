@@ -10,11 +10,12 @@ Package name: `tako.sh`
 - File-based channel definitions via `defineChannel` in `<app_root>/channels/*.ts` (default-exported handle)
 - File-based workflow definitions via `defineWorkflow` in `<app_root>/workflows/<name>.ts` (default-exported handle with `.enqueue`)
 - Public optimized image URLs via `imageUrl` from `tako.sh`
+- Typed object storage bindings via `tako.storages`
 - Vite plugin for SSR framework builds
 - Built-in internal status endpoint (`GET /status` on `Host: <app>.tako`)
 - Built-in internal channel auth + dispatch endpoints on `Host: <app>.tako`
 
-The `tako.sh` package's named exports include the `tako` runtime object, definition helpers (`defineChannel`, `defineWorkflow`), the workflow `signal` function, `TakoError`, public image helpers, and types (`InferChannel`, `InferWorkflowPayload`, `TakoErrorCode`, `EnqueueOptions`, `WorkflowOpts`). There is no `Tako` global — channels and workflows are plain ES modules that you import where you use them.
+The `tako.sh` package's named exports include the `tako` runtime object, definition helpers (`defineChannel`, `defineWorkflow`), the workflow `signal` function, `TakoError`, public image helpers, storage types, and types (`InferChannel`, `InferWorkflowPayload`, `TakoErrorCode`, `EnqueueOptions`, `WorkflowOpts`). There is no `Tako` global — channels and workflows are plain ES modules that you import where you use them.
 
 ## Install
 
@@ -60,6 +61,33 @@ const hero = imageUrl("/assets/hero.jpg", {
 ```
 
 Public image URLs use `/_tako/image?src=...&w=...`. Local public paths work by default, and remote URLs must match `[images].remote_patterns` in `tako.toml`.
+
+## Storage
+
+Attach S3-compatible storage with the Tako CLI, then use `tako.storages.<name>` from server-side app code:
+
+```bash
+tako storage add uploads \
+  --provider r2 \
+  --bucket app-uploads \
+  --endpoint https://<account>.r2.cloudflarestorage.com \
+  --access-key-id <key-id> \
+  --secret-access-key <secret>
+```
+
+```ts
+import { tako } from "tako.sh";
+
+const downloadUrl = await tako.storages.uploads.createDownloadUrl("receipts/r_123.png", {
+  expiresInSeconds: 3600,
+});
+
+const uploadUrl = await tako.storages.uploads.createUploadUrl("avatars/u_123.png", {
+  contentType: "image/png",
+});
+```
+
+Storage URLs are private by default and signed with SigV4. If the storage was attached with `--public-base-url`, `createImageUrl(..., { public: true, width })` returns a public optimizer URL for that object.
 
 ## Channels
 

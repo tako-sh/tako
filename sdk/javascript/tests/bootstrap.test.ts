@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { getInternalToken, injectBootstrap, loadSecrets } from "../src/tako/secrets";
+import {
+  getInternalToken,
+  getStorageBindings,
+  injectBootstrap,
+  loadSecrets,
+} from "../src/tako/secrets";
 import { initBootstrapFromFd } from "../src/tako/secrets-fd";
 
 describe("initBootstrapFromFd", () => {
@@ -12,6 +17,16 @@ describe("initBootstrapFromFd", () => {
     const envelope = JSON.stringify({
       token: "tok-abc",
       secrets: { DATABASE_URL: "postgres://x", API_KEY: "sk-123" },
+      storages: {
+        uploads: {
+          provider: "r2",
+          bucket: "app-uploads",
+          endpoint: "https://abc.r2.cloudflarestorage.com",
+          region: "auto",
+          access_key_id: "key-id",
+          secret_access_key: "secret",
+        },
+      },
     });
 
     initBootstrapFromFd(() => envelope);
@@ -20,6 +35,7 @@ describe("initBootstrapFromFd", () => {
     const secrets = loadSecrets();
     expect(secrets["DATABASE_URL"]).toBe("postgres://x");
     expect(secrets["API_KEY"]).toBe("sk-123");
+    expect(getStorageBindings()["uploads"]).toMatchObject({ bucket: "app-uploads" });
   });
 
   test("empty envelope (no Tako fd) leaves store empty", () => {
