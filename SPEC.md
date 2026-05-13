@@ -30,6 +30,8 @@ App names must be URL-friendly (DNS hostname compatible):
 
 - **Allowed:** lowercase letters (a-z), numbers (0-9), hyphens (-)
 - **Must start with:** lowercase letter
+- **Must end with:** lowercase letter or number
+- **Maximum length:** 63 characters
 - **Examples:** `my-app`, `api-server`, `web-frontend`
 
 This ensures names work in DNS (`{app-name}.test` by default), URLs, and environment variables.
@@ -50,6 +52,7 @@ runtime = "bun"              # Optional override; defaults to detected adapter
 runtime_version = "1.2.3"   # Optional pinned version; auto-detected if omitted
 package_manager = "bun"      # Optional override; auto-detected from package.json or lockfiles
 preset = "tanstack-start"   # Optional app preset; provides `main`, `assets`, and `dev` defaults
+app_root = "src"             # Optional JS app root for channels/workflows; default: "src"
 dev = ["vite", "dev"]        # Optional custom dev command override
 assets = ["dist/client"]     # Optional asset directories for deploy artifact
 release = "bun run db:migrate"   # Optional release command (run once on the leader server before rolling update)
@@ -89,6 +92,19 @@ routes = [
 ]
 servers = ["staging"]
 idle_timeout = 120
+
+[workflows]
+workers = 0
+concurrency = 10
+
+[workflows.email]
+workers = 1
+
+[servers.la.workflows]
+workers = 2
+
+[servers.la.workflows.email]
+workers = 4
 ```
 
 **Variable merging order (later overrides earlier):**
@@ -329,7 +345,7 @@ Config selection is global for app-scoped commands:
 - project directory: parent directory of the selected config file
 
 App-scoped commands that honor `-c/--config`: `init`, `dev`, `logs`, `deploy`, `releases`,
-`delete`, `secrets`, and `scale` when it is using project context.
+`delete`, `secrets`, `generate`, and `scale` when it is using project context.
 
 ### tako init
 
@@ -1079,10 +1095,10 @@ Apps specify routes at environment level (not per-server). Routes support:
 
 **Validation rules:**
 
-- Routes must include hostname (path-only routes invalid: `"/api/*"` ❌)
+- Routes must include hostname (path-only routes such as `"/api/*"` are invalid)
 - Exact path routes normalize trailing slash (`example.com/api` and `example.com/api/` are equivalent)
 - Each `[envs.{env}]` can have either `route` or `routes`, not both
-- `[envs.{env}]` accepts only route keys (`route`/`routes`); env vars belong in `[vars]` / `[vars.{env}]`
+- `[envs.{env}]` accepts environment behavior keys (`route`/`routes`, `servers`, `idle_timeout`, and `release`); env vars belong in `[vars]` / `[vars.{env}]`
 - Each non-development environment must define `route` or `routes`
 - Empty route lists are invalid for non-development environments
 - Development routes may use any valid hostname. Tako manages DNS and `.local` LAN aliases only for `.test` and `.tako.test` routes; external dev routes must be pointed at the dev proxy by the user.

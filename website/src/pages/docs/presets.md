@@ -8,20 +8,20 @@ description: "Learn how Tako presets provide framework-specific defaults for ent
 
 # Presets
 
-Presets are small framework manifests. They help Tako choose the runtime entrypoint, static asset roots, and local dev command for common frameworks.
+Presets are small framework manifests. They help Tako choose the deployed entrypoint, static asset roots, and local dev command for common frameworks.
 
-They do not define production start commands, runtime downloads, package-manager install commands, or build behavior. Those belong to runtime plugins.
+Presets are deliberately limited. Runtime plugins, not presets, define production install commands, start commands, runtime downloads, package-manager behavior, and runtime environment variables.
 
-## What A Preset Can Set
+## What Presets Can Set
 
 | Field    | Meaning                                                   |
 | -------- | --------------------------------------------------------- |
 | `name`   | Optional display/name override. Defaults to section name. |
 | `main`   | Runtime entrypoint after build.                           |
 | `assets` | Static asset directories copied into deployed `public/`.  |
-| `dev`    | Command used by `tako dev`.                               |
+| `dev`    | Command used by `tako dev` before runtime defaults.       |
 
-Example:
+Example family manifest section:
 
 ```toml
 [my-framework]
@@ -41,7 +41,7 @@ JavaScript presets live in `presets/javascript.toml`.
 dev = ["vite", "dev"]
 ```
 
-The Vite preset mainly affects local development. It leaves production `main` to runtime defaults or your app config.
+The Vite preset is primarily for local development. It leaves production `main` to your app config, manifest, or runtime defaults.
 
 ### `tanstack-start`
 
@@ -52,7 +52,7 @@ assets = ["dist/client"]
 dev = ["vite", "dev"]
 ```
 
-The deploy entry is emitted by `tako.sh/vite` during build.
+The deploy entry is emitted by the `tako.sh/vite` plugin during `vite build`.
 
 ### `nextjs`
 
@@ -62,120 +62,116 @@ main = ".next/tako-entry.mjs"
 dev = ["next", "dev"]
 ```
 
-The deploy entry is emitted by `tako.sh/nextjs`.
+The deploy entry is emitted by the `tako.sh/nextjs` adapter.
 
-Go presets live in `presets/go.toml`. The current Go family manifest is intentionally empty; Go's base runtime defaults are supplied by the runtime plugin.
+Go presets live in `presets/go.toml`. The current Go family manifest is intentionally empty because Go's base runtime defaults come from the Go runtime plugin.
 
 ## Choosing A Preset
 
-Use a runtime-local alias:
+Use top-level `runtime` to pick the runtime family, then use a runtime-local preset alias:
 
 ```toml
 runtime = "bun"
 preset = "tanstack-start"
 ```
 
-Use `runtime` to choose Bun, Node, or Go. Do not namespace the preset in `tako.toml`:
+`runtime` may be `bun`, `node`, or `go`.
+
+Do not namespace the preset in `tako.toml`:
 
 ```toml
-# Do not use this in tako.toml
+# Invalid in tako.toml
+preset = "js/tanstack-start"
 preset = "javascript/tanstack-start"
 ```
 
-Pinned aliases are allowed:
+Tako qualifies the runtime-local alias internally from the selected runtime.
+
+## Pinned Presets
+
+Official aliases can be pinned by commit hash:
 
 ```toml
+runtime = "bun"
 preset = "tanstack-start@abc1234"
 ```
 
-`github:` preset references are not supported in `tako.toml`.
+The hash must be 7 to 64 hexadecimal characters. Unpinned aliases are resolved from the `master` branch of the official preset repository.
 
-## Resolution
+## Unsupported References
 
-`tako init` loads preset names for the selected runtime family and offers them in the setup flow.
+`tako.toml` does not support GitHub preset references or arbitrary repository paths:
 
-`tako dev` prefers cached or embedded preset data. It fetches from GitHub only when no local data is available.
+```toml
+# Invalid
+preset = "github:owner/repo/path"
+preset = "owner/repo"
+```
 
-`tako deploy` refreshes unpinned official aliases from the `master` branch on each deploy. If fetch fails, it falls back to cached content.
-
-Fetched manifests are cached locally for about one hour. GitHub fetches use `GH_TOKEN` when set, then `GITHUB_TOKEN`.
+Keep presets as official runtime-local aliases. Runtime behavior should be configured through runtime plugins and app config, not by pointing a project at a custom preset repo.
 
 ## Runtime Overrides
 
-A preset can override the `dev` command for a specific runtime:
+Preset family manifests can include runtime-local dev-command overrides:
 
 ```toml
-[vite]
-dev = ["vite", "dev"]
-
-[vite.bun]
-dev = ["bun", "--bun", "./node_modules/.bin/vite", "dev"]
-```
-
-Only `dev` can be overridden in runtime-local nested sections. `main`, `assets`, and `name` always come from the base preset section.
-
-The built-in Bun overrides avoid `bunx` and `bun x` because those shims drop file descriptors above 2, which would break Tako's fd-4 readiness handshake.
-
-## How Presets Interact With `main`
-
-Tako resolves the deploy/dev entrypoint in this order:
-
-1. top-level `main` in `tako.toml`
-2. manifest main such as `package.json` `main`
-3. preset `main`
-4. runtime default
-
-For JS runtimes, common index files are checked when a preset points at an index-style entry:
-
-- `index.ts`
-- `index.tsx`
-- `index.js`
-- `index.jsx`
-- `src/index.ts`
-- `src/index.tsx`
-- `src/index.js`
-- `src/index.jsx`
-
-If no `main` can be resolved, deploy/dev fail with guidance.
-
-## Assets
-
-Asset roots are:
-
-1. preset `assets`
-2. top-level `assets` in `tako.toml`
-
-The combined list is deduplicated, then merged into app `public/` after build. Later roots overwrite earlier files.
-
-## Base Runtime Presets
-
-Using only a runtime is valid:
-
-```toml
-runtime = "node"
-```
-
-Base runtime behavior comes from the runtime plugin:
-
-- Bun defaults to a JS SDK server entrypoint.
-- Node defaults to a JS SDK server entrypoint.
-- Go builds a binary and runs it directly.
-
-Use a framework preset only when the framework needs a specific deploy wrapper, asset root, or dev command.
-
-## Preset File Format
-
-Official family manifests are TOML files:
-
-```toml
-[preset-name]
-name = "preset-name"
+[my-framework]
 main = "dist/server/entry.mjs"
 assets = ["dist/client"]
 dev = ["vite", "dev"]
 
-[preset-name.bun]
+[my-framework.bun]
 dev = ["bun", "--bun", "./node_modules/.bin/vite", "dev"]
 ```
 
-Unknown fields are ignored with warnings. Runtime override sections must be named after a supported runtime id such as `bun`, `node`, or `go`.
+Only `dev` can be overridden in a runtime section. `main`, `assets`, and `name` always come from the base preset section.
+
+The built-in JavaScript manifest uses Bun overrides for Vite-based presets because `bunx --bun` goes through a shim that drops file descriptors above 2, which breaks Tako's fd-4 readiness handshake. The override runs Vite through `bun --bun` directly.
+
+## Resolution And Caching
+
+`tako dev` prefers cached or embedded preset data and fetches from GitHub only when nothing local is available.
+
+`tako deploy` refreshes unpinned official aliases from GitHub on each deploy. If the refresh fails, it falls back to cached content. Branch manifests are cached locally for roughly one hour.
+
+GitHub preset fetches use `GH_TOKEN` when set, then `GITHUB_TOKEN`.
+
+## How Presets Affect Deploy
+
+During deploy, a preset can provide:
+
+- the default runtime `main`
+- asset directories to merge into `public/`
+
+Asset roots are the preset `assets` plus top-level `assets` from `tako.toml`, deduplicated and applied in order. Later roots overwrite earlier files.
+
+The final deploy archive still comes from the app build output. Presets do not run builds.
+
+## How Presets Affect Dev
+
+`tako dev` chooses the command in this order:
+
+1. top-level `dev` in `tako.toml`
+2. preset `dev`
+3. runtime default
+
+Runtime defaults:
+
+- Bun runs the SDK Bun HTTP entrypoint with `{main}`.
+- Node runs the SDK Node HTTP entrypoint with `{main}`.
+- Go runs `go run .`.
+
+Direct Vite dev commands must use the `tako.sh/vite` plugin so the app writes fd-4 readiness. If no readiness signal arrives and the command looks like Vite, Tako reports a Vite-specific plugin hint.
+
+## Authoring Preset Manifests
+
+The repo's example manifest is `presets/_example.toml`. A family file such as `presets/javascript.toml` contains top-level sections, one per preset alias:
+
+```toml
+[my-framework]
+main = "dist/server/entry.mjs"
+assets = ["dist/client"]
+dev = ["vite", "dev"]
+```
+
+Base runtime presets such as `bun`, `node`, and `go` can be absent from family files; when no section exists, Tako uses runtime plugin defaults.
