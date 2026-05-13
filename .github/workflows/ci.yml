@@ -155,6 +155,9 @@ jobs:
       - name: Make binaries executable
         run: chmod +x .e2e-bin/tako .e2e-bin/tako-dev-server .e2e-bin/tako-dev-proxy
 
+      - name: Install libvips runtime
+        run: sh scripts/install-libvips-runtime.sh
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -172,7 +175,7 @@ jobs:
         run: bun run --filter 'tako.sh' build
 
       - name: Add E2E bin to PATH
-        run: echo "${{ github.workspace }}/.e2e-bin" >> $GITHUB_PATH
+        run: echo "${{ github.workspace }}/.e2e-bin" >> "$GITHUB_PATH"
 
       - name: Run CLI tests
         env:
@@ -204,6 +207,9 @@ jobs:
       - name: Make binaries executable
         run: chmod +x .e2e-bin/tako .e2e-bin/tako-dev-server .e2e-bin/tako-dev-proxy
 
+      - name: Install libvips
+        run: sh scripts/install-libvips-runtime.sh
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -221,7 +227,7 @@ jobs:
         run: bun run --filter 'tako.sh' build
 
       - name: Add E2E bin to PATH
-        run: echo "${{ github.workspace }}/.e2e-bin" >> $GITHUB_PATH
+        run: echo "${{ github.workspace }}/.e2e-bin" >> "$GITHUB_PATH"
 
       - name: Run CLI tests
         env:
@@ -432,10 +438,20 @@ jobs:
 
   # macOS builds — master only (for rolling release)
   build-darwin:
-    name: Build macOS CLI
+    name: Build macOS CLI (${{ matrix.arch }})
     needs: [detect-changes]
     if: needs.detect-changes.outputs.website_only != 'true' && github.event_name == 'push'
-    runs-on: macos-latest
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: aarch64
+            runner: macos-latest
+            target: aarch64-apple-darwin
+          - arch: x86_64
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -443,45 +459,33 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          targets: ${{ matrix.target }}
 
       - name: Cache Rust artifacts
         uses: Swatinem/rust-cache@v2
+
+      - name: Install libvips
+        run: sh scripts/install-libvips-runtime.sh
 
       - name: Build
         env:
           TAKO_BUILD_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          cargo build -p tako --bin tako --bin tako-dev-server --bin tako-dev-proxy --release --target aarch64-apple-darwin
-          cargo build -p tako --bin tako --bin tako-dev-server --bin tako-dev-proxy --release --target x86_64-apple-darwin
+          cargo build -p tako --bin tako --bin tako-dev-server --bin tako-dev-proxy --release --target ${{ matrix.target }}
           sh scripts/package-tako-app.sh \
-            target/aarch64-apple-darwin/release/tako \
-            target/aarch64-apple-darwin/release/Tako.app
-          sh scripts/package-tako-app.sh \
-            target/x86_64-apple-darwin/release/tako \
-            target/x86_64-apple-darwin/release/Tako.app
+            target/${{ matrix.target }}/release/tako \
+            target/${{ matrix.target }}/release/Tako.app
 
-      - name: Upload aarch64
+      - name: Upload binaries
         uses: actions/upload-artifact@v7
         with:
-          name: bin-tako-darwin-aarch64
+          name: bin-tako-darwin-${{ matrix.arch }}
           path: |
-            target/aarch64-apple-darwin/release/tako
-            target/aarch64-apple-darwin/release/tako-dev-server
-            target/aarch64-apple-darwin/release/tako-dev-proxy
-            target/aarch64-apple-darwin/release/Tako.app
-          if-no-files-found: error
-
-      - name: Upload x86_64
-        uses: actions/upload-artifact@v7
-        with:
-          name: bin-tako-darwin-x86_64
-          path: |
-            target/x86_64-apple-darwin/release/tako
-            target/x86_64-apple-darwin/release/tako-dev-server
-            target/x86_64-apple-darwin/release/tako-dev-proxy
-            target/x86_64-apple-darwin/release/Tako.app
+            target/${{ matrix.target }}/release/tako
+            target/${{ matrix.target }}/release/tako-dev-server
+            target/${{ matrix.target }}/release/tako-dev-proxy
+            target/${{ matrix.target }}/release/Tako.app
           if-no-files-found: error
 
   e2e:
@@ -526,6 +530,9 @@ jobs:
             dirty_suffix="-dirty"
           fi
           printf '%s-%s%s\n' "$head" "$arch" "$dirty_suffix" > .e2e-bin/.build-stamp
+
+      - name: Install libvips runtime
+        run: sh scripts/install-libvips-runtime.sh
 
       - name: Run E2E suites
         env:
