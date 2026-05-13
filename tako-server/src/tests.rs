@@ -335,6 +335,7 @@ async fn deploy_rejects_invalid_app_name() {
             path: temp.path().to_string_lossy().to_string(),
             routes: vec!["api.example.com".to_string()],
             secrets: Some(HashMap::new()),
+            storages: Some(HashMap::new()),
         })
         .await;
 
@@ -369,6 +370,7 @@ async fn deploy_rejects_release_path_outside_managed_root() {
             path: outside_release.to_string_lossy().to_string(),
             routes: vec!["api.example.com".to_string()],
             secrets: Some(HashMap::new()),
+            storages: Some(HashMap::new()),
         })
         .await;
 
@@ -411,6 +413,7 @@ async fn deploy_rejects_invalid_release_version() {
             path: release_dir.to_string_lossy().to_string(),
             routes: vec!["api.example.com".to_string()],
             secrets: Some(HashMap::new()),
+            storages: Some(HashMap::new()),
         })
         .await;
 
@@ -913,6 +916,7 @@ async fn deploy_without_secrets_keeps_existing() {
             path: release_dir.to_string_lossy().to_string(),
             routes: vec!["keep.localhost".to_string()],
             secrets: None,
+            storages: None,
         })
         .await;
 
@@ -1660,6 +1664,7 @@ async fn deploy_preserves_scaled_instance_count() {
             path: broken_release.to_string_lossy().to_string(),
             routes: vec!["api.example.com".to_string()],
             secrets: Some(HashMap::new()),
+            storages: Some(HashMap::new()),
         })
         .await;
 
@@ -1772,6 +1777,7 @@ async fn deploy_on_demand_validates_startup_and_fails_for_unhealthy_build() {
             path: release_dir.to_string_lossy().to_string(),
             routes: vec!["broken.localhost".to_string()],
             secrets: Some(HashMap::new()),
+            storages: Some(HashMap::new()),
         })
         .await;
 
@@ -1929,6 +1935,7 @@ HTTPServer(("127.0.0.1", port), Handler).serve_forever()
             path: release_dir.to_string_lossy().to_string(),
             routes: vec!["warm.localhost".to_string()],
             secrets: Some(HashMap::new()),
+            storages: Some(HashMap::new()),
         })
         .await;
     assert!(

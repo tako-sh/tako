@@ -684,6 +684,7 @@ pub(super) async fn deploy_to_server(
                         path: release_dir.clone(),
                         routes: config.routes.clone(),
                         secrets: deploy_secrets,
+                        storages: Some(config.storages.clone()),
                     };
                     let json = serde_json::to_string(&cmd)
                         .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
@@ -720,6 +721,7 @@ pub(super) async fn deploy_to_server(
                     path: release_dir.clone(),
                     routes: config.routes.clone(),
                     secrets: deploy_secrets,
+                    storages: Some(config.storages.clone()),
                 };
                 let json = serde_json::to_string(&cmd)
                     .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;

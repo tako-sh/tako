@@ -1,5 +1,6 @@
 use super::*;
 use crate::commands::secret::SecretKeyCommands;
+use crate::commands::storage::{StorageCommands, StorageProviderArg};
 use clap::Parser;
 
 #[test]
@@ -199,6 +200,61 @@ fn secrets_key_import_passphrase_parses_with_env() {
 
     assert!(passphrase);
     assert_eq!(env.as_deref(), Some("production"));
+}
+
+#[test]
+fn storage_add_parses_required_binding_options() {
+    let cli = Cli::try_parse_from([
+        "tako",
+        "storage",
+        "add",
+        "uploads",
+        "--env",
+        "production",
+        "--provider",
+        "r2",
+        "--bucket",
+        "app-uploads",
+        "--endpoint",
+        "https://abc.r2.cloudflarestorage.com",
+        "--region",
+        "auto",
+        "--access-key-id",
+        "key-id",
+        "--secret-access-key",
+        "secret",
+        "--force-path-style",
+        "--public-base-url",
+        "https://cdn.example.com",
+    ])
+    .unwrap();
+
+    let Some(Commands::Storage(StorageCommands::Add {
+        name,
+        env,
+        provider,
+        bucket,
+        endpoint,
+        region,
+        access_key_id,
+        secret_access_key,
+        force_path_style,
+        public_base_url,
+    })) = cli.command
+    else {
+        panic!("expected Storage::Add");
+    };
+
+    assert_eq!(name, "uploads");
+    assert_eq!(env, "production");
+    assert!(matches!(provider, StorageProviderArg::R2));
+    assert_eq!(bucket, "app-uploads");
+    assert_eq!(endpoint, "https://abc.r2.cloudflarestorage.com");
+    assert_eq!(region, "auto");
+    assert_eq!(access_key_id.as_deref(), Some("key-id"));
+    assert_eq!(secret_access_key.as_deref(), Some("secret"));
+    assert!(force_path_style);
+    assert_eq!(public_base_url.as_deref(), Some("https://cdn.example.com"));
 }
 
 #[test]

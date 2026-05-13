@@ -93,8 +93,9 @@ fn resolve_binary_from_env(binary: &str, env: &HashMap<String, String>) -> Strin
 pub(super) fn create_bootstrap_pipe(
     token: &str,
     secrets: &HashMap<String, String>,
+    storages: &HashMap<String, tako_core::StorageBinding>,
 ) -> std::io::Result<(OwnedFd, std::thread::JoinHandle<std::io::Result<()>>)> {
-    let bytes = tako_core::bootstrap::envelope_bytes(token, secrets);
+    let bytes = tako_core::bootstrap::envelope_bytes(token, secrets, storages);
     tako_spawn::create_payload_pipe(bytes)
 }
 
@@ -233,7 +234,8 @@ pub(super) fn spawn_child_process(
     // The OwnedFd must stay alive until after spawn (fork copies the fd table).
     // The writer thread owns the write end; it drains in parallel with the child
     // so large envelopes don't deadlock the parent on pipe-buffer backpressure.
-    let (bootstrap_pipe, bootstrap_writer) = create_bootstrap_pipe(token, secrets)?;
+    let (bootstrap_pipe, bootstrap_writer) =
+        create_bootstrap_pipe(token, secrets, &config.storages)?;
     #[cfg(unix)]
     let raw_fd = Some(bootstrap_pipe.as_raw_fd());
     #[cfg(not(unix))]

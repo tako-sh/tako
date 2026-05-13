@@ -54,6 +54,7 @@ struct DeployConfig {
     remote_base: String,
     routes: Vec<String>,
     secrets: HashMap<String, String>,
+    storages: HashMap<String, tako_core::StorageBinding>,
     /// SHA-256 hash of the decrypted secrets for this deploy.
     secrets_hash: String,
     main: String,
@@ -95,6 +96,7 @@ struct BuildPhaseResult {
     version: String,
     manifest_main: String,
     deploy_secrets: HashMap<String, String>,
+    deploy_storages: HashMap<String, tako_core::StorageBinding>,
     use_unified_target_process: bool,
     artifacts_by_target: HashMap<String, PathBuf>,
 }
@@ -103,6 +105,7 @@ struct ValidationResult {
     tako_config: TakoToml,
     servers: ServersToml,
     secrets: SecretsStore,
+    storages: crate::config::StoragesStore,
     env: String,
     warnings: Vec<String>,
 }
@@ -190,6 +193,8 @@ async fn run_async(
                 TakoToml::load_from_file(&context.config_path).map_err(|e| e.to_string())?;
             let servers = ServersToml::load().map_err(|e| e.to_string())?;
             let secrets = SecretsStore::load_from_dir(&project_dir).map_err(|e| e.to_string())?;
+            let storages = crate::config::StoragesStore::load_from_dir(&project_dir)
+                .map_err(|e| e.to_string())?;
 
             let env = resolve_deploy_environment(requested_env, &tako_config)?;
 
@@ -215,6 +220,7 @@ async fn run_async(
                 tako_config,
                 servers,
                 secrets,
+                storages,
                 env,
                 warnings,
             })
@@ -226,6 +232,7 @@ async fn run_async(
         tako_config,
         mut servers,
         secrets,
+        storages,
         env,
         warnings,
     } = validation;
@@ -359,6 +366,7 @@ async fn run_async(
         env.clone(),
         tako_config.clone(),
         secrets.clone(),
+        storages.clone(),
         preflight_preset_ref.clone(),
         preflight_runtime_adapter,
         server_targets.clone(),
@@ -434,6 +442,7 @@ async fn run_async(
         version,
         manifest_main,
         deploy_secrets,
+        deploy_storages,
         use_unified_target_process: use_unified_js_target_process,
         artifacts_by_target,
     } = build_result.expect("build result should be present");
@@ -453,6 +462,7 @@ async fn run_async(
         remote_base: format!("/opt/tako/apps/{}", deployment_app_name),
         routes: routes.clone(),
         secrets: deploy_secrets,
+        storages: deploy_storages,
         secrets_hash,
         main: manifest_main,
         use_unified_target_process: use_unified_js_target_process,

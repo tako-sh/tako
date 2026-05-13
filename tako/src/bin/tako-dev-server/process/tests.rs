@@ -58,6 +58,7 @@ async fn readiness_times_out_when_route_becomes_active_without_fd4_signal() {
                 client_pid: None,
                 readiness_failure_hint: Some("custom readiness hint".to_string()),
                 bootstrap_token: "dev-token".to_string(),
+                storages: std::collections::HashMap::new(),
             },
         );
         s.routes.set_routes(
@@ -116,6 +117,7 @@ async fn spawn_app_exposes_bootstrap_envelope_on_fd3() {
         client_pid: None,
         readiness_failure_hint: None,
         bootstrap_token: "dev-token".to_string(),
+        storages: std::collections::HashMap::new(),
     };
 
     let (mut child, readiness_fd) = spawn_app(&app.project_dir, &app, None).await.unwrap();
@@ -128,6 +130,7 @@ async fn spawn_app_exposes_bootstrap_envelope_on_fd3() {
     let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(parsed["token"], "dev-token");
     assert_eq!(parsed["secrets"], serde_json::json!({}));
+    assert_eq!(parsed["storages"], serde_json::json!({}));
 }
 
 #[test]
@@ -146,6 +149,7 @@ fn readiness_failure_message_uses_client_hint() {
         client_pid: None,
         readiness_failure_hint: Some("custom readiness hint".to_string()),
         bootstrap_token: "dev-token".to_string(),
+        storages: std::collections::HashMap::new(),
     };
 
     assert_eq!(readiness_failure_message(&app), "custom readiness hint");

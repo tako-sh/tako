@@ -50,6 +50,7 @@ fn test_deploy_command_serialization_includes_scaling() {
             "API_KEY".to_string(),
             "secret123".to_string(),
         )])),
+        storages: None,
     };
     let json = serde_json::to_string(&cmd).unwrap();
     assert!(json.contains(r#""command":"deploy""#));
@@ -67,7 +68,12 @@ fn test_deploy_command_deserialization_defaults_secrets_when_missing() {
         }"#;
     let cmd: Command = serde_json::from_str(json).unwrap();
     match cmd {
-        Command::Deploy { secrets, .. } => assert!(secrets.is_none()),
+        Command::Deploy {
+            secrets, storages, ..
+        } => {
+            assert!(secrets.is_none());
+            assert!(storages.is_none());
+        }
         _ => panic!("Expected deploy command"),
     }
 }
@@ -390,11 +396,17 @@ fn test_deploy_with_none_secrets_keeps_existing() {
         path: "/opt/tako/apps/my-app/releases/v1".to_string(),
         routes: vec!["example.com".to_string()],
         secrets: None,
+        storages: None,
     };
     let json = serde_json::to_string(&cmd).unwrap();
     let parsed: Command = serde_json::from_str(&json).unwrap();
     match parsed {
-        Command::Deploy { secrets, .. } => assert!(secrets.is_none()),
+        Command::Deploy {
+            secrets, storages, ..
+        } => {
+            assert!(secrets.is_none());
+            assert!(storages.is_none());
+        }
         _ => panic!("Expected deploy command"),
     }
 }

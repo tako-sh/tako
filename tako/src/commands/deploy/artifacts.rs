@@ -38,6 +38,7 @@ pub(super) async fn prepare_build_phase(
     env: String,
     tako_config: TakoToml,
     secrets: crate::config::SecretsStore,
+    storages: crate::config::StoragesStore,
     preset_ref: String,
     runtime_adapter: BuildAdapter,
     server_targets: Vec<(String, crate::config::ServerTarget)>,
@@ -181,6 +182,9 @@ pub(super) async fn prepare_build_phase(
     );
     let deploy_secrets =
         decrypt_deploy_secrets(&env, &secrets, Some(&project_dir)).map_err(|e| e.to_string())?;
+    let deploy_storages =
+        crate::commands::storage::decrypt_storage_bindings(&env, &storages, Some(&project_dir))
+            .map_err(|e| e.to_string())?;
 
     let app_json_bytes = serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?;
 
@@ -232,6 +236,7 @@ pub(super) async fn prepare_build_phase(
         version,
         manifest_main,
         deploy_secrets,
+        deploy_storages,
         use_unified_target_process: should_use_unified_js_target_process(&runtime_tool),
         artifacts_by_target,
     })

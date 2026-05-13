@@ -198,12 +198,14 @@ mod tests {
                 path,
                 routes,
                 secrets,
+                storages,
             } => {
                 assert_eq!(app, "my-app");
                 assert_eq!(version, "1.0.0");
                 assert!(path.contains("releases"));
                 assert_eq!(routes.len(), 2);
                 assert!(secrets.is_none());
+                assert!(storages.is_none());
             }
             _ => panic!("Expected Deploy command"),
         }

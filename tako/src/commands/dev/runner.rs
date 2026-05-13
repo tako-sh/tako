@@ -261,6 +261,10 @@ pub async fn run(
 
     let reg_hosts = hosts_state.lock().await.clone();
     let env_snapshot = env_state.lock().await.clone();
+    let storages = load_dev_storages(&project_dir).unwrap_or_else(|error| {
+        tracing::warn!("Failed to load development storages: {error}");
+        std::collections::HashMap::new()
+    });
     let project_dir_display = project_dir.to_string_lossy();
     let reg_url =
         crate::dev_server_client::register_app(crate::dev_server_client::RegisterAppRequest {
@@ -272,6 +276,7 @@ pub async fn run(
             command: &cmd,
             env: &env_snapshot,
             images: &cfg.images,
+            storages: &storages,
             readiness_failure_hint: readiness_failure_hint.as_deref(),
             worker_command: worker_command.as_deref(),
         })
@@ -545,7 +550,25 @@ pub async fn run(
                     changed
                 };
 
-                if hosts_changed {
+                let should_register = hosts_changed
+                    || matches!(
+                        change,
+                        watcher::WatchChange::Config | watcher::WatchChange::Storages
+                    );
+                if should_register {
+                    let storages = match load_dev_storages(&project_dir).map_err(|e| e.to_string())
+                    {
+                        Ok(storages) => storages,
+                        Err(msg) => {
+                            let _ = log_tx
+                                .send(ScopedLog::warn(
+                                    "tako",
+                                    format!("Failed to reload storages: {msg}"),
+                                ))
+                                .await;
+                            std::collections::HashMap::new()
+                        }
+                    };
                     let project_dir_display = project_dir.to_string_lossy();
                     let reg_result = crate::dev_server_client::register_app(
                         crate::dev_server_client::RegisterAppRequest {
@@ -557,6 +580,7 @@ pub async fn run(
                             command: &cmd,
                             env: &new_env,
                             images: &cfg.images,
+                            storages: &storages,
                             readiness_failure_hint: readiness_failure_hint.as_deref(),
                             worker_command: worker_command.as_deref(),
                         },
@@ -575,6 +599,7 @@ pub async fn run(
                     let restart_reason = match change {
                         watcher::WatchChange::Config => "tako.toml changed, restarting…",
                         watcher::WatchChange::Secrets => "Secrets changed, restarting…",
+                        watcher::WatchChange::Storages => "Storages changed, restarting…",
                         watcher::WatchChange::Channels => "channels/ changed, restarting…",
                         watcher::WatchChange::Workflows => "workflows/ changed, restarting…",
                         watcher::WatchChange::GeneratedDeclarations => unreachable!(),
@@ -734,4 +759,12 @@ pub async fn run(
 
     let _ = crate::dev_server_client::unregister_app(&config_key).await;
     Ok(())
+}
+
+fn load_dev_storages(
+    project_dir: &std::path::Path,
+) -> Result<std::collections::HashMap<String, tako_core::StorageBinding>, Box<dyn std::error::Error>>
+{
+    let storages = crate::config::StoragesStore::load_from_dir(project_dir)?;
+    crate::commands::storage::decrypt_storage_bindings("development", &storages, Some(project_dir))
 }

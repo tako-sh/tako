@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
 
+use crate::storage::StorageBinding;
+
 pub const PROTOCOL_VERSION: u32 = 0;
 pub const MANAGEMENT_AUTH_NAMESPACE: &str = "tako-management-rpc-v0";
 const DEPLOYMENT_APP_ID_SEPARATOR: char = '/';
@@ -88,6 +90,10 @@ pub enum Command {
         /// When `None`, the server keeps existing secrets for this app.
         #[serde(default)]
         secrets: Option<HashMap<String, String>>,
+        /// Storage bindings injected into app processes at spawn time.
+        /// When `None`, the server keeps existing storage bindings for this app.
+        #[serde(default)]
+        storages: Option<HashMap<String, StorageBinding>>,
     },
 
     /// Update the desired minimum number of instances for an app.

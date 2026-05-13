@@ -236,7 +236,9 @@ fn bootstrap_pipe_envelope_has_token_and_secrets() {
     ]);
     let token = "test-token-abc";
 
-    let (read_end, writer) = create_bootstrap_pipe(token, &secrets).expect("create pipe");
+    let storages = HashMap::new();
+    let (read_end, writer) =
+        create_bootstrap_pipe(token, &secrets, &storages).expect("create pipe");
 
     let mut buf = String::new();
     let mut file = std::fs::File::from(read_end);
@@ -250,6 +252,7 @@ fn bootstrap_pipe_envelope_has_token_and_secrets() {
         Some("postgres://x")
     );
     assert_eq!(parsed["secrets"]["API_KEY"].as_str(), Some("sk-123"));
+    assert_eq!(parsed["storages"].as_object().unwrap().len(), 0);
 }
 
 #[test]
@@ -260,7 +263,9 @@ fn bootstrap_pipe_is_created_even_with_empty_secrets() {
     let secrets: HashMap<String, String> = HashMap::new();
     let token = "still-has-a-token";
 
-    let (read_end, writer) = create_bootstrap_pipe(token, &secrets).expect("create pipe");
+    let storages = HashMap::new();
+    let (read_end, writer) =
+        create_bootstrap_pipe(token, &secrets, &storages).expect("create pipe");
 
     let mut buf = String::new();
     let mut file = std::fs::File::from(read_end);
@@ -271,6 +276,7 @@ fn bootstrap_pipe_is_created_even_with_empty_secrets() {
     assert_eq!(parsed["token"].as_str(), Some(token));
     assert!(parsed["secrets"].is_object());
     assert_eq!(parsed["secrets"].as_object().unwrap().len(), 0);
+    assert_eq!(parsed["storages"].as_object().unwrap().len(), 0);
 }
 
 #[test]

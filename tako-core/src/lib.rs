@@ -9,5 +9,7 @@
 pub mod bootstrap;
 pub mod instance_env;
 mod protocol;
+pub mod storage;
 
 pub use protocol::*;
+pub use storage::*;

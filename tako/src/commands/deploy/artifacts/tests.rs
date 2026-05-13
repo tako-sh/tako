@@ -680,6 +680,7 @@ dev = ["vite", "dev"]
         "production".to_string(),
         tako_config,
         crate::config::SecretsStore::default(),
+        crate::config::StoragesStore::default(),
         format!("javascript/vite@{branch_sha}"),
         BuildAdapter::Node,
         vec![(

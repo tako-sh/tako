@@ -10,8 +10,9 @@ mod sync;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use key::load_or_create_key_for_set;
 pub use key::{ensure_secret_key_available, load_secret_key};
-use key::{export_key, import_key, load_or_create_key_for_set};
+use key::{export_key, import_key};
 use sync::{list_secrets, sync_secrets};
 
 /// Refresh generated files (`tako.d.ts` for JS/TS, `tako_secrets.go` for

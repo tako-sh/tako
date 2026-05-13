@@ -294,7 +294,7 @@ pub fn load_secret_key(
     Err(missing_secret_key_message(env).into())
 }
 
-pub(super) fn load_or_create_key_for_set(
+pub(crate) fn load_or_create_key_for_set(
     env: &str,
     secrets: &crate::config::SecretsStore,
     usage_path: Option<&Path>,

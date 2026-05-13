@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 
-use crate::commands::{self, delete, releases, scale, secret, server, upgrade};
+use crate::commands::{self, delete, releases, scale, secret, server, storage, upgrade};
 use clap::CommandFactory;
 
 const DEV_PUBLIC_PORT: u16 = 47831;
@@ -127,6 +127,10 @@ pub enum Commands {
     #[command(subcommand)]
     Secrets(secret::SecretCommands),
 
+    /// Object storage commands
+    #[command(subcommand)]
+    Storage(storage::StorageCommands),
+
     /// Release history and rollback commands
     #[command(subcommand)]
     Releases(releases::ReleaseCommands),
@@ -243,6 +247,7 @@ impl Cli {
             }
             Commands::Servers(cmd) => server::run(cmd),
             Commands::Secrets(cmd) => secret::run(cmd, self.config.as_deref()),
+            Commands::Storage(cmd) => storage::run(cmd, self.config.as_deref()),
             Commands::Releases(cmd) => releases::run(cmd, self.config.as_deref()),
             Commands::Upgrade => upgrade::run(),
             Commands::Implode { yes } => commands::implode::run(yes),

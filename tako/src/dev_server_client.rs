@@ -496,6 +496,7 @@ pub struct RegisterAppRequest<'a> {
     pub command: &'a [String],
     pub env: &'a std::collections::HashMap<String, String>,
     pub images: &'a tako_images::ImagesConfig,
+    pub storages: &'a std::collections::HashMap<String, tako_core::StorageBinding>,
     pub readiness_failure_hint: Option<&'a str>,
     pub worker_command: Option<&'a [String]>,
 }
@@ -515,6 +516,7 @@ pub async fn register_app(
         "command": args.command,
         "env": args.env,
         "images": args.images,
+        "storages": args.storages,
         "client_pid": std::process::id(),
     });
     if let Some(v) = args.variant {

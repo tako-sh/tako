@@ -79,6 +79,8 @@ pub struct AppConfig {
     pub env_vars: HashMap<String, String>,
     /// Secret environment variables (loaded from encrypted server state)
     pub secrets: HashMap<String, String>,
+    /// Storage bindings loaded from encrypted server state.
+    pub storages: HashMap<String, tako_core::StorageBinding>,
     /// Public image optimizer configuration from app.json.
     pub images: tako_images::ImagesConfig,
     /// Minimum instances (0 = on-demand)
@@ -126,6 +128,7 @@ impl Default for AppConfig {
             command: vec![],
             env_vars: HashMap::new(),
             secrets: HashMap::new(),
+            storages: HashMap::new(),
             images: tako_images::ImagesConfig::default(),
             min_instances: 1,
             max_instances: 4,

@@ -431,6 +431,13 @@ impl ServerState {
                 tracing::warn!(app = %app_name, "Failed to read secrets: {}", e);
                 HashMap::new()
             });
+            config.storages = self
+                .state_store
+                .get_storages(&app_name)
+                .unwrap_or_else(|e| {
+                    tracing::warn!(app = %app_name, "Failed to read storages: {}", e);
+                    HashMap::new()
+                });
 
             let app = self.app_manager.register_app(config.clone());
             self.load_balancer.register_app(app.clone());

@@ -60,6 +60,7 @@ impl crate::ServerState {
                 path,
                 routes,
                 secrets,
+                storages,
             } => {
                 if let Err(msg) = validate_app_name(&app) {
                     return Response::error(msg);
@@ -70,7 +71,7 @@ impl crate::ServerState {
                 if let Some(resp) = self.reject_mutating_when_upgrading("deploy").await {
                     return resp;
                 }
-                self.deploy_app(&app, &version, &path, routes, secrets)
+                self.deploy_app(&app, &version, &path, routes, secrets, storages)
                     .await
             }
             Command::Scale { app, instances } => {

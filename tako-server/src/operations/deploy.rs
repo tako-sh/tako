@@ -20,6 +20,7 @@ impl crate::ServerState {
         path: &str,
         routes: Vec<String>,
         secrets: Option<HashMap<String, String>>,
+        storages: Option<HashMap<String, tako_core::StorageBinding>>,
     ) -> Response {
         tracing::info!(app = app_name, version = version, "Deploying app");
 
@@ -72,6 +73,14 @@ impl crate::ServerState {
         } else {
             self.state_store.get_secrets(app_name).unwrap_or_default()
         };
+        let storages = if let Some(new_storages) = storages {
+            if let Err(e) = self.state_store.set_storages(app_name, &new_storages) {
+                return Response::error(format!("Failed to store storages: {}", e));
+            }
+            new_storages
+        } else {
+            self.state_store.get_storages(app_name).unwrap_or_default()
+        };
         let mut release_env = env_vars.clone();
         inject_app_data_dir_env(&mut release_env, &data_paths);
         release_env.extend(secrets.clone());
@@ -105,6 +114,7 @@ impl crate::ServerState {
             let mut config = existing.config.read().clone();
             config.version = version.to_string();
             config.secrets = secrets;
+            config.storages = storages;
             if let Err(error) = apply_release_runtime_to_config(
                 &mut config,
                 release_path.clone(),
@@ -122,6 +132,7 @@ impl crate::ServerState {
                 environment,
                 version: version.to_string(),
                 secrets,
+                storages,
                 min_instances: 1,
                 max_instances: 4,
                 ..Default::default()
@@ -352,11 +363,15 @@ impl crate::ServerState {
         let previous_release_path =
             app_release_root(&self.runtime.data_dir, app_name, &previous_config.version);
         let previous_secrets = previous_config.secrets.clone();
+        let previous_storages = previous_config.storages.clone();
         app.update_config(previous_config);
         app.set_state(previous_state);
         app.set_last_error(format!("Rolling update failed: {error}"));
         if let Err(e) = self.state_store.set_secrets(app_name, &previous_secrets) {
             tracing::warn!(app = app_name, "Failed to restore previous secrets: {}", e);
+        }
+        if let Err(e) = self.state_store.set_storages(app_name, &previous_storages) {
+            tracing::warn!(app = app_name, "Failed to restore previous storages: {}", e);
         }
         {
             let mut route_table = self.routes.write().await;

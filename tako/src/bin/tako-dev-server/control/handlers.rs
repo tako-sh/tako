@@ -222,6 +222,7 @@ pub(crate) async fn handle_client(
                 command,
                 env,
                 images,
+                storages,
                 client_pid,
                 readiness_failure_hint,
                 worker_command,
@@ -309,6 +310,7 @@ pub(crate) async fn handle_client(
                             client_pid,
                             readiness_failure_hint,
                             bootstrap_token,
+                            storages: (*storages).clone(),
                         },
                     );
 

@@ -93,6 +93,8 @@ impl SqliteStateStore {
         let secret_key = format!("{name}/{environment}");
         conn.execute("DELETE FROM app_secrets WHERE app = ?1;", [&secret_key])
             .map_err(StateStoreError::from)?;
+        conn.execute("DELETE FROM app_storages WHERE app = ?1;", [&secret_key])
+            .map_err(StateStoreError::from)?;
         conn.execute(
             "DELETE FROM apps WHERE name = ?1 AND environment = ?2;",
             rusqlite::params![name, environment],
@@ -304,6 +306,49 @@ impl SqliteStateStore {
         }
     }
 
+    pub fn set_storages(
+        &self,
+        app: &str,
+        storages: &HashMap<String, tako_core::StorageBinding>,
+    ) -> Result<(), StateStoreError> {
+        let json = serde_json::to_vec(storages)
+            .map_err(|e| StateStoreError::InvalidData(format!("serialize storages: {e}")))?;
+        let encrypted = encrypt_blob(&self.encryption_key, &json)?;
+        let conn = self.open_connection()?;
+        conn.execute(
+            "INSERT INTO app_storages (app, encrypted_data)
+             VALUES (?1, ?2)
+             ON CONFLICT(app) DO UPDATE SET encrypted_data = excluded.encrypted_data;",
+            rusqlite::params![app, encrypted],
+        )
+        .map_err(StateStoreError::from)?;
+        Ok(())
+    }
+
+    pub fn get_storages(
+        &self,
+        app: &str,
+    ) -> Result<HashMap<String, tako_core::StorageBinding>, StateStoreError> {
+        let conn = self.open_connection()?;
+        let blob: Option<Vec<u8>> = conn
+            .query_row(
+                "SELECT encrypted_data FROM app_storages WHERE app = ?1;",
+                [app],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(StateStoreError::from)?;
+
+        match blob {
+            Some(encrypted) => {
+                let json = decrypt_blob(&self.encryption_key, &encrypted)?;
+                serde_json::from_slice(&json)
+                    .map_err(|e| StateStoreError::InvalidData(format!("deserialize storages: {e}")))
+            }
+            None => Ok(HashMap::new()),
+        }
+    }
+
     #[cfg(test)]
     pub fn delete_secrets(&self, app: &str) -> Result<(), StateStoreError> {
         let conn = self.open_connection()?;
@@ -363,6 +408,16 @@ impl SqliteStateStore {
             .map_err(StateStoreError::from)?;
         }
 
+        if from_version < 3 {
+            tx.execute_batch(
+                "CREATE TABLE IF NOT EXISTS app_storages (
+                    app TEXT NOT NULL PRIMARY KEY,
+                    encrypted_data BLOB NOT NULL
+                );",
+            )
+            .map_err(StateStoreError::from)?;
+        }
+
         self.ensure_default_rows_on(&tx)?;
         tx.execute_batch(&format!("PRAGMA user_version = {STATE_SCHEMA_VERSION};"))
             .map_err(StateStoreError::from)?;
@@ -401,6 +456,11 @@ impl SqliteStateStore {
             );
 
             CREATE TABLE IF NOT EXISTS app_secrets (
+                app TEXT NOT NULL PRIMARY KEY,
+                encrypted_data BLOB NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS app_storages (
                 app TEXT NOT NULL PRIMARY KEY,
                 encrypted_data BLOB NOT NULL
             );",

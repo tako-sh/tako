@@ -13,6 +13,7 @@ use tokio::sync::mpsc;
 pub enum WatchChange {
     Config,
     Secrets,
+    Storages,
     Channels,
     Workflows,
     GeneratedDeclarations,
@@ -53,7 +54,7 @@ impl ConfigWatcher {
 
         watch_path(&debouncer, &self.config_path, RecursiveMode::NonRecursive)?;
 
-        // Watch .tako/ directory for secrets.json changes.
+        // Watch .tako/ directory for secrets.json and storages.json changes.
         let tako_dir = self.project_dir.join(".tako");
         if tako_dir.is_dir() {
             let _ = watch_path(&debouncer, &tako_dir, RecursiveMode::NonRecursive);
@@ -175,6 +176,9 @@ fn classify_path(
     if path == project_dir.join(".tako").join("secrets.json") {
         return Some(WatchChange::Secrets);
     }
+    if path == project_dir.join(".tako").join("storages.json") {
+        return Some(WatchChange::Storages);
+    }
     if crate::build::js::is_generated_declaration_path(project_dir, path) {
         return Some(WatchChange::GeneratedDeclarations);
     }
@@ -214,6 +218,15 @@ mod tests {
                 &project_dir.join(".tako").join("secrets.json")
             ),
             Some(WatchChange::Secrets)
+        );
+        assert_eq!(
+            classify_path(
+                &project_dir,
+                &app_root,
+                &config_path,
+                &project_dir.join(".tako").join("storages.json")
+            ),
+            Some(WatchChange::Storages)
         );
         assert_eq!(
             classify_path(

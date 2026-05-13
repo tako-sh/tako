@@ -490,7 +490,7 @@ fn join_secrets_writer(
 }
 
 /// Create the fd-3 bootstrap pipe for a worker process: the child reads a
-/// JSON `{"token": ..., "secrets": {...}}` envelope and closes the fd. The
+/// JSON `{"token": ..., "secrets": {...}, "storages": {...}}` envelope and closes the fd. The
 /// envelope shape is owned by `tako_core::bootstrap` — sharing it with the
 /// app spawner prevents drift between the two spawner paths.
 #[cfg(unix)]
@@ -501,7 +501,7 @@ fn create_bootstrap_pipe(
     std::os::fd::OwnedFd,
     std::thread::JoinHandle<std::io::Result<()>>,
 )> {
-    let bytes = tako_core::bootstrap::envelope_bytes(token, secrets);
+    let bytes = tako_core::bootstrap::envelope_bytes(token, secrets, &HashMap::new());
     tako_spawn::create_payload_pipe(bytes)
 }
 

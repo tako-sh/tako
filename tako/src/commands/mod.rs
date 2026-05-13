@@ -14,4 +14,5 @@ pub mod scale;
 pub mod secret;
 pub mod server;
 pub mod status;
+pub mod storage;
 pub mod upgrade;
