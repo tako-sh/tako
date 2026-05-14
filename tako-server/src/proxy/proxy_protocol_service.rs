@@ -1,4 +1,4 @@
-use super::proxy_protocol::{ProxyProtocolError, read_proxy_protocol_header};
+use super::proxy_protocol::{ProxyProtocolError, ProxyProtocolResult, read_proxy_protocol_header};
 use super::{TakoProxy, TrustedProxyConfig};
 use async_trait::async_trait;
 use pingora_core::apps::ServerApp;
@@ -22,10 +22,12 @@ use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::os::windows::io::{AsRawSocket, FromRawSocket};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::io::AsyncRead;
 use tokio::net::TcpSocket;
 
 const H2_H1_ALPN_WIRE_PREFERENCE: &[u8] = b"\x02h2\x08http/1.1";
 const LISTENER_BACKLOG: u32 = 65535;
+const PROXY_PROTOCOL_HEADER_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub(crate) struct ProxyProtocolService {
     name: String,
@@ -132,14 +134,9 @@ impl ProxyProtocolService {
                     let tls = endpoint.tls.clone();
                     tokio::spawn(async move {
                         let peer_addr = stream_peer_addr(&io);
-                        match tokio::time::timeout(
-                            Duration::from_secs(60),
-                            handle_proxy_protocol_stream(io, tls, app, shutdown),
-                        )
-                        .await
-                        {
-                            Ok(Ok(())) => {}
-                            Ok(Err(error)) => {
+                        match handle_proxy_protocol_stream(io, tls, app, shutdown).await {
+                            Ok(()) => {}
+                            Err(error) => {
                                 if let Some(addr) = peer_addr {
                                     tracing::error!(
                                         "Downstream PROXY protocol error from {addr}: {error}"
@@ -147,9 +144,6 @@ impl ProxyProtocolService {
                                 } else {
                                     tracing::error!("Downstream PROXY protocol error: {error}");
                                 }
-                            }
-                            Err(_) => {
-                                tracing::error!("Downstream PROXY protocol handshake timeout")
                             }
                         }
                     });
@@ -380,9 +374,8 @@ async fn handle_proxy_protocol_stream(
     app_logic: Arc<HttpProxy<TakoProxy>>,
     shutdown: ShutdownWatch,
 ) -> Result<()> {
-    let parsed = read_proxy_protocol_header(&mut stream)
-        .await
-        .map_err(proxy_protocol_error)?;
+    let parsed =
+        read_proxy_protocol_header_with_timeout(&mut stream, PROXY_PROTOCOL_HEADER_TIMEOUT).await?;
     if let Some(source_addr) = parsed.source_addr {
         set_stream_peer_addr(&mut stream, source_addr);
     }
@@ -395,6 +388,23 @@ async fn handle_proxy_protocol_stream(
 
     handle_event(stream, app_logic, shutdown).await;
     Ok(())
+}
+
+async fn read_proxy_protocol_header_with_timeout<R>(
+    reader: &mut R,
+    timeout: Duration,
+) -> Result<ProxyProtocolResult>
+where
+    R: AsyncRead + Unpin,
+{
+    match tokio::time::timeout(timeout, read_proxy_protocol_header(reader)).await {
+        Ok(Ok(parsed)) => Ok(parsed),
+        Ok(Err(error)) => Err(proxy_protocol_error(error)),
+        Err(_) => Err(Error::explain(
+            ErrorType::ReadTimedout,
+            "Timed out waiting for PROXY protocol header",
+        )),
+    }
 }
 
 async fn handle_event(
@@ -446,4 +456,20 @@ fn prefer_h2<'a>(_ssl: &mut SslRef, alpn_in: &'a [u8]) -> Result<&'a [u8], AlpnE
     }
 
     select_next_proto(H2_H1_ALPN_WIRE_PREFERENCE, alpn_in).ok_or(AlpnError::NOACK)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn proxy_protocol_timeout_applies_to_header_read() {
+        let (_client, mut server) = tokio::io::duplex(64);
+
+        let error = read_proxy_protocol_header_with_timeout(&mut server, Duration::from_millis(1))
+            .await
+            .expect_err("idle downstream should time out waiting for PROXY header");
+
+        assert_eq!(error.etype, ErrorType::ReadTimedout);
+    }
 }
