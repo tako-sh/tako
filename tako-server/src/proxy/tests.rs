@@ -1,6 +1,7 @@
 use super::request::{
-    forwarded_header_has_proto, forwarded_header_proto_is_https, https_redirect_host,
-    is_request_forwarded_https, strip_route_prefix_for_static_lookup, x_forwarded_proto_is_https,
+    client_ip_from_trusted_headers, forwarded_header_has_proto, forwarded_header_proto_is_https,
+    https_redirect_host, is_request_forwarded_https, strip_route_prefix_for_static_lookup,
+    x_forwarded_proto_is_https,
 };
 use super::server::{create_tls_settings, listener_socket_options};
 use super::*;
@@ -86,6 +87,83 @@ fn test_proxy_config_default() {
     assert!(!config.dev_mode);
     assert!(config.redirect_http_to_https);
     assert!(config.response_cache.is_some());
+    assert!(!config.trusted_proxy.proxy_protocol);
+    assert!(config.trusted_proxy.trusted_cidrs.is_empty());
+    assert!(config.trusted_proxy.client_ip_headers.is_empty());
+}
+
+#[test]
+fn trusted_proxy_config_matches_configured_cidrs() {
+    let config = TrustedProxyConfig::from_raw(
+        true,
+        &["127.0.0.1/32".to_string(), "10.0.0.0/8".to_string()],
+        &[],
+    )
+    .unwrap();
+
+    assert!(config.trusts_proxy_ip(&"127.0.0.1".parse().unwrap()));
+    assert!(config.trusts_proxy_ip(&"10.1.2.3".parse().unwrap()));
+    assert!(!config.trusts_proxy_ip(&"192.0.2.10".parse().unwrap()));
+}
+
+#[test]
+fn trusted_headers_use_first_configured_valid_client_ip() {
+    let config = TrustedProxyConfig::from_raw(
+        false,
+        &["127.0.0.1/32".to_string()],
+        &[
+            "cf-connecting-ip".to_string(),
+            "x-forwarded-for".to_string(),
+        ],
+    )
+    .unwrap();
+    let mut request = RequestHeader::build("GET", b"/", None).expect("build request");
+    request
+        .insert_header("CF-Connecting-IP", "203.0.113.15")
+        .unwrap();
+    request
+        .insert_header("X-Forwarded-For", "198.51.100.10, 127.0.0.1")
+        .unwrap();
+
+    let ip = client_ip_from_trusted_headers(&request, "127.0.0.1".parse().unwrap(), &config);
+
+    assert_eq!(ip, Some("203.0.113.15".parse().unwrap()));
+}
+
+#[test]
+fn trusted_headers_are_ignored_from_untrusted_peer() {
+    let config = TrustedProxyConfig::from_raw(
+        false,
+        &["127.0.0.1/32".to_string()],
+        &["x-forwarded-for".to_string()],
+    )
+    .unwrap();
+    let mut request = RequestHeader::build("GET", b"/", None).expect("build request");
+    request
+        .insert_header("X-Forwarded-For", "203.0.113.15")
+        .unwrap();
+
+    let ip = client_ip_from_trusted_headers(&request, "198.51.100.1".parse().unwrap(), &config);
+
+    assert_eq!(ip, None);
+}
+
+#[test]
+fn x_forwarded_for_uses_only_leftmost_address() {
+    let config = TrustedProxyConfig::from_raw(
+        false,
+        &["127.0.0.1/32".to_string()],
+        &["x-forwarded-for".to_string()],
+    )
+    .unwrap();
+    let mut request = RequestHeader::build("GET", b"/", None).expect("build request");
+    request
+        .insert_header("X-Forwarded-For", "not-an-ip, 203.0.113.15")
+        .unwrap();
+
+    let ip = client_ip_from_trusted_headers(&request, "127.0.0.1".parse().unwrap(), &config);
+
+    assert_eq!(ip, None);
 }
 
 #[test]

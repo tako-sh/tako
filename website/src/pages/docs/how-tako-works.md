@@ -121,10 +121,12 @@ Production TLS uses SNI. Tako looks up an exact certificate first, then wildcard
 Tako issues certificates automatically:
 
 - HTTP-01 for ordinary hostnames
-- DNS-01 for wildcard routes after `tako servers configure <name>`
+- DNS-01 for wildcard routes after choosing DNS setup in `tako servers configure <name>`
 - self-signed certs for private or local names such as `localhost`, `.local`, `.test`, `.invalid`, `.example`, and `.home.arpa`
 
 Certificates renew before expiry without stopping traffic.
+
+When another proxy or load balancer sits in front of Tako, `tako servers configure <name>` can enable trusted source-IP handling. TCP proxies can use PROXY protocol v1/v2. HTTP proxies and CDNs can use trusted headers such as `CF-Connecting-IP` or `X-Forwarded-For`. Header and PROXY metadata are accepted only from configured trusted proxy CIDRs.
 
 ## Instances And Scaling
 

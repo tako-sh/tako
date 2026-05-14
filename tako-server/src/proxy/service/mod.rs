@@ -7,9 +7,10 @@ pub(crate) use backend::BackendResolution;
 
 use super::TakoProxy;
 use super::request::{
-    build_proxy_cache_key, client_ip_from_session, create_production_error_response,
-    https_redirect_host, insert_body_headers, is_effective_request_https,
-    path_looks_like_static_asset, request_host, request_is_proxy_cacheable, response_cacheability,
+    build_proxy_cache_key, client_ip_from_session, client_ip_from_trusted_headers,
+    create_production_error_response, https_redirect_host, insert_body_headers,
+    is_effective_request_https, path_looks_like_static_asset, request_host,
+    request_is_proxy_cacheable, response_cacheability,
     should_assume_forwarded_private_request_https, should_redirect_http_request,
 };
 use crate::lb::Backend;
@@ -86,7 +87,13 @@ impl ProxyHttp for TakoProxy {
     }
 
     async fn request_filter(&self, session: &mut Session, ctx: &mut Self::CTX) -> Result<bool> {
-        if let Some(ip) = client_ip_from_session(session) {
+        if let Some(peer_ip) = client_ip_from_session(session) {
+            let ip = client_ip_from_trusted_headers(
+                session.req_header(),
+                peer_ip,
+                &self.config.trusted_proxy,
+            )
+            .unwrap_or(peer_ip);
             if !self.ip_tracker.try_acquire(ip) {
                 let body = "Too Many Requests";
                 let mut header = ResponseHeader::build(429, None)?;
@@ -387,7 +394,7 @@ impl ProxyHttp for TakoProxy {
 
     async fn upstream_request_filter(
         &self,
-        session: &mut Session,
+        _session: &mut Session,
         upstream_request: &mut RequestHeader,
         ctx: &mut Self::CTX,
     ) -> Result<()> {
@@ -396,7 +403,7 @@ impl ProxyHttp for TakoProxy {
             .insert_header("X-Forwarded-Proto", proto)
             .unwrap();
 
-        if let Some(ip) = client_ip_from_session(session) {
+        if let Some(ip) = ctx.client_ip {
             upstream_request
                 .insert_header("X-Forwarded-For", ip.to_string())
                 .unwrap();

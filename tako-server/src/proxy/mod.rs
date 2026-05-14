@@ -6,12 +6,14 @@
 
 mod config;
 mod limits;
+mod proxy_protocol;
+mod proxy_protocol_service;
 mod request;
 mod server;
 mod service;
 mod static_files;
 
-pub use config::{ProxyConfig, ResponseCacheConfig};
+pub use config::{ProxyConfig, ResponseCacheConfig, TrustedClientIpHeader, TrustedProxyConfig};
 pub use server::build_server_with_acme;
 #[allow(unused_imports)]
 pub use static_files::*;

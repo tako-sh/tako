@@ -235,16 +235,16 @@ tako servers configure <name>
 tako servers uninstall la
 ```
 
-| Command                         | Meaning                                                                   |
-| ------------------------------- | ------------------------------------------------------------------------- |
-| `servers rm [name]`             | Remove a server from global config. Aliases: `remove`, `delete`.          |
-| `servers list`                  | List configured servers. Alias: `ls`.                                     |
-| `servers status`                | Show deployment status across configured servers. Alias: `info`.          |
-| `servers reload <name>`         | Reload `tako-server` without downtime by default.                         |
-| `servers reload <name> --force` | Full service restart, which may cause brief downtime.                     |
-| `servers upgrade [name]`        | Upgrade one server or all servers with graceful reload and rollback.      |
-| `servers configure <name>`      | Configure server settings, including DNS-01 wildcard certificate support. |
-| `servers uninstall [name]`      | Remove `tako-server` and all data from a remote server.                   |
+| Command                         | Meaning                                                                             |
+| ------------------------------- | ----------------------------------------------------------------------------------- |
+| `servers rm [name]`             | Remove a server from global config. Aliases: `remove`, `delete`.                    |
+| `servers list`                  | List configured servers. Alias: `ls`.                                               |
+| `servers status`                | Show deployment status across configured servers. Alias: `info`.                    |
+| `servers reload <name>`         | Reload `tako-server` without downtime by default.                                   |
+| `servers reload <name> --force` | Full service restart, which may cause brief downtime.                               |
+| `servers upgrade [name]`        | Upgrade one server or all servers with graceful reload and rollback.                |
+| `servers configure <name>`      | Configure server settings: DNS-01 wildcard certificates or trusted proxy source IP. |
+| `servers uninstall [name]`      | Remove `tako-server` and all data from a remote server.                             |
 
 ## `tako secrets`
 

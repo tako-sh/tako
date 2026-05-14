@@ -198,7 +198,7 @@ async fn prompt_dns_setup() -> Result<DnsConfig, Box<dyn std::error::Error>> {
     })
 }
 
-pub(super) async fn configure_server(name: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub(super) async fn configure_dns(name: &str) -> Result<(), Box<dyn std::error::Error>> {
     use crate::config::ServersToml;
     use crate::ssh::SshConfig;
 

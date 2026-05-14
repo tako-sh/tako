@@ -154,6 +154,16 @@ Normal remote management requires Tailscale. `tako servers add` configures priva
 
 If any check fails, the server is not written to `config.toml`.
 
+## Source IP Shows The Proxy
+
+If Tako is behind HAProxy, a cloud load balancer, or Cloudflare, the direct TCP peer may be the proxy instead of the browser. Run:
+
+```bash
+tako servers configure <name>
+```
+
+Choose source-IP configuration. Use PROXY protocol only when the upstream is a TCP proxy that sends a PROXY v1/v2 preface. Cloudflare orange-cloud HTTP proxying uses `CF-Connecting-IP`; it does not use PROXY protocol. Configure trusted proxy CIDRs and make sure direct public traffic cannot bypass that proxy.
+
 ## Deploy Fails Before Upload
 
 Common early deploy failures:

@@ -154,6 +154,14 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     let server_config = read_server_config(&data_dir);
     let config_dns_provider = server_config.dns.as_ref().map(|d| d.provider.clone());
+    let trusted_proxy_config = match server_config.trusted_proxy.as_ref() {
+        Some(config) => proxy::TrustedProxyConfig::from_raw(
+            config.proxy_protocol,
+            &config.trusted_cidrs,
+            &config.client_ip_headers,
+        )?,
+        None => proxy::TrustedProxyConfig::default(),
+    };
     let challenge_tokens: ChallengeTokens = Arc::new(parking_lot::RwLock::new(HashMap::new()));
 
     let acme_client = init_acme_client(
@@ -257,6 +265,7 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         } else {
             Some(args.metrics_port)
         },
+        trusted_proxy: trusted_proxy_config,
     };
 
     tracing::info!("Starting HTTP proxy on port {}", args.http_port);

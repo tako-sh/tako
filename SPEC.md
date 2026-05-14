@@ -778,17 +778,27 @@ Remove tako-server and all data from a remote server.
 
 ### tako servers configure <name>
 
-Configure server settings. The current configure flow sets up DNS-01 wildcard certificate support for one configured server.
+Configure server settings through an interactive wizard.
 
 1. Loads the named server from global config.
-2. Runs an interactive wizard prompting for DNS provider and credentials.
-3. Verifies credentials locally against the provider API.
-4. Applies the configuration to the server:
-   - Writes credentials to `/opt/tako/dns-credentials.env` (mode 0600)
-   - Merges `dns.provider` into `/opt/tako/config.json`
-   - Writes a systemd drop-in to inject the env file and restarts `tako-server`
-   - Polls `tako-server` to confirm the provider is active
-5. `tako-server` downloads and installs lego on-demand when issuing wildcard certificates.
+2. Prompts for the setting to configure:
+   - DNS wildcard certificates
+   - Source IP behind a trusted proxy
+3. DNS wildcard configuration:
+   - Prompts for DNS provider and credentials.
+   - Verifies credentials locally against the provider API when a verifier is available.
+   - Writes credentials to `/opt/tako/dns-credentials.env` (mode 0600).
+   - Merges `dns.provider` into `/opt/tako/config.json`.
+   - Writes a systemd drop-in to inject the env file and restarts `tako-server`.
+   - Polls `tako-server` to confirm the provider is active.
+   - `tako-server` downloads and installs lego on-demand when issuing wildcard certificates.
+4. Trusted proxy source-IP configuration:
+   - `Direct traffic` removes trusted proxy source-IP config.
+   - `PROXY protocol from a TCP proxy` enables PROXY protocol v1/v2 on the public HTTP/HTTPS listeners and prompts for trusted proxy CIDRs. The default CIDRs are loopback (`127.0.0.1/32`, `::1/128`) for same-host proxies such as HAProxy.
+   - `Cloudflare HTTP proxy header` trusts `CF-Connecting-IP` only from configured trusted proxy CIDRs. Users must enter Cloudflare's current proxy CIDRs from `https://www.cloudflare.com/ips/`.
+   - `X-Forwarded-For from an HTTP proxy` trusts the leftmost `X-Forwarded-For` IP only from configured trusted proxy CIDRs.
+   - Writes `trusted_proxy` into `/opt/tako/config.json` and restarts `tako-server`.
+   - Trusted source-IP metadata is server/listener-level, not per app. Enable it only when public traffic can reach Tako only through the configured trusted proxy CIDRs; otherwise clients could spoof their source IP.
 
 ### tako uninstall [-y|--yes]
 
@@ -1311,13 +1321,21 @@ Reference scripts in this repo:
   "server_name": "prod",
   "dns": {
     "provider": "cloudflare"
+  },
+  "trusted_proxy": {
+    "proxy_protocol": true,
+    "trusted_cidrs": ["127.0.0.1/32", "::1/128"],
+    "client_ip_headers": []
   }
 }
 ```
 
 - `server_name` — identity label for Prometheus metrics (defaults to hostname if absent).
 - `dns.provider` — DNS provider for Let's Encrypt DNS-01 wildcard challenges (configured via `tako servers configure <name>`).
-- Written by the installer (server name) and CLI (DNS config). Read by `tako-server` at startup.
+- `trusted_proxy.proxy_protocol` — when true, public listeners require a PROXY protocol v1/v2 preface from a trusted proxy and use its source address for rate limiting and upstream `X-Forwarded-For`.
+- `trusted_proxy.trusted_cidrs` — CIDR ranges allowed to provide source-IP metadata.
+- `trusted_proxy.client_ip_headers` — optional trusted HTTP source-IP headers (`cf-connecting-ip`, `x-forwarded-for`) accepted only from `trusted_cidrs`.
+- Written by the installer (server name) and CLI (DNS/trusted proxy config). Read by `tako-server` at startup.
 
 **Server identity:** `tako-server` creates a stable Ed25519 identity at `{data_dir}/identity.key` and writes the public key to `{data_dir}/identity.pub`. The private key is mode `0600`, is preserved across restarts/upgrades, and is removed only by full server uninstall. `hello` and `server_info` include the OpenSSH SHA-256 fingerprint so the CLI can identify the server during add/probe flows.
 

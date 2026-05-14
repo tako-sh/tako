@@ -10,6 +10,8 @@ use std::path::Path;
 use std::sync::OnceLock;
 use tokio::io::AsyncReadExt;
 
+use super::{TrustedClientIpHeader, TrustedProxyConfig};
+
 pub(super) fn should_redirect_http_request(
     is_effective_https: bool,
     redirect_http_to_https: bool,
@@ -211,6 +213,37 @@ pub(super) fn client_ip_from_session(session: &Session) -> Option<IpAddr> {
         .and_then(|sd| sd.peer_addr())
         .and_then(|addr| addr.as_inet())
         .map(|inet| inet.ip())
+}
+
+pub(super) fn client_ip_from_trusted_headers(
+    request: &RequestHeader,
+    peer_ip: IpAddr,
+    trusted_proxy: &TrustedProxyConfig,
+) -> Option<IpAddr> {
+    if trusted_proxy.client_ip_headers.is_empty() || !trusted_proxy.trusts_proxy_ip(&peer_ip) {
+        return None;
+    }
+
+    trusted_proxy
+        .client_ip_headers
+        .iter()
+        .find_map(|header| client_ip_from_header(request, *header))
+}
+
+fn client_ip_from_header(request: &RequestHeader, header: TrustedClientIpHeader) -> Option<IpAddr> {
+    let value = request
+        .headers
+        .get(header.as_str())
+        .and_then(|value| value.to_str().ok())?;
+
+    match header {
+        TrustedClientIpHeader::CfConnectingIp => parse_header_ip(value),
+        TrustedClientIpHeader::XForwardedFor => value.split(',').next().and_then(parse_header_ip),
+    }
+}
+
+fn parse_header_ip(value: &str) -> Option<IpAddr> {
+    value.trim().parse().ok()
 }
 
 pub(super) fn request_host(req: &pingora_http::RequestHeader) -> &str {

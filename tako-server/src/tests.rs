@@ -2280,12 +2280,16 @@ fn read_server_config_from_json() {
     let dir = TempDir::new().unwrap();
     std::fs::write(
         dir.path().join("config.json"),
-        r#"{"server_name":"prod","dns":{"provider":"cloudflare"}}"#,
+        r#"{"server_name":"prod","dns":{"provider":"cloudflare"},"trusted_proxy":{"proxy_protocol":true,"trusted_cidrs":["127.0.0.1/32"],"client_ip_headers":["cf-connecting-ip"]}}"#,
     )
     .unwrap();
     let config = read_server_config(dir.path());
     assert_eq!(config.server_name.as_deref(), Some("prod"));
     assert_eq!(config.dns.as_ref().unwrap().provider, "cloudflare");
+    let trusted_proxy = config.trusted_proxy.unwrap();
+    assert!(trusted_proxy.proxy_protocol);
+    assert_eq!(trusted_proxy.trusted_cidrs, vec!["127.0.0.1/32"]);
+    assert_eq!(trusted_proxy.client_ip_headers, vec!["cf-connecting-ip"]);
 }
 
 #[test]

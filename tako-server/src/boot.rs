@@ -55,11 +55,23 @@ pub(crate) struct ServerConfigFile {
     pub(crate) acme_email: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) dns: Option<ServerConfigDns>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) trusted_proxy: Option<ServerConfigTrustedProxy>,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub(crate) struct ServerConfigDns {
     pub(crate) provider: String,
+}
+
+#[derive(Debug, Default, serde::Deserialize, serde::Serialize)]
+pub(crate) struct ServerConfigTrustedProxy {
+    #[serde(default)]
+    pub(crate) proxy_protocol: bool,
+    #[serde(default)]
+    pub(crate) trusted_cidrs: Vec<String>,
+    #[serde(default)]
+    pub(crate) client_ip_headers: Vec<String>,
 }
 
 pub(crate) fn read_server_config(data_dir: &Path) -> ServerConfigFile {

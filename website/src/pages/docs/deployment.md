@@ -52,6 +52,14 @@ The installer:
 
 Configure/start mode requires Tailscale for private control traffic. If no Tailscale IP is available when `tako servers add` configures the service, the command fails with a remote-management hint.
 
+If public traffic reaches Tako through another proxy or load balancer, run:
+
+```bash
+tako servers configure <name>
+```
+
+Choose source-IP configuration. PROXY protocol v1/v2 is for TCP proxies such as same-host HAProxy. Cloudflare orange-cloud HTTP proxying uses `CF-Connecting-IP`, not PROXY protocol. In both cases, configure trusted proxy CIDRs and only enable source-IP trust when clients cannot reach Tako directly around that proxy.
+
 ## Server Inventory
 
 Server inventory is global user config, not project config. It lives in the platform config directory as `config.toml`.
@@ -273,7 +281,7 @@ routes = [
 Tako issues certificates automatically:
 
 - HTTP-01 for ordinary hostnames
-- DNS-01 for wildcard routes after `tako servers configure <name>`
+- DNS-01 for wildcard routes after choosing DNS setup in `tako servers configure <name>`
 - self-signed certs for local/private hostnames
 
 If a wildcard route is deployed without DNS-01 provider config, deploy fails and tells you to run:
