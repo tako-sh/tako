@@ -440,13 +440,38 @@ const pageStructuredData = structuredData
       }
 
       .footer-note {
-        text-align: center;
-        font-family: "Nunito", sans-serif;
-        font-size: 13px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-wrap: wrap;
+        gap: 8px 12px;
         color: var(--muted);
         padding: 8px 14px 20px;
         border-top: 1px solid var(--line);
         margin: 0 14px;
+      }
+
+      .footer-note-main {
+        font-family: "Poppins", sans-serif;
+        font-size: clamp(15px, 2vw, 18px);
+        font-weight: 700;
+        color: var(--ink);
+      }
+
+      .footer-note-mark {
+        display: inline-flex;
+        align-items: center;
+        min-height: 30px;
+        padding: 3px 12px 5px;
+        border: 1.5px solid rgba(232, 135, 131, 0.45);
+        border-radius: 999px;
+        background: rgba(232, 135, 131, 0.16);
+        color: var(--primary-text);
+        font-family: "Caveat", cursive;
+        font-size: 22px;
+        font-weight: 500;
+        line-height: 1;
+        transform: rotate(-1.5deg);
       }
 
       @media (max-width: 720px) {
@@ -645,7 +670,10 @@ const pageStructuredData = structuredData
                 <a href="/llms.txt">LLMs.txt</a>
               </div>
             </div>
-            <p class="footer-note">open source will win &middot; made in Japan</p>
+            <p class="footer-note" aria-label="Open source will win. Made in Japan.">
+              <span class="footer-note-main">open source will win</span>
+              <span class="footer-note-mark">made in Japan</span>
+            </p>
           </div>
         </footer>
 
