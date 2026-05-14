@@ -122,9 +122,17 @@ export type {
   WorkflowStepContext,
 } from "./workflows";
 export { TakoError, type TakoErrorCode } from "./tako/error";
-export { imageUrl, type ImageUrlOptions } from "./images";
+export {
+  imageSrcSet,
+  imageUrl,
+  type ImageSrcSet,
+  type ImageSrcSetLayout,
+  type ImageSrcSetOptions,
+  type ImageUrlOptions,
+} from "./images";
 export type {
   CreateDownloadUrlOptions,
+  CreateImageSrcSetOptions,
   CreateImageUrlOptions,
   CreateUploadUrlOptions,
   TakoStorage,

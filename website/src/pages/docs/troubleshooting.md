@@ -331,7 +331,7 @@ Failures commonly come from:
 - remote source with redirects, private IPs, unsupported schemes, userinfo, or fragments
 - source bytes exceeding optimizer limits
 
-Image optimizer failures return non-shared error caching and detailed diagnostics go to app logs. If a storage image URL fails, check that `tako storage add` configured the right environment and that `--public-base-url` is set when using `createImageUrl(..., { public: true })`.
+Image optimizer failures return non-shared error caching and detailed diagnostics go to app logs. If a storage image URL or srcset fails, check that `tako storage add` configured the right environment and that `--public-base-url` is set when using `createImageUrl(..., { public: true })` or `createImageSrcSet(..., { public: true })`.
 
 ## Logs Are Hard To Read
 

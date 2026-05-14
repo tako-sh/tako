@@ -1,4 +1,10 @@
-import { imageUrl, type ImageUrlOptions } from "./images";
+import {
+  imageSrcSet,
+  imageUrl,
+  type ImageSrcSet,
+  type ImageSrcSetOptions,
+  type ImageUrlOptions,
+} from "./images";
 import { getStorageBindings } from "./tako/secrets";
 
 const DEFAULT_EXPIRES_SECONDS = 3600;
@@ -45,10 +51,16 @@ export type CreateImageUrlOptions = ImageUrlOptions & {
   public?: boolean;
 };
 
+export type CreateImageSrcSetOptions = ImageSrcSetOptions & {
+  /** Use `public_base_url` and the public image optimizer. Required until private image transforms are supported. */
+  public?: boolean;
+};
+
 export interface TakoStorage {
   createDownloadUrl(key: string, options?: CreateDownloadUrlOptions): Promise<string>;
   createUploadUrl(key: string, options?: CreateUploadUrlOptions): Promise<string>;
   createImageUrl(key: string, options?: CreateImageUrlOptions): Promise<string>;
+  createImageSrcSet(key: string, options: CreateImageSrcSetOptions): Promise<ImageSrcSet>;
 }
 
 export type TakoStorageBag<T = TakoStorages> = Readonly<{
@@ -150,6 +162,18 @@ function createStorage(binding: TakoStorageBinding, now: () => Date): TakoStorag
         headers: {},
         now,
       });
+    },
+
+    async createImageSrcSet(key: string, options: CreateImageSrcSetOptions) {
+      const { public: usePublic, ...imageOptions } = options;
+      const publicUrl = publicObjectUrl(binding, key, usePublic ?? false);
+      if (publicUrl) {
+        return imageSrcSet(publicUrl, imageOptions);
+      }
+
+      throw new TypeError(
+        "private storage image srcsets require a public_base_url for now; use createDownloadUrl for a signed object URL",
+      );
     },
   });
 }

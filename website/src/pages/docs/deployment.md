@@ -243,7 +243,7 @@ tako storage add uploads \
 
 Local storage credentials are encrypted in `.tako/storages.json`. Deploy decrypts the selected environment's storage bindings locally, sends them over the signed management path, and `tako-server` stores them encrypted in SQLite.
 
-Fresh HTTP instances and workflow workers receive storage bindings through fd 3 alongside secrets. In JavaScript apps, use `tako.storages.<name>.createDownloadUrl`, `createUploadUrl`, and `createImageUrl`.
+Fresh HTTP instances and workflow workers receive storage bindings through fd 3 alongside secrets. In JavaScript apps, use `tako.storages.<name>.createDownloadUrl`, `createUploadUrl`, `createImageUrl`, and `createImageSrcSet`.
 
 ## Images
 
@@ -254,7 +254,7 @@ Public optimized images are configured in `tako.toml`:
 remote_patterns = ["https://cdn.example.com/uploads/**"]
 ```
 
-The optimizer endpoint is `/_tako/image?src=...&w=...`. Local public paths are available by default. Remote URLs must match the configured allowlist, and widths, qualities, and formats must match the configured guardrails.
+The optimizer endpoint is `/_tako/image?src=...&w=...`. Local public paths are available by default. Remote URLs must match the configured allowlist, and widths, qualities, and formats must match the configured guardrails. In JavaScript apps, use `imageUrl` for one optimized URL or `imageSrcSet` for plain `<img>` responsive sources.
 
 ## TLS And Routes
 

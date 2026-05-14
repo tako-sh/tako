@@ -54,6 +54,26 @@ export default withTako({});
 
 This enables Next.js standalone output, installs the Tako adapter, adds `*.test` and `*.tako.test` to `allowedDevOrigins` so `next dev` accepts requests from Tako's dev hostnames, and generates `.next/tako-entry.mjs` for deploys. If Next emits standalone output, Tako uses it; otherwise the wrapper falls back to `next start`.
 
+`withTako()` configures `next/image` to use Tako's public optimizer globally:
+
+```tsx
+import Image from "next/image";
+
+export function Hero() {
+  return (
+    <Image
+      src="/images/hero.jpg"
+      width={1200}
+      height={800}
+      sizes="(min-width: 1200px) 1200px, 100vw"
+      alt="Hero"
+    />
+  );
+}
+```
+
+`withTako()` aligns Next's generated image widths with Tako's default public optimizer widths so `next/image` does not request variants the server would reject.
+
 Then in `tako.toml`:
 
 ```toml

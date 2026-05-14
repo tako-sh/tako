@@ -70,6 +70,30 @@ describe("storage URLs", () => {
     );
   });
 
+  test("creates public optimized image srcsets when public_base_url is requested", async () => {
+    const storages = createStorageBag({ uploads: binding }, { now: fixedClock });
+    const uploads = requireUploads(storages);
+
+    const image = await uploads.createImageSrcSet("avatars/u_123.png", {
+      public: true,
+      layout: "constrained",
+      width: 1200,
+      format: "webp",
+    });
+
+    expect(image).toEqual({
+      src: "/_tako/image?src=https%3A%2F%2Fcdn.example.com%2Fuploads%2Favatars%2Fu_123.png&w=1200&f=webp",
+      srcSet: [
+        "/_tako/image?src=https%3A%2F%2Fcdn.example.com%2Fuploads%2Favatars%2Fu_123.png&w=320&f=webp 320w",
+        "/_tako/image?src=https%3A%2F%2Fcdn.example.com%2Fuploads%2Favatars%2Fu_123.png&w=640&f=webp 640w",
+        "/_tako/image?src=https%3A%2F%2Fcdn.example.com%2Fuploads%2Favatars%2Fu_123.png&w=960&f=webp 960w",
+        "/_tako/image?src=https%3A%2F%2Fcdn.example.com%2Fuploads%2Favatars%2Fu_123.png&w=1200&f=webp 1200w",
+        "/_tako/image?src=https%3A%2F%2Fcdn.example.com%2Fuploads%2Favatars%2Fu_123.png&w=1920&f=webp 1920w",
+      ].join(", "),
+      sizes: "(min-width: 1200px) 1200px, 100vw",
+    });
+  });
+
   test("rejects transform options for private direct image URLs", async () => {
     const storages = createStorageBag({ uploads: { ...binding, public_base_url: undefined } });
     const uploads = requireUploads(storages);
@@ -83,5 +107,22 @@ describe("storage URLs", () => {
 
     expect(error).toBeInstanceOf(TypeError);
     expect((error as Error).message).toContain("private storage image transforms");
+  });
+
+  test("rejects private storage image srcsets for now", async () => {
+    const storages = createStorageBag({ uploads: { ...binding, public_base_url: undefined } });
+    const uploads = requireUploads(storages);
+
+    let error: unknown;
+    try {
+      await uploads.createImageSrcSet("avatars/u_123.png", {
+        width: 1200,
+      });
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(TypeError);
+    expect((error as Error).message).toContain("private storage image srcsets");
   });
 });

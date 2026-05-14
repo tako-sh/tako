@@ -1287,6 +1287,7 @@ Reference scripts in this repo:
 
 - JavaScript code can call `imageUrl(source, opts?)` from `tako.sh` to build a public optimizer URL. It is synchronous and does not sign. Omitted options use `width: 1200`, default quality `75`, and negotiated AVIF/WebP output.
 - The helper returns a canonical query URL: `/_tako/image?src=<source>&w=<width>[&q=<quality>][&f=<format>]`. It emits `q` only when the requested quality differs from `75`.
+- JavaScript code can call `imageSrcSet(source, opts)` from `tako.sh` to build responsive public image sources for plain `<img>` usage. It returns `{ src, srcSet, sizes }`, uses `imageUrl` for each candidate, and supports `layout = "constrained" | "full-width" | "fixed"` plus optional explicit `widths` and `sizes`. `constrained` derives `sizes = "(min-width: <width>px) <width>px, 100vw"`, `full-width` derives `sizes = "100vw"`, and `fixed` derives `sizes = "<width>px"`. Generated widths must be allowed public optimizer widths.
 - Public optimizer requests fail closed. `src` and `w` are required; `q` and `f` are optional; duplicate or unknown query params are rejected. Width must be in `[images].sizes`, quality must be in `[images].qualities`, and format must be in `[images].formats`. The defaults are sizes `[320, 640, 960, 1200, 1920]`, qualities `[75]`, and formats `["avif", "webp"]`.
 - Local sources are path-only URLs such as `/assets/hero.jpg`. Local paths are allowed by default with `local_patterns = ["/**"]`; setting `[images].local_patterns` replaces that default. In deploys, local paths resolve from the app's deployed `public/` directory first, then from the matched app backend; in dev, local paths are fetched from the active app backend.
 - Remote sources must be `http` or `https` URLs and must match `[images].remote_patterns`. Remote patterns are glob-like URL strings, not regular expressions. If the pattern omits a protocol, Tako allows both `http` and `https`. Remote URLs reject unsupported schemes, userinfo, fragments, recursive image optimizer URLs, private/local hosts and IPs, private/local DNS results, and redirects.
@@ -1301,6 +1302,7 @@ Reference scripts in this repo:
 - `await tako.storages.uploads.createDownloadUrl(key, options?)` creates a SigV4 signed `GET` URL. Storage URLs are private by default. `expiresInSeconds` defaults to `3600` and is capped at `604800`. Download options may set S3 response content type/disposition overrides. Passing `public: true` returns `public_base_url + key` when the binding has a `public_base_url`.
 - `await tako.storages.uploads.createUploadUrl(key, options?)` creates a SigV4 signed `PUT` URL. `contentType` signs the `content-type` header, so upload clients must send the same header.
 - `await tako.storages.uploads.createImageUrl(key, imageOptions?)` returns a private signed object URL when no image transform options are supplied. With `{ public: true }` and a storage `public_base_url`, it returns the public optimizer URL for that object. Private storage image transforms are a separate feature; for now transform options without public storage access fail with guidance to use `createDownloadUrl`.
+- `await tako.storages.uploads.createImageSrcSet(key, imageSrcSetOptions)` returns public responsive image sources for a storage object when called with `{ public: true }` and the binding has `public_base_url`. Private storage image srcsets are a separate feature; for now they fail with guidance to use `createDownloadUrl`.
 - Object keys must be non-empty relative keys and cannot start with `/`. S3 and R2 endpoints must use HTTPS. R2 defaults to `region = "auto"`; S3 can use its normal region.
 
 **`/opt/tako/config.json`** — server-level configuration:
@@ -1788,7 +1790,7 @@ const dbUrl = tako.secrets.DATABASE_URL;
 
 `tako.secrets` redacts automatically on `JSON.stringify`, `console.log`, and `toString` (returns `"[REDACTED]"`); individual key access (`tako.secrets.MY_KEY`) returns the value. The generated `TakoSecrets` augmentation is regenerated from `.tako/secrets.json` on every `tako dev`, `tako deploy`, `tako generate`, and `tako secrets` change. Generation prefers secret names from the `development` environment when present, then falls back to the union of all secret environments.
 
-`tako.storages` exposes storage bindings delivered through fd 3. Individual storage access (`tako.storages.uploads`) returns an object with `createDownloadUrl`, `createUploadUrl`, and `createImageUrl`. The generated `TakoStorages` augmentation is regenerated from `.tako/storages.json` on `tako dev`, `tako deploy`, and `tako generate`.
+`tako.storages` exposes storage bindings delivered through fd 3. Individual storage access (`tako.storages.uploads`) returns an object with `createDownloadUrl`, `createUploadUrl`, `createImageUrl`, and `createImageSrcSet`. The generated `TakoStorages` augmentation is regenerated from `.tako/storages.json` on `tako dev`, `tako deploy`, and `tako generate`.
 
 Channels and workflows are not on the runtime context — they are regular ES modules you import from their files:
 
@@ -1800,7 +1802,7 @@ await sendEmail.enqueue({ to: "u@e.co" });
 await chat({ roomId: "r1" }).publish({ type: "msg", data: { text: "hi" } });
 ```
 
-The `tako.sh` package exports `tako`, `imageUrl`, `defineChannel`, `defineWorkflow`, `signal`, `TakoError`, `InferChannel`, and `InferWorkflowPayload`. Storage URL option types are exported from `tako.sh`. The `tako.sh/runtime` subpath is reserved for browser-safe runtime internals. Server-adapter plumbing (`handleTakoEndpoint`, `initServerRuntime`, and the channel/workflow definition types) lives under `tako.sh/internal` and is intended for framework adapters. The `Channel` class is not exported from `tako.sh`: server code uses the accessor returned by `defineChannel(...).$messageTypes<M>()` (imported from your `<app_root>/channels/` file); browser code imports from `tako.sh/client` (or uses the `useChannel` hook from `tako.sh/react`). There is no `Tako` global.
+The `tako.sh` package exports `tako`, `imageUrl`, `imageSrcSet`, `defineChannel`, `defineWorkflow`, `signal`, `TakoError`, `InferChannel`, and `InferWorkflowPayload`. Storage URL option types are exported from `tako.sh`. The `tako.sh/runtime` subpath is reserved for browser-safe runtime internals. Server-adapter plumbing (`handleTakoEndpoint`, `initServerRuntime`, and the channel/workflow definition types) lives under `tako.sh/internal` and is intended for framework adapters. The `Channel` class is not exported from `tako.sh`: server code uses the accessor returned by `defineChannel(...).$messageTypes<M>()` (imported from your `<app_root>/channels/` file); browser code imports from `tako.sh/client` (or uses the `useChannel` hook from `tako.sh/react`). There is no `Tako` global.
 
 ### Go SDK
 
@@ -1875,6 +1877,7 @@ import { withTako } from "tako.sh/nextjs";
 ```
 
 - `tako.sh/nextjs` provides `withTako()`, a helper that sets `output = "standalone"`, points `adapterPath` at the installed Tako adapter, and appends `"*.test"` and `"*.tako.test"` to `allowedDevOrigins` so `next dev` accepts requests from Tako's dev hostnames.
+- `withTako()` configures `next/image` to use Tako's public optimizer globally by setting `images.loader = "custom"` and `images.loaderFile` to Tako's packaged loader. It also aligns Next's generated image widths with Tako's public optimizer defaults by setting `images.deviceSizes = [320, 640, 960, 1200, 1920]` and `images.imageSizes = []`.
 - On build, the adapter writes `.next/tako-entry.mjs`.
 - If Next emits `.next/standalone/server.js`, the adapter copies `public/` and `.next/static/` into `.next/standalone/` so that standalone server can serve them.
 - If standalone output is not emitted, the generated wrapper falls back to `next start` against the built `.next/` directory and installed `next` package.

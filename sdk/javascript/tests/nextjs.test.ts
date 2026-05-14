@@ -9,6 +9,7 @@ import {
   shutdownManagedNextjsServers,
   withTako,
 } from "../src/nextjs";
+import imageLoader from "../src/nextjs/image-loader";
 
 let rootDir = "";
 
@@ -30,6 +31,9 @@ describe("tako Next.js adapter", () => {
 
   test("withTako configures standalone output and adapter path", () => {
     const config = withTako({
+      images: {
+        remotePatterns: [{ hostname: "cdn.example.com", protocol: "https" }],
+      },
       experimental: {
         typedRoutes: true,
       },
@@ -39,6 +43,23 @@ describe("tako Next.js adapter", () => {
     expect(config.experimental?.typedRoutes).toBe(true);
     expect(path.isAbsolute(config.adapterPath!)).toBe(true);
     expect(config.adapterPath).toEndWith(path.join("src", "nextjs", "index.ts"));
+    expect(config.images?.loaderFile).toBe(path.join("src", "nextjs", "image-loader.ts"));
+    expect(config.images).toEqual({
+      remotePatterns: [{ hostname: "cdn.example.com", protocol: "https" }],
+      loader: "custom",
+      loaderFile: config.images?.loaderFile,
+      deviceSizes: [320, 640, 960, 1200, 1920],
+      imageSizes: [],
+    });
+  });
+
+  test("imageLoader returns Tako public optimizer URLs for next/image", () => {
+    expect(imageLoader({ src: "/images/hero.jpg", width: 1200 })).toBe(
+      "/_tako/image?src=%2Fimages%2Fhero.jpg&w=1200",
+    );
+    expect(imageLoader({ src: "/images/hero.jpg", width: 640, quality: 80 })).toBe(
+      "/_tako/image?src=%2Fimages%2Fhero.jpg&w=640&q=80",
+    );
   });
 
   test("adapter writes Tako wrapper and copies standalone assets", async () => {
