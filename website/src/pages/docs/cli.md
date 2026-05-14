@@ -219,6 +219,8 @@ Options:
 
 `admin-user@host` is shorthand for choosing the admin user and enabling install/repair when needed.
 
+If the host was bootstrapped with `install-server.sh`, `tako servers add` configures and starts the stopped service before saving the server.
+
 ### Other Server Commands
 
 ```bash

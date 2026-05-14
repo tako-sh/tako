@@ -120,6 +120,8 @@ tako servers add ubuntu@host.example.com --install --name la
 
 `admin-user@host` tells Tako which admin SSH user to use for install or repair. The server is stored locally as just the host.
 
+If you already ran `install-server.sh` on the host, run `tako servers add host.example.com --name la` from your workstation. The installer leaves the service stopped; `servers add` configures and starts it after SSH checks pass.
+
 ## Target Metadata Missing
 
 Deploy requires each selected server to have target metadata:
@@ -142,7 +144,7 @@ Tako uses local SSH keys first, then `ssh-agent` when available. If your key is 
 tako servers status --ssh-passphrase "$PASSPHRASE"
 ```
 
-Normal remote management requires Tailscale. Server setup must configure private management HTTP on the Tailscale address. `tako servers add` verifies:
+Normal remote management requires Tailscale. `tako servers add` configures private management HTTP on the Tailscale address before it writes the server. It verifies:
 
 - host resolves to a Tailscale address
 - `tako@host` SSH recovery works

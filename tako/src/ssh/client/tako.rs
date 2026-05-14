@@ -290,8 +290,11 @@ impl SshClient {
     }
 }
 
-fn install_server_env(public_key: &str, ports: Option<ServerInstallPorts>) -> String {
-    let mut assignments = vec![format!("TAKO_SSH_PUBKEY={}", shell_quote(public_key))];
+pub(super) fn install_server_env(public_key: &str, ports: Option<ServerInstallPorts>) -> String {
+    let mut assignments = vec![
+        format!("TAKO_SSH_PUBKEY={}", shell_quote(public_key)),
+        "TAKO_RESTART_SERVICE='1'".to_string(),
+    ];
     for key in INSTALL_ENV_PASSTHROUGH {
         if let Ok(value) = std::env::var(key)
             && !value.is_empty()

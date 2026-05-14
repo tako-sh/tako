@@ -248,6 +248,25 @@ fn install_server_script_installs_and_verifies_runtime_dependencies() {
     assert!(!between_install_and_runtime_check.contains("install_libvips_runtime"));
 }
 
+#[test]
+fn install_server_script_defaults_to_stopped_bootstrap_install() {
+    let script = super::tako::INSTALL_SERVER_SCRIPT;
+
+    assert!(script.contains("TAKO_RESTART_SERVICE=\"${TAKO_RESTART_SERVICE:-0}\""));
+    assert!(script.contains("OK installed tako-server service (not started)"));
+    assert!(script.contains(
+        "Run `tako servers add <host>` from your workstation to configure and start it."
+    ));
+    assert!(!script.contains("systemctl enable tako-server >/dev/null 2>&1 || true\n    echo \"OK install refreshed without restarting tako-server"));
+}
+
+#[test]
+fn install_server_env_starts_service_for_cli_installs() {
+    let env = super::tako::install_server_env("ssh-ed25519 AAAA", None);
+
+    assert!(env.contains("TAKO_RESTART_SERVICE='1'"));
+}
+
 #[tokio::test]
 async fn connect_to_unreachable_host_fails_quickly() {
     let mut cfg = SshConfig::from_server("10.255.255.1", 22);

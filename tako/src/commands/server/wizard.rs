@@ -6,8 +6,9 @@ mod naming;
 
 pub(super) use connection::detect_server_target;
 use connection::{
-    WizardConnectionResult, check_tako_connection, install_tako_server_with_admin,
-    trace_management_probe, verify_remote_management, verify_tailscale_host,
+    WizardConnectionResult, check_tako_connection, configure_tako_server_with_service_user,
+    install_tako_server_with_admin, trace_management_probe, verify_remote_management,
+    verify_tailscale_host,
 };
 #[cfg(test)]
 use connection::{parse_detected_arch, parse_detected_libc, remote_management_unavailable_message};
@@ -332,6 +333,41 @@ pub(super) async fn run_add_server_wizard(
                 result = output::with_spinner_async_err(
                     "Verifying install",
                     "Install verified",
+                    "Verification failed",
+                    check_tako_connection(&host, port).instrument(verify_scope),
+                )
+                .await;
+                drop(_t);
+            }
+        }
+
+        if allow_install
+            && matches!(
+                &result,
+                Ok(info) if info.installed && info.public_ports.is_none()
+            )
+        {
+            let should_configure = output::confirm("Configure and start tako-server now?", true)?;
+            if should_configure {
+                let public_ports = install_public_ports(initial_public_ports)?;
+                let configure_scope = output::scope(&host);
+                let _t = output::timed(&format!("Configure tako-server on {host}:{port}"));
+                output::with_spinner_async_err(
+                    "Configuring tako-server",
+                    "tako-server configured",
+                    "Configuration failed",
+                    configure_tako_server_with_service_user(&host, port, Some(public_ports))
+                        .instrument(configure_scope),
+                )
+                .await?;
+                drop(_t);
+                detected_public_ports = Some(public_ports);
+
+                let verify_scope = output::scope(&host);
+                let _t = output::timed(&format!("Verify tako-server on {host}:{port}"));
+                result = output::with_spinner_async_err(
+                    "Verifying server",
+                    "Server verified",
                     "Verification failed",
                     check_tako_connection(&host, port).instrument(verify_scope),
                 )
@@ -673,6 +709,39 @@ pub async fn add_server(
                 result = output::with_spinner_async_err(
                     "Verifying install",
                     "Install verified",
+                    "Verification failed",
+                    check_tako_connection(host, port),
+                )
+                .await;
+            }
+        }
+
+        let needs_configure = matches!(
+            &result,
+            Ok(info) if info.installed && info.public_ports.is_none()
+        );
+        if needs_configure
+            && (install_if_missing || (allow_install_prompt && output::is_interactive()))
+        {
+            let should_configure = if install_if_missing {
+                true
+            } else {
+                output::confirm("Configure and start tako-server now?", true)?
+            };
+            if should_configure {
+                let configure_ports = install_public_ports(public_ports)?;
+                output::with_spinner_async_err(
+                    "Configuring tako-server",
+                    "tako-server configured",
+                    "Configuration failed",
+                    configure_tako_server_with_service_user(host, port, Some(configure_ports)),
+                )
+                .await?;
+                resolved_public_ports = Some(configure_ports);
+
+                result = output::with_spinner_async_err(
+                    "Verifying server",
+                    "Server verified",
                     "Verification failed",
                     check_tako_connection(host, port),
                 )

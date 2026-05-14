@@ -85,6 +85,29 @@ pub(super) async fn install_tako_server_with_admin(
     }
 }
 
+pub(super) async fn configure_tako_server_with_service_user(
+    host: &str,
+    port: u16,
+    public_ports: Option<super::ServerPublicPorts>,
+) -> Result<(), String> {
+    use crate::ssh::{SshClient, SshConfig};
+
+    let ssh_config = SshConfig::from_server(host, port);
+    let mut ssh = SshClient::new(ssh_config);
+    ssh.connect().await.map_err(|e| e.to_string())?;
+
+    let result = ssh
+        .install_tako_server(public_ports.map(Into::into))
+        .await
+        .map_err(|e| format!("Configure failed: {e}"));
+    let disconnect = ssh.disconnect().await.map_err(|e| e.to_string());
+    match (result, disconnect) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Ok(()), Err(error)) => Err(error),
+        (Err(error), _) => Err(error),
+    }
+}
+
 pub(super) async fn verify_remote_management(
     host: &str,
 ) -> Result<crate::management_http::ManagementProbe, String> {

@@ -34,7 +34,7 @@ Most remote management reads and mutations use signed HTTP over the server's pri
 
 `tako-server` is the production runtime installed on each host. It listens on public HTTP and HTTPS ports, routes requests to the right app, manages certificates, supervises app instances, stores runtime state in SQLite, and exposes a private management API.
 
-Normal installs use `/opt/tako` as the server data directory and `/var/run/tako/tako.sock` as the local management socket.
+Normal host bootstraps use `/opt/tako` as the server data directory and `/var/run/tako/tako.sock` as the local management socket. The installer lays down the service but leaves it stopped; `tako servers add` configures private management and starts the service.
 
 ### SDKs
 

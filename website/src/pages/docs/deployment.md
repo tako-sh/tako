@@ -12,13 +12,15 @@ Tako deploys locally built artifacts to servers you control. The CLI builds, pac
 
 ## Server Setup
 
-Install `tako-server` on each host:
+Bootstrap `tako-server` on each host:
 
 ```bash
 sudo sh -c "$(curl -fsSL https://tako.sh/install-server.sh)"
 ```
 
-Custom public proxy ports can be passed during install:
+The host installer installs the binary, service users, maintenance helpers, and service definition, but it does not enable or start `tako-server` by default. `tako servers add` configures remote management, enables the service, starts it, verifies access, and then stores the server locally.
+
+Custom public proxy ports can be passed during bootstrap:
 
 ```bash
 curl -fsSL https://tako.sh/install-server.sh | sudo sh -s -- --http-port 8080 --https-port 8443
@@ -43,12 +45,12 @@ The installer:
 - installs `tako-server` to `/usr/local/bin/tako-server`
 - creates `/opt/tako` and `/var/run/tako`
 - prepares those roots without recursively traversing existing app releases
-- installs systemd or OpenRC service files
+- installs systemd or OpenRC service files without enabling or starting them
 - installs libvips for image optimization
-- configures private Tailscale remote management
+- configures private Tailscale remote management during `tako servers add`
 - enrolls the SSH key for signed management
 
-Normal installs require Tailscale for private control traffic. If no Tailscale IP is available, install fails with a remote-management hint.
+Configure/start mode requires Tailscale for private control traffic. If no Tailscale IP is available when `tako servers add` configures the service, the command fails with a remote-management hint.
 
 ## Server Inventory
 

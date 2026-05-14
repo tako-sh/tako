@@ -60,7 +60,7 @@ import DocsLayout from "../../layouts/DocsLayout.astro";
   <p>Check remote access:</p>
   <Snippet code="tako servers status" lang="bash" />
 
-  <p>Prefer installing from the host itself? Run the server installer as root, enter your workstation SSH public key when prompted, then add the host from your developer machine:</p>
+  <p>Prefer installing from the host itself? Run the server installer as root, enter your workstation SSH public key when prompted, then add the host from your developer machine. The installer bootstraps the host; <code>tako servers add</code> configures and starts it.</p>
   <Snippet code='sudo sh -c "$(curl -fsSL https://tako.sh/install-server.sh)"' lang="bash" />
 
   <h2 id="first-deployment">First deployment</h2>

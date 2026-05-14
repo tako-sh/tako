@@ -10,7 +10,7 @@ set -eu
 # - downloads and installs `tako-server`
 # - installs the libvips runtime used by the built-in image optimizer
 # - creates OS user `tako`
-# - configures a service manager (systemd or OpenRC) for `tako-server`
+# - installs a service manager unit (systemd or OpenRC) for `tako-server`
 # - installs maintenance helpers and sudoers for the tako service user
 #
 # Optional env vars:
@@ -36,7 +36,7 @@ set -eu
 #   TAKO_SERVER_NAME        server identity for metrics labels (optional)
 #                           if unset, installer prompts in interactive terminals
 #                           defaults to machine hostname if non-interactive
-#   TAKO_RESTART_SERVICE    default: 1 (set 0/false for install-only refresh; no service restart)
+#   TAKO_RESTART_SERVICE    default: 0 (set 1/true to configure and start/reload the service)
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "error: run as root (use sudo)" >&2
@@ -59,7 +59,7 @@ TAKO_ALLOW_INSECURE_DOWNLOAD_BASE="${TAKO_ALLOW_INSECURE_DOWNLOAD_BASE:-}"
 TAKO_REPO_OWNER="${TAKO_REPO_OWNER:-lilienblum}"
 TAKO_REPO_NAME="${TAKO_REPO_NAME:-tako}"
 TAKO_RELEASE_TAG="${TAKO_RELEASE_TAG:-latest}"
-TAKO_RESTART_SERVICE="${TAKO_RESTART_SERVICE:-1}"
+TAKO_RESTART_SERVICE="${TAKO_RESTART_SERVICE:-0}"
 TAKO_MANAGEMENT_REQUIRED_MESSAGE="Remote management requires Tailscale so Tako can keep server control traffic private by default."
 TAKO_MANAGEMENT_ARGS=""
 TAKO_PUBLIC_PORT_ARGS=""
@@ -469,12 +469,15 @@ configure_public_ports() {
   default_http="${default_http:-80}"
   default_https="${default_https:-443}"
 
-  if [ -z "$TAKO_HTTP_PORT" ]; then
+  if [ -z "$TAKO_HTTP_PORT" ] && is_enabled "$TAKO_RESTART_SERVICE"; then
     TAKO_HTTP_PORT="$(prompt_with_default "HTTP port" "$default_http")"
   fi
-  if [ -z "$TAKO_HTTPS_PORT" ]; then
+  if [ -z "$TAKO_HTTPS_PORT" ] && is_enabled "$TAKO_RESTART_SERVICE"; then
     TAKO_HTTPS_PORT="$(prompt_with_default "HTTPS port" "$default_https")"
   fi
+
+  TAKO_HTTP_PORT="${TAKO_HTTP_PORT:-$default_http}"
+  TAKO_HTTPS_PORT="${TAKO_HTTPS_PORT:-$default_https}"
 
   validate_port_value "HTTP port" "$TAKO_HTTP_PORT"
   validate_port_value "HTTPS port" "$TAKO_HTTPS_PORT"
@@ -1215,6 +1218,10 @@ maybe_prompt_server_name() {
     return
   fi
 
+  if ! is_enabled "$TAKO_RESTART_SERVICE"; then
+    return
+  fi
+
   # Interactive prompt
   if [ -t 0 ] 2>/dev/null; then
     printf 'Server name (used in metrics) [%s]: ' "$default_name"
@@ -1365,12 +1372,12 @@ if [ "$SERVICE_MANAGER" = "systemd" ]; then
       exit 1
     fi
   else
-    systemctl enable tako-server >/dev/null 2>&1 || true
-    echo "OK install refreshed without restarting tako-server (TAKO_RESTART_SERVICE=0)"
+    echo "OK installed tako-server service (not started)"
+    echo 'Run `tako servers add <host>` from your workstation to configure and start it.'
   fi
 elif [ "$SERVICE_MANAGER" = "openrc" ]; then
-  rc-update add tako-server default >/dev/null 2>&1 || true
   if is_enabled "$TAKO_RESTART_SERVICE"; then
+    rc-update add tako-server default >/dev/null 2>&1 || true
     if rc-service tako-server status >/dev/null 2>&1; then
       main_pid="$(openrc_main_pid)"
       if { [ -n "$TAKO_MANAGEMENT_ARGS" ] && ! process_has_management_host "$main_pid" "$TAKO_MANAGEMENT_HOST"; } || ! process_has_public_ports "$main_pid" "$TAKO_HTTP_PORT" "$TAKO_HTTPS_PORT"; then
@@ -1391,7 +1398,8 @@ elif [ "$SERVICE_MANAGER" = "openrc" ]; then
       exit 1
     fi
   else
-    echo "OK install refreshed without restarting tako-server (TAKO_RESTART_SERVICE=0)"
+    echo "OK installed tako-server service (not started)"
+    echo 'Run `tako servers add <host>` from your workstation to configure and start it.'
   fi
 else
   # Install-refresh mode can run before init is active (for example in image builds).

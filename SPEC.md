@@ -669,7 +669,7 @@ Add server to global `config.toml` (`[[servers]]`).
 
 - With `host`: adds directly from CLI args and defaults the server name to the host's first DNS label (`my-server.tailnet.ts.net` becomes `my-server`). IP addresses and hosts that do not produce a valid server name require `--name`.
 - With `admin-user@host`: treats the prefix as the admin SSH user for install/repair and stores only `host`.
-- Without `host` (interactive terminal): launches a guided wizard (host, SSH port, optional SSH passphrase when a default key is encrypted, install HTTP/HTTPS ports when installing, required server name, optional description) with a final `Looks good?` confirmation. Choosing `No` restarts the wizard.
+- Without `host` (interactive terminal): launches a guided wizard (host, SSH port, optional SSH passphrase when a default key is encrypted, HTTP/HTTPS ports when installing or configuring a stopped install, required server name, optional description) with a final `Looks good?` confirmation. Choosing `No` restarts the wizard.
 - If the derived server name already exists, interactive mode prompts for another name. Non-interactive mode fails and asks for `--name`.
 - The add-server wizard supports `Tab` autocomplete suggestions for host/name/port from existing servers and persisted CLI history.
   - For name/port prompts, suggestions related to the selected host (and selected name for ports) are prioritized first, then global suggestions are shown.
@@ -684,9 +684,11 @@ During SSH checks, `tako servers add` also detects and stores target metadata (`
 
 If `--no-test` is used, SSH checks and target detection are skipped; deploy later fails for that server until target metadata is captured by re-adding the server with SSH checks enabled.
 
-If `--install` is used and `tako-server` is missing or `tako@host` is not available, `tako servers add` connects as the admin SSH user (default `root`, override with `--admin-user`) and runs the server installer over SSH. Passing `admin-user@host` is shorthand for setting that admin user and enabling install/repair when needed. Interactive installs prompt for editable HTTP and HTTPS port fields prefilled with `80` and `443` unless `--http-port`/`--https-port` were passed. The installer authorizes the SSH public key that authenticated the admin connection for the `tako` user, then `servers add` rechecks `tako@host`, enrolls the same key for signed remote management, verifies signed HTTP access, and only then writes `config.toml`.
+If `--install` is used and `tako-server` is missing or `tako@host` is not available, `tako servers add` connects as the admin SSH user (default `root`, override with `--admin-user`) and runs the server installer over SSH in configure/start mode. Passing `admin-user@host` is shorthand for setting that admin user and enabling install/repair when needed. Interactive installs prompt for editable HTTP and HTTPS port fields prefilled with `80` and `443` unless `--http-port`/`--https-port` were passed. The installer authorizes the SSH public key that authenticated the admin connection for the `tako` user, then `servers add` rechecks `tako@host`, enrolls the same key for signed remote management, verifies signed HTTP access, and only then writes `config.toml`.
 
 In the interactive wizard and direct host flow, if `tako-server` is missing or `tako@host` cannot be reached, Tako asks whether to install now, prompts for public HTTP/HTTPS ports, and prompts for the admin SSH user.
+
+If `tako-server` is installed but not yet configured or started (the normal result of running `install-server.sh` manually), `tako servers add` asks whether to configure and start it. In non-interactive install/repair mode (`--install` or `admin-user@host`), this configure/start step runs automatically.
 
 ### tako servers rm [name]
 
@@ -1230,8 +1232,9 @@ Installer SSH key behavior:
 - Installer installs restricted maintenance helpers and scoped sudoers policy so the `tako` SSH user can perform non-interactive server upgrade/reload operations.
 - When the installer installs or accepts `TAKO_SSH_PUBKEY`, it also enrolls that public key for signed remote management in `/opt/tako/management-authorized-keys`.
 - Installer supports systemd and OpenRC hosts.
-- Installer supports install-refresh mode (`TAKO_RESTART_SERVICE=0`) for build/image workflows without active init; in this mode, it refreshes binary/users and skips service-definition install/start.
-- Installer writes `tako-server --http-port {port} --https-port {port}` into the host service definition. Interactive installs prompt for `HTTP port [80]:` and `HTTPS port [443]:`; non-interactive installs use defaults unless `--http-port`/`--https-port` or `TAKO_HTTP_PORT`/`TAKO_HTTPS_PORT` are provided. Reinstalls use the existing service ports as prompt defaults when present.
+- Installer defaults to bootstrap-only mode (`TAKO_RESTART_SERVICE=0`): it installs/refreshes the binary, users, directories, helpers, sudoers policy, and service definition, but does not enable or start `tako-server`. The installer prints the next step: run `tako servers add <host>` from the workstation to configure and start the server.
+- Configure/start mode (`TAKO_RESTART_SERVICE=1`) is used by `tako servers add --install`, `admin-user@host` add/repair flows, and manual installer runs that explicitly set it. This mode requires a usable service manager and remote management on a Tailscale IP.
+- Installer writes `tako-server --http-port {port} --https-port {port}` into the host service definition. Configure/start mode prompts for `HTTP port [80]:` and `HTTPS port [443]:` when a terminal is available; bootstrap-only mode never prompts for ports and uses existing service ports or `80`/`443` unless `--http-port`/`--https-port` or `TAKO_HTTP_PORT`/`TAKO_HTTPS_PORT` are provided. Reinstalls use the existing service ports as prompt defaults when present.
 - If service public ports change, installer performs a full service restart so the service manager command line takes effect. Otherwise, active services use the normal zero-downtime reload path.
 - For normal service installs, installer configures remote management on the server's Tailscale IP. It detects that address with `tailscale ip -4` or uses `TAKO_MANAGEMENT_HOST` when set. If no Tailscale IP is available, install fails with: `Remote management requires Tailscale so Tako can keep server control traffic private by default.`
 - Installer configures service capability support for privileged binds, app-user switching, and stopping app processes after switching users:
