@@ -198,7 +198,7 @@ async fn prompt_dns_setup() -> Result<DnsConfig, Box<dyn std::error::Error>> {
     })
 }
 
-pub(super) async fn setup_wildcard(env: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+pub(super) async fn configure_server(name: &str) -> Result<(), Box<dyn std::error::Error>> {
     use crate::config::ServersToml;
     use crate::ssh::SshConfig;
 
@@ -207,52 +207,21 @@ pub(super) async fn setup_wildcard(env: Option<&str>) -> Result<(), Box<dyn std:
         return Err("No servers configured. Run `tako servers add` first.".into());
     }
 
-    let env_name = env.unwrap_or("production");
-    let server_names: Vec<String> = servers.names().into_iter().map(String::from).collect();
-
-    if server_names.is_empty() {
-        return Err(format!("No servers found for environment '{env_name}'.").into());
-    }
+    let server = servers
+        .get(name)
+        .ok_or_else(|| format!("Server '{}' not found.", name))?;
 
     let dns_config = prompt_dns_setup().await?;
 
-    let mut handles = Vec::new();
-    for name in &server_names {
-        let server = servers.get(name).unwrap();
-        let ssh_config = SshConfig::from_server(&server.host, server.port);
-        let name = name.clone();
-        let config = DnsConfig {
-            provider: dns_config.provider.clone(),
-            credentials_env: dns_config.credentials_env.clone(),
-        };
-        handles.push(tokio::spawn(async move {
-            let mut ssh = SshClient::new(ssh_config);
-            ssh.connect()
-                .await
-                .map_err(|e| format!("Failed to connect to {name}: {e}"))?;
-            apply_dns_config(&ssh, &name, &config)
-                .await
-                .map_err(|e| format!("{e}"))?;
-            let _ = ssh.disconnect().await;
-            Ok::<_, String>(())
-        }));
-    }
+    let ssh_config = SshConfig::from_server(&server.host, server.port);
+    let mut ssh = SshClient::new(ssh_config);
+    ssh.connect()
+        .await
+        .map_err(|e| format!("Failed to connect to {name}: {e}"))?;
+    apply_dns_config(&ssh, name, &dns_config).await?;
+    let _ = ssh.disconnect().await;
 
-    let mut errors = Vec::new();
-    for handle in handles {
-        if let Err(e) = handle.await.unwrap() {
-            errors.push(e);
-        }
-    }
-
-    if !errors.is_empty() {
-        return Err(errors.join("\n").into());
-    }
-
-    output::success(&format!(
-        "DNS-01 wildcard support configured on {} server(s)",
-        server_names.len(),
-    ));
+    output::success(&format!("Server {} configured", output::strong(name)));
 
     Ok(())
 }
@@ -337,7 +306,7 @@ async fn apply_dns_config_inner(
             Ok(info) => {
                 return Err(format!(
                     "DNS provider on {} is {:?} after restart (expected '{}').\n\
-                     Try: tako servers restart {}",
+                     Try: tako servers reload {}",
                     name, info.dns_provider, provider, name,
                 )
                 .into());

@@ -56,17 +56,23 @@ pub enum ServerCommands {
     },
 
     /// List all servers
-    #[command(visible_alias = "list")]
-    Ls,
+    #[command(visible_alias = "ls")]
+    List,
 
     /// Reload tako-server on a server without downtime
-    Restart {
+    Reload {
         /// Server name
         name: String,
 
         /// Force a full service restart with brief downtime
         #[arg(long)]
         force: bool,
+    },
+
+    /// Configure server settings
+    Configure {
+        /// Server name
+        name: String,
     },
 
     /// Upgrade tako-server via graceful reload with rollback to the previous binary on failure
@@ -76,8 +82,7 @@ pub enum ServerCommands {
     },
 
     /// Remove tako-server and all data from a server
-    #[command(visible_alias = "uninstall")]
-    Implode {
+    Uninstall {
         /// Server name (omit to choose interactively)
         name: Option<String>,
 
@@ -89,13 +94,6 @@ pub enum ServerCommands {
     /// Show global deployment status across configured servers
     #[command(visible_alias = "info")]
     Status,
-
-    /// Configure DNS-01 wildcard certificate support
-    SetupWildcard {
-        /// Target environment
-        #[arg(long, short)]
-        env: Option<String>,
-    },
 }
 
 pub fn run(cmd: ServerCommands) -> Result<(), Box<dyn std::error::Error>> {
@@ -154,16 +152,16 @@ async fn run_async(cmd: ServerCommands) -> Result<(), Box<dyn std::error::Error>
             }
         }
         ServerCommands::Rm { name } => crud::remove_server(name.as_deref()).await,
-        ServerCommands::Ls => crud::list_servers().await,
-        ServerCommands::Restart { name, force } => crud::restart_server(&name, force).await,
+        ServerCommands::List => crud::list_servers().await,
+        ServerCommands::Reload { name, force } => crud::restart_server(&name, force).await,
+        ServerCommands::Configure { name } => dns::configure_server(&name).await,
         ServerCommands::Upgrade { name } => upgrade::upgrade_servers(name.as_deref()).await,
-        ServerCommands::Implode { name, yes } => implode_server_cmd(name.as_deref(), yes).await,
+        ServerCommands::Uninstall { name, yes } => uninstall_server_cmd(name.as_deref(), yes).await,
         ServerCommands::Status => crate::commands::status::run().await,
-        ServerCommands::SetupWildcard { env } => dns::setup_wildcard(env.as_deref()).await,
     }
 }
 
-async fn implode_server_cmd(
+async fn uninstall_server_cmd(
     name: Option<&str>,
     assume_yes: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -186,7 +184,7 @@ async fn implode_server_cmd(
         None => {
             if !output::is_interactive() {
                 return Err(
-                    "No server name provided and selection requires an interactive terminal. Run 'tako servers implode <name>'."
+                    "No server name provided and selection requires an interactive terminal. Run 'tako servers uninstall <name>'."
                         .into(),
                 );
             }

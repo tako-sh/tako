@@ -63,7 +63,7 @@ tako dev --var preview
 tako dev stop
 tako dev stop my-app
 tako dev stop --all
-tako dev ls
+tako dev list
 ```
 
 Starts or attaches to a local HTTPS dev session.
@@ -76,8 +76,8 @@ Options and aliases:
 | `--var <name>`     | Alias for `--variant`.                           |
 | `dev stop [name]`  | Stop one registered dev app.                     |
 | `dev stop --all`   | Stop all registered dev apps.                    |
-| `dev ls`           | List registered dev apps.                        |
-| `dev list`         | Alias for `dev ls`.                              |
+| `dev list`         | List registered dev apps.                        |
+| `dev ls`           | Alias for `dev list`.                            |
 
 Interactive shortcuts:
 
@@ -141,7 +141,7 @@ Human logs are formatted with timestamp, level, source, and message columns. Wit
 ## `tako releases`
 
 ```bash
-tako releases ls
+tako releases list
 tako releases list --env staging
 tako releases rollback abc1234
 tako releases rollback abc1234 --env production --yes
@@ -151,8 +151,8 @@ Subcommands:
 
 | Command                              | Meaning                                   |
 | ------------------------------------ | ----------------------------------------- |
-| `releases ls [--env <ENV>]`          | List release/build history, newest first. |
-| `releases list [--env <ENV>]`        | Alias for `releases ls`.                  |
+| `releases list [--env <ENV>]`        | List release/build history, newest first. |
+| `releases ls [--env <ENV>]`          | Alias for `releases list`.                |
 | `releases rollback <ID> [--env ENV]` | Roll back using the normal rolling flow.  |
 
 Rollback to implicit production asks for confirmation unless `--yes` is provided.
@@ -210,7 +210,7 @@ Options:
 | Flag                   | Meaning                                                     |
 | ---------------------- | ----------------------------------------------------------- |
 | `--name <NAME>`        | Server name. Defaults to host's first DNS label when valid. |
-| `--description <TEXT>` | Optional metadata shown by `servers ls`.                    |
+| `--description <TEXT>` | Optional metadata shown by `servers list`.                  |
 | `--port <PORT>`        | SSH port. Default: `22`.                                    |
 | `--http-port <PORT>`   | Public HTTP port used when installing `tako-server`.        |
 | `--https-port <PORT>`  | Public HTTPS port used when installing `tako-server`.       |
@@ -223,26 +223,26 @@ Options:
 
 ```bash
 tako servers rm la
-tako servers ls
+tako servers list
 tako servers status
-tako servers restart la
-tako servers restart la --force
+tako servers reload la
+tako servers reload la --force
 tako servers upgrade
 tako servers upgrade la
-tako servers setup-wildcard
-tako servers implode la
+tako servers configure <name>
+tako servers uninstall la
 ```
 
-| Command                   | Meaning                                                                     |
-| ------------------------- | --------------------------------------------------------------------------- |
-| `servers rm [name]`       | Remove a server from global config. Aliases: `remove`, `delete`.            |
-| `servers ls`              | List configured servers. Alias: `list`.                                     |
-| `servers status`          | Show deployment status across configured servers. Alias: `info`.            |
-| `servers restart <name>`  | Reload `tako-server` without downtime by default.                           |
-| `servers restart --force` | Full service restart, which may cause brief downtime.                       |
-| `servers upgrade [name]`  | Upgrade one server or all servers with graceful reload and rollback.        |
-| `servers setup-wildcard`  | Configure DNS-01 wildcard certificate support.                              |
-| `servers implode [name]`  | Remove `tako-server` and all data from a remote server. Alias: `uninstall`. |
+| Command                         | Meaning                                                                   |
+| ------------------------------- | ------------------------------------------------------------------------- |
+| `servers rm [name]`             | Remove a server from global config. Aliases: `remove`, `delete`.          |
+| `servers list`                  | List configured servers. Alias: `ls`.                                     |
+| `servers status`                | Show deployment status across configured servers. Alias: `info`.          |
+| `servers reload <name>`         | Reload `tako-server` without downtime by default.                         |
+| `servers reload <name> --force` | Full service restart, which may cause brief downtime.                     |
+| `servers upgrade [name]`        | Upgrade one server or all servers with graceful reload and rollback.      |
+| `servers configure <name>`      | Configure server settings, including DNS-01 wildcard certificate support. |
+| `servers uninstall [name]`      | Remove `tako-server` and all data from a remote server.                   |
 
 ## `tako secrets`
 
@@ -250,18 +250,18 @@ tako servers implode la
 tako secrets set DATABASE_URL --env production
 tako secrets set API_KEY --env production --sync
 tako secrets rm API_KEY --env production --sync
-tako secrets ls
+tako secrets list
 tako secrets sync --env production
 ```
 
 Subcommands:
 
-| Command                                 | Meaning                                                    |
-| --------------------------------------- | ---------------------------------------------------------- |
-| `secrets set [--env ENV] [--sync] NAME` | Set or update one secret. Alias: `add`.                    |
-| `secrets rm [--env ENV] [--sync] NAME`  | Remove one secret. Aliases: `remove`, `delete`, `del`.     |
-| `secrets ls`                            | List secret names by environment. Aliases: `list`, `show`. |
-| `secrets sync [--env ENV]`              | Sync local encrypted secrets to target servers.            |
+| Command                                 | Meaning                                                  |
+| --------------------------------------- | -------------------------------------------------------- |
+| `secrets set [--env ENV] [--sync] NAME` | Set or update one secret. Alias: `add`.                  |
+| `secrets rm [--env ENV] [--sync] NAME`  | Remove one secret. Aliases: `remove`, `delete`, `del`.   |
+| `secrets list`                          | List secret names by environment. Aliases: `ls`, `show`. |
+| `secrets sync [--env ENV]`              | Sync local encrypted secrets to target servers.          |
 
 Interactive `set` prompts for the value with masked input. Non-interactive `set` reads one line from stdin.
 
@@ -279,12 +279,12 @@ tako secrets key import --passphrase --env production
 | `secrets key import [--env ENV]`            | Import an exported key bundle from prompt or stdin. |
 | `secrets key import --passphrase --env ENV` | Import a passphrase-derived environment key.        |
 
-## `tako storage`
+## `tako storages`
 
 Attach S3-compatible object storage to the current app:
 
 ```bash
-tako storage add uploads \
+tako storages add uploads \
   --env production \
   --provider r2 \
   --bucket app-uploads \
@@ -315,13 +315,11 @@ tako upgrade
 
 Upgrades the local CLI installation. Homebrew installs use `brew upgrade tako`; other installs download the hosted CLI archive. Downloaded archives require a valid SHA-256 checksum before extraction.
 
-## `tako implode`
-
-Alias: `tako uninstall`.
+## `tako uninstall`
 
 ```bash
-tako implode
-tako implode --yes
+tako uninstall
+tako uninstall --yes
 ```
 
 Removes the local Tako CLI, local data directories, and platform-specific dev services/config installed by `tako dev`. System-level cleanup may require sudo.

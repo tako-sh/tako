@@ -103,7 +103,7 @@ The obvious reason to pick Vercel is that you do not have to own the platform. T
 
 That ownership shows up in a few practical places.
 
-First, deploys are normal server events, not platform events. `tako deploy` builds locally, uploads a versioned artifact, runs production install on the server, starts a fresh instance, waits for the internal health check, adds it to the load balancer, and drains the old one. If startup fails, the old instance keeps serving and the failed release is cleaned up. You can inspect release history with `tako releases ls` and roll back with `tako releases rollback`.
+First, deploys are normal server events, not platform events. `tako deploy` builds locally, uploads a versioned artifact, runs production install on the server, starts a fresh instance, waits for the internal health check, adds it to the load balancer, and drains the old one. If startup fails, the old instance keeps serving and the failed release is cleaned up. You can inspect release history with `tako releases list` and roll back with `tako releases rollback`.
 
 Second, secrets are part of the platform instead of scattered `.env` files. [`tako secrets set`](/docs/cli) stores encrypted project secrets locally, syncs them to mapped servers, and `tako-server` injects them into app processes without writing a release `.env` file. For Next.js apps, `tako.sh` gives typed runtime state and generated `tako.d.ts` declarations add typed secrets, so server code can import what it needs without leaning on untyped `process.env` reads.
 

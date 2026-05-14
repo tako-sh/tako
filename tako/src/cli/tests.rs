@@ -203,10 +203,10 @@ fn secrets_key_import_passphrase_parses_with_env() {
 }
 
 #[test]
-fn storage_add_parses_required_binding_options() {
+fn storages_add_parses_required_binding_options() {
     let cli = Cli::try_parse_from([
         "tako",
-        "storage",
+        "storages",
         "add",
         "uploads",
         "--env",
@@ -229,7 +229,7 @@ fn storage_add_parses_required_binding_options() {
     ])
     .unwrap();
 
-    let Some(Commands::Storage(StorageCommands::Add {
+    let Some(Commands::Storages(StorageCommands::Add {
         name,
         env,
         provider,
@@ -285,10 +285,18 @@ fn servers_rm_without_name_parses_for_selector() {
 }
 
 #[test]
-fn servers_list_alias_parses() {
+fn servers_list_parses() {
     let cli = Cli::try_parse_from(["tako", "servers", "list"]).unwrap();
-    let Commands::Servers(server::ServerCommands::Ls) = cli.command.expect("command") else {
-        panic!("expected Servers::Ls");
+    let Commands::Servers(server::ServerCommands::List) = cli.command.expect("command") else {
+        panic!("expected Servers::List");
+    };
+}
+
+#[test]
+fn servers_ls_alias_parses() {
+    let cli = Cli::try_parse_from(["tako", "servers", "ls"]).unwrap();
+    let Commands::Servers(server::ServerCommands::List) = cli.command.expect("command") else {
+        panic!("expected Servers::List");
     };
 }
 
@@ -313,47 +321,35 @@ fn servers_status_with_name_is_rejected() {
 }
 
 #[test]
-fn servers_setup_wildcard_parses_without_env() {
-    let cli = Cli::try_parse_from(["tako", "servers", "setup-wildcard"]).unwrap();
-    let Commands::Servers(server::ServerCommands::SetupWildcard { env }) =
+fn servers_configure_parses_name() {
+    let cli = Cli::try_parse_from(["tako", "servers", "configure", "prod"]).unwrap();
+    let Commands::Servers(server::ServerCommands::Configure { name }) =
         cli.command.expect("command")
     else {
-        panic!("expected Servers::SetupWildcard");
+        panic!("expected Servers::Configure");
     };
-    assert_eq!(env, None);
+    assert_eq!(name, "prod");
 }
 
 #[test]
-fn servers_setup_wildcard_parses_with_env() {
-    let cli =
-        Cli::try_parse_from(["tako", "servers", "setup-wildcard", "--env", "staging"]).unwrap();
-    let Commands::Servers(server::ServerCommands::SetupWildcard { env }) =
+fn servers_reload_parses_without_force() {
+    let cli = Cli::try_parse_from(["tako", "servers", "reload", "prod"]).unwrap();
+    let Commands::Servers(server::ServerCommands::Reload { name, force }) =
         cli.command.expect("command")
     else {
-        panic!("expected Servers::SetupWildcard");
-    };
-    assert_eq!(env, Some("staging".to_string()));
-}
-
-#[test]
-fn servers_restart_parses_without_force() {
-    let cli = Cli::try_parse_from(["tako", "servers", "restart", "prod"]).unwrap();
-    let Commands::Servers(server::ServerCommands::Restart { name, force }) =
-        cli.command.expect("command")
-    else {
-        panic!("expected Servers::Restart");
+        panic!("expected Servers::Reload");
     };
     assert_eq!(name, "prod");
     assert!(!force);
 }
 
 #[test]
-fn servers_restart_parses_with_force() {
-    let cli = Cli::try_parse_from(["tako", "servers", "restart", "prod", "--force"]).unwrap();
-    let Commands::Servers(server::ServerCommands::Restart { name, force }) =
+fn servers_reload_parses_with_force() {
+    let cli = Cli::try_parse_from(["tako", "servers", "reload", "prod", "--force"]).unwrap();
+    let Commands::Servers(server::ServerCommands::Reload { name, force }) =
         cli.command.expect("command")
     else {
-        panic!("expected Servers::Restart");
+        panic!("expected Servers::Reload");
     };
     assert_eq!(name, "prod");
     assert!(force);
@@ -409,10 +405,10 @@ fn secrets_remove_aliases_parse() {
 }
 
 #[test]
-fn secrets_list_alias_parses() {
+fn secrets_list_parses() {
     let cli = Cli::try_parse_from(["tako", "secrets", "list"]).unwrap();
-    let Some(Commands::Secrets(secret::SecretCommands::Ls)) = cli.command else {
-        panic!("expected Secrets::Ls");
+    let Some(Commands::Secrets(secret::SecretCommands::List)) = cli.command else {
+        panic!("expected Secrets::List");
     };
 }
 
@@ -502,20 +498,29 @@ fn deploy_parses_yes_short_flag() {
 
 #[test]
 fn releases_list_parses() {
-    let cli = Cli::try_parse_from(["tako", "releases", "ls"]).unwrap();
-    let Some(Commands::Releases(releases::ReleaseCommands::Ls { env })) = cli.command else {
-        panic!("expected Releases::Ls");
+    let cli = Cli::try_parse_from(["tako", "releases", "list"]).unwrap();
+    let Some(Commands::Releases(releases::ReleaseCommands::List { env })) = cli.command else {
+        panic!("expected Releases::List");
     };
     assert!(env.is_none());
 }
 
 #[test]
 fn releases_list_parses_with_env() {
-    let cli = Cli::try_parse_from(["tako", "releases", "ls", "--env", "staging"]).unwrap();
-    let Some(Commands::Releases(releases::ReleaseCommands::Ls { env })) = cli.command else {
-        panic!("expected Releases::Ls");
+    let cli = Cli::try_parse_from(["tako", "releases", "list", "--env", "staging"]).unwrap();
+    let Some(Commands::Releases(releases::ReleaseCommands::List { env })) = cli.command else {
+        panic!("expected Releases::List");
     };
     assert_eq!(env.as_deref(), Some("staging"));
+}
+
+#[test]
+fn releases_ls_alias_parses() {
+    let cli = Cli::try_parse_from(["tako", "releases", "ls"]).unwrap();
+    let Some(Commands::Releases(releases::ReleaseCommands::List { env })) = cli.command else {
+        panic!("expected Releases::List");
+    };
+    assert!(env.is_none());
 }
 
 #[test]
@@ -593,6 +598,15 @@ fn delete_parses_env_and_server_flags_together() {
 fn upgrade_command_parses() {
     let cli = Cli::try_parse_from(["tako", "upgrade"]).unwrap();
     assert!(matches!(cli.command, Some(Commands::Upgrade)));
+}
+
+#[test]
+fn uninstall_command_parses() {
+    let cli = Cli::try_parse_from(["tako", "uninstall"]).unwrap();
+    assert!(matches!(
+        cli.command,
+        Some(Commands::Uninstall { yes: false })
+    ));
 }
 
 #[test]
@@ -683,21 +697,21 @@ fn dev_stop_all_parses() {
 }
 
 #[test]
-fn dev_ls_parses() {
-    let cli = Cli::try_parse_from(["tako", "dev", "ls"]).unwrap();
-    let Commands::Dev { command, .. } = cli.command.expect("command") else {
-        panic!("expected Dev");
-    };
-    assert!(matches!(command, Some(DevSubcommands::Ls)));
-}
-
-#[test]
-fn dev_list_alias_parses() {
+fn dev_list_parses() {
     let cli = Cli::try_parse_from(["tako", "dev", "list"]).unwrap();
     let Commands::Dev { command, .. } = cli.command.expect("command") else {
         panic!("expected Dev");
     };
-    assert!(matches!(command, Some(DevSubcommands::Ls)));
+    assert!(matches!(command, Some(DevSubcommands::List)));
+}
+
+#[test]
+fn dev_ls_alias_parses() {
+    let cli = Cli::try_parse_from(["tako", "dev", "ls"]).unwrap();
+    let Commands::Dev { command, .. } = cli.command.expect("command") else {
+        panic!("expected Dev");
+    };
+    assert!(matches!(command, Some(DevSubcommands::List)));
 }
 
 #[test]

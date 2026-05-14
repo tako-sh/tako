@@ -158,7 +158,7 @@ tako secrets sync --env production
 ```bash
 tako secrets set API_KEY --env production
 tako secrets set API_KEY --env development
-tako secrets ls
+tako secrets list
 ```
 
 Check the [CLI reference](/docs/cli) for the full command set, or the [deployment docs](/docs/deployment) for how secrets flow during a deploy. The [development guide](/docs/development) covers how secrets work locally with `tako dev`.

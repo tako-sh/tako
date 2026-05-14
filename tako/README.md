@@ -9,7 +9,7 @@ Rust crate for the `tako` CLI, `tako-dev-server`, and `tako-dev-proxy` local bin
 - Local development daemon runtime (`tako-dev-server`).
 - macOS dev proxy for loopback-only local ingress (`tako-dev-proxy`).
 - Deployment orchestration (`tako deploy`).
-- Release history and rollback (`tako releases ls`, `tako releases rollback`).
+- Release history and rollback (`tako releases list`, `tako releases rollback`).
 - Remote operational commands (`logs`, `delete`, `servers`, `secrets`).
 - Config loading/validation, runtime detection, and SSH interactions.
 
@@ -23,10 +23,14 @@ Primary subcommands:
 - `doctor`
 - `servers`
 - `secrets`
+- `storages`
+- `releases`
 - `upgrade`
 - `deploy`
-- `releases`
 - `delete`
+- `scale`
+- `generate`
+- `uninstall`
 
 Use `cargo run -p tako --bin tako -- --help` for current flags and subcommand help.
 
@@ -35,7 +39,7 @@ Operational behavior highlights:
 - `tako upgrade` upgrades only the local CLI. On macOS it preserves the signed `Tako.app` + `tako` symlink layout used by the hosted installer. Every build is a rolling `latest` build while Tako's protocol is v0.
 - `tako servers status` prints one global snapshot and exits.
 - `tako servers upgrade <name>` verifies the signed `tako-server-sha256s.txt` release manifest, enforces the matching archive SHA-256 on the host, installs `/usr/local/bin/tako-server`, enters server upgrade mode, triggers service-manager reload (`systemctl reload tako-server` on systemd or `rc-service tako-server reload` on OpenRC) using root privileges (root login or sudo-capable user), waits for readiness, then exits upgrade mode. Reload uses temporary process overlap until the replacement server is ready, and Tako keeps the previous on-disk binary until then so it can restore it if readiness fails. Custom `TAKO_DOWNLOAD_BASE_URL` overrides must use `https://` unless `TAKO_ALLOW_INSECURE_DOWNLOAD_BASE=1` is set for local testing. GitHub-backed update checks and downloads use `GH_TOKEN` when set, falling back to `GITHUB_TOKEN`.
-- Installer-managed hosts configure scoped passwordless sudo helpers for the `tako` SSH user, so upgrade/restart maintenance flows run non-interactively by default.
+- Installer-managed hosts configure scoped passwordless sudo helpers for the `tako` SSH user, so upgrade/reload maintenance flows run non-interactively by default.
 - Status output shows separate lines for concurrently running builds of the same app.
 - App heading lines show `app (environment) state`; build/version is shown on the nested `build:` line.
 - `tako deploy` packages source files from the app's source root (git root when available; otherwise app directory), filtered by `.gitignore`.
@@ -51,7 +55,7 @@ Operational behavior highlights:
 - Local runtime version resolution runs `<tool> --version` directly, falling back to `latest`.
 - `tako deploy` merges build assets (preset assets + `build.assets`) into app `public/` after target build, in listed order.
 - `tako deploy` writes `app.json` in the deployed app directory and `tako-server` uses it to resolve the runtime start command.
-- `tako releases ls` shows release/build history for the current app and environment with commit metadata when available.
+- `tako releases list` shows release/build history for the current app and environment with commit metadata when available.
 - `tako releases rollback <release-id>` rolls target servers back to a previous release id using the normal rolling-update path.
 - `tako servers add` expects a Tailscale MagicDNS name or Tailscale IP, verifies `tako@host` SSH recovery access, enrolls the authenticated SSH key for signed remote management, verifies private management HTTP, then stores detected target metadata (`arch`, `libc`) in each `[[servers]]` entry in `~/.tako/config.toml`. Use `--install` to install or repair `tako-server` over SSH before adding. Encrypted local SSH keys prompt interactively; pass `--ssh-passphrase` for one-line commands.
 - `tako deploy` requires valid target metadata for each selected server and does not probe targets during deploy.

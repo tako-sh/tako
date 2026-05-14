@@ -19,8 +19,8 @@ static LOCAL_OFFSET: OnceLock<UtcOffset> = OnceLock::new();
 #[derive(Subcommand)]
 pub enum ReleaseCommands {
     /// List previously deployed releases/builds for the current app
-    #[command(visible_alias = "list")]
-    Ls {
+    #[command(visible_alias = "ls")]
+    List {
         /// Environment to query (defaults to production)
         #[arg(long)]
         env: Option<String>,
@@ -60,7 +60,7 @@ async fn run_async(
     let servers = ServersToml::load()?;
 
     match cmd {
-        ReleaseCommands::Ls { env } => {
+        ReleaseCommands::List { env } => {
             let env = resolve_env_name(env.as_deref(), &tako_config)?;
             let server_names = resolve_server_names_for_env(&tako_config, &servers, &env)?;
             list_releases(&app_name, &env, &server_names, &servers).await

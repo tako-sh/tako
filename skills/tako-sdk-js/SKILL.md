@@ -133,7 +133,7 @@ The helper returns `/_tako/image?src=...&w=...` and is synchronous. Width must b
 Attach S3-compatible storage with the CLI, then use `tako.storages.<name>` from server-side app code:
 
 ```bash
-tako storage add uploads \
+tako storages add uploads \
   --provider r2 \
   --bucket app-uploads \
   --endpoint https://<account>.r2.cloudflarestorage.com \

@@ -306,13 +306,13 @@ If a worker exits non-zero before claiming a run, enqueue fails loudly for a sho
 ## Stopping And Listing Apps
 
 ```bash
-tako dev ls
+tako dev list
 tako dev stop
 tako dev stop my-app
 tako dev stop --all
 ```
 
-`tako dev ls` has alias `tako dev list`.
+`tako dev list` has alias `tako dev ls`.
 
 Without a name, `tako dev stop` stops the app for the selected config file.
 

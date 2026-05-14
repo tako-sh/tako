@@ -78,8 +78,8 @@ pub enum SecretCommands {
     },
 
     /// List all secrets
-    #[command(visible_aliases = ["list", "show"])]
-    Ls,
+    #[command(visible_aliases = ["ls", "show"])]
+    List,
 
     /// Sync secrets to servers
     Sync {
@@ -158,7 +158,7 @@ async fn run_async(
         SecretCommands::Rm { name, env, sync } => {
             remove_secret(&context, &name, env.as_deref(), sync).await
         }
-        SecretCommands::Ls => list_secrets(&context).await,
+        SecretCommands::List => list_secrets(&context).await,
         SecretCommands::Sync { env } => sync_secrets(&context, env.as_deref()).await,
         SecretCommands::Key(SecretKeyCommands::Export { env }) => {
             let env = resolve_secret_environment(&context, env.as_deref(), "Key environment")?;

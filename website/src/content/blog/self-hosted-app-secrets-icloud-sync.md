@@ -31,7 +31,7 @@ The file looks like this:
 }
 ```
 
-Secret names are plaintext so `tako secrets ls` can show a useful table without decrypting values. Secret values are encrypted with AES-256-GCM. Each environment has a `key_id`, which is the small but important rebuild: every machine can agree that production uses key `0123456789abcdef`, without storing the key itself in the repo.
+Secret names are plaintext so `tako secrets list` can show a useful table without decrypting values. Secret values are encrypted with AES-256-GCM. Each environment has a `key_id`, which is the small but important rebuild: every machine can agree that production uses key `0123456789abcdef`, without storing the key itself in the repo.
 
 The key lives outside the project:
 
@@ -157,7 +157,7 @@ That is the whole shape:
 | Share access   | `tako secrets key export --env production`         | Copies a key bundle for that environment              |
 | Join a machine | `tako secrets key import`                          | Caches the imported key locally or in iCloud Keychain |
 | Rotate live    | `tako secrets set API_KEY --env production --sync` | Updates servers and rolls fresh processes             |
-| Audit names    | `tako secrets ls`                                  | Shows presence across environments, never values      |
+| Audit names    | `tako secrets list`                                | Shows presence across environments, never values      |
 
 ## Small enough to use, strict enough to trust.
 

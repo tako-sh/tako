@@ -45,7 +45,7 @@ Start local development server with built-in HTTPS proxy and `.test` domain.
 tako dev
 tako dev --variant staging    # myapp-staging.test
 tako dev stop [name]          # stop a running dev app
-tako dev ls                   # list registered dev apps
+tako dev list                   # list registered dev apps
 ```
 
 Features:
@@ -71,7 +71,7 @@ tako secrets set API_KEY --sync   # set and sync to servers immediately
 
 Delete a secret. Aliases: `remove`, `delete`.
 
-### `tako secrets ls`
+### `tako secrets list`
 
 List all secret names.
 
@@ -89,12 +89,12 @@ Import a base64url key string. The string includes its id, so import does not ta
 
 ## Storage
 
-### `tako storage add <name>`
+### `tako storages add <name>`
 
 Attach S3-compatible storage to the app. Credentials are encrypted in `.tako/storages.json` and synced on deploy.
 
 ```bash
-tako storage add uploads \
+tako storages add uploads \
   --env production \
   --provider r2 \
   --bucket app-uploads \
@@ -155,7 +155,7 @@ tako scale 1 --env staging
 
 ## Releases
 
-### `tako releases ls [--env <env>]`
+### `tako releases list [--env <env>]`
 
 List deployment history.
 
@@ -180,7 +180,7 @@ tako logs --days 3
 
 Add a deployment server.
 
-### `tako servers ls`
+### `tako servers list`
 
 List configured servers.
 
@@ -206,7 +206,7 @@ Show CLI version.
 
 Upgrade the Tako CLI.
 
-### `tako implode [--yes]`
+### `tako uninstall [--yes]`
 
 Uninstall Tako and remove all local data.
 

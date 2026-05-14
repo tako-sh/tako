@@ -161,7 +161,7 @@ pub(super) fn check_wildcard_dns_support(
 
     Err(format!(
         "Server(s) {} need DNS-01 for wildcard route(s) {route_list}\n\
-         Run `tako servers setup-wildcard` to configure DNS credentials.",
+         Run `tako servers configure <name>` for each listed server.",
         missing.join(", "),
     )
     .into())
@@ -259,7 +259,7 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("prod-2"), "should name the server: {msg}");
         assert!(
-            msg.contains("setup-wildcard"),
+            msg.contains("servers configure"),
             "should suggest the command: {msg}"
         );
     }

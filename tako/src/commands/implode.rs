@@ -256,7 +256,7 @@ fn gather_macos_system_targets() -> Vec<SystemTarget> {
 /// Check whether any Tako CA certificates exist in the system keychain (macOS)
 /// or trust store (Linux).
 /// Common names of all Tako dev CA certs we've ever shipped. Include
-/// legacy names so `tako implode` can clean up machines that still have
+/// legacy names so `tako uninstall` can clean up machines that still have
 /// an older cert pinned from a previous Tako version.
 #[cfg(target_os = "macos")]
 const TAKO_CA_COMMON_NAMES: &[&str] = &[

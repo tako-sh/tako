@@ -535,7 +535,7 @@ mod server_commands {
     use super::*;
 
     #[test]
-    fn test_server_ls_empty() {
+    fn test_server_list_empty() {
         let temp = TempDir::new().unwrap();
         let project_dir = temp.path().to_path_buf();
 
@@ -546,7 +546,7 @@ mod server_commands {
 
         // Point tako at this isolated TAKO_HOME.
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_tako"));
-        cmd.args(["servers", "ls"])
+        cmd.args(["servers", "list"])
             .current_dir(&project_dir)
             .env("HOME", &project_dir)
             .env("TAKO_HOME", &tako_dir)
@@ -558,7 +558,7 @@ mod server_commands {
 
         assert!(
             output.status.success(),
-            "tako servers ls failed: {}",
+            "tako servers list failed: {}",
             stderr_str(&output)
         );
 
@@ -576,7 +576,7 @@ mod server_commands {
         );
         assert!(
             !combined.contains("Add one now?"),
-            "servers ls should not launch an add wizard: {}",
+            "servers list should not launch an add wizard: {}",
             combined
         );
     }
@@ -849,10 +849,10 @@ mod server_commands {
         );
         assert!(add.status.success(), "add should succeed");
 
-        let ls = run_tako_with_env(&["servers", "ls"], &project_dir, &home, &tako_home);
+        let ls = run_tako_with_env(&["servers", "list"], &project_dir, &home, &tako_home);
         assert!(
             ls.status.success(),
-            "servers ls should succeed: {}{}",
+            "servers list should succeed: {}{}",
             stdout_str(&ls),
             stderr_str(&ls)
         );
@@ -966,10 +966,10 @@ mod server_commands {
             "expected shared cancellation message: {stderr}"
         );
 
-        let ls = run_tako_with_env(&["servers", "ls"], &project_dir, &home, &tako_home);
+        let ls = run_tako_with_env(&["servers", "list"], &project_dir, &home, &tako_home);
         assert!(
             ls.status.success(),
-            "servers ls should succeed after cancellation: {}{}",
+            "servers list should succeed after cancellation: {}{}",
             stdout_str(&ls),
             stderr_str(&ls)
         );
@@ -1134,11 +1134,11 @@ main = "index.ts"
         )
         .unwrap();
 
-        let output = run_tako(&["secrets", "ls"], &project_dir);
+        let output = run_tako(&["secrets", "list"], &project_dir);
 
         assert!(
             output.status.success(),
-            "tako secrets ls failed: {}",
+            "tako secrets list failed: {}",
             stderr_str(&output)
         );
 
@@ -2172,7 +2172,7 @@ mod output_modes {
         fs::write(tako_dir.join("config.toml"), "").unwrap();
 
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_tako"));
-        cmd.args(["--ci", "servers", "ls"])
+        cmd.args(["--ci", "servers", "list"])
             .current_dir(project_dir)
             .env("HOME", project_dir)
             .env("TAKO_HOME", &tako_dir)
@@ -2202,7 +2202,7 @@ mod output_modes {
         fs::write(tako_dir.join("config.toml"), "").unwrap();
 
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_tako"));
-        cmd.args(["--verbose", "servers", "ls"])
+        cmd.args(["--verbose", "servers", "list"])
             .current_dir(project_dir)
             .env("HOME", project_dir)
             .env("TAKO_HOME", &tako_dir)
@@ -2236,7 +2236,7 @@ mod output_modes {
         fs::write(tako_dir.join("config.toml"), "").unwrap();
 
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_tako"));
-        cmd.args(["--ci", "--verbose", "servers", "ls"])
+        cmd.args(["--ci", "--verbose", "servers", "list"])
             .current_dir(project_dir)
             .env("HOME", project_dir)
             .env("TAKO_HOME", &tako_dir)
@@ -2274,7 +2274,7 @@ mod output_modes {
         fs::write(tako_dir.join("config.toml"), "").unwrap();
 
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_tako"));
-        cmd.args(["--verbose", "servers", "ls"])
+        cmd.args(["--verbose", "servers", "list"])
             .current_dir(project_dir)
             .env("HOME", project_dir)
             .env("TAKO_HOME", &tako_dir)
@@ -2292,13 +2292,13 @@ mod output_modes {
     }
 }
 
-mod implode_commands {
+mod uninstall_commands {
     use super::*;
 
     #[test]
-    fn implode_lists_targets_and_confirms() {
+    fn uninstall_lists_targets_and_confirms() {
         // Non-interactive (stdin is null) — confirmation defaults to false,
-        // so implode lists targets but does not actually delete anything.
+        // so uninstall lists targets but does not actually delete anything.
         let temp = TempDir::new().unwrap();
         let project_dir = temp.path().join("project");
         fs::create_dir_all(&project_dir).unwrap();
@@ -2307,11 +2307,11 @@ mod implode_commands {
         fs::create_dir_all(&tako_home).unwrap();
         fs::write(tako_home.join("config.toml"), "").unwrap();
 
-        let output = run_tako_with_env(&["implode"], &project_dir, temp.path(), &tako_home);
+        let output = run_tako_with_env(&["uninstall"], &project_dir, temp.path(), &tako_home);
 
         assert!(
             output.status.success(),
-            "implode should succeed (cancelled): {}",
+            "uninstall should succeed (cancelled): {}",
             stderr_str(&output)
         );
         let stderr = stderr_str(&output);
@@ -2337,7 +2337,7 @@ mod implode_commands {
     }
 
     #[test]
-    fn servers_implode_without_name_in_non_interactive_mode_shows_hint() {
+    fn servers_uninstall_without_name_in_non_interactive_mode_shows_hint() {
         let temp = TempDir::new().unwrap();
         let project_dir = temp.path().join("project");
         fs::create_dir_all(&project_dir).unwrap();
@@ -2363,21 +2363,22 @@ mod implode_commands {
         );
         assert!(add.status.success(), "add should succeed");
 
-        let implode = run_tako_with_env(&["servers", "implode"], &project_dir, &home, &tako_home);
+        let uninstall =
+            run_tako_with_env(&["servers", "uninstall"], &project_dir, &home, &tako_home);
         assert!(
-            !implode.status.success(),
-            "implode without name should fail on non-tty"
+            !uninstall.status.success(),
+            "uninstall without name should fail on non-tty"
         );
 
-        let stderr = stderr_str(&implode);
+        let stderr = stderr_str(&uninstall);
         assert!(
             stderr.contains("requires an interactive terminal"),
-            "expected helpful error for non-interactive implode: {stderr}"
+            "expected helpful error for non-interactive uninstall: {stderr}"
         );
     }
 
     #[test]
-    fn servers_implode_nonexistent_name_fails() {
+    fn servers_uninstall_nonexistent_name_fails() {
         let temp = TempDir::new().unwrap();
         let project_dir = temp.path().join("project");
         fs::create_dir_all(&project_dir).unwrap();
@@ -2403,18 +2404,18 @@ mod implode_commands {
         );
         assert!(add.status.success(), "add should succeed");
 
-        let implode = run_tako_with_env(
-            &["servers", "implode", "ghost-server", "--yes"],
+        let uninstall = run_tako_with_env(
+            &["servers", "uninstall", "ghost-server", "--yes"],
             &project_dir,
             &home,
             &tako_home,
         );
         assert!(
-            !implode.status.success(),
-            "implode of nonexistent server should fail"
+            !uninstall.status.success(),
+            "uninstall of nonexistent server should fail"
         );
 
-        let stderr = stderr_str(&implode);
+        let stderr = stderr_str(&uninstall);
         assert!(
             stderr.contains("not found"),
             "expected 'not found' error, got: {stderr}"

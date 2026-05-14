@@ -302,7 +302,7 @@ When the first secret is set for an environment, Tako generates a random environ
 
 ### .tako/storages.json (Project - Encrypted)
 
-Per-environment object storage bindings live in `.tako/storages.json`. The file is written by `tako storage add`, is encrypted with the same environment-key mechanism as secrets, and is trackable in the repository.
+Per-environment object storage bindings live in `.tako/storages.json`. The file is written by `tako storages add`, is encrypted with the same environment-key mechanism as secrets, and is trackable in the repository.
 
 ```json
 {
@@ -556,11 +556,11 @@ Stop a running dev app.
 - With `name`: stops the app with that name.
 - `--all`: stops all registered dev apps.
 
-### tako dev ls
+### tako dev list
 
 List all registered dev apps.
 
-Alias: `tako dev list`.
+Alias: `tako dev ls`.
 
 ### tako doctor
 
@@ -674,7 +674,7 @@ Add server to global `config.toml` (`[[servers]]`).
 - The add-server wizard supports `Tab` autocomplete suggestions for host/name/port from existing servers and persisted CLI history.
   - For name/port prompts, suggestions related to the selected host (and selected name for ports) are prioritized first, then global suggestions are shown.
 - Successful adds record host/name/SSH-port history in `history.toml` for future autocomplete.
-- `--description` stores optional human-readable metadata in `config.toml` (shown in `tako servers ls`).
+- `--description` stores optional human-readable metadata in `config.toml` (shown in `tako servers list`).
 - `--http-port` and `--https-port` set the public proxy ports used when `servers add` installs `tako-server`; omitted values default to `80` and `443`. They are distinct from `--port`, which remains the SSH port.
 - Re-running with the same name/host/SSH-port/public-port tuple is idempotent (reports already configured and succeeds).
 
@@ -699,7 +699,7 @@ Confirms before removal. Warns that projects referencing this server will fail.
 
 Aliases: `tako servers remove [name]`, `tako servers delete [name]`.
 
-### tako servers ls
+### tako servers list
 
 List all configured servers from global config (`config.toml`) as a table:
 
@@ -708,11 +708,11 @@ List all configured servers from global config (`config.toml`) as a table:
 - Port
 - Optional description
 
-Alias: `tako servers list`.
+Alias: `tako servers ls`.
 
-If no servers are configured, `tako servers ls` shows a hint to run `tako servers add`.
+If no servers are configured, `tako servers list` shows a hint to run `tako servers add`.
 
-### tako servers restart {server-name} [--force]
+### tako servers reload {server-name} [--force]
 
 Reload `tako-server` without downtime by default. `--force` performs a full service restart and may cause brief downtime for all apps.
 
@@ -760,7 +760,7 @@ Failure behavior:
 - Upgrade keeps the previous on-disk `tako-server` binary until the replacement process reports ready. If readiness does not arrive, the previous binary is restored.
 - If the reload was sent but the socket did not become ready within the timeout, CLI warns that upgrade mode may remain enabled until the primary recovers.
 
-### tako servers implode [name] [-y|--yes]
+### tako servers uninstall [name] [-y|--yes]
 
 Remove tako-server and all data from a remote server.
 
@@ -774,23 +774,21 @@ Remove tako-server and all data from a remote server.
    - Removes data directory (`/opt/tako/`) and the management socket directory (`/var/run/tako/`).
 4. Removes the server from the local `config.toml` server list.
 
-Alias: `tako servers uninstall`.
+### tako servers configure <name>
 
-### tako servers setup-wildcard [-e|--env ENV]
+Configure server settings. The current configure flow sets up DNS-01 wildcard certificate support for one configured server.
 
-Configure DNS-01 wildcard certificate support on all configured servers.
-
-1. Loads all configured servers. The `--env` flag is accepted by the command but does not currently filter the target server list.
+1. Loads the named server from global config.
 2. Runs an interactive wizard prompting for DNS provider and credentials.
 3. Verifies credentials locally against the provider API.
-4. Applies the configuration to all servers in parallel:
+4. Applies the configuration to the server:
    - Writes credentials to `/opt/tako/dns-credentials.env` (mode 0600)
    - Merges `dns.provider` into `/opt/tako/config.json`
    - Writes a systemd drop-in to inject the env file and restarts `tako-server`
    - Polls `tako-server` to confirm the provider is active
 5. `tako-server` downloads and installs lego on-demand when issuing wildcard certificates.
 
-### tako implode [-y|--yes]
+### tako uninstall [-y|--yes]
 
 Remove the local Tako CLI and all local data.
 
@@ -804,8 +802,6 @@ Remove the local Tako CLI and all local data.
 4. Best-effort stops the dev server (unregisters all dev apps).
 5. Removes system-level items via `sudo` (best-effort), then removes user-level directories and binaries.
 6. Reports success or partial removal if some items could not be deleted.
-
-Alias: `tako uninstall`.
 
 ### tako secrets set [--env {environment}] [--sync] {name}
 
@@ -831,13 +827,13 @@ When `--sync` is provided, immediately syncs secrets to servers after the local 
 
 Aliases: `tako secrets remove ...`, `tako secrets delete ...`, `tako secrets del ...`.
 
-### tako secrets ls
+### tako secrets list
 
 List all secrets with presence table across environments.
 
 Shows which secrets exist in which environments. Warns about missing secrets. Never displays values.
 
-Aliases: `tako secrets list`, `tako secrets show`.
+Aliases: `tako secrets ls`, `tako secrets show`.
 
 ### tako secrets sync [--env {environment}]
 
@@ -877,12 +873,12 @@ In interactive mode, asks for the key source:
 
 In non-interactive mode, `tako secrets key import --env {environment}` reads a single exported key string from stdin by default. Omitting `--env` still imports the key and matches an existing environment by key id when possible. Pass `--passphrase --env {environment}` to import a passphrase from stdin. Imported keys are stored under Tako's data directory at `keys/{id}` by default. On macOS interactive runs, Tako offers iCloud Keychain storage, which requires the signed `Tako.app` CLI. If the entitlement is unavailable while saving to iCloud Keychain, the import fails before writing a local key file or updating `.tako/secrets.json`. If the current project has an environment matching the imported `id`, reports that environment name; otherwise reports the imported id.
 
-### tako storage add {name}
+### tako storages add {name}
 
 Attach an S3-compatible object storage binding to this app.
 
 ```bash
-tako storage add uploads \
+tako storages add uploads \
   --env production \
   --provider r2 \
   --bucket app-uploads \
@@ -1003,7 +999,7 @@ Deploy flow helpers:
 - Target artifacts are cached locally by deterministic key and reused across deploys when build inputs are unchanged.
 - Cached artifacts are validated by checksum/size before reuse; invalid cache entries are rebuilt automatically.
 - Deploy artifacts include the canonical `app.json` used by `tako-server` at runtime.
-- Release `app.json` contains resolved runtime metadata (`runtime`, `main`, `package_manager`), non-secret env vars, JS `app_root`, environment idle timeout, and optional release metadata (`commit_message`, `git_dirty`) used by `tako releases ls`.
+- Release `app.json` contains resolved runtime metadata (`runtime`, `main`, `package_manager`), non-secret env vars, JS `app_root`, environment idle timeout, and optional release metadata (`commit_message`, `git_dirty`) used by `tako releases list`.
 - Deploy does not write a release `.env` file; non-secret env vars live in release `app.json`, secrets are stored encrypted in SQLite on the server, and `tako-server` injects runtime vars (`TAKO_BUILD`, `TAKO_DATA_DIR`, and `TAKO_APP_ROOT` for JS apps) when spawning HTTP instances and workflow workers.
 - Deploy queries each server's secrets hash before sending the deploy command. If the hash matches the local secrets, secrets are omitted from the payload and the server keeps its existing secrets. This avoids unnecessary secret transmission and ensures new servers or servers with stale secrets are automatically provisioned.
 - Deploy requires valid `arch` and `libc` metadata in each selected `[[servers]]` entry.
@@ -1066,7 +1062,7 @@ When the stored desired instance count is `0`, rolling deploy still starts one w
 
 **Release command test coverage note:** End-to-end coverage for `release` (docker compose harness with success and failure fixtures) is deferred. Behavior is currently verified by Rust unit tests at the runner, dispatch, resolver, orchestration, and task-tree layers.
 
-### tako releases ls [--env {environment}]
+### tako releases list [--env {environment}]
 
 List release/build history for the current app across mapped environment servers.
 
@@ -1298,7 +1294,7 @@ Reference scripts in this repo:
 
 **Object storage runtime bindings:**
 
-- Storage bindings are configured with `tako storage add` and delivered to JavaScript apps on `tako.storages.<name>`. `tako generate` augments the `TakoStorages` interface from `.tako/storages.json`; development names are preferred when present, otherwise generation uses the union of all environments.
+- Storage bindings are configured with `tako storages add` and delivered to JavaScript apps on `tako.storages.<name>`. `tako generate` augments the `TakoStorages` interface from `.tako/storages.json`; development names are preferred when present, otherwise generation uses the union of all environments.
 - `await tako.storages.uploads.createDownloadUrl(key, options?)` creates a SigV4 signed `GET` URL. Storage URLs are private by default. `expiresInSeconds` defaults to `3600` and is capped at `604800`. Download options may set S3 response content type/disposition overrides. Passing `public: true` returns `public_base_url + key` when the binding has a `public_base_url`.
 - `await tako.storages.uploads.createUploadUrl(key, options?)` creates a SigV4 signed `PUT` URL. `contentType` signs the `content-type` header, so upload clients must send the same header.
 - `await tako.storages.uploads.createImageUrl(key, imageOptions?)` returns a private signed object URL when no image transform options are supplied. With `{ public: true }` and a storage `public_base_url`, it returns the public optimizer URL for that object. Private storage image transforms are a separate feature; for now transform options without public storage access fail with guidance to use `createDownloadUrl`.
@@ -1317,7 +1313,7 @@ Reference scripts in this repo:
 ```
 
 - `server_name` — identity label for Prometheus metrics (defaults to hostname if absent).
-- `dns.provider` — DNS provider for Let's Encrypt DNS-01 wildcard challenges (configured via `tako servers setup-wildcard`).
+- `dns.provider` — DNS provider for Let's Encrypt DNS-01 wildcard challenges (configured via `tako servers configure <name>`).
 - Written by the installer (server name) and CLI (DNS config). Read by `tako-server` at startup.
 
 **Server identity:** `tako-server` creates a stable Ed25519 identity at `{data_dir}/identity.key` and writes the public key to `{data_dir}/identity.pub`. The private key is mode `0600`, is preserved across restarts/upgrades, and is removed only by full server uninstall. `hello` and `server_info` include the OpenSSH SHA-256 fingerprint so the CLI can identify the server during add/probe flows.
@@ -1333,7 +1329,7 @@ Reference scripts in this repo:
 
 ### Zero-Downtime Operation
 
-- `tako servers restart` performs a zero-downtime control-plane reload by default (`systemctl reload tako-server` on systemd, `rc-service tako-server reload` on OpenRC). `--force` performs a full service restart instead.
+- `tako servers reload` performs a zero-downtime control-plane reload by default (`systemctl reload tako-server` on systemd, `rc-service tako-server reload` on OpenRC). `--force` performs a full service restart instead.
 - `tako servers upgrade` performs an in-place upgrade via service-manager reload (`systemctl reload tako-server` on systemd, `rc-service tako-server reload` on OpenRC) with root privileges (root login or sudo-capable user). Reload uses temporary process and listener overlap until the replacement process reports ready.
 - Management socket uses a symlink-based path: the active server creates a PID-specific socket (`tako-{pid}.sock`) and atomically updates the `tako.sock` symlink on ready, so clients always connect to the current process.
 - Restart/stop still honor graceful shutdown semantics from the host service manager (systemd or OpenRC as described above).
@@ -1711,7 +1707,7 @@ This requires OpenSSL (not rustls) for callback support.
 - Automatic renewal 30 days before expiry
 - HTTP-01 challenge uses the public HTTP port. Let's Encrypt reaches port 80, so custom HTTP ports require external port-80 forwarding, DNS-01, or manual certificates.
 - Zero-downtime renewal
-- DNS-01 challenges are supported for wildcard certificates via the [`lego`](https://go-acme.github.io/lego/) ACME client, which `tako-server` downloads and installs on-demand. Credentials are stored on the server at `/opt/tako/dns-credentials.env` and the provider name is persisted in `/opt/tako/config.json`. Run `tako servers setup-wildcard` to configure DNS credentials before deploying wildcard routes.
+- DNS-01 challenges are supported for wildcard certificates via the [`lego`](https://go-acme.github.io/lego/) ACME client, which `tako-server` downloads and installs on-demand. Credentials are stored on the server at `/opt/tako/dns-credentials.env` and the provider name is persisted in `/opt/tako/config.json`. Run `tako servers configure <name>` to configure DNS credentials before deploying wildcard routes.
 
 ### Wildcard Certificate Handling
 
@@ -1719,7 +1715,7 @@ Routing supports wildcard hosts (e.g. `*.example.com`). For TLS:
 
 - Wildcard certificates are issued automatically via DNS-01 challenges when a DNS provider is configured
 - Wildcard certificates are used when present in cert storage
-- If no DNS provider is configured when wildcard routes are deployed, deploy fails with an error directing the user to run `tako servers setup-wildcard`
+- If no DNS provider is configured when wildcard routes are deployed, deploy fails with an error directing the user to run `tako servers configure <name>`
 
 ### Certificate Storage
 

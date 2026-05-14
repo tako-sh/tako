@@ -78,8 +78,8 @@ pub enum DevSubcommands {
         all: bool,
     },
     /// List registered dev apps
-    #[command(visible_alias = "list")]
-    Ls,
+    #[command(visible_alias = "ls")]
+    List,
 }
 
 #[derive(Subcommand)]
@@ -129,7 +129,7 @@ pub enum Commands {
 
     /// Object storage commands
     #[command(subcommand)]
-    Storage(storage::StorageCommands),
+    Storages(storage::StorageCommands),
 
     /// Release history and rollback commands
     #[command(subcommand)]
@@ -166,8 +166,7 @@ pub enum Commands {
     },
 
     /// Remove Tako CLI and all local data
-    #[command(visible_alias = "uninstall")]
-    Implode {
+    Uninstall {
         /// Skip confirmation prompts
         #[arg(short = 'y', long = "yes")]
         yes: bool,
@@ -238,7 +237,7 @@ impl Cli {
                     Some(DevSubcommands::Stop { name, all }) => {
                         rt.block_on(commands::dev::stop(name, all, self.config.as_deref()))
                     }
-                    Some(DevSubcommands::Ls) => rt.block_on(commands::dev::ls()),
+                    Some(DevSubcommands::List) => rt.block_on(commands::dev::ls()),
                 }
             }
             Commands::Doctor => {
@@ -247,10 +246,10 @@ impl Cli {
             }
             Commands::Servers(cmd) => server::run(cmd),
             Commands::Secrets(cmd) => secret::run(cmd, self.config.as_deref()),
-            Commands::Storage(cmd) => storage::run(cmd, self.config.as_deref()),
+            Commands::Storages(cmd) => storage::run(cmd, self.config.as_deref()),
             Commands::Releases(cmd) => releases::run(cmd, self.config.as_deref()),
             Commands::Upgrade => upgrade::run(),
-            Commands::Implode { yes } => commands::implode::run(yes),
+            Commands::Uninstall { yes } => commands::implode::run(yes),
             Commands::Generate => commands::codegen::run(self.config.as_deref()),
             Commands::Deploy { env, yes } => {
                 commands::deploy::run(env.as_deref(), yes, self.config.as_deref())

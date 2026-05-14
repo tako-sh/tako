@@ -74,7 +74,7 @@ Public image URLs use `/_tako/image?src=...&w=...`. Local public paths work by d
 Attach S3-compatible storage with the Tako CLI, then use `tako.storages.<name>` from server-side app code:
 
 ```bash
-tako storage add uploads \
+tako storages add uploads \
   --provider r2 \
   --bucket app-uploads \
   --endpoint https://<account>.r2.cloudflarestorage.com \

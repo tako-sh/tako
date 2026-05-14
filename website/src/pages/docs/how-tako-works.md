@@ -121,7 +121,7 @@ Production TLS uses SNI. Tako looks up an exact certificate first, then wildcard
 Tako issues certificates automatically:
 
 - HTTP-01 for ordinary hostnames
-- DNS-01 for wildcard routes after `tako servers setup-wildcard`
+- DNS-01 for wildcard routes after `tako servers configure <name>`
 - self-signed certs for private or local names such as `localhost`, `.local`, `.test`, `.invalid`, `.example`, and `.home.arpa`
 
 Certificates renew before expiry without stopping traffic.
@@ -159,7 +159,7 @@ Public image optimization uses CDN-friendly query URLs:
 
 Local public paths are available by default. Remote images must match `[images].remote_patterns` in `tako.toml`, protocol-less remote patterns allow both `http` and `https`, and widths, qualities, and formats must match the app's configured guardrails. JavaScript apps can use `imageUrl` for one optimized URL or `imageSrcSet` for plain `<img>` responsive sources.
 
-Object storage bindings are attached with `tako storage add` and exposed to JavaScript apps as `tako.storages.<name>`. The SDK can create private signed download/upload URLs, and can build public optimized image URLs and responsive sources for storage objects when the binding has a `public_base_url`.
+Object storage bindings are attached with `tako storages add` and exposed to JavaScript apps as `tako.storages.<name>`. The SDK can create private signed download/upload URLs, and can build public optimized image URLs and responsive sources for storage objects when the binding has a `public_base_url`.
 
 ## Channels And Workflows
 

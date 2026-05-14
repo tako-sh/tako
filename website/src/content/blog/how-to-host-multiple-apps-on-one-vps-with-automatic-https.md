@@ -196,7 +196,7 @@ For the three-app setup:
 Wildcard routes are the special case. If you deploy `*.example.com`, HTTP-01 cannot prove control of every possible subdomain. Tako supports wildcard certificates through DNS-01 using the `lego` ACME client. Configure DNS credentials first:
 
 ```bash
-tako servers setup-wildcard
+tako servers configure <name>
 ```
 
 Then deploy the wildcard route. If a server is missing DNS-01 support and your app declares a wildcard route, deploy fails with a setup hint instead of leaving you with a route that cannot get the right certificate.

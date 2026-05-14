@@ -470,13 +470,13 @@ run_cli_post_deploy_checks() {
   require_file_contains "$status_log" "$route_host" "tako servers status"
   require_file_contains "$status_log" "healthy" "tako servers status"
 
-  if ! HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --config "$PROJECT_DIR/tako.toml" releases ls --env production >"$releases_log" 2>&1; then
-    echo "tako releases ls failed on $server_host" >&2
+  if ! HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --config "$PROJECT_DIR/tako.toml" releases list --env production >"$releases_log" 2>&1; then
+    echo "tako releases list failed on $server_host" >&2
     cat "$releases_log" >&2 || true
     exit 1
   fi
-  require_file_contains "$releases_log" "$release_version" "tako releases ls"
-  require_file_contains "$releases_log" "[current]" "tako releases ls"
+  require_file_contains "$releases_log" "$release_version" "tako releases list"
+  require_file_contains "$releases_log" "[current]" "tako releases list"
 
   ssh_exec "$server_host" "mkdir -p '$remote_log_dir' && printf '%s [out] [e2e] ${log_marker}\n' \"\$(date -u '+%Y-%m-%dT%H:%M:%S.000Z')\" >> '$remote_log_file' && grep -F '$log_marker' '$remote_log_file' >/dev/null"
 

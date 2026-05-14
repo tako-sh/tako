@@ -233,7 +233,7 @@ Fresh HTTP instances and workflow workers receive secrets through fd 3. Secret s
 Attach object storage before deploy:
 
 ```bash
-tako storage add uploads \
+tako storages add uploads \
   --env production \
   --provider r2 \
   --bucket app-uploads \
@@ -271,13 +271,13 @@ routes = [
 Tako issues certificates automatically:
 
 - HTTP-01 for ordinary hostnames
-- DNS-01 for wildcard routes after `tako servers setup-wildcard`
+- DNS-01 for wildcard routes after `tako servers configure <name>`
 - self-signed certs for local/private hostnames
 
 If a wildcard route is deployed without DNS-01 provider config, deploy fails and tells you to run:
 
 ```bash
-tako servers setup-wildcard
+tako servers configure <name>
 ```
 
 When HTTPS uses a non-default public port, deploy summaries include that port and HTTP redirects target it.
@@ -288,7 +288,7 @@ When HTTPS uses a non-default public port, deploy summaries include that port an
 tako servers status
 tako logs --env production
 tako logs --env production --tail
-tako releases ls --env production
+tako releases list --env production
 ```
 
 `tako servers status` uses signed HTTP remote management and can run from any directory. Logs include app stdout/stderr plus app-scoped Tako diagnostics.
@@ -298,13 +298,13 @@ tako releases ls --env production
 Reload without downtime:
 
 ```bash
-tako servers restart la
+tako servers reload la
 ```
 
 Force a full service restart:
 
 ```bash
-tako servers restart la --force
+tako servers reload la --force
 ```
 
 Upgrade one or all servers:
@@ -319,7 +319,7 @@ Upgrade acquires a durable upgrade lock, installs the new binary, reloads throug
 Remove a remote server install and its data:
 
 ```bash
-tako servers implode la
+tako servers uninstall la
 ```
 
 Delete one app deployment target:
