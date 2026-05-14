@@ -42,7 +42,7 @@ tako deploy -c apps/web/tako.production
 
 The `.toml` suffix is optional. The selected file's parent directory becomes the app directory.
 
-Commands that honor `-c` include `init`, `dev`, `logs`, `deploy`, `releases`, `delete`, `secrets`, `storage`, `generate`, and project-context `scale`.
+Commands that honor `-c` include `init`, `dev`, `logs`, `deploy`, `releases`, `delete`, `secrets`, `storages`, `generate`, and project-context `scale`.
 
 ## Invalid App Or Server Name
 

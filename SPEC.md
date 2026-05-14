@@ -380,7 +380,7 @@ Config selection is global for app-scoped commands:
 - project directory: parent directory of the selected config file
 
 App-scoped commands that honor `-c/--config`: `init`, `dev`, `logs`, `deploy`, `releases`,
-`delete`, `secrets`, `storage`, `generate`, and `scale` when it is using project context.
+`delete`, `secrets`, `storages`, `generate`, and `scale` when it is using project context.
 
 ### tako init
 
@@ -724,7 +724,7 @@ Service-manager reload/restart behavior:
 
 - Default path: `systemctl reload tako-server` on systemd hosts, or `rc-service tako-server reload` on OpenRC hosts. Reload sends `SIGHUP`; the current process spawns a replacement process, the new process takes over the management socket and listener ports, then the old process drains and exits.
 - `--force` path: `systemctl restart tako-server` on systemd hosts, or `rc-service tako-server restart` on OpenRC hosts.
-- On systemd hosts, installer configures `KillMode=control-group` and `TimeoutStopSec=30min`, allowing all app processes in the service cgroup time to handle graceful shutdown before forced termination.
+- On systemd hosts, installer configures `KillMode=mixed` and `TimeoutStopSec=30min`, allowing the main server process to receive the first stop signal while child processes still get time to handle graceful shutdown before forced termination.
 - On OpenRC hosts, installer configures `retry="TERM/1800/KILL/5"` in the init script so restart/stop waits up to 30 minutes before forced termination.
 
 `tako-server` persists app runtime registration (app config and routes) in SQLite under the data directory and restores it on startup so app routing/config survives reloads, restarts, and crashes. Env vars are stored in `app.json` in the release directory; secrets are stored encrypted (AES-256-GCM) in the same SQLite database using a per-device key. Fresh app and worker processes receive secrets through the fd 3 bootstrap envelope at spawn time. Secret updates store the new encrypted values, then drain/restart workflow workers and roll HTTP instances so fresh processes receive the new values; secrets never touch disk as plaintext. Each deployed app also gets a persistent runtime data tree under `{data_dir}/apps/{app}/data/`:
@@ -1251,7 +1251,7 @@ Installer SSH key behavior:
   - systemd: `AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL`, `CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL`
   - non-systemd/OpenRC hosts: installer applies `setcap cap_net_bind_service,cap_setuid,cap_setgid,cap_kill=+ep /usr/local/bin/tako-server`; install fails if the capability cannot be granted
 - Installer configures graceful stop semantics:
-  - systemd: `KillMode=control-group`, `TimeoutStopSec=30min`
+  - systemd: `KillMode=mixed`, `TimeoutStopSec=30min`
   - OpenRC: `retry="TERM/1800/KILL/5"`
 - Installer verifies `tako-server` is active after service start; if startup fails, installer exits non-zero and prints available service diagnostics.
 

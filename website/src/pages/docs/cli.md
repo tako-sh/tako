@@ -25,7 +25,7 @@ tako [--version] [-v|--verbose] [--ci] [--dry-run] [-c|--config <CONFIG>] [--ssh
 
 Status, progress, prompts, and logs go to stderr. Command results and machine-readable data go to stdout.
 
-App-scoped commands treat the selected config file's parent directory as the app directory. That includes `init`, `dev`, `logs`, `deploy`, `releases`, `delete`, `secrets`, `storage`, `generate`, and project-context `scale`.
+App-scoped commands treat the selected config file's parent directory as the app directory. That includes `init`, `dev`, `logs`, `deploy`, `releases`, `delete`, `secrets`, `storages`, `generate`, and project-context `scale`.
 
 ## `tako init`
 

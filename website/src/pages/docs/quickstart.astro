@@ -47,20 +47,21 @@ import DocsLayout from "../../layouts/DocsLayout.astro";
   <p>From your developer machine, add the server by MagicDNS name:</p>
   <Snippet code="tako servers add admin-user@my-server" lang="bash" />
   <p>
-    Tako stores the MagicDNS name as the host and uses its first label as the server name. It checks Tailscale,
-    <code>tako</code> SSH recovery access, target metadata, and signed private management before saving the server in
-    your global <code>config.toml</code>.
+    The <code>admin-user@host</code> form tells Tako which admin SSH user to use if install or repair is needed. Tako
+    stores only the MagicDNS host, uses its first label as the server name, checks Tailscale, verifies
+    <code>tako</code> SSH recovery access, records target metadata, and verifies signed private management before saving
+    the server in your global <code>config.toml</code>.
   </p>
   <p>
-    If <code>tako-server</code> is missing or access needs repair, Tako asks whether to install now and which admin SSH
-    user to use. During install, Tako enrolls the SSH key used for access for signed management and installs the
-    libvips runtime used by the image optimizer.
+    If <code>tako-server</code> is missing or access needs repair, that shorthand runs the installer in configure/start
+    mode with the provided admin user. During install, Tako enrolls the SSH key used for access for signed management and
+    installs the libvips runtime used by the image optimizer.
   </p>
 
   <p>Check remote access:</p>
   <Snippet code="tako servers status" lang="bash" />
 
-  <p>Prefer installing from the host itself? Run the server installer as root, enter your workstation SSH public key when prompted, then add the host from your developer machine. The installer bootstraps the host; <code>tako servers add</code> configures and starts it.</p>
+  <p>Prefer installing from the host itself? Run the server installer as root, enter your workstation SSH public key when prompted, then add the host from your developer machine. The installer bootstraps the host and leaves the service stopped; <code>tako servers add</code> configures and starts it.</p>
   <Snippet code='sudo sh -c "$(curl -fsSL https://tako.sh/install-server.sh)"' lang="bash" />
 
   <h2 id="first-deployment">First deployment</h2>

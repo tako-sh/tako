@@ -34,8 +34,8 @@ set -eu
 #   TAKO_RELEASE_TAG        default: latest
 #   GH_TOKEN/GITHUB_TOKEN   optional GitHub token for release downloads
 #   TAKO_SERVER_NAME        server identity for metrics labels (optional)
-#                           if unset, installer prompts in interactive terminals
-#                           defaults to machine hostname if non-interactive
+#                           configure/start mode prompts in interactive terminals
+#                           defaults to machine hostname when non-interactive
 #   TAKO_RESTART_SERVICE    default: 0 (set 1/true to configure and start/reload the service)
 
 if [ "$(id -u)" -ne 0 ]; then
