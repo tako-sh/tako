@@ -2,7 +2,7 @@
 
 A TanStack Start demo app that doubles as a live tour of Tako's primitives: **multi-tenancy**, **durable workflows**, **channels**, and **image optimization**.
 
-Each planet base is an isolated tenant (wildcard subdomain). Submitting a supply request enqueues a five-step sequential workflow (check → pack → load → ship → deliver) where the late steps occasionally throw and Tako retries them via `ctx.run`'s `retries` option. Every step publishes to the `mission-log` channel, so the right-rail log streams live to every connected client. Base artwork lives in `public/images/`; under `tako dev` and deploys, the route loader signs AVIF image URLs with `createImageUrl()` so Tako serves resized, cached images from `/_tako/image`. A daily cron workflow deletes demo database records older than three days.
+Each planet base is an isolated tenant (wildcard subdomain). Submitting a supply request enqueues a five-step sequential workflow (check → pack → load → ship → deliver) where the late steps occasionally throw and Tako retries them via `ctx.run`'s `retries` option. Every step publishes to the `mission-log` channel, so the right-rail log streams live to every connected client. Base artwork lives in `public/images/`; the route loader uses `imageUrl()` so Tako serves resized, cached images from `/_tako/image`. A daily cron workflow deletes demo database records older than three days.
 
 Live at [demo.tako.sh](https://demo.tako.sh).
 

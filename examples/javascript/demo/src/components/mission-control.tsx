@@ -5,7 +5,6 @@ import {
   WarningIcon,
   WrenchIcon,
 } from "@phosphor-icons/react";
-import { memo } from "react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent } from "@/components/ui/card";
 import type { PlanetBase } from "@/lib/bases";
@@ -91,7 +90,7 @@ export function MissionControl({
   );
 }
 
-const TenantHeader = memo(function TenantHeader({
+function TenantHeader({
   baseName,
   baseVisual,
   requests,
@@ -192,17 +191,9 @@ const TenantHeader = memo(function TenantHeader({
       </CardContent>
     </Card>
   );
-});
+}
 
-const Resource = memo(function Resource({
-  icon,
-  label,
-  count,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  count: number;
-}) {
+function Resource({ icon, label, count }: { icon: React.ReactNode; label: string; count: number }) {
   return (
     <div className="flex items-center gap-2 rounded-md bg-muted/40 px-3 py-2">
       <span className={count > 0 ? "text-primary" : "text-muted-foreground"}>{icon}</span>
@@ -226,4 +217,4 @@ const Resource = memo(function Resource({
       </div>
     </div>
   );
-});
+}

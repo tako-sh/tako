@@ -1,5 +1,4 @@
 import { BookOpenIcon, CodeIcon, ArrowSquareOutIcon } from "@phosphor-icons/react";
-import { memo } from "react";
 import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { GITHUB_BASE } from "./info";
@@ -17,7 +16,7 @@ const linkClass = cn(
   "font-mono text-[11px] tracking-widest uppercase",
 );
 
-export const TopAppBar = memo(function TopAppBar({ baseName, homeHref = "/" }: Props) {
+export function TopAppBar({ baseName, homeHref = "/" }: Props) {
   return (
     <header
       className="
@@ -116,6 +115,6 @@ export const TopAppBar = memo(function TopAppBar({ baseName, homeHref = "/" }: P
       </div>
     </header>
   );
-});
+}
 
 export { TAKO_URL };

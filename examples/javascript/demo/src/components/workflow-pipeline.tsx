@@ -1,6 +1,5 @@
 import { ArrowClockwiseIcon, CheckIcon, XIcon } from "@phosphor-icons/react";
 import { motion } from "motion/react";
-import { memo } from "react";
 import {
   PIPELINE_STEPS,
   PIPELINE_STEP_LABELS,
@@ -13,7 +12,7 @@ type Props = {
   request: InFlightRequest;
 };
 
-export const WorkflowPipeline = memo(function WorkflowPipeline({ request }: Props) {
+export function WorkflowPipeline({ request }: Props) {
   const { isComplete, steps: stepStates, retries } = request;
 
   return (
@@ -38,7 +37,7 @@ export const WorkflowPipeline = memo(function WorkflowPipeline({ request }: Prop
       </div>
     </div>
   );
-});
+}
 
 function TrackFill({
   isComplete,

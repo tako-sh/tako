@@ -1,5 +1,4 @@
 import { ArrowSquareOutIcon } from "@phosphor-icons/react";
-import { memo } from "react";
 
 export const GITHUB_BASE =
   "https://github.com/lilienblum/tako/tree/master/examples/javascript/demo";
@@ -10,7 +9,7 @@ type Props = {
   sourcePath: string;
 };
 
-export const Info = memo(function DemoInfo({ label, description, sourcePath }: Props) {
+export function Info({ label, description, sourcePath }: Props) {
   const sourceUrl = `${GITHUB_BASE}/${sourcePath}`;
   const filename = sourcePath.split("/").pop() ?? sourcePath;
 
@@ -39,4 +38,4 @@ export const Info = memo(function DemoInfo({ label, description, sourcePath }: P
       </a>
     </div>
   );
-});
+}

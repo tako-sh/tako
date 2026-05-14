@@ -1,6 +1,5 @@
 import { ArrowClockwiseIcon, PackageIcon } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
-import { memo } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardAction, CardContent, CardHeader } from "@/components/ui/card";
 import { Empty, EmptyContent, EmptyDescription } from "@/components/ui/empty";
@@ -11,7 +10,7 @@ type Props = {
   requests: InFlightRequest[];
 };
 
-export const InFlightFeed = memo(function InFlightFeed({ requests }: Props) {
+export function InFlightFeed({ requests }: Props) {
   const activeCount = requests.filter((request) => !request.isComplete).length;
 
   return (
@@ -64,9 +63,9 @@ export const InFlightFeed = memo(function InFlightFeed({ requests }: Props) {
       )}
     </section>
   );
-});
+}
 
-const RequestCard = memo(function RequestCard({ request }: { request: InFlightRequest }) {
+function RequestCard({ request }: { request: InFlightRequest }) {
   const { isComplete } = request;
   const retries = totalRetries(request.retries);
 
@@ -147,4 +146,4 @@ const RequestCard = memo(function RequestCard({ request }: { request: InFlightRe
       </CardContent>
     </Card>
   );
-});
+}

@@ -7,10 +7,8 @@ export type BasePreset = {
 };
 
 export type BaseImageUrls = {
-  source: string;
   card: string;
   hero: string;
-  thumb: string;
 };
 
 export type PlanetBase = BasePreset & {

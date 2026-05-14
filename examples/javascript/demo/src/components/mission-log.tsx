@@ -1,6 +1,5 @@
 import { WaveformIcon } from "@phosphor-icons/react";
 import { motion } from "motion/react";
-import { memo } from "react";
 import { Info } from "./info";
 import { formatTimestamp, shortRequestId, type MissionLogEvent } from "./types";
 
@@ -9,7 +8,7 @@ type Props = {
   connected: boolean;
 };
 
-export const MissionLog = memo(function MissionLog({ events, connected }: Props) {
+export function MissionLog({ events, connected }: Props) {
   return (
     <aside
       className="
@@ -70,9 +69,9 @@ export const MissionLog = memo(function MissionLog({ events, connected }: Props)
       </div>
     </aside>
   );
-});
+}
 
-const LogEntry = memo(function LogEntry({ event }: { event: MissionLogEvent }) {
+function LogEntry({ event }: { event: MissionLogEvent }) {
   const isError = event.level === "error";
   const isWarn = event.level === "warn";
   const isSystem = event.source === "System";
@@ -113,4 +112,4 @@ const LogEntry = memo(function LogEntry({ event }: { event: MissionLogEvent }) {
       </div>
     </motion.div>
   );
-});
+}

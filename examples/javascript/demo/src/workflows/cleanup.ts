@@ -1,7 +1,7 @@
 import { defineWorkflow } from "tako.sh";
 import { cleanupOldRecords, RECORD_RETENTION_MS } from "../server/db";
 
-export default defineWorkflow<Record<string, never>>("cleanup", {
+export default defineWorkflow("cleanup", {
   schedule: "@daily",
   handler: async (_payload, ctx) => {
     const result = await ctx.run("delete-old-records", () => cleanupOldRecords());

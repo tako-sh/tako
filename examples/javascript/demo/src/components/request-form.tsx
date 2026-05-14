@@ -1,5 +1,4 @@
 import { DropIcon, FirstAidKitIcon, PlantIcon, WrenchIcon } from "@phosphor-icons/react";
-import { memo } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Info } from "./info";
@@ -18,7 +17,7 @@ const ITEMS: { label: string; icon: React.ReactNode }[] = [
   { label: "Hydroponics", icon: <PlantIcon data-icon="inline-start" /> },
 ];
 
-export const RequestForm = memo(function RequestForm({ tenantSlug, submitting, onSubmit }: Props) {
+export function RequestForm({ tenantSlug, submitting, onSubmit }: Props) {
   return (
     <Card>
       <CardHeader
@@ -77,4 +76,4 @@ export const RequestForm = memo(function RequestForm({ tenantSlug, submitting, o
       </CardContent>
     </Card>
   );
-});
+}
