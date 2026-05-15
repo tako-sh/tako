@@ -1,10 +1,10 @@
 use std::io;
 
 use super::super::{
-    ACCENT, bold, is_interactive, is_pretty, theme_accent, theme_dim, theme_error, theme_muted,
+    ACCENT, is_interactive, is_pretty, theme_accent, theme_dim, theme_error, theme_muted,
     theme_warning,
 };
-use super::wizard_back_error;
+use super::{EscapeAction, prompt_escape_action, wizard_back_error};
 
 pub fn password_field(prompt: &str) -> io::Result<String> {
     TextField::new(prompt).password().prompt()
@@ -109,6 +109,27 @@ impl<'a> TextField<'a> {
         self,
         mut validate: impl FnMut(&str) -> Result<(), String>,
     ) -> io::Result<String> {
+        self.prompt_validated_inner(|value, _status| validate(value))
+    }
+
+    pub fn prompt_validated_with_spinner<F>(self, validate: F) -> io::Result<String>
+    where
+        F: Fn(String) -> Result<(), String> + Send + Sync + 'static,
+    {
+        let validate = std::sync::Arc::new(validate);
+        self.prompt_validated_inner(move |value, status| {
+            if let Some(status) = status {
+                run_validation_with_prompt_spinner(value.to_string(), status, validate.clone())
+            } else {
+                validate(value.to_string())
+            }
+        })
+    }
+
+    fn prompt_validated_inner(
+        self,
+        mut validate: impl FnMut(&str, Option<PromptValidationStatus>) -> Result<(), String>,
+    ) -> io::Result<String> {
         if !is_interactive() {
             if self.password {
                 return Err(io::Error::new(
@@ -126,7 +147,7 @@ impl<'a> TextField<'a> {
                     ),
                 )),
             }?;
-            validate(&value)
+            validate(&value, None)
                 .map_err(|message| io::Error::new(io::ErrorKind::InvalidInput, message))?;
             return Ok(value);
         }
@@ -137,11 +158,11 @@ impl<'a> TextField<'a> {
             loop {
                 if let Some(warning) = self.warning {
                     // CodeQL[rust/cleartext-logging]: prompt warnings are UI copy; password input is masked below.
-                    eprintln!("{} {}", bold(&theme_warning("!")), theme_warning(warning));
+                    eprintln!("{}", theme_warning(warning));
                 }
                 let active_error = error.as_deref();
                 if let Some(message) = active_error {
-                    eprintln!("{} {}", bold(&theme_error("✘")), theme_error(message));
+                    eprintln!("{}", theme_error(message));
                 }
                 let label = if active_error.is_some() {
                     theme_error(self.label)
@@ -175,9 +196,10 @@ impl<'a> TextField<'a> {
                         trimmed: self.trimmed,
                         use_separator: true, // use › separator
                         error: active_error.is_some(),
+                        show_back: self.show_back,
                     },
                 )?;
-                match validate(&value) {
+                match validate(&value, None) {
                     Ok(()) => return Ok(value),
                     Err(message) => error = Some(message),
                 }
@@ -190,21 +212,26 @@ impl<'a> TextField<'a> {
             .hint
             .map(|hint| vec![super::format_pretty_prompt_hint_line(hint)]);
         let footer_spacing = usize::from(!self.footer_lines.is_empty());
-        // Lines below the input: content hints (optional) + key hints
-        let below_input_count = hint_lines.as_ref().map_or(0, |l| l.len())
-            + 1
-            + footer_spacing
-            + self.footer_lines.len();
 
         let mut error: Option<String> = None;
         loop {
             let active_error = error.as_deref();
+            // Lines below the input: validation error (optional), content hints,
+            // key hints, and optional footer.
+            let below_input_count = active_error.is_some() as usize
+                + hint_lines.as_ref().map_or(0, |l| l.len())
+                + 1
+                + footer_spacing
+                + self.footer_lines.len();
             for line in super::format_pretty_prompt_header(self.label, self.warning, active_error) {
                 eprintln!("{line}");
             }
 
             // Reserve space: blank for input, then hint lines, then key hints
             eprintln!();
+            if let Some(message) = active_error {
+                eprintln!("{}", super::format_pretty_prompt_error_line(message));
+            }
             if let Some(lines) = &hint_lines {
                 for line in lines {
                     eprintln!("{line}");
@@ -238,6 +265,7 @@ impl<'a> TextField<'a> {
                     trimmed: self.trimmed,
                     use_separator: false, // no › separator in pretty mode
                     error: active_error.is_some(),
+                    show_back: self.show_back,
                 },
             ) {
                 Ok(v) => v,
@@ -264,7 +292,12 @@ impl<'a> TextField<'a> {
                 }
             };
 
-            let validation = validate(&value);
+            let validation = validate(
+                &value,
+                Some(PromptValidationStatus {
+                    marker_offset: prompt_validation_marker_offset(self.warning),
+                }),
+            );
             let _ = crossterm::execute!(
                 io::stderr(),
                 crossterm::cursor::MoveDown(below_input_count as u16),
@@ -307,6 +340,83 @@ impl<'a> TextField<'a> {
     }
 }
 
+#[derive(Clone, Copy)]
+struct PromptValidationStatus {
+    marker_offset: u16,
+}
+
+fn prompt_validation_marker_offset(warning: Option<&str>) -> u16 {
+    2 + warning.is_some() as u16
+}
+
+fn run_validation_with_prompt_spinner<F>(
+    value: String,
+    status: PromptValidationStatus,
+    validate: std::sync::Arc<F>,
+) -> Result<(), String>
+where
+    F: Fn(String) -> Result<(), String> + Send + Sync + 'static,
+{
+    use std::sync::mpsc::RecvTimeoutError;
+    use std::time::Duration;
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result = validate(value);
+        let _ = tx.send(result);
+    });
+
+    match rx.recv_timeout(Duration::from_secs(1)) {
+        Ok(result) => return result,
+        Err(RecvTimeoutError::Disconnected) => {
+            return Err("Validation failed. Try again.".to_string());
+        }
+        Err(RecvTimeoutError::Timeout) => {}
+    }
+
+    let _guard = PromptValidationCursorGuard;
+    let _ = crossterm::execute!(io::stderr(), crossterm::cursor::Hide);
+    let mut tick = 0usize;
+    loop {
+        draw_prompt_validation_marker(status, tick);
+        tick = tick.wrapping_add(1);
+        match rx.recv_timeout(Duration::from_millis(80)) {
+            Ok(result) => return result,
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err("Validation failed. Try again.".to_string());
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+        }
+    }
+}
+
+struct PromptValidationCursorGuard;
+
+impl Drop for PromptValidationCursorGuard {
+    fn drop(&mut self) {
+        if !crate::output::cursor::is_cursor_globally_hidden() {
+            let _ = crossterm::execute!(io::stderr(), crossterm::cursor::Show);
+        }
+    }
+}
+
+fn draw_prompt_validation_marker(status: PromptValidationStatus, tick: usize) {
+    use std::io::Write;
+
+    let spinner = crate::output::SPINNER_TICKS[tick % crate::output::SPINNER_TICKS.len()];
+    let marker = theme_accent(spinner);
+    let mut out = io::stderr();
+    let _ = crossterm::execute!(
+        out,
+        crossterm::cursor::SavePosition,
+        crossterm::cursor::MoveUp(status.marker_offset),
+        crossterm::cursor::MoveToColumn(0)
+    );
+    let _ = write!(out, "{marker}");
+    let _ = crossterm::execute!(out, crossterm::cursor::RestorePosition);
+    let _ = out.flush();
+}
+
 /// Custom text input using crossterm. Supports cursor movement, word deletion,
 /// tab-completion from suggestions, inline auto-suggest, password masking, and placeholder text.
 ///
@@ -322,6 +432,7 @@ struct RawTextInputOptions<'a> {
     trimmed: bool,
     use_separator: bool,
     error: bool,
+    show_back: bool,
 }
 
 fn raw_text_input(prompt: &str, options: RawTextInputOptions<'_>) -> io::Result<String> {
@@ -342,6 +453,7 @@ fn raw_text_input(prompt: &str, options: RawTextInputOptions<'_>) -> io::Result<
         trimmed,
         use_separator,
         error,
+        show_back,
     } = options;
 
     let mut buf: Vec<char> = initial.unwrap_or("").chars().collect();
@@ -496,7 +608,10 @@ fn raw_text_input(prompt: &str, options: RawTextInputOptions<'_>) -> io::Result<
                     ));
                 }
                 KeyCode::Esc => {
-                    break Err(wizard_back_error());
+                    if prompt_escape_action(show_back) == EscapeAction::Back {
+                        break Err(wizard_back_error());
+                    }
+                    continue;
                 }
                 // Character input
                 KeyCode::Char(c)

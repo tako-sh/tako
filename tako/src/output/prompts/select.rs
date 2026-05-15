@@ -2,10 +2,11 @@ use std::io;
 
 use console::Term;
 
-use super::super::{is_interactive, is_pretty, theme_accent, theme_muted, underline};
+use super::super::{INDENT, is_interactive, is_pretty, theme_accent, theme_muted, underline};
 use super::{
-    format_key_hints, format_pretty_cancelled_prompt, format_pretty_prompt_completion,
-    format_pretty_prompt_header, is_wizard_back, wizard_back_error,
+    EscapeAction, format_key_hints_with_enter_action, format_pretty_cancelled_prompt,
+    format_pretty_prompt_completion, format_pretty_prompt_header, format_pretty_prompt_hint_line,
+    is_wizard_back, prompt_escape_action, wizard_back_error,
 };
 
 pub fn select<T>(
@@ -47,7 +48,7 @@ pub fn select_with_default<T>(
             Some(desc) => format!("{title}\n{desc}"),
             None => title.to_string(),
         };
-        let index = raw_select(&term, &full_prompt, &labels, &[], false, default, &[])?;
+        let index = raw_select(&term, &full_prompt, &labels, &[], None, default, &[])?;
         return Ok(options.into_iter().nth(index).unwrap().1);
     }
 
@@ -59,7 +60,7 @@ pub fn select_with_default<T>(
     };
 
     // raw_select clears display and writes completion/cancelled lines
-    let index = raw_select(&term, &full_prompt, &labels, &[], false, default, &[])?;
+    let index = raw_select(&term, &full_prompt, &labels, &[], None, default, &[])?;
     Ok(options.into_iter().nth(index).unwrap().1)
 }
 
@@ -70,7 +71,7 @@ pub(in crate::output) fn raw_select(
     prompt: &str,
     labels: &[&str],
     hints: &[&str],
-    show_back: bool,
+    escape_hint: Option<&str>,
     default: usize,
     footer_lines: &[String],
 ) -> io::Result<usize> {
@@ -85,27 +86,15 @@ pub(in crate::output) fn raw_select(
     let mut out = io::stderr();
 
     // Print prompt (before raw mode) — diamond style
-    for line in format_pretty_prompt_header(prompt, None, None) {
+    for line in format_select_prompt_header_lines(prompt) {
         let _ = term.write_line(&line);
     }
 
-    let key_hints = format_key_hints(show_back);
+    let key_hints = format_select_key_hints(escape_hint);
     let footer_spacing = usize::from(!footer_lines.is_empty());
     let draw = |sel: usize, out: &mut io::Stderr, key_hints: &str| {
-        for (i, label) in labels.iter().enumerate() {
-            let hint = hints.get(i).filter(|h| !h.is_empty());
-            if i == sel {
-                let _ = write!(out, "{} {}", theme_accent("→"), underline(label));
-                if let Some(h) = hint {
-                    let _ = write!(out, " {}", theme_muted(format!("({h})")));
-                }
-            } else {
-                let _ = write!(out, "  {label}");
-                if let Some(h) = hint {
-                    let _ = write!(out, " {}", theme_muted(format!("({h})")));
-                }
-            }
-            let _ = write!(out, "\r\n");
+        for line in format_select_option_lines(labels, hints, sel) {
+            let _ = write!(out, "{line}\r\n");
         }
         let _ = write!(out, "{key_hints}");
         if !footer_lines.is_empty() {
@@ -152,13 +141,17 @@ pub(in crate::output) fn raw_select(
                     ));
                 }
                 KeyCode::Esc => {
-                    break Err(wizard_back_error());
+                    if prompt_escape_action(escape_hint.is_some()) == EscapeAction::Back {
+                        break Err(wizard_back_error());
+                    }
+                    continue;
                 }
                 _ => continue,
             }
             // Move cursor up to first option, clear, and redraw
             // options + key hints line
-            let total_draw_lines = labels.len() + 1 + footer_spacing + footer_lines.len();
+            let total_draw_lines =
+                select_draw_line_count(labels, hints, footer_spacing, footer_lines);
             if total_draw_lines > 1 {
                 crossterm::execute!(out, cursor::MoveUp((total_draw_lines - 1) as u16),)?;
             }
@@ -187,26 +180,70 @@ pub(in crate::output) fn raw_select(
     // Clear the select display and write appropriate completion
     if is_pretty() {
         let prompt_lines = prompt.chars().filter(|c| *c == '\n').count() + 1;
-        let total = labels.len() + prompt_lines + 1 + footer_spacing + footer_lines.len(); // +1 for key hints
+        let total =
+            prompt_lines + select_draw_line_count(labels, hints, footer_spacing, footer_lines);
         let _ = term.clear_last_lines(total);
 
         let title = prompt.lines().next().unwrap_or(prompt);
-        match &result {
-            Ok(idx) => {
-                for line in format_pretty_prompt_completion(title, labels[*idx]) {
-                    let _ = term.write_line(&line);
-                }
-            }
-            Err(e) if e.kind() == io::ErrorKind::Interrupted && !is_wizard_back(e) => {
-                for line in format_pretty_cancelled_prompt(title) {
-                    let _ = term.write_line(&line);
-                }
-            }
-            Err(_) => {} // ESC/back — just clear, no completion
+        for line in format_select_completion_lines(title, labels, &result) {
+            let _ = term.write_line(&line);
         }
     }
 
     result
+}
+
+fn format_select_prompt_header_lines(prompt: &str) -> Vec<String> {
+    let mut lines = prompt.lines();
+    let title = lines.next().unwrap_or(prompt);
+    let mut formatted = format_pretty_prompt_header(title, None, None);
+    formatted.extend(lines.map(format_pretty_prompt_hint_line));
+    formatted
+}
+
+fn format_select_key_hints(escape_hint: Option<&str>) -> String {
+    format_key_hints_with_enter_action(escape_hint, "select")
+}
+
+fn format_select_option_lines(labels: &[&str], hints: &[&str], selected: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    for (i, label) in labels.iter().enumerate() {
+        let hint = hints.get(i).filter(|h| !h.is_empty());
+        let mut line = if i == selected {
+            format!("{INDENT}{} {}", theme_accent("→"), underline(label))
+        } else {
+            format!("{INDENT}{INDENT}{label}")
+        };
+        if let Some(h) = hint {
+            line.push(' ');
+            line.push_str(&theme_muted(format!("({h})")));
+        }
+        lines.push(line);
+    }
+    lines
+}
+
+fn select_draw_line_count(
+    labels: &[&str],
+    hints: &[&str],
+    footer_spacing: usize,
+    footer_lines: &[String],
+) -> usize {
+    format_select_option_lines(labels, hints, 0).len() + 1 + footer_spacing + footer_lines.len()
+}
+
+fn format_select_completion_lines(
+    title: &str,
+    labels: &[&str],
+    result: &io::Result<usize>,
+) -> Vec<String> {
+    match result {
+        Ok(idx) => format_pretty_prompt_completion(title, labels[*idx]),
+        Err(e) if e.kind() == io::ErrorKind::Interrupted && !is_wizard_back(e) => {
+            format_pretty_cancelled_prompt(title)
+        }
+        _ => Vec::new(),
+    }
 }
 
 #[cfg(test)]
@@ -221,5 +258,73 @@ mod tests {
         }
         let err = select("Pick one", None, vec![("server-a".to_string(), 1)]).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
+    }
+
+    #[test]
+    fn select_completion_keeps_cancelled_completion() {
+        let result = Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "Operation interrupted",
+        ));
+
+        let lines = format_select_completion_lines(
+            "Select setting",
+            &["DNS wildcard certificates"],
+            &result,
+        );
+
+        assert_eq!(lines, vec!["◇ Select setting".to_string(), String::new()]);
+    }
+
+    #[test]
+    fn select_completion_omits_back_completion() {
+        let result = Err(io::Error::new(io::ErrorKind::Interrupted, "wizard_back"));
+
+        let lines = format_select_completion_lines(
+            "Select setting",
+            &["DNS wildcard certificates"],
+            &result,
+        );
+
+        assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn select_prompt_description_is_muted_below_title() {
+        let lines = format_select_prompt_header_lines(
+            "Source IP mode\nUse Direct traffic unless every request reaches Tako through a trusted proxy.",
+        );
+
+        assert_eq!(
+            lines,
+            vec![
+                "◆ Source IP mode".to_string(),
+                "  Use Direct traffic unless every request reaches Tako through a trusted proxy."
+                    .to_string(),
+            ],
+        );
+    }
+
+    #[test]
+    fn select_key_hints_use_select_action() {
+        assert_eq!(format_select_key_hints(None), "  enter select".to_string());
+        assert_eq!(
+            format_select_key_hints(Some("back")),
+            "  esc back · enter select".to_string(),
+        );
+    }
+
+    #[test]
+    fn select_options_render_labels_and_hints_only() {
+        let lines =
+            format_select_option_lines(&["Direct traffic", "PROXY protocol"], &["", "detected"], 0);
+
+        assert_eq!(
+            lines,
+            vec![
+                "  → Direct traffic".to_string(),
+                "    PROXY protocol (detected)".to_string(),
+            ],
+        );
     }
 }

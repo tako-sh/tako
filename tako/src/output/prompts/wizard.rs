@@ -6,7 +6,8 @@ use super::super::{DIAMOND_OUTLINED, is_interactive, is_pretty, theme_muted};
 use super::select::raw_select;
 use super::text_field::TextField;
 use super::{
-    confirm_with_description, format_pretty_confirm_completion, format_pretty_prompt_completion,
+    confirm::confirm_with_description_back, confirm_with_description,
+    format_pretty_confirm_completion, format_pretty_prompt_completion,
     format_pretty_text_prompt_completion, is_wizard_back, wizard_back_error,
 };
 
@@ -277,12 +278,13 @@ impl Wizard {
         loop {
             self.render();
             let labels: Vec<&str> = options.iter().map(|(l, _)| l.as_str()).collect();
+            let escape_hint = wizard_select_escape_hint(first);
             let select_result = raw_select(
                 &Term::stderr(),
                 prompt,
                 &labels,
                 hints,
-                !first,
+                escape_hint,
                 default,
                 &footer_lines,
             );
@@ -322,6 +324,31 @@ impl Wizard {
         field_label: &str,
         builder: TextField,
     ) -> io::Result<String> {
+        self.text_field_named_inner(field_label, builder, |builder| builder.prompt())
+    }
+
+    pub fn text_field_named_validated_with_spinner<F>(
+        &mut self,
+        field_label: &str,
+        builder: TextField,
+        validate: F,
+    ) -> io::Result<String>
+    where
+        F: Fn(String) -> Result<(), String> + Send + Sync + 'static,
+    {
+        let validate = std::sync::Arc::new(validate);
+        self.text_field_named_inner(field_label, builder, move |builder| {
+            let validate = validate.clone();
+            builder.prompt_validated_with_spinner(move |value| validate(value))
+        })
+    }
+
+    fn text_field_named_inner(
+        &mut self,
+        field_label: &str,
+        builder: TextField,
+        mut prompt: impl FnMut(TextField) -> io::Result<String>,
+    ) -> io::Result<String> {
         let prompt_label = builder.label.to_string();
         let warning = builder.warning.map(str::to_string);
         let first = self.prepare_prompt(field_label);
@@ -335,7 +362,7 @@ impl Wizard {
             if !first {
                 b = b.show_back();
             }
-            match b.prompt() {
+            match prompt(b) {
                 Ok(value) => {
                     let completion = format_pretty_text_prompt_completion(
                         &prompt_label,
@@ -370,7 +397,12 @@ impl Wizard {
         let first = self.prepare_prompt(field_label);
         loop {
             self.render();
-            match confirm_with_description(prompt, None, default) {
+            let result = if first {
+                confirm_with_description(prompt, None, default)
+            } else {
+                confirm_with_description_back(prompt, None, default)
+            };
+            match result {
                 Ok(answer) => {
                     let answer_text = if answer { "yes" } else { "no" };
                     let completion = format_pretty_confirm_completion(prompt, default, answer_text);
@@ -412,6 +444,10 @@ impl Wizard {
     }
 }
 
+fn wizard_select_escape_hint(first: bool) -> Option<&'static str> {
+    if !first { Some("back") } else { None }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -422,21 +458,21 @@ mod tests {
         w.set_completed(
             "Name",
             "tako",
-            vec!["◇ Name".into(), "› tako".into(), String::new()],
+            vec!["◇ Name".into(), "  tako".into(), String::new()],
         );
         w.set_completed(
             "Runtime",
             "bun",
-            vec!["◇ Runtime".into(), "› bun".into(), String::new()],
+            vec!["◇ Runtime".into(), "  bun".into(), String::new()],
         );
         assert_eq!(
             w.format_block(),
             vec![
                 "◇ Name".to_string(),
-                "› tako".to_string(),
+                "  tako".to_string(),
                 String::new(),
                 "◇ Runtime".to_string(),
-                "› bun".to_string(),
+                "  bun".to_string(),
                 String::new(),
             ]
         );
@@ -532,5 +568,20 @@ mod tests {
         assert!(w.fields[1].completion_lines.is_empty());
         // A untouched
         assert_eq!(w.fields[0].value.as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn wizard_select_has_no_escape_hint_on_first_regular_step() {
+        assert_eq!(wizard_select_escape_hint(true), None);
+    }
+
+    #[test]
+    fn wizard_select_shows_back_on_later_regular_step() {
+        assert_eq!(wizard_select_escape_hint(false), Some("back"));
+    }
+
+    #[test]
+    fn wizard_select_has_no_escape_hint_on_repeated_first_step() {
+        assert_eq!(wizard_select_escape_hint(true), None);
     }
 }

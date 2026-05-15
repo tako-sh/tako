@@ -3,9 +3,11 @@ use std::io;
 use console::Term;
 
 use super::super::{is_interactive, is_pretty, theme_accent, theme_muted};
+use super::prompt_escape_action;
 use super::{
-    format_key_hints, format_pretty_cancelled_prompt, format_pretty_confirm_completion,
-    format_pretty_confirm_prompt, wizard_back_error,
+    EscapeAction, format_key_hints, format_pretty_cancelled_prompt,
+    format_pretty_confirm_completion, format_pretty_confirm_prompt_with_description,
+    pretty_prompt_input_column, wizard_back_error,
 };
 
 pub fn confirm(prompt: &str, default: bool) -> io::Result<bool> {
@@ -16,6 +18,23 @@ pub fn confirm_with_description(
     prompt: &str,
     description: Option<&str>,
     default: bool,
+) -> io::Result<bool> {
+    confirm_inner(prompt, description, default, false)
+}
+
+pub(in crate::output) fn confirm_with_description_back(
+    prompt: &str,
+    description: Option<&str>,
+    default: bool,
+) -> io::Result<bool> {
+    confirm_inner(prompt, description, default, true)
+}
+
+fn confirm_inner(
+    prompt: &str,
+    description: Option<&str>,
+    default: bool,
+    show_back: bool,
 ) -> io::Result<bool> {
     if !is_interactive() {
         return Ok(default);
@@ -54,7 +73,10 @@ pub fn confirm_with_description(
                         break Ok(default);
                     }
                     KeyCode::Esc => {
-                        break Err(wizard_back_error());
+                        if prompt_escape_action(show_back) == EscapeAction::Back {
+                            break Err(wizard_back_error());
+                        }
+                        continue;
                     }
                     KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
                         break Err(io::Error::new(
@@ -79,19 +101,18 @@ pub fn confirm_with_description(
 
     let term = Term::stderr();
 
-    // Print description line first (if any)
-    if let Some(desc) = description {
-        let _ = term.write_line(desc);
-    }
-
-    let prompt_lines = format_pretty_confirm_prompt(prompt, default);
+    let prompt_lines = format_pretty_confirm_prompt_with_description(prompt, description, default);
     for line in &prompt_lines {
         eprintln!("{line}");
     }
     // Key hints below the input line
-    eprintln!("{}", format_key_hints(false));
+    eprintln!("{}", format_key_hints(show_back));
     // Move cursor back to the › line
-    let _ = crossterm::execute!(io::stderr(), cursor::MoveUp(2), cursor::MoveToColumn(2));
+    let _ = crossterm::execute!(
+        io::stderr(),
+        cursor::MoveUp(2),
+        cursor::MoveToColumn(pretty_prompt_input_column(true, false))
+    );
     let _ = std::io::Write::flush(&mut io::stderr());
 
     // Raw mode: read single keypress
@@ -113,7 +134,10 @@ pub fn confirm_with_description(
                     break Ok(default);
                 }
                 KeyCode::Esc => {
-                    break Err(wizard_back_error());
+                    if prompt_escape_action(show_back) == EscapeAction::Back {
+                        break Err(wizard_back_error());
+                    }
+                    continue;
                 }
                 KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
                     break Err(io::Error::new(

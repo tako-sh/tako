@@ -81,3 +81,9 @@ fn filter_suggestions_matches_case_insensitive_substring() {
     let filtered = filter_suggestions(&suggestions, "PROD");
     assert_eq!(filtered, vec!["Prod-EU".to_string(), "prod-us".to_string()]);
 }
+
+#[test]
+fn prompt_validation_marker_offset_starts_from_label_line() {
+    assert_eq!(prompt_validation_marker_offset(None), 2);
+    assert_eq!(prompt_validation_marker_offset(Some("warning")), 3);
+}

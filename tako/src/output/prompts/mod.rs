@@ -11,8 +11,8 @@ pub use wizard::Wizard;
 use std::io;
 
 use super::{
-    DIAMOND_FILLED, DIAMOND_OUTLINED, INDENT, OPERATION_CANCELLED, bold, emit, theme_accent,
-    theme_dim, theme_error, theme_muted, theme_warning,
+    DIAMOND_FILLED, DIAMOND_OUTLINED, INDENT, OPERATION_CANCELLED, emit, theme_accent, theme_dim,
+    theme_error, theme_muted, theme_warning,
 };
 
 // ---------------------------------------------------------------------------
@@ -67,16 +67,30 @@ fn wizard_back_error() -> io::Error {
     io::Error::new(io::ErrorKind::Interrupted, "wizard_back")
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum EscapeAction {
+    Ignore,
+    Back,
+}
+
+fn prompt_escape_action(show_back: bool) -> EscapeAction {
+    if show_back {
+        EscapeAction::Back
+    } else {
+        EscapeAction::Ignore
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Prompt format helpers
 // ---------------------------------------------------------------------------
 
 fn format_pretty_prompt_warning_line(message: &str) -> String {
-    format!("{} {}", bold(&theme_warning("!")), theme_warning(message))
+    format!("{INDENT}{}", theme_warning(message))
 }
 
 fn format_pretty_prompt_error_line(message: &str) -> String {
-    format!("{} {}", bold(&theme_error("✘")), theme_error(message))
+    format!("{INDENT}{}", theme_error(message))
 }
 
 fn format_pretty_prompt_header(
@@ -99,9 +113,6 @@ fn format_pretty_prompt_header(
     if let Some(warning_text) = warning {
         lines.push(format_pretty_prompt_warning_line(warning_text));
     }
-    if let Some(error_text) = error {
-        lines.push(format_pretty_prompt_error_line(error_text));
-    }
     lines
 }
 
@@ -119,15 +130,20 @@ fn format_pretty_prompt_input_prefix_for_status(active: bool, has_error: bool) -
     } else {
         theme_muted("›")
     };
-    format!("{marker} ")
+    format!("{INDENT}{marker} ")
+}
+
+fn pretty_prompt_input_column(active: bool, has_error: bool) -> u16 {
+    console::measure_text_width(&format_pretty_prompt_input_prefix_for_status(
+        active, has_error,
+    )) as u16
 }
 
 fn format_pretty_prompt_value_line(value: &str) -> String {
-    let prefix = format_pretty_prompt_input_prefix(false);
     if value.is_empty() {
-        prefix.trim_end().to_string()
+        String::new()
     } else {
-        format!("{prefix}{value}")
+        format!("{INDENT}{value}")
     }
 }
 
@@ -160,12 +176,21 @@ fn format_pretty_text_prompt_completion(
 /// Keyboard shortcut hints shown below the active prompt input line.
 /// `show_back` adds "esc go back" for non-first wizard steps.
 pub fn format_key_hints(show_back: bool) -> String {
+    let escape_action = show_back.then_some("back");
+    format_key_hints_with_enter_action(escape_action, "submit")
+}
+
+fn format_key_hints_with_enter_action(escape_action: Option<&str>, enter_action: &str) -> String {
     let dot = theme_dim("·");
     let mut parts = Vec::new();
-    if show_back {
-        parts.push(format!("{} {}", theme_muted("esc"), theme_dim("back")));
+    if let Some(action) = escape_action {
+        parts.push(format!("{} {}", theme_muted("esc"), theme_dim(action)));
     }
-    parts.push(format!("{} {}", theme_muted("enter"), theme_dim("submit")));
+    parts.push(format!(
+        "{} {}",
+        theme_muted("enter"),
+        theme_dim(enter_action)
+    ));
     format!("{INDENT}{}", parts.join(&format!(" {dot} ")))
 }
 
@@ -200,13 +225,21 @@ fn format_pretty_confirm_label(label: &str, default: bool, active: bool) -> Stri
     }
 }
 
-fn format_pretty_confirm_prompt(label: &str, default: bool) -> Vec<String> {
-    vec![
-        format_pretty_confirm_label(label, default, true),
+fn format_pretty_confirm_prompt_with_description(
+    label: &str,
+    description: Option<&str>,
+    default: bool,
+) -> Vec<String> {
+    let mut lines = vec![format_pretty_confirm_label(label, default, true)];
+    if let Some(description) = description {
+        lines.push(format_pretty_prompt_hint_line(description));
+    }
+    lines.push(
         format_pretty_prompt_input_prefix(true)
             .trim_end()
             .to_string(),
-    ]
+    );
+    lines
 }
 
 fn format_pretty_confirm_completion(label: &str, default: bool, value: &str) -> Vec<String> {
@@ -243,58 +276,78 @@ mod tests {
             lines,
             vec![
                 "◆ Application name".to_string(),
-                "! Name cannot be changed after the first deployment.".to_string(),
+                "  Name cannot be changed after the first deployment.".to_string(),
             ]
         );
     }
 
     #[test]
-    fn pretty_prompt_header_places_error_below_label() {
+    fn pretty_prompt_header_marks_error_without_rendering_error_text() {
         let lines = format_pretty_prompt_header("Passphrase", None, Some("Invalid passphrase"));
 
+        assert_eq!(lines, vec!["◆ Passphrase".to_string()]);
+    }
+
+    #[test]
+    fn pretty_prompt_error_line_is_indented_without_icon() {
         assert_eq!(
-            lines,
-            vec![
-                "◆ Passphrase".to_string(),
-                "✘ Invalid passphrase".to_string(),
-            ]
+            format_pretty_prompt_error_line("Invalid passphrase"),
+            "  Invalid passphrase".to_string(),
         );
     }
 
     #[test]
     fn pretty_prompt_hint_line_is_indented() {
         assert_eq!(
-            format_pretty_prompt_hint_line("lego provider code"),
-            "  lego provider code".to_string()
+            format_pretty_prompt_hint_line("Cloudflare API token"),
+            "  Cloudflare API token".to_string()
         );
     }
 
     #[test]
     fn pretty_prompt_input_prefix_uses_chevron() {
-        assert_eq!(format_pretty_prompt_input_prefix(true), "› ".to_string());
-        assert_eq!(format_pretty_prompt_input_prefix(false), "› ".to_string());
+        assert_eq!(format_pretty_prompt_input_prefix(true), "  › ".to_string());
+        assert_eq!(format_pretty_prompt_input_prefix(false), "  › ".to_string());
     }
 
     #[test]
     fn pretty_confirm_prompt_keeps_default_choice_on_label_line() {
-        let lines = format_pretty_confirm_prompt("Overwrite configuration?", false);
+        let lines =
+            format_pretty_confirm_prompt_with_description("Overwrite configuration?", None, false);
         assert_eq!(
             lines,
             vec![
                 "◆ Overwrite configuration? [y/N]".to_string(),
-                "›".to_string(),
+                "  ›".to_string(),
             ]
         );
     }
 
     #[test]
-    fn pretty_confirm_completion_keeps_answer_on_chevron_line() {
+    fn pretty_confirm_prompt_indents_description_inside_prompt_body() {
+        let lines = format_pretty_confirm_prompt_with_description(
+            "Use iCloud Keychain?",
+            Some("Stores the key in your macOS login keychain."),
+            false,
+        );
+        assert_eq!(
+            lines,
+            vec![
+                "◆ Use iCloud Keychain? [y/N]".to_string(),
+                "  Stores the key in your macOS login keychain.".to_string(),
+                "  ›".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn pretty_confirm_completion_aligns_answer_under_label_without_chevron() {
         let lines = format_pretty_confirm_completion("Overwrite configuration?", false, "no");
         assert_eq!(
             lines,
             vec![
                 "◇ Overwrite configuration?".to_string(),
-                "› no".to_string(),
+                "  no".to_string(),
                 String::new(),
             ]
         );
@@ -305,7 +358,7 @@ mod tests {
         let lines = format_pretty_prompt_completion("Runtime", "bun");
         assert_eq!(
             lines,
-            vec!["◇ Runtime".to_string(), "› bun".to_string(), String::new(),]
+            vec!["◇ Runtime".to_string(), "  bun".to_string(), String::new(),]
         );
     }
 
@@ -355,6 +408,16 @@ mod tests {
     }
 
     #[test]
+    fn prompt_escape_ignores_when_back_hint_is_hidden() {
+        assert_eq!(prompt_escape_action(false), EscapeAction::Ignore);
+    }
+
+    #[test]
+    fn prompt_escape_goes_back_when_back_hint_is_visible() {
+        assert_eq!(prompt_escape_action(true), EscapeAction::Back);
+    }
+
+    #[test]
     fn pretty_text_prompt_completion_keeps_warning_and_value_on_separate_lines() {
         let lines = format_pretty_text_prompt_completion(
             "Application name",
@@ -366,8 +429,8 @@ mod tests {
             lines,
             vec![
                 "◇ Application name".to_string(),
-                "! Name cannot be changed after the first deployment.".to_string(),
-                "› my-app".to_string(),
+                "  Name cannot be changed after the first deployment.".to_string(),
+                "  my-app".to_string(),
                 String::new(),
             ]
         );
