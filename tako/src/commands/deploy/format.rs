@@ -315,7 +315,7 @@ pub(super) fn format_server_target_metadata_error(
     }
 
     format!(
-        "Deploy target metadata check failed: {}. Remove and add each affected server again (`tako servers rm <name>` then `tako servers add --name <name> <host>`). Deploy does not probe server targets.",
+        "Deploy target metadata check failed: {}. Remove and add each affected server again (`tako servers remove <name>` then `tako servers add --name <name> <host>`). Deploy does not probe server targets.",
         details.join("; ")
     )
 }

@@ -2,57 +2,24 @@ use crate::output;
 use crate::ssh::SshClient;
 use std::time::Duration;
 
-const SERVER_CONFIG_JSON: &str = "/opt/tako/config.json";
 const DNS_CREDENTIALS_ENV: &str = "/opt/tako/dns-credentials.env";
+const CLOUDFLARE_DNS_PROVIDER: &str = "cloudflare";
+const CLOUDFLARE_TOKEN_HINT: &str = "Can read zones and edit DNS records for your zone.";
+const INVALID_DNS_CREDENTIALS_MESSAGE: &str =
+    "Credentials invalid. Check your API token and try again.";
 
 /// Return a shell command to quickly verify credentials for a provider, if
 /// supported. The command should exit 0 on success, non-zero on failure.
 fn credential_verify_command(provider: &str, credentials: &[(String, String)]) -> Option<String> {
     match provider {
-        "cloudflare" => {
+        CLOUDFLARE_DNS_PROVIDER => {
             let token = credentials.iter().find(|(k, _)| k == "CF_DNS_API_TOKEN")?;
-            let escaped = crate::shell::shell_single_quote(&token.1);
+            let header = format!("Authorization: Bearer {}", token.1);
+            let escaped = crate::shell::shell_single_quote(&header);
             Some(format!(
-                "curl -sf -H 'Authorization: Bearer '{} \
+                "curl -sf -H {} \
                  https://api.cloudflare.com/client/v4/user/tokens/verify \
                  | grep -q '\"active\"'",
-                escaped,
-            ))
-        }
-        "digitalocean" => {
-            let token = credentials.iter().find(|(k, _)| k == "DO_AUTH_TOKEN")?;
-            let escaped = crate::shell::shell_single_quote(&token.1);
-            Some(format!(
-                "curl -sf -H 'Authorization: Bearer '{} \
-                 https://api.digitalocean.com/v2/account \
-                 | grep -q '\"account\"'",
-                escaped,
-            ))
-        }
-        "hetzner" => {
-            let token = credentials.iter().find(|(k, _)| k == "HETZNER_API_KEY")?;
-            let escaped = crate::shell::shell_single_quote(&token.1);
-            Some(format!(
-                "curl -sf -H 'Auth-API-Token: '{} \
-                 https://dns.hetzner.com/api/v1/zones >/dev/null",
-                escaped,
-            ))
-        }
-        "vultr" => {
-            let token = credentials.iter().find(|(k, _)| k == "VULTR_API_KEY")?;
-            let escaped = crate::shell::shell_single_quote(&token.1);
-            Some(format!(
-                "curl -sf -H 'Authorization: Bearer '{} \
-                 https://api.vultr.com/v2/account >/dev/null",
-                escaped,
-            ))
-        }
-        "linode" => {
-            let token = credentials.iter().find(|(k, _)| k == "LINODE_TOKEN")?;
-            let escaped = crate::shell::shell_single_quote(&token.1);
-            Some(format!(
-                "curl -sf -H 'Authorization: Bearer '{} \
-                 https://api.linode.com/v4/profile >/dev/null",
                 escaped,
             ))
         }
@@ -60,131 +27,139 @@ fn credential_verify_command(provider: &str, credentials: &[(String, String)]) -
     }
 }
 
-/// Well-known DNS providers and their required environment variables.
+fn run_credential_verify_command(command: &str) -> Result<(), String> {
+    let output = std::process::Command::new("sh")
+        .args(["-c", command])
+        .output()
+        .map_err(|e| format!("Failed to run credential verification: {e}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(INVALID_DNS_CREDENTIALS_MESSAGE.to_string())
+    }
+}
+
+fn verify_dns_credentials(provider: &str, credentials: &[(String, String)]) -> Result<(), String> {
+    if let Some(command) = credential_verify_command(provider, credentials) {
+        let _t = output::timed(&format!("Verify DNS credentials ({provider})"));
+        run_credential_verify_command(&command)?;
+    }
+    Ok(())
+}
+
+fn supported_dns_provider_options() -> Vec<(String, &'static str)> {
+    vec![("cloudflare".to_string(), CLOUDFLARE_DNS_PROVIDER)]
+}
+
+/// Supported DNS providers and their required environment variables.
 fn dns_provider_env_vars(provider: &str) -> &'static [(&'static str, &'static str)] {
     match provider {
-        "cloudflare" => &[(
-            "CF_DNS_API_TOKEN",
-            "Cloudflare API token (DNS edit permission)",
-        )],
-        "route53" => &[
-            ("AWS_ACCESS_KEY_ID", "AWS access key ID"),
-            ("AWS_SECRET_ACCESS_KEY", "AWS secret access key"),
-            ("AWS_REGION", "AWS region (e.g. us-east-1)"),
-        ],
-        "digitalocean" => &[("DO_AUTH_TOKEN", "DigitalOcean API token")],
-        "hetzner" => &[("HETZNER_API_KEY", "Hetzner DNS API token")],
-        "vultr" => &[("VULTR_API_KEY", "Vultr API key")],
-        "linode" => &[("LINODE_TOKEN", "Linode API token")],
-        "namecheap" => &[
-            ("NAMECHEAP_API_USER", "Namecheap API user"),
-            ("NAMECHEAP_API_KEY", "Namecheap API key"),
-        ],
-        "gcloud" => &[
-            ("GCE_PROJECT", "Google Cloud project ID"),
-            (
-                "GCE_SERVICE_ACCOUNT_FILE",
-                "Path to service account JSON key file",
-            ),
-        ],
+        CLOUDFLARE_DNS_PROVIDER => &[("CF_DNS_API_TOKEN", "Cloudflare API token")],
         _ => &[],
     }
 }
 
-struct DnsConfig {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct DnsConfig {
     provider: String,
     credentials_env: String, // KEY=VALUE\n content
 }
 
-/// Interactively prompt for DNS provider and credentials, verify them locally,
-/// and return the config. Does not write anything to any server.
-async fn prompt_dns_setup() -> Result<DnsConfig, Box<dyn std::error::Error>> {
-    // Select DNS provider
-    let provider_options = vec![
-        ("cloudflare".to_string(), "cloudflare"),
-        ("route53 (AWS)".to_string(), "route53"),
-        ("digitalocean".to_string(), "digitalocean"),
-        ("hetzner".to_string(), "hetzner"),
-        ("vultr".to_string(), "vultr"),
-        ("linode".to_string(), "linode"),
-        ("namecheap".to_string(), "namecheap"),
-        ("gcloud (Google Cloud DNS)".to_string(), "gcloud"),
-        ("other (enter manually)".to_string(), "other"),
-    ];
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum DnsConfigChange {
+    Enable(DnsConfig),
+    Disable,
+    Unchanged,
+}
 
-    let provider = output::select(
-        "Choose your DNS provider for Let's Encrypt DNS-01 challenges",
-        None,
-        provider_options,
+#[cfg(test)]
+fn dns_current_status(current_provider: Option<&str>) -> String {
+    match current_provider {
+        None => "currently disabled".to_string(),
+        Some(CLOUDFLARE_DNS_PROVIDER) => "currently enabled with Cloudflare".to_string(),
+        Some(provider) => format!("currently configured for unsupported provider '{provider}'"),
+    }
+}
+
+fn dns_wildcard_prompt_default(current_provider: Option<&str>) -> bool {
+    current_provider.is_some()
+}
+
+fn dns_wildcard_prompt_description(current_provider: Option<&str>) -> String {
+    match current_provider {
+        None => "Use this for wildcard routes such as *.example.com.".to_string(),
+        Some(CLOUDFLARE_DNS_PROVIDER) => {
+            "Cloudflare DNS-01 is already enabled. Answer no to disable it.".to_string()
+        }
+        Some(provider) => {
+            format!(
+                "DNS-01 is configured for unsupported provider '{provider}'. Answer yes to switch to Cloudflare."
+            )
+        }
+    }
+}
+
+fn dns_no_wildcard_change(current_provider: Option<&str>) -> DnsConfigChange {
+    if current_provider.is_some() {
+        DnsConfigChange::Disable
+    } else {
+        DnsConfigChange::Unchanged
+    }
+}
+
+/// Interactively prompt for the DNS wildcard mode and Cloudflare credentials.
+/// Does not write anything to any server.
+pub(super) fn prompt_dns_setup(
+    current_provider: Option<&str>,
+) -> Result<DnsConfigChange, Box<dyn std::error::Error>> {
+    let description = dns_wildcard_prompt_description(current_provider);
+    let needs_wildcards = output::confirm_with_description(
+        "Need DNS wildcard certificates?",
+        Some(&description),
+        dns_wildcard_prompt_default(current_provider),
     )?;
 
-    let provider = if provider == "other" {
-        output::TextField::new("DNS provider name")
-            .with_hint("lego provider code")
-            .prompt()?
-    } else {
-        provider.to_string()
-    };
+    if !needs_wildcards {
+        return Ok(dns_no_wildcard_change(current_provider));
+    }
 
-    // Collect credentials
+    if current_provider == Some(CLOUDFLARE_DNS_PROVIDER)
+        && !output::confirm("Update Cloudflare API token?", false)?
+    {
+        return Ok(DnsConfigChange::Unchanged);
+    }
+
+    let provider = supported_dns_provider_options()
+        .into_iter()
+        .next()
+        .map(|(_, provider)| provider.to_string())
+        .expect("Cloudflare DNS provider is configured");
+
+    let mut wizard = output::Wizard::new().with_fields(&[("Cloudflare API token", false)]);
+
+    // Validate before the prompt completes, so invalid input stays on the
+    // current wizard step with the error shown under the field.
     let known_vars = dns_provider_env_vars(&provider);
     let mut credentials: Vec<(String, String)> = Vec::new();
 
-    if known_vars.is_empty() {
-        output::muted(&format!(
-            "Provider '{}' — enter environment variables required by lego.",
-            provider,
-        ));
-        output::muted("See https://go-acme.github.io/lego/dns/ for provider docs.");
-        output::muted("Enter variable name, then value. Empty name to finish.");
-
-        loop {
-            let key = output::TextField::new("Variable name")
-                .optional()
-                .prompt()?;
-            let key = key.trim().to_string();
-            if key.is_empty() {
-                break;
-            }
-            let value = output::password_field(&format!("{key} value"))?;
-            credentials.push((key, value));
-        }
-    } else {
-        for (var_name, description) in known_vars {
-            let value = output::password_field(description)?;
-            credentials.push((var_name.to_string(), value));
-        }
+    for &(var_name, description) in known_vars {
+        let provider_for_validation = provider.clone();
+        let var_name_for_validation = var_name.to_string();
+        let value = wizard.text_field_named_validated_with_spinner(
+            "Cloudflare API token",
+            output::TextField::new(description)
+                .password()
+                .with_hint(CLOUDFLARE_TOKEN_HINT),
+            move |value| {
+                let candidate = [(var_name_for_validation.clone(), value)];
+                verify_dns_credentials(&provider_for_validation, &candidate)
+            },
+        )?;
+        credentials.push((var_name.to_string(), value));
     }
 
     if credentials.is_empty() {
         return Err(output::operation_cancelled_error().into());
-    }
-
-    // Quick credential validation via provider API (runs locally).
-    if let Some(verify_cmd) = credential_verify_command(&provider, &credentials) {
-        let _t = output::timed(&format!("Verify DNS credentials ({provider})"));
-        let verify_future = async {
-            let out = tokio::process::Command::new("sh")
-                .args(["-c", &verify_cmd])
-                .output()
-                .await
-                .map_err(|e| -> Box<dyn std::error::Error> {
-                    format!("Failed to run credential verification: {e}").into()
-                })?;
-            if !out.status.success() {
-                return Err::<(), Box<dyn std::error::Error>>(
-                    "Credentials invalid. Check your API token and try again.".into(),
-                );
-            }
-            Ok(())
-        };
-        output::with_spinner_async_err(
-            "Verifying credentials",
-            "Credentials valid",
-            "Verifying credentials",
-            verify_future,
-        )
-        .await?;
     }
 
     let mut env_content = String::new();
@@ -192,42 +167,41 @@ async fn prompt_dns_setup() -> Result<DnsConfig, Box<dyn std::error::Error>> {
         env_content.push_str(&format!("{}={}\n", key, value));
     }
 
-    Ok(DnsConfig {
+    Ok(DnsConfigChange::Enable(DnsConfig {
         provider,
         credentials_env: env_content,
-    })
+    }))
 }
 
-pub(super) async fn configure_dns(name: &str) -> Result<(), Box<dyn std::error::Error>> {
-    use crate::config::ServersToml;
-    use crate::ssh::SshConfig;
-
-    let servers = ServersToml::load()?;
-    if servers.is_empty() {
-        return Err("No servers configured. Run `tako servers add` first.".into());
+pub(super) async fn configure_dns(
+    name: &str,
+    ssh: &SshClient,
+    current_config: &super::remote_config::ServerConfigWithoutSecrets,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match prompt_dns_setup(current_config.dns_provider())? {
+        DnsConfigChange::Enable(dns_config) => {
+            apply_dns_config(ssh, name, &dns_config).await?;
+            output::success(&format!("Server {} configured", output::strong(name)));
+        }
+        DnsConfigChange::Disable => {
+            disable_dns_config(ssh, name).await?;
+            output::success(&format!("Server {} configured", output::strong(name)));
+        }
+        DnsConfigChange::Unchanged => {
+            let state = if current_config.dns_provider().is_some() {
+                "DNS wildcard certificates unchanged on"
+            } else {
+                "DNS wildcard certificates disabled on"
+            };
+            output::success(&format!("{state} {}", output::strong(name)));
+        }
     }
-
-    let server = servers
-        .get(name)
-        .ok_or_else(|| format!("Server '{}' not found.", name))?;
-
-    let dns_config = prompt_dns_setup().await?;
-
-    let ssh_config = SshConfig::from_server(&server.host, server.port);
-    let mut ssh = SshClient::new(ssh_config);
-    ssh.connect()
-        .await
-        .map_err(|e| format!("Failed to connect to {name}: {e}"))?;
-    apply_dns_config(&ssh, name, &dns_config).await?;
-    let _ = ssh.disconnect().await;
-
-    output::success(&format!("Server {} configured", output::strong(name)));
 
     Ok(())
 }
 
 /// Apply a DNS config to a server: write credentials, configure systemd, and
-/// reload tako-server. The server installs lego on-demand when it needs it.
+/// reload tako-server.
 /// All intermediate output is suppressed — shows a single spinner line.
 async fn apply_dns_config(
     ssh: &SshClient,
@@ -253,45 +227,18 @@ async fn apply_dns_config_inner(
 
     // Write credentials env file
     let _t = output::timed(&format!("[{name}] Write DNS credentials ({provider})"));
-    let escaped_content = crate::shell::shell_single_quote(&config.credentials_env);
-    let write_creds_cmd = SshClient::run_with_root_or_sudo(&format!(
-        "printf '%s' {} > {} && chmod 0600 {} && chown tako:tako {}",
-        escaped_content, DNS_CREDENTIALS_ENV, DNS_CREDENTIALS_ENV, DNS_CREDENTIALS_ENV,
-    ));
-    ssh.exec_checked(&write_creds_cmd).await?;
+    ssh.exec_checked(&write_dns_credentials_command(config))
+        .await?;
     drop(_t);
 
     // Merge dns.provider into config.json
-    let escaped_provider = crate::shell::shell_single_quote(provider);
-    let merge_config_cmd = SshClient::run_with_root_or_sudo(&format!(
-        r#"CONFIG="{path}"; \
-         PROVIDER={provider}; \
-         EXISTING="$(cat "$CONFIG" 2>/dev/null || echo '{{}}')"; \
-         if command -v jq >/dev/null 2>&1; then \
-           echo "$EXISTING" | jq --arg p "$PROVIDER" '.dns.provider = $p' > "$CONFIG.tmp"; \
-         elif command -v python3 >/dev/null 2>&1; then \
-           python3 -c "import json,sys; d=json.loads(sys.argv[1]); d.setdefault('dns',{{}}); d['dns']['provider']=sys.argv[2]; json.dump(d,open(sys.argv[3],'w'))" "$EXISTING" "$PROVIDER" "$CONFIG.tmp"; \
-         else \
-           echo "error: jq or python3 required" >&2 && exit 1; \
-         fi && \
-         mv "$CONFIG.tmp" "$CONFIG" && chmod 0644 "$CONFIG" && chown tako:tako "$CONFIG""#,
-        path = SERVER_CONFIG_JSON,
-        provider = escaped_provider,
-    ));
-    ssh.exec_checked(&merge_config_cmd).await?;
+    ssh.exec_checked(&merge_dns_provider_command(provider))
+        .await?;
 
     // Write systemd drop-in for EnvironmentFile (credentials only), reload, and restart
     let _t = output::timed("Systemd reload + restart");
-    let dropin = format!("[Service]\nEnvironmentFile={}\n", DNS_CREDENTIALS_ENV,);
-    let escaped_dropin = dropin.replace('\'', "'\\''");
-    let write_dropin_cmd = SshClient::run_with_root_or_sudo(&format!(
-        "mkdir -p /etc/systemd/system/tako-server.service.d && \
-         printf '%s' '{}' > /etc/systemd/system/tako-server.service.d/dns.conf && \
-         systemctl daemon-reload && \
-         systemctl restart tako-server",
-        escaped_dropin,
-    ));
-    ssh.exec_checked(&write_dropin_cmd).await?;
+    ssh.exec_checked(&write_dns_systemd_dropin_command(true))
+        .await?;
     drop(_t);
     tracing::debug!("DNS configured, tako-server restarted");
 
@@ -324,9 +271,179 @@ async fn apply_dns_config_inner(
     Ok(())
 }
 
+pub(super) async fn apply_dns_config_before_start(
+    ssh: &SshClient,
+    name: &str,
+    change: &DnsConfigChange,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match change {
+        DnsConfigChange::Enable(config) => {
+            let provider = &config.provider;
+            let _t = output::timed(&format!("[{name}] Write DNS credentials ({provider})"));
+            ssh.exec_checked(&write_dns_credentials_command(config))
+                .await?;
+            drop(_t);
+
+            ssh.exec_checked(&merge_dns_provider_command(provider))
+                .await?;
+            ssh.exec_checked(&write_dns_systemd_dropin_command(false))
+                .await?;
+        }
+        DnsConfigChange::Disable => {
+            let disable_cmd = SshClient::run_with_root_or_sudo(&disable_dns_config_command(false));
+            ssh.exec_checked(&disable_cmd).await?;
+        }
+        DnsConfigChange::Unchanged => {}
+    }
+
+    Ok(())
+}
+
+fn write_dns_credentials_command(config: &DnsConfig) -> String {
+    let escaped_content = crate::shell::shell_single_quote(&config.credentials_env);
+    SshClient::run_with_root_or_sudo(&format!(
+        "printf '%s' {} > {} && chmod 0600 {} && chown tako:tako {}",
+        escaped_content, DNS_CREDENTIALS_ENV, DNS_CREDENTIALS_ENV, DNS_CREDENTIALS_ENV,
+    ))
+}
+
+fn merge_dns_provider_command(provider: &str) -> String {
+    let escaped_provider = crate::shell::shell_single_quote(provider);
+    SshClient::run_with_root_or_sudo(&format!(
+        r#"CONFIG="{path}"; \
+         PROVIDER={provider}; \
+         EXISTING="$(cat "$CONFIG" 2>/dev/null || echo '{{}}')"; \
+         if command -v jq >/dev/null 2>&1; then \
+           echo "$EXISTING" | jq --arg p "$PROVIDER" '.dns.provider = $p' > "$CONFIG.tmp"; \
+         elif command -v python3 >/dev/null 2>&1; then \
+           python3 -c "import json,sys; d=json.loads(sys.argv[1]); d.setdefault('dns',{{}}); d['dns']['provider']=sys.argv[2]; json.dump(d,open(sys.argv[3],'w'))" "$EXISTING" "$PROVIDER" "$CONFIG.tmp"; \
+         else \
+           echo "error: jq or python3 required" >&2 && exit 1; \
+         fi && \
+         mv "$CONFIG.tmp" "$CONFIG" && chmod 0644 "$CONFIG" && chown tako:tako "$CONFIG""#,
+        path = super::remote_config::SERVER_CONFIG_JSON,
+        provider = escaped_provider,
+    ))
+}
+
+fn write_dns_systemd_dropin_command(restart: bool) -> String {
+    let dropin = format!("[Service]\nEnvironmentFile={}\n", DNS_CREDENTIALS_ENV,);
+    let escaped_dropin = dropin.replace('\'', "'\\''");
+    let fallback_restart = if restart {
+        "elif command -v rc-service >/dev/null 2>&1; then \
+           rc-service tako-server restart; \
+         else \
+           service tako-server restart; \
+         fi"
+    } else {
+        "fi"
+    };
+    let systemd_action = if restart {
+        "systemctl daemon-reload && systemctl restart tako-server"
+    } else {
+        ":"
+    };
+    SshClient::run_with_root_or_sudo(&format!(
+        "if command -v systemctl >/dev/null 2>&1; then \
+         mkdir -p /etc/systemd/system/tako-server.service.d && \
+         printf '%s' '{}' > /etc/systemd/system/tako-server.service.d/dns.conf && \
+         {}; \
+         {}",
+        escaped_dropin, systemd_action, fallback_restart,
+    ))
+}
+
+async fn disable_dns_config(ssh: &SshClient, name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let msg = format!("Disabling DNS on {name}");
+    output::with_spinner_async_err(
+        &msg,
+        &format!("DNS disabled on {name}"),
+        &msg,
+        disable_dns_config_inner(ssh, name),
+    )
+    .await
+}
+
+async fn disable_dns_config_inner(
+    ssh: &SshClient,
+    name: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let _t = output::timed(&format!("[{name}] Disable DNS config"));
+    let disable_cmd = SshClient::run_with_root_or_sudo(&disable_dns_config_command(true));
+    ssh.exec_checked(&disable_cmd).await?;
+    drop(_t);
+
+    for attempt in 0..5 {
+        tokio::time::sleep(Duration::from_secs(if attempt == 0 { 2 } else { 3 })).await;
+        match ssh.tako_server_info().await {
+            Ok(info) if info.dns_provider.is_none() => return Ok(()),
+            Ok(_) if attempt < 4 => continue,
+            Ok(info) => {
+                return Err(format!(
+                    "DNS provider on {} is {:?} after restart (expected disabled).\n\
+                     Try: tako servers reload {}",
+                    name, info.dns_provider, name,
+                )
+                .into());
+            }
+            Err(_) if attempt < 4 => continue,
+            Err(e) => {
+                return Err(format!(
+                    "Could not verify DNS config on {} after restart: {}",
+                    name, e,
+                )
+                .into());
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn disable_dns_config_command(restart: bool) -> String {
+    let restart_command = if restart {
+        "if command -v systemctl >/dev/null 2>&1; then \
+           systemctl daemon-reload && systemctl restart tako-server; \
+         elif command -v rc-service >/dev/null 2>&1; then \
+           rc-service tako-server restart; \
+         else \
+           service tako-server restart; \
+         fi"
+    } else {
+        ":"
+    };
+    format!(
+        r#"CONFIG="{config_path}"; \
+         EXISTING="$(cat "$CONFIG" 2>/dev/null || echo '{{}}')"; \
+         if ! command -v python3 >/dev/null 2>&1; then \
+           echo "error: python3 required" >&2 && exit 1; \
+         fi; \
+         python3 -c "import json,sys; d=json.loads(sys.argv[1] or '{{}}'); d.pop('dns', None); json.dump(d, open(sys.argv[2], 'w'))" "$EXISTING" "$CONFIG.tmp" && \
+         mv "$CONFIG.tmp" "$CONFIG" && chmod 0644 "$CONFIG" && chown tako:tako "$CONFIG" && \
+         rm -f {credentials_path} /etc/systemd/system/tako-server.service.d/dns.conf && \
+         {restart_command}"#,
+        config_path = super::remote_config::SERVER_CONFIG_JSON,
+        credentials_path = DNS_CREDENTIALS_ENV,
+        restart_command = restart_command,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn credential_verification_accepts_successful_command() {
+        assert_eq!(run_credential_verify_command("true"), Ok(()));
+    }
+
+    #[test]
+    fn credential_verification_rejects_failed_command() {
+        assert_eq!(
+            run_credential_verify_command("false").unwrap_err(),
+            INVALID_DNS_CREDENTIALS_MESSAGE,
+        );
+    }
 
     #[test]
     fn dns_provider_env_vars_returns_cloudflare_vars() {
@@ -336,8 +453,86 @@ mod tests {
     }
 
     #[test]
-    fn dns_provider_env_vars_returns_empty_for_unknown() {
-        let vars = dns_provider_env_vars("some-obscure-provider");
+    fn dns_provider_env_vars_returns_empty_for_legacy_provider() {
+        let vars = dns_provider_env_vars("route53");
         assert!(vars.is_empty());
+    }
+
+    #[test]
+    fn supported_dns_provider_options_only_include_cloudflare() {
+        assert_eq!(
+            supported_dns_provider_options(),
+            vec![("cloudflare".to_string(), "cloudflare")],
+        );
+    }
+
+    #[test]
+    fn cloudflare_token_hint_describes_required_actions() {
+        assert_eq!(
+            CLOUDFLARE_TOKEN_HINT,
+            "Can read zones and edit DNS records for your zone.",
+        );
+    }
+
+    #[test]
+    fn dns_current_status_describes_known_states() {
+        assert_eq!(dns_current_status(None), "currently disabled");
+        assert_eq!(
+            dns_current_status(Some("cloudflare")),
+            "currently enabled with Cloudflare"
+        );
+        assert_eq!(
+            dns_current_status(Some("route53")),
+            "currently configured for unsupported provider 'route53'"
+        );
+    }
+
+    #[test]
+    fn dns_wildcard_prompt_defaults_to_current_state() {
+        assert!(!dns_wildcard_prompt_default(None));
+        assert!(dns_wildcard_prompt_default(Some("cloudflare")));
+        assert!(dns_wildcard_prompt_default(Some("route53")));
+    }
+
+    #[test]
+    fn dns_wildcard_prompt_description_explains_disabled_state() {
+        assert_eq!(
+            dns_wildcard_prompt_description(None),
+            "Use this for wildcard routes such as *.example.com.",
+        );
+    }
+
+    #[test]
+    fn no_wildcard_choice_disables_existing_dns() {
+        assert_eq!(dns_no_wildcard_change(None), DnsConfigChange::Unchanged,);
+        assert_eq!(
+            dns_no_wildcard_change(Some("cloudflare")),
+            DnsConfigChange::Disable,
+        );
+    }
+
+    #[test]
+    fn disable_dns_config_command_removes_dns_provider_and_credentials() {
+        let command = disable_dns_config_command(true);
+        assert!(command.contains("d.pop('dns', None)"));
+        assert!(command.contains(DNS_CREDENTIALS_ENV));
+        assert!(command.contains("dns.conf"));
+    }
+
+    #[test]
+    fn pre_start_dns_command_writes_config_without_restarting_service() {
+        let command = write_dns_systemd_dropin_command(false);
+
+        assert!(command.contains("EnvironmentFile=/opt/tako/dns-credentials.env"));
+        assert!(!command.contains("systemctl restart tako-server"));
+        assert!(!command.contains("rc-service tako-server restart"));
+    }
+
+    #[test]
+    fn dns_restart_command_supports_openrc_after_writing_config() {
+        let command = write_dns_systemd_dropin_command(true);
+
+        assert!(command.contains("systemctl restart tako-server"));
+        assert!(command.contains("rc-service tako-server restart"));
     }
 }

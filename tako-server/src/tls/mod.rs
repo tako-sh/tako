@@ -7,6 +7,7 @@
 //! - SNI-based certificate selection
 
 mod acme;
+mod dns;
 mod manager;
 mod self_signed;
 mod sni;

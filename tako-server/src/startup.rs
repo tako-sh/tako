@@ -73,7 +73,6 @@ struct AcmeInitConfig {
     dns_provider: Option<String>,
     no_acme: bool,
     account_dir: PathBuf,
-    data_dir: PathBuf,
     cert_manager: Arc<CertManager>,
     challenge_tokens: ChallengeTokens,
 }
@@ -173,7 +172,6 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             dns_provider: config_dns_provider.clone(),
             no_acme: args.no_acme,
             account_dir: acme_dir,
-            data_dir: data_dir.clone(),
             cert_manager: cert_manager.clone(),
             challenge_tokens: challenge_tokens.clone(),
         },
@@ -313,7 +311,6 @@ fn init_acme_client(rt: &Runtime, config: AcmeInitConfig) -> Option<Arc<AcmeClie
             email: config.acme_email,
             account_dir: config.account_dir,
             dns_provider: config.dns_provider,
-            data_dir: config.data_dir,
             ..Default::default()
         },
         config.cert_manager,
@@ -551,7 +548,6 @@ fn spawn_standby_monitor(rt: &Runtime, config: StandbyPromotionConfig) {
                                     email: config.acme_email.clone(),
                                     account_dir: config.data_dir.join("acme"),
                                     dns_provider: config.dns_provider.clone(),
-                                    data_dir: config.data_dir.clone(),
                                     ..Default::default()
                                 },
                                 config.cert_manager.clone(),

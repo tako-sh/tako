@@ -1,7 +1,7 @@
 use super::*;
 use crate::commands::secret::SecretKeyCommands;
 use crate::commands::storage::{StorageCommands, StorageProviderArg};
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 
 #[test]
 fn servers_add_defaults_to_tako_user() {
@@ -258,30 +258,62 @@ fn storages_add_parses_required_binding_options() {
 }
 
 #[test]
-fn servers_remove_aliases_parse() {
+fn servers_remove_parses() {
     let cli = Cli::try_parse_from(["tako", "servers", "remove", "prod"]).unwrap();
-    let Commands::Servers(server::ServerCommands::Rm { name }) = cli.command.expect("command")
+    let Commands::Servers(server::ServerCommands::Remove { name }) = cli.command.expect("command")
     else {
-        panic!("expected Servers::Rm");
-    };
-    assert_eq!(name.as_deref(), Some("prod"));
-
-    let cli = Cli::try_parse_from(["tako", "servers", "delete", "prod"]).unwrap();
-    let Commands::Servers(server::ServerCommands::Rm { name }) = cli.command.expect("command")
-    else {
-        panic!("expected Servers::Rm");
+        panic!("expected Servers::Remove");
     };
     assert_eq!(name.as_deref(), Some("prod"));
 }
 
 #[test]
-fn servers_rm_without_name_parses_for_selector() {
-    let cli = Cli::try_parse_from(["tako", "servers", "rm"]).unwrap();
-    let Commands::Servers(server::ServerCommands::Rm { name }) = cli.command.expect("command")
+fn servers_remove_aliases_parse() {
+    let cli = Cli::try_parse_from(["tako", "servers", "rm", "prod"]).unwrap();
+    let Commands::Servers(server::ServerCommands::Remove { name }) = cli.command.expect("command")
     else {
-        panic!("expected Servers::Rm");
+        panic!("expected Servers::Remove");
+    };
+    assert_eq!(name.as_deref(), Some("prod"));
+
+    let cli = Cli::try_parse_from(["tako", "servers", "delete", "prod"]).unwrap();
+    let Commands::Servers(server::ServerCommands::Remove { name }) = cli.command.expect("command")
+    else {
+        panic!("expected Servers::Remove");
+    };
+    assert_eq!(name.as_deref(), Some("prod"));
+}
+
+#[test]
+fn servers_remove_without_name_parses_for_selector() {
+    let cli = Cli::try_parse_from(["tako", "servers", "remove"]).unwrap();
+    let Commands::Servers(server::ServerCommands::Remove { name }) = cli.command.expect("command")
+    else {
+        panic!("expected Servers::Remove");
     };
     assert!(name.is_none());
+}
+
+#[test]
+fn servers_help_shows_remove_as_primary_command() {
+    let mut cmd = Cli::command();
+    let servers = cmd.find_subcommand_mut("servers").unwrap();
+    let mut help = Vec::new();
+    servers.write_help(&mut help).unwrap();
+    let help = String::from_utf8(help).unwrap();
+    let remove_line = help
+        .lines()
+        .find(|line| line.contains("Remove a server"))
+        .expect("expected remove command in help");
+
+    assert!(
+        remove_line.trim_start().starts_with("remove "),
+        "expected remove to be primary command: {remove_line}"
+    );
+    assert!(
+        remove_line.contains("rm") && remove_line.contains("delete"),
+        "expected rm and delete aliases: {remove_line}"
+    );
 }
 
 #[test]
@@ -328,7 +360,18 @@ fn servers_configure_parses_name() {
     else {
         panic!("expected Servers::Configure");
     };
-    assert_eq!(name, "prod");
+    assert_eq!(name.as_deref(), Some("prod"));
+}
+
+#[test]
+fn servers_configure_without_name_parses_for_selector() {
+    let cli = Cli::try_parse_from(["tako", "servers", "configure"]).unwrap();
+    let Commands::Servers(server::ServerCommands::Configure { name }) =
+        cli.command.expect("command")
+    else {
+        panic!("expected Servers::Configure");
+    };
+    assert!(name.is_none());
 }
 
 #[test]

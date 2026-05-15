@@ -196,7 +196,7 @@ fn test_acme_config_with_custom_values() {
         max_attempts: 50,
         check_delay: Duration::from_secs(10),
         dns_provider: Some("cloudflare".to_string()),
-        data_dir: PathBuf::from("/custom/data"),
+        dns_propagation_delay: Duration::from_secs(1),
     };
 
     assert!(config.staging);
@@ -215,7 +215,31 @@ async fn test_wildcard_requires_dns_provider() {
 }
 
 #[tokio::test]
-async fn test_wildcard_without_email_still_attempts_lego() {
+async fn test_wildcard_rejects_unsupported_dns_provider() {
+    let temp = TempDir::new().unwrap();
+    let cert_config = CertManagerConfig {
+        cert_dir: temp.path().join("certs"),
+        ..Default::default()
+    };
+    let cert_manager = Arc::new(CertManager::new(cert_config));
+    let acme_config = AcmeConfig {
+        dns_provider: Some("route53".to_string()),
+        email: None,
+        account_dir: temp.path().join("acme"),
+        ..Default::default()
+    };
+    let acme = AcmeClient::new(acme_config, cert_manager);
+
+    let result = acme.request_certificate("*.example.com").await;
+
+    assert!(matches!(
+        result,
+        Err(AcmeError::UnsupportedDnsProvider(provider)) if provider == "route53"
+    ));
+}
+
+#[tokio::test]
+async fn test_wildcard_cloudflare_requires_registered_account() {
     let temp = TempDir::new().unwrap();
     let cert_config = CertManagerConfig {
         cert_dir: temp.path().join("certs"),
@@ -226,13 +250,13 @@ async fn test_wildcard_without_email_still_attempts_lego() {
         dns_provider: Some("cloudflare".to_string()),
         email: None,
         account_dir: temp.path().join("acme"),
-        data_dir: temp.path().join("data"),
         ..Default::default()
     };
     let acme = AcmeClient::new(acme_config, cert_manager);
-    // Should attempt lego (and fail because it's not installed), not error on missing email
+
     let result = acme.request_certificate("*.example.com").await;
-    assert!(matches!(result, Err(AcmeError::LegoDns01Failed(_))));
+
+    assert!(matches!(result, Err(AcmeError::NotRegistered)));
 }
 
 #[test]

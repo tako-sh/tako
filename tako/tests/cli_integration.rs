@@ -582,6 +582,81 @@ mod server_commands {
     }
 
     #[test]
+    fn servers_configure_without_name_reaches_command_logic() {
+        let temp = TempDir::new().unwrap();
+        let project_dir = temp.path().join("project");
+        fs::create_dir_all(&project_dir).unwrap();
+
+        let home = temp.path().join("home");
+        let tako_home = temp.path().join("tako-home");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&tako_home).unwrap();
+
+        let out = run_tako_with_env(&["servers", "configure"], &project_dir, &home, &tako_home);
+
+        assert!(
+            !out.status.success(),
+            "servers configure should fail at command validation without servers: {}{}",
+            stdout_str(&out),
+            stderr_str(&out)
+        );
+
+        let combined = format!("{}{}", stdout_str(&out), stderr_str(&out));
+        assert!(
+            combined.contains("No servers configured"),
+            "expected no-servers guidance: {}",
+            combined
+        );
+        assert!(
+            !combined.contains("required arguments"),
+            "should not fail in clap before command logic: {}",
+            combined
+        );
+    }
+
+    #[test]
+    fn servers_configure_without_name_auto_selects_single_server() {
+        let temp = TempDir::new().unwrap();
+        let project_dir = temp.path().join("project");
+        fs::create_dir_all(&project_dir).unwrap();
+
+        let home = temp.path().join("home");
+        let tako_home = temp.path().join("tako-home");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&tako_home).unwrap();
+        fs::write(
+            tako_home.join("config.toml"),
+            r#"
+[[servers]]
+name = "prod"
+host = "prod.example.com"
+"#,
+        )
+        .unwrap();
+
+        let out = run_tako_with_env(&["servers", "configure"], &project_dir, &home, &tako_home);
+
+        assert!(
+            !out.status.success(),
+            "settings wizard should require a terminal: {}{}",
+            stdout_str(&out),
+            stderr_str(&out)
+        );
+
+        let combined = format!("{}{}", stdout_str(&out), stderr_str(&out));
+        assert!(
+            combined.contains("Interactive server configuration requires a terminal"),
+            "expected terminal-required error after server resolution: {}",
+            combined
+        );
+        assert!(
+            !combined.contains("No server name provided"),
+            "single configured server should be selected automatically: {}",
+            combined
+        );
+    }
+
+    #[test]
     fn servers_add_creates_missing_tako_home() {
         let temp = TempDir::new().unwrap();
         let project_dir = temp.path().join("project");
@@ -871,7 +946,7 @@ mod server_commands {
     }
 
     #[test]
-    fn servers_rm_without_name_in_non_interactive_mode_shows_hint() {
+    fn servers_remove_without_name_in_non_interactive_mode_shows_hint() {
         let temp = TempDir::new().unwrap();
         let project_dir = temp.path().join("project");
         fs::create_dir_all(&project_dir).unwrap();
@@ -901,23 +976,23 @@ mod server_commands {
             stderr_str(&add)
         );
 
-        let rm = run_tako_with_env(&["servers", "rm"], &project_dir, &home, &tako_home);
+        let rm = run_tako_with_env(&["servers", "remove"], &project_dir, &home, &tako_home);
         assert!(
             !rm.status.success(),
-            "rm without name should fail on non-tty"
+            "remove without name should fail on non-tty"
         );
 
         let stderr = stderr_str(&rm);
         assert!(
             stderr.contains("requires an interactive terminal")
                 || stderr.contains("provide a server name"),
-            "expected helpful error for non-interactive rm without name: {}",
+            "expected helpful error for non-interactive remove without name: {}",
             stderr
         );
     }
 
     #[test]
-    fn servers_rm_named_non_interactive_uses_operation_cancelled_message() {
+    fn servers_remove_named_non_interactive_uses_operation_cancelled_message() {
         let temp = TempDir::new().unwrap();
         let project_dir = temp.path().join("project");
         fs::create_dir_all(&project_dir).unwrap();
@@ -948,7 +1023,7 @@ mod server_commands {
         );
 
         let rm = run_tako_with_env(
-            &["servers", "rm", "prod-2"],
+            &["servers", "remove", "prod-2"],
             &project_dir,
             &home,
             &tako_home,

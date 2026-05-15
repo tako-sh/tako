@@ -261,10 +261,34 @@ fn install_server_script_defaults_to_stopped_bootstrap_install() {
 }
 
 #[test]
-fn install_server_env_starts_service_for_cli_installs() {
-    let env = super::tako::install_server_env("ssh-ed25519 AAAA", None);
+fn install_server_env_can_run_bootstrap_without_starting_service() {
+    let env = super::tako::install_server_env(
+        "ssh-ed25519 AAAA",
+        None,
+        super::tako::InstallServerMode::BootstrapOnly,
+    );
+
+    assert!(env.contains("TAKO_RESTART_SERVICE='0'"));
+}
+
+#[test]
+fn install_server_env_starts_service_for_configure_start_mode() {
+    let env = super::tako::install_server_env(
+        "ssh-ed25519 AAAA",
+        None,
+        super::tako::InstallServerMode::ConfigureAndStart,
+    );
 
     assert!(env.contains("TAKO_RESTART_SERVICE='1'"));
+}
+
+#[test]
+fn install_server_script_preserves_existing_config_when_writing_server_name() {
+    let script = super::tako::INSTALL_SERVER_SCRIPT;
+
+    assert!(script.contains("data[\"server_name\"] = server_name"));
+    assert!(script.contains("data.setdefault(\"dns\", {})[\"provider\"] = dns_provider"));
+    assert!(script.contains("json.dump(data, fh)"));
 }
 
 #[tokio::test]

@@ -143,14 +143,17 @@ pub(super) fn check_wildcard_dns_support(
         return Ok(());
     }
 
-    if checks.iter().all(|c| c.dns_provider.is_some()) {
+    if checks
+        .iter()
+        .all(|c| c.dns_provider.as_deref() == Some("cloudflare"))
+    {
         tracing::debug!("All servers support wildcard domains");
         return Ok(());
     }
 
     let missing: Vec<_> = checks
         .iter()
-        .filter(|c| c.dns_provider.is_none())
+        .filter(|c| c.dns_provider.as_deref() != Some("cloudflare"))
         .map(|c| c.name.as_str())
         .collect();
     let route_list = wildcard_routes
@@ -160,7 +163,7 @@ pub(super) fn check_wildcard_dns_support(
         .join(", ");
 
     Err(format!(
-        "Server(s) {} need DNS-01 for wildcard route(s) {route_list}\n\
+        "Server(s) {} need Cloudflare DNS-01 for wildcard route(s) {route_list}\n\
          Run `tako servers configure <name>` for each listed server.",
         missing.join(", "),
     )
@@ -238,6 +241,25 @@ mod tests {
             dns_provider: Some("cloudflare".to_string()),
         }];
         assert!(check_wildcard_dns_support(&routes, &checks).is_ok());
+    }
+
+    #[test]
+    fn check_wildcard_dns_support_fails_for_unsupported_dns_provider() {
+        let routes = vec!["*.example.com".to_string()];
+        let checks = vec![ServerCheck {
+            name: "prod-1".to_string(),
+            mode: tako_core::UpgradeMode::Normal,
+            dns_provider: Some("route53".to_string()),
+        }];
+
+        let err = check_wildcard_dns_support(&routes, &checks).unwrap_err();
+        let msg = err.to_string();
+
+        assert!(msg.contains("prod-1"), "should name the server: {msg}");
+        assert!(
+            msg.contains("Cloudflare"),
+            "should explain the supported provider: {msg}",
+        );
     }
 
     #[test]

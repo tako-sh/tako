@@ -153,6 +153,29 @@ fn install_public_ports(
     }
 }
 
+async fn apply_first_run_settings_and_start(
+    host: &str,
+    port: u16,
+    public_ports: ServerPublicPorts,
+    settings: &super::first_run::FirstRunServerSettings,
+) -> Result<(), Box<dyn std::error::Error>> {
+    super::first_run::apply_first_run_settings_before_start(host, port, host, settings).await?;
+
+    let start_scope = output::scope(host);
+    let _t = output::timed(&format!("Start tako-server on {host}:{port}"));
+    output::with_spinner_async_err(
+        "Starting tako-server",
+        "tako-server started",
+        "Start failed",
+        configure_tako_server_with_service_user(host, port, Some(public_ports))
+            .instrument(start_scope),
+    )
+    .await?;
+    drop(_t);
+
+    Ok(())
+}
+
 pub(super) async fn run_add_server_wizard(
     initial_name: Option<&str>,
     initial_description: Option<&str>,
@@ -315,18 +338,27 @@ pub(super) async fn run_add_server_wizard(
                 let admin_user = output::TextField::new("Admin SSH user")
                     .with_default(admin_user_default.unwrap_or("root"))
                     .prompt()?;
+                let first_run_settings = super::first_run::prompt_first_run_settings()?;
                 let install_scope = output::scope(&host);
                 let _t = output::timed(&format!("Install tako-server on {host}:{port}"));
                 output::with_spinner_async_err(
                     "Installing tako-server",
                     "tako-server installed",
                     "Install failed",
-                    install_tako_server_with_admin(&host, port, &admin_user, Some(public_ports))
-                        .instrument(install_scope),
+                    install_tako_server_with_admin(
+                        &host,
+                        port,
+                        &admin_user,
+                        Some(public_ports),
+                        crate::ssh::InstallServerMode::BootstrapOnly,
+                    )
+                    .instrument(install_scope),
                 )
                 .await?;
                 drop(_t);
                 detected_public_ports = Some(public_ports);
+                apply_first_run_settings_and_start(&host, port, public_ports, &first_run_settings)
+                    .await?;
 
                 let verify_scope = output::scope(&host);
                 let _t = output::timed(&format!("Verify tako-server on {host}:{port}"));
@@ -347,20 +379,12 @@ pub(super) async fn run_add_server_wizard(
                 Ok(info) if info.installed && info.public_ports.is_none()
             )
         {
-            let should_configure = output::confirm("Configure and start tako-server now?", true)?;
+            let should_configure = output::confirm("Set up and start tako-server now?", true)?;
             if should_configure {
                 let public_ports = install_public_ports(initial_public_ports)?;
-                let configure_scope = output::scope(&host);
-                let _t = output::timed(&format!("Configure tako-server on {host}:{port}"));
-                output::with_spinner_async_err(
-                    "Configuring tako-server",
-                    "tako-server configured",
-                    "Configuration failed",
-                    configure_tako_server_with_service_user(&host, port, Some(public_ports))
-                        .instrument(configure_scope),
-                )
-                .await?;
-                drop(_t);
+                let first_run_settings = super::first_run::prompt_first_run_settings()?;
+                apply_first_run_settings_and_start(&host, port, public_ports, &first_run_settings)
+                    .await?;
                 detected_public_ports = Some(public_ports);
 
                 let verify_scope = output::scope(&host);
@@ -648,13 +672,7 @@ pub async fn add_server(
     let mut detected_target: Option<ServerTarget> = pre_detected_target;
     let should_verify_access = install_if_missing || !no_test || detected_target.is_some();
     if should_verify_access {
-        output::with_spinner_async_err(
-            "Checking Tailscale",
-            "Tailscale ready",
-            "Tailscale required",
-            verify_tailscale_host(host),
-        )
-        .await?;
+        output::with_spinner_async_simple("Checking server", verify_tailscale_host(host)).await?;
     }
 
     // Test SSH connection unless skipped or already tested
@@ -674,14 +692,23 @@ pub async fn add_server(
         if install_if_missing && needs_install {
             let admin_user = admin_user.unwrap_or("root");
             let install_ports = install_public_ports(public_ports)?;
+            let first_run_settings = super::first_run::prompt_first_run_settings()?;
             output::with_spinner_async_err(
                 "Installing tako-server",
                 "tako-server installed",
                 "Install failed",
-                install_tako_server_with_admin(host, port, admin_user, Some(install_ports)),
+                install_tako_server_with_admin(
+                    host,
+                    port,
+                    admin_user,
+                    Some(install_ports),
+                    crate::ssh::InstallServerMode::BootstrapOnly,
+                ),
             )
             .await?;
             resolved_public_ports = Some(install_ports);
+            apply_first_run_settings_and_start(host, port, install_ports, &first_run_settings)
+                .await?;
 
             result = output::with_spinner_async_err(
                 "Verifying install",
@@ -697,14 +724,23 @@ pub async fn add_server(
                 let admin_user = output::TextField::new("Admin SSH user")
                     .with_default(admin_user.unwrap_or("root"))
                     .prompt()?;
+                let first_run_settings = super::first_run::prompt_first_run_settings()?;
                 output::with_spinner_async_err(
                     "Installing tako-server",
                     "tako-server installed",
                     "Install failed",
-                    install_tako_server_with_admin(host, port, &admin_user, Some(install_ports)),
+                    install_tako_server_with_admin(
+                        host,
+                        port,
+                        &admin_user,
+                        Some(install_ports),
+                        crate::ssh::InstallServerMode::BootstrapOnly,
+                    ),
                 )
                 .await?;
                 resolved_public_ports = Some(install_ports);
+                apply_first_run_settings_and_start(host, port, install_ports, &first_run_settings)
+                    .await?;
 
                 result = output::with_spinner_async_err(
                     "Verifying install",
@@ -726,15 +762,16 @@ pub async fn add_server(
             let should_configure = if install_if_missing {
                 true
             } else {
-                output::confirm("Configure and start tako-server now?", true)?
+                output::confirm("Set up and start tako-server now?", true)?
             };
             if should_configure {
                 let configure_ports = install_public_ports(public_ports)?;
-                output::with_spinner_async_err(
-                    "Configuring tako-server",
-                    "tako-server configured",
-                    "Configuration failed",
-                    configure_tako_server_with_service_user(host, port, Some(configure_ports)),
+                let first_run_settings = super::first_run::prompt_first_run_settings()?;
+                apply_first_run_settings_and_start(
+                    host,
+                    port,
+                    configure_ports,
+                    &first_run_settings,
                 )
                 .await?;
                 resolved_public_ports = Some(configure_ports);
@@ -776,13 +813,9 @@ pub async fn add_server(
     }
 
     if should_verify_access {
-        let probe = output::with_spinner_async_err(
-            "Checking server access",
-            "Server access verified",
-            "Server access failed",
-            verify_remote_management(host),
-        )
-        .await?;
+        let probe =
+            output::with_spinner_async_simple("Checking server", verify_remote_management(host))
+                .await?;
         resolved_public_ports = Some(ServerPublicPorts {
             http_port: probe.info.http_port,
             https_port: probe.info.https_port,

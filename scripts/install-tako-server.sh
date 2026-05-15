@@ -1177,19 +1177,58 @@ print(v if isinstance(v, str) and v else '')
 }
 
 # Write config.json from CONFIG_SERVER_NAME and CONFIG_DNS_PROVIDER variables.
+# Preserve CLI-managed keys such as trusted_proxy when updating installer-owned fields.
 write_config() {
-  local json="{"
-  local need_comma=false
-  if [ -n "$CONFIG_SERVER_NAME" ]; then
-    json="${json}\"server_name\":\"$CONFIG_SERVER_NAME\""
-    need_comma=true
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$TAKO_CONFIG" "$CONFIG_SERVER_NAME" "$CONFIG_DNS_PROVIDER" <<'PY'
+import json
+import os
+import sys
+
+path, server_name, dns_provider = sys.argv[1:4]
+try:
+    with open(path) as fh:
+        data = json.load(fh)
+    if not isinstance(data, dict):
+        data = {}
+except (FileNotFoundError, json.JSONDecodeError):
+    data = {}
+
+if server_name:
+    data["server_name"] = server_name
+if dns_provider:
+    data.setdefault("dns", {})["provider"] = dns_provider
+
+tmp = f"{path}.tmp"
+with open(tmp, "w") as fh:
+    json.dump(data, fh)
+    fh.write("\n")
+os.replace(tmp, path)
+PY
+  elif command -v jq >/dev/null 2>&1; then
+    local existing
+    existing="$(cat "$TAKO_CONFIG" 2>/dev/null || echo '{}')"
+    printf '%s\n' "$existing" | jq \
+      --arg server_name "$CONFIG_SERVER_NAME" \
+      --arg dns_provider "$CONFIG_DNS_PROVIDER" \
+      'if $server_name != "" then .server_name = $server_name else . end
+       | if $dns_provider != "" then .dns.provider = $dns_provider else . end' \
+      > "$TAKO_CONFIG.tmp"
+    mv "$TAKO_CONFIG.tmp" "$TAKO_CONFIG"
+  else
+    local json="{"
+    local need_comma=false
+    if [ -n "$CONFIG_SERVER_NAME" ]; then
+      json="${json}\"server_name\":\"$CONFIG_SERVER_NAME\""
+      need_comma=true
+    fi
+    if [ -n "$CONFIG_DNS_PROVIDER" ]; then
+      $need_comma && json="${json},"
+      json="${json}\"dns\":{\"provider\":\"$CONFIG_DNS_PROVIDER\"}"
+    fi
+    json="${json}}"
+    printf '%s\n' "$json" > "$TAKO_CONFIG"
   fi
-  if [ -n "$CONFIG_DNS_PROVIDER" ]; then
-    $need_comma && json="${json},"
-    json="${json}\"dns\":{\"provider\":\"$CONFIG_DNS_PROVIDER\"}"
-  fi
-  json="${json}}"
-  printf '%s\n' "$json" > "$TAKO_CONFIG"
   chown "$TAKO_USER":"$TAKO_USER" "$TAKO_CONFIG" 2>/dev/null || true
   chmod 0644 "$TAKO_CONFIG"
 }
@@ -1288,9 +1327,15 @@ description="Tako Server"
 command="/usr/local/bin/tako-server"
 command_args="--socket $TAKO_SOCKET --data-dir $TAKO_HOME $TAKO_PUBLIC_PORT_ARGS $TAKO_MANAGEMENT_ARGS"
 command_user="$TAKO_USER:$TAKO_USER"
+dns_env="$TAKO_HOME/dns-credentials.env"
 pidfile="/run/\${RC_SVCNAME}.pid"
 command_background="yes"
 retry="TERM/1800/KILL/5"
+
+if [ -f "\$dns_env" ]; then
+  . "\$dns_env"
+  export CF_DNS_API_TOKEN
+fi
 
 depend() {
   need net

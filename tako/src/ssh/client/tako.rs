@@ -25,6 +25,21 @@ pub struct ServerInstallPorts {
     pub https_port: u16,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallServerMode {
+    BootstrapOnly,
+    ConfigureAndStart,
+}
+
+impl InstallServerMode {
+    fn restart_service_value(self) -> &'static str {
+        match self {
+            Self::BootstrapOnly => "0",
+            Self::ConfigureAndStart => "1",
+        }
+    }
+}
+
 impl SshClient {
     pub async fn tako_restart(&self) -> SshResult<()> {
         self.exec_checked(&Self::tako_restart_command()).await?;
@@ -221,13 +236,17 @@ impl SshClient {
         Ok(())
     }
 
-    pub async fn install_tako_server(&self, ports: Option<ServerInstallPorts>) -> SshResult<()> {
+    pub async fn install_tako_server(
+        &self,
+        ports: Option<ServerInstallPorts>,
+        mode: InstallServerMode,
+    ) -> SshResult<()> {
         let public_key = self.authenticated_public_key().ok_or_else(|| {
             SshError::Authentication("No authenticated SSH key available for install".to_string())
         })?;
         let command = Self::run_with_root_or_sudo(&format!(
             "{} sh -s",
-            install_server_env(public_key, ports)
+            install_server_env(public_key, ports, mode)
         ));
 
         self.exec_checked_with_stdin(&command, INSTALL_SERVER_SCRIPT.as_bytes())
@@ -290,10 +309,14 @@ impl SshClient {
     }
 }
 
-pub(super) fn install_server_env(public_key: &str, ports: Option<ServerInstallPorts>) -> String {
+pub(super) fn install_server_env(
+    public_key: &str,
+    ports: Option<ServerInstallPorts>,
+    mode: InstallServerMode,
+) -> String {
     let mut assignments = vec![
         format!("TAKO_SSH_PUBKEY={}", shell_quote(public_key)),
-        "TAKO_RESTART_SERVICE='1'".to_string(),
+        format!("TAKO_RESTART_SERVICE='{}'", mode.restart_service_value()),
     ];
     for key in INSTALL_ENV_PASSTHROUGH {
         if let Ok(value) = std::env::var(key)
@@ -341,7 +364,11 @@ mod tests {
 
     #[test]
     fn install_server_env_includes_authenticated_public_key() {
-        let env = install_server_env("ssh-ed25519 AAAA test@example", None);
+        let env = install_server_env(
+            "ssh-ed25519 AAAA test@example",
+            None,
+            InstallServerMode::ConfigureAndStart,
+        );
 
         assert!(env.contains("TAKO_SSH_PUBKEY='ssh-ed25519 AAAA test@example'"));
     }
@@ -351,7 +378,11 @@ mod tests {
         let previous = std::env::var("TAKO_RELEASE_TAG").ok();
         unsafe { std::env::set_var("TAKO_RELEASE_TAG", "v0.0.0-test") };
 
-        let env = install_server_env("ssh-ed25519 AAAA", None);
+        let env = install_server_env(
+            "ssh-ed25519 AAAA",
+            None,
+            InstallServerMode::ConfigureAndStart,
+        );
 
         assert!(env.contains("TAKO_RELEASE_TAG='v0.0.0-test'"));
         match previous {
@@ -368,6 +399,7 @@ mod tests {
                 http_port: 8080,
                 https_port: 8443,
             }),
+            InstallServerMode::ConfigureAndStart,
         );
 
         assert!(env.contains("TAKO_HTTP_PORT='8080'"));

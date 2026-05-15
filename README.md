@@ -51,8 +51,8 @@ Deploy your app:
 ```bash
 tako init    # prompts for app name + production route, writes tako.toml, updates .gitignore for .tako/secrets.json
 tako servers add my-server
-# Optional: DNS wildcards or trusted source IP behind HAProxy/Cloudflare.
-tako servers configure my-server
+# Optional: Cloudflare DNS wildcards or trusted source IP behind HAProxy/Cloudflare.
+tako servers configure
 tako deploy
 ```
 

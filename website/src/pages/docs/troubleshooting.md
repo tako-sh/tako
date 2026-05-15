@@ -120,7 +120,7 @@ tako servers add ubuntu@host.example.com --install --name la
 
 `admin-user@host` tells Tako which admin SSH user to use for install or repair. The server is stored locally as just the host.
 
-If you already ran `install-server.sh` on the host, run `tako servers add host.example.com --name la` from your workstation. The installer leaves the service stopped; `servers add` configures and starts it after SSH checks pass.
+If you already ran `install-server.sh` on the host, run `tako servers add host.example.com --name la` from your workstation. The installer leaves the service stopped; `servers add` collects first-run source-IP and DNS wildcard settings, starts it, and verifies access before saving it locally.
 
 ## Target Metadata Missing
 
@@ -132,7 +132,7 @@ Deploy requires each selected server to have target metadata:
 `tako servers add` detects and stores this metadata. If deploy says metadata is missing or invalid, remove and re-add the server with SSH checks enabled:
 
 ```bash
-tako servers rm la
+tako servers remove la
 tako servers add host.example.com --name la
 ```
 
@@ -156,13 +156,15 @@ If any check fails, the server is not written to `config.toml`.
 
 ## Source IP Shows The Proxy
 
-If Tako is behind HAProxy, a cloud load balancer, or Cloudflare, the direct TCP peer may be the proxy instead of the browser. Run:
+If Tako is behind HAProxy, a cloud load balancer, or Cloudflare, the direct TCP peer may be the proxy instead of the browser. New installs can configure source-IP handling during `tako servers add`. To change it later, run:
 
 ```bash
-tako servers configure <name>
+tako servers configure [name]
 ```
 
-Choose source-IP configuration. Use PROXY protocol only when the upstream is a TCP proxy that sends a PROXY v1/v2 preface. Cloudflare orange-cloud HTTP proxying uses `CF-Connecting-IP`; it does not use PROXY protocol. Configure trusted proxy CIDRs and make sure direct public traffic cannot bypass that proxy.
+The wizard reads current non-secret server config first, asks whether to change source-IP handling, then asks whether the server needs DNS wildcard certificates before entering Cloudflare DNS-01 setup. When changing source-IP handling, the prompt recommends direct traffic unless the server is only reachable through a trusted proxy and uses compact option labels.
+
+Choose source-IP configuration. Use PROXY protocol only when the upstream is a TCP proxy that sends a PROXY header, such as NGINX stream or HAProxy. Cloudflare proxy mode uses `CF-Connecting-IP`; it does not use PROXY protocol. Configure trusted proxy CIDRs and make sure direct public traffic cannot bypass that proxy.
 
 ## Deploy Fails Before Upload
 

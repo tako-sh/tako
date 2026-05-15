@@ -359,7 +359,7 @@ Rolling release model:
 - `--version`: Print version and exit (format: `<base>-<sha7>`).
 - `-v, --verbose`: Show verbose output as an append-only execution transcript with timestamps and log levels.
 - `--ci`: Deterministic non-interactive output (no colors, no spinners, no prompts). Can be combined with `--verbose`.
-- `--dry-run`: Show what would happen without performing any side effects. Skips SSH connections, file uploads, config writes, and remote commands. Prints `⏭ ... (dry run)` for each skipped action. Production deploy confirmation is auto-skipped. Supported by: `deploy`, `servers add`, `servers rm`, `delete`.
+- `--dry-run`: Show what would happen without performing any side effects. Skips SSH connections, file uploads, config writes, and remote commands. Prints `⏭ ... (dry run)` for each skipped action. Production deploy confirmation is auto-skipped. Supported by: `deploy`, `servers add`, `servers remove`, `delete`.
 - `-c, --config {config}`: Use an explicit app config file instead of `./tako.toml`. If the provided path does not end with `.toml`, Tako appends it automatically. App-scoped commands treat the selected file's parent directory as the project directory. This allows multiple config files in one folder.
 - `--ssh-passphrase {passphrase}`: Use the provided passphrase for encrypted local SSH private keys during SSH authentication and signed remote-management requests.
 
@@ -669,7 +669,7 @@ Add server to global `config.toml` (`[[servers]]`).
 
 - With `host`: adds directly from CLI args and defaults the server name to the host's first DNS label (`my-server.tailnet.ts.net` becomes `my-server`). IP addresses and hosts that do not produce a valid server name require `--name`.
 - With `admin-user@host`: treats the prefix as the admin SSH user for install/repair and stores only `host`.
-- Without `host` (interactive terminal): launches a guided wizard (host, SSH port, optional SSH passphrase when a default key is encrypted, HTTP/HTTPS ports when installing or configuring a stopped install, required server name, optional description) with a final `Looks good?` confirmation. Choosing `No` restarts the wizard.
+- Without `host` (interactive terminal): launches a guided wizard (host, SSH port, optional SSH passphrase when a default key is encrypted, HTTP/HTTPS ports and first-run server settings when installing or configuring a stopped install, required server name, optional description) with a final `Looks good?` confirmation. Choosing `No` restarts the wizard.
 - If the derived server name already exists, interactive mode prompts for another name. Non-interactive mode fails and asks for `--name`.
 - The add-server wizard supports `Tab` autocomplete suggestions for host/name/port from existing servers and persisted CLI history.
   - For name/port prompts, suggestions related to the selected host (and selected name for ports) are prioritized first, then global suggestions are shown.
@@ -684,13 +684,20 @@ During SSH checks, `tako servers add` also detects and stores target metadata (`
 
 If `--no-test` is used, SSH checks and target detection are skipped; deploy later fails for that server until target metadata is captured by re-adding the server with SSH checks enabled.
 
-If `--install` is used and `tako-server` is missing or `tako@host` is not available, `tako servers add` connects as the admin SSH user (default `root`, override with `--admin-user`) and runs the server installer over SSH in configure/start mode. Passing `admin-user@host` is shorthand for setting that admin user and enabling install/repair when needed. Interactive installs prompt for editable HTTP and HTTPS port fields prefilled with `80` and `443` unless `--http-port`/`--https-port` were passed. The installer authorizes the SSH public key that authenticated the admin connection for the `tako` user, then `servers add` rechecks `tako@host`, enrolls the same key for signed remote management, verifies signed HTTP access, and only then writes `config.toml`.
+If `--install` is used and `tako-server` is missing or `tako@host` is not available, `tako servers add` connects as the admin SSH user (default `root`, override with `--admin-user`) and runs the server installer over SSH in bootstrap-only mode first. Passing `admin-user@host` is shorthand for setting that admin user and enabling install/repair when needed. Interactive installs prompt for editable HTTP and HTTPS port fields prefilled with `80` and `443` unless `--http-port`/`--https-port` were passed.
+
+Before the first service start, interactive install/configure flows prompt for first-run server settings:
+
+- Source IP mode for direct traffic, PROXY protocol, Cloudflare `CF-Connecting-IP`, or `X-Forwarded-For`.
+- DNS wildcard certificates (asks whether wildcard routes are needed, then collects a Cloudflare DNS-01 token when enabled).
+
+Tako writes selected first-run settings to the server before starting `tako-server`. It then starts the service through the installer configure/start path, rechecks `tako@host`, enrolls the same key for signed remote management, verifies signed HTTP access, and only then writes `config.toml`. Non-interactive install/repair uses safe defaults (DNS wildcard certificates disabled and no trusted proxy source-IP config).
 
 In the interactive wizard and direct host flow, if `tako-server` is missing or `tako@host` cannot be reached, Tako asks whether to install now, prompts for public HTTP/HTTPS ports, and prompts for the admin SSH user.
 
-If `tako-server` is installed but not yet configured or started (the normal result of running `install-server.sh` manually), `tako servers add` asks whether to configure and start it. In non-interactive install/repair mode (`--install` or `admin-user@host`), this configure/start step runs automatically.
+If `tako-server` is installed but not yet set up or started (the normal result of running `install-server.sh` manually), `tako servers add` asks whether to set up and start it. Interactive flows prompt for first-run server settings before the service starts. In non-interactive install/repair mode (`--install` or `admin-user@host`), the configure/start step runs automatically with safe defaults.
 
-### tako servers rm [name]
+### tako servers remove [name]
 
 Remove server from `config.toml` (`[[servers]]`).
 
@@ -699,7 +706,7 @@ In non-interactive mode, `name` is required.
 
 Confirms before removal. Warns that projects referencing this server will fail.
 
-Aliases: `tako servers remove [name]`, `tako servers delete [name]`.
+Aliases: `tako servers rm [name]`, `tako servers delete [name]`.
 
 ### tako servers list
 
@@ -776,29 +783,41 @@ Remove tako-server and all data from a remote server.
    - Removes data directory (`/opt/tako/`) and the management socket directory (`/var/run/tako/`).
 4. Removes the server from the local `config.toml` server list.
 
-### tako servers configure <name>
+### tako servers configure [name]
 
-Configure server settings through an interactive wizard.
+Change server settings through an interactive wizard. Initial install/start settings are also collected by `tako servers add` when it installs or starts a stopped server.
 
-1. Loads the named server from global config.
-2. Prompts for the setting to configure:
-   - DNS wildcard certificates
+1. Resolves the server from global config:
+   - If `name` is provided, loads that server.
+   - If `name` is omitted and exactly one server is configured, uses that server.
+   - If `name` is omitted and multiple servers are configured in an interactive terminal, prompts to select one.
+   - If `name` is omitted and multiple servers are configured in a non-interactive terminal, fails and asks for `tako servers configure <name>`.
+2. Connects to the server and reads the current server config without reading secrets:
+   - Reads the non-secret settings from `/opt/tako/config.json`.
+   - Does not read `/opt/tako/dns-credentials.env` or any stored credential values.
+3. Runs the setting prompts in a linear order:
    - Source IP behind a trusted proxy
-3. DNS wildcard configuration:
-   - Prompts for DNS provider and credentials.
-   - Verifies credentials locally against the provider API when a verifier is available.
-   - Writes credentials to `/opt/tako/dns-credentials.env` (mode 0600).
-   - Merges `dns.provider` into `/opt/tako/config.json`.
-   - Writes a systemd drop-in to inject the env file and restarts `tako-server`.
-   - Polls `tako-server` to confirm the provider is active.
-   - `tako-server` downloads and installs lego on-demand when issuing wildcard certificates.
+   - DNS wildcard certificates
 4. Trusted proxy source-IP configuration:
+   - The source-IP prompt shows the current mode and asks whether to change it. Answering no leaves the existing source-IP config unchanged.
+   - When changing source-IP handling, the mode prompt recommends direct traffic unless the server is only reachable through a trusted proxy and uses compact option labels.
    - `Direct traffic` removes trusted proxy source-IP config.
-   - `PROXY protocol from a TCP proxy` enables PROXY protocol v1/v2 on the public HTTP/HTTPS listeners and prompts for trusted proxy CIDRs. The default CIDRs are loopback (`127.0.0.1/32`, `::1/128`) for same-host proxies such as HAProxy.
-   - `Cloudflare HTTP proxy header` trusts `CF-Connecting-IP` only from configured trusted proxy CIDRs. Users must enter Cloudflare's current proxy CIDRs from `https://www.cloudflare.com/ips/`.
-   - `X-Forwarded-For from an HTTP proxy` trusts the leftmost `X-Forwarded-For` IP only from configured trusted proxy CIDRs.
+   - `PROXY protocol from a TCP proxy such as NGINX` enables PROXY protocol v1/v2 on the public HTTP/HTTPS listeners and prompts for trusted proxy CIDRs. The default CIDRs are loopback (`127.0.0.1/32`, `::1/128`) for same-host proxies such as NGINX stream or HAProxy.
+   - `Cloudflare proxy mode using CF-Connecting-IP` trusts `CF-Connecting-IP` only from configured Cloudflare IP ranges. Use it when the hostname is proxied by Cloudflare.
+   - `X-Forwarded-For from a non-Cloudflare HTTP reverse proxy` trusts the leftmost `X-Forwarded-For` IP only from configured trusted proxy CIDRs. Use it for a non-Cloudflare proxy that terminates HTTP/HTTPS and forwards requests to Tako.
    - Writes `trusted_proxy` into `/opt/tako/config.json` and restarts `tako-server`.
    - Trusted source-IP metadata is server/listener-level, not per app. Enable it only when public traffic can reach Tako only through the configured trusted proxy CIDRs; otherwise clients could spoof their source IP.
+5. DNS wildcard configuration:
+   - Asks whether the server needs DNS wildcard certificates. Choosing no keeps DNS wildcard certificates disabled when they are already disabled, or disables existing DNS wildcard configuration.
+   - Choosing yes uses Cloudflare as the DNS-01 provider. If Cloudflare DNS-01 is already enabled, Tako asks whether to update the Cloudflare API token.
+   - Prompts for a Cloudflare API token that can read zones and edit DNS records for the zone when enabling or updating Cloudflare.
+   - Verifies credentials locally against the Cloudflare token verification API.
+   - Writes credentials to `/opt/tako/dns-credentials.env` (mode 0600).
+   - Merges `dns.provider = "cloudflare"` into `/opt/tako/config.json`.
+   - Writes a systemd drop-in to inject the env file and restarts `tako-server`.
+   - Polls `tako-server` to confirm the provider is active.
+   - Disabling removes `dns.provider`, removes DNS credentials and the DNS systemd drop-in, restarts `tako-server`, and polls to confirm DNS wildcard certificates are disabled.
+   - `tako-server` creates and removes Cloudflare TXT records directly when issuing wildcard certificates.
 
 ### tako uninstall [-y|--yes]
 
@@ -1243,7 +1262,7 @@ Installer SSH key behavior:
 - When the installer installs or accepts `TAKO_SSH_PUBKEY`, it also enrolls that public key for signed remote management in `/opt/tako/management-authorized-keys`.
 - Installer supports systemd and OpenRC hosts.
 - Installer defaults to bootstrap-only mode (`TAKO_RESTART_SERVICE=0`): it installs/refreshes the binary, users, directories, helpers, sudoers policy, and service definition, but does not enable or start `tako-server`. The installer prints the next step: run `tako servers add <host>` from the workstation to configure and start the server.
-- Configure/start mode (`TAKO_RESTART_SERVICE=1`) is used by `tako servers add --install`, `admin-user@host` add/repair flows, and manual installer runs that explicitly set it. This mode requires a usable service manager and remote management on a Tailscale IP.
+- Configure/start mode (`TAKO_RESTART_SERVICE=1`) enables/starts the service and requires a usable service manager and remote management on a Tailscale IP. `tako servers add --install` and `admin-user@host` add/repair flows run bootstrap-only mode first, write first-run settings, then run configure/start mode to start the service. Manual installer runs may explicitly set `TAKO_RESTART_SERVICE=1`.
 - Installer writes `tako-server --http-port {port} --https-port {port}` into the host service definition. Configure/start mode prompts for `HTTP port [80]:` and `HTTPS port [443]:` when a terminal is available; bootstrap-only mode never prompts for ports and uses existing service ports or `80`/`443` unless `--http-port`/`--https-port` or `TAKO_HTTP_PORT`/`TAKO_HTTPS_PORT` are provided. Reinstalls use the existing service ports as prompt defaults when present.
 - If service public ports change, installer performs a full service restart so the service manager command line takes effect. Otherwise, active services use the normal zero-downtime reload path.
 - For normal service installs, installer configures remote management on the server's Tailscale IP. It detects that address with `tailscale ip -4` or uses `TAKO_MANAGEMENT_HOST` when set. If no Tailscale IP is available, install fails with: `Remote management requires Tailscale so Tako can keep server control traffic private by default.`
@@ -1331,7 +1350,7 @@ Reference scripts in this repo:
 ```
 
 - `server_name` — identity label for Prometheus metrics (defaults to hostname if absent).
-- `dns.provider` — DNS provider for Let's Encrypt DNS-01 wildcard challenges (configured via `tako servers configure <name>`).
+- `dns.provider` — DNS provider for Let's Encrypt DNS-01 wildcard challenges. Currently only `"cloudflare"` is supported and is configured during `tako servers add` first-run setup or later with `tako servers configure [name]`.
 - `trusted_proxy.proxy_protocol` — when true, public listeners require a PROXY protocol v1/v2 preface from a trusted proxy and use its source address for rate limiting and upstream `X-Forwarded-For`.
 - `trusted_proxy.trusted_cidrs` — CIDR ranges allowed to provide source-IP metadata.
 - `trusted_proxy.client_ip_headers` — optional trusted HTTP source-IP headers (`cf-connecting-ip`, `x-forwarded-for`) accepted only from `trusted_cidrs`.
@@ -1728,15 +1747,15 @@ This requires OpenSSL (not rustls) for callback support.
 - Automatic renewal 30 days before expiry
 - HTTP-01 challenge uses the public HTTP port. Let's Encrypt reaches port 80, so custom HTTP ports require external port-80 forwarding, DNS-01, or manual certificates.
 - Zero-downtime renewal
-- DNS-01 challenges are supported for wildcard certificates via the [`lego`](https://go-acme.github.io/lego/) ACME client, which `tako-server` downloads and installs on-demand. Credentials are stored on the server at `/opt/tako/dns-credentials.env` and the provider name is persisted in `/opt/tako/config.json`. Run `tako servers configure <name>` to configure DNS credentials before deploying wildcard routes.
+- DNS-01 challenges are supported for wildcard certificates through Cloudflare DNS. Credentials are stored on the server at `/opt/tako/dns-credentials.env` and `dns.provider = "cloudflare"` is persisted in `/opt/tako/config.json`. Enable Cloudflare DNS-01 during `tako servers add` first-run setup, or run `tako servers configure [name]` later and answer yes when asked whether the server needs wildcard certificates.
 
 ### Wildcard Certificate Handling
 
 Routing supports wildcard hosts (e.g. `*.example.com`). For TLS:
 
-- Wildcard certificates are issued automatically via DNS-01 challenges when a DNS provider is configured
+- Wildcard certificates are issued automatically via Cloudflare DNS-01 challenges when Cloudflare DNS credentials are configured
 - Wildcard certificates are used when present in cert storage
-- If no DNS provider is configured when wildcard routes are deployed, deploy fails with an error directing the user to run `tako servers configure <name>`
+- If Cloudflare DNS-01 is not configured when wildcard routes are deployed, deploy fails with an error directing the user to run `tako servers configure <name>` for each listed server
 
 ### Certificate Storage
 

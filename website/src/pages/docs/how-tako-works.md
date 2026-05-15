@@ -34,7 +34,7 @@ Most remote management reads and mutations use signed HTTP over the server's pri
 
 `tako-server` is the production runtime installed on each host. It listens on public HTTP and HTTPS ports, routes requests to the right app, manages certificates, supervises app instances, stores runtime state in SQLite, and exposes a private management API.
 
-Normal host bootstraps use `/opt/tako` as the server data directory and `/var/run/tako/tako.sock` as the local management socket. The installer lays down the service but leaves it stopped; `tako servers add` configures private management and starts the service.
+Normal host bootstraps use `/opt/tako` as the server data directory and `/var/run/tako/tako.sock` as the local management socket. The installer lays down the service but leaves it stopped; `tako servers add` configures private management, collects first-run source-IP and DNS wildcard settings when needed, and starts the service.
 
 ### SDKs
 
@@ -121,12 +121,16 @@ Production TLS uses SNI. Tako looks up an exact certificate first, then wildcard
 Tako issues certificates automatically:
 
 - HTTP-01 for ordinary hostnames
-- DNS-01 for wildcard routes after choosing DNS setup in `tako servers configure <name>`
+- Cloudflare DNS-01 for wildcard routes after configuring DNS setup during `tako servers add` or later with `tako servers configure [name]`
 - self-signed certs for private or local names such as `localhost`, `.local`, `.test`, `.invalid`, `.example`, and `.home.arpa`
+
+The Cloudflare token must be able to read zones and edit DNS records for the zone.
+The add-server flow can set DNS before the first service start. Later, `tako servers configure [name]` asks whether to change source-IP handling, then asks whether the server needs DNS wildcard certificates before enabling Cloudflare DNS-01 or updating the API token.
 
 Certificates renew before expiry without stopping traffic.
 
-When another proxy or load balancer sits in front of Tako, `tako servers configure <name>` can enable trusted source-IP handling. TCP proxies can use PROXY protocol v1/v2. HTTP proxies and CDNs can use trusted headers such as `CF-Connecting-IP` or `X-Forwarded-For`. Header and PROXY metadata are accepted only from configured trusted proxy CIDRs.
+When another proxy or load balancer sits in front of Tako, the add-server flow can enable trusted source-IP handling before the first service start. Use `tako servers configure [name]` to change it later. The configure flow preserves existing source-IP handling unless you choose to change it. When changing source-IP handling, the prompt recommends direct traffic unless the server is only reachable through a trusted proxy and uses compact option labels. TCP proxies can use PROXY protocol v1/v2. Cloudflare proxy mode uses `CF-Connecting-IP`; non-Cloudflare HTTP reverse proxies that terminate HTTP/HTTPS can use `X-Forwarded-For`. Header and PROXY metadata are accepted only from configured trusted proxy CIDRs.
+The configure wizard reads current non-secret server settings first; it does not read stored DNS credentials.
 
 ## Instances And Scaling
 

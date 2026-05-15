@@ -53,15 +53,16 @@ import DocsLayout from "../../layouts/DocsLayout.astro";
     the server in your global <code>config.toml</code>.
   </p>
   <p>
-    If <code>tako-server</code> is missing or access needs repair, that shorthand runs the installer in configure/start
-    mode with the provided admin user. During install, Tako enrolls the SSH key used for access for signed management and
-    installs the libvips runtime used by the image optimizer.
+    If <code>tako-server</code> is missing or access needs repair, that shorthand bootstraps the host with the provided
+    admin user. Before the first service start, Tako prompts for source-IP handling and DNS wildcard certificates, then
+    starts the service, enrolls the SSH key used for signed management, and installs the libvips runtime used by the image
+    optimizer.
   </p>
 
   <p>Check remote access:</p>
   <Snippet code="tako servers status" lang="bash" />
 
-  <p>Prefer installing from the host itself? Run the server installer as root, enter your workstation SSH public key when prompted, then add the host from your developer machine. The installer bootstraps the host and leaves the service stopped; <code>tako servers add</code> configures and starts it.</p>
+  <p>Prefer installing from the host itself? Run the server installer as root, enter your workstation SSH public key when prompted, then add the host from your developer machine. The installer bootstraps the host and leaves the service stopped; <code>tako servers add</code> collects first-run settings, then starts it.</p>
   <Snippet code='sudo sh -c "$(curl -fsSL https://tako.sh/install-server.sh)"' lang="bash" />
 
   <h2 id="first-deployment">First deployment</h2>

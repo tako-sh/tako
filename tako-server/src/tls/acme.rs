@@ -2,8 +2,12 @@
 //!
 //! Uses instant-acme for the ACME protocol implementation.
 //! Supports HTTP-01 challenges for non-wildcard domains and
-//! DNS-01 challenges (via lego) for wildcard certificates.
+//! Cloudflare DNS-01 challenges for wildcard certificates.
 
+use super::dns::{
+    CLOUDFLARE_DNS_PROVIDER, CloudflareDnsProvider, DnsChallengeProvider, DnsChallengeRecord,
+    DnsError,
+};
 use super::manager::{CertError, CertInfo, CertManager};
 use instant_acme::{
     Account, AuthorizationStatus, ChallengeType, Identifier, NewAccount, NewOrder, OrderStatus,
@@ -58,11 +62,25 @@ pub enum AcmeError {
     #[error("HTTP-01 challenge not available")]
     NoHttp01Challenge,
 
-    #[error("Wildcard certificate requires a DNS provider (dns.provider not set in config.json)")]
+    #[error("DNS-01 challenge not available")]
+    NoDns01Challenge,
+
+    #[error(
+        "Wildcard certificate requires Cloudflare DNS-01 (dns.provider = \"cloudflare\" not set in config.json)"
+    )]
     NoDnsProvider,
 
-    #[error("lego DNS-01 challenge failed: {0}")]
-    LegoDns01Failed(String),
+    #[error("Unsupported DNS provider '{0}'. Tako currently supports Cloudflare for DNS-01")]
+    UnsupportedDnsProvider(String),
+
+    #[error("DNS-01 challenge failed: {0}")]
+    Dns01Failed(String),
+}
+
+impl From<DnsError> for AcmeError {
+    fn from(error: DnsError) -> Self {
+        Self::Dns01Failed(error.to_string())
+    }
 }
 
 /// ACME configuration
@@ -80,10 +98,10 @@ pub struct AcmeConfig {
     pub max_attempts: u32,
     /// Delay between status checks
     pub check_delay: Duration,
-    /// DNS provider for lego DNS-01 challenges (e.g. "cloudflare", "route53")
+    /// DNS provider for DNS-01 wildcard challenges. Currently supports `cloudflare`.
     pub dns_provider: Option<String>,
-    /// Server data directory (lego stores state under `<data_dir>/lego/`)
-    pub data_dir: PathBuf,
+    /// Delay after writing DNS-01 TXT records before asking the CA to validate.
+    pub dns_propagation_delay: Duration,
 }
 
 impl Default for AcmeConfig {
@@ -96,7 +114,7 @@ impl Default for AcmeConfig {
             max_attempts: 30,
             check_delay: Duration::from_secs(5),
             dns_provider: None,
-            data_dir: PathBuf::from("/opt/tako"),
+            dns_propagation_delay: Duration::from_secs(10),
         }
     }
 }
@@ -278,7 +296,7 @@ impl AcmeClient {
 
     /// Request a certificate for a domain.
     ///
-    /// Wildcard domains (starting with `*.`) use DNS-01 via lego.
+    /// Wildcard domains (starting with `*.`) use DNS-01 through Cloudflare.
     /// All other domains use HTTP-01 via instant-acme.
     pub async fn request_certificate(&self, domain: &str) -> Result<CertInfo, AcmeError> {
         // Validate domain
@@ -408,44 +426,11 @@ impl AcmeClient {
         // Poll for certificate with retry policy
         let cert_chain = order.poll_certificate(&retry_policy).await?;
 
-        // Save certificate and key
-        let domain_dir = self.cert_manager.domain_cert_dir(domain);
-        std::fs::create_dir_all(&domain_dir)?;
-
-        let cert_path = domain_dir.join("fullchain.pem");
-        let key_path = domain_dir.join("privkey.pem");
-
-        // Write certificate chain
-        std::fs::write(&cert_path, &cert_chain)?;
-
-        // Write private key (already in PEM format)
-        std::fs::write(&key_path, &private_key_pem)?;
-
-        // Set restrictive permissions on key
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))?;
-        }
-
-        // Parse expiry from certificate
-        let expires_at = parse_cert_expiry(&cert_chain);
-
-        let cert_info = CertInfo {
-            domain: domain.to_string(),
-            cert_path: cert_path.clone(),
-            key_path: key_path.clone(),
-            expires_at,
-            is_wildcard: domain.starts_with("*."),
-            is_self_signed: false,
-        };
-
-        // Add to cert manager
-        self.cert_manager.add_cert(cert_info.clone());
+        let cert_info = self.store_issued_certificate(domain, &cert_chain, &private_key_pem)?;
 
         tracing::info!(
             domain = domain,
-            cert_path = %cert_path.display(),
+            cert_path = %cert_info.cert_path.display(),
             expires_in_days = cert_info.days_until_expiry(),
             "Certificate issued successfully"
         );
@@ -453,93 +438,20 @@ impl AcmeClient {
         Ok(cert_info)
     }
 
-    /// Request a wildcard certificate using DNS-01 challenge via lego.
-    async fn request_certificate_dns01(&self, domain: &str) -> Result<CertInfo, AcmeError> {
-        let provider = self
-            .config
-            .dns_provider
-            .as_deref()
-            .ok_or(AcmeError::NoDnsProvider)?;
-
-        let lego_dir = self.config.data_dir.join("lego");
-        std::fs::create_dir_all(&lego_dir)?;
-
-        let lego_bin = ensure_lego_installed(&self.config.data_dir).await?;
-
-        // Determine whether to `run` (first time) or `renew` (cert already exists).
-        // lego stores certs under <path>/certificates/<domain>.crt
-        let lego_cert_path = lego_dir
-            .join("certificates")
-            .join(format!("{}.crt", domain));
-        let lego_action = if lego_cert_path.exists() {
-            "renew"
-        } else {
-            "run"
-        };
-
-        let mut cmd = tokio::process::Command::new(&lego_bin);
-        cmd.arg("--dns")
-            .arg(provider)
-            .arg("--domains")
-            .arg(domain)
-            .arg("--path")
-            .arg(&lego_dir);
-
-        // --email is optional in lego v4.30+; for older versions pass a space to bypass
-        // the empty check (Let's Encrypt accepts registration without a contact email)
-        if let Some(email) = self.config.email.as_deref() {
-            cmd.arg("--email").arg(email);
-        }
-
-        cmd.arg("--accept-tos");
-
-        if self.config.staging {
-            cmd.arg("--server")
-                .arg("https://acme-staging-v02.api.letsencrypt.org/directory");
-        }
-
-        cmd.arg(lego_action);
-
-        tracing::info!(
-            domain = domain,
-            provider = provider,
-            action = lego_action,
-            "Running lego DNS-01 challenge"
-        );
-
-        let output = cmd
-            .output()
-            .await
-            .map_err(|e| AcmeError::LegoDns01Failed(format!("Failed to execute lego: {}", e)))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(AcmeError::LegoDns01Failed(format!(
-                "lego {} exited with {}: {}",
-                lego_action, output.status, stderr
-            )));
-        }
-
-        // lego writes cert to <path>/certificates/<domain>.crt and .key
-        let lego_key_path = lego_dir
-            .join("certificates")
-            .join(format!("{}.key", domain));
-
-        if !lego_cert_path.exists() || !lego_key_path.exists() {
-            return Err(AcmeError::LegoDns01Failed(
-                "lego completed but certificate files not found".to_string(),
-            ));
-        }
-
-        // Copy into our cert dir structure
+    fn store_issued_certificate(
+        &self,
+        domain: &str,
+        cert_chain: &str,
+        private_key_pem: &str,
+    ) -> Result<CertInfo, AcmeError> {
         let domain_dir = self.cert_manager.domain_cert_dir(domain);
         std::fs::create_dir_all(&domain_dir)?;
 
         let cert_path = domain_dir.join("fullchain.pem");
         let key_path = domain_dir.join("privkey.pem");
 
-        std::fs::copy(&lego_cert_path, &cert_path)?;
-        std::fs::copy(&lego_key_path, &key_path)?;
+        std::fs::write(&cert_path, cert_chain)?;
+        std::fs::write(&key_path, private_key_pem)?;
 
         #[cfg(unix)]
         {
@@ -547,28 +459,170 @@ impl AcmeClient {
             std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))?;
         }
 
-        let cert_pem = std::fs::read_to_string(&cert_path)?;
-        let expires_at = parse_cert_expiry(&cert_pem);
-
         let cert_info = CertInfo {
             domain: domain.to_string(),
             cert_path: cert_path.clone(),
-            key_path: key_path.clone(),
-            expires_at,
-            is_wildcard: true,
+            key_path,
+            expires_at: parse_cert_expiry(cert_chain),
+            is_wildcard: domain.starts_with("*."),
             is_self_signed: false,
         };
 
         self.cert_manager.add_cert(cert_info.clone());
+        Ok(cert_info)
+    }
+
+    /// Request a wildcard certificate using Cloudflare DNS-01 challenge records.
+    async fn request_certificate_dns01(&self, domain: &str) -> Result<CertInfo, AcmeError> {
+        let provider = self
+            .config
+            .dns_provider
+            .as_deref()
+            .ok_or(AcmeError::NoDnsProvider)?;
+
+        if provider != CLOUDFLARE_DNS_PROVIDER {
+            return Err(AcmeError::UnsupportedDnsProvider(provider.to_string()));
+        }
+
+        let account = {
+            let guard = self.account.read();
+            guard.clone().ok_or(AcmeError::NotRegistered)?
+        };
+        let dns_provider = CloudflareDnsProvider::from_env(self.config.dns_propagation_delay)?;
+        let mut records = Vec::new();
+        let result = self
+            .complete_dns01_order(domain, account, &dns_provider, &mut records)
+            .await;
+        self.cleanup_dns_challenge_records(&dns_provider, &records)
+            .await;
+        result
+    }
+
+    async fn complete_dns01_order(
+        &self,
+        domain: &str,
+        account: Account,
+        dns_provider: &dyn DnsChallengeProvider,
+        records: &mut Vec<DnsChallengeRecord>,
+    ) -> Result<CertInfo, AcmeError> {
+        tracing::info!(
+            domain = domain,
+            provider = CLOUDFLARE_DNS_PROVIDER,
+            "Requesting wildcard certificate via DNS-01"
+        );
+
+        let identifiers = [Identifier::Dns(domain.to_string())];
+        let new_order = NewOrder::new(&identifiers);
+        let mut order = account.new_order(&new_order).await?;
+
+        {
+            let mut authorizations = order.authorizations();
+            while let Some(auth_result) = authorizations.next().await {
+                let mut auth = auth_result?;
+
+                match auth.status {
+                    AuthorizationStatus::Pending => {
+                        let mut challenge = auth
+                            .challenge(ChallengeType::Dns01)
+                            .ok_or(AcmeError::NoDns01Challenge)?;
+                        let dns_value = challenge.key_authorization().dns_value();
+
+                        let record = dns_provider.present(domain, &dns_value).await?;
+                        tracing::info!(
+                            domain = domain,
+                            record = %record.name,
+                            "DNS-01 challenge TXT record created"
+                        );
+                        records.push(record);
+
+                        dns_provider.wait_for_propagation().await?;
+
+                        challenge.set_ready().await?;
+                    }
+                    AuthorizationStatus::Valid => {
+                        tracing::debug!(domain = domain, "Authorization already valid");
+                    }
+                    status => {
+                        return Err(AcmeError::ChallengeFailed(format!(
+                            "Unexpected authorization status: {:?}",
+                            status
+                        )));
+                    }
+                }
+            }
+        }
+
+        let retry_policy = RetryPolicy::new().timeout(self.config.timeout);
+        match order.poll_ready(&retry_policy).await? {
+            OrderStatus::Ready => {
+                tracing::info!(domain = domain, "DNS-01 order ready, finalizing");
+            }
+            OrderStatus::Invalid => {
+                return Err(self.order_invalid_error(domain, &mut order).await);
+            }
+            status => {
+                return Err(AcmeError::OrderNotReady(format!("{:?}", status)));
+            }
+        };
+
+        let private_key_pem = order.finalize().await?;
+        let cert_chain = order.poll_certificate(&retry_policy).await?;
+        let cert_info = self.store_issued_certificate(domain, &cert_chain, &private_key_pem)?;
 
         tracing::info!(
             domain = domain,
-            cert_path = %cert_path.display(),
+            cert_path = %cert_info.cert_path.display(),
             expires_in_days = cert_info.days_until_expiry(),
-            "Wildcard certificate issued via lego DNS-01"
+            "Wildcard certificate issued via Cloudflare DNS-01"
         );
 
         Ok(cert_info)
+    }
+
+    async fn cleanup_dns_challenge_records(
+        &self,
+        dns_provider: &dyn DnsChallengeProvider,
+        records: &[DnsChallengeRecord],
+    ) {
+        for record in records {
+            if let Err(error) = dns_provider.cleanup(record).await {
+                tracing::warn!(
+                    record = %record.name,
+                    error = %error,
+                    "Failed to clean up DNS-01 challenge TXT record"
+                );
+            }
+        }
+    }
+
+    async fn order_invalid_error(
+        &self,
+        domain: &str,
+        order: &mut instant_acme::Order,
+    ) -> AcmeError {
+        let mut detail = String::from("Order became invalid");
+        let mut auths = order.authorizations();
+        while let Some(Ok(auth)) = auths.next().await {
+            for challenge in &auth.challenges {
+                if let Some(ref err) = challenge.error {
+                    let err_type = err.r#type.as_deref().unwrap_or("unknown");
+                    let err_detail = err.detail.as_deref().unwrap_or("unknown");
+                    detail = format!(
+                        "Order became invalid: {err_detail} (type: {err_type}, status: {:?})",
+                        challenge.status,
+                    );
+                    tracing::warn!(
+                        domain = domain,
+                        error_type = err_type,
+                        error_detail = err_detail,
+                        challenge_status = ?challenge.status,
+                        "ACME challenge validation failed"
+                    );
+                }
+            }
+        }
+
+        AcmeError::ChallengeFailed(detail)
     }
 
     /// Clear only the challenge tokens belonging to the given domain.
@@ -622,114 +676,6 @@ impl AcmeClient {
     pub fn config(&self) -> &AcmeConfig {
         &self.config
     }
-}
-
-const LEGO_VERSION: &str = "4.33.0";
-
-/// Expected SHA-256 checksums for lego archives, keyed by Go architecture.
-fn lego_expected_sha256(go_arch: &str) -> Option<&'static str> {
-    match go_arch {
-        "amd64" => Some("ad9774e26038bfc48ebafd4430e6412b7fc09ab91809f7f4841a49043ef37aee"),
-        "arm64" => Some("83603dbf45f9a18b66cbd3c943a192888d6e6b2c181b72610694abd199253c3d"),
-        _ => None,
-    }
-}
-
-/// Ensure lego is available, downloading it if necessary.
-/// Returns the path to the lego binary.
-async fn ensure_lego_installed(data_dir: &std::path::Path) -> Result<PathBuf, AcmeError> {
-    let lego_bin = data_dir.join("bin").join("lego");
-
-    if lego_bin.exists() {
-        return Ok(lego_bin);
-    }
-
-    tracing::info!(
-        "lego not found at {}, downloading v{LEGO_VERSION}",
-        lego_bin.display()
-    );
-
-    let go_arch = match std::env::consts::ARCH {
-        "x86_64" => "amd64",
-        "aarch64" => "arm64",
-        other => {
-            return Err(AcmeError::LegoDns01Failed(format!(
-                "Unsupported architecture for lego auto-install: {other}"
-            )));
-        }
-    };
-
-    let expected_sha256 = lego_expected_sha256(go_arch)
-        .ok_or_else(|| AcmeError::LegoDns01Failed(format!("No checksum for lego on {go_arch}")))?;
-
-    let url = format!(
-        "https://github.com/go-acme/lego/releases/download/v{LEGO_VERSION}/lego_v{LEGO_VERSION}_linux_{go_arch}.tar.gz"
-    );
-
-    let bin_dir = data_dir.join("bin");
-    std::fs::create_dir_all(&bin_dir)?;
-
-    let tmp_tar = bin_dir.join("lego.tar.gz");
-
-    let output = tokio::process::Command::new("curl")
-        .args(["-sfL", "-o"])
-        .arg(&tmp_tar)
-        .arg(&url)
-        .output()
-        .await
-        .map_err(|e| AcmeError::LegoDns01Failed(format!("Failed to download lego: {e}")))?;
-
-    if !output.status.success() {
-        let _ = std::fs::remove_file(&tmp_tar);
-        return Err(AcmeError::LegoDns01Failed(format!(
-            "Failed to download lego from {url}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        )));
-    }
-
-    // Verify SHA-256 checksum
-    {
-        use sha2::Digest;
-        let data = std::fs::read(&tmp_tar).map_err(|e| {
-            AcmeError::LegoDns01Failed(format!("Failed to read downloaded archive: {e}"))
-        })?;
-        let actual = hex::encode(sha2::Sha256::digest(&data));
-        if actual != expected_sha256 {
-            let _ = std::fs::remove_file(&tmp_tar);
-            return Err(AcmeError::LegoDns01Failed(format!(
-                "SHA-256 mismatch for lego archive: expected {expected_sha256}, got {actual}"
-            )));
-        }
-    }
-
-    let output = tokio::process::Command::new("tar")
-        .args(["xzf"])
-        .arg(&tmp_tar)
-        .arg("-C")
-        .arg(&bin_dir)
-        .arg("lego")
-        .output()
-        .await
-        .map_err(|e| AcmeError::LegoDns01Failed(format!("Failed to extract lego: {e}")))?;
-
-    let _ = std::fs::remove_file(&tmp_tar);
-
-    if !output.status.success() {
-        return Err(AcmeError::LegoDns01Failed(format!(
-            "Failed to extract lego: {}",
-            String::from_utf8_lossy(&output.stderr)
-        )));
-    }
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&lego_bin, std::fs::Permissions::from_mode(0o755))?;
-    }
-
-    tracing::info!(path = %lego_bin.display(), "lego installed successfully");
-
-    Ok(lego_bin)
 }
 
 /// Parse certificate expiry from PEM data

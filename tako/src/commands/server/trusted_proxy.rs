@@ -1,10 +1,8 @@
 use crate::output;
-use crate::ssh::{SshClient, SshConfig};
-
-const SERVER_CONFIG_JSON: &str = "/opt/tako/config.json";
+use crate::ssh::SshClient;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-struct TrustedProxyCliConfig {
+pub(super) struct TrustedProxyCliConfig {
     proxy_protocol: bool,
     trusted_cidrs: Vec<String>,
     client_ip_headers: Vec<String>,
@@ -28,56 +26,87 @@ impl TrustedProxyCliConfig {
     }
 }
 
-pub(super) async fn configure_trusted_proxy(name: &str) -> Result<(), Box<dyn std::error::Error>> {
-    use crate::config::ServersToml;
-
-    let servers = ServersToml::load()?;
-    if servers.is_empty() {
-        return Err("No servers configured. Run `tako servers add` first.".into());
+pub(super) async fn configure_trusted_proxy(
+    name: &str,
+    ssh: &SshClient,
+    current_config: &super::remote_config::ServerConfigWithoutSecrets,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match prompt_trusted_proxy_config_change(current_config.trusted_proxy())? {
+        TrustedProxyConfigChange::Apply(config) => {
+            apply_trusted_proxy_config(ssh, name, config.as_ref()).await?;
+            output::success(&format!("Server {} configured", output::strong(name)));
+        }
+        TrustedProxyConfigChange::Unchanged => {
+            output::success(&format!(
+                "Source-IP handling unchanged on {}",
+                output::strong(name)
+            ));
+        }
     }
-
-    let server = servers
-        .get(name)
-        .ok_or_else(|| format!("Server '{}' not found.", name))?;
-
-    let config = prompt_trusted_proxy_config()?;
-
-    let ssh_config = SshConfig::from_server(&server.host, server.port);
-    let mut ssh = SshClient::new(ssh_config);
-    ssh.connect()
-        .await
-        .map_err(|e| format!("Failed to connect to {name}: {e}"))?;
-    apply_trusted_proxy_config(&ssh, name, config.as_ref()).await?;
-    let _ = ssh.disconnect().await;
-
-    output::success(&format!("Server {} configured", output::strong(name)));
 
     Ok(())
 }
 
-fn prompt_trusted_proxy_config() -> Result<Option<TrustedProxyCliConfig>, Box<dyn std::error::Error>>
-{
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TrustedProxyConfigChange {
+    Apply(Option<TrustedProxyCliConfig>),
+    Unchanged,
+}
+
+fn prompt_trusted_proxy_config_change(
+    current: Option<&super::remote_config::ServerTrustedProxyConfig>,
+) -> Result<TrustedProxyConfigChange, Box<dyn std::error::Error>> {
+    let description = trusted_proxy_change_prompt_description(current);
+    let should_change =
+        output::confirm_with_description("Change source-IP handling?", Some(&description), false)?;
+    if !should_change {
+        return Ok(TrustedProxyConfigChange::Unchanged);
+    }
+
+    Ok(TrustedProxyConfigChange::Apply(
+        prompt_trusted_proxy_config()?,
+    ))
+}
+
+fn trusted_proxy_change_prompt_description(
+    current: Option<&super::remote_config::ServerTrustedProxyConfig>,
+) -> String {
+    match current {
+        None => "Currently using direct traffic.".to_string(),
+        Some(config) if config.proxy_protocol => {
+            "Currently using PROXY protocol from trusted proxy CIDRs.".to_string()
+        }
+        Some(config)
+            if config
+                .client_ip_headers
+                .iter()
+                .any(|header| header == "cf-connecting-ip") =>
+        {
+            "Currently using Cloudflare CF-Connecting-IP from trusted proxy CIDRs.".to_string()
+        }
+        Some(config)
+            if config
+                .client_ip_headers
+                .iter()
+                .any(|header| header == "x-forwarded-for") =>
+        {
+            "Currently using X-Forwarded-For from trusted proxy CIDRs.".to_string()
+        }
+        Some(_) => "Currently using trusted source-IP config.".to_string(),
+    }
+}
+
+pub(super) fn prompt_trusted_proxy_config()
+-> Result<Option<TrustedProxyCliConfig>, Box<dyn std::error::Error>> {
     let mode = output::select(
         "Source IP mode",
-        None,
-        vec![
-            ("Direct traffic".to_string(), "direct".to_string()),
-            (
-                "PROXY protocol from a TCP proxy".to_string(),
-                "proxy-protocol".to_string(),
-            ),
-            (
-                "Cloudflare HTTP proxy header".to_string(),
-                "cloudflare-header".to_string(),
-            ),
-            (
-                "X-Forwarded-For from an HTTP proxy".to_string(),
-                "x-forwarded-for".to_string(),
-            ),
-        ],
+        Some(
+            "Choose how Tako should find the real client IP. Use Direct traffic unless the server is only reachable through a trusted proxy.",
+        ),
+        source_ip_mode_options(),
     )?;
 
-    match mode.as_str() {
+    match mode {
         "direct" => Ok(None),
         "proxy-protocol" => {
             let cidrs = prompt_trusted_cidrs(Some(&default_loopback_cidrs().join(", ")))?;
@@ -100,6 +129,24 @@ fn prompt_trusted_proxy_config() -> Result<Option<TrustedProxyCliConfig>, Box<dy
         }
         _ => Err(output::operation_cancelled_error().into()),
     }
+}
+
+fn source_ip_mode_options() -> Vec<(String, &'static str)> {
+    vec![
+        ("Direct traffic".to_string(), "direct"),
+        (
+            "PROXY protocol from a TCP proxy such as NGINX".to_string(),
+            "proxy-protocol",
+        ),
+        (
+            "Cloudflare proxy mode using CF-Connecting-IP".to_string(),
+            "cloudflare-header",
+        ),
+        (
+            "X-Forwarded-For from a non-Cloudflare HTTP reverse proxy".to_string(),
+            "x-forwarded-for",
+        ),
+    ]
 }
 
 fn prompt_trusted_cidrs(default: Option<&str>) -> Result<Vec<String>, Box<dyn std::error::Error>> {
@@ -154,6 +201,25 @@ async fn apply_trusted_proxy_config_inner(
     ssh: &SshClient,
     config: Option<&TrustedProxyCliConfig>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    ssh.exec_checked(&trusted_proxy_config_command(config, true)?)
+        .await?;
+
+    Ok(())
+}
+
+pub(super) async fn apply_trusted_proxy_config_before_start(
+    ssh: &SshClient,
+    config: Option<&TrustedProxyCliConfig>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    ssh.exec_checked(&trusted_proxy_config_command(config, false)?)
+        .await?;
+    Ok(())
+}
+
+fn trusted_proxy_config_command(
+    config: Option<&TrustedProxyCliConfig>,
+    restart: bool,
+) -> Result<String, String> {
     let fragment = match config {
         Some(config) => Some(trusted_proxy_config_fragment(config)?),
         None => None,
@@ -163,8 +229,19 @@ async fn apply_trusted_proxy_config_inner(
         .map(crate::shell::shell_single_quote)
         .unwrap_or_else(|| "''".to_string());
     let mode = if fragment.is_some() { "set" } else { "clear" };
+    let restart_command = if restart {
+        "if command -v systemctl >/dev/null 2>&1; then \
+           systemctl restart tako-server; \
+         elif command -v rc-service >/dev/null 2>&1; then \
+           rc-service tako-server restart; \
+         else \
+           service tako-server restart; \
+         fi"
+    } else {
+        ":"
+    };
 
-    let merge_cmd = SshClient::run_with_root_or_sudo(&format!(
+    Ok(SshClient::run_with_root_or_sudo(&format!(
         r#"CONFIG="{path}"; \
          MODE={mode}; \
          FRAGMENT={fragment}; \
@@ -173,25 +250,13 @@ async fn apply_trusted_proxy_config_inner(
            echo "error: python3 required" >&2 && exit 1; \
          fi; \
          python3 -c "import json,sys; d=json.loads(sys.argv[1] or '{{}}'); mode=sys.argv[2]; frag=sys.argv[3]; d.pop('trusted_proxy', None) if mode == 'clear' else d.__setitem__('trusted_proxy', json.loads(frag)); json.dump(d, open(sys.argv[4], 'w'))" "$EXISTING" "$MODE" "$FRAGMENT" "$CONFIG.tmp" && \
-         mv "$CONFIG.tmp" "$CONFIG" && chmod 0644 "$CONFIG" && chown tako:tako "$CONFIG""#,
-        path = SERVER_CONFIG_JSON,
+         mv "$CONFIG.tmp" "$CONFIG" && chmod 0644 "$CONFIG" && chown tako:tako "$CONFIG" && \
+         {restart_command}"#,
+        path = super::remote_config::SERVER_CONFIG_JSON,
         mode = crate::shell::shell_single_quote(mode),
         fragment = escaped_fragment,
-    ));
-    ssh.exec_checked(&merge_cmd).await?;
-
-    let restart_cmd = SshClient::run_with_root_or_sudo(
-        "if command -v systemctl >/dev/null 2>&1; then \
-           systemctl restart tako-server; \
-         elif command -v rc-service >/dev/null 2>&1; then \
-           rc-service tako-server restart; \
-         else \
-           service tako-server restart; \
-         fi",
-    );
-    ssh.exec_checked(&restart_cmd).await?;
-
-    Ok(())
+        restart_command = restart_command,
+    )))
 }
 
 fn trusted_proxy_config_fragment(config: &TrustedProxyCliConfig) -> Result<String, String> {
@@ -226,10 +291,63 @@ mod tests {
     }
 
     #[test]
+    fn source_ip_mode_prompt_uses_compact_labels_for_common_modes() {
+        let options = source_ip_mode_options();
+
+        assert_eq!(options.len(), 4);
+        assert_eq!(options[0].0, "Direct traffic");
+        assert_eq!(options[0].1, "direct");
+        assert_eq!(
+            options[1].0,
+            "PROXY protocol from a TCP proxy such as NGINX",
+        );
+        assert_eq!(options[1].1, "proxy-protocol");
+        assert_eq!(options[2].0, "Cloudflare proxy mode using CF-Connecting-IP",);
+        assert_eq!(options[2].1, "cloudflare-header");
+        assert_eq!(
+            options[3].0,
+            "X-Forwarded-For from a non-Cloudflare HTTP reverse proxy",
+        );
+        assert_eq!(options[3].1, "x-forwarded-for");
+    }
+
+    #[test]
     fn cidr_list_parser_trims_commas_and_spaces() {
         assert_eq!(
             parse_cidr_list(" 127.0.0.1/32, ::1/128  ").unwrap(),
             vec!["127.0.0.1/32".to_string(), "::1/128".to_string()]
+        );
+    }
+
+    #[test]
+    fn trusted_proxy_merge_command_can_skip_service_restart_before_first_start() {
+        let config = TrustedProxyCliConfig::proxy_protocol(default_loopback_cidrs());
+        let command = trusted_proxy_config_command(Some(&config), false).unwrap();
+
+        assert!(command.contains("trusted_proxy"));
+        assert!(!command.contains("systemctl restart tako-server"));
+        assert!(!command.contains("rc-service tako-server restart"));
+    }
+
+    #[test]
+    fn trusted_proxy_change_prompt_describes_direct_current_state() {
+        assert_eq!(
+            trusted_proxy_change_prompt_description(None),
+            "Currently using direct traffic.",
+        );
+    }
+
+    #[test]
+    fn trusted_proxy_change_prompt_describes_proxy_protocol_current_state() {
+        let current = super::super::remote_config::ServerTrustedProxyConfig {
+            proxy_protocol: true,
+            trusted_cidrs: default_loopback_cidrs(),
+            client_ip_headers: Vec::new(),
+        };
+
+        assert_eq!(
+            trusted_proxy_change_prompt_description(Some(&current)),
+            "Currently using PROXY protocol from trusted proxy CIDRs.",
         );
     }
 }

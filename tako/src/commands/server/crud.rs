@@ -50,7 +50,7 @@ pub(super) async fn remove_server(name: Option<&str>) -> Result<(), Box<dyn std:
 
     if !output::is_interactive() {
         return Err(
-            "No server name provided and selection requires an interactive terminal. Run 'tako servers rm <name>'."
+            "No server name provided and selection requires an interactive terminal. Run 'tako servers remove <name>'."
                 .into(),
         );
     }

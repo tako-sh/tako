@@ -18,7 +18,7 @@ Bootstrap `tako-server` on each host:
 sudo sh -c "$(curl -fsSL https://tako.sh/install-server.sh)"
 ```
 
-The host installer installs the binary, service users, maintenance helpers, and service definition, but it does not enable or start `tako-server` by default. `tako servers add` configures remote management, enables the service, starts it, verifies access, and then stores the server locally.
+The host installer installs the binary, service users, maintenance helpers, and service definition, but it does not enable or start `tako-server` by default. `tako servers add` configures remote management, collects first-run source-IP and DNS wildcard settings when needed, starts the service, verifies access, and then stores the server locally.
 
 Custom public proxy ports can be passed during bootstrap:
 
@@ -48,17 +48,20 @@ The installer:
 - installs systemd or OpenRC service files without enabling or starting them
 - installs libvips for image optimization
 - configures private Tailscale remote management during `tako servers add`
+- collects source-IP and DNS wildcard certificate settings before the first service start
 - enrolls the SSH key for signed management
 
-Configure/start mode requires Tailscale for private control traffic. If no Tailscale IP is available when `tako servers add` configures the service, the command fails with a remote-management hint.
+Configure/start mode requires Tailscale for private control traffic. If no Tailscale IP is available when `tako servers add` starts the service, the command fails with a remote-management hint.
 
-If public traffic reaches Tako through another proxy or load balancer, run:
+To change DNS wildcard certificates or source-IP handling later, run:
 
 ```bash
-tako servers configure <name>
+tako servers configure [name]
 ```
 
-Choose source-IP configuration. PROXY protocol v1/v2 is for TCP proxies such as same-host HAProxy. Cloudflare orange-cloud HTTP proxying uses `CF-Connecting-IP`, not PROXY protocol. In both cases, configure trusted proxy CIDRs and only enable source-IP trust when clients cannot reach Tako directly around that proxy.
+The command reads the current server config first and only uses non-secret settings. DNS credentials are not read back from the server. It asks whether to change source-IP handling, then asks whether the server needs DNS wildcard certificates before entering Cloudflare DNS-01 setup. When changing source-IP handling, the prompt recommends direct traffic unless the server is only reachable through a trusted proxy and uses compact option labels.
+
+Choose source-IP configuration. PROXY protocol v1/v2 is for TCP proxies such as same-host NGINX stream or HAProxy. Cloudflare proxy mode uses `CF-Connecting-IP`, not PROXY protocol. In both cases, configure trusted proxy CIDRs and only enable source-IP trust when clients cannot reach Tako directly around that proxy.
 
 ## Server Inventory
 
@@ -281,13 +284,16 @@ routes = [
 Tako issues certificates automatically:
 
 - HTTP-01 for ordinary hostnames
-- DNS-01 for wildcard routes after choosing DNS setup in `tako servers configure <name>`
+- Cloudflare DNS-01 for wildcard routes after configuring DNS setup during `tako servers add` or later with `tako servers configure [name]`
 - self-signed certs for local/private hostnames
 
-If a wildcard route is deployed without DNS-01 provider config, deploy fails and tells you to run:
+The Cloudflare token must be able to read zones and edit DNS records for the zone.
+The DNS setup prompt asks whether the server needs wildcard certificates. Answer yes to enable Cloudflare DNS-01 or update the API token; answer no to keep DNS wildcard certificates disabled or disable existing DNS wildcard config.
+
+If a wildcard route is deployed without Cloudflare DNS-01 config, deploy fails and tells you to run:
 
 ```bash
-tako servers configure <name>
+tako servers configure [name]
 ```
 
 When HTTPS uses a non-default public port, deploy summaries include that port and HTTP redirects target it.

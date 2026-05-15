@@ -66,6 +66,7 @@ pub(super) async fn install_tako_server_with_admin(
     port: u16,
     admin_user: &str,
     public_ports: Option<super::ServerPublicPorts>,
+    mode: crate::ssh::InstallServerMode,
 ) -> Result<(), String> {
     use crate::ssh::{SshClient, SshConfig};
 
@@ -74,7 +75,7 @@ pub(super) async fn install_tako_server_with_admin(
     ssh.connect().await.map_err(|e| e.to_string())?;
 
     let result = ssh
-        .install_tako_server(public_ports.map(Into::into))
+        .install_tako_server(public_ports.map(Into::into), mode)
         .await
         .map_err(|e| format!("Install failed: {e}"));
     let disconnect = ssh.disconnect().await.map_err(|e| e.to_string());
@@ -97,7 +98,10 @@ pub(super) async fn configure_tako_server_with_service_user(
     ssh.connect().await.map_err(|e| e.to_string())?;
 
     let result = ssh
-        .install_tako_server(public_ports.map(Into::into))
+        .install_tako_server(
+            public_ports.map(Into::into),
+            crate::ssh::InstallServerMode::ConfigureAndStart,
+        )
         .await
         .map_err(|e| format!("Configure failed: {e}"));
     let disconnect = ssh.disconnect().await.map_err(|e| e.to_string());

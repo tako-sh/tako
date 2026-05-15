@@ -219,32 +219,34 @@ Options:
 
 `admin-user@host` is shorthand for choosing the admin user and enabling install/repair when needed.
 
-If the host was bootstrapped with `install-server.sh`, `tako servers add` configures and starts the stopped service before saving the server.
+If the host was bootstrapped with `install-server.sh`, `tako servers add` collects first-run source-IP and DNS wildcard settings, starts the stopped service, then saves the server.
 
 ### Other Server Commands
 
 ```bash
-tako servers rm la
+tako servers remove la
 tako servers list
 tako servers status
 tako servers reload la
 tako servers reload la --force
 tako servers upgrade
 tako servers upgrade la
-tako servers configure <name>
+tako servers configure [name]
 tako servers uninstall la
 ```
 
-| Command                         | Meaning                                                                             |
-| ------------------------------- | ----------------------------------------------------------------------------------- |
-| `servers rm [name]`             | Remove a server from global config. Aliases: `remove`, `delete`.                    |
-| `servers list`                  | List configured servers. Alias: `ls`.                                               |
-| `servers status`                | Show deployment status across configured servers. Alias: `info`.                    |
-| `servers reload <name>`         | Reload `tako-server` without downtime by default.                                   |
-| `servers reload <name> --force` | Full service restart, which may cause brief downtime.                               |
-| `servers upgrade [name]`        | Upgrade one server or all servers with graceful reload and rollback.                |
-| `servers configure <name>`      | Configure server settings: DNS-01 wildcard certificates or trusted proxy source IP. |
-| `servers uninstall [name]`      | Remove `tako-server` and all data from a remote server.                             |
+| Command                         | Meaning                                                                                     |
+| ------------------------------- | ------------------------------------------------------------------------------------------- |
+| `servers remove [name]`         | Remove a server from global config. Aliases: `rm`, `delete`.                                |
+| `servers list`                  | List configured servers. Alias: `ls`.                                                       |
+| `servers status`                | Show deployment status across configured servers. Alias: `info`.                            |
+| `servers reload <name>`         | Reload `tako-server` without downtime by default.                                           |
+| `servers reload <name> --force` | Full service restart, which may cause brief downtime.                                       |
+| `servers upgrade [name]`        | Upgrade one server or all servers with graceful reload and rollback.                        |
+| `servers configure [name]`      | Change server settings: Cloudflare DNS-01 wildcard certificates or trusted proxy source IP. |
+| `servers uninstall [name]`      | Remove `tako-server` and all data from a remote server.                                     |
+
+`servers add` asks for source-IP and DNS wildcard settings before the first service start when it installs or starts a stopped server. For later changes, `servers configure` omits `name` when there is only one configured server or prompts you to choose one when there are multiple. It then reads current non-secret server config, asks whether to change source-IP handling, and asks whether the server needs DNS wildcard certificates before entering Cloudflare DNS-01 setup.
 
 ## `tako secrets`
 
