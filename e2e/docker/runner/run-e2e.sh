@@ -285,7 +285,10 @@ post_route_json() {
 fixture_has_secrets_for_env() {
   local env_name=$1
   [[ -f "$PROJECT_DIR/.tako/secrets.json" ]] && \
-    jq -e --arg env_name "$env_name" '.[$env_name].secrets | length > 0' \
+    jq -e --arg env_name "$env_name" '
+      ((.[$env_name].app // {}) | length > 0) or
+      ((.[$env_name].storages // {}) | length > 0)
+    ' \
       "$PROJECT_DIR/.tako/secrets.json" >/dev/null 2>&1
 }
 
