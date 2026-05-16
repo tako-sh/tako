@@ -160,10 +160,78 @@ impl Config {
             for server_name in &env_config.servers {
                 validate_server_name(server_name)?;
             }
+            for (binding_name, resource_name) in &env_config.storages {
+                super::super::validate_storage_name(binding_name)?;
+                super::super::validate_storage_name(resource_name)?;
+                if !is_development && !self.storages.contains_key(resource_name) {
+                    return Err(ConfigError::Validation(format!(
+                        "Environment '{}' storage '{}' references missing storage resource '{}'",
+                        env_name, binding_name, resource_name
+                    )));
+                }
+            }
+        }
+
+        for (resource_name, resource) in &self.storages {
+            super::super::validate_storage_name(resource_name)?;
+            validate_storage_resource(resource_name, resource)?;
         }
 
         Ok(())
     }
+}
+
+fn validate_storage_resource(name: &str, resource: &StorageResourceConfig) -> Result<()> {
+    match resource.provider {
+        tako_core::StorageProvider::Local => {
+            if resource.bucket.is_some()
+                || resource.endpoint.is_some()
+                || resource.region.is_some()
+                || resource.public_base_url.is_some()
+                || resource.force_path_style
+            {
+                return Err(ConfigError::Validation(format!(
+                    "Storage resource '{name}' uses provider 'local' and cannot set S3 fields"
+                )));
+            }
+        }
+        tako_core::StorageProvider::S3 => {
+            validate_required_storage_field(name, "bucket", resource.bucket.as_deref())?;
+            validate_required_storage_field(name, "endpoint", resource.endpoint.as_deref())?;
+            validate_required_storage_field(name, "region", resource.region.as_deref())?;
+            validate_https_url(
+                resource.endpoint.as_deref().unwrap_or_default(),
+                &format!("storages.{name}.endpoint"),
+            )?;
+            if let Some(public_base_url) = &resource.public_base_url {
+                validate_https_url(public_base_url, &format!("storages.{name}.public_base_url"))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_required_storage_field(name: &str, field: &str, value: Option<&str>) -> Result<()> {
+    if value.is_none_or(|value| value.trim().is_empty()) {
+        return Err(ConfigError::Validation(format!(
+            "Storage resource '{name}' with provider 's3' must set '{field}'"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_https_url(value: &str, field: &str) -> Result<()> {
+    let parsed = reqwest::Url::parse(value)
+        .map_err(|e| ConfigError::Validation(format!("'{field}' must be a valid URL: {e}")))?;
+    if parsed.scheme() != "https" {
+        return Err(ConfigError::Validation(format!("'{field}' must use https")));
+    }
+    if parsed.host_str().is_none() {
+        return Err(ConfigError::Validation(format!(
+            "'{field}' must include a host"
+        )));
+    }
+    Ok(())
 }
 
 pub(super) fn validate_top_level_keys(raw: &toml::Value) -> Result<()> {
@@ -192,6 +260,7 @@ pub(super) fn validate_top_level_keys(raw: &toml::Value) -> Result<()> {
                 | "images"
                 | "vars"
                 | "envs"
+                | "storages"
                 | "servers"
         ) {
             return Err(ConfigError::Validation(format!("Unknown key '{}'", key)));

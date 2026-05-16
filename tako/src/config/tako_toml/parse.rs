@@ -52,6 +52,7 @@ impl Config {
         let build_stages = parse_build_stages(&raw)?;
         let workflows = parse_workflows_config(&raw, "workflows")?.unwrap_or_default();
         let images = parse_images_config(&raw)?;
+        let storages = parse_storage_resources(&raw)?;
         let mut config = Config {
             name,
             main,
@@ -67,6 +68,7 @@ impl Config {
             build_stages,
             workflows,
             images,
+            storages,
             ..Config::default()
         };
 
@@ -120,6 +122,23 @@ impl Config {
         config.validate()?;
         Ok(config)
     }
+}
+
+fn parse_storage_resources(raw: &toml::Value) -> Result<HashMap<String, StorageResourceConfig>> {
+    let mut resources = HashMap::new();
+    let Some(storages) = raw.get("storages") else {
+        return Ok(resources);
+    };
+    let table = storages
+        .as_table()
+        .ok_or_else(|| ConfigError::Validation("'storages' must be a table".to_string()))?;
+
+    for (name, value) in table {
+        let resource: StorageResourceConfig = toml::from_str(&toml::to_string(value)?)?;
+        resources.insert(name.clone(), resource);
+    }
+
+    Ok(resources)
 }
 
 fn parse_images_config(raw: &toml::Value) -> Result<tako_images::ImagesConfig> {

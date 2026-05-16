@@ -12,6 +12,7 @@ fn sleep_spec(cwd: PathBuf, workers: u32, sleep_secs: &str) -> WorkerSpec {
         cwd,
         env: HashMap::new(),
         secrets: HashMap::new(),
+        storages: HashMap::new(),
         log_sink: None,
     }
 }
@@ -78,6 +79,7 @@ async fn shutdown_reaps_children_that_ignore_sigterm() {
         cwd: dir.path().into(),
         env: HashMap::new(),
         secrets: HashMap::new(),
+        storages: HashMap::new(),
         log_sink: None,
     };
     let sup = WorkerSupervisor::new(spec);
@@ -114,6 +116,7 @@ fn failing_spec(cwd: PathBuf) -> WorkerSpec {
         cwd,
         env: HashMap::new(),
         secrets: HashMap::new(),
+        storages: HashMap::new(),
         log_sink: None,
     }
 }
@@ -176,6 +179,7 @@ async fn clean_idle_exit_does_not_mark_unhealthy() {
         cwd: dir.path().into(),
         env: HashMap::new(),
         secrets: HashMap::new(),
+        storages: HashMap::new(),
         log_sink: None,
     };
     let sup = WorkerSupervisor::new(spec);
@@ -196,6 +200,7 @@ async fn background_reaper_collects_clean_idle_exit_without_poll() {
         cwd: dir.path().into(),
         env: HashMap::new(),
         secrets: HashMap::new(),
+        storages: HashMap::new(),
         log_sink: None,
     };
     let sup = WorkerSupervisor::new(spec);
@@ -218,9 +223,25 @@ fn bootstrap_pipe_envelope_has_token_and_secrets() {
         ("DATABASE_URL".to_string(), "postgres://x".to_string()),
         ("API_KEY".to_string(), "sk-123".to_string()),
     ]);
+    let storages = HashMap::from([(
+        "uploads".to_string(),
+        tako_core::StorageBinding {
+            provider: tako_core::StorageProvider::Local,
+            bucket: None,
+            endpoint: None,
+            region: None,
+            access_key_id: None,
+            secret_access_key: None,
+            force_path_style: false,
+            public_base_url: None,
+            path: Some("storage/uploads".to_string()),
+            signing_key: Some("local-signing-key".to_string()),
+        },
+    )]);
     let token = "worker-token-abc";
 
-    let (read_end, writer) = create_bootstrap_pipe(token, &secrets).expect("create pipe");
+    let (read_end, writer) =
+        create_bootstrap_pipe(token, &secrets, &storages).expect("create pipe");
 
     let mut buf = String::new();
     let mut file = std::fs::File::from(read_end);
@@ -234,6 +255,14 @@ fn bootstrap_pipe_envelope_has_token_and_secrets() {
         Some("postgres://x")
     );
     assert_eq!(parsed["secrets"]["API_KEY"].as_str(), Some("sk-123"));
+    assert_eq!(
+        parsed["storages"]["uploads"]["provider"].as_str(),
+        Some("local")
+    );
+    assert_eq!(
+        parsed["storages"]["uploads"]["path"].as_str(),
+        Some("storage/uploads")
+    );
 }
 
 #[cfg(unix)]
@@ -244,7 +273,9 @@ fn bootstrap_pipe_is_always_created_even_with_empty_secrets() {
     let secrets: HashMap<String, String> = HashMap::new();
     let token = "still-has-a-token";
 
-    let (read_end, writer) = create_bootstrap_pipe(token, &secrets).expect("create pipe");
+    let storages = HashMap::new();
+    let (read_end, writer) =
+        create_bootstrap_pipe(token, &secrets, &storages).expect("create pipe");
 
     let mut buf = String::new();
     let mut file = std::fs::File::from(read_end);
@@ -268,6 +299,7 @@ async fn effective_env_sets_concurrency_and_idle_timeout() {
         cwd: ".".into(),
         env: HashMap::from([("FOO".to_string(), "bar".to_string())]),
         secrets: HashMap::new(),
+        storages: HashMap::new(),
         log_sink: None,
     };
     let env = spec.effective_env();

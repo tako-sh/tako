@@ -82,7 +82,7 @@ route = "staging.example.com"
     fs::create_dir_all(&secrets_dir).unwrap();
     fs::write(
         secrets_dir.join("secrets.json"),
-        r#"{"development":{"secrets":{"API_KEY":"x"}}}"#,
+        r#"{"development":{"app":{"API_KEY":"x"}}}"#,
     )
     .unwrap();
 
@@ -174,7 +174,7 @@ fn write_tako_declarations_with_secrets_generate_typed_interface_augmentation() 
     fs::create_dir_all(&secrets_dir).unwrap();
     fs::write(
         secrets_dir.join("secrets.json"),
-        r#"{"development":{"secrets":{"API_KEY":"x","DATABASE_URL":"y"}}}"#,
+        r#"{"development":{"app":{"API_KEY":"x","DATABASE_URL":"y"}}}"#,
     )
     .unwrap();
 
@@ -191,11 +191,12 @@ fn write_tako_declarations_with_secrets_generate_typed_interface_augmentation() 
 #[test]
 fn write_tako_declarations_with_storages_generate_typed_interface_augmentation() {
     let dir = TempDir::new().unwrap();
-    let tako_dir = dir.path().join(".tako");
-    fs::create_dir_all(&tako_dir).unwrap();
     fs::write(
-        tako_dir.join("storages.json"),
-        r#"{"development":{"key_id":"0123456789abcdef","storages":{"uploads":{"provider":"r2","bucket":"app-uploads","endpoint":"https://abc.r2.cloudflarestorage.com","region":"auto","access_key_id":"x","secret_access_key":"y"},"profile-images":{"provider":"s3","bucket":"images","endpoint":"https://s3.amazonaws.com","region":"us-east-1","access_key_id":"x","secret_access_key":"y"}}}}"#,
+        dir.path().join("tako.toml"),
+        r#"
+[envs.development]
+storages = { uploads = "local_uploads", "profile-images" = "profile_images" }
+"#,
     )
     .unwrap();
 

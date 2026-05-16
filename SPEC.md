@@ -89,6 +89,7 @@ API_URL = "https://staging-api.example.com"
 [envs.production]
 route = "api.example.com"  # Single route, or use 'routes' for multiple
 servers = ["la", "nyc"]
+storages = { uploads = "prod_uploads" }
 idle_timeout = 300         # Optional, default: 5 minutes
 
 [envs.staging]
@@ -98,7 +99,21 @@ routes = [
   "example.com/api/*"
 ]
 servers = ["staging"]
+storages = { uploads = "staging_uploads" }
 idle_timeout = 120
+
+[storages.prod_uploads]
+provider = "s3"
+bucket = "app-prod-uploads"
+endpoint = "https://s3.example.com"
+region = "us-east-1"
+public_base_url = "https://cdn.example.com/uploads"
+
+[storages.staging_uploads]
+provider = "s3"
+bucket = "app-staging-uploads"
+endpoint = "https://s3.example.com"
+region = "us-east-1"
 
 [workflows]
 workers = 0
@@ -173,6 +188,9 @@ workers = 4
 - Runtime behavior (install commands, launch args, entrypoint resolution) lives in runtime plugins (`tako-runtime/src/plugins/`), not in presets.
 - `tako init` installs the `tako.sh` SDK via the selected runtime's package-manager `add` command.
 - Server membership is declared per environment with `[envs.<name>].servers`.
+- Storage bindings are declared per environment with `[envs.<name>].storages = { app_name = "resource_name" }`. The key is the stable app-facing binding exposed as `tako.storages.<app_name>`; the value references a top-level `[storages.<resource_name>]` resource.
+- Top-level `[storages.<resource>]` config contains non-secret storage metadata. Supported providers are `s3` and `local`. `s3` requires `bucket`, `endpoint`, and `region`; `endpoint` and optional `public_base_url` must use HTTPS. `local` has no configurable path; Tako stores objects under the app data directory using a Tako-chosen layout.
+- In `development`, a storage binding may reference a resource that is not declared under `[storages]`; it defaults to local storage. In deploy environments, every bound resource must be declared. Explicit `provider = "local"` may be used outside development only for single-server deployments.
 - The same server name may be assigned to multiple non-development environments in one project. Each environment deploys to its own server-side app identity and filesystem path under `/opt/tako/apps/{app}/{env}`.
 - `development` is for `tako dev`; `servers` declared there are ignored by deploy validation.
 - Deployed app instances bind to `127.0.0.1` on an OS-assigned port. The SDK signals readiness to `tako-server` by writing the bound port to fd 4 (file descriptor 4) once listening. The server then routes traffic to that loopback endpoint.
@@ -272,21 +290,27 @@ Per-environment encrypted secrets (JSON format, AES-256-GCM encryption):
 {
   "production": {
     "key_id": "0123456789abcdef",
-    "secrets": {
+    "app": {
       "DATABASE_URL": "encrypted_value",
       "API_KEY": "encrypted_value"
+    },
+    "storages": {
+      "prod_uploads": {
+        "access_key_id": "encrypted_value",
+        "secret_access_key": "encrypted_value"
+      }
     }
   },
   "staging": {
     "key_id": "fedcba9876543210",
-    "secrets": {
+    "app": {
       "DATABASE_URL": "encrypted_value_different"
     }
   }
 }
 ```
 
-Each environment has a `key_id` (16 hex characters) and a `secrets` map. Secret names are plaintext; values encrypted with AES-256-GCM.
+Each environment has a `key_id` (16 hex characters), an `app` map for app secrets, and an optional `storages` map for encrypted storage credentials keyed by storage resource name. App secret names and storage resource names are plaintext; values are encrypted with AES-256-GCM.
 
 `tako init` ensures the app's `.tako/` directory stays ignored while `.tako/secrets.json` remains trackable:
 
@@ -300,31 +324,25 @@ Encryption keys are stored outside the project:
 
 When the first secret is set for an environment, Tako generates a random environment key. Keys are shared with other machines via `tako secrets key export` and `tako secrets key import`. Teams that prefer a memorized shared secret can initialize an environment key with `tako secrets key import --passphrase --env {environment}` before setting secrets.
 
-### .tako/storages.json (Project - Encrypted)
+### Storage Configuration And Credentials
 
-Per-environment object storage bindings live in `.tako/storages.json`. The file is written by `tako storages add`, is encrypted with the same environment-key mechanism as secrets, and is trackable in the repository.
+Storage bindings are split between `tako.toml` and `.tako/secrets.json`. `tako.toml` stores app-facing binding names and non-secret provider metadata. `.tako/secrets.json` stores only encrypted S3 credentials under each environment's `storages` map. There is no separate `.tako/storages.json` file.
 
-```json
-{
-  "production": {
-    "key_id": "a1b2c3d4e5f60708",
-    "storages": {
-      "uploads": {
-        "provider": "r2",
-        "bucket": "app-uploads",
-        "endpoint": "https://<account>.r2.cloudflarestorage.com",
-        "region": "auto",
-        "access_key_id": "<encrypted>",
-        "secret_access_key": "<encrypted>",
-        "force_path_style": false,
-        "public_base_url": "https://cdn.example.com/uploads"
-      }
-    }
-  }
-}
+```toml
+[envs.production]
+route = "app.example.com"
+servers = ["la"]
+storages = { uploads = "prod_uploads" }
+
+[storages.prod_uploads]
+provider = "s3"
+bucket = "app-uploads"
+endpoint = "https://<account>.r2.cloudflarestorage.com"
+region = "auto"
+public_base_url = "https://cdn.example.com/uploads"
 ```
 
-Storage binding names may contain lowercase letters, numbers, hyphens, and underscores. Access keys are encrypted; bucket, endpoint, region, provider, URL style, and optional `public_base_url` are plaintext app configuration. Deploy decrypts the selected environment's bindings locally, sends them over the signed management path, and `tako-server` stores them encrypted in server SQLite. Fresh app and worker processes receive bindings through the fd 3 bootstrap envelope as `storages`.
+Storage binding and resource names may contain lowercase letters, numbers, hyphens, and underscores. Deploy decrypts the selected environment's storage credentials locally, combines them with the selected `tako.toml` resource metadata, sends the runtime bindings over the signed management path, and `tako-server` stores the resulting bindings encrypted in server SQLite. Fresh app and worker processes receive bindings through the fd 3 bootstrap envelope as `storages`.
 
 ## Tako CLI Commands
 
@@ -906,12 +924,13 @@ In non-interactive mode, `tako secrets key import --env {environment}` reads a s
 
 ### tako storages add {name}
 
-Attach an S3-compatible object storage binding to this app.
+Attach an object storage binding to this app.
 
 ```bash
 tako storages add uploads \
   --env production \
-  --provider r2 \
+  --resource prod_uploads \
+  --provider s3 \
   --bucket app-uploads \
   --endpoint https://<account>.r2.cloudflarestorage.com \
   --region auto \
@@ -921,15 +940,16 @@ tako storages add uploads \
 Options:
 
 - `--env {environment}` defaults to `production`.
-- `--provider {s3|r2}` defaults to `s3`.
-- `--bucket {bucket}` is required.
-- `--endpoint {https-url}` is required.
+- `--resource {name}` sets the backing storage resource name. It defaults to the binding name.
+- `--provider {s3|local}` defaults to `s3`.
+- `--bucket {bucket}` is required for `s3`.
+- `--endpoint {https-url}` is required for `s3`. R2 is configured as `provider = "s3"` with the R2 S3-compatible endpoint.
 - `--region {region}` defaults to `auto`.
-- `--access-key-id {value}` and `--secret-access-key {value}` are optional; interactive runs prompt when omitted.
-- `--force-path-style` signs path-style object URLs instead of virtual-hosted bucket URLs.
-- `--public-base-url {https-url}` enables public object URLs for helpers that request `public: true`.
+- `--access-key-id {value}` and `--secret-access-key {value}` are optional for `s3`; interactive runs prompt when omitted.
+- `--force-path-style` signs path-style object URLs instead of virtual-hosted bucket URLs for `s3`.
+- `--public-base-url {https-url}` enables public object URLs for helpers that request `public: true` on `s3` bindings.
 
-The command writes `.tako/storages.json` and reuses the same environment-key mechanism as `tako secrets`. Deploy syncs storage bindings with the app release. There is no separate storage sync command.
+The command writes the environment binding and resource metadata to `tako.toml`. For `s3`, it writes encrypted credentials to `.tako/secrets.json` under the selected environment's `storages` map. For `local`, it writes only config metadata; local storage has no user-configured path or credentials. Deploy validates that every non-development storage binding references a declared resource, that S3 resources have credentials, and that credentials do not exist for unbound resources. There is no separate storage sync command.
 
 ### tako deploy [--env {environment}] [--yes|-y]
 
@@ -1326,12 +1346,12 @@ Reference scripts in this repo:
 
 **Object storage runtime bindings:**
 
-- Storage bindings are configured with `tako storages add` and delivered to JavaScript apps on `tako.storages.<name>`. `tako generate` augments the `TakoStorages` interface from `.tako/storages.json`; development names are preferred when present, otherwise generation uses the union of all environments.
-- `await tako.storages.uploads.createDownloadUrl(key, options?)` creates a SigV4 signed `GET` URL. Storage URLs are private by default. `expiresInSeconds` defaults to `3600` and is capped at `604800`. Download options may set S3 response content type/disposition overrides. Passing `public: true` returns `public_base_url + key` when the binding has a `public_base_url`.
-- `await tako.storages.uploads.createUploadUrl(key, options?)` creates a SigV4 signed `PUT` URL. `contentType` signs the `content-type` header, so upload clients must send the same header.
-- `await tako.storages.uploads.createImageUrl(key, imageOptions?)` returns a private signed object URL when no image transform options are supplied. With `{ public: true }` and a storage `public_base_url`, it returns the public optimizer URL for that object. Private storage image transforms are a separate feature; for now transform options without public storage access fail with guidance to use `createDownloadUrl`.
+- Storage bindings are configured with `tako storages add` or `[envs.<env>].storages` in `tako.toml` and delivered to JavaScript apps on `tako.storages.<name>`. `tako generate` augments the `TakoStorages` interface from `tako.toml`; development names are preferred when present, otherwise generation uses the union of all environments.
+- `await tako.storages.uploads.createDownloadUrl(key, options?)` creates a private signed `GET` URL. For `s3`, it uses SigV4. For `local`, it returns a signed app-local `/_tako/storage/download/...` URL served from the app data directory. `expiresInSeconds` defaults to `3600` and is capped at `604800`. Download options may set S3 response content type/disposition overrides. Passing `public: true` returns `public_base_url + key` when an `s3` binding has a `public_base_url`.
+- `await tako.storages.uploads.createUploadUrl(key, options?)` creates a private signed `PUT` URL. For `s3`, `contentType` signs the `content-type` header, so upload clients must send the same header. For `local`, the SDK returns a signed app-local upload route.
+- `await tako.storages.uploads.createImageUrl(key, imageOptions?)` returns a private signed object URL when no image transform options are supplied. With `{ public: true }` and an `s3` storage `public_base_url`, it returns the public optimizer URL for that object. Private storage image transforms are a separate feature; for now transform options without public storage access fail with guidance to use `createDownloadUrl`.
 - `await tako.storages.uploads.createImageSrcSet(key, imageSrcSetOptions)` returns public responsive image sources for a storage object when called with `{ public: true }` and the binding has `public_base_url`. Private storage image srcsets are a separate feature; for now they fail with guidance to use `createDownloadUrl`.
-- Object keys must be non-empty relative keys and cannot start with `/`. S3 and R2 endpoints must use HTTPS. R2 defaults to `region = "auto"`; S3 can use its normal region.
+- Object keys must be non-empty relative keys and cannot start with `/`. S3-compatible endpoints must use HTTPS. R2 is configured as `provider = "s3"` with the R2 endpoint and usually `region = "auto"`.
 
 **`/opt/tako/config.json`** — server-level configuration:
 
@@ -1467,7 +1487,7 @@ The SDK parses this from `process.argv` (JS) or `os.Args` (Go) at startup and ex
   "secrets": { "KEY": "value", ... },
   "storages": {
     "uploads": {
-      "provider": "r2",
+      "provider": "s3",
       "bucket": "app-uploads",
       "endpoint": "https://<account>.r2.cloudflarestorage.com",
       "region": "auto",
@@ -1821,12 +1841,12 @@ const dbUrl = tako.secrets.DATABASE_URL;
 | `logger`       | Structured JSON logger (`logger.info(...)`) bound to `source: "app"`; also available as `tako.logger`                  |
 | `Env`          | TypeScript union of environment names declared in `tako.toml`, narrows `tako.env === "staging"` checks at compile time |
 | `TakoSecrets`  | TypeScript interface of secret keys declared in `.tako/secrets.json`                                                   |
-| `TakoStorages` | TypeScript interface of storage binding names declared in `.tako/storages.json`                                        |
+| `TakoStorages` | TypeScript interface of storage binding names declared in `tako.toml`                                                  |
 | `TakoRuntime`  | TypeScript type of the `tako` runtime object                                                                           |
 
 `tako.secrets` redacts automatically on `JSON.stringify`, `console.log`, and `toString` (returns `"[REDACTED]"`); individual key access (`tako.secrets.MY_KEY`) returns the value. The generated `TakoSecrets` augmentation is regenerated from `.tako/secrets.json` on every `tako dev`, `tako deploy`, `tako generate`, and `tako secrets` change. Generation prefers secret names from the `development` environment when present, then falls back to the union of all secret environments.
 
-`tako.storages` exposes storage bindings delivered through fd 3. Individual storage access (`tako.storages.uploads`) returns an object with `createDownloadUrl`, `createUploadUrl`, `createImageUrl`, and `createImageSrcSet`. The generated `TakoStorages` augmentation is regenerated from `.tako/storages.json` on `tako dev`, `tako deploy`, and `tako generate`.
+`tako.storages` exposes storage bindings delivered through fd 3. Individual storage access (`tako.storages.uploads`) returns an object with `createDownloadUrl`, `createUploadUrl`, `createImageUrl`, and `createImageSrcSet`. The generated `TakoStorages` augmentation is regenerated from `tako.toml` on `tako dev`, `tako deploy`, and `tako generate`.
 
 Channels and workflows are not on the runtime context — they are regular ES modules you import from their files:
 

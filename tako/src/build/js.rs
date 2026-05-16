@@ -82,7 +82,7 @@ fn read_secret_names(project_dir: &Path) -> Vec<String> {
     };
 
     if let Some(dev) = envs.get("development")
-        && let Some(secrets) = dev.get("secrets").and_then(|s| s.as_object())
+        && let Some(secrets) = dev.get("app").and_then(|s| s.as_object())
     {
         let mut names: Vec<String> = secrets.keys().cloned().collect();
         names.sort();
@@ -91,7 +91,7 @@ fn read_secret_names(project_dir: &Path) -> Vec<String> {
 
     let mut names_set = std::collections::BTreeSet::new();
     for env_value in envs.values() {
-        if let Some(secrets) = env_value.get("secrets").and_then(|s| s.as_object()) {
+        if let Some(secrets) = env_value.get("app").and_then(|s| s.as_object()) {
             for name in secrets.keys() {
                 names_set.insert(name.clone());
             }
@@ -100,24 +100,24 @@ fn read_secret_names(project_dir: &Path) -> Vec<String> {
     names_set.into_iter().collect()
 }
 
-/// Read storage binding names from `.tako/storages.json` for the "development"
-/// environment. Falls back to all bindings across environments.
+/// Read storage binding names from `tako.toml` environment assignments.
+/// Development names are preferred because that is what `tako dev` injects.
 fn read_storage_names(project_dir: &Path) -> Vec<String> {
-    let storages_path = project_dir.join(".tako").join("storages.json");
-    let Ok(content) = fs::read_to_string(&storages_path) else {
+    let config_path = project_dir.join("tako.toml");
+    let Ok(content) = fs::read_to_string(&config_path) else {
         return Vec::new();
     };
 
-    let Ok(parsed): Result<serde_json::Value, _> = serde_json::from_str(&content) else {
+    let Ok(parsed): Result<toml::Value, _> = toml::from_str(&content) else {
         return Vec::new();
     };
 
-    let Some(envs) = parsed.as_object() else {
+    let Some(envs) = parsed.get("envs").and_then(|value| value.as_table()) else {
         return Vec::new();
     };
 
     if let Some(dev) = envs.get("development")
-        && let Some(storages) = dev.get("storages").and_then(|s| s.as_object())
+        && let Some(storages) = dev.get("storages").and_then(|s| s.as_table())
     {
         let mut names: Vec<String> = storages.keys().cloned().collect();
         names.sort();
@@ -126,7 +126,7 @@ fn read_storage_names(project_dir: &Path) -> Vec<String> {
 
     let mut names_set = std::collections::BTreeSet::new();
     for env_value in envs.values() {
-        if let Some(storages) = env_value.get("storages").and_then(|s| s.as_object()) {
+        if let Some(storages) = env_value.get("storages").and_then(|s| s.as_table()) {
             for name in storages.keys() {
                 names_set.insert(name.clone());
             }
@@ -207,11 +207,11 @@ fn build_secrets_block(names: &[String]) -> String {
 
 fn build_storages_block(names: &[String]) -> String {
     if names.is_empty() {
-        return "  /**\n   * Project-specific object storage bindings from `.tako/storages.json`.\n   *\n   * No storages are currently configured for this project. After you add one,\n   * this interface is regenerated with typed readonly bindings.\n   */\n  export interface TakoStorages {}\n\n".to_string();
+        return "  /**\n   * Project-specific object storage bindings from `tako.toml`.\n   *\n   * No storages are currently configured for this project. After you add one,\n   * this interface is regenerated with typed readonly bindings.\n   */\n  export interface TakoStorages {}\n\n".to_string();
     }
 
     let mut out = String::from(
-        "  /**\n   * Project-specific object storage bindings from `.tako/storages.json`.\n   *\n   * Values are injected by Tako at runtime. App code uses `tako.storages.<name>`\n   * to create signed upload/download URLs.\n   */\n  export interface TakoStorages {\n",
+        "  /**\n   * Project-specific object storage bindings from `tako.toml`.\n   *\n   * Values are injected by Tako at runtime. App code uses `tako.storages.<name>`\n   * to create upload/download URLs.\n   */\n  export interface TakoStorages {\n",
     );
     for name in names {
         out.push_str(&format!(

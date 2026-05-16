@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtemp, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   TAKO_INTERNAL_CHANNELS_AUTHORIZE_PATH,
   TAKO_INTERNAL_CHANNELS_DISPATCH_PATH,
@@ -7,17 +10,19 @@ import {
   handleTakoEndpoint,
 } from "../src/tako/endpoints";
 import { injectBootstrap } from "../src/tako/secrets";
+import { createStorageBag } from "../src/storage";
 import type { TakoStatus } from "../src/types";
 import { ChannelRegistry } from "../src/channels";
 import { defineChannel } from "../src/channels/define";
 
 describe("handleTakoEndpoint", () => {
-  injectBootstrap({ token: "test-token", secrets: {} });
   const previousAppName = process.env["TAKO_APP_NAME"];
+  const previousDataDir = process.env["TAKO_DATA_DIR"];
 
   let channels: ChannelRegistry;
   beforeEach(() => {
     process.env["TAKO_APP_NAME"] = "test-app";
+    injectBootstrap({ token: "test-token", secrets: {}, storages: {} });
     channels = new ChannelRegistry();
   });
   afterEach(() => {
@@ -25,6 +30,11 @@ describe("handleTakoEndpoint", () => {
       delete process.env["TAKO_APP_NAME"];
     } else {
       process.env["TAKO_APP_NAME"] = previousAppName;
+    }
+    if (previousDataDir === undefined) {
+      delete process.env["TAKO_DATA_DIR"];
+    } else {
+      process.env["TAKO_DATA_DIR"] = previousDataDir;
     }
   });
 
@@ -53,6 +63,59 @@ describe("handleTakoEndpoint", () => {
     const request = new Request("http://example.com/");
     const response = await handleTakoEndpoint(request, mockStatus, channels);
     expect(response).toBeNull();
+  });
+
+  test("handles signed local storage upload and download URLs on public hosts", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "tako-local-storage-"));
+    process.env["TAKO_DATA_DIR"] = dataDir;
+    const localBinding = {
+      provider: "local",
+      path: "storage/uploads",
+      signing_key: "test-signing-key",
+    } as const;
+    injectBootstrap({
+      token: "test-token",
+      secrets: {},
+      storages: { uploads: localBinding },
+    });
+    const storage = createStorageBag({ uploads: localBinding }).uploads;
+    if (!storage) throw new Error("missing local storage");
+
+    const uploadUrl = await storage.createUploadUrl("avatars/u_123.txt");
+    const upload = await handleTakoEndpoint(
+      new Request(new URL(uploadUrl, "http://example.com"), {
+        method: "PUT",
+        body: "image-bytes",
+      }),
+      mockStatus,
+      channels,
+    );
+
+    expect(upload!.status).toBe(204);
+    expect(await readFile(join(dataDir, "storage/uploads/avatars/u_123.txt"), "utf8")).toBe(
+      "image-bytes",
+    );
+
+    const downloadUrl = await storage.createDownloadUrl("avatars/u_123.txt");
+    const download = await handleTakoEndpoint(
+      new Request(new URL(downloadUrl, "http://example.com")),
+      mockStatus,
+      channels,
+    );
+
+    expect(download!.status).toBe(200);
+    expect(await download!.text()).toBe("image-bytes");
+  });
+
+  test("rejects malformed local storage URLs without throwing", async () => {
+    const response = await handleTakoEndpoint(
+      new Request("http://example.com/_tako/storage/download/%E0%A4%A/file.txt"),
+      mockStatus,
+      channels,
+    );
+
+    expect(response!.status).toBe(400);
+    expect(await response!.json()).toEqual({ error: "Invalid key" });
   });
 
   describe("internal host /status", () => {

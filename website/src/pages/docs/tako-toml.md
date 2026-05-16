@@ -51,13 +51,28 @@ API_URL = "https://staging-api.example.com"
 [envs.production]
 route = "dashboard.example.com"
 servers = ["la", "nyc"]
+storages = { uploads = "prod_uploads" }
 idle_timeout = 300
 
 [envs.staging]
 routes = ["staging.example.com", "example.com/staging/*"]
 servers = ["staging"]
+storages = { uploads = "staging_uploads" }
 idle_timeout = 120
 release = ""
+
+[storages.prod_uploads]
+provider = "s3"
+bucket = "dashboard-prod-uploads"
+endpoint = "https://s3.example.com"
+region = "us-east-1"
+public_base_url = "https://cdn.example.com/uploads"
+
+[storages.staging_uploads]
+provider = "s3"
+bucket = "dashboard-staging-uploads"
+endpoint = "https://s3.example.com"
+region = "us-east-1"
 
 [workflows]
 workers = 0
@@ -235,6 +250,24 @@ Common Tako variables include:
 | `BUN_ENV`       | Set for Bun.                                    |
 
 Secrets do not live in `tako.toml`; use `tako secrets`.
+
+## Storage
+
+```toml
+[envs.production]
+storages = { uploads = "prod_uploads" }
+
+[storages.prod_uploads]
+provider = "s3"
+bucket = "app-uploads"
+endpoint = "https://s3.example.com"
+region = "us-east-1"
+public_base_url = "https://cdn.example.com/uploads"
+```
+
+`[envs.<env>].storages` maps app-facing binding names to storage resource names. The key is exposed to app code as `tako.storages.<key>`; the value references a top-level `[storages.<resource>]`.
+
+Supported providers are `s3` and `local`. `s3` requires `bucket`, `endpoint`, and `region`; `endpoint` and optional `public_base_url` must use HTTPS. R2 uses `provider = "s3"` with the R2 S3-compatible endpoint. `local` has no configurable path or credentials. In `development`, an undeclared storage resource defaults to local storage under the app data directory. In deploy environments, every bound resource must be declared.
 
 ## Images
 

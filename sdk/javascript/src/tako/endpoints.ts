@@ -10,7 +10,7 @@
 import type { ChannelRegistry } from "../channels";
 import type { ChannelAuthorizeInput, TakoStatus } from "../types";
 import { dispatchWsMessage } from "../channels/handler";
-import { getInternalToken } from "./secrets";
+import { getInternalToken, getStorageBindings } from "./secrets";
 
 export const TAKO_INTERNAL_HOST_SUFFIX = ".tako";
 export const TAKO_INTERNAL_STATUS_PATH = "/status";
@@ -18,6 +18,7 @@ export const TAKO_INTERNAL_CHANNELS_AUTHORIZE_PATH = "/channels/authorize";
 export const TAKO_INTERNAL_CHANNELS_DISPATCH_PATH = "/channels/dispatch";
 export const TAKO_INTERNAL_CHANNELS_REGISTRY_PATH = "/channels/registry";
 export const TAKO_INTERNAL_TOKEN_HEADER = "x-tako-internal-token";
+const TAKO_LOCAL_STORAGE_PREFIX = "/_tako/storage/";
 const LOOPBACK_INTERNAL_HOSTS = new Set(["127.0.0.1", "localhost", "0.0.0.0"]);
 
 function baseAppName(value: string): string {
@@ -98,13 +99,17 @@ export async function handleTakoEndpoint(
   status: TakoStatus,
   channels: ChannelRegistry,
 ): Promise<Response | null> {
+  const url = new URL(request.url);
+  if (url.pathname.startsWith(TAKO_LOCAL_STORAGE_PREFIX)) {
+    return handleLocalStorageRequest(request, url);
+  }
+
   // Fast path: check Host header before parsing the URL (avoids allocation for normal traffic)
   const hostHeader = normalizeHost(request.headers.get("host"));
   if (hostHeader && !isInternalHost(hostHeader)) {
     return null;
   }
 
-  const url = new URL(request.url);
   const host = hostHeader || normalizeHost(url.host);
   if (!isInternalHost(host)) {
     return null;
@@ -217,6 +222,164 @@ async function handleChannelDispatch(
  */
 function handleStatus(status: TakoStatus, token: string): Response {
   return internalResponse(status, 200, token);
+}
+
+async function handleLocalStorageRequest(request: Request, url: URL): Promise<Response> {
+  const route = parseLocalStorageRoute(url.pathname);
+  if (route === "invalid") {
+    return storageJson({ error: "Invalid key" }, 400);
+  }
+  if (!route) {
+    return storageJson({ error: "Not found" }, 404);
+  }
+  if (request.method !== (route.operation === "download" ? "GET" : "PUT")) {
+    return storageJson({ error: "Method not allowed" }, 405);
+  }
+
+  const binding = localStorageBinding(route.storagePath);
+  if (!binding) {
+    return storageJson({ error: "Not found" }, 404);
+  }
+
+  const expires = Number(url.searchParams.get("expires"));
+  const token = url.searchParams.get("token") ?? "";
+  if (!Number.isSafeInteger(expires) || expires < Math.floor(Date.now() / 1000)) {
+    return storageJson({ error: "Forbidden" }, 403);
+  }
+
+  const payload = `${route.operation}\n${route.storagePath}\n${route.encodedKey}\n${expires}`;
+  const expectedToken = await hmacHex(utf8(binding.signingKey), payload);
+  if (!constantTimeEqual(token, expectedToken)) {
+    return storageJson({ error: "Forbidden" }, 403);
+  }
+
+  const dataDir = process.env["TAKO_DATA_DIR"];
+  if (!dataDir) {
+    return storageJson({ error: "Local storage is not available" }, 500);
+  }
+
+  const path = await import("node:path");
+  const fs = await import("node:fs/promises");
+  const root = path.resolve(dataDir, route.storagePath);
+  const target = path.resolve(root, ...route.keySegments);
+  if (target !== root && !target.startsWith(root + path.sep)) {
+    return storageJson({ error: "Invalid key" }, 400);
+  }
+
+  if (route.operation === "upload") {
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.writeFile(target, Buffer.from(await request.arrayBuffer()));
+    return new Response(null, { status: 204 });
+  }
+
+  try {
+    const body = request.method === "GET" ? await fs.readFile(target) : null;
+    return new Response(body, {
+      status: 200,
+      headers: { "Content-Type": "application/octet-stream" },
+    });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return storageJson({ error: "Not found" }, 404);
+    }
+    throw error;
+  }
+}
+
+function parseLocalStorageRoute(pathname: string):
+  | {
+      operation: "download" | "upload";
+      storagePath: string;
+      encodedKey: string;
+      keySegments: string[];
+    }
+  | "invalid"
+  | null {
+  const rest = pathname.slice(TAKO_LOCAL_STORAGE_PREFIX.length);
+  const [operation, encodedStoragePath, ...encodedKeySegments] = rest.split("/");
+  if (operation !== "download" && operation !== "upload") {
+    return null;
+  }
+  if (!encodedStoragePath || encodedKeySegments.length === 0) {
+    return null;
+  }
+  const storagePath = safeDecodeURIComponent(encodedStoragePath);
+  const keySegments = encodedKeySegments.map(safeDecodeURIComponent);
+  if (storagePath === null || !keySegments.every(isString)) {
+    return "invalid";
+  }
+  return {
+    operation,
+    storagePath,
+    encodedKey: encodedKeySegments.join("/"),
+    keySegments,
+  };
+}
+
+function isString(value: string | null): value is string {
+  return value !== null;
+}
+
+function safeDecodeURIComponent(value: string): string | null {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return null;
+  }
+}
+
+function localStorageBinding(storagePath: string): { signingKey: string } | null {
+  for (const raw of Object.values(getStorageBindings())) {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+      continue;
+    }
+    const binding = raw as { provider?: unknown; path?: unknown; signing_key?: unknown };
+    if (
+      binding.provider === "local" &&
+      binding.path === storagePath &&
+      typeof binding.signing_key === "string" &&
+      binding.signing_key.length > 0
+    ) {
+      return { signingKey: binding.signing_key };
+    }
+  }
+  return null;
+}
+
+function storageJson(body: unknown, status: number): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+async function hmacHex(key: ArrayBuffer, value: string): Promise<string> {
+  const cryptoKey = await crypto.subtle.importKey(
+    "raw",
+    key,
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const signature = await crypto.subtle.sign("HMAC", cryptoKey, utf8(value));
+  return Array.from(new Uint8Array(signature))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function utf8(value: string): ArrayBuffer {
+  return new TextEncoder().encode(value).slice().buffer as ArrayBuffer;
+}
+
+function constantTimeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) {
+    return false;
+  }
+  let diff = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return diff === 0;
 }
 
 async function handleChannelAuthorize(

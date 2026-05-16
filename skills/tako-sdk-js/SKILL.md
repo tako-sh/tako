@@ -93,7 +93,7 @@ export default function fetch(request: Request) {
 | `tako.dataDir`  | Persistent app-owned data directory — writes survive restarts               |
 | `tako.appDir`   | Directory the app is running from (equivalent to `process.cwd()`)           |
 | `tako.secrets`  | Typed secret bag (interface regenerated from `.tako/secrets.json`)          |
-| `tako.storages` | Typed storage bag (interface regenerated from `.tako/storages.json`)        |
+| `tako.storages` | Typed storage bag (interface regenerated from `tako.toml`)                  |
 | `tako.logger`   | Structured JSON logger (`tako.logger.info(...)`)                            |
 | `Env`           | TypeScript union of configured environment names                            |
 | `TakoSecrets`   | TypeScript interface of secret names                                        |
@@ -134,7 +134,7 @@ Attach S3-compatible storage with the CLI, then use `tako.storages.<name>` from 
 
 ```bash
 tako storages add uploads \
-  --provider r2 \
+  --provider s3 \
   --bucket app-uploads \
   --endpoint https://<account>.r2.cloudflarestorage.com \
   --region auto

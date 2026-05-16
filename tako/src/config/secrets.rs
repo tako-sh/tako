@@ -16,8 +16,12 @@ const SECRETS_FILE_NAME: &str = "secrets.json";
 pub struct EnvironmentSecrets {
     /// Local key id under Tako's data directory.
     pub key_id: String,
-    /// Map of secret name to encrypted value
-    pub secrets: HashMap<String, String>,
+    /// App secret name to encrypted value.
+    #[serde(default)]
+    pub app: HashMap<String, String>,
+    /// Storage resource name to encrypted credentials.
+    #[serde(default)]
+    pub storages: HashMap<String, super::EncryptedStorageCredentials>,
 }
 
 /// Secrets storage from .tako/secrets.json
@@ -27,16 +31,23 @@ pub struct EnvironmentSecrets {
 /// {
 ///   "production": {
 ///     "key_id": "0123456789abcdef",
-///     "secrets": {
+///     "app": {
 ///       "DATABASE_URL": "encrypted_base64_value",
 ///       "API_KEY": "encrypted_base64_value"
+///     },
+///     "storages": {
+///       "prod_uploads": {
+///         "access_key_id": "encrypted_base64_value",
+///         "secret_access_key": "encrypted_base64_value"
+///       }
 ///     }
 ///   }
 /// }
 /// ```
 ///
-/// Secret names are plaintext (allows listing without decryption).
-/// Secret values are encrypted with AES-256-GCM.
+/// App secret names and storage resource names are plaintext (allows listing
+/// without decryption). Secret values and storage credentials are encrypted
+/// with AES-256-GCM.
 /// Keys are random per environment and stored locally under the environment key id.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct SecretsStore {
@@ -87,8 +98,21 @@ impl SecretsStore {
             crate::crypto::KeyStore::for_key_id(&env_secrets.key_id)?;
 
             // Validate secret names
-            for secret_name in env_secrets.secrets.keys() {
+            for secret_name in env_secrets.app.keys() {
                 validate_secret_name(secret_name)?;
+            }
+            for (storage_name, credentials) in &env_secrets.storages {
+                super::validate_storage_name(storage_name)?;
+                if credentials.access_key_id.trim().is_empty() {
+                    return Err(ConfigError::Validation(
+                        "Storage access key id cannot be empty".to_string(),
+                    ));
+                }
+                if credentials.secret_access_key.trim().is_empty() {
+                    return Err(ConfigError::Validation(
+                        "Storage secret access key cannot be empty".to_string(),
+                    ));
+                }
             }
         }
         Ok(())
@@ -133,7 +157,7 @@ impl SecretsStore {
     pub fn get(&self, env: &str, name: &str) -> Option<&String> {
         self.environments
             .get(env)
-            .and_then(|env_secrets| env_secrets.secrets.get(name))
+            .and_then(|env_secrets| env_secrets.app.get(name))
     }
 
     /// Get the key_id for an environment
@@ -155,7 +179,7 @@ impl SecretsStore {
             ))
         })?;
 
-        env_secrets.secrets.insert(name.to_string(), value);
+        env_secrets.app.insert(name.to_string(), value);
         Ok(())
     }
 
@@ -169,7 +193,8 @@ impl SecretsStore {
                 .entry(env.to_string())
                 .or_insert_with(|| EnvironmentSecrets {
                     key_id: crate::crypto::generate_key_id(),
-                    secrets: HashMap::new(),
+                    app: HashMap::new(),
+                    storages: HashMap::new(),
                 });
 
         Ok(env_secrets.key_id.clone())
@@ -184,7 +209,8 @@ impl SecretsStore {
             env.to_string(),
             EnvironmentSecrets {
                 key_id: key_id.to_string(),
-                secrets: HashMap::new(),
+                app: HashMap::new(),
+                storages: HashMap::new(),
             },
         );
         Ok(())
@@ -197,12 +223,12 @@ impl SecretsStore {
             .get_mut(env)
             .ok_or_else(|| ConfigError::EnvironmentNotFound(env.to_string()))?;
 
-        if env_secrets.secrets.remove(name).is_none() {
+        if env_secrets.app.remove(name).is_none() {
             return Err(ConfigError::SecretNotFound(name.to_string()));
         }
 
         // Remove environment if no secrets remain.
-        if env_secrets.secrets.is_empty() {
+        if env_secrets.app.is_empty() && env_secrets.storages.is_empty() {
             self.environments.remove(env);
         }
 
@@ -214,14 +240,15 @@ impl SecretsStore {
         let mut removed_from = Vec::new();
 
         for (env_name, env_secrets) in &mut self.environments {
-            if env_secrets.secrets.remove(name).is_some() {
+            if env_secrets.app.remove(name).is_some() {
                 removed_from.push(env_name.clone());
             }
         }
 
         // Remove empty environments
-        self.environments
-            .retain(|_, env_secrets| !env_secrets.secrets.is_empty());
+        self.environments.retain(|_, env_secrets| {
+            !env_secrets.app.is_empty() || !env_secrets.storages.is_empty()
+        });
 
         if removed_from.is_empty() {
             return Err(ConfigError::SecretNotFound(name.to_string()));
@@ -234,7 +261,7 @@ impl SecretsStore {
     pub fn contains(&self, env: &str, name: &str) -> bool {
         self.environments
             .get(env)
-            .map(|env_secrets| env_secrets.secrets.contains_key(name))
+            .map(|env_secrets| env_secrets.app.contains_key(name))
             .unwrap_or(false)
     }
 
@@ -243,7 +270,7 @@ impl SecretsStore {
         let mut names: Vec<String> = self
             .environments
             .values()
-            .flat_map(|env_secrets| env_secrets.secrets.keys().cloned())
+            .flat_map(|env_secrets| env_secrets.app.keys().cloned())
             .collect();
         names.sort();
         names.dedup();
@@ -261,7 +288,56 @@ impl SecretsStore {
     pub fn get_env(&self, env: &str) -> Option<&HashMap<String, String>> {
         self.environments
             .get(env)
-            .map(|env_secrets| &env_secrets.secrets)
+            .map(|env_secrets| &env_secrets.app)
+    }
+
+    pub fn get_storage_credentials(
+        &self,
+        env: &str,
+        resource: &str,
+    ) -> Option<&super::EncryptedStorageCredentials> {
+        self.environments
+            .get(env)
+            .and_then(|env_secrets| env_secrets.storages.get(resource))
+    }
+
+    pub fn get_storage_credentials_env(
+        &self,
+        env: &str,
+    ) -> Option<&HashMap<String, super::EncryptedStorageCredentials>> {
+        self.environments
+            .get(env)
+            .map(|env_secrets| &env_secrets.storages)
+    }
+
+    pub fn set_storage_credentials(
+        &mut self,
+        env: &str,
+        resource: &str,
+        value: super::EncryptedStorageCredentials,
+    ) -> Result<()> {
+        validate_environment_name(env)?;
+        super::validate_storage_name(resource)?;
+        if value.access_key_id.trim().is_empty() {
+            return Err(ConfigError::Validation(
+                "Storage access key id cannot be empty".to_string(),
+            ));
+        }
+        if value.secret_access_key.trim().is_empty() {
+            return Err(ConfigError::Validation(
+                "Storage secret access key cannot be empty".to_string(),
+            ));
+        }
+
+        let env_secrets = self.environments.get_mut(env).ok_or_else(|| {
+            ConfigError::Validation(format!(
+                "Environment '{}' not initialized. Call ensure_env_key_id first.",
+                env
+            ))
+        })?;
+
+        env_secrets.storages.insert(resource.to_string(), value);
+        Ok(())
     }
 
     /// Check for discrepancies (secrets missing in some environments)
@@ -304,7 +380,7 @@ impl SecretsStore {
     pub fn count_by_env(&self) -> HashMap<String, usize> {
         self.environments
             .iter()
-            .map(|(env, env_secrets)| (env.clone(), env_secrets.secrets.len()))
+            .map(|(env, env_secrets)| (env.clone(), env_secrets.app.len()))
             .collect()
     }
 
@@ -317,7 +393,7 @@ impl SecretsStore {
     pub fn total_count(&self) -> usize {
         self.environments
             .values()
-            .map(|env_secrets| env_secrets.secrets.len())
+            .map(|env_secrets| env_secrets.app.len())
             .sum()
     }
 }
@@ -329,12 +405,14 @@ fn sorted_environments(
     environments
         .iter()
         .map(|(env_name, env_secrets)| {
-            let sorted_secrets = env_secrets.secrets.iter().collect::<BTreeMap<_, _>>();
+            let sorted_app = env_secrets.app.iter().collect::<BTreeMap<_, _>>();
+            let sorted_storages = env_secrets.storages.iter().collect::<BTreeMap<_, _>>();
             (
                 env_name,
                 SortedEnvironmentSecrets {
                     key_id: &env_secrets.key_id,
-                    secrets: sorted_secrets,
+                    app: sorted_app,
+                    storages: sorted_storages,
                 },
             )
         })
@@ -344,7 +422,8 @@ fn sorted_environments(
 #[derive(Serialize)]
 struct SortedEnvironmentSecrets<'a> {
     key_id: &'a str,
-    secrets: BTreeMap<&'a String, &'a String>,
+    app: BTreeMap<&'a String, &'a String>,
+    storages: BTreeMap<&'a String, &'a super::EncryptedStorageCredentials>,
 }
 
 /// Represents a secret that is missing in some environments

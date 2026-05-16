@@ -290,26 +290,28 @@ Attach S3-compatible object storage to the current app:
 ```bash
 tako storages add uploads \
   --env production \
-  --provider r2 \
+  --resource prod_uploads \
+  --provider s3 \
   --bucket app-uploads \
   --endpoint https://<account>.r2.cloudflarestorage.com \
   --region auto \
   --public-base-url https://cdn.example.com/uploads
 ```
 
-| Option                | Meaning                                                       |
-| --------------------- | ------------------------------------------------------------- |
-| `--env ENV`           | Environment to attach. Defaults to `production`.              |
-| `--provider s3\|r2`   | Storage provider. Defaults to `s3`.                           |
-| `--bucket NAME`       | Bucket name. Required.                                        |
-| `--endpoint URL`      | HTTPS S3-compatible endpoint. Required.                       |
-| `--region REGION`     | Signing region. Defaults to `auto`.                           |
-| `--access-key-id KEY` | Access key id. Prompts when omitted in interactive terminals. |
-| `--secret-access-key` | Secret access key. Prompts when omitted in interactive runs.  |
-| `--force-path-style`  | Sign path-style URLs instead of virtual-hosted bucket URLs.   |
-| `--public-base-url`   | Public base URL used by `public: true` SDK helpers.           |
+| Option                 | Meaning                                                       |
+| ---------------------- | ------------------------------------------------------------- |
+| `--env ENV`            | Environment to attach. Defaults to `production`.              |
+| `--resource NAME`      | Backing storage resource name. Defaults to the binding name.  |
+| `--provider s3\|local` | Storage provider. Defaults to `s3`.                           |
+| `--bucket NAME`        | Bucket name. Required for `s3`.                               |
+| `--endpoint URL`       | HTTPS S3-compatible endpoint. Required for `s3`.              |
+| `--region REGION`      | Signing region. Defaults to `auto`.                           |
+| `--access-key-id KEY`  | Access key id. Prompts when omitted in interactive terminals. |
+| `--secret-access-key`  | Secret access key. Prompts when omitted in interactive runs.  |
+| `--force-path-style`   | Sign path-style URLs instead of virtual-hosted bucket URLs.   |
+| `--public-base-url`    | Public base URL used by `public: true` SDK helpers.           |
 
-The command writes encrypted credentials to `.tako/storages.json`. Deploy syncs storage bindings with the app release; there is no separate storage sync command.
+The command writes bindings and non-secret provider metadata to `tako.toml`. For `s3`, encrypted credentials are written to `.tako/secrets.json` under the selected environment's `storages` map. R2 uses `provider = "s3"` with the R2 S3-compatible endpoint. Deploy syncs storage bindings with the app release; there is no separate storage sync command.
 
 ## `tako upgrade`
 

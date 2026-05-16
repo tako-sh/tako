@@ -91,12 +91,13 @@ Import a base64url key string. The string includes its id, so import does not ta
 
 ### `tako storages add <name>`
 
-Attach S3-compatible storage to the app. Credentials are encrypted in `.tako/storages.json` and synced on deploy.
+Attach storage to the app. Bindings and non-secret provider metadata are written to `tako.toml`; S3 credentials are encrypted in `.tako/secrets.json` under the selected environment's `storages` map and synced on deploy.
 
 ```bash
 tako storages add uploads \
   --env production \
-  --provider r2 \
+  --resource prod_uploads \
+  --provider s3 \
   --bucket app-uploads \
   --endpoint https://<account>.r2.cloudflarestorage.com \
   --region auto \
@@ -120,7 +121,7 @@ Aliases: `tako gen`, `tako g`.
 Generates:
 
 - **Typed secrets** — reads secret names from `.tako/secrets.json` and emits a `TakoSecrets` augmentation in `tako.d.ts` for `tako.secrets` from `tako.sh`.
-- **Typed storages** — reads storage names from `.tako/storages.json` and emits a `TakoStorages` augmentation for `tako.storages`.
+- **Typed storages** — reads storage binding names from `tako.toml` and emits a `TakoStorages` augmentation for `tako.storages`.
 - **Runtime types** — augments `tako.sh` with environment names, channel metadata inferred from channel exports, and runtime env globals. App runtime values come from `tako.sh`.
 - **JS definition stubs** — when `<app_root>/channels/` or `<app_root>/workflows/` already exists, scaffolds `demo.ts` in empty dirs and adds missing default `defineChannel({ name: "<file-stem>" })` / `defineWorkflow(...)` exports to files that do not have a default export yet. Existing explicit channel names are not rewritten.
 

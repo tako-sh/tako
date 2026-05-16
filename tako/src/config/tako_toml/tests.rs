@@ -1456,3 +1456,96 @@ release_command = "bun run db:migrate"
     let err = Config::parse(toml).unwrap_err();
     assert!(format!("{err}").contains("release_command"), "{err}");
 }
+
+#[test]
+fn parses_storage_resources_and_env_bindings() {
+    let config = Config::parse(
+        r#"
+name = "demo"
+
+[storages.prod_uploads]
+provider = "s3"
+bucket = "demo-prod-uploads"
+endpoint = "https://s3.example.com"
+region = "us-east-1"
+force_path_style = true
+public_base_url = "https://cdn.example.com/uploads"
+
+[storages.local_cache]
+provider = "local"
+
+[envs.production]
+route = "demo.example.com"
+storages = { uploads = "prod_uploads", cache = "local_cache" }
+"#,
+    )
+    .unwrap();
+
+    let prod = config.envs.get("production").unwrap();
+    assert_eq!(
+        prod.storages.get("uploads").map(String::as_str),
+        Some("prod_uploads")
+    );
+    assert_eq!(
+        prod.storages.get("cache").map(String::as_str),
+        Some("local_cache")
+    );
+
+    let uploads = config.storages.get("prod_uploads").unwrap();
+    assert_eq!(uploads.provider, tako_core::StorageProvider::S3);
+    assert_eq!(uploads.bucket.as_deref(), Some("demo-prod-uploads"));
+    assert!(uploads.force_path_style);
+    assert_eq!(
+        uploads.public_base_url.as_deref(),
+        Some("https://cdn.example.com/uploads")
+    );
+
+    let local = config.storages.get("local_cache").unwrap();
+    assert_eq!(local.provider, tako_core::StorageProvider::Local);
+}
+
+#[test]
+fn non_development_storage_bindings_must_reference_configured_resources() {
+    let err = Config::parse(
+        r#"
+name = "demo"
+
+[envs.production]
+route = "demo.example.com"
+storages = { uploads = "prod_uploads" }
+"#,
+    )
+    .unwrap_err();
+
+    assert!(
+        err.to_string().contains(
+            "Environment 'production' storage 'uploads' references missing storage resource 'prod_uploads'"
+        ),
+        "{err}"
+    );
+}
+
+#[test]
+fn development_storage_bindings_allow_implicit_local_resources() {
+    let config = Config::parse(
+        r#"
+name = "demo"
+
+[envs.development]
+storages = { uploads = "uploads" }
+"#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        config
+            .envs
+            .get("development")
+            .unwrap()
+            .storages
+            .get("uploads")
+            .map(String::as_str),
+        Some("uploads")
+    );
+    assert!(!config.storages.contains_key("uploads"));
+}

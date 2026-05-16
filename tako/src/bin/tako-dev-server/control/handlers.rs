@@ -242,6 +242,8 @@ pub(crate) async fn handle_client(
                         .map_err(|e| format!("failed to generate dev bootstrap token: {e}"))?,
                 };
 
+                let app_storages = storages.clone();
+
                 {
                     let s = state.lock().unwrap();
                     if let Some(existing) = s.apps.get(&config_path)
@@ -375,6 +377,7 @@ pub(crate) async fn handle_client(
                     let app = app_name.clone();
                     let cwd = std::path::PathBuf::from(&project_dir);
                     let app_root = worker_app_root.clone();
+                    let worker_storages = app_storages.clone();
                     let cmd_os: Vec<std::ffi::OsString> =
                         worker_cmd.iter().map(std::ffi::OsString::from).collect();
                     let log_sink: Option<tako_workflows::WorkerLogSink> =
@@ -393,6 +396,7 @@ pub(crate) async fn handle_client(
                         command: cmd_os,
                         cwd,
                         secrets: std::collections::HashMap::new(),
+                        storages: worker_storages,
                         log_sink,
                     };
                     if let Err(e) = workflows.ensure(&app_name, spec_fn).await {

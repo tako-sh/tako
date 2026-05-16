@@ -550,11 +550,8 @@ pub async fn run(
                     changed
                 };
 
-                let should_register = hosts_changed
-                    || matches!(
-                        change,
-                        watcher::WatchChange::Config | watcher::WatchChange::Storages
-                    );
+                let should_register =
+                    hosts_changed || matches!(change, watcher::WatchChange::Config);
                 if should_register {
                     let storages = match load_dev_storages(&project_dir).map_err(|e| e.to_string())
                     {
@@ -599,7 +596,6 @@ pub async fn run(
                     let restart_reason = match change {
                         watcher::WatchChange::Config => "tako.toml changed, restarting…",
                         watcher::WatchChange::Secrets => "Secrets changed, restarting…",
-                        watcher::WatchChange::Storages => "Storages changed, restarting…",
                         watcher::WatchChange::Channels => "channels/ changed, restarting…",
                         watcher::WatchChange::Workflows => "workflows/ changed, restarting…",
                         watcher::WatchChange::GeneratedDeclarations => unreachable!(),
@@ -765,6 +761,12 @@ fn load_dev_storages(
     project_dir: &std::path::Path,
 ) -> Result<std::collections::HashMap<String, tako_core::StorageBinding>, Box<dyn std::error::Error>>
 {
-    let storages = crate::config::StoragesStore::load_from_dir(project_dir)?;
-    crate::commands::storage::decrypt_storage_bindings("development", &storages, Some(project_dir))
+    let config = crate::config::TakoToml::load_from_dir(project_dir)?;
+    let secrets = crate::config::SecretsStore::load_from_dir(project_dir)?;
+    crate::commands::storage::decrypt_storage_bindings(
+        "development",
+        &config,
+        &secrets,
+        Some(project_dir),
+    )
 }

@@ -153,7 +153,7 @@ Non-secret variables come from `[vars]`, `[vars.<env>]`, and Tako runtime variab
 
 HTTP instances and workflow workers receive the same app/runtime environment except for HTTP-only bind variables such as `PORT` and `HOST`.
 
-Secrets are encrypted locally in `.tako/secrets.json`, with keys stored outside the repo. Storage credentials are encrypted locally in `.tako/storages.json` with the same environment-key mechanism. On deploy, secrets and storage bindings are stored encrypted in server SQLite and delivered to fresh app and worker processes through fd 3, not environment variables. Secret updates roll HTTP instances and restart workflow workers so new processes receive the latest values.
+Secrets are encrypted locally in `.tako/secrets.json`, with keys stored outside the repo. Storage bindings and non-secret provider metadata live in `tako.toml`; S3 credentials are encrypted in `.tako/secrets.json` under each environment's `storages` map. On deploy, secrets and storage bindings are stored encrypted in server SQLite and delivered to fresh app and worker processes through fd 3, not environment variables. Secret updates roll HTTP instances and restart workflow workers so new processes receive the latest values.
 
 ## Images And Storage
 

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { createStorageBag } from "../src/storage";
 
 const binding = {
-  provider: "r2",
+  provider: "s3",
   bucket: "app-uploads",
   endpoint: "https://abc.r2.cloudflarestorage.com",
   region: "auto",
@@ -124,5 +124,28 @@ describe("storage URLs", () => {
 
     expect(error).toBeInstanceOf(TypeError);
     expect((error as Error).message).toContain("private storage image srcsets");
+  });
+
+  test("creates local storage URLs for implicit local bindings", async () => {
+    const storages = createStorageBag(
+      {
+        uploads: {
+          provider: "local",
+          path: "storage/uploads",
+          signing_key: "test-signing-key",
+        },
+      },
+      { now: fixedClock },
+    );
+    const uploads = requireUploads(storages);
+
+    const url = await uploads.createUploadUrl("avatars/u_123.png");
+    const parsed = new URL(url, "https://app.test");
+
+    expect(parsed.pathname).toBe("/_tako/storage/upload/storage%2Fuploads/avatars/u_123.png");
+    expect(parsed.searchParams.get("expires")).toBe(
+      String(Math.floor(fixedClock().getTime() / 1000) + 3600),
+    );
+    expect(parsed.searchParams.get("token")).toMatch(/^[0-9a-f]{64}$/);
   });
 });

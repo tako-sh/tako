@@ -334,14 +334,14 @@ host = "5.6.7.8"
         let secrets_json = r#"{
             "production": {
                 "key_id": "0123456789abcdef",
-                "secrets": {
+                "app": {
                     "API_KEY": "prod-key",
                     "DB_URL": "postgres://prod"
                 }
             },
             "staging": {
                 "key_id": "fedcba9876543210",
-                "secrets": {
+                "app": {
                     "API_KEY": "staging-key",
                     "DB_URL": "postgres://staging"
                 }
@@ -493,14 +493,14 @@ host = "5.6.7.8"
         let secrets_json = r#"{
             "production": {
                 "key_id": "0123456789abcdef",
-                "secrets": {
+                "app": {
                     "API_KEY": "prod-key",
                     "DB_URL": "postgres://prod"
                 }
             },
             "staging": {
                 "key_id": "fedcba9876543210",
-                "secrets": {
+                "app": {
                     "API_KEY": "staging-key"
                 }
             }

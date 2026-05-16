@@ -66,6 +66,20 @@ impl Config {
             .unwrap_or_default()
     }
 
+    pub fn storage_resource_for_env(
+        &self,
+        env_name: &str,
+        resource_name: &str,
+    ) -> Option<StorageResourceConfig> {
+        if let Some(resource) = self.storages.get(resource_name) {
+            return Some(resource.clone());
+        }
+        if env_name == "development" {
+            return Some(StorageResourceConfig::default());
+        }
+        None
+    }
+
     /// Get effective idle timeout for an environment.
     pub fn get_idle_timeout(&self, env_name: &str) -> u32 {
         self.envs

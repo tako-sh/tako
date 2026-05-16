@@ -64,7 +64,7 @@ fn ensure_secret_key_available_is_noop_when_key_already_cached() {
         let json = r#"{
             "production": {
                 "key_id": "0123456789abcdef",
-                "secrets": {"DATABASE_URL": "opaque-encrypted-blob"}
+                "app": {"DATABASE_URL": "opaque-encrypted-blob"}
             }
         }"#;
         let secrets = crate::config::SecretsStore::parse(json).unwrap();
@@ -86,7 +86,7 @@ fn ensure_secret_key_available_errors_when_existing_secrets_have_no_key() {
         let json = r#"{
             "production": {
                 "key_id": "0123456789abcdef",
-                "secrets": {"DATABASE_URL": "opaque-encrypted-blob"}
+                "app": {"DATABASE_URL": "opaque-encrypted-blob"}
             }
         }"#;
         let secrets = crate::config::SecretsStore::parse(json).unwrap();
@@ -114,7 +114,7 @@ fn validate_passphrase_key_for_env_uses_short_invalid_passphrase_error() {
         r#"{{
             "production": {{
                 "key_id": "0123456789abcdef",
-                "secrets": {{"DATABASE_URL": "{encrypted}"}}
+                "app": {{"DATABASE_URL": "{encrypted}"}}
             }}
         }}"#
     ))
@@ -219,7 +219,7 @@ route = "staging.example.com"
         r#"{
             "preview": {
                 "key_id": "0123456789abcdef",
-                "secrets": {}
+                "app": {}
             }
         }"#,
     )
@@ -296,7 +296,7 @@ fn environment_for_key_id_matches_environment_key_id() {
         r#"{
             "development": {
                 "key_id": "0123456789abcdef",
-                "secrets": {}
+                "app": {}
             }
         }"#,
     )

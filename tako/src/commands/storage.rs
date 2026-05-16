@@ -2,30 +2,37 @@ use clap::Subcommand;
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::config::{EncryptedStorageBinding, StoragesStore, validate_storage_name};
+use base64::Engine;
+
+use crate::config::{
+    EncryptedStorageCredentials, StorageResourceConfig, TakoToml, validate_storage_name,
+};
 use crate::output;
 
 #[derive(Subcommand)]
 pub enum StorageCommands {
-    /// Attach an S3-compatible bucket to this app
+    /// Attach a storage resource to this app
     Add {
-        /// Storage binding name, e.g. uploads
+        /// App storage binding name, e.g. uploads
         name: String,
         /// Environment to attach storage for
         #[arg(long, default_value = "production")]
         env: String,
+        /// Backing storage resource name. Defaults to the binding name.
+        #[arg(long)]
+        resource: Option<String>,
         /// Storage provider
         #[arg(long, default_value = "s3")]
         provider: StorageProviderArg,
         /// Bucket name
         #[arg(long)]
-        bucket: String,
+        bucket: Option<String>,
         /// S3-compatible endpoint, e.g. https://s3.amazonaws.com or https://<account>.r2.cloudflarestorage.com
         #[arg(long)]
-        endpoint: String,
+        endpoint: Option<String>,
         /// Region. Use auto for R2.
-        #[arg(long, default_value = "auto")]
-        region: String,
+        #[arg(long)]
+        region: Option<String>,
         /// Access key id. Prompted when omitted.
         #[arg(long)]
         access_key_id: Option<String>,
@@ -43,8 +50,8 @@ pub enum StorageCommands {
 
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
 pub enum StorageProviderArg {
+    Local,
     S3,
-    R2,
 }
 
 pub fn run(
@@ -56,6 +63,7 @@ pub fn run(
         StorageCommands::Add {
             name,
             env,
+            resource,
             provider,
             bucket,
             endpoint,
@@ -66,8 +74,10 @@ pub fn run(
             public_base_url,
         } => add_storage(StorageAddInput {
             project_dir: &context.project_dir,
+            config_path: &context.config_path,
             name,
             env,
+            resource,
             provider,
             bucket,
             endpoint,
@@ -82,12 +92,14 @@ pub fn run(
 
 struct StorageAddInput<'a> {
     project_dir: &'a Path,
+    config_path: &'a Path,
     name: String,
     env: String,
+    resource: Option<String>,
     provider: StorageProviderArg,
-    bucket: String,
-    endpoint: String,
-    region: String,
+    bucket: Option<String>,
+    endpoint: Option<String>,
+    region: Option<String>,
     access_key_id: Option<String>,
     secret_access_key: Option<String>,
     force_path_style: bool,
@@ -97,42 +109,66 @@ struct StorageAddInput<'a> {
 fn add_storage(input: StorageAddInput<'_>) -> Result<(), Box<dyn std::error::Error>> {
     crate::config::validate_environment_name(&input.env)?;
     validate_storage_name(&input.name)?;
-    validate_endpoint(&input.endpoint)?;
+    let resource_name = input.resource.as_deref().unwrap_or(&input.name);
+    validate_storage_name(resource_name)?;
+
     if let Some(public_base_url) = &input.public_base_url {
         validate_endpoint(public_base_url)?;
     }
 
-    let mut secrets = crate::config::SecretsStore::load_from_dir(input.project_dir)?;
-    let key_id = secrets.ensure_env_key_id(&input.env)?;
-    secrets.save_to_dir(input.project_dir)?;
-    let key = crate::commands::secret::load_or_create_key_for_set(
+    let resource = match input.provider {
+        StorageProviderArg::Local => StorageResourceConfig {
+            provider: tako_core::StorageProvider::Local,
+            ..StorageResourceConfig::default()
+        },
+        StorageProviderArg::S3 => {
+            let bucket = required_option(input.bucket, "Bucket")?;
+            let endpoint = required_option(input.endpoint, "Endpoint")?;
+            validate_endpoint(&endpoint)?;
+            StorageResourceConfig {
+                provider: tako_core::StorageProvider::S3,
+                bucket: Some(bucket),
+                endpoint: Some(trim_trailing_slash(&endpoint)),
+                region: Some(input.region.unwrap_or_else(|| "auto".to_string())),
+                force_path_style: input.force_path_style,
+                public_base_url: input
+                    .public_base_url
+                    .map(|value| trim_trailing_slash(&value)),
+            }
+        }
+    };
+
+    TakoToml::upsert_storage_binding_in_file(
+        input.config_path,
         &input.env,
-        &secrets,
-        Some(input.project_dir),
+        &input.name,
+        resource_name,
+        &resource,
     )?;
 
-    let access_key_id = read_storage_credential(input.access_key_id, "Access key id")?;
-    let secret_access_key = read_storage_credential(input.secret_access_key, "Secret access key")?;
+    if matches!(input.provider, StorageProviderArg::S3) {
+        let mut secrets = crate::config::SecretsStore::load_from_dir(input.project_dir)?;
+        secrets.ensure_env_key_id(&input.env)?;
+        let key = crate::commands::secret::load_or_create_key_for_set(
+            &input.env,
+            &secrets,
+            Some(input.project_dir),
+        )?;
 
-    let mut storages = StoragesStore::load_from_dir(input.project_dir)?;
-    storages.set_env_key_id(&input.env, &key_id)?;
-    let binding = EncryptedStorageBinding {
-        provider: match input.provider {
-            StorageProviderArg::S3 => tako_core::StorageProvider::S3,
-            StorageProviderArg::R2 => tako_core::StorageProvider::R2,
-        },
-        bucket: input.bucket,
-        endpoint: trim_trailing_slash(&input.endpoint),
-        region: input.region,
-        access_key_id: crate::crypto::encrypt(&access_key_id, &key)?,
-        secret_access_key: crate::crypto::encrypt(&secret_access_key, &key)?,
-        force_path_style: input.force_path_style,
-        public_base_url: input
-            .public_base_url
-            .map(|value| trim_trailing_slash(&value)),
-    };
-    storages.set(&input.env, &input.name, binding)?;
-    storages.save_to_dir(input.project_dir)?;
+        let access_key_id = read_storage_credential(input.access_key_id, "Access key id")?;
+        let secret_access_key =
+            read_storage_credential(input.secret_access_key, "Secret access key")?;
+
+        secrets.set_storage_credentials(
+            &input.env,
+            resource_name,
+            EncryptedStorageCredentials {
+                access_key_id: crate::crypto::encrypt(&access_key_id, &key)?,
+                secret_access_key: crate::crypto::encrypt(&secret_access_key, &key)?,
+            },
+        )?;
+        secrets.save_to_dir(input.project_dir)?;
+    }
 
     output::success(&format!(
         "Attached storage {} to {}.",
@@ -141,6 +177,16 @@ fn add_storage(input: StorageAddInput<'_>) -> Result<(), Box<dyn std::error::Err
     ));
     output::hint("Deploy to sync the storage binding to your server.");
     Ok(())
+}
+
+fn required_option(
+    value: Option<String>,
+    label: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    match value {
+        Some(value) if !value.trim().is_empty() => Ok(value),
+        _ => Err(format!("{label} is required for S3 storage.").into()),
+    }
 }
 
 fn read_storage_credential(
@@ -176,39 +222,77 @@ fn trim_trailing_slash(value: &str) -> String {
 
 pub(crate) fn decrypt_storage_bindings(
     env: &str,
-    storages: &StoragesStore,
+    config: &TakoToml,
+    secrets: &crate::config::SecretsStore,
     usage_path: Option<&Path>,
 ) -> Result<HashMap<String, tako_core::StorageBinding>, Box<dyn std::error::Error>> {
-    let encrypted = match storages.get_env(env) {
-        Some(map) if !map.is_empty() => map,
-        _ => return Ok(HashMap::new()),
-    };
-    let key_id = storages
-        .get_key_id(env)
-        .ok_or_else(|| format!("No storage key configured for environment '{}'.", env))?;
-    let key_store = crate::crypto::KeyStore::for_key_id(key_id)?;
-    let Some(key) = key_store.load_key_optional_with_usage_path(usage_path)? else {
-        return Err(format!(
-            "Unable to decrypt {env} storage bindings. Run `tako secrets key import` to import an exported key or passphrase."
-        )
-        .into());
+    let Some(env_config) = config.envs.get(env) else {
+        return Ok(HashMap::new());
     };
 
     let mut decrypted = HashMap::new();
-    for (name, binding) in encrypted {
-        decrypted.insert(
-            name.clone(),
-            tako_core::StorageBinding {
-                provider: binding.provider,
-                bucket: binding.bucket.clone(),
-                endpoint: binding.endpoint.clone(),
-                region: binding.region.clone(),
-                access_key_id: crate::crypto::decrypt(&binding.access_key_id, &key)?,
-                secret_access_key: crate::crypto::decrypt(&binding.secret_access_key, &key)?,
-                force_path_style: binding.force_path_style,
-                public_base_url: binding.public_base_url.clone(),
+    let mut key_cache: Option<crate::crypto::EncryptionKey> = None;
+    for (binding_name, resource_name) in &env_config.storages {
+        let Some(resource) = config.storage_resource_for_env(env, resource_name) else {
+            return Err(format!(
+                "Storage binding '{binding_name}' references missing resource '{resource_name}'."
+            )
+            .into());
+        };
+        let binding = match resource.provider {
+            tako_core::StorageProvider::Local => tako_core::StorageBinding {
+                provider: tako_core::StorageProvider::Local,
+                bucket: None,
+                endpoint: None,
+                region: None,
+                access_key_id: None,
+                secret_access_key: None,
+                force_path_style: false,
+                public_base_url: None,
+                path: Some(format!("storage/{resource_name}")),
+                signing_key: Some(generate_local_storage_signing_key()?),
             },
-        );
+            tako_core::StorageProvider::S3 => {
+                let encrypted = secrets
+                    .get_storage_credentials(env, resource_name)
+                    .ok_or_else(|| {
+                        format!(
+                            "Missing storage credentials for resource '{resource_name}' in environment '{env}'."
+                        )
+                    })?;
+                let key = match &key_cache {
+                    Some(key) => key.clone(),
+                    None => {
+                        let loaded =
+                            crate::commands::secret::load_secret_key(env, secrets, usage_path)?;
+                        key_cache = Some(loaded.clone());
+                        loaded
+                    }
+                };
+                tako_core::StorageBinding {
+                    provider: tako_core::StorageProvider::S3,
+                    bucket: resource.bucket.clone(),
+                    endpoint: resource.endpoint.clone(),
+                    region: resource.region.clone(),
+                    access_key_id: Some(crate::crypto::decrypt(&encrypted.access_key_id, &key)?),
+                    secret_access_key: Some(crate::crypto::decrypt(
+                        &encrypted.secret_access_key,
+                        &key,
+                    )?),
+                    force_path_style: resource.force_path_style,
+                    public_base_url: resource.public_base_url.clone(),
+                    path: None,
+                    signing_key: None,
+                }
+            }
+        };
+        decrypted.insert(binding_name.clone(), binding);
     }
     Ok(decrypted)
+}
+
+fn generate_local_storage_signing_key() -> Result<String, getrandom::Error> {
+    let mut bytes = [0_u8; 32];
+    getrandom::fill(&mut bytes)?;
+    Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes))
 }

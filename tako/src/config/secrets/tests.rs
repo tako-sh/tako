@@ -20,7 +20,7 @@ fn test_parse_new_format() {
     let json = r#"{
             "production": {
                 "key_id": "0123456789abcdef",
-                "secrets": {
+                "app": {
                     "DATABASE_URL": "encrypted_value_1",
                     "API_KEY": "encrypted_value_2"
                 }
@@ -41,17 +41,68 @@ fn test_parse_new_format() {
 }
 
 #[test]
+fn parse_reads_app_secrets_and_storage_credentials() {
+    let json = r#"{
+            "production": {
+                "key_id": "0123456789abcdef",
+                "app": {
+                    "DATABASE_URL": "encrypted-db"
+                },
+                "storages": {
+                    "prod_uploads": {
+                        "access_key_id": "encrypted-key-id",
+                        "secret_access_key": "encrypted-secret"
+                    }
+                }
+            }
+        }"#;
+
+    let store = SecretsStore::parse(json).unwrap();
+    assert_eq!(
+        store.get("production", "DATABASE_URL"),
+        Some(&"encrypted-db".to_string())
+    );
+    let storage = store
+        .get_storage_credentials("production", "prod_uploads")
+        .unwrap();
+    assert_eq!(storage.access_key_id, "encrypted-key-id");
+    assert_eq!(storage.secret_access_key, "encrypted-secret");
+}
+
+#[test]
+fn storage_credentials_do_not_appear_as_app_secret_names() {
+    let json = r#"{
+            "production": {
+                "key_id": "0123456789abcdef",
+                "app": {
+                    "DATABASE_URL": "encrypted-db"
+                },
+                "storages": {
+                    "prod_uploads": {
+                        "access_key_id": "encrypted-key-id",
+                        "secret_access_key": "encrypted-secret"
+                    }
+                }
+            }
+        }"#;
+
+    let store = SecretsStore::parse(json).unwrap();
+    assert_eq!(store.all_secret_names(), vec!["DATABASE_URL".to_string()]);
+    assert!(!store.contains("production", "prod_uploads"));
+}
+
+#[test]
 fn test_parse_multiple_environments() {
     let json = r#"{
             "production": {
                 "key_id": "1111111111111111",
-                "secrets": {
+                "app": {
                     "DATABASE_URL": "prod_db"
                 }
             },
             "staging": {
                 "key_id": "2222222222222222",
-                "secrets": {
+                "app": {
                     "DATABASE_URL": "staging_db",
                     "DEBUG": "true"
                 }

@@ -193,7 +193,6 @@ Tako watches:
 
 - `tako.toml`
 - `.tako/secrets.json`
-- `.tako/storages.json`
 - `<app_root>/channels/`
 - `<app_root>/workflows/`
 - locations that may contain `tako.d.ts`: `app/`, `src/`, and project root
@@ -251,7 +250,7 @@ The fd-3 bootstrap envelope is present in dev even when no secrets exist. It car
 
 ## Storage In Dev
 
-Storage bindings are read from `.tako/storages.json` and exposed through the SDK:
+Storage bindings are read from `[envs.development].storages` in `tako.toml` and exposed through the SDK:
 
 ```ts
 import { tako } from "tako.sh";
@@ -261,7 +260,7 @@ const uploadUrl = await tako.storages.uploads.createUploadUrl("avatars/u_123.png
 });
 ```
 
-Development uses the `development` storage bindings when present. If none exist, `tako generate` falls back to the union of storage names from other environments for type generation.
+Development uses the `development` storage bindings when present. A development binding can reference an undeclared resource; Tako treats it as local storage with a Tako-chosen location under the app data directory. If no development bindings exist, `tako generate` falls back to the union of storage names from other environments for type generation.
 
 ## Images In Dev
 

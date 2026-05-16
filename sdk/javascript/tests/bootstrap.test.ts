@@ -19,7 +19,7 @@ describe("initBootstrapFromFd", () => {
       secrets: { DATABASE_URL: "postgres://x", API_KEY: "sk-123" },
       storages: {
         uploads: {
-          provider: "r2",
+          provider: "s3",
           bucket: "app-uploads",
           endpoint: "https://abc.r2.cloudflarestorage.com",
           region: "auto",

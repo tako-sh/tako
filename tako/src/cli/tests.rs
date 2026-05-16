@@ -212,7 +212,9 @@ fn storages_add_parses_required_binding_options() {
         "--env",
         "production",
         "--provider",
-        "r2",
+        "s3",
+        "--resource",
+        "prod_uploads",
         "--bucket",
         "app-uploads",
         "--endpoint",
@@ -232,6 +234,7 @@ fn storages_add_parses_required_binding_options() {
     let Some(Commands::Storages(StorageCommands::Add {
         name,
         env,
+        resource,
         provider,
         bucket,
         endpoint,
@@ -247,10 +250,14 @@ fn storages_add_parses_required_binding_options() {
 
     assert_eq!(name, "uploads");
     assert_eq!(env, "production");
-    assert!(matches!(provider, StorageProviderArg::R2));
-    assert_eq!(bucket, "app-uploads");
-    assert_eq!(endpoint, "https://abc.r2.cloudflarestorage.com");
-    assert_eq!(region, "auto");
+    assert_eq!(resource.as_deref(), Some("prod_uploads"));
+    assert!(matches!(provider, StorageProviderArg::S3));
+    assert_eq!(bucket.as_deref(), Some("app-uploads"));
+    assert_eq!(
+        endpoint.as_deref(),
+        Some("https://abc.r2.cloudflarestorage.com")
+    );
+    assert_eq!(region.as_deref(), Some("auto"));
     assert_eq!(access_key_id.as_deref(), Some("key-id"));
     assert_eq!(secret_access_key.as_deref(), Some("secret"));
     assert!(force_path_style);

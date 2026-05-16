@@ -75,7 +75,7 @@ Attach S3-compatible storage with the Tako CLI, then use `tako.storages.<name>` 
 
 ```bash
 tako storages add uploads \
-  --provider r2 \
+  --provider s3 \
   --bucket app-uploads \
   --endpoint https://<account>.r2.cloudflarestorage.com \
   --access-key-id <key-id> \

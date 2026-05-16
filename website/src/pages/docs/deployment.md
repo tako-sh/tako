@@ -248,13 +248,14 @@ Attach object storage before deploy:
 ```bash
 tako storages add uploads \
   --env production \
-  --provider r2 \
+  --resource prod_uploads \
+  --provider s3 \
   --bucket app-uploads \
   --endpoint https://<account>.r2.cloudflarestorage.com \
   --region auto
 ```
 
-Local storage credentials are encrypted in `.tako/storages.json`. Deploy decrypts the selected environment's storage bindings locally, sends them over the signed management path, and `tako-server` stores them encrypted in SQLite.
+Storage bindings and non-secret provider metadata live in `tako.toml`; S3 credentials are encrypted in `.tako/secrets.json` under the selected environment's `storages` map. R2 uses `provider = "s3"` with the R2 S3-compatible endpoint. Deploy decrypts the selected environment's storage credentials locally, sends runtime bindings over the signed management path, and `tako-server` stores them encrypted in SQLite.
 
 Fresh HTTP instances and workflow workers receive storage bindings through fd 3 alongside secrets. In JavaScript apps, use `tako.storages.<name>.createDownloadUrl`, `createUploadUrl`, `createImageUrl`, and `createImageSrcSet`.
 

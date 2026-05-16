@@ -261,6 +261,7 @@ pub fn worker_spec_for_bun(
     app_cwd: &Path,
     mut env: std::collections::HashMap<String, String>,
     secrets: std::collections::HashMap<String, String>,
+    storages: std::collections::HashMap<String, tako_core::StorageBinding>,
 ) -> WorkerSpec {
     env.insert(
         tako_core::instance_env::TAKO_APP_NAME_ENV.into(),
@@ -282,6 +283,7 @@ pub fn worker_spec_for_bun(
         cwd: app_cwd.to_path_buf(),
         env,
         secrets,
+        storages,
         log_sink: None,
     }
 }
@@ -301,6 +303,7 @@ mod tests {
             cwd,
             env: StdHashMap::new(),
             secrets: StdHashMap::new(),
+            storages: StdHashMap::new(),
             log_sink: None,
         }
     }

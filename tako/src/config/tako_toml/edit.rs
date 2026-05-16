@@ -1,4 +1,5 @@
 use super::schema::Config;
+use super::schema::StorageResourceConfig;
 use crate::config::error::{ConfigError, Result};
 use std::fs;
 use std::path::Path;
@@ -88,6 +89,74 @@ impl Config {
                 );
             }
         }
+
+        let rendered = toml::to_string_pretty(&doc)
+            .map_err(|e| ConfigError::Validation(format!("Failed to render tako.toml: {}", e)))?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| ConfigError::FileWrite(parent.to_path_buf(), e))?;
+        }
+        fs::write(path, rendered).map_err(|e| ConfigError::FileWrite(path.to_path_buf(), e))?;
+        Ok(())
+    }
+
+    pub fn upsert_storage_binding_in_file<P: AsRef<Path>>(
+        path: P,
+        env: &str,
+        binding_name: &str,
+        resource_name: &str,
+        resource: &StorageResourceConfig,
+    ) -> Result<()> {
+        let path = path.as_ref();
+        let mut doc = load_or_create_toml_document(path)?;
+        let root = doc
+            .as_table_mut()
+            .ok_or_else(|| ConfigError::Validation("tako.toml must be a TOML table".to_string()))?;
+
+        let storages = root
+            .entry("storages")
+            .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+            .as_table_mut()
+            .ok_or_else(|| {
+                ConfigError::Validation(
+                    "Invalid [storages] section: expected table structure".to_string(),
+                )
+            })?;
+        storages.insert(
+            resource_name.to_string(),
+            toml::Value::try_from(resource).map_err(|e| {
+                ConfigError::Validation(format!("Failed to encode storage resource: {e}"))
+            })?,
+        );
+
+        let envs = root
+            .entry("envs")
+            .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+            .as_table_mut()
+            .ok_or_else(|| {
+                ConfigError::Validation(
+                    "Invalid [envs] section: expected table structure".to_string(),
+                )
+            })?;
+        let env_entry = envs
+            .entry(env.to_string())
+            .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+        let env_table = env_entry.as_table_mut().ok_or_else(|| {
+            ConfigError::Validation(format!("Cannot map storage: [envs.{env}] is not a table"))
+        })?;
+        let storage_map = env_table
+            .entry("storages")
+            .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+            .as_table_mut()
+            .ok_or_else(|| {
+                ConfigError::Validation(format!(
+                    "Cannot map storage: [envs.{env}].storages must be an inline table or table"
+                ))
+            })?;
+        storage_map.insert(
+            binding_name.to_string(),
+            toml::Value::String(resource_name.to_string()),
+        );
 
         let rendered = toml::to_string_pretty(&doc)
             .map_err(|e| ConfigError::Validation(format!("Failed to render tako.toml: {}", e)))?;

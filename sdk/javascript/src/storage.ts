@@ -16,14 +16,16 @@ const UNSIGNED_PAYLOAD = "UNSIGNED-PAYLOAD";
 export interface TakoStorages {}
 
 export interface TakoStorageBinding {
-  provider: "s3" | "r2";
-  bucket: string;
-  endpoint: string;
-  region: string;
-  access_key_id: string;
-  secret_access_key: string;
+  provider: "local" | "s3";
+  bucket?: string | undefined;
+  endpoint?: string | undefined;
+  region?: string | undefined;
+  access_key_id?: string | undefined;
+  secret_access_key?: string | undefined;
   force_path_style?: boolean | undefined;
   public_base_url?: string | undefined;
+  path?: string | undefined;
+  signing_key?: string | undefined;
 }
 
 export interface CreateDownloadUrlOptions {
@@ -114,6 +116,9 @@ export function createStorageBag<T = TakoStorages>(
 function createStorage(binding: TakoStorageBinding, now: () => Date): TakoStorage {
   return Object.freeze({
     createDownloadUrl(key: string, options: CreateDownloadUrlOptions = {}) {
+      if (binding.provider === "local") {
+        return localStorageUrl(binding, "download", key, options.expiresInSeconds, now);
+      }
       const publicUrl = publicObjectUrl(binding, key, options.public ?? false);
       if (publicUrl) return Promise.resolve(publicUrl);
 
@@ -129,6 +134,9 @@ function createStorage(binding: TakoStorageBinding, now: () => Date): TakoStorag
     },
 
     createUploadUrl(key: string, options: CreateUploadUrlOptions = {}) {
+      if (binding.provider === "local") {
+        return localStorageUrl(binding, "upload", key, options.expiresInSeconds, now);
+      }
       return presign({
         binding,
         key,
@@ -142,6 +150,12 @@ function createStorage(binding: TakoStorageBinding, now: () => Date): TakoStorag
 
     async createImageUrl(key: string, options: CreateImageUrlOptions = {}) {
       const { expiresInSeconds, public: usePublic, ...imageOptions } = options;
+      if (binding.provider === "local") {
+        if (hasImageTransformOptions(imageOptions)) {
+          throw new TypeError("local storage image transforms require public storage for now");
+        }
+        return localStorageUrl(binding, "download", key, expiresInSeconds, now);
+      }
       const publicUrl = publicObjectUrl(binding, key, usePublic ?? false);
       if (publicUrl) {
         return imageUrl(publicUrl, imageOptions);
@@ -183,8 +197,24 @@ function parseBinding(name: string, raw: unknown): TakoStorageBinding {
     throw new TypeError(`invalid storage binding ${name}: expected object`);
   }
   const binding = raw as Partial<TakoStorageBinding>;
+  if (binding.provider !== "local" && binding.provider !== "s3") {
+    throw new TypeError(`invalid storage binding ${name}: provider must be local or s3`);
+  }
+
+  if (binding.provider === "local") {
+    for (const field of ["path", "signing_key"] as const) {
+      if (typeof binding[field] !== "string" || binding[field]?.trim() === "") {
+        throw new TypeError(`invalid storage binding ${name}: missing ${field}`);
+      }
+    }
+    return {
+      provider: "local",
+      path: binding.path as string,
+      signing_key: binding.signing_key as string,
+    };
+  }
+
   for (const field of [
-    "provider",
     "bucket",
     "endpoint",
     "region",
@@ -195,11 +225,8 @@ function parseBinding(name: string, raw: unknown): TakoStorageBinding {
       throw new TypeError(`invalid storage binding ${name}: missing ${field}`);
     }
   }
-  if (binding.provider !== "s3" && binding.provider !== "r2") {
-    throw new TypeError(`invalid storage binding ${name}: provider must be s3 or r2`);
-  }
   return {
-    provider: binding.provider,
+    provider: "s3",
     bucket: binding.bucket as string,
     endpoint: (binding.endpoint as string).replace(/\/+$/, ""),
     region: binding.region as string,
@@ -219,6 +246,7 @@ async function presign(input: {
   headers: Record<string, string>;
   now: () => Date;
 }): Promise<string> {
+  assertS3Binding(input.binding);
   const url = objectUrl(input.binding, input.key);
   for (const [key, value] of Object.entries(input.query)) {
     url.searchParams.set(key, value);
@@ -261,6 +289,7 @@ async function presign(input: {
 }
 
 function objectUrl(binding: TakoStorageBinding, key: string): URL {
+  assertS3Binding(binding);
   const encodedKey = encodeObjectKey(key);
   const endpoint = new URL(binding.endpoint);
   if (endpoint.protocol !== "https:") {
@@ -282,6 +311,7 @@ function publicObjectUrl(
   key: string,
   requested: boolean,
 ): string | null {
+  if (binding.provider !== "s3") return null;
   if (!requested) return null;
   if (!binding.public_base_url) {
     throw new TypeError("storage does not have public_base_url configured");
@@ -289,6 +319,48 @@ function publicObjectUrl(
   const url = new URL(binding.public_base_url);
   url.pathname = joinUrlPath(url.pathname, encodeObjectKey(key));
   return url.toString();
+}
+
+function assertS3Binding(binding: TakoStorageBinding): asserts binding is TakoStorageBinding & {
+  provider: "s3";
+  bucket: string;
+  endpoint: string;
+  region: string;
+  access_key_id: string;
+  secret_access_key: string;
+} {
+  if (
+    binding.provider !== "s3" ||
+    !binding.bucket ||
+    !binding.endpoint ||
+    !binding.region ||
+    !binding.access_key_id ||
+    !binding.secret_access_key
+  ) {
+    throw new TypeError("storage binding is not configured for s3");
+  }
+}
+
+function localStorageUrl(
+  binding: TakoStorageBinding,
+  operation: "download" | "upload",
+  key: string,
+  expiresInSeconds: number | undefined,
+  now: () => Date,
+): Promise<string> {
+  if (binding.provider !== "local" || !binding.path || !binding.signing_key) {
+    throw new TypeError("storage binding is not configured for local storage");
+  }
+  const expires =
+    Math.floor(now().getTime() / 1000) +
+    validateExpires(expiresInSeconds ?? DEFAULT_EXPIRES_SECONDS);
+  const encodedKey = encodeObjectKey(key);
+  const storagePath = binding.path;
+  const signingKey = binding.signing_key;
+  const payload = `${operation}\n${storagePath}\n${encodedKey}\n${expires}`;
+  return hmacHex(utf8(signingKey), payload).then((token) => {
+    return `/_tako/storage/${operation}/${encodeURIComponent(storagePath)}/${encodedKey}?expires=${expires}&token=${token}`;
+  });
 }
 
 function encodeObjectKey(key: string): string {

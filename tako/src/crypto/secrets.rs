@@ -652,7 +652,7 @@ mod tests {
                     env_name.to_string(),
                     serde_json::json!({
                         "key_id": key_id,
-                        "secrets": secrets_map
+                        "app": secrets_map
                     }),
                 );
             }

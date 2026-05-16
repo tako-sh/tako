@@ -362,6 +362,7 @@ impl ServerState {
         let internal_socket = self.workflows.socket_path();
 
         let secrets = self.state_store.get_secrets(app_name).unwrap_or_default();
+        let storages = self.state_store.get_storages(app_name).unwrap_or_default();
 
         let app = app_name.to_string();
         let app_for_spec = app.clone();
@@ -381,6 +382,7 @@ impl ServerState {
                     &worker_cwd,
                     worker_env,
                     secrets,
+                    storages,
                 )
             })
             .await;

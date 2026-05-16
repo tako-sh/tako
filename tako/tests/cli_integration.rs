@@ -1251,7 +1251,7 @@ main = "index.ts"
 
         let raw = fs::read_to_string(&secrets_path).expect("read secrets file");
         let parsed: serde_json::Value = serde_json::from_str(&raw).expect("parse secrets json");
-        let stored = parsed["production"]["secrets"]["API_KEY"]
+        let stored = parsed["production"]["app"]["API_KEY"]
             .as_str()
             .expect("stored API_KEY value");
         assert!(!stored.is_empty(), "stored value should not be empty");
@@ -1313,7 +1313,7 @@ main = "index.ts"
                 r#"{{
   "production": {{
     "key_id": "{key_id}",
-    "secrets": {{}}
+    "app": {{}}
   }}
 }}"#
             ),
@@ -1378,7 +1378,7 @@ main = "index.ts"
                 r#"{{
   "production": {{
     "key_id": "{key_id}",
-    "secrets": {{}}
+    "app": {{}}
   }}
 }}"#
             ),

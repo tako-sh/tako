@@ -58,6 +58,10 @@ pub struct Config {
     #[serde(default)]
     pub envs: HashMap<String, EnvConfig>,
 
+    /// [storages.*] sections - reusable storage resource configurations.
+    #[serde(default)]
+    pub storages: HashMap<String, StorageResourceConfig>,
+
     /// Release command run once on the deploy leader server during the "Preparing"
     /// phase, before any rolling update starts (e.g. `"bun run db:migrate"`).
     /// Can be overridden per environment via `[envs.<name>].release`.
@@ -139,6 +143,13 @@ pub struct EnvConfig {
     #[serde(default)]
     pub servers: Vec<String>,
 
+    /// Storage bindings assigned to this environment.
+    ///
+    /// Key = app binding name exposed as `tako.storages.<key>`.
+    /// Value = backing storage resource name from `[storages.<value>]`.
+    #[serde(default)]
+    pub storages: HashMap<String, String>,
+
     /// Idle timeout in seconds (300 = 5 minutes).
     #[serde(default = "default_idle_timeout")]
     pub idle_timeout: u32,
@@ -146,6 +157,40 @@ pub struct EnvConfig {
     /// Per-environment release command override. An empty string explicitly
     /// clears the top-level `release` command for this environment.
     pub release: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct StorageResourceConfig {
+    #[serde(default = "default_storage_provider")]
+    pub provider: tako_core::StorageProvider,
+    #[serde(default)]
+    pub bucket: Option<String>,
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    #[serde(default)]
+    pub region: Option<String>,
+    #[serde(default)]
+    pub force_path_style: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_base_url: Option<String>,
+}
+
+impl Default for StorageResourceConfig {
+    fn default() -> Self {
+        Self {
+            provider: default_storage_provider(),
+            bucket: None,
+            endpoint: None,
+            region: None,
+            force_path_style: false,
+            public_base_url: None,
+        }
+    }
+}
+
+fn default_storage_provider() -> tako_core::StorageProvider {
+    tako_core::StorageProvider::Local
 }
 
 pub(super) fn default_idle_timeout() -> u32 {

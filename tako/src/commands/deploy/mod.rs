@@ -21,7 +21,9 @@ use crate::commands::project_context;
 use crate::config::{SecretsStore, ServerEntry, ServerTarget, ServersToml, TakoToml};
 use crate::output;
 use crate::ssh::SshClient;
-use crate::validation::{validate_full_config, validate_secrets_for_deployment};
+use crate::validation::{
+    validate_full_config, validate_secrets_for_deployment, validate_storages_for_deployment,
+};
 use tracing::Instrument;
 
 use artifacts::prepare_build_phase;
@@ -105,7 +107,6 @@ struct ValidationResult {
     tako_config: TakoToml,
     servers: ServersToml,
     secrets: SecretsStore,
-    storages: crate::config::StoragesStore,
     env: String,
     warnings: Vec<String>,
 }
@@ -193,8 +194,6 @@ async fn run_async(
                 TakoToml::load_from_file(&context.config_path).map_err(|e| e.to_string())?;
             let servers = ServersToml::load().map_err(|e| e.to_string())?;
             let secrets = SecretsStore::load_from_dir(&project_dir).map_err(|e| e.to_string())?;
-            let storages = crate::config::StoragesStore::load_from_dir(&project_dir)
-                .map_err(|e| e.to_string())?;
 
             let env = resolve_deploy_environment(requested_env, &tako_config)?;
 
@@ -220,7 +219,6 @@ async fn run_async(
                 tako_config,
                 servers,
                 secrets,
-                storages,
                 env,
                 warnings,
             })
@@ -232,7 +230,6 @@ async fn run_async(
         tako_config,
         mut servers,
         secrets,
-        storages,
         env,
         warnings,
     } = validation;
@@ -307,6 +304,15 @@ async fn run_async(
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
     tracing::debug!("{}", format_servers_summary(&server_names));
 
+    let storage_result =
+        validate_storages_for_deployment(&tako_config, &secrets, &env, server_names.len());
+    if storage_result.has_errors() {
+        return Err(format!("Storage errors:\n  {}", storage_result.errors.join("\n  ")).into());
+    }
+    for warning in storage_result.warnings {
+        output::warning(&format!("Validation: {}", warning));
+    }
+
     let use_unified_js_target_process =
         should_use_unified_js_target_process(preflight_runtime_adapter.id());
     if let Some(server_targets_summary) =
@@ -366,7 +372,6 @@ async fn run_async(
         env.clone(),
         tako_config.clone(),
         secrets.clone(),
-        storages.clone(),
         preflight_preset_ref.clone(),
         preflight_runtime_adapter,
         server_targets.clone(),
