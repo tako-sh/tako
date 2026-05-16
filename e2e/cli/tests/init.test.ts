@@ -76,7 +76,7 @@ describe("tako init --ci", () => {
 });
 
 describe("tako init (interactive wizard)", () => {
-  test("overwrite confirmation keeps the chevron marker", async () => {
+  test("overwrite confirmation keeps the input marker aligned under the label", async () => {
     await writeFile(join(tempDir, "package.json"), JSON.stringify({ name: "wizard-app" }));
     await writeFile(join(tempDir, "tako.toml"), 'name = "existing"\n');
 
@@ -103,7 +103,7 @@ describe("tako init (interactive wizard)", () => {
     expect(cursor.x).toBeGreaterThan(0);
 
     const activeArrowCol = findCharInRow(term, valueRow, "›");
-    expect(activeArrowCol).toBe(0);
+    expect(activeArrowCol).toBe(2);
     if (activeArrowCol !== null) {
       const cell = term.cell(valueRow, activeArrowCol);
       expect(cell).not.toBeNull();
@@ -120,15 +120,10 @@ describe("tako init (interactive wizard)", () => {
     expect(labelRow).not.toBeNull();
     expect(term.row(labelRow!)).not.toContain("[y/N]");
     expect(valueRow).toBe(labelRow! + 1);
-    expect(term.row(valueRow!)).toContain("› no");
+    expect(term.row(valueRow!)).toBe("  no");
 
     const doneArrowCol = findCharInRow(term, valueRow!, "›");
-    expect(doneArrowCol).toBe(0);
-    if (doneArrowCol !== null) {
-      const cell = term.cell(valueRow!, doneArrowCol);
-      expect(cell).not.toBeNull();
-      expect(cell!.isDim).toBe(true);
-    }
+    expect(doneArrowCol).toBeNull();
 
     await term.close();
   });

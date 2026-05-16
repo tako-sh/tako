@@ -102,7 +102,7 @@ describe("init wizard interaction", () => {
     expect(term.row(valueRow!)).toContain("› prompt-layout-app");
 
     const activeArrowCol = findCharInRow(term, valueRow!, "›");
-    expect(activeArrowCol).toBe(0);
+    expect(activeArrowCol).toBe(2);
     if (activeArrowCol !== null) {
       const cell = term.cell(valueRow!, activeArrowCol);
       expect(cell).not.toBeNull();
@@ -120,16 +120,11 @@ describe("init wizard interaction", () => {
     expect(labelRow).not.toBeNull();
     expect(warningRow).toBe(labelRow! + 1);
     expect(valueRow).toBe(warningRow! + 1);
-    expect(term.row(valueRow!)).toContain("› prompt-layout-app");
+    expect(term.row(valueRow!)).toBe("  prompt-layout-app");
     expect(term.screenText()).not.toContain("Application name   prompt-layout-app");
 
     const doneArrowCol = findCharInRow(term, valueRow!, "›");
-    expect(doneArrowCol).toBe(0);
-    if (doneArrowCol !== null) {
-      const cell = term.cell(valueRow!, doneArrowCol);
-      expect(cell).not.toBeNull();
-      expect(cell!.isDim).toBe(true);
-    }
+    expect(doneArrowCol).toBeNull();
 
     await term.close();
   });
