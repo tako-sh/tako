@@ -25,7 +25,7 @@ Pretty output renders — persistent task lists, spinners where still applicable
 - Persistent task lists for multi-step interactive flows
 - Show the whole known plan up front when the command already knows future work
 - Waiting tasks use muted `○`
-- Single-line state transitions: spinner → result (double space before elapsed)
+- Single-line state transitions: spinner → result (single space before elapsed)
 - `✔` success, `✘` failure, `!` warnings, `-` bullets
 - Section headings in bold+accent (2-space indent in interactive mode)
 - Prompts use diamond style; vanish after the user answers
@@ -86,10 +86,10 @@ deploy task tree also renders its success summary flush-left for the same reason
 ## Elapsed Times
 
 Pretty output does not use parentheses for elapsed times. The `format_elapsed()` function returns `"3s"`, `"42s"`,
-`"1m10s"`. Completion lines use double space before elapsed:
-`✔ Deploy complete  12s`.
+`"1m10s"`. Completion lines use a single space before elapsed:
+`✔ Deploy complete 12s`.
 
-When showing size + time: `✔ Downloaded  3s, 72 MB` (comma separator, no parens).
+When showing size + time: `✔ Downloaded 3s, 72 MB` (comma separator, no parens).
 
 TRACE timing records use `format_elapsed_trace()`, which always returns a value and wraps it in parentheses:
 `TRACE SSH connect (250ms)`, `TRACE Upload artifact (4.1s)`.
@@ -108,7 +108,7 @@ Use `output::is_pretty()` to check whether normal pretty UI is active. Pretty-on
 | `line(message)` | Default-color text (no indent — for isolated summary blocks) | no-op |
 | `bullet(message)` | `  - message` | no-op |
 | `success(message)` | `✔ message` | `tracing::info!` |
-| `success_with_elapsed(message, elapsed)` | `✔ message  elapsed` | `tracing::info!` |
+| `success_with_elapsed(message, elapsed)` | `✔ message elapsed` | `tracing::info!` |
 | `warning(message)` | `! message` | no-op |
 | `error(message)` | Wrapped red error text via `error_block()` | `tracing::error!` |
 | `error_block(message)` | Wrapped red error text with no prompt chrome | `tracing::error!` |
@@ -137,7 +137,7 @@ Spinners are pure UI: they render animation in pretty mode and are silent in ver
 
 The only exception is errors: spinner helpers that surface a failure still emit `tracing::error!` so failures remain visible in verbose/CI.
 
-**`with_spinner(loading, success, work)`** — Shows spinner if >1s. On success: `✔ success  elapsed`.
+**`with_spinner(loading, success, work)`** — Shows spinner if >1s. On success: `✔ success elapsed`.
 
 ```rust
 let _t = output::timed("Validate config");
@@ -145,7 +145,7 @@ output::with_spinner("Validating", "Validated", || {
     validate()?;
     Ok(())
 })?;
-// Normal: ⠋ Validating... → ✔ Validated  1.2s
+// Normal: ⠋ Validating... → ✔ Validated 1.2s
 // Verbose: TRACE Validate config (1.2s)  (single record, action was <2s)
 ```
 
@@ -164,7 +164,7 @@ let _t = output::timed("Build phase");
 let phase = output::PhaseSpinner::start("Building…");
 // ... build steps ...
 phase.finish("Build complete");
-// Normal: ⠋ Building…  5s → ✔ Build complete  5.2s
+// Normal: ⠋ Building… 5s → ✔ Build complete 5.2s
 // Verbose: DEBUG Build phase…     (deferred start at 2s)
 //          TRACE Build phase (5.2s) (end record on drop)
 ```
@@ -401,7 +401,7 @@ output::bullet(&format!("Revision {} deployed", output::strong(rev)));
 Every spinner transitions from loading to result:
 ```
 ⠋ Connecting…        → ✔ Connected
-⠋ Building…  5s      → ✔ Build complete  5.2s
+⠋ Building… 5s       → ✔ Build complete 5.2s
 ```
 
 ### 3. Phase flow for deploy-style commands

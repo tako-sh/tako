@@ -27,7 +27,7 @@ const BAR_WIDTH: usize = 16;
 /// On completion:
 ///
 /// ```text
-/// ✔ Download complete  12s, 72 MB
+/// ✔ Download complete 12s, 72 MB
 /// ```
 pub struct TransferProgress {
     pb: Option<ProgressBar>,
@@ -90,7 +90,7 @@ impl TransferProgress {
         }
     }
 
-    /// Finish with success — shows `✔ <success_msg> (<size>, <time>)`.
+    /// Finish with success — shows `✔ <success_msg> <time>, <size>`.
     ///
     /// In pretty mode the progress bar is cleared so only the single summary
     /// line remains in scrollback.
@@ -101,25 +101,8 @@ impl TransferProgress {
         {
             return;
         }
-        let check = theme_success("✔");
         let elapsed = self.start.elapsed();
-        let mut details = Vec::new();
-        let time = format_elapsed_inline(elapsed);
-        if !time.is_empty() {
-            details.push(time);
-        }
-        if self.total > 0 {
-            details.push(format_size(self.total));
-        }
-        let line = if details.is_empty() {
-            format!("{check} {}", theme_fg(&self.success_msg))
-        } else {
-            format!(
-                "{check} {}  {}",
-                theme_fg(&self.success_msg),
-                theme_muted(details.join(", "))
-            )
-        };
+        let line = format_transfer_success_line(&self.success_msg, self.total, elapsed);
 
         if let Some(ref pb) = self.pb {
             clear_active_progress_bar();
@@ -289,6 +272,28 @@ fn format_transfer_amount(bytes: u64, total: u64) -> String {
     }
 }
 
+fn format_transfer_success_line(success_msg: &str, total: u64, elapsed: Duration) -> String {
+    let check = theme_success("✔");
+    let mut details = Vec::new();
+    let time = format_elapsed_inline(elapsed);
+    if !time.is_empty() {
+        details.push(time);
+    }
+    if total > 0 {
+        details.push(format_size(total));
+    }
+
+    if details.is_empty() {
+        format!("{check} {}", theme_fg(success_msg))
+    } else {
+        format!(
+            "{check} {} {}",
+            theme_fg(success_msg),
+            theme_muted(details.join(", "))
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -305,6 +310,18 @@ mod tests {
         assert_eq!(
             format_transfer_compact_detail(512, 1024, Duration::from_secs(2)),
             "50%, (512 bytes/1.00 KB)"
+        );
+    }
+
+    #[test]
+    fn transfer_success_line_uses_single_space_before_elapsed() {
+        assert_eq!(
+            format_transfer_success_line(
+                "Download complete",
+                72 * 1024 * 1024,
+                Duration::from_secs(12)
+            ),
+            "✔ Download complete 12s, 72.00 MB"
         );
     }
 }

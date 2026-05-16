@@ -16,8 +16,8 @@ use super::cursor::{
     clear_active_progress_bar, hide_cursor, register_active_progress_bar, show_cursor,
 };
 use super::{
-    ACCENT, PHASE_PB, bold, emit, error_block, is_interactive, is_pretty, muted_elapsed,
-    should_colorize, theme_error, theme_fg, theme_success,
+    ACCENT, PHASE_PB, bold, emit, error_block, format_elapsed_suffix, format_success_elapsed_line,
+    is_interactive, is_pretty, should_colorize, theme_error, theme_fg,
 };
 
 // ---------------------------------------------------------------------------
@@ -57,25 +57,22 @@ fn print_ok(success_msg: &str, elapsed: Duration) {
     if !is_pretty() {
         return;
     }
-    let check = theme_success("✔");
-    let time = muted_elapsed(elapsed);
-    let line = if time.is_empty() {
-        format!("{check} {}", theme_fg(success_msg))
-    } else {
-        format!("{check} {}  {time}", theme_fg(success_msg))
-    };
-    emit(&line);
+    emit(&format_success_elapsed_line(success_msg, elapsed));
+}
+
+/// Emit `✘ {label}` as a standalone failure indicator line, optionally with elapsed time.
+fn format_error_label_line(label: &str, elapsed: Option<Duration>) -> String {
+    let check = bold(&theme_error("✘"));
+    let time_str = elapsed
+        .map(format_elapsed_suffix)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_default();
+    format!("{check} {}{time_str}", theme_fg(label))
 }
 
 /// Emit `✘ {label}` as a standalone failure indicator line, optionally with elapsed time.
 fn emit_error_label(label: &str, elapsed: Option<Duration>) {
-    let check = bold(&theme_error("✘"));
-    let time_str = elapsed
-        .map(muted_elapsed)
-        .filter(|s| !s.is_empty())
-        .map(|t| format!("  {t}"))
-        .unwrap_or_default();
-    emit(&format!("{check} {}{time_str}", theme_fg(label)));
+    emit(&format_error_label_line(label, elapsed));
 }
 
 fn print_err(loading: &str) {
@@ -100,14 +97,7 @@ pub(super) fn finish_spinner_ok(pb: &ProgressBar, success_msg: &str, elapsed: Du
     clear_active_progress_bar();
     pb.finish_and_clear();
     show_cursor();
-    let check = theme_success("✔");
-    let time = muted_elapsed(elapsed);
-    let line = if time.is_empty() {
-        format!("{check} {}", theme_fg(success_msg))
-    } else {
-        format!("{check} {}  {time}", theme_fg(success_msg))
-    };
-    emit(&line);
+    emit(&format_success_elapsed_line(success_msg, elapsed));
 }
 
 fn finish_spinner_err(pb: &ProgressBar, loading: &str, elapsed: Duration) {
@@ -151,7 +141,7 @@ where
 /// Spinner that shows only if work takes >= 1s, then clears on completion.
 ///
 /// - Fast (<1s):  prints result directly, no spinner, no elapsed
-/// - Slow (≥1s):  `⠋ {loading}…` → `{success} (elapsed)` or `✘ {loading} failed`
+/// - Slow (≥1s):  `⠋ {loading}…` → `✔ {success} elapsed` or `✘ {loading} elapsed`
 ///
 /// In verbose/CI mode: silent on success — the caller's `output::timed()`
 /// owns action tracing. Errors still emit.
@@ -345,5 +335,13 @@ mod tests {
         let value: Result<usize, String> =
             rt.block_on(with_spinner_async("Working", "Done", async { Ok(42usize) }));
         assert_eq!(value.unwrap(), 42);
+    }
+
+    #[test]
+    fn error_label_line_uses_single_space_before_elapsed() {
+        assert_eq!(
+            format_error_label_line("Connection failed", Some(Duration::from_secs(12))),
+            "✘ Connection failed 12s"
+        );
     }
 }

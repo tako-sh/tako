@@ -200,6 +200,24 @@ pub fn muted_elapsed(duration: Duration) -> String {
     if s.is_empty() { s } else { theme_muted(&s) }
 }
 
+fn format_elapsed_suffix(elapsed: Duration) -> String {
+    let elapsed = muted_elapsed(elapsed);
+    if elapsed.is_empty() {
+        String::new()
+    } else {
+        format!(" {elapsed}")
+    }
+}
+
+fn format_success_elapsed_line(message: &str, elapsed: Duration) -> String {
+    format!(
+        "{} {}{}",
+        theme_success("✔"),
+        theme_fg(message),
+        format_elapsed_suffix(elapsed)
+    )
+}
+
 /// Format a muted progress counter, e.g. `"[2/5]"` rendered in muted style.
 pub fn muted_progress(done: usize, total: usize) -> String {
     theme_muted(format!("[{done}/{total}]"))
@@ -419,17 +437,7 @@ pub fn success(message: &str) {
 pub fn success_with_elapsed(message: &str, elapsed: Duration) {
     let time = format_elapsed(elapsed);
     if is_pretty() {
-        let line = if time.is_empty() {
-            format!("{} {}", theme_success("✔"), theme_fg(message))
-        } else {
-            format!(
-                "{} {}  {}",
-                theme_success("✔"),
-                theme_fg(message),
-                muted_elapsed(elapsed)
-            )
-        };
-        emit(&line);
+        emit(&format_success_elapsed_line(message, elapsed));
     } else if time.is_empty() {
         tracing::info!("{}", message);
     } else {

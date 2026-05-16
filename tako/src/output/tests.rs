@@ -111,3 +111,19 @@ fn format_elapsed_always_hides_near_zero() {
     assert_eq!(format_elapsed_always(Duration::from_millis(0)), "");
     assert_eq!(format_elapsed_always(Duration::from_millis(49)), "");
 }
+
+#[test]
+fn format_success_elapsed_line_uses_single_space_before_elapsed() {
+    assert_eq!(
+        format_success_elapsed_line("Connection successful", Duration::from_secs(12)),
+        "✔ Connection successful 12s"
+    );
+}
+
+#[test]
+fn format_success_elapsed_line_omits_fast_elapsed() {
+    assert_eq!(
+        format_success_elapsed_line("Connection successful", Duration::from_millis(50)),
+        "✔ Connection successful"
+    );
+}
