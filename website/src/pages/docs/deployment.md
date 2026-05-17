@@ -8,52 +8,39 @@ description: "Guide to deploying apps with Tako on your own servers, including s
 
 # Deployment
 
-Tako deploys locally built artifacts to servers you control. The CLI builds, packages, uploads, and orchestrates. `tako-server` extracts the release, installs production dependencies, runs optional release commands, manages TLS, starts app processes, and rolls traffic forward.
+Tako deploys locally built apps to servers you control. The CLI builds the release, validates app configuration, sends the artifact over the signed management path, and asks `tako-server` to prepare and roll the new release into traffic.
 
 ## Server Setup
 
-Bootstrap `tako-server` on each host:
+Install `tako-server` on each host:
 
 ```bash
 sudo sh -c "$(curl -fsSL https://tako.sh/install-server.sh)"
 ```
 
-The host installer installs the binary, service users, maintenance helpers, service definition, private Tailscale management binding, and starts `tako-server` by default. `tako servers add` verifies SSH and signed management access, records target metadata, and stores the server locally.
+The installer creates the `tako` service user, the `tako-app` runtime user, `/opt/tako`, `/var/run/tako`, service-manager units, maintenance helpers, private Tailscale remote management, and the default public HTTP/HTTPS listeners. The server starts after install when Tailscale is available.
 
-Custom public proxy ports can be passed during bootstrap:
-
-```bash
-curl -fsSL https://tako.sh/install-server.sh | sudo sh -s -- --http-port 8080 --https-port 8443
-```
-
-Then register the host locally:
+Register the host locally:
 
 ```bash
 tako servers add host.example.com --name la
 ```
 
-If the server is missing or needs repair:
+If the host is not installed yet or needs repair:
 
 ```bash
 tako servers add ubuntu@host.example.com --install --name la
 ```
 
-The installer:
+`tako servers add` records server metadata and listener ports. It does not ask for app routes, DNS, storage, or source-IP settings; those are app-environment settings and are applied during deploy.
 
-- creates `tako` for SSH and the server service
-- creates `tako-app` for app and worker processes
-- installs `tako-server` to `/usr/local/bin/tako-server`
-- creates `/opt/tako` and `/var/run/tako`
-- prepares those roots without recursively traversing existing app releases
-- installs systemd or OpenRC service files and starts the service by default
-- installs libvips for image optimization
-- configures private Tailscale remote management during install
-- starts the service with default listener settings
-- enrolls the SSH key for signed management
+Custom public ports are set at install time:
 
-Service start requires Tailscale for private control traffic. If no Tailscale IP is available during install, the installer fails with a remote-management hint. Set `TAKO_RESTART_SERVICE=0` only for bootstrap-only image builds or refreshes that should not touch the running service.
+```bash
+curl -fsSL https://tako.sh/install-server.sh | sudo sh -s -- --http-port 8080 --https-port 8443
+```
 
-Cloudflare source-IP handling is automatic. When a request comes from Cloudflare IP ranges and includes `CF-Connecting-IP`, Tako uses that header; otherwise it uses the direct peer IP. Set `source_ip = "cloudflare-proxy"` under an environment for strict Cloudflare-only traffic, `source_ip = "trusted-proxy"` for strict nginx/HAProxy-style forwarded headers from loopback or configured trusted proxy CIDRs, or `source_ip = "direct"` to ignore proxy headers. Tako keeps Cloudflare IP ranges in memory, starts from bundled ranges plus a last-known-good disk cache, and refreshes them daily while running when any route uses `auto` or `cloudflare-proxy`.
+Service start requires a private Tailscale IP for remote management. For image builds or refreshes that should not touch the running service, set `TAKO_RESTART_SERVICE=0`.
 
 ## Server Inventory
 
@@ -71,32 +58,34 @@ arch = "x86_64"
 libc = "glibc"
 ```
 
-`tako servers add` detects and stores target metadata (`arch`, `libc`) and public proxy ports. Deploy requires valid metadata for every selected server.
+Deploy requires valid metadata for every selected server. Server names use the same shape as app names: lowercase letters, numbers, hyphens, start with a lowercase letter, end with a letter or number, and at most 63 characters.
 
-Server names use the same validation rules as app names: lowercase letters, numbers, hyphens, start with a lowercase letter, end with a letter or number, and at most 63 characters.
+## App Environment
 
-## Configure Environments
-
-Map project environments to server names in `tako.toml`:
+Map a deployable environment to route patterns and server names in `tako.toml`:
 
 ```toml
 name = "dashboard"
 
 [envs.production]
-route = "dashboard.example.com"
+routes = ["dashboard.example.com", "*.dashboard.example.com"]
 servers = ["la", "nyc"]
+source_ip = "cloudflare-proxy"
 idle_timeout = 300
 
 [envs.staging]
-routes = ["staging.example.com", "example.com/staging/*"]
+route = "staging.example.com"
 servers = ["staging"]
+source_ip = "direct"
 ```
 
-The deployment identity on each server is `{app}/{env}`. The same physical server can host multiple environments for the same app because each environment gets a separate identity and filesystem path.
+The remote deployment identity is `{app}/{env}`. The same physical server can host multiple environments for the same app because each environment gets a separate identity and filesystem path.
 
 `development` is reserved for `tako dev` and cannot be deployed.
 
-## Deploy
+## Deploy Flow
+
+Run:
 
 ```bash
 tako deploy
@@ -104,16 +93,17 @@ tako deploy --env staging
 tako deploy --env production --yes
 ```
 
-`--env` defaults to `production`. Interactive production deploys ask for confirmation only when the environment is implicit. Passing `--env production` or `--yes` makes the target explicit and skips the prompt.
+`--env` defaults to `production`. Interactive production deploys ask for confirmation only when the environment is implicit. Passing `--env production` or `--yes` makes the target explicit.
 
-Deploy requires:
+Before build or upload, deploy validates:
 
-- a declared target environment
-- `route` or `routes`
-- valid server names
-- target metadata for every server
-- local secret keys for required secrets
-- enough free disk space under `/opt/tako`
+- the selected environment exists
+- routes are present
+- all server names exist and have target metadata
+- required app secrets can be decrypted
+- storage credentials can be decrypted when configured
+- DNS credentials exist when wildcard routes require DNS-01
+- expiring or expired credentials are surfaced before work starts
 
 If `production` has no server mapping and exactly one global server exists, interactive deploy can write that server into `[envs.production].servers`.
 
@@ -139,25 +129,15 @@ Build stage precedence:
 3. runtime default
 4. no-op
 
-Built target artifacts are cached under `.tako/artifacts/`. Cache entries are verified by checksum and size before reuse, and invalid entries are rebuilt. Deploy prunes old cached target artifacts on a best-effort basis.
+Target artifacts are cached under `.tako/artifacts/`. Cache entries are verified by checksum and size before reuse, and invalid entries are rebuilt.
 
 ## Runtime Metadata
 
-`app.json` is the canonical runtime manifest in each release. It includes:
-
-- resolved runtime
-- resolved `main`
-- package manager
-- runtime version
-- non-secret environment variables
-- JS `app_root`
-- public image optimizer config
-- environment idle timeout
-- release metadata such as commit message and dirty state
+Each release contains `app.json`, the runtime manifest used by `tako-server`. It includes the resolved runtime, entrypoint, package manager, runtime version, non-secret environment variables, JS app root, image optimizer config, idle timeout, and release metadata.
 
 If `runtime_version` is set in `tako.toml`, deploy uses it directly. Otherwise, deploy runs `<runtime> --version` and falls back to `latest`.
 
-After extraction, `tako-server` runs the runtime plugin's production install command. It does not run app build steps on the server.
+After extraction, `tako-server` runs the runtime plugin's production install command. App build steps run locally, not on the server.
 
 ## Release Commands
 
@@ -177,7 +157,7 @@ Release command behavior:
 - cwd is the new release directory
 - command runs as `sh -c "<command>"`
 - env matches the new app instance env
-- secrets are injected as env vars for that one-shot command
+- secrets and storage bindings are injected for that run
 - timeout is 10 minutes
 
 If the command fails, deploy aborts everywhere, removes the new partial release directory, leaves `current` unchanged, and old instances keep serving.
@@ -204,24 +184,67 @@ X-Tako-Internal-Token: <instance-token>
 
 The SDK implements the status endpoint and echoes the token.
 
-If startup fails during a warm deploy, deploy fails. If a later cold start fails, users receive generic `502` or `504` responses while details go to the app log stream.
+If startup fails during a warm deploy, deploy fails. If a later cold start fails, users receive generic `502` or `504` responses while details go to app logs.
 
-## Scaling
+## Routes And TLS
 
-Desired instance count is stored on each server:
+Routes live under `[envs.<env>]`:
 
-```bash
-tako scale 2 --env production
-tako scale 0 --env production
+```toml
+[envs.production]
+routes = [
+  "example.com",
+  "*.example.com/admin/*",
+]
 ```
 
-`N > 0` keeps at least `N` healthy instances running. `0` enables scale-to-zero: deploy keeps one warm instance initially, then idle instances stop after `idle_timeout`. The next request wakes the app and waits for readiness.
+Tako issues certificates automatically:
 
-Scale settings survive server restarts, deploys, and rollbacks.
+- HTTP-01 for ordinary public hostnames
+- Cloudflare DNS-01 for wildcard routes
+- self-signed certs for local or private hostnames
+
+Cloudflare DNS credentials are configured separately from `tako.toml`:
+
+```bash
+tako dns configure --env production --expires-at "in 90 days"
+```
+
+The token must be able to read zones and edit DNS records for the zone. Tako encrypts it in `.tako/secrets.json` under the selected environment's DNS credentials. Deploy fails early when wildcard routes need a missing or expired token, and warns when the token expires within 30 days.
+
+When HTTPS uses a non-default public port, deploy summaries include that port and HTTP redirects target it.
+
+## Source IPs
+
+`source_ip` controls how the proxy decides the original client IP for an app environment:
+
+| Value              | Behavior                                                                                                                                                               |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| omitted or `auto`  | Use `CF-Connecting-IP` only for requests from Cloudflare IP ranges, then explicitly configured trusted proxy headers from trusted CIDRs, otherwise the direct peer IP. |
+| `cloudflare-proxy` | Require a Cloudflare peer and `CF-Connecting-IP`; reject non-Cloudflare requests with `403 Forbidden`.                                                                 |
+| `trusted-proxy`    | Require loopback or a configured trusted proxy CIDR plus a valid forwarded client IP; reject invalid requests with `403 Forbidden`.                                    |
+| `direct`           | Ignore proxy headers and use the TCP peer IP.                                                                                                                          |
+
+Use `cloudflare-proxy` when the route is intentionally behind Cloudflare. It is stricter than the default and protects the app if the firewall accidentally allows direct public traffic.
+
+Use `trusted-proxy` for nginx, HAProxy, or a load balancer in front of Tako. Server-level trusted proxy settings live in `/opt/tako/config.json`, not `tako.toml`:
+
+```json
+{
+  "trusted_proxy": {
+    "trusted_cidrs": ["127.0.0.1/32", "10.0.0.0/8"],
+    "client_ip_headers": ["x-forwarded-for", "forwarded"]
+  }
+}
+```
+
+Supported headers are `cf-connecting-ip`, `x-forwarded-for`, and `forwarded`. `proxy_protocol` also requires `trusted_cidrs`.
+
+Tako ships with bundled Cloudflare IP ranges, loads a last-known-good disk cache when available, keeps ranges in memory, and refreshes them daily while running when any app route uses `auto` or `cloudflare-proxy`.
 
 ## Secrets
 
-Local secrets are encrypted in `.tako/secrets.json`. Keys live outside the repo and can be exported/imported:
+Local app secrets are encrypted in `.tako/secrets.json`. Keys live outside the repo and can be exported or imported:
 
 ```bash
 tako secrets set DATABASE_URL --env production --expires-at "in 90 days" --sync
@@ -229,7 +252,7 @@ tako secrets key export --env production
 tako secrets key import --env production
 ```
 
-Each secret entry stores an encrypted `value` and can include plaintext `expires_at` metadata. Use `YYYY-MM-DD`, `in N days`, or a UTC timestamp when expiry is known; `in N days` normalizes to UTC midnight on the UTC date N days from now. Skip expiry, omit `--expires-at`, or pass `--expires-at never` when the expiry is unknown or the credential does not expire; Tako stores no `expires_at` field in that case. Deploy checks the selected environment's app secrets before build/deploy work starts, fails if any are expired, and warns when any expire within 30 days.
+Each secret entry stores an encrypted value and optional plaintext `expires_at` metadata. Use `YYYY-MM-DD`, `in N days`, or a UTC timestamp when expiry is known. Use `--expires-at never` or omit the flag when it is unknown.
 
 Deploy compares a server secrets hash before sending secrets. If hashes match, secrets are omitted and the server keeps its current encrypted values. If they differ, deploy sends decrypted secrets over the signed management path and `tako-server` stores them encrypted in SQLite.
 
@@ -250,9 +273,11 @@ tako storages add uploads \
   --expires-at "in 90 days"
 ```
 
-Storage bindings and non-secret provider metadata live in `tako.toml`; S3 credentials are encrypted in `.tako/secrets.json` under the selected environment's `storages` map with optional `expires_at` metadata. R2 uses `provider = "s3"` with the R2 S3-compatible endpoint. Deploy fails early if selected S3 credentials are expired, warns if they expire within 30 days, then decrypts current credentials locally, sends runtime bindings over the signed management path, and `tako-server` stores them encrypted in SQLite.
+Storage bindings and non-secret provider metadata live in `tako.toml`. S3 credentials are encrypted in `.tako/secrets.json` under the selected environment's `storages` map with optional `expires_at` metadata. R2 uses `provider = "s3"` with the R2 S3-compatible endpoint.
 
-Fresh HTTP instances and workflow workers receive storage bindings through fd 3 alongside secrets. In JavaScript apps, use `tako.storages.<name>.createDownloadUrl`, `createUploadUrl`, `createImageUrl`, and `createImageSrcSet`.
+Deploy fails early if selected S3 credentials are expired, warns if they expire within 30 days, sends runtime bindings over the signed management path, and stores server-side bindings encrypted in SQLite.
+
+Fresh HTTP instances and workflow workers receive storage bindings through fd 3 alongside secrets.
 
 ## Images
 
@@ -263,48 +288,41 @@ Public optimized images are configured in `tako.toml`:
 remote_patterns = ["https://cdn.example.com/uploads/**"]
 ```
 
-The optimizer endpoint is `/_tako/image?src=...&w=...`. Local public paths are available by default. Remote URLs must match the configured allowlist, and widths, qualities, and formats must match the configured guardrails. In JavaScript apps, use `imageUrl` for one optimized URL or `imageSrcSet` for plain `<img>` responsive sources.
+The optimizer endpoint is `/_tako/image?src=...&w=...`. Local public paths are available by default. Remote URLs must match the configured allowlist, and widths, qualities, and formats must match the configured guardrails.
 
-## TLS And Routes
+In JavaScript apps, use `imageUrl` for one optimized URL or `imageSrcSet` for plain `<img>` responsive sources.
 
-Routes live under `[envs.<env>]`:
+## Scaling
 
-```toml
-[envs.production]
-routes = [
-  "example.com",
-  "*.example.com/admin/*",
-]
-```
-
-Tako issues certificates automatically:
-
-- HTTP-01 for ordinary hostnames
-- Cloudflare DNS-01 for wildcard routes after configuring the app environment with `tako dns configure --env <env>`
-- self-signed certs for local/private hostnames
-
-The Cloudflare token must be able to read zones and edit DNS records for the zone. `tako dns configure` optionally asks when the token expires, encrypts the token in `.tako/secrets.json`, and does not edit `tako.toml`. Deploy fails early if wildcard routes need DNS credentials and the saved token is expired, and warns if the token expires within 30 days.
-
-If a wildcard route is deployed without Cloudflare DNS-01 credentials, deploy fails and tells you to run:
+Desired instance count is stored on each server:
 
 ```bash
-tako dns configure --env production --expires-at "in 90 days"
+tako scale 2 --env production
+tako scale 0 --env production
 ```
 
-When HTTPS uses a non-default public port, deploy summaries include that port and HTTP redirects target it.
+`N > 0` keeps at least `N` healthy instances running. `0` enables scale-to-zero: deploy keeps one warm instance initially, then idle instances stop after `idle_timeout`. The next request wakes the app and waits for readiness.
 
-## Logs And Status
+Scale settings survive server restarts, deploys, and rollbacks.
+
+## Logs And Releases
 
 ```bash
-tako servers status
 tako logs --env production
 tako logs --env production --tail
 tako releases list --env production
+tako releases rollback <release-id> --env production
 ```
 
-`tako servers status` uses signed HTTP remote management and can run from any directory. Logs include app stdout/stderr plus app-scoped Tako diagnostics.
+Logs include app stdout/stderr plus app-scoped Tako diagnostics. Rollback uses the same rolling update path as deploy.
 
 ## Server Operations
+
+Check all servers from any directory:
+
+```bash
+tako servers status
+```
 
 Reload without downtime:
 

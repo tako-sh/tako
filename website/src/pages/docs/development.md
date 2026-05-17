@@ -14,10 +14,16 @@ description: "Learn how tako dev provides trusted HTTPS, custom .test domains, h
 tako dev
 ```
 
-Default URL:
+Default URL on macOS:
 
 ```text
 https://{app}.test/
+```
+
+On platforms where privileged local port setup is not available, the HTTPS listener is:
+
+```text
+https://{app}.test:47831/
 ```
 
 The app name comes from `name` in `tako.toml`, or from the selected config file's parent directory when `name` is omitted.
@@ -37,12 +43,6 @@ Running `tako dev` again for the same config attaches to the existing session wh
 When running from a source checkout, Tako prefers repo-local `target/debug` or `target/release` dev binaries. Installed CLIs use bundled or PATH binaries.
 
 ## Routes
-
-Default managed route:
-
-```text
-https://{app}.test/
-```
 
 Configure development routes in `tako.toml`:
 
@@ -78,9 +78,7 @@ Use variants when you need two local copies of the same app shape reachable at d
 
 ## Platform Setup
 
-### macOS
-
-Tako uses:
+On macOS, Tako uses:
 
 - a dedicated loopback alias: `127.77.0.1`
 - `/etc/resolver/test` and `/etc/resolver/tako.test`
@@ -95,11 +93,7 @@ The dev proxy forwards:
 127.77.0.1:80  -> 127.0.0.1:47830
 ```
 
-Tako installs and repairs the proxy when needed. It explains the change before prompting for sudo.
-
-### Linux
-
-Tako uses:
+On Linux, Tako uses:
 
 - the same loopback alias: `127.77.0.1`
 - iptables redirects for `443 -> 47831`, `80 -> 47830`, and `53 -> 53535`
@@ -107,6 +101,8 @@ Tako uses:
 - a local root CA trusted by the system store
 
 On NixOS, Tako prints a `configuration.nix` snippet instead of applying imperative setup.
+
+Tako installs or repairs platform setup when needed. It explains privileged changes before prompting for sudo.
 
 ## Local CA
 
@@ -246,9 +242,9 @@ import { tako } from "tako.sh";
 const db = tako.secrets.DATABASE_URL;
 ```
 
-Secret entries can carry expiry metadata for deployment checks; deploy fails on expired secrets and warns when they expire within 30 days. Dev exposes configured secret values so local work keeps using the same SDK shape as production.
-
 The fd-3 bootstrap envelope is present in dev even when no secrets exist. It carries internal auth, the secrets object, and storage bindings.
+
+Secret entries can carry expiry metadata for deployment checks; deploy fails on expired secrets and warns when they expire within 30 days. Dev exposes configured secret values so local work keeps the same SDK shape as production.
 
 ## Storage In Dev
 
@@ -262,7 +258,7 @@ const uploadUrl = await tako.storages.uploads.createUploadUrl("avatars/u_123.png
 });
 ```
 
-Development uses the `development` storage bindings when present. A development binding can reference an undeclared resource; Tako treats it as local storage with a Tako-chosen location under the app data directory. If no development bindings exist, `tako generate` falls back to the union of storage names from other environments for type generation.
+Development can reference an undeclared storage resource. Tako treats it as local storage with a Tako-chosen location under the app data directory. If no development bindings exist, `tako generate` falls back to the union of storage names from other environments for type generation.
 
 ## Images In Dev
 
@@ -272,7 +268,9 @@ Public optimized images are served at:
 /_tako/image?src=/assets/hero.jpg&w=1200
 ```
 
-Local image sources are allowed by default. Remote image sources must match `[images].remote_patterns` in `tako.toml`; protocol-less remote patterns allow both `http` and `https`. Use `imageUrl` for one optimized URL or `imageSrcSet` for plain `<img>` responsive sources.
+Local image sources are allowed by default. Remote image sources must match `[images].remote_patterns` in `tako.toml`; protocol-less remote patterns allow both `http` and `https`.
+
+Use `imageUrl` for one optimized URL or `imageSrcSet` for plain `<img>` responsive sources.
 
 ## Channels In Dev
 
@@ -304,7 +302,7 @@ Workers are scale-to-zero with a short idle timeout. They start on enqueue or cr
 
 If a worker exits non-zero before claiming a run, enqueue fails loudly for a short window with the worker error. Clean idle exits do not mark the worker unhealthy.
 
-## Stopping And Listing Apps
+## Stop And Inspect
 
 ```bash
 tako dev list
@@ -313,11 +311,7 @@ tako dev stop my-app
 tako dev stop --all
 ```
 
-`tako dev list` has alias `tako dev ls`.
-
-Without a name, `tako dev stop` stops the app for the selected config file.
-
-## Diagnostics
+`tako dev list` has alias `tako dev ls`. Without a name, `tako dev stop` stops the app for the selected config file.
 
 Use:
 
@@ -325,4 +319,4 @@ Use:
 tako doctor
 ```
 
-Doctor reports local daemon, DNS, proxy, loopback, and platform setup. If the daemon is not running, it reports that state and exits successfully.
+Doctor reports the local daemon, DNS, proxy, loopback, and platform setup. If the daemon is not running, it reports that state and exits successfully.

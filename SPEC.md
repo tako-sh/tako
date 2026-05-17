@@ -190,7 +190,7 @@ workers = 4
 - Server membership is declared per environment with `[envs.<name>].servers`.
 - Storage bindings are declared per environment with `[envs.<name>].storages = { app_name = "resource_name" }`. The key is the stable app-facing binding exposed as `tako.storages.<app_name>`; the value references a top-level `[storages.<resource_name>]` resource.
 - Wildcard certificate DNS credentials are stored per environment in `.tako/secrets.json` by `tako dns configure --env <name>`. Cloudflare is the only supported DNS-01 provider. No DNS provider defaults are written to `tako.toml`. Deploy rejects expired app secrets, storage credentials, and DNS credentials before build/deploy work starts, and warns when any of them expire within 30 days.
-- Client source-IP handling is per environment through optional `source_ip` under `[envs.<name>]`. Omitted means automatic Cloudflare detection with direct peer fallback.
+- Client source-IP handling is per environment through optional `source_ip` under `[envs.<name>]`. Omitted means automatic Cloudflare detection, then explicitly configured trusted proxy headers, then direct peer fallback.
 - Top-level `[storages.<resource>]` config contains non-secret storage metadata. Supported providers are `s3` and `local`. `s3` requires `bucket`, `endpoint`, and `region`; `endpoint` and optional `public_base_url` must use HTTPS. `local` has no configurable path; Tako stores objects under the app data directory using a Tako-chosen layout.
 - In `development`, a storage binding may reference a resource that is not declared under `[storages]`; it defaults to local storage. In deploy environments, every bound resource must be declared. Explicit `provider = "local"` may be used outside development only for single-server deployments.
 - The same server name may be assigned to multiple non-development environments in one project. Each environment deploys to its own server-side app identity and filesystem path under `/opt/tako/apps/{app}/{env}`.
@@ -398,10 +398,10 @@ source_ip = "cloudflare-proxy"
 
 Allowed values:
 
-- Omitted or `"auto"`: if the direct peer IP belongs to Cloudflare and `CF-Connecting-IP` is present, use that header; otherwise use the direct peer IP.
+- Omitted or `"auto"`: if the direct peer IP belongs to Cloudflare and `CF-Connecting-IP` is present, use that header; otherwise, if server `trusted_proxy.client_ip_headers` is configured and the peer IP is in `trusted_proxy.trusted_cidrs`, use the first configured trusted header that contains a valid client IP; otherwise use the direct peer IP.
 - `"direct"`: always use the direct peer IP.
-- `"cloudflare-proxy"`: strict Cloudflare mode; requests must come from Cloudflare IP ranges and include a valid `CF-Connecting-IP` header.
-- `"trusted-proxy"`: strict generic proxy mode for nginx, HAProxy, Caddy, Traefik, and similar front proxies. Requests must come from loopback or from a CIDR listed in server `trusted_proxy.trusted_cidrs`, and must include a valid client IP in `X-Forwarded-For` or `Forwarded` unless the server config sets an explicit `trusted_proxy.client_ip_headers` list.
+- `"cloudflare-proxy"`: strict Cloudflare mode; requests must come from Cloudflare IP ranges and include a valid `CF-Connecting-IP` header. Other requests are rejected with `403 Forbidden`.
+- `"trusted-proxy"`: strict generic proxy mode for nginx, HAProxy, Caddy, Traefik, and similar front proxies. Requests must come from loopback or from a CIDR listed in server `trusted_proxy.trusted_cidrs`, and must include a valid client IP in `X-Forwarded-For` or `Forwarded` unless the server config sets an explicit `trusted_proxy.client_ip_headers` list. Other requests are rejected with `403 Forbidden`.
 
 Generated `tako.toml` files omit `source_ip` by default. `tako-server` keeps Cloudflare IP ranges in memory, starts from a bundled fallback list, overlays a valid last-known-good cache from the server data directory, and refreshes the list every 24 hours while running when any route uses `source_ip = "auto"` or `source_ip = "cloudflare-proxy"`. Successful refreshes are written back to disk.
 
@@ -1390,12 +1390,17 @@ Reference scripts in this repo:
 
 ```json
 {
-  "server_name": "prod"
+  "server_name": "prod",
+  "trusted_proxy": {
+    "proxy_protocol": false,
+    "trusted_cidrs": ["127.0.0.1/32"],
+    "client_ip_headers": ["x-forwarded-for", "forwarded"]
+  }
 }
 ```
 
 - `server_name` — identity label for Prometheus metrics (defaults to hostname if absent).
-- `trusted_proxy` remains an advanced server-level escape hatch for PROXY protocol deployments and non-loopback trusted front proxies. It is not configured by the CLI. App/environment-level source-IP behavior is selected through `source_ip`.
+- `trusted_proxy` remains an advanced server-level escape hatch for PROXY protocol deployments and non-loopback trusted front proxies. It is not configured by the CLI. App/environment-level source-IP behavior is selected through `source_ip`. `trusted_cidrs` is required when `proxy_protocol = true` or `client_ip_headers` is set. Supported header names are `cf-connecting-ip`, `x-forwarded-for`, and `forwarded`.
 - Written by the installer for server identity. Read by `tako-server` at startup.
 
 **Server identity:** `tako-server` creates a stable Ed25519 identity at `{data_dir}/identity.key` and writes the public key to `{data_dir}/identity.pub`. The private key is mode `0600`, is preserved across restarts/upgrades, and is removed only by full server uninstall. `hello` and `server_info` include the OpenSSH SHA-256 fingerprint so the CLI can identify the server during add/probe flows.
@@ -1582,7 +1587,7 @@ Response:
 }
 ```
 
-- `deploy` (includes route patterns and optional secrets payload; env vars are read from `app.json` in the release dir). When `secrets` is omitted or `null`, the server keeps existing secrets for the app:
+- `deploy` (includes route patterns, source-IP mode, optional secrets payload, optional storage bindings, and optional DNS binding; env vars are read from `app.json` in the release dir). When `secrets` or `storages` are omitted or `null`, the server keeps existing values for the app. When `dns` is omitted or `null`, the server clears app DNS credentials:
 
 ```json
 {
@@ -1591,9 +1596,25 @@ Response:
   "version": "1.0.0",
   "path": "/opt/tako/apps/my-app/production/releases/1.0.0",
   "routes": ["api.example.com", "*.example.com/admin/*"],
+  "source_ip": "cloudflare-proxy",
   "secrets": {
     "DATABASE_URL": "...",
     "API_KEY": "..."
+  },
+  "storages": {
+    "uploads": {
+      "provider": "s3",
+      "bucket": "my-app-prod",
+      "endpoint": "https://example.r2.cloudflarestorage.com",
+      "region": "auto",
+      "access_key_id": "...",
+      "secret_access_key": "...",
+      "force_path_style": false
+    }
+  },
+  "dns": {
+    "provider": "cloudflare",
+    "cloudflare_api_token": "..."
   }
 }
 ```
@@ -1685,6 +1706,12 @@ Server-side validation on `deploy` and app-scoped commands:
 ```json
 { "command": "update_secrets", "app": "my-app/production", "secrets": { "KEY": "value" } }
 ```
+
+**SDK/app → tako-server (internal socket commands):**
+
+- From any Tako-managed app or worker process: `enqueue_run`, `signal`, and `channel_publish`.
+- From workflow worker processes: `register_schedules`, `claim_run`, `heartbeat_run`, `save_step`, `complete_run`, `cancel_run`, `fail_run`, `defer_run`, and `wait_for_event`.
+- Every internal command carries an `app` field so the shared internal socket can route commands for every deployed app.
 
 **Instance communication model:**
 
