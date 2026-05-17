@@ -7,9 +7,9 @@ pub(crate) use backend::BackendResolution;
 
 use super::TakoProxy;
 use super::request::{
-    build_proxy_cache_key, client_ip_from_session, client_ip_from_trusted_headers,
-    create_production_error_response, https_redirect_host, insert_body_headers,
-    is_effective_request_https, path_looks_like_static_asset, request_host,
+    ClientIpResolution, build_proxy_cache_key, client_ip_for_source_ip_mode,
+    client_ip_from_session, create_production_error_response, https_redirect_host,
+    insert_body_headers, is_effective_request_https, path_looks_like_static_asset, request_host,
     request_is_proxy_cacheable, response_cacheability,
     should_assume_forwarded_private_request_https, should_redirect_http_request,
 };
@@ -87,27 +87,6 @@ impl ProxyHttp for TakoProxy {
     }
 
     async fn request_filter(&self, session: &mut Session, ctx: &mut Self::CTX) -> Result<bool> {
-        if let Some(peer_ip) = client_ip_from_session(session) {
-            let ip = client_ip_from_trusted_headers(
-                session.req_header(),
-                peer_ip,
-                &self.config.trusted_proxy,
-            )
-            .unwrap_or(peer_ip);
-            if !self.ip_tracker.try_acquire(ip) {
-                let body = "Too Many Requests";
-                let mut header = ResponseHeader::build(429, None)?;
-                header.insert_header("Retry-After", "1")?;
-                insert_body_headers(&mut header, "text/plain", body)?;
-                session
-                    .write_response_header(Box::new(header), false)
-                    .await?;
-                session.write_response_body(Some(body.into()), true).await?;
-                return Ok(true);
-            }
-            ctx.client_ip = Some(ip);
-        }
-
         if let Some(cl) = session
             .req_header()
             .headers
@@ -129,6 +108,52 @@ impl ProxyHttp for TakoProxy {
         let path = session.req_header().uri.path().to_string();
         let host = request_host(session.req_header()).to_string();
         let hostname = host.split(':').next().unwrap_or(&host);
+
+        let route_match = self.routes.read().await.select_with_route(hostname, &path);
+
+        if let Some(route_match) = route_match.as_ref() {
+            let resolution = match client_ip_from_session(session) {
+                Some(peer_ip) => Some(client_ip_for_source_ip_mode(
+                    session.req_header(),
+                    peer_ip,
+                    route_match.source_ip,
+                    &self.cloudflare_ips,
+                    &self.config.trusted_proxy,
+                )),
+                None if route_match.source_ip == tako_core::SourceIpMode::CloudflareProxy => {
+                    Some(ClientIpResolution::RejectCloudflareProxy)
+                }
+                None => None,
+            };
+
+            if let Some(resolution) = resolution {
+                let ip = match resolution {
+                    ClientIpResolution::Accepted(ip) => ip,
+                    ClientIpResolution::RejectCloudflareProxy => {
+                        let body = "Forbidden";
+                        let mut header = ResponseHeader::build(403, None)?;
+                        insert_body_headers(&mut header, "text/plain", body)?;
+                        session
+                            .write_response_header(Box::new(header), false)
+                            .await?;
+                        session.write_response_body(Some(body.into()), true).await?;
+                        return Ok(true);
+                    }
+                };
+                if !self.ip_tracker.try_acquire(ip) {
+                    let body = "Too Many Requests";
+                    let mut header = ResponseHeader::build(429, None)?;
+                    header.insert_header("Retry-After", "1")?;
+                    insert_body_headers(&mut header, "text/plain", body)?;
+                    session
+                        .write_response_header(Box::new(header), false)
+                        .await?;
+                    session.write_response_body(Some(body.into()), true).await?;
+                    return Ok(true);
+                }
+                ctx.client_ip = Some(ip);
+            }
+        }
 
         if let Some(ref handler) = self.challenge_handler
             && handler.is_challenge_request(&path)
@@ -206,7 +231,7 @@ impl ProxyHttp for TakoProxy {
             }
         }
 
-        let route_match = match self.routes.read().await.select_with_route(hostname, &path) {
+        let route_match = match route_match {
             Some(route_match) => route_match,
             None => {
                 let body = "Not Found";

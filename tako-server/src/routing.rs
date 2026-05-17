@@ -6,6 +6,7 @@
 pub struct RouteEntry {
     pub app: String,
     pub pattern: String,
+    pub source_ip: tako_core::SourceIpMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13,12 +14,14 @@ pub struct CompiledRouteEntry {
     pub app: String,
     pub host: String,
     pub path: Option<String>,
+    pub source_ip: tako_core::SourceIpMode,
     pub specificity: (u8, usize, u8),
 }
 
 #[derive(Debug, Default, Clone)]
 pub struct RouteTable {
     app_routes: std::collections::HashMap<String, Vec<String>>,
+    app_source_ip: std::collections::HashMap<String, tako_core::SourceIpMode>,
     compiled: Vec<CompiledRouteEntry>,
 }
 
@@ -26,21 +29,51 @@ pub struct RouteTable {
 pub struct SelectedRoute {
     pub app: String,
     pub path: Option<String>,
+    pub source_ip: tako_core::SourceIpMode,
 }
 
 impl RouteTable {
     pub fn set_app_routes(&mut self, app: String, routes: Vec<String>) {
+        self.set_app_routes_with_source_ip(app, routes, tako_core::SourceIpMode::Auto);
+    }
+
+    pub fn set_app_routes_with_source_ip(
+        &mut self,
+        app: String,
+        routes: Vec<String>,
+        source_ip: tako_core::SourceIpMode,
+    ) {
+        self.app_source_ip.insert(app.clone(), source_ip);
         self.app_routes.insert(app, routes);
         self.rebuild();
     }
 
     pub fn remove_app_routes(&mut self, app: &str) {
         self.app_routes.remove(app);
+        self.app_source_ip.remove(app);
         self.rebuild();
     }
 
     pub fn routes_for_app(&self, app: &str) -> Vec<String> {
         self.app_routes.get(app).cloned().unwrap_or_default()
+    }
+
+    pub fn needs_cloudflare_ip_ranges(&self) -> bool {
+        self.compiled.iter().any(|entry| {
+            matches!(
+                entry.source_ip,
+                tako_core::SourceIpMode::Auto | tako_core::SourceIpMode::CloudflareProxy
+            )
+        })
+    }
+
+    pub fn app_for_route_domain(&self, domain: &str) -> Option<String> {
+        self.app_routes.iter().find_map(|(app, routes)| {
+            routes
+                .iter()
+                .any(|route| split_route(route).0.eq_ignore_ascii_case(domain))
+                .then(|| app.clone())
+        })
     }
 
     pub fn select(&self, host: &str, path: &str) -> Option<String> {
@@ -56,6 +89,7 @@ impl RouteTable {
         let mut entries = Vec::new();
 
         for (app, patterns) in &self.app_routes {
+            let source_ip = self.app_source_ip.get(app).copied().unwrap_or_default();
             for pattern in patterns {
                 if pattern.is_empty() {
                     continue;
@@ -63,6 +97,7 @@ impl RouteTable {
                 entries.push(RouteEntry {
                     app: app.clone(),
                     pattern: pattern.clone(),
+                    source_ip,
                 });
             }
         }
@@ -83,6 +118,7 @@ pub fn compile_routes(routes: &[RouteEntry]) -> Vec<CompiledRouteEntry> {
             app: entry.app.clone(),
             host: pattern_host.to_string(),
             path: pattern_path.map(|p| p.to_string()),
+            source_ip: entry.source_ip,
             specificity: route_specificity(&entry.pattern),
         });
     }
@@ -118,6 +154,7 @@ pub fn select_route_for_request_compiled(
         return Some(SelectedRoute {
             app: entry.app.clone(),
             path: entry.path.clone(),
+            source_ip: entry.source_ip,
         });
     }
     None

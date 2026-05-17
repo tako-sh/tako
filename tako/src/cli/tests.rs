@@ -1,4 +1,5 @@
 use super::*;
+use crate::commands::dns::DnsCommands;
 use crate::commands::secret::SecretKeyCommands;
 use crate::commands::storage::{StorageCommands, StorageProviderArg};
 use clap::{CommandFactory, Parser};
@@ -360,25 +361,26 @@ fn servers_status_with_name_is_rejected() {
 }
 
 #[test]
-fn servers_configure_parses_name() {
-    let cli = Cli::try_parse_from(["tako", "servers", "configure", "prod"]).unwrap();
-    let Commands::Servers(server::ServerCommands::Configure { name }) =
-        cli.command.expect("command")
+fn dns_configure_parses_cloudflare_token() {
+    let cli = Cli::try_parse_from([
+        "tako",
+        "dns",
+        "configure",
+        "--env",
+        "staging",
+        "--cloudflare-api-token",
+        "token",
+    ])
+    .unwrap();
+    let Commands::Dns(DnsCommands::Configure {
+        env,
+        cloudflare_api_token,
+    }) = cli.command.expect("command")
     else {
-        panic!("expected Servers::Configure");
+        panic!("expected Dns::Configure");
     };
-    assert_eq!(name.as_deref(), Some("prod"));
-}
-
-#[test]
-fn servers_configure_without_name_parses_for_selector() {
-    let cli = Cli::try_parse_from(["tako", "servers", "configure"]).unwrap();
-    let Commands::Servers(server::ServerCommands::Configure { name }) =
-        cli.command.expect("command")
-    else {
-        panic!("expected Servers::Configure");
-    };
-    assert!(name.is_none());
+    assert_eq!(env, "staging");
+    assert_eq!(cloudflare_api_token.as_deref(), Some("token"));
 }
 
 #[test]

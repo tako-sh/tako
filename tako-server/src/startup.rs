@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Runtime;
-use tokio::sync::mpsc;
+use tokio::sync::{RwLock, mpsc};
 
 /// Permissions for the tako data directory (typically `/opt/tako`).
 ///
@@ -36,6 +36,8 @@ use tokio::sync::mpsc;
 /// `cold start spawn failed: No such file or directory`.
 #[cfg(unix)]
 const DATA_DIR_MODE: u32 = 0o710;
+
+const CLOUDFLARE_IP_REFRESH_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Create the tako data directory (idempotent) and set its permissions
 /// so the `tako-app` sandbox user can traverse into release and runtime
@@ -59,7 +61,6 @@ struct StandbyPromotionConfig {
     cert_manager: Arc<CertManager>,
     acme_staging: bool,
     acme_email: Option<String>,
-    dns_provider: Option<String>,
     no_acme: bool,
     renewal_interval_hours: u64,
     data_dir: PathBuf,
@@ -70,7 +71,6 @@ struct AcmeInitConfig {
     standby: bool,
     acme_staging: bool,
     acme_email: Option<String>,
-    dns_provider: Option<String>,
     no_acme: bool,
     account_dir: PathBuf,
     cert_manager: Arc<CertManager>,
@@ -152,7 +152,6 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let server_config = read_server_config(&data_dir);
-    let config_dns_provider = server_config.dns.as_ref().map(|d| d.provider.clone());
     let trusted_proxy_config = match server_config.trusted_proxy.as_ref() {
         Some(config) => proxy::TrustedProxyConfig::from_raw(
             config.proxy_protocol,
@@ -169,7 +168,6 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             standby,
             acme_staging: args.acme_staging,
             acme_email: server_config.acme_email.clone(),
-            dns_provider: config_dns_provider.clone(),
             no_acme: args.no_acme,
             account_dir: acme_dir,
             cert_manager: cert_manager.clone(),
@@ -192,7 +190,6 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         no_acme: args.no_acme,
         acme_staging: args.acme_staging,
         renewal_interval_hours: args.renewal_interval_hours,
-        dns_provider: config_dns_provider.clone(),
         standby,
         metrics_port: if args.metrics_port == 0 {
             None
@@ -223,10 +220,33 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         return Err(e.into());
     }
 
+    let cloudflare_ips = proxy::CloudflareIpRanges::default();
+    tracing::info!(
+        cidrs = cloudflare_ips.count(),
+        "Loaded static Cloudflare IP ranges"
+    );
+    let cloudflare_ip_cache_path = data_dir.join("cloudflare-ips.json");
+    if cloudflare_ip_cache_path.exists() {
+        match cloudflare_ips.load_cache_file(&cloudflare_ip_cache_path) {
+            Ok(()) => {
+                tracing::info!(
+                    cidrs = cloudflare_ips.count(),
+                    path = %cloudflare_ip_cache_path.display(),
+                    "Loaded cached Cloudflare IP ranges"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    path = %cloudflare_ip_cache_path.display(),
+                    "Cloudflare IP range cache ignored: {error}"
+                );
+            }
+        }
+    }
     spawn_instance_event_bridge(&rt, state.clone());
     spawn_health_monitoring(&rt, state.clone());
     spawn_idle_monitoring(&rt, state.clone());
-    spawn_certificate_renewals(&rt, &acme_client, args.renewal_interval_hours);
+    spawn_certificate_renewals(&rt, state.clone(), args.renewal_interval_hours);
     spawn_management_socket(&rt, state.clone(), socket_listener);
     if !standby {
         spawn_management_http(&rt, state.clone(), args.management_host.clone());
@@ -241,7 +261,6 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 cert_manager: cert_manager.clone(),
                 acme_staging: args.acme_staging,
                 acme_email: server_config.acme_email.clone(),
-                dns_provider: config_dns_provider,
                 no_acme: args.no_acme,
                 renewal_interval_hours: args.renewal_interval_hours,
                 data_dir: data_dir.clone(),
@@ -274,6 +293,14 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     spawn_reload_signal_handlers(&rt, exe);
 
     metrics::init(state.runtime_config().server_name.as_deref());
+    if !should_skip_cloudflare_ip_refresh() {
+        spawn_cloudflare_ip_refresh(
+            &rt,
+            cloudflare_ips.clone(),
+            cloudflare_ip_cache_path,
+            state.routes(),
+        );
+    }
 
     let server = proxy::build_server_with_acme(
         state.load_balancer(),
@@ -282,6 +309,7 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         Some(challenge_tokens_for_promote),
         Some(cert_manager),
         state.cold_start(),
+        cloudflare_ips,
     )?;
 
     sd_notify_ready();
@@ -293,6 +321,50 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     });
 
     Ok(())
+}
+
+fn should_skip_cloudflare_ip_refresh() -> bool {
+    std::env::var_os("TAKO_TEST_SKIP_CLOUDFLARE_IP_REFRESH").is_some()
+}
+
+fn spawn_cloudflare_ip_refresh(
+    rt: &tokio::runtime::Runtime,
+    cloudflare_ips: proxy::CloudflareIpRanges,
+    cache_path: PathBuf,
+    routes: Arc<RwLock<crate::routing::RouteTable>>,
+) {
+    rt.spawn(async move {
+        loop {
+            tokio::time::sleep(CLOUDFLARE_IP_REFRESH_INTERVAL).await;
+            if !routes.read().await.needs_cloudflare_ip_ranges() {
+                continue;
+            }
+            refresh_cloudflare_ip_ranges_once(&cloudflare_ips, &cache_path).await;
+        }
+    });
+}
+
+async fn refresh_cloudflare_ip_ranges_once(
+    cloudflare_ips: &proxy::CloudflareIpRanges,
+    cache_path: &Path,
+) {
+    match cloudflare_ips.refresh_from_api().await {
+        Ok(cache) => {
+            if let Err(error) = cache.write_to_path(cache_path) {
+                tracing::warn!(
+                    path = %cache_path.display(),
+                    "Failed to write Cloudflare IP range cache: {error}"
+                );
+            }
+            tracing::info!(
+                cidrs = cloudflare_ips.count(),
+                "Refreshed Cloudflare IP ranges"
+            );
+        }
+        Err(error) => {
+            tracing::warn!("Cloudflare IP range refresh skipped: {error}");
+        }
+    }
 }
 
 fn init_acme_client(rt: &Runtime, config: AcmeInitConfig) -> Option<Arc<AcmeClient>> {
@@ -310,7 +382,6 @@ fn init_acme_client(rt: &Runtime, config: AcmeInitConfig) -> Option<Arc<AcmeClie
             staging: config.acme_staging,
             email: config.acme_email,
             account_dir: config.account_dir,
-            dns_provider: config.dns_provider,
             ..Default::default()
         },
         config.cert_manager,
@@ -444,14 +515,10 @@ fn spawn_idle_monitoring(rt: &Runtime, state: Arc<ServerState>) {
     });
 }
 
-fn spawn_certificate_renewals(
-    rt: &Runtime,
-    acme_client: &Option<Arc<AcmeClient>>,
-    renewal_interval_hours: u64,
-) {
-    if let Some(acme) = acme_client {
+fn spawn_certificate_renewals(rt: &Runtime, state: Arc<ServerState>, renewal_interval_hours: u64) {
+    if !state.runtime.no_acme && !state.runtime.standby {
         rt.spawn(certificate_renewal_task(
-            acme.clone(),
+            state,
             Duration::from_secs(renewal_interval_hours * 3600),
         ));
     }
@@ -547,7 +614,6 @@ fn spawn_standby_monitor(rt: &Runtime, config: StandbyPromotionConfig) {
                                     staging: config.acme_staging,
                                     email: config.acme_email.clone(),
                                     account_dir: config.data_dir.join("acme"),
-                                    dns_provider: config.dns_provider.clone(),
                                     ..Default::default()
                                 },
                                 config.cert_manager.clone(),
@@ -556,11 +622,11 @@ fn spawn_standby_monitor(rt: &Runtime, config: StandbyPromotionConfig) {
                             match client.init().await {
                                 Ok(()) => {
                                     tracing::info!("ACME initialized after promotion");
+                                    config.state.set_acme_client(client).await;
                                     tokio::spawn(certificate_renewal_task(
-                                        client.clone(),
+                                        config.state.clone(),
                                         Duration::from_secs(config.renewal_interval_hours * 3600),
                                     ));
-                                    config.state.set_acme_client(client).await;
                                 }
                                 Err(e) => {
                                     tracing::error!("Failed to init ACME after promotion: {e}");

@@ -19,8 +19,10 @@ impl crate::ServerState {
         version: &str,
         path: &str,
         routes: Vec<String>,
+        source_ip: tako_core::SourceIpMode,
         secrets: Option<HashMap<String, String>>,
         storages: Option<HashMap<String, tako_core::StorageBinding>>,
+        dns: Option<tako_core::DnsBinding>,
     ) -> Response {
         tracing::info!(app = app_name, version = version, "Deploying app");
 
@@ -98,6 +100,16 @@ impl crate::ServerState {
         }
 
         let existing_app = self.app_manager.get_app(app_name);
+        let previous_dns = if existing_app.is_some() {
+            match self.state_store.get_dns(app_name) {
+                Ok(value) => value,
+                Err(error) => {
+                    return Response::error(format!("Failed to read DNS credentials: {error}"));
+                }
+            }
+        } else {
+            None
+        };
         let rollback_snapshot = if let Some(existing) = existing_app.as_ref() {
             let previous_config = existing.config.read().clone();
             let previous_routes = {
@@ -105,7 +117,12 @@ impl crate::ServerState {
                 route_table.routes_for_app(app_name)
             };
             let previous_state = existing.state();
-            Some((previous_config, previous_routes, previous_state))
+            Some((
+                previous_config,
+                previous_routes,
+                previous_state,
+                previous_dns,
+            ))
         } else {
             None
         };
@@ -113,6 +130,7 @@ impl crate::ServerState {
         let (app, deploy_config, is_new_app) = if let Some(existing) = existing_app {
             let mut config = existing.config.read().clone();
             config.version = version.to_string();
+            config.source_ip = source_ip;
             config.secrets = secrets;
             config.storages = storages;
             if let Err(error) = apply_release_runtime_to_config(
@@ -123,6 +141,9 @@ impl crate::ServerState {
                 return Response::error(format!("Invalid app release: {}", error));
             }
             inject_app_data_dir_env(&mut config.env_vars, &data_paths);
+            if let Err(e) = self.persist_dns_binding(app_name, dns.as_ref()) {
+                return Response::error(e);
+            }
             existing.update_config(config.clone());
             (existing, config, false)
         } else {
@@ -133,6 +154,7 @@ impl crate::ServerState {
                 version: version.to_string(),
                 secrets,
                 storages,
+                source_ip,
                 min_instances: 1,
                 max_instances: 4,
                 ..Default::default()
@@ -146,6 +168,9 @@ impl crate::ServerState {
                 return Response::error(format!("Invalid app release: {}", error));
             }
             inject_app_data_dir_env(&mut config.env_vars, &data_paths);
+            if let Err(e) = self.persist_dns_binding(app_name, dns.as_ref()) {
+                return Response::error(e);
+            }
 
             let deploy_config = config.clone();
             let app = self.app_manager.register_app(config);
@@ -155,7 +180,11 @@ impl crate::ServerState {
 
         {
             let mut route_table = self.routes.write().await;
-            route_table.set_app_routes(app_name.to_string(), routes.clone());
+            route_table.set_app_routes_with_source_ip(
+                app_name.to_string(),
+                routes.clone(),
+                source_ip,
+            );
         }
 
         app.clear_last_error();
@@ -190,8 +219,12 @@ impl crate::ServerState {
                     }
                     Err(e) => {
                         let error = e.to_string();
-                        if let Some((previous_config, previous_routes, previous_state)) =
-                            rollback_snapshot
+                        if let Some((
+                            previous_config,
+                            previous_routes,
+                            previous_state,
+                            previous_dns,
+                        )) = rollback_snapshot
                         {
                             self.restore_failed_rollout_snapshot(
                                 app_name,
@@ -199,6 +232,7 @@ impl crate::ServerState {
                                 previous_config,
                                 previous_routes,
                                 previous_state,
+                                previous_dns,
                                 error.clone(),
                             )
                             .await;
@@ -223,8 +257,12 @@ impl crate::ServerState {
                     }
                     Err(e) => {
                         let error = e.to_string();
-                        if let Some((previous_config, previous_routes, previous_state)) =
-                            rollback_snapshot
+                        if let Some((
+                            previous_config,
+                            previous_routes,
+                            previous_state,
+                            previous_dns,
+                        )) = rollback_snapshot
                         {
                             self.restore_failed_rollout_snapshot(
                                 app_name,
@@ -232,6 +270,7 @@ impl crate::ServerState {
                                 previous_config,
                                 previous_routes,
                                 previous_state,
+                                previous_dns,
                                 error.clone(),
                             )
                             .await;
@@ -287,8 +326,12 @@ impl crate::ServerState {
                             }))
                         }
                     } else {
-                        if let Some((previous_config, previous_routes, previous_state)) =
-                            rollback_snapshot
+                        if let Some((
+                            previous_config,
+                            previous_routes,
+                            previous_state,
+                            previous_dns,
+                        )) = rollback_snapshot
                         {
                             self.restore_failed_rollout_snapshot(
                                 app_name,
@@ -296,6 +339,7 @@ impl crate::ServerState {
                                 previous_config,
                                 previous_routes,
                                 previous_state,
+                                previous_dns,
                                 result
                                     .error
                                     .clone()
@@ -317,7 +361,7 @@ impl crate::ServerState {
                     }
                 }
                 Err(e) => {
-                    if let Some((previous_config, previous_routes, previous_state)) =
+                    if let Some((previous_config, previous_routes, previous_state, previous_dns)) =
                         rollback_snapshot
                     {
                         self.restore_failed_rollout_snapshot(
@@ -326,6 +370,7 @@ impl crate::ServerState {
                             previous_config,
                             previous_routes,
                             previous_state,
+                            previous_dns,
                             e.to_string(),
                         )
                         .await;
@@ -351,6 +396,22 @@ impl crate::ServerState {
         }
     }
 
+    fn persist_dns_binding(
+        &self,
+        app_name: &str,
+        dns: Option<&tako_core::DnsBinding>,
+    ) -> Result<(), String> {
+        if let Some(dns) = dns {
+            self.state_store
+                .set_dns(app_name, dns)
+                .map_err(|e| format!("Failed to store DNS credentials: {e}"))
+        } else {
+            self.state_store
+                .delete_dns(app_name)
+                .map_err(|e| format!("Failed to clear DNS credentials: {e}"))
+        }
+    }
+
     async fn restore_failed_rollout_snapshot(
         &self,
         app_name: &str,
@@ -358,12 +419,14 @@ impl crate::ServerState {
         previous_config: AppConfig,
         previous_routes: Vec<String>,
         previous_state: AppState,
+        previous_dns: Option<tako_core::DnsBinding>,
         error: String,
     ) {
         let previous_release_path =
             app_release_root(&self.runtime.data_dir, app_name, &previous_config.version);
         let previous_secrets = previous_config.secrets.clone();
         let previous_storages = previous_config.storages.clone();
+        let previous_source_ip = previous_config.source_ip;
         app.update_config(previous_config);
         app.set_state(previous_state);
         app.set_last_error(format!("Rolling update failed: {error}"));
@@ -373,9 +436,25 @@ impl crate::ServerState {
         if let Err(e) = self.state_store.set_storages(app_name, &previous_storages) {
             tracing::warn!(app = app_name, "Failed to restore previous storages: {}", e);
         }
+        match previous_dns {
+            Some(dns) => {
+                if let Err(e) = self.state_store.set_dns(app_name, &dns) {
+                    tracing::warn!(app = app_name, "Failed to restore previous DNS: {}", e);
+                }
+            }
+            None => {
+                if let Err(e) = self.state_store.delete_dns(app_name) {
+                    tracing::warn!(app = app_name, "Failed to clear restored DNS: {}", e);
+                }
+            }
+        }
         {
             let mut route_table = self.routes.write().await;
-            route_table.set_app_routes(app_name.to_string(), previous_routes);
+            route_table.set_app_routes_with_source_ip(
+                app_name.to_string(),
+                previous_routes,
+                previous_source_ip,
+            );
         }
         self.persist_app_state(app_name).await;
         let runtime_bin_path =

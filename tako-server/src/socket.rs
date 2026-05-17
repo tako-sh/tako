@@ -197,15 +197,19 @@ mod tests {
                 version,
                 path,
                 routes,
+                source_ip,
                 secrets,
                 storages,
+                dns,
             } => {
                 assert_eq!(app, "my-app");
                 assert_eq!(version, "1.0.0");
                 assert!(path.contains("releases"));
                 assert_eq!(routes.len(), 2);
+                assert_eq!(source_ip, tako_core::SourceIpMode::Auto);
                 assert!(secrets.is_none());
                 assert!(storages.is_none());
+                assert!(dns.is_none());
             }
             _ => panic!("Expected Deploy command"),
         }

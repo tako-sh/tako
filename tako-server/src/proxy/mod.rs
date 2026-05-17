@@ -4,6 +4,7 @@
 //! Supports TLS termination with automatic certificate management.
 //! Handles ACME HTTP-01 challenges for Let's Encrypt certificate issuance.
 
+mod cloudflare_ips;
 mod config;
 mod limits;
 mod proxy_protocol;
@@ -13,6 +14,7 @@ mod server;
 mod service;
 mod static_files;
 
+pub(crate) use cloudflare_ips::CloudflareIpRanges;
 pub use config::{ProxyConfig, ResponseCacheConfig, TrustedClientIpHeader, TrustedProxyConfig};
 pub use server::build_server_with_acme;
 #[allow(unused_imports)]
@@ -69,6 +71,8 @@ pub struct TakoProxy {
     channel_stores: SyncRwLock<HashMap<String, Arc<ChannelStore>>>,
     /// Per-IP concurrent request limiter (DDoS mitigation)
     ip_tracker: IpRequestTracker,
+    /// Cloudflare proxy CIDRs used for app-level source IP modes.
+    cloudflare_ips: CloudflareIpRanges,
     /// Channel metadata cache hydrated from app internal endpoints.
     channel_registry: ChannelRegistry,
 }
@@ -79,6 +83,7 @@ impl TakoProxy {
         routes: Arc<RwLock<RouteTable>>,
         config: ProxyConfig,
         cold_start: Arc<ColdStartManager>,
+        cloudflare_ips: CloudflareIpRanges,
     ) -> Self {
         let response_cache = config
             .response_cache
@@ -94,6 +99,7 @@ impl TakoProxy {
             static_servers: SyncRwLock::new(HashMap::new()),
             channel_stores: SyncRwLock::new(HashMap::new()),
             ip_tracker: IpRequestTracker::new(),
+            cloudflare_ips,
             channel_registry: ChannelRegistry::new(),
         }
     }
@@ -105,6 +111,7 @@ impl TakoProxy {
         config: ProxyConfig,
         tokens: ChallengeTokens,
         cold_start: Arc<ColdStartManager>,
+        cloudflare_ips: CloudflareIpRanges,
     ) -> Self {
         let response_cache = config
             .response_cache
@@ -120,6 +127,7 @@ impl TakoProxy {
             static_servers: SyncRwLock::new(HashMap::new()),
             channel_stores: SyncRwLock::new(HashMap::new()),
             ip_tracker: IpRequestTracker::new(),
+            cloudflare_ips,
             channel_registry: ChannelRegistry::new(),
         }
     }

@@ -88,6 +88,14 @@ impl Config {
             .unwrap_or_else(default_idle_timeout)
     }
 
+    /// Get effective client source-IP mode for an environment.
+    pub fn get_source_ip_mode(&self, env_name: &str) -> tako_core::SourceIpMode {
+        self.envs
+            .get(env_name)
+            .and_then(|env| env.source_ip)
+            .unwrap_or_default()
+    }
+
     /// Get merged vars for an environment (global + per-env)
     pub fn get_merged_vars(&self, env_name: &str) -> HashMap<String, String> {
         let mut merged = self.vars.clone();

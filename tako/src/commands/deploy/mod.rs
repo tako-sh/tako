@@ -22,7 +22,8 @@ use crate::config::{SecretsStore, ServerEntry, ServerTarget, ServersToml, TakoTo
 use crate::output;
 use crate::ssh::SshClient;
 use crate::validation::{
-    validate_full_config, validate_secrets_for_deployment, validate_storages_for_deployment,
+    validate_dns_for_deployment, validate_full_config, validate_secrets_for_deployment,
+    validate_storages_for_deployment,
 };
 use tracing::Instrument;
 
@@ -40,7 +41,7 @@ use format::{
     format_servers_summary, print_deploy_summary_with_https_port, should_use_per_server_spinners,
     should_use_unified_js_target_process,
 };
-use preflight::{check_wildcard_dns_support, run_server_preflight_checks};
+use preflight::run_server_preflight_checks;
 use remote::deploy_to_server;
 use task_tree::{
     DeployTaskTreeController, build_artifact_target_groups, should_use_deploy_task_tree,
@@ -55,8 +56,10 @@ struct DeployConfig {
     version: String,
     remote_base: String,
     routes: Vec<String>,
+    source_ip: tako_core::SourceIpMode,
     secrets: HashMap<String, String>,
     storages: HashMap<String, tako_core::StorageBinding>,
+    dns: Option<tako_core::DnsBinding>,
     /// SHA-256 hash of the decrypted secrets for this deploy.
     secrets_hash: String,
     main: String,
@@ -83,11 +86,9 @@ struct ServerDeployTarget {
 struct ServerCheck {
     name: String,
     mode: tako_core::UpgradeMode,
-    dns_provider: Option<String>,
 }
 
 struct PreflightPhaseResult {
-    checks: Vec<ServerCheck>,
     /// Pre-established SSH connections, keyed by server name.
     /// Kept alive from preflight so deploy can reuse them without reconnecting.
     ssh_clients: HashMap<String, SshClient>,
@@ -99,6 +100,7 @@ struct BuildPhaseResult {
     manifest_main: String,
     deploy_secrets: HashMap<String, String>,
     deploy_storages: HashMap<String, tako_core::StorageBinding>,
+    deploy_dns: Option<tako_core::DnsBinding>,
     use_unified_target_process: bool,
     artifacts_by_target: HashMap<String, PathBuf>,
 }
@@ -279,6 +281,12 @@ async fn run_async(
     )?;
     let routes = required_env_routes(&tako_config, &env)
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    let source_ip = tako_config.get_source_ip_mode(&env);
+
+    let dns_result = validate_dns_for_deployment(&routes, &secrets, &env);
+    if dns_result.has_errors() {
+        return Err(format!("DNS errors:\n  {}", dns_result.errors.join("\n  ")).into());
+    }
 
     let server_names = if output::is_dry_run() {
         resolve_deploy_server_names(&tako_config, &servers, &env)
@@ -441,13 +449,13 @@ async fn run_async(
         .unwrap()
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
     let mut preflight_ssh_clients = preflight.ssh_clients;
-    check_wildcard_dns_support(&routes, &preflight.checks)?;
 
     let BuildPhaseResult {
         version,
         manifest_main,
         deploy_secrets,
         deploy_storages,
+        deploy_dns,
         use_unified_target_process: use_unified_js_target_process,
         artifacts_by_target,
     } = build_result.expect("build result should be present");
@@ -466,8 +474,10 @@ async fn run_async(
         version: version.clone(),
         remote_base: format!("/opt/tako/apps/{}", deployment_app_name),
         routes: routes.clone(),
+        source_ip,
         secrets: deploy_secrets,
         storages: deploy_storages,
+        dns: deploy_dns,
         secrets_hash,
         main: manifest_main,
         use_unified_target_process: use_unified_js_target_process,

@@ -512,6 +512,8 @@ pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>>
     });
 
     // Generate tako.toml
+    let production_route = sanitize_route(&production_route);
+    let init_dns_token = prompt_init_dns_token(&production_route)?;
     let app_root_for_toml = if adapter.preset_group() == PresetGroup::Js {
         Some(app_root.trim())
     } else {
@@ -521,7 +523,7 @@ pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>>
         app_name: app_name.trim(),
         app_root: app_root_for_toml,
         main: main_entry.as_deref().map(str::trim),
-        production_route: &sanitize_route(&production_route),
+        production_route: &production_route,
         runtime: Some(adapter.id()),
         runtime_version: runtime_version.as_deref(),
         package_manager: pm_for_toml.as_deref(),
@@ -533,6 +535,10 @@ pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>>
     let parsed_template = TakoToml::parse(&template)?;
     fs::write(&tako_toml_path, template)?;
     ensure_project_gitignore_tracks_secrets(&project_dir)?;
+    let configured_init_dns = init_dns_token.is_some();
+    if let Some(token) = init_dns_token {
+        crate::commands::dns::configure_env_dns(&project_dir, "production", Some(token), false)?;
+    }
 
     let config_name = tako_toml_path
         .file_name()
@@ -541,7 +547,15 @@ pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>>
     if let Some(generated_file) =
         write_init_generated_file(&project_dir, adapter, parsed_template.js_app_root())?
     {
-        output::success(&format!("Created {config_name} and {generated_file}"));
+        if configured_init_dns {
+            output::success(&format!(
+                "Created {config_name}, {generated_file}, and DNS secrets"
+            ));
+        } else {
+            output::success(&format!("Created {config_name} and {generated_file}"));
+        }
+    } else if configured_init_dns {
+        output::success(&format!("Created {config_name} and DNS secrets"));
     } else {
         output::success(&format!("Created {config_name}"));
     }
@@ -640,6 +654,39 @@ fn write_init_generated_file(
         }
         PresetGroup::Unknown => Ok(None),
     }
+}
+
+fn prompt_init_dns_token(
+    production_route: &str,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    if !output::is_interactive() || !production_route_needs_dns(production_route) {
+        return Ok(None);
+    }
+
+    let description = "Wildcard routes need DNS-01 certificates. Tako stores the token encrypted in .tako/secrets.json.";
+    let should_configure = output::confirm_with_description(
+        "Set up Cloudflare DNS for wildcard HTTPS?",
+        Some(description),
+        true,
+    )?;
+    if !should_configure {
+        return Ok(None);
+    }
+
+    Ok(Some(crate::commands::dns::read_dns_credential(
+        None,
+        "Cloudflare API token",
+    )?))
+}
+
+fn production_route_needs_dns(route: &str) -> bool {
+    route
+        .trim()
+        .split('/')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .starts_with("*.")
 }
 
 fn resolve_adapter(detected_adapter: BuildAdapter, existing: Option<&TakoToml>) -> BuildAdapter {

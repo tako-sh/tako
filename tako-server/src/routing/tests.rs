@@ -5,6 +5,7 @@ fn route(app: &str, pattern: &str) -> RouteEntry {
     RouteEntry {
         app: app.to_string(),
         pattern: pattern.to_string(),
+        source_ip: tako_core::SourceIpMode::Auto,
     }
 }
 
@@ -176,6 +177,18 @@ fn test_route_table_remove_app_routes() {
         Some("web".to_string()),
         "other apps should remain routable"
     );
+}
+
+#[test]
+fn test_route_table_finds_app_for_certificate_domain() {
+    let mut table = RouteTable::default();
+    table.set_app_routes("api".to_string(), vec!["*.example.com/admin/*".to_string()]);
+
+    assert_eq!(
+        table.app_for_route_domain("*.EXAMPLE.com").as_deref(),
+        Some("api")
+    );
+    assert_eq!(table.app_for_route_domain("api.example.com"), None);
 }
 
 // ===========================================
@@ -554,4 +567,41 @@ fn test_route_table_select_with_route_returns_matched_path_pattern() {
         .expect("expected matching route");
     assert_eq!(matched.app, "web");
     assert_eq!(matched.path, Some("/tanstack-start/*".to_string()));
+    assert_eq!(matched.source_ip, tako_core::SourceIpMode::Auto);
+}
+
+#[test]
+fn route_table_preserves_per_app_source_ip_mode() {
+    let mut table = RouteTable::default();
+    table.set_app_routes_with_source_ip(
+        "web".to_string(),
+        vec!["example.com".to_string()],
+        tako_core::SourceIpMode::CloudflareProxy,
+    );
+
+    let matched = table
+        .select_with_route("example.com", "/")
+        .expect("expected matching route");
+
+    assert_eq!(matched.source_ip, tako_core::SourceIpMode::CloudflareProxy);
+}
+
+#[test]
+fn route_table_reports_when_cloudflare_ranges_are_needed() {
+    let mut table = RouteTable::default();
+    assert!(!table.needs_cloudflare_ip_ranges());
+
+    table.set_app_routes_with_source_ip(
+        "web".to_string(),
+        vec!["example.com".to_string()],
+        tako_core::SourceIpMode::Direct,
+    );
+    assert!(!table.needs_cloudflare_ip_ranges());
+
+    table.set_app_routes_with_source_ip(
+        "api".to_string(),
+        vec!["api.example.com".to_string()],
+        tako_core::SourceIpMode::Auto,
+    );
+    assert!(table.needs_cloudflare_ip_ranges());
 }

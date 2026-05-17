@@ -150,6 +150,10 @@ pub struct EnvConfig {
     #[serde(default)]
     pub storages: HashMap<String, String>,
 
+    /// Client source-IP mode for requests to this environment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_ip: Option<tako_core::SourceIpMode>,
+
     /// Idle timeout in seconds (300 = 5 minutes).
     #[serde(default = "default_idle_timeout")]
     pub idle_timeout: u32,

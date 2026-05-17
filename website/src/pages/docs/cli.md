@@ -34,7 +34,7 @@ tako init
 tako init -c staging
 ```
 
-Creates a `tako.toml` template, updates `.gitignore`, prompts for app name and production route, detects runtime, optionally prompts for JS `app_root`, and installs the SDK through the selected runtime package manager.
+Creates a `tako.toml` template, updates `.gitignore`, prompts for app name and production route, offers Cloudflare DNS setup for wildcard routes, detects runtime, optionally prompts for JS `app_root`, and installs the SDK through the selected runtime package manager.
 
 If the selected config file exists, interactive mode asks before overwriting. Non-interactive mode leaves it untouched and prints `Operation cancelled`.
 
@@ -219,7 +219,7 @@ Options:
 
 `admin-user@host` is shorthand for choosing the admin user and enabling install/repair when needed.
 
-If the host was bootstrapped with `install-server.sh`, `tako servers add` collects first-run source-IP and DNS wildcard settings, starts the stopped service, then saves the server.
+If the host was bootstrapped with `install-server.sh`, `tako servers add` verifies access, records target metadata, then saves the server. For explicit bootstrap-only installs (`TAKO_RESTART_SERVICE=0`), it can also start the stopped service with default listener settings.
 
 ### Other Server Commands
 
@@ -231,22 +231,22 @@ tako servers reload la
 tako servers reload la --force
 tako servers upgrade
 tako servers upgrade la
-tako servers configure [name]
 tako servers uninstall la
+tako dns configure --env production
 ```
 
-| Command                         | Meaning                                                                                     |
-| ------------------------------- | ------------------------------------------------------------------------------------------- |
-| `servers remove [name]`         | Remove a server from global config. Aliases: `rm`, `delete`.                                |
-| `servers list`                  | List configured servers. Alias: `ls`.                                                       |
-| `servers status`                | Show deployment status across configured servers. Alias: `info`.                            |
-| `servers reload <name>`         | Reload `tako-server` without downtime by default.                                           |
-| `servers reload <name> --force` | Full service restart, which may cause brief downtime.                                       |
-| `servers upgrade [name]`        | Upgrade one server or all servers with graceful reload and rollback.                        |
-| `servers configure [name]`      | Change server settings: Cloudflare DNS-01 wildcard certificates or trusted proxy source IP. |
-| `servers uninstall [name]`      | Remove `tako-server` and all data from a remote server.                                     |
+| Command                         | Meaning                                                                            |
+| ------------------------------- | ---------------------------------------------------------------------------------- |
+| `servers remove [name]`         | Remove a server from global config. Aliases: `rm`, `delete`.                       |
+| `servers list`                  | List configured servers. Alias: `ls`.                                              |
+| `servers status`                | Show deployment status across configured servers. Alias: `info`.                   |
+| `servers reload <name>`         | Reload `tako-server` without downtime by default.                                  |
+| `servers reload <name> --force` | Full service restart, which may cause brief downtime.                              |
+| `servers upgrade [name]`        | Upgrade one server or all servers with graceful reload and rollback.               |
+| `servers uninstall [name]`      | Remove `tako-server` and all data from a remote server.                            |
+| `dns configure`                 | Configure app-environment Cloudflare DNS-01 credentials for wildcard certificates. |
 
-`servers add` asks for source-IP and DNS wildcard settings before the first service start when it installs or starts a stopped server. For later changes, `servers configure` omits `name` when there is only one configured server or prompts you to choose one when there are multiple. It then reads current non-secret server config, asks whether to change source-IP handling, and asks whether the server needs DNS wildcard certificates before entering Cloudflare DNS-01 setup.
+`servers add --install` starts new or stopped installs with default listener settings. Use `tako dns configure --env <env>` for wildcard certificate DNS. Cloudflare source-IP handling is automatic unless an environment sets `source_ip = "direct"` or `source_ip = "cloudflare-proxy"`.
 
 ## `tako secrets`
 

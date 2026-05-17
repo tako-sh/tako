@@ -7,7 +7,6 @@ use thiserror::Error;
 
 pub(crate) const CLOUDFLARE_DNS_PROVIDER: &str = "cloudflare";
 const CLOUDFLARE_API_BASE_URL: &str = "https://api.cloudflare.com/client/v4";
-const CLOUDFLARE_API_TOKEN_ENV: &str = "CF_DNS_API_TOKEN";
 
 #[derive(Debug, Error)]
 pub(crate) enum DnsError {
@@ -78,10 +77,11 @@ struct CloudflareDnsRecord {
 }
 
 impl CloudflareDnsProvider {
-    pub(crate) fn from_env(propagation_delay: Duration) -> Result<Self, DnsError> {
-        let api_token = std::env::var(CLOUDFLARE_API_TOKEN_ENV)
-            .map_err(|_| DnsError::MissingCredential(CLOUDFLARE_API_TOKEN_ENV))?;
-        Self::new(api_token, CLOUDFLARE_API_BASE_URL, propagation_delay)
+    pub(crate) fn from_api_token(
+        api_token: impl Into<String>,
+        propagation_delay: Duration,
+    ) -> Result<Self, DnsError> {
+        Self::new(api_token.into(), CLOUDFLARE_API_BASE_URL, propagation_delay)
     }
 
     fn new(

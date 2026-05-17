@@ -10,7 +10,7 @@ use std::path::Path;
 use std::sync::OnceLock;
 use tokio::io::AsyncReadExt;
 
-use super::{TrustedClientIpHeader, TrustedProxyConfig};
+use super::{CloudflareIpRanges, TrustedClientIpHeader, TrustedProxyConfig};
 
 pub(super) fn should_redirect_http_request(
     is_effective_https: bool,
@@ -228,6 +228,48 @@ pub(super) fn client_ip_from_trusted_headers(
         .client_ip_headers
         .iter()
         .find_map(|header| client_ip_from_header(request, *header))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ClientIpResolution {
+    Accepted(IpAddr),
+    RejectCloudflareProxy,
+}
+
+pub(super) fn client_ip_for_source_ip_mode(
+    request: &RequestHeader,
+    peer_ip: IpAddr,
+    mode: tako_core::SourceIpMode,
+    cloudflare_ips: &CloudflareIpRanges,
+    trusted_proxy: &TrustedProxyConfig,
+) -> ClientIpResolution {
+    match mode {
+        tako_core::SourceIpMode::Auto => {
+            let ip = client_ip_from_cloudflare_proxy(request, peer_ip, cloudflare_ips)
+                .or_else(|| client_ip_from_trusted_headers(request, peer_ip, trusted_proxy))
+                .unwrap_or(peer_ip);
+            ClientIpResolution::Accepted(ip)
+        }
+        tako_core::SourceIpMode::Direct => ClientIpResolution::Accepted(peer_ip),
+        tako_core::SourceIpMode::CloudflareProxy => {
+            match client_ip_from_cloudflare_proxy(request, peer_ip, cloudflare_ips) {
+                Some(ip) => ClientIpResolution::Accepted(ip),
+                None => ClientIpResolution::RejectCloudflareProxy,
+            }
+        }
+    }
+}
+
+fn client_ip_from_cloudflare_proxy(
+    request: &RequestHeader,
+    peer_ip: IpAddr,
+    cloudflare_ips: &CloudflareIpRanges,
+) -> Option<IpAddr> {
+    if !cloudflare_ips.contains(&peer_ip) {
+        return None;
+    }
+
+    client_ip_from_header(request, TrustedClientIpHeader::CfConnectingIp)
 }
 
 fn client_ip_from_header(request: &RequestHeader, header: TrustedClientIpHeader) -> Option<IpAddr> {

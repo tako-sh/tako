@@ -34,9 +34,9 @@ set -eu
 #   TAKO_RELEASE_TAG        default: latest
 #   GH_TOKEN/GITHUB_TOKEN   optional GitHub token for release downloads
 #   TAKO_SERVER_NAME        server identity for metrics labels (optional)
-#                           configure/start mode prompts in interactive terminals
+#                           service-start mode prompts in interactive terminals
 #                           defaults to machine hostname when non-interactive
-#   TAKO_RESTART_SERVICE    default: 0 (set 1/true to configure and start/reload the service)
+#   TAKO_RESTART_SERVICE    default: 1 (set 0/false to install or refresh without starting the service)
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "error: run as root (use sudo)" >&2
@@ -59,7 +59,7 @@ TAKO_ALLOW_INSECURE_DOWNLOAD_BASE="${TAKO_ALLOW_INSECURE_DOWNLOAD_BASE:-}"
 TAKO_REPO_OWNER="${TAKO_REPO_OWNER:-lilienblum}"
 TAKO_REPO_NAME="${TAKO_REPO_NAME:-tako}"
 TAKO_RELEASE_TAG="${TAKO_RELEASE_TAG:-latest}"
-TAKO_RESTART_SERVICE="${TAKO_RESTART_SERVICE:-0}"
+TAKO_RESTART_SERVICE="${TAKO_RESTART_SERVICE:-1}"
 TAKO_MANAGEMENT_REQUIRED_MESSAGE="Remote management requires Tailscale so Tako can keep server control traffic private by default."
 TAKO_MANAGEMENT_ARGS=""
 TAKO_PUBLIC_PORT_ARGS=""
@@ -1151,7 +1151,7 @@ else
 fi
 
 # ── Server config (config.json) ──────────────────────────────────────
-# Stores server_name (metrics label) and dns.provider in a single file.
+# Stores server_name (metrics label).
 
 TAKO_CONFIG="$TAKO_HOME/config.json"
 
@@ -1176,16 +1176,16 @@ print(v if isinstance(v, str) and v else '')
   fi
 }
 
-# Write config.json from CONFIG_SERVER_NAME and CONFIG_DNS_PROVIDER variables.
-# Preserve CLI-managed keys such as trusted_proxy when updating installer-owned fields.
+# Write config.json from CONFIG_SERVER_NAME.
+# Preserve non-installer keys such as trusted_proxy when updating installer-owned fields.
 write_config() {
   if command -v python3 >/dev/null 2>&1; then
-    python3 - "$TAKO_CONFIG" "$CONFIG_SERVER_NAME" "$CONFIG_DNS_PROVIDER" <<'PY'
+    python3 - "$TAKO_CONFIG" "$CONFIG_SERVER_NAME" <<'PY'
 import json
 import os
 import sys
 
-path, server_name, dns_provider = sys.argv[1:4]
+path, server_name = sys.argv[1:3]
 try:
     with open(path) as fh:
         data = json.load(fh)
@@ -1196,8 +1196,6 @@ except (FileNotFoundError, json.JSONDecodeError):
 
 if server_name:
     data["server_name"] = server_name
-if dns_provider:
-    data.setdefault("dns", {})["provider"] = dns_provider
 
 tmp = f"{path}.tmp"
 with open(tmp, "w") as fh:
@@ -1210,21 +1208,13 @@ PY
     existing="$(cat "$TAKO_CONFIG" 2>/dev/null || echo '{}')"
     printf '%s\n' "$existing" | jq \
       --arg server_name "$CONFIG_SERVER_NAME" \
-      --arg dns_provider "$CONFIG_DNS_PROVIDER" \
-      'if $server_name != "" then .server_name = $server_name else . end
-       | if $dns_provider != "" then .dns.provider = $dns_provider else . end' \
+      'if $server_name != "" then .server_name = $server_name else . end' \
       > "$TAKO_CONFIG.tmp"
     mv "$TAKO_CONFIG.tmp" "$TAKO_CONFIG"
   else
     local json="{"
-    local need_comma=false
     if [ -n "$CONFIG_SERVER_NAME" ]; then
       json="${json}\"server_name\":\"$CONFIG_SERVER_NAME\""
-      need_comma=true
-    fi
-    if [ -n "$CONFIG_DNS_PROVIDER" ]; then
-      $need_comma && json="${json},"
-      json="${json}\"dns\":{\"provider\":\"$CONFIG_DNS_PROVIDER\"}"
     fi
     json="${json}}"
     printf '%s\n' "$json" > "$TAKO_CONFIG"
@@ -1234,10 +1224,8 @@ PY
 }
 
 CONFIG_SERVER_NAME=""
-CONFIG_DNS_PROVIDER=""
 if [ -f "$TAKO_CONFIG" ]; then
   CONFIG_SERVER_NAME="$(config_get server_name)"
-  CONFIG_DNS_PROVIDER="$(config_get dns.provider)"
 fi
 
 maybe_prompt_server_name() {
@@ -1327,15 +1315,9 @@ description="Tako Server"
 command="/usr/local/bin/tako-server"
 command_args="--socket $TAKO_SOCKET --data-dir $TAKO_HOME $TAKO_PUBLIC_PORT_ARGS $TAKO_MANAGEMENT_ARGS"
 command_user="$TAKO_USER:$TAKO_USER"
-dns_env="$TAKO_HOME/dns-credentials.env"
 pidfile="/run/\${RC_SVCNAME}.pid"
 command_background="yes"
 retry="TERM/1800/KILL/5"
-
-if [ -f "\$dns_env" ]; then
-  . "\$dns_env"
-  export CF_DNS_API_TOKEN
-fi
 
 depend() {
   need net
@@ -1418,7 +1400,7 @@ if [ "$SERVICE_MANAGER" = "systemd" ]; then
     fi
   else
     echo "OK installed tako-server service (not started)"
-    echo 'Run `tako servers add <host>` from your workstation to configure and start it.'
+    echo 'Run `tako servers add <host>` from your workstation to start and verify it.'
   fi
 elif [ "$SERVICE_MANAGER" = "openrc" ]; then
   if is_enabled "$TAKO_RESTART_SERVICE"; then
@@ -1444,31 +1426,12 @@ elif [ "$SERVICE_MANAGER" = "openrc" ]; then
     fi
   else
     echo "OK installed tako-server service (not started)"
-    echo 'Run `tako servers add <host>` from your workstation to configure and start it.'
+    echo 'Run `tako servers add <host>` from your workstation to start and verify it.'
   fi
 else
   # Install-refresh mode can run before init is active (for example in image builds).
   # In this mode we install binaries/users only and skip service definition install.
   echo "OK install refreshed without active service manager (TAKO_RESTART_SERVICE=0); skipped service definition install"
-fi
-
-# Ensure DNS credentials systemd drop-in is in place (idempotent)
-TAKO_DNS_CREDENTIALS_ENV="$TAKO_HOME/dns-credentials.env"
-
-if [ -n "$CONFIG_DNS_PROVIDER" ]; then
-  echo "OK DNS provider already configured: $CONFIG_DNS_PROVIDER"
-  if [ "$SERVICE_MANAGER" = "systemd" ] && [ -f "$TAKO_DNS_CREDENTIALS_ENV" ]; then
-    dropin_dir="/etc/systemd/system/tako-server.service.d"
-    if [ ! -f "$dropin_dir/dns.conf" ]; then
-      mkdir -p "$dropin_dir"
-      cat > "$dropin_dir/dns.conf" <<DNSEOF
-[Service]
-EnvironmentFile=$TAKO_DNS_CREDENTIALS_ENV
-DNSEOF
-      systemctl daemon-reload
-      echo "OK restored DNS systemd drop-in"
-    fi
-  fi
 fi
 
 echo "OK installed tako-server"

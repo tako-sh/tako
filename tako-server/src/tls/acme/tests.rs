@@ -195,7 +195,6 @@ fn test_acme_config_with_custom_values() {
         timeout: Duration::from_secs(600),
         max_attempts: 50,
         check_delay: Duration::from_secs(10),
-        dns_provider: Some("cloudflare".to_string()),
         dns_propagation_delay: Duration::from_secs(1),
     };
 
@@ -203,39 +202,15 @@ fn test_acme_config_with_custom_values() {
     assert_eq!(config.email, Some("admin@example.com".to_string()));
     assert_eq!(config.max_attempts, 50);
     assert!(config.directory_url().contains("staging"));
-    assert_eq!(config.dns_provider, Some("cloudflare".to_string()));
 }
 
 #[tokio::test]
-async fn test_wildcard_requires_dns_provider() {
+async fn test_wildcard_requires_dns_credentials() {
     let (_temp, acme) = create_test_acme();
-    // dns_provider is None by default, so wildcard should fail with NoDnsProvider
-    let result = acme.request_certificate("*.example.com").await;
-    assert!(matches!(result, Err(AcmeError::NoDnsProvider)));
-}
-
-#[tokio::test]
-async fn test_wildcard_rejects_unsupported_dns_provider() {
-    let temp = TempDir::new().unwrap();
-    let cert_config = CertManagerConfig {
-        cert_dir: temp.path().join("certs"),
-        ..Default::default()
-    };
-    let cert_manager = Arc::new(CertManager::new(cert_config));
-    let acme_config = AcmeConfig {
-        dns_provider: Some("route53".to_string()),
-        email: None,
-        account_dir: temp.path().join("acme"),
-        ..Default::default()
-    };
-    let acme = AcmeClient::new(acme_config, cert_manager);
 
     let result = acme.request_certificate("*.example.com").await;
 
-    assert!(matches!(
-        result,
-        Err(AcmeError::UnsupportedDnsProvider(provider)) if provider == "route53"
-    ));
+    assert!(matches!(result, Err(AcmeError::MissingDnsCredentials)));
 }
 
 #[tokio::test]
@@ -247,14 +222,19 @@ async fn test_wildcard_cloudflare_requires_registered_account() {
     };
     let cert_manager = Arc::new(CertManager::new(cert_config));
     let acme_config = AcmeConfig {
-        dns_provider: Some("cloudflare".to_string()),
         email: None,
         account_dir: temp.path().join("acme"),
         ..Default::default()
     };
     let acme = AcmeClient::new(acme_config, cert_manager);
 
-    let result = acme.request_certificate("*.example.com").await;
+    let dns = tako_core::DnsBinding {
+        provider: tako_core::DnsProvider::Cloudflare,
+        cloudflare_api_token: Some("test-token".to_string()),
+    };
+    let result = acme
+        .request_certificate_with_dns("*.example.com", Some(&dns))
+        .await;
 
     assert!(matches!(result, Err(AcmeError::NotRegistered)));
 }

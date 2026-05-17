@@ -189,6 +189,8 @@ workers = 4
 - `tako init` installs the `tako.sh` SDK via the selected runtime's package-manager `add` command.
 - Server membership is declared per environment with `[envs.<name>].servers`.
 - Storage bindings are declared per environment with `[envs.<name>].storages = { app_name = "resource_name" }`. The key is the stable app-facing binding exposed as `tako.storages.<app_name>`; the value references a top-level `[storages.<resource_name>]` resource.
+- Wildcard certificate DNS credentials are stored per environment in `.tako/secrets.json` by `tako dns configure --env <name>`. Cloudflare is the only supported DNS-01 provider. No DNS provider defaults are written to `tako.toml`.
+- Client source-IP handling is per environment through optional `source_ip` under `[envs.<name>]`. Omitted means automatic Cloudflare detection with direct peer fallback.
 - Top-level `[storages.<resource>]` config contains non-secret storage metadata. Supported providers are `s3` and `local`. `s3` requires `bucket`, `endpoint`, and `region`; `endpoint` and optional `public_base_url` must use HTTPS. `local` has no configurable path; Tako stores objects under the app data directory using a Tako-chosen layout.
 - In `development`, a storage binding may reference a resource that is not declared under `[storages]`; it defaults to local storage. In deploy environments, every bound resource must be declared. Explicit `provider = "local"` may be used outside development only for single-server deployments.
 - The same server name may be assigned to multiple non-development environments in one project. Each environment deploys to its own server-side app identity and filesystem path under `/opt/tako/apps/{app}/{env}`.
@@ -299,6 +301,9 @@ Per-environment encrypted secrets (JSON format, AES-256-GCM encryption):
         "access_key_id": "encrypted_value",
         "secret_access_key": "encrypted_value"
       }
+    },
+    "dns": {
+      "cloudflare_api_token": "encrypted_value"
     }
   },
   "staging": {
@@ -310,7 +315,7 @@ Per-environment encrypted secrets (JSON format, AES-256-GCM encryption):
 }
 ```
 
-Each environment has a `key_id` (16 hex characters), an `app` map for app secrets, and an optional `storages` map for encrypted storage credentials keyed by storage resource name. App secret names and storage resource names are plaintext; values are encrypted with AES-256-GCM.
+Each environment has a `key_id` (16 hex characters), an `app` map for app secrets, an optional `storages` map for encrypted storage credentials keyed by storage resource name, and optional encrypted `dns` credentials for wildcard certificates. App secret names and storage resource names are plaintext; values are encrypted with AES-256-GCM.
 
 `tako init` ensures the app's `.tako/` directory stays ignored while `.tako/secrets.json` remains trackable:
 
@@ -343,6 +348,43 @@ public_base_url = "https://cdn.example.com/uploads"
 ```
 
 Storage binding and resource names may contain lowercase letters, numbers, hyphens, and underscores. Deploy decrypts the selected environment's storage credentials locally, combines them with the selected `tako.toml` resource metadata, sends the runtime bindings over the signed management path, and `tako-server` stores the resulting bindings encrypted in server SQLite. Fresh app and worker processes receive bindings through the fd 3 bootstrap envelope as `storages`.
+
+### DNS Configuration And Credentials
+
+Wildcard certificate DNS credentials live in `.tako/secrets.json`. `tako.toml` does not declare a DNS provider while Cloudflare is the only supported DNS-01 provider.
+
+```toml
+[envs.production]
+route = "*.example.com"
+servers = ["la"]
+```
+
+Configure Cloudflare DNS credentials with:
+
+```bash
+tako dns configure --env production
+```
+
+The command prompts for a Cloudflare API token when `--cloudflare-api-token` is omitted and encrypts the token in `.tako/secrets.json` under the selected environment's `dns` object. Deploy validates that wildcard routes have DNS credentials, decrypts the selected environment's token locally, sends the DNS binding over the signed management path only for wildcard routes, and `tako-server` stores it encrypted in server SQLite for that deployed app.
+
+### Source IP Configuration
+
+`[envs.<env>].source_ip` controls how Tako derives the client IP that is used for per-IP rate limits and upstream `X-Forwarded-For`.
+
+```toml
+[envs.production]
+route = "app.example.com"
+servers = ["la"]
+source_ip = "cloudflare-proxy"
+```
+
+Allowed values:
+
+- Omitted or `"auto"`: if the direct peer IP belongs to Cloudflare and `CF-Connecting-IP` is present, use that header; otherwise use the direct peer IP.
+- `"direct"`: always use the direct peer IP.
+- `"cloudflare-proxy"`: strict Cloudflare mode; requests must come from Cloudflare IP ranges and include a valid `CF-Connecting-IP` header.
+
+Generated `tako.toml` files omit `source_ip` by default. `tako-server` keeps Cloudflare IP ranges in memory, starts from a bundled fallback list, overlays a valid last-known-good cache from the server data directory, and refreshes the list every 24 hours while running when any route uses `source_ip = "auto"` or `source_ip = "cloudflare-proxy"`. Successful refreshes are written back to disk.
 
 ## Tako CLI Commands
 
@@ -426,6 +468,7 @@ Template behavior:
 - Writes the selected config file (default `./tako.toml`).
 - Prompts for required app `name` (default from selected-config parent directory-derived app name).
 - Prompts for required production route (`[envs.production].route`) with default `{name}.example.com`.
+- If the production route is a wildcard route, prompts to set up Cloudflare DNS for wildcard HTTPS. When accepted, init encrypts the Cloudflare API token in `.tako/secrets.json` under the production environment's `dns` object.
 - Detects adapter (`bun`, `node`, `go`, fallback `unknown`) and prompts for runtime selection.
 - For JS runtimes, prompts for `app_root` after runtime selection. The default is `src` for new projects, `src` or `app` when existing Tako JS files live there, and `.` when existing `tako.d.ts`, legacy `tako.gen.ts`, `channels/`, or `workflows/` live next to `tako.toml`. The generated config omits `app_root` when the selected root is the default `src`, and writes it only for non-default roots.
 - After generating `tako.toml`, init installs the `tako.sh` SDK package via the selected runtime's package-manager `add` command (for JS: `bun add tako.sh`, etc.; for Go: `go get tako.sh`).
@@ -687,7 +730,7 @@ Add server to global `config.toml` (`[[servers]]`).
 
 - With `host`: adds directly from CLI args and defaults the server name to the host's first DNS label (`my-server.tailnet.ts.net` becomes `my-server`). IP addresses and hosts that do not produce a valid server name require `--name`.
 - With `admin-user@host`: treats the prefix as the admin SSH user for install/repair and stores only `host`.
-- Without `host` (interactive terminal): launches a guided wizard (host, SSH port, optional SSH passphrase when a default key is encrypted, HTTP/HTTPS ports and first-run server settings when installing or configuring a stopped install, required server name, optional description) with a final `Looks good?` confirmation. Choosing `No` restarts the wizard.
+- Without `host` (interactive terminal): launches a guided wizard (host, SSH port, optional SSH passphrase when a default key is encrypted, HTTP/HTTPS ports when installing or starting a stopped install, required server name, optional description) with a final `Looks good?` confirmation. Choosing `No` restarts the wizard.
 - If the derived server name already exists, interactive mode prompts for another name. Non-interactive mode fails and asks for `--name`.
 - The add-server wizard supports `Tab` autocomplete suggestions for host/name/port from existing servers and persisted CLI history.
   - For name/port prompts, suggestions related to the selected host (and selected name for ports) are prioritized first, then global suggestions are shown.
@@ -704,16 +747,11 @@ If `--no-test` is used, SSH checks and target detection are skipped; deploy late
 
 If `--install` is used and `tako-server` is missing or `tako@host` is not available, `tako servers add` connects as the admin SSH user (default `root`, override with `--admin-user`) and runs the server installer over SSH in bootstrap-only mode first. Passing `admin-user@host` is shorthand for setting that admin user and enabling install/repair when needed. Interactive installs prompt for editable HTTP and HTTPS port fields prefilled with `80` and `443` unless `--http-port`/`--https-port` were passed.
 
-Before the first service start, interactive install/configure flows prompt for first-run server settings:
-
-- Source IP mode for direct traffic, PROXY protocol, Cloudflare `CF-Connecting-IP`, or `X-Forwarded-For`.
-- DNS wildcard certificates (asks whether wildcard routes are needed, then collects a Cloudflare DNS-01 token when enabled).
-
-Tako writes selected first-run settings to the server before starting `tako-server`. It then starts the service through the installer configure/start path, rechecks `tako@host`, enrolls the same key for signed remote management, verifies signed HTTP access, and only then writes `config.toml`. Non-interactive install/repair uses safe defaults (DNS wildcard certificates disabled and no trusted proxy source-IP config).
+Before the first service start, add-server install flows use default listener settings. Tako starts the service through the installer service-start path, rechecks `tako@host`, enrolls the same key for signed remote management, verifies signed HTTP access, and only then writes `config.toml`.
 
 In the interactive wizard and direct host flow, if `tako-server` is missing or `tako@host` cannot be reached, Tako asks whether to install now, prompts for public HTTP/HTTPS ports, and prompts for the admin SSH user.
 
-If `tako-server` is installed but not yet set up or started (the normal result of running `install-server.sh` manually), `tako servers add` asks whether to set up and start it. Interactive flows prompt for first-run server settings before the service starts. In non-interactive install/repair mode (`--install` or `admin-user@host`), the configure/start step runs automatically with safe defaults.
+If `tako-server` is installed but not yet started (for example after an explicit bootstrap-only install), `tako servers add` asks whether to start it. In non-interactive install/repair mode (`--install` or `admin-user@host`), the service-start step runs automatically with default listener settings.
 
 ### tako servers remove [name]
 
@@ -801,41 +839,14 @@ Remove tako-server and all data from a remote server.
    - Removes data directory (`/opt/tako/`) and the management socket directory (`/var/run/tako/`).
 4. Removes the server from the local `config.toml` server list.
 
-### tako servers configure [name]
+### tako dns configure [--env {environment}] [--cloudflare-api-token {token}]
 
-Change server settings through an interactive wizard. Initial install/start settings are also collected by `tako servers add` when it installs or starts a stopped server.
+Configure wildcard certificate DNS for the current app environment.
 
-1. Resolves the server from global config:
-   - If `name` is provided, loads that server.
-   - If `name` is omitted and exactly one server is configured, uses that server.
-   - If `name` is omitted and multiple servers are configured in an interactive terminal, prompts to select one.
-   - If `name` is omitted and multiple servers are configured in a non-interactive terminal, fails and asks for `tako servers configure <name>`.
-2. Connects to the server and reads the current server config without reading secrets:
-   - Reads the non-secret settings from `/opt/tako/config.json`.
-   - Does not read `/opt/tako/dns-credentials.env` or any stored credential values.
-3. Runs the setting prompts in a linear order:
-   - Source IP behind a trusted proxy
-   - DNS wildcard certificates
-4. Trusted proxy source-IP configuration:
-   - The source-IP prompt shows the current mode and asks whether to change it. Answering no leaves the existing source-IP config unchanged.
-   - When changing source-IP handling, the mode prompt recommends direct traffic unless the server is only reachable through a trusted proxy and uses compact option labels.
-   - `Direct traffic` removes trusted proxy source-IP config.
-   - `PROXY protocol from a TCP proxy such as NGINX` enables PROXY protocol v1/v2 on the public HTTP/HTTPS listeners and prompts for trusted proxy CIDRs. The default CIDRs are loopback (`127.0.0.1/32`, `::1/128`) for same-host proxies such as NGINX stream or HAProxy.
-   - `Cloudflare proxy mode using CF-Connecting-IP` trusts `CF-Connecting-IP` only from configured Cloudflare IP ranges. Use it when the hostname is proxied by Cloudflare.
-   - `X-Forwarded-For from a non-Cloudflare HTTP reverse proxy` trusts the leftmost `X-Forwarded-For` IP only from configured trusted proxy CIDRs. Use it for a non-Cloudflare proxy that terminates HTTP/HTTPS and forwards requests to Tako.
-   - Writes `trusted_proxy` into `/opt/tako/config.json` and restarts `tako-server`.
-   - Trusted source-IP metadata is server/listener-level, not per app. Enable it only when public traffic can reach Tako only through the configured trusted proxy CIDRs; otherwise clients could spoof their source IP.
-5. DNS wildcard configuration:
-   - Asks whether the server needs DNS wildcard certificates. Choosing no keeps DNS wildcard certificates disabled when they are already disabled, or disables existing DNS wildcard configuration.
-   - Choosing yes uses Cloudflare as the DNS-01 provider. If Cloudflare DNS-01 is already enabled, Tako asks whether to update the Cloudflare API token.
-   - Prompts for a Cloudflare API token that can read zones and edit DNS records for the zone when enabling or updating Cloudflare.
-   - Verifies credentials locally against the Cloudflare token verification API.
-   - Writes credentials to `/opt/tako/dns-credentials.env` (mode 0600).
-   - Merges `dns.provider = "cloudflare"` into `/opt/tako/config.json`.
-   - Writes a systemd drop-in to inject the env file and restarts `tako-server`.
-   - Polls `tako-server` to confirm the provider is active.
-   - Disabling removes `dns.provider`, removes DNS credentials and the DNS systemd drop-in, restarts `tako-server`, and polls to confirm DNS wildcard certificates are disabled.
-   - `tako-server` creates and removes Cloudflare TXT records directly when issuing wildcard certificates.
+- `--env {environment}` defaults to `production`.
+- `--cloudflare-api-token {token}` is optional; interactive runs prompt when omitted.
+
+The command ensures the environment has an encryption key and stores the encrypted Cloudflare API token in `.tako/secrets.json` under that environment's `dns` object. It does not edit `tako.toml`. The token is sent to servers only during deploys that include wildcard routes, scoped to the deployed app environment.
 
 ### tako uninstall [-y|--yes]
 
@@ -993,7 +1004,7 @@ Deploy flow helpers:
 
 **Steps:**
 
-1. Pre-deployment validation (secrets present, server target metadata present/valid for all selected servers)
+1. Pre-deployment validation (secrets present, wildcard DNS credentials present when routes include wildcards, server target metadata present/valid for all selected servers)
 2. Resolve source bundle root (git root when available; otherwise app directory)
 3. Resolve app subdirectory from the selected config file's parent directory relative to source bundle root
 4. Resolve deploy runtime `main` (`main` from `tako.toml`; otherwise manifest main such as `package.json` `main`; otherwise preset `main`, with JS index fallback order: `index.<ext>` then `src/index.<ext>` for `ts`/`tsx`/`js`/`jsx` when applicable)
@@ -1013,6 +1024,7 @@ Deploy flow helpers:
    - Require `tako-server` to be pre-installed and running on each server
    - Upload and extract target-specific artifact
    - Query server for the app's current secrets hash; if it matches the local secrets hash, skip sending secrets (server keeps existing). If hashes differ (or app is new), include decrypted secrets in the deploy command.
+   - If the environment has wildcard routes, include the decrypted DNS binding in the deploy command. Otherwise, the server clears stored DNS credentials for that deployed app.
    - `tako-server` acquires a per-app deploy lock in memory, reads non-secret runtime/app config from release `app.json`, creates per-app runtime data directories, and runs the runtime plugin's production install command
    - If another deploy for the same app environment is already running on that server, the deploy command fails immediately with a retry message
 10. Run release command on the leader server (when configured):
@@ -1281,9 +1293,9 @@ Installer SSH key behavior:
 - Installer installs restricted maintenance helpers and scoped sudoers policy so the `tako` SSH user can perform non-interactive server upgrade/reload operations.
 - When the installer installs or accepts `TAKO_SSH_PUBKEY`, it also enrolls that public key for signed remote management in `/opt/tako/management-authorized-keys`.
 - Installer supports systemd and OpenRC hosts.
-- Installer defaults to bootstrap-only mode (`TAKO_RESTART_SERVICE=0`): it installs/refreshes the binary, users, directories, helpers, sudoers policy, and service definition, but does not enable or start `tako-server`. The installer prints the next step: run `tako servers add <host>` from the workstation to configure and start the server.
-- Configure/start mode (`TAKO_RESTART_SERVICE=1`) enables/starts the service and requires a usable service manager and remote management on a Tailscale IP. `tako servers add --install` and `admin-user@host` add/repair flows run bootstrap-only mode first, write first-run settings, then run configure/start mode to start the service. Manual installer runs may explicitly set `TAKO_RESTART_SERVICE=1`.
-- Installer writes `tako-server --http-port {port} --https-port {port}` into the host service definition. Configure/start mode prompts for `HTTP port [80]:` and `HTTPS port [443]:` when a terminal is available; bootstrap-only mode never prompts for ports and uses existing service ports or `80`/`443` unless `--http-port`/`--https-port` or `TAKO_HTTP_PORT`/`TAKO_HTTPS_PORT` are provided. Reinstalls use the existing service ports as prompt defaults when present.
+- Installer defaults to service-start mode (`TAKO_RESTART_SERVICE=1`): it installs/refreshes the binary, users, directories, helpers, sudoers policy, and service definition, then enables and starts or reloads `tako-server`.
+- Bootstrap-only mode (`TAKO_RESTART_SERVICE=0`) installs or refreshes files without enabling, starting, or reloading `tako-server`. `tako servers add --install` and `admin-user@host` add/repair flows run bootstrap-only mode first, then run service-start mode to start the service with default listener settings.
+- Installer writes `tako-server --http-port {port} --https-port {port}` into the host service definition. Service-start mode prompts for `HTTP port [80]:` and `HTTPS port [443]:` when a terminal is available; bootstrap-only mode never prompts for ports and uses existing service ports or `80`/`443` unless `--http-port`/`--https-port` or `TAKO_HTTP_PORT`/`TAKO_HTTPS_PORT` are provided. Reinstalls use the existing service ports as prompt defaults when present.
 - If service public ports change, installer performs a full service restart so the service manager command line takes effect. Otherwise, active services use the normal zero-downtime reload path.
 - For normal service installs, installer configures remote management on the server's Tailscale IP. It detects that address with `tailscale ip -4` or uses `TAKO_MANAGEMENT_HOST` when set. If no Tailscale IP is available, install fails with: `Remote management requires Tailscale so Tako can keep server control traffic private by default.`
 - Installer configures service capability support for privileged binds, app-user switching, and stopping app processes after switching users:
@@ -1357,24 +1369,13 @@ Reference scripts in this repo:
 
 ```json
 {
-  "server_name": "prod",
-  "dns": {
-    "provider": "cloudflare"
-  },
-  "trusted_proxy": {
-    "proxy_protocol": true,
-    "trusted_cidrs": ["127.0.0.1/32", "::1/128"],
-    "client_ip_headers": []
-  }
+  "server_name": "prod"
 }
 ```
 
 - `server_name` — identity label for Prometheus metrics (defaults to hostname if absent).
-- `dns.provider` — DNS provider for Let's Encrypt DNS-01 wildcard challenges. Currently only `"cloudflare"` is supported and is configured during `tako servers add` first-run setup or later with `tako servers configure [name]`.
-- `trusted_proxy.proxy_protocol` — when true, public listeners require a PROXY protocol v1/v2 preface from a trusted proxy and use its source address for rate limiting and upstream `X-Forwarded-For`.
-- `trusted_proxy.trusted_cidrs` — CIDR ranges allowed to provide source-IP metadata.
-- `trusted_proxy.client_ip_headers` — optional trusted HTTP source-IP headers (`cf-connecting-ip`, `x-forwarded-for`) accepted only from `trusted_cidrs`.
-- Written by the installer (server name) and CLI (DNS/trusted proxy config). Read by `tako-server` at startup.
+- `trusted_proxy` remains an advanced server-level escape hatch for PROXY protocol deployments, but it is not configured by the CLI. Cloudflare source-IP handling is app/environment-level through `source_ip`.
+- Written by the installer for server identity. Read by `tako-server` at startup.
 
 **Server identity:** `tako-server` creates a stable Ed25519 identity at `{data_dir}/identity.key` and writes the public key to `{data_dir}/identity.pub`. The private key is mode `0600`, is preserved across restarts/upgrades, and is removed only by full server uninstall. `hello` and `server_info` include the OpenSSH SHA-256 fingerprint so the CLI can identify the server during add/probe flows.
 
@@ -1767,15 +1768,15 @@ This requires OpenSSL (not rustls) for callback support.
 - Automatic renewal 30 days before expiry
 - HTTP-01 challenge uses the public HTTP port. Let's Encrypt reaches port 80, so custom HTTP ports require external port-80 forwarding, DNS-01, or manual certificates.
 - Zero-downtime renewal
-- DNS-01 challenges are supported for wildcard certificates through Cloudflare DNS. Credentials are stored on the server at `/opt/tako/dns-credentials.env` and `dns.provider = "cloudflare"` is persisted in `/opt/tako/config.json`. Enable Cloudflare DNS-01 during `tako servers add` first-run setup, or run `tako servers configure [name]` later and answer yes when asked whether the server needs wildcard certificates.
+- DNS-01 challenges are supported for wildcard certificates through Cloudflare DNS. Configure encrypted credentials with `tako dns configure --env <env>`. Deploy sends the selected environment's DNS binding to each server for wildcard routes, and `tako-server` stores it encrypted per deployed app.
 
 ### Wildcard Certificate Handling
 
 Routing supports wildcard hosts (e.g. `*.example.com`). For TLS:
 
-- Wildcard certificates are issued automatically via Cloudflare DNS-01 challenges when Cloudflare DNS credentials are configured
+- Wildcard certificates are issued automatically via Cloudflare DNS-01 challenges when the deployed app environment has Cloudflare DNS credentials
 - Wildcard certificates are used when present in cert storage
-- If Cloudflare DNS-01 is not configured when wildcard routes are deployed, deploy fails with an error directing the user to run `tako servers configure <name>` for each listed server
+- If Cloudflare DNS-01 is not configured when wildcard routes are deployed, deploy fails with an error directing the user to run `tako dns configure --env <env>`
 
 ### Certificate Storage
 

@@ -46,15 +46,57 @@ fn test_deploy_command_serialization_includes_scaling() {
         version: "v1".to_string(),
         path: "/opt/tako/apps/my-app/releases/v1".to_string(),
         routes: vec!["example.com".to_string()],
+        source_ip: SourceIpMode::Auto,
         secrets: Some(HashMap::from([(
             "API_KEY".to_string(),
             "secret123".to_string(),
         )])),
         storages: None,
+        dns: None,
     };
     let json = serde_json::to_string(&cmd).unwrap();
     assert!(json.contains(r#""command":"deploy""#));
     assert!(json.contains(r#""secrets":{"API_KEY":"secret123"}"#));
+}
+
+#[test]
+fn test_deploy_command_serialization_includes_dns_binding() {
+    let cmd = Command::Deploy {
+        app: "my-app".to_string(),
+        version: "v1".to_string(),
+        path: "/opt/tako/apps/my-app/releases/v1".to_string(),
+        routes: vec!["*.example.com".to_string()],
+        source_ip: SourceIpMode::Auto,
+        secrets: None,
+        storages: None,
+        dns: Some(DnsBinding {
+            provider: DnsProvider::Cloudflare,
+            cloudflare_api_token: Some("token".to_string()),
+        }),
+    };
+
+    let json = serde_json::to_string(&cmd).unwrap();
+
+    assert!(json.contains(r#""dns":{"provider":"cloudflare""#));
+    assert!(json.contains(r#""cloudflare_api_token":"token""#));
+}
+
+#[test]
+fn test_deploy_command_serialization_includes_source_ip_mode() {
+    let cmd = Command::Deploy {
+        app: "my-app".to_string(),
+        version: "v1".to_string(),
+        path: "/opt/tako/apps/my-app/releases/v1".to_string(),
+        routes: vec!["example.com".to_string()],
+        source_ip: SourceIpMode::CloudflareProxy,
+        secrets: None,
+        storages: None,
+        dns: None,
+    };
+
+    let json = serde_json::to_string(&cmd).unwrap();
+
+    assert!(json.contains(r#""source_ip":"cloudflare-proxy""#));
 }
 
 #[test]
@@ -69,10 +111,16 @@ fn test_deploy_command_deserialization_defaults_secrets_when_missing() {
     let cmd: Command = serde_json::from_str(json).unwrap();
     match cmd {
         Command::Deploy {
-            secrets, storages, ..
+            source_ip,
+            secrets,
+            storages,
+            dns,
+            ..
         } => {
+            assert_eq!(source_ip, SourceIpMode::Auto);
             assert!(secrets.is_none());
             assert!(storages.is_none());
+            assert!(dns.is_none());
         }
         _ => panic!("Expected deploy command"),
     }
@@ -395,17 +443,25 @@ fn test_deploy_with_none_secrets_keeps_existing() {
         version: "v1".to_string(),
         path: "/opt/tako/apps/my-app/releases/v1".to_string(),
         routes: vec!["example.com".to_string()],
+        source_ip: SourceIpMode::Auto,
         secrets: None,
         storages: None,
+        dns: None,
     };
     let json = serde_json::to_string(&cmd).unwrap();
     let parsed: Command = serde_json::from_str(&json).unwrap();
     match parsed {
         Command::Deploy {
-            secrets, storages, ..
+            source_ip,
+            secrets,
+            storages,
+            dns,
+            ..
         } => {
+            assert_eq!(source_ip, SourceIpMode::Auto);
             assert!(secrets.is_none());
             assert!(storages.is_none());
+            assert!(dns.is_none());
         }
         _ => panic!("Expected deploy command"),
     }
@@ -460,7 +516,6 @@ fn test_server_runtime_info_pid_roundtrip() {
         acme_staging: false,
         acme_email: None,
         renewal_interval_hours: 12,
-        dns_provider: None,
         standby: false,
         metrics_port: Some(9898),
         server_name: Some("la".to_string()),
@@ -469,7 +524,6 @@ fn test_server_runtime_info_pid_roundtrip() {
     let json = serde_json::to_string(&info).unwrap();
     let parsed: ServerRuntimeInfo = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed.pid, 42);
-    assert!(parsed.dns_provider.is_none());
     assert_eq!(parsed.server_name.as_deref(), Some("la"));
     assert_eq!(
         parsed.server_identity.as_deref(),

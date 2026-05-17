@@ -103,7 +103,9 @@ impl TestServer {
 
             let _ = fs::remove_file(&socket_path);
             let mut child = spawn_test_server(&socket_path, data_dir.path(), http_port, tls_port);
-            match wait_for_server_socket(&socket_path, &mut child) {
+            match wait_for_server_socket(&socket_path, &mut child)
+                .and_then(|()| wait_for_server_http(http_port, &mut child))
+            {
                 Ok(()) => {
                     return TestServer {
                         child: Some(child),
@@ -248,6 +250,7 @@ fn spawn_test_server(
         .arg("--metrics-port")
         .arg("0")
         .env("RUST_LOG", "warn")
+        .env("TAKO_TEST_SKIP_CLOUDFLARE_IP_REFRESH", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
@@ -269,6 +272,21 @@ fn wait_for_server_socket(socket_path: &std::path::Path, child: &mut Child) -> R
         thread::sleep(SERVER_START_POLL_DELAY);
     }
     Err("server socket never became available".to_string())
+}
+
+fn wait_for_server_http(http_port: u16, child: &mut Child) -> Result<(), String> {
+    for _ in 0..SERVER_START_POLL_ATTEMPTS {
+        if TcpStream::connect(("127.0.0.1", http_port)).is_ok() {
+            return Ok(());
+        }
+        if let Ok(Some(status)) = child.try_wait() {
+            return Err(format!(
+                "tako-server exited before HTTP became available: {status}"
+            ));
+        }
+        thread::sleep(SERVER_START_POLL_DELAY);
+    }
+    Err("server HTTP port never became available".to_string())
 }
 
 fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> Option<std::process::ExitStatus> {

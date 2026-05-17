@@ -65,10 +65,8 @@ pub enum AcmeError {
     #[error("DNS-01 challenge not available")]
     NoDns01Challenge,
 
-    #[error(
-        "Wildcard certificate requires Cloudflare DNS-01 (dns.provider = \"cloudflare\" not set in config.json)"
-    )]
-    NoDnsProvider,
+    #[error("Wildcard certificate requires Cloudflare DNS credentials for this app")]
+    MissingDnsCredentials,
 
     #[error("Unsupported DNS provider '{0}'. Tako currently supports Cloudflare for DNS-01")]
     UnsupportedDnsProvider(String),
@@ -98,8 +96,6 @@ pub struct AcmeConfig {
     pub max_attempts: u32,
     /// Delay between status checks
     pub check_delay: Duration,
-    /// DNS provider for DNS-01 wildcard challenges. Currently supports `cloudflare`.
-    pub dns_provider: Option<String>,
     /// Delay after writing DNS-01 TXT records before asking the CA to validate.
     pub dns_propagation_delay: Duration,
 }
@@ -113,7 +109,6 @@ impl Default for AcmeConfig {
             timeout: Duration::from_secs(300),
             max_attempts: 30,
             check_delay: Duration::from_secs(5),
-            dns_provider: None,
             dns_propagation_delay: Duration::from_secs(10),
         }
     }
@@ -296,16 +291,24 @@ impl AcmeClient {
 
     /// Request a certificate for a domain.
     ///
-    /// Wildcard domains (starting with `*.`) use DNS-01 through Cloudflare.
+    /// Wildcard domains (starting with `*.`) require app DNS credentials.
     /// All other domains use HTTP-01 via instant-acme.
     pub async fn request_certificate(&self, domain: &str) -> Result<CertInfo, AcmeError> {
+        self.request_certificate_with_dns(domain, None).await
+    }
+
+    pub async fn request_certificate_with_dns(
+        &self,
+        domain: &str,
+        dns: Option<&tako_core::DnsBinding>,
+    ) -> Result<CertInfo, AcmeError> {
         // Validate domain
         if domain.is_empty() || domain.contains('/') || domain.starts_with('.') {
             return Err(AcmeError::InvalidDomain(domain.to_string()));
         }
 
         if domain.starts_with("*.") {
-            return self.request_certificate_dns01(domain).await;
+            return self.request_certificate_dns01(domain, dns).await;
         }
 
         let account = {
@@ -473,22 +476,30 @@ impl AcmeClient {
     }
 
     /// Request a wildcard certificate using Cloudflare DNS-01 challenge records.
-    async fn request_certificate_dns01(&self, domain: &str) -> Result<CertInfo, AcmeError> {
-        let provider = self
-            .config
-            .dns_provider
-            .as_deref()
-            .ok_or(AcmeError::NoDnsProvider)?;
-
-        if provider != CLOUDFLARE_DNS_PROVIDER {
-            return Err(AcmeError::UnsupportedDnsProvider(provider.to_string()));
+    async fn request_certificate_dns01(
+        &self,
+        domain: &str,
+        dns: Option<&tako_core::DnsBinding>,
+    ) -> Result<CertInfo, AcmeError> {
+        let dns = dns.ok_or(AcmeError::MissingDnsCredentials)?;
+        if dns.provider != tako_core::DnsProvider::Cloudflare {
+            return Err(AcmeError::UnsupportedDnsProvider(format!(
+                "{:?}",
+                dns.provider
+            )));
         }
+        let token = dns
+            .cloudflare_api_token
+            .as_deref()
+            .filter(|token| !token.trim().is_empty())
+            .ok_or(DnsError::MissingCredential("cloudflare_api_token"))?;
 
         let account = {
             let guard = self.account.read();
             guard.clone().ok_or(AcmeError::NotRegistered)?
         };
-        let dns_provider = CloudflareDnsProvider::from_env(self.config.dns_propagation_delay)?;
+        let dns_provider =
+            CloudflareDnsProvider::from_api_token(token, self.config.dns_propagation_delay)?;
         let mut records = Vec::new();
         let result = self
             .complete_dns01_order(domain, account, &dns_provider, &mut records)
@@ -641,6 +652,15 @@ impl AcmeClient {
     pub async fn renew_certificate(&self, domain: &str) -> Result<CertInfo, AcmeError> {
         tracing::info!(domain = domain, "Renewing certificate");
         self.request_certificate(domain).await
+    }
+
+    pub async fn renew_certificate_with_dns(
+        &self,
+        domain: &str,
+        dns: Option<&tako_core::DnsBinding>,
+    ) -> Result<CertInfo, AcmeError> {
+        tracing::info!(domain = domain, "Renewing certificate");
+        self.request_certificate_with_dns(domain, dns).await
     }
 
     /// Get challenge response for HTTP-01 validation

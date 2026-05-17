@@ -120,7 +120,7 @@ tako servers add ubuntu@host.example.com --install --name la
 
 `admin-user@host` tells Tako which admin SSH user to use for install or repair. The server is stored locally as just the host.
 
-If you already ran `install-server.sh` on the host, run `tako servers add host.example.com --name la` from your workstation. The installer leaves the service stopped; `servers add` collects first-run source-IP and DNS wildcard settings, starts it, and verifies access before saving it locally.
+If you already ran `install-server.sh` on the host, run `tako servers add host.example.com --name la` from your workstation. The installer starts the service by default; `servers add` verifies access and saves it locally. If you explicitly installed with `TAKO_RESTART_SERVICE=0`, `servers add` can start the stopped service with default listener settings.
 
 ## Target Metadata Missing
 
@@ -156,15 +156,11 @@ If any check fails, the server is not written to `config.toml`.
 
 ## Source IP Shows The Proxy
 
-If Tako is behind HAProxy, a cloud load balancer, or Cloudflare, the direct TCP peer may be the proxy instead of the browser. New installs can configure source-IP handling during `tako servers add`. To change it later, run:
+If Tako is behind Cloudflare, source-IP handling is automatic by default. Requests from Cloudflare IP ranges use `CF-Connecting-IP`; other requests use the direct peer IP.
 
-```bash
-tako servers configure [name]
-```
+Set `source_ip = "cloudflare-proxy"` under the app environment when all public traffic must come through Cloudflare. In that strict mode, non-Cloudflare peers are rejected. Set `source_ip = "direct"` when Tako should ignore proxy headers and always use the TCP peer.
 
-The wizard reads current non-secret server config first, asks whether to change source-IP handling, then asks whether the server needs DNS wildcard certificates before entering Cloudflare DNS-01 setup. When changing source-IP handling, the prompt recommends direct traffic unless the server is only reachable through a trusted proxy and uses compact option labels.
-
-Choose source-IP configuration. Use PROXY protocol only when the upstream is a TCP proxy that sends a PROXY header, such as NGINX stream or HAProxy. Cloudflare proxy mode uses `CF-Connecting-IP`; it does not use PROXY protocol. Configure trusted proxy CIDRs and make sure direct public traffic cannot bypass that proxy.
+Configure wildcard certificate DNS per app environment with `tako dns configure --env <env>`.
 
 ## Deploy Fails Before Upload
 

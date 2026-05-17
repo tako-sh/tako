@@ -92,6 +92,26 @@ fn storage_credentials_do_not_appear_as_app_secret_names() {
 }
 
 #[test]
+fn parse_reads_dns_credentials_without_app_secret_name() {
+    let json = r#"{
+            "production": {
+                "key_id": "0123456789abcdef",
+                "app": {
+                    "DATABASE_URL": "encrypted-db"
+                },
+                "dns": {
+                    "cloudflare_api_token": "encrypted-token"
+                }
+            }
+        }"#;
+
+    let store = SecretsStore::parse(json).unwrap();
+    let dns = store.get_dns_credentials("production").unwrap();
+    assert_eq!(dns.cloudflare_api_token, "encrypted-token");
+    assert_eq!(store.all_secret_names(), vec!["DATABASE_URL".to_string()]);
+}
+
+#[test]
 fn test_parse_multiple_environments() {
     let json = r#"{
             "production": {

@@ -202,14 +202,27 @@ impl crate::ServerState {
                 app_name
             ));
         }
+        let dns = match self.state_store.get_dns(app_name) {
+            Ok(value) => value,
+            Err(error) => {
+                return Response::error(format!("Failed to read DNS credentials: {error}"));
+            }
+        };
+        let source_ip = self
+            .app_manager
+            .get_app(app_name)
+            .map(|app| app.config.read().source_ip)
+            .unwrap_or_default();
 
         self.deploy_app(
             app_name,
             version,
             &target_path.to_string_lossy(),
             routes,
+            source_ip,
             None,
             None,
+            dns,
         )
         .await
     }

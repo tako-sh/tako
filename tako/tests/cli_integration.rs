@@ -582,81 +582,6 @@ mod server_commands {
     }
 
     #[test]
-    fn servers_configure_without_name_reaches_command_logic() {
-        let temp = TempDir::new().unwrap();
-        let project_dir = temp.path().join("project");
-        fs::create_dir_all(&project_dir).unwrap();
-
-        let home = temp.path().join("home");
-        let tako_home = temp.path().join("tako-home");
-        fs::create_dir_all(&home).unwrap();
-        fs::create_dir_all(&tako_home).unwrap();
-
-        let out = run_tako_with_env(&["servers", "configure"], &project_dir, &home, &tako_home);
-
-        assert!(
-            !out.status.success(),
-            "servers configure should fail at command validation without servers: {}{}",
-            stdout_str(&out),
-            stderr_str(&out)
-        );
-
-        let combined = format!("{}{}", stdout_str(&out), stderr_str(&out));
-        assert!(
-            combined.contains("No servers configured"),
-            "expected no-servers guidance: {}",
-            combined
-        );
-        assert!(
-            !combined.contains("required arguments"),
-            "should not fail in clap before command logic: {}",
-            combined
-        );
-    }
-
-    #[test]
-    fn servers_configure_without_name_auto_selects_single_server() {
-        let temp = TempDir::new().unwrap();
-        let project_dir = temp.path().join("project");
-        fs::create_dir_all(&project_dir).unwrap();
-
-        let home = temp.path().join("home");
-        let tako_home = temp.path().join("tako-home");
-        fs::create_dir_all(&home).unwrap();
-        fs::create_dir_all(&tako_home).unwrap();
-        fs::write(
-            tako_home.join("config.toml"),
-            r#"
-[[servers]]
-name = "prod"
-host = "prod.example.com"
-"#,
-        )
-        .unwrap();
-
-        let out = run_tako_with_env(&["servers", "configure"], &project_dir, &home, &tako_home);
-
-        assert!(
-            !out.status.success(),
-            "settings wizard should require a terminal: {}{}",
-            stdout_str(&out),
-            stderr_str(&out)
-        );
-
-        let combined = format!("{}{}", stdout_str(&out), stderr_str(&out));
-        assert!(
-            combined.contains("Interactive server configuration requires a terminal"),
-            "expected terminal-required error after server resolution: {}",
-            combined
-        );
-        assert!(
-            !combined.contains("No server name provided"),
-            "single configured server should be selected automatically: {}",
-            combined
-        );
-    }
-
-    #[test]
     fn servers_add_creates_missing_tako_home() {
         let temp = TempDir::new().unwrap();
         let project_dir = temp.path().join("project");
@@ -2060,6 +1985,62 @@ route = "prod.example.com"
             stderr.contains("No servers have been added")
                 || stderr.contains("tako servers add <host>"),
             "Should include add-server hint: {}",
+            stderr
+        );
+    }
+
+    #[test]
+    fn test_deploy_detects_missing_dns_secret_before_server_setup() {
+        let temp = TempDir::new().unwrap();
+        let project_dir = temp.path().to_path_buf();
+        let home = temp.path().join("home");
+        let tako_home = temp.path().join("tako-home");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&tako_home).unwrap();
+
+        fs::write(
+            project_dir.join("tako.toml"),
+            r#"
+name = "test-app"
+runtime = "node"
+main = "index.js"
+
+[envs.production]
+routes = ["*.example.com"]
+"#,
+        )
+        .unwrap();
+
+        fs::write(
+            project_dir.join("package.json"),
+            r#"{"name": "test-app", "version": "1.0.0"}"#,
+        )
+        .unwrap();
+        fs::write(project_dir.join("index.js"), "export default {}").unwrap();
+
+        let output = run_tako_with_env(
+            &["deploy", "--env", "production"],
+            &project_dir,
+            &home,
+            &tako_home,
+        );
+
+        assert!(
+            !output.status.success(),
+            "Deploy should fail when wildcard DNS credentials are missing"
+        );
+
+        let stderr = stderr_str(&output);
+        assert!(
+            stderr.contains("DNS errors")
+                && stderr.contains("Wildcard routes require DNS credentials")
+                && stderr.contains("tako dns configure --env production"),
+            "Should fail locally with the DNS credential hint: {}",
+            stderr
+        );
+        assert!(
+            !stderr.contains("No servers have been added"),
+            "DNS validation should run before server setup: {}",
             stderr
         );
     }

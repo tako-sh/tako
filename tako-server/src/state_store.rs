@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tako_core::UpgradeMode;
 
-pub const STATE_SCHEMA_VERSION: i32 = 3;
+pub const STATE_SCHEMA_VERSION: i32 = 5;
 
 #[derive(Debug, Clone)]
 pub struct PersistedApp {
@@ -95,6 +95,8 @@ impl SqliteStateStore {
             .map_err(StateStoreError::from)?;
         conn.execute("DELETE FROM app_storages WHERE app = ?1;", [&secret_key])
             .map_err(StateStoreError::from)?;
+        conn.execute("DELETE FROM app_dns WHERE app = ?1;", [&secret_key])
+            .map_err(StateStoreError::from)?;
         conn.execute(
             "DELETE FROM apps WHERE name = ?1 AND environment = ?2;",
             rusqlite::params![name, environment],
@@ -109,7 +111,7 @@ impl SqliteStateStore {
         let mut stmt = conn
             .prepare(
                 "SELECT
-                    name, environment, version, min_instances, max_instances
+                    name, environment, version, min_instances, max_instances, source_ip
                  FROM apps
                  ORDER BY name, environment;",
             )
@@ -124,6 +126,7 @@ impl SqliteStateStore {
             let version: String = row.get(2).map_err(StateStoreError::from)?;
             let min_instances: i64 = row.get(3).map_err(StateStoreError::from)?;
             let max_instances: i64 = row.get(4).map_err(StateStoreError::from)?;
+            let source_ip: String = row.get(5).map_err(StateStoreError::from)?;
 
             let mut routes_stmt = conn
                 .prepare(
@@ -144,6 +147,7 @@ impl SqliteStateStore {
                 version,
                 min_instances: to_u32(min_instances, "min_instances")?,
                 max_instances: to_u32(max_instances, "max_instances")?,
+                source_ip: source_ip_from_str(&source_ip)?,
                 ..Default::default()
             };
 
@@ -349,6 +353,50 @@ impl SqliteStateStore {
         }
     }
 
+    pub fn set_dns(&self, app: &str, dns: &tako_core::DnsBinding) -> Result<(), StateStoreError> {
+        let json = serde_json::to_vec(dns)
+            .map_err(|e| StateStoreError::InvalidData(format!("serialize dns: {e}")))?;
+        let encrypted = encrypt_blob(&self.encryption_key, &json)?;
+        let conn = self.open_connection()?;
+        conn.execute(
+            "INSERT INTO app_dns (app, encrypted_data)
+             VALUES (?1, ?2)
+             ON CONFLICT(app) DO UPDATE SET encrypted_data = excluded.encrypted_data;",
+            rusqlite::params![app, encrypted],
+        )
+        .map_err(StateStoreError::from)?;
+        Ok(())
+    }
+
+    pub fn get_dns(&self, app: &str) -> Result<Option<tako_core::DnsBinding>, StateStoreError> {
+        let conn = self.open_connection()?;
+        let blob: Option<Vec<u8>> = conn
+            .query_row(
+                "SELECT encrypted_data FROM app_dns WHERE app = ?1;",
+                [app],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(StateStoreError::from)?;
+
+        match blob {
+            Some(encrypted) => {
+                let json = decrypt_blob(&self.encryption_key, &encrypted)?;
+                serde_json::from_slice(&json)
+                    .map(Some)
+                    .map_err(|e| StateStoreError::InvalidData(format!("deserialize dns: {e}")))
+            }
+            None => Ok(None),
+        }
+    }
+
+    pub fn delete_dns(&self, app: &str) -> Result<(), StateStoreError> {
+        let conn = self.open_connection()?;
+        conn.execute("DELETE FROM app_dns WHERE app = ?1;", [app])
+            .map_err(StateStoreError::from)?;
+        Ok(())
+    }
+
     #[cfg(test)]
     pub fn delete_secrets(&self, app: &str) -> Result<(), StateStoreError> {
         let conn = self.open_connection()?;
@@ -418,6 +466,21 @@ impl SqliteStateStore {
             .map_err(StateStoreError::from)?;
         }
 
+        if from_version < 4 {
+            tx.execute_batch(
+                "CREATE TABLE IF NOT EXISTS app_dns (
+                    app TEXT NOT NULL PRIMARY KEY,
+                    encrypted_data BLOB NOT NULL
+                );",
+            )
+            .map_err(StateStoreError::from)?;
+        }
+
+        if from_version < 5 {
+            tx.execute_batch("ALTER TABLE apps ADD COLUMN source_ip TEXT NOT NULL DEFAULT 'auto';")
+                .map_err(StateStoreError::from)?;
+        }
+
         self.ensure_default_rows_on(&tx)?;
         tx.execute_batch(&format!("PRAGMA user_version = {STATE_SCHEMA_VERSION};"))
             .map_err(StateStoreError::from)?;
@@ -433,6 +496,7 @@ impl SqliteStateStore {
                 version TEXT NOT NULL,
                 min_instances INTEGER NOT NULL,
                 max_instances INTEGER NOT NULL,
+                source_ip TEXT NOT NULL DEFAULT 'auto',
                 PRIMARY KEY (name, environment)
             );
 
@@ -461,6 +525,11 @@ impl SqliteStateStore {
             );
 
             CREATE TABLE IF NOT EXISTS app_storages (
+                app TEXT NOT NULL PRIMARY KEY,
+                encrypted_data BLOB NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS app_dns (
                 app TEXT NOT NULL PRIMARY KEY,
                 encrypted_data BLOB NOT NULL
             );",
@@ -569,18 +638,20 @@ fn upsert_app_on(
 ) -> Result<(), StateStoreError> {
     conn.execute(
         "INSERT INTO apps (
-            name, environment, version, min_instances, max_instances
-         ) VALUES (?1, ?2, ?3, ?4, ?5)
+            name, environment, version, min_instances, max_instances, source_ip
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
          ON CONFLICT(name, environment) DO UPDATE SET
             version = excluded.version,
             min_instances = excluded.min_instances,
-            max_instances = excluded.max_instances;",
+            max_instances = excluded.max_instances,
+            source_ip = excluded.source_ip;",
         rusqlite::params![
             &config.name,
             &config.environment,
             &config.version,
             config.min_instances as i64,
             config.max_instances as i64,
+            source_ip_to_str(config.source_ip),
         ],
     )
     .map_err(StateStoreError::from)?;
@@ -606,6 +677,25 @@ fn to_u32(value: i64, field: &str) -> Result<u32, StateStoreError> {
     u32::try_from(value).map_err(|_| {
         StateStoreError::InvalidData(format!("field '{field}' out of range for u32: {value}"))
     })
+}
+
+fn source_ip_to_str(mode: tako_core::SourceIpMode) -> &'static str {
+    match mode {
+        tako_core::SourceIpMode::Auto => "auto",
+        tako_core::SourceIpMode::Direct => "direct",
+        tako_core::SourceIpMode::CloudflareProxy => "cloudflare-proxy",
+    }
+}
+
+fn source_ip_from_str(value: &str) -> Result<tako_core::SourceIpMode, StateStoreError> {
+    match value {
+        "auto" => Ok(tako_core::SourceIpMode::Auto),
+        "direct" => Ok(tako_core::SourceIpMode::Direct),
+        "cloudflare-proxy" => Ok(tako_core::SourceIpMode::CloudflareProxy),
+        other => Err(StateStoreError::InvalidData(format!(
+            "unsupported source_ip mode '{other}'"
+        ))),
+    }
 }
 
 fn server_mode_to_str(mode: UpgradeMode) -> &'static str {

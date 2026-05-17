@@ -99,6 +99,24 @@ fn ensure_secret_key_available_errors_when_existing_secrets_have_no_key() {
 }
 
 #[test]
+fn ensure_secret_key_available_errors_when_dns_credentials_have_no_key() {
+    with_temp_tako_home(|| {
+        let json = r#"{
+            "production": {
+                "key_id": "0123456789abcdef",
+                "dns": {"cloudflare_api_token": "opaque-encrypted-blob"}
+            }
+        }"#;
+        let secrets = crate::config::SecretsStore::parse(json).unwrap();
+        let err = ensure_secret_key_available("production", &secrets, None).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Unable to decrypt production secrets. Run `tako secrets key import` to import an exported key or passphrase."
+        );
+    });
+}
+
+#[test]
 fn missing_secret_key_message_names_environment_and_import_command() {
     assert_eq!(
         missing_secret_key_message("production"),

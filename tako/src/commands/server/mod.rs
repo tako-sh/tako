@@ -1,9 +1,4 @@
-mod configure;
 mod crud;
-mod dns;
-mod first_run;
-mod remote_config;
-mod trusted_proxy;
 mod upgrade;
 mod wizard;
 
@@ -71,12 +66,6 @@ pub enum ServerCommands {
         /// Force a full service restart with brief downtime
         #[arg(long)]
         force: bool,
-    },
-
-    /// Configure server settings
-    Configure {
-        /// Server name (omit to choose interactively)
-        name: Option<String>,
     },
 
     /// Upgrade tako-server via graceful reload with rollback to the previous binary on failure
@@ -158,7 +147,6 @@ async fn run_async(cmd: ServerCommands) -> Result<(), Box<dyn std::error::Error>
         ServerCommands::Remove { name } => crud::remove_server(name.as_deref()).await,
         ServerCommands::List => crud::list_servers().await,
         ServerCommands::Reload { name, force } => crud::restart_server(&name, force).await,
-        ServerCommands::Configure { name } => configure::configure_server(name.as_deref()).await,
         ServerCommands::Upgrade { name } => upgrade::upgrade_servers(name.as_deref()).await,
         ServerCommands::Uninstall { name, yes } => uninstall_server_cmd(name.as_deref(), yes).await,
         ServerCommands::Status => crate::commands::status::run().await,

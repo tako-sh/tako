@@ -196,10 +196,10 @@ For the three-app setup:
 Wildcard routes are the special case. If you deploy `*.example.com`, HTTP-01 cannot prove control of every possible subdomain. Tako supports wildcard certificates through Cloudflare DNS-01. Configure Cloudflare DNS credentials first:
 
 ```bash
-tako servers configure <name>
+tako dns configure --env production
 ```
 
-Then deploy the wildcard route. If a server is missing Cloudflare DNS-01 support and your app declares a wildcard route, deploy fails with a setup hint instead of leaving you with a route that cannot get the right certificate.
+Then deploy the wildcard route. If the app environment is missing Cloudflare DNS-01 credentials and declares a wildcard route, deploy fails with a setup hint instead of leaving you with a route that cannot get the right certificate.
 
 ## The box stays understandable
 

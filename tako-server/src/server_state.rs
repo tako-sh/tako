@@ -26,7 +26,6 @@ pub struct ServerRuntimeConfig {
     pub(crate) no_acme: bool,
     pub(crate) acme_staging: bool,
     pub(crate) renewal_interval_hours: u64,
-    pub(crate) dns_provider: Option<String>,
     pub(crate) standby: bool,
     pub(crate) metrics_port: Option<u16>,
     pub(crate) server_name: Option<String>,
@@ -45,7 +44,6 @@ impl ServerRuntimeConfig {
             no_acme: false,
             acme_staging: false,
             renewal_interval_hours: 12,
-            dns_provider: None,
             standby: false,
             metrics_port: Some(9898),
             server_name: None,
@@ -66,7 +64,6 @@ impl ServerRuntimeConfig {
             acme_staging: self.acme_staging,
             acme_email: None,
             renewal_interval_hours: self.renewal_interval_hours,
-            dns_provider: self.dns_provider.clone(),
             standby: self.standby,
             metrics_port: self.metrics_port,
             server_name: self.server_name.clone(),
@@ -446,7 +443,11 @@ impl ServerState {
 
             {
                 let mut route_table = self.routes.write().await;
-                route_table.set_app_routes(app_name.clone(), routes);
+                route_table.set_app_routes_with_source_ip(
+                    app_name.clone(),
+                    routes,
+                    config.source_ip,
+                );
             }
 
             let runtime_bin_path =

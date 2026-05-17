@@ -81,6 +81,8 @@ pub struct AppConfig {
     pub secrets: HashMap<String, String>,
     /// Storage bindings loaded from encrypted server state.
     pub storages: HashMap<String, tako_core::StorageBinding>,
+    /// Client source-IP mode for requests routed to this app.
+    pub source_ip: tako_core::SourceIpMode,
     /// Public image optimizer configuration from app.json.
     pub images: tako_images::ImagesConfig,
     /// Minimum instances (0 = on-demand)
@@ -129,6 +131,7 @@ impl Default for AppConfig {
             env_vars: HashMap::new(),
             secrets: HashMap::new(),
             storages: HashMap::new(),
+            source_ip: tako_core::SourceIpMode::Auto,
             images: tako_images::ImagesConfig::default(),
             min_instances: 1,
             max_instances: 4,

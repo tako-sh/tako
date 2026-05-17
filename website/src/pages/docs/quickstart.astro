@@ -54,15 +54,14 @@ import DocsLayout from "../../layouts/DocsLayout.astro";
   </p>
   <p>
     If <code>tako-server</code> is missing or access needs repair, that shorthand bootstraps the host with the provided
-    admin user. Before the first service start, Tako prompts for source-IP handling and DNS wildcard certificates, then
-    starts the service, enrolls the SSH key used for signed management, and installs the libvips runtime used by the image
+    admin user. Tako starts the service with default listener settings, enrolls the SSH key used for signed management, and installs the libvips runtime used by the image
     optimizer.
   </p>
 
   <p>Check remote access:</p>
   <Snippet code="tako servers status" lang="bash" />
 
-  <p>Prefer installing from the host itself? Run the server installer as root, enter your workstation SSH public key when prompted, then add the host from your developer machine. The installer bootstraps the host and leaves the service stopped; <code>tako servers add</code> collects first-run settings, then starts it.</p>
+  <p>Prefer installing from the host itself? Run the server installer as root, enter your workstation SSH public key when prompted, then add the host from your developer machine. The installer bootstraps the host and starts <code>tako-server</code>; <code>tako servers add</code> verifies access and saves it locally.</p>
   <Snippet code='sudo sh -c "$(curl -fsSL https://tako.sh/install-server.sh)"' lang="bash" />
 
   <h2 id="first-deployment">First deployment</h2>
@@ -71,7 +70,7 @@ import DocsLayout from "../../layouts/DocsLayout.astro";
   <Snippet code="tako init" lang="bash" />
   <p>
     <code>tako init</code> prompts for app name and production route, writes them to
-    <code>tako.toml</code>, and updates <code>.gitignore</code> so
+    <code>tako.toml</code>, offers encrypted Cloudflare DNS setup for wildcard routes, and updates <code>.gitignore</code> so
     <code>.tako/secrets.json</code> stays trackable.
   </p>
 

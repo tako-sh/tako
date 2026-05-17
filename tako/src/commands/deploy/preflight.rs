@@ -85,14 +85,7 @@ pub(super) async fn run_server_preflight_checks(
                         task_tree.succeed_deploy_step(&name, "connecting", None);
                     }
 
-                    Ok::<_, crate::ssh::SshError>((
-                        ServerCheck {
-                            name,
-                            mode,
-                            dns_provider: info.dns_provider,
-                        },
-                        ssh,
-                    ))
+                    Ok::<_, crate::ssh::SshError>((ServerCheck { name, mode }, ssh))
                 }
                 .await;
                 if let Err(error) = &result
@@ -106,7 +99,6 @@ pub(super) async fn run_server_preflight_checks(
         );
     }
 
-    let mut checks = Vec::new();
     let mut ssh_clients = HashMap::new();
     while let Some(result) = check_set.join_next().await {
         let (check, ssh) = result
@@ -124,50 +116,12 @@ pub(super) async fn run_server_preflight_checks(
         }
 
         ssh_clients.insert(check.name.clone(), ssh);
-        checks.push(check);
     }
 
     Ok(PreflightPhaseResult {
-        checks,
         ssh_clients,
         elapsed: start.elapsed(),
     })
-}
-
-pub(super) fn check_wildcard_dns_support(
-    routes: &[String],
-    checks: &[ServerCheck],
-) -> Result<(), Box<dyn std::error::Error>> {
-    let wildcard_routes: Vec<_> = routes.iter().filter(|r| r.starts_with("*.")).collect();
-    if wildcard_routes.is_empty() {
-        return Ok(());
-    }
-
-    if checks
-        .iter()
-        .all(|c| c.dns_provider.as_deref() == Some("cloudflare"))
-    {
-        tracing::debug!("All servers support wildcard domains");
-        return Ok(());
-    }
-
-    let missing: Vec<_> = checks
-        .iter()
-        .filter(|c| c.dns_provider.as_deref() != Some("cloudflare"))
-        .map(|c| c.name.as_str())
-        .collect();
-    let route_list = wildcard_routes
-        .iter()
-        .map(|r| r.as_str())
-        .collect::<Vec<_>>()
-        .join(", ");
-
-    Err(format!(
-        "Server(s) {} need Cloudflare DNS-01 for wildcard route(s) {route_list}\n\
-         Run `tako servers configure <name>` for each listed server.",
-        missing.join(", "),
-    )
-    .into())
 }
 
 const DEPLOY_DISK_CHECK_PATH: &str = "/opt/tako";
@@ -220,71 +174,6 @@ async fn ensure_remote_disk_space(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn check_wildcard_dns_support_passes_without_wildcards() {
-        let routes = vec!["api.example.com".to_string()];
-        let checks = vec![ServerCheck {
-            name: "prod-1".to_string(),
-            mode: tako_core::UpgradeMode::Normal,
-            dns_provider: None,
-        }];
-        assert!(check_wildcard_dns_support(&routes, &checks).is_ok());
-    }
-
-    #[test]
-    fn check_wildcard_dns_support_passes_when_all_have_dns() {
-        let routes = vec!["*.example.com".to_string()];
-        let checks = vec![ServerCheck {
-            name: "prod-1".to_string(),
-            mode: tako_core::UpgradeMode::Normal,
-            dns_provider: Some("cloudflare".to_string()),
-        }];
-        assert!(check_wildcard_dns_support(&routes, &checks).is_ok());
-    }
-
-    #[test]
-    fn check_wildcard_dns_support_fails_for_unsupported_dns_provider() {
-        let routes = vec!["*.example.com".to_string()];
-        let checks = vec![ServerCheck {
-            name: "prod-1".to_string(),
-            mode: tako_core::UpgradeMode::Normal,
-            dns_provider: Some("route53".to_string()),
-        }];
-
-        let err = check_wildcard_dns_support(&routes, &checks).unwrap_err();
-        let msg = err.to_string();
-
-        assert!(msg.contains("prod-1"), "should name the server: {msg}");
-        assert!(
-            msg.contains("Cloudflare"),
-            "should explain the supported provider: {msg}",
-        );
-    }
-
-    #[test]
-    fn check_wildcard_dns_support_fails_when_server_lacks_dns() {
-        let routes = vec!["*.example.com".to_string()];
-        let checks = vec![
-            ServerCheck {
-                name: "prod-1".to_string(),
-                mode: tako_core::UpgradeMode::Normal,
-                dns_provider: Some("cloudflare".to_string()),
-            },
-            ServerCheck {
-                name: "prod-2".to_string(),
-                mode: tako_core::UpgradeMode::Normal,
-                dns_provider: None,
-            },
-        ];
-        let err = check_wildcard_dns_support(&routes, &checks).unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("prod-2"), "should name the server: {msg}");
-        assert!(
-            msg.contains("servers configure"),
-            "should suggest the command: {msg}"
-        );
-    }
 
     #[test]
     fn parse_df_available_kb_accepts_numeric_output() {

@@ -1,7 +1,7 @@
 use super::request::{
-    client_ip_from_trusted_headers, forwarded_header_has_proto, forwarded_header_proto_is_https,
-    https_redirect_host, is_request_forwarded_https, strip_route_prefix_for_static_lookup,
-    x_forwarded_proto_is_https,
+    ClientIpResolution, client_ip_for_source_ip_mode, client_ip_from_trusted_headers,
+    forwarded_header_has_proto, forwarded_header_proto_is_https, https_redirect_host,
+    is_request_forwarded_https, strip_route_prefix_for_static_lookup, x_forwarded_proto_is_https,
 };
 use super::server::{create_tls_settings, listener_socket_options};
 use super::*;
@@ -22,7 +22,13 @@ fn test_tako_proxy_creation() {
     let cold_start = Arc::new(ColdStartManager::new(
         crate::scaling::ColdStartConfig::default(),
     ));
-    let proxy = TakoProxy::new(lb, routes, ProxyConfig::default(), cold_start);
+    let proxy = TakoProxy::new(
+        lb,
+        routes,
+        ProxyConfig::default(),
+        cold_start,
+        CloudflareIpRanges::default(),
+    );
 
     // Just verify creation works
     let ctx = proxy.new_ctx();
@@ -49,7 +55,13 @@ async fn proxy_context_finishes_only_requests_started_upstream() {
     let cold_start = Arc::new(ColdStartManager::new(
         crate::scaling::ColdStartConfig::default(),
     ));
-    let proxy = TakoProxy::new(lb.clone(), routes, ProxyConfig::default(), cold_start);
+    let proxy = TakoProxy::new(
+        lb.clone(),
+        routes,
+        ProxyConfig::default(),
+        cold_start,
+        CloudflareIpRanges::default(),
+    );
 
     let mut ctx = proxy.new_ctx();
     ctx.backend = lb.get_backend("test-app");
@@ -74,7 +86,14 @@ fn test_tako_proxy_with_acme() {
     let cold_start = Arc::new(ColdStartManager::new(
         crate::scaling::ColdStartConfig::default(),
     ));
-    let proxy = TakoProxy::with_acme(lb, routes, ProxyConfig::default(), tokens, cold_start);
+    let proxy = TakoProxy::with_acme(
+        lb,
+        routes,
+        ProxyConfig::default(),
+        tokens,
+        cold_start,
+        CloudflareIpRanges::default(),
+    );
     assert!(proxy.challenge_handler.is_some());
 }
 
@@ -164,6 +183,107 @@ fn x_forwarded_for_uses_only_leftmost_address() {
     let ip = client_ip_from_trusted_headers(&request, "127.0.0.1".parse().unwrap(), &config);
 
     assert_eq!(ip, None);
+}
+
+#[test]
+fn auto_source_ip_uses_cloudflare_header_from_cloudflare_peer() {
+    let mut request = RequestHeader::build("GET", b"/", None).expect("build request");
+    request
+        .insert_header("CF-Connecting-IP", "203.0.113.15")
+        .unwrap();
+    let cloudflare_ips = CloudflareIpRanges::from_test_cidrs(&["198.51.100.0/24"]);
+
+    let resolution = client_ip_for_source_ip_mode(
+        &request,
+        "198.51.100.1".parse().unwrap(),
+        tako_core::SourceIpMode::Auto,
+        &cloudflare_ips,
+        &TrustedProxyConfig::default(),
+    );
+
+    assert_eq!(
+        resolution,
+        ClientIpResolution::Accepted("203.0.113.15".parse().unwrap())
+    );
+}
+
+#[test]
+fn auto_source_ip_falls_back_to_direct_peer_when_not_cloudflare() {
+    let mut request = RequestHeader::build("GET", b"/", None).expect("build request");
+    request
+        .insert_header("CF-Connecting-IP", "203.0.113.15")
+        .unwrap();
+    let cloudflare_ips = CloudflareIpRanges::from_test_cidrs(&["198.51.100.0/24"]);
+
+    let resolution = client_ip_for_source_ip_mode(
+        &request,
+        "192.0.2.10".parse().unwrap(),
+        tako_core::SourceIpMode::Auto,
+        &cloudflare_ips,
+        &TrustedProxyConfig::default(),
+    );
+
+    assert_eq!(
+        resolution,
+        ClientIpResolution::Accepted("192.0.2.10".parse().unwrap())
+    );
+}
+
+#[test]
+fn strict_cloudflare_source_ip_rejects_non_cloudflare_peer() {
+    let mut request = RequestHeader::build("GET", b"/", None).expect("build request");
+    request
+        .insert_header("CF-Connecting-IP", "203.0.113.15")
+        .unwrap();
+    let cloudflare_ips = CloudflareIpRanges::from_test_cidrs(&["198.51.100.0/24"]);
+
+    let resolution = client_ip_for_source_ip_mode(
+        &request,
+        "192.0.2.10".parse().unwrap(),
+        tako_core::SourceIpMode::CloudflareProxy,
+        &cloudflare_ips,
+        &TrustedProxyConfig::default(),
+    );
+
+    assert_eq!(resolution, ClientIpResolution::RejectCloudflareProxy);
+}
+
+#[test]
+fn strict_cloudflare_source_ip_rejects_cloudflare_peer_without_header() {
+    let request = RequestHeader::build("GET", b"/", None).expect("build request");
+    let cloudflare_ips = CloudflareIpRanges::from_test_cidrs(&["198.51.100.0/24"]);
+
+    let resolution = client_ip_for_source_ip_mode(
+        &request,
+        "198.51.100.1".parse().unwrap(),
+        tako_core::SourceIpMode::CloudflareProxy,
+        &cloudflare_ips,
+        &TrustedProxyConfig::default(),
+    );
+
+    assert_eq!(resolution, ClientIpResolution::RejectCloudflareProxy);
+}
+
+#[test]
+fn direct_source_ip_ignores_cloudflare_header() {
+    let mut request = RequestHeader::build("GET", b"/", None).expect("build request");
+    request
+        .insert_header("CF-Connecting-IP", "203.0.113.15")
+        .unwrap();
+    let cloudflare_ips = CloudflareIpRanges::from_test_cidrs(&["198.51.100.0/24"]);
+
+    let resolution = client_ip_for_source_ip_mode(
+        &request,
+        "198.51.100.1".parse().unwrap(),
+        tako_core::SourceIpMode::Direct,
+        &cloudflare_ips,
+        &TrustedProxyConfig::default(),
+    );
+
+    assert_eq!(
+        resolution,
+        ClientIpResolution::Accepted("198.51.100.1".parse().unwrap())
+    );
 }
 
 #[test]
@@ -479,7 +599,13 @@ async fn resolve_backend_waits_for_ready_on_on_demand_apps() {
         startup_timeout: Duration::from_secs(1),
         max_queued_requests: 100,
     }));
-    let proxy = TakoProxy::new(lb, routes, ProxyConfig::default(), cold_start.clone());
+    let proxy = TakoProxy::new(
+        lb,
+        routes,
+        ProxyConfig::default(),
+        cold_start.clone(),
+        CloudflareIpRanges::default(),
+    );
 
     let instance = app.allocate_instance();
     cold_start.begin("test-app");
@@ -513,7 +639,13 @@ async fn resolve_backend_returns_startup_timeout_after_wait_timeout() {
         startup_timeout: Duration::from_millis(25),
         max_queued_requests: 100,
     }));
-    let proxy = TakoProxy::new(lb, routes, ProxyConfig::default(), cold_start.clone());
+    let proxy = TakoProxy::new(
+        lb,
+        routes,
+        ProxyConfig::default(),
+        cold_start.clone(),
+        CloudflareIpRanges::default(),
+    );
 
     cold_start.begin("test-app");
 
@@ -538,7 +670,13 @@ async fn resolve_backend_returns_startup_failed_when_cold_start_fails() {
         startup_timeout: Duration::from_secs(1),
         max_queued_requests: 100,
     }));
-    let proxy = TakoProxy::new(lb, routes, ProxyConfig::default(), cold_start.clone());
+    let proxy = TakoProxy::new(
+        lb,
+        routes,
+        ProxyConfig::default(),
+        cold_start.clone(),
+        CloudflareIpRanges::default(),
+    );
 
     cold_start.begin("test-app");
     let failed_cold_start = cold_start.clone();
@@ -573,6 +711,7 @@ async fn resolve_backend_returns_queue_full_when_cold_start_queue_is_full() {
         routes,
         ProxyConfig::default(),
         cold_start.clone(),
+        CloudflareIpRanges::default(),
     ));
 
     cold_start.begin("test-app");
@@ -603,7 +742,13 @@ async fn resolve_backend_returns_unavailable_for_non_on_demand_apps_without_back
 
     let routes = Arc::new(tokio::sync::RwLock::new(RouteTable::default()));
     let cold_start = Arc::new(ColdStartManager::new(ColdStartConfig::default()));
-    let proxy = TakoProxy::new(lb, routes, ProxyConfig::default(), cold_start);
+    let proxy = TakoProxy::new(
+        lb,
+        routes,
+        ProxyConfig::default(),
+        cold_start,
+        CloudflareIpRanges::default(),
+    );
 
     let resolution = proxy.resolve_backend("test-app").await;
     assert!(matches!(resolution, BackendResolution::Unavailable));
@@ -616,7 +761,13 @@ async fn resolve_backend_returns_app_missing_when_app_not_registered() {
 
     let routes = Arc::new(tokio::sync::RwLock::new(RouteTable::default()));
     let cold_start = Arc::new(ColdStartManager::new(ColdStartConfig::default()));
-    let proxy = TakoProxy::new(lb, routes, ProxyConfig::default(), cold_start);
+    let proxy = TakoProxy::new(
+        lb,
+        routes,
+        ProxyConfig::default(),
+        cold_start,
+        CloudflareIpRanges::default(),
+    );
 
     let resolution = proxy.resolve_backend("missing-app").await;
     assert!(matches!(resolution, BackendResolution::AppMissing));
@@ -636,7 +787,13 @@ async fn load_balancer_cleanup_removes_stale_routes_for_app() {
         );
     }
     let cold_start = Arc::new(ColdStartManager::new(ColdStartConfig::default()));
-    let proxy = TakoProxy::new(lb, routes.clone(), ProxyConfig::default(), cold_start);
+    let proxy = TakoProxy::new(
+        lb,
+        routes.clone(),
+        ProxyConfig::default(),
+        cold_start,
+        CloudflareIpRanges::default(),
+    );
 
     proxy.load_balancer_cleanup("test-app").await;
 
@@ -651,7 +808,13 @@ fn static_server_for_app_reuses_cached_server_for_same_root() {
     let lb = Arc::new(LoadBalancer::new(manager));
     let routes = Arc::new(tokio::sync::RwLock::new(RouteTable::default()));
     let cold_start = Arc::new(ColdStartManager::new(ColdStartConfig::default()));
-    let proxy = TakoProxy::new(lb, routes, ProxyConfig::default(), cold_start);
+    let proxy = TakoProxy::new(
+        lb,
+        routes,
+        ProxyConfig::default(),
+        cold_start,
+        CloudflareIpRanges::default(),
+    );
 
     let root = TempDir::new().unwrap();
     let first = proxy.static_server_for_app("my-app", root.path());
@@ -666,7 +829,13 @@ fn static_server_for_app_replaces_cached_server_when_root_changes() {
     let lb = Arc::new(LoadBalancer::new(manager));
     let routes = Arc::new(tokio::sync::RwLock::new(RouteTable::default()));
     let cold_start = Arc::new(ColdStartManager::new(ColdStartConfig::default()));
-    let proxy = TakoProxy::new(lb, routes, ProxyConfig::default(), cold_start);
+    let proxy = TakoProxy::new(
+        lb,
+        routes,
+        ProxyConfig::default(),
+        cold_start,
+        CloudflareIpRanges::default(),
+    );
 
     let root_a = TempDir::new().unwrap();
     let root_b = TempDir::new().unwrap();

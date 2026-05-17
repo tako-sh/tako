@@ -152,6 +152,7 @@ impl TestServer {
             "--no-acme",
         ])
         .env("RUST_LOG", "warn")
+        .env("TAKO_TEST_SKIP_CLOUDFLARE_IP_REFRESH", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
@@ -166,8 +167,10 @@ impl TestServer {
                 break;
             }
 
-            if socket_path.exists() && UnixStream::connect(&socket_path).is_ok() {
-                thread::sleep(Duration::from_millis(100));
+            if socket_path.exists()
+                && UnixStream::connect(&socket_path).is_ok()
+                && std::net::TcpStream::connect(("127.0.0.1", http_port)).is_ok()
+            {
                 return Self {
                     child: Some(child),
                     _process_lock: process_lock,

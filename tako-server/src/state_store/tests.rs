@@ -46,6 +46,7 @@ fn init_creates_schema() {
             "version".to_string(),
             "min_instances".to_string(),
             "max_instances".to_string(),
+            "source_ip".to_string(),
         ]
     );
 }
@@ -88,6 +89,7 @@ fn upsert_and_load_round_trip() {
     assert!(app.config.secrets.is_empty());
     assert_eq!(app.config.min_instances, 2);
     assert_eq!(app.config.max_instances, 4);
+    assert_eq!(app.config.source_ip, tako_core::SourceIpMode::Auto);
     assert_eq!(
         app.routes,
         vec![

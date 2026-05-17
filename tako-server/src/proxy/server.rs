@@ -1,6 +1,6 @@
 use crate::lb::LoadBalancer;
 use crate::proxy::proxy_protocol_service::{ProxyProtocolService, ProxyProtocolTlsAcceptor};
-use crate::proxy::{ProxyConfig, RouteTable, TakoProxy};
+use crate::proxy::{CloudflareIpRanges, ProxyConfig, RouteTable, TakoProxy};
 use crate::scaling::ColdStartManager;
 use crate::tls::{CertManager, ChallengeTokens, SelfSignedGenerator, create_sni_callbacks};
 use pingora_core::listeners::TcpSocketOptions;
@@ -19,14 +19,28 @@ pub fn build_server_with_acme(
     acme_tokens: Option<ChallengeTokens>,
     cert_manager: Option<Arc<CertManager>>,
     cold_start: Arc<ColdStartManager>,
+    cloudflare_ips: CloudflareIpRanges,
 ) -> Result<Server> {
     let mut server = Server::new_with_opt_and_conf(None, proxy_server_conf()?);
     server.bootstrap();
 
     let proxy = if let Some(tokens) = acme_tokens {
-        TakoProxy::with_acme(lb, routes.clone(), config.clone(), tokens, cold_start)
+        TakoProxy::with_acme(
+            lb,
+            routes.clone(),
+            config.clone(),
+            tokens,
+            cold_start,
+            cloudflare_ips,
+        )
     } else {
-        TakoProxy::new(lb, routes.clone(), config.clone(), cold_start)
+        TakoProxy::new(
+            lb,
+            routes.clone(),
+            config.clone(),
+            cold_start,
+            cloudflare_ips,
+        )
     };
 
     if config.trusted_proxy.proxy_protocol {

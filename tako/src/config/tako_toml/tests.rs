@@ -257,6 +257,56 @@ dev = ["vite", "dev"]
 }
 
 #[test]
+fn test_parse_environment_source_ip_mode() {
+    let toml = r#"
+name = "app"
+
+[envs.production]
+route = "example.com"
+servers = ["prod"]
+source_ip = "cloudflare-proxy"
+"#;
+    let config = Config::parse(toml).unwrap();
+    assert_eq!(
+        config.envs["production"].source_ip,
+        Some(tako_core::SourceIpMode::CloudflareProxy)
+    );
+    assert_eq!(
+        config.get_source_ip_mode("production"),
+        tako_core::SourceIpMode::CloudflareProxy
+    );
+}
+
+#[test]
+fn omitted_environment_source_ip_defaults_to_auto() {
+    let toml = r#"
+name = "app"
+
+[envs.production]
+route = "example.com"
+"#;
+    let config = Config::parse(toml).unwrap();
+    assert_eq!(
+        config.get_source_ip_mode("production"),
+        tako_core::SourceIpMode::Auto
+    );
+}
+
+#[test]
+fn parse_unknown_environment_source_ip_mode_errors() {
+    let toml = r#"
+name = "app"
+
+[envs.production]
+route = "example.com"
+source_ip = "unknown"
+"#;
+
+    let err = Config::parse(toml).unwrap_err();
+    assert!(err.to_string().contains("unknown"));
+}
+
+#[test]
 fn test_parse_build_arrays() {
     let toml = r#"
 assets = ["public-assets", "shared/images"]

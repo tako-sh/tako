@@ -397,14 +397,18 @@ pub(super) fn keychain_storage_hint(env: Option<&str>) -> String {
 /// long-running rendering (e.g. the deploy task tree), so missing-key errors are
 /// shown against a clean terminal.
 ///
-/// Returns immediately if the env has no encrypted secrets (nothing to decrypt).
+/// Returns immediately if the env has no encrypted values (nothing to decrypt).
 pub fn ensure_secret_key_available(
     env: &str,
     secrets: &crate::config::SecretsStore,
     usage_path: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let has_secrets = secrets.get_env(env).is_some_and(|map| !map.is_empty());
-    if !has_secrets {
+    let has_encrypted_values = secrets.get_env(env).is_some_and(|map| !map.is_empty())
+        || secrets
+            .get_storage_credentials_env(env)
+            .is_some_and(|map| !map.is_empty())
+        || secrets.get_dns_credentials(env).is_some();
+    if !has_encrypted_values {
         return Ok(());
     }
     let _ = load_secret_key(env, secrets, usage_path)?;

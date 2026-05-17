@@ -2,6 +2,7 @@ pub mod codegen;
 pub mod delete;
 pub mod deploy;
 pub mod dev;
+pub mod dns;
 pub mod doctor;
 pub mod helpers;
 pub mod implode;

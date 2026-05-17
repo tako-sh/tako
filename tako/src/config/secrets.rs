@@ -22,6 +22,15 @@ pub struct EnvironmentSecrets {
     /// Storage resource name to encrypted credentials.
     #[serde(default)]
     pub storages: HashMap<String, super::EncryptedStorageCredentials>,
+    /// DNS credentials for wildcard certificate issuance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dns: Option<EncryptedDnsCredentials>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct EncryptedDnsCredentials {
+    pub cloudflare_api_token: String,
 }
 
 /// Secrets storage from .tako/secrets.json
@@ -40,14 +49,17 @@ pub struct EnvironmentSecrets {
 ///         "access_key_id": "encrypted_base64_value",
 ///         "secret_access_key": "encrypted_base64_value"
 ///       }
+///     },
+///     "dns": {
+///       "cloudflare_api_token": "encrypted_base64_value"
 ///     }
 ///   }
 /// }
 /// ```
 ///
 /// App secret names and storage resource names are plaintext (allows listing
-/// without decryption). Secret values and storage credentials are encrypted
-/// with AES-256-GCM.
+/// without decryption). Secret values, storage credentials, and DNS credentials
+/// are encrypted with AES-256-GCM.
 /// Keys are random per environment and stored locally under the environment key id.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct SecretsStore {
@@ -113,6 +125,13 @@ impl SecretsStore {
                         "Storage secret access key cannot be empty".to_string(),
                     ));
                 }
+            }
+            if let Some(credentials) = &env_secrets.dns
+                && credentials.cloudflare_api_token.trim().is_empty()
+            {
+                return Err(ConfigError::Validation(
+                    "Cloudflare API token cannot be empty".to_string(),
+                ));
             }
         }
         Ok(())
@@ -195,6 +214,7 @@ impl SecretsStore {
                     key_id: crate::crypto::generate_key_id(),
                     app: HashMap::new(),
                     storages: HashMap::new(),
+                    dns: None,
                 });
 
         Ok(env_secrets.key_id.clone())
@@ -211,6 +231,7 @@ impl SecretsStore {
                 key_id: key_id.to_string(),
                 app: HashMap::new(),
                 storages: HashMap::new(),
+                dns: None,
             },
         );
         Ok(())
@@ -228,7 +249,10 @@ impl SecretsStore {
         }
 
         // Remove environment if no secrets remain.
-        if env_secrets.app.is_empty() && env_secrets.storages.is_empty() {
+        if env_secrets.app.is_empty()
+            && env_secrets.storages.is_empty()
+            && env_secrets.dns.is_none()
+        {
             self.environments.remove(env);
         }
 
@@ -247,7 +271,9 @@ impl SecretsStore {
 
         // Remove empty environments
         self.environments.retain(|_, env_secrets| {
-            !env_secrets.app.is_empty() || !env_secrets.storages.is_empty()
+            !env_secrets.app.is_empty()
+                || !env_secrets.storages.is_empty()
+                || env_secrets.dns.is_some()
         });
 
         if removed_from.is_empty() {
@@ -340,6 +366,31 @@ impl SecretsStore {
         Ok(())
     }
 
+    pub fn get_dns_credentials(&self, env: &str) -> Option<&EncryptedDnsCredentials> {
+        self.environments
+            .get(env)
+            .and_then(|env_secrets| env_secrets.dns.as_ref())
+    }
+
+    pub fn set_dns_credentials(&mut self, env: &str, value: EncryptedDnsCredentials) -> Result<()> {
+        validate_environment_name(env)?;
+        if value.cloudflare_api_token.trim().is_empty() {
+            return Err(ConfigError::Validation(
+                "Cloudflare API token cannot be empty".to_string(),
+            ));
+        }
+
+        let env_secrets = self.environments.get_mut(env).ok_or_else(|| {
+            ConfigError::Validation(format!(
+                "Environment '{}' not initialized. Call ensure_env_key_id first.",
+                env
+            ))
+        })?;
+
+        env_secrets.dns = Some(value);
+        Ok(())
+    }
+
     /// Check for discrepancies (secrets missing in some environments)
     pub fn find_discrepancies(&self) -> Vec<SecretDiscrepancy> {
         let all_names = self.all_secret_names();
@@ -413,6 +464,7 @@ fn sorted_environments(
                     key_id: &env_secrets.key_id,
                     app: sorted_app,
                     storages: sorted_storages,
+                    dns: env_secrets.dns.as_ref(),
                 },
             )
         })
@@ -424,6 +476,8 @@ struct SortedEnvironmentSecrets<'a> {
     key_id: &'a str,
     app: BTreeMap<&'a String, &'a String>,
     storages: BTreeMap<&'a String, &'a super::EncryptedStorageCredentials>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dns: Option<&'a EncryptedDnsCredentials>,
 }
 
 /// Represents a secret that is missing in some environments

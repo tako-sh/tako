@@ -269,6 +269,16 @@ public_base_url = "https://cdn.example.com/uploads"
 
 Supported providers are `s3` and `local`. `s3` requires `bucket`, `endpoint`, and `region`; `endpoint` and optional `public_base_url` must use HTTPS. R2 uses `provider = "s3"` with the R2 S3-compatible endpoint. `local` has no configurable path or credentials. In `development`, an undeclared storage resource defaults to local storage under the app data directory. In deploy environments, every bound resource must be declared.
 
+## DNS
+
+```toml
+[envs.production]
+route = "*.example.com"
+servers = ["la"]
+```
+
+Wildcard routes require DNS credentials for that app environment. Cloudflare is the default and only supported provider. Store the Cloudflare API token with `tako dns configure --env <env>`; the token is encrypted in `.tako/secrets.json`, not stored in `tako.toml`.
+
 ## Images
 
 ```toml
@@ -313,6 +323,7 @@ release = ""
 | `servers`      | string[] | Server names from global `config.toml`.                              |
 | `idle_timeout` | number   | Seconds before idle instances stop. Default: `300`.                  |
 | `release`      | string   | Per-env release command override. Empty string clears top-level one. |
+| `source_ip`    | string   | Optional source-IP mode: `auto`, `direct`, or `cloudflare-proxy`.    |
 
 Non-development environments must define at least one route. `development` is reserved for `tako dev`; deploy refuses it and ignores servers declared there.
 
@@ -328,6 +339,8 @@ routes = [
 ```
 
 Environment variables belong in `[vars]` and `[vars.<env>]`, not under `[envs.<env>]`.
+
+Generated `tako.toml` files omit `source_ip`. The default `auto` mode uses `CF-Connecting-IP` only for requests from Cloudflare IP ranges, then falls back to the direct peer IP. Use `cloudflare-proxy` for strict Cloudflare-only traffic, or `direct` to ignore proxy headers. Tako stores Cloudflare IP ranges in memory, seeds them from bundled ranges and a last-known-good disk cache, and refreshes them daily while running when any route uses `auto` or `cloudflare-proxy`.
 
 ## Release Commands
 

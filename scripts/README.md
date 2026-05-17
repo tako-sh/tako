@@ -12,9 +12,9 @@ Repository scripts used by installers, CI checks, and local development workflow
   - GitHub-hosted downloads use `GH_TOKEN` when set, falling back to `GITHUB_TOKEN`.
   - Hosted installers require HTTPS download overrides by default; set `TAKO_ALLOW_INSECURE_DOWNLOAD_BASE=1` only for local test mirrors.
   - Supports systemd and OpenRC service definitions.
-  - Defaults to bootstrap-only mode via `TAKO_RESTART_SERVICE=0`: refreshes binary/users/helpers and installs the service definition without enabling or starting it. Run `tako servers add <host>` from the workstation to configure and start the server.
-  - Uses configure/start mode when `TAKO_RESTART_SERVICE=1`; this mode enables/starts the service. `tako servers add --install` bootstraps first, writes first-run settings, then runs configure/start mode.
-  - Detects the host's Tailscale IP with `tailscale ip -4` and configures remote management HTTP on port `9844` in configure/start mode. Set `TAKO_MANAGEMENT_HOST` to the server's Tailscale IP to override detection. Configure/start mode fails if no Tailscale IP is available.
+  - Starts the service by default via `TAKO_RESTART_SERVICE=1`: refreshes binary/users/helpers, installs the service definition, enables `tako-server`, and starts or reloads it. Set `TAKO_RESTART_SERVICE=0` for bootstrap-only image builds or refreshes that should not touch the running service.
+  - `tako servers add --install` still bootstraps first, then starts the service with the requested listener ports.
+  - Detects the host's Tailscale IP with `tailscale ip -4` and configures remote management HTTP on port `9844` when starting the service. Set `TAKO_MANAGEMENT_HOST` to the server's Tailscale IP to override detection. Service start fails if no Tailscale IP is available.
   - Detects host architecture (`x86_64`/`aarch64`) and libc (`glibc`/`musl`) to download the matching server artifact.
   - Applies `setcap cap_net_bind_service,cap_setuid,cap_setgid,cap_kill=+ep` to `/usr/local/bin/tako-server` for non-root `:80/:443` binds, app-user switching, and stopping app processes; non-systemd/OpenRC installs fail if the capability cannot be granted.
   - Creates both `tako` (server) and `tako-app` (app process) users.

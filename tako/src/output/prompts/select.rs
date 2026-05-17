@@ -267,11 +267,8 @@ mod tests {
             "Operation interrupted",
         ));
 
-        let lines = format_select_completion_lines(
-            "Select setting",
-            &["DNS wildcard certificates"],
-            &result,
-        );
+        let lines =
+            format_select_completion_lines("Select setting", &["Source IP handling"], &result);
 
         assert_eq!(lines, vec!["◇ Select setting".to_string(), String::new()]);
     }
@@ -280,11 +277,8 @@ mod tests {
     fn select_completion_omits_back_completion() {
         let result = Err(io::Error::new(io::ErrorKind::Interrupted, "wizard_back"));
 
-        let lines = format_select_completion_lines(
-            "Select setting",
-            &["DNS wildcard certificates"],
-            &result,
-        );
+        let lines =
+            format_select_completion_lines("Select setting", &["Source IP handling"], &result);
 
         assert!(lines.is_empty());
     }
@@ -292,14 +286,14 @@ mod tests {
     #[test]
     fn select_prompt_description_is_muted_below_title() {
         let lines = format_select_prompt_header_lines(
-            "Source IP mode\nUse Direct traffic unless every request reaches Tako through a trusted proxy.",
+            "Source IP mode\nCloudflare proxy mode is strict when an app environment only accepts Cloudflare traffic.",
         );
 
         assert_eq!(
             lines,
             vec![
                 "◆ Source IP mode".to_string(),
-                "  Use Direct traffic unless every request reaches Tako through a trusted proxy."
+                "  Cloudflare proxy mode is strict when an app environment only accepts Cloudflare traffic."
                     .to_string(),
             ],
         );

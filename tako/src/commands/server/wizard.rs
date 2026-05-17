@@ -153,14 +153,11 @@ fn install_public_ports(
     }
 }
 
-async fn apply_first_run_settings_and_start(
+async fn start_tako_server(
     host: &str,
     port: u16,
     public_ports: ServerPublicPorts,
-    settings: &super::first_run::FirstRunServerSettings,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    super::first_run::apply_first_run_settings_before_start(host, port, host, settings).await?;
-
     let start_scope = output::scope(host);
     let _t = output::timed(&format!("Start tako-server on {host}:{port}"));
     output::with_spinner_async_err(
@@ -338,7 +335,6 @@ pub(super) async fn run_add_server_wizard(
                 let admin_user = output::TextField::new("Admin SSH user")
                     .with_default(admin_user_default.unwrap_or("root"))
                     .prompt()?;
-                let first_run_settings = super::first_run::prompt_first_run_settings()?;
                 let install_scope = output::scope(&host);
                 let _t = output::timed(&format!("Install tako-server on {host}:{port}"));
                 output::with_spinner_async_err(
@@ -357,8 +353,7 @@ pub(super) async fn run_add_server_wizard(
                 .await?;
                 drop(_t);
                 detected_public_ports = Some(public_ports);
-                apply_first_run_settings_and_start(&host, port, public_ports, &first_run_settings)
-                    .await?;
+                start_tako_server(&host, port, public_ports).await?;
 
                 let verify_scope = output::scope(&host);
                 let _t = output::timed(&format!("Verify tako-server on {host}:{port}"));
@@ -379,12 +374,10 @@ pub(super) async fn run_add_server_wizard(
                 Ok(info) if info.installed && info.public_ports.is_none()
             )
         {
-            let should_configure = output::confirm("Set up and start tako-server now?", true)?;
-            if should_configure {
+            let should_start = output::confirm("Start tako-server now?", true)?;
+            if should_start {
                 let public_ports = install_public_ports(initial_public_ports)?;
-                let first_run_settings = super::first_run::prompt_first_run_settings()?;
-                apply_first_run_settings_and_start(&host, port, public_ports, &first_run_settings)
-                    .await?;
+                start_tako_server(&host, port, public_ports).await?;
                 detected_public_ports = Some(public_ports);
 
                 let verify_scope = output::scope(&host);
@@ -692,7 +685,6 @@ pub async fn add_server(
         if install_if_missing && needs_install {
             let admin_user = admin_user.unwrap_or("root");
             let install_ports = install_public_ports(public_ports)?;
-            let first_run_settings = super::first_run::prompt_first_run_settings()?;
             output::with_spinner_async_err(
                 "Installing tako-server",
                 "tako-server installed",
@@ -707,8 +699,7 @@ pub async fn add_server(
             )
             .await?;
             resolved_public_ports = Some(install_ports);
-            apply_first_run_settings_and_start(host, port, install_ports, &first_run_settings)
-                .await?;
+            start_tako_server(host, port, install_ports).await?;
 
             result = output::with_spinner_async_err(
                 "Verifying install",
@@ -724,7 +715,6 @@ pub async fn add_server(
                 let admin_user = output::TextField::new("Admin SSH user")
                     .with_default(admin_user.unwrap_or("root"))
                     .prompt()?;
-                let first_run_settings = super::first_run::prompt_first_run_settings()?;
                 output::with_spinner_async_err(
                     "Installing tako-server",
                     "tako-server installed",
@@ -739,8 +729,7 @@ pub async fn add_server(
                 )
                 .await?;
                 resolved_public_ports = Some(install_ports);
-                apply_first_run_settings_and_start(host, port, install_ports, &first_run_settings)
-                    .await?;
+                start_tako_server(host, port, install_ports).await?;
 
                 result = output::with_spinner_async_err(
                     "Verifying install",
@@ -762,18 +751,11 @@ pub async fn add_server(
             let should_configure = if install_if_missing {
                 true
             } else {
-                output::confirm("Set up and start tako-server now?", true)?
+                output::confirm("Start tako-server now?", true)?
             };
             if should_configure {
                 let configure_ports = install_public_ports(public_ports)?;
-                let first_run_settings = super::first_run::prompt_first_run_settings()?;
-                apply_first_run_settings_and_start(
-                    host,
-                    port,
-                    configure_ports,
-                    &first_run_settings,
-                )
-                .await?;
+                start_tako_server(host, port, configure_ports).await?;
                 resolved_public_ports = Some(configure_ports);
 
                 result = output::with_spinner_async_err(

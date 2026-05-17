@@ -85,6 +85,11 @@ pub enum Command {
         /// Route patterns for this app (host, wildcard, optional path).
         routes: Vec<String>,
 
+        /// How the proxy derives the client IP for requests to this app.
+        /// Defaults to automatic Cloudflare detection with direct peer fallback.
+        #[serde(default)]
+        source_ip: SourceIpMode,
+
         /// Secret environment variables injected into app processes at spawn time.
         /// Non-secret env vars are read by the server from app.json in the release dir.
         /// When `None`, the server keeps existing secrets for this app.
@@ -94,6 +99,10 @@ pub enum Command {
         /// When `None`, the server keeps existing storage bindings for this app.
         #[serde(default)]
         storages: Option<HashMap<String, StorageBinding>>,
+        /// DNS credentials used for app route wildcard certificate issuance.
+        /// When `None`, app DNS credentials are cleared.
+        #[serde(default)]
+        dns: Option<DnsBinding>,
     },
 
     /// Update the desired minimum number of instances for an app.
@@ -338,6 +347,29 @@ pub enum UpgradeMode {
     Upgrading,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+#[derive(Default)]
+pub enum SourceIpMode {
+    #[default]
+    Auto,
+    Direct,
+    CloudflareProxy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DnsProvider {
+    Cloudflare,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DnsBinding {
+    pub provider: DnsProvider,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloudflare_api_token: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerRuntimeInfo {
     pub pid: u32,
@@ -353,8 +385,6 @@ pub struct ServerRuntimeInfo {
     #[serde(default)]
     pub acme_email: Option<String>,
     pub renewal_interval_hours: u64,
-    #[serde(default)]
-    pub dns_provider: Option<String>,
     #[serde(default, alias = "worker")]
     pub standby: bool,
     #[serde(default)]

@@ -37,7 +37,7 @@ Set up a deployment host:
 
 ```bash
 # Connect the host and your workstation to Tailscale first.
-# The host installer bootstraps only; servers add configures and starts it.
+# The host installer bootstraps only; servers add starts and verifies it.
 sudo sh -c "$(curl -fsSL https://tako.sh/install-server.sh)"
 tako servers add my-server
 # Or install/repair over SSH while adding:
@@ -49,10 +49,10 @@ tako servers add root@my-server --http-port 8080 --https-port 8443
 Deploy your app:
 
 ```bash
-tako init    # prompts for app name + production route, writes tako.toml, updates .gitignore for .tako/secrets.json
+tako init    # prompts for app name + route, offers wildcard DNS setup, writes tako.toml
 tako servers add my-server
-# Optional: Cloudflare DNS wildcards or trusted source IP behind HAProxy/Cloudflare.
-tako servers configure
+# Optional: Cloudflare DNS wildcards.
+tako dns configure --env production
 tako deploy
 ```
 

@@ -1,10 +1,9 @@
 use crate::SIGNAL_PARENT_ON_READY_ENV;
-use crate::tls::AcmeClient;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-pub(crate) async fn certificate_renewal_task(acme_client: Arc<AcmeClient>, interval: Duration) {
+pub(crate) async fn certificate_renewal_task(state: Arc<crate::ServerState>, interval: Duration) {
     tracing::info!(
         interval_hours = interval.as_secs() / 3600,
         "Starting certificate renewal task"
@@ -14,7 +13,7 @@ pub(crate) async fn certificate_renewal_task(acme_client: Arc<AcmeClient>, inter
         tokio::time::sleep(interval).await;
         tracing::info!("Checking for certificates needing renewal…");
 
-        let results = acme_client.check_renewals().await;
+        let results = state.check_certificate_renewals().await;
         for result in results {
             match result {
                 Ok(cert) => {
@@ -54,14 +53,7 @@ pub(crate) struct ServerConfigFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) acme_email: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) dns: Option<ServerConfigDns>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) trusted_proxy: Option<ServerConfigTrustedProxy>,
-}
-
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
-pub(crate) struct ServerConfigDns {
-    pub(crate) provider: String,
 }
 
 #[derive(Debug, Default, serde::Deserialize, serde::Serialize)]

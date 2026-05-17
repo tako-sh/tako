@@ -1,6 +1,7 @@
 use super::{
     build_preset_selection_options, display_config_path_for_prompt,
-    ensure_project_gitignore_tracks_secrets, push_history_if_interactive, resolve_adapter,
+    ensure_project_gitignore_tracks_secrets, production_route_needs_dns,
+    push_history_if_interactive, resolve_adapter,
 };
 use crate::build::{BuildAdapter, PresetDefinition};
 use crate::commands::init::presets::normalize_group_preset_definitions;
@@ -289,6 +290,18 @@ fn init_template_uses_prompted_production_route() {
     });
     assert!(rendered.contains("[envs.production]\nroute = \"api.demo-app.com\""));
     assert!(!rendered.contains("[envs.production]\nroute = \"demo-app.example.com\""));
+}
+
+#[test]
+fn init_offers_dns_setup_for_wildcard_production_route() {
+    assert!(production_route_needs_dns("*.demo-app.example.com"));
+    assert!(production_route_needs_dns("*.demo-app.example.com/api"));
+}
+
+#[test]
+fn init_skips_dns_setup_for_exact_production_route() {
+    assert!(!production_route_needs_dns("demo-app.example.com"));
+    assert!(!production_route_needs_dns("demo-app.example.com/api"));
 }
 
 #[test]

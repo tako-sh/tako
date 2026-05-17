@@ -334,8 +334,10 @@ async fn deploy_rejects_invalid_app_name() {
             version: "v1".to_string(),
             path: temp.path().to_string_lossy().to_string(),
             routes: vec!["api.example.com".to_string()],
+            source_ip: tako_core::SourceIpMode::Auto,
             secrets: Some(HashMap::new()),
             storages: Some(HashMap::new()),
+            dns: None,
         })
         .await;
 
@@ -343,6 +345,96 @@ async fn deploy_rejects_invalid_app_name() {
         panic!("expected invalid app name to be rejected");
     };
     assert!(message.contains("Invalid app name"), "got: {message}");
+}
+
+#[tokio::test]
+async fn state_store_persists_dns_credentials_per_app() {
+    let temp_dir = TempDir::new().unwrap();
+    let cert_manager = Arc::new(CertManager::new(CertManagerConfig {
+        cert_dir: temp_dir.path().join("certs"),
+        ..Default::default()
+    }));
+    let state = ServerState::new(
+        temp_dir.path().to_path_buf(),
+        cert_manager,
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+
+    let dns = tako_core::DnsBinding {
+        provider: tako_core::DnsProvider::Cloudflare,
+        cloudflare_api_token: Some("token-a".to_string()),
+    };
+
+    state
+        .state_store
+        .set_dns("my-app/production", &dns)
+        .unwrap();
+
+    assert_eq!(
+        state.state_store.get_dns("my-app/production").unwrap(),
+        Some(dns)
+    );
+    assert_eq!(
+        state.state_store.get_dns("other-app/production").unwrap(),
+        None
+    );
+}
+
+#[tokio::test]
+async fn failed_deploy_does_not_persist_dns_credentials() {
+    let temp_dir = TempDir::new().unwrap();
+    let cert_manager = Arc::new(CertManager::new(CertManagerConfig {
+        cert_dir: temp_dir.path().join("certs"),
+        ..Default::default()
+    }));
+    let state = ServerState::new(
+        temp_dir.path().to_path_buf(),
+        cert_manager,
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+    let app_id = "my-app/production";
+    let release_dir = temp_dir
+        .path()
+        .join("apps")
+        .join("my-app")
+        .join("production")
+        .join("releases")
+        .join("v1");
+    std::fs::create_dir_all(&release_dir).unwrap();
+    write_release_manifest(
+        &release_dir,
+        "node",
+        "",
+        &["/bin/sh", "-lc", "sleep 600"],
+        Some("true"),
+        300,
+    );
+
+    let response = state
+        .handle_command(Command::Deploy {
+            app: app_id.to_string(),
+            version: "v1".to_string(),
+            path: release_dir.to_string_lossy().to_string(),
+            routes: vec!["*.example.com".to_string()],
+            source_ip: tako_core::SourceIpMode::Auto,
+            secrets: Some(HashMap::new()),
+            storages: Some(HashMap::new()),
+            dns: Some(tako_core::DnsBinding {
+                provider: tako_core::DnsProvider::Cloudflare,
+                cloudflare_api_token: Some("token".to_string()),
+            }),
+        })
+        .await;
+
+    let Response::Error { message } = response else {
+        panic!("expected invalid release to be rejected");
+    };
+    assert!(message.contains("empty main field"), "got: {message}");
+    assert_eq!(state.state_store.get_dns(app_id).unwrap(), None);
 }
 
 #[tokio::test]
@@ -369,8 +461,10 @@ async fn deploy_rejects_release_path_outside_managed_root() {
             version: "v1".to_string(),
             path: outside_release.to_string_lossy().to_string(),
             routes: vec!["api.example.com".to_string()],
+            source_ip: tako_core::SourceIpMode::Auto,
             secrets: Some(HashMap::new()),
             storages: Some(HashMap::new()),
+            dns: None,
         })
         .await;
 
@@ -412,8 +506,10 @@ async fn deploy_rejects_invalid_release_version() {
             version: "../v1".to_string(),
             path: release_dir.to_string_lossy().to_string(),
             routes: vec!["api.example.com".to_string()],
+            source_ip: tako_core::SourceIpMode::Auto,
             secrets: Some(HashMap::new()),
             storages: Some(HashMap::new()),
+            dns: None,
         })
         .await;
 
@@ -736,7 +832,6 @@ async fn server_info_command_reports_runtime_config() {
         no_acme: true,
         acme_staging: false,
         renewal_interval_hours: 24,
-        dns_provider: None,
         standby: false,
         metrics_port: Some(9898),
         server_name: Some("test-server".to_string()),
@@ -915,8 +1010,10 @@ async fn deploy_without_secrets_keeps_existing() {
             version: "v1".to_string(),
             path: release_dir.to_string_lossy().to_string(),
             routes: vec!["keep.localhost".to_string()],
+            source_ip: tako_core::SourceIpMode::Auto,
             secrets: None,
             storages: None,
+            dns: None,
         })
         .await;
 
@@ -979,18 +1076,20 @@ async fn restore_from_state_store_rehydrates_apps_routes_and_secrets() {
         ],
         min_instances: 0,
         max_instances: 4,
+        source_ip: tako_core::SourceIpMode::CloudflareProxy,
         idle_timeout: Duration::from_secs(300),
         ..Default::default()
     });
     state_a.load_balancer.register_app(app);
     {
         let mut route_table = state_a.routes.write().await;
-        route_table.set_app_routes(
+        route_table.set_app_routes_with_source_ip(
             app_id.to_string(),
             vec![
                 "api.example.com".to_string(),
                 "example.com/api/*".to_string(),
             ],
+            tako_core::SourceIpMode::CloudflareProxy,
         );
     }
     state_a.persist_app_state(app_id).await;
@@ -1007,6 +1106,10 @@ async fn restore_from_state_store_rehydrates_apps_routes_and_secrets() {
 
     let restored = state_b.app_manager.get_app(app_id).expect("app restored");
     assert_eq!(restored.version(), "v1");
+    assert_eq!(
+        restored.config.read().source_ip,
+        tako_core::SourceIpMode::CloudflareProxy
+    );
     assert_eq!(restored.state(), crate::socket::AppState::Idle);
     let route_table = state_b.routes.read().await;
     assert_eq!(
@@ -1015,6 +1118,13 @@ async fn restore_from_state_store_rehydrates_apps_routes_and_secrets() {
             "api.example.com".to_string(),
             "example.com/api/*".to_string()
         ]
+    );
+    assert_eq!(
+        route_table
+            .select_with_route("api.example.com", "/")
+            .expect("route restored")
+            .source_ip,
+        tako_core::SourceIpMode::CloudflareProxy
     );
     let restored_secrets = restored.config.read().secrets.clone();
     assert_eq!(
@@ -1663,8 +1773,10 @@ async fn deploy_preserves_scaled_instance_count() {
             version: "v2".to_string(),
             path: broken_release.to_string_lossy().to_string(),
             routes: vec!["api.example.com".to_string()],
+            source_ip: tako_core::SourceIpMode::Auto,
             secrets: Some(HashMap::new()),
             storages: Some(HashMap::new()),
+            dns: None,
         })
         .await;
 
@@ -1776,8 +1888,10 @@ async fn deploy_on_demand_validates_startup_and_fails_for_unhealthy_build() {
             version: "v1".to_string(),
             path: release_dir.to_string_lossy().to_string(),
             routes: vec!["broken.localhost".to_string()],
+            source_ip: tako_core::SourceIpMode::Auto,
             secrets: Some(HashMap::new()),
             storages: Some(HashMap::new()),
+            dns: None,
         })
         .await;
 
@@ -1934,8 +2048,10 @@ HTTPServer(("127.0.0.1", port), Handler).serve_forever()
             version: "v1".to_string(),
             path: release_dir.to_string_lossy().to_string(),
             routes: vec!["warm.localhost".to_string()],
+            source_ip: tako_core::SourceIpMode::Auto,
             secrets: Some(HashMap::new()),
             storages: Some(HashMap::new()),
+            dns: None,
         })
         .await;
     assert!(
@@ -2280,12 +2396,11 @@ fn read_server_config_from_json() {
     let dir = TempDir::new().unwrap();
     std::fs::write(
         dir.path().join("config.json"),
-        r#"{"server_name":"prod","dns":{"provider":"cloudflare"},"trusted_proxy":{"proxy_protocol":true,"trusted_cidrs":["127.0.0.1/32"],"client_ip_headers":["cf-connecting-ip"]}}"#,
+        r#"{"server_name":"prod","trusted_proxy":{"proxy_protocol":true,"trusted_cidrs":["127.0.0.1/32"],"client_ip_headers":["cf-connecting-ip"]}}"#,
     )
     .unwrap();
     let config = read_server_config(dir.path());
     assert_eq!(config.server_name.as_deref(), Some("prod"));
-    assert_eq!(config.dns.as_ref().unwrap().provider, "cloudflare");
     let trusted_proxy = config.trusted_proxy.unwrap();
     assert!(trusted_proxy.proxy_protocol);
     assert_eq!(trusted_proxy.trusted_cidrs, vec!["127.0.0.1/32"]);
@@ -2297,5 +2412,4 @@ fn read_server_config_returns_defaults_when_missing() {
     let dir = TempDir::new().unwrap();
     let config = read_server_config(dir.path());
     assert!(config.server_name.is_none());
-    assert!(config.dns.is_none());
 }

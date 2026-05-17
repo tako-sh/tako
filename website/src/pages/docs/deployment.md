@@ -18,7 +18,7 @@ Bootstrap `tako-server` on each host:
 sudo sh -c "$(curl -fsSL https://tako.sh/install-server.sh)"
 ```
 
-The host installer installs the binary, service users, maintenance helpers, and service definition, but it does not enable or start `tako-server` by default. `tako servers add` configures remote management, collects first-run source-IP and DNS wildcard settings when needed, starts the service, verifies access, and then stores the server locally.
+The host installer installs the binary, service users, maintenance helpers, service definition, private Tailscale management binding, and starts `tako-server` by default. `tako servers add` verifies SSH and signed management access, records target metadata, and stores the server locally.
 
 Custom public proxy ports can be passed during bootstrap:
 
@@ -45,23 +45,15 @@ The installer:
 - installs `tako-server` to `/usr/local/bin/tako-server`
 - creates `/opt/tako` and `/var/run/tako`
 - prepares those roots without recursively traversing existing app releases
-- installs systemd or OpenRC service files without enabling or starting them
+- installs systemd or OpenRC service files and starts the service by default
 - installs libvips for image optimization
-- configures private Tailscale remote management during `tako servers add`
-- collects source-IP and DNS wildcard certificate settings before the first service start
+- configures private Tailscale remote management during install
+- starts the service with default listener settings
 - enrolls the SSH key for signed management
 
-Configure/start mode requires Tailscale for private control traffic. If no Tailscale IP is available when `tako servers add` starts the service, the command fails with a remote-management hint.
+Service start requires Tailscale for private control traffic. If no Tailscale IP is available during install, the installer fails with a remote-management hint. Set `TAKO_RESTART_SERVICE=0` only for bootstrap-only image builds or refreshes that should not touch the running service.
 
-To change DNS wildcard certificates or source-IP handling later, run:
-
-```bash
-tako servers configure [name]
-```
-
-The command reads the current server config first and only uses non-secret settings. DNS credentials are not read back from the server. It asks whether to change source-IP handling, then asks whether the server needs DNS wildcard certificates before entering Cloudflare DNS-01 setup. When changing source-IP handling, the prompt recommends direct traffic unless the server is only reachable through a trusted proxy and uses compact option labels.
-
-Choose source-IP configuration. PROXY protocol v1/v2 is for TCP proxies such as same-host NGINX stream or HAProxy. Cloudflare proxy mode uses `CF-Connecting-IP`, not PROXY protocol. In both cases, configure trusted proxy CIDRs and only enable source-IP trust when clients cannot reach Tako directly around that proxy.
+Cloudflare source-IP handling is automatic. When a request comes from Cloudflare IP ranges and includes `CF-Connecting-IP`, Tako uses that header; otherwise it uses the direct peer IP. Set `source_ip = "cloudflare-proxy"` under an environment for strict Cloudflare-only traffic, or `source_ip = "direct"` to ignore proxy headers. Tako keeps Cloudflare IP ranges in memory, starts from bundled ranges plus a last-known-good disk cache, and refreshes them daily while running when any route uses `auto` or `cloudflare-proxy`.
 
 ## Server Inventory
 
@@ -285,16 +277,15 @@ routes = [
 Tako issues certificates automatically:
 
 - HTTP-01 for ordinary hostnames
-- Cloudflare DNS-01 for wildcard routes after configuring DNS setup during `tako servers add` or later with `tako servers configure [name]`
+- Cloudflare DNS-01 for wildcard routes after configuring the app environment with `tako dns configure --env <env>`
 - self-signed certs for local/private hostnames
 
-The Cloudflare token must be able to read zones and edit DNS records for the zone.
-The DNS setup prompt asks whether the server needs wildcard certificates. Answer yes to enable Cloudflare DNS-01 or update the API token; answer no to keep DNS wildcard certificates disabled or disable existing DNS wildcard config.
+The Cloudflare token must be able to read zones and edit DNS records for the zone. `tako dns configure` encrypts the token in `.tako/secrets.json` and does not edit `tako.toml`.
 
-If a wildcard route is deployed without Cloudflare DNS-01 config, deploy fails and tells you to run:
+If a wildcard route is deployed without Cloudflare DNS-01 credentials, deploy fails and tells you to run:
 
 ```bash
-tako servers configure [name]
+tako dns configure --env production
 ```
 
 When HTTPS uses a non-default public port, deploy summaries include that port and HTTP redirects target it.

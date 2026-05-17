@@ -249,14 +249,26 @@ fn install_server_script_installs_and_verifies_runtime_dependencies() {
 }
 
 #[test]
-fn install_server_script_defaults_to_stopped_bootstrap_install() {
+fn install_server_script_starts_service_by_default() {
     let script = super::tako::INSTALL_SERVER_SCRIPT;
 
-    assert!(script.contains("TAKO_RESTART_SERVICE=\"${TAKO_RESTART_SERVICE:-0}\""));
+    assert!(script.contains("TAKO_RESTART_SERVICE=\"${TAKO_RESTART_SERVICE:-1}\""));
+    assert!(script.contains("Starting tako-server service"));
+    assert!(script.contains("systemctl enable tako-server"));
+    assert!(script.contains("rc-update add tako-server default"));
+    assert!(script.contains("TAKO_RESTART_SERVICE    default: 1"));
+}
+
+#[test]
+fn install_server_script_supports_explicit_stopped_bootstrap_install() {
+    let script = super::tako::INSTALL_SERVER_SCRIPT;
+
     assert!(script.contains("OK installed tako-server service (not started)"));
-    assert!(script.contains(
-        "Run `tako servers add <host>` from your workstation to configure and start it."
-    ));
+    assert!(
+        script.contains(
+            "Run `tako servers add <host>` from your workstation to start and verify it."
+        )
+    );
     assert!(!script.contains("systemctl enable tako-server >/dev/null 2>&1 || true\n    echo \"OK install refreshed without restarting tako-server"));
 }
 
@@ -287,7 +299,6 @@ fn install_server_script_preserves_existing_config_when_writing_server_name() {
     let script = super::tako::INSTALL_SERVER_SCRIPT;
 
     assert!(script.contains("data[\"server_name\"] = server_name"));
-    assert!(script.contains("data.setdefault(\"dns\", {})[\"provider\"] = dns_provider"));
     assert!(script.contains("json.dump(data, fh)"));
 }
 
