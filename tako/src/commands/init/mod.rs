@@ -536,8 +536,14 @@ pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>>
     fs::write(&tako_toml_path, template)?;
     ensure_project_gitignore_tracks_secrets(&project_dir)?;
     let configured_init_dns = init_dns_token.is_some();
-    if let Some(token) = init_dns_token {
-        crate::commands::dns::configure_env_dns(&project_dir, "production", Some(token), false)?;
+    if let Some((token, expires_at)) = init_dns_token {
+        crate::commands::dns::configure_env_dns(
+            &project_dir,
+            "production",
+            Some(token),
+            expires_at,
+            false,
+        )?;
     }
 
     let config_name = tako_toml_path
@@ -658,7 +664,7 @@ fn write_init_generated_file(
 
 fn prompt_init_dns_token(
     production_route: &str,
-) -> Result<Option<String>, Box<dyn std::error::Error>> {
+) -> Result<Option<(String, Option<String>)>, Box<dyn std::error::Error>> {
     if !output::is_interactive() || !production_route_needs_dns(production_route) {
         return Ok(None);
     }
@@ -673,10 +679,18 @@ fn prompt_init_dns_token(
         return Ok(None);
     }
 
-    Ok(Some(crate::commands::dns::read_dns_credential(
-        None,
-        "Cloudflare API token",
-    )?))
+    let token = crate::commands::dns::read_dns_credential(None, "Cloudflare API token")?;
+    let expires_at = output::TextField::new("Expires on")
+        .with_hint(crate::config::secret_expires_at_prompt_hint())
+        .prompt_validated(|value| {
+            crate::config::normalize_secret_expires_at(value)
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        })?;
+    Ok(Some((
+        token,
+        crate::config::normalize_secret_expires_at(&expires_at)?,
+    )))
 }
 
 fn production_route_needs_dns(route: &str) -> bool {

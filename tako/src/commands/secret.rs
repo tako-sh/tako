@@ -57,6 +57,10 @@ pub enum SecretCommands {
         #[arg(long)]
         env: Option<String>,
 
+        /// Optional expiry. Use YYYY-MM-DD, "in 30 days", YYYY-MM-DDTHH:MM:SSZ, or never.
+        #[arg(long)]
+        expires_at: Option<String>,
+
         /// Sync secrets to servers after setting
         #[arg(long)]
         sync: bool,
@@ -144,16 +148,53 @@ fn read_secret_value(prompt: &str) -> Result<String, Box<dyn std::error::Error>>
     Ok(value)
 }
 
+pub(crate) fn read_secret_expires_at(
+    value: Option<String>,
+    prompt: &str,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    if let Some(value) = value {
+        return crate::config::normalize_secret_expires_at(&value).map_err(Into::into);
+    }
+
+    if !output::is_interactive() {
+        return Ok(None);
+    }
+
+    let raw = output::TextField::new(prompt)
+        .with_hint(crate::config::secret_expires_at_prompt_hint())
+        .prompt_validated(|value| {
+            crate::config::normalize_secret_expires_at(value)
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        })?;
+    crate::config::normalize_secret_expires_at(&raw).map_err(Into::into)
+}
+
 async fn run_async(
     cmd: SecretCommands,
     context: crate::commands::project_context::ProjectContext,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
-        SecretCommands::Set { name, env, sync } => {
-            let Some(input) = resolve_secret_set_input(&context, env.as_deref(), &name)? else {
+        SecretCommands::Set {
+            name,
+            env,
+            expires_at,
+            sync,
+        } => {
+            let Some(input) =
+                resolve_secret_set_input(&context, env.as_deref(), &name, expires_at)?
+            else {
                 return Ok(());
             };
-            set_secret(&context, &name, &input.env, &input.value, sync).await
+            set_secret(
+                &context,
+                &name,
+                &input.env,
+                &input.value,
+                input.expires_at,
+                sync,
+            )
+            .await
         }
         SecretCommands::Rm { name, env, sync } => {
             remove_secret(&context, &name, env.as_deref(), sync).await
@@ -179,6 +220,7 @@ enum SecretEnvironmentChoice {
 struct SecretSetInput {
     env: String,
     value: String,
+    expires_at: Option<String>,
 }
 
 fn secret_environment_options(
@@ -298,12 +340,55 @@ fn read_secret_value_in_wizard(
     wizard.text_field_named("Value", output::TextField::new(&prompt).password())
 }
 
+fn read_secret_expires_at_in_wizard(
+    wizard: &mut output::Wizard,
+) -> std::io::Result<Option<String>> {
+    let raw = wizard.text_field_named_validated_with_spinner(
+        "Expires",
+        output::TextField::new("Expires on")
+            .with_hint(crate::config::secret_expires_at_prompt_hint()),
+        |value| {
+            crate::config::normalize_secret_expires_at(&value)
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        },
+    )?;
+    crate::config::normalize_secret_expires_at(&raw)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()))
+}
+
+fn read_secret_value_and_expires_at_in_wizard(
+    wizard: &mut output::Wizard,
+    secrets: &crate::config::SecretsStore,
+    name: &str,
+    env: &str,
+    requested_expires_at: Option<Option<String>>,
+) -> std::io::Result<(String, Option<String>)> {
+    loop {
+        let value = read_secret_value_in_wizard(wizard, secrets, name, env)?;
+        if let Some(expires_at) = &requested_expires_at {
+            return Ok((value, expires_at.clone()));
+        }
+        match read_secret_expires_at_in_wizard(wizard) {
+            Ok(expires_at) => return Ok((value, expires_at)),
+            Err(e) if output::is_wizard_back(&e) => {
+                wizard.undo_last();
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 fn resolve_secret_set_input(
     context: &crate::commands::project_context::ProjectContext,
     requested_env: Option<&str>,
     name: &str,
+    requested_expires_at: Option<String>,
 ) -> Result<Option<SecretSetInput>, Box<dyn std::error::Error>> {
     let secrets = crate::config::SecretsStore::load_from_dir(&context.project_dir)?;
+    let requested_expires_at = requested_expires_at
+        .map(|value| crate::config::normalize_secret_expires_at(&value))
+        .transpose()?;
 
     if let Some(env) = requested_env {
         crate::config::validate_environment_name(env)?;
@@ -311,9 +396,23 @@ fn resolve_secret_set_input(
             return Ok(None);
         }
         let prompt = secret_value_prompt(&secrets, name, env);
+        if requested_expires_at.is_none() && output::is_interactive() {
+            let value = read_secret_value(&prompt)?;
+            let expires_at = read_secret_expires_at(None, "Expires on")?;
+            return Ok(Some(SecretSetInput {
+                env: env.to_string(),
+                value,
+                expires_at,
+            }));
+        }
+        let expires_at = match requested_expires_at {
+            Some(expires_at) => expires_at,
+            None => read_secret_expires_at(None, "Expires on")?,
+        };
         return Ok(Some(SecretSetInput {
             env: env.to_string(),
             value: read_secret_value(&prompt)?,
+            expires_at,
         }));
     }
 
@@ -324,18 +423,22 @@ fn resolve_secret_set_input(
     }
 
     let tako_config = crate::config::TakoToml::load_from_file(&context.config_path)?;
+    let prompt_for_expires_at = requested_expires_at.is_none();
     let mut wizard = output::Wizard::new().with_fields(&[
         ("Environment", false),
         ("Name", true),
         ("Override", true),
         ("Value", false),
+        ("Expires", false),
     ]);
 
     'environment: loop {
         wizard.set_visible("Name", false);
         wizard.set_visible("Override", false);
         wizard.set_visible("Value", false);
+        wizard.set_visible("Expires", false);
         wizard.set_visible("Value", true);
+        wizard.set_visible("Expires", prompt_for_expires_at);
         let choice = wizard.select(
             "Environment",
             "Secret environment",
@@ -366,9 +469,19 @@ fn resolve_secret_set_input(
                             Err(e) => return Err(e.into()),
                         }
 
-                        match read_secret_value_in_wizard(&mut wizard, &secrets, name, &env) {
-                            Ok(value) => {
-                                return Ok(Some(SecretSetInput { env, value }));
+                        match read_secret_value_and_expires_at_in_wizard(
+                            &mut wizard,
+                            &secrets,
+                            name,
+                            &env,
+                            requested_expires_at.clone(),
+                        ) {
+                            Ok((value, expires_at)) => {
+                                return Ok(Some(SecretSetInput {
+                                    env,
+                                    value,
+                                    expires_at,
+                                }));
                             }
                             Err(e) if output::is_wizard_back(&e) => {
                                 wizard.undo_last();
@@ -379,9 +492,19 @@ fn resolve_secret_set_input(
                     }
                 }
 
-                match read_secret_value_in_wizard(&mut wizard, &secrets, name, &env) {
-                    Ok(value) => {
-                        return Ok(Some(SecretSetInput { env, value }));
+                match read_secret_value_and_expires_at_in_wizard(
+                    &mut wizard,
+                    &secrets,
+                    name,
+                    &env,
+                    requested_expires_at.clone(),
+                ) {
+                    Ok((value, expires_at)) => {
+                        return Ok(Some(SecretSetInput {
+                            env,
+                            value,
+                            expires_at,
+                        }));
                     }
                     Err(e) if output::is_wizard_back(&e) => {
                         wizard.undo_last();
@@ -432,9 +555,19 @@ fn resolve_secret_set_input(
                                 Err(e) => return Err(e.into()),
                             }
 
-                            match read_secret_value_in_wizard(&mut wizard, &secrets, name, &env) {
-                                Ok(value) => {
-                                    return Ok(Some(SecretSetInput { env, value }));
+                            match read_secret_value_and_expires_at_in_wizard(
+                                &mut wizard,
+                                &secrets,
+                                name,
+                                &env,
+                                requested_expires_at.clone(),
+                            ) {
+                                Ok((value, expires_at)) => {
+                                    return Ok(Some(SecretSetInput {
+                                        env,
+                                        value,
+                                        expires_at,
+                                    }));
                                 }
                                 Err(e) if output::is_wizard_back(&e) => {
                                     wizard.undo_last();
@@ -445,9 +578,19 @@ fn resolve_secret_set_input(
                         }
                     }
 
-                    match read_secret_value_in_wizard(&mut wizard, &secrets, name, &env) {
-                        Ok(value) => {
-                            return Ok(Some(SecretSetInput { env, value }));
+                    match read_secret_value_and_expires_at_in_wizard(
+                        &mut wizard,
+                        &secrets,
+                        name,
+                        &env,
+                        requested_expires_at.clone(),
+                    ) {
+                        Ok((value, expires_at)) => {
+                            return Ok(Some(SecretSetInput {
+                                env,
+                                value,
+                                expires_at,
+                            }));
                         }
                         Err(e) if output::is_wizard_back(&e) => {
                             wizard.undo_last();
@@ -466,6 +609,7 @@ async fn set_secret(
     name: &str,
     env: &str,
     value: &str,
+    expires_at: Option<String>,
     do_sync: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::config::SecretsStore;
@@ -484,7 +628,7 @@ async fn set_secret(
 
     // Encrypt and store
     let encrypted = encrypt(value, &key)?;
-    secrets.set(env, name, encrypted)?;
+    secrets.set_with_expires_at(env, name, encrypted, expires_at)?;
     secrets.save_to_dir(&context.project_dir)?;
     refresh_generated_files_after_secret_change(&context.project_dir, &context.config_path);
 

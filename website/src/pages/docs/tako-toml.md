@@ -277,7 +277,7 @@ route = "*.example.com"
 servers = ["la"]
 ```
 
-Wildcard routes require DNS credentials for that app environment. Cloudflare is the default and only supported provider. Store the Cloudflare API token with `tako dns configure --env <env>`; the token is encrypted in `.tako/secrets.json`, not stored in `tako.toml`.
+Wildcard routes require DNS credentials for that app environment. Cloudflare is the default and only supported provider. Store the Cloudflare API token with `tako dns configure --env <env>` and optionally pass `--expires-at <when>` using `YYYY-MM-DD`, `in N days`, a UTC timestamp, or `never`; the token is encrypted in `.tako/secrets.json`, not stored in `tako.toml`. Deploy fails before build/deploy work starts if the saved token is expired and warns if it expires within 30 days.
 
 ## Images
 

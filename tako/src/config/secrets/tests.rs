@@ -21,8 +21,8 @@ fn test_parse_new_format() {
             "production": {
                 "key_id": "0123456789abcdef",
                 "app": {
-                    "DATABASE_URL": "encrypted_value_1",
-                    "API_KEY": "encrypted_value_2"
+                    "DATABASE_URL": {"value": "encrypted_value_1"},
+                    "API_KEY": {"value": "encrypted_value_2"}
                 }
             }
         }"#;
@@ -46,12 +46,12 @@ fn parse_reads_app_secrets_and_storage_credentials() {
             "production": {
                 "key_id": "0123456789abcdef",
                 "app": {
-                    "DATABASE_URL": "encrypted-db"
+                    "DATABASE_URL": {"value": "encrypted-db"}
                 },
                 "storages": {
                     "prod_uploads": {
-                        "access_key_id": "encrypted-key-id",
-                        "secret_access_key": "encrypted-secret"
+                        "access_key_id": {"value": "encrypted-key-id"},
+                        "secret_access_key": {"value": "encrypted-secret"}
                     }
                 }
             }
@@ -65,8 +65,8 @@ fn parse_reads_app_secrets_and_storage_credentials() {
     let storage = store
         .get_storage_credentials("production", "prod_uploads")
         .unwrap();
-    assert_eq!(storage.access_key_id, "encrypted-key-id");
-    assert_eq!(storage.secret_access_key, "encrypted-secret");
+    assert_eq!(storage.access_key_id.value, "encrypted-key-id");
+    assert_eq!(storage.secret_access_key.value, "encrypted-secret");
 }
 
 #[test]
@@ -75,12 +75,12 @@ fn storage_credentials_do_not_appear_as_app_secret_names() {
             "production": {
                 "key_id": "0123456789abcdef",
                 "app": {
-                    "DATABASE_URL": "encrypted-db"
+                    "DATABASE_URL": {"value": "encrypted-db"}
                 },
                 "storages": {
                     "prod_uploads": {
-                        "access_key_id": "encrypted-key-id",
-                        "secret_access_key": "encrypted-secret"
+                        "access_key_id": {"value": "encrypted-key-id"},
+                        "secret_access_key": {"value": "encrypted-secret"}
                     }
                 }
             }
@@ -97,18 +97,67 @@ fn parse_reads_dns_credentials_without_app_secret_name() {
             "production": {
                 "key_id": "0123456789abcdef",
                 "app": {
-                    "DATABASE_URL": "encrypted-db"
+                    "DATABASE_URL": {"value": "encrypted-db"}
                 },
                 "dns": {
-                    "cloudflare_api_token": "encrypted-token"
+                    "cloudflare_api_token": {"value": "encrypted-token"}
                 }
             }
         }"#;
 
     let store = SecretsStore::parse(json).unwrap();
     let dns = store.get_dns_credentials("production").unwrap();
-    assert_eq!(dns.cloudflare_api_token, "encrypted-token");
+    assert_eq!(dns.cloudflare_api_token.value, "encrypted-token");
     assert_eq!(store.all_secret_names(), vec!["DATABASE_URL".to_string()]);
+}
+
+#[test]
+fn parse_reads_secret_values_with_expires_at_metadata() {
+    let json = r#"{
+            "production": {
+                "key_id": "0123456789abcdef",
+                "app": {
+                    "DATABASE_URL": {
+                        "value": "encrypted-db",
+                        "expires_at": "2099-01-01T00:00:00Z"
+                    }
+                },
+                "storages": {
+                    "prod_uploads": {
+                        "access_key_id": {
+                            "value": "encrypted-key-id",
+                            "expires_at": "2099-01-01T00:00:00Z"
+                        },
+                        "secret_access_key": {
+                            "value": "encrypted-secret",
+                            "expires_at": "2099-01-01T00:00:00Z"
+                        }
+                    }
+                },
+                "dns": {
+                    "cloudflare_api_token": {
+                        "value": "encrypted-token",
+                        "expires_at": "2099-01-01T00:00:00Z"
+                    }
+                }
+            }
+        }"#;
+
+    let store = SecretsStore::parse(json).unwrap();
+
+    let secret = store.get_secret("production", "DATABASE_URL").unwrap();
+    assert_eq!(secret.value, "encrypted-db");
+    assert_eq!(secret.expires_at.as_deref(), Some("2099-01-01T00:00:00Z"));
+    let storage = store
+        .get_storage_credentials("production", "prod_uploads")
+        .unwrap();
+    assert_eq!(storage.access_key_id.value, "encrypted-key-id");
+    assert_eq!(
+        storage.access_key_id.expires_at.as_deref(),
+        Some("2099-01-01T00:00:00Z")
+    );
+    let dns = store.get_dns_credentials("production").unwrap();
+    assert_eq!(dns.cloudflare_api_token.value, "encrypted-token");
 }
 
 #[test]
@@ -117,14 +166,14 @@ fn test_parse_multiple_environments() {
             "production": {
                 "key_id": "1111111111111111",
                 "app": {
-                    "DATABASE_URL": "prod_db"
+                    "DATABASE_URL": {"value": "prod_db"}
                 }
             },
             "staging": {
                 "key_id": "2222222222222222",
                 "app": {
-                    "DATABASE_URL": "staging_db",
-                    "DEBUG": "true"
+                    "DATABASE_URL": {"value": "staging_db"},
+                    "DEBUG": {"value": "true"}
                 }
             }
         }"#;
@@ -188,6 +237,57 @@ fn test_validate_environment_name_invalid() {
     assert!(validate_environment_name("").is_err());
     assert!(validate_environment_name("Production").is_err());
     assert!(validate_environment_name("prod_1").is_err());
+}
+
+#[test]
+fn normalize_secret_expires_at_accepts_date_timestamp_and_never() {
+    assert_eq!(
+        normalize_secret_expires_at("2099-01-01")
+            .unwrap()
+            .as_deref(),
+        Some("2099-01-01T00:00:00Z")
+    );
+    assert_eq!(
+        normalize_secret_expires_at("2099-01-01T12:30:00Z")
+            .unwrap()
+            .as_deref(),
+        Some("2099-01-01T12:30:00Z")
+    );
+    assert_eq!(normalize_secret_expires_at("never").unwrap(), None);
+    assert_eq!(normalize_secret_expires_at("").unwrap(), None);
+}
+
+#[test]
+fn normalize_secret_expires_at_accepts_relative_days() {
+    let now = OffsetDateTime::parse(
+        "2026-05-17T13:45:12Z",
+        &time::format_description::well_known::Rfc3339,
+    )
+    .unwrap();
+
+    assert_eq!(
+        normalize_secret_expires_at_at("in 7 days", now)
+            .unwrap()
+            .as_deref(),
+        Some("2026-05-24T00:00:00Z")
+    );
+    assert_eq!(
+        normalize_secret_expires_at_at("IN 1 DAY", now)
+            .unwrap()
+            .as_deref(),
+        Some("2026-05-18T00:00:00Z")
+    );
+}
+
+#[test]
+fn normalize_secret_expires_at_rejects_invalid_values() {
+    assert!(normalize_secret_expires_at("tomorrow").is_err());
+    assert!(normalize_secret_expires_at("2099-99-99").is_err());
+    assert!(normalize_secret_expires_at("2099-1-01T12:30:00Z").is_err());
+    assert!(normalize_secret_expires_at("2099-01-01T1:30:00Z").is_err());
+    assert!(normalize_secret_expires_at("in -1 days").is_err());
+    assert!(normalize_secret_expires_at("in 0 days").is_err());
+    assert!(normalize_secret_expires_at("in days").is_err());
 }
 
 // ==================== CRUD Operation Tests ====================
@@ -463,6 +563,28 @@ fn test_save_to_dir_writes_new_secrets_json_path() {
 
     assert!(temp_dir.path().join(".tako").join("secrets.json").exists());
     assert!(!temp_dir.path().join(".tako").join("secrets").exists());
+}
+
+#[test]
+fn save_omits_expires_at_when_unknown() {
+    let temp_dir = TempDir::new().unwrap();
+    let path = temp_dir.path().join(".tako").join("secrets.json");
+    let mut store = SecretsStore::default();
+    store.ensure_env_key_id("production").unwrap();
+    store
+        .set("production", "API_KEY", "secret123".to_string())
+        .unwrap();
+
+    store.save_to_file(&path).unwrap();
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    assert!(
+        parsed["production"]["app"]["API_KEY"]
+            .get("expires_at")
+            .is_none(),
+        "{parsed:#}"
+    );
 }
 
 #[test]

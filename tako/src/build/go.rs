@@ -258,8 +258,8 @@ mod tests {
                 "development": {
                     "key_id": "0123456789abcdef",
                     "app": {
-                        "DB_URL": "encrypted",
-                        "API_KEY": "encrypted"
+                        "DB_URL": {"value": "encrypted"},
+                        "API_KEY": {"value": "encrypted"}
                     }
                 }
             }"#,

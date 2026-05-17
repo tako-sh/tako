@@ -191,7 +191,7 @@ pub(super) async fn sync_secrets(
                 let key = load_secret_key(env_name, &secrets, Some(&context.project_dir))?;
                 let mut decrypted = std::collections::HashMap::new();
                 for (name, encrypted_value) in encrypted_secrets {
-                    match decrypt(encrypted_value, &key) {
+                    match decrypt(&encrypted_value.value, &key) {
                         Ok(value) => {
                             decrypted.insert(name.clone(), value);
                         }

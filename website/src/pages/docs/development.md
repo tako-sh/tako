@@ -246,6 +246,8 @@ import { tako } from "tako.sh";
 const db = tako.secrets.DATABASE_URL;
 ```
 
+Secret entries can carry expiry metadata for deployment checks; deploy fails on expired secrets and warns when they expire within 30 days. Dev exposes configured secret values so local work keeps using the same SDK shape as production.
+
 The fd-3 bootstrap envelope is present in dev even when no secrets exist. It carries internal auth, the secrets object, and storage bindings.
 
 ## Storage In Dev

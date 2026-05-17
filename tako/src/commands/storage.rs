@@ -39,6 +39,9 @@ pub enum StorageCommands {
         /// Secret access key. Prompted when omitted.
         #[arg(long)]
         secret_access_key: Option<String>,
+        /// Optional expiry for S3 credentials. Use YYYY-MM-DD, "in 30 days", YYYY-MM-DDTHH:MM:SSZ, or never.
+        #[arg(long)]
+        expires_at: Option<String>,
         /// Use path-style bucket URLs instead of virtual-hosted bucket URLs
         #[arg(long)]
         force_path_style: bool,
@@ -70,6 +73,7 @@ pub fn run(
             region,
             access_key_id,
             secret_access_key,
+            expires_at,
             force_path_style,
             public_base_url,
         } => add_storage(StorageAddInput {
@@ -84,6 +88,7 @@ pub fn run(
             region,
             access_key_id,
             secret_access_key,
+            expires_at,
             force_path_style,
             public_base_url,
         }),
@@ -102,6 +107,7 @@ struct StorageAddInput<'a> {
     region: Option<String>,
     access_key_id: Option<String>,
     secret_access_key: Option<String>,
+    expires_at: Option<String>,
     force_path_style: bool,
     public_base_url: Option<String>,
 }
@@ -158,14 +164,17 @@ fn add_storage(input: StorageAddInput<'_>) -> Result<(), Box<dyn std::error::Err
         let access_key_id = read_storage_credential(input.access_key_id, "Access key id")?;
         let secret_access_key =
             read_storage_credential(input.secret_access_key, "Secret access key")?;
+        let expires_at =
+            crate::commands::secret::read_secret_expires_at(input.expires_at, "Expires on")?;
 
         secrets.set_storage_credentials(
             &input.env,
             resource_name,
-            EncryptedStorageCredentials {
-                access_key_id: crate::crypto::encrypt(&access_key_id, &key)?,
-                secret_access_key: crate::crypto::encrypt(&secret_access_key, &key)?,
-            },
+            EncryptedStorageCredentials::new(
+                crate::crypto::encrypt(&access_key_id, &key)?,
+                crate::crypto::encrypt(&secret_access_key, &key)?,
+                expires_at,
+            ),
         )?;
         secrets.save_to_dir(input.project_dir)?;
     }
@@ -274,9 +283,12 @@ pub(crate) fn decrypt_storage_bindings(
                     bucket: resource.bucket.clone(),
                     endpoint: resource.endpoint.clone(),
                     region: resource.region.clone(),
-                    access_key_id: Some(crate::crypto::decrypt(&encrypted.access_key_id, &key)?),
+                    access_key_id: Some(crate::crypto::decrypt(
+                        &encrypted.access_key_id.value,
+                        &key,
+                    )?),
                     secret_access_key: Some(crate::crypto::decrypt(
-                        &encrypted.secret_access_key,
+                        &encrypted.secret_access_key.value,
                         &key,
                     )?),
                     force_path_style: resource.force_path_style,

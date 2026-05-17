@@ -287,6 +287,9 @@ async fn run_async(
     if dns_result.has_errors() {
         return Err(format!("DNS errors:\n  {}", dns_result.errors.join("\n  ")).into());
     }
+    for warning in dns_result.warnings {
+        output::warning(&format!("Validation: {}", warning));
+    }
 
     let server_names = if output::is_dry_run() {
         resolve_deploy_server_names(&tako_config, &servers, &env)

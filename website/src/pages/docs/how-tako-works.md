@@ -124,7 +124,7 @@ Tako issues certificates automatically:
 - Cloudflare DNS-01 for wildcard routes after configuring the app environment with `tako dns configure --env <env>`
 - self-signed certs for private or local names such as `localhost`, `.local`, `.test`, `.invalid`, `.example`, and `.home.arpa`
 
-The Cloudflare token must be able to read zones and edit DNS records for the zone. `tako dns configure --env <env>` encrypts the token in `.tako/secrets.json`; DNS credentials are not written to `tako.toml`. Deploy sends that DNS binding to each server only when the selected app environment has wildcard routes.
+The Cloudflare token must be able to read zones and edit DNS records for the zone. `tako dns configure --env <env>` can record when the token expires and encrypts the token in `.tako/secrets.json`; DNS credentials are not written to `tako.toml`. Deploy checks that the DNS token is still current when expiry is known, warns when it expires within 30 days, then sends that DNS binding to each server only when the selected app environment has wildcard routes.
 
 Certificates renew before expiry without stopping traffic.
 
@@ -151,7 +151,7 @@ Non-secret variables come from `[vars]`, `[vars.<env>]`, and Tako runtime variab
 
 HTTP instances and workflow workers receive the same app/runtime environment except for HTTP-only bind variables such as `PORT` and `HOST`.
 
-Secrets are encrypted locally in `.tako/secrets.json`, with keys stored outside the repo. Storage bindings and non-secret provider metadata live in `tako.toml`; S3 credentials are encrypted in `.tako/secrets.json` under each environment's `storages` map. On deploy, secrets and storage bindings are stored encrypted in server SQLite and delivered to fresh app and worker processes through fd 3, not environment variables. Secret updates roll HTTP instances and restart workflow workers so new processes receive the latest values.
+Secrets are encrypted locally in `.tako/secrets.json`, with keys stored outside the repo. Each encrypted value can carry plaintext `expires_at` metadata so deploy can fail before build/deploy work starts when app secrets, S3 credentials, or wildcard DNS credentials are expired, and warn when any of them expire within 30 days. If expiry is skipped, `expires_at` is omitted. Storage bindings and non-secret provider metadata live in `tako.toml`; S3 credentials are encrypted in `.tako/secrets.json` under each environment's `storages` map. On deploy, current secrets and storage bindings are stored encrypted in server SQLite and delivered to fresh app and worker processes through fd 3, not environment variables. Secret updates roll HTTP instances and restart workflow workers so new processes receive the latest values.
 
 ## Images And Storage
 

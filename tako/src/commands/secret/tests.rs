@@ -62,11 +62,11 @@ fn ensure_secret_key_available_is_noop_when_env_has_no_key_id() {
 fn ensure_secret_key_available_is_noop_when_key_already_cached() {
     with_temp_tako_home(|| {
         let json = r#"{
-            "production": {
-                "key_id": "0123456789abcdef",
-                "app": {"DATABASE_URL": "opaque-encrypted-blob"}
-            }
-        }"#;
+                "production": {
+                    "key_id": "0123456789abcdef",
+                    "app": {"DATABASE_URL": {"value": "opaque-encrypted-blob"}}
+                }
+            }"#;
         let secrets = crate::config::SecretsStore::parse(json).unwrap();
         let key_id_b64 = secrets.get_key_id("production").unwrap();
         let key = crate::crypto::EncryptionKey::generate().unwrap();
@@ -84,11 +84,11 @@ fn ensure_secret_key_available_is_noop_when_key_already_cached() {
 fn ensure_secret_key_available_errors_when_existing_secrets_have_no_key() {
     with_temp_tako_home(|| {
         let json = r#"{
-            "production": {
-                "key_id": "0123456789abcdef",
-                "app": {"DATABASE_URL": "opaque-encrypted-blob"}
-            }
-        }"#;
+                "production": {
+                    "key_id": "0123456789abcdef",
+                    "app": {"DATABASE_URL": {"value": "opaque-encrypted-blob"}}
+                }
+            }"#;
         let secrets = crate::config::SecretsStore::parse(json).unwrap();
         let err = ensure_secret_key_available("production", &secrets, None).unwrap_err();
         assert_eq!(
@@ -102,11 +102,11 @@ fn ensure_secret_key_available_errors_when_existing_secrets_have_no_key() {
 fn ensure_secret_key_available_errors_when_dns_credentials_have_no_key() {
     with_temp_tako_home(|| {
         let json = r#"{
-            "production": {
-                "key_id": "0123456789abcdef",
-                "dns": {"cloudflare_api_token": "opaque-encrypted-blob"}
-            }
-        }"#;
+                "production": {
+                    "key_id": "0123456789abcdef",
+                    "dns": {"cloudflare_api_token": {"value": "opaque-encrypted-blob"}}
+                }
+            }"#;
         let secrets = crate::config::SecretsStore::parse(json).unwrap();
         let err = ensure_secret_key_available("production", &secrets, None).unwrap_err();
         assert_eq!(
@@ -132,7 +132,7 @@ fn validate_passphrase_key_for_env_uses_short_invalid_passphrase_error() {
         r#"{{
             "production": {{
                 "key_id": "0123456789abcdef",
-                "app": {{"DATABASE_URL": "{encrypted}"}}
+                "app": {{"DATABASE_URL": {{"value": "{encrypted}"}}}}
             }}
         }}"#
     ))

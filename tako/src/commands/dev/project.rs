@@ -240,7 +240,7 @@ pub(super) fn inject_dev_secrets(
 
     let key = crate::commands::secret::load_secret_key("development", &secrets, Some(project_dir))?;
     for (name, encrypted_value) in encrypted {
-        match crate::crypto::decrypt(encrypted_value, &key) {
+        match crate::crypto::decrypt(&encrypted_value.value, &key) {
             Ok(value) => {
                 env.insert(name.clone(), value);
             }

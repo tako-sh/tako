@@ -82,7 +82,7 @@ route = "staging.example.com"
     fs::create_dir_all(&secrets_dir).unwrap();
     fs::write(
         secrets_dir.join("secrets.json"),
-        r#"{"development":{"app":{"API_KEY":"x"}}}"#,
+        r#"{"development":{"app":{"API_KEY":{"value":"x"}}}}"#,
     )
     .unwrap();
 
@@ -174,7 +174,7 @@ fn write_tako_declarations_with_secrets_generate_typed_interface_augmentation() 
     fs::create_dir_all(&secrets_dir).unwrap();
     fs::write(
         secrets_dir.join("secrets.json"),
-        r#"{"development":{"app":{"API_KEY":"x","DATABASE_URL":"y"}}}"#,
+        r#"{"development":{"app":{"API_KEY":{"value":"x"},"DATABASE_URL":{"value":"y"}}}}"#,
     )
     .unwrap();
 

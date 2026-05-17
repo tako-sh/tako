@@ -243,7 +243,7 @@ fn validate_imported_key_for_env(
 ) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(encrypted_secrets) = secrets.get_env(env) {
         for encrypted_value in encrypted_secrets.values() {
-            crate::crypto::decrypt(encrypted_value, key)
+            crate::crypto::decrypt(&encrypted_value.value, key)
                 .map_err(|_| format!("{source} does not decrypt {env} secrets."))?;
         }
     }

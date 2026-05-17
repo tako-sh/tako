@@ -1159,7 +1159,15 @@ main = "index.ts"
 
         // Set a secret - value comes from stdin
         let output = run_tako_with_stdin(
-            &["secrets", "set", "API_KEY", "--env", "production"],
+            &[
+                "secrets",
+                "set",
+                "API_KEY",
+                "--env",
+                "production",
+                "--expires-at",
+                "2099-01-01",
+            ],
             &project_dir,
             "secret123\n",
         );
@@ -1176,15 +1184,50 @@ main = "index.ts"
 
         let raw = fs::read_to_string(&secrets_path).expect("read secrets file");
         let parsed: serde_json::Value = serde_json::from_str(&raw).expect("parse secrets json");
-        let stored = parsed["production"]["app"]["API_KEY"]
+        let stored = parsed["production"]["app"]["API_KEY"]["value"]
             .as_str()
             .expect("stored API_KEY value");
         assert!(!stored.is_empty(), "stored value should not be empty");
         assert_ne!(stored, "secret123", "stored value should be encrypted");
+        assert_eq!(
+            parsed["production"]["app"]["API_KEY"]["expires_at"].as_str(),
+            Some("2099-01-01T00:00:00Z")
+        );
         // Key id should be present.
         assert!(
             parsed["production"]["key_id"].as_str().is_some(),
             "key id should be present"
+        );
+    }
+
+    #[test]
+    fn test_secret_set_omits_expiry_when_not_provided() {
+        let temp = TempDir::new().unwrap();
+        let project_dir = temp.path().to_path_buf();
+
+        write_secret_test_tako_toml(&project_dir);
+
+        let output = run_tako_with_stdin(
+            &["secrets", "set", "API_KEY", "--env", "production"],
+            &project_dir,
+            "secret123\n",
+        );
+
+        assert!(
+            output.status.success(),
+            "secret set should succeed without expiry: {}{}",
+            stdout_str(&output),
+            stderr_str(&output)
+        );
+
+        let raw = fs::read_to_string(project_dir.join(".tako").join("secrets.json"))
+            .expect("read secrets file");
+        let parsed: serde_json::Value = serde_json::from_str(&raw).expect("parse secrets json");
+        assert!(
+            parsed["production"]["app"]["API_KEY"]
+                .get("expires_at")
+                .is_none(),
+            "{parsed:#}"
         );
     }
 
@@ -1467,7 +1510,15 @@ port = 1
 
         // Create encrypted secret and key in isolated HOME/TAKO_HOME.
         let set_output = run_tako_with_stdin_and_env(
-            &["secrets", "set", "API_KEY", "--env", "production"],
+            &[
+                "secrets",
+                "set",
+                "API_KEY",
+                "--env",
+                "production",
+                "--expires-at",
+                "2099-01-01",
+            ],
             &project_dir,
             "secret123\n",
             &home,

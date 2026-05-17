@@ -232,26 +232,26 @@ tako servers reload la --force
 tako servers upgrade
 tako servers upgrade la
 tako servers uninstall la
-tako dns configure --env production
+tako dns configure --env production --expires-at "in 90 days"
 ```
 
-| Command                         | Meaning                                                                            |
-| ------------------------------- | ---------------------------------------------------------------------------------- |
-| `servers remove [name]`         | Remove a server from global config. Aliases: `rm`, `delete`.                       |
-| `servers list`                  | List configured servers. Alias: `ls`.                                              |
-| `servers status`                | Show deployment status across configured servers. Alias: `info`.                   |
-| `servers reload <name>`         | Reload `tako-server` without downtime by default.                                  |
-| `servers reload <name> --force` | Full service restart, which may cause brief downtime.                              |
-| `servers upgrade [name]`        | Upgrade one server or all servers with graceful reload and rollback.               |
-| `servers uninstall [name]`      | Remove `tako-server` and all data from a remote server.                            |
-| `dns configure`                 | Configure app-environment Cloudflare DNS-01 credentials for wildcard certificates. |
+| Command                         | Meaning                                                                                                |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `servers remove [name]`         | Remove a server from global config. Aliases: `rm`, `delete`.                                           |
+| `servers list`                  | List configured servers. Alias: `ls`.                                                                  |
+| `servers status`                | Show deployment status across configured servers. Alias: `info`.                                       |
+| `servers reload <name>`         | Reload `tako-server` without downtime by default.                                                      |
+| `servers reload <name> --force` | Full service restart, which may cause brief downtime.                                                  |
+| `servers upgrade [name]`        | Upgrade one server or all servers with graceful reload and rollback.                                   |
+| `servers uninstall [name]`      | Remove `tako-server` and all data from a remote server.                                                |
+| `dns configure`                 | Configure app-environment Cloudflare DNS-01 credentials and optional expiry for wildcard certificates. |
 
 `servers add --install` starts new or stopped installs with default listener settings. Use `tako dns configure --env <env>` for wildcard certificate DNS. Cloudflare source-IP handling is automatic unless an environment sets `source_ip = "direct"` or `source_ip = "cloudflare-proxy"`.
 
 ## `tako secrets`
 
 ```bash
-tako secrets set DATABASE_URL --env production
+tako secrets set DATABASE_URL --env production --expires-at "in 90 days"
 tako secrets set API_KEY --env production --sync
 tako secrets rm API_KEY --env production --sync
 tako secrets list
@@ -260,14 +260,14 @@ tako secrets sync --env production
 
 Subcommands:
 
-| Command                                 | Meaning                                                  |
-| --------------------------------------- | -------------------------------------------------------- |
-| `secrets set [--env ENV] [--sync] NAME` | Set or update one secret. Alias: `add`.                  |
-| `secrets rm [--env ENV] [--sync] NAME`  | Remove one secret. Aliases: `remove`, `delete`, `del`.   |
-| `secrets list`                          | List secret names by environment. Aliases: `ls`, `show`. |
-| `secrets sync [--env ENV]`              | Sync local encrypted secrets to target servers.          |
+| Command                                                     | Meaning                                                  |
+| ----------------------------------------------------------- | -------------------------------------------------------- |
+| `secrets set [--env ENV] [--expires-at WHEN] [--sync] NAME` | Set or update one secret. Alias: `add`.                  |
+| `secrets rm [--env ENV] [--sync] NAME`                      | Remove one secret. Aliases: `remove`, `delete`, `del`.   |
+| `secrets list`                                              | List secret names by environment. Aliases: `ls`, `show`. |
+| `secrets sync [--env ENV]`                                  | Sync local encrypted secrets to target servers.          |
 
-Interactive `set` prompts for the value with masked input. Non-interactive `set` reads one line from stdin.
+Interactive `set` prompts for the value with masked input and then asks when it expires; press Enter to skip expiry. Non-interactive `set` reads one line from stdin and may omit `--expires-at`. Valid expiry values are `YYYY-MM-DD`, `in N days`, `YYYY-MM-DDTHH:MM:SSZ`, or `never`. `in N days` normalizes to UTC midnight on the UTC date N days from now. Blank, omitted, or `never` stores no `expires_at` field. Deploy fails before build/deploy work starts if a selected environment secret is expired and warns when one expires within 30 days.
 
 ### Secret Keys
 
@@ -295,23 +295,25 @@ tako storages add uploads \
   --bucket app-uploads \
   --endpoint https://<account>.r2.cloudflarestorage.com \
   --region auto \
+  --expires-at "in 90 days" \
   --public-base-url https://cdn.example.com/uploads
 ```
 
-| Option                 | Meaning                                                       |
-| ---------------------- | ------------------------------------------------------------- |
-| `--env ENV`            | Environment to attach. Defaults to `production`.              |
-| `--resource NAME`      | Backing storage resource name. Defaults to the binding name.  |
-| `--provider s3\|local` | Storage provider. Defaults to `s3`.                           |
-| `--bucket NAME`        | Bucket name. Required for `s3`.                               |
-| `--endpoint URL`       | HTTPS S3-compatible endpoint. Required for `s3`.              |
-| `--region REGION`      | Signing region. Defaults to `auto`.                           |
-| `--access-key-id KEY`  | Access key id. Prompts when omitted in interactive terminals. |
-| `--secret-access-key`  | Secret access key. Prompts when omitted in interactive runs.  |
-| `--force-path-style`   | Sign path-style URLs instead of virtual-hosted bucket URLs.   |
-| `--public-base-url`    | Public base URL used by `public: true` SDK helpers.           |
+| Option                 | Meaning                                                                                  |
+| ---------------------- | ---------------------------------------------------------------------------------------- |
+| `--env ENV`            | Environment to attach. Defaults to `production`.                                         |
+| `--resource NAME`      | Backing storage resource name. Defaults to the binding name.                             |
+| `--provider s3\|local` | Storage provider. Defaults to `s3`.                                                      |
+| `--bucket NAME`        | Bucket name. Required for `s3`.                                                          |
+| `--endpoint URL`       | HTTPS S3-compatible endpoint. Required for `s3`.                                         |
+| `--region REGION`      | Signing region. Defaults to `auto`.                                                      |
+| `--access-key-id KEY`  | Access key id. Prompts when omitted in interactive terminals.                            |
+| `--secret-access-key`  | Secret access key. Prompts when omitted in interactive runs.                             |
+| `--expires-at WHEN`    | Optional S3 credential expiry. Use `YYYY-MM-DD`, `in N days`, UTC timestamp, or `never`. |
+| `--force-path-style`   | Sign path-style URLs instead of virtual-hosted bucket URLs.                              |
+| `--public-base-url`    | Public base URL used by `public: true` SDK helpers.                                      |
 
-The command writes bindings and non-secret provider metadata to `tako.toml`. For `s3`, encrypted credentials are written to `.tako/secrets.json` under the selected environment's `storages` map. R2 uses `provider = "s3"` with the R2 S3-compatible endpoint. Deploy syncs storage bindings with the app release; there is no separate storage sync command.
+The command writes bindings and non-secret provider metadata to `tako.toml`. For `s3`, encrypted credentials and optional plaintext expiry metadata are written to `.tako/secrets.json` under the selected environment's `storages` map. Blank, omitted, or `never` expiry stores no `expires_at` field. R2 uses `provider = "s3"` with the R2 S3-compatible endpoint. Deploy syncs storage bindings with the app release, fails early if selected S3 credentials are expired, and warns when they expire within 30 days; there is no separate storage sync command.
 
 ## `tako upgrade`
 

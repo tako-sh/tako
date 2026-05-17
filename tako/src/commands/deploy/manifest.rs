@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Component, Path};
 
 use crate::build::{BuildAdapter, BuildError, BuildExecutor};
-use crate::config::{SecretsStore, TakoToml};
+use crate::config::{EncryptedSecretValue, SecretsStore, TakoToml};
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub(super) struct DeployArchiveManifest {
@@ -169,7 +169,7 @@ pub(super) fn build_deploy_archive_manifest(
     git_dirty: Option<bool>,
     app_env_vars: HashMap<String, String>,
     runtime_env_vars: HashMap<String, String>,
-    env_secrets: Option<&HashMap<String, String>>,
+    env_secrets: Option<&HashMap<String, EncryptedSecretValue>>,
     images: tako_images::ImagesConfig,
     app_dir: String,
     install_dir: String,
@@ -217,7 +217,7 @@ pub(super) fn decrypt_deploy_secrets(
     let key = super::super::secret::load_secret_key(env, secrets, usage_path)?;
     let mut decrypted = HashMap::new();
     for (name, encrypted_value) in encrypted {
-        let value = crate::crypto::decrypt(encrypted_value, &key)
+        let value = crate::crypto::decrypt(&encrypted_value.value, &key)
             .map_err(|e| format!("Failed to decrypt secret '{}': {}", name, e))?;
         decrypted.insert(name.clone(), value);
     }
@@ -330,8 +330,14 @@ mod tests {
             ("BUN_ENV".to_string(), "production".to_string()),
         ]);
         let secrets = HashMap::from([
-            ("API_KEY".to_string(), "x".to_string()),
-            ("DB_URL".to_string(), "y".to_string()),
+            (
+                "API_KEY".to_string(),
+                EncryptedSecretValue::new("x".to_string(), None),
+            ),
+            (
+                "DB_URL".to_string(),
+                EncryptedSecretValue::new("y".to_string(), None),
+            ),
         ]);
 
         let manifest = build_deploy_archive_manifest(

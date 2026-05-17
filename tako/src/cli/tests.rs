@@ -204,6 +204,36 @@ fn secrets_key_import_passphrase_parses_with_env() {
 }
 
 #[test]
+fn secrets_set_parses_expiry() {
+    let cli = Cli::try_parse_from([
+        "tako",
+        "secrets",
+        "set",
+        "API_KEY",
+        "--env",
+        "production",
+        "--expires-at",
+        "2099-01-01",
+    ])
+    .unwrap();
+
+    let Some(Commands::Secrets(secret::SecretCommands::Set {
+        name,
+        env,
+        expires_at,
+        sync,
+    })) = cli.command
+    else {
+        panic!("expected Secrets::Set");
+    };
+
+    assert_eq!(name, "API_KEY");
+    assert_eq!(env.as_deref(), Some("production"));
+    assert_eq!(expires_at.as_deref(), Some("2099-01-01"));
+    assert!(!sync);
+}
+
+#[test]
 fn storages_add_parses_required_binding_options() {
     let cli = Cli::try_parse_from([
         "tako",
@@ -226,6 +256,8 @@ fn storages_add_parses_required_binding_options() {
         "key-id",
         "--secret-access-key",
         "secret",
+        "--expires-at",
+        "2099-01-01",
         "--force-path-style",
         "--public-base-url",
         "https://cdn.example.com",
@@ -242,6 +274,7 @@ fn storages_add_parses_required_binding_options() {
         region,
         access_key_id,
         secret_access_key,
+        expires_at,
         force_path_style,
         public_base_url,
     })) = cli.command
@@ -261,6 +294,7 @@ fn storages_add_parses_required_binding_options() {
     assert_eq!(region.as_deref(), Some("auto"));
     assert_eq!(access_key_id.as_deref(), Some("key-id"));
     assert_eq!(secret_access_key.as_deref(), Some("secret"));
+    assert_eq!(expires_at.as_deref(), Some("2099-01-01"));
     assert!(force_path_style);
     assert_eq!(public_base_url.as_deref(), Some("https://cdn.example.com"));
 }
@@ -370,17 +404,21 @@ fn dns_configure_parses_cloudflare_token() {
         "staging",
         "--cloudflare-api-token",
         "token",
+        "--expires-at",
+        "2099-01-01",
     ])
     .unwrap();
     let Commands::Dns(DnsCommands::Configure {
         env,
         cloudflare_api_token,
+        expires_at,
     }) = cli.command.expect("command")
     else {
         panic!("expected Dns::Configure");
     };
     assert_eq!(env, "staging");
     assert_eq!(cloudflare_api_token.as_deref(), Some("token"));
+    assert_eq!(expires_at.as_deref(), Some("2099-01-01"));
 }
 
 #[test]

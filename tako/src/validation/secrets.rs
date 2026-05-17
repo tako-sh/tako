@@ -1,6 +1,6 @@
 use crate::config::SecretsStore;
 
-use super::ValidationResult;
+use super::{SECRET_EXPIRY_WARNING_DAYS, ValidationResult};
 
 /// Validate secrets configuration
 pub fn validate_secrets(secrets: &SecretsStore) -> ValidationResult {
@@ -68,6 +68,7 @@ pub fn validate_secrets_for_deployment(secrets: &SecretsStore, env_name: &str) -
     result.merge(validate_secrets_for_env(secrets, env_name));
     // Warn (do not fail) when the target environment has additional secret names.
     result.merge(validate_target_only_secret_names(secrets, env_name));
+    result.merge(validate_target_secret_expirations(secrets, env_name));
 
     result
 }
@@ -103,9 +104,60 @@ fn validate_target_only_secret_names(secrets: &SecretsStore, env_name: &str) -> 
     result
 }
 
+fn validate_target_secret_expirations(secrets: &SecretsStore, env_name: &str) -> ValidationResult {
+    let mut result = ValidationResult::new();
+    let Some(target_secrets) = secrets.get_env(env_name) else {
+        return result;
+    };
+
+    for (secret_name, secret) in target_secrets {
+        match secret.is_expired() {
+            Ok(true) => {
+                if let Some(expires_at) = &secret.expires_at {
+                    result.error(format!(
+                        "Secret '{secret_name}' in environment '{env_name}' expired at {expires_at}. Run `tako secrets set {secret_name} --env {env_name}` to update it."
+                    ));
+                }
+            }
+            Ok(false) => match secret.is_expiring_within_days(SECRET_EXPIRY_WARNING_DAYS) {
+                Ok(true) => {
+                    if let Some(expires_at) = &secret.expires_at {
+                        result.warn(format!(
+                            "Secret '{secret_name}' in environment '{env_name}' expires within {SECRET_EXPIRY_WARNING_DAYS} days at {expires_at}. Run `tako secrets set {secret_name} --env {env_name}` to rotate it."
+                        ));
+                    }
+                }
+                Ok(false) => {}
+                Err(error) => result.error(format!(
+                    "Secret '{secret_name}' in environment '{env_name}' has invalid expiry metadata: {error}"
+                )),
+            },
+            Err(error) => result.error(format!(
+                "Secret '{secret_name}' in environment '{env_name}' has invalid expiry metadata: {error}"
+            )),
+        }
+    }
+
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use time::{Duration, OffsetDateTime};
+
+    fn future_expiry(days: i64) -> String {
+        let expires_at = OffsetDateTime::now_utc() + Duration::days(days);
+        format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+            expires_at.year(),
+            u8::from(expires_at.month()),
+            expires_at.day(),
+            expires_at.hour(),
+            expires_at.minute(),
+            expires_at.second()
+        )
+    }
 
     #[test]
     fn deploy_validation_warns_when_target_env_has_extra_secret_names() {
@@ -151,6 +203,56 @@ mod tests {
             !result.has_errors(),
             "unexpected errors: {:?}",
             result.errors
+        );
+    }
+
+    #[test]
+    fn deploy_validation_fails_when_target_secret_is_expired() {
+        let mut secrets = SecretsStore::default();
+        secrets.ensure_env_key_id("production").unwrap();
+        secrets
+            .set_with_expires_at(
+                "production",
+                "API_KEY",
+                "encrypted".to_string(),
+                Some("2000-01-01T00:00:00Z".to_string()),
+            )
+            .unwrap();
+
+        let result = validate_secrets_for_deployment(&secrets, "production");
+
+        assert!(result.has_errors());
+        assert!(
+            result.errors.iter().any(|error| {
+                error.contains("API_KEY") && error.contains("expired at 2000-01-01T00:00:00Z")
+            }),
+            "{:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn deploy_validation_warns_when_target_secret_expires_soon() {
+        let mut secrets = SecretsStore::default();
+        secrets.ensure_env_key_id("production").unwrap();
+        secrets
+            .set_with_expires_at(
+                "production",
+                "API_KEY",
+                "encrypted".to_string(),
+                Some(future_expiry(7)),
+            )
+            .unwrap();
+
+        let result = validate_secrets_for_deployment(&secrets, "production");
+
+        assert!(!result.has_errors(), "{:?}", result.errors);
+        assert!(
+            result.warnings.iter().any(|warning| {
+                warning.contains("API_KEY") && warning.contains("expires within 30 days")
+            }),
+            "{:?}",
+            result.warnings
         );
     }
 }

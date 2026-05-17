@@ -224,10 +224,12 @@ Scale settings survive server restarts, deploys, and rollbacks.
 Local secrets are encrypted in `.tako/secrets.json`. Keys live outside the repo and can be exported/imported:
 
 ```bash
-tako secrets set DATABASE_URL --env production --sync
+tako secrets set DATABASE_URL --env production --expires-at "in 90 days" --sync
 tako secrets key export --env production
 tako secrets key import --env production
 ```
+
+Each secret entry stores an encrypted `value` and can include plaintext `expires_at` metadata. Use `YYYY-MM-DD`, `in N days`, or a UTC timestamp when expiry is known; `in N days` normalizes to UTC midnight on the UTC date N days from now. Skip expiry, omit `--expires-at`, or pass `--expires-at never` when the expiry is unknown or the credential does not expire; Tako stores no `expires_at` field in that case. Deploy checks the selected environment's app secrets before build/deploy work starts, fails if any are expired, and warns when any expire within 30 days.
 
 Deploy compares a server secrets hash before sending secrets. If hashes match, secrets are omitted and the server keeps its current encrypted values. If they differ, deploy sends decrypted secrets over the signed management path and `tako-server` stores them encrypted in SQLite.
 
@@ -244,10 +246,11 @@ tako storages add uploads \
   --provider s3 \
   --bucket app-uploads \
   --endpoint https://<account>.r2.cloudflarestorage.com \
-  --region auto
+  --region auto \
+  --expires-at "in 90 days"
 ```
 
-Storage bindings and non-secret provider metadata live in `tako.toml`; S3 credentials are encrypted in `.tako/secrets.json` under the selected environment's `storages` map. R2 uses `provider = "s3"` with the R2 S3-compatible endpoint. Deploy decrypts the selected environment's storage credentials locally, sends runtime bindings over the signed management path, and `tako-server` stores them encrypted in SQLite.
+Storage bindings and non-secret provider metadata live in `tako.toml`; S3 credentials are encrypted in `.tako/secrets.json` under the selected environment's `storages` map with optional `expires_at` metadata. R2 uses `provider = "s3"` with the R2 S3-compatible endpoint. Deploy fails early if selected S3 credentials are expired, warns if they expire within 30 days, then decrypts current credentials locally, sends runtime bindings over the signed management path, and `tako-server` stores them encrypted in SQLite.
 
 Fresh HTTP instances and workflow workers receive storage bindings through fd 3 alongside secrets. In JavaScript apps, use `tako.storages.<name>.createDownloadUrl`, `createUploadUrl`, `createImageUrl`, and `createImageSrcSet`.
 
@@ -280,12 +283,12 @@ Tako issues certificates automatically:
 - Cloudflare DNS-01 for wildcard routes after configuring the app environment with `tako dns configure --env <env>`
 - self-signed certs for local/private hostnames
 
-The Cloudflare token must be able to read zones and edit DNS records for the zone. `tako dns configure` encrypts the token in `.tako/secrets.json` and does not edit `tako.toml`.
+The Cloudflare token must be able to read zones and edit DNS records for the zone. `tako dns configure` optionally asks when the token expires, encrypts the token in `.tako/secrets.json`, and does not edit `tako.toml`. Deploy fails early if wildcard routes need DNS credentials and the saved token is expired, and warns if the token expires within 30 days.
 
 If a wildcard route is deployed without Cloudflare DNS-01 credentials, deploy fails and tells you to run:
 
 ```bash
-tako dns configure --env production
+tako dns configure --env production --expires-at "in 90 days"
 ```
 
 When HTTPS uses a non-default public port, deploy summaries include that port and HTTP redirects target it.

@@ -160,7 +160,7 @@ If Tako is behind Cloudflare, source-IP handling is automatic by default. Reques
 
 Set `source_ip = "cloudflare-proxy"` under the app environment when all public traffic must come through Cloudflare. In that strict mode, non-Cloudflare peers are rejected. Set `source_ip = "direct"` when Tako should ignore proxy headers and always use the TCP peer.
 
-Configure wildcard certificate DNS per app environment with `tako dns configure --env <env>`.
+Configure wildcard certificate DNS per app environment with `tako dns configure --env <env>`. When token expiry is known, Tako stores it with the encrypted token and rejects deploys that need wildcard DNS after the token expires.
 
 ## Deploy Fails Before Upload
 
@@ -171,6 +171,7 @@ Common early deploy failures:
 - server names are not in global `config.toml`
 - server target metadata is missing
 - required secret keys are unavailable locally
+- app, storage, or DNS secrets needed for the deploy are expired
 - disk space under `/opt/tako` is insufficient
 - another deploy already holds the project-local `.tako/deploy.lock`
 
@@ -181,6 +182,8 @@ tako deploy --env production --verbose
 ```
 
 Verbose mode shows each step as an append-only transcript.
+
+Credentials that expire within 30 days produce a deploy warning but do not stop the deploy.
 
 ## Build Or Entrypoint Fails
 
@@ -278,9 +281,11 @@ Secrets live in `.tako/secrets.json`; keys live outside the repo.
 Set and sync:
 
 ```bash
-tako secrets set DATABASE_URL --env production --sync
+tako secrets set DATABASE_URL --env production --expires-at "in 90 days" --sync
 tako secrets sync --env production
 ```
+
+Use `--expires-at "in 90 days"` or an exact date when expiry is known. Skip expiry, omit `--expires-at`, or pass `--expires-at never` when the expiry is unknown or the credential does not expire. Expired app secrets, S3 storage credentials, and wildcard DNS credentials stop deployment before the build starts; credentials expiring within 30 days produce a deploy warning.
 
 Export/import keys for another machine:
 
@@ -341,7 +346,7 @@ Failures commonly come from:
 - remote source with redirects, private IPs, unsupported schemes, userinfo, or fragments
 - source bytes exceeding optimizer limits
 
-Image optimizer failures return non-shared error caching and detailed diagnostics go to app logs. If a storage image URL or srcset fails, check that `tako storages add` configured the right environment and that `--public-base-url` is set when using `createImageUrl(..., { public: true })` or `createImageSrcSet(..., { public: true })`.
+Image optimizer failures return non-shared error caching and detailed diagnostics go to app logs. If a storage image URL or srcset fails, check that `tako storages add` configured the right environment, that the storage credentials have not expired, and that `--public-base-url` is set when using `createImageUrl(..., { public: true })` or `createImageSrcSet(..., { public: true })`.
 
 ## Logs Are Hard To Read
 
