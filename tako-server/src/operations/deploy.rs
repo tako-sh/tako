@@ -68,17 +68,11 @@ impl crate::ServerState {
         };
 
         let secrets = if let Some(new_secrets) = secrets {
-            if let Err(e) = self.state_store.set_secrets(app_name, &new_secrets) {
-                return Response::error(format!("Failed to store secrets: {}", e));
-            }
             new_secrets
         } else {
             self.state_store.get_secrets(app_name).unwrap_or_default()
         };
         let storages = if let Some(new_storages) = storages {
-            if let Err(e) = self.state_store.set_storages(app_name, &new_storages) {
-                return Response::error(format!("Failed to store storages: {}", e));
-            }
             new_storages
         } else {
             self.state_store.get_storages(app_name).unwrap_or_default()
@@ -131,8 +125,6 @@ impl crate::ServerState {
             let mut config = existing.config.read().clone();
             config.version = version.to_string();
             config.source_ip = source_ip;
-            config.secrets = secrets;
-            config.storages = storages;
             if let Err(error) = apply_release_runtime_to_config(
                 &mut config,
                 release_path.clone(),
@@ -141,9 +133,14 @@ impl crate::ServerState {
                 return Response::error(format!("Invalid app release: {}", error));
             }
             inject_app_data_dir_env(&mut config.env_vars, &data_paths);
+            if let Err(e) = self.persist_credentials(app_name, &secrets, &storages) {
+                return Response::error(e);
+            }
             if let Err(e) = self.persist_dns_binding(app_name, dns.as_ref()) {
                 return Response::error(e);
             }
+            config.secrets = secrets;
+            config.storages = storages;
             existing.update_config(config.clone());
             (existing, config, false)
         } else {
@@ -152,8 +149,6 @@ impl crate::ServerState {
                 name,
                 environment,
                 version: version.to_string(),
-                secrets,
-                storages,
                 source_ip,
                 min_instances: 1,
                 max_instances: 4,
@@ -168,9 +163,14 @@ impl crate::ServerState {
                 return Response::error(format!("Invalid app release: {}", error));
             }
             inject_app_data_dir_env(&mut config.env_vars, &data_paths);
+            if let Err(e) = self.persist_credentials(app_name, &secrets, &storages) {
+                return Response::error(e);
+            }
             if let Err(e) = self.persist_dns_binding(app_name, dns.as_ref()) {
                 return Response::error(e);
             }
+            config.secrets = secrets;
+            config.storages = storages;
 
             let deploy_config = config.clone();
             let app = self.app_manager.register_app(config);
@@ -410,6 +410,21 @@ impl crate::ServerState {
                 .delete_dns(app_name)
                 .map_err(|e| format!("Failed to clear DNS credentials: {e}"))
         }
+    }
+
+    fn persist_credentials(
+        &self,
+        app_name: &str,
+        secrets: &HashMap<String, String>,
+        storages: &HashMap<String, tako_core::StorageBinding>,
+    ) -> Result<(), String> {
+        self.state_store
+            .set_secrets(app_name, secrets)
+            .map_err(|e| format!("Failed to store secrets: {e}"))?;
+        self.state_store
+            .set_storages(app_name, storages)
+            .map_err(|e| format!("Failed to store storages: {e}"))?;
+        Ok(())
     }
 
     async fn restore_failed_rollout_snapshot(

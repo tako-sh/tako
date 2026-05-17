@@ -1023,6 +1023,82 @@ async fn deploy_without_secrets_keeps_existing() {
 }
 
 #[tokio::test]
+async fn failed_deploy_does_not_persist_credentials_for_unregistered_app() {
+    let temp = TempDir::new().unwrap();
+    let cert_manager = Arc::new(CertManager::new(CertManagerConfig {
+        cert_dir: temp.path().join("certs"),
+        ..Default::default()
+    }));
+    let state = ServerState::new(
+        temp.path().to_path_buf(),
+        cert_manager,
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+
+    let release_dir = temp
+        .path()
+        .join("apps")
+        .join("bad-app")
+        .join("releases")
+        .join("v1");
+    std::fs::create_dir_all(&release_dir).unwrap();
+    std::fs::write(
+        release_dir.join("app.json"),
+        r#"{"runtime":"python","main":"server.py","idle_timeout":300}"#,
+    )
+    .unwrap();
+
+    let secrets: HashMap<String, String> = [("API_KEY".to_string(), "new".to_string())]
+        .into_iter()
+        .collect();
+    let storages: HashMap<String, tako_core::StorageBinding> = [(
+        "uploads".to_string(),
+        tako_core::StorageBinding {
+            provider: tako_core::StorageProvider::Local,
+            bucket: None,
+            endpoint: None,
+            region: None,
+            access_key_id: None,
+            secret_access_key: None,
+            force_path_style: false,
+            public_base_url: None,
+            path: Some("uploads".to_string()),
+            signing_key: None,
+        },
+    )]
+    .into_iter()
+    .collect();
+
+    let response = state
+        .handle_command(Command::Deploy {
+            app: "bad-app".to_string(),
+            version: "v1".to_string(),
+            path: release_dir.to_string_lossy().to_string(),
+            routes: vec!["bad.localhost".to_string()],
+            source_ip: tako_core::SourceIpMode::Auto,
+            secrets: Some(secrets),
+            storages: Some(storages),
+            dns: None,
+        })
+        .await;
+
+    assert!(
+        matches!(response, Response::Error { .. }),
+        "expected unsupported runtime deploy failure: {response:?}"
+    );
+    assert!(state.state_store.get_secrets("bad-app").unwrap().is_empty());
+    assert!(
+        state
+            .state_store
+            .get_storages("bad-app")
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
 async fn restore_from_state_store_rehydrates_apps_routes_and_secrets() {
     let temp = TempDir::new().unwrap();
     let app_id = "my-app/production";
