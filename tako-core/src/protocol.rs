@@ -355,6 +355,7 @@ pub enum SourceIpMode {
     Auto,
     Direct,
     CloudflareProxy,
+    TrustedProxy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

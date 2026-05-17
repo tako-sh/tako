@@ -70,7 +70,8 @@ fn upsert_and_load_round_trip() {
     let (_temp, store) = temp_store();
     store.init().unwrap();
 
-    let cfg = sample_config();
+    let mut cfg = sample_config();
+    cfg.source_ip = tako_core::SourceIpMode::TrustedProxy;
     let routes = vec![
         "api.example.com".to_string(),
         "example.com/api/*".to_string(),
@@ -89,7 +90,7 @@ fn upsert_and_load_round_trip() {
     assert!(app.config.secrets.is_empty());
     assert_eq!(app.config.min_instances, 2);
     assert_eq!(app.config.max_instances, 4);
-    assert_eq!(app.config.source_ip, tako_core::SourceIpMode::Auto);
+    assert_eq!(app.config.source_ip, tako_core::SourceIpMode::TrustedProxy);
     assert_eq!(
         app.routes,
         vec![

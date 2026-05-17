@@ -684,6 +684,7 @@ fn source_ip_to_str(mode: tako_core::SourceIpMode) -> &'static str {
         tako_core::SourceIpMode::Auto => "auto",
         tako_core::SourceIpMode::Direct => "direct",
         tako_core::SourceIpMode::CloudflareProxy => "cloudflare-proxy",
+        tako_core::SourceIpMode::TrustedProxy => "trusted-proxy",
     }
 }
 
@@ -692,6 +693,7 @@ fn source_ip_from_str(value: &str) -> Result<tako_core::SourceIpMode, StateStore
         "auto" => Ok(tako_core::SourceIpMode::Auto),
         "direct" => Ok(tako_core::SourceIpMode::Direct),
         "cloudflare-proxy" => Ok(tako_core::SourceIpMode::CloudflareProxy),
+        "trusted-proxy" => Ok(tako_core::SourceIpMode::TrustedProxy),
         other => Err(StateStoreError::InvalidData(format!(
             "unsupported source_ip mode '{other}'"
         ))),

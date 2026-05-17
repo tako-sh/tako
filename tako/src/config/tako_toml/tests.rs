@@ -278,6 +278,27 @@ source_ip = "cloudflare-proxy"
 }
 
 #[test]
+fn test_parse_environment_trusted_proxy_source_ip_mode() {
+    let toml = r#"
+name = "app"
+
+[envs.production]
+route = "example.com"
+servers = ["prod"]
+source_ip = "trusted-proxy"
+"#;
+    let config = Config::parse(toml).unwrap();
+    assert_eq!(
+        config.envs["production"].source_ip,
+        Some(tako_core::SourceIpMode::TrustedProxy)
+    );
+    assert_eq!(
+        config.get_source_ip_mode("production"),
+        tako_core::SourceIpMode::TrustedProxy
+    );
+}
+
+#[test]
 fn omitted_environment_source_ip_defaults_to_auto() {
     let toml = r#"
 name = "app"

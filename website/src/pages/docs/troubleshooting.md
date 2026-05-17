@@ -158,7 +158,7 @@ If any check fails, the server is not written to `config.toml`.
 
 If Tako is behind Cloudflare, source-IP handling is automatic by default. Requests from Cloudflare IP ranges use `CF-Connecting-IP`; other requests use the direct peer IP.
 
-Set `source_ip = "cloudflare-proxy"` under the app environment when all public traffic must come through Cloudflare. In that strict mode, non-Cloudflare peers are rejected. Set `source_ip = "direct"` when Tako should ignore proxy headers and always use the TCP peer.
+Set `source_ip = "cloudflare-proxy"` under the app environment when all public traffic must come through Cloudflare. In that strict mode, non-Cloudflare peers are rejected. Set `source_ip = "trusted-proxy"` for nginx, HAProxy, Caddy, Traefik, or another front proxy that sends `X-Forwarded-For` or `Forwarded`; non-loopback peers must be listed in server `trusted_proxy.trusted_cidrs`. Set `source_ip = "direct"` when Tako should ignore proxy headers and always use the TCP peer.
 
 Configure wildcard certificate DNS per app environment with `tako dns configure --env <env>`. When token expiry is known, Tako stores it with the encrypted token and rejects deploys that need wildcard DNS after the token expires.
 

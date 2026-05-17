@@ -120,16 +120,22 @@ impl ProxyHttp for TakoProxy {
                     &self.cloudflare_ips,
                     &self.config.trusted_proxy,
                 )),
-                None if route_match.source_ip == tako_core::SourceIpMode::CloudflareProxy => {
-                    Some(ClientIpResolution::RejectCloudflareProxy)
-                }
-                None => None,
+                None => match route_match.source_ip {
+                    tako_core::SourceIpMode::CloudflareProxy => {
+                        Some(ClientIpResolution::RejectCloudflareProxy)
+                    }
+                    tako_core::SourceIpMode::TrustedProxy => {
+                        Some(ClientIpResolution::RejectTrustedProxy)
+                    }
+                    _ => None,
+                },
             };
 
             if let Some(resolution) = resolution {
                 let ip = match resolution {
                     ClientIpResolution::Accepted(ip) => ip,
-                    ClientIpResolution::RejectCloudflareProxy => {
+                    ClientIpResolution::RejectCloudflareProxy
+                    | ClientIpResolution::RejectTrustedProxy => {
                         let body = "Forbidden";
                         let mut header = ResponseHeader::build(403, None)?;
                         insert_body_headers(&mut header, "text/plain", body)?;

@@ -594,7 +594,7 @@ fn route_table_reports_when_cloudflare_ranges_are_needed() {
     table.set_app_routes_with_source_ip(
         "web".to_string(),
         vec!["example.com".to_string()],
-        tako_core::SourceIpMode::Direct,
+        tako_core::SourceIpMode::TrustedProxy,
     );
     assert!(!table.needs_cloudflare_ip_ranges());
 

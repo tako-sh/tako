@@ -316,14 +316,14 @@ servers = ["staging"]
 release = ""
 ```
 
-| Field          | Type     | Meaning                                                              |
-| -------------- | -------- | -------------------------------------------------------------------- |
-| `route`        | string   | Single route. Mutually exclusive with `routes`.                      |
-| `routes`       | string[] | Multiple routes. Mutually exclusive with `route`.                    |
-| `servers`      | string[] | Server names from global `config.toml`.                              |
-| `idle_timeout` | number   | Seconds before idle instances stop. Default: `300`.                  |
-| `release`      | string   | Per-env release command override. Empty string clears top-level one. |
-| `source_ip`    | string   | Optional source-IP mode: `auto`, `direct`, or `cloudflare-proxy`.    |
+| Field          | Type     | Meaning                                                                            |
+| -------------- | -------- | ---------------------------------------------------------------------------------- |
+| `route`        | string   | Single route. Mutually exclusive with `routes`.                                    |
+| `routes`       | string[] | Multiple routes. Mutually exclusive with `route`.                                  |
+| `servers`      | string[] | Server names from global `config.toml`.                                            |
+| `idle_timeout` | number   | Seconds before idle instances stop. Default: `300`.                                |
+| `release`      | string   | Per-env release command override. Empty string clears top-level one.               |
+| `source_ip`    | string   | Optional source-IP mode: `auto`, `direct`, `cloudflare-proxy`, or `trusted-proxy`. |
 
 Non-development environments must define at least one route. `development` is reserved for `tako dev`; deploy refuses it and ignores servers declared there.
 
@@ -340,7 +340,7 @@ routes = [
 
 Environment variables belong in `[vars]` and `[vars.<env>]`, not under `[envs.<env>]`.
 
-Generated `tako.toml` files omit `source_ip`. The default `auto` mode uses `CF-Connecting-IP` only for requests from Cloudflare IP ranges, then falls back to the direct peer IP. Use `cloudflare-proxy` for strict Cloudflare-only traffic, or `direct` to ignore proxy headers. Tako stores Cloudflare IP ranges in memory, seeds them from bundled ranges and a last-known-good disk cache, and refreshes them daily while running when any route uses `auto` or `cloudflare-proxy`.
+Generated `tako.toml` files omit `source_ip`. The default `auto` mode uses `CF-Connecting-IP` only for requests from Cloudflare IP ranges, then falls back to the direct peer IP. Use `cloudflare-proxy` for strict Cloudflare-only traffic, `trusted-proxy` for strict nginx/HAProxy-style forwarded headers from loopback or configured trusted proxy CIDRs, or `direct` to ignore proxy headers. Tako stores Cloudflare IP ranges in memory, seeds them from bundled ranges and a last-known-good disk cache, and refreshes them daily while running when any route uses `auto` or `cloudflare-proxy`.
 
 ## Release Commands
 

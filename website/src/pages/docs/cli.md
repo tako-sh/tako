@@ -246,7 +246,7 @@ tako dns configure --env production --expires-at "in 90 days"
 | `servers uninstall [name]`      | Remove `tako-server` and all data from a remote server.                                                |
 | `dns configure`                 | Configure app-environment Cloudflare DNS-01 credentials and optional expiry for wildcard certificates. |
 
-`servers add --install` starts new or stopped installs with default listener settings. Use `tako dns configure --env <env>` for wildcard certificate DNS. Cloudflare source-IP handling is automatic unless an environment sets `source_ip = "direct"` or `source_ip = "cloudflare-proxy"`.
+`servers add --install` starts new or stopped installs with default listener settings. Use `tako dns configure --env <env>` for wildcard certificate DNS. Cloudflare source-IP handling is automatic unless an environment sets `source_ip = "direct"`, `source_ip = "cloudflare-proxy"`, or `source_ip = "trusted-proxy"`.
 
 ## `tako secrets`
 

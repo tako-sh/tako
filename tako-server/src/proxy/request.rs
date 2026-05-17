@@ -230,10 +230,35 @@ pub(super) fn client_ip_from_trusted_headers(
         .find_map(|header| client_ip_from_header(request, *header))
 }
 
+pub(super) fn client_ip_from_trusted_proxy_source_headers(
+    request: &RequestHeader,
+    peer_ip: IpAddr,
+    trusted_proxy: &TrustedProxyConfig,
+) -> Option<IpAddr> {
+    if !peer_ip.is_loopback() && !trusted_proxy.trusts_proxy_ip(&peer_ip) {
+        return None;
+    }
+
+    if trusted_proxy.client_ip_headers.is_empty() {
+        return [
+            TrustedClientIpHeader::XForwardedFor,
+            TrustedClientIpHeader::Forwarded,
+        ]
+        .into_iter()
+        .find_map(|header| client_ip_from_header(request, header));
+    }
+
+    trusted_proxy
+        .client_ip_headers
+        .iter()
+        .find_map(|header| client_ip_from_header(request, *header))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ClientIpResolution {
     Accepted(IpAddr),
     RejectCloudflareProxy,
+    RejectTrustedProxy,
 }
 
 pub(super) fn client_ip_for_source_ip_mode(
@@ -255,6 +280,12 @@ pub(super) fn client_ip_for_source_ip_mode(
             match client_ip_from_cloudflare_proxy(request, peer_ip, cloudflare_ips) {
                 Some(ip) => ClientIpResolution::Accepted(ip),
                 None => ClientIpResolution::RejectCloudflareProxy,
+            }
+        }
+        tako_core::SourceIpMode::TrustedProxy => {
+            match client_ip_from_trusted_proxy_source_headers(request, peer_ip, trusted_proxy) {
+                Some(ip) => ClientIpResolution::Accepted(ip),
+                None => ClientIpResolution::RejectTrustedProxy,
             }
         }
     }
@@ -280,12 +311,42 @@ fn client_ip_from_header(request: &RequestHeader, header: TrustedClientIpHeader)
 
     match header {
         TrustedClientIpHeader::CfConnectingIp => parse_header_ip(value),
+        TrustedClientIpHeader::Forwarded => parse_forwarded_for(value),
         TrustedClientIpHeader::XForwardedFor => value.split(',').next().and_then(parse_header_ip),
     }
 }
 
 fn parse_header_ip(value: &str) -> Option<IpAddr> {
     value.trim().parse().ok()
+}
+
+fn parse_forwarded_for(value: &str) -> Option<IpAddr> {
+    let first_entry = value.split(',').next()?;
+    let raw_for = first_entry.split(';').find_map(|param| {
+        let (key, value) = param.split_once('=')?;
+        key.trim()
+            .eq_ignore_ascii_case("for")
+            .then(|| value.trim().trim_matches('"'))
+    })?;
+
+    parse_forwarded_for_value(raw_for)
+}
+
+fn parse_forwarded_for_value(value: &str) -> Option<IpAddr> {
+    if let Some(rest) = value.strip_prefix('[') {
+        let (ip, _) = rest.split_once(']')?;
+        return ip.parse().ok();
+    }
+
+    if let Ok(ip) = value.parse() {
+        return Some(ip);
+    }
+
+    let (host, port) = value.rsplit_once(':')?;
+    if host.contains(':') || !port.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    host.parse().ok()
 }
 
 pub(super) fn request_host(req: &pingora_http::RequestHeader) -> &str {

@@ -265,6 +265,103 @@ fn strict_cloudflare_source_ip_rejects_cloudflare_peer_without_header() {
 }
 
 #[test]
+fn trusted_proxy_source_ip_uses_x_forwarded_for_from_loopback() {
+    let mut request = RequestHeader::build("GET", b"/", None).expect("build request");
+    request
+        .insert_header("X-Forwarded-For", "203.0.113.15, 127.0.0.1")
+        .unwrap();
+
+    let resolution = client_ip_for_source_ip_mode(
+        &request,
+        "127.0.0.1".parse().unwrap(),
+        tako_core::SourceIpMode::TrustedProxy,
+        &CloudflareIpRanges::default(),
+        &TrustedProxyConfig::default(),
+    );
+
+    assert_eq!(
+        resolution,
+        ClientIpResolution::Accepted("203.0.113.15".parse().unwrap())
+    );
+}
+
+#[test]
+fn trusted_proxy_source_ip_uses_forwarded_header_from_loopback() {
+    let mut request = RequestHeader::build("GET", b"/", None).expect("build request");
+    request
+        .insert_header("Forwarded", "for=203.0.113.15;proto=https")
+        .unwrap();
+
+    let resolution = client_ip_for_source_ip_mode(
+        &request,
+        "127.0.0.1".parse().unwrap(),
+        tako_core::SourceIpMode::TrustedProxy,
+        &CloudflareIpRanges::default(),
+        &TrustedProxyConfig::default(),
+    );
+
+    assert_eq!(
+        resolution,
+        ClientIpResolution::Accepted("203.0.113.15".parse().unwrap())
+    );
+}
+
+#[test]
+fn trusted_proxy_source_ip_uses_configured_trusted_cidr() {
+    let config = TrustedProxyConfig::from_raw(false, &["10.0.0.0/8".to_string()], &[]).unwrap();
+    let mut request = RequestHeader::build("GET", b"/", None).expect("build request");
+    request
+        .insert_header("X-Forwarded-For", "203.0.113.15")
+        .unwrap();
+
+    let resolution = client_ip_for_source_ip_mode(
+        &request,
+        "10.1.2.3".parse().unwrap(),
+        tako_core::SourceIpMode::TrustedProxy,
+        &CloudflareIpRanges::default(),
+        &config,
+    );
+
+    assert_eq!(
+        resolution,
+        ClientIpResolution::Accepted("203.0.113.15".parse().unwrap())
+    );
+}
+
+#[test]
+fn strict_trusted_proxy_source_ip_rejects_untrusted_peer() {
+    let mut request = RequestHeader::build("GET", b"/", None).expect("build request");
+    request
+        .insert_header("X-Forwarded-For", "203.0.113.15")
+        .unwrap();
+
+    let resolution = client_ip_for_source_ip_mode(
+        &request,
+        "198.51.100.1".parse().unwrap(),
+        tako_core::SourceIpMode::TrustedProxy,
+        &CloudflareIpRanges::default(),
+        &TrustedProxyConfig::default(),
+    );
+
+    assert_eq!(resolution, ClientIpResolution::RejectTrustedProxy);
+}
+
+#[test]
+fn strict_trusted_proxy_source_ip_rejects_loopback_without_header() {
+    let request = RequestHeader::build("GET", b"/", None).expect("build request");
+
+    let resolution = client_ip_for_source_ip_mode(
+        &request,
+        "127.0.0.1".parse().unwrap(),
+        tako_core::SourceIpMode::TrustedProxy,
+        &CloudflareIpRanges::default(),
+        &TrustedProxyConfig::default(),
+    );
+
+    assert_eq!(resolution, ClientIpResolution::RejectTrustedProxy);
+}
+
+#[test]
 fn direct_source_ip_ignores_cloudflare_header() {
     let mut request = RequestHeader::build("GET", b"/", None).expect("build request");
     request

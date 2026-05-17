@@ -39,6 +39,7 @@ pub struct TrustedProxyConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrustedClientIpHeader {
     CfConnectingIp,
+    Forwarded,
     XForwardedFor,
 }
 
@@ -46,6 +47,7 @@ impl TrustedClientIpHeader {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::CfConnectingIp => "cf-connecting-ip",
+            Self::Forwarded => "forwarded",
             Self::XForwardedFor => "x-forwarded-for",
         }
     }
@@ -57,6 +59,7 @@ impl FromStr for TrustedClientIpHeader {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.trim().to_ascii_lowercase().as_str() {
             "cf-connecting-ip" => Ok(Self::CfConnectingIp),
+            "forwarded" => Ok(Self::Forwarded),
             "x-forwarded-for" => Ok(Self::XForwardedFor),
             other => Err(format!("Unsupported trusted client IP header '{other}'")),
         }

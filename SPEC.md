@@ -401,6 +401,7 @@ Allowed values:
 - Omitted or `"auto"`: if the direct peer IP belongs to Cloudflare and `CF-Connecting-IP` is present, use that header; otherwise use the direct peer IP.
 - `"direct"`: always use the direct peer IP.
 - `"cloudflare-proxy"`: strict Cloudflare mode; requests must come from Cloudflare IP ranges and include a valid `CF-Connecting-IP` header.
+- `"trusted-proxy"`: strict generic proxy mode for nginx, HAProxy, Caddy, Traefik, and similar front proxies. Requests must come from loopback or from a CIDR listed in server `trusted_proxy.trusted_cidrs`, and must include a valid client IP in `X-Forwarded-For` or `Forwarded` unless the server config sets an explicit `trusted_proxy.client_ip_headers` list.
 
 Generated `tako.toml` files omit `source_ip` by default. `tako-server` keeps Cloudflare IP ranges in memory, starts from a bundled fallback list, overlays a valid last-known-good cache from the server data directory, and refreshes the list every 24 hours while running when any route uses `source_ip = "auto"` or `source_ip = "cloudflare-proxy"`. Successful refreshes are written back to disk.
 
@@ -1394,7 +1395,7 @@ Reference scripts in this repo:
 ```
 
 - `server_name` — identity label for Prometheus metrics (defaults to hostname if absent).
-- `trusted_proxy` remains an advanced server-level escape hatch for PROXY protocol deployments, but it is not configured by the CLI. Cloudflare source-IP handling is app/environment-level through `source_ip`.
+- `trusted_proxy` remains an advanced server-level escape hatch for PROXY protocol deployments and non-loopback trusted front proxies. It is not configured by the CLI. App/environment-level source-IP behavior is selected through `source_ip`.
 - Written by the installer for server identity. Read by `tako-server` at startup.
 
 **Server identity:** `tako-server` creates a stable Ed25519 identity at `{data_dir}/identity.key` and writes the public key to `{data_dir}/identity.pub`. The private key is mode `0600`, is preserved across restarts/upgrades, and is removed only by full server uninstall. `hello` and `server_info` include the OpenSSH SHA-256 fingerprint so the CLI can identify the server during add/probe flows.

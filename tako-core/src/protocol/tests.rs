@@ -88,7 +88,7 @@ fn test_deploy_command_serialization_includes_source_ip_mode() {
         version: "v1".to_string(),
         path: "/opt/tako/apps/my-app/releases/v1".to_string(),
         routes: vec!["example.com".to_string()],
-        source_ip: SourceIpMode::CloudflareProxy,
+        source_ip: SourceIpMode::TrustedProxy,
         secrets: None,
         storages: None,
         dns: None,
@@ -96,7 +96,7 @@ fn test_deploy_command_serialization_includes_source_ip_mode() {
 
     let json = serde_json::to_string(&cmd).unwrap();
 
-    assert!(json.contains(r#""source_ip":"cloudflare-proxy""#));
+    assert!(json.contains(r#""source_ip":"trusted-proxy""#));
 }
 
 #[test]

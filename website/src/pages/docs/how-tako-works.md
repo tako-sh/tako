@@ -128,7 +128,7 @@ The Cloudflare token must be able to read zones and edit DNS records for the zon
 
 Certificates renew before expiry without stopping traffic.
 
-Tako derives the client source IP per app environment. By default, requests from Cloudflare IP ranges use `CF-Connecting-IP`; all other requests use the direct peer IP. Set `source_ip = "cloudflare-proxy"` for strict Cloudflare-only traffic, or `source_ip = "direct"` to ignore proxy headers. Cloudflare IP ranges are held in memory, seeded from bundled ranges and a last-known-good disk cache, and refreshed daily while the server runs when any route uses `auto` or `cloudflare-proxy`.
+Tako derives the client source IP per app environment. By default, requests from Cloudflare IP ranges use `CF-Connecting-IP`; all other requests use the direct peer IP. Set `source_ip = "cloudflare-proxy"` for strict Cloudflare-only traffic, `source_ip = "trusted-proxy"` for strict nginx/HAProxy-style forwarded headers from loopback or configured trusted proxy CIDRs, or `source_ip = "direct"` to ignore proxy headers. Cloudflare IP ranges are held in memory, seeded from bundled ranges and a last-known-good disk cache, and refreshed daily while the server runs when any route uses `auto` or `cloudflare-proxy`.
 
 ## Instances And Scaling
 

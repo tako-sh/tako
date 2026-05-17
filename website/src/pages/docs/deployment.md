@@ -53,7 +53,7 @@ The installer:
 
 Service start requires Tailscale for private control traffic. If no Tailscale IP is available during install, the installer fails with a remote-management hint. Set `TAKO_RESTART_SERVICE=0` only for bootstrap-only image builds or refreshes that should not touch the running service.
 
-Cloudflare source-IP handling is automatic. When a request comes from Cloudflare IP ranges and includes `CF-Connecting-IP`, Tako uses that header; otherwise it uses the direct peer IP. Set `source_ip = "cloudflare-proxy"` under an environment for strict Cloudflare-only traffic, or `source_ip = "direct"` to ignore proxy headers. Tako keeps Cloudflare IP ranges in memory, starts from bundled ranges plus a last-known-good disk cache, and refreshes them daily while running when any route uses `auto` or `cloudflare-proxy`.
+Cloudflare source-IP handling is automatic. When a request comes from Cloudflare IP ranges and includes `CF-Connecting-IP`, Tako uses that header; otherwise it uses the direct peer IP. Set `source_ip = "cloudflare-proxy"` under an environment for strict Cloudflare-only traffic, `source_ip = "trusted-proxy"` for strict nginx/HAProxy-style forwarded headers from loopback or configured trusted proxy CIDRs, or `source_ip = "direct"` to ignore proxy headers. Tako keeps Cloudflare IP ranges in memory, starts from bundled ranges plus a last-known-good disk cache, and refreshes them daily while running when any route uses `auto` or `cloudflare-proxy`.
 
 ## Server Inventory
 
