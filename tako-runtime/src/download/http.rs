@@ -47,17 +47,54 @@ async fn download_bytes_limited(url: &str, max_bytes: u64) -> Result<Vec<u8>, St
         ));
     }
 
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|e| format!("failed to read response body from {url}: {e}"))?;
+    let bytes = read_limited_body(response, max_bytes, url).await?;
+    Ok(bytes)
+}
 
-    if bytes.len() as u64 > max_bytes {
+async fn read_limited_body(
+    mut response: reqwest::Response,
+    max_bytes: u64,
+    url: &str,
+) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| format!("failed to read response body from {url}: {e}"))?
+    {
+        append_chunk_limited(&mut bytes, &chunk, max_bytes, url)?;
+    }
+    Ok(bytes)
+}
+
+fn append_chunk_limited(
+    bytes: &mut Vec<u8>,
+    chunk: &[u8],
+    max_bytes: u64,
+    url: &str,
+) -> Result<(), String> {
+    let next_len = bytes.len() as u64 + chunk.len() as u64;
+    if next_len > max_bytes {
         return Err(format!(
-            "download too large: {} bytes exceeds limit of {max_bytes} bytes for {url}",
-            bytes.len()
+            "download too large: {next_len} bytes exceeds limit of {max_bytes} bytes for {url}"
         ));
     }
+    bytes.extend_from_slice(chunk);
+    Ok(())
+}
 
-    Ok(bytes.to_vec())
+#[cfg(test)]
+mod tests {
+    use super::append_chunk_limited;
+
+    #[test]
+    fn append_chunk_limited_rejects_chunk_that_crosses_limit() {
+        let mut bytes = vec![0; 4];
+
+        let error = append_chunk_limited(&mut bytes, &[1, 2], 5, "https://example.com/runtime")
+            .unwrap_err();
+
+        assert!(error.contains("download too large"), "{error}");
+        assert_eq!(bytes.len(), 4);
+    }
 }
