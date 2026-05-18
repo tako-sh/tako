@@ -45,7 +45,7 @@ The high-level flow is:
 2. Resolve runtime, preset, package manager, entrypoint, asset roots, and build commands.
 3. Build locally in a temporary workspace.
 4. Package the artifact while excluding `.git/`, `.tako/`, `.env*`, `node_modules/`, configured exclusions, and `.gitignore` matches.
-5. Upload the artifact to each target server.
+5. Upload the artifact to each target server over signed HTTP; the server verifies size and digest before extracting it.
 6. Ask each server to prepare the release by downloading the runtime if needed and installing production dependencies.
 7. Run the optional release command once on the leader server.
 8. Deploy route, source-IP, secret, storage, and DNS bindings through the signed management path.
@@ -57,9 +57,11 @@ Servers receive prebuilt artifacts. They do not build application code during de
 
 Normal server installs require Tailscale for remote management. The installer binds the management HTTP endpoint to the server's Tailscale address on port `9844`.
 
-The HTTP management API uses the same typed `Command -> Response` protocol as the Unix management socket. `hello` and `server_info` are public probes. All other RPCs require an enrolled SSH key signature, a fresh timestamp, and a non-replayed nonce.
+The HTTP management API uses the same typed `Command -> Response` protocol as the Unix management socket. `hello` and `server_info` are public probes. All other RPCs require an enrolled SSH key signature, a fresh timestamp, and a non-replayed nonce. Deploy artifacts use a separate streamed upload endpoint signed over app id, version, size, and SHA-256 digest.
 
 `tako servers add` verifies Tailscale reachability, SSH recovery access as `tako@host`, management identity, signed RPC access, and server target metadata before it writes the server to global `config.toml`.
+
+Normal app/runtime commands such as deploy, status, scale, releases, delete, and secret sync use signed HTTP management. SSH remains for setup, recovery, reload, upgrade, and uninstall flows.
 
 ## Routing
 

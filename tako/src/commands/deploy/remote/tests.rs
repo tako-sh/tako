@@ -8,23 +8,6 @@ use crate::ui::TaskState;
 use std::time::Duration;
 
 #[test]
-fn extract_server_error_message_strips_leading_deploy_failed_prefix() {
-    let response = r#"{"status":"error","message":"Deploy failed: Warm instance startup failed"}"#;
-    assert_eq!(
-        extract_server_error_message(response),
-        "Warm instance startup failed"
-    );
-}
-
-#[test]
-fn cleanup_partial_release_command_uses_safe_single_quoted_path() {
-    let cmd = cleanup_partial_release_command("/opt/tako/apps/a'b/releases/v1");
-    assert!(cmd.contains("rm -rf"));
-    assert!(cmd.contains("'\\''"));
-    assert!(cmd.contains("/opt/tako/apps/"));
-}
-
-#[test]
 fn parse_existing_routes_from_ok_response_keeps_empty_routes_and_ignores_malformed_entries() {
     let response = Response::Ok {
         data: serde_json::json!({
@@ -52,37 +35,6 @@ fn parse_existing_routes_from_error_response_returns_message() {
     };
     let err = parse_existing_routes_response(response).unwrap_err();
     assert!(err.contains("boom"));
-}
-
-#[test]
-fn deploy_response_error_detection_only_accepts_structured_status_errors() {
-    let json_err = r#"{"status":"error","message":"nope"}"#;
-    let json_ok = r#"{"status":"ok","data":{}}"#;
-    let old_error_shape = r#"{"error":"old-shape"}"#;
-    let plain_text = "all good";
-
-    assert!(deploy_response_has_error(json_err));
-    assert!(!deploy_response_has_error(json_ok));
-    assert!(!deploy_response_has_error(old_error_shape));
-    assert!(!deploy_response_has_error(plain_text));
-}
-
-#[test]
-fn remote_release_archive_path_uses_artifacts_tar_zst_name() {
-    let path = remote_release_archive_path("/opt/tako/apps/my-app/releases/v1");
-    assert_eq!(path, "/opt/tako/apps/my-app/releases/v1/artifacts.tar.zst");
-}
-
-#[test]
-fn build_remote_extract_archive_command_uses_tako_server_and_cleanup() {
-    let cmd = build_remote_extract_archive_command(
-        "/opt/tako/apps/a'b/releases/v1",
-        "/opt/tako/apps/a'b/releases/v1/artifacts.tar.zst",
-    );
-    assert!(cmd.contains("tako-server --extract-zstd-archive"));
-    assert!(cmd.contains("--extract-dest"));
-    assert!(cmd.contains("rm -f"));
-    assert!(cmd.contains("'\\''"));
 }
 
 fn sample_shared_build_group() -> ArtifactBuildGroup {

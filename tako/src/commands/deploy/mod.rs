@@ -20,7 +20,6 @@ use crate::build::{PresetGroup, js};
 use crate::commands::project_context;
 use crate::config::{SecretsStore, ServerEntry, ServerTarget, ServersToml, TakoToml};
 use crate::output;
-use crate::ssh::SshClient;
 use crate::validation::{
     validate_dns_for_deployment, validate_full_config, validate_secrets_for_deployment,
     validate_storages_for_deployment,
@@ -54,7 +53,6 @@ pub(crate) use manifest::resolve_deploy_main;
 struct DeployConfig {
     app_name: String,
     version: String,
-    remote_base: String,
     routes: Vec<String>,
     source_ip: tako_core::SourceIpMode,
     secrets: HashMap<String, String>,
@@ -89,9 +87,6 @@ struct ServerCheck {
 }
 
 struct PreflightPhaseResult {
-    /// Pre-established SSH connections, keyed by server name.
-    /// Kept alive from preflight so deploy can reuse them without reconnecting.
-    ssh_clients: HashMap<String, SshClient>,
     elapsed: Duration,
 }
 
@@ -146,18 +141,6 @@ pub(super) fn resolve_release_command(config: &TakoToml, env_name: &str) -> Opti
 }
 
 impl DeployConfig {
-    fn release_dir(&self) -> String {
-        format!("{}/releases/{}", self.remote_base, self.version)
-    }
-
-    fn current_link(&self) -> String {
-        format!("{}/current", self.remote_base)
-    }
-
-    fn shared_dir(&self) -> String {
-        format!("{}/shared", self.remote_base)
-    }
-
     fn release_command_payload(&self, release_dir: &str) -> Option<tako_core::Command> {
         let command_line = self.release_command.as_ref()?;
         Some(tako_core::Command::RunRelease {
@@ -448,10 +431,9 @@ async fn run_async(
         }
     }
 
-    let preflight = preflight_result
+    preflight_result
         .unwrap()
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
-    let mut preflight_ssh_clients = preflight.ssh_clients;
 
     let BuildPhaseResult {
         version,
@@ -475,7 +457,6 @@ async fn run_async(
     let deploy_config = Arc::new(DeployConfig {
         app_name: deployment_app_name.clone(),
         version: version.clone(),
-        remote_base: format!("/opt/tako/apps/{}", deployment_app_name),
         routes: routes.clone(),
         source_ip,
         secrets: deploy_secrets,
@@ -540,8 +521,6 @@ async fn run_async(
         let deploy_config = deploy_config.clone();
         let use_spinner = use_per_server_spinners;
         let task_tree = deploy_task_tree.clone();
-        let preconnected_ssh = preflight_ssh_clients.remove(&server_name);
-
         let is_leader = target.name == leader_server_name;
         let release_tx_for_task = if is_leader { release_tx.take() } else { None };
         let release_rx_for_task = if !is_leader {
@@ -561,7 +540,6 @@ async fn run_async(
                     &target_label,
                     use_spinner,
                     task_tree,
-                    preconnected_ssh,
                     release_tx_for_task,
                     release_rx_for_task,
                 )

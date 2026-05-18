@@ -297,7 +297,7 @@ release = "bun run db:migrate"
 
 The command runs as `sh -c` in the release directory after production dependencies are installed. It receives app vars and freshly decrypted app secrets.
 
-If it exits non-zero or times out, deploy aborts on every server, removes the partial release, leaves `current` unchanged, and old instances keep serving. Check the stderr tail in deploy output and the app logs:
+If it exits non-zero or times out, deploy aborts on every server, removes the partial release through signed management, leaves `current` unchanged, and old instances keep serving. Check the stderr tail in deploy output and the app logs:
 
 ```bash
 tako logs --env production --days 1

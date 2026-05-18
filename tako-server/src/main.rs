@@ -5,6 +5,7 @@ compile_error!("tako-server requires Unix (management commands use Unix sockets)
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 mod app_command;
+mod archive;
 mod boot;
 mod channels;
 mod channels_ws;
@@ -58,6 +59,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::util::SubscriberInitExt;
 
+pub(crate) use crate::archive::extract_zstd_archive;
 pub(crate) use crate::release::is_private_local_hostname;
 pub use server_state::{ServerRuntimeConfig, ServerState};
 
@@ -254,30 +256,6 @@ pub struct Args {
     /// Destination directory used with `--extract-zstd-archive`.
     #[arg(long, hide = true)]
     pub extract_dest: Option<String>,
-}
-
-fn extract_zstd_archive(archive_path: &Path, dest_dir: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(dest_dir)
-        .map_err(|e| format!("create extraction dir {}: {}", dest_dir.display(), e))?;
-    let file = std::fs::File::open(archive_path)
-        .map_err(|e| format!("open archive {}: {}", archive_path.display(), e))?;
-    let decoder = zstd::stream::read::Decoder::new(file).map_err(|e| {
-        format!(
-            "initialize zstd decoder for {}: {}",
-            archive_path.display(),
-            e
-        )
-    })?;
-    let mut archive = tar::Archive::new(decoder);
-    archive.unpack(dest_dir).map_err(|e| {
-        format!(
-            "extract archive {} into {}: {}",
-            archive_path.display(),
-            dest_dir.display(),
-            e
-        )
-    })?;
-    Ok(())
 }
 
 fn run_extract_archive_mode(args: &Args) -> Result<(), String> {

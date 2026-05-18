@@ -3,33 +3,10 @@ use std::fs;
 use tempfile::TempDir;
 
 #[test]
-fn deploy_config_paths_are_derived_from_remote_base() {
-    let cfg = DeployConfig {
-        app_name: "my-app".to_string(),
-        version: "v1".to_string(),
-        remote_base: "/opt/tako/apps/my-app".to_string(),
-        routes: vec![],
-        source_ip: tako_core::SourceIpMode::Auto,
-        secrets: HashMap::new(),
-        storages: HashMap::new(),
-        dns: None,
-        secrets_hash: String::new(),
-        main: "index.ts".to_string(),
-        use_unified_target_process: false,
-        release_command: None,
-        leader_server: String::new(),
-    };
-    assert_eq!(cfg.release_dir(), "/opt/tako/apps/my-app/releases/v1");
-    assert_eq!(cfg.current_link(), "/opt/tako/apps/my-app/current");
-    assert_eq!(cfg.shared_dir(), "/opt/tako/apps/my-app/shared");
-}
-
-#[test]
 fn release_command_payload_includes_deploy_secrets() {
     let cfg = DeployConfig {
         app_name: "my-app/production".to_string(),
         version: "v1".to_string(),
-        remote_base: "/opt/tako/apps/my-app/production".to_string(),
         routes: vec![],
         source_ip: tako_core::SourceIpMode::Auto,
         secrets: HashMap::from([("DATABASE_URL".to_string(), "postgres://new".to_string())]),

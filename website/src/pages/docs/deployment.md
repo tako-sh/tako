@@ -111,7 +111,7 @@ If `production` has no server mapping and exactly one global server exists, inte
 
 Deploy resolves the source root from the git root when available, otherwise from the app directory. The app subdirectory is the selected config file's parent directory relative to that source root.
 
-Tako copies source into `.tako/build`, respects `.gitignore`, links `node_modules` from the original tree, runs build stages, merges assets into `public/`, verifies the resolved `main`, writes `app.json`, and archives the result.
+Tako copies source into `.tako/build`, respects `.gitignore`, links `node_modules` from the original tree, runs build stages, merges assets into `public/`, verifies the resolved `main`, writes `app.json`, and archives the result. Uploads go to each server over the private signed HTTP management endpoint; the server verifies the artifact size and SHA-256 digest before extracting the release.
 
 Force-excluded paths:
 
@@ -160,7 +160,7 @@ Release command behavior:
 - secrets and storage bindings are injected for that run
 - timeout is 10 minutes
 
-If the command fails, deploy aborts everywhere, removes the new partial release directory, leaves `current` unchanged, and old instances keep serving.
+If the command fails, deploy aborts everywhere, removes the new partial release directory through remote management, leaves `current` unchanged, and old instances keep serving.
 
 ## Rolling Updates
 

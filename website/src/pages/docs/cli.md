@@ -23,7 +23,7 @@ Progress, prompts, status, and logs go to stderr. Command results and machine-re
 | `--ci`                          | Disable interactive prompts and pretty UI.                                                           |
 | `--dry-run`                     | Show side effects without performing them. Supported by deploy, server add/remove, and delete flows. |
 | `-c`, `--config <CONFIG>`       | Use a specific app config file. If it has no `.toml` suffix, Tako appends it.                        |
-| `--ssh-passphrase <PASSPHRASE>` | Passphrase for encrypted SSH keys used by server operations.                                         |
+| `--ssh-passphrase <PASSPHRASE>` | Passphrase for encrypted SSH keys used by setup/recovery and signed management requests.             |
 
 App-scoped commands treat the selected config file's parent directory as the app directory. This includes `init`, `dev`, `logs`, `deploy`, `releases`, `delete`, `secrets`, `storages`, `dns`, `generate`, and project-context `scale`.
 
@@ -114,7 +114,7 @@ tako deploy --env production --yes
 
 Interactive production deploys ask for confirmation only when the environment is implicit. Passing `--env production` or `--yes` makes the target explicit and skips that prompt.
 
-Deploy validates secrets, storage credentials, wildcard DNS credentials, routes, target servers, and server target metadata before build work starts. It builds locally, packages an artifact, uploads to each server, prepares the release, optionally runs the release command, and performs a rolling update.
+Deploy validates secrets, storage credentials, wildcard DNS credentials, routes, target servers, and server target metadata before build work starts. It builds locally, packages an artifact, uploads it over signed HTTP to each server, prepares the release, optionally runs the release command, and performs a rolling update.
 
 Wildcard routes require `tako dns configure --env <env>`. Storage bindings configured with `tako storages add` are synced during deploy; there is no separate storage sync command.
 
@@ -382,7 +382,7 @@ tako delete --env production --server prod-a --yes
 | `--server <NAME>` | Server deployment to delete from. |
 | `-y`, `--yes`     | Skip confirmation.                |
 
-Delete removes one deployed app/environment/server target after draining instances and workers. In non-interactive mode, pass `--yes`, `--env`, and `--server`.
+Delete uses signed HTTP management to remove one deployed app/environment/server target after draining instances and workers. In non-interactive mode, pass `--yes`, `--env`, and `--server`.
 
 ## `tako upgrade`
 

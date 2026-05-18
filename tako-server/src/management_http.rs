@@ -1,6 +1,7 @@
 use std::convert::Infallible;
 use std::io::ErrorKind;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -12,7 +13,9 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response};
 use hyper_util::rt::TokioIo;
+use sha2::{Digest, Sha256};
 use tako_core::Command;
+use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 
 use crate::ServerState;
@@ -20,6 +23,10 @@ use crate::management_auth::{ManagementAuthState, verify_signed_request};
 
 pub(crate) const MANAGEMENT_PORT: u16 = 9844;
 const MAX_RPC_BODY_BYTES: usize = 1024 * 1024;
+const HEADER_UPLOAD_APP: &str = "x-tako-app";
+const HEADER_UPLOAD_VERSION: &str = "x-tako-version";
+const HEADER_UPLOAD_SIZE: &str = "x-tako-artifact-size";
+const HEADER_UPLOAD_SHA256: &str = "x-tako-artifact-sha256";
 
 type ResponseBody = Full<Bytes>;
 
@@ -88,6 +95,10 @@ async fn handle_request(
     auth_state: Arc<ManagementAuthState>,
     peer_addr: SocketAddr,
 ) -> Response<ResponseBody> {
+    if request.method() == Method::POST && request.uri().path() == "/release-artifact" {
+        return handle_release_artifact_upload(request, state, auth_state, peer_addr).await;
+    }
+
     if request.method() != Method::POST || request.uri().path() != "/rpc" {
         return json_response(
             StatusCode::NOT_FOUND,
@@ -146,6 +157,169 @@ async fn handle_request(
         StatusCode::BAD_REQUEST
     };
     json_response(status, &response)
+}
+
+async fn handle_release_artifact_upload(
+    request: Request<Incoming>,
+    state: Arc<ServerState>,
+    auth_state: Arc<ManagementAuthState>,
+    peer_addr: SocketAddr,
+) -> Response<ResponseBody> {
+    let (parts, mut body) = request.into_parts();
+    let app = match required_header(&parts.headers, HEADER_UPLOAD_APP) {
+        Ok(value) => value.to_string(),
+        Err(response) => return response,
+    };
+    let version = match required_header(&parts.headers, HEADER_UPLOAD_VERSION) {
+        Ok(value) => value.to_string(),
+        Err(response) => return response,
+    };
+    let expected_size = match required_header(&parts.headers, HEADER_UPLOAD_SIZE)
+        .and_then(|value| parse_u64_header(HEADER_UPLOAD_SIZE, value))
+    {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let expected_sha256 = match required_header(&parts.headers, HEADER_UPLOAD_SHA256) {
+        Ok(value) => value.to_string(),
+        Err(response) => return response,
+    };
+    if expected_sha256.len() != 64 || !expected_sha256.chars().all(|c| c.is_ascii_hexdigit()) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &tako_core::Response::error("invalid artifact digest"),
+        );
+    }
+
+    let auth_body = tako_core::release_artifact_upload_auth_body(
+        &app,
+        &version,
+        expected_size,
+        &expected_sha256,
+    );
+    if let Err(error) = verify_signed_request(
+        &state.runtime_config().data_dir,
+        &auth_state,
+        &parts.headers,
+        &auth_body,
+    ) {
+        return json_response(
+            StatusCode::UNAUTHORIZED,
+            &tako_core::Response::error(error.to_string()),
+        );
+    }
+
+    let upload_dir = state.runtime_config().data_dir.join("tmp").join("uploads");
+    if let Err(error) = tokio::fs::create_dir_all(&upload_dir).await {
+        return json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &tako_core::Response::error(format!("create upload dir: {error}")),
+        );
+    }
+    let temp_path = upload_dir.join(format!(
+        "{}-{}.tar.zst",
+        tako_core::deployment_app_id_filename(&app),
+        nanoid::nanoid!(8)
+    ));
+
+    let upload_result = write_upload_body(&mut body, &temp_path, expected_size).await;
+    let actual_sha256 = match upload_result {
+        Ok(digest) => digest,
+        Err(error) => {
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            tracing::debug!(%peer_addr, %error, "Failed to receive release artifact");
+            return json_response(StatusCode::BAD_REQUEST, &tako_core::Response::error(error));
+        }
+    };
+
+    if actual_sha256 != expected_sha256.to_ascii_lowercase() {
+        let _ = tokio::fs::remove_file(&temp_path).await;
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &tako_core::Response::error("artifact digest mismatch"),
+        );
+    }
+
+    let store_result = state.store_uploaded_release_artifact(&app, &version, &temp_path);
+    let _ = tokio::fs::remove_file(&temp_path).await;
+    match store_result {
+        Ok(plan) => json_response(StatusCode::OK, &tako_core::Response::ok(plan)),
+        Err(error) => json_response(StatusCode::BAD_REQUEST, &tako_core::Response::error(error)),
+    }
+}
+
+async fn write_upload_body(
+    body: &mut Incoming,
+    temp_path: &PathBuf,
+    expected_size: u64,
+) -> Result<String, String> {
+    let mut file = tokio::fs::File::create(temp_path)
+        .await
+        .map_err(|e| format!("create upload file {}: {e}", temp_path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut received = 0_u64;
+
+    while let Some(frame) = body.frame().await {
+        let frame = frame.map_err(|e| format!("read upload body: {e}"))?;
+        let Ok(data) = frame.into_data() else {
+            continue;
+        };
+        received = received
+            .checked_add(data.len() as u64)
+            .ok_or_else(|| "artifact upload too large".to_string())?;
+        if received > expected_size {
+            return Err("artifact upload exceeded declared size".to_string());
+        }
+        hasher.update(&data);
+        file.write_all(&data)
+            .await
+            .map_err(|e| format!("write upload file {}: {e}", temp_path.display()))?;
+    }
+
+    if received != expected_size {
+        return Err(format!(
+            "artifact upload size mismatch: expected {expected_size} bytes, received {received}"
+        ));
+    }
+    file.shutdown()
+        .await
+        .map_err(|e| format!("flush upload file {}: {e}", temp_path.display()))?;
+    Ok(hex::encode(hasher.finalize()))
+}
+
+fn required_header<'a>(
+    headers: &'a hyper::HeaderMap,
+    name: &'static str,
+) -> Result<&'a str, Response<ResponseBody>> {
+    let Some(value) = headers.get(name) else {
+        return Err(json_response(
+            StatusCode::BAD_REQUEST,
+            &tako_core::Response::error(format!("missing {name} header")),
+        ));
+    };
+    let Ok(value) = value.to_str() else {
+        return Err(json_response(
+            StatusCode::BAD_REQUEST,
+            &tako_core::Response::error(format!("invalid {name} header")),
+        ));
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(json_response(
+            StatusCode::BAD_REQUEST,
+            &tako_core::Response::error(format!("empty {name} header")),
+        ));
+    }
+    Ok(value)
+}
+
+fn parse_u64_header(name: &'static str, value: &str) -> Result<u64, Response<ResponseBody>> {
+    value.parse::<u64>().map_err(|_| {
+        json_response(
+            StatusCode::BAD_REQUEST,
+            &tako_core::Response::error(format!("invalid {name} header")),
+        )
+    })
 }
 
 pub(crate) async fn handle_rpc_command(

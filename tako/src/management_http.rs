@@ -1,12 +1,19 @@
 use std::net::IpAddr;
+use std::path::Path;
 use std::time::Duration;
 
+use sha2::{Digest, Sha256};
 use tako_core::{Command, HelloResponse, Response, ServerRuntimeInfo};
+use tokio::io::AsyncReadExt;
 
 mod auth;
 
 pub(crate) const MANAGEMENT_PORT: u16 = 9844;
 const MANAGEMENT_TIMEOUT: Duration = Duration::from_secs(5);
+const HEADER_UPLOAD_APP: &str = "x-tako-app";
+const HEADER_UPLOAD_VERSION: &str = "x-tako-version";
+const HEADER_UPLOAD_SIZE: &str = "x-tako-artifact-size";
+const HEADER_UPLOAD_SHA256: &str = "x-tako-artifact-sha256";
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ManagementError {
@@ -67,9 +74,66 @@ impl ManagementClient {
             last_auth_error.unwrap_or_else(|| "management auth failed".to_string()),
         ))
     }
+
+    pub(crate) async fn upload_release_artifact(
+        &mut self,
+        app: &str,
+        version: &str,
+        artifact_path: &Path,
+    ) -> Result<Response, ManagementError> {
+        let metadata = tokio::fs::metadata(artifact_path)
+            .await
+            .map_err(|error| ManagementError::Message(error.to_string()))?;
+        let size = metadata.len();
+        let sha256 = sha256_file_hex(artifact_path).await?;
+        let auth_body = tako_core::release_artifact_upload_auth_body(app, version, size, &sha256);
+        let signed_headers = self.signer.sign_headers(&auth_body).await?;
+        let mut last_auth_error = None;
+
+        for headers in signed_headers {
+            let file = tokio::fs::File::open(artifact_path)
+                .await
+                .map_err(|error| ManagementError::Message(error.to_string()))?;
+            let response = self
+                .http
+                .post(release_artifact_url(&self.host))
+                .header(auth::HEADER_KEY_FINGERPRINT, headers.key_fingerprint)
+                .header(auth::HEADER_TIMESTAMP, headers.timestamp)
+                .header(auth::HEADER_NONCE, headers.nonce)
+                .header(auth::HEADER_SIGNATURE, headers.signature)
+                .header(HEADER_UPLOAD_APP, app)
+                .header(HEADER_UPLOAD_VERSION, version)
+                .header(HEADER_UPLOAD_SIZE, size.to_string())
+                .header(HEADER_UPLOAD_SHA256, sha256.as_str())
+                .header("content-type", "application/zstd")
+                .body(reqwest::Body::from(file))
+                .send()
+                .await
+                .map_err(|error| ManagementError::Message(error.to_string()))?;
+
+            let parsed = parse_response(response).await?;
+            if is_auth_error(&parsed) {
+                last_auth_error = parsed.error_message().map(str::to_string);
+                continue;
+            }
+            return Ok(parsed);
+        }
+
+        Err(ManagementError::Message(
+            last_auth_error.unwrap_or_else(|| "management auth failed".to_string()),
+        ))
+    }
 }
 
 pub(crate) fn rpc_url(host: &str) -> String {
+    management_url(host, "rpc")
+}
+
+pub(crate) fn release_artifact_url(host: &str) -> String {
+    management_url(host, "release-artifact")
+}
+
+fn management_url(host: &str, path: &str) -> String {
     let trimmed = host.trim();
     let literal = trimmed
         .strip_prefix('[')
@@ -80,9 +144,9 @@ pub(crate) fn rpc_url(host: &str) -> String {
         .parse::<IpAddr>()
         .is_ok_and(|ip| matches!(ip, IpAddr::V6(_)))
     {
-        format!("http://[{literal}]:{MANAGEMENT_PORT}/rpc")
+        format!("http://[{literal}]:{MANAGEMENT_PORT}/{path}")
     } else {
-        format!("http://{trimmed}:{MANAGEMENT_PORT}/rpc")
+        format!("http://{trimmed}:{MANAGEMENT_PORT}/{path}")
     }
 }
 
@@ -143,6 +207,25 @@ fn is_auth_error(response: &Response) -> bool {
     )
 }
 
+async fn sha256_file_hex(path: &Path) -> Result<String, ManagementError> {
+    let mut file = tokio::fs::File::open(path)
+        .await
+        .map_err(|error| ManagementError::Message(error.to_string()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0_u8; 128 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .await
+            .map_err(|error| ManagementError::Message(error.to_string()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
 pub(crate) fn parse_ok_data<T>(response: Response, context: &str) -> Result<T, ManagementError>
 where
     T: serde::de::DeserializeOwned,
@@ -171,6 +254,14 @@ mod tests {
         assert_eq!(
             rpc_url("fd7a:115c:a1e0::1"),
             "http://[fd7a:115c:a1e0::1]:9844/rpc"
+        );
+    }
+
+    #[test]
+    fn release_artifact_url_uses_management_port() {
+        assert_eq!(
+            release_artifact_url("prod.tailnet.ts.net"),
+            "http://prod.tailnet.ts.net:9844/release-artifact"
         );
     }
 

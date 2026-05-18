@@ -62,7 +62,7 @@ rustls-pemfile = "2.2"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 
 # HTTP client for proxying
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "stream"] }
 
 # SSH client
 russh = "0.60"

@@ -1,5 +1,6 @@
+use crate::management_http::ManagementClient;
 use crate::output;
-use tako_core::Command;
+use tako_core::{Command, Response};
 
 use super::load_secret_key;
 
@@ -278,41 +279,17 @@ async fn sync_to_server(
     server: &crate::config::ServerEntry,
     secrets: &std::collections::HashMap<String, String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    use crate::ssh::SshClient;
-
-    let mut ssh = SshClient::connect_to(&server.host, server.port).await?;
-
-    // Push secrets through the management protocol; no remote .env file writes.
-    let update_cmd = build_update_secrets_command(app_name, secrets)?;
-    let response = ssh.tako_command(&update_cmd).await?;
-    if tako_response_has_error(&response) {
-        return Err(format!("tako-server error (update-secrets): {response}").into());
-    }
-
-    ssh.disconnect().await?;
-
-    Ok(())
-}
-
-pub(super) fn build_update_secrets_command(
-    app_name: &str,
-    secrets: &std::collections::HashMap<String, String>,
-) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    serde_json::to_string(&Command::UpdateSecrets {
-        app: app_name.to_string(),
-        secrets: secrets.clone(),
-    })
-    .map_err(|e| format!("Failed to serialize update-secrets command: {e}").into())
-}
-
-pub(super) fn tako_response_has_error(response: &str) -> bool {
-    serde_json::from_str::<serde_json::Value>(response)
-        .ok()
-        .and_then(|value| {
-            value
-                .get("status")
-                .and_then(|status| status.as_str())
-                .map(|status| status == "error")
+    let mut client = ManagementClient::new(&server.host).await?;
+    match client
+        .send(&Command::UpdateSecrets {
+            app: app_name.to_string(),
+            secrets: secrets.clone(),
         })
-        .unwrap_or(false)
+        .await?
+    {
+        Response::Ok { .. } => Ok(()),
+        Response::Error { message } => {
+            Err(format!("tako-server error (update-secrets): {message}").into())
+        }
+    }
 }

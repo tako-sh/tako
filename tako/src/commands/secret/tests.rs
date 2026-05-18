@@ -5,13 +5,10 @@ use super::key::{
     environment_for_key_id, load_or_create_key_for_set, missing_secret_key_message,
     resolve_key_import_source, save_key_with_storage_choice, validate_passphrase_key_for_env,
 };
-use super::sync::{
-    build_update_secrets_command, resolve_secret_sync_server_names, tako_response_has_error,
-};
+use super::sync::resolve_secret_sync_server_names;
 use super::*;
 use crate::config::{ServerEntry, ServersToml, TakoToml};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as BASE64_URL};
-use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::Path;
 use tempfile::TempDir;
@@ -370,39 +367,4 @@ fn resolve_secret_sync_server_names_returns_empty_for_unmapped_non_production() 
     let names =
         resolve_secret_sync_server_names("staging", &tako_config, &servers).expect("should work");
     assert!(names.is_empty());
-}
-
-#[test]
-fn build_update_secrets_command_uses_protocol_payload_not_env_file_writes() {
-    let secrets = HashMap::from([("API_KEY".to_string(), "secret".to_string())]);
-    let command = build_update_secrets_command("my-app", &secrets).expect("serialize command");
-    let value: serde_json::Value =
-        serde_json::from_str(&command).expect("parse serialized command");
-
-    assert_eq!(
-        value.get("command").and_then(|v| v.as_str()),
-        Some("update_secrets")
-    );
-    assert_eq!(value.get("app").and_then(|v| v.as_str()), Some("my-app"));
-    assert_eq!(
-        value
-            .get("secrets")
-            .and_then(|v| v.get("API_KEY"))
-            .and_then(|v| v.as_str()),
-        Some("secret")
-    );
-    assert!(!command.contains(".env"));
-}
-
-#[test]
-fn tako_response_has_error_only_accepts_structured_status_errors() {
-    let json_err = r#"{"status":"error","message":"nope"}"#;
-    let json_ok = r#"{"status":"ok","data":{}}"#;
-    let old_error_shape = r#"{"error":"old-shape"}"#;
-    let plain_text = "all good";
-
-    assert!(tako_response_has_error(json_err));
-    assert!(!tako_response_has_error(json_ok));
-    assert!(!tako_response_has_error(old_error_shape));
-    assert!(!tako_response_has_error(plain_text));
 }

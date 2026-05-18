@@ -4,9 +4,9 @@ use std::path::Path;
 use crate::app::require_app_name_from_config_path;
 use crate::commands::project_context;
 use crate::config::{ServerEntry, ServersToml, TakoToml};
+use crate::management_http::ManagementClient;
 use crate::output;
-use crate::ssh::SshClient;
-use tako_core::{AppStatus, Command, Response};
+use tako_core::{Command, Response};
 use tracing::Instrument;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -245,39 +245,27 @@ async fn discover_server_deployments(
     server: &ServerEntry,
 ) -> Result<Vec<RemoteDeployment>, Box<dyn std::error::Error + Send + Sync>> {
     let _t = output::timed("Discover deployments");
-    let mut ssh = SshClient::connect_to(&server.host, server.port).await?;
+    let mut client = ManagementClient::new(&server.host).await?;
+    let app_names = parse_list_apps_response(client.send(&Command::List).await?)
+        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
+    tracing::debug!("Found {} app(s)", app_names.len());
 
-    let result = async {
-        let list = ssh.tako_list_apps().await?;
-        let app_names = parse_list_apps_response(list)
-            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
-        tracing::debug!("Found {} app(s)", app_names.len());
-
-        let mut deployments = Vec::new();
-        for app_name in app_names {
-            let (app, env) = if let Some((app, env)) = tako_core::split_deployment_app_id(&app_name)
-            {
-                (app.to_string(), env.to_string())
-            } else {
-                let env = query_connected_app_env(&ssh, &app_name, server_name)
-                    .await
-                    .unwrap_or_else(|| "unknown".to_string());
-                (app_name.clone(), env)
-            };
-            deployments.push(RemoteDeployment {
-                remote_app_id: app_name,
-                app,
-                env,
-                server_name: server_name.to_string(),
-            });
-        }
-
-        Ok::<Vec<RemoteDeployment>, Box<dyn std::error::Error + Send + Sync>>(deployments)
+    let mut deployments = Vec::new();
+    for app_name in app_names {
+        let (app, env) = if let Some((app, env)) = tako_core::split_deployment_app_id(&app_name) {
+            (app.to_string(), env.to_string())
+        } else {
+            (app_name.clone(), "unknown".to_string())
+        };
+        deployments.push(RemoteDeployment {
+            remote_app_id: app_name,
+            app,
+            env,
+            server_name: server_name.to_string(),
+        });
     }
-    .await;
 
-    let _ = ssh.disconnect().await;
-    result
+    Ok(deployments)
 }
 
 fn parse_list_apps_response(response: Response) -> Result<Vec<String>, String> {
@@ -301,69 +289,6 @@ fn parse_list_apps_response(response: Response) -> Result<Vec<String>, String> {
             Ok(names)
         }
         Response::Error { message } => Err(format!("tako-server error (list): {}", message)),
-    }
-}
-
-async fn query_connected_app_env(
-    client: &SshClient,
-    app_name: &str,
-    server_name: &str,
-) -> Option<String> {
-    let response = client.tako_app_status(app_name).await.ok()?;
-    let status = match response {
-        Response::Ok { data } => serde_json::from_value::<AppStatus>(data).ok()?,
-        Response::Error { .. } => return None,
-    };
-
-    query_remote_app_env_for_server(client, app_name, &status.version, server_name).await
-}
-
-async fn query_remote_app_env_for_server(
-    client: &SshClient,
-    app_name: &str,
-    version: &str,
-    server_name: &str,
-) -> Option<String> {
-    let release_toml = format!("/opt/tako/apps/{}/releases/{}/tako.toml", app_name, version);
-    let quoted = shell_single_quote(&release_toml);
-    let cmd = format!("if [ -f {path} ]; then cat {path}; fi", path = quoted);
-    let output = client.exec(&cmd).await.ok()?;
-    let content = output.stdout;
-    if content.trim().is_empty() {
-        return None;
-    }
-    parse_server_env_from_tako_toml(&content, server_name)
-}
-
-fn parse_server_env_from_tako_toml(content: &str, server_name: &str) -> Option<String> {
-    let config = TakoToml::parse(content).ok()?;
-
-    let mut matching_envs = config
-        .envs
-        .iter()
-        .filter(|(env_name, _)| env_name.as_str() != "development")
-        .filter(|(_, env_config)| env_config.servers.iter().any(|name| name == server_name))
-        .map(|(env_name, _)| env_name.clone())
-        .collect::<Vec<_>>();
-    matching_envs.sort();
-    matching_envs.dedup();
-    if matching_envs.len() == 1 {
-        return matching_envs.into_iter().next();
-    }
-
-    let mut configured_envs = config
-        .envs
-        .iter()
-        .filter(|(env_name, _)| env_name.as_str() != "development")
-        .filter(|(_, env_config)| !env_config.servers.is_empty())
-        .map(|(env_name, _)| env_name.clone())
-        .collect::<Vec<_>>();
-    configured_envs.sort();
-    configured_envs.dedup();
-    if configured_envs.len() == 1 {
-        configured_envs.into_iter().next()
-    } else {
-        None
     }
 }
 
@@ -668,32 +593,18 @@ async fn delete_from_server(
     remote_app_name: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let _t = output::timed(&format!("Delete app {remote_app_name}"));
-    let mut ssh = SshClient::connect_to(&server.host, server.port).await?;
-
-    let result = async {
-        let cmd = Command::Delete {
-            app: remote_app_name.to_string(),
-        };
-        let json = serde_json::to_string(&cmd)?;
-        let response_raw = ssh.tako_command(&json).await?;
-        let response: Response = serde_json::from_str(&response_raw)?;
-        parse_delete_response(response)
-            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
-        tracing::debug!("Delete command succeeded for {remote_app_name}");
-
-        let remote_app_root = format!("/opt/tako/apps/{}", remote_app_name);
-        let cleanup_cmd = format!("rm -rf {}", shell_single_quote(&remote_app_root));
-        ssh.exec_checked(&cleanup_cmd).await?;
-
-        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-    }
-    .await;
-
-    let _ = ssh.disconnect().await;
-    result
+    let mut client = ManagementClient::new(&server.host).await?;
+    parse_delete_response(
+        client
+            .send(&Command::Delete {
+                app: remote_app_name.to_string(),
+            })
+            .await?,
+    )
+    .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
+    tracing::debug!("Delete command succeeded for {remote_app_name}");
+    Ok(())
 }
-
-use crate::shell::shell_single_quote;
 
 fn parse_delete_response(response: Response) -> Result<(), String> {
     match response {

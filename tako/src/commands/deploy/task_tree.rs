@@ -212,19 +212,6 @@ impl DeployTaskTreeController {
         self.mark_running_by_id(&deploy_task_step_id(server_name, step));
     }
 
-    pub(super) fn update_deploy_step_progress(
-        &self,
-        server_name: &str,
-        step: &str,
-        detail: String,
-        progress: f64,
-    ) {
-        self.update_by_id(&deploy_task_step_id(server_name, step), |task| {
-            task.detail = Some(detail);
-            task.progress = Some(progress);
-        });
-    }
-
     pub(super) fn succeed_deploy_step(
         &self,
         server_name: &str,

@@ -22,6 +22,16 @@ fn management_auth_message_includes_context_and_body() {
 }
 
 #[test]
+fn release_artifact_upload_auth_body_is_stable() {
+    let body = release_artifact_upload_auth_body("my-app/production", "v1", 42, "abcdef");
+
+    assert_eq!(
+        body,
+        b"release_artifact_upload\nmy-app/production\nv1\n42\nabcdef"
+    );
+}
+
+#[test]
 fn test_prepare_release_command_roundtrip() {
     let cmd = Command::PrepareRelease {
         app: "my-app".to_string(),
@@ -36,6 +46,36 @@ fn test_prepare_release_command_roundtrip() {
             assert_eq!(path, "/opt/tako/apps/my-app/releases/v1");
         }
         _ => panic!("Expected PrepareRelease command"),
+    }
+}
+
+#[test]
+fn release_upload_commands_roundtrip() {
+    let commands = [
+        Command::PrepareReleaseUpload {
+            app: "my-app/production".to_string(),
+            version: "v1".to_string(),
+        },
+        Command::CleanupRelease {
+            app: "my-app/production".to_string(),
+            version: "v1".to_string(),
+        },
+        Command::FinalizeRelease {
+            app: "my-app/production".to_string(),
+            version: "v1".to_string(),
+        },
+        Command::CheckDeploySpace {
+            min_free_bytes: 256 * 1024 * 1024,
+        },
+    ];
+
+    for command in commands {
+        let json = serde_json::to_string(&command).unwrap();
+        let parsed: Command = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            serde_json::to_value(parsed).unwrap(),
+            serde_json::to_value(command).unwrap()
+        );
     }
 }
 

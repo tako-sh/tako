@@ -436,7 +436,7 @@ Rolling release model:
 - `--version`: Print version and exit (format: `<base>-<sha7>`).
 - `-v, --verbose`: Show verbose output as an append-only execution transcript with timestamps and log levels.
 - `--ci`: Deterministic non-interactive output (no colors, no spinners, no prompts). Can be combined with `--verbose`.
-- `--dry-run`: Show what would happen without performing any side effects. Skips SSH connections, file uploads, config writes, and remote commands. Prints `⏭ ... (dry run)` for each skipped action. Production deploy confirmation is auto-skipped. Supported by: `deploy`, `servers add`, `servers remove`, `delete`.
+- `--dry-run`: Show what would happen without performing any side effects. Skips server connections, file uploads, config writes, and remote commands. Prints `⏭ ... (dry run)` for each skipped action. Production deploy confirmation is auto-skipped. Supported by: `deploy`, `servers add`, `servers remove`, `delete`.
 - `-c, --config {config}`: Use an explicit app config file instead of `./tako.toml`. If the provided path does not end with `.toml`, Tako appends it automatically. App-scoped commands treat the selected file's parent directory as the project directory. This allows multiple config files in one folder.
 - `--ssh-passphrase {passphrase}`: Use the provided passphrase for encrypted local SSH private keys during SSH authentication and signed remote-management requests.
 
@@ -813,7 +813,7 @@ Service-manager reload/restart behavior:
 
 Deleting an app removes the entire `{data_dir}/apps/{app}` tree after the app is drained and stopped.
 
-During single-host upgrade orchestration, `tako-server` may enter an internal `upgrading` server mode that temporarily rejects mutating management commands (`deploy`, `stop`, `delete`, `update-secrets`) until the upgrade window ends.
+During single-host upgrade orchestration, `tako-server` may enter an internal `upgrading` server mode that temporarily rejects mutating management commands (release preparation/finalization, `deploy`, `scale`, `stop`, `delete`, `rollback`, `update-secrets`) until the upgrade window ends.
 Upgrade mode transitions are guarded by a durable single-owner upgrade lock in SQLite so only one upgrade controller can hold the upgrade window at a time.
 
 ### tako servers upgrade [server-name]
@@ -1040,7 +1040,7 @@ Deploy flow helpers:
    - Package filtered artifact tarball using include/exclude rules and store in local cache
 9. On all servers in parallel: upload artifact, extract, and run production install
    - Require `tako-server` to be pre-installed and running on each server
-   - Upload and extract target-specific artifact
+   - Ask the server for a release upload plan over signed HTTP. If the release is not already present, upload the target-specific artifact to `POST /release-artifact`; the server verifies the declared size and SHA-256 digest, extracts the artifact into the release directory, and links release logs to the app's shared log directory.
    - Query server for the app's current secrets hash; if it matches the local secrets hash, skip sending secrets (server keeps existing). If hashes differ (or app is new), include decrypted secrets in the deploy command.
    - If the environment has wildcard routes, include the decrypted DNS binding in the deploy command. Otherwise, the server clears stored DNS credentials for that deployed app.
    - `tako-server` acquires a per-app deploy lock in memory, reads non-secret runtime/app config from release `app.json`, creates per-app runtime data directories, and runs the runtime plugin's production install command
@@ -1125,7 +1125,7 @@ When the stored desired instance count is `0`, rolling deploy still starts one w
 
 **Partial failure:** If some servers fail while others succeed, deployment continues. Failures are reported at the end.
 
-**Disk space preflight:** Before uploading artifacts, `tako deploy` checks free space under `/opt/tako` on each target server.
+**Disk space preflight:** Before uploading artifacts, `tako deploy` asks each target server to check free space under its configured data directory.
 
 - Required free space is based on archive size plus unpack headroom.
 - If free space is insufficient, deploy fails early with required vs available sizes.
@@ -1212,9 +1212,9 @@ Delete confirmation:
 
 **Steps:**
 
-1. Connect over SSH to the selected server.
-2. Send `delete` to `tako-server` for the remote deployment id `{app-name}/{env-name}`.
-3. Remove `/opt/tako/apps/{app-name}/{env-name}` from disk.
+1. Discover deployed app ids from configured servers over signed HTTP remote management.
+2. Send `delete` over signed HTTP to the selected `tako-server` for the remote deployment id `{app-name}/{env-name}`.
+3. `tako-server` drains and stops the app, removes runtime state, and removes `{data_dir}/apps/{app-name}/{env-name}` from disk.
 
 - Interactive single-target deletes show a spinner while the selected server is being cleaned up.
 - Delete is idempotent for absent app state (safe to re-run for cleanup).
@@ -1406,10 +1406,11 @@ Reference scripts in this repo:
 
 - `POST /rpc` with JSON command bodies handles small management commands.
 - HTTP `/rpc` accepts unsigned `hello` and `server_info` probes. All other commands require a signed request from an enrolled SSH key. Requests include the enrolled key fingerprint, timestamp, nonce, and SSH signature over the RPC body plus Tako's management-auth context. Replayed nonces and stale timestamps are rejected.
-- Signed HTTP commands reuse the existing dispatcher; bulk deploy artifacts and logs use separate streaming endpoints instead of the JSON RPC path.
+- `POST /release-artifact` accepts deploy artifacts as a streamed request body. The request is signed over an upload descriptor containing app id, release version, byte size, and SHA-256 digest; the server verifies the received size and digest before extracting the release.
+- Signed HTTP commands reuse the existing dispatcher; bulk deploy artifacts use the streaming upload endpoint instead of the JSON RPC path.
 - The Unix management socket remains the local server IPC path. SSH remains setup/recovery, not the normal remote management transport.
 - `tako servers add` expects the host to be the server's Tailscale MagicDNS name or Tailscale IP. MagicDNS hostnames default the local server name to the first DNS label; IP addresses require `--name`. It verifies the host resolves to a Tailscale address, verifies `tako@host` SSH recovery access, enrolls the SSH key that authenticated that connection, probes private HTTP management with `hello` and `server_info`, verifies signed HTTP access, and refuses to write `config.toml` if any check fails.
-- `tako servers status` uses signed HTTP remote management for server/app status, routes, and release metadata. SSH is not used for normal status reads.
+- App-scoped runtime commands (`deploy`, `status`, `scale`, `releases`, `delete`, and `secrets sync`) use signed HTTP remote management. SSH is not used for normal app/runtime management.
 
 ### Zero-Downtime Operation
 
@@ -1457,13 +1458,14 @@ App log files contain app stdout/stderr plus app-scoped Tako server diagnostics.
 
 - Symlink path: `/var/run/tako/tako.sock` (always points to the active server socket)
 - PID-specific socket path: `/var/run/tako/tako-{pid}.sock` (created by active server; symlink updated atomically on ready)
-- Used by: CLI for deploy/delete/status/routes commands
+- Used by local server IPC and app/workflow internal commands. Normal remote CLI management uses signed HTTP.
 
 **Remote management HTTP:**
 
-- `tako-server` also listens for management RPC over HTTP on port `9844` for Tailscale-reachable server status and deploy operations.
+- `tako-server` listens for management RPC over HTTP on port `9844` for Tailscale-reachable server status and deploy operations.
 - Only `hello` and `server_info` are public probes. All other RPCs require SSH-key-signed headers, a fresh timestamp, and a non-replayed nonce against the server's `management-authorized-keys` file.
 - Management RPC request bodies are capped at 1 MiB.
+- Deploy artifact uploads use `POST /release-artifact`, signed over upload metadata rather than the full artifact body; the server verifies the streamed body size and SHA-256 digest before extracting it.
 
 **Public proxy listeners:**
 
@@ -1582,6 +1584,42 @@ Response:
   "app": "my-app/production",
   "path": "/opt/tako/apps/my-app/production/releases/1.0.0"
 }
+```
+
+- `prepare_release_upload` (returns the server release path and whether the artifact needs to be uploaded):
+
+```json
+{
+  "command": "prepare_release_upload",
+  "app": "my-app/production",
+  "version": "1.0.0"
+}
+```
+
+- `cleanup_release` (removes a newly-created partial release after deploy failure):
+
+```json
+{
+  "command": "cleanup_release",
+  "app": "my-app/production",
+  "version": "1.0.0"
+}
+```
+
+- `finalize_release` (points `current` at the deployed release and prunes old releases):
+
+```json
+{
+  "command": "finalize_release",
+  "app": "my-app/production",
+  "version": "1.0.0"
+}
+```
+
+- `check_deploy_space` (checks free bytes under the server data directory before artifact upload):
+
+```json
+{ "command": "check_deploy_space", "min_free_bytes": 268435456 }
 ```
 
 - `deploy` (includes route patterns, source-IP mode, optional secrets payload, optional storage bindings, and optional DNS binding; env vars are read from `app.json` in the release dir). When `secrets` or `storages` are omitted or `null`, the server keeps existing values for the app. When `dns` is omitted or `null`, the server clears app DNS credentials:

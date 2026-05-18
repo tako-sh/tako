@@ -18,6 +18,7 @@ impl crate::ServerState {
                         "server_runtime_info".to_string(),
                         "release_history".to_string(),
                         "rollback".to_string(),
+                        "management_http_uploads".to_string(),
                     ],
                     server_identity: self.runtime_config().server_identity.clone(),
                 };
@@ -36,6 +37,43 @@ impl crate::ServerState {
                     return Response::error(msg);
                 }
                 self.prepare_release(&app, &path).await
+            }
+            Command::PrepareReleaseUpload { app, version } => {
+                if let Err(msg) = validate_app_name(&app) {
+                    return Response::error(msg);
+                }
+                if let Err(msg) = validate_release_version(&version) {
+                    return Response::error(msg);
+                }
+                if let Some(resp) = self.reject_mutating_when_upgrading("prepare-release-upload").await
+                {
+                    return resp;
+                }
+                self.prepare_release_upload(&app, &version).await
+            }
+            Command::CleanupRelease { app, version } => {
+                if let Err(msg) = validate_app_name(&app) {
+                    return Response::error(msg);
+                }
+                if let Err(msg) = validate_release_version(&version) {
+                    return Response::error(msg);
+                }
+                self.cleanup_release(&app, &version).await
+            }
+            Command::FinalizeRelease { app, version } => {
+                if let Err(msg) = validate_app_name(&app) {
+                    return Response::error(msg);
+                }
+                if let Err(msg) = validate_release_version(&version) {
+                    return Response::error(msg);
+                }
+                if let Some(resp) = self.reject_mutating_when_upgrading("finalize-release").await {
+                    return resp;
+                }
+                self.finalize_release(&app, &version).await
+            }
+            Command::CheckDeploySpace { min_free_bytes } => {
+                self.check_deploy_space(min_free_bytes).await
             }
             Command::RunRelease {
                 app,

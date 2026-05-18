@@ -191,6 +191,90 @@ fn extract_zstd_archive_unpacks_files() {
     );
 }
 
+#[tokio::test]
+async fn release_upload_lifecycle_extracts_and_finalizes_release() {
+    let temp = TempDir::new().unwrap();
+    let cert_manager = Arc::new(CertManager::new(CertManagerConfig {
+        cert_dir: temp.path().join("certs"),
+        ..Default::default()
+    }));
+    let state = ServerState::new(
+        temp.path().to_path_buf(),
+        cert_manager,
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+    let archive_path = temp.path().join("release.tar.zst");
+    write_test_release_archive(&archive_path);
+
+    let response = state
+        .handle_command(Command::PrepareReleaseUpload {
+            app: "my-app/production".to_string(),
+            version: "v1".to_string(),
+        })
+        .await;
+    let Response::Ok { data } = response else {
+        panic!("expected upload plan");
+    };
+    let initial_plan: tako_core::ReleaseUploadPlan = serde_json::from_value(data).unwrap();
+    assert!(initial_plan.upload_required);
+
+    let stored_plan = state
+        .store_uploaded_release_artifact("my-app/production", "v1", &archive_path)
+        .unwrap();
+    assert!(stored_plan.upload_required);
+    assert!(Path::new(&stored_plan.path).join("app.json").is_file());
+    #[cfg(unix)]
+    assert!(
+        std::fs::symlink_metadata(Path::new(&stored_plan.path).join("logs"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+
+    let response = state
+        .handle_command(Command::PrepareReleaseUpload {
+            app: "my-app/production".to_string(),
+            version: "v1".to_string(),
+        })
+        .await;
+    let Response::Ok { data } = response else {
+        panic!("expected cached upload plan");
+    };
+    let cached_plan: tako_core::ReleaseUploadPlan = serde_json::from_value(data).unwrap();
+    assert!(!cached_plan.upload_required);
+
+    let response = state
+        .handle_command(Command::FinalizeRelease {
+            app: "my-app/production".to_string(),
+            version: "v1".to_string(),
+        })
+        .await;
+    assert!(matches!(response, Response::Ok { .. }));
+    #[cfg(unix)]
+    assert_eq!(
+        std::fs::read_link(temp.path().join("apps/my-app/production/current")).unwrap(),
+        Path::new(&stored_plan.path)
+    );
+}
+
+fn write_test_release_archive(archive_path: &Path) {
+    let file = std::fs::File::create(archive_path).unwrap();
+    let encoder = zstd::stream::write::Encoder::new(file, 3).unwrap();
+    let mut archive = tar::Builder::new(encoder);
+    let manifest = br#"{"runtime":"bun","main":"src/index.ts","idle_timeout":300,"app_dir":""}"#;
+    let mut header = tar::Header::new_gnu();
+    header.set_size(manifest.len() as u64);
+    header.set_mode(0o644);
+    header.set_cksum();
+    archive
+        .append_data(&mut header, "app.json", &mut Cursor::new(manifest))
+        .unwrap();
+    let encoder = archive.into_inner().unwrap();
+    encoder.finish().unwrap();
+}
+
 #[test]
 fn extract_zstd_archive_rejects_path_traversal() {
     let temp = TempDir::new().unwrap();

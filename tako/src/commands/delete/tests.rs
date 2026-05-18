@@ -217,31 +217,3 @@ fn validate_target_flags_for_mode_requires_env_and_server_non_interactive() {
     assert!(err.contains("--env"));
     assert!(err.contains("--server"));
 }
-
-#[test]
-fn parse_server_env_from_tako_toml_matches_named_server() {
-    let content = r#"
-[envs.production]
-route = "app.example.com"
-servers = ["prod"]
-
-[envs.staging]
-route = "staging.example.com"
-servers = ["staging"]
-"#;
-
-    let env = parse_server_env_from_tako_toml(content, "prod");
-    assert_eq!(env.as_deref(), Some("production"));
-}
-
-#[test]
-fn parse_server_env_from_tako_toml_falls_back_to_single_env() {
-    let content = r#"
-[envs.production]
-route = "app.example.com"
-servers = ["a", "b"]
-"#;
-
-    let env = parse_server_env_from_tako_toml(content, "missing");
-    assert_eq!(env.as_deref(), Some("production"));
-}

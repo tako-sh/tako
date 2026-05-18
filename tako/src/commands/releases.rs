@@ -9,8 +9,8 @@ use time::{OffsetDateTime, UtcOffset};
 use crate::app::require_app_name_from_config_path;
 use crate::commands::project_context;
 use crate::config::{ServerEntry, ServersToml, TakoToml};
+use crate::management_http::ManagementClient;
 use crate::output;
-use crate::ssh::SshClient;
 use tako_core::{Command, ListReleasesResponse, ReleaseInfo, Response};
 use tracing::Instrument;
 
@@ -313,17 +313,16 @@ async fn fetch_releases_for_server(
     app_name: &str,
 ) -> Result<Vec<ReleaseInfo>, String> {
     let _t = output::timed(&format!("Fetch releases for {app_name}"));
-    let mut ssh = SshClient::connect_to(&server.host, server.port)
+    let mut client = ManagementClient::new(&server.host)
         .await
         .map_err(|e| e.to_string())?;
-
-    let cmd = serde_json::to_string(&Command::ListReleases {
-        app: app_name.to_string(),
-    })
-    .map_err(|e| e.to_string())?;
-    let response = ssh.tako_command(&cmd).await.map_err(|e| e.to_string())?;
-    let _ = ssh.disconnect().await;
-    let result = parse_release_list_response(&response);
+    let response = client
+        .send(&Command::ListReleases {
+            app: app_name.to_string(),
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    let result = parse_release_list_response(response);
     if let Ok(ref releases) = result {
         tracing::debug!("Returned {} release(s)", releases.len());
     }
@@ -336,26 +335,24 @@ async fn rollback_server_release(
     release: &str,
 ) -> Result<(), String> {
     let _t = output::timed(&format!("Rollback {app_name} to {release}"));
-    let mut ssh = SshClient::connect_to(&server.host, server.port)
+    let mut client = ManagementClient::new(&server.host)
         .await
         .map_err(|e| e.to_string())?;
-
-    let cmd = serde_json::to_string(&Command::Rollback {
-        app: app_name.to_string(),
-        version: release.to_string(),
-    })
-    .map_err(|e| e.to_string())?;
-    let response = ssh.tako_command(&cmd).await.map_err(|e| e.to_string())?;
-    let _ = ssh.disconnect().await;
-    let result = parse_ok_response(&response);
+    let response = client
+        .send(&Command::Rollback {
+            app: app_name.to_string(),
+            version: release.to_string(),
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    let result = parse_ok_response(response);
     if result.is_ok() {
         tracing::debug!("Rollback succeeded");
     }
     result
 }
 
-fn parse_release_list_response(raw: &str) -> Result<Vec<ReleaseInfo>, String> {
-    let response: Response = serde_json::from_str(raw).map_err(|e| e.to_string())?;
+fn parse_release_list_response(response: Response) -> Result<Vec<ReleaseInfo>, String> {
     match response {
         Response::Ok { data } => {
             let parsed: ListReleasesResponse = serde_json::from_value(data)
@@ -366,8 +363,7 @@ fn parse_release_list_response(raw: &str) -> Result<Vec<ReleaseInfo>, String> {
     }
 }
 
-fn parse_ok_response(raw: &str) -> Result<(), String> {
-    let response: Response = serde_json::from_str(raw).map_err(|e| e.to_string())?;
+fn parse_ok_response(response: Response) -> Result<(), String> {
     match response {
         Response::Ok { .. } => Ok(()),
         Response::Error { message } => Err(message),

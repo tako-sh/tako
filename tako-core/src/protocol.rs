@@ -27,6 +27,21 @@ pub fn management_auth_message(timestamp: &str, nonce: &str, body: &[u8]) -> Vec
     message
 }
 
+pub fn release_artifact_upload_auth_body(
+    app: &str,
+    version: &str,
+    size_bytes: u64,
+    sha256_hex: &str,
+) -> Vec<u8> {
+    format!("release_artifact_upload\n{app}\n{version}\n{size_bytes}\n{sha256_hex}").into_bytes()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReleaseUploadPlan {
+    pub path: String,
+    pub upload_required: bool,
+}
+
 pub fn deployment_app_id(app_name: &str, env_name: &str) -> String {
     format!("{app_name}{DEPLOYMENT_APP_ID_SEPARATOR}{env_name}")
 }
@@ -55,6 +70,20 @@ pub enum Command {
     /// Called before `Deploy` so that the deploy step only does app registration
     /// and instance startup, keeping it fast.
     PrepareRelease { app: String, path: String },
+
+    /// Plan a release artifact upload. Returns the server-side release path and
+    /// whether the artifact still needs to be uploaded.
+    PrepareReleaseUpload { app: String, version: String },
+
+    /// Remove a partially uploaded/extracted release.
+    CleanupRelease { app: String, version: String },
+
+    /// Point the app's current symlink at a successfully deployed release and
+    /// prune old releases.
+    FinalizeRelease { app: String, version: String },
+
+    /// Check that the server has enough free space for deploy work.
+    CheckDeploySpace { min_free_bytes: u64 },
 
     /// Run a one-shot release command on this server for the given
     /// release. Used during deploy to run migrations / cache invalidation

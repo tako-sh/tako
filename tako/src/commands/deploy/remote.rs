@@ -1,19 +1,13 @@
 use std::future::Future;
 use std::path::Path;
-use std::time::Instant;
 
+use crate::management_http::{self, ManagementClient};
 use crate::output;
-use crate::shell::shell_single_quote;
-use crate::ssh::{SshClient, SshConfig};
-use tako_core::{Command, Response};
+use tako_core::{Command, ReleaseUploadPlan, Response};
 
 use super::DeployConfig;
 use super::format::{format_deploy_step_failure, format_size};
 use super::task_tree::DeployTaskTreeController;
-
-/// Artifacts smaller than this upload fast enough that the progress bar just
-/// flashes on and off. Skip the live bar below this size.
-const PROGRESS_BAR_MIN_BYTES: u64 = 10 * 1024 * 1024;
 
 type ReleaseCommandResult = Option<Result<(), String>>;
 type ReleaseCommandSender = tokio::sync::watch::Sender<ReleaseCommandResult>;
@@ -46,90 +40,6 @@ pub(super) fn parse_existing_routes_response(
             .unwrap_or_default()),
         Response::Error { message } => Err(format!("tako-server error (routes): {}", message)),
     }
-}
-
-pub(super) fn extract_server_error_message(response: &str) -> String {
-    serde_json::from_str::<serde_json::Value>(response)
-        .ok()
-        .and_then(|v| v["message"].as_str().map(String::from))
-        .map(|message| {
-            message
-                .strip_prefix("Deploy failed: ")
-                .unwrap_or(&message)
-                .to_string()
-        })
-        .unwrap_or_else(|| response.to_string())
-}
-
-pub(super) fn deploy_response_has_error(response: &str) -> bool {
-    serde_json::from_str::<serde_json::Value>(response)
-        .ok()
-        .and_then(|value| {
-            value
-                .get("status")
-                .and_then(|status| status.as_str())
-                .map(|status| status == "error")
-        })
-        .unwrap_or(false)
-}
-
-pub(super) fn cleanup_partial_release_command(release_dir: &str) -> String {
-    format!("rm -rf {}", shell_single_quote(release_dir))
-}
-
-pub(super) async fn cleanup_partial_release(
-    ssh: &SshClient,
-    release_dir: &str,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    ssh.exec_checked(&cleanup_partial_release_command(release_dir))
-        .await?;
-    Ok(())
-}
-
-pub(super) async fn remote_directory_exists(
-    ssh: &SshClient,
-    path: &str,
-) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-    let quoted = shell_single_quote(path);
-    let cmd = format!("if [ -d {quoted} ]; then echo yes; else echo no; fi");
-    let output = ssh.exec(&cmd).await?;
-    if !output.success() {
-        return Err(format!(
-            "Failed to check remote directory existence for {}: {}",
-            path,
-            output.combined().trim()
-        )
-        .into());
-    }
-    Ok(output.stdout.trim() == "yes")
-}
-
-pub(super) async fn connect_and_prepare_remote_release_dir(
-    ssh: &mut SshClient,
-    release_dir: &str,
-    shared_dir: &str,
-) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-    ssh.connect().await?;
-    prepare_remote_release_dir(ssh, release_dir, shared_dir).await
-}
-
-/// Prepare the remote release directory on an already-connected SSH session.
-pub(super) async fn prepare_remote_release_dir(
-    ssh: &SshClient,
-    release_dir: &str,
-    shared_dir: &str,
-) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-    let release_dir_preexisted = remote_directory_exists(ssh, release_dir).await?;
-    if !release_dir_preexisted {
-        ssh.exec_checked(&format!(
-            "mkdir -p {} {}",
-            shell_single_quote(release_dir),
-            shell_single_quote(shared_dir)
-        ))
-        .await?;
-    }
-
-    Ok(release_dir_preexisted)
 }
 
 pub(super) async fn run_deploy_step<T, E, Fut>(
@@ -245,230 +155,141 @@ where
     }
 }
 
-pub(super) fn remote_release_archive_path(release_dir: &str) -> String {
-    format!("{release_dir}/artifacts.tar.zst")
-}
-
-pub(super) fn build_remote_extract_archive_command(
-    release_dir: &str,
-    remote_archive: &str,
-) -> String {
-    format!(
-        "tako-server --extract-zstd-archive {} --extract-dest {} && rm -f {}",
-        shell_single_quote(remote_archive),
-        shell_single_quote(release_dir),
-        shell_single_quote(remote_archive)
-    )
-}
-
-async fn connect_for_deploy(
-    config: &DeployConfig,
-    server_name: &str,
-    server: &crate::config::ServerEntry,
-    release_dir: &str,
-    use_spinner: bool,
-    task_tree: Option<&DeployTaskTreeController>,
-    preconnected_ssh: Option<SshClient>,
-) -> Result<(SshClient, bool), Box<dyn std::error::Error + Send + Sync>> {
-    if let Some(ssh) = preconnected_ssh {
-        let preexisted = prepare_remote_release_dir(&ssh, release_dir, &config.shared_dir())
-            .await
-            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e })?;
-        return Ok((ssh, preexisted));
+fn release_response_result(response: Response) -> Result<serde_json::Value, String> {
+    match response {
+        Response::Ok { data } => Ok(data),
+        Response::Error { message } => Err(message
+            .strip_prefix("Deploy failed: ")
+            .unwrap_or(&message)
+            .to_string()),
     }
+}
 
-    let ssh_config = SshConfig::from_server(&server.host, server.port);
-    let mut ssh = SshClient::new(ssh_config);
-    let preexisted = if let Some(task_tree) = task_tree {
-        run_task_tree_deploy_step(
-            task_tree,
-            server_name,
-            "connecting",
-            connect_and_prepare_remote_release_dir(&mut ssh, release_dir, &config.shared_dir()),
-        )
-        .await?
-    } else {
-        run_deploy_step(
-            "Preflight",
-            "Preflight",
-            use_spinner,
-            connect_and_prepare_remote_release_dir(&mut ssh, release_dir, &config.shared_dir()),
-        )
-        .await?
-    };
-    Ok((ssh, preexisted))
+async fn prepare_release_upload_plan(
+    client: &mut ManagementClient,
+    config: &DeployConfig,
+) -> Result<ReleaseUploadPlan, management_http::ManagementError> {
+    let response = client
+        .send(&Command::PrepareReleaseUpload {
+            app: config.app_name.clone(),
+            version: config.version.clone(),
+        })
+        .await?;
+    management_http::parse_ok_data(response, "release upload plan")
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn upload_release_artifact(
-    ssh: &SshClient,
+    client: &mut ManagementClient,
+    config: &DeployConfig,
     server_name: &str,
     archive_path: &Path,
-    remote_archive: &str,
     archive_size_bytes: u64,
-    release_dir_preexisted: bool,
+    upload_plan: ReleaseUploadPlan,
     use_spinner: bool,
     task_tree: Option<&DeployTaskTreeController>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    if release_dir_preexisted {
-        tracing::debug!("Release dir already exists, skipping upload");
+) -> Result<ReleaseUploadPlan, Box<dyn std::error::Error + Send + Sync>> {
+    if !upload_plan.upload_required {
+        tracing::debug!("Release already exists, skipping artifact upload");
         if let Some(task_tree) = task_tree {
             task_tree.skip_deploy_step(server_name, "uploading", "cached");
         }
-        return Ok(());
+        return Ok(upload_plan);
     }
 
     let upload_timer = output::timed(&format!(
         "Upload artifact ({})",
         format_size(archive_size_bytes)
     ));
-    if let Some(task_tree) = task_tree {
-        let total_size = archive_size_bytes;
-        let task_tree_for_progress = task_tree.clone();
-        let server_name_for_progress = server_name.to_string();
-        let upload_started_at = Instant::now();
-        let show_progress = archive_size_bytes >= PROGRESS_BAR_MIN_BYTES;
-        run_task_tree_deploy_step_with_detail(task_tree, server_name, "uploading", None, async {
-            let callback: Option<Box<dyn Fn(u64, u64) + Send>> = if show_progress {
-                Some(Box::new(move |done, _total| {
-                    let fraction = if total_size > 0 {
-                        done as f64 / total_size as f64
-                    } else {
-                        0.0
-                    };
-                    task_tree_for_progress.update_deploy_step_progress(
-                        &server_name_for_progress,
-                        "uploading",
-                        output::format_transfer_compact_detail(
-                            done,
-                            total_size,
-                            upload_started_at.elapsed(),
-                        ),
-                        fraction,
-                    );
-                }))
-            } else {
-                None
-            };
-            ssh.upload_with_progress(archive_path, remote_archive, callback)
-                .await
-                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })
+    let upload_detail = Some(format_size(archive_size_bytes));
+    let result = if let Some(task_tree) = task_tree {
+        run_task_tree_deploy_step_with_detail(
+            task_tree,
+            server_name,
+            "uploading",
+            upload_detail,
+            async {
+                let response = client
+                    .upload_release_artifact(&config.app_name, &config.version, archive_path)
+                    .await?;
+                management_http::parse_ok_data::<ReleaseUploadPlan>(
+                    response,
+                    "release artifact upload",
+                )
+            },
+        )
+        .await
+    } else {
+        run_deploy_step("Uploading…", "Uploaded", use_spinner, async {
+            let response = client
+                .upload_release_artifact(&config.app_name, &config.version, archive_path)
+                .await?;
+            management_http::parse_ok_data::<ReleaseUploadPlan>(response, "release artifact upload")
         })
         .await
-        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
-            format_deploy_step_failure("Uploading", &e.to_string()).into()
-        })?;
-    } else {
-        let upload_result: Result<(), Box<dyn std::error::Error + Send + Sync>> = if use_spinner {
-            let progress = std::sync::Arc::new(output::TransferProgress::new(
-                "Uploading",
-                "Uploaded",
-                archive_size_bytes,
-            ));
-            let progress_update = progress.clone();
-            ssh.upload_with_progress(
-                archive_path,
-                remote_archive,
-                Some(Box::new(move |done, _total| {
-                    progress_update.set_position(done)
-                })),
-            )
-            .await
-            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
-            progress.finish();
-            Ok(())
-        } else {
-            ssh.upload(archive_path, remote_archive)
-                .await
-                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })
-        };
-        upload_result.map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
-            format_deploy_step_failure("Uploading", &e.to_string()).into()
-        })?;
-    }
+    };
     drop(upload_timer);
-    Ok(())
+
+    result.map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+        format_deploy_step_failure("Uploading", &e.to_string()).into()
+    })
 }
 
-async fn extract_and_prepare_release(
+async fn prepare_release(
     config: &DeployConfig,
-    ssh: &SshClient,
+    client: &mut ManagementClient,
     release_dir: &str,
-    remote_archive: &str,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let _t = output::timed("Extract and configure release");
-    let extract_cmd = build_remote_extract_archive_command(release_dir, remote_archive);
-    let shared = shell_single_quote(&config.shared_dir());
-    let rel = shell_single_quote(release_dir);
-    let shared_link_cmd = format!(
-        "mkdir -p {}/logs && ln -sfn {}/logs {}/logs",
-        shared, shared, rel
-    );
-    let combined_cmd = format!("{} && {}", extract_cmd, shared_link_cmd);
-    ssh.exec_checked(&combined_cmd).await?;
-
-    let prepare_cmd = Command::PrepareRelease {
-        app: config.app_name.clone(),
-        path: release_dir.to_string(),
-    };
-    let json = serde_json::to_string(&prepare_cmd)
-        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
-    let response = ssh
-        .tako_command(&json)
-        .await
-        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
-    if deploy_response_has_error(&response) {
-        return Err(extract_server_error_message(&response).into());
-    }
-
+) -> Result<(), management_http::ManagementError> {
+    let response = client
+        .send(&Command::PrepareRelease {
+            app: config.app_name.clone(),
+            path: release_dir.to_string(),
+        })
+        .await?;
+    release_response_result(response).map_err(management_http::ManagementError::Message)?;
     Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn prepare_uploaded_release(
     config: &DeployConfig,
-    ssh: &SshClient,
+    client: &mut ManagementClient,
     server_name: &str,
     release_dir: &str,
-    remote_archive: &str,
-    release_dir_preexisted: bool,
+    release_preexisted: bool,
     use_spinner: bool,
     task_tree: Option<&DeployTaskTreeController>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    if release_dir_preexisted {
+    if release_preexisted {
         if let Some(task_tree) = task_tree {
             task_tree.skip_deploy_step(server_name, "preparing", "skipped");
         }
         return Ok(());
     }
 
-    if let Some(task_tree) = task_tree {
+    let result = if let Some(task_tree) = task_tree {
         run_task_tree_deploy_step(task_tree, server_name, "preparing", async {
-            extract_and_prepare_release(config, ssh, release_dir, remote_archive).await
+            prepare_release(config, client, release_dir).await
         })
         .await
-        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
-            format_deploy_step_failure("Preparing", &e.to_string()).into()
-        })?;
     } else {
         run_deploy_step("Preparing…", "Prepared", use_spinner, async {
-            extract_and_prepare_release(config, ssh, release_dir, remote_archive).await
+            prepare_release(config, client, release_dir).await
         })
         .await
-        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
-            format_deploy_step_failure("Preparing", &e.to_string()).into()
-        })?;
-    }
-    Ok(())
+    };
+
+    result.map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+        format_deploy_step_failure("Preparing", &e.to_string()).into()
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn run_release_command_step(
     config: &DeployConfig,
-    ssh: &SshClient,
+    client: &mut ManagementClient,
     server_name: &str,
     release_dir: &str,
-    release_dir_preexisted: bool,
     task_tree: Option<&DeployTaskTreeController>,
     release_tx: Option<&ReleaseCommandSender>,
     release_rx: Option<ReleaseCommandReceiver>,
@@ -490,23 +311,17 @@ async fn run_release_command_step(
         let cmd = config
             .release_command_payload(release_dir)
             .expect("release command is present");
-        let json = serde_json::to_string(&cmd)
-            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
-        let response_text = ssh
-            .tako_command(&json)
+        let response = client
+            .send(&cmd)
             .await
             .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
 
-        if deploy_response_has_error(&response_text) {
-            let msg = extract_server_error_message(&response_text);
+        if let Err(msg) = release_response_result(response) {
             if let Some(sender) = release_tx {
                 let _ = sender.send(Some(Err(msg.clone())));
             }
             if let Some(task_tree) = task_tree {
                 task_tree.fail_release_step(server_name, msg.clone());
-            }
-            if !release_dir_preexisted {
-                let _ = cleanup_partial_release(ssh, release_dir).await;
             }
             return Err(format_deploy_step_failure("Release command", &msg).into());
         }
@@ -535,9 +350,6 @@ async fn run_release_command_step(
                     if let Some(task_tree) = task_tree {
                         task_tree.cancel_release_step(server_name, "leader failed");
                     }
-                    if !release_dir_preexisted {
-                        let _ = cleanup_partial_release(ssh, release_dir).await;
-                    }
                     return Err(format_deploy_step_failure("Release command (leader)", &msg).into());
                 }
             }
@@ -551,25 +363,66 @@ async fn run_release_command_step(
     }
 }
 
+async fn send_deploy_command(
+    config: &DeployConfig,
+    client: &mut ManagementClient,
+    release_dir: &str,
+    deploy_secrets: Option<std::collections::HashMap<String, String>>,
+) -> Result<(), management_http::ManagementError> {
+    let response = client
+        .send(&Command::Deploy {
+            app: config.app_name.clone(),
+            version: config.version.clone(),
+            path: release_dir.to_string(),
+            routes: config.routes.clone(),
+            source_ip: config.source_ip,
+            secrets: deploy_secrets,
+            storages: Some(config.storages.clone()),
+            dns: config.dns.clone(),
+        })
+        .await?;
+    release_response_result(response).map_err(management_http::ManagementError::Message)?;
+    Ok(())
+}
+
+async fn cleanup_release_on_host(host: &str, app: &str, version: &str) -> Result<(), String> {
+    let mut client = ManagementClient::new(host)
+        .await
+        .map_err(|error| error.to_string())?;
+    cleanup_release_with_client(&mut client, app, version).await
+}
+
+async fn cleanup_release_with_client(
+    client: &mut ManagementClient,
+    app: &str,
+    version: &str,
+) -> Result<(), String> {
+    let response = client
+        .send(&Command::CleanupRelease {
+            app: app.to_string(),
+            version: version.to_string(),
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+    release_response_result(response)?;
+    Ok(())
+}
+
 async fn finish_deploy_housekeeping(
     config: &DeployConfig,
-    ssh: &SshClient,
-    release_dir: &str,
+    client: &mut ManagementClient,
     server_name: &str,
     task_tree: Option<&DeployTaskTreeController>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    ssh.symlink(release_dir, &config.current_link())
+    let response = client
+        .send(&Command::FinalizeRelease {
+            app: config.app_name.clone(),
+            version: config.version.clone(),
+        })
         .await
         .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
-
-    let releases_dir = format!("{}/releases", config.remote_base);
-    let cleanup_cmd = format!(
-        "find {} -mindepth 1 -maxdepth 1 -type d -mtime +30 -exec rm -rf {{}} \\;",
-        shell_single_quote(&releases_dir)
-    );
-    if let Err(e) = ssh.exec(&cleanup_cmd).await {
-        tracing::warn!("Failed to clean up old releases: {e}");
-    }
+    release_response_result(response)
+        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
 
     if let Some(task_tree) = task_tree {
         task_tree.succeed_deploy_target(server_name, None);
@@ -578,12 +431,7 @@ async fn finish_deploy_housekeeping(
     Ok(())
 }
 
-/// Deploy to a single server.
-///
-/// If `preconnected_ssh` is provided (from the preflight phase), the existing
-/// connection is reused and the "Preflight" task-tree step is skipped (it was
-/// already marked complete during preflight).  Otherwise a fresh SSH connection
-/// is established here.
+/// Deploy to a single server over signed HTTP management.
 ///
 /// `release_tx` is `Some` only for the leader server when a release command is
 /// configured. `release_rx` is `Some` only for follower servers in that case.
@@ -596,49 +444,43 @@ pub(super) async fn deploy_to_server(
     target_label: &str,
     use_spinner: bool,
     task_tree: Option<DeployTaskTreeController>,
-    preconnected_ssh: Option<SshClient>,
     release_tx: Option<ReleaseCommandSender>,
     release_rx: Option<ReleaseCommandReceiver>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let _server_deploy_timer =
-        output::timed(&format!("Server deploy ({target_label}:{})", server.port));
-    let release_dir = config.release_dir();
-
-    let (mut ssh, release_dir_preexisted) = connect_for_deploy(
-        config,
-        server_name,
-        server,
-        &release_dir,
-        use_spinner,
-        task_tree.as_ref(),
-        preconnected_ssh,
-    )
-    .await?;
+        output::timed(&format!("Server deploy ({target_label}:{})", server.host));
+    let mut client = ManagementClient::new(&server.host)
+        .await
+        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
     let archive_size_bytes = std::fs::metadata(archive_path)?.len();
     tracing::debug!("Archive size: {}", format_size(archive_size_bytes));
-    let mut cleaned_partial_release = false;
+
+    let upload_plan = prepare_release_upload_plan(&mut client, config)
+        .await
+        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
+    let release_preexisted = !upload_plan.upload_required;
+    let release_dir = upload_plan.path.clone();
 
     let result = async {
-        let remote_archive = remote_release_archive_path(&release_dir);
-        upload_release_artifact(
-            &ssh,
+        let uploaded_plan = upload_release_artifact(
+            &mut client,
+            config,
             server_name,
             archive_path,
-            &remote_archive,
             archive_size_bytes,
-            release_dir_preexisted,
+            upload_plan,
             use_spinner,
             task_tree.as_ref(),
         )
         .await?;
+        let release_dir = uploaded_plan.path;
 
         prepare_uploaded_release(
             config,
-            &ssh,
+            &mut client,
             server_name,
             &release_dir,
-            &remote_archive,
-            release_dir_preexisted,
+            release_preexisted,
             use_spinner,
             task_tree.as_ref(),
         )
@@ -646,10 +488,9 @@ pub(super) async fn deploy_to_server(
 
         run_release_command_step(
             config,
-            &ssh,
+            &mut client,
             server_name,
             &release_dir,
-            release_dir_preexisted,
             task_tree.as_ref(),
             release_tx.as_ref(),
             release_rx,
@@ -666,79 +507,37 @@ pub(super) async fn deploy_to_server(
         );
 
         // Resolve secrets before the starting step to keep it fast.
-        let deploy_secrets = match query_remote_secrets_hash(&ssh, &config.app_name).await {
+        let deploy_secrets = match query_remote_secrets_hash(&mut client, &config.app_name).await {
             Some(remote_hash) if remote_hash == config.secrets_hash => None,
             _ => Some(config.secrets.clone()),
         };
 
         let start_result = if let Some(task_tree) = &task_tree {
+            let cleanup_host = server.host.clone();
+            let cleanup_app = config.app_name.clone();
+            let cleanup_version = config.version.clone();
             run_task_tree_deploy_step_with_detail_and_error_cleanup(
                 task_tree,
                 server_name,
                 "starting",
                 None,
                 async {
-                    let cmd = Command::Deploy {
-                        app: config.app_name.clone(),
-                        version: config.version.clone(),
-                        path: release_dir.clone(),
-                        routes: config.routes.clone(),
-                        source_ip: config.source_ip,
-                        secrets: deploy_secrets,
-                        storages: Some(config.storages.clone()),
-                        dns: config.dns.clone(),
-                    };
-                    let json = serde_json::to_string(&cmd)
-                        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
-                    let response = ssh
-                        .tako_command(&json)
-                        .await
-                        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
-
-                    if deploy_response_has_error(&response) {
-                        return Err(extract_server_error_message(&response).into());
-                    }
-
-                    Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+                    send_deploy_command(config, &mut client, &release_dir, deploy_secrets).await
                 },
-                || {
-                    cleaned_partial_release = true;
-                    async {
-                        if !release_dir_preexisted
-                            && let Err(e) = cleanup_partial_release(&ssh, &release_dir).await
-                        {
-                            tracing::warn!(
-                                "Failed to cleanup partial release directory {release_dir}: {e}"
-                            );
-                        }
+                move || async move {
+                    if !release_preexisted
+                        && let Err(error) =
+                            cleanup_release_on_host(&cleanup_host, &cleanup_app, &cleanup_version)
+                                .await
+                    {
+                        tracing::warn!("Failed to cleanup partial release: {error}");
                     }
                 },
             )
             .await
         } else {
             run_deploy_step("Starting…", "Started", use_spinner, async {
-                let cmd = Command::Deploy {
-                    app: config.app_name.clone(),
-                    version: config.version.clone(),
-                    path: release_dir.clone(),
-                    routes: config.routes.clone(),
-                    source_ip: config.source_ip,
-                    secrets: deploy_secrets,
-                    storages: Some(config.storages.clone()),
-                    dns: config.dns.clone(),
-                };
-                let json = serde_json::to_string(&cmd)
-                    .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
-                let response = ssh
-                    .tako_command(&json)
-                    .await
-                    .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
-
-                if deploy_response_has_error(&response) {
-                    return Err(extract_server_error_message(&response).into());
-                }
-
-                Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+                send_deploy_command(config, &mut client, &release_dir, deploy_secrets).await
             })
             .await
         };
@@ -746,44 +545,39 @@ pub(super) async fn deploy_to_server(
             format_deploy_step_failure("Starting", &e.to_string()).into()
         })?;
 
-        finish_deploy_housekeeping(config, &ssh, &release_dir, server_name, task_tree.as_ref())
-            .await?;
+        finish_deploy_housekeeping(config, &mut client, server_name, task_tree.as_ref()).await?;
 
         Ok(())
     }
     .await;
 
     if result.is_err()
-        && !release_dir_preexisted
-        && !cleaned_partial_release
-        && let Err(e) = cleanup_partial_release(&ssh, &release_dir).await
+        && !release_preexisted
+        && let Err(error) =
+            cleanup_release_with_client(&mut client, &config.app_name, &config.version).await
     {
-        tracing::warn!("Failed to cleanup partial release directory {release_dir}: {e}");
+        tracing::warn!("Failed to cleanup partial release {release_dir}: {error}");
     }
-
-    // Always disconnect (best-effort).
-    let _ = ssh.disconnect().await;
 
     result
 }
 
 /// Query the remote server for the SHA-256 hash of an app's current secrets.
 /// Returns `None` if the query fails.
-pub(super) async fn query_remote_secrets_hash(ssh: &SshClient, app_name: &str) -> Option<String> {
-    let cmd = Command::GetSecretsHash {
-        app: app_name.to_string(),
-    };
-    let json = serde_json::to_string(&cmd).ok()?;
-    let response_str = ssh.tako_command(&json).await.ok()?;
-    let value: serde_json::Value = serde_json::from_str(&response_str).ok()?;
-    if value.get("status").and_then(|s| s.as_str()) != Some("ok") {
-        return None;
-    }
-    value
-        .get("data")
-        .and_then(|d| d.get("hash"))
-        .and_then(|h| h.as_str())
-        .map(|s| s.to_string())
+pub(super) async fn query_remote_secrets_hash(
+    client: &mut ManagementClient,
+    app_name: &str,
+) -> Option<String> {
+    let response = client
+        .send(&Command::GetSecretsHash {
+            app: app_name.to_string(),
+        })
+        .await
+        .ok()?;
+    let data = release_response_result(response).ok()?;
+    data.get("hash")
+        .and_then(|hash| hash.as_str())
+        .map(str::to_string)
 }
 
 #[cfg(test)]

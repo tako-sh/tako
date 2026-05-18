@@ -4,8 +4,8 @@ use crate::app::require_app_name_from_config_path;
 use crate::commands::helpers::{resolve_servers_for_env, validate_server_names};
 use crate::commands::project_context;
 use crate::config::{ServerEntry, ServersToml, TakoToml};
+use crate::management_http::ManagementClient;
 use crate::output;
-use crate::ssh::SshClient;
 use tako_core::{Command, Response};
 use tracing::Instrument;
 
@@ -254,19 +254,15 @@ async fn scale_server(
     instances: u8,
 ) -> Result<ScaleResult, Box<dyn std::error::Error + Send + Sync>> {
     let _t = output::timed(&format!("Scale {app_name} to {instances} instance(s)"));
-    let mut ssh = SshClient::connect_to(&server.host, server.port).await?;
-    let command = serde_json::to_string(&Command::Scale {
-        app: app_name.to_string(),
-        instances,
-    })
-    .map_err(|error| format!("Failed to serialize scale command: {error}"))?;
+    let mut client = ManagementClient::new(&server.host).await?;
+    let response = client
+        .send(&Command::Scale {
+            app: app_name.to_string(),
+            instances,
+        })
+        .await?;
 
-    let response_raw = ssh.tako_command(&command).await?;
-    ssh.disconnect().await?;
-
-    match serde_json::from_str::<Response>(&response_raw)
-        .map_err(|error| format!("Invalid response from tako-server: {error}"))?
-    {
+    match response {
         Response::Ok { data } => {
             let result = ScaleResult {
                 instances: data
