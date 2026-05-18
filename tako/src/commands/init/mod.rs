@@ -18,6 +18,8 @@ use scaffold::{
     sdk_install_command,
 };
 
+type InitDnsToken = Option<(String, Option<String>)>;
+
 pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>> {
     output::logo_header();
     let cwd = std::env::current_dir()?;
@@ -664,7 +666,7 @@ fn write_init_generated_file(
 
 fn prompt_init_dns_token(
     production_route: &str,
-) -> Result<Option<(String, Option<String>)>, Box<dyn std::error::Error>> {
+) -> Result<InitDnsToken, Box<dyn std::error::Error>> {
     if !output::is_interactive() || !production_route_needs_dns(production_route) {
         return Ok(None);
     }
