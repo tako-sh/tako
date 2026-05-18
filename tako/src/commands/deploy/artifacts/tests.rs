@@ -309,6 +309,28 @@ fn run_local_build_stage_cwd_rejects_workspace_escape() {
 }
 
 #[test]
+#[cfg(unix)]
+fn run_local_build_stage_cwd_rejects_symlink_escape() {
+    let temp = TempDir::new().unwrap();
+    let workspace = temp.path().join("workspace");
+    let app_dir = workspace.join("apps/myapp");
+    let outside = temp.path().join("outside");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::os::unix::fs::symlink(&outside, app_dir.join("linked-outside")).unwrap();
+    let stages = vec![crate::config::BuildStage {
+        name: None,
+        cwd: Some("linked-outside".to_string()),
+        install: None,
+        run: "true".to_string(),
+        exclude: Vec::new(),
+    }];
+
+    let err = run_local_build(&workspace, &workspace, &app_dir, &stages, &[]).unwrap_err();
+    assert!(err.contains("must stay under the project root"));
+}
+
+#[test]
 fn merge_assets_locally_merges_into_public_and_overwrites_last_write() {
     let temp = TempDir::new().unwrap();
     let workspace = temp.path().join("workspace");

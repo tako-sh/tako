@@ -15,8 +15,6 @@ pub(crate) const HEADER_NONCE: &str = "x-tako-nonce";
 pub(crate) const HEADER_SIGNATURE: &str = "x-tako-signature";
 
 const AUTH_WINDOW_SECS: i64 = 300;
-const MAX_SEEN_NONCES: usize = 4096;
-
 #[derive(Debug, Error)]
 pub(crate) enum ManagementAuthError {
     #[error("management auth required")]
@@ -33,26 +31,37 @@ pub(crate) struct ManagementAuthState {
 
 #[derive(Default)]
 struct SeenNonces {
-    order: VecDeque<String>,
+    order: VecDeque<SeenNonce>,
     set: HashSet<String>,
 }
 
+struct SeenNonce {
+    value: String,
+    seen_at: i64,
+}
+
 impl ManagementAuthState {
-    fn accept_nonce(&self, nonce: &str) -> Result<(), ManagementAuthError> {
+    fn accept_nonce(&self, nonce: &str, now: i64) -> Result<(), ManagementAuthError> {
         let mut seen = self.seen.lock();
+        let oldest_allowed = now - AUTH_WINDOW_SECS;
+        while let Some(old) = seen.order.front()
+            && old.seen_at < oldest_allowed
+        {
+            if let Some(old) = seen.order.pop_front() {
+                seen.set.remove(&old.value);
+            }
+        }
+
         if seen.set.contains(nonce) {
             return Err(ManagementAuthError::Failed);
         }
 
-        seen.order.push_back(nonce.to_string());
-        seen.set.insert(nonce.to_string());
-
-        while seen.order.len() > MAX_SEEN_NONCES {
-            if let Some(old) = seen.order.pop_front() {
-                seen.set.remove(&old);
-            }
-        }
-
+        let value = nonce.to_string();
+        seen.order.push_back(SeenNonce {
+            value: value.clone(),
+            seen_at: now,
+        });
+        seen.set.insert(value);
         Ok(())
     }
 }
@@ -68,12 +77,13 @@ pub(crate) fn verify_signed_request(
     let nonce = required_header(headers, HEADER_NONCE)?;
     let signature = required_header(headers, HEADER_SIGNATURE)?;
 
-    validate_timestamp(timestamp)?;
+    let now = current_unix_secs()?;
+    validate_timestamp(timestamp, now)?;
     validate_nonce(nonce)?;
 
     let key = load_authorized_key(data_dir, key_fingerprint)?;
     verify_signature(&key, timestamp, nonce, signature, body)?;
-    state.accept_nonce(nonce)?;
+    state.accept_nonce(nonce, now)?;
     Ok(())
 }
 
@@ -97,14 +107,17 @@ fn required_header<'a>(
     Ok(value)
 }
 
-fn validate_timestamp(timestamp: &str) -> Result<(), ManagementAuthError> {
+fn current_unix_secs() -> Result<i64, ManagementAuthError> {
+    Ok(SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| ManagementAuthError::Failed)?
+        .as_secs() as i64)
+}
+
+fn validate_timestamp(timestamp: &str, now: i64) -> Result<(), ManagementAuthError> {
     let timestamp = timestamp
         .parse::<i64>()
         .map_err(|_| ManagementAuthError::Failed)?;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| ManagementAuthError::Failed)?
-        .as_secs() as i64;
 
     if (now - timestamp).abs() > AUTH_WINDOW_SECS {
         return Err(ManagementAuthError::Failed);
@@ -256,6 +269,21 @@ mod tests {
         verify_signed_request(temp.path(), &state, &headers, body).unwrap();
         let err = verify_signed_request(temp.path(), &state, &headers, body).unwrap_err();
 
+        assert!(matches!(err, ManagementAuthError::Failed));
+    }
+
+    #[test]
+    fn accept_nonce_rejects_replay_after_many_later_requests() {
+        let state = ManagementAuthState::default();
+        let first_nonce = "nonce00000000001";
+        state.accept_nonce(first_nonce, 1_000).unwrap();
+
+        for index in 2..=5_000 {
+            let nonce = format!("nonce{index:011}");
+            state.accept_nonce(&nonce, 1_001).unwrap();
+        }
+
+        let err = state.accept_nonce(first_nonce, 1_002).unwrap_err();
         assert!(matches!(err, ManagementAuthError::Failed));
     }
 

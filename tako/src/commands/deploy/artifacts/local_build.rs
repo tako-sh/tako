@@ -293,7 +293,9 @@ fn resolve_stage_working_dir_for_local_build(
             original_source_root.display()
         )
     })?;
-    let relative = canonical.strip_prefix(&canonical_root).unwrap();
+    let relative = canonical.strip_prefix(&canonical_root).map_err(|_| {
+        format!("{stage_label} working directory '{working_dir}' must stay under the project root")
+    })?;
     Ok(workspace.join(relative))
 }
 

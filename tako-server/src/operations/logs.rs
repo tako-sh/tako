@@ -1,4 +1,4 @@
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{BufRead, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use crate::ServerState;
@@ -81,22 +81,12 @@ fn read_logs_since(
     let mut truncated = false;
 
     for path in paths {
-        let text = match std::fs::read(path) {
-            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        let file = match std::fs::File::open(path) {
+            Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
             Err(error) => return Err(format!("read log file {}: {error}", path.display())),
         };
-
-        for line in text.split_inclusive('\n') {
-            if !line_matches_cutoff(line, &cutoff) {
-                continue;
-            }
-            if bytes.len().saturating_add(line.len()) > max_bytes {
-                truncated = true;
-                break;
-            }
-            bytes.extend_from_slice(line.as_bytes());
-        }
+        append_lines_since(path, file, &cutoff, max_bytes, &mut bytes, &mut truncated)?;
 
         if truncated {
             break;
@@ -168,6 +158,37 @@ fn read_logs_from_offsets(
         current_len,
         truncated,
     })
+}
+
+fn append_lines_since(
+    path: &Path,
+    file: std::fs::File,
+    cutoff: &str,
+    max_bytes: usize,
+    out: &mut Vec<u8>,
+    truncated: &mut bool,
+) -> Result<(), String> {
+    let mut reader = std::io::BufReader::new(file);
+    let mut line = Vec::new();
+
+    loop {
+        line.clear();
+        let read = reader
+            .read_until(b'\n', &mut line)
+            .map_err(|error| format!("read log file {}: {error}", path.display()))?;
+        if read == 0 {
+            return Ok(());
+        }
+
+        if !line_matches_cutoff(&String::from_utf8_lossy(&line), cutoff) {
+            continue;
+        }
+        if out.len().saturating_add(line.len()) > max_bytes {
+            *truncated = true;
+            return Ok(());
+        }
+        out.extend_from_slice(&line);
+    }
 }
 
 fn append_file_range(
@@ -296,6 +317,38 @@ mod tests {
         assert_eq!(response.previous_offset, response.previous_len);
         assert_eq!(response.current_offset, response.current_len);
         assert!(!response.truncated);
+    }
+
+    #[test]
+    fn read_logs_since_honors_max_bytes() {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let log_dir = temp
+            .path()
+            .join("apps")
+            .join("demo/production")
+            .join("logs");
+        fs::create_dir_all(&log_dir).expect("log dir");
+        fs::write(
+            log_dir.join("current.log"),
+            "2026-05-18T09:00:00.000Z [out] [a] first\n2026-05-18T09:00:01.000Z [out] [b] second\n",
+        )
+        .expect("current log");
+
+        let response = super::read_logs(
+            temp.path(),
+            "demo/production",
+            0,
+            0,
+            Some(1_779_052_400),
+            "2026-05-18T09:00:00.000Z [out] [a] first\n".len(),
+        )
+        .expect("read logs");
+
+        assert_eq!(
+            String::from_utf8(response.bytes).expect("utf8"),
+            "2026-05-18T09:00:00.000Z [out] [a] first\n"
+        );
+        assert!(response.truncated);
     }
 
     #[test]
