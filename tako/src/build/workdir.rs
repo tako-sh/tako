@@ -74,8 +74,9 @@ fn symlink_node_modules_recursive(
         let entry = entry?;
         let path = entry.path();
         let file_name = entry.file_name();
+        let file_type = entry.file_type()?;
 
-        if file_name == "node_modules" && path.is_dir() {
+        if file_name == "node_modules" && file_type.is_dir() {
             // Only symlink if sibling package.json exists
             if current.join("package.json").is_file() {
                 let relative = current.strip_prefix(source_root).map_err(|e| {
@@ -100,7 +101,7 @@ fn symlink_node_modules_recursive(
             continue;
         }
 
-        if path.is_dir() {
+        if file_type.is_dir() {
             symlink_node_modules_recursive(&path, source_root, workdir)?;
         }
     }
@@ -248,6 +249,28 @@ mod tests {
                 .file_type()
                 .is_symlink()
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_node_modules_does_not_recurse_into_directory_symlink() {
+        use std::os::unix::fs as unix_fs;
+
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("project");
+        let outside = temp.path().join("outside");
+        let workdir = temp.path().join("workdir");
+
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(outside.join("node_modules/pkg")).unwrap();
+        fs::write(outside.join("package.json"), "{}").unwrap();
+        fs::write(outside.join("node_modules/pkg/index.js"), "ok").unwrap();
+        unix_fs::symlink(&outside, root.join("linked")).unwrap();
+        fs::create_dir_all(&workdir).unwrap();
+
+        symlink_node_modules(&root, &workdir).unwrap();
+
+        assert!(!workdir.join("linked/node_modules").exists());
     }
 
     #[test]
