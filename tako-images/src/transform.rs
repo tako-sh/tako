@@ -1,0 +1,288 @@
+use crate::{
+    ImageCrop, ImageError, ImageFit, NormalizedResize, OutputFormat, normalize_resize,
+    validate_quality, validate_width,
+};
+use libvips::{VipsApp, VipsImage, ops};
+use std::sync::OnceLock;
+
+const STRIP_SOURCE_METADATA: &str = "strip";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransformLimits {
+    pub max_source_bytes: usize,
+    pub max_image_width: u32,
+    pub max_image_height: u32,
+    pub max_decoded_pixels: u64,
+}
+
+impl Default for TransformLimits {
+    fn default() -> Self {
+        Self {
+            max_source_bytes: 8 * 1024 * 1024,
+            max_image_width: 8_000,
+            max_image_height: 8_000,
+            max_decoded_pixels: 32_000_000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransformedImage {
+    pub bytes: Vec<u8>,
+    pub content_type: &'static str,
+    pub format: OutputFormat,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TransformOptions {
+    pub format: OutputFormat,
+    pub width: u32,
+    pub height: Option<u32>,
+    pub fit: Option<ImageFit>,
+    pub crop: Option<ImageCrop>,
+    pub quality: u8,
+}
+
+pub fn transform_image(
+    source: &[u8],
+    _source_content_type: Option<&str>,
+    options: TransformOptions,
+    limits: &TransformLimits,
+) -> Result<TransformedImage, ImageError> {
+    validate_width(options.width)?;
+    validate_quality(options.quality)?;
+    let resize = normalize_resize(
+        Some(options.width),
+        options.height,
+        options.fit,
+        options.crop,
+    )?;
+    if source.len() > limits.max_source_bytes {
+        return Err(ImageError::SourceTooLarge);
+    }
+
+    validate_source_format(source)?;
+    let (source_width, source_height) = image_dimensions(source)?;
+    enforce_dimension_limits(source_width, source_height, limits)?;
+
+    if source_width == 0 || source_height == 0 {
+        return Err(ImageError::TransformFailed);
+    }
+
+    let resized = thumbnail_image(source, options.width, resize)?;
+    let width = dimension_from_vips(resized.get_width())?;
+    let height = dimension_from_vips(resized.get_height())?;
+    let bytes = encode_image(&resized, options.format, options.quality)?;
+
+    Ok(TransformedImage {
+        bytes,
+        content_type: options.format.content_type(),
+        format: options.format,
+        width,
+        height,
+    })
+}
+
+fn validate_source_format(source: &[u8]) -> Result<(), ImageError> {
+    if source.starts_with(&[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n']) {
+        return Ok(());
+    }
+    if source.starts_with(&[0xff, 0xd8, 0xff]) {
+        return Ok(());
+    }
+    if source.len() >= 12 && &source[0..4] == b"RIFF" && &source[8..12] == b"WEBP" {
+        return Ok(());
+    }
+    if source.len() >= 12
+        && &source[4..8] == b"ftyp"
+        && source[8..].windows(4).any(|brand| brand == b"avif")
+    {
+        return Ok(());
+    }
+
+    Err(ImageError::UnsupportedFormat)
+}
+
+fn image_dimensions(source: &[u8]) -> Result<(u32, u32), ImageError> {
+    let image = read_image_header(source)?;
+    Ok((
+        dimension_from_vips(image.get_width())?,
+        dimension_from_vips(image.get_height())?,
+    ))
+}
+
+fn enforce_dimension_limits(
+    width: u32,
+    height: u32,
+    limits: &TransformLimits,
+) -> Result<(), ImageError> {
+    if width > limits.max_image_width || height > limits.max_image_height {
+        return Err(ImageError::ImageTooLarge);
+    }
+    let pixels = u64::from(width) * u64::from(height);
+    if pixels > limits.max_decoded_pixels {
+        return Err(ImageError::ImageTooLarge);
+    }
+    Ok(())
+}
+
+fn read_image_header(source: &[u8]) -> Result<VipsImage, ImageError> {
+    let app = vips_app()?;
+    app.error_clear();
+    VipsImage::new_from_buffer(source, "").map_err(|_| vips_transform_error(app))
+}
+
+fn autorotate_image(image: &VipsImage) -> Result<VipsImage, ImageError> {
+    let app = vips_app()?;
+    app.error_clear();
+    ops::autorot(image).map_err(|_| vips_transform_error(app))
+}
+
+fn thumbnail_image(
+    source: &[u8],
+    width: u32,
+    resize: NormalizedResize,
+) -> Result<VipsImage, ImageError> {
+    let image = autorotate_image(&read_image_header(source)?)?;
+    let source_width = dimension_from_vips(image.get_width())?;
+    let source_height = dimension_from_vips(image.get_height())?;
+    let scale = resize_scale(source_width, source_height, width, resize)?;
+    let resized = if scale < 1.0 {
+        resize_image(&image, scale)?
+    } else {
+        image
+    };
+
+    let Some(height) = resize.height else {
+        return Ok(resized);
+    };
+    if resize.fit == Some(ImageFit::Contain) {
+        return Ok(resized);
+    }
+
+    let resized_width = dimension_from_vips(resized.get_width())?;
+    let resized_height = dimension_from_vips(resized.get_height())?;
+    let crop_width = width.min(resized_width);
+    let crop_height = height.min(resized_height);
+    if crop_width == resized_width && crop_height == resized_height {
+        return Ok(resized);
+    }
+
+    match resize.crop.unwrap_or(ImageCrop::Center) {
+        ImageCrop::Center => center_crop_image(&resized, crop_width, crop_height),
+        ImageCrop::Smart => smart_crop_image(&resized, crop_width, crop_height),
+    }
+}
+
+fn resize_scale(
+    source_width: u32,
+    source_height: u32,
+    width: u32,
+    resize: NormalizedResize,
+) -> Result<f64, ImageError> {
+    let width_scale = f64::from(width) / f64::from(source_width);
+    let scale = match resize.height {
+        None => width_scale,
+        Some(height) => {
+            let height_scale = f64::from(height) / f64::from(source_height);
+            match resize.fit.unwrap_or(ImageFit::Cover) {
+                ImageFit::Cover => width_scale.max(height_scale),
+                ImageFit::Contain => width_scale.min(height_scale),
+            }
+        }
+    };
+    if scale.is_finite() && scale > 0.0 {
+        // Requested dimensions are upper bounds. Never enlarge a source image.
+        Ok(scale.min(1.0))
+    } else {
+        Err(ImageError::TransformFailed)
+    }
+}
+
+fn resize_image(image: &VipsImage, scale: f64) -> Result<VipsImage, ImageError> {
+    let app = vips_app()?;
+    app.error_clear();
+    ops::resize(image, scale).map_err(|_| vips_transform_error(app))
+}
+
+fn center_crop_image(image: &VipsImage, width: u32, height: u32) -> Result<VipsImage, ImageError> {
+    let app = vips_app()?;
+    app.error_clear();
+    let image_width = dimension_from_vips(image.get_width())?;
+    let image_height = dimension_from_vips(image.get_height())?;
+    let left = (image_width.saturating_sub(width)) / 2;
+    let top = (image_height.saturating_sub(height)) / 2;
+    ops::extract_area(
+        image,
+        i32::try_from(left).map_err(|_| ImageError::TransformFailed)?,
+        i32::try_from(top).map_err(|_| ImageError::TransformFailed)?,
+        i32::try_from(width).map_err(|_| ImageError::TransformFailed)?,
+        i32::try_from(height).map_err(|_| ImageError::TransformFailed)?,
+    )
+    .map_err(|_| vips_transform_error(app))
+}
+
+fn smart_crop_image(image: &VipsImage, width: u32, height: u32) -> Result<VipsImage, ImageError> {
+    let app = vips_app()?;
+    app.error_clear();
+    ops::smartcrop(
+        image,
+        i32::try_from(width).map_err(|_| ImageError::TransformFailed)?,
+        i32::try_from(height).map_err(|_| ImageError::TransformFailed)?,
+    )
+    .map_err(|_| vips_transform_error(app))
+}
+
+fn encode_image(
+    image: &VipsImage,
+    format: OutputFormat,
+    quality: u8,
+) -> Result<Vec<u8>, ImageError> {
+    let app = vips_app()?;
+    app.error_clear();
+    match format {
+        OutputFormat::Avif => {
+            let suffix = format!(".avif[Q={quality},compression=av1,{STRIP_SOURCE_METADATA}]");
+            image
+                .image_write_to_buffer(&suffix)
+                .map_err(|_| vips_transform_error(app))
+        }
+        OutputFormat::Webp => {
+            let suffix = format!(
+                ".webp[Q={quality},alpha-q={quality},smart-subsample=true,preset=photo,{STRIP_SOURCE_METADATA}]"
+            );
+            image
+                .image_write_to_buffer(&suffix)
+                .map_err(|_| vips_transform_error(app))
+        }
+    }
+}
+
+fn vips_transform_error(_app: &VipsApp) -> ImageError {
+    #[cfg(test)]
+    if let Ok(error) = _app.error_buffer()
+        && !error.is_empty()
+    {
+        eprintln!("libvips error: {error}");
+    }
+    ImageError::TransformFailed
+}
+
+fn dimension_from_vips(value: i32) -> Result<u32, ImageError> {
+    u32::try_from(value).map_err(|_| ImageError::TransformFailed)
+}
+
+fn vips_app() -> Result<&'static VipsApp, ImageError> {
+    static APP: OnceLock<Result<VipsApp, ()>> = OnceLock::new();
+    match APP.get_or_init(|| {
+        let app = VipsApp::new("tako-images", false).map_err(|_| ())?;
+        app.cache_set_max(100);
+        app.cache_set_max_mem(128 * 1024 * 1024);
+        Ok(app)
+    }) {
+        Ok(app) => Ok(app),
+        Err(()) => Err(ImageError::TransformFailed),
+    }
+}
