@@ -179,29 +179,29 @@ async fn handle_logs(
     let (parts, _body) = request.into_parts();
     let app = match required_header(&parts.headers, HEADER_LOG_APP) {
         Ok(value) => value.to_string(),
-        Err(response) => return response,
+        Err(error) => return header_error_response(error),
     };
     let previous_offset = match required_header(&parts.headers, HEADER_LOG_PREVIOUS_OFFSET)
         .and_then(|value| parse_u64_header(HEADER_LOG_PREVIOUS_OFFSET, value))
     {
         Ok(value) => value,
-        Err(response) => return response,
+        Err(error) => return header_error_response(error),
     };
     let current_offset = match required_header(&parts.headers, HEADER_LOG_CURRENT_OFFSET)
         .and_then(|value| parse_u64_header(HEADER_LOG_CURRENT_OFFSET, value))
     {
         Ok(value) => value,
-        Err(response) => return response,
+        Err(error) => return header_error_response(error),
     };
     let max_bytes = match required_header(&parts.headers, HEADER_LOG_MAX_BYTES)
         .and_then(|value| parse_usize_header(HEADER_LOG_MAX_BYTES, value))
     {
         Ok(value) => value,
-        Err(response) => return response,
+        Err(error) => return header_error_response(error),
     };
     let since_unix_secs = match optional_i64_header(&parts.headers, HEADER_LOG_SINCE_UNIX_SECS) {
         Ok(value) => value,
-        Err(response) => return response,
+        Err(error) => return header_error_response(error),
     };
 
     let auth_body = tako_core::logs_request_auth_body(
@@ -244,21 +244,21 @@ async fn handle_release_artifact_upload(
     let (parts, mut body) = request.into_parts();
     let app = match required_header(&parts.headers, HEADER_UPLOAD_APP) {
         Ok(value) => value.to_string(),
-        Err(response) => return response,
+        Err(error) => return header_error_response(error),
     };
     let version = match required_header(&parts.headers, HEADER_UPLOAD_VERSION) {
         Ok(value) => value.to_string(),
-        Err(response) => return response,
+        Err(error) => return header_error_response(error),
     };
     let expected_size = match required_header(&parts.headers, HEADER_UPLOAD_SIZE)
         .and_then(|value| parse_u64_header(HEADER_UPLOAD_SIZE, value))
     {
         Ok(value) => value,
-        Err(response) => return response,
+        Err(error) => return header_error_response(error),
     };
     let expected_sha256 = match required_header(&parts.headers, HEADER_UPLOAD_SHA256) {
         Ok(value) => value.to_string(),
-        Err(response) => return response,
+        Err(error) => return header_error_response(error),
     };
     if expected_sha256.len() != 64 || !expected_sha256.chars().all(|c| c.is_ascii_hexdigit()) {
         return json_response(
@@ -366,70 +366,68 @@ async fn write_upload_body(
 fn required_header<'a>(
     headers: &'a hyper::HeaderMap,
     name: &'static str,
-) -> Result<&'a str, Response<ResponseBody>> {
+) -> Result<&'a str, HeaderParseError> {
     let Some(value) = headers.get(name) else {
-        return Err(json_response(
-            StatusCode::BAD_REQUEST,
-            &tako_core::Response::error(format!("missing {name} header")),
-        ));
+        return Err(HeaderParseError::Missing(name));
     };
     let Ok(value) = value.to_str() else {
-        return Err(json_response(
-            StatusCode::BAD_REQUEST,
-            &tako_core::Response::error(format!("invalid {name} header")),
-        ));
+        return Err(HeaderParseError::Invalid(name));
     };
     let value = value.trim();
     if value.is_empty() {
-        return Err(json_response(
-            StatusCode::BAD_REQUEST,
-            &tako_core::Response::error(format!("empty {name} header")),
-        ));
+        return Err(HeaderParseError::Empty(name));
     }
     Ok(value)
 }
 
-fn parse_u64_header(name: &'static str, value: &str) -> Result<u64, Response<ResponseBody>> {
-    value.parse::<u64>().map_err(|_| {
-        json_response(
-            StatusCode::BAD_REQUEST,
-            &tako_core::Response::error(format!("invalid {name} header")),
-        )
-    })
+fn parse_u64_header(name: &'static str, value: &str) -> Result<u64, HeaderParseError> {
+    value
+        .parse::<u64>()
+        .map_err(|_| HeaderParseError::Invalid(name))
 }
 
-fn parse_usize_header(name: &'static str, value: &str) -> Result<usize, Response<ResponseBody>> {
-    value.parse::<usize>().map_err(|_| {
-        json_response(
-            StatusCode::BAD_REQUEST,
-            &tako_core::Response::error(format!("invalid {name} header")),
-        )
-    })
+fn parse_usize_header(name: &'static str, value: &str) -> Result<usize, HeaderParseError> {
+    value
+        .parse::<usize>()
+        .map_err(|_| HeaderParseError::Invalid(name))
 }
 
 fn optional_i64_header(
     headers: &hyper::HeaderMap,
     name: &'static str,
-) -> Result<Option<i64>, Response<ResponseBody>> {
+) -> Result<Option<i64>, HeaderParseError> {
     let Some(value) = headers.get(name) else {
         return Ok(None);
     };
     let Ok(value) = value.to_str() else {
-        return Err(json_response(
-            StatusCode::BAD_REQUEST,
-            &tako_core::Response::error(format!("invalid {name} header")),
-        ));
+        return Err(HeaderParseError::Invalid(name));
     };
     let value = value.trim();
     if value.is_empty() {
         return Ok(None);
     }
-    value.parse::<i64>().map(Some).map_err(|_| {
-        json_response(
-            StatusCode::BAD_REQUEST,
-            &tako_core::Response::error(format!("invalid {name} header")),
-        )
-    })
+    value
+        .parse::<i64>()
+        .map(Some)
+        .map_err(|_| HeaderParseError::Invalid(name))
+}
+
+enum HeaderParseError {
+    Missing(&'static str),
+    Invalid(&'static str),
+    Empty(&'static str),
+}
+
+fn header_error_response(error: HeaderParseError) -> Response<ResponseBody> {
+    let message = match error {
+        HeaderParseError::Missing(name) => format!("missing {name} header"),
+        HeaderParseError::Invalid(name) => format!("invalid {name} header"),
+        HeaderParseError::Empty(name) => format!("empty {name} header"),
+    };
+    json_response(
+        StatusCode::BAD_REQUEST,
+        &tako_core::Response::error(message),
+    )
 }
 
 pub(crate) async fn handle_rpc_command(
