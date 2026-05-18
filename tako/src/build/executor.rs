@@ -314,6 +314,7 @@ impl BuildExecutor {
         for entry in entries {
             let entry = entry?;
             let path = entry.path();
+            let file_type = entry.file_type()?;
             let file_name = path.file_name().unwrap().to_string_lossy();
 
             // Check exclusions
@@ -337,7 +338,7 @@ impl BuildExecutor {
 
             let relative_path = path.strip_prefix(base_dir).unwrap();
 
-            if path.is_dir() {
+            if file_type.is_dir() {
                 self.add_dir_to_archive(
                     archive,
                     base_dir,
@@ -345,7 +346,7 @@ impl BuildExecutor {
                     default_excludes,
                     custom_excludes,
                 )?;
-            } else if path.is_file() {
+            } else if file_type.is_file() || file_type.is_symlink() {
                 archive
                     .append_path_with_name(&path, relative_path)
                     .map_err(|e| {
@@ -413,14 +414,21 @@ pub fn compute_dir_hash(dir: &Path, exclude_patterns: &[&str]) -> Result<String,
         let relative = path.strip_prefix(dir).unwrap();
         hasher.update(relative.to_string_lossy().as_bytes());
 
-        let mut file = std::fs::File::open(&path)?;
-        let mut buffer = [0u8; 8192];
-        loop {
-            let bytes_read = file.read(&mut buffer)?;
-            if bytes_read == 0 {
-                break;
+        let metadata = std::fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() {
+            let target = std::fs::read_link(&path)?;
+            hasher.update(b"symlink:");
+            hasher.update(target.to_string_lossy().as_bytes());
+        } else {
+            let mut file = std::fs::File::open(&path)?;
+            let mut buffer = [0u8; 8192];
+            loop {
+                let bytes_read = file.read(&mut buffer)?;
+                if bytes_read == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..bytes_read]);
             }
-            hasher.update(&buffer[..bytes_read]);
         }
     }
 
@@ -498,6 +506,7 @@ fn collect_files(
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
+        let file_type = entry.file_type()?;
         let file_name = path.file_name().unwrap().to_string_lossy();
 
         // Check exclusions
@@ -514,9 +523,9 @@ fn collect_files(
             continue;
         }
 
-        if path.is_dir() {
+        if file_type.is_dir() {
             collect_files(&path, paths, exclude_patterns)?;
-        } else if path.is_file() {
+        } else if file_type.is_file() || file_type.is_symlink() {
             paths.push(path);
         }
     }

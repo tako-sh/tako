@@ -216,6 +216,32 @@ fn test_create_source_archive_preserves_symlinks() {
 
 #[cfg(unix)]
 #[test]
+fn test_create_archive_preserves_directory_symlink_without_following() {
+    use std::os::unix::fs as unix_fs;
+
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("source");
+    let outside = temp.path().join("outside");
+    let archive_path = temp.path().join("test.tar.zst");
+    let dest = temp.path().join("dest");
+
+    fs::create_dir_all(&source).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("secret.txt"), "secret").unwrap();
+    unix_fs::symlink(&outside, source.join("linked")).unwrap();
+
+    let executor = BuildExecutor::new(&source);
+    executor
+        .create_archive(&source, &archive_path, &[])
+        .unwrap();
+
+    BuildExecutor::extract_archive(&archive_path, &dest).unwrap();
+    let metadata = fs::symlink_metadata(dest.join("linked")).unwrap();
+    assert!(metadata.file_type().is_symlink());
+}
+
+#[cfg(unix)]
+#[test]
 fn test_compute_source_hash_supports_directory_symlinks() {
     use std::os::unix::fs as unix_fs;
 
@@ -229,6 +255,27 @@ fn test_compute_source_hash_supports_directory_symlinks() {
     let executor = BuildExecutor::new(&source);
     let hash = executor.compute_source_hash(&source).unwrap();
     assert!(!hash.is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn test_compute_dir_hash_uses_symlink_target_without_following_directory() {
+    use std::os::unix::fs as unix_fs;
+
+    let temp = TempDir::new().unwrap();
+    let dir = temp.path().join("project");
+    let outside = temp.path().join("outside");
+
+    fs::create_dir_all(&dir).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("secret.txt"), "secret-v1").unwrap();
+    unix_fs::symlink(&outside, dir.join("linked")).unwrap();
+
+    let hash1 = compute_dir_hash(&dir, &[]).unwrap();
+    fs::write(outside.join("secret.txt"), "secret-v2").unwrap();
+    let hash2 = compute_dir_hash(&dir, &[]).unwrap();
+
+    assert_eq!(hash1, hash2);
 }
 
 #[test]
