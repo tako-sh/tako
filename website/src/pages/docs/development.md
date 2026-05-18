@@ -102,7 +102,7 @@ On Linux, Tako uses:
 
 On NixOS, Tako prints a `configuration.nix` snippet instead of applying imperative setup.
 
-Tako installs or repairs platform setup when needed. It explains privileged changes before prompting for sudo.
+Tako installs or repairs platform setup when needed and explains privileged changes before prompting for sudo.
 
 ## Local CA
 

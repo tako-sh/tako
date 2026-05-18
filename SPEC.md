@@ -209,11 +209,12 @@ workers = 4
 - Build stage resolution precedence (first non-empty wins): `[[build_stages]]` → `[build]` (normalized to a single stage) → runtime default. The runtime default is the runtime plugin's build command: `bun/npm/pnpm/yarn run --if-present build` for JS runtimes and no default for Go. When nothing resolves, the build phase is a no-op.
 - App-level custom build stages can be declared in `tako.toml` under `[[build_stages]]` (top-level array):
   - `name` (optional display label)
-  - `cwd` (optional, relative to app root; `..` is allowed for monorepo traversal but guarded against escaping the workspace root)
+  - `cwd` (optional, relative to app root; `..` is allowed for monorepo traversal but guarded against escaping the workspace root; symlink escapes outside the source root fail deploy)
   - `install` (optional command run before `run`)
   - `run` (required command)
   - `exclude` (optional array of file globs to exclude from the deploy artifact)
 - Build uses a build dir approach: copies the project from source root into `.tako/build` (respecting `.gitignore`), symlinks `node_modules/` directories from the original tree, runs build commands, then archives the result without `node_modules/`.
+- Build and source archives preserve symlinks as symlinks instead of following them. Directory symlinks are not expanded into the artifact, and source hashes track each symlink target so symlink changes invalidate the artifact cache.
 - During `tako deploy`, source files are bundled from source root (`git` root when available, otherwise app directory).
 - Deploy always force-excludes `.git/`, `.tako/`, `.env*`, and `node_modules/` from the deploy archive. Additional exclusions come from `[build].exclude` and `.gitignore`.
 - After extracting the deploy artifact, `tako-server` runs the runtime plugin's production install command (e.g. `bun install --production`) before starting instances.
@@ -1030,7 +1031,7 @@ Deploy flow helpers:
 3. Resolve app subdirectory from the selected config file's parent directory relative to source bundle root
 4. Resolve deploy runtime `main` (`main` from `tako.toml`; otherwise manifest main such as `package.json` `main`; otherwise preset `main`, with JS index fallback order: `index.<ext>` then `src/index.<ext>` for `ts`/`tsx`/`js`/`jsx` when applicable)
 5. Resolve app preset (top-level `preset` in `tako.toml`), fetching unpinned official aliases from `master`
-6. Prepare build dir: copy project from source root into `.tako/build` (respecting `.gitignore`), symlink `node_modules/` directories from original tree
+6. Prepare build dir: copy project from source root into `.tako/build` (respecting `.gitignore`), symlink `node_modules/` directories from original tree, and preserve other symlinks as symlinks
 7. Run build commands in build dir:
    - Resolve stage list by precedence: `[[build_stages]]` → `[build]` (single-stage form) → runtime default stage → no-op
    - Run resolved stages in declaration order (`install` then `run` per stage)
@@ -1038,6 +1039,7 @@ Deploy flow helpers:
    - Verify resolved runtime `main` exists in the built app directory
    - Save resolved runtime version into `app.json` (`runtime_version` field) for server-side version pinning
 8. Archive build dir (excluding `node_modules/`) as deploy artifact
+   - Source and build archives preserve symlinks as links instead of following them; directory symlinks are not expanded into the artifact
    - Version format: clean git tree => `{commit}`; dirty git tree => `{commit}_{source_hash8}`; no git commit => `nogit_{source_hash8}`
    - Best-effort local artifact cache prune runs before builds (retention: 90 target artifacts; orphan target metadata is removed)
    - Package filtered artifact tarball using include/exclude rules and store in local cache
@@ -1073,7 +1075,7 @@ Deploy flow helpers:
 
 - Deploy archive source is the app's source bundle root (git root when available; otherwise selected-config parent directory).
 - Deploy target app path is the selected config file's parent directory relative to the source bundle root.
-- Build uses a build dir: copies project from source root into `.tako/build` (respecting `.gitignore`), symlinks `node_modules/` from the original tree (build tools read but don't modify), runs build commands in the build dir, then archives the result excluding `node_modules/`.
+- Build uses a build dir: copies project from source root into `.tako/build` (respecting `.gitignore`), symlinks `node_modules/` from the original tree (build tools read but don't modify), runs build commands in the build dir, then archives the result excluding `node_modules/`. Source and build archives preserve symlinks as symlinks; directory symlinks are not followed, and source hashes track symlink targets for cache invalidation.
 - These paths are always force-excluded from the deploy archive: `.git/`, `.tako/`, `.env*`, `node_modules/`. Additional exclusions come from `[build].exclude` and `.gitignore`.
 - Servers receive prebuilt artifacts and do not run app build steps during deploy. After extracting the artifact, `tako-server` runs the runtime plugin's production install command (e.g. `bun install --production`) before starting instances. Production install runs with the release env plus minimal process env (`PATH`, `HOME` when available); it does not inherit arbitrary `tako-server` service environment variables. When `tako-server` is root, production install runs as `tako-app`; if `tako-app` cannot be resolved, install fails instead of running as root.
 - Build logic runs in the build dir against the resolved stage list (precedence: `[[build_stages]]` → `[build]` → runtime default). Each stage runs `install` then `run` in declaration order.

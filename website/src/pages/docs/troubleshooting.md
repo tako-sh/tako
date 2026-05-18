@@ -20,17 +20,17 @@ Then rerun the failing command with verbose output:
 tako -v deploy --env production
 ```
 
-For automation, add `--ci` to disable interactive prompts and pretty UI:
+For automation, add `--ci` and pass explicit flags instead of relying on prompts:
 
 ```bash
 tako --ci deploy --env production --yes
 ```
 
-Status, progress, prompts, and logs go to stderr. Machine-readable command results go to stdout.
+Status, progress, prompts, and logs go to stderr. Machine-readable command output goes to stdout.
 
 ## Config Not Found
 
-Commands that need an app config look for `./tako.toml` by default:
+Commands that need app config look for `./tako.toml` by default:
 
 ```text
 tako.toml not found
@@ -44,13 +44,11 @@ tako -c apps/web/tako.toml deploy --env production
 
 If the path passed to `--config` has no `.toml` suffix, Tako appends it.
 
-## Invalid App Or Server Names
+## Invalid Names
 
-App names, server names, environment names, and workflow worker group names are intentionally strict. Use lowercase letters, numbers, and hyphens; start with a lowercase letter; do not end with a hyphen; stay under 64 characters.
+App names, server names, environment names, and workflow worker group names are strict. Use lowercase letters, numbers, and hyphens; start with a lowercase letter; do not end with a hyphen; stay under 64 characters.
 
-Storage binding and resource names can also use underscores.
-
-Fix the value in `tako.toml`, then rerun the command.
+Storage binding and resource names can also use underscores. Fix the value in `tako.toml`, then rerun the command.
 
 ## Unknown `tako.toml` Key
 
@@ -62,13 +60,13 @@ Unknown key '...'
 
 Common causes:
 
-- Putting DNS provider settings in `tako.toml`. Use `tako dns configure --env <env>` instead.
-- Putting global server inventory under app `[servers]`. Use `tako servers add`; app `[servers.<name>]` is only for per-app workflow overrides.
-- Using a namespaced preset in `tako.toml`, such as `preset = "js/tanstack-start"`. Set `runtime = "bun"` and `preset = "tanstack-start"`.
+- DNS provider settings in `tako.toml`. Use `tako dns configure --env <env>`.
+- Global server inventory under app `[servers]`. Use `tako servers add`; app `[servers.<name>]` is only for per-app workflow overrides.
+- Namespaced presets such as `preset = "js/tanstack-start"`. Use `runtime = "bun"` and `preset = "tanstack-start"`.
 
 ## Environment Not Found
 
-Deploy, logs, releases, and app-scoped secret sync require the selected environment to exist in `tako.toml`:
+Deploy, logs, releases, and app-scoped secret sync require the selected environment to exist:
 
 ```toml
 [envs.production]
@@ -86,7 +84,7 @@ tako deploy --env staging
 
 ## No Servers Configured
 
-Deploy, logs, releases, and scale need target servers. Add a server first:
+Deploy, logs, releases, and project-context scale need target servers. Add a server first:
 
 ```bash
 tako servers add prod-a.tailnet.ts.net
@@ -108,13 +106,13 @@ If `production` has no server mapping and exactly one global server exists, inte
 
 - The host is a Tailscale MagicDNS name or Tailscale IP.
 - `tako@host` SSH recovery access works.
-- Signed remote management works over the private Tailscale HTTP endpoint.
+- Signed HTTP remote management works on the private Tailscale endpoint.
 - Server target metadata such as architecture and libc can be detected.
 - Public HTTP and HTTPS ports are detected.
 
 If verification fails, the server is not written to global `config.toml`.
 
-When adding a fresh host, use install mode:
+For a fresh host or repair flow, use an admin SSH user:
 
 ```bash
 tako servers add ubuntu@prod-a.tailnet.ts.net
@@ -126,19 +124,25 @@ or:
 tako servers add prod-a.tailnet.ts.net --install --admin-user ubuntu
 ```
 
-Passing `admin-user@host` is shorthand for using that admin user and running install or repair when needed.
+Passing `admin-user@host` uses that admin user and enables install or repair when needed.
 
-## Remote Management Requires Tailscale
+## Remote Management Cannot Connect
 
-Normal server installs bind management RPC to the server's Tailscale address on port `9844`. If install cannot find a Tailscale IP, it fails with a message explaining that remote management requires Tailscale.
+Normal installs bind remote management HTTP to the server's Tailscale address on port `9844`. The API uses:
 
-Fix Tailscale on the server, or pass `TAKO_MANAGEMENT_HOST` to the server installer when you know the correct private address.
+- `POST /rpc` for JSON management commands
+- `POST /release-artifact` for streamed deploy artifacts
+- `POST /logs` for raw log byte ranges
+
+Only `hello` and `server_info` probes are unsigned. Other requests require an enrolled SSH key signature with a fresh timestamp and non-replayed nonce.
+
+If install cannot find a Tailscale IP, it fails with a message explaining that remote management requires Tailscale. Fix Tailscale on the server, or pass `TAKO_MANAGEMENT_HOST` to the server installer when you know the correct private address.
 
 ## Deploy Lock Already Held
 
-Non-dry-run deploys acquire a project-local lock at `.tako/deploy.lock`.
+Non-dry-run deploys acquire a project-local lock at `.tako/deploy.lock`. A second deploy exits immediately with the owning PID.
 
-If another deploy is running, the later command exits immediately with the owning PID. Wait for the active deploy to finish. If the process crashed, rerun deploy; stale lock handling does not require manual cleanup in normal cases.
+Wait for the active deploy to finish. If the process crashed, rerun deploy; stale lock handling does not normally need manual cleanup.
 
 ## Secrets Missing Or Expired
 
@@ -160,11 +164,6 @@ If a teammate cannot decrypt secrets, import the environment key:
 
 ```bash
 tako secrets key import --env production
-```
-
-or use passphrase mode:
-
-```bash
 tako secrets key import --passphrase --env production
 ```
 
@@ -185,7 +184,7 @@ The command writes binding metadata to `tako.toml` and encrypted credentials to 
 
 Deploy fails early if selected S3 credentials are missing or expired, warns if they expire within 30 days, and checks that credentials do not exist for unbound resources.
 
-For local storage, use:
+For local storage:
 
 ```bash
 tako storages add uploads --env production --provider local
@@ -208,11 +207,11 @@ Configure Cloudflare DNS for that app environment:
 tako dns configure --env production --expires-on "in 90 days"
 ```
 
-The token must be able to read zones and edit DNS records for the zone. It is encrypted in `.tako/secrets.json`, not stored in `tako.toml`.
+The token must be able to read zones and edit DNS records. It is encrypted in `.tako/secrets.json`, not stored in `tako.toml`.
 
-Deploy fails early if wildcard routes need DNS credentials and none are configured, or if the configured token has expired. It warns when the token expires within 30 days.
+Deploy fails early if wildcard routes need missing or expired DNS credentials. It warns when the token expires within 30 days.
 
-## Cloudflare Or Proxy Source IP Problems
+## Source IP Problems
 
 Generated configs use `source_ip = "auto"` implicitly. Auto mode uses:
 
@@ -220,14 +219,12 @@ Generated configs use `source_ip = "auto"` implicitly. Auto mode uses:
 2. Configured trusted proxy headers when the peer is trusted.
 3. The direct peer IP.
 
-Strict Cloudflare mode rejects anything that is not a valid Cloudflare request:
+Strict Cloudflare mode rejects requests that are not valid Cloudflare requests:
 
 ```toml
 [envs.production]
 source_ip = "cloudflare-proxy"
 ```
-
-Use this when your app should only receive public traffic through Cloudflare. Non-Cloudflare requests return `403 Forbidden`.
 
 For nginx, HAProxy, Caddy, Traefik, or another front proxy:
 
@@ -267,9 +264,9 @@ Then check build configuration:
 run = "bun run build"
 ```
 
-`[build].run` and `[[build_stages]]` are mutually exclusive. `[build].include` and `[build].exclude` cannot be used with `[[build_stages]]`; use per-stage `exclude` instead.
+`[build].run` and `[[build_stages]]` are mutually exclusive. `[build].include` and `[build].exclude` cannot be used with `[[build_stages]]`; use per-stage `exclude`.
 
-Deploy bundles source from the git root when available, otherwise from the app directory. It always excludes `.git/`, `.tako/`, `.env*`, and `node_modules/`.
+Deploy bundles source from the git root when available, otherwise from the app directory. It always excludes `.git/`, `.tako/`, `.env*`, and `node_modules/`. Source and build archives preserve symlinks instead of following directory symlinks; a `[[build_stages]].cwd` symlink that resolves outside the source root fails deploy.
 
 ## Entrypoint Not Found
 
@@ -297,7 +294,7 @@ release = "bun run db:migrate"
 
 The command runs as `sh -c` in the release directory after production dependencies are installed. It receives app vars and freshly decrypted app secrets.
 
-If it exits non-zero or times out, deploy aborts on every server, removes the partial release through signed management, leaves `current` unchanged, and old instances keep serving. Check the stderr tail in deploy output and the app logs:
+If it exits non-zero or times out, deploy aborts on every server, removes the partial release through signed management, leaves `current` unchanged, and old instances keep serving. Check deploy output and recent logs:
 
 ```bash
 tako logs --env production --days 1
@@ -311,18 +308,18 @@ Common causes:
 
 - The server cannot reach GitHub or nodejs.org.
 - The runtime version is invalid.
-- The runtime archive or checksum download exceeds the configured safety limits.
+- The runtime archive or checksum download exceeds safety limits.
 - The checksum does not match.
 
-Pin the runtime in `tako.toml` when you need a specific runtime version:
+Pin the runtime when you need a specific version:
 
 ```toml
 runtime = "bun@1.2.3"
 ```
 
-## App Starts But Requests Return 502 Or 504
+## Requests Return 502 Or 504
 
-The app process must bind to `127.0.0.1` on an OS-assigned port and report the bound port on fd 4. The SDK entrypoints handle this automatically.
+The app process must bind to `127.0.0.1` on an OS-assigned port and report the bound port on fd 4. SDK entrypoints handle this automatically.
 
 For JavaScript apps, use the `tako.sh` runtime entrypoint or a framework preset. Direct Vite dev commands need the `tako.sh/vite` plugin for fd-4 readiness.
 
@@ -369,11 +366,11 @@ If status fails:
 
 ## TLS Or Certificate Issues
 
-Exact public hostnames use HTTP-01 challenges. Wildcard hostnames use Cloudflare DNS-01. Local/private hostnames use self-signed certificates.
+Exact public hostnames use HTTP-01 challenges. Wildcard hostnames use Cloudflare DNS-01. Local and private hostnames use self-signed certificates.
 
 For public exact routes, make sure ports 80 and 443 reach `tako-server`.
 
-For wildcard routes, make sure DNS credentials are configured for the app environment:
+For wildcard routes, make sure DNS credentials are configured:
 
 ```bash
 tako dns configure --env production
@@ -390,12 +387,7 @@ On macOS, `tako dev` sets up the local CA, loopback proxy, and DNS resolver. On 
 
 ## Public Images Fail
 
-The image optimizer fails closed. Public requests require:
-
-- `src`
-- `w`
-- optional `q`
-- optional `f`
+The image optimizer fails closed. Public requests require `src` and `w`; `q` and `f` are optional.
 
 The width must be in `[images].sizes`, quality must be in `[images].qualities`, and format must be in `[images].formats`.
 
