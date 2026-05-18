@@ -135,7 +135,7 @@ Target artifacts are cached under `.tako/artifacts/`. Cache entries are verified
 
 Each release contains `app.json`, the runtime manifest used by `tako-server`. It includes the resolved runtime, entrypoint, package manager, runtime version, non-secret environment variables, JS app root, image optimizer config, idle timeout, and release metadata.
 
-If `runtime_version` is set in `tako.toml`, deploy uses it directly. Otherwise, deploy runs `<runtime> --version` and falls back to `latest`.
+If `runtime` includes `@<version>` in `tako.toml`, deploy uses it directly. Otherwise, deploy runs `<runtime> --version` and falls back to `latest`.
 
 After extraction, `tako-server` runs the runtime plugin's production install command. App build steps run locally, not on the server.
 

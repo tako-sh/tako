@@ -103,7 +103,7 @@ fn resolve_runtime_version_from_workspace_impl(
                 }
                 if emit_warning {
                     crate::output::warning(&format!(
-                        "Could not detect {runtime_tool} version. To pin a version, set runtime_version in tako.toml"
+                        "Could not detect {runtime_tool} version. Pin it with runtime = \"{runtime_tool}@<version>\" in tako.toml"
                     ));
                 }
                 Ok("latest".to_string())
@@ -111,7 +111,7 @@ fn resolve_runtime_version_from_workspace_impl(
             _ => {
                 if emit_warning {
                     crate::output::warning(&format!(
-                        "Could not detect {runtime_tool} version. To pin a version, set runtime_version in tako.toml"
+                        "Could not detect {runtime_tool} version. Pin it with runtime = \"{runtime_tool}@<version>\" in tako.toml"
                     ));
                 }
                 Ok("latest".to_string())

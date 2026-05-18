@@ -371,12 +371,11 @@ fn init_template_pins_runtime_version_when_provided() {
         assets: &[],
         excludes: &[],
     });
-    assert!(rendered.contains("runtime_version = \"1.2.3\""));
-    assert!(!rendered.contains("# runtime_version"));
+    assert!(rendered.contains("runtime = \"bun@1.2.3\""));
 }
 
 #[test]
-fn init_template_comments_runtime_version_when_absent() {
+fn init_template_omits_runtime_pin_when_absent() {
     let rendered = generate_template(&TemplateParams {
         app_name: "demo-app",
         app_root: Some("src"),
@@ -389,8 +388,7 @@ fn init_template_comments_runtime_version_when_absent() {
         assets: &[],
         excludes: &[],
     });
-    assert!(rendered.contains("# runtime_version = \"1.0.0\""));
-    assert!(!rendered.contains("\nruntime_version = \""));
+    assert!(rendered.contains("runtime = \"bun\""));
 }
 
 #[test]

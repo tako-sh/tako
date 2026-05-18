@@ -40,8 +40,7 @@ impl Config {
         // Parse top-level metadata
         let name = parse_optional_string(&raw, "name")?;
         let main = parse_optional_string(&raw, "main")?;
-        let runtime = parse_optional_string(&raw, "runtime")?;
-        let runtime_version = parse_optional_string(&raw, "runtime_version")?;
+        let (runtime, runtime_version_pin) = parse_runtime_spec(&raw)?;
         let package_manager = parse_optional_string(&raw, "package_manager")?;
         let preset = parse_optional_string(&raw, "preset")?;
         let dev = parse_string_array(&raw, "dev")?.unwrap_or_default();
@@ -57,7 +56,7 @@ impl Config {
             name,
             main,
             runtime,
-            runtime_version,
+            runtime_version_pin,
             package_manager,
             preset,
             dev,
@@ -275,6 +274,28 @@ fn parse_optional_string(raw: &toml::Value, key: &str) -> Result<Option<String>>
         .as_str()
         .map(|s| Some(s.to_string()))
         .ok_or_else(|| ConfigError::Validation(format!("'{}' must be a string", key)))
+}
+
+fn parse_runtime_spec(raw: &toml::Value) -> Result<(Option<String>, Option<String>)> {
+    let Some(runtime) = parse_optional_string(raw, "runtime")? else {
+        return Ok((None, None));
+    };
+    let trimmed = runtime.trim();
+    if trimmed.is_empty() {
+        return Ok((Some(String::new()), None));
+    }
+
+    let Some((id, version)) = trimmed.split_once('@') else {
+        return Ok((Some(trimmed.to_string()), None));
+    };
+    let id = id.trim();
+    let version = version.trim();
+    if version.is_empty() {
+        return Err(ConfigError::Validation(
+            "runtime version cannot be empty".to_string(),
+        ));
+    }
+    Ok((Some(id.to_string()), Some(version.to_string())))
 }
 
 fn parse_build_stages(raw: &toml::Value) -> Result<Vec<BuildStage>> {

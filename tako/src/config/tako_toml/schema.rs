@@ -13,8 +13,10 @@ pub struct Config {
     /// Build runtime override used for default preset selection when `preset` is omitted.
     pub runtime: Option<String>,
 
-    /// Pinned runtime version (for example: "1.2.3"). Used by deploy instead of auto-detecting.
-    pub runtime_version: Option<String>,
+    /// Pinned runtime version parsed from `runtime = "<id>@<version>"`.
+    /// Used by deploy instead of auto-detecting.
+    #[serde(default, skip)]
+    pub runtime_version_pin: Option<String>,
 
     /// Package manager override (e.g. "npm", "pnpm", "yarn", "bun").
     /// Auto-detected from package.json `packageManager` field or lockfiles if omitted.

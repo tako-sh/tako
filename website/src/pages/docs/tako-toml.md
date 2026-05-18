@@ -30,8 +30,7 @@ Generated configs stay minimal. Defaults such as `source_ip = "auto"` are not wr
 
 ```toml
 name = "my-app"
-runtime = "bun"
-runtime_version = "1.2.3"
+runtime = "bun@1.2.3"
 package_manager = "pnpm"
 preset = "tanstack-start"
 app_root = "src"
@@ -96,8 +95,7 @@ workers = 2
 | Field             | Type            | Meaning                                                                                                      |
 | ----------------- | --------------- | ------------------------------------------------------------------------------------------------------------ |
 | `name`            | string          | Optional but recommended stable app identity. Defaults to the config file's parent directory name.           |
-| `runtime`         | string          | Optional runtime override: `bun`, `node`, or `go`.                                                           |
-| `runtime_version` | string          | Pinned runtime version for deploy. If omitted, deploy runs `<runtime> --version` and falls back to `latest`. |
+| `runtime`         | string          | Optional runtime override: `bun`, `node`, or `go`. Add `@<version>` to pin deploys, for example `bun@1.2.3`. |
 | `package_manager` | string          | Package manager override for JavaScript runtimes, optionally with a version such as `pnpm@9.1.0`.            |
 | `preset`          | string          | Runtime-local preset alias such as `tanstack-start`, `vite`, or `nextjs`.                                    |
 | `dev`             | string array    | Custom `tako dev` command. Overrides preset and runtime dev defaults.                                        |

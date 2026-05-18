@@ -48,8 +48,7 @@ The config file's parent directory is the app directory (there is no separate `a
 ```toml
 name = "my-app"              # Optional but recommended stable identity used by deploy/dev
 main = "server/index.mjs"   # Optional override; required only when preset does not define `main`
-runtime = "bun"              # Optional override; defaults to detected adapter
-runtime_version = "1.2.3"   # Optional pinned version; auto-detected if omitted
+runtime = "bun@1.2.3"        # Optional override and version pin; defaults to detected adapter/version
 package_manager = "bun"      # Optional override; auto-detected from package.json or lockfiles
 preset = "tanstack-start"   # Optional app preset; provides `main`, `assets`, and `dev` defaults
 app_root = "src"             # Optional JS app root for channels/workflows; default: "src"
@@ -150,8 +149,7 @@ workers = 4
 - If `main` is omitted in `tako.toml`, deploy/dev check the manifest main field (e.g. `package.json` `main`), then fall back to preset `main`.
 - For JS adapters (`bun`, `node`), when preset `main` is `index.<ext>` or `src/index.<ext>` (`ext`: `ts`, `tsx`, `js`, `jsx`), deploy/dev resolve in this order: existing `index.<ext>`, then existing `src/index.<ext>`, then preset `main`.
 - If neither `tako.toml main`, manifest main, nor preset `main` is set, deploy/dev fail with guidance.
-- Top-level `runtime` is optional; when set to `bun`, `node`, or `go`, it overrides adapter detection for default preset selection in `tako deploy`/`tako dev`.
-- Top-level `runtime_version` is optional; when set (e.g. `"1.2.3"`), deploy uses it directly instead of auto-detecting with `<runtime> --version`. `tako init` pins the locally-installed version by default.
+- Top-level `runtime` is optional; when set to `bun`, `node`, or `go`, it overrides adapter detection for default preset selection in `tako deploy`/`tako dev`. Add `@<version>` (for example `bun@1.2.3`) to pin the deploy runtime version. Without a pin, deploy auto-detects with `<runtime> --version`. `tako init` pins the locally-installed version by default.
 - Top-level `package_manager` is optional; when set (e.g. `"npm"`, `"pnpm"`, `"yarn"`, `"bun"`), it overrides auto-detection from `package.json` `packageManager` field or lockfiles.
 - Top-level `preset` is optional. Presets are metadata-only (`name`, `main`, `assets`, `dev`) providing entrypoint, asset, and dev-command defaults. They do not contain build, install, or start commands.
 - Top-level `dev` is optional; when set (e.g. `["vite", "dev"]`), it overrides both preset and runtime default dev commands for `tako dev`.
@@ -219,7 +217,7 @@ workers = 4
 - During `tako deploy`, source files are bundled from source root (`git` root when available, otherwise app directory).
 - Deploy always force-excludes `.git/`, `.tako/`, `.env*`, and `node_modules/` from the deploy archive. Additional exclusions come from `[build].exclude` and `.gitignore`.
 - After extracting the deploy artifact, `tako-server` runs the runtime plugin's production install command (e.g. `bun install --production`) before starting instances.
-- When `runtime_version` is set in `tako.toml`, deploy uses it directly. Otherwise, runtime version resolution runs `<tool> --version` directly, falling back to `latest`.
+- When `runtime` includes `@<version>`, deploy uses that version directly. Otherwise, runtime version resolution runs `<tool> --version` directly, falling back to `latest`.
 - Deploy saves the resolved runtime version into `app.json` (`runtime_version` field).
 - Built target artifacts are cached locally under `.tako/artifacts/` using a deterministic cache key that includes source hash, target label, resolved preset source/commit, build commands, include/exclude patterns, asset roots, and app subdirectory.
 - Cached artifacts are checksum/size verified before reuse; invalid cache entries are automatically discarded and rebuilt.
@@ -474,8 +472,7 @@ Template behavior:
 - Leaves only minimal starter options uncommented:
   - `name`
   - `[envs.production].route`
-  - top-level `runtime`
-  - top-level `runtime_version` (pinned from locally-installed runtime version via `<runtime> --version`)
+  - top-level `runtime` (including a version pin from the locally-installed runtime via `<runtime> --version`)
   - top-level `preset` only when a non-base preset is selected (for base adapter presets and custom mode, it remains commented/unset)
 - Updates `.gitignore` so the app's `.tako/*` stays ignored while `.tako/secrets.json` remains trackable (repo-root `.gitignore` when inside git, app-local `.gitignore` otherwise)
 - Includes commented examples/explanations for supported `tako.toml` options:
@@ -1077,7 +1074,7 @@ Deploy flow helpers:
 - These paths are always force-excluded from the deploy archive: `.git/`, `.tako/`, `.env*`, `node_modules/`. Additional exclusions come from `[build].exclude` and `.gitignore`.
 - Servers receive prebuilt artifacts and do not run app build steps during deploy. After extracting the artifact, `tako-server` runs the runtime plugin's production install command (e.g. `bun install --production`) before starting instances. Production install runs with the release env plus minimal process env (`PATH`, `HOME` when available); it does not inherit arbitrary `tako-server` service environment variables. When `tako-server` is root, production install runs as `tako-app`; if `tako-app` cannot be resolved, install fails instead of running as root.
 - Build logic runs in the build dir against the resolved stage list (precedence: `[[build_stages]]` → `[build]` → runtime default). Each stage runs `install` then `run` in declaration order.
-- Deploy uses `runtime_version` from `tako.toml` when set. Otherwise it resolves runtime version by running `<tool> --version` directly, falling back to `latest`.
+- Deploy uses the version pin from `runtime = "<id>@<version>"` when set. Otherwise it resolves runtime version by running `<tool> --version` directly, falling back to `latest`.
 - Artifact include precedence: in simple build mode, `build.include` -> `**/*`. In multi-stage mode, `**/*` is used (stages control output via `exclude` patterns only).
 - Asset roots are preset `assets` plus top-level `assets` (deduplicated), merged into app `public/` after build with ordered overwrite.
 - Target artifacts are cached locally by deterministic key and reused across deploys when build inputs are unchanged.

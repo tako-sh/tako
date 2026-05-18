@@ -471,8 +471,8 @@ mod init {
         );
         let content = fs::read_to_string(project_dir.join("tako.toml")).unwrap();
         assert!(
-            content.contains("runtime = \"bun\""),
-            "expected bun runtime in tako.toml: {}",
+            content.contains("runtime = \"bun@"),
+            "expected pinned bun runtime in tako.toml: {}",
             content
         );
     }

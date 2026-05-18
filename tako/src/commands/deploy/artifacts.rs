@@ -240,7 +240,7 @@ pub(super) async fn prepare_build_phase(
         &include_patterns,
         &exclude_patterns,
         &asset_roots,
-        tako_config.runtime_version.as_deref(),
+        tako_config.runtime_version_pin.as_deref(),
         manifest.package_manager.as_deref(),
         task_tree.clone(),
     )

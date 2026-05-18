@@ -314,10 +314,10 @@ Common causes:
 - The runtime archive or checksum download exceeds the configured safety limits.
 - The checksum does not match.
 
-Set `runtime_version` in `tako.toml` when you need a specific runtime:
+Pin the runtime in `tako.toml` when you need a specific runtime version:
 
 ```toml
-runtime_version = "1.2.3"
+runtime = "bun@1.2.3"
 ```
 
 ## App Starts But Requests Return 502 Or 504

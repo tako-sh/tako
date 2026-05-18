@@ -534,25 +534,26 @@ runtime = "node"
 "#;
     let config = Config::parse(toml).unwrap();
     assert_eq!(config.runtime, Some("node".to_string()));
+    assert_eq!(config.runtime_version_pin, None);
 }
 
 #[test]
-fn test_parse_runtime_version() {
+fn test_parse_runtime_with_version_pin() {
     let toml = r#"
-runtime = "bun"
-runtime_version = "1.2.3"
+runtime = "bun@1.2.3"
 "#;
     let config = Config::parse(toml).unwrap();
-    assert_eq!(config.runtime_version, Some("1.2.3".to_string()));
+    assert_eq!(config.runtime, Some("bun".to_string()));
+    assert_eq!(config.runtime_version_pin, Some("1.2.3".to_string()));
 }
 
 #[test]
-fn test_parse_runtime_version_defaults_to_none() {
+fn test_parse_runtime_version_pin_defaults_to_none() {
     let toml = r#"
 runtime = "bun"
 "#;
     let config = Config::parse(toml).unwrap();
-    assert!(config.runtime_version.is_none());
+    assert!(config.runtime_version_pin.is_none());
 }
 
 #[test]
@@ -982,6 +983,12 @@ runtime = "python"
         err.to_string()
             .contains("runtime must be one of: bun, node, go")
     );
+
+    let empty_version = r#"
+runtime = "bun@"
+"#;
+    let err = Config::parse(empty_version).unwrap_err();
+    assert!(err.to_string().contains("runtime version cannot be empty"));
 }
 
 #[test]

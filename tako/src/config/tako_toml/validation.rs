@@ -57,6 +57,13 @@ impl Config {
                 ));
             }
         }
+        if let Some(version) = &self.runtime_version_pin
+            && version.trim().is_empty()
+        {
+            return Err(ConfigError::Validation(
+                "runtime version cannot be empty".to_string(),
+            ));
+        }
         for asset_path in &self.assets {
             validate_asset_path(asset_path)?;
         }
@@ -249,7 +256,6 @@ pub(super) fn validate_top_level_keys(raw: &toml::Value) -> Result<()> {
             key.as_str(),
             "name"
                 | "runtime"
-                | "runtime_version"
                 | "package_manager"
                 | "preset"
                 | "dev"

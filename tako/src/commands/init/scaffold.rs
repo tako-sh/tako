@@ -190,15 +190,11 @@ app_root = "{}"
         "# Entrypoint comes from the selected preset default `main`.\n# main = \"index.ts\""
             .to_string()
     };
-    let runtime_line = if let Some(runtime) = runtime {
-        format!("runtime = \"{}\"", runtime)
-    } else {
-        "# runtime = \"bun\"".to_string()
-    };
-    let runtime_version_line = if let Some(version) = runtime_version {
-        format!("runtime_version = \"{}\"", version)
-    } else {
-        "# runtime_version = \"1.0.0\"".to_string()
+    let runtime_line = match (runtime, runtime_version) {
+        (Some(runtime), Some(version)) => format!("runtime = \"{}@{}\"", runtime, version),
+        (Some(runtime), None) => format!("runtime = \"{}\"", runtime),
+        (None, Some(version)) => format!("# runtime = \"bun@{}\"", version),
+        (None, None) => "# runtime = \"bun@1.0.0\"".to_string(),
     };
     let package_manager_line = if let Some(pm) = package_manager {
         format!("package_manager = \"{}\"", pm)
@@ -244,9 +240,8 @@ name = "{app_name}"
 {app_root_block}
 {main_line}
 
-# Build runtime and preset selection for runtime/build lifecycle defaults.
+# Build runtime and optional @version pin for runtime/build lifecycle defaults.
 {runtime_line}
-{runtime_version_line}
 {package_manager_line}
 
 # App preset (provides main + assets defaults).
@@ -307,7 +302,6 @@ route = "{production_route}"
         app_name = app_name,
         main_line = main_line,
         runtime_line = runtime_line,
-        runtime_version_line = runtime_version_line,
         preset_line = preset_line,
         production_route = production_route
     )
