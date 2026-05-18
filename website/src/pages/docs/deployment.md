@@ -273,9 +273,9 @@ tako storages add uploads \
   --expires-at "in 90 days"
 ```
 
-Storage bindings and non-secret provider metadata live in `tako.toml`. S3 credentials are encrypted in `.tako/secrets.json` under the selected environment's `storages` map with optional `expires_at` metadata. R2 uses `provider = "s3"` with the R2 S3-compatible endpoint.
+Storage bindings and non-secret S3 provider metadata live in `tako.toml`. S3 credentials are encrypted in `.tako/secrets.json` under the selected environment's `storages` map with optional `expires_at` metadata. R2 uses `provider = "s3"` with the R2 S3-compatible endpoint. Local storage uses the built-in `local` resource name and does not declare `[storages.local]`.
 
-Deploy fails early if selected S3 credentials are expired, warns if they expire within 30 days, sends runtime bindings over the signed management path, and stores server-side bindings encrypted in SQLite.
+Deploy fails early if selected S3 credentials are expired, warns if they expire within 30 days, rejects local storage on multi-server environments, sends runtime bindings over the signed management path, and stores server-side bindings encrypted in SQLite.
 
 Fresh HTTP instances and workflow workers receive storage bindings through fd 3 alongside secrets.
 

@@ -87,7 +87,7 @@ export function createStorageBag<T = TakoStorages>(
 
   for (const [name, raw] of Object.entries(bindings)) {
     const binding = parseBinding(name, raw);
-    storages.set(name, createStorage(binding, now));
+    storages.set(name, createStorage(name, binding, now));
   }
 
   return new Proxy(Object.create(null) as Record<string, TakoStorage>, {
@@ -113,11 +113,11 @@ export function createStorageBag<T = TakoStorages>(
   }) as TakoStorageBag<T>;
 }
 
-function createStorage(binding: TakoStorageBinding, now: () => Date): TakoStorage {
+function createStorage(name: string, binding: TakoStorageBinding, now: () => Date): TakoStorage {
   return Object.freeze({
     createDownloadUrl(key: string, options: CreateDownloadUrlOptions = {}) {
       if (binding.provider === "local") {
-        return localStorageUrl(binding, "download", key, options.expiresInSeconds, now);
+        return localStorageUrl(name, binding, "GET", key, options.expiresInSeconds, now);
       }
       const publicUrl = publicObjectUrl(binding, key, options.public ?? false);
       if (publicUrl) return Promise.resolve(publicUrl);
@@ -135,7 +135,7 @@ function createStorage(binding: TakoStorageBinding, now: () => Date): TakoStorag
 
     createUploadUrl(key: string, options: CreateUploadUrlOptions = {}) {
       if (binding.provider === "local") {
-        return localStorageUrl(binding, "upload", key, options.expiresInSeconds, now);
+        return localStorageUrl(name, binding, "PUT", key, options.expiresInSeconds, now);
       }
       return presign({
         binding,
@@ -154,7 +154,7 @@ function createStorage(binding: TakoStorageBinding, now: () => Date): TakoStorag
         if (hasImageTransformOptions(imageOptions)) {
           throw new TypeError("local storage image transforms require public storage for now");
         }
-        return localStorageUrl(binding, "download", key, expiresInSeconds, now);
+        return localStorageUrl(name, binding, "GET", key, expiresInSeconds, now);
       }
       const publicUrl = publicObjectUrl(binding, key, usePublic ?? false);
       if (publicUrl) {
@@ -342,8 +342,9 @@ function assertS3Binding(binding: TakoStorageBinding): asserts binding is TakoSt
 }
 
 function localStorageUrl(
+  name: string,
   binding: TakoStorageBinding,
-  operation: "download" | "upload",
+  method: "GET" | "PUT",
   key: string,
   expiresInSeconds: number | undefined,
   now: () => Date,
@@ -355,11 +356,10 @@ function localStorageUrl(
     Math.floor(now().getTime() / 1000) +
     validateExpires(expiresInSeconds ?? DEFAULT_EXPIRES_SECONDS);
   const encodedKey = encodeObjectKey(key);
-  const storagePath = binding.path;
   const signingKey = binding.signing_key;
-  const payload = `${operation}\n${storagePath}\n${encodedKey}\n${expires}`;
+  const payload = `${method}\n${name}\n${encodedKey}\n${expires}`;
   return hmacHex(utf8(signingKey), payload).then((token) => {
-    return `/_tako/storage/${operation}/${encodeURIComponent(storagePath)}/${encodedKey}?expires=${expires}&token=${token}`;
+    return `/_tako/storages/${encodeURIComponent(name)}/${encodedKey}?expires=${expires}&token=${token}`;
   });
 }
 

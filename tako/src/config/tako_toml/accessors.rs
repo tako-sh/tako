@@ -1,4 +1,5 @@
 use super::schema::*;
+use crate::config::BUILTIN_LOCAL_STORAGE_RESOURCE_NAME;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -71,11 +72,14 @@ impl Config {
         env_name: &str,
         resource_name: &str,
     ) -> Option<StorageResourceConfig> {
+        if resource_name == BUILTIN_LOCAL_STORAGE_RESOURCE_NAME {
+            return Some(StorageResourceConfig::local());
+        }
         if let Some(resource) = self.storages.get(resource_name) {
             return Some(resource.clone());
         }
         if env_name == "development" {
-            return Some(StorageResourceConfig::default());
+            return Some(StorageResourceConfig::local());
         }
         None
     }

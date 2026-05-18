@@ -58,7 +58,7 @@ pub struct Config {
     #[serde(default)]
     pub envs: HashMap<String, EnvConfig>,
 
-    /// [storages.*] sections - reusable storage resource configurations.
+    /// [storages.*] sections - reusable S3-compatible storage resource configurations.
     #[serde(default)]
     pub storages: HashMap<String, StorageResourceConfig>,
 
@@ -146,7 +146,8 @@ pub struct EnvConfig {
     /// Storage bindings assigned to this environment.
     ///
     /// Key = app binding name exposed as `tako.storages.<key>`.
-    /// Value = backing storage resource name from `[storages.<value>]`.
+    /// Value = backing storage resource name from `[storages.<value>]`, or
+    /// the built-in `local` resource.
     #[serde(default)]
     pub storages: HashMap<String, String>,
 
@@ -193,8 +194,21 @@ impl Default for StorageResourceConfig {
     }
 }
 
+impl StorageResourceConfig {
+    pub fn local() -> Self {
+        Self {
+            provider: tako_core::StorageProvider::Local,
+            bucket: None,
+            endpoint: None,
+            region: None,
+            force_path_style: false,
+            public_base_url: None,
+        }
+    }
+}
+
 fn default_storage_provider() -> tako_core::StorageProvider {
-    tako_core::StorageProvider::Local
+    tako_core::StorageProvider::S3
 }
 
 pub(super) fn default_idle_timeout() -> u32 {

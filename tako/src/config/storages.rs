@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use super::error::{ConfigError, Result};
 use super::secrets::EncryptedSecretValue;
 
+pub const BUILTIN_LOCAL_STORAGE_RESOURCE_NAME: &str = "local";
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct EncryptedStorageCredentials {

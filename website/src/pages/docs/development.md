@@ -258,7 +258,9 @@ const uploadUrl = await tako.storages.uploads.createUploadUrl("avatars/u_123.png
 });
 ```
 
-Development can reference an undeclared storage resource. Tako treats it as local storage with a Tako-chosen location under the app data directory. If no development bindings exist, `tako generate` falls back to the union of storage names from other environments for type generation.
+Development can reference the built-in `local` resource or any undeclared storage resource. Tako treats either as local storage with a Tako-chosen location under the app data directory. If no development bindings exist, `tako generate` falls back to the union of storage names from other environments for type generation.
+
+Local storage URLs are app-relative signed GET/PUT routes under `/_tako/storages/<binding>/<key>`, so they resolve against whichever development route the client is already using.
 
 ## Images In Dev
 

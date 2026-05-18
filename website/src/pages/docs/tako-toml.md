@@ -311,16 +311,25 @@ force_path_style = false
 public_base_url = "https://cdn.example.com"
 ```
 
-| Field              | Type    | Meaning                                                        |
-| ------------------ | ------- | -------------------------------------------------------------- |
-| `provider`         | string  | `s3` or `local`. Defaults to `local` if omitted in raw config. |
-| `bucket`           | string  | Required for S3.                                               |
-| `endpoint`         | string  | Required HTTPS endpoint for S3-compatible APIs.                |
-| `region`           | string  | Required for S3. Use `auto` for R2.                            |
-| `force_path_style` | boolean | Use path-style bucket URLs instead of virtual-hosted URLs.     |
-| `public_base_url`  | string  | Optional HTTPS public origin/base URL for public object URLs.  |
+| Field              | Type    | Meaning                                                       |
+| ------------------ | ------- | ------------------------------------------------------------- |
+| `provider`         | string  | S3-compatible resource provider. Defaults to `s3`.            |
+| `bucket`           | string  | Required for S3.                                              |
+| `endpoint`         | string  | Required HTTPS endpoint for S3-compatible APIs.               |
+| `region`           | string  | Required for S3. Use `auto` for R2.                           |
+| `force_path_style` | boolean | Use path-style bucket URLs instead of virtual-hosted URLs.    |
+| `public_base_url`  | string  | Optional HTTPS public origin/base URL for public object URLs. |
 
-`local` has no configurable path or credentials. In `development`, an undeclared storage resource defaults to local storage. In deploy environments, every bound resource must be declared.
+Top-level `[storages.<resource>]` tables are for S3-compatible resources. `provider = "local"` is invalid in config.
+
+`local` is the built-in local storage resource name:
+
+```toml
+[envs.production]
+storages = { uploads = "local" }
+```
+
+It has no `[storages.local]` table, configurable path, or credentials. In `development`, an undeclared storage resource also defaults to local storage. In deploy environments, every bound resource must be declared unless it is `local`.
 
 S3 credentials are stored with `tako storages add`, encrypted in `.tako/secrets.json`, and checked for expiry before deploy.
 

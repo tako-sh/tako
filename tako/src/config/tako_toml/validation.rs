@@ -163,7 +163,10 @@ impl Config {
             for (binding_name, resource_name) in &env_config.storages {
                 super::super::validate_storage_name(binding_name)?;
                 super::super::validate_storage_name(resource_name)?;
-                if !is_development && !self.storages.contains_key(resource_name) {
+                if !is_development
+                    && resource_name != super::super::BUILTIN_LOCAL_STORAGE_RESOURCE_NAME
+                    && !self.storages.contains_key(resource_name)
+                {
                     return Err(ConfigError::Validation(format!(
                         "Environment '{}' storage '{}' references missing storage resource '{}'",
                         env_name, binding_name, resource_name
@@ -182,18 +185,18 @@ impl Config {
 }
 
 fn validate_storage_resource(name: &str, resource: &StorageResourceConfig) -> Result<()> {
+    if name == super::super::BUILTIN_LOCAL_STORAGE_RESOURCE_NAME {
+        return Err(ConfigError::Validation(
+            "Storage resource 'local' is built in and cannot be declared; use storages = { <binding> = \"local\" } to select local storage"
+                .to_string(),
+        ));
+    }
+
     match resource.provider {
         tako_core::StorageProvider::Local => {
-            if resource.bucket.is_some()
-                || resource.endpoint.is_some()
-                || resource.region.is_some()
-                || resource.public_base_url.is_some()
-                || resource.force_path_style
-            {
-                return Err(ConfigError::Validation(format!(
-                    "Storage resource '{name}' uses provider 'local' and cannot set S3 fields"
-                )));
-            }
+            return Err(ConfigError::Validation(format!(
+                "Storage resource '{name}' cannot set provider 'local'; use storages = {{ <binding> = \"local\" }} to select built-in local storage"
+            )));
         }
         tako_core::StorageProvider::S3 => {
             validate_required_storage_field(name, "bucket", resource.bucket.as_deref())?;

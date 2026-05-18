@@ -105,7 +105,7 @@ impl Config {
         env: &str,
         binding_name: &str,
         resource_name: &str,
-        resource: &StorageResourceConfig,
+        resource: Option<&StorageResourceConfig>,
     ) -> Result<()> {
         let path = path.as_ref();
         let mut doc = load_or_create_toml_document(path)?;
@@ -113,21 +113,23 @@ impl Config {
             .as_table_mut()
             .ok_or_else(|| ConfigError::Validation("tako.toml must be a TOML table".to_string()))?;
 
-        let storages = root
-            .entry("storages")
-            .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
-            .as_table_mut()
-            .ok_or_else(|| {
-                ConfigError::Validation(
-                    "Invalid [storages] section: expected table structure".to_string(),
-                )
-            })?;
-        storages.insert(
-            resource_name.to_string(),
-            toml::Value::try_from(resource).map_err(|e| {
-                ConfigError::Validation(format!("Failed to encode storage resource: {e}"))
-            })?,
-        );
+        if let Some(resource) = resource {
+            let storages = root
+                .entry("storages")
+                .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+                .as_table_mut()
+                .ok_or_else(|| {
+                    ConfigError::Validation(
+                        "Invalid [storages] section: expected table structure".to_string(),
+                    )
+                })?;
+            storages.insert(
+                resource_name.to_string(),
+                toml::Value::try_from(resource).map_err(|e| {
+                    ConfigError::Validation(format!("Failed to encode storage resource: {e}"))
+                })?,
+            );
+        }
 
         let envs = root
             .entry("envs")

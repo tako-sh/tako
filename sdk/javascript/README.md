@@ -95,7 +95,7 @@ const uploadUrl = await tako.storages.uploads.createUploadUrl("avatars/u_123.png
 });
 ```
 
-Storage URLs are private by default and signed with SigV4. If the storage was attached with `--public-base-url`, `createImageUrl(..., { public: true, width })` returns a public optimizer URL for that object, and `createImageSrcSet(..., { public: true, layout, width })` returns public responsive image sources.
+Storage URLs are private by default. S3-compatible storage uses SigV4; local storage returns signed app-local GET/PUT routes under `/_tako/storages/<binding>/<key>`. If the storage was attached with `--public-base-url`, `createImageUrl(..., { public: true, width })` returns a public optimizer URL for that object, and `createImageSrcSet(..., { public: true, layout, width })` returns public responsive image sources.
 
 ## Channels
 

@@ -5,7 +5,8 @@ use std::path::Path;
 use base64::Engine;
 
 use crate::config::{
-    EncryptedStorageCredentials, StorageResourceConfig, TakoToml, validate_storage_name,
+    BUILTIN_LOCAL_STORAGE_RESOURCE_NAME, EncryptedStorageCredentials, StorageResourceConfig,
+    TakoToml, validate_storage_name,
 };
 use crate::output;
 
@@ -115,23 +116,38 @@ struct StorageAddInput<'a> {
 fn add_storage(input: StorageAddInput<'_>) -> Result<(), Box<dyn std::error::Error>> {
     crate::config::validate_environment_name(&input.env)?;
     validate_storage_name(&input.name)?;
-    let resource_name = input.resource.as_deref().unwrap_or(&input.name);
-    validate_storage_name(resource_name)?;
-
-    if let Some(public_base_url) = &input.public_base_url {
-        validate_endpoint(public_base_url)?;
-    }
-
+    let resource_name;
     let resource = match input.provider {
-        StorageProviderArg::Local => StorageResourceConfig {
-            provider: tako_core::StorageProvider::Local,
-            ..StorageResourceConfig::default()
-        },
+        StorageProviderArg::Local => {
+            if let Some(resource) = input.resource.as_deref()
+                && resource != BUILTIN_LOCAL_STORAGE_RESOURCE_NAME
+            {
+                return Err("Local storage uses the built-in resource name 'local'.".into());
+            }
+            if input.bucket.is_some()
+                || input.endpoint.is_some()
+                || input.region.is_some()
+                || input.access_key_id.is_some()
+                || input.secret_access_key.is_some()
+                || input.expires_at.is_some()
+                || input.force_path_style
+                || input.public_base_url.is_some()
+            {
+                return Err("S3 storage options cannot be used with local storage.".into());
+            }
+            resource_name = BUILTIN_LOCAL_STORAGE_RESOURCE_NAME;
+            None
+        }
         StorageProviderArg::S3 => {
+            resource_name = input.resource.as_deref().unwrap_or(&input.name);
+            validate_storage_name(resource_name)?;
+            if let Some(public_base_url) = &input.public_base_url {
+                validate_endpoint(public_base_url)?;
+            }
             let bucket = required_option(input.bucket, "Bucket")?;
             let endpoint = required_option(input.endpoint, "Endpoint")?;
             validate_endpoint(&endpoint)?;
-            StorageResourceConfig {
+            Some(StorageResourceConfig {
                 provider: tako_core::StorageProvider::S3,
                 bucket: Some(bucket),
                 endpoint: Some(trim_trailing_slash(&endpoint)),
@@ -140,7 +156,7 @@ fn add_storage(input: StorageAddInput<'_>) -> Result<(), Box<dyn std::error::Err
                 public_base_url: input
                     .public_base_url
                     .map(|value| trim_trailing_slash(&value)),
-            }
+            })
         }
     };
 
@@ -149,7 +165,7 @@ fn add_storage(input: StorageAddInput<'_>) -> Result<(), Box<dyn std::error::Err
         &input.env,
         &input.name,
         resource_name,
-        &resource,
+        resource.as_ref(),
     )?;
 
     if matches!(input.provider, StorageProviderArg::S3) {
@@ -307,4 +323,70 @@ fn generate_local_storage_signing_key() -> Result<String, getrandom::Error> {
     let mut bytes = [0_u8; 32];
     getrandom::fill(&mut bytes)?;
     Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn add_local_storage_writes_builtin_local_binding_without_resource_table() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let config_path = temp.path().join("tako.toml");
+        std::fs::write(&config_path, "name = \"demo\"\n").unwrap();
+
+        add_storage(StorageAddInput {
+            project_dir: temp.path(),
+            config_path: &config_path,
+            name: "uploads".to_string(),
+            env: "production".to_string(),
+            resource: None,
+            provider: StorageProviderArg::Local,
+            bucket: None,
+            endpoint: None,
+            region: None,
+            access_key_id: None,
+            secret_access_key: None,
+            expires_at: None,
+            force_path_style: false,
+            public_base_url: None,
+        })
+        .unwrap();
+
+        let contents = std::fs::read_to_string(config_path).unwrap();
+        assert!(contents.contains("[envs.production.storages]"));
+        assert!(contents.contains("uploads = \"local\""));
+        assert!(!contents.contains("[storages.local]"));
+    }
+
+    #[test]
+    fn add_local_storage_rejects_custom_resource_name() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let config_path = temp.path().join("tako.toml");
+        std::fs::write(&config_path, "name = \"demo\"\n").unwrap();
+
+        let err = add_storage(StorageAddInput {
+            project_dir: temp.path(),
+            config_path: &config_path,
+            name: "uploads".to_string(),
+            env: "production".to_string(),
+            resource: Some("cache".to_string()),
+            provider: StorageProviderArg::Local,
+            bucket: None,
+            endpoint: None,
+            region: None,
+            access_key_id: None,
+            secret_access_key: None,
+            expires_at: None,
+            force_path_style: false,
+            public_base_url: None,
+        })
+        .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("Local storage uses the built-in resource name 'local'"),
+            "{err}"
+        );
+    }
 }

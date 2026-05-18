@@ -186,6 +186,24 @@ storages = { uploads = "uploads" }
     }
 
     #[test]
+    fn deploy_validation_allows_implicit_production_local_storage() {
+        let config = TakoToml::parse(
+            r#"
+name = "demo"
+
+[envs.production]
+route = "demo.example.com"
+servers = ["prod-a"]
+storages = { uploads = "local" }
+"#,
+        )
+        .unwrap();
+        let result =
+            validate_storages_for_deployment(&config, &SecretsStore::default(), "production", 1);
+        assert!(!result.has_errors(), "{:?}", result.errors);
+    }
+
+    #[test]
     fn deploy_validation_fails_when_s3_credentials_are_expired() {
         let config = config_with_production_storage();
         let mut secrets = SecretsStore::default();

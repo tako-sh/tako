@@ -191,7 +191,7 @@ For local storage, use:
 tako storages add uploads --env production --provider local
 ```
 
-Local storage has no configurable path or user-provided credentials.
+Local storage uses the built-in `local` resource and writes `storages = { uploads = "local" }`. It has no `[storages.local]` table, configurable path, or user-provided credentials.
 
 ## Wildcard Routes Need DNS
 

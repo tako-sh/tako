@@ -107,9 +107,36 @@ describe("handleTakoEndpoint", () => {
     expect(await download!.text()).toBe("image-bytes");
   });
 
+  test("rejects local storage URLs signed for another method", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "tako-local-storage-"));
+    process.env["TAKO_DATA_DIR"] = dataDir;
+    const localBinding = {
+      provider: "local",
+      path: "storage/uploads",
+      signing_key: "test-signing-key",
+    } as const;
+    injectBootstrap({
+      token: "test-token",
+      secrets: {},
+      storages: { uploads: localBinding },
+    });
+    const storage = createStorageBag({ uploads: localBinding }).uploads;
+    if (!storage) throw new Error("missing local storage");
+
+    const uploadUrl = await storage.createUploadUrl("avatars/u_123.txt");
+    const response = await handleTakoEndpoint(
+      new Request(new URL(uploadUrl, "http://example.com")),
+      mockStatus,
+      channels,
+    );
+
+    expect(response!.status).toBe(403);
+    expect(await response!.json()).toEqual({ error: "Forbidden" });
+  });
+
   test("rejects malformed local storage URLs without throwing", async () => {
     const response = await handleTakoEndpoint(
-      new Request("http://example.com/_tako/storage/download/%E0%A4%A/file.txt"),
+      new Request("http://example.com/_tako/storages/%E0%A4%A/file.txt"),
       mockStatus,
       channels,
     );

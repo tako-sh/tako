@@ -1542,12 +1542,9 @@ region = "us-east-1"
 force_path_style = true
 public_base_url = "https://cdn.example.com/uploads"
 
-[storages.local_cache]
-provider = "local"
-
 [envs.production]
 route = "demo.example.com"
-storages = { uploads = "prod_uploads", cache = "local_cache" }
+storages = { uploads = "prod_uploads", cache = "local" }
 "#,
     )
     .unwrap();
@@ -1559,7 +1556,7 @@ storages = { uploads = "prod_uploads", cache = "local_cache" }
     );
     assert_eq!(
         prod.storages.get("cache").map(String::as_str),
-        Some("local_cache")
+        Some("local")
     );
 
     let uploads = config.storages.get("prod_uploads").unwrap();
@@ -1570,9 +1567,6 @@ storages = { uploads = "prod_uploads", cache = "local_cache" }
         uploads.public_base_url.as_deref(),
         Some("https://cdn.example.com/uploads")
     );
-
-    let local = config.storages.get("local_cache").unwrap();
-    assert_eq!(local.provider, tako_core::StorageProvider::Local);
 }
 
 #[test]
@@ -1594,6 +1588,81 @@ storages = { uploads = "prod_uploads" }
         ),
         "{err}"
     );
+}
+
+#[test]
+fn storage_resources_reject_local_provider() {
+    let err = Config::parse(
+        r#"
+name = "demo"
+
+[storages.cache]
+provider = "local"
+
+[envs.production]
+route = "demo.example.com"
+storages = { cache = "cache" }
+"#,
+    )
+    .unwrap_err();
+
+    assert!(
+        err.to_string()
+            .contains("Storage resource 'cache' cannot set provider 'local'"),
+        "{err}"
+    );
+}
+
+#[test]
+fn storage_resources_reject_builtin_local_resource_table() {
+    let err = Config::parse(
+        r#"
+name = "demo"
+
+[storages.local]
+provider = "s3"
+bucket = "demo-prod-uploads"
+endpoint = "https://s3.example.com"
+region = "us-east-1"
+
+[envs.production]
+route = "demo.example.com"
+storages = { uploads = "local" }
+"#,
+    )
+    .unwrap_err();
+
+    assert!(
+        err.to_string()
+            .contains("Storage resource 'local' is built in and cannot be declared"),
+        "{err}"
+    );
+}
+
+#[test]
+fn non_development_storage_bindings_allow_implicit_local_resource() {
+    let config = Config::parse(
+        r#"
+name = "demo"
+
+[envs.production]
+route = "demo.example.com"
+storages = { uploads = "local" }
+"#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        config
+            .envs
+            .get("production")
+            .unwrap()
+            .storages
+            .get("uploads")
+            .map(String::as_str),
+        Some("local")
+    );
+    assert!(!config.storages.contains_key("local"));
 }
 
 #[test]

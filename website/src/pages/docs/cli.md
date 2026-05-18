@@ -317,7 +317,7 @@ tako storages add uploads \
 | ----------------------------- | ---------------------------------------------------------- | ------------------------------- |
 | `name`                        | App-facing binding name exposed as `tako.storages.<name>`. |
 | `--env <ENV>`                 | Environment to attach storage to. Default `production`.    |
-| `--resource <NAME>`           | Backing resource name. Defaults to the binding name.       |
+| `--resource <NAME>`           | Backing S3 resource name. Defaults to the binding name.    |
 | `--provider <local            | s3>`                                                       | Storage provider. Default `s3`. |
 | `--bucket <BUCKET>`           | Required for S3.                                           |
 | `--endpoint <URL>`            | Required HTTPS S3-compatible endpoint.                     |
@@ -328,7 +328,7 @@ tako storages add uploads \
 | `--force-path-style`          | Use path-style bucket URLs.                                |
 | `--public-base-url <URL>`     | HTTPS public base URL for public object URLs.              |
 
-The command writes binding and non-secret provider metadata to `tako.toml`. S3 credentials are encrypted in `.tako/secrets.json`. Deploy syncs storage bindings; there is no separate storage sync command.
+The command writes binding metadata to `tako.toml`. S3 resources also write non-secret provider metadata and encrypted credentials. Local storage writes the binding to the built-in `local` resource, no `[storages.local]` table, and `--resource` may be omitted or set to `local`. Deploy syncs storage bindings; there is no separate storage sync command.
 
 ## `tako releases`
 

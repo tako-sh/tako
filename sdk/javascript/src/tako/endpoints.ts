@@ -18,7 +18,7 @@ export const TAKO_INTERNAL_CHANNELS_AUTHORIZE_PATH = "/channels/authorize";
 export const TAKO_INTERNAL_CHANNELS_DISPATCH_PATH = "/channels/dispatch";
 export const TAKO_INTERNAL_CHANNELS_REGISTRY_PATH = "/channels/registry";
 export const TAKO_INTERNAL_TOKEN_HEADER = "x-tako-internal-token";
-const TAKO_LOCAL_STORAGE_PREFIX = "/_tako/storage/";
+const TAKO_LOCAL_STORAGE_PREFIX = "/_tako/storages/";
 const LOOPBACK_INTERNAL_HOSTS = new Set(["127.0.0.1", "localhost", "0.0.0.0"]);
 
 function baseAppName(value: string): string {
@@ -232,11 +232,11 @@ async function handleLocalStorageRequest(request: Request, url: URL): Promise<Re
   if (!route) {
     return storageJson({ error: "Not found" }, 404);
   }
-  if (request.method !== (route.operation === "download" ? "GET" : "PUT")) {
+  if (request.method !== "GET" && request.method !== "PUT") {
     return storageJson({ error: "Method not allowed" }, 405);
   }
 
-  const binding = localStorageBinding(route.storagePath);
+  const binding = localStorageBinding(route.bindingName);
   if (!binding) {
     return storageJson({ error: "Not found" }, 404);
   }
@@ -247,7 +247,7 @@ async function handleLocalStorageRequest(request: Request, url: URL): Promise<Re
     return storageJson({ error: "Forbidden" }, 403);
   }
 
-  const payload = `${route.operation}\n${route.storagePath}\n${route.encodedKey}\n${expires}`;
+  const payload = `${request.method}\n${route.bindingName}\n${route.encodedKey}\n${expires}`;
   const expectedToken = await hmacHex(utf8(binding.signingKey), payload);
   if (!constantTimeEqual(token, expectedToken)) {
     return storageJson({ error: "Forbidden" }, 403);
@@ -260,13 +260,13 @@ async function handleLocalStorageRequest(request: Request, url: URL): Promise<Re
 
   const path = await import("node:path");
   const fs = await import("node:fs/promises");
-  const root = path.resolve(dataDir, route.storagePath);
+  const root = path.resolve(dataDir, binding.storagePath);
   const target = path.resolve(root, ...route.keySegments);
   if (target !== root && !target.startsWith(root + path.sep)) {
     return storageJson({ error: "Invalid key" }, 400);
   }
 
-  if (route.operation === "upload") {
+  if (request.method === "PUT") {
     await fs.mkdir(path.dirname(target), { recursive: true });
     await fs.writeFile(target, Buffer.from(await request.arrayBuffer()));
     return new Response(null, { status: 204 });
@@ -288,29 +288,24 @@ async function handleLocalStorageRequest(request: Request, url: URL): Promise<Re
 
 function parseLocalStorageRoute(pathname: string):
   | {
-      operation: "download" | "upload";
-      storagePath: string;
+      bindingName: string;
       encodedKey: string;
       keySegments: string[];
     }
   | "invalid"
   | null {
   const rest = pathname.slice(TAKO_LOCAL_STORAGE_PREFIX.length);
-  const [operation, encodedStoragePath, ...encodedKeySegments] = rest.split("/");
-  if (operation !== "download" && operation !== "upload") {
+  const [encodedBindingName, ...encodedKeySegments] = rest.split("/");
+  if (!encodedBindingName || encodedKeySegments.length === 0) {
     return null;
   }
-  if (!encodedStoragePath || encodedKeySegments.length === 0) {
-    return null;
-  }
-  const storagePath = safeDecodeURIComponent(encodedStoragePath);
+  const bindingName = safeDecodeURIComponent(encodedBindingName);
   const keySegments = encodedKeySegments.map(safeDecodeURIComponent);
-  if (storagePath === null || !keySegments.every(isString)) {
+  if (bindingName === null || !keySegments.every(isString)) {
     return "invalid";
   }
   return {
-    operation,
-    storagePath,
+    bindingName,
     encodedKey: encodedKeySegments.join("/"),
     keySegments,
   };
@@ -328,20 +323,22 @@ function safeDecodeURIComponent(value: string): string | null {
   }
 }
 
-function localStorageBinding(storagePath: string): { signingKey: string } | null {
-  for (const raw of Object.values(getStorageBindings())) {
-    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-      continue;
-    }
-    const binding = raw as { provider?: unknown; path?: unknown; signing_key?: unknown };
-    if (
-      binding.provider === "local" &&
-      binding.path === storagePath &&
-      typeof binding.signing_key === "string" &&
-      binding.signing_key.length > 0
-    ) {
-      return { signingKey: binding.signing_key };
-    }
+function localStorageBinding(
+  bindingName: string,
+): { storagePath: string; signingKey: string } | null {
+  const raw = getStorageBindings()[bindingName];
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return null;
+  }
+  const binding = raw as { provider?: unknown; path?: unknown; signing_key?: unknown };
+  if (
+    binding.provider === "local" &&
+    typeof binding.path === "string" &&
+    binding.path.length > 0 &&
+    typeof binding.signing_key === "string" &&
+    binding.signing_key.length > 0
+  ) {
+    return { storagePath: binding.path, signingKey: binding.signing_key };
   }
   return null;
 }

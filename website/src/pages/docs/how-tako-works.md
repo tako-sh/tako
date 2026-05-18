@@ -73,7 +73,7 @@ servers = ["prod-a"]
 
 The proxy selects the most specific matching host and path. Static files are served directly from the deployed `public/` directory when possible, then unmatched paths are proxied to the app. Unknown hosts return `404`.
 
-The `/_tako/*` path space is reserved after a route match. Tako uses it for channels and public image optimization.
+The `/_tako/*` path space is reserved after a route match. Tako uses it for channels, public image optimization, and signed local storage routes.
 
 ## TLS
 
@@ -138,7 +138,7 @@ Project secrets are encrypted in `.tako/secrets.json`. Each environment has a ke
 
 Secrets and storage bindings are stored encrypted in server SQLite and delivered to app and worker processes through fd 3 at spawn time. They are not inherited through process environment variables.
 
-Storage bindings are declared in `tako.toml` and exposed to JavaScript apps as `tako.storages.<name>`. S3-compatible credentials are encrypted in `.tako/secrets.json`; local storage has no user-provided credentials.
+Storage bindings are declared in `tako.toml` and exposed to JavaScript apps as `tako.storages.<name>`. S3-compatible credentials are encrypted in `.tako/secrets.json`; the built-in `local` resource has no user-provided credentials and serves signed app-local URLs under `/_tako/storages/<binding>/<key>`.
 
 ## Workflows And Channels
 

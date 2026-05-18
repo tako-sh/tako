@@ -142,7 +142,7 @@ describe("storage URLs", () => {
     const url = await uploads.createUploadUrl("avatars/u_123.png");
     const parsed = new URL(url, "https://app.test");
 
-    expect(parsed.pathname).toBe("/_tako/storage/upload/storage%2Fuploads/avatars/u_123.png");
+    expect(parsed.pathname).toBe("/_tako/storages/uploads/avatars/u_123.png");
     expect(parsed.searchParams.get("expires")).toBe(
       String(Math.floor(fixedClock().getTime() / 1000) + 3600),
     );

@@ -188,11 +188,11 @@ workers = 4
 - Runtime behavior (install commands, launch args, entrypoint resolution) lives in runtime plugins (`tako-runtime/src/plugins/`), not in presets.
 - `tako init` installs the `tako.sh` SDK via the selected runtime's package-manager `add` command.
 - Server membership is declared per environment with `[envs.<name>].servers`.
-- Storage bindings are declared per environment with `[envs.<name>].storages = { app_name = "resource_name" }`. The key is the stable app-facing binding exposed as `tako.storages.<app_name>`; the value references a top-level `[storages.<resource_name>]` resource.
+- Storage bindings are declared per environment with `[envs.<name>].storages = { app_name = "resource_name" }`. The key is the stable app-facing binding exposed as `tako.storages.<app_name>`; the value references a top-level `[storages.<resource_name>]` S3 resource or the built-in `local` resource.
 - Wildcard certificate DNS credentials are stored per environment in `.tako/secrets.json` by `tako dns configure --env <name>`. Cloudflare is the only supported DNS-01 provider. No DNS provider defaults are written to `tako.toml`. Deploy rejects expired app secrets, storage credentials, and DNS credentials before build/deploy work starts, and warns when any of them expire within 30 days.
 - Client source-IP handling is per environment through optional `source_ip` under `[envs.<name>]`. Omitted means automatic Cloudflare detection, then explicitly configured trusted proxy headers, then direct peer fallback.
-- Top-level `[storages.<resource>]` config contains non-secret storage metadata. Supported providers are `s3` and `local`. `s3` requires `bucket`, `endpoint`, and `region`; `endpoint` and optional `public_base_url` must use HTTPS. `local` has no configurable path; Tako stores objects under the app data directory using a Tako-chosen layout.
-- In `development`, a storage binding may reference a resource that is not declared under `[storages]`; it defaults to local storage. In deploy environments, every bound resource must be declared. Explicit `provider = "local"` may be used outside development only for single-server deployments.
+- Top-level `[storages.<resource>]` config contains non-secret S3-compatible storage metadata. `provider` defaults to `s3`; `provider = "local"` is invalid in config. S3 resources require `bucket`, `endpoint`, and `region`; `endpoint` and optional `public_base_url` must use HTTPS.
+- `local` is a built-in storage resource name, not a top-level `[storages.local]` table. Bind an app storage to it with `storages = { uploads = "local" }`. In `development`, a storage binding may also reference any undeclared resource name and it defaults to local storage. In deploy environments, every bound resource must be declared unless the resource name is `local`; local storage can deploy only to single-server environments.
 - The same server name may be assigned to multiple non-development environments in one project. Each environment deploys to its own server-side app identity and filesystem path under `/opt/tako/apps/{app}/{env}`.
 - `development` is for `tako dev`; `servers` declared there are ignored by deploy validation.
 - Deployed app instances bind to `127.0.0.1` on an OS-assigned port. The SDK signals readiness to `tako-server` by writing the bound port to fd 4 (file descriptor 4) once listening. The server then routes traffic to that loopback endpoint.
@@ -365,7 +365,7 @@ region = "auto"
 public_base_url = "https://cdn.example.com/uploads"
 ```
 
-Storage binding and resource names may contain lowercase letters, numbers, hyphens, and underscores. For S3 resources, `tako storages add` prompts for access credentials and optionally when they expire; `--expires-at` can provide the expiry directly. Deploy fails before build/deploy work starts if the selected environment's S3 credentials are expired and warns when they expire within 30 days. When credentials are current or expiry is unknown, deploy decrypts them locally, combines them with the selected `tako.toml` resource metadata, sends the runtime bindings over the signed management path, and `tako-server` stores the resulting bindings encrypted in server SQLite. Fresh app and worker processes receive bindings through the fd 3 bootstrap envelope as `storages`.
+Storage binding and S3 resource names may contain lowercase letters, numbers, hyphens, and underscores. The resource name `local` is built in and must not be declared under `[storages]`; bind to it directly with `storages = { uploads = "local" }`. For S3 resources, `tako storages add` prompts for access credentials and optionally when they expire; `--expires-at` can provide the expiry directly. Deploy fails before build/deploy work starts if the selected environment's S3 credentials are expired and warns when they expire within 30 days. When credentials are current or expiry is unknown, deploy decrypts them locally, combines them with the selected `tako.toml` resource metadata, sends the runtime bindings over the signed management path, and `tako-server` stores the resulting bindings encrypted in server SQLite. Fresh app and worker processes receive bindings through the fd 3 bootstrap envelope as `storages`.
 
 ### DNS Configuration And Credentials
 
@@ -971,7 +971,7 @@ tako storages add uploads \
 Options:
 
 - `--env {environment}` defaults to `production`.
-- `--resource {name}` sets the backing storage resource name. It defaults to the binding name.
+- `--resource {name}` sets the backing S3 resource name. It defaults to the binding name for `s3`; for `local`, omit it or set it to `local`.
 - `--provider {s3|local}` defaults to `s3`.
 - `--bucket {bucket}` is required for `s3`.
 - `--endpoint {https-url}` is required for `s3`. R2 is configured as `provider = "s3"` with the R2 S3-compatible endpoint.
@@ -981,7 +981,7 @@ Options:
 - `--force-path-style` signs path-style object URLs instead of virtual-hosted bucket URLs for `s3`.
 - `--public-base-url {https-url}` enables public object URLs for helpers that request `public: true` on `s3` bindings.
 
-The command writes the environment binding and resource metadata to `tako.toml`. For `s3`, it writes encrypted credentials plus optional `expires_at` metadata to `.tako/secrets.json` under the selected environment's `storages` map. For `local`, it writes only config metadata; local storage has no user-configured path or credentials. Deploy validates that every non-development storage binding references a declared resource, that S3 resources have unexpired credentials when expiry is known, warns when S3 credentials expire within 30 days, and checks that credentials do not exist for unbound resources. There is no separate storage sync command.
+The command writes the environment binding to `tako.toml`. For `s3`, it also writes top-level resource metadata and encrypted credentials plus optional `expires_at` metadata to `.tako/secrets.json` under the selected environment's `storages` map. For `local`, it writes the binding to the built-in `local` resource and no `[storages.local]` table; local storage has no user-configured path or credentials. Deploy validates that every non-development storage binding references either a declared S3 resource or the built-in `local` resource, that S3 resources have unexpired credentials when expiry is known, warns when S3 credentials expire within 30 days, checks that credentials do not exist for unbound resources, and rejects local storage on multi-server deploy environments. There is no separate storage sync command.
 
 ### tako deploy [--env {environment}] [--yes|-y]
 
@@ -1362,7 +1362,7 @@ Reference scripts in this repo:
 - Maximum HTTP request body size: 128 MiB; larger requests receive `413`.
 - Maximum channel WebSocket frame payload size: 128 MiB; larger frames are rejected and the socket closes.
 - Production browser-facing `tako-server` 5xx responses use generic reason-phrase bodies such as `Internal Server Error`, `Bad Gateway`, `Service Unavailable`, or `Gateway Timeout`; detailed app-scoped startup, proxy, channel storage, and static file diagnostics are recorded in the app log stream instead of returned in response bodies.
-- After a request matches an app route, `/_tako/*` is reserved for Tako-owned public endpoints. `/_tako/channels/<name>` serves durable channels. `/_tako/image` serves public optimized images. Other request paths are served as static assets when a matching file exists in `public/`, then proxied to the app.
+- After a request matches an app route, `/_tako/*` is reserved for Tako-owned public endpoints. `/_tako/channels/<name>` serves durable channels, `/_tako/image` serves public optimized images, and `/_tako/storages/<binding>/<key>` serves signed local storage GET/PUT requests. Other request paths are served as static assets when a matching file exists in `public/`, then proxied to the app.
 
 **Public image optimization:**
 
@@ -1380,8 +1380,8 @@ Reference scripts in this repo:
 **Object storage runtime bindings:**
 
 - Storage bindings are configured with `tako storages add` or `[envs.<env>].storages` in `tako.toml` and delivered to JavaScript apps on `tako.storages.<name>`. `tako generate` augments the `TakoStorages` interface from `tako.toml`; development names are preferred when present, otherwise generation uses the union of all environments.
-- `await tako.storages.uploads.createDownloadUrl(key, options?)` creates a private signed `GET` URL. For `s3`, it uses SigV4. For `local`, it returns a signed app-local `/_tako/storage/download/...` URL served from the app data directory. `expiresInSeconds` defaults to `3600` and is capped at `604800`. Download options may set S3 response content type/disposition overrides. Passing `public: true` returns `public_base_url + key` when an `s3` binding has a `public_base_url`.
-- `await tako.storages.uploads.createUploadUrl(key, options?)` creates a private signed `PUT` URL. For `s3`, `contentType` signs the `content-type` header, so upload clients must send the same header. For `local`, the SDK returns a signed app-local upload route.
+- `await tako.storages.uploads.createDownloadUrl(key, options?)` creates a private signed `GET` URL. For `s3`, it uses SigV4. For `local`, it returns a signed app-local `/_tako/storages/uploads/<key>` URL served from the app data directory. `expiresInSeconds` defaults to `3600` and is capped at `604800`. Download options may set S3 response content type/disposition overrides. Passing `public: true` returns `public_base_url + key` when an `s3` binding has a `public_base_url`.
+- `await tako.storages.uploads.createUploadUrl(key, options?)` creates a private signed `PUT` URL. For `s3`, `contentType` signs the `content-type` header, so upload clients must send the same header. For `local`, the SDK returns the same app-local object route and signs the `PUT` method into the token.
 - `await tako.storages.uploads.createImageUrl(key, imageOptions?)` returns a private signed object URL when no image transform options are supplied. With `{ public: true }` and an `s3` storage `public_base_url`, it returns the public optimizer URL for that object. Private storage image transforms are a separate feature; for now transform options without public storage access fail with guidance to use `createDownloadUrl`.
 - `await tako.storages.uploads.createImageSrcSet(key, imageSrcSetOptions)` returns public responsive image sources for a storage object when called with `{ public: true }` and the binding has `public_base_url`. Private storage image srcsets are a separate feature; for now they fail with guidance to use `createDownloadUrl`.
 - Object keys must be non-empty relative keys and cannot start with `/`. S3-compatible endpoints must use HTTPS. R2 is configured as `provider = "s3"` with the R2 endpoint and usually `region = "auto"`.
