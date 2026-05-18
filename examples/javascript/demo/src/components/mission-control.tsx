@@ -23,7 +23,7 @@ const RESOURCES: { label: string; icon: React.ReactNode }[] = [
 ];
 
 type Props = {
-  tenantSlug: string;
+  baseSlug: string;
   rootOrigin: string;
   baseVisual: PlanetBase | null;
   inFlight: InFlightRequest[];
@@ -35,7 +35,7 @@ type Props = {
 };
 
 export function MissionControl({
-  tenantSlug,
+  baseSlug,
   rootOrigin,
   baseVisual,
   inFlight,
@@ -45,7 +45,7 @@ export function MissionControl({
   submitError,
   onSubmit,
 }: Props) {
-  const baseName = formatBaseName(tenantSlug);
+  const baseName = formatBaseName(baseSlug);
 
   return (
     <div
@@ -73,14 +73,14 @@ export function MissionControl({
               md:p-6 lg:overflow-y-auto xl:p-8
             "
           >
-            <TenantHeader baseName={baseName} baseVisual={baseVisual} requests={inFlight} />
+            <BaseHeader baseName={baseName} baseVisual={baseVisual} requests={inFlight} />
             {submitError ? (
               <Alert variant="destructive">
                 <WarningIcon />
                 <AlertDescription>{submitError}</AlertDescription>
               </Alert>
             ) : null}
-            <RequestForm tenantSlug={tenantSlug} submitting={submitting} onSubmit={onSubmit} />
+            <RequestForm baseSlug={baseSlug} submitting={submitting} onSubmit={onSubmit} />
             <InFlightFeed requests={inFlight} />
           </div>
           <MissionLog events={events} connected={connected} />
@@ -90,7 +90,7 @@ export function MissionControl({
   );
 }
 
-function TenantHeader({
+function BaseHeader({
   baseName,
   baseVisual,
   requests,
@@ -161,9 +161,9 @@ function TenantHeader({
             "
           >
             <Info
-              label="multi-tenancy"
-              description="Every subdomain is an isolated tenant of this app. Tako routes wildcard hosts to the same process and exposes the tenant via the Host header."
-              sourcePath="tako.toml"
+              label="persistent state"
+              description="Requests are stored in SQLite under Tako's data directory, so each base reloads with its recent shipment history."
+              sourcePath="src/server/db.ts"
             />
           </div>
         </div>

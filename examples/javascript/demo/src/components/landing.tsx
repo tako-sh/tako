@@ -18,11 +18,11 @@ import { TopAppBar } from "./top-app-bar";
 const TAKO_URL = "https://tako.sh";
 
 type Props = {
-  rootHost: string;
+  rootOrigin: string;
   bases: PlanetBase[];
 };
 
-export function Landing({ rootHost, bases }: Props) {
+export function Landing({ rootOrigin, bases }: Props) {
   const [baseName, setBaseName] = useState("");
   const [error, setError] = useState<string | null>(null);
 
@@ -33,7 +33,7 @@ export function Landing({ rootHost, bases }: Props) {
       setError("Enter a base name using letters, numbers, or hyphens");
       return;
     }
-    redirectToBase(slug, rootHost);
+    redirectToBase(slug);
   }
 
   return (
@@ -71,9 +71,9 @@ export function Landing({ rootHost, bases }: Props) {
               Planetary <span className="text-primary">Supply Desk</span>
             </h1>
             <p className="mb-10 max-w-xl text-base/relaxed text-muted-foreground">
-              Dispatch supplies to an off-world base. Each base is an isolated Tako tenant — spin
-              one up by name, submit a supply request, and watch a five-step durable workflow run
-              with a live mission log on the side.
+              Dispatch supplies to an off-world base. Each base gets its own mission route — pick
+              one, submit a supply request, and watch a five-step durable workflow run with a live
+              mission log on the side.
             </p>
 
             <form onSubmit={handleSubmit} className="mb-10">
@@ -96,10 +96,19 @@ export function Landing({ rootHost, bases }: Props) {
                     >
                       <span
                         className="
-                          shrink-0 font-mono text-sm text-muted-foreground
+                          hidden shrink-0 font-mono text-xs text-muted-foreground
+                          sm:inline
                         "
                       >
-                        //
+                        {rootOrigin}/bases/
+                      </span>
+                      <span
+                        className="
+                          shrink-0 font-mono text-sm text-muted-foreground
+                          sm:hidden
+                        "
+                      >
+                        /bases/
                       </span>
                       <Input
                         id="base-name"
@@ -118,14 +127,6 @@ export function Landing({ rootHost, bases }: Props) {
                           focus-visible:border-transparent focus-visible:ring-0
                         "
                       />
-                      <span
-                        className="
-                          hidden shrink-0 font-mono text-xs text-muted-foreground
-                          sm:inline
-                        "
-                      >
-                        .{rootHost}
-                      </span>
                     </div>
                     <Button
                       type="submit"
@@ -158,9 +159,9 @@ export function Landing({ rootHost, bases }: Props) {
             >
               <Feature
                 icon={<StackIcon className="size-4" aria-hidden="true" />}
-                label="Multi-tenancy"
-                body="Every subdomain is an isolated tenant. Tako routes wildcard hosts to one app and exposes the tenant via Host."
-                sourcePath="tako.toml"
+                label="Scheduled cleanup"
+                body="A daily workflow prunes old demo records, keeping the public app tidy without a separate cron service."
+                sourcePath="src/workflows/cleanup.ts"
               />
               <Feature
                 icon={<NetworkIcon className="size-4" aria-hidden="true" />}
@@ -201,7 +202,6 @@ export function Landing({ rootHost, bases }: Props) {
                   <BaseButton
                     key={base.slug}
                     base={base}
-                    rootHost={rootHost}
                     loading={index === 0 ? "eager" : "lazy"}
                   />
                 ))}
@@ -257,19 +257,11 @@ export function Landing({ rootHost, bases }: Props) {
   );
 }
 
-function BaseButton({
-  base,
-  rootHost,
-  loading,
-}: {
-  base: PlanetBase;
-  rootHost: string;
-  loading: "eager" | "lazy";
-}) {
+function BaseButton({ base, loading }: { base: PlanetBase; loading: "eager" | "lazy" }) {
   return (
     <button
       type="button"
-      onClick={() => redirectToBase(base.slug, rootHost)}
+      onClick={() => redirectToBase(base.slug)}
       className="
         group relative aspect-video overflow-hidden border border-border
         bg-muted text-left transition-colors outline-none
@@ -375,15 +367,14 @@ function normalizeBaseName(raw: string): string | null {
     .trim()
     .toLowerCase()
     .replace(/\s+/g, "-")
-    .replace(/[^a-z0-9-]/g, "");
-  if (!cleaned || cleaned.length > 63) return null;
-  if (cleaned.startsWith("-") || cleaned.endsWith("-")) return null;
+    .replace(/[^a-z0-9-]/g, "")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  if (!cleaned || cleaned.length > 64) return null;
   return cleaned;
 }
 
-function redirectToBase(slug: string, rootHost: string): void {
+function redirectToBase(slug: string): void {
   if (typeof window === "undefined") return;
-  const port = window.location.port ? `:${window.location.port}` : "";
-  const protocol = window.location.protocol;
-  window.location.href = `${protocol}//${slug}.${rootHost}${port}/`;
+  window.location.href = `/bases/${slug}`;
 }

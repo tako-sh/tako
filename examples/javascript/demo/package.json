@@ -4,8 +4,8 @@
   "type": "module",
   "sideEffects": false,
   "scripts": {
-    "dev": "vite dev",
-    "build": "bunx --bun vite build && tsc --noEmit",
+    "dev": "bunx --bun vite dev",
+    "build": "bunx --bun vite build --configLoader runner && tsc --noEmit",
     "test": "bun test tests"
   },
   "dependencies": {

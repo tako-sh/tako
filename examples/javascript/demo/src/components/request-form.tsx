@@ -5,7 +5,7 @@ import { Info } from "./info";
 import { formatBaseName } from "./types";
 
 type Props = {
-  tenantSlug: string;
+  baseSlug: string;
   submitting: boolean;
   onSubmit: (payload: { item: string }) => void;
 };
@@ -17,7 +17,7 @@ const ITEMS: { label: string; icon: React.ReactNode }[] = [
   { label: "Hydroponics", icon: <PlantIcon data-icon="inline-start" /> },
 ];
 
-export function RequestForm({ tenantSlug, submitting, onSubmit }: Props) {
+export function RequestForm({ baseSlug, submitting, onSubmit }: Props) {
   return (
     <Card>
       <CardHeader
@@ -35,7 +35,7 @@ export function RequestForm({ tenantSlug, submitting, onSubmit }: Props) {
             mt-1 font-mono text-xs tracking-wider uppercase
           "
           >
-            Sector: {formatBaseName(tenantSlug)}
+            Sector: {formatBaseName(baseSlug)}
           </CardDescription>
         </div>
         <div className="md:max-w-xs">

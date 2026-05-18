@@ -1,7 +1,7 @@
 import { Resvg } from "@resvg/resvg-js";
 import satori from "satori";
 
-import { prettifyTenantSlug, sanitizeTenantSlug } from "@/lib/host";
+import { prettifyBaseSlug, sanitizeBaseSlug } from "@/lib/host";
 
 const OXANIUM_WEIGHT = 700;
 const PLEX_MONO_WEIGHT = 500;
@@ -43,16 +43,16 @@ function titleFontSize(title: string): number {
 }
 
 export interface OgInput {
-  tenantSlug: string | null;
+  baseSlug: string | null;
 }
 
-export async function renderOgPng({ tenantSlug }: OgInput): Promise<Uint8Array> {
+export async function renderOgPng({ baseSlug }: OgInput): Promise<Uint8Array> {
   const { oxanium, plexMono } = await loadFonts();
 
-  const slug = tenantSlug !== null ? sanitizeTenantSlug(tenantSlug) : null;
-  const headline = slug ? prettifyTenantSlug(slug) : "Planetary Supply Desk";
-  const eyebrow = slug ? "Planetary Supply Desk" : "A multi-tenant Tako demo";
-  const footer = slug ? `${slug}.demo.tako.sh` : "demo.tako.sh";
+  const slug = baseSlug !== null ? sanitizeBaseSlug(baseSlug) : null;
+  const headline = slug ? prettifyBaseSlug(slug) : "Planetary Supply Desk";
+  const eyebrow = slug ? "Planetary Supply Desk" : "A Tako workflow demo";
+  const footer = slug ? `demo.tako.sh/bases/${slug}` : "demo.tako.sh";
   const statusLine = slug ? "online · mission control" : "";
 
   const svg = await satori(

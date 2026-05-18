@@ -1,8 +1,8 @@
 # Planetary Supply Desk — Tako demo
 
-A TanStack Start demo app that doubles as a live tour of Tako's primitives: **multi-tenancy**, **durable workflows**, **channels**, and **image optimization**.
+A TanStack Start demo app that doubles as a live tour of Tako's primitives: **base-scoped routing**, **durable workflows**, **channels**, and **image optimization**.
 
-Each planet base is an isolated tenant (wildcard subdomain). Submitting a supply request enqueues a five-step sequential workflow (check → pack → load → ship → deliver) where the late steps occasionally throw and Tako retries them via `ctx.run`'s `retries` option. Every step publishes to the `mission-log` channel, so the right-rail log streams live to every connected client. Base artwork lives in `public/images/`; the route loader uses `imageUrl()` so Tako serves resized, cached images from `/_tako/image`. A daily cron workflow deletes demo database records older than three days.
+Each planet base has a mission page under `/bases/<base>`. Submitting a supply request enqueues a five-step sequential workflow (check → pack → load → ship → deliver) where the late steps occasionally throw and Tako retries them via `ctx.run`'s `retries` option. Every step publishes to the `mission-log` channel, so the right-rail log streams live to every connected client. Base artwork lives in `public/images/`; production builds use `imageUrl()` so Tako serves resized, cached images from `/_tako/image`. A daily cron workflow deletes demo database records older than three days.
 
 Live at [demo.tako.sh](https://demo.tako.sh).
 
@@ -14,7 +14,7 @@ bun install
 bun run dev
 ```
 
-This mode works without a Tako runtime. It uses an in-process simulator that publishes mission-log events on the same cadence as the real workflow, so you can try the UI in plain Vite. Image optimization is a Tako runtime feature, so this mode serves the source artwork directly.
+This mode works without a Tako runtime for route and UI checks. Workflow enqueueing and live channels require `tako dev`. Image optimization is a Tako runtime feature, so Vite dev serves the source artwork directly.
 
 ## Run With Tako Dev Flow
 
@@ -25,7 +25,7 @@ cd examples/javascript/demo
 tako dev
 ```
 
-Use this mode for the real Tako path: workflows are enqueued through the internal socket, events flow through the actual `mission-log` channel, and base artwork is served through the AVIF image service.
+Use this mode for the real Tako path: workflows are enqueued through the internal socket and events flow through the actual `mission-log` channel. Vite dev serves source artwork directly; production serves optimized images.
 
 Import demo development secrets:
 
@@ -50,23 +50,26 @@ bun test
 ## Notes
 
 - `tako.toml` sets `preset = "tanstack-start"` with `runtime = "bun"`.
-- Plain `bun run dev` uses an in-process simulator for the workflow.
+- Plain `bun run dev` is UI-only for mission routes; use `tako dev` to exercise channels and workflows.
 - `tako dev` uses real Tako channels + workflows.
 - The cleanup cron workflow runs daily and removes supply requests older than three days plus empty stale bases.
-- Tenant is detected server-side from the `Host` header — no env var needed.
-  - `valles-hub.demo.tako.sh` → tenant `valles-hub` (Mission Control view)
-  - `demo.tako.sh` → no tenant (Landing view with base-name input)
-- Development routes: `demo.test`, `*.demo.test`
-- Production routes: `demo.tako.sh`, `*.demo.tako.sh`
+- Base context is read server-side from the `/bases/<base>` route — no env var needed.
+  - `demo.tako.sh/bases/valles-hub` → base `valles-hub` (Mission Control view)
+  - `demo.tako.sh` → landing view with base-name input
+- Development route: `demo.test`
+- Production route: `demo.tako.sh`
 
 ## Files of interest
 
 - `src/workflows/order-shipment.ts` — five-step sequential workflow with `ctx.run` retries
 - `src/workflows/cleanup.ts` — daily scheduled cleanup for old demo DB rows
 - `src/channels/mission-log.ts` — pub/sub channel for live events
-- `src/routes/index.tsx` — route glue, server loader, image URL signing, local-mode simulator
+- `src/routes/index.tsx` — landing route, server loader, image URL signing
+- `src/routes/` — landing, base mission-control, and OG routes
+- `src/components/mission-controller.tsx` — workflow enqueueing and live channel state
 - `src/server/db.ts` — SQLite persistence and retention cleanup
 - `src/lib/bases.ts` — planet base catalog and source image paths
+- `src/lib/images.ts` — Tako image URLs with a plain-Vite source-image fallback
 - `public/images/` — generated source artwork for the base previews
 - `src/components/` — all UI components (MissionControl, Landing, Sidebar, etc.)
 - `src/styles/app.css` — Tailwind v4 `@theme` with the Obsidian Observatory palette
