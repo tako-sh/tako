@@ -193,7 +193,7 @@ jobs:
     name: CLI Tests (macOS)
     needs: [build-darwin]
     if: github.event_name == 'push'
-    runs-on: macos-latest
+    runs-on: macos-15
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -447,7 +447,7 @@ jobs:
       matrix:
         include:
           - arch: aarch64
-            runner: macos-latest
+            runner: macos-15
             target: aarch64-apple-darwin
           - arch: x86_64
             runner: macos-15-intel

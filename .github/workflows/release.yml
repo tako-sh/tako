@@ -19,7 +19,7 @@ jobs:
   sign-darwin:
     name: Sign macOS app
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
-    runs-on: macos-latest
+    runs-on: macos-15
     environment: release
     steps:
       - name: Checkout
