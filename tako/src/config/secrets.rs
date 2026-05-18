@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
-use time::{Date, Duration, Month, OffsetDateTime, Time};
+use time::{Date, Duration, Month, OffsetDateTime};
 
 use super::error::{ConfigError, Result};
 
@@ -33,12 +33,12 @@ pub struct EnvironmentSecrets {
 pub struct EncryptedSecretValue {
     pub value: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expires_at: Option<String>,
+    pub expires_on: Option<String>,
 }
 
 impl EncryptedSecretValue {
-    pub fn new(value: String, expires_at: Option<String>) -> Self {
-        Self { value, expires_at }
+    pub fn new(value: String, expires_on: Option<String>) -> Self {
+        Self { value, expires_on }
     }
 
     pub fn is_expired(&self) -> Result<bool> {
@@ -46,10 +46,10 @@ impl EncryptedSecretValue {
     }
 
     pub fn is_expired_at(&self, now_unix_secs: i64) -> Result<bool> {
-        let Some(expires_at) = &self.expires_at else {
+        let Some(expires_on) = &self.expires_on else {
             return Ok(false);
         };
-        Ok(parse_secret_expires_at_unix(expires_at)? <= now_unix_secs)
+        Ok(parse_secret_expires_on_unix(expires_on)? <= now_unix_secs)
     }
 
     pub fn is_expiring_within_days(&self, days: i64) -> Result<bool> {
@@ -57,13 +57,13 @@ impl EncryptedSecretValue {
     }
 
     pub fn is_expiring_within_days_at(&self, now_unix_secs: i64, days: i64) -> Result<bool> {
-        let Some(expires_at) = &self.expires_at else {
+        let Some(expires_on) = &self.expires_on else {
             return Ok(false);
         };
-        let expires_at_unix = parse_secret_expires_at_unix(expires_at)?;
+        let expires_on_unix = parse_secret_expires_on_unix(expires_on)?;
         let window_secs = days.max(0).saturating_mul(24 * 60 * 60);
-        Ok(expires_at_unix > now_unix_secs
-            && expires_at_unix <= now_unix_secs.saturating_add(window_secs))
+        Ok(expires_on_unix > now_unix_secs
+            && expires_on_unix <= now_unix_secs.saturating_add(window_secs))
     }
 }
 
@@ -73,15 +73,15 @@ pub struct EncryptedDnsCredentials {
     pub cloudflare_api_token: EncryptedSecretValue,
 }
 
-pub fn secret_expires_at_prompt_hint() -> &'static str {
+pub fn secret_expires_on_prompt_hint() -> &'static str {
     "Optional. Use YYYY-MM-DD, in 30 days, never, or leave blank."
 }
 
-pub fn normalize_secret_expires_at(input: &str) -> Result<Option<String>> {
-    normalize_secret_expires_at_at(input, OffsetDateTime::now_utc())
+pub fn normalize_secret_expires_on(input: &str) -> Result<Option<String>> {
+    normalize_secret_expires_on_at(input, OffsetDateTime::now_utc())
 }
 
-fn normalize_secret_expires_at_at(input: &str, now: OffsetDateTime) -> Result<Option<String>> {
+fn normalize_secret_expires_on_at(input: &str, now: OffsetDateTime) -> Result<Option<String>> {
     let trimmed = input.trim();
     if trimmed.is_empty()
         || trimmed.eq_ignore_ascii_case("never")
@@ -92,24 +92,23 @@ fn normalize_secret_expires_at_at(input: &str, now: OffsetDateTime) -> Result<Op
 
     if trimmed.len() == 10 && trimmed.as_bytes().get(4) == Some(&b'-') {
         let (year, month, day) = parse_secret_expiry_date(trimmed)?;
-        return Ok(Some(format!("{year:04}-{month:02}-{day:02}T00:00:00Z")));
+        return Ok(Some(format!("{year:04}-{month:02}-{day:02}")));
     }
 
     if let Some(days) = parse_relative_secret_expiry_days(trimmed)? {
         let target = now
             .checked_add(Duration::days(days))
-            .ok_or_else(|| invalid_secret_expires_at(trimmed))?;
+            .ok_or_else(|| invalid_secret_expires_on(trimmed))?;
         let date = target.date();
         return Ok(Some(format!(
-            "{:04}-{:02}-{:02}T00:00:00Z",
+            "{:04}-{:02}-{:02}",
             date.year(),
             u8::from(date.month()),
             date.day()
         )));
     }
 
-    parse_secret_expires_at_unix(trimmed)?;
-    Ok(Some(trimmed.to_string()))
+    Err(invalid_secret_expires_on(trimmed))
 }
 
 pub fn current_unix_timestamp() -> i64 {
@@ -126,7 +125,7 @@ pub fn current_unix_timestamp() -> i64 {
 ///     "app": {
 ///       "DATABASE_URL": {
 ///         "value": "encrypted_base64_value",
-///         "expires_at": "2026-12-31T00:00:00Z"
+///         "expires_on": "2026-12-31"
 ///       },
 ///       "API_KEY": {
 ///         "value": "encrypted_base64_value"
@@ -136,18 +135,18 @@ pub fn current_unix_timestamp() -> i64 {
 ///       "prod_uploads": {
 ///         "access_key_id": {
 ///           "value": "encrypted_base64_value",
-///           "expires_at": "2026-12-31T00:00:00Z"
+///           "expires_on": "2026-12-31"
 ///         },
 ///         "secret_access_key": {
 ///           "value": "encrypted_base64_value",
-///           "expires_at": "2026-12-31T00:00:00Z"
+///           "expires_on": "2026-12-31"
 ///         }
 ///       }
 ///     },
 ///     "dns": {
 ///       "cloudflare_api_token": {
 ///         "value": "encrypted_base64_value",
-///         "expires_at": "2026-12-31T00:00:00Z"
+///         "expires_on": "2026-12-31"
 ///       }
 ///     }
 ///   }
@@ -288,20 +287,20 @@ impl SecretsStore {
 
     /// Set a secret value for an environment (key_id must already exist)
     pub fn set(&mut self, env: &str, name: &str, value: String) -> Result<()> {
-        self.set_with_expires_at(env, name, value, None)
+        self.set_with_expires_on(env, name, value, None)
     }
 
     /// Set a secret value and expiry for an environment (key_id must already exist).
-    pub fn set_with_expires_at(
+    pub fn set_with_expires_on(
         &mut self,
         env: &str,
         name: &str,
         value: String,
-        expires_at: Option<String>,
+        expires_on: Option<String>,
     ) -> Result<()> {
         validate_environment_name(env)?;
         validate_secret_name(name)?;
-        let secret = EncryptedSecretValue::new(value, normalize_optional_expires_at(expires_at)?);
+        let secret = EncryptedSecretValue::new(value, normalize_optional_expires_on(expires_on)?);
         validate_encrypted_secret_value(&format!("Secret '{name}' value"), &secret)?;
 
         let env_secrets = self.environments.get_mut(env).ok_or_else(|| {
@@ -588,9 +587,9 @@ struct SortedEnvironmentSecrets<'a> {
     dns: Option<&'a EncryptedDnsCredentials>,
 }
 
-fn normalize_optional_expires_at(expires_at: Option<String>) -> Result<Option<String>> {
-    match expires_at {
-        Some(value) => normalize_secret_expires_at(&value),
+fn normalize_optional_expires_on(expires_on: Option<String>) -> Result<Option<String>> {
+    match expires_on {
+        Some(value) => normalize_secret_expires_on(&value),
         None => Ok(None),
     }
 }
@@ -606,7 +605,7 @@ fn parse_relative_secret_expiry_days(value: &str) -> Result<Option<i64>> {
 
     let days = parse_secret_expiry_number::<i64>(Some(parts[1]), value)?;
     if days <= 0 {
-        return Err(invalid_secret_expires_at(value));
+        return Err(invalid_secret_expires_on(value));
     }
     Ok(Some(days))
 }
@@ -615,30 +614,18 @@ fn validate_encrypted_secret_value(label: &str, secret: &EncryptedSecretValue) -
     if secret.value.trim().is_empty() {
         return Err(ConfigError::Validation(format!("{label} cannot be empty")));
     }
-    if let Some(expires_at) = &secret.expires_at {
-        parse_secret_expires_at_unix(expires_at)?;
+    if let Some(expires_on) = &secret.expires_on {
+        parse_secret_expires_on_unix(expires_on)?;
     }
     Ok(())
 }
 
-fn parse_secret_expires_at_unix(value: &str) -> Result<i64> {
-    if value.len() != "YYYY-MM-DDTHH:MM:SSZ".len() {
-        return Err(invalid_secret_expires_at(value));
-    }
-    let Some(timestamp) = value.strip_suffix('Z') else {
-        return Err(invalid_secret_expires_at(value));
-    };
-    let Some((date_part, time_part)) = timestamp.split_once('T') else {
-        return Err(invalid_secret_expires_at(value));
-    };
-    let (year, month, day) = parse_secret_expiry_date(date_part)?;
-    let (hour, minute, second) = parse_secret_expiry_time(time_part, value)?;
-    let month = Month::try_from(month).map_err(|_| invalid_secret_expires_at(value))?;
+fn parse_secret_expires_on_unix(value: &str) -> Result<i64> {
+    let (year, month, day) = parse_secret_expiry_date(value)?;
+    let month = Month::try_from(month).map_err(|_| invalid_secret_expires_on(value))?;
     let date =
-        Date::from_calendar_date(year, month, day).map_err(|_| invalid_secret_expires_at(value))?;
-    let time =
-        Time::from_hms(hour, minute, second).map_err(|_| invalid_secret_expires_at(value))?;
-    Ok(OffsetDateTime::new_utc(date, time).unix_timestamp())
+        Date::from_calendar_date(year, month, day).map_err(|_| invalid_secret_expires_on(value))?;
+    Ok(date.midnight().assume_utc().unix_timestamp())
 }
 
 fn parse_secret_expiry_date(value: &str) -> Result<(i32, u8, u8)> {
@@ -646,36 +633,19 @@ fn parse_secret_expiry_date(value: &str) -> Result<(i32, u8, u8)> {
         || value.as_bytes().get(4) != Some(&b'-')
         || value.as_bytes().get(7) != Some(&b'-')
     {
-        return Err(invalid_secret_expires_at(value));
+        return Err(invalid_secret_expires_on(value));
     }
     let mut parts = value.split('-');
     let year = parse_secret_expiry_number::<i32>(parts.next(), value)?;
     let month = parse_secret_expiry_number::<u8>(parts.next(), value)?;
     let day = parse_secret_expiry_number::<u8>(parts.next(), value)?;
     if parts.next().is_some() {
-        return Err(invalid_secret_expires_at(value));
+        return Err(invalid_secret_expires_on(value));
     }
-    let month_value = Month::try_from(month).map_err(|_| invalid_secret_expires_at(value))?;
+    let month_value = Month::try_from(month).map_err(|_| invalid_secret_expires_on(value))?;
     Date::from_calendar_date(year, month_value, day)
-        .map_err(|_| invalid_secret_expires_at(value))?;
+        .map_err(|_| invalid_secret_expires_on(value))?;
     Ok((year, month, day))
-}
-
-fn parse_secret_expiry_time(time_part: &str, full_value: &str) -> Result<(u8, u8, u8)> {
-    if time_part.len() != "HH:MM:SS".len()
-        || time_part.as_bytes().get(2) != Some(&b':')
-        || time_part.as_bytes().get(5) != Some(&b':')
-    {
-        return Err(invalid_secret_expires_at(full_value));
-    }
-    let mut parts = time_part.split(':');
-    let hour = parse_secret_expiry_number::<u8>(parts.next(), full_value)?;
-    let minute = parse_secret_expiry_number::<u8>(parts.next(), full_value)?;
-    let second = parse_secret_expiry_number::<u8>(parts.next(), full_value)?;
-    if parts.next().is_some() {
-        return Err(invalid_secret_expires_at(full_value));
-    }
-    Ok((hour, minute, second))
 }
 
 fn parse_secret_expiry_number<T: std::str::FromStr>(
@@ -684,15 +654,15 @@ fn parse_secret_expiry_number<T: std::str::FromStr>(
 ) -> Result<T> {
     value
         .filter(|part| !part.is_empty())
-        .ok_or_else(|| invalid_secret_expires_at(full_value))?
+        .ok_or_else(|| invalid_secret_expires_on(full_value))?
         .parse::<T>()
-        .map_err(|_| invalid_secret_expires_at(full_value))
+        .map_err(|_| invalid_secret_expires_on(full_value))
 }
 
-fn invalid_secret_expires_at(value: &str) -> ConfigError {
+fn invalid_secret_expires_on(value: &str) -> ConfigError {
     ConfigError::Validation(format!(
         "Invalid secret expiry '{value}'. {}",
-        secret_expires_at_prompt_hint()
+        secret_expires_on_prompt_hint()
     ))
 }
 

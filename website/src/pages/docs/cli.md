@@ -223,14 +223,14 @@ Removes `tako-server`, service files, app data, runtime data, authorized keys, a
 
 ```bash
 tako dns configure --env production
-tako dns configure --env production --cloudflare-api-token "$TOKEN" --expires-at "in 90 days"
+tako dns configure --env production --cloudflare-api-token "$TOKEN" --expires-on "in 90 days"
 ```
 
-| Option                           | Meaning                                                                |
-| -------------------------------- | ---------------------------------------------------------------------- |
-| `--env <ENV>`                    | Environment to configure. Default `production`.                        |
-| `--cloudflare-api-token <TOKEN>` | Token value. Prompted when omitted.                                    |
-| `--expires-at <WHEN>`            | Optional expiry: `YYYY-MM-DD`, `in N days`, UTC timestamp, or `never`. |
+| Option                           | Meaning                                                      |
+| -------------------------------- | ------------------------------------------------------------ |
+| `--env <ENV>`                    | Environment to configure. Default `production`.              |
+| `--cloudflare-api-token <TOKEN>` | Token value. Prompted when omitted.                          |
+| `--expires-on <WHEN>`            | Optional expiry date: `YYYY-MM-DD`, `in N days`, or `never`. |
 
 Stores encrypted Cloudflare DNS credentials in `.tako/secrets.json` under the selected environment's `dns` object. It does not edit `tako.toml`.
 
@@ -244,13 +244,13 @@ Alias: `tako secrets add`.
 
 ```bash
 tako secrets set DATABASE_URL --env production
-printf '%s\n' "$DATABASE_URL" | tako secrets set DATABASE_URL --env production --expires-at "in 90 days"
+printf '%s\n' "$DATABASE_URL" | tako secrets set DATABASE_URL --env production --expires-on "in 90 days"
 ```
 
 | Option                | Meaning                                                                          |
 | --------------------- | -------------------------------------------------------------------------------- |
 | `--env <ENV>`         | Target environment. Interactive terminals can choose or create one when omitted. |
-| `--expires-at <WHEN>` | Optional expiry: `YYYY-MM-DD`, `in N days`, UTC timestamp, or `never`.           |
+| `--expires-on <WHEN>` | Optional expiry date: `YYYY-MM-DD`, `in N days`, or `never`.                     |
 | `--sync`              | Sync to servers after saving.                                                    |
 
 Secret values are encrypted in `.tako/secrets.json`. Expired selected secrets fail deploy before build work starts; secrets expiring within 30 days produce a warning.
@@ -324,7 +324,7 @@ tako storages add uploads \
 | `--region <REGION>`           | Region. Use `auto` for R2.                                 |
 | `--access-key-id <VALUE>`     | Access key id. Prompted when omitted for S3.               |
 | `--secret-access-key <VALUE>` | Secret access key. Prompted when omitted for S3.           |
-| `--expires-at <WHEN>`         | Optional S3 credential expiry.                             |
+| `--expires-on <WHEN>`         | Optional S3 credential expiry date.                        |
 | `--force-path-style`          | Use path-style bucket URLs.                                |
 | `--public-base-url <URL>`     | HTTPS public base URL for public object URLs.              |
 

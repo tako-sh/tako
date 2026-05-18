@@ -27,7 +27,11 @@ tako dev
 
 Use this mode for the real Tako path: workflows are enqueued through the internal socket, events flow through the actual `mission-log` channel, and base artwork is served through the AVIF image service.
 
-Import demo secrets (dev, then prod): `printf '%s\n' 'eyJ2ZXJzaW9uIjoxLCJpZCI6IjlhYzhkYjk1N2MwZTQwNjEiLCJrZXkiOiI2WjhwazZnWElsN1A2ZGlNaTVDRFN0cEdXWmhUQVI5Tnp0RWR6RXZPUWxZPSJ9' | tako secrets key import --env development && printf '%s\n' 'eyJ2ZXJzaW9uIjoxLCJpZCI6IjJmMzJmMzFhZmQyMDQ1MmEiLCJrZXkiOiJWTVl0U2JXVmRuSXhISWV0dCtyS2ZiK3JPU0laYzNrUE1mS3ZSbUlqY2tJPSJ9' | tako secrets key import --env production`
+Import demo development secrets:
+
+```bash
+printf '%s\n' 'eyJ2ZXJzaW9uIjoxLCJpZCI6IjlhYzhkYjk1N2MwZTQwNjEiLCJrZXkiOiI2WjhwazZnWElsN1A2ZGlNaTVDRFN0cEdXWmhUQVI5Tnp0RWR6RXZPUWxZPSJ9' | tako secrets key import --env development
+```
 
 ## Build
 

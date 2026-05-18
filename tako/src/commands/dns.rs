@@ -16,9 +16,9 @@ pub enum DnsCommands {
         #[arg(long)]
         cloudflare_api_token: Option<String>,
 
-        /// Optional expiry for the Cloudflare API token. Use YYYY-MM-DD, "in 30 days", YYYY-MM-DDTHH:MM:SSZ, or never.
+        /// Optional expiry date for the Cloudflare API token. Use YYYY-MM-DD, "in 30 days", or never.
         #[arg(long)]
-        expires_at: Option<String>,
+        expires_on: Option<String>,
     },
 }
 
@@ -28,12 +28,12 @@ pub fn run(cmd: DnsCommands, config_path: Option<&Path>) -> Result<(), Box<dyn s
         DnsCommands::Configure {
             env,
             cloudflare_api_token,
-            expires_at,
+            expires_on,
         } => configure_dns(DnsConfigureInput {
             project_dir: &context.project_dir,
             env: &env,
             cloudflare_api_token,
-            expires_at,
+            expires_on,
             print_success: true,
         }),
     }
@@ -43,7 +43,7 @@ struct DnsConfigureInput<'a> {
     project_dir: &'a Path,
     env: &'a str,
     cloudflare_api_token: Option<String>,
-    expires_at: Option<String>,
+    expires_on: Option<String>,
     print_success: bool,
 }
 
@@ -52,7 +52,7 @@ fn configure_dns(input: DnsConfigureInput<'_>) -> Result<(), Box<dyn std::error:
         input.project_dir,
         input.env,
         input.cloudflare_api_token,
-        input.expires_at,
+        input.expires_on,
         input.print_success,
     )
 }
@@ -61,12 +61,12 @@ pub(crate) fn configure_env_dns(
     project_dir: &Path,
     env: &str,
     cloudflare_api_token: Option<String>,
-    expires_at: Option<String>,
+    expires_on: Option<String>,
     print_success: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     crate::config::validate_environment_name(env)?;
     let cloudflare_api_token = read_dns_credential(cloudflare_api_token, "Cloudflare API token")?;
-    let expires_at = crate::commands::secret::read_secret_expires_at(expires_at, "Expires on")?;
+    let expires_on = crate::commands::secret::read_secret_expires_on(expires_on, "Expires on")?;
 
     let mut secrets = crate::config::SecretsStore::load_from_dir(project_dir)?;
     secrets.ensure_env_key_id(env)?;
@@ -77,7 +77,7 @@ pub(crate) fn configure_env_dns(
         EncryptedDnsCredentials {
             cloudflare_api_token: crate::config::EncryptedSecretValue::new(
                 crate::crypto::encrypt(&cloudflare_api_token, &key)?,
-                expires_at,
+                expires_on,
             ),
         },
     )?;

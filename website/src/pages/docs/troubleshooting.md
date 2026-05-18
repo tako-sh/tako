@@ -151,7 +151,7 @@ tako secrets set DATABASE_URL --env production
 Interactive `set` prompts for the value and optional expiry. Non-interactive `set` reads one line from stdin:
 
 ```bash
-printf '%s\n' "$DATABASE_URL" | tako secrets set DATABASE_URL --env production --expires-at "in 90 days"
+printf '%s\n' "$DATABASE_URL" | tako secrets set DATABASE_URL --env production --expires-on "in 90 days"
 ```
 
 Deploy fails before build work starts if any selected environment secret is expired. It warns when a secret expires within 30 days.
@@ -205,7 +205,7 @@ routes = ["app.example.com", "*.app.example.com"]
 Configure Cloudflare DNS for that app environment:
 
 ```bash
-tako dns configure --env production --expires-at "in 90 days"
+tako dns configure --env production --expires-on "in 90 days"
 ```
 
 The token must be able to read zones and edit DNS records for the zone. It is encrypted in `.tako/secrets.json`, not stored in `tako.toml`.

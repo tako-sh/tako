@@ -40,9 +40,9 @@ pub enum StorageCommands {
         /// Secret access key. Prompted when omitted.
         #[arg(long)]
         secret_access_key: Option<String>,
-        /// Optional expiry for S3 credentials. Use YYYY-MM-DD, "in 30 days", YYYY-MM-DDTHH:MM:SSZ, or never.
+        /// Optional expiry date for S3 credentials. Use YYYY-MM-DD, "in 30 days", or never.
         #[arg(long)]
-        expires_at: Option<String>,
+        expires_on: Option<String>,
         /// Use path-style bucket URLs instead of virtual-hosted bucket URLs
         #[arg(long)]
         force_path_style: bool,
@@ -74,7 +74,7 @@ pub fn run(
             region,
             access_key_id,
             secret_access_key,
-            expires_at,
+            expires_on,
             force_path_style,
             public_base_url,
         } => add_storage(StorageAddInput {
@@ -89,7 +89,7 @@ pub fn run(
             region,
             access_key_id,
             secret_access_key,
-            expires_at,
+            expires_on,
             force_path_style,
             public_base_url,
         }),
@@ -108,7 +108,7 @@ struct StorageAddInput<'a> {
     region: Option<String>,
     access_key_id: Option<String>,
     secret_access_key: Option<String>,
-    expires_at: Option<String>,
+    expires_on: Option<String>,
     force_path_style: bool,
     public_base_url: Option<String>,
 }
@@ -129,7 +129,7 @@ fn add_storage(input: StorageAddInput<'_>) -> Result<(), Box<dyn std::error::Err
                 || input.region.is_some()
                 || input.access_key_id.is_some()
                 || input.secret_access_key.is_some()
-                || input.expires_at.is_some()
+                || input.expires_on.is_some()
                 || input.force_path_style
                 || input.public_base_url.is_some()
             {
@@ -180,8 +180,8 @@ fn add_storage(input: StorageAddInput<'_>) -> Result<(), Box<dyn std::error::Err
         let access_key_id = read_storage_credential(input.access_key_id, "Access key id")?;
         let secret_access_key =
             read_storage_credential(input.secret_access_key, "Secret access key")?;
-        let expires_at =
-            crate::commands::secret::read_secret_expires_at(input.expires_at, "Expires on")?;
+        let expires_on =
+            crate::commands::secret::read_secret_expires_on(input.expires_on, "Expires on")?;
 
         secrets.set_storage_credentials(
             &input.env,
@@ -189,7 +189,7 @@ fn add_storage(input: StorageAddInput<'_>) -> Result<(), Box<dyn std::error::Err
             EncryptedStorageCredentials::new(
                 crate::crypto::encrypt(&access_key_id, &key)?,
                 crate::crypto::encrypt(&secret_access_key, &key)?,
-                expires_at,
+                expires_on,
             ),
         )?;
         secrets.save_to_dir(input.project_dir)?;
@@ -347,7 +347,7 @@ mod tests {
             region: None,
             access_key_id: None,
             secret_access_key: None,
-            expires_at: None,
+            expires_on: None,
             force_path_style: false,
             public_base_url: None,
         })
@@ -377,7 +377,7 @@ mod tests {
             region: None,
             access_key_id: None,
             secret_access_key: None,
-            expires_at: None,
+            expires_on: None,
             force_path_style: false,
             public_base_url: None,
         })

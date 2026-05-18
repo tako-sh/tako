@@ -1165,7 +1165,7 @@ main = "index.ts"
                 "API_KEY",
                 "--env",
                 "production",
-                "--expires-at",
+                "--expires-on",
                 "2099-01-01",
             ],
             &project_dir,
@@ -1190,8 +1190,8 @@ main = "index.ts"
         assert!(!stored.is_empty(), "stored value should not be empty");
         assert_ne!(stored, "secret123", "stored value should be encrypted");
         assert_eq!(
-            parsed["production"]["app"]["API_KEY"]["expires_at"].as_str(),
-            Some("2099-01-01T00:00:00Z")
+            parsed["production"]["app"]["API_KEY"]["expires_on"].as_str(),
+            Some("2099-01-01")
         );
         // Key id should be present.
         assert!(
@@ -1225,7 +1225,7 @@ main = "index.ts"
         let parsed: serde_json::Value = serde_json::from_str(&raw).expect("parse secrets json");
         assert!(
             parsed["production"]["app"]["API_KEY"]
-                .get("expires_at")
+                .get("expires_on")
                 .is_none(),
             "{parsed:#}"
         );
@@ -1516,7 +1516,7 @@ port = 1
                 "API_KEY",
                 "--env",
                 "production",
-                "--expires-at",
+                "--expires-on",
                 "2099-01-01",
             ],
             &project_dir,

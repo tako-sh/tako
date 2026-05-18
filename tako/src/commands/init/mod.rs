@@ -536,12 +536,12 @@ pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>>
     fs::write(&tako_toml_path, template)?;
     ensure_project_gitignore_tracks_secrets(&project_dir)?;
     let configured_init_dns = init_dns_token.is_some();
-    if let Some((token, expires_at)) = init_dns_token {
+    if let Some((token, expires_on)) = init_dns_token {
         crate::commands::dns::configure_env_dns(
             &project_dir,
             "production",
             Some(token),
-            expires_at,
+            expires_on,
             false,
         )?;
     }
@@ -680,16 +680,16 @@ fn prompt_init_dns_token(
     }
 
     let token = crate::commands::dns::read_dns_credential(None, "Cloudflare API token")?;
-    let expires_at = output::TextField::new("Expires on")
-        .with_hint(crate::config::secret_expires_at_prompt_hint())
+    let expires_on = output::TextField::new("Expires on")
+        .with_hint(crate::config::secret_expires_on_prompt_hint())
         .prompt_validated(|value| {
-            crate::config::normalize_secret_expires_at(value)
+            crate::config::normalize_secret_expires_on(value)
                 .map(|_| ())
                 .map_err(|e| e.to_string())
         })?;
     Ok(Some((
         token,
-        crate::config::normalize_secret_expires_at(&expires_at)?,
+        crate::config::normalize_secret_expires_on(&expires_on)?,
     )))
 }
 

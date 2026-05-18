@@ -113,17 +113,17 @@ fn validate_target_secret_expirations(secrets: &SecretsStore, env_name: &str) ->
     for (secret_name, secret) in target_secrets {
         match secret.is_expired() {
             Ok(true) => {
-                if let Some(expires_at) = &secret.expires_at {
+                if let Some(expires_on) = &secret.expires_on {
                     result.error(format!(
-                        "Secret '{secret_name}' in environment '{env_name}' expired at {expires_at}. Run `tako secrets set {secret_name} --env {env_name}` to update it."
+                        "Secret '{secret_name}' in environment '{env_name}' expired on {expires_on}. Run `tako secrets set {secret_name} --env {env_name}` to update it."
                     ));
                 }
             }
             Ok(false) => match secret.is_expiring_within_days(SECRET_EXPIRY_WARNING_DAYS) {
                 Ok(true) => {
-                    if let Some(expires_at) = &secret.expires_at {
+                    if let Some(expires_on) = &secret.expires_on {
                         result.warn(format!(
-                            "Secret '{secret_name}' in environment '{env_name}' expires within {SECRET_EXPIRY_WARNING_DAYS} days at {expires_at}. Run `tako secrets set {secret_name} --env {env_name}` to rotate it."
+                            "Secret '{secret_name}' in environment '{env_name}' expires within {SECRET_EXPIRY_WARNING_DAYS} days on {expires_on}. Run `tako secrets set {secret_name} --env {env_name}` to rotate it."
                         ));
                     }
                 }
@@ -147,15 +147,12 @@ mod tests {
     use time::{Duration, OffsetDateTime};
 
     fn future_expiry(days: i64) -> String {
-        let expires_at = OffsetDateTime::now_utc() + Duration::days(days);
+        let expires_on = OffsetDateTime::now_utc() + Duration::days(days);
         format!(
-            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-            expires_at.year(),
-            u8::from(expires_at.month()),
-            expires_at.day(),
-            expires_at.hour(),
-            expires_at.minute(),
-            expires_at.second()
+            "{:04}-{:02}-{:02}",
+            expires_on.year(),
+            u8::from(expires_on.month()),
+            expires_on.day()
         )
     }
 
@@ -211,11 +208,11 @@ mod tests {
         let mut secrets = SecretsStore::default();
         secrets.ensure_env_key_id("production").unwrap();
         secrets
-            .set_with_expires_at(
+            .set_with_expires_on(
                 "production",
                 "API_KEY",
                 "encrypted".to_string(),
-                Some("2000-01-01T00:00:00Z".to_string()),
+                Some("2000-01-01".to_string()),
             )
             .unwrap();
 
@@ -224,7 +221,7 @@ mod tests {
         assert!(result.has_errors());
         assert!(
             result.errors.iter().any(|error| {
-                error.contains("API_KEY") && error.contains("expired at 2000-01-01T00:00:00Z")
+                error.contains("API_KEY") && error.contains("expired on 2000-01-01")
             }),
             "{:?}",
             result.errors
@@ -236,7 +233,7 @@ mod tests {
         let mut secrets = SecretsStore::default();
         secrets.ensure_env_key_id("production").unwrap();
         secrets
-            .set_with_expires_at(
+            .set_with_expires_on(
                 "production",
                 "API_KEY",
                 "encrypted".to_string(),

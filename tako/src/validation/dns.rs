@@ -30,9 +30,9 @@ pub fn validate_dns_for_deployment(
 
     match credentials.cloudflare_api_token.is_expired() {
         Ok(true) => {
-            if let Some(expires_at) = &credentials.cloudflare_api_token.expires_at {
+            if let Some(expires_on) = &credentials.cloudflare_api_token.expires_on {
                 result.error(format!(
-                    "DNS credentials for environment '{env_name}' expired at {expires_at}. Run `tako dns configure --env {env_name}` to update them."
+                    "DNS credentials for environment '{env_name}' expired on {expires_on}. Run `tako dns configure --env {env_name}` to update them."
                 ));
             }
         }
@@ -41,9 +41,9 @@ pub fn validate_dns_for_deployment(
             .is_expiring_within_days(SECRET_EXPIRY_WARNING_DAYS)
         {
             Ok(true) => {
-                if let Some(expires_at) = &credentials.cloudflare_api_token.expires_at {
+                if let Some(expires_on) = &credentials.cloudflare_api_token.expires_on {
                     result.warn(format!(
-                        "DNS credentials for environment '{env_name}' expire within {SECRET_EXPIRY_WARNING_DAYS} days at {expires_at}. Run `tako dns configure --env {env_name}` to rotate them."
+                        "DNS credentials for environment '{env_name}' expire within {SECRET_EXPIRY_WARNING_DAYS} days on {expires_on}. Run `tako dns configure --env {env_name}` to rotate them."
                     ));
                 }
             }
@@ -71,15 +71,12 @@ mod tests {
     use time::{Duration, OffsetDateTime};
 
     fn future_expiry(days: i64) -> String {
-        let expires_at = OffsetDateTime::now_utc() + Duration::days(days);
+        let expires_on = OffsetDateTime::now_utc() + Duration::days(days);
         format!(
-            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-            expires_at.year(),
-            u8::from(expires_at.month()),
-            expires_at.day(),
-            expires_at.hour(),
-            expires_at.minute(),
-            expires_at.second()
+            "{:04}-{:02}-{:02}",
+            expires_on.year(),
+            u8::from(expires_on.month()),
+            expires_on.day()
         )
     }
 
@@ -108,7 +105,7 @@ mod tests {
                 EncryptedDnsCredentials {
                     cloudflare_api_token: crate::config::EncryptedSecretValue::new(
                         "encrypted".to_string(),
-                        Some("2099-01-01T00:00:00Z".to_string()),
+                        Some("2099-01-01".to_string()),
                     ),
                 },
             )
@@ -139,7 +136,7 @@ mod tests {
                 EncryptedDnsCredentials {
                     cloudflare_api_token: crate::config::EncryptedSecretValue::new(
                         "encrypted".to_string(),
-                        Some("2000-01-01T00:00:00Z".to_string()),
+                        Some("2000-01-01".to_string()),
                     ),
                 },
             )
@@ -150,8 +147,7 @@ mod tests {
         assert!(result.has_errors());
         assert!(
             result.errors.iter().any(|error| {
-                error.contains("DNS credentials")
-                    && error.contains("expired at 2000-01-01T00:00:00Z")
+                error.contains("DNS credentials") && error.contains("expired on 2000-01-01")
             }),
             "{:?}",
             result.errors

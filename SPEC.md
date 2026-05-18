@@ -295,7 +295,7 @@ Per-environment encrypted secrets (JSON format, AES-256-GCM encryption):
     "app": {
       "DATABASE_URL": {
         "value": "encrypted_value",
-        "expires_at": "2027-01-01T00:00:00Z"
+        "expires_on": "2027-01-01"
       },
       "API_KEY": {
         "value": "encrypted_value"
@@ -305,18 +305,18 @@ Per-environment encrypted secrets (JSON format, AES-256-GCM encryption):
       "prod_uploads": {
         "access_key_id": {
           "value": "encrypted_value",
-          "expires_at": "2027-01-01T00:00:00Z"
+          "expires_on": "2027-01-01"
         },
         "secret_access_key": {
           "value": "encrypted_value",
-          "expires_at": "2027-01-01T00:00:00Z"
+          "expires_on": "2027-01-01"
         }
       }
     },
     "dns": {
       "cloudflare_api_token": {
         "value": "encrypted_value",
-        "expires_at": "2027-01-01T00:00:00Z"
+        "expires_on": "2027-01-01"
       }
     }
   },
@@ -331,7 +331,7 @@ Per-environment encrypted secrets (JSON format, AES-256-GCM encryption):
 }
 ```
 
-Each environment has a `key_id` (16 hex characters), an `app` map for app secrets, an optional `storages` map for encrypted storage credentials keyed by storage resource name, and optional encrypted `dns` credentials for wildcard certificates. App secret names and storage resource names are plaintext. Each encrypted secret field stores a `value` and may store `expires_at`; `value` is encrypted with AES-256-GCM, while `expires_at` is plaintext metadata. Expiry values are UTC timestamps (`YYYY-MM-DDTHH:MM:SSZ`); the CLI accepts `YYYY-MM-DD` as shorthand for midnight UTC and `in N days` as shorthand for UTC midnight on the UTC date N days from now. Leaving expiry blank, omitting `--expires-at`, or passing `never` leaves `expires_at` out of `.tako/secrets.json`.
+Each environment has a `key_id` (16 hex characters), an `app` map for app secrets, an optional `storages` map for encrypted storage credentials keyed by storage resource name, and optional encrypted `dns` credentials for wildcard certificates. App secret names and storage resource names are plaintext. Each encrypted secret field stores a `value` and may store `expires_on`; `value` is encrypted with AES-256-GCM, while `expires_on` is plaintext date metadata. Expiry values are dates (`YYYY-MM-DD`); `in N days` is normalized to the UTC date N days from now. Leaving expiry blank, omitting `--expires-on`, or passing `never` leaves `expires_on` out of `.tako/secrets.json`.
 
 Deploy validates expiry before build/deploy work starts. Expired app secrets, expired S3 storage credentials used by the target environment, and expired DNS credentials required by wildcard routes fail deployment with an update command. Credentials that expire within 30 days produce a deployment warning but do not block the deploy.
 
@@ -365,7 +365,7 @@ region = "auto"
 public_base_url = "https://cdn.example.com/uploads"
 ```
 
-Storage binding and S3 resource names may contain lowercase letters, numbers, hyphens, and underscores. The resource name `local` is built in and must not be declared under `[storages]`; bind to it directly with `storages = { uploads = "local" }`. For S3 resources, `tako storages add` prompts for access credentials and optionally when they expire; `--expires-at` can provide the expiry directly. Deploy fails before build/deploy work starts if the selected environment's S3 credentials are expired and warns when they expire within 30 days. When credentials are current or expiry is unknown, deploy decrypts them locally, combines them with the selected `tako.toml` resource metadata, sends the runtime bindings over the signed management path, and `tako-server` stores the resulting bindings encrypted in server SQLite. Fresh app and worker processes receive bindings through the fd 3 bootstrap envelope as `storages`.
+Storage binding and S3 resource names may contain lowercase letters, numbers, hyphens, and underscores. The resource name `local` is built in and must not be declared under `[storages]`; bind to it directly with `storages = { uploads = "local" }`. For S3 resources, `tako storages add` prompts for access credentials and optionally when they expire; `--expires-on` can provide the expiry directly. Deploy fails before build/deploy work starts if the selected environment's S3 credentials are expired and warns when they expire within 30 days. When credentials are current or expiry is unknown, deploy decrypts them locally, combines them with the selected `tako.toml` resource metadata, sends the runtime bindings over the signed management path, and `tako-server` stores the resulting bindings encrypted in server SQLite. Fresh app and worker processes receive bindings through the fd 3 bootstrap envelope as `storages`.
 
 ### DNS Configuration And Credentials
 
@@ -383,7 +383,7 @@ Configure Cloudflare DNS credentials with:
 tako dns configure --env production
 ```
 
-The command prompts for a Cloudflare API token when `--cloudflare-api-token` is omitted and optionally asks when the token expires. `--expires-at` can provide the expiry directly. The token is encrypted in `.tako/secrets.json` under the selected environment's `dns` object. Deploy validates that wildcard routes have unexpired DNS credentials when expiry is known, warns when DNS credentials expire within 30 days, decrypts the selected environment's token locally, sends the DNS binding over the signed management path only for wildcard routes, and `tako-server` stores it encrypted in server SQLite for that deployed app.
+The command prompts for a Cloudflare API token when `--cloudflare-api-token` is omitted and optionally asks when the token expires. `--expires-on` can provide the expiry directly. The token is encrypted in `.tako/secrets.json` under the selected environment's `dns` object. Deploy validates that wildcard routes have unexpired DNS credentials when expiry is known, warns when DNS credentials expire within 30 days, decrypts the selected environment's token locally, sends the DNS binding over the signed management path only for wildcard routes, and `tako-server` stores it encrypted in server SQLite for that deployed app.
 
 ### Source IP Configuration
 
@@ -858,15 +858,15 @@ Remove tako-server and all data from a remote server.
    - Removes data directory (`/opt/tako/`) and the management socket directory (`/var/run/tako/`).
 4. Removes the server from the local `config.toml` server list.
 
-### tako dns configure [--env {environment}] [--cloudflare-api-token {token}] [--expires-at {when}]
+### tako dns configure [--env {environment}] [--cloudflare-api-token {token}] [--expires-on {when}]
 
 Configure wildcard certificate DNS for the current app environment.
 
 - `--env {environment}` defaults to `production`.
 - `--cloudflare-api-token {token}` is optional; interactive runs prompt when omitted.
-- `--expires-at {when}` optionally records when the token expires. Interactive runs prompt when omitted. Non-interactive runs may omit it. `YYYY-MM-DD` is normalized to `YYYY-MM-DDT00:00:00Z`; `in N days` is normalized to UTC midnight on the UTC date N days from now; `never`, a blank prompt, or an omitted flag stores no `expires_at` field.
+- `--expires-on {when}` optionally records the date when the token expires. Interactive runs prompt when omitted. Non-interactive runs may omit it. `YYYY-MM-DD` is stored as-is; `in N days` is normalized to the UTC date N days from now; `never`, a blank prompt, or an omitted flag stores no `expires_on` field. Timestamp values are rejected.
 
-The command ensures the environment has an encryption key and stores the encrypted Cloudflare API token plus optional `expires_at` metadata in `.tako/secrets.json` under that environment's `dns` object. It does not edit `tako.toml`. The token is sent to servers only during deploys that include wildcard routes, scoped to the deployed app environment. Deploy fails before build/deploy work starts if the token has expired and warns if it expires within 30 days.
+The command ensures the environment has an encryption key and stores the encrypted Cloudflare API token plus optional `expires_on` metadata in `.tako/secrets.json` under that environment's `dns` object. It does not edit `tako.toml`. The token is sent to servers only during deploys that include wildcard routes, scoped to the deployed app environment. Deploy fails before build/deploy work starts if the token has expired and warns if it expires within 30 days.
 
 ### tako uninstall [-y|--yes]
 
@@ -883,13 +883,13 @@ Remove the local Tako CLI and all local data.
 5. Removes system-level items via `sudo` (best-effort), then removes user-level directories and binaries.
 6. Reports success or partial removal if some items could not be deleted.
 
-### tako secrets set [--env {environment}] [--expires-at {when}] [--sync] {name}
+### tako secrets set [--env {environment}] [--expires-on {when}] [--sync] {name}
 
 Set/update secret for an environment.
 
 When `--env` is omitted in an interactive terminal, Tako opens an environment wizard. The first step shows the default environments (`development`, `production`), any environments already declared in `tako.toml` or `.tako/secrets.json`, and a `New environment` option. Choosing `New environment` prompts for the environment name in the next wizard step. In non-interactive mode, `--env` is required.
 
-After the environment is resolved, Tako prompts for the secret value with masked input in an interactive terminal, or reads a single line from stdin in non-interactive mode. It also asks when the secret expires; pressing Enter skips expiry. `--expires-at {when}` can provide the expiry directly. `YYYY-MM-DD` is normalized to `YYYY-MM-DDT00:00:00Z`; `in N days` is normalized to UTC midnight on the UTC date N days from now; `never`, a blank prompt, or an omitted flag stores no `expires_at` field. If the secret already exists in the selected environment during an interactive run, Tako asks for overwrite confirmation before prompting for the new value. Stores encrypted value plus optional plaintext `expires_at` metadata locally in `.tako/secrets.json`. Tako does not write `.tako/secrets.json` until the environment wizard, value prompt, and optional expiry prompt have completed.
+After the environment is resolved, Tako prompts for the secret value with masked input in an interactive terminal, or reads a single line from stdin in non-interactive mode. It also asks when the secret expires; pressing Enter skips expiry. `--expires-on {when}` can provide the expiry directly. `YYYY-MM-DD` is stored as-is; `in N days` is normalized to the UTC date N days from now; `never`, a blank prompt, or an omitted flag stores no `expires_on` field. Timestamp values are rejected. If the secret already exists in the selected environment during an interactive run, Tako asks for overwrite confirmation before prompting for the new value. Stores encrypted value plus optional plaintext `expires_on` metadata locally in `.tako/secrets.json`. Tako does not write `.tako/secrets.json` until the environment wizard, value prompt, and optional expiry prompt have completed.
 
 Uses the environment's cached key from iCloud Keychain through the signed `Tako.app` CLI, or from Tako's data directory at `keys/{key_id}`. If a local key file exists and iCloud Keychain is unavailable during a read, Tako uses the local key file. If the environment has no key yet, Tako creates a random key. On macOS interactive runs, Tako offers iCloud Keychain storage, which requires the signed app bundle. If the entitlement is unavailable while saving a new key to iCloud Keychain, the command fails before writing `.tako/secrets.json`.
 
@@ -977,11 +977,11 @@ Options:
 - `--endpoint {https-url}` is required for `s3`. R2 is configured as `provider = "s3"` with the R2 S3-compatible endpoint.
 - `--region {region}` defaults to `auto`.
 - `--access-key-id {value}` and `--secret-access-key {value}` are optional for `s3`; interactive runs prompt when omitted.
-- `--expires-at {when}` optionally records when S3 credentials expire; interactive S3 runs prompt when omitted, and non-interactive S3 runs may omit it. `YYYY-MM-DD` is normalized to `YYYY-MM-DDT00:00:00Z`; `in N days` is normalized to UTC midnight on the UTC date N days from now; `never`, a blank prompt, or an omitted flag stores no `expires_at` field.
+- `--expires-on {when}` optionally records the date when S3 credentials expire; interactive S3 runs prompt when omitted, and non-interactive S3 runs may omit it. `YYYY-MM-DD` is stored as-is; `in N days` is normalized to the UTC date N days from now; `never`, a blank prompt, or an omitted flag stores no `expires_on` field. Timestamp values are rejected.
 - `--force-path-style` signs path-style object URLs instead of virtual-hosted bucket URLs for `s3`.
 - `--public-base-url {https-url}` enables public object URLs for helpers that request `public: true` on `s3` bindings.
 
-The command writes the environment binding to `tako.toml`. For `s3`, it also writes top-level resource metadata and encrypted credentials plus optional `expires_at` metadata to `.tako/secrets.json` under the selected environment's `storages` map. For `local`, it writes the binding to the built-in `local` resource and no `[storages.local]` table; local storage has no user-configured path or credentials. Deploy validates that every non-development storage binding references either a declared S3 resource or the built-in `local` resource, that S3 resources have unexpired credentials when expiry is known, warns when S3 credentials expire within 30 days, checks that credentials do not exist for unbound resources, and rejects local storage on multi-server deploy environments. There is no separate storage sync command.
+The command writes the environment binding to `tako.toml`. For `s3`, it also writes top-level resource metadata and encrypted credentials plus optional `expires_on` metadata to `.tako/secrets.json` under the selected environment's `storages` map. For `local`, it writes the binding to the built-in `local` resource and no `[storages.local]` table; local storage has no user-configured path or credentials. Deploy validates that every non-development storage binding references either a declared S3 resource or the built-in `local` resource, that S3 resources have unexpired credentials when expiry is known, warns when S3 credentials expire within 30 days, checks that credentials do not exist for unbound resources, and rejects local storage on multi-server deploy environments. There is no separate storage sync command.
 
 ### tako deploy [--env {environment}] [--yes|-y]
 

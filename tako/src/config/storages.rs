@@ -16,11 +16,11 @@ impl EncryptedStorageCredentials {
     pub fn new(
         access_key_id: String,
         secret_access_key: String,
-        expires_at: Option<String>,
+        expires_on: Option<String>,
     ) -> Self {
         Self {
-            access_key_id: EncryptedSecretValue::new(access_key_id, expires_at.clone()),
-            secret_access_key: EncryptedSecretValue::new(secret_access_key, expires_at),
+            access_key_id: EncryptedSecretValue::new(access_key_id, expires_on.clone()),
+            secret_access_key: EncryptedSecretValue::new(secret_access_key, expires_on),
         }
     }
 }

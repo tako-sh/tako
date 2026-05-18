@@ -37,7 +37,7 @@ pub fn validate_storages_for_deployment(
                 }
             }
             tako_core::StorageProvider::S3 => {
-                let mut warned_expiring_at = HashSet::new();
+                let mut warned_expiring_on = HashSet::new();
                 let Some(credentials) = secrets.get_storage_credentials(env_name, resource_name)
                 else {
                     result.error(format!(
@@ -51,20 +51,20 @@ pub fn validate_storages_for_deployment(
                 ] {
                     match secret.is_expired() {
                         Ok(true) => {
-                            if let Some(expires_at) = &secret.expires_at {
+                            if let Some(expires_on) = &secret.expires_on {
                                 result.error(format!(
-                                    "Storage credentials for '{resource_name}' in environment '{env_name}' expired at {expires_at} ({field}). Run `tako storages add {binding_name} --env {env_name}` to update them."
+                                    "Storage credentials for '{resource_name}' in environment '{env_name}' expired on {expires_on} ({field}). Run `tako storages add {binding_name} --env {env_name}` to update them."
                                 ));
                             }
                         }
                         Ok(false) => {
                             match secret.is_expiring_within_days(SECRET_EXPIRY_WARNING_DAYS) {
                                 Ok(true) => {
-                                    if let Some(expires_at) = &secret.expires_at
-                                        && warned_expiring_at.insert(expires_at.clone())
+                                    if let Some(expires_on) = &secret.expires_on
+                                        && warned_expiring_on.insert(expires_on.clone())
                                     {
                                         result.warn(format!(
-                                            "Storage credentials for '{resource_name}' in environment '{env_name}' expire within {SECRET_EXPIRY_WARNING_DAYS} days at {expires_at}. Run `tako storages add {binding_name} --env {env_name}` to rotate them."
+                                            "Storage credentials for '{resource_name}' in environment '{env_name}' expire within {SECRET_EXPIRY_WARNING_DAYS} days on {expires_on}. Run `tako storages add {binding_name} --env {env_name}` to rotate them."
                                         ));
                                     }
                                 }
@@ -103,15 +103,12 @@ mod tests {
     use time::{Duration, OffsetDateTime};
 
     fn future_expiry(days: i64) -> String {
-        let expires_at = OffsetDateTime::now_utc() + Duration::days(days);
+        let expires_on = OffsetDateTime::now_utc() + Duration::days(days);
         format!(
-            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-            expires_at.year(),
-            u8::from(expires_at.month()),
-            expires_at.day(),
-            expires_at.hour(),
-            expires_at.minute(),
-            expires_at.second()
+            "{:04}-{:02}-{:02}",
+            expires_on.year(),
+            u8::from(expires_on.month()),
+            expires_on.day()
         )
     }
 
@@ -157,7 +154,7 @@ storages = { uploads = "prod_uploads" }
                 EncryptedStorageCredentials::new(
                     "encrypted-key".to_string(),
                     "encrypted-secret".to_string(),
-                    Some("2099-01-01T00:00:00Z".to_string()),
+                    Some("2099-01-01".to_string()),
                 ),
             )
             .unwrap();
@@ -217,7 +214,7 @@ storages = { uploads = "local" }
                 EncryptedStorageCredentials::new(
                     "encrypted-key".to_string(),
                     "encrypted-secret".to_string(),
-                    Some("2000-01-01T00:00:00Z".to_string()),
+                    Some("2000-01-01".to_string()),
                 ),
             )
             .unwrap();
@@ -227,7 +224,7 @@ storages = { uploads = "local" }
         assert!(result.has_errors());
         assert!(
             result.errors.iter().any(|error| {
-                error.contains("prod_uploads") && error.contains("expired at 2000-01-01T00:00:00Z")
+                error.contains("prod_uploads") && error.contains("expired on 2000-01-01")
             }),
             "{:?}",
             result.errors

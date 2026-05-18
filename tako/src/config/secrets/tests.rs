@@ -112,32 +112,32 @@ fn parse_reads_dns_credentials_without_app_secret_name() {
 }
 
 #[test]
-fn parse_reads_secret_values_with_expires_at_metadata() {
+fn parse_reads_secret_values_with_expires_on_metadata() {
     let json = r#"{
             "production": {
                 "key_id": "0123456789abcdef",
                 "app": {
                     "DATABASE_URL": {
                         "value": "encrypted-db",
-                        "expires_at": "2099-01-01T00:00:00Z"
+                        "expires_on": "2099-01-01"
                     }
                 },
                 "storages": {
                     "prod_uploads": {
                         "access_key_id": {
                             "value": "encrypted-key-id",
-                            "expires_at": "2099-01-01T00:00:00Z"
+                            "expires_on": "2099-01-01"
                         },
                         "secret_access_key": {
                             "value": "encrypted-secret",
-                            "expires_at": "2099-01-01T00:00:00Z"
+                            "expires_on": "2099-01-01"
                         }
                     }
                 },
                 "dns": {
                     "cloudflare_api_token": {
                         "value": "encrypted-token",
-                        "expires_at": "2099-01-01T00:00:00Z"
+                        "expires_on": "2099-01-01"
                     }
                 }
             }
@@ -147,14 +147,14 @@ fn parse_reads_secret_values_with_expires_at_metadata() {
 
     let secret = store.get_secret("production", "DATABASE_URL").unwrap();
     assert_eq!(secret.value, "encrypted-db");
-    assert_eq!(secret.expires_at.as_deref(), Some("2099-01-01T00:00:00Z"));
+    assert_eq!(secret.expires_on.as_deref(), Some("2099-01-01"));
     let storage = store
         .get_storage_credentials("production", "prod_uploads")
         .unwrap();
     assert_eq!(storage.access_key_id.value, "encrypted-key-id");
     assert_eq!(
-        storage.access_key_id.expires_at.as_deref(),
-        Some("2099-01-01T00:00:00Z")
+        storage.access_key_id.expires_on.as_deref(),
+        Some("2099-01-01")
     );
     let dns = store.get_dns_credentials("production").unwrap();
     assert_eq!(dns.cloudflare_api_token.value, "encrypted-token");
@@ -240,25 +240,19 @@ fn test_validate_environment_name_invalid() {
 }
 
 #[test]
-fn normalize_secret_expires_at_accepts_date_timestamp_and_never() {
+fn normalize_secret_expires_on_accepts_date_and_never() {
     assert_eq!(
-        normalize_secret_expires_at("2099-01-01")
+        normalize_secret_expires_on("2099-01-01")
             .unwrap()
             .as_deref(),
-        Some("2099-01-01T00:00:00Z")
+        Some("2099-01-01")
     );
-    assert_eq!(
-        normalize_secret_expires_at("2099-01-01T12:30:00Z")
-            .unwrap()
-            .as_deref(),
-        Some("2099-01-01T12:30:00Z")
-    );
-    assert_eq!(normalize_secret_expires_at("never").unwrap(), None);
-    assert_eq!(normalize_secret_expires_at("").unwrap(), None);
+    assert_eq!(normalize_secret_expires_on("never").unwrap(), None);
+    assert_eq!(normalize_secret_expires_on("").unwrap(), None);
 }
 
 #[test]
-fn normalize_secret_expires_at_accepts_relative_days() {
+fn normalize_secret_expires_on_accepts_relative_days() {
     let now = OffsetDateTime::parse(
         "2026-05-17T13:45:12Z",
         &time::format_description::well_known::Rfc3339,
@@ -266,28 +260,28 @@ fn normalize_secret_expires_at_accepts_relative_days() {
     .unwrap();
 
     assert_eq!(
-        normalize_secret_expires_at_at("in 7 days", now)
+        normalize_secret_expires_on_at("in 7 days", now)
             .unwrap()
             .as_deref(),
-        Some("2026-05-24T00:00:00Z")
+        Some("2026-05-24")
     );
     assert_eq!(
-        normalize_secret_expires_at_at("IN 1 DAY", now)
+        normalize_secret_expires_on_at("IN 1 DAY", now)
             .unwrap()
             .as_deref(),
-        Some("2026-05-18T00:00:00Z")
+        Some("2026-05-18")
     );
 }
 
 #[test]
-fn normalize_secret_expires_at_rejects_invalid_values() {
-    assert!(normalize_secret_expires_at("tomorrow").is_err());
-    assert!(normalize_secret_expires_at("2099-99-99").is_err());
-    assert!(normalize_secret_expires_at("2099-1-01T12:30:00Z").is_err());
-    assert!(normalize_secret_expires_at("2099-01-01T1:30:00Z").is_err());
-    assert!(normalize_secret_expires_at("in -1 days").is_err());
-    assert!(normalize_secret_expires_at("in 0 days").is_err());
-    assert!(normalize_secret_expires_at("in days").is_err());
+fn normalize_secret_expires_on_rejects_invalid_values() {
+    assert!(normalize_secret_expires_on("tomorrow").is_err());
+    assert!(normalize_secret_expires_on("2099-99-99").is_err());
+    assert!(normalize_secret_expires_on("2099-1-01").is_err());
+    assert!(normalize_secret_expires_on("2099-01-01T00:00:00Z").is_err());
+    assert!(normalize_secret_expires_on("in -1 days").is_err());
+    assert!(normalize_secret_expires_on("in 0 days").is_err());
+    assert!(normalize_secret_expires_on("in days").is_err());
 }
 
 // ==================== CRUD Operation Tests ====================
@@ -566,7 +560,7 @@ fn test_save_to_dir_writes_new_secrets_json_path() {
 }
 
 #[test]
-fn save_omits_expires_at_when_unknown() {
+fn save_omits_expires_on_when_unknown() {
     let temp_dir = TempDir::new().unwrap();
     let path = temp_dir.path().join(".tako").join("secrets.json");
     let mut store = SecretsStore::default();
@@ -581,7 +575,7 @@ fn save_omits_expires_at_when_unknown() {
         serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
     assert!(
         parsed["production"]["app"]["API_KEY"]
-            .get("expires_at")
+            .get("expires_on")
             .is_none(),
         "{parsed:#}"
     );

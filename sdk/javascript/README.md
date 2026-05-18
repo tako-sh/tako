@@ -80,7 +80,7 @@ tako storages add uploads \
   --endpoint https://<account>.r2.cloudflarestorage.com \
   --access-key-id <key-id> \
   --secret-access-key <secret> \
-  --expires-at "in 90 days"
+  --expires-on "in 90 days"
 ```
 
 ```ts

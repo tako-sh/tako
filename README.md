@@ -52,7 +52,7 @@ Deploy your app:
 tako init    # prompts for app name + route, offers wildcard DNS setup, writes tako.toml
 tako servers add my-server
 # Optional: Cloudflare DNS wildcards.
-tako dns configure --env production --expires-at "in 90 days"
+tako dns configure --env production --expires-on "in 90 days"
 tako deploy
 ```
 
