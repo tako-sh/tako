@@ -76,35 +76,37 @@ export function Landing({ rootOrigin, bases }: Props) {
               mission log on the side.
             </p>
 
-            <form onSubmit={handleSubmit} className="mb-10">
+            <form onSubmit={handleSubmit} className="mb-10 max-w-3xl">
               <FieldGroup>
                 <Field data-invalid={error ? true : undefined}>
                   <FieldLabel htmlFor="base-name">Enter a base name</FieldLabel>
                   <div
                     className="
-                      flex flex-col gap-3
-                      md:flex-row
+                      flex max-w-2xl flex-col gap-3
+                      sm:flex-row
                     "
                   >
                     <div
                       className="
-                        flex flex-1 items-center gap-1 rounded-lg border
-                        border-input bg-transparent px-3 transition-colors
+                        flex min-w-0 flex-1 items-center rounded-md border
+                        border-input bg-card/35 transition-colors
                         has-focus-visible:border-ring has-focus-visible:ring-3
                         has-focus-visible:ring-ring/50
                       "
                     >
                       <span
                         className="
-                          hidden shrink-0 font-mono text-xs text-muted-foreground
-                          sm:inline
+                          hidden h-11 shrink-0 items-center border-r border-border/60
+                          px-3 font-mono text-xs text-muted-foreground
+                          sm:flex
                         "
                       >
                         {rootOrigin}/bases/
                       </span>
                       <span
                         className="
-                          shrink-0 font-mono text-sm text-muted-foreground
+                          flex h-11 shrink-0 items-center border-r border-border/60
+                          px-3 font-mono text-sm text-muted-foreground
                           sm:hidden
                         "
                       >
@@ -121,9 +123,9 @@ export function Landing({ rootOrigin, bases }: Props) {
                           setError(null);
                         }}
                         className="
-                          h-11 flex-1 border-0 bg-transparent px-1 font-mono
+                          h-11 flex-1 border-0 bg-transparent px-3 font-mono
                           text-base shadow-none
-                          placeholder:text-muted-foreground/35 placeholder:italic
+                          placeholder:text-muted-foreground/40
                           focus-visible:border-transparent focus-visible:ring-0
                         "
                       />
@@ -131,7 +133,7 @@ export function Landing({ rootOrigin, bases }: Props) {
                     <Button
                       type="submit"
                       size="lg"
-                      className="h-11 px-6 font-mono tracking-wider uppercase"
+                      className="h-11 px-6 font-mono tracking-wider uppercase sm:shrink-0"
                     >
                       Enter base
                       <ArrowRightIcon data-icon="inline-end" />
