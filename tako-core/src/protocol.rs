@@ -36,6 +36,19 @@ pub fn release_artifact_upload_auth_body(
     format!("release_artifact_upload\n{app}\n{version}\n{size_bytes}\n{sha256_hex}").into_bytes()
 }
 
+pub fn logs_request_auth_body(
+    app: &str,
+    previous_offset: u64,
+    current_offset: u64,
+    since_unix_secs: Option<i64>,
+    max_bytes: usize,
+) -> Vec<u8> {
+    let since = since_unix_secs
+        .map(|value| value.to_string())
+        .unwrap_or_default();
+    format!("logs\n{app}\n{previous_offset}\n{current_offset}\n{since}\n{max_bytes}").into_bytes()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReleaseUploadPlan {
     pub path: String,

@@ -1,282 +1,140 @@
-use std::process::Stdio;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::shell::shell_single_quote;
-use crate::ssh::SshClient;
+use crate::management_http::{LogCursor, ManagementClient};
 
 pub(super) type SharedLogSink = Arc<dyn Fn(&[u8]) + Send + Sync>;
 
+const LOG_FETCH_MAX_BYTES: usize = 24 * 1024 * 1024;
+const LOG_TAIL_CHUNK_BYTES: usize = 256 * 1024;
+const LOG_TAIL_BACKLOG_BYTES: usize = 64 * 1024;
+const LOG_TAIL_BACKLOG_LINES: usize = 10;
+
 pub(super) async fn stream_remote_logs(
     host: &str,
-    port: u16,
-    log_cmd: &str,
+    app: &str,
     sink: SharedLogSink,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    match stream_remote_logs_russh(host, port, log_cmd, sink.clone()).await {
-        Ok(()) => Ok(()),
-        Err(primary) => match stream_remote_logs_openssh(host, port, log_cmd, sink).await {
-            Ok(()) => Ok(()),
-            Err(fallback) => Err(format!(
-                "SSH log stream failed for {host}:{port}: {primary}; OpenSSH fallback failed: {fallback}"
-            )
-            .into()),
-        },
-    }
-}
-
-async fn stream_remote_logs_russh(
-    host: &str,
-    port: u16,
-    log_cmd: &str,
-    sink: SharedLogSink,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut ssh = SshClient::connect_to(host, port).await?;
-    let out = sink.clone();
-    let err = sink;
-    let exit = ssh
-        .exec_streaming(
-            log_cmd,
-            move |data| {
-                out(data);
-            },
-            move |data| {
-                err(data);
-            },
-        )
+    let mut client = ManagementClient::new(host).await?;
+    let metadata = client
+        .fetch_log_bytes(app, LogCursor::default(), None, 0)
         .await?;
-    ssh.disconnect().await?;
+    let mut cursor = LogCursor {
+        previous: metadata.previous_len,
+        current: metadata.current_len,
+    };
 
-    if exit != 0 {
-        return Err(format!("remote log command exited {exit}").into());
-    }
-
-    Ok(())
-}
-
-async fn stream_remote_logs_openssh(
-    host: &str,
-    port: u16,
-    log_cmd: &str,
-    sink: SharedLogSink,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut child = tokio::process::Command::new("ssh")
-        .arg("-o")
-        .arg("BatchMode=yes")
-        .arg("-p")
-        .arg(port.to_string())
-        .arg(format!("tako@{host}"))
-        .arg(log_cmd)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-
-    let stdout_task = stdout.map(|stream| {
-        let sink = sink.clone();
-        tokio::spawn(async move { stream_to_sink(stream, sink).await })
-    });
-    let stderr_task = stderr.map(|stream| {
-        let sink = sink.clone();
-        tokio::spawn(async move { stream_to_sink(stream, sink).await })
-    });
-
-    let status = child.wait().await?;
-
-    if let Some(task) = stdout_task {
-        task.await??;
-    }
-    if let Some(task) = stderr_task {
-        task.await??;
-    }
-
-    if !status.success() {
-        return Err(format!("exit {status}").into());
-    }
-
-    Ok(())
-}
-
-async fn stream_to_sink<R>(mut stream: R, sink: SharedLogSink) -> Result<(), std::io::Error>
-where
-    R: tokio::io::AsyncRead + Unpin,
-{
-    use tokio::io::AsyncReadExt;
-
-    let mut buf = [0_u8; 8192];
-    loop {
-        let n = stream.read(&mut buf).await?;
-        if n == 0 {
-            break;
+    if metadata.current_len > 0 {
+        let start = metadata
+            .current_len
+            .saturating_sub(LOG_TAIL_BACKLOG_BYTES as u64);
+        let backlog = client
+            .fetch_log_bytes(
+                app,
+                LogCursor {
+                    previous: metadata.previous_len,
+                    current: start,
+                },
+                None,
+                LOG_TAIL_BACKLOG_BYTES,
+            )
+            .await?;
+        let tail = last_complete_lines(&backlog.bytes, LOG_TAIL_BACKLOG_LINES, start > 0);
+        if !tail.is_empty() {
+            sink(&tail);
         }
-        sink(&buf[..n]);
+        cursor = backlog.cursor;
     }
-    Ok(())
+
+    loop {
+        let fetch = client
+            .fetch_log_bytes(app, cursor, None, LOG_TAIL_CHUNK_BYTES)
+            .await?;
+        if !fetch.bytes.is_empty() {
+            sink(&fetch.bytes);
+        }
+        cursor = fetch.cursor;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
 }
 
 pub(super) async fn collect_remote_log_bytes(
     host: &str,
-    port: u16,
-    log_cmd: &str,
+    app: &str,
+    days: u32,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
-    match collect_remote_log_bytes_russh(host, port, log_cmd).await {
-        Ok(bytes) => Ok(bytes),
-        Err(primary) => match collect_remote_log_bytes_openssh(host, port, log_cmd).await {
-            Ok(bytes) => Ok(bytes),
-            Err(fallback) => Err(format!(
-                "SSH log fetch failed for {host}:{port}: {primary}; OpenSSH fallback failed: {fallback}"
-            )
-            .into()),
-        },
-    }
-}
-
-async fn collect_remote_log_bytes_russh(
-    host: &str,
-    port: u16,
-    log_cmd: &str,
-) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
-    let mut ssh = SshClient::connect_to(host, port).await?;
-    let bytes = Arc::new(Mutex::new(Vec::new()));
-    let out = bytes.clone();
-    let err = Arc::new(Mutex::new(Vec::new()));
-    let err_out = err.clone();
-
-    let exit = ssh
-        .exec_streaming(
-            log_cmd,
-            move |data| {
-                if let Ok(mut buf) = out.lock() {
-                    buf.extend_from_slice(data);
-                }
-            },
-            move |data| {
-                if let Ok(mut buf) = err_out.lock() {
-                    buf.extend_from_slice(data);
-                }
-            },
+    let since = cutoff_unix_secs_for_days(days);
+    let mut client = ManagementClient::new(host).await?;
+    let fetch = client
+        .fetch_log_bytes(app, LogCursor::default(), Some(since), LOG_FETCH_MAX_BYTES)
+        .await?;
+    if fetch.truncated {
+        return Err(format!(
+            "log response exceeded {} bytes; retry with a smaller --days value",
+            LOG_FETCH_MAX_BYTES
         )
-        .await?;
-    ssh.disconnect().await?;
+        .into());
+    }
+    Ok(fetch.bytes.to_vec())
+}
 
-    if exit != 0 {
-        let stderr = err.lock().unwrap_or_else(|e| e.into_inner());
-        let detail = String::from_utf8_lossy(&stderr).trim().to_string();
-        let message = if detail.is_empty() {
-            format!("remote log command exited {exit}")
-        } else {
-            format!("remote log command exited {exit}: {detail}")
-        };
-        return Err(message.into());
+fn cutoff_unix_secs_for_days(days: u32) -> i64 {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let window = u64::from(days).saturating_mul(86_400);
+    now.saturating_sub(window) as i64
+}
+
+fn last_complete_lines(bytes: &[u8], line_count: usize, drop_first_partial: bool) -> Vec<u8> {
+    if bytes.is_empty() || line_count == 0 {
+        return Vec::new();
     }
 
-    let bytes = Arc::try_unwrap(bytes)
-        .map_err(|_| "log byte collector still has references")?
-        .into_inner()
-        .map_err(|_| "log byte collector lock poisoned")?;
-    Ok(bytes)
-}
-
-async fn collect_remote_log_bytes_openssh(
-    host: &str,
-    port: u16,
-    log_cmd: &str,
-) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
-    let output = tokio::process::Command::new("ssh")
-        .arg("-o")
-        .arg("BatchMode=yes")
-        .arg("-p")
-        .arg(port.to_string())
-        .arg(format!("tako@{host}"))
-        .arg(log_cmd)
-        .output()
-        .await?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let detail = if stderr.is_empty() {
-            format!("exit {}", output.status)
-        } else {
-            stderr
-        };
-        return Err(detail.into());
+    let start = if drop_first_partial {
+        bytes
+            .iter()
+            .position(|b| *b == b'\n')
+            .map_or(bytes.len(), |i| i + 1)
+    } else {
+        0
+    };
+    let bytes = &bytes[start..];
+    if bytes.is_empty() {
+        return Vec::new();
     }
 
-    Ok(output.stdout)
-}
+    let mut lines_seen = 0;
+    let mut start_index = 0;
+    for (index, byte) in bytes.iter().enumerate().rev() {
+        if *byte == b'\n' && index + 1 < bytes.len() {
+            lines_seen += 1;
+            if lines_seen == line_count {
+                start_index = index + 1;
+                break;
+            }
+        }
+    }
 
-pub(super) fn build_fetch_log_command(app_name: &str, days: u32) -> String {
-    let log_dir = shell_single_quote(&format!("/opt/tako/apps/{app_name}/logs"));
-    let app_logs = build_app_log_command(&log_dir, days);
-    format!("{{ {app_logs}; }} | if command -v zstd >/dev/null 2>&1; then zstd -c; else cat; fi")
-}
-
-fn build_app_log_command(log_dir: &str, days: u32) -> String {
-    let since = shell_single_quote(&format!("{days} days ago"));
-    let awk = shell_single_quote(
-        r#"substr($0,5,1)!="-" || substr($0,11,1)!="T" || substr($0,1,19) >= cutoff"#,
-    );
-    format!(
-        "if cutoff=$(date -u -d {since} '+%Y-%m-%dT%H:%M:%S' 2>/dev/null); then for log_file in {log_dir}/previous.log {log_dir}/current.log; do test -f \"$log_file\" && awk -v cutoff=\"$cutoff\" {awk} \"$log_file\"; done; else for log_file in {log_dir}/previous.log {log_dir}/current.log; do test -f \"$log_file\" && cat \"$log_file\"; done; fi"
-    )
-}
-
-pub(super) fn build_tail_log_command(app_name: &str) -> String {
-    let log_file = shell_single_quote(&format!("/opt/tako/apps/{app_name}/logs/current.log"));
-    format!("tail -F {log_file} 2>/dev/null || echo 'No logs available'")
+    bytes[start_index..].to_vec()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
-    use std::process::Command;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn fetch_log_command_reads_app_log_files() {
-        let command = build_fetch_log_command("demo/production", 2);
+    fn last_complete_lines_returns_last_n_lines() {
+        let lines = last_complete_lines(b"one\ntwo\nthree\n", 2, false);
 
-        assert!(command.contains("date -u -d '2 days ago' '+%Y-%m-%dT%H:%M:%S'"));
-        assert!(command.contains("awk -v cutoff=\"$cutoff\""));
-        assert!(command.contains("substr($0,1,19) >= cutoff"));
-        assert!(command.contains("'/opt/tako/apps/demo/production/logs'/previous.log"));
-        assert!(command.contains("zstd -c"));
+        assert_eq!(String::from_utf8(lines).unwrap(), "two\nthree\n");
     }
 
     #[test]
-    fn app_log_command_reads_current_when_previous_log_is_missing() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let log_dir =
-            std::env::temp_dir().join(format!("tako-log-command-{}-{unique}", std::process::id()));
-        fs::create_dir_all(&log_dir).unwrap();
-        fs::write(log_dir.join("current.log"), "[out] [test] current only\n").unwrap();
+    fn last_complete_lines_drops_partial_first_line_when_reading_from_middle() {
+        let lines = last_complete_lines(b"rtial\none\ntwo\n", 2, true);
 
-        let command = build_app_log_command(&shell_single_quote(&log_dir.to_string_lossy()), 1);
-        let output = Command::new("sh").arg("-c").arg(command).output().unwrap();
-        let _ = fs::remove_dir_all(&log_dir);
-
-        assert!(
-            output.status.success(),
-            "command failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(
-            String::from_utf8_lossy(&output.stdout).contains("current only"),
-            "stdout should include current.log: {}",
-            String::from_utf8_lossy(&output.stdout)
-        );
-    }
-
-    #[test]
-    fn tail_log_command_streams_app_log_file() {
-        let command = build_tail_log_command("demo/production");
-
-        assert!(command.contains("tail -F '/opt/tako/apps/demo/production/logs/current.log'"));
-        assert!(command.contains("No logs available"));
+        assert_eq!(String::from_utf8(lines).unwrap(), "one\ntwo\n");
     }
 }

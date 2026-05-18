@@ -13,8 +13,8 @@ use crate::config::{ServersToml, TakoToml};
 use crate::output;
 use json::JsonLogWriter;
 use json::format_json_lines;
+use remote::collect_remote_log_bytes;
 use remote::stream_remote_logs;
-use remote::{build_fetch_log_command, build_tail_log_command, collect_remote_log_bytes};
 use render::{LogWriter, extract_timestamp, format_and_dedup, format_prefix};
 use tracing::Instrument;
 
@@ -145,7 +145,6 @@ async fn stream_logs(
             .ok_or_else(|| server_not_found_error(server_name))?;
 
         let host = server.host.clone();
-        let port = server.port;
         let remote_app_name = remote_app_name.to_string();
         let display_app_name = display_app_name.to_string();
         let writer = writer.clone();
@@ -155,8 +154,7 @@ async fn stream_logs(
 
         tasks.push(tokio::spawn(
             async move {
-                let _t = output::timed(&format!("Stream logs ({host}:{port})"));
-                let log_cmd = build_tail_log_command(&remote_app_name);
+                let _t = output::timed(&format!("Stream logs ({host})"));
 
                 if json {
                     let lw = Arc::new(Mutex::new(JsonLogWriter::new(writer, name, show_prefix)));
@@ -168,7 +166,7 @@ async fn stream_logs(
                             }
                         })
                     };
-                    stream_remote_logs(&host, port, &log_cmd, sink).await?;
+                    stream_remote_logs(&host, &remote_app_name, sink).await?;
 
                     if let Ok(mut w) = lw.lock() {
                         w.flush();
@@ -188,7 +186,7 @@ async fn stream_logs(
                             }
                         })
                     };
-                    stream_remote_logs(&host, port, &log_cmd, sink).await?;
+                    stream_remote_logs(&host, &remote_app_name, sink).await?;
 
                     if let Ok(mut w) = lw.lock() {
                         w.flush();
@@ -235,7 +233,6 @@ async fn fetch_logs(
             .ok_or_else(|| server_not_found_error(server_name))?;
 
         let host = server.host.clone();
-        let port = server.port;
         let app_name = app_name.to_string();
         let server_name = server_name.to_string();
         let collected = collected.clone();
@@ -245,12 +242,10 @@ async fn fetch_logs(
 
         tasks.push(tokio::spawn(
             async move {
-                let _t = output::timed(&format!("Fetch logs ({host}:{port}, last {days} days)"));
-                // Read app log files and pipe through zstd if available on the server.
-                let log_cmd = build_fetch_log_command(&app_name, days);
+                let _t = output::timed(&format!("Fetch logs ({host}, last {days} days)"));
 
                 let collector = Arc::new(Mutex::new(ByteCollector::new(server_name, collected)));
-                let bytes = collect_remote_log_bytes(&host, port, &log_cmd).await?;
+                let bytes = collect_remote_log_bytes(&host, &app_name, days).await?;
 
                 if let Ok(mut c) = collector.lock() {
                     c.push(&bytes);

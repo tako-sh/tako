@@ -348,7 +348,7 @@ Stream live logs:
 tako logs --env production --tail
 ```
 
-If no logs are found, make sure the environment exists, the target server is mapped, and the app has been deployed to that environment.
+Logs use signed HTTP management. If no logs are found, make sure the environment exists, the target server is mapped, signed management works, and the app has been deployed to that environment.
 
 Use JSON output for tooling:
 

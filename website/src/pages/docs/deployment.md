@@ -314,7 +314,7 @@ tako releases list --env production
 tako releases rollback <release-id> --env production
 ```
 
-Logs include app stdout/stderr plus app-scoped Tako diagnostics. Rollback uses the same rolling update path as deploy.
+Logs are read over signed HTTP and include app stdout/stderr plus app-scoped Tako diagnostics. Rollback uses the same rolling update path as deploy.
 
 ## Server Operations
 

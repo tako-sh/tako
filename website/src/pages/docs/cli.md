@@ -134,7 +134,7 @@ tako logs --env production --json
 | `--days <N>`  | Fetch historical logs from the last N days. Default `3`. |
 | `--json`      | Emit JSON lines.                                         |
 
-Historical logs are sorted by timestamp across target servers. Interactive history output opens in a pager when stdout is a terminal.
+Logs are fetched over signed HTTP management. Historical logs are sorted by timestamp across target servers. Interactive history output opens in a pager when stdout is a terminal.
 
 ## `tako servers`
 

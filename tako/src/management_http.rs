@@ -14,6 +14,14 @@ const HEADER_UPLOAD_APP: &str = "x-tako-app";
 const HEADER_UPLOAD_VERSION: &str = "x-tako-version";
 const HEADER_UPLOAD_SIZE: &str = "x-tako-artifact-size";
 const HEADER_UPLOAD_SHA256: &str = "x-tako-artifact-sha256";
+const HEADER_LOG_APP: &str = "x-tako-app";
+const HEADER_LOG_PREVIOUS_OFFSET: &str = "x-tako-log-previous-offset";
+const HEADER_LOG_CURRENT_OFFSET: &str = "x-tako-log-current-offset";
+const HEADER_LOG_SINCE_UNIX_SECS: &str = "x-tako-log-since-unix-secs";
+const HEADER_LOG_MAX_BYTES: &str = "x-tako-log-max-bytes";
+const HEADER_LOG_PREVIOUS_LEN: &str = "x-tako-log-previous-len";
+const HEADER_LOG_CURRENT_LEN: &str = "x-tako-log-current-len";
+const HEADER_LOG_TRUNCATED: &str = "x-tako-log-truncated";
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ManagementError {
@@ -31,6 +39,21 @@ pub(crate) struct ManagementClient {
     host: String,
     http: reqwest::Client,
     signer: auth::ManagementSigner,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct LogCursor {
+    pub(crate) previous: u64,
+    pub(crate) current: u64,
+}
+
+#[derive(Debug)]
+pub(crate) struct LogFetch {
+    pub(crate) bytes: bytes::Bytes,
+    pub(crate) cursor: LogCursor,
+    pub(crate) previous_len: u64,
+    pub(crate) current_len: u64,
+    pub(crate) truncated: bool,
 }
 
 impl ManagementClient {
@@ -123,6 +146,58 @@ impl ManagementClient {
             last_auth_error.unwrap_or_else(|| "management auth failed".to_string()),
         ))
     }
+
+    pub(crate) async fn fetch_log_bytes(
+        &mut self,
+        app: &str,
+        cursor: LogCursor,
+        since_unix_secs: Option<i64>,
+        max_bytes: usize,
+    ) -> Result<LogFetch, ManagementError> {
+        let auth_body = tako_core::logs_request_auth_body(
+            app,
+            cursor.previous,
+            cursor.current,
+            since_unix_secs,
+            max_bytes,
+        );
+        let signed_headers = self.signer.sign_headers(&auth_body).await?;
+        let mut last_auth_error = None;
+
+        for headers in signed_headers {
+            let mut request = self
+                .http
+                .post(logs_url(&self.host))
+                .header(auth::HEADER_KEY_FINGERPRINT, headers.key_fingerprint)
+                .header(auth::HEADER_TIMESTAMP, headers.timestamp)
+                .header(auth::HEADER_NONCE, headers.nonce)
+                .header(auth::HEADER_SIGNATURE, headers.signature)
+                .header(HEADER_LOG_APP, app)
+                .header(HEADER_LOG_PREVIOUS_OFFSET, cursor.previous.to_string())
+                .header(HEADER_LOG_CURRENT_OFFSET, cursor.current.to_string())
+                .header(HEADER_LOG_MAX_BYTES, max_bytes.to_string());
+            if let Some(since_unix_secs) = since_unix_secs {
+                request = request.header(HEADER_LOG_SINCE_UNIX_SECS, since_unix_secs.to_string());
+            }
+
+            let response = request
+                .send()
+                .await
+                .map_err(|error| ManagementError::Message(error.to_string()))?;
+            match parse_log_fetch(response).await {
+                Ok(fetch) => return Ok(fetch),
+                Err(LogFetchError::Auth(message)) => {
+                    last_auth_error = Some(message);
+                    continue;
+                }
+                Err(LogFetchError::Other(error)) => return Err(error),
+            }
+        }
+
+        Err(ManagementError::Message(
+            last_auth_error.unwrap_or_else(|| "management auth failed".to_string()),
+        ))
+    }
 }
 
 pub(crate) fn rpc_url(host: &str) -> String {
@@ -131,6 +206,10 @@ pub(crate) fn rpc_url(host: &str) -> String {
 
 pub(crate) fn release_artifact_url(host: &str) -> String {
     management_url(host, "release-artifact")
+}
+
+pub(crate) fn logs_url(host: &str) -> String {
+    management_url(host, "logs")
 }
 
 fn management_url(host: &str, path: &str) -> String {
@@ -197,6 +276,95 @@ async fn parse_response(response: reqwest::Response) -> Result<Response, Managem
 
     serde_json::from_slice::<Response>(&body).map_err(|error| {
         ManagementError::Message(format!("Remote management returned invalid JSON: {error}"))
+    })
+}
+
+enum LogFetchError {
+    Auth(String),
+    Other(ManagementError),
+}
+
+async fn parse_log_fetch(response: reqwest::Response) -> Result<LogFetch, LogFetchError> {
+    let status = response.status();
+    let headers = response.headers().clone();
+    let body = response
+        .bytes()
+        .await
+        .map_err(|error| LogFetchError::Other(ManagementError::Message(error.to_string())))?;
+
+    if !status.is_success() {
+        let parsed = serde_json::from_slice::<Response>(&body).map_err(|error| {
+            LogFetchError::Other(ManagementError::Message(format!(
+                "Remote management returned invalid error JSON: {error}"
+            )))
+        })?;
+        if is_auth_error(&parsed) {
+            return Err(LogFetchError::Auth(
+                parsed
+                    .error_message()
+                    .unwrap_or("management auth failed")
+                    .to_string(),
+            ));
+        }
+        return Err(LogFetchError::Other(ManagementError::Message(
+            parsed
+                .error_message()
+                .unwrap_or("remote log request failed")
+                .to_string(),
+        )));
+    }
+
+    Ok(LogFetch {
+        bytes: body,
+        cursor: LogCursor {
+            previous: response_u64_header(&headers, HEADER_LOG_PREVIOUS_OFFSET)?,
+            current: response_u64_header(&headers, HEADER_LOG_CURRENT_OFFSET)?,
+        },
+        previous_len: response_u64_header(&headers, HEADER_LOG_PREVIOUS_LEN)?,
+        current_len: response_u64_header(&headers, HEADER_LOG_CURRENT_LEN)?,
+        truncated: response_bool_header(&headers, HEADER_LOG_TRUNCATED)?,
+    })
+}
+
+fn response_u64_header(
+    headers: &reqwest::header::HeaderMap,
+    name: &'static str,
+) -> Result<u64, LogFetchError> {
+    let value = headers.get(name).ok_or_else(|| {
+        LogFetchError::Other(ManagementError::Message(format!(
+            "Remote log response missing {name}"
+        )))
+    })?;
+    let value = value.to_str().map_err(|_| {
+        LogFetchError::Other(ManagementError::Message(format!(
+            "Remote log response has invalid {name}"
+        )))
+    })?;
+    value.parse::<u64>().map_err(|_| {
+        LogFetchError::Other(ManagementError::Message(format!(
+            "Remote log response has invalid {name}"
+        )))
+    })
+}
+
+fn response_bool_header(
+    headers: &reqwest::header::HeaderMap,
+    name: &'static str,
+) -> Result<bool, LogFetchError> {
+    let value = headers.get(name).ok_or_else(|| {
+        LogFetchError::Other(ManagementError::Message(format!(
+            "Remote log response missing {name}"
+        )))
+    })?;
+    let value = value.to_str().map_err(|_| {
+        LogFetchError::Other(ManagementError::Message(format!(
+            "Remote log response has invalid {name}"
+        )))
+    })?;
+    value.parse::<bool>().map_err(|_| {
+        LogFetchError::Other(ManagementError::Message(format!(
+            "Remote log response has invalid {name}"
+        )))
     })
 }
 

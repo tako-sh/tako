@@ -57,11 +57,11 @@ Servers receive prebuilt artifacts. They do not build application code during de
 
 Normal server installs require Tailscale for remote management. The installer binds the management HTTP endpoint to the server's Tailscale address on port `9844`.
 
-The HTTP management API uses the same typed `Command -> Response` protocol as the Unix management socket. `hello` and `server_info` are public probes. All other RPCs require an enrolled SSH key signature, a fresh timestamp, and a non-replayed nonce. Deploy artifacts use a separate streamed upload endpoint signed over app id, version, size, and SHA-256 digest.
+The HTTP management API uses the same typed `Command -> Response` protocol as the Unix management socket. `hello` and `server_info` are public probes. All other RPCs require an enrolled SSH key signature, a fresh timestamp, and a non-replayed nonce. Deploy artifacts and app logs use separate byte-body endpoints signed over request metadata.
 
 `tako servers add` verifies Tailscale reachability, SSH recovery access as `tako@host`, management identity, signed RPC access, and server target metadata before it writes the server to global `config.toml`.
 
-Normal app/runtime commands such as deploy, status, scale, releases, delete, and secret sync use signed HTTP management. SSH remains for setup, recovery, reload, upgrade, and uninstall flows.
+Normal app/runtime commands such as deploy, status, logs, scale, releases, delete, and secret sync use signed HTTP management. SSH remains for setup, recovery, reload, upgrade, and uninstall flows.
 
 ## Routing
 

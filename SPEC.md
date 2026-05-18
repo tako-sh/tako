@@ -712,6 +712,9 @@ View or stream logs from all servers in an environment.
   metadata fields such as `instance=...` as dim italic text.
 - Prefixes each line with `[server-name]` when multiple servers are present.
 - Remote fetch/connect failures are reported as command failures; they are not treated as empty logs.
+- Remote logs are read over signed HTTP management. History uses one bounded raw-byte fetch from
+  the app's `previous.log` and `current.log`; streaming mode polls the same endpoint with byte
+  offsets and starts by showing up to the last 10 current-log lines.
 - `--json` emits JSONL for agents and automation: one log event per stdout line and no
   human progress output on stdout. Structured app/worker JSON records are preserved and
   annotated with `source` and `instance_id`; `source` is the app instance id, worker name
@@ -1407,10 +1410,13 @@ Reference scripts in this repo:
 - `POST /rpc` with JSON command bodies handles small management commands.
 - HTTP `/rpc` accepts unsigned `hello` and `server_info` probes. All other commands require a signed request from an enrolled SSH key. Requests include the enrolled key fingerprint, timestamp, nonce, and SSH signature over the RPC body plus Tako's management-auth context. Replayed nonces and stale timestamps are rejected.
 - `POST /release-artifact` accepts deploy artifacts as a streamed request body. The request is signed over an upload descriptor containing app id, release version, byte size, and SHA-256 digest; the server verifies the received size and digest before extracting the release.
-- Signed HTTP commands reuse the existing dispatcher; bulk deploy artifacts use the streaming upload endpoint instead of the JSON RPC path.
+- `POST /logs` returns raw app log bytes with offset headers. The request is signed over app id,
+  current/previous offsets, optional history cutoff, and byte limit.
+- Signed HTTP commands reuse the existing dispatcher; bulk deploy artifacts and logs use dedicated
+  byte-body endpoints instead of the JSON RPC path.
 - The Unix management socket remains the local server IPC path. SSH remains setup/recovery, not the normal remote management transport.
 - `tako servers add` expects the host to be the server's Tailscale MagicDNS name or Tailscale IP. MagicDNS hostnames default the local server name to the first DNS label; IP addresses require `--name`. It verifies the host resolves to a Tailscale address, verifies `tako@host` SSH recovery access, enrolls the SSH key that authenticated that connection, probes private HTTP management with `hello` and `server_info`, verifies signed HTTP access, and refuses to write `config.toml` if any check fails.
-- App-scoped runtime commands (`deploy`, `status`, `scale`, `releases`, `delete`, and `secrets sync`) use signed HTTP remote management. SSH is not used for normal app/runtime management.
+- App-scoped runtime commands (`deploy`, `status`, `logs`, `scale`, `releases`, `delete`, and `secrets sync`) use signed HTTP remote management. SSH is not used for normal app/runtime management.
 
 ### Zero-Downtime Operation
 
@@ -1466,6 +1472,7 @@ App log files contain app stdout/stderr plus app-scoped Tako server diagnostics.
 - Only `hello` and `server_info` are public probes. All other RPCs require SSH-key-signed headers, a fresh timestamp, and a non-replayed nonce against the server's `management-authorized-keys` file.
 - Management RPC request bodies are capped at 1 MiB.
 - Deploy artifact uploads use `POST /release-artifact`, signed over upload metadata rather than the full artifact body; the server verifies the streamed body size and SHA-256 digest before extracting it.
+- Log reads use `POST /logs`, signed over request metadata and returned as raw bytes with cursor headers.
 
 **Public proxy listeners:**
 

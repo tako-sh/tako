@@ -27,6 +27,14 @@ const HEADER_UPLOAD_APP: &str = "x-tako-app";
 const HEADER_UPLOAD_VERSION: &str = "x-tako-version";
 const HEADER_UPLOAD_SIZE: &str = "x-tako-artifact-size";
 const HEADER_UPLOAD_SHA256: &str = "x-tako-artifact-sha256";
+const HEADER_LOG_APP: &str = "x-tako-app";
+const HEADER_LOG_PREVIOUS_OFFSET: &str = "x-tako-log-previous-offset";
+const HEADER_LOG_CURRENT_OFFSET: &str = "x-tako-log-current-offset";
+const HEADER_LOG_SINCE_UNIX_SECS: &str = "x-tako-log-since-unix-secs";
+const HEADER_LOG_MAX_BYTES: &str = "x-tako-log-max-bytes";
+const HEADER_LOG_PREVIOUS_LEN: &str = "x-tako-log-previous-len";
+const HEADER_LOG_CURRENT_LEN: &str = "x-tako-log-current-len";
+const HEADER_LOG_TRUNCATED: &str = "x-tako-log-truncated";
 
 type ResponseBody = Full<Bytes>;
 
@@ -99,6 +107,10 @@ async fn handle_request(
         return handle_release_artifact_upload(request, state, auth_state, peer_addr).await;
     }
 
+    if request.method() == Method::POST && request.uri().path() == "/logs" {
+        return handle_logs(request, state, auth_state).await;
+    }
+
     if request.method() != Method::POST || request.uri().path() != "/rpc" {
         return json_response(
             StatusCode::NOT_FOUND,
@@ -157,6 +169,70 @@ async fn handle_request(
         StatusCode::BAD_REQUEST
     };
     json_response(status, &response)
+}
+
+async fn handle_logs(
+    request: Request<Incoming>,
+    state: Arc<ServerState>,
+    auth_state: Arc<ManagementAuthState>,
+) -> Response<ResponseBody> {
+    let (parts, _body) = request.into_parts();
+    let app = match required_header(&parts.headers, HEADER_LOG_APP) {
+        Ok(value) => value.to_string(),
+        Err(response) => return response,
+    };
+    let previous_offset = match required_header(&parts.headers, HEADER_LOG_PREVIOUS_OFFSET)
+        .and_then(|value| parse_u64_header(HEADER_LOG_PREVIOUS_OFFSET, value))
+    {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let current_offset = match required_header(&parts.headers, HEADER_LOG_CURRENT_OFFSET)
+        .and_then(|value| parse_u64_header(HEADER_LOG_CURRENT_OFFSET, value))
+    {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let max_bytes = match required_header(&parts.headers, HEADER_LOG_MAX_BYTES)
+        .and_then(|value| parse_usize_header(HEADER_LOG_MAX_BYTES, value))
+    {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let since_unix_secs = match optional_i64_header(&parts.headers, HEADER_LOG_SINCE_UNIX_SECS) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+
+    let auth_body = tako_core::logs_request_auth_body(
+        &app,
+        previous_offset,
+        current_offset,
+        since_unix_secs,
+        max_bytes,
+    );
+    if let Err(error) = verify_signed_request(
+        &state.runtime_config().data_dir,
+        &auth_state,
+        &parts.headers,
+        &auth_body,
+    ) {
+        return json_response(
+            StatusCode::UNAUTHORIZED,
+            &tako_core::Response::error(error.to_string()),
+        );
+    }
+
+    match state.read_logs(
+        &app,
+        previous_offset,
+        current_offset,
+        since_unix_secs,
+        max_bytes,
+    ) {
+        Ok(logs) => log_bytes_response(StatusCode::OK, logs),
+        Err(error) => json_response(StatusCode::BAD_REQUEST, &tako_core::Response::error(error)),
+    }
 }
 
 async fn handle_release_artifact_upload(
@@ -322,6 +398,40 @@ fn parse_u64_header(name: &'static str, value: &str) -> Result<u64, Response<Res
     })
 }
 
+fn parse_usize_header(name: &'static str, value: &str) -> Result<usize, Response<ResponseBody>> {
+    value.parse::<usize>().map_err(|_| {
+        json_response(
+            StatusCode::BAD_REQUEST,
+            &tako_core::Response::error(format!("invalid {name} header")),
+        )
+    })
+}
+
+fn optional_i64_header(
+    headers: &hyper::HeaderMap,
+    name: &'static str,
+) -> Result<Option<i64>, Response<ResponseBody>> {
+    let Some(value) = headers.get(name) else {
+        return Ok(None);
+    };
+    let Ok(value) = value.to_str() else {
+        return Err(json_response(
+            StatusCode::BAD_REQUEST,
+            &tako_core::Response::error(format!("invalid {name} header")),
+        ));
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    value.parse::<i64>().map(Some).map_err(|_| {
+        json_response(
+            StatusCode::BAD_REQUEST,
+            &tako_core::Response::error(format!("invalid {name} header")),
+        )
+    })
+}
+
 pub(crate) async fn handle_rpc_command(
     state: Arc<ServerState>,
     command: Command,
@@ -353,6 +463,23 @@ fn json_response(status: StatusCode, value: &impl serde::Serialize) -> Response<
                 .expect("management HTTP error response should build")
         }
     }
+}
+
+fn log_bytes_response(
+    status: StatusCode,
+    logs: crate::operations::logs::LogRead,
+) -> Response<ResponseBody> {
+    Response::builder()
+        .status(status)
+        .header("content-type", "application/octet-stream")
+        .header("cache-control", "no-store")
+        .header(HEADER_LOG_PREVIOUS_OFFSET, logs.previous_offset.to_string())
+        .header(HEADER_LOG_CURRENT_OFFSET, logs.current_offset.to_string())
+        .header(HEADER_LOG_PREVIOUS_LEN, logs.previous_len.to_string())
+        .header(HEADER_LOG_CURRENT_LEN, logs.current_len.to_string())
+        .header(HEADER_LOG_TRUNCATED, logs.truncated.to_string())
+        .body(Full::new(Bytes::from(logs.bytes)))
+        .expect("management HTTP log response should build")
 }
 
 #[cfg(test)]

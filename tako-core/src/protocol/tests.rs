@@ -32,6 +32,13 @@ fn release_artifact_upload_auth_body_is_stable() {
 }
 
 #[test]
+fn logs_request_auth_body_is_stable() {
+    let body = logs_request_auth_body("my-app/production", 12, 34, Some(1_778_220_000), 8192);
+
+    assert_eq!(body, b"logs\nmy-app/production\n12\n34\n1778220000\n8192");
+}
+
+#[test]
 fn test_prepare_release_command_roundtrip() {
     let cmd = Command::PrepareRelease {
         app: "my-app".to_string(),
