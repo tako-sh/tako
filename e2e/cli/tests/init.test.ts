@@ -55,7 +55,7 @@ describe("tako init --ci", () => {
 
     expect(exitCode).toBe(0);
     const toml = await readFile(join(tempDir, "tako.toml"), "utf-8");
-    expect(toml).toContain('runtime = "bun"');
+    expect(toml).toMatch(/^runtime = "bun@\d+\.\d+\.\d+"$/m);
   });
 
   test("--ci produces no ANSI color codes in output", async () => {
