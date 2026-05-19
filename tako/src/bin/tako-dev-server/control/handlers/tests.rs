@@ -1,4 +1,4 @@
-use super::build_worker_env;
+use super::apps::build_worker_env;
 
 #[test]
 fn build_worker_env_sets_data_dir_under_project() {
