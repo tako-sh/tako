@@ -159,11 +159,6 @@ async fn collect_cache_files(root: &Path) -> Vec<CacheFile> {
             continue;
         };
 
-        if metadata.is_file() {
-            files.push(cache_file(path, metadata));
-            continue;
-        }
-
         if !metadata.is_dir() {
             continue;
         }
@@ -176,7 +171,7 @@ async fn collect_cache_files(root: &Path) -> Vec<CacheFile> {
             let Ok(child_metadata) = child.metadata().await else {
                 continue;
             };
-            if child_metadata.is_file() {
+            if child_metadata.is_file() && is_cache_file_path(root, &child_path) {
                 files.push(cache_file(child_path, child_metadata));
             }
         }
@@ -191,6 +186,36 @@ fn cache_file(path: PathBuf, metadata: std::fs::Metadata) -> CacheFile {
         len: metadata.len(),
         modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
     }
+}
+
+fn is_cache_file_path(root: &Path, path: &Path) -> bool {
+    let Ok(relative) = path.strip_prefix(root) else {
+        return false;
+    };
+
+    let mut components = relative.components();
+    let Some(std::path::Component::Normal(prefix)) = components.next() else {
+        return false;
+    };
+    let Some(std::path::Component::Normal(suffix)) = components.next() else {
+        return false;
+    };
+    if components.next().is_some() {
+        return false;
+    }
+
+    let Some(prefix) = prefix.to_str() else {
+        return false;
+    };
+    let Some(suffix) = suffix.to_str() else {
+        return false;
+    };
+
+    prefix.len() == 2
+        && !suffix.is_empty()
+        && prefix.len() + suffix.len() >= 4
+        && prefix.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 async fn remove_empty_cache_dirs(root: &Path) {
@@ -571,5 +596,37 @@ mod tests {
         .await;
 
         assert!(cache_total_bytes(temp.path()).await <= 8);
+    }
+
+    #[tokio::test]
+    async fn prune_ignores_temporary_transform_cache_files() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let key = transform_cache_key(
+            "demo",
+            test_app_root(),
+            b"in-progress",
+            &options(OutputFormat::Webp, 640),
+        );
+        let path = cache_path(temp.path(), &key).expect("cache path");
+        let parent = path.parent().expect("cache parent");
+        tokio::fs::create_dir_all(parent)
+            .await
+            .expect("create cache dir");
+        let tmp_path = path.with_extension("tmp-test");
+        tokio::fs::write(&tmp_path, b"in-progress")
+            .await
+            .expect("write tmp cache file");
+
+        prune_with_policy(
+            temp.path(),
+            TransformCachePolicy {
+                max_bytes: 0,
+                max_age: Duration::ZERO,
+            },
+        )
+        .await;
+
+        assert!(tmp_path.exists());
+        assert_eq!(cache_total_bytes(temp.path()).await, 0);
     }
 }
