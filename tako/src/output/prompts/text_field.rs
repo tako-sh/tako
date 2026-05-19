@@ -1,10 +1,15 @@
+mod raw;
+mod validation;
+
 use std::io;
 
 use super::super::{
-    ACCENT, is_interactive, is_pretty, theme_accent, theme_dim, theme_error, theme_muted,
-    theme_warning,
+    is_interactive, is_pretty, theme_accent, theme_error, theme_muted, theme_warning,
 };
-use super::{EscapeAction, prompt_escape_action, wizard_back_error};
+use raw::{RawTextInputOptions, raw_text_input};
+use validation::{
+    PromptValidationStatus, prompt_validation_marker_offset, run_validation_with_prompt_spinner,
+};
 
 pub fn password_field(prompt: &str) -> io::Result<String> {
     TextField::new(prompt).password().prompt()
@@ -152,61 +157,73 @@ impl<'a> TextField<'a> {
             return Ok(value);
         }
 
-        // Verbose mode: single-line prompt with › separator, no screen erasing.
         if !is_pretty() {
-            let mut error: Option<String> = None;
-            loop {
-                if let Some(warning) = self.warning {
-                    // CodeQL[rust/cleartext-logging]: prompt warnings are UI copy; password input is masked below.
-                    eprintln!("{}", theme_warning(warning));
-                }
-                let active_error = error.as_deref();
-                if let Some(message) = active_error {
-                    eprintln!("{}", theme_error(message));
-                }
-                let label = if active_error.is_some() {
-                    theme_error(self.label)
-                } else {
-                    theme_accent(self.label)
-                };
-                let display_label = match self.hint {
-                    Some(hint) => {
-                        let hint = format!("({hint})");
-                        let hint = if active_error.is_some() {
-                            theme_error(hint)
-                        } else {
-                            theme_muted(hint)
-                        };
-                        format!("{label} {hint}")
-                    }
-                    None => label,
-                };
-                let value = raw_text_input(
-                    &display_label,
-                    RawTextInputOptions {
-                        initial: if active_error.is_some() {
-                            None
-                        } else {
-                            self.default
-                        },
-                        suggestions: self.suggestions,
-                        password: self.password,
-                        placeholder_override: self.placeholder,
-                        required: self.required,
-                        trimmed: self.trimmed,
-                        use_separator: true, // use › separator
-                        error: active_error.is_some(),
-                        show_back: self.show_back,
-                    },
-                )?;
-                match validate(&value, None) {
-                    Ok(()) => return Ok(value),
-                    Err(message) => error = Some(message),
-                }
-            }
+            return self.prompt_verbose(validate);
         }
 
-        // Pretty mode: multi-line diamond design
+        self.prompt_pretty(validate)
+    }
+
+    fn prompt_verbose(
+        self,
+        mut validate: impl FnMut(&str, Option<PromptValidationStatus>) -> Result<(), String>,
+    ) -> io::Result<String> {
+        let mut error: Option<String> = None;
+        loop {
+            if let Some(warning) = self.warning {
+                // CodeQL[rust/cleartext-logging]: prompt warnings are UI copy; password input is masked below.
+                eprintln!("{}", theme_warning(warning));
+            }
+            let active_error = error.as_deref();
+            if let Some(message) = active_error {
+                eprintln!("{}", theme_error(message));
+            }
+            let label = if active_error.is_some() {
+                theme_error(self.label)
+            } else {
+                theme_accent(self.label)
+            };
+            let display_label = match self.hint {
+                Some(hint) => {
+                    let hint = format!("({hint})");
+                    let hint = if active_error.is_some() {
+                        theme_error(hint)
+                    } else {
+                        theme_muted(hint)
+                    };
+                    format!("{label} {hint}")
+                }
+                None => label,
+            };
+            let value = raw_text_input(
+                &display_label,
+                RawTextInputOptions {
+                    initial: if active_error.is_some() {
+                        None
+                    } else {
+                        self.default
+                    },
+                    suggestions: self.suggestions,
+                    password: self.password,
+                    placeholder_override: self.placeholder,
+                    required: self.required,
+                    trimmed: self.trimmed,
+                    use_separator: true,
+                    error: active_error.is_some(),
+                    show_back: self.show_back,
+                },
+            )?;
+            match validate(&value, None) {
+                Ok(()) => return Ok(value),
+                Err(message) => error = Some(message),
+            }
+        }
+    }
+
+    fn prompt_pretty(
+        self,
+        mut validate: impl FnMut(&str, Option<PromptValidationStatus>) -> Result<(), String>,
+    ) -> io::Result<String> {
         let term = console::Term::stderr();
         let hint_lines = self
             .hint
@@ -216,8 +233,6 @@ impl<'a> TextField<'a> {
         let mut error: Option<String> = None;
         loop {
             let active_error = error.as_deref();
-            // Lines below the input: validation error (optional), content hints,
-            // key hints, and optional footer.
             let below_input_count = active_error.is_some() as usize
                 + hint_lines.as_ref().map_or(0, |l| l.len())
                 + 1
@@ -227,7 +242,6 @@ impl<'a> TextField<'a> {
                 eprintln!("{line}");
             }
 
-            // Reserve space: blank for input, then hint lines, then key hints
             eprintln!();
             if let Some(message) = active_error {
                 eprintln!("{}", super::format_pretty_prompt_error_line(message));
@@ -263,7 +277,7 @@ impl<'a> TextField<'a> {
                     placeholder_override: self.placeholder,
                     required: self.required,
                     trimmed: self.trimmed,
-                    use_separator: false, // no › separator in pretty mode
+                    use_separator: false,
                     error: active_error.is_some(),
                     show_back: self.show_back,
                 },
@@ -340,418 +354,6 @@ impl<'a> TextField<'a> {
     }
 }
 
-#[derive(Clone, Copy)]
-struct PromptValidationStatus {
-    marker_offset: u16,
-}
-
-fn prompt_validation_marker_offset(warning: Option<&str>) -> u16 {
-    2 + warning.is_some() as u16
-}
-
-fn run_validation_with_prompt_spinner<F>(
-    value: String,
-    status: PromptValidationStatus,
-    validate: std::sync::Arc<F>,
-) -> Result<(), String>
-where
-    F: Fn(String) -> Result<(), String> + Send + Sync + 'static,
-{
-    use std::sync::mpsc::RecvTimeoutError;
-    use std::time::Duration;
-
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let result = validate(value);
-        let _ = tx.send(result);
-    });
-
-    match rx.recv_timeout(Duration::from_secs(1)) {
-        Ok(result) => return result,
-        Err(RecvTimeoutError::Disconnected) => {
-            return Err("Validation failed. Try again.".to_string());
-        }
-        Err(RecvTimeoutError::Timeout) => {}
-    }
-
-    let _guard = PromptValidationCursorGuard;
-    let _ = crossterm::execute!(io::stderr(), crossterm::cursor::Hide);
-    let mut tick = 0usize;
-    loop {
-        draw_prompt_validation_marker(status, tick);
-        tick = tick.wrapping_add(1);
-        match rx.recv_timeout(Duration::from_millis(80)) {
-            Ok(result) => return result,
-            Err(RecvTimeoutError::Disconnected) => {
-                return Err("Validation failed. Try again.".to_string());
-            }
-            Err(RecvTimeoutError::Timeout) => {}
-        }
-    }
-}
-
-struct PromptValidationCursorGuard;
-
-impl Drop for PromptValidationCursorGuard {
-    fn drop(&mut self) {
-        if !crate::output::cursor::is_cursor_globally_hidden() {
-            let _ = crossterm::execute!(io::stderr(), crossterm::cursor::Show);
-        }
-    }
-}
-
-fn draw_prompt_validation_marker(status: PromptValidationStatus, tick: usize) {
-    use std::io::Write;
-
-    let spinner = crate::output::SPINNER_TICKS[tick % crate::output::SPINNER_TICKS.len()];
-    let marker = theme_accent(spinner);
-    let mut out = io::stderr();
-    let _ = crossterm::execute!(
-        out,
-        crossterm::cursor::SavePosition,
-        crossterm::cursor::MoveUp(status.marker_offset),
-        crossterm::cursor::MoveToColumn(0)
-    );
-    let _ = write!(out, "{marker}");
-    let _ = crossterm::execute!(out, crossterm::cursor::RestorePosition);
-    let _ = out.flush();
-}
-
-/// Custom text input using crossterm. Supports cursor movement, word deletion,
-/// tab-completion from suggestions, inline auto-suggest, password masking, and placeholder text.
-///
-/// `use_separator`: if true, renders `{prompt} › {cursor}` (verbose style).
-/// If false, renders `{prompt}{cursor}` — the caller has already printed the label
-/// and `prompt` is any optional indentation prefix.
-struct RawTextInputOptions<'a> {
-    initial: Option<&'a str>,
-    suggestions: &'a [String],
-    password: bool,
-    placeholder_override: Option<&'a str>,
-    required: bool,
-    trimmed: bool,
-    use_separator: bool,
-    error: bool,
-    show_back: bool,
-}
-
-fn raw_text_input(prompt: &str, options: RawTextInputOptions<'_>) -> io::Result<String> {
-    use crossterm::{
-        cursor,
-        event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
-        terminal::{self, Clear, ClearType},
-    };
-    use std::io::Write;
-
-    let mut out = io::stderr();
-    let RawTextInputOptions {
-        initial,
-        suggestions,
-        password,
-        placeholder_override,
-        required,
-        trimmed,
-        use_separator,
-        error,
-        show_back,
-    } = options;
-
-    let mut buf: Vec<char> = initial.unwrap_or("").chars().collect();
-    let mut pos: usize = buf.len(); // cursor position in chars
-    let mut suggestion_idx: Option<usize> = None;
-
-    // Placeholder: explicit override > first suggestion > dots for password
-    let placeholder: Option<String> = if initial.is_some() {
-        None
-    } else if password && !error {
-        Some("••••••".to_string())
-    } else if let Some(ph) = placeholder_override {
-        Some(ph.to_string())
-    } else {
-        suggestions.first().cloned()
-    };
-
-    let separator = if error {
-        theme_error("›")
-    } else {
-        theme_muted("›")
-    };
-
-    // Find the best starts-with match for inline auto-suggest (fish-shell style).
-    let sep_display_width: usize = if use_separator { 3 } else { 0 }; // " › " = 3
-
-    let inline_suffix = |buf: &[char]| -> String {
-        if buf.is_empty() || suggestions.is_empty() || password {
-            return String::new();
-        }
-        let current: String = buf.iter().collect();
-        let lower = current.to_lowercase();
-        for s in suggestions {
-            if s.to_lowercase().starts_with(&lower) && s.len() > current.len() {
-                // Use char-based slicing for multi-byte safety
-                return s.chars().skip(current.chars().count()).collect();
-            }
-        }
-        String::new()
-    };
-
-    let draw = |buf: &[char],
-                pos: usize,
-                out: &mut io::Stderr,
-                password: bool,
-                placeholder: &Option<String>,
-                suffix: &str| {
-        let _ = write!(out, "\r");
-        let _ = crossterm::execute!(*out, Clear(ClearType::CurrentLine));
-        if buf.is_empty() {
-            if let Some(ph) = placeholder {
-                let dimmed = if error {
-                    theme_error(ph)
-                } else {
-                    theme_dim(ph)
-                };
-                if use_separator {
-                    let _ = write!(out, "{prompt} {separator} {dimmed}");
-                } else {
-                    let _ = write!(out, "{prompt}{dimmed}");
-                }
-            } else if use_separator {
-                let _ = write!(out, "{prompt} {separator} ");
-            } else {
-                let _ = write!(out, "{prompt}");
-            }
-        } else {
-            let display: String = if password {
-                "•".repeat(buf.len())
-            } else {
-                buf.iter().collect()
-            };
-            let display = if error { theme_error(display) } else { display };
-            if use_separator {
-                let _ = write!(out, "{prompt} {separator} {display}");
-            } else {
-                let _ = write!(out, "{prompt}{display}");
-            }
-            // Show inline suggestion suffix dimmed (only when cursor is at end)
-            if !suffix.is_empty() && pos == buf.len() {
-                let suffix = if error {
-                    theme_error(suffix)
-                } else {
-                    theme_dim(suffix)
-                };
-                let _ = write!(out, "{suffix}");
-            }
-        }
-        // Position cursor: prompt_width + sep_width + chars-before-cursor
-        let prompt_width = console::measure_text_width(prompt);
-        let cursor_offset = if password {
-            pos
-        } else {
-            buf[..pos].iter().collect::<String>().len()
-        };
-        let col = prompt_width + sep_display_width + cursor_offset;
-        let _ = crossterm::execute!(*out, cursor::MoveToColumn(col as u16));
-        let _ = out.flush();
-    };
-
-    // Accept the current inline suggestion into the buffer.
-    let accept_inline = |buf: &mut Vec<char>, pos: &mut usize, suggestions: &[String]| -> bool {
-        if buf.is_empty() || suggestions.is_empty() {
-            return false;
-        }
-        let current: String = buf.iter().collect();
-        let lower = current.to_lowercase();
-        if let Some(sugg) = suggestions
-            .iter()
-            .find(|s| s.to_lowercase().starts_with(&lower) && s.len() > current.len())
-        {
-            *buf = sugg.chars().collect();
-            *pos = buf.len();
-            true
-        } else {
-            false
-        }
-    };
-
-    // Draw initial state
-    terminal::enable_raw_mode()?;
-    let _ = crossterm::execute!(out, cursor::Show);
-
-    // Set cursor color to brand teal
-    let (cr, cg, cb) = ACCENT;
-    let _ = write!(out, "\x1b]12;rgb:{cr:02x}/{cg:02x}/{cb:02x}\x1b\\");
-    let _ = out.flush();
-
-    let suf = inline_suffix(&buf);
-    draw(&buf, pos, &mut out, password, &placeholder, &suf);
-
-    let result = loop {
-        if let Event::Key(KeyEvent {
-            code, modifiers, ..
-        }) = event::read()?
-        {
-            match code {
-                KeyCode::Enter => {
-                    let mut result: String = buf.iter().collect();
-                    if trimmed {
-                        result = result.trim().to_string();
-                    }
-                    if required && result.is_empty() {
-                        continue;
-                    }
-                    break Ok(result);
-                }
-                KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    break Err(io::Error::new(
-                        io::ErrorKind::Interrupted,
-                        "Operation interrupted",
-                    ));
-                }
-                KeyCode::Esc => {
-                    if prompt_escape_action(show_back) == EscapeAction::Back {
-                        break Err(wizard_back_error());
-                    }
-                    continue;
-                }
-                // Character input
-                KeyCode::Char(c)
-                    if !modifiers.contains(KeyModifiers::CONTROL)
-                        && !modifiers.contains(KeyModifiers::ALT) =>
-                {
-                    // Reject leading whitespace when trimmed
-                    if trimmed
-                        && c.is_whitespace()
-                        && buf[..pos].iter().all(|ch| ch.is_whitespace())
-                    {
-                        continue;
-                    }
-                    buf.insert(pos, c);
-                    pos += 1;
-                    suggestion_idx = None;
-                }
-                // Backspace
-                KeyCode::Backspace
-                    if (modifiers.contains(KeyModifiers::SUPER)
-                        || modifiers.contains(KeyModifiers::ALT))
-                    // Word/line delete backward
-                    && pos > 0 =>
-                {
-                    let old_pos = pos;
-                    while pos > 0 && buf[pos - 1].is_whitespace() {
-                        pos -= 1;
-                    }
-                    while pos > 0 && !buf[pos - 1].is_whitespace() {
-                        pos -= 1;
-                    }
-                    buf.drain(pos..old_pos);
-                    suggestion_idx = None;
-                }
-                KeyCode::Backspace if pos > 0 => {
-                    pos -= 1;
-                    buf.remove(pos);
-                    suggestion_idx = None;
-                }
-                KeyCode::Delete if pos < buf.len() => {
-                    buf.remove(pos);
-                }
-                // Cursor movement
-                KeyCode::Left
-                    if modifiers.contains(KeyModifiers::SUPER)
-                        || modifiers.contains(KeyModifiers::ALT) =>
-                {
-                    while pos > 0 && buf[pos - 1].is_whitespace() {
-                        pos -= 1;
-                    }
-                    while pos > 0 && !buf[pos - 1].is_whitespace() {
-                        pos -= 1;
-                    }
-                }
-                KeyCode::Left => {
-                    pos = pos.saturating_sub(1);
-                }
-                KeyCode::Right
-                    if modifiers.contains(KeyModifiers::SUPER)
-                        || modifiers.contains(KeyModifiers::ALT) =>
-                {
-                    while pos < buf.len() && !buf[pos].is_whitespace() {
-                        pos += 1;
-                    }
-                    while pos < buf.len() && buf[pos].is_whitespace() {
-                        pos += 1;
-                    }
-                }
-                KeyCode::Right => {
-                    if pos < buf.len() {
-                        pos += 1;
-                    } else {
-                        // At end of buffer: accept inline suggestion
-                        accept_inline(&mut buf, &mut pos, suggestions);
-                        suggestion_idx = None;
-                    }
-                }
-                KeyCode::Home | KeyCode::Char('a') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    pos = 0;
-                }
-                KeyCode::End | KeyCode::Char('e') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    pos = buf.len();
-                }
-                // Kill to end of line
-                KeyCode::Char('k') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    buf.truncate(pos);
-                }
-                // Kill to start of line
-                KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    buf.drain(..pos);
-                    pos = 0;
-                }
-                // Tab completion: cycle through matching suggestions
-                KeyCode::Tab | KeyCode::BackTab if !suggestions.is_empty() && !password => {
-                    let current: String = buf.iter().collect();
-                    let needle = current.to_lowercase();
-                    let matches: Vec<&String> = suggestions
-                        .iter()
-                        .filter(|s| needle.is_empty() || s.to_lowercase().contains(&needle))
-                        .collect();
-                    if !matches.is_empty() {
-                        let idx = match suggestion_idx {
-                            Some(i) => {
-                                if code == KeyCode::BackTab {
-                                    if i == 0 { matches.len() - 1 } else { i - 1 }
-                                } else {
-                                    (i + 1) % matches.len()
-                                }
-                            }
-                            None => 0,
-                        };
-                        suggestion_idx = Some(idx);
-                        buf = matches[idx].chars().collect();
-                        pos = buf.len();
-                    }
-                }
-                _ => {}
-            }
-            let suf = inline_suffix(&buf);
-            draw(&buf, pos, &mut out, password, &placeholder, &suf);
-        }
-    };
-
-    // Hide cursor again if it's globally hidden (we only showed it for
-    // the duration of active text input).
-    if crate::output::cursor::is_cursor_globally_hidden() {
-        let _ = crossterm::execute!(out, crossterm::cursor::Hide);
-    }
-    terminal::disable_raw_mode()?;
-
-    // Restore default cursor color
-    let _ = write!(out, "\x1b]112\x1b\\");
-
-    // Move to next line
-    let _ = write!(out, "\r\n");
-    let _ = out.flush();
-
-    result
-}
-
 fn pretty_text_prompt_active_lines(
     warning: Option<&str>,
     error: Option<&str>,
@@ -765,24 +367,6 @@ fn pretty_text_prompt_active_lines(
         + hint.is_some() as usize
         + footer_spacing
         + footer_lines
-}
-
-/// Used internally by filter_suggestions tests — kept for test compatibility.
-#[cfg(test)]
-fn filter_suggestions(suggestions: &[String], current_input: &str) -> Vec<String> {
-    let needle = current_input.to_lowercase();
-    let mut filtered = Vec::new();
-
-    for candidate in suggestions {
-        if !needle.is_empty() && !candidate.to_lowercase().contains(&needle) {
-            continue;
-        }
-        if !filtered.iter().any(|existing| existing == candidate) {
-            filtered.push(candidate.clone());
-        }
-    }
-
-    filtered
 }
 
 #[cfg(test)]

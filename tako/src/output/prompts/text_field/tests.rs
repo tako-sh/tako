@@ -1,4 +1,6 @@
 use super::super::super::is_interactive;
+use super::raw::filter_suggestions;
+use super::validation::prompt_validation_marker_offset;
 use super::*;
 
 #[test]
