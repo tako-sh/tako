@@ -141,6 +141,7 @@ impl ManagementClient {
                 .header(HEADER_UPLOAD_SIZE, size.to_string())
                 .header(HEADER_UPLOAD_SHA256, sha256.as_str())
                 .header("content-type", "application/zstd")
+                .timeout(MANAGEMENT_UPLOAD_TIMEOUT)
                 .body(reqwest::Body::from(file))
                 .send()
                 .await
