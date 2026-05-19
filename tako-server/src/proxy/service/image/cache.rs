@@ -1,11 +1,17 @@
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::time::{Duration, SystemTime};
 use tako_images::{ImageCrop, ImageFit, OutputFormat, TransformOptions};
 use tokio::io::AsyncWriteExt;
+use tokio::sync::watch;
 
 const CACHE_VERSION: &str = "tako-image-transform-v1";
 const CACHE_DIR_NAME: &str = "tako-image-cache";
+const TRANSFORM_CACHE_MAX_BYTES: u64 = 1024 * 1024 * 1024;
+const TRANSFORM_CACHE_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct CachedTransform {
@@ -17,9 +23,18 @@ pub(super) fn default_cache_root() -> PathBuf {
     std::env::temp_dir().join(CACHE_DIR_NAME)
 }
 
-pub(super) fn transform_cache_key(source: &[u8], options: &TransformOptions) -> String {
+pub(super) fn transform_cache_key(
+    app_name: &str,
+    app_root: &Path,
+    source: &[u8],
+    options: &TransformOptions,
+) -> String {
     let mut hasher = Sha256::new();
     hasher.update(CACHE_VERSION.as_bytes());
+    hasher.update(b"\napp\n");
+    hasher.update(app_name.as_bytes());
+    hasher.update(b"\nroot\n");
+    hasher.update(app_root.to_string_lossy().as_bytes());
     hasher.update(b"\nsource\n");
     hasher.update(source);
     hasher.update(b"\nformat\n");
@@ -67,12 +82,202 @@ pub(super) async fn write(root: &Path, key: &str, bytes: &[u8]) {
         return;
     }
     drop(file);
-    if tokio::fs::rename(&tmp_path, &path).await.is_err() {
+    if tokio::fs::rename(&tmp_path, &path).await.is_ok() {
+        prune_with_policy(root, TransformCachePolicy::default()).await;
+    } else {
         let _ = tokio::fs::remove_file(&tmp_path).await;
     }
 }
 
 static TMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, Copy)]
+struct TransformCachePolicy {
+    max_bytes: u64,
+    max_age: Duration,
+}
+
+impl Default for TransformCachePolicy {
+    fn default() -> Self {
+        Self {
+            max_bytes: TRANSFORM_CACHE_MAX_BYTES,
+            max_age: TRANSFORM_CACHE_MAX_AGE,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct CacheFile {
+    path: PathBuf,
+    len: u64,
+    modified: SystemTime,
+}
+
+async fn prune_with_policy(root: &Path, policy: TransformCachePolicy) {
+    let mut files = collect_cache_files(root).await;
+    let now = SystemTime::now();
+    let mut retained = Vec::with_capacity(files.len());
+    let mut total_bytes = 0_u64;
+
+    for file in files.drain(..) {
+        if cache_file_is_expired(&file, now, policy.max_age) {
+            let _ = tokio::fs::remove_file(&file.path).await;
+        } else {
+            total_bytes = total_bytes.saturating_add(file.len);
+            retained.push(file);
+        }
+    }
+
+    if total_bytes > policy.max_bytes {
+        retained.sort_by_key(|file| file.modified);
+        for file in retained {
+            if total_bytes <= policy.max_bytes {
+                break;
+            }
+            if tokio::fs::remove_file(&file.path).await.is_ok() {
+                total_bytes = total_bytes.saturating_sub(file.len);
+            }
+        }
+    }
+
+    remove_empty_cache_dirs(root).await;
+}
+
+fn cache_file_is_expired(file: &CacheFile, now: SystemTime, max_age: Duration) -> bool {
+    now.duration_since(file.modified).unwrap_or_default() >= max_age
+}
+
+async fn collect_cache_files(root: &Path) -> Vec<CacheFile> {
+    let mut files = Vec::new();
+    let Ok(mut entries) = tokio::fs::read_dir(root).await else {
+        return files;
+    };
+
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+        let Ok(metadata) = entry.metadata().await else {
+            continue;
+        };
+
+        if metadata.is_file() {
+            files.push(cache_file(path, metadata));
+            continue;
+        }
+
+        if !metadata.is_dir() {
+            continue;
+        }
+
+        let Ok(mut children) = tokio::fs::read_dir(&path).await else {
+            continue;
+        };
+        while let Ok(Some(child)) = children.next_entry().await {
+            let child_path = child.path();
+            let Ok(child_metadata) = child.metadata().await else {
+                continue;
+            };
+            if child_metadata.is_file() {
+                files.push(cache_file(child_path, child_metadata));
+            }
+        }
+    }
+
+    files
+}
+
+fn cache_file(path: PathBuf, metadata: std::fs::Metadata) -> CacheFile {
+    CacheFile {
+        path,
+        len: metadata.len(),
+        modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+    }
+}
+
+async fn remove_empty_cache_dirs(root: &Path) {
+    let Ok(mut entries) = tokio::fs::read_dir(root).await else {
+        return;
+    };
+
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+        let Ok(metadata) = entry.metadata().await else {
+            continue;
+        };
+        if metadata.is_dir() {
+            let _ = tokio::fs::remove_dir(path).await;
+        }
+    }
+}
+
+pub(super) enum TransformLease {
+    Owner(TransformOwner),
+    Waiter(TransformWaiter),
+}
+
+pub(super) struct TransformOwner {
+    key: String,
+    entry: Arc<InFlightTransform>,
+}
+
+impl Drop for TransformOwner {
+    fn drop(&mut self) {
+        let mut transforms = lock_in_flight_transforms();
+        if transforms
+            .get(&self.key)
+            .is_some_and(|entry| Arc::ptr_eq(entry, &self.entry))
+        {
+            transforms.remove(&self.key);
+        }
+        let _ = self.entry.done.send(true);
+    }
+}
+
+pub(super) struct TransformWaiter {
+    done: watch::Receiver<bool>,
+}
+
+impl TransformWaiter {
+    pub(super) async fn wait(mut self) {
+        while !*self.done.borrow_and_update() {
+            if self.done.changed().await.is_err() {
+                break;
+            }
+        }
+    }
+}
+
+struct InFlightTransform {
+    done: watch::Sender<bool>,
+}
+
+pub(super) fn acquire_transform_lease(key: &str) -> TransformLease {
+    let mut transforms = lock_in_flight_transforms();
+    if let Some(entry) = transforms.get(key) {
+        return TransformLease::Waiter(TransformWaiter {
+            done: entry.done.subscribe(),
+        });
+    }
+
+    let (done, _receiver) = watch::channel(false);
+    let entry = Arc::new(InFlightTransform { done });
+    transforms.insert(key.to_string(), entry.clone());
+    TransformLease::Owner(TransformOwner {
+        key: key.to_string(),
+        entry,
+    })
+}
+
+fn in_flight_transforms() -> &'static Mutex<HashMap<String, Arc<InFlightTransform>>> {
+    static TRANSFORMS: OnceLock<Mutex<HashMap<String, Arc<InFlightTransform>>>> = OnceLock::new();
+    TRANSFORMS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn lock_in_flight_transforms() -> MutexGuard<'static, HashMap<String, Arc<InFlightTransform>>> {
+    match in_flight_transforms().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
 
 fn cache_path(root: &Path, key: &str) -> Option<PathBuf> {
     if key.len() < 4 || !key.bytes().all(|byte| byte.is_ascii_hexdigit()) {
@@ -112,6 +317,7 @@ fn crop_code(crop: ImageCrop) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::time::{Duration, timeout};
 
     fn options(format: OutputFormat, width: u32) -> TransformOptions {
         TransformOptions {
@@ -121,6 +327,96 @@ mod tests {
             fit: None,
             crop: None,
             quality: 75,
+        }
+    }
+
+    fn test_key(name: &str) -> String {
+        format!(
+            "test-{name}-{}-{}",
+            std::process::id(),
+            TMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed)
+        )
+    }
+
+    fn test_app_root() -> &'static Path {
+        Path::new("/opt/tako/apps/demo/production/releases/v1")
+    }
+
+    async fn cache_total_bytes(root: &Path) -> u64 {
+        collect_cache_files(root)
+            .await
+            .into_iter()
+            .map(|file| file.len)
+            .sum()
+    }
+
+    #[test]
+    fn duplicate_transform_lease_waits_for_existing_owner() {
+        let key = test_key("duplicate");
+        let _owner = match acquire_transform_lease(&key) {
+            TransformLease::Owner(owner) => owner,
+            TransformLease::Waiter(_) => panic!("first lease should own transform"),
+        };
+
+        match acquire_transform_lease(&key) {
+            TransformLease::Owner(_) => panic!("duplicate lease should wait"),
+            TransformLease::Waiter(_) => {}
+        }
+    }
+
+    #[test]
+    fn different_transform_lease_keys_get_independent_owners() {
+        let left_key = test_key("left");
+        let right_key = test_key("right");
+        let _left = match acquire_transform_lease(&left_key) {
+            TransformLease::Owner(owner) => owner,
+            TransformLease::Waiter(_) => panic!("left lease should own transform"),
+        };
+
+        match acquire_transform_lease(&right_key) {
+            TransformLease::Owner(_) => {}
+            TransformLease::Waiter(_) => panic!("right lease should own transform"),
+        }
+    }
+
+    #[tokio::test]
+    async fn transform_waiter_completes_after_owner_drops() {
+        let key = test_key("wait");
+        let owner = match acquire_transform_lease(&key) {
+            TransformLease::Owner(owner) => owner,
+            TransformLease::Waiter(_) => panic!("first lease should own transform"),
+        };
+        let waiter = match acquire_transform_lease(&key) {
+            TransformLease::Owner(_) => panic!("duplicate lease should wait"),
+            TransformLease::Waiter(waiter) => waiter,
+        };
+        let mut waiting = tokio::spawn(waiter.wait());
+
+        assert!(
+            timeout(Duration::from_millis(25), &mut waiting)
+                .await
+                .is_err()
+        );
+
+        drop(owner);
+        timeout(Duration::from_secs(1), waiting)
+            .await
+            .expect("waiter should complete after owner drop")
+            .expect("waiter task");
+    }
+
+    #[test]
+    fn transform_lease_owner_drop_releases_key() {
+        let key = test_key("release");
+        let owner = match acquire_transform_lease(&key) {
+            TransformLease::Owner(owner) => owner,
+            TransformLease::Waiter(_) => panic!("first lease should own transform"),
+        };
+        drop(owner);
+
+        match acquire_transform_lease(&key) {
+            TransformLease::Owner(_) => {}
+            TransformLease::Waiter(_) => panic!("released key should be ownable"),
         }
     }
 
@@ -134,16 +430,72 @@ mod tests {
 
     #[test]
     fn cache_key_changes_with_source_bytes() {
-        let left = transform_cache_key(b"first", &options(OutputFormat::Avif, 640));
-        let right = transform_cache_key(b"second", &options(OutputFormat::Avif, 640));
+        let left = transform_cache_key(
+            "demo",
+            test_app_root(),
+            b"first",
+            &options(OutputFormat::Avif, 640),
+        );
+        let right = transform_cache_key(
+            "demo",
+            test_app_root(),
+            b"second",
+            &options(OutputFormat::Avif, 640),
+        );
 
         assert_ne!(left, right);
     }
 
     #[test]
     fn cache_key_changes_with_transform_options() {
-        let left = transform_cache_key(b"source", &options(OutputFormat::Avif, 640));
-        let right = transform_cache_key(b"source", &options(OutputFormat::Webp, 640));
+        let left = transform_cache_key(
+            "demo",
+            test_app_root(),
+            b"source",
+            &options(OutputFormat::Avif, 640),
+        );
+        let right = transform_cache_key(
+            "demo",
+            test_app_root(),
+            b"source",
+            &options(OutputFormat::Webp, 640),
+        );
+
+        assert_ne!(left, right);
+    }
+
+    #[test]
+    fn cache_key_changes_with_app_name() {
+        let left = transform_cache_key(
+            "demo",
+            test_app_root(),
+            b"source",
+            &options(OutputFormat::Avif, 640),
+        );
+        let right = transform_cache_key(
+            "other",
+            test_app_root(),
+            b"source",
+            &options(OutputFormat::Avif, 640),
+        );
+
+        assert_ne!(left, right);
+    }
+
+    #[test]
+    fn cache_key_changes_with_app_root() {
+        let left = transform_cache_key(
+            "demo",
+            Path::new("/opt/tako/apps/demo/production/releases/v1"),
+            b"source",
+            &options(OutputFormat::Avif, 640),
+        );
+        let right = transform_cache_key(
+            "demo",
+            Path::new("/opt/tako/apps/demo/production/releases/v2"),
+            b"source",
+            &options(OutputFormat::Avif, 640),
+        );
 
         assert_ne!(left, right);
     }
@@ -151,7 +503,12 @@ mod tests {
     #[tokio::test]
     async fn cache_write_then_read_returns_bytes_with_transform_content_type() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let key = transform_cache_key(b"source", &options(OutputFormat::Webp, 640));
+        let key = transform_cache_key(
+            "demo",
+            test_app_root(),
+            b"source",
+            &options(OutputFormat::Webp, 640),
+        );
 
         write(temp.path(), &key, b"cached-image").await;
         let cached = read(temp.path(), &key, OutputFormat::Webp)
@@ -165,5 +522,54 @@ mod tests {
                 content_type: "image/webp",
             }
         );
+    }
+
+    #[tokio::test]
+    async fn prune_removes_expired_transform_cache_files() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let key = transform_cache_key(
+            "demo",
+            test_app_root(),
+            b"expired",
+            &options(OutputFormat::Webp, 640),
+        );
+
+        write(temp.path(), &key, b"expired-image").await;
+        prune_with_policy(
+            temp.path(),
+            TransformCachePolicy {
+                max_bytes: u64::MAX,
+                max_age: Duration::ZERO,
+            },
+        )
+        .await;
+
+        assert_eq!(cache_total_bytes(temp.path()).await, 0);
+    }
+
+    #[tokio::test]
+    async fn prune_removes_transform_cache_files_to_fit_byte_limit() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let transform_options = options(OutputFormat::Webp, 640);
+
+        for source in [
+            b"first".as_slice(),
+            b"second".as_slice(),
+            b"third".as_slice(),
+        ] {
+            let key = transform_cache_key("demo", test_app_root(), source, &transform_options);
+            write(temp.path(), &key, b"1234").await;
+        }
+
+        prune_with_policy(
+            temp.path(),
+            TransformCachePolicy {
+                max_bytes: 8,
+                max_age: Duration::from_secs(60 * 60),
+            },
+        )
+        .await;
+
+        assert!(cache_total_bytes(temp.path()).await <= 8);
     }
 }

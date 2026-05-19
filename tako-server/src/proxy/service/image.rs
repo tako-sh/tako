@@ -1,4 +1,5 @@
 mod cache;
+mod source_cache;
 
 use super::{BackendResolution, RequestCtx};
 use crate::image_worker;
@@ -13,7 +14,7 @@ use reqwest::{Client, ClientBuilder, Url, redirect::Policy};
 use sha2::{Digest, Sha256};
 use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tako_images::{
     ImageError, ImageSource, PUBLIC_IMAGE_BASE_PATH, TransformLimits, TransformOptions,
@@ -93,26 +94,26 @@ impl TakoProxy {
             quality: verified.quality,
         };
         let cache_root = cache::default_cache_root();
-        let cache_key = cache::transform_cache_key(&source.bytes, &transform_options);
+        let cache_key =
+            cache::transform_cache_key(app_name, &app_root, source.bytes(), &transform_options);
         let response = match cache::read(&cache_root, &cache_key, transform_options.format).await {
             Some(cached) => ImageResponseBody {
                 bytes: cached.bytes,
                 content_type: cached.content_type.to_string(),
             },
-            None => match transform_image_isolated(source, transform_options, limits).await {
-                TransformImageOutcome::Transformed(transformed) => {
-                    cache::write(&cache_root, &cache_key, &transformed.bytes).await;
-                    ImageResponseBody::from_transformed(transformed)
-                }
-                TransformImageOutcome::Failed(error, source) => {
-                    match image_response_body_from_transform_error(error, source) {
-                        Ok(response) => response,
-                        Err(error) => {
-                            let status = image_error_status(&error);
-                            return write_image_error(session, status, image_error_body(status))
-                                .await;
-                        }
-                    }
+            None => match transform_uncached_image(
+                source,
+                transform_options,
+                limits,
+                &cache_root,
+                &cache_key,
+            )
+            .await
+            {
+                Ok(response) => response,
+                Err(error) => {
+                    let status = image_error_status(&error);
+                    return write_image_error(session, status, image_error_body(status)).await;
                 }
             },
         };
@@ -139,6 +140,30 @@ impl TakoProxy {
     }
 
     async fn load_image_source(
+        &self,
+        app_name: &str,
+        app_root: &Path,
+        source: &ImageSource,
+        host: &str,
+        matched_route_path: Option<&str>,
+        limits: &TransformLimits,
+    ) -> Result<ImageSourceBytes, ImageError> {
+        let cache_key = source_cache_key(app_name, app_root, source, host, matched_route_path);
+        source_cache::get_or_load(&cache_key, || async {
+            self.load_image_source_uncached(
+                app_name,
+                app_root,
+                source,
+                host,
+                matched_route_path,
+                limits,
+            )
+            .await
+        })
+        .await
+    }
+
+    async fn load_image_source_uncached(
         &self,
         app_name: &str,
         app_root: &Path,
@@ -179,10 +204,7 @@ impl TakoProxy {
             match static_server.resolve(&lookup_path) {
                 Ok(file) => {
                     let bytes = read_file_limited(&file.path, limits.max_source_bytes).await?;
-                    return Ok(Some(ImageSourceBytes {
-                        bytes,
-                        content_type: Some(file.content_type),
-                    }));
+                    return Ok(Some(ImageSourceBytes::new(bytes, Some(file.content_type))));
                 }
                 Err(StaticFileError::NotFound(_)) | Err(StaticFileError::Io(_)) => {}
                 Err(StaticFileError::PathTraversal(_)) | Err(StaticFileError::InvalidPath(_)) => {
@@ -220,9 +242,31 @@ impl TakoProxy {
     }
 }
 
+#[derive(Clone)]
 struct ImageSourceBytes {
-    bytes: Vec<u8>,
+    bytes: Arc<[u8]>,
     content_type: Option<String>,
+}
+
+impl ImageSourceBytes {
+    fn new(bytes: Vec<u8>, content_type: Option<String>) -> Self {
+        Self {
+            bytes: Arc::from(bytes.into_boxed_slice()),
+            content_type,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    fn bytes(&self) -> &[u8] {
+        self.bytes.as_ref()
+    }
+
+    fn to_vec(&self) -> Vec<u8> {
+        self.bytes.to_vec()
+    }
 }
 
 #[derive(Debug)]
@@ -245,13 +289,52 @@ enum TransformImageOutcome {
     Failed(ImageError, ImageSourceBytes),
 }
 
+async fn transform_uncached_image(
+    source: ImageSourceBytes,
+    options: TransformOptions,
+    limits: TransformLimits,
+    cache_root: &Path,
+    cache_key: &str,
+) -> Result<ImageResponseBody, ImageError> {
+    loop {
+        match cache::acquire_transform_lease(cache_key) {
+            cache::TransformLease::Owner(_lease) => {
+                if let Some(cached) = cache::read(cache_root, cache_key, options.format).await {
+                    return Ok(ImageResponseBody {
+                        bytes: cached.bytes,
+                        content_type: cached.content_type.to_string(),
+                    });
+                }
+                return match transform_image_isolated(source, options, limits).await {
+                    TransformImageOutcome::Transformed(transformed) => {
+                        cache::write(cache_root, cache_key, &transformed.bytes).await;
+                        Ok(ImageResponseBody::from_transformed(transformed))
+                    }
+                    TransformImageOutcome::Failed(error, source) => {
+                        image_response_body_from_transform_error(error, source)
+                    }
+                };
+            }
+            cache::TransformLease::Waiter(waiter) => {
+                waiter.wait().await;
+                if let Some(cached) = cache::read(cache_root, cache_key, options.format).await {
+                    return Ok(ImageResponseBody {
+                        bytes: cached.bytes,
+                        content_type: cached.content_type.to_string(),
+                    });
+                }
+            }
+        }
+    }
+}
+
 async fn transform_image_isolated(
     source: ImageSourceBytes,
     options: TransformOptions,
     limits: TransformLimits,
 ) -> TransformImageOutcome {
     match image_worker::transform_in_worker(
-        &source.bytes,
+        source.bytes(),
         source.content_type.as_deref(),
         options,
         &limits,
@@ -272,11 +355,13 @@ fn image_response_body_from_transform_error(
     }
     let content_type = source
         .content_type
+        .as_ref()
         .filter(|content_type| is_image_content_type(content_type))
+        .cloned()
         .ok_or(ImageError::TransformFailed)?;
 
     Ok(ImageResponseBody {
-        bytes: source.bytes,
+        bytes: source.to_vec(),
         content_type,
     })
 }
@@ -349,10 +434,7 @@ async fn fetch_image_source(
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
     let bytes = read_response_body_limited(&mut response, limits.max_source_bytes).await?;
-    Ok(ImageSourceBytes {
-        bytes,
-        content_type,
-    })
+    Ok(ImageSourceBytes::new(bytes, content_type))
 }
 
 enum RemoteFetchTarget {
@@ -526,101 +608,35 @@ fn image_etag(path: &str, content_type: &str) -> String {
     format!("\"{}\"", hex::encode(hasher.finalize()))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::net::{Ipv4Addr, SocketAddr};
-
-    #[test]
-    fn identifies_image_request_paths() {
-        assert!(is_image_request_path("/_tako/image"));
-        assert!(!is_image_request_path("/_tako/channels/chat"));
+fn source_cache_key(
+    app_name: &str,
+    app_root: &Path,
+    source: &ImageSource,
+    host: &str,
+    matched_route_path: Option<&str>,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"tako-image-source-v1");
+    hasher.update(b"\napp\n");
+    hasher.update(app_name.as_bytes());
+    hasher.update(b"\nroot\n");
+    hasher.update(app_root.to_string_lossy().as_bytes());
+    match source {
+        ImageSource::LocalPath(path) => {
+            hasher.update(b"\nlocal\n");
+            hasher.update(path.as_bytes());
+            hasher.update(b"\nhost\n");
+            hasher.update(host.as_bytes());
+            hasher.update(b"\nroute\n");
+            hasher.update(matched_route_path.unwrap_or("").as_bytes());
+        }
+        ImageSource::RemoteUrl(url) => {
+            hasher.update(b"\nremote\n");
+            hasher.update(url.as_bytes());
+        }
     }
-
-    #[test]
-    fn image_errors_map_to_public_safe_status_codes() {
-        assert_eq!(image_error_status(&ImageError::InvalidSignature), 403);
-        assert_eq!(image_error_status(&ImageError::SourceTooLarge), 413);
-        assert_eq!(image_error_status(&ImageError::UnsupportedFormat), 415);
-    }
-
-    #[test]
-    fn transform_failure_falls_back_to_original_image_source() {
-        let source = ImageSourceBytes {
-            bytes: vec![1, 2, 3],
-            content_type: Some("image/jpeg".to_string()),
-        };
-
-        let response =
-            image_response_body_from_transform_error(ImageError::TransformFailed, source).unwrap();
-
-        assert_eq!(response.bytes, vec![1, 2, 3]);
-        assert_eq!(response.content_type, "image/jpeg");
-    }
-
-    #[test]
-    fn transform_failure_fallback_accepts_content_type_parameters() {
-        let source = ImageSourceBytes {
-            bytes: vec![4, 5, 6],
-            content_type: Some("image/webp; charset=binary".to_string()),
-        };
-
-        let response =
-            image_response_body_from_transform_error(ImageError::TransformFailed, source).unwrap();
-
-        assert_eq!(response.bytes, vec![4, 5, 6]);
-        assert_eq!(response.content_type, "image/webp; charset=binary");
-    }
-
-    #[test]
-    fn transform_failure_without_image_content_type_stays_error() {
-        let source = ImageSourceBytes {
-            bytes: b"<html></html>".to_vec(),
-            content_type: Some("text/html".to_string()),
-        };
-
-        let err = image_response_body_from_transform_error(ImageError::TransformFailed, source)
-            .unwrap_err();
-
-        assert_eq!(err, ImageError::TransformFailed);
-    }
-
-    #[test]
-    fn non_transform_image_errors_do_not_fallback() {
-        let source = ImageSourceBytes {
-            bytes: vec![1, 2, 3],
-            content_type: Some("image/png".to_string()),
-        };
-
-        let err = image_response_body_from_transform_error(ImageError::UnsupportedFormat, source)
-            .unwrap_err();
-
-        assert_eq!(err, ImageError::UnsupportedFormat);
-    }
-
-    #[test]
-    fn response_body_chunks_stop_at_source_limit() {
-        let mut bytes = vec![0_u8; 4];
-
-        let err = append_limited_body_chunk(&mut bytes, &[1, 2, 3], 6).unwrap_err();
-
-        assert_eq!(err, ImageError::SourceTooLarge);
-        assert_eq!(bytes.len(), 4);
-    }
-
-    #[test]
-    fn private_resolved_remote_addrs_are_rejected() {
-        let private_addr = SocketAddr::from((Ipv4Addr::new(127, 0, 0, 1), 80));
-
-        let err = validate_remote_resolved_addrs(&[private_addr]).unwrap_err();
-
-        assert_eq!(err, ImageError::InvalidSource);
-    }
-
-    #[test]
-    fn public_resolved_remote_addrs_are_allowed() {
-        let public_addr = SocketAddr::from((Ipv4Addr::new(93, 184, 216, 34), 80));
-
-        validate_remote_resolved_addrs(&[public_addr]).expect("public address");
-    }
+    hex::encode(hasher.finalize())
 }
+
+#[cfg(test)]
+mod tests;

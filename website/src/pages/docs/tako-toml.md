@@ -238,7 +238,7 @@ formats = ["avif", "webp"]
 
 Patterns are glob-like URL strings. `*` matches one segment and `**` matches the rest of a path. Remote hosts may use a leading wildcard, and remote patterns without a protocol match both `http` and `https`.
 
-On deployed servers, successful transformed variants are cached in the system temp directory after the request is validated and the source is loaded. The cache key includes the source bytes and transform options.
+On deployed servers, Tako validates each request before using origin caches. Source bytes are kept briefly in memory so the same source requested with different transform parameters reuses the source load. Successful transformed variants are cached in the system temp directory with a key that includes the app, release root, source bytes, and transform options. This is separate from browser/CDN `Cache-Control`; concurrent misses for the same source or transform key share one in-flight operation, and transform cache files are pruned by age and size.
 
 ## Environments
 

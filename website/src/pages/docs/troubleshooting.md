@@ -393,7 +393,7 @@ The width must be in `[images].sizes`, quality must be in `[images].qualities`, 
 
 Remote images must match `[images].remote_patterns`. Local sources must match `[images].local_patterns`, which defaults to `["/**"]` unless overridden.
 
-On deployed servers, successful transforms are cached in the system temp directory. Cache hits still require a valid request and source load first, so authorization and allowlists continue to apply.
+On deployed servers, successful transforms are cached in the system temp directory. Cache hits still require a valid request, so authorization and allowlists continue to apply. Tako also keeps source bytes briefly in memory, which lets one page reuse the same source across different transform parameters without fetching or reading it again. This origin caching is separate from HTTP `Cache-Control`; concurrent misses for the same source or transform key share one in-flight operation, and transform cache files are pruned by age and size.
 
 Storage image URLs also require the storage binding to be configured and current. Public storage URLs require `public_base_url`.
 
