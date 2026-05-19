@@ -9,7 +9,9 @@ use tokio::io::AsyncReadExt;
 mod auth;
 
 pub(crate) const MANAGEMENT_PORT: u16 = 9844;
-const MANAGEMENT_TIMEOUT: Duration = Duration::from_secs(5);
+const MANAGEMENT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const MANAGEMENT_RPC_TIMEOUT: Duration = Duration::from_secs(5);
+const MANAGEMENT_UPLOAD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const HEADER_UPLOAD_APP: &str = "x-tako-app";
 const HEADER_UPLOAD_VERSION: &str = "x-tako-version";
 const HEADER_UPLOAD_SIZE: &str = "x-tako-artifact-size";
@@ -38,6 +40,7 @@ pub(crate) struct ManagementProbe {
 pub(crate) struct ManagementClient {
     host: String,
     http: reqwest::Client,
+    upload_http: reqwest::Client,
     signer: auth::ManagementSigner,
 }
 
@@ -60,7 +63,8 @@ impl ManagementClient {
     pub(crate) async fn new(host: &str) -> Result<Self, ManagementError> {
         Ok(Self {
             host: host.to_string(),
-            http: http_client()?,
+            http: http_client(MANAGEMENT_RPC_TIMEOUT)?,
+            upload_http: http_client(MANAGEMENT_UPLOAD_TIMEOUT)?,
             signer: auth::ManagementSigner::load().await?,
         })
     }
@@ -118,7 +122,7 @@ impl ManagementClient {
                 .await
                 .map_err(|error| ManagementError::Message(error.to_string()))?;
             let response = self
-                .http
+                .upload_http
                 .post(release_artifact_url(&self.host))
                 .header(auth::HEADER_KEY_FINGERPRINT, headers.key_fingerprint)
                 .header(auth::HEADER_TIMESTAMP, headers.timestamp)
@@ -233,7 +237,7 @@ pub(crate) async fn send_command(
     host: &str,
     command: &Command,
 ) -> Result<Response, ManagementError> {
-    let client = http_client()?;
+    let client = http_client(MANAGEMENT_RPC_TIMEOUT)?;
 
     let response = client
         .post(rpc_url(host))
@@ -261,9 +265,10 @@ pub(crate) async fn probe(host: &str) -> Result<ManagementProbe, ManagementError
     Ok(ManagementProbe { hello, info })
 }
 
-fn http_client() -> Result<reqwest::Client, ManagementError> {
+fn http_client(timeout: Duration) -> Result<reqwest::Client, ManagementError> {
     reqwest::Client::builder()
-        .timeout(MANAGEMENT_TIMEOUT)
+        .connect_timeout(MANAGEMENT_CONNECT_TIMEOUT)
+        .timeout(timeout)
         .build()
         .map_err(|error| ManagementError::Message(error.to_string()))
 }
@@ -431,6 +436,12 @@ mod tests {
             release_artifact_url("prod.tailnet.ts.net"),
             "http://prod.tailnet.ts.net:9844/release-artifact"
         );
+    }
+
+    #[test]
+    fn release_artifact_upload_has_room_for_large_archives() {
+        assert!(MANAGEMENT_UPLOAD_TIMEOUT > MANAGEMENT_RPC_TIMEOUT);
+        assert!(MANAGEMENT_UPLOAD_TIMEOUT >= Duration::from_secs(10 * 60));
     }
 
     #[test]
