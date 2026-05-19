@@ -1,4 +1,7 @@
+mod cache;
+
 use super::{BackendResolution, RequestCtx};
+use crate::image_worker;
 use crate::instances::internal_app_host_for_app_id;
 use crate::proxy::request::{insert_body_headers, static_lookup_paths};
 use crate::proxy::{StaticFileError, TakoProxy};
@@ -14,7 +17,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 use tako_images::{
     ImageError, ImageSource, PUBLIC_IMAGE_BASE_PATH, TransformLimits, TransformOptions,
-    cache_control, ip_is_private_or_local, transform_image, verify_public_image_request,
+    cache_control, ip_is_private_or_local, verify_public_image_request,
 };
 use tokio::io::AsyncReadExt;
 use tokio::net::lookup_host;
@@ -81,36 +84,37 @@ impl TakoProxy {
             }
         };
 
-        let response = match transform_image_blocking(
-            source,
-            TransformOptions {
-                format: verified.format,
-                width: verified.width,
-                height: verified.height,
-                fit: verified.fit,
-                crop: verified.crop,
-                quality: verified.quality,
+        let transform_options = TransformOptions {
+            format: verified.format,
+            width: verified.width,
+            height: verified.height,
+            fit: verified.fit,
+            crop: verified.crop,
+            quality: verified.quality,
+        };
+        let cache_root = cache::default_cache_root();
+        let cache_key = cache::transform_cache_key(&source.bytes, &transform_options);
+        let response = match cache::read(&cache_root, &cache_key, transform_options.format).await {
+            Some(cached) => ImageResponseBody {
+                bytes: cached.bytes,
+                content_type: cached.content_type.to_string(),
             },
-            limits,
-        )
-        .await
-        {
-            TransformImageOutcome::Transformed(transformed) => {
-                ImageResponseBody::from_transformed(transformed)
-            }
-            TransformImageOutcome::Failed(error, source) => {
-                match image_response_body_from_transform_error(error, source) {
-                    Ok(response) => response,
-                    Err(error) => {
-                        let status = image_error_status(&error);
-                        return write_image_error(session, status, image_error_body(status)).await;
+            None => match transform_image_isolated(source, transform_options, limits).await {
+                TransformImageOutcome::Transformed(transformed) => {
+                    cache::write(&cache_root, &cache_key, &transformed.bytes).await;
+                    ImageResponseBody::from_transformed(transformed)
+                }
+                TransformImageOutcome::Failed(error, source) => {
+                    match image_response_body_from_transform_error(error, source) {
+                        Ok(response) => response,
+                        Err(error) => {
+                            let status = image_error_status(&error);
+                            return write_image_error(session, status, image_error_body(status))
+                                .await;
+                        }
                     }
                 }
-            }
-            TransformImageOutcome::Unavailable(error) => {
-                let status = image_error_status(&error);
-                return write_image_error(session, status, image_error_body(status)).await;
-            }
+            },
         };
 
         let mut header = ResponseHeader::build(200, None)?;
@@ -239,28 +243,23 @@ impl ImageResponseBody {
 enum TransformImageOutcome {
     Transformed(tako_images::TransformedImage),
     Failed(ImageError, ImageSourceBytes),
-    Unavailable(ImageError),
 }
 
-async fn transform_image_blocking(
+async fn transform_image_isolated(
     source: ImageSourceBytes,
     options: TransformOptions,
     limits: TransformLimits,
 ) -> TransformImageOutcome {
-    match tokio::task::spawn_blocking(move || {
-        transform_image(
-            &source.bytes,
-            source.content_type.as_deref(),
-            options,
-            &limits,
-        )
-        .map(TransformImageOutcome::Transformed)
-        .unwrap_or_else(|error| TransformImageOutcome::Failed(error, source))
-    })
+    match image_worker::transform_in_worker(
+        &source.bytes,
+        source.content_type.as_deref(),
+        options,
+        &limits,
+    )
     .await
     {
-        Ok(outcome) => outcome,
-        Err(_) => TransformImageOutcome::Unavailable(ImageError::TransformFailed),
+        Ok(transformed) => TransformImageOutcome::Transformed(transformed),
+        Err(error) => TransformImageOutcome::Failed(error, source),
     }
 }
 

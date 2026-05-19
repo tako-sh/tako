@@ -238,6 +238,8 @@ formats = ["avif", "webp"]
 
 Patterns are glob-like URL strings. `*` matches one segment and `**` matches the rest of a path. Remote hosts may use a leading wildcard, and remote patterns without a protocol match both `http` and `https`.
 
+On deployed servers, successful transformed variants are cached in the system temp directory after the request is validated and the source is loaded. The cache key includes the source bytes and transform options.
+
 ## Environments
 
 ```toml

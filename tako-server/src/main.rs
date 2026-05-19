@@ -11,6 +11,7 @@ mod channels;
 mod channels_ws;
 mod defaults;
 mod identity;
+mod image_worker;
 mod instances;
 mod lb;
 mod management_auth;
@@ -256,6 +257,10 @@ pub struct Args {
     /// Destination directory used with `--extract-zstd-archive`.
     #[arg(long, hide = true)]
     pub extract_dest: Option<String>,
+
+    /// Run the isolated image transform worker protocol on stdin/stdout.
+    #[arg(long, hide = true)]
+    pub image_worker: bool,
 }
 
 fn run_extract_archive_mode(args: &Args) -> Result<(), String> {
@@ -272,6 +277,12 @@ fn run_extract_archive_mode(args: &Args) -> Result<(), String> {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     install_rustls_crypto_provider();
+
+    let args = Args::parse();
+    if args.image_worker {
+        image_worker::run_stdio().map_err(std::io::Error::other)?;
+        return Ok(());
+    }
 
     // Initialize tracing with a non-blocking writer so log I/O never stalls
     // Tokio worker threads (critical under high request volume / DDoS).
@@ -307,7 +318,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
-    let args = Args::parse();
     if args.extract_zstd_archive.is_some() || args.extract_dest.is_some() {
         run_extract_archive_mode(&args)?;
         return Ok(());
