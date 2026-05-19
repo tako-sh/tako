@@ -35,10 +35,28 @@ declare module "tako.sh" {
   /**
    * Project-specific secret keys from `.tako/secrets.json`.
    *
-   * No secrets are currently configured for this project. After you add one,
-   * this interface is regenerated with typed readonly keys.
+   * Values are injected by Tako at runtime and redacted during bulk serialization.
+   * App code reads individual values from `tako.secrets` imported from `tako.sh`.
+   *
+   * @example
+   * ```ts
+   * import { tako } from "tako.sh";
+   *
+   * const foo = tako.secrets.FOO;
+   * ```
    */
-  export interface TakoSecrets {}
+  export interface TakoSecrets {
+    /** Secret `FOO`. Read it with `tako.secrets.FOO`. */
+    readonly FOO: string;
+  }
+
+  /**
+   * Project-specific object storage bindings from `tako.toml`.
+   *
+   * No storages are currently configured for this project. After you add one,
+   * this interface is regenerated with typed readonly bindings.
+   */
+  export interface TakoStorages {}
 
   /**
    * Project-specific channel metadata discovered from `<app_root>/channels/`.

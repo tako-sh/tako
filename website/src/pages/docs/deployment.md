@@ -306,6 +306,8 @@ remote_patterns = ["https://cdn.example.com/uploads/**"]
 
 The optimizer endpoint is `/_tako/image?src=...&w=...`. Local public paths are available by default. Remote URLs must match the configured allowlist, and widths, qualities, and formats must match the configured guardrails.
 
+On deployed servers, transforms run in an isolated image worker process. Requests wait for an available worker slot, and the worker timeout starts once the transform begins. Successful variants are cached in the system temp directory after validation and source load, keyed by source bytes and transform options.
+
 In JavaScript apps, use `imageUrl` for one optimized URL or `imageSrcSet` for plain `<img>` responsive sources.
 
 ## Scaling

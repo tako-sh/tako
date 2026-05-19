@@ -17,7 +17,7 @@ The protocol is still v0. Runtime behavior lives in runtime plugins; presets sta
 | Piece               | Role                                                                                                                        |
 | ------------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | `tako`              | CLI for init, dev, deploy, server management, secrets, storage, logs, releases, scaling, and code generation.               |
-| `tako-server`       | Remote runtime with the proxy, TLS, supervisor, state store, workflow manager, and management API.                          |
+| `tako-server`       | Remote runtime with the proxy, TLS, supervisor, state store, workflow manager, image worker, and management API.            |
 | `tako.sh`           | JavaScript/TypeScript SDK for fetch handlers, readiness, status, channels, workflows, storage, images, and generated types. |
 | `tako.sh` Go module | Go SDK for `net/http` handlers, readiness, health checks, secrets, channels, and workflow RPCs.                             |
 | Runtime plugins     | Built-in runtime definitions for Bun, Node, and Go.                                                                         |
