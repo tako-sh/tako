@@ -3,9 +3,10 @@ use crate::{
     validate_quality, validate_width,
 };
 use libvips::{VipsApp, VipsImage, ops};
-use std::sync::OnceLock;
+use std::sync::{Condvar, Mutex, MutexGuard, OnceLock};
 
 const STRIP_SOURCE_METADATA: &str = "strip";
+const MAX_PARALLEL_TRANSFORMS: usize = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransformLimits {
@@ -64,6 +65,7 @@ pub fn transform_image(
     }
 
     validate_source_format(source)?;
+    let _permit = acquire_vips_transform_permit();
     let (source_width, source_height) = image_dimensions(source)?;
     enforce_dimension_limits(source_width, source_height, limits)?;
 
@@ -278,6 +280,7 @@ fn vips_app() -> Result<&'static VipsApp, ImageError> {
     static APP: OnceLock<Result<VipsApp, ()>> = OnceLock::new();
     match APP.get_or_init(|| {
         let app = VipsApp::new("tako-images", false).map_err(|_| ())?;
+        app.concurrency_set(1);
         app.cache_set_max(100);
         app.cache_set_max_mem(128 * 1024 * 1024);
         Ok(app)
@@ -285,4 +288,88 @@ fn vips_app() -> Result<&'static VipsApp, ImageError> {
         Ok(app) => Ok(app),
         Err(()) => Err(ImageError::TransformFailed),
     }
+}
+
+fn lock_active_count(mutex: &Mutex<usize>) -> MutexGuard<'_, usize> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+fn wait_for_transform_slot<'a>(
+    available: &Condvar,
+    active: MutexGuard<'a, usize>,
+) -> MutexGuard<'a, usize> {
+    match available.wait(active) {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+struct TransformGate {
+    active: Mutex<usize>,
+    available: Condvar,
+    capacity: usize,
+}
+
+impl TransformGate {
+    fn new(capacity: usize) -> Self {
+        Self {
+            active: Mutex::new(0),
+            available: Condvar::new(),
+            capacity,
+        }
+    }
+
+    fn acquire(&'static self) -> TransformPermit {
+        let mut active = lock_active_count(&self.active);
+        while *active >= self.capacity {
+            active = wait_for_transform_slot(&self.available, active);
+        }
+        *active += 1;
+        TransformPermit { gate: self }
+    }
+
+    fn release(&self) {
+        let mut active = lock_active_count(&self.active);
+        if *active > 0 {
+            *active -= 1;
+            self.available.notify_one();
+        }
+    }
+}
+
+struct TransformPermit {
+    gate: &'static TransformGate,
+}
+
+impl Drop for TransformPermit {
+    fn drop(&mut self) {
+        self.gate.release();
+    }
+}
+
+fn acquire_vips_transform_permit() -> TransformPermit {
+    vips_transform_gate().acquire()
+}
+
+fn vips_transform_gate() -> &'static TransformGate {
+    static GATE: OnceLock<TransformGate> = OnceLock::new();
+    GATE.get_or_init(|| TransformGate::new(MAX_PARALLEL_TRANSFORMS))
+}
+
+#[cfg(test)]
+pub(crate) fn vips_transform_capacity() -> usize {
+    vips_transform_gate().capacity
+}
+
+#[cfg(test)]
+pub(crate) fn occupy_vips_transform_slot() -> impl Drop {
+    acquire_vips_transform_permit()
+}
+
+#[cfg(test)]
+pub(crate) fn vips_concurrency() -> Result<i32, ImageError> {
+    Ok(vips_app()?.concurrency_get())
 }

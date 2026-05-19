@@ -3,6 +3,8 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use image::{ImageBuffer, ImageFormat, Rgb, Rgba};
 use std::io::Cursor;
+use std::sync::mpsc;
+use std::time::Duration;
 
 #[test]
 fn resizes_png_to_avif() {
@@ -274,6 +276,56 @@ fn rejects_source_bytes_above_limit() {
     .unwrap_err();
 
     assert_eq!(err, ImageError::SourceTooLarge);
+}
+
+#[test]
+fn limits_parallel_libvips_transform_work() {
+    let img = ImageBuffer::from_fn(32, 16, |_x, _y| Rgba([255_u8, 0, 0, 255]));
+    let mut source = Cursor::new(Vec::new());
+    img.write_to(&mut source, ImageFormat::Png)
+        .expect("encode png");
+    let source = source.into_inner();
+
+    let permits = (0..crate::transform::vips_transform_capacity())
+        .map(|_| crate::transform::occupy_vips_transform_slot())
+        .collect::<Vec<_>>();
+    let (started_tx, started_rx) = mpsc::channel();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        started_tx.send(()).expect("send worker start");
+        let result = transform_image(
+            &source,
+            Some("image/png"),
+            transform_options(OutputFormat::Webp, 16, 80),
+            &TransformLimits::default(),
+        )
+        .map(|transformed| (transformed.width, transformed.height));
+        tx.send(result).expect("send transform result");
+    });
+    started_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("transform worker starts");
+
+    match rx.recv_timeout(Duration::from_millis(50)) {
+        Ok(result) => panic!("transform passed gate early: {result:?}"),
+        Err(mpsc::RecvTimeoutError::Timeout) => {}
+        Err(mpsc::RecvTimeoutError::Disconnected) => panic!("transform worker disconnected"),
+    }
+
+    drop(permits);
+    let dimensions = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("transform completes after gate is released")
+        .expect("transform image");
+    assert_eq!(dimensions, (16, 8));
+}
+
+#[test]
+fn configures_libvips_for_single_worker_transforms() {
+    assert_eq!(
+        crate::transform::vips_concurrency().expect("libvips initializes"),
+        1
+    );
 }
 
 fn transform_options(format: OutputFormat, width: u32, quality: u8) -> TransformOptions {
