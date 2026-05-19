@@ -11,6 +11,7 @@ mod auth;
 pub(crate) const MANAGEMENT_PORT: u16 = 9844;
 const MANAGEMENT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const MANAGEMENT_RPC_TIMEOUT: Duration = Duration::from_secs(5);
+const MANAGEMENT_DEPLOY_RPC_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const MANAGEMENT_UPLOAD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const HEADER_UPLOAD_APP: &str = "x-tako-app";
 const HEADER_UPLOAD_VERSION: &str = "x-tako-version";
@@ -40,6 +41,7 @@ pub(crate) struct ManagementProbe {
 pub(crate) struct ManagementClient {
     host: String,
     http: reqwest::Client,
+    deploy_http: reqwest::Client,
     upload_http: reqwest::Client,
     signer: auth::ManagementSigner,
 }
@@ -64,6 +66,7 @@ impl ManagementClient {
         Ok(Self {
             host: host.to_string(),
             http: http_client(MANAGEMENT_RPC_TIMEOUT)?,
+            deploy_http: http_client(MANAGEMENT_DEPLOY_RPC_TIMEOUT)?,
             upload_http: http_client(MANAGEMENT_UPLOAD_TIMEOUT)?,
             signer: auth::ManagementSigner::load().await?,
         })
@@ -74,10 +77,15 @@ impl ManagementClient {
             .map_err(|error| ManagementError::Message(error.to_string()))?;
         let signed_headers = self.signer.sign_headers(&body).await?;
         let mut last_auth_error = None;
+        let timeout = management_rpc_timeout_for_command(command);
+        let http = if timeout == MANAGEMENT_DEPLOY_RPC_TIMEOUT {
+            &self.deploy_http
+        } else {
+            &self.http
+        };
 
         for headers in signed_headers {
-            let response = self
-                .http
+            let response = http
                 .post(rpc_url(&self.host))
                 .header(auth::HEADER_KEY_FINGERPRINT, headers.key_fingerprint)
                 .header(auth::HEADER_TIMESTAMP, headers.timestamp)
@@ -265,6 +273,23 @@ pub(crate) async fn probe(host: &str) -> Result<ManagementProbe, ManagementError
     Ok(ManagementProbe { hello, info })
 }
 
+fn management_rpc_timeout_for_command(command: &Command) -> Duration {
+    if matches!(
+        command,
+        Command::PrepareRelease { .. }
+            | Command::CleanupRelease { .. }
+            | Command::FinalizeRelease { .. }
+            | Command::RunRelease { .. }
+            | Command::Deploy { .. }
+            | Command::Delete { .. }
+            | Command::Rollback { .. }
+    ) {
+        MANAGEMENT_DEPLOY_RPC_TIMEOUT
+    } else {
+        MANAGEMENT_RPC_TIMEOUT
+    }
+}
+
 fn http_client(timeout: Duration) -> Result<reqwest::Client, ManagementError> {
     reqwest::Client::builder()
         .connect_timeout(MANAGEMENT_CONNECT_TIMEOUT)
@@ -442,6 +467,40 @@ mod tests {
     fn release_artifact_upload_has_room_for_large_archives() {
         assert!(MANAGEMENT_UPLOAD_TIMEOUT > MANAGEMENT_RPC_TIMEOUT);
         assert!(MANAGEMENT_UPLOAD_TIMEOUT >= Duration::from_secs(10 * 60));
+    }
+
+    #[test]
+    fn release_lifecycle_commands_use_long_rpc_timeout() {
+        assert_eq!(
+            management_rpc_timeout_for_command(&Command::PrepareRelease {
+                app: "demo".to_string(),
+                path: "/opt/tako/apps/demo/production/releases/v1".to_string(),
+            }),
+            MANAGEMENT_DEPLOY_RPC_TIMEOUT
+        );
+        assert_eq!(
+            management_rpc_timeout_for_command(&Command::Deploy {
+                app: "demo".to_string(),
+                version: "v1".to_string(),
+                path: "/opt/tako/apps/demo/production/releases/v1".to_string(),
+                routes: vec!["demo.tako.sh".to_string()],
+                source_ip: tako_core::SourceIpMode::Direct,
+                secrets: None,
+                storages: None,
+                dns: None,
+            }),
+            MANAGEMENT_DEPLOY_RPC_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn quick_management_commands_keep_short_rpc_timeout() {
+        assert_eq!(
+            management_rpc_timeout_for_command(&Command::Hello {
+                protocol_version: tako_core::PROTOCOL_VERSION,
+            }),
+            MANAGEMENT_RPC_TIMEOUT
+        );
     }
 
     #[test]
