@@ -52,7 +52,7 @@ export async function renderOgPng({ baseSlug }: OgInput): Promise<Uint8Array> {
   const slug = baseSlug !== null ? sanitizeBaseSlug(baseSlug) : null;
   const headline = slug ? prettifyBaseSlug(slug) : "Planetary Supply Desk";
   const eyebrow = slug ? "Planetary Supply Desk" : "A Tako workflow demo";
-  const footer = slug ? `demo.tako.sh/bases/${slug}` : "demo.tako.sh";
+  const footer = slug ? `${slug}.demo.tako.sh` : "demo.tako.sh";
   const statusLine = slug ? "online · mission control" : "";
 
   const svg = await satori(

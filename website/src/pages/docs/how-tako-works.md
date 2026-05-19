@@ -108,6 +108,8 @@ Tako manages certificates automatically:
 
 Cloudflare DNS tokens are encrypted in `.tako/secrets.json`, not written to `tako.toml`. Deploy fails early when wildcard routes need missing or expired DNS credentials and warns when credentials expire within 30 days.
 
+Cloudflare DNS-01 does not require Cloudflare proxy mode. For wildcard second-level subdomains such as `*.app.example.com`, point DNS records directly at the Tako server so Tako can terminate TLS.
+
 ## Source IPs
 
 `source_ip` is selected per app environment:
@@ -115,7 +117,7 @@ Cloudflare DNS tokens are encrypted in `.tako/secrets.json`, not written to `tak
 ```toml
 [envs.production]
 route = "app.example.com"
-source_ip = "cloudflare-proxy"
+source_ip = "direct"
 ```
 
 Generated configs omit `source_ip`, which behaves like `auto`: use `CF-Connecting-IP` only for Cloudflare peers, then configured trusted proxy headers for trusted peers, then the direct TCP peer IP.

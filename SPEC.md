@@ -374,6 +374,7 @@ Wildcard certificate DNS credentials live in `.tako/secrets.json`. `tako.toml` d
 [envs.production]
 route = "*.example.com"
 servers = ["la"]
+source_ip = "direct"
 ```
 
 Configure Cloudflare DNS credentials with:
@@ -384,6 +385,8 @@ tako dns configure --env production
 
 The command prompts for a Cloudflare API token when `--cloudflare-api-token` is omitted and optionally asks when the token expires. `--expires-on` can provide the expiry directly. The token is encrypted in `.tako/secrets.json` under the selected environment's `dns` object. Deploy validates that wildcard routes have unexpired DNS credentials when expiry is known, warns when DNS credentials expire within 30 days, decrypts the selected environment's token locally, sends the DNS binding over the signed management path only for wildcard routes, and `tako-server` stores it encrypted in server SQLite for that deployed app.
 
+Cloudflare DNS-01 is only used to prove domain control for wildcard certificates. It does not require Cloudflare proxy mode. For wildcard second-level subdomains such as `*.app.example.com`, use DNS-only/direct records that point at the Tako server so `tako-server` terminates TLS itself.
+
 ### Source IP Configuration
 
 `[envs.<env>].source_ip` controls how Tako derives the client IP that is used for per-IP rate limits and upstream `X-Forwarded-For`.
@@ -392,7 +395,7 @@ The command prompts for a Cloudflare API token when `--cloudflare-api-token` is 
 [envs.production]
 route = "app.example.com"
 servers = ["la"]
-source_ip = "cloudflare-proxy"
+source_ip = "direct"
 ```
 
 Allowed values:
@@ -1640,7 +1643,7 @@ Response:
   "version": "1.0.0",
   "path": "/opt/tako/apps/my-app/production/releases/1.0.0",
   "routes": ["api.example.com", "*.example.com/admin/*"],
-  "source_ip": "cloudflare-proxy",
+  "source_ip": "direct",
   "secrets": {
     "DATABASE_URL": "...",
     "API_KEY": "..."

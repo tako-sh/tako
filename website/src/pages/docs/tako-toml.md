@@ -74,7 +74,7 @@ storages = { uploads = "dev_uploads" }
 routes = ["app.example.com", "*.app.example.com"]
 servers = ["prod-a", "prod-b"]
 storages = { uploads = "prod_uploads" }
-source_ip = "cloudflare-proxy"
+source_ip = "direct"
 idle_timeout = 300
 
 [storages.prod_uploads]
@@ -245,7 +245,7 @@ Patterns are glob-like URL strings. `*` matches one segment and `**` matches the
 route = "app.example.com"
 servers = ["prod-a"]
 storages = { uploads = "prod_uploads" }
-source_ip = "cloudflare-proxy"
+source_ip = "direct"
 idle_timeout = 300
 release = "bun run db:migrate"
 ```
@@ -293,6 +293,8 @@ tako dns configure --env production
 ```
 
 Cloudflare is the only supported DNS-01 provider. The token is encrypted in `.tako/secrets.json` under the environment's `dns` object. Deploy sends DNS credentials only when the selected environment has wildcard routes.
+
+Cloudflare DNS-01 is only certificate validation. It does not require proxy mode; for wildcard second-level subdomains such as `*.app.example.com`, point DNS records directly at the Tako server and let Tako terminate TLS.
 
 ## Storage
 

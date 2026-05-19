@@ -13,9 +13,9 @@ name = "app"
 run = "bun run build"
 
 [envs.development]
-routes = ["demo.test"]
+routes = ["demo.test", "*.demo.test"]
 
 [envs.production]
-routes = ["demo.tako.sh"]
-source_ip = "cloudflare-proxy"
+routes = ["demo.tako.sh", "*.demo.tako.sh"]
+source_ip = "direct"
 servers = ["tako-demo"]

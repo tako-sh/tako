@@ -76,7 +76,7 @@ name = "dashboard"
 [envs.production]
 routes = ["dashboard.example.com", "*.dashboard.example.com"]
 servers = ["prod-a", "prod-b"]
-source_ip = "cloudflare-proxy"
+source_ip = "direct"
 idle_timeout = 300
 
 [envs.staging]
@@ -88,6 +88,8 @@ source_ip = "direct"
 The remote deployment identity is `{app}/{env}`. The same server can host multiple environments for the same app because each environment gets a separate identity and filesystem path.
 
 `development` is reserved for `tako dev` and cannot be deployed.
+
+For wildcard second-level subdomains such as `*.dashboard.example.com`, use DNS-only/direct records that point at the Tako server. Cloudflare DNS can still be used for the DNS-01 certificate challenge; traffic does not need to pass through Cloudflare proxy mode.
 
 ## Deploy Flow
 
@@ -227,6 +229,8 @@ tako dns configure --env production --expires-on "in 90 days"
 ```
 
 The token must be able to read zones and edit DNS records. It is encrypted in `.tako/secrets.json`. Deploy fails early when wildcard routes need a missing or expired token and warns when the token expires within 30 days.
+
+Cloudflare DNS-01 is certificate validation only. If your wildcard hostnames are not covered by Cloudflare proxy TLS, keep those DNS records direct and let Tako terminate TLS.
 
 When HTTPS uses a non-default public port, deploy summaries include that port and HTTP redirects target it.
 

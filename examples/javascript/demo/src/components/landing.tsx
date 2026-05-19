@@ -6,25 +6,29 @@ import {
   NetworkIcon,
   RadioIcon,
 } from "@phosphor-icons/react";
+import type { ReactNode } from "react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import type { PlanetBase } from "@/lib/bases";
+import { baseHref, type ParsedHost } from "@/lib/host";
 import { GITHUB_BASE } from "./info";
 import { TopAppBar } from "./top-app-bar";
 
 const TAKO_URL = "https://tako.sh";
 
 type Props = {
+  rootHost: string;
   rootOrigin: string;
+  routeStyle: ParsedHost["routeStyle"];
   bases: PlanetBase[];
 };
 
-export function Landing({ rootOrigin, bases }: Props) {
+export function Landing({ rootHost, rootOrigin, routeStyle, bases }: Props) {
   const [baseName, setBaseName] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const parsedHost: ParsedHost = { routeStyle, rootHost, rootOrigin };
 
   function handleSubmit(event: React.SyntheticEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -33,7 +37,7 @@ export function Landing({ rootOrigin, bases }: Props) {
       setError("Enter a base name using letters, numbers, or hyphens");
       return;
     }
-    redirectToBase(slug);
+    redirectToBase(parsedHost, slug);
   }
 
   return (
@@ -71,8 +75,8 @@ export function Landing({ rootOrigin, bases }: Props) {
               Planetary <span className="text-primary">Supply Desk</span>
             </h1>
             <p className="mb-10 max-w-xl text-base/relaxed text-muted-foreground">
-              Dispatch supplies to an off-world base. Each base gets its own mission route — pick
-              one, submit a supply request, and watch a five-step durable workflow run with a live
+              Dispatch supplies to an off-world base. Each base gets its own wildcard mission route:
+              pick one, submit a supply request, and watch a durable workflow run with a live
               mission log on the side.
             </p>
 
@@ -101,7 +105,7 @@ export function Landing({ rootOrigin, bases }: Props) {
                           sm:flex
                         "
                       >
-                        {rootOrigin}/bases/
+                        {routeStyle === "subdomain" ? "https://" : `${rootOrigin}/bases/`}
                       </span>
                       <span
                         className="
@@ -110,7 +114,7 @@ export function Landing({ rootOrigin, bases }: Props) {
                           sm:hidden
                         "
                       >
-                        /bases/
+                        {routeStyle === "subdomain" ? "https://" : "/bases/"}
                       </span>
                       <Input
                         id="base-name"
@@ -123,12 +127,22 @@ export function Landing({ rootOrigin, bases }: Props) {
                           setError(null);
                         }}
                         className="
-                          h-11 flex-1 border-0 bg-transparent px-3 font-mono
+                          h-11 min-w-0 flex-1 border-0 bg-transparent px-3 font-mono
                           text-base shadow-none
                           placeholder:text-muted-foreground/40
                           focus-visible:border-transparent focus-visible:ring-0
                         "
                       />
+                      {routeStyle === "subdomain" ? (
+                        <span
+                          className="
+                            flex h-11 shrink-0 items-center border-l border-border/60
+                            px-3 font-mono text-xs text-muted-foreground
+                          "
+                        >
+                          .{rootHost}
+                        </span>
+                      ) : null}
                     </div>
                     <Button
                       type="submit"
@@ -155,34 +169,52 @@ export function Landing({ rootOrigin, bases }: Props) {
 
             <div
               className="
-                mb-12 grid grid-cols-1 gap-4
-                md:grid-cols-2
+                mb-12
               "
             >
-              <Feature
-                icon={<StackIcon className="size-4" aria-hidden="true" />}
-                label="Scheduled cleanup"
-                body="A daily workflow prunes old demo records, keeping the public app tidy without a separate cron service."
-                sourcePath="src/workflows/cleanup.ts"
-              />
-              <Feature
-                icon={<NetworkIcon className="size-4" aria-hidden="true" />}
-                label="Durable workflows"
-                body="One supply request fans out into five resumable steps. Server crashes mid-launch? The workflow picks up where it left off."
-                sourcePath="src/workflows/order-shipment.ts"
-              />
-              <Feature
-                icon={<RadioIcon className="size-4" aria-hidden="true" />}
-                label="Live channels"
-                body="Workflow steps publish to a channel. Every connected client sees the stream — no polling, no reconnect logic in app code."
-                sourcePath="src/channels/mission-log.ts"
-              />
-              <Feature
-                icon={<StackIcon className="size-4" aria-hidden="true" />}
-                label="Image service"
-                body="Server code signs AVIF image URLs. Tako resizes, caches, and serves them from /_tako/image."
-                sourcePath="src/routes/index.tsx"
-              />
+              <div className="mb-4">
+                <h2 className="font-heading text-2xl font-bold tracking-tight">
+                  One request, four platform primitives
+                </h2>
+                <p className="mt-1 max-w-2xl text-sm/relaxed text-muted-foreground">
+                  The route is wildcard DNS. The app behavior is ordinary code running on Tako.
+                </p>
+              </div>
+              <ol
+                className="
+                  grid grid-cols-1 gap-3
+                  lg:grid-cols-4
+                "
+              >
+                <Feature
+                  step="01"
+                  icon={<NetworkIcon className="size-4" aria-hidden="true" />}
+                  label="Durable workflows"
+                  body="One supply request fans out into five resumable steps. If the server restarts mid-launch, the workflow resumes where it stopped."
+                  sourcePath="src/workflows/order-shipment.ts"
+                />
+                <Feature
+                  step="02"
+                  icon={<RadioIcon className="size-4" aria-hidden="true" />}
+                  label="Live channels"
+                  body="Each workflow step publishes to a channel, so connected clients see progress without polling."
+                  sourcePath="src/channels/mission-log.ts"
+                />
+                <Feature
+                  step="03"
+                  icon={<CodeIcon className="size-4" aria-hidden="true" />}
+                  label="Image service"
+                  body="Server code signs AVIF image URLs. Tako resizes, caches, and serves them from /_tako/image."
+                  sourcePath="src/routes/index.tsx"
+                />
+                <Feature
+                  step="04"
+                  icon={<StackIcon className="size-4" aria-hidden="true" />}
+                  label="Scheduled cleanup"
+                  body="A daily workflow prunes old demo records, keeping the public app tidy without a separate cron service."
+                  sourcePath="src/workflows/cleanup.ts"
+                />
+              </ol>
             </div>
 
             <section className="mb-16">
@@ -205,6 +237,7 @@ export function Landing({ rootOrigin, bases }: Props) {
                     key={base.slug}
                     base={base}
                     loading={index === 0 ? "eager" : "lazy"}
+                    parsedHost={parsedHost}
                   />
                 ))}
               </div>
@@ -259,11 +292,19 @@ export function Landing({ rootOrigin, bases }: Props) {
   );
 }
 
-function BaseButton({ base, loading }: { base: PlanetBase; loading: "eager" | "lazy" }) {
+function BaseButton({
+  base,
+  loading,
+  parsedHost,
+}: {
+  base: PlanetBase;
+  loading: "eager" | "lazy";
+  parsedHost: ParsedHost;
+}) {
   return (
     <button
       type="button"
-      onClick={() => redirectToBase(base.slug)}
+      onClick={() => redirectToBase(parsedHost, base.slug)}
       className="
         group relative aspect-video overflow-hidden border border-border
         bg-muted text-left transition-colors outline-none
@@ -297,12 +338,14 @@ function BaseButton({ base, loading }: { base: PlanetBase; loading: "eager" | "l
 }
 
 function Feature({
+  step,
   icon,
   label,
   body,
   sourcePath,
 }: {
-  icon: React.ReactNode;
+  step: string;
+  icon: ReactNode;
   label: string;
   body: string;
   sourcePath: string;
@@ -311,12 +354,17 @@ function Feature({
   const filename = sourcePath.split("/").pop() ?? sourcePath;
 
   return (
-    <Card size="sm">
-      <CardHeader>
-        <CardTitle
+    <li
+      className="
+        border border-border bg-card/35 p-4
+        transition-colors hover:border-primary/50
+      "
+    >
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div
           className="
-            flex items-center gap-2 font-mono text-[11px] tracking-widest
-            text-primary uppercase
+            flex items-center gap-2 font-mono text-[11px]
+            tracking-widest text-primary uppercase
           "
         >
           <span
@@ -328,25 +376,26 @@ function Feature({
             {icon}
           </span>
           {label}
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
-        <p className="text-xs/relaxed text-muted-foreground">{body}</p>
-        <a
-          href={sourceUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="
-            mt-3 inline-flex items-center gap-1 font-mono text-[10px]
-            tracking-widest text-primary/90 uppercase
-            hover:text-primary
-          "
-        >
-          {filename}
-          <ArrowSquareOutIcon className="size-3" aria-hidden="true" />
-        </a>
-      </CardContent>
-    </Card>
+        </div>
+        <span className="font-mono text-[10px] tracking-widest text-muted-foreground/55">
+          {step}
+        </span>
+      </div>
+      <p className="text-xs/relaxed text-muted-foreground">{body}</p>
+      <a
+        href={sourceUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="
+          mt-3 inline-flex items-center gap-1 font-mono text-[10px]
+          tracking-widest text-primary/90 uppercase
+          hover:text-primary
+        "
+      >
+        {filename}
+        <ArrowSquareOutIcon className="size-3" aria-hidden="true" />
+      </a>
+    </li>
   );
 }
 
@@ -376,7 +425,7 @@ function normalizeBaseName(raw: string): string | null {
   return cleaned;
 }
 
-function redirectToBase(slug: string): void {
+function redirectToBase(parsedHost: ParsedHost, slug: string): void {
   if (typeof window === "undefined") return;
-  window.location.href = `/bases/${slug}`;
+  window.location.href = baseHref(parsedHost, slug);
 }

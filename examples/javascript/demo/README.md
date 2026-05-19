@@ -1,8 +1,8 @@
 # Planetary Supply Desk — Tako demo
 
-A TanStack Start demo app that doubles as a live tour of Tako's primitives: **base-scoped routing**, **durable workflows**, **channels**, and **image optimization**.
+A TanStack Start demo app that doubles as a live tour of Tako's primitives: **wildcard routing**, **durable workflows**, **channels**, and **image optimization**.
 
-Each planet base has a mission page under `/bases/<base>`. Submitting a supply request enqueues a five-step sequential workflow (check → pack → load → ship → deliver) where the late steps occasionally throw and Tako retries them via `ctx.run`'s `retries` option. Every step publishes to the `mission-log` channel, so the right-rail log streams live to every connected client. Base artwork lives in `public/images/`; production builds use `imageUrl()` so Tako serves resized, cached images from `/_tako/image`. A daily cron workflow deletes demo database records older than three days.
+Each planet base has a mission page at `<base>.demo.tako.sh`, with `/bases/<base>` kept as a local fallback. Submitting a supply request enqueues a five-step sequential workflow (check → pack → load → ship → deliver) where the late steps occasionally throw and Tako retries them via `ctx.run`'s `retries` option. Every step publishes to the `mission-log` channel, so the right-rail log streams live to every connected client. Base artwork lives in `public/images/`; production builds use `imageUrl()` so Tako serves resized, cached images from `/_tako/image`. A daily cron workflow deletes demo database records older than three days.
 
 Live at [demo.tako.sh](https://demo.tako.sh).
 
@@ -53,11 +53,11 @@ bun test
 - Plain `bun run dev` is UI-only for mission routes; use `tako dev` to exercise channels and workflows.
 - `tako dev` uses real Tako channels + workflows.
 - The cleanup cron workflow runs daily and removes supply requests older than three days plus empty stale bases.
-- Base context is read server-side from the `/bases/<base>` route — no env var needed.
-  - `demo.tako.sh/bases/valles-hub` → base `valles-hub` (Mission Control view)
+- Base context is read server-side from the wildcard host or the `/bases/<base>` fallback route, so no env var is needed.
+  - `valles-hub.demo.tako.sh` → base `valles-hub` (Mission Control view)
   - `demo.tako.sh` → landing view with base-name input
-- Development route: `demo.test`
-- Production route: `demo.tako.sh`
+- Development routes: `demo.test`, `*.demo.test`
+- Production routes: `demo.tako.sh`, `*.demo.tako.sh` (DNS-only/direct to the Tako server)
 
 ## Files of interest
 
