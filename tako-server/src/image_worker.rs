@@ -130,7 +130,7 @@ async fn acquire_worker_slot() -> Result<tokio::sync::SemaphorePermit<'static>, 
 }
 
 async fn run_worker_process(input: Vec<u8>) -> Result<Vec<u8>, ImageError> {
-    let exe = std::env::current_exe().map_err(|_| ImageError::TransformFailed)?;
+    let exe = worker_executable_path()?;
     let mut child = Command::new(exe)
         .arg("--image-worker")
         .stdin(Stdio::piped())
@@ -162,6 +162,19 @@ async fn run_worker_process(input: Vec<u8>) -> Result<Vec<u8>, ImageError> {
     })
     .await
     .map_err(|_| ImageError::TransformFailed)?
+}
+
+#[cfg(target_os = "linux")]
+fn worker_executable_path() -> Result<std::path::PathBuf, ImageError> {
+    // During upgrades, the installed tako-server path can be replaced while
+    // the old process is still serving. `/proc/self/exe` spawns the currently
+    // running process image instead of resolving the on-disk install path.
+    Ok(std::path::PathBuf::from("/proc/self/exe"))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn worker_executable_path() -> Result<std::path::PathBuf, ImageError> {
+    std::env::current_exe().map_err(|_| ImageError::TransformFailed)
 }
 
 pub(crate) fn run_stdio() -> Result<(), String> {
@@ -367,6 +380,24 @@ mod tests {
         let err = decode_worker_response(&output, OutputFormat::Avif).unwrap_err();
 
         assert_eq!(err, ImageError::TransformFailed);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn worker_executable_path_uses_running_process_image_on_linux() {
+        assert_eq!(
+            worker_executable_path().expect("worker executable path"),
+            std::path::PathBuf::from("/proc/self/exe")
+        );
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn worker_executable_path_uses_current_exe_off_linux() {
+        assert_eq!(
+            worker_executable_path().expect("worker executable path"),
+            std::env::current_exe().expect("current exe")
+        );
     }
 
     #[tokio::test]
