@@ -16,7 +16,7 @@ thiserror = "2.0"
 parking_lot = "0.12"
 rusqlite = { version = "0.39", features = ["bundled"] }
 nanoid = "0.5"
-cron = "0.12"
+cron = "0.16"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 libc = "0.2"
 

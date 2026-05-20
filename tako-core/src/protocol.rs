@@ -604,7 +604,7 @@ pub fn compute_secrets_hash(secrets: &HashMap<String, String>) -> String {
         hasher.update((value.len() as u64).to_le_bytes());
         hasher.update(value.as_bytes());
     }
-    format!("{:x}", hasher.finalize())
+    hex::encode(hasher.finalize())
 }
 
 #[cfg(test)]

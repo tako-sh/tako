@@ -9,8 +9,8 @@
     ],
     "catalog": {
       "@resvg/resvg-js": "^2.6.2",
-      "@tanstack/react-router": "^1.169.2",
-      "@tanstack/react-start": "1.167.65",
+      "@tanstack/react-router": "^1.170.4",
+      "@tanstack/react-start": "1.168.6",
       "react": "^19.2.6",
       "react-dom": "^19.2.6",
       "satori": "^0.26.0",
@@ -22,15 +22,15 @@
         "@tsconfig/strictest": "^2.0.0",
         "@types/react": "^19.0.8",
         "@types/react-dom": "^19.0.3",
-        "@vitejs/plugin-react": "^6.0.1",
-        "@types/bun": "^1.3.13",
-        "@types/node": "^25.6.2",
-        "astro": "^6.3.1",
+        "@vitejs/plugin-react": "^6.0.2",
+        "@types/bun": "^1.3.14",
+        "@types/node": "^25.8.0",
+        "astro": "^6.3.3",
         "eslint-plugin-better-tailwindcss": "^4.5.0",
-        "wrangler": "^4.90.0",
+        "wrangler": "^4.92.0",
         "tailwindcss": "^4.3.0",
         "typescript": "^6.0.3",
-        "vite": "^8.0.11"
+        "vite": "^8.0.13"
       }
     }
   },
@@ -42,8 +42,8 @@
   },
   "devDependencies": {
     "@types/bun": "catalog:dev",
-    "oxfmt": "0.48.0",
-    "oxlint": "^1.63.0",
+    "oxfmt": "0.50.0",
+    "oxlint": "^1.65.0",
     "oxlint-tsgolint": "^0.22.1"
   }
 }

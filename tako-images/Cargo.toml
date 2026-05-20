@@ -6,11 +6,11 @@ publish = false
 
 [dependencies]
 base64 = "0.22"
-hmac = "0.12"
-libvips = "1.7.4"
+hmac = "0.13"
+libvips = "2.0.2"
 serde.workspace = true
 serde_json.workspace = true
-sha2 = "0.10"
+sha2 = "0.11"
 thiserror = "2.0"
 url = "2.5"
 

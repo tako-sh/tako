@@ -15,7 +15,7 @@ pub(super) async fn verify_checksum(
 
     let mut hasher = Sha256::new();
     hasher.update(data);
-    let actual_hash = format!("{:x}", hasher.finalize());
+    let actual_hash = hex::encode(hasher.finalize());
 
     match checksum_format {
         "shasums" => {

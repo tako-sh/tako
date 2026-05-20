@@ -448,12 +448,12 @@ fn sha256_hash_is_consistent() {
     let hash1 = {
         let mut h = Sha256::new();
         h.update(data);
-        format!("{:x}", h.finalize())
+        hex::encode(h.finalize())
     };
     let hash2 = {
         let mut h = Sha256::new();
         h.update(data);
-        format!("{:x}", h.finalize())
+        hex::encode(h.finalize())
     };
     assert_eq!(hash1, hash2);
     assert_eq!(hash1.len(), 64); // SHA-256 hex length

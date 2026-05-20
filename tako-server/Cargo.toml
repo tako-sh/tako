@@ -50,9 +50,9 @@ hyper = { version = "1.8", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 mimalloc = "0.1"
 percent-encoding = "2"
-prometheus = "0.13"
+prometheus = "0.14"
 hostname = "0.4"
-sha2 = "0.10"
+sha2 = "0.11"
 hex = "0.4"
 ssh-key = { version = "0.6", features = ["ed25519", "getrandom"] }
 ipnet = "2.11"
