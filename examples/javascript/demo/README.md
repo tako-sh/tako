@@ -2,7 +2,7 @@
 
 A TanStack Start demo app that doubles as a live tour of Tako's primitives: **wildcard routing**, **durable workflows**, **channels**, and **image optimization**.
 
-Each planet base has a mission page at `<base>.demo.tako.sh`, with `/bases/<base>` kept as a local fallback. Submitting a supply request enqueues a five-step sequential workflow (check → pack → load → ship → deliver) where the late steps occasionally throw and Tako retries them via `ctx.run`'s `retries` option. Every step publishes to the `mission-log` channel, so the right-rail log streams live to every connected client. Base artwork lives in `public/images/`; production builds use `imageUrl()` so Tako serves resized, cached images from `/_tako/image`. A daily cron workflow deletes demo database records older than three days.
+Each planet base has a mission page at `<base>.demo.tako.sh`, with `/bases/<base>` kept as a local fallback. Submitting a supply request enqueues a five-step sequential workflow (check → pack → load → ship → deliver) where the late steps occasionally throw and Tako retries them via `ctx.run`'s `retries` option. Every step publishes to the `mission-log` channel, so the right-rail log streams live to every connected client. Base artwork lives in `public/images/`; the app uses `imageUrl()` so Tako serves resized, cached images from `/_tako/image`. A daily cron workflow deletes demo database records older than three days.
 
 Live at [demo.tako.sh](https://demo.tako.sh).
 
@@ -14,7 +14,7 @@ bun install
 bun run dev
 ```
 
-This mode works without a Tako runtime for route and UI checks. Workflow enqueueing and live channels require `tako dev`. Image optimization is a Tako runtime feature, so Vite dev serves the source artwork directly.
+This mode works without a Tako runtime for route and UI checks. Workflow enqueueing, live channels, and image optimization require `tako dev`.
 
 ## Run With Tako Dev Flow
 
@@ -25,7 +25,7 @@ cd examples/javascript/demo
 tako dev
 ```
 
-Use this mode for the real Tako path: workflows are enqueued through the internal socket and events flow through the actual `mission-log` channel. Vite dev serves source artwork directly; production serves optimized images.
+Use this mode for the real Tako path: workflows are enqueued through the internal socket, events flow through the actual `mission-log` channel, and base artwork is served through `/_tako/image`.
 
 Import demo development secrets:
 
@@ -69,7 +69,7 @@ bun test
 - `src/components/mission-controller.tsx` — workflow enqueueing and live channel state
 - `src/server/db.ts` — SQLite persistence and retention cleanup
 - `src/lib/bases.ts` — planet base catalog and source image paths
-- `src/lib/images.ts` — Tako image URLs with a plain-Vite source-image fallback
+- `src/lib/images.ts` — Tako image URLs for base artwork
 - `public/images/` — generated source artwork for the base previews
 - `src/components/` — all UI components (MissionControl, Landing, Sidebar, etc.)
 - `src/styles/app.css` — Tailwind v4 `@theme` with the Obsidian Observatory palette
