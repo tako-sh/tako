@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::process::Stdio;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tako_images::{
     ImageCrop, ImageError, ImageFit, OutputFormat, TransformLimits, TransformOptions,
@@ -11,11 +12,12 @@ use tako_images::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, SemaphorePermit, TryAcquireError};
 use tokio::time::timeout;
 
 const IMAGE_WORKER_EXECUTION_TIMEOUT: Duration = Duration::from_secs(30);
 const IMAGE_WORKER_CONCURRENCY: usize = 2;
+const IMAGE_WORKER_QUEUE_CAPACITY: usize = 16;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct WorkerLimits {
@@ -119,14 +121,46 @@ pub(crate) async fn transform_in_worker(
     decode_worker_response(&output, options.format)
 }
 
-async fn acquire_worker_slot() -> Result<tokio::sync::SemaphorePermit<'static>, ImageError> {
-    // Queue wait is intentionally unbounded: a long transform queue should keep
-    // the HTTP request open until a worker can start. The execution timeout
-    // below begins only after this permit is acquired.
-    worker_slots()
+async fn acquire_worker_slot() -> Result<SemaphorePermit<'static>, ImageError> {
+    let slots = worker_slots();
+    match slots.try_acquire() {
+        Ok(permit) => return Ok(permit),
+        Err(TryAcquireError::Closed) => return Err(ImageError::TransformFailed),
+        Err(TryAcquireError::NoPermits) => {}
+    }
+
+    let _queue_slot = reserve_worker_queue_slot()?;
+    slots
         .acquire()
         .await
         .map_err(|_| ImageError::TransformFailed)
+}
+
+fn reserve_worker_queue_slot() -> Result<WorkerQueueSlot, ImageError> {
+    let queue_depth = worker_queue_depth();
+    let mut current = queue_depth.load(Ordering::Acquire);
+    loop {
+        if current >= IMAGE_WORKER_QUEUE_CAPACITY {
+            return Err(ImageError::TransformQueueFull);
+        }
+        match queue_depth.compare_exchange_weak(
+            current,
+            current + 1,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => return Ok(WorkerQueueSlot),
+            Err(next) => current = next,
+        }
+    }
+}
+
+struct WorkerQueueSlot;
+
+impl Drop for WorkerQueueSlot {
+    fn drop(&mut self) {
+        worker_queue_depth().fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 async fn run_worker_process(input: Vec<u8>) -> Result<Vec<u8>, ImageError> {
@@ -268,6 +302,11 @@ fn worker_slots() -> &'static Semaphore {
     SLOTS.get_or_init(|| Semaphore::new(IMAGE_WORKER_CONCURRENCY))
 }
 
+fn worker_queue_depth() -> &'static AtomicUsize {
+    static DEPTH: OnceLock<AtomicUsize> = OnceLock::new();
+    DEPTH.get_or_init(|| AtomicUsize::new(0))
+}
+
 fn content_type_for_format(format: OutputFormat) -> &'static str {
     match format {
         OutputFormat::Avif => "image/avif",
@@ -320,6 +359,7 @@ fn image_error_code(error: &ImageError) -> &'static str {
         ImageError::UnsupportedFormat => "unsupported_format",
         ImageError::ImageTooLarge => "image_too_large",
         ImageError::TransformFailed => "transform_failed",
+        ImageError::TransformQueueFull => "transform_queue_full",
     }
 }
 
@@ -337,6 +377,7 @@ fn image_error_from_code(code: &str) -> ImageError {
         "source_too_large" => ImageError::SourceTooLarge,
         "unsupported_format" => ImageError::UnsupportedFormat,
         "image_too_large" => ImageError::ImageTooLarge,
+        "transform_queue_full" => ImageError::TransformQueueFull,
         _ => ImageError::TransformFailed,
     }
 }
@@ -362,6 +403,7 @@ mod tests {
             ImageError::UnsupportedFormat,
             ImageError::ImageTooLarge,
             ImageError::TransformFailed,
+            ImageError::TransformQueueFull,
         ] {
             assert_eq!(image_error_from_code(image_error_code(&error)), error);
         }
@@ -402,6 +444,7 @@ mod tests {
 
     #[tokio::test]
     async fn worker_slot_queue_waits_until_permit_is_available() {
+        let _lock = acquire_worker_slot_test_lock().await;
         let first = acquire_worker_slot().await.expect("first worker slot");
         let second = acquire_worker_slot().await.expect("second worker slot");
         let mut queued = tokio::spawn(acquire_worker_slot());
@@ -421,5 +464,53 @@ mod tests {
             .expect("queued worker slot should acquire after release")
             .expect("queued worker task")
             .expect("queued worker slot");
+    }
+
+    #[tokio::test]
+    async fn worker_slot_queue_rejects_when_capacity_is_reached() {
+        let _lock = acquire_worker_slot_test_lock().await;
+        assert_eq!(worker_queue_depth().load(Ordering::Acquire), 0);
+        let first = acquire_worker_slot().await.expect("first worker slot");
+        let second = acquire_worker_slot().await.expect("second worker slot");
+        let mut queued = Vec::with_capacity(IMAGE_WORKER_QUEUE_CAPACITY);
+        for _ in 0..IMAGE_WORKER_QUEUE_CAPACITY {
+            queued.push(tokio::spawn(acquire_worker_slot()));
+        }
+        wait_for_worker_queue_depth(IMAGE_WORKER_QUEUE_CAPACITY).await;
+
+        let result = acquire_worker_slot().await;
+
+        assert!(matches!(result, Err(ImageError::TransformQueueFull)));
+        drop(first);
+        drop(second);
+        for task in queued {
+            let permit = timeout(Duration::from_secs(1), task)
+                .await
+                .expect("queued worker slot should acquire after release")
+                .expect("queued worker task")
+                .expect("queued worker slot");
+            drop(permit);
+        }
+        assert_eq!(worker_queue_depth().load(Ordering::Acquire), 0);
+    }
+
+    async fn acquire_worker_slot_test_lock() -> tokio::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+            .lock()
+            .await
+    }
+
+    async fn wait_for_worker_queue_depth(expected: usize) {
+        for _ in 0..100 {
+            if worker_queue_depth().load(Ordering::Acquire) == expected {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        panic!(
+            "worker queue depth did not reach {expected}; current={}",
+            worker_queue_depth().load(Ordering::Acquire)
+        );
     }
 }

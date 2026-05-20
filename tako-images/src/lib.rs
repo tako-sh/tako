@@ -55,6 +55,7 @@ pub struct ImageUrlOptions {
 pub struct VerifiedImageRequest {
     pub source: ImageSource,
     pub format: OutputFormat,
+    pub vary_accept: bool,
     pub width: u32,
     pub height: Option<u32>,
     pub fit: Option<ImageFit>,
@@ -162,6 +163,8 @@ pub enum ImageError {
     ImageTooLarge,
     #[error("image transform failed")]
     TransformFailed,
+    #[error("image transform queue is full")]
+    TransformQueueFull,
 }
 
 pub fn sign_image_path(secret: &str, options: &ImageUrlOptions) -> Result<String, ImageError> {
@@ -241,6 +244,7 @@ pub fn verify_image_path(
     Ok(VerifiedImageRequest {
         source: parse_source(&parts.source)?,
         format: parts.format,
+        vary_accept: false,
         width: parts.width,
         height: parts.height,
         fit: parts.fit,
@@ -271,14 +275,16 @@ pub fn verify_public_image_request(
         Some(value) => parse_public_quality(&value, config)?,
         None => DEFAULT_QUALITY,
     };
-    let format = match params.format {
-        Some(value) => parse_public_format(&value, config)?,
+    let vary_accept = params.format.is_none();
+    let format = match params.format.as_deref() {
+        Some(value) => parse_public_format(value, config)?,
         None => negotiate_public_format(accept, config)?,
     };
 
     Ok(VerifiedImageRequest {
         source,
         format,
+        vary_accept,
         width,
         height: None,
         fit: None,

@@ -20,17 +20,15 @@ run_as_root() {
 install_apt_libvips_runtime() {
   run_as_root apt-get update -y
 
-  apt_avif_encoder_pkg=""
-  if apt-cache show libheif-plugin-aomenc >/dev/null 2>&1; then
-    apt_avif_encoder_pkg="libheif-plugin-aomenc"
-  fi
+  apt_avif_pkgs=""
+  for apt_avif_pkg in libheif-plugin-aomenc libheif-plugin-aomdec libheif-plugin-dav1d; do
+    if apt-cache show "$apt_avif_pkg" >/dev/null 2>&1; then
+      apt_avif_pkgs="$apt_avif_pkgs $apt_avif_pkg"
+    fi
+  done
 
   for apt_vips_pkg in libvips42t64 libvips42 libvips; do
-    if [ -n "$apt_avif_encoder_pkg" ]; then
-      if run_as_root apt-get install -y --no-install-recommends "$apt_vips_pkg" "$apt_avif_encoder_pkg"; then
-        return 0
-      fi
-    elif run_as_root apt-get install -y --no-install-recommends "$apt_vips_pkg"; then
+    if run_as_root apt-get install -y --no-install-recommends "$apt_vips_pkg" $apt_avif_pkgs; then
       return 0
     fi
   done

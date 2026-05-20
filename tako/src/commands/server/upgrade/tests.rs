@@ -111,7 +111,9 @@ fn remote_binary_replace_command_uses_root_shell_wrapper_and_verifies_sha256() {
     assert!(cmd.contains("Authorization: Bearer"));
     assert!(cmd.contains("libvips42t64"));
     assert!(cmd.contains("libheif-plugin-aomenc"));
-    assert!(cmd.contains("apt-get install -y \"$apt_vips_pkg\" $apt_avif_encoder_pkg"));
+    assert!(cmd.contains("libheif-plugin-aomdec"));
+    assert!(cmd.contains("libheif-plugin-dav1d"));
+    assert!(cmd.contains("apt-get install -y \"$apt_vips_pkg\" $apt_avif_pkgs"));
     assert!(cmd.contains("dnf install -y vips"));
     assert!(cmd.contains("apk add --no-cache vips vips-heif"));
     assert!(cmd.contains("sha256 mismatch"));

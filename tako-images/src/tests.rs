@@ -398,6 +398,7 @@ fn verifies_public_local_image_requests_with_default_config() {
     assert_eq!(verified.quality, 75);
     assert_eq!(verified.format, OutputFormat::Avif);
     assert_eq!(verified.visibility, ImageVisibility::Public);
+    assert!(verified.vary_accept);
 }
 
 #[test]
@@ -449,6 +450,7 @@ fn verifies_public_remote_image_requests_against_remote_patterns() {
         ImageSource::RemoteUrl("https://cdn.example.com/uploads/avatar.jpg?v=1".to_string())
     );
     assert_eq!(verified.format, OutputFormat::Webp);
+    assert!(!verified.vary_accept);
 
     let err = verify_public_image_request(
         "/_tako/image",

@@ -12,6 +12,7 @@ fn image_errors_map_to_public_safe_status_codes() {
     assert_eq!(image_error_status(&ImageError::InvalidSignature), 403);
     assert_eq!(image_error_status(&ImageError::SourceTooLarge), 413);
     assert_eq!(image_error_status(&ImageError::UnsupportedFormat), 415);
+    assert_eq!(image_error_status(&ImageError::TransformQueueFull), 503);
 }
 
 #[test]
@@ -57,6 +58,32 @@ fn non_transform_image_errors_do_not_fallback() {
         .unwrap_err();
 
     assert_eq!(err, ImageError::UnsupportedFormat);
+}
+
+#[test]
+fn transform_queue_full_does_not_fallback_to_original_image_source() {
+    let source = ImageSourceBytes::new(vec![1, 2, 3], Some("image/png".to_string()));
+
+    let err = image_response_body_from_transform_error(ImageError::TransformQueueFull, source)
+        .unwrap_err();
+
+    assert_eq!(err, ImageError::TransformQueueFull);
+}
+
+#[test]
+fn image_etag_changes_with_response_bytes() {
+    let left = image_etag(b"one", "image/webp");
+    let right = image_etag(b"two", "image/webp");
+
+    assert_ne!(left, right);
+}
+
+#[test]
+fn image_etag_changes_with_content_type() {
+    let left = image_etag(b"bytes", "image/avif");
+    let right = image_etag(b"bytes", "image/webp");
+
+    assert_ne!(left, right);
 }
 
 #[test]

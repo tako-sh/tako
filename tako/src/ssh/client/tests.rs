@@ -226,7 +226,9 @@ fn install_server_script_installs_and_verifies_runtime_dependencies() {
     assert!(script.contains("install_libvips_runtime"));
     assert!(script.contains("libvips42t64"));
     assert!(script.contains("libheif-plugin-aomenc"));
-    assert!(script.contains("apt-get install -y \"$apt_vips_pkg\" $apt_avif_encoder_pkg"));
+    assert!(script.contains("libheif-plugin-aomdec"));
+    assert!(script.contains("libheif-plugin-dav1d"));
+    assert!(script.contains("apt-get install -y \"$apt_vips_pkg\" $apt_avif_pkgs"));
     assert!(script.contains("dnf install -y vips || {"));
     assert!(script.contains("apk add --no-cache vips vips-heif"));
     assert!(script.contains("install_libvips_codec_runtime"));

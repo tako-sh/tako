@@ -88,7 +88,13 @@ pub(crate) async fn try_handle(
     let cache_control_header =
         cache_control(verified.visibility, verified.private_browser_cache_max_age);
     header.insert_header("Cache-Control", cache_control_header.as_ref())?;
-    header.insert_header("ETag", image_etag(path, transformed.content_type))?;
+    if verified.vary_accept {
+        header.insert_header("Vary", "Accept")?;
+    }
+    header.insert_header(
+        "ETag",
+        image_etag(&transformed.bytes, transformed.content_type),
+    )?;
     session
         .write_response_header(Box::new(header), false)
         .await?;
@@ -332,6 +338,7 @@ fn image_error_status(error: &ImageError) -> u16 {
         ImageError::SourceTooLarge | ImageError::ImageTooLarge => 413,
         ImageError::UnsupportedFormat => 415,
         ImageError::TransformFailed => 502,
+        ImageError::TransformQueueFull => 503,
     }
 }
 
@@ -343,15 +350,18 @@ fn image_error_body(status: u16) -> &'static str {
         413 => "Payload Too Large",
         415 => "Unsupported Media Type",
         502 => "Bad Gateway",
+        503 => "Service Unavailable",
         _ => "Internal Server Error",
     }
 }
 
-fn image_etag(path: &str, content_type: &str) -> String {
+fn image_etag(bytes: &[u8], content_type: &str) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(path.as_bytes());
+    hasher.update(b"tako-image-response-v1");
     hasher.update(b"\n");
     hasher.update(content_type.as_bytes());
+    hasher.update(b"\n");
+    hasher.update(bytes);
     format!("\"{}\"", hex::encode(hasher.finalize()))
 }
 
@@ -371,6 +381,23 @@ mod tests {
         assert_eq!(image_error_status(&ImageError::InvalidSignature), 403);
         assert_eq!(image_error_status(&ImageError::SourceTooLarge), 413);
         assert_eq!(image_error_status(&ImageError::UnsupportedFormat), 415);
+        assert_eq!(image_error_status(&ImageError::TransformQueueFull), 503);
+    }
+
+    #[test]
+    fn image_etag_changes_with_response_bytes() {
+        let left = image_etag(b"one", "image/webp");
+        let right = image_etag(b"two", "image/webp");
+
+        assert_ne!(left, right);
+    }
+
+    #[test]
+    fn image_etag_changes_with_content_type() {
+        let left = image_etag(b"bytes", "image/avif");
+        let right = image_etag(b"bytes", "image/webp");
+
+        assert_ne!(left, right);
     }
 
     #[test]
