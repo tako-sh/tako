@@ -14,7 +14,7 @@ const AVIF_16X8: &str = "AAAAHGZ0eXBhdmlmAAAAAG1pZjFhdmlmbWlhZgAAARdtZXRhAAAAAAA
 fn private_options() -> ImageUrlOptions {
     ImageUrlOptions {
         source: "/assets/avatar.png".to_string(),
-        format: OutputFormat::Avif,
+        format: OutputFormat::Webp,
         width: Some(640),
         height: None,
         fit: None,
@@ -71,7 +71,7 @@ fn verifies_signed_private_path() {
     assert_eq!(verified.fit, None);
     assert_eq!(verified.crop, None);
     assert_eq!(verified.quality, 75);
-    assert_eq!(verified.format, OutputFormat::Avif);
+    assert_eq!(verified.format, OutputFormat::Webp);
     assert_eq!(verified.visibility, ImageVisibility::Private);
     assert_eq!(
         verified.private_browser_cache_max_age,
@@ -225,18 +225,18 @@ fn public_paths_reject_browser_cache_overrides() {
 }
 
 #[test]
-fn signs_webp_fallback_urls() {
+fn signs_avif_urls() {
     let mut options = private_options();
-    options.format = OutputFormat::Webp;
+    options.format = OutputFormat::Avif;
 
     let path = sign_image_path(SECRET, &options).expect("sign path");
     let verified = verify_image_path(SECRET, &path, 1_800_000_000).expect("verify path");
 
-    assert_eq!(verified.format, OutputFormat::Webp);
+    assert_eq!(verified.format, OutputFormat::Avif);
     assert_eq!(
         payload_value(&path),
         json!({
-            "f": "webp",
+            "f": "avif",
             "w": 640,
             "e": 1_900_000_000_u64,
             "s": "/assets/avatar.png",
@@ -257,7 +257,7 @@ fn rejects_tampered_paths() {
 #[test]
 fn rejects_tampered_output_formats() {
     let path = sign_image_path(SECRET, &private_options()).expect("sign path");
-    let tampered = tamper_payload(&path, |payload| payload["f"] = json!("webp"));
+    let tampered = tamper_payload(&path, |payload| payload["f"] = json!("avif"));
 
     let err = verify_image_path(SECRET, &tampered, 1_800_000_000).unwrap_err();
 
@@ -265,9 +265,9 @@ fn rejects_tampered_output_formats() {
 }
 
 #[test]
-fn rejects_explicit_avif_payload_formats() {
+fn rejects_explicit_webp_payload_formats() {
     let path = signed_payload(json!({
-        "f": "avif",
+        "f": "webp",
         "w": 640,
         "e": 1_900_000_000_u64,
         "s": "/assets/avatar.png",
@@ -396,9 +396,39 @@ fn verifies_public_local_image_requests_with_default_config() {
     );
     assert_eq!(verified.width, 640);
     assert_eq!(verified.quality, 75);
-    assert_eq!(verified.format, OutputFormat::Avif);
+    assert_eq!(verified.format, OutputFormat::Webp);
     assert_eq!(verified.visibility, ImageVisibility::Public);
     assert!(verified.vary_accept);
+}
+
+#[test]
+fn public_format_negotiation_respects_configured_order() {
+    let avif_first = ImagesConfig {
+        formats: vec![OutputFormat::Avif, OutputFormat::Webp],
+        ..Default::default()
+    };
+    let webp_first = ImagesConfig {
+        formats: vec![OutputFormat::Webp, OutputFormat::Avif],
+        ..Default::default()
+    };
+
+    let avif = verify_public_image_request(
+        "/_tako/image",
+        Some("src=%2Fassets%2Favatar.png&w=640"),
+        Some("image/avif,image/webp"),
+        &avif_first,
+    )
+    .expect("verify public avif image");
+    let webp = verify_public_image_request(
+        "/_tako/image",
+        Some("src=%2Fassets%2Favatar.png&w=640"),
+        Some("image/avif,image/webp"),
+        &webp_first,
+    )
+    .expect("verify public webp image");
+
+    assert_eq!(avif.format, OutputFormat::Avif);
+    assert_eq!(webp.format, OutputFormat::Webp);
 }
 
 #[test]
@@ -495,6 +525,7 @@ fn public_image_requests_reject_unbounded_variants() {
         "src=%2Favatar.png&w=640&q=80",
         "src=%2Favatar.png&w=640&q=75&q=75",
         "src=%2Favatar.png&w=640&x=1",
+        "src=%2Favatar.png&w=640&f=avif",
         "src=%2Favatar.png&w=640&f=jpeg",
     ] {
         assert!(

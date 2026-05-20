@@ -49,11 +49,6 @@ const avatar = imageUrl("/avatars/u_123.png", {
   width: 640,
 });
 
-const avatarFallback = imageUrl("/avatars/u_123.png", {
-  width: 640,
-  format: "webp",
-});
-
 const hero = imageUrl("/assets/hero.jpg", {
   width: 1200,
   quality: 80,
@@ -64,6 +59,8 @@ const responsiveHero = imageSrcSet("/assets/hero.jpg", {
   width: 1200,
 });
 ```
+
+Omit `format` for the optimizer default. Tako defaults to WebP; set `format: "avif"` only when the app's `[images].formats` allows AVIF.
 
 `imageSrcSet` returns `{ src, srcSet, sizes }` for plain `<img>` usage. Layouts are `constrained` for images that scale down but stop at `width`, `full-width` for viewport-wide images, and `fixed` for fixed-width images. Pass `widths` and `sizes` for custom responsive markup.
 

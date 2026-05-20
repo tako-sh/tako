@@ -3,7 +3,7 @@ const DEFAULT_WIDTH = 1200;
 const DEFAULT_QUALITY = 75;
 const ALLOWED_WIDTH_VALUES = [320, 640, 960, 1200, 1920] as const;
 const ALLOWED_WIDTHS = new Set<number>(ALLOWED_WIDTH_VALUES);
-const ALLOWED_FORMATS = new Set(["avif", "webp"]);
+const ALLOWED_FORMATS = new Set(["webp", "avif"]);
 const ALLOWED_LAYOUTS = new Set(["constrained", "full-width", "fixed"]);
 
 export interface ImageUrlOptions {
@@ -11,7 +11,7 @@ export interface ImageUrlOptions {
   width?: number;
   /** Output quality, 1-100. Omitted when it matches Tako's default quality. */
   quality?: number;
-  /** Preferred output format. The optimizer still respects client support. */
+  /** Output format override. Omit to use the optimizer's configured default. */
   format?: "avif" | "webp";
 }
 

@@ -56,7 +56,7 @@ LOG_LEVEL = "info"
 remote_patterns = ["https://cdn.example.com/uploads/**"]
 sizes = [320, 640, 960, 1200, 1920]
 qualities = [75]
-formats = ["avif", "webp"]
+formats = ["webp"]
 
 [workflows]
 workers = 0
@@ -225,7 +225,7 @@ remote_patterns = ["https://cdn.example.com/uploads/**"]
 local_patterns = ["/images/**"]
 sizes = [320, 640, 960, 1200, 1920]
 qualities = [75]
-formats = ["avif", "webp"]
+formats = ["webp"]
 ```
 
 | Field             | Default                       | Meaning                                                              |
@@ -234,7 +234,7 @@ formats = ["avif", "webp"]
 | `remote_patterns` | `[]`                          | Remote image URL allowlist. Remote images are denied unless matched. |
 | `sizes`           | `[320, 640, 960, 1200, 1920]` | Allowed output widths.                                               |
 | `qualities`       | `[75]`                        | Allowed output qualities.                                            |
-| `formats`         | `["avif", "webp"]`            | Allowed output formats.                                              |
+| `formats`         | `["webp"]`                    | Allowed output formats, in negotiation preference order.             |
 
 Patterns are glob-like URL strings. `*` matches one segment and `**` matches the rest of a path. Remote hosts may use a leading wildcard, and remote patterns without a protocol match both `http` and `https`.
 

@@ -120,13 +120,13 @@ import { imageUrl } from "tako.sh";
 
 const photo = imageUrl("/photos/p_123.jpg");
 const url = imageUrl("/avatars/u_123.png", { width: 640 });
-const webpUrl = imageUrl("https://cdn.example.com/uploads/avatars/u_123.png", {
+const avifUrl = imageUrl("https://cdn.example.com/uploads/avatars/u_123.png", {
   width: 640,
-  format: "webp",
+  format: "avif",
 });
 ```
 
-The helper returns `/_tako/image?src=...&w=...` and is synchronous. Width must be one of `320, 640, 960, 1200, 1920`; quality is `1..100`; format is `avif` or `webp`. Local public paths are available by default. Remote URLs must match `[images].remote_patterns` in `tako.toml`. The server verifies the app's configured image guardrails before fetching or transforming.
+The helper returns `/_tako/image?src=...&w=...` and is synchronous. Width must be one of `320, 640, 960, 1200, 1920`; quality is `1..100`; format is `webp` or `avif`. Omit `format` for the optimizer default; Tako defaults to WebP, and `format: "avif"` is only valid when the app's `[images].formats` allows AVIF. Local public paths are available by default. Remote URLs must match `[images].remote_patterns` in `tako.toml`. The server verifies the app's configured image guardrails before fetching or transforming.
 
 ## Storage
 

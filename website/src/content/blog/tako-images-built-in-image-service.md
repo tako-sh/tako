@@ -7,7 +7,7 @@ image: 653527a88f78
 
 Images are sneaky infrastructure.
 
-Your app starts with a few uploads in `public/`, object storage, or a CDN bucket. Then someone wants avatars cropped square, gallery photos capped at a sensible width, WebP fallbacks for older clients, private message attachments, and cache headers that do not accidentally make a user's photo reusable in the wrong place. Suddenly "show this image" has become a second platform.
+Your app starts with a few uploads in `public/`, object storage, or a CDN bucket. Then someone wants avatars cropped square, gallery photos capped at a sensible width, optional AVIF for image-heavy pages, private message attachments, and cache headers that do not accidentally make a user's photo reusable in the wrong place. Suddenly "show this image" has become a second platform.
 
 Tako now ships that image service in the app boundary you already own. Keep originals wherever your app keeps images; server-side TypeScript can call `createImageUrl()` from `tako.sh/server`, hand the signed path to the browser, and let `tako-server` verify, resize, encode, and cache the response under `/_tako/image/v1/...`. Storage stays yours. Transformation and policy move into Tako. No separate optimizer service. No query-string soup.
 
@@ -21,7 +21,7 @@ import { createImageUrl } from "tako.sh/server";
 const photo = createImageUrl("/photos/p_123.jpg");
 ```
 
-That signs a private AVIF URL with maximum width `1200`, quality `75`, a 7-day expiration, and 7-day browser-only caching. The return value is a path on your own app:
+That signs a private WebP URL with maximum width `1200`, quality `75`, a 7-day expiration, and 7-day browser-only caching. The return value is a path on your own app:
 
 ```txt
 /_tako/image/v1/<payload>.<signature>
@@ -61,16 +61,16 @@ Public image URLs have no expiration and use long immutable public cache headers
 
 ## Resize, crop, and format without a side service
 
-Tako's optimizer is intentionally narrow. It accepts local paths or remote `http`/`https` sources, rejects private and local remote hosts, and transforms JPEG, PNG, WebP, and AVIF sources by file signature. It emits AVIF by default, or WebP when you ask for the fallback:
+Tako's optimizer is intentionally narrow. It accepts local paths or remote `http`/`https` sources, rejects private and local remote hosts, and transforms JPEG, PNG, WebP, and AVIF sources by file signature. It emits WebP by default, or AVIF when you opt into the smaller, slower-to-encode format:
 
 ```ts
-const fallback = createImageUrl("/avatars/u_123.png", {
+const avif = createImageUrl("/avatars/u_123.png", {
   width: 256,
-  format: "webp",
+  format: "avif",
 });
 ```
 
-You do not pass `format: "avif"` because AVIF is the default. Omitting `format` keeps the payload smaller and leaves the default obvious.
+You do not pass `format: "webp"` because WebP is the default. Omitting `format` keeps the payload smaller and leaves the default obvious.
 
 Width-only requests preserve aspect ratio and never upscale. If the original image is `800px` wide and you request `1200`, the output stays `800px`. Fixed boxes require both `width` and `height`, then choose `cover` or `contain`:
 
@@ -95,10 +95,10 @@ The useful shape is easier to scan as a table:
 
 | Need                   | Options                             | Result                                                   |
 | ---------------------- | ----------------------------------- | -------------------------------------------------------- |
-| Regular private photo  | omitted or `{ width }`              | AVIF, max width `1200` by default, private browser cache |
+| Regular private photo  | omitted or `{ width }`              | WebP, max width `1200` by default, private browser cache |
 | Square avatar          | `{ width, height, crop: "smart" }`  | Cover resize with attention crop                         |
 | Product image in a box | `{ width, height, fit: "contain" }` | Fits inside the box without cropping or upscaling        |
-| Older-client fallback  | `{ format: "webp" }`                | WebP output instead of default AVIF                      |
+| Smaller AVIF variant   | `{ format: "avif" }`                | AVIF output when the tradeoff is worth it                |
 | Public marketing asset | `{ public: true }`                  | Stable public URL with immutable cache headers           |
 
 The server side uses libvips for resize, crop, and encode work, and strips metadata from transformed output. Server installs include the host libvips runtime, so this is part of the same [`tako-server`](/docs/deployment) surface that already handles routing, TLS, deploys, and static assets.
@@ -129,7 +129,7 @@ browser -> proxy: "GET signed image URL"
 proxy -> proxy: "verify payload signature"
 proxy -> source: "fetch original image"
 source -> vips: "JPEG / PNG / WebP / AVIF"
-vips -> browser: "AVIF or WebP + cache headers"
+vips -> browser: "WebP or AVIF + cache headers"
 ```
 
 ## Why this belongs in Tako
@@ -149,7 +149,7 @@ The image optimizer is not trying to be a giant media pipeline. It is the 80% pa
 | Concern  | Tako behavior                                                           |
 | -------- | ----------------------------------------------------------------------- |
 | Privacy  | Signed URLs are private by default and expire by default                |
-| Formats  | AVIF by default, WebP fallback on request                               |
+| Formats  | WebP by default, AVIF on request                                        |
 | Resizing | Fixed allowed dimensions, no upscaling                                  |
 | Cropping | Center or libvips smart crop for cover thumbnails                       |
 | Caching  | Browser-only private cache by default, explicit immutable public cache  |

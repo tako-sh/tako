@@ -1,7 +1,7 @@
 ---
 title: "The Open Source Cloudinary Alternative for Signed Image Resizing on a VPS"
 date: "2026-05-13T04:39"
-description: "Compare Cloudinary-style image transforms with Tako's self-hosted signed URLs, AVIF/WebP output, and app-owned cache policy."
+description: "Compare Cloudinary-style image transforms with Tako's self-hosted signed URLs, WebP/AVIF output, and app-owned cache policy."
 image: 0e292c22eac5
 ---
 
@@ -11,7 +11,7 @@ Upload an original, ask for the shape you need, and the image pipeline takes car
 
 That is the right shape. The question is where it should live.
 
-For a lot of apps, a full hosted media platform is the right answer. If media is its own product surface, use the thing built for that. Tako is not trying to become that. Tako's image service is smaller on purpose: signed image resizing, safe source fetching, AVIF/WebP output, and cache policy inside the same self-hosted platform that already runs your app on a VPS.
+For a lot of apps, a full hosted media platform is the right answer. If media is its own product surface, use the thing built for that. Tako is not trying to become that. Tako's image service is smaller on purpose: signed image resizing, safe source fetching, WebP/AVIF output, and cache policy inside the same self-hosted platform that already runs your app on a VPS.
 
 ## The Difference Is Ownership
 
@@ -63,7 +63,7 @@ The default call is private and conservative:
 const photo = createImageUrl("/uploads/p_123.jpg");
 ```
 
-That produces a private AVIF URL with maximum width `1200`, quality `75`, a 7-day expiration, and browser-only private caching. For public marketing assets, you say so explicitly:
+That produces a private WebP URL with maximum width `1200`, quality `75`, a 7-day expiration, and browser-only private caching. For public marketing assets, you say so explicitly:
 
 ```ts
 const hero = createImageUrl("/assets/home-hero.jpg", {
@@ -79,13 +79,13 @@ The transform surface is intentionally small:
 
 | Need                     | Tako option                                   | Result                                 |
 | ------------------------ | --------------------------------------------- | -------------------------------------- |
-| Default responsive image | omitted or `{ width: 1200 }`                  | AVIF, no upscaling, private by default |
+| Default responsive image | omitted or `{ width: 1200 }`                  | WebP, no upscaling, private by default |
 | Square avatar            | `{ width: 256, height: 256, crop: "smart" }`  | Cover resize with attention crop       |
 | Product image box        | `{ width: 640, height: 640, fit: "contain" }` | Fit inside the box without cropping    |
-| Older-client fallback    | `{ format: "webp" }`                          | WebP instead of default AVIF           |
+| Smaller AVIF variant     | `{ format: "avif" }`                          | AVIF when the tradeoff is worth it     |
 | Public evergreen asset   | `{ public: true }`                            | Immutable public cache policy          |
 
-The limits are part of the product. Widths and heights come from a fixed set. Quality is `1..100`. Output is AVIF by default or WebP when requested. Source images are JPEG, PNG, WebP, or AVIF by file signature. Transform work uses libvips, strips metadata, respects EXIF orientation, and never upscales.
+The limits are part of the product. Widths and heights come from a fixed set. Quality is `1..100`. Output is WebP by default or AVIF when requested. Source images are JPEG, PNG, WebP, or AVIF by file signature. Transform work uses libvips, strips metadata, respects EXIF orientation, and never upscales.
 
 That is less flexible than a general media platform. It is also much harder to misuse.
 
@@ -106,7 +106,7 @@ source: "App image source\npublic/ or backend" {
   style.fill: "#FFF9F4"
   style.stroke: "#2F2A44"
 }
-vips: "libvips\nAVIF / WebP" {
+vips: "libvips\nWebP / AVIF" {
   style.fill: "#9BC4B6"
 }
 

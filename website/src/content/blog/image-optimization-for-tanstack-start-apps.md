@@ -1,13 +1,13 @@
 ---
 title: "Image Optimization for TanStack Start Apps on a VPS"
 date: "2026-05-16T13:26"
-description: "Optimize TanStack Start images on a VPS with Tako's public image endpoint, responsive srcsets, remote allowlists, and AVIF/WebP output."
+description: "Optimize TanStack Start images on a VPS with Tako's public image endpoint, responsive srcsets, remote allowlists, and WebP output."
 image: 5b5b0f21ec5b
 ---
 
 TanStack Start gives React apps a clean full-stack shape: routes, SSR, server functions, and a normal Vite build. Images are the part that still tries to become infrastructure.
 
-A hero image looks harmless in `public/images/hero.jpg`. Then the homepage needs AVIF, cards need smaller variants, remote CMS images need an allowlist, and you would rather not make the browser download a 3000px original into a 640px slot. Hosted platforms usually hide that behind an image component. If you are running TanStack Start on your own VPS, you need the same boringly useful piece close to the app.
+A hero image looks harmless in `public/images/hero.jpg`. Then the homepage needs modern output, cards need smaller variants, remote CMS images need an allowlist, and you would rather not make the browser download a 3000px original into a 640px slot. Hosted platforms usually hide that behind an image component. If you are running TanStack Start on your own VPS, you need the same boringly useful piece close to the app.
 
 That is what Tako's public image optimizer is for. The app renders plain `<img>` markup, the SDK builds CDN-friendly URLs, and `tako-server` does the resize and encode work behind your route. If you already followed the [TanStack Start deploy guide](/blog/deploy-tanstack-start-to-a-vps-in-five-minutes), images use the same platform boundary as routing, TLS, static assets, and [zero-downtime deploys](/blog/zero-downtime-deploys-without-a-container-in-sight).
 
@@ -64,7 +64,6 @@ import { imageUrl } from "tako.sh";
 
 const avatar = imageUrl("/avatars/u_123.png", {
   width: 640,
-  format: "webp",
 });
 ```
 
@@ -95,7 +94,7 @@ route -> html: "imageSrcSet()"
 html -> proxy: "browser requests variant"
 proxy -> source: "fetch original"
 source -> vips: "JPEG / PNG / WebP / AVIF"
-vips -> html: "AVIF by default\nor WebP fallback"
+vips -> html: "WebP by default\nor AVIF opt-in"
 ```
 
 ## Configure The Guardrails
@@ -112,7 +111,7 @@ preset = "tanstack-start"
 remote_patterns = ["https://cdn.example.com/uploads/**"]
 sizes = [320, 640, 960, 1200, 1920]
 qualities = [75]
-formats = ["avif", "webp"]
+formats = ["webp"]
 ```
 
 Those fields are intentionally narrow:
@@ -123,7 +122,7 @@ Those fields are intentionally narrow:
 | `remote_patterns` | `[]`                          | Allow only the remote image origins your app expects.      |
 | `sizes`           | `[320, 640, 960, 1200, 1920]` | Keep generated variants finite and cacheable.              |
 | `qualities`       | `[75]`                        | Prevent arbitrary quality values from becoming cache keys. |
-| `formats`         | `["avif", "webp"]`            | Keep output formats predictable.                           |
+| `formats`         | `["webp"]`                    | Keep output formats predictable; add AVIF when needed.     |
 
 Patterns are glob-like URL strings, not regular expressions. `*` matches one path segment, `**` matches the rest, and a remote host can use a leading wildcard such as `https://*.example.com/uploads/**`. A pattern without a protocol allows both `http` and `https`, though most production image origins should be explicit.
 
@@ -142,7 +141,7 @@ tako deploy
 
 For TanStack Start, `tako init` detects the app and offers the `tanstack-start` preset. That preset points Tako at the generated server entry and client assets, so your SSR handler, static files, and image optimizer all land in one deploy artifact. The [Tako config reference](/docs/tako-toml) has the full `[images]` field list when you want tighter local paths or remote sources.
 
-In production, public optimized responses use long immutable cache headers. Transforms preserve aspect ratio, do not upscale, apply EXIF orientation before encoding, strip source metadata, and emit AVIF by default or WebP when requested. Sources are accepted by file signature for JPEG, PNG, WebP, and AVIF rather than trusting `Content-Type` alone.
+In production, public optimized responses use long immutable cache headers. Transforms preserve aspect ratio, do not upscale, apply EXIF orientation before encoding, strip source metadata, and emit WebP by default. Public AVIF variants are available when you add AVIF to `[images].formats` and request it explicitly, or put AVIF first when you want `Accept` negotiation to choose it. Sources are accepted by file signature for JPEG, PNG, WebP, and AVIF rather than trusting `Content-Type` alone.
 
 Here is the practical decision table:
 
@@ -154,6 +153,6 @@ Here is the practical decision table:
 | CMS or bucket image        | Add `remote_patterns`, then use the remote `https://...` URL.               |
 | Public object storage file | Add `public_base_url`, then use `createImageSrcSet(..., { public: true })`. |
 
-The important thing is where the contract lives. Your TanStack Start app decides which original image belongs on the page. `tako.sh` turns that decision into a small set of optimizer URLs. `tako-server` enforces the allowlists, does the resize work, and serves cacheable AVIF or WebP from the same route that already serves the app.
+The important thing is where the contract lives. Your TanStack Start app decides which original image belongs on the page. `tako.sh` turns that decision into a small set of optimizer URLs. `tako-server` enforces the allowlists, does the resize work, and serves cacheable WebP or configured AVIF from the same route that already serves the app.
 
 That keeps the happy path small: build a TanStack Start app, deploy it to your VPS, and render responsive optimized images without adding a media service, a framework-specific image component, or a second proxy. The app stays React. The image pipeline becomes part of the platform layer Tako is already running for you. Start with the [framework guide](/docs/framework-guides), then wire images through `imageSrcSet` when the first oversized hero image shows up.

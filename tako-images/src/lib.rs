@@ -27,7 +27,7 @@ const DEFAULT_WIDTH: u32 = 1200;
 const DEFAULT_QUALITY: u8 = 75;
 const DEFAULT_PUBLIC_WIDTHS: &[u32] = &[320, 640, 960, 1200, 1920];
 const DEFAULT_PUBLIC_QUALITIES: &[u8] = &[75];
-const DEFAULT_PUBLIC_FORMATS: &[OutputFormat] = &[OutputFormat::Avif, OutputFormat::Webp];
+const DEFAULT_PUBLIC_FORMATS: &[OutputFormat] = &[OutputFormat::Webp];
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -195,7 +195,7 @@ pub fn sign_image_path(secret: &str, options: &ImageUrlOptions) -> Result<String
     let source_raw = source.as_str();
     let payload = ImagePayload {
         public: (options.visibility == ImageVisibility::Public).then_some(true),
-        format: (options.format != OutputFormat::Avif)
+        format: (options.format != OutputFormat::Webp)
             .then(|| options.format.payload_value().to_string()),
         width: (resize.width != DEFAULT_WIDTH || resize.height.is_some()).then_some(resize.width),
         height: resize.height,
@@ -317,7 +317,7 @@ pub fn cache_control(
 impl OutputFormat {
     fn parse_payload_override(value: &str) -> Result<Self, ImageError> {
         match value {
-            "webp" => Ok(Self::Webp),
+            "avif" => Ok(Self::Avif),
             _ => Err(ImageError::UnsupportedFormat),
         }
     }
@@ -471,7 +471,7 @@ fn parse_path(path: &str) -> Result<ParsedPath, ImageError> {
         .as_deref()
         .map(OutputFormat::parse_payload_override)
         .transpose()?
-        .unwrap_or(OutputFormat::Avif);
+        .unwrap_or(OutputFormat::Webp);
     let fit = payload.fit.as_deref().map(ImageFit::parse).transpose()?;
     let crop = payload.crop.as_deref().map(ImageCrop::parse).transpose()?;
     let resize = normalize_resize(payload.width, payload.height, fit, crop)?;
@@ -551,11 +551,10 @@ fn negotiate_public_format(
     config: &ImagesConfig,
 ) -> Result<OutputFormat, ImageError> {
     if let Some(accept) = accept {
-        if accept_contains(accept, "image/avif") && config.formats.contains(&OutputFormat::Avif) {
-            return Ok(OutputFormat::Avif);
-        }
-        if accept_contains(accept, "image/webp") && config.formats.contains(&OutputFormat::Webp) {
-            return Ok(OutputFormat::Webp);
+        for format in &config.formats {
+            if accept_contains(accept, format.content_type()) {
+                return Ok(*format);
+            }
         }
     }
     config
