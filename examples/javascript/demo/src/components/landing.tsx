@@ -21,14 +21,13 @@ const TAKO_URL = "https://tako.sh";
 type Props = {
   rootHost: string;
   rootOrigin: string;
-  routeStyle: ParsedHost["routeStyle"];
   bases: PlanetBase[];
 };
 
-export function Landing({ rootHost, rootOrigin, routeStyle, bases }: Props) {
+export function Landing({ rootHost, rootOrigin, bases }: Props) {
   const [baseName, setBaseName] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const parsedHost: ParsedHost = { routeStyle, rootHost, rootOrigin };
+  const parsedHost: ParsedHost = { rootHost, rootOrigin };
 
   function handleSubmit(event: React.SyntheticEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -105,7 +104,7 @@ export function Landing({ rootHost, rootOrigin, routeStyle, bases }: Props) {
                           sm:flex
                         "
                       >
-                        {routeStyle === "subdomain" ? "https://" : `${rootOrigin}/bases/`}
+                        https://
                       </span>
                       <span
                         className="
@@ -114,7 +113,7 @@ export function Landing({ rootHost, rootOrigin, routeStyle, bases }: Props) {
                           sm:hidden
                         "
                       >
-                        {routeStyle === "subdomain" ? "https://" : "/bases/"}
+                        https://
                       </span>
                       <Input
                         id="base-name"
@@ -133,16 +132,14 @@ export function Landing({ rootHost, rootOrigin, routeStyle, bases }: Props) {
                           focus-visible:border-transparent focus-visible:ring-0
                         "
                       />
-                      {routeStyle === "subdomain" ? (
-                        <span
-                          className="
-                            flex h-11 shrink-0 items-center border-l border-border/60
-                            px-3 font-mono text-xs text-muted-foreground
-                          "
-                        >
-                          .{rootHost}
-                        </span>
-                      ) : null}
+                      <span
+                        className="
+                          flex h-11 shrink-0 items-center border-l border-border/60
+                          px-3 font-mono text-xs text-muted-foreground
+                        "
+                      >
+                        .{rootHost}
+                      </span>
                     </div>
                     <Button
                       type="submit"

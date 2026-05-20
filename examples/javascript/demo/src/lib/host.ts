@@ -1,12 +1,11 @@
 export interface ParsedHost {
   baseSlug?: string;
-  routeStyle: "path" | "subdomain";
   rootHost: string;
   rootOrigin: string;
 }
 
 const DEFAULT_ROOT = "demo.tako.sh";
-const WILDCARD_ROOTS = ["demo.tako.sh", "demo.test"];
+const WILDCARD_ROOTS = ["demo.tako.sh", "demo.test", "localhost"];
 const BASE_SUBDOMAIN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 export function parseHost(hostHeader: string): ParsedHost {
@@ -18,35 +17,24 @@ export function parseHost(hostHeader: string): ParsedHost {
   const rootHost = wildcardRoot ?? currentHost;
   const rootOrigin = `//${rootHost}${port ? `:${port}` : ""}`;
 
-  if (!wildcardRoot) {
-    return { routeStyle: "path", rootHost, rootOrigin };
-  }
-
   const maybeBase =
-    currentHost === wildcardRoot
+    !wildcardRoot || currentHost === wildcardRoot
       ? null
       : currentHost.slice(0, currentHost.length - wildcardRoot.length - 1);
   const baseSlug = maybeBase && BASE_SUBDOMAIN.test(maybeBase) ? maybeBase : undefined;
 
   return {
     ...(baseSlug ? { baseSlug } : {}),
-    routeStyle: "subdomain",
     rootHost,
     rootOrigin,
   };
 }
 
 export function baseHref(parsedHost: ParsedHost, slug: string): string {
-  if (parsedHost.routeStyle === "subdomain") {
-    return (
-      parsedHost.rootOrigin.replace(
-        `//${parsedHost.rootHost}`,
-        `//${slug}.${parsedHost.rootHost}`,
-      ) + "/"
-    );
-  }
-
-  return `/bases/${slug}`;
+  return (
+    parsedHost.rootOrigin.replace(`//${parsedHost.rootHost}`, `//${slug}.${parsedHost.rootHost}`) +
+    "/"
+  );
 }
 
 function splitHostPort(hostHeader: string): { host: string; port: string | null } {

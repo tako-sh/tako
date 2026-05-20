@@ -11,7 +11,6 @@
 import { Route as rootRouteImport } from "./routes/__root";
 import { Route as OgDotpngRouteImport } from "./routes/og[.]png";
 import { Route as IndexRouteImport } from "./routes/index";
-import { Route as BasesBaseSlugRouteImport } from "./routes/bases.$baseSlug";
 
 const OgDotpngRoute = OgDotpngRouteImport.update({
   id: "/og.png",
@@ -23,40 +22,31 @@ const IndexRoute = IndexRouteImport.update({
   path: "/",
   getParentRoute: () => rootRouteImport,
 } as any);
-const BasesBaseSlugRoute = BasesBaseSlugRouteImport.update({
-  id: "/bases/$baseSlug",
-  path: "/bases/$baseSlug",
-  getParentRoute: () => rootRouteImport,
-} as any);
 
 export interface FileRoutesByFullPath {
   "/": typeof IndexRoute;
   "/og.png": typeof OgDotpngRoute;
-  "/bases/$baseSlug": typeof BasesBaseSlugRoute;
 }
 export interface FileRoutesByTo {
   "/": typeof IndexRoute;
   "/og.png": typeof OgDotpngRoute;
-  "/bases/$baseSlug": typeof BasesBaseSlugRoute;
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport;
   "/": typeof IndexRoute;
   "/og.png": typeof OgDotpngRoute;
-  "/bases/$baseSlug": typeof BasesBaseSlugRoute;
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath;
-  fullPaths: "/" | "/og.png" | "/bases/$baseSlug";
+  fullPaths: "/" | "/og.png";
   fileRoutesByTo: FileRoutesByTo;
-  to: "/" | "/og.png" | "/bases/$baseSlug";
-  id: "__root__" | "/" | "/og.png" | "/bases/$baseSlug";
+  to: "/" | "/og.png";
+  id: "__root__" | "/" | "/og.png";
   fileRoutesById: FileRoutesById;
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute;
   OgDotpngRoute: typeof OgDotpngRoute;
-  BasesBaseSlugRoute: typeof BasesBaseSlugRoute;
 }
 
 declare module "@tanstack/react-router" {
@@ -75,20 +65,12 @@ declare module "@tanstack/react-router" {
       preLoaderRoute: typeof IndexRouteImport;
       parentRoute: typeof rootRouteImport;
     };
-    "/bases/$baseSlug": {
-      id: "/bases/$baseSlug";
-      path: "/bases/$baseSlug";
-      fullPath: "/bases/$baseSlug";
-      preLoaderRoute: typeof BasesBaseSlugRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   OgDotpngRoute: OgDotpngRoute,
-  BasesBaseSlugRoute: BasesBaseSlugRoute,
 };
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -1,9 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
+import { getRequest } from "@tanstack/react-start/server";
 import { imageUrl } from "tako.sh";
 import { MissionController } from "@/components/mission-controller";
-import { BASE_PRESETS, type BasePreset, type PlanetBase } from "../lib/bases";
-import { parseHost, type ParsedHost } from "../lib/host";
+import { BASE_PRESETS, resolveBasePreset, type BasePreset, type PlanetBase } from "../lib/bases";
+import { parseHost } from "../lib/host";
 import type { BaseSnapshot } from "@/server/types";
 import { Landing } from "../components/landing";
 
@@ -12,19 +13,16 @@ type PageData = {
   baseSlug?: string;
   rootHost: string;
   rootOrigin: string;
-  routeStyle: ParsedHost["routeStyle"];
   bases: PlanetBase[];
   snapshot?: BaseSnapshot;
 };
 
 const getPageData = createServerFn().handler(async (): Promise<PageData> => {
-  const { getRequest } = await import("@tanstack/react-start/server");
   const request = getRequest();
   const parsedHost = parseHost(request?.headers.get("host") ?? "");
   const bases = BASE_PRESETS.map(toPlanetBase);
 
   if (parsedHost.baseSlug) {
-    const { resolveBasePreset } = await import("../lib/bases");
     const { getBaseSnapshot } = await import("@/server/db");
     return {
       activeBase: toPlanetBase(resolveBasePreset(parsedHost.baseSlug)),
@@ -32,7 +30,6 @@ const getPageData = createServerFn().handler(async (): Promise<PageData> => {
       bases,
       rootHost: parsedHost.rootHost,
       rootOrigin: parsedHost.rootOrigin,
-      routeStyle: parsedHost.routeStyle,
       snapshot: getBaseSnapshot(parsedHost.baseSlug),
     };
   }
@@ -40,7 +37,6 @@ const getPageData = createServerFn().handler(async (): Promise<PageData> => {
   return {
     rootHost: parsedHost.rootHost,
     rootOrigin: parsedHost.rootOrigin,
-    routeStyle: parsedHost.routeStyle,
     bases,
   };
 });
@@ -51,8 +47,7 @@ export const Route = createFileRoute("/")({
 });
 
 function Home() {
-  const { activeBase, baseSlug, rootHost, rootOrigin, routeStyle, bases, snapshot } =
-    Route.useLoaderData();
+  const { activeBase, baseSlug, rootHost, rootOrigin, bases, snapshot } = Route.useLoaderData();
   if (baseSlug && activeBase && snapshot) {
     return (
       <MissionController
@@ -64,9 +59,7 @@ function Home() {
     );
   }
 
-  return (
-    <Landing rootHost={rootHost} rootOrigin={rootOrigin} routeStyle={routeStyle} bases={bases} />
-  );
+  return <Landing rootHost={rootHost} rootOrigin={rootOrigin} bases={bases} />;
 }
 
 function toPlanetBase(base: BasePreset): PlanetBase {
