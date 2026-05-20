@@ -1,9 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
+import { imageUrl } from "tako.sh";
 import { MissionController } from "@/components/mission-controller";
 import { BASE_PRESETS, type BasePreset, type PlanetBase } from "../lib/bases";
 import { parseHost, type ParsedHost } from "../lib/host";
-import { demoImageUrl } from "../lib/images";
 import type { BaseSnapshot } from "@/server/types";
 import { Landing } from "../components/landing";
 
@@ -73,8 +73,8 @@ function toPlanetBase(base: BasePreset): PlanetBase {
   return {
     ...base,
     image: {
-      hero: demoImageUrl(base.source, { width: 1200 }),
-      card: demoImageUrl(base.source, { width: 640 }),
+      hero: imageUrl(base.source, { width: 1200 }),
+      card: imageUrl(base.source, { width: 640 }),
     },
   };
 }

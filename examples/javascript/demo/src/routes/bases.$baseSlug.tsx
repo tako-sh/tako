@@ -1,10 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
+import { imageUrl } from "tako.sh";
 import { z } from "zod";
 import { MissionController } from "@/components/mission-controller";
 import { resolveBasePreset, type BasePreset, type PlanetBase } from "@/lib/bases";
 import { parseHost } from "@/lib/host";
-import { demoImageUrl } from "@/lib/images";
 import type { BaseSnapshot } from "@/server/types";
 
 const baseSlugSchema = z
@@ -56,8 +56,8 @@ function toPlanetBase(base: BasePreset): PlanetBase {
   return {
     ...base,
     image: {
-      hero: demoImageUrl(base.source, { width: 1200 }),
-      card: demoImageUrl(base.source, { width: 640 }),
+      hero: imageUrl(base.source, { width: 1200 }),
+      card: imageUrl(base.source, { width: 640 }),
     },
   };
 }
