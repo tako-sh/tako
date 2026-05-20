@@ -303,7 +303,7 @@ jobs:
     if: needs.detect-changes.outputs.website_only != 'true'
     runs-on: ubuntu-latest
     # Build inside Debian 11 container for glibc 2.31 compat (supports Debian 11+, Ubuntu 22.04+, RHEL 9+, Amazon Linux 2023)
-    container: rust:1.89-bullseye
+    container: rust:1.95-bullseye
     defaults:
       run:
         shell: bash
@@ -355,7 +355,7 @@ jobs:
             -e TAKO_BUILD_SHA="${{ github.sha }}" \
             -v "$PWD":/workspace \
             -w /workspace \
-            rust:1.89-alpine \
+            rust:1.95-alpine \
             sh -c 'apk add --no-cache build-base cmake perl pkgconfig vips-dev && PATH="/usr/local/cargo/bin:$PATH" RUSTFLAGS="-C target-feature=-crt-static" cargo build -p tako-server --release'
 
       - name: Upload server binary
@@ -373,7 +373,7 @@ jobs:
     # 24.04-arm is the only GitHub-hosted ARM runner available
     runs-on: ubuntu-24.04-arm
     # Build inside Debian 11 container for glibc 2.31 compat (same as x86_64)
-    container: rust:1.89-bullseye
+    container: rust:1.95-bullseye
     defaults:
       run:
         shell: bash
@@ -426,7 +426,7 @@ jobs:
             -e TAKO_BUILD_SHA="${{ github.sha }}" \
             -v "$PWD":/workspace \
             -w /workspace \
-            rust:1.89-alpine \
+            rust:1.95-alpine \
             sh -c 'apk add --no-cache build-base cmake perl pkgconfig vips-dev && PATH="/usr/local/cargo/bin:$PATH" RUSTFLAGS="-C target-feature=-crt-static" cargo build -p tako-server --release'
 
       - name: Upload server binary
