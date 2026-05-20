@@ -773,16 +773,27 @@ install_sqlite_runtime() {
   fi
 }
 
+apt_available_avif_packages() {
+  for apt_avif_pkg in libheif-plugin-aomenc libheif-plugin-aomdec libheif-plugin-dav1d; do
+    if apt-cache show "$apt_avif_pkg" >/dev/null 2>&1; then
+      printf '%s\n' "$apt_avif_pkg"
+    fi
+  done
+}
+
+install_apt_avif_plugins() {
+  apt_avif_pkgs="$(apt_available_avif_packages | tr '\n' ' ')"
+  if [ -n "$apt_avif_pkgs" ]; then
+    apt-get install -y $apt_avif_pkgs
+  fi
+}
+
 install_libvips_runtime() {
   echo "Installing libvips runtime"
   if need_cmd apt-get; then
     apt-get update -y
     apt_avif_pkgs=
-    for apt_avif_pkg in libheif-plugin-aomenc libheif-plugin-aomdec libheif-plugin-dav1d; do
-      if apt-cache show "$apt_avif_pkg" >/dev/null 2>&1; then
-        apt_avif_pkgs="$apt_avif_pkgs $apt_avif_pkg"
-      fi
-    done
+    apt_avif_pkgs="$(apt_available_avif_packages | tr '\n' ' ')"
     for apt_vips_pkg in libvips42t64 libvips42 libvips; do
       if apt-get install -y "$apt_vips_pkg" $apt_avif_pkgs; then
         return
@@ -815,7 +826,10 @@ install_libvips_runtime() {
 }
 
 install_libvips_codec_runtime() {
-  if need_cmd apk; then
+  if need_cmd apt-get; then
+    apt-get update -y
+    install_apt_avif_plugins || true
+  elif need_cmd apk; then
     apk add --no-cache vips-heif
   fi
 }

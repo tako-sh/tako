@@ -33,6 +33,7 @@ fn transform_failure_falls_back_to_original_image_source() {
 
     assert_eq!(response.bytes, vec![1, 2, 3]);
     assert_eq!(response.content_type, "image/jpeg");
+    assert!(!response.cacheable);
 }
 
 #[test]
@@ -52,6 +53,20 @@ fn transform_failure_fallback_accepts_content_type_parameters() {
 
     assert_eq!(response.bytes, vec![4, 5, 6]);
     assert_eq!(response.content_type, "image/webp; charset=binary");
+    assert!(!response.cacheable);
+}
+
+#[test]
+fn transformed_image_responses_are_cacheable() {
+    let response = ImageResponseBody::from_transformed(tako_images::TransformedImage {
+        bytes: vec![7, 8, 9],
+        content_type: "image/webp",
+        format: tako_images::OutputFormat::Webp,
+        width: 16,
+        height: 8,
+    });
+
+    assert!(response.cacheable);
 }
 
 #[test]

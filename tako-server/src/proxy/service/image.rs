@@ -102,6 +102,7 @@ impl TakoProxy {
             Some(cached) => ImageResponseBody {
                 bytes: cached.bytes,
                 content_type: cached.content_type.to_string(),
+                cacheable: true,
             },
             None => match transform_uncached_image(
                 app_name,
@@ -125,9 +126,13 @@ impl TakoProxy {
         let mut header = ResponseHeader::build(200, None)?;
         header.insert_header("Content-Type", response.content_type.as_str())?;
         header.insert_header("Content-Length", response.bytes.len().to_string())?;
-        let cache_control_header =
-            cache_control(verified.visibility, verified.private_browser_cache_max_age);
-        header.insert_header("Cache-Control", cache_control_header.as_ref())?;
+        if response.cacheable {
+            let cache_control_header =
+                cache_control(verified.visibility, verified.private_browser_cache_max_age);
+            header.insert_header("Cache-Control", cache_control_header.as_ref())?;
+        } else {
+            header.insert_header("Cache-Control", IMAGE_ERROR_CACHE_CONTROL)?;
+        }
         if verified.vary_accept {
             header.insert_header("Vary", "Accept")?;
         }
@@ -283,6 +288,7 @@ impl ImageSourceBytes {
 struct ImageResponseBody {
     bytes: Vec<u8>,
     content_type: String,
+    cacheable: bool,
 }
 
 impl ImageResponseBody {
@@ -290,6 +296,7 @@ impl ImageResponseBody {
         Self {
             bytes: transformed.bytes,
             content_type: transformed.content_type.to_string(),
+            cacheable: true,
         }
     }
 }
@@ -314,6 +321,7 @@ async fn transform_uncached_image(
                     return Ok(ImageResponseBody {
                         bytes: cached.bytes,
                         content_type: cached.content_type.to_string(),
+                        cacheable: true,
                     });
                 }
                 return match transform_image_isolated(app_name, source, options, limits).await {
@@ -332,6 +340,7 @@ async fn transform_uncached_image(
                     return Ok(ImageResponseBody {
                         bytes: cached.bytes,
                         content_type: cached.content_type.to_string(),
+                        cacheable: true,
                     });
                 }
             }
@@ -392,6 +401,7 @@ fn image_response_body_from_transform_error(
     Ok(ImageResponseBody {
         bytes: source.to_vec(),
         content_type,
+        cacheable: false,
     })
 }
 
