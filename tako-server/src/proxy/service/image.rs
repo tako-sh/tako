@@ -81,6 +81,7 @@ impl TakoProxy {
             Ok(source) => source,
             Err(error) => {
                 let status = image_error_status(&error);
+                log_image_request_error(app_name, &error, status);
                 return write_image_error(session, status, image_error_body(status)).await;
             }
         };
@@ -102,6 +103,7 @@ impl TakoProxy {
                 content_type: cached.content_type.to_string(),
             },
             None => match transform_uncached_image(
+                app_name,
                 source,
                 transform_options,
                 limits,
@@ -113,6 +115,7 @@ impl TakoProxy {
                 Ok(response) => response,
                 Err(error) => {
                     let status = image_error_status(&error);
+                    log_image_request_error(app_name, &error, status);
                     return write_image_error(session, status, image_error_body(status)).await;
                 }
             },
@@ -296,6 +299,7 @@ enum TransformImageOutcome {
 }
 
 async fn transform_uncached_image(
+    app_name: &str,
     source: ImageSourceBytes,
     options: TransformOptions,
     limits: TransformLimits,
@@ -311,13 +315,13 @@ async fn transform_uncached_image(
                         content_type: cached.content_type.to_string(),
                     });
                 }
-                return match transform_image_isolated(source, options, limits).await {
+                return match transform_image_isolated(app_name, source, options, limits).await {
                     TransformImageOutcome::Transformed(transformed) => {
                         cache::write(cache_root, cache_key, &transformed.bytes).await;
                         Ok(ImageResponseBody::from_transformed(transformed))
                     }
                     TransformImageOutcome::Failed(error, source) => {
-                        image_response_body_from_transform_error(error, source)
+                        image_response_body_from_transform_error(app_name, error, source, options)
                     }
                 };
             }
@@ -335,11 +339,13 @@ async fn transform_uncached_image(
 }
 
 async fn transform_image_isolated(
+    app_name: &str,
     source: ImageSourceBytes,
     options: TransformOptions,
     limits: TransformLimits,
 ) -> TransformImageOutcome {
     match image_worker::transform_in_worker(
+        app_name,
         source.bytes(),
         source.content_type.as_deref(),
         options,
@@ -353,12 +359,15 @@ async fn transform_image_isolated(
 }
 
 fn image_response_body_from_transform_error(
+    app_name: &str,
     error: ImageError,
     source: ImageSourceBytes,
+    options: TransformOptions,
 ) -> Result<ImageResponseBody, ImageError> {
     if error != ImageError::TransformFailed {
         return Err(error);
     }
+    let source_bytes = source.len();
     let content_type = source
         .content_type
         .as_ref()
@@ -366,10 +375,35 @@ fn image_response_body_from_transform_error(
         .cloned()
         .ok_or(ImageError::TransformFailed)?;
 
+    tracing::warn!(
+        app = %app_name,
+        error = %error,
+        requested_format = ?options.format,
+        width = options.width,
+        height = ?options.height,
+        quality = options.quality,
+        source_bytes = source_bytes as u64,
+        content_type = %content_type,
+        "Image transform failed; serving original image"
+    );
+
     Ok(ImageResponseBody {
         bytes: source.to_vec(),
         content_type,
     })
+}
+
+fn log_image_request_error(app_name: &str, error: &ImageError, status: u16) {
+    if status < 500 {
+        return;
+    }
+
+    tracing::warn!(
+        app = %app_name,
+        error = %error,
+        status,
+        "Image optimizer request failed"
+    );
 }
 
 fn is_image_content_type(content_type: &str) -> bool {
