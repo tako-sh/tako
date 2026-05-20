@@ -16,8 +16,9 @@ use tokio::sync::{Semaphore, SemaphorePermit, TryAcquireError};
 use tokio::time::timeout;
 
 const IMAGE_WORKER_EXECUTION_TIMEOUT: Duration = Duration::from_secs(30);
-const IMAGE_WORKER_CONCURRENCY: usize = 2;
-const IMAGE_WORKER_QUEUE_CAPACITY: usize = 16;
+const IMAGE_WORKER_MIN_CONCURRENCY: usize = 2;
+const IMAGE_WORKER_MAX_CONCURRENCY: usize = 4;
+const IMAGE_WORKER_QUEUE_CAPACITY: usize = 128;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct WorkerLimits {
@@ -299,7 +300,14 @@ fn decode_worker_response(
 
 fn worker_slots() -> &'static Semaphore {
     static SLOTS: OnceLock<Semaphore> = OnceLock::new();
-    SLOTS.get_or_init(|| Semaphore::new(IMAGE_WORKER_CONCURRENCY))
+    SLOTS.get_or_init(|| Semaphore::new(worker_concurrency()))
+}
+
+fn worker_concurrency() -> usize {
+    std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(IMAGE_WORKER_MIN_CONCURRENCY)
+        .clamp(IMAGE_WORKER_MIN_CONCURRENCY, IMAGE_WORKER_MAX_CONCURRENCY)
 }
 
 fn worker_queue_depth() -> &'static AtomicUsize {
@@ -410,6 +418,15 @@ mod tests {
     }
 
     #[test]
+    fn worker_concurrency_scales_with_host_without_exceeding_limit() {
+        let concurrency = worker_concurrency();
+
+        assert!(
+            (IMAGE_WORKER_MIN_CONCURRENCY..=IMAGE_WORKER_MAX_CONCURRENCY).contains(&concurrency)
+        );
+    }
+
+    #[test]
     fn decode_worker_response_rejects_wrong_format() {
         let output = serde_json::to_vec(&WorkerResponse::Ok {
             bytes_base64: BASE64_STANDARD.encode([1, 2, 3]),
@@ -445,8 +462,7 @@ mod tests {
     #[tokio::test]
     async fn worker_slot_queue_waits_until_permit_is_available() {
         let _lock = acquire_worker_slot_test_lock().await;
-        let first = acquire_worker_slot().await.expect("first worker slot");
-        let second = acquire_worker_slot().await.expect("second worker slot");
+        let permits = acquire_all_worker_slots().await;
         let mut queued = tokio::spawn(acquire_worker_slot());
 
         if timeout(Duration::from_millis(25), &mut queued)
@@ -456,8 +472,7 @@ mod tests {
             panic!("queued worker slot returned early");
         }
 
-        drop(first);
-        drop(second);
+        drop(permits);
 
         let _queued_permit = timeout(Duration::from_secs(1), queued)
             .await
@@ -470,8 +485,7 @@ mod tests {
     async fn worker_slot_queue_rejects_when_capacity_is_reached() {
         let _lock = acquire_worker_slot_test_lock().await;
         assert_eq!(worker_queue_depth().load(Ordering::Acquire), 0);
-        let first = acquire_worker_slot().await.expect("first worker slot");
-        let second = acquire_worker_slot().await.expect("second worker slot");
+        let permits = acquire_all_worker_slots().await;
         let mut queued = Vec::with_capacity(IMAGE_WORKER_QUEUE_CAPACITY);
         for _ in 0..IMAGE_WORKER_QUEUE_CAPACITY {
             queued.push(tokio::spawn(acquire_worker_slot()));
@@ -481,8 +495,7 @@ mod tests {
         let result = acquire_worker_slot().await;
 
         assert!(matches!(result, Err(ImageError::TransformQueueFull)));
-        drop(first);
-        drop(second);
+        drop(permits);
         for task in queued {
             let permit = timeout(Duration::from_secs(1), task)
                 .await
@@ -492,6 +505,14 @@ mod tests {
             drop(permit);
         }
         assert_eq!(worker_queue_depth().load(Ordering::Acquire), 0);
+    }
+
+    async fn acquire_all_worker_slots() -> Vec<SemaphorePermit<'static>> {
+        let mut permits = Vec::with_capacity(worker_concurrency());
+        for _ in 0..worker_concurrency() {
+            permits.push(acquire_worker_slot().await.expect("worker slot"));
+        }
+        permits
     }
 
     async fn acquire_worker_slot_test_lock() -> tokio::sync::MutexGuard<'static, ()> {
