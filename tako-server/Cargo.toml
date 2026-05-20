@@ -58,4 +58,5 @@ ssh-key = { version = "0.6", features = ["ed25519", "getrandom"] }
 ipnet = "2.11"
 
 [dev-dependencies]
+image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
 tempfile = "3.27"

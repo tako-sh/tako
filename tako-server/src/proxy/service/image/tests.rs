@@ -128,7 +128,7 @@ async fn transform_failure_fallback_writes_app_scoped_warning() {
 
     let content = std::fs::read_to_string(dir.path().join("current.log")).unwrap();
     assert!(content.contains("[server]"));
-    assert!(content.contains("[tako-server]"));
+    assert!(content.contains("[images]"));
     assert!(content.contains("WARN"));
     assert!(content.contains("Image transform failed; serving original image"));
     assert!(content.contains("requested_format=Webp"));

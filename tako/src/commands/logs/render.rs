@@ -310,8 +310,7 @@ fn parse_app_log(line: &str, app_name: &str) -> Option<AppLogEntry> {
         timestamp,
         level: app_stream_level(parts.stream).to_string(),
         scope: app_log_scope(app_name, parts.stream, parts.instance),
-        app_process_scope: (parts.stream != "server" || parts.instance != "tako-server")
-            .then(|| parts.instance.to_string()),
+        app_process_scope: (parts.stream != "server").then(|| parts.instance.to_string()),
         message: parts.message.to_string(),
     };
 
@@ -332,10 +331,17 @@ fn parse_app_log(line: &str, app_name: &str) -> Option<AppLogEntry> {
 }
 
 fn app_log_scope(_app_name: &str, stream: &str, instance: &str) -> String {
-    if stream == "server" && instance == "tako-server" {
-        "tako".to_string()
+    if stream == "server" {
+        server_log_scope(instance).to_string()
     } else {
         instance.to_string()
+    }
+}
+
+fn server_log_scope(instance: &str) -> &str {
+    match instance {
+        "tako-server" => "tako",
+        source => source,
     }
 }
 

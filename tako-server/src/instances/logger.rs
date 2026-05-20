@@ -146,8 +146,9 @@ where
             return;
         };
 
+        let source = fields.source.as_deref().unwrap_or(SERVER_LOG_SOURCE);
         let line = format_server_event_line(metadata.level().as_str(), &fields);
-        write_server_log_entry(app_name, line);
+        write_server_log_entry(app_name, source, line);
     }
 }
 
@@ -162,13 +163,13 @@ fn is_logger_metadata(metadata: &Metadata<'_>) -> bool {
     target.ends_with("instances::logger") || module_path.ends_with("instances::logger")
 }
 
-fn write_server_log_entry(app_name: &str, line: String) {
+fn write_server_log_entry(app_name: &str, source: &str, line: String) {
     let Some(handle) = APP_LOG_REGISTRY.get(app_name) else {
         return;
     };
 
     handle.try_send(LogEntry {
-        instance_id: SERVER_LOG_SOURCE.to_string(),
+        instance_id: source.to_string(),
         stream: LogStream::Server,
         line,
     });
@@ -178,6 +179,7 @@ fn write_server_log_entry(app_name: &str, line: String) {
 struct ServerEventFields {
     app: Option<String>,
     message: Option<String>,
+    source: Option<String>,
     fields: Vec<(String, String)>,
 }
 
@@ -189,6 +191,8 @@ impl ServerEventFields {
             self.app = Some(value.clone());
         } else if name == "message" {
             self.message = Some(value.clone());
+        } else if name == "source" {
+            self.source = Some(value.clone());
         }
 
         self.fields.push((name.to_string(), value));
@@ -245,7 +249,7 @@ fn format_server_event_line(level: &str, fields: &ServerEventFields) -> String {
     }
 
     for (name, value) in &fields.fields {
-        if name == "app" || name == "message" {
+        if name == "app" || name == "message" || name == "source" {
             continue;
         }
 
@@ -466,6 +470,7 @@ mod tests {
         let fields = ServerEventFields {
             app: Some("demo/production".into()),
             message: Some("Instance ready".into()),
+            source: None,
             fields: vec![
                 ("message".into(), "Instance ready".into()),
                 ("app".into(), "demo/production".into()),
@@ -485,6 +490,7 @@ mod tests {
         let fields = ServerEventFields {
             app: Some("demo/production".into()),
             message: Some("Startup failed".into()),
+            source: None,
             fields: vec![
                 ("message".into(), "Startup failed".into()),
                 ("app".into(), "demo/production".into()),
@@ -530,6 +536,37 @@ mod tests {
         assert!(content.contains("Instance ready"));
         assert!(content.contains("instance=inst1"));
         assert!(content.contains("requests=3"));
+    }
+
+    #[tokio::test]
+    async fn tracing_layer_writes_app_scoped_events_with_source_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = unique_app_name("trace-app");
+        let handle = spawn_app_logger(&app, dir.path().to_path_buf());
+        register_app_logger(&app, handle.clone());
+
+        let subscriber = tracing_subscriber::registry().with(app_log_tracing_layer());
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!(
+                app = %app,
+                source = "images",
+                requested_format = "webp",
+                "Image transform failed; serving original image"
+            );
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        unregister_app_logger(&app);
+        drop(handle);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let content = std::fs::read_to_string(dir.path().join("current.log")).unwrap();
+        assert!(content.contains("[server]"));
+        assert!(content.contains("[images]"));
+        assert!(content.contains("WARN"));
+        assert!(content.contains("Image transform failed; serving original image"));
+        assert!(content.contains("requested_format=webp"));
+        assert!(!content.contains("source=images"));
     }
 
     #[tokio::test]

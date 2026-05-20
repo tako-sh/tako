@@ -3,6 +3,8 @@ use crate::{
     validate_quality, validate_width,
 };
 use libvips::{VipsApp, VipsImage, ops};
+use std::ffi::c_void;
+use std::mem::ManuallyDrop;
 use std::sync::{Condvar, Mutex, MutexGuard, OnceLock};
 
 const STRIP_SOURCE_METADATA: &str = "strip";
@@ -249,17 +251,54 @@ fn encode_image(
     match format {
         OutputFormat::Avif => {
             let suffix = format!(".avif[Q={quality},compression=av1,{STRIP_SOURCE_METADATA}]");
-            image
+            let bytes = image
                 .image_write_to_buffer(&suffix)
-                .map_err(|_| vips_transform_error(app))
+                .map_err(|_| vips_transform_error(app))?;
+            Ok(copy_vips_allocated_buffer(bytes))
         }
         OutputFormat::Webp => {
             let suffix = format!(
                 ".webp[Q={quality},alpha-q={quality},smart-subsample=true,preset=photo,{STRIP_SOURCE_METADATA}]"
             );
-            image
+            let bytes = image
                 .image_write_to_buffer(&suffix)
-                .map_err(|_| vips_transform_error(app))
+                .map_err(|_| vips_transform_error(app))?;
+            Ok(copy_vips_allocated_buffer(bytes))
+        }
+    }
+}
+
+fn copy_vips_allocated_buffer(bytes: Vec<u8>) -> Vec<u8> {
+    VipsAllocatedBuffer::new(bytes).to_vec()
+}
+
+struct VipsAllocatedBuffer {
+    bytes: ManuallyDrop<Vec<u8>>,
+}
+
+impl VipsAllocatedBuffer {
+    fn new(bytes: Vec<u8>) -> Self {
+        Self {
+            bytes: ManuallyDrop::new(bytes),
+        }
+    }
+
+    fn to_vec(&self) -> Vec<u8> {
+        self.bytes.as_slice().to_vec()
+    }
+}
+
+impl Drop for VipsAllocatedBuffer {
+    fn drop(&mut self) {
+        if self.bytes.capacity() == 0 {
+            return;
+        }
+
+        // SAFETY: libvips allocates image_write_to_buffer output with GLib. The
+        // libvips crate wraps that pointer in Vec, so we suppress Vec's Drop
+        // and return ownership to GLib instead of Rust's global allocator.
+        unsafe {
+            libvips::bindings::g_free(self.bytes.as_mut_ptr().cast::<c_void>());
         }
     }
 }

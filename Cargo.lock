@@ -5720,6 +5720,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "image",
  "instant-acme",
  "ipnet",
  "libc",

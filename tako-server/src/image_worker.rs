@@ -20,6 +20,7 @@ const IMAGE_WORKER_STDERR_LIMIT: u64 = 4096;
 const IMAGE_WORKER_MIN_CONCURRENCY: usize = 2;
 const IMAGE_WORKER_MAX_CONCURRENCY: usize = 4;
 const IMAGE_WORKER_QUEUE_CAPACITY: usize = 128;
+const IMAGE_LOG_SOURCE: &str = "images";
 
 #[derive(Debug, Serialize, Deserialize)]
 struct WorkerLimits {
@@ -178,6 +179,7 @@ async fn run_worker_process(app_name: &str, input: Vec<u8>) -> Result<Vec<u8>, I
         .map_err(|error| {
             tracing::warn!(
                 app = %app_name,
+                source = IMAGE_LOG_SOURCE,
                 error = %error,
                 "Failed to start image worker process"
             );
@@ -191,6 +193,7 @@ async fn run_worker_process(app_name: &str, input: Vec<u8>) -> Result<Vec<u8>, I
         stdin.write_all(&input).await.map_err(|error| {
             tracing::warn!(
                 app = %app_name,
+                source = IMAGE_LOG_SOURCE,
                 error = %error,
                 "Failed to write image worker request"
             );
@@ -208,6 +211,7 @@ async fn run_worker_process(app_name: &str, input: Vec<u8>) -> Result<Vec<u8>, I
         read_result.map_err(|error| {
             tracing::warn!(
                 app = %app_name,
+                source = IMAGE_LOG_SOURCE,
                 error = %error,
                 "Failed to read image worker response"
             );
@@ -216,6 +220,7 @@ async fn run_worker_process(app_name: &str, input: Vec<u8>) -> Result<Vec<u8>, I
         stderr_result.map_err(|error| {
             tracing::warn!(
                 app = %app_name,
+                source = IMAGE_LOG_SOURCE,
                 error = %error,
                 "Failed to read image worker stderr"
             );
@@ -224,6 +229,7 @@ async fn run_worker_process(app_name: &str, input: Vec<u8>) -> Result<Vec<u8>, I
         let status = wait_result.map_err(|error| {
             tracing::warn!(
                 app = %app_name,
+                source = IMAGE_LOG_SOURCE,
                 error = %error,
                 "Failed to wait for image worker process"
             );
@@ -234,6 +240,7 @@ async fn run_worker_process(app_name: &str, input: Vec<u8>) -> Result<Vec<u8>, I
             let stderr_truncated = stderr_output.len() >= IMAGE_WORKER_STDERR_LIMIT as usize;
             tracing::warn!(
                 app = %app_name,
+                source = IMAGE_LOG_SOURCE,
                 status = %status,
                 stderr = %stderr,
                 stderr_truncated,
@@ -249,6 +256,7 @@ async fn run_worker_process(app_name: &str, input: Vec<u8>) -> Result<Vec<u8>, I
         Err(_) => {
             tracing::warn!(
                 app = %app_name,
+                source = IMAGE_LOG_SOURCE,
                 timeout_ms = IMAGE_WORKER_EXECUTION_TIMEOUT.as_millis() as u64,
                 "Image worker process timed out"
             );

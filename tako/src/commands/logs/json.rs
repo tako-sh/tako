@@ -93,8 +93,8 @@ fn app_log_record(server: &str, raw: &str, include_server: bool) -> Option<Value
     let (inst, msg) = bracketed(strip_log_separator(rest))?;
     let msg = strip_log_separator(msg);
 
-    if stream == "server" && inst == "tako-server" {
-        return Some(tako_record(server, include_server, ts, msg));
+    if stream == "server" {
+        return Some(tako_record(server, include_server, ts, inst, msg));
     }
 
     if let Some(record) = structured_app_record(server, include_server, inst, msg) {
@@ -154,17 +154,24 @@ fn raw_process_record(
     Value::Object(out)
 }
 
-fn tako_record(server: &str, include_server: bool, ts: &str, msg: &str) -> Value {
+fn tako_record(server: &str, include_server: bool, ts: &str, inst: &str, msg: &str) -> Value {
     let (level, msg) = split_level_prefix(msg).unwrap_or(("info", msg));
 
     let mut out = Map::new();
     insert_str(&mut out, "ts", ts);
-    insert_str(&mut out, "source", "tako");
+    insert_str(&mut out, "source", server_log_source(inst));
     insert_server(&mut out, server, include_server);
     insert_str(&mut out, "level", level);
     insert_str(&mut out, "msg", msg);
 
     Value::Object(out)
+}
+
+fn server_log_source(instance_id: &str) -> &str {
+    match instance_id {
+        "tako-server" => "tako",
+        source => source,
+    }
 }
 
 fn split_level_prefix(msg: &str) -> Option<(&'static str, &str)> {
@@ -355,6 +362,22 @@ mod tests {
         assert_eq!(value["source"], "tako");
         assert_eq!(value["level"], "info");
         assert_eq!(value["msg"], "Instance ready instance=zF-c2auM");
+        assert!(value.get("server").is_none());
+    }
+
+    #[test]
+    fn wraps_server_diagnostics_with_source_context() {
+        let raw = "2026-05-08T07:26:50Z [server] [images] WARN Image transform failed; serving original image requested_format=Webp";
+        let line = format_json_line("prod", raw, false);
+        let value: Value = serde_json::from_str(&line).unwrap();
+
+        assert_eq!(value["ts"], "2026-05-08T07:26:50Z");
+        assert_eq!(value["source"], "images");
+        assert_eq!(value["level"], "warn");
+        assert_eq!(
+            value["msg"],
+            "Image transform failed; serving original image requested_format=Webp"
+        );
         assert!(value.get("server").is_none());
     }
 

@@ -25,6 +25,7 @@ use tokio::net::lookup_host;
 use tokio::time::timeout;
 
 const IMAGE_ERROR_CACHE_CONTROL: &str = "private, no-store";
+const IMAGE_LOG_SOURCE: &str = "images";
 
 impl TakoProxy {
     pub(crate) async fn try_handle_image_request(
@@ -377,6 +378,7 @@ fn image_response_body_from_transform_error(
 
     tracing::warn!(
         app = %app_name,
+        source = IMAGE_LOG_SOURCE,
         error = %error,
         requested_format = ?options.format,
         width = options.width,
@@ -400,6 +402,7 @@ fn log_image_request_error(app_name: &str, error: &ImageError, status: u16) {
 
     tracing::warn!(
         app = %app_name,
+        source = IMAGE_LOG_SOURCE,
         error = %error,
         status,
         "Image optimizer request failed"

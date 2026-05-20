@@ -264,6 +264,18 @@ fn format_app_scoped_server_log_line() {
 }
 
 #[test]
+fn format_app_scoped_server_log_line_with_source_context() {
+    let line = "2026-05-08T07:26:50.851Z [server] [images] WARN Image transform failed; serving original image requested_format=Webp";
+
+    let (_key, formatted) = format_log_entry(line, false);
+
+    assert_eq!(
+        formatted,
+        "2026-05-08 07:26:50  WARN images Image transform failed; serving original image requested_format=Webp"
+    );
+}
+
+#[test]
 fn colorized_server_log_dims_metadata_fields() {
     let line =
         "2026-05-08T07:26:50.851Z [server] [tako-server] INFO Instance ready instance=zF-c2auM";
