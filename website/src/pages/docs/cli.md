@@ -204,7 +204,7 @@ tako servers upgrade
 tako servers upgrade prod-a
 ```
 
-Upgrades one server or all servers through graceful reload with rollback to the previous binary on failure.
+Upgrades one server or all servers through graceful reload with rollback to the previous binary on failure. The upgrade checks the extracted binary for missing runtime libraries before replacing the active binary.
 
 ### `tako servers uninstall`
 

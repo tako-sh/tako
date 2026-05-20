@@ -124,6 +124,49 @@ fn remote_binary_replace_command_uses_root_shell_wrapper_and_verifies_sha256() {
 }
 
 #[test]
+fn remote_binary_replace_installs_runtime_deps_only_after_extracting_binary() {
+    let cmd = remote_binary_replace_command(
+        "https://example.com/tako-server.tar.zst",
+        "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+    );
+
+    let extract_pos = cmd.find("zstd -d").expect("extracts archive");
+    let runtime_check_pos = cmd
+        .find("missing_runtime_libs=$(missing_runtime_libraries \"$bin\")")
+        .expect("checks extracted binary runtime deps");
+    let apt_update_pos = cmd.find("apt-get update -y").expect("can install libvips");
+    let install_pos = cmd
+        .find("install -m 0755 \"$bin\" /usr/local/bin/tako-server")
+        .expect("installs binary");
+
+    assert!(
+        extract_pos < runtime_check_pos,
+        "runtime dependency check should inspect the extracted binary"
+    );
+    assert!(
+        runtime_check_pos < apt_update_pos,
+        "package-manager work should be gated by the missing dependency check"
+    );
+    assert!(
+        runtime_check_pos < install_pos,
+        "runtime dependencies should be verified before replacing the active binary"
+    );
+}
+
+#[test]
+fn remote_binary_replace_reports_missing_non_libvips_runtime_dependencies() {
+    let cmd = remote_binary_replace_command(
+        "https://example.com/tako-server.tar.zst",
+        "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+    );
+
+    assert!(cmd.contains("tako-server is missing runtime libraries"));
+    assert!(cmd.contains("missing_runtime_libraries()"));
+    assert!(cmd.contains("grep -Eq"));
+    assert!(cmd.contains("^libvips(\\.|$)"));
+}
+
+#[test]
 fn remote_restore_previous_binary_command_restores_prev_binary() {
     let cmd = remote_restore_previous_binary_command();
     assert!(cmd.contains("sudo sh -c '"));

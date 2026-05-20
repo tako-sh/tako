@@ -830,6 +830,7 @@ Upgrade `tako-server` on one or all configured servers via service-manager reloa
 1. CLI verifies `tako-server` is active on the host.
 2. CLI installs the new server binary on the host.
    - CLI verifies the signed `tako-server-sha256s.txt` release manifest with an embedded public key, selects the expected SHA-256 for the target archive, and the remote host verifies that SHA-256 before extracting the archive into `/usr/local/bin/tako-server`
+   - before replacing the active binary, the remote host checks the extracted binary for missing runtime libraries and installs the libvips runtime only when the new binary needs it
    - custom `TAKO_DOWNLOAD_BASE_URL` overrides must use `https://`; non-HTTPS overrides are rejected unless `TAKO_ALLOW_INSECURE_DOWNLOAD_BASE=1` is set explicitly for local testing
    - CLI metadata downloads and remote host archive downloads use `GH_TOKEN` when set, falling back to `GITHUB_TOKEN`, for GitHub-hosted release URLs only
 3. CLI acquires the durable upgrade lock (`enter_upgrading`) and sets server mode to `upgrading`.

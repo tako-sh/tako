@@ -268,15 +268,36 @@ fn remote_install_libvips_runtime_script() -> &'static str {
      fi"
 }
 
+fn remote_verify_server_runtime_deps_script(binary_expr: &str) -> String {
+    format!(
+        "missing_runtime_libraries() {{ \
+           if ! command -v ldd >/dev/null 2>&1; then return 0; fi; \
+           ldd \"$1\" 2>&1 | awk '/not found/ {{ print $1 }} /Error loading shared library/ {{ lib = $5; sub(/:$/, \"\", lib); print lib }}' || true; \
+         }}; \
+         missing_runtime_libs=$(missing_runtime_libraries {binary_expr}); \
+         if [ -n \"$missing_runtime_libs\" ]; then \
+           if printf '%s\\n' \"$missing_runtime_libs\" | grep -Eq '^libvips(\\.|$)'; then \
+             {}; \
+             missing_runtime_libs=$(missing_runtime_libraries {binary_expr}); \
+           fi; \
+         fi; \
+         if [ -n \"$missing_runtime_libs\" ]; then \
+           echo 'error: tako-server is missing runtime libraries:' >&2; \
+           printf '%s\\n' \"$missing_runtime_libs\" >&2; \
+           exit 1; \
+         fi",
+        remote_install_libvips_runtime_script()
+    )
+}
+
 fn remote_binary_replace_command(url: &str, expected_sha256: &str) -> String {
     use crate::shell::shell_single_quote;
     let url_q = shell_single_quote(url);
     let sha_check = verify_downloaded_sha256_script("\"$archive\"", expected_sha256);
     let auth_header_script = crate::github::remote_curl_auth_header_script("download_url");
-    let libvips_runtime = remote_install_libvips_runtime_script();
+    let runtime_deps = remote_verify_server_runtime_deps_script("\"$bin\"");
     let script = format!(
         "set -eu; \
-         {libvips_runtime}; \
          download_url={url_q}; \
          {auth_header_script}; \
          tmp=$(mktemp -d); \
@@ -291,6 +312,7 @@ fn remote_binary_replace_command(url: &str, expected_sha256: &str) -> String {
          zstd -d \"$archive\" --stdout | tar -x -C \"$tmp\"; \
          bin=$(find \"$tmp\" -type f -name tako-server | head -n 1); \
          if [ -z \"$bin\" ]; then echo 'error: archive did not contain tako-server binary' >&2; exit 1; fi; \
+         {runtime_deps}; \
          if [ -f {SERVER_BINARY_PATH} ]; then install -m 0755 {SERVER_BINARY_PATH} {SERVER_PREVIOUS_BINARY_PATH}; fi; \
          install -m 0755 \"$bin\" {SERVER_BINARY_PATH}; \
          if command -v setcap >/dev/null 2>&1; then setcap {SERVER_FILE_CAPABILITIES} {SERVER_BINARY_PATH} 2>/dev/null || true; fi"

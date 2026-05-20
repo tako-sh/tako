@@ -361,7 +361,7 @@ tako servers upgrade prod-a
 tako servers upgrade
 ```
 
-Upgrade acquires a durable upgrade lock, installs the new binary, reloads through the service manager, waits for readiness, and releases upgrade mode. If readiness fails, the previous on-disk binary is restored.
+Upgrade acquires a durable upgrade lock, installs the new binary, checks the extracted binary for missing runtime libraries, reloads through the service manager, waits for readiness, and releases upgrade mode. If readiness fails, the previous on-disk binary is restored.
 
 Remove a remote server install and its data:
 
