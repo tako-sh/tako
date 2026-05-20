@@ -66,17 +66,47 @@ pub fn transform_image(
 
     validate_source_format(source)?;
     let _permit = acquire_vips_transform_permit();
-    let (source_width, source_height) = image_dimensions(source)?;
+    let source_image = read_image(source)?;
+    let source_width = dimension_from_vips(source_image.get_width())?;
+    let source_height = dimension_from_vips(source_image.get_height())?;
     enforce_dimension_limits(source_width, source_height, limits)?;
 
     if source_width == 0 || source_height == 0 {
         return Err(ImageError::TransformFailed);
     }
 
-    let resized = thumbnail_image(source, options.width, resize)?;
-    let width = dimension_from_vips(resized.get_width())?;
-    let height = dimension_from_vips(resized.get_height())?;
-    let bytes = encode_image(&resized, options.format, options.quality)?;
+    let oriented_image = autorotate_image(&source_image)?;
+    let oriented_width = dimension_from_vips(oriented_image.get_width())?;
+    let oriented_height = dimension_from_vips(oriented_image.get_height())?;
+    let scale = resize_scale(oriented_width, oriented_height, options.width, resize)?;
+
+    let resized_image;
+    let resized = if scale < 1.0 {
+        resized_image = resize_image(&oriented_image, scale)?;
+        &resized_image
+    } else {
+        &oriented_image
+    };
+
+    let cropped_image;
+    let output = if should_crop_image(resized, resize)? {
+        let crop_width = resize.width.min(dimension_from_vips(resized.get_width())?);
+        let crop_height = resize
+            .height
+            .ok_or(ImageError::TransformFailed)?
+            .min(dimension_from_vips(resized.get_height())?);
+        cropped_image = match resize.crop.unwrap_or(ImageCrop::Center) {
+            ImageCrop::Center => center_crop_image(resized, crop_width, crop_height)?,
+            ImageCrop::Smart => smart_crop_image(resized, crop_width, crop_height)?,
+        };
+        &cropped_image
+    } else {
+        resized
+    };
+
+    let width = dimension_from_vips(output.get_width())?;
+    let height = dimension_from_vips(output.get_height())?;
+    let bytes = encode_image(output, options.format, options.quality)?;
 
     Ok(TransformedImage {
         bytes,
@@ -107,14 +137,6 @@ fn validate_source_format(source: &[u8]) -> Result<(), ImageError> {
     Err(ImageError::UnsupportedFormat)
 }
 
-fn image_dimensions(source: &[u8]) -> Result<(u32, u32), ImageError> {
-    let image = read_image_header(source)?;
-    Ok((
-        dimension_from_vips(image.get_width())?,
-        dimension_from_vips(image.get_height())?,
-    ))
-}
-
 fn enforce_dimension_limits(
     width: u32,
     height: u32,
@@ -130,7 +152,7 @@ fn enforce_dimension_limits(
     Ok(())
 }
 
-fn read_image_header(source: &[u8]) -> Result<VipsImage, ImageError> {
+fn read_image(source: &[u8]) -> Result<VipsImage, ImageError> {
     let app = vips_app()?;
     app.error_clear();
     VipsImage::new_from_buffer(source, "").map_err(|_| vips_transform_error(app))
@@ -142,40 +164,20 @@ fn autorotate_image(image: &VipsImage) -> Result<VipsImage, ImageError> {
     ops::autorot(image).map_err(|_| vips_transform_error(app))
 }
 
-fn thumbnail_image(
-    source: &[u8],
-    width: u32,
-    resize: NormalizedResize,
-) -> Result<VipsImage, ImageError> {
-    let image = autorotate_image(&read_image_header(source)?)?;
+fn should_crop_image(image: &VipsImage, resize: NormalizedResize) -> Result<bool, ImageError> {
     let source_width = dimension_from_vips(image.get_width())?;
     let source_height = dimension_from_vips(image.get_height())?;
-    let scale = resize_scale(source_width, source_height, width, resize)?;
-    let resized = if scale < 1.0 {
-        resize_image(&image, scale)?
-    } else {
-        image
-    };
-
     let Some(height) = resize.height else {
-        return Ok(resized);
+        return Ok(false);
     };
     if resize.fit == Some(ImageFit::Contain) {
-        return Ok(resized);
+        return Ok(false);
     }
 
-    let resized_width = dimension_from_vips(resized.get_width())?;
-    let resized_height = dimension_from_vips(resized.get_height())?;
-    let crop_width = width.min(resized_width);
-    let crop_height = height.min(resized_height);
-    if crop_width == resized_width && crop_height == resized_height {
-        return Ok(resized);
-    }
-
-    match resize.crop.unwrap_or(ImageCrop::Center) {
-        ImageCrop::Center => center_crop_image(&resized, crop_width, crop_height),
-        ImageCrop::Smart => smart_crop_image(&resized, crop_width, crop_height),
-    }
+    Ok(
+        resize.width.min(source_width) != source_width
+            || height.min(source_height) != source_height,
+    )
 }
 
 fn resize_scale(

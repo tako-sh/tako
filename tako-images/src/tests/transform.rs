@@ -141,6 +141,30 @@ fn accepts_jpeg_sources_and_emits_avif() {
 }
 
 #[test]
+fn resizes_large_jpeg_to_webp_without_dropping_lazy_pipeline_inputs() {
+    let img = ImageBuffer::from_fn(1672, 941, |x, y| {
+        Rgb([(x % 251) as u8, (y % 241) as u8, ((x + y) % 239) as u8])
+    });
+    let mut source = Cursor::new(Vec::new());
+    img.write_to(&mut source, ImageFormat::Jpeg)
+        .expect("encode jpeg");
+
+    let transformed = transform_image(
+        source.get_ref(),
+        Some("image/jpeg"),
+        transform_options(OutputFormat::Webp, 1200, 75),
+        &TransformLimits::default(),
+    )
+    .expect("transform image");
+
+    assert_eq!(transformed.width, 1200);
+    assert_eq!(transformed.height, 675);
+    assert_eq!(transformed.content_type, "image/webp");
+    assert_eq!(&transformed.bytes[0..4], b"RIFF");
+    assert_eq!(&transformed.bytes[8..12], b"WEBP");
+}
+
+#[test]
 fn resizes_webp_sources_to_webp_when_requested() {
     let source = BASE64_STANDARD
         .decode(super::WEBP_64X32)
