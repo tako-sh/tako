@@ -25,7 +25,7 @@ Repository scripts used by installers, CI checks, and local development workflow
   - Installs service definitions based on host init system:
     - systemd unit with `Type=notify`, `ExecReload=/bin/kill -HUP $MAINPID`, and capability bounding for bind, app-user switching, and app-process stop capabilities.
     - OpenRC init script with `reload` support and `retry="TERM/1800/KILL/5"` graceful-stop semantics.
-  - Installs required runtime dependencies (including Unix-socket-capable `nc` with `-U` support, sqlite runtime libraries, Linux namespace networking tools `ip`/`iptables`/`sysctl`, and `proto`) via the host package manager when available.
+  - Installs required runtime dependencies (including Unix-socket-capable `nc` with `-U` support, sqlite runtime libraries, libvips image codec packages, Linux namespace networking tools `ip`/`iptables`/`sysctl`, and `proto`) via the host package manager when available.
   - Falls back to the official `proto` installer if not already present.
 - `check_critical_coverage.sh`: coverage gate for selected critical source files.
 

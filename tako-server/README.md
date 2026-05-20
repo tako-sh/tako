@@ -47,9 +47,9 @@ Routing policy notes:
 
 From repository root:
 
-Install libvips first: macOS `brew install vips`; Debian/Ubuntu `sudo apt-get update && sudo apt-get install -y --no-install-recommends libvips-dev libheif-plugin-aomenc`.
+Install libvips first: macOS `brew install vips`; Debian/Ubuntu `sudo apt-get update && sudo apt-get install -y --no-install-recommends libvips-dev libheif-plugin-aomenc`; Alpine `apk add vips-dev vips-heif`.
 
-Homebrew's `vips` formula includes the codec libraries Tako needs for JPEG, PNG, WebP, and AVIF transforms. Debian/Ubuntu split the AVIF encoder into `libheif-plugin-aomenc`, so install that alongside `libvips-dev`.
+Homebrew's `vips` formula includes the codec libraries Tako needs for JPEG, PNG, WebP, and AVIF transforms. Debian/Ubuntu split the AVIF encoder into `libheif-plugin-aomenc`, and Alpine splits HEIF/AVIF support into `vips-heif`.
 
 ```bash
 cargo test -p tako-images

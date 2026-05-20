@@ -258,7 +258,7 @@ fn remote_install_libvips_runtime_script() -> &'static str {
      elif command -v pacman >/dev/null 2>&1; then \
        pacman -Sy --noconfirm vips; \
      elif command -v apk >/dev/null 2>&1; then \
-       apk add --no-cache vips; \
+       apk add --no-cache vips vips-heif; \
      elif command -v zypper >/dev/null 2>&1; then \
        zypper --non-interactive install libvips42 || zypper --non-interactive install vips; \
      else \

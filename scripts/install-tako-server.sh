@@ -803,12 +803,18 @@ install_libvips_runtime() {
   elif need_cmd pacman; then
     pacman -Sy --noconfirm vips
   elif need_cmd apk; then
-    apk add --no-cache vips
+    apk add --no-cache vips vips-heif
   elif need_cmd zypper; then
     zypper --non-interactive install libvips42 || zypper --non-interactive install vips
   else
     echo "error: unsupported package manager; install libvips manually before starting tako-server" >&2
     exit 1
+  fi
+}
+
+install_libvips_codec_runtime() {
+  if need_cmd apk; then
+    apk add --no-cache vips-heif
   fi
 }
 
@@ -836,12 +842,16 @@ install_missing_tako_server_runtime_deps() {
 
   missing="$(missing_runtime_libraries "$_bin")"
   if [ -z "$missing" ]; then
+    install_libvips_codec_runtime
     return
   fi
 
   if printf '%s\n' "$missing" | grep -Eq '^libvips(\.|$)'; then
     install_libvips_runtime
+    return
   fi
+
+  install_libvips_codec_runtime
 }
 
 verify_tako_server_runtime_deps() {
