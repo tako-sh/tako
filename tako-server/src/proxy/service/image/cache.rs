@@ -10,7 +10,11 @@ use tokio::sync::watch;
 
 const CACHE_VERSION: &str = "tako-image-transform-v1";
 const CACHE_DIR_NAME: &str = "tako-image-cache";
-const TRANSFORM_CACHE_MAX_BYTES: u64 = 1024 * 1024 * 1024;
+const GIB: u64 = 1024 * 1024 * 1024;
+const TRANSFORM_CACHE_MIN_BYTES: u64 = GIB;
+const TRANSFORM_CACHE_FALLBACK_BYTES: u64 = 2 * GIB;
+const TRANSFORM_CACHE_MAX_BYTES: u64 = 4 * GIB;
+const TRANSFORM_CACHE_FILESYSTEM_FRACTION: u64 = 20;
 const TRANSFORM_CACHE_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
 #[derive(Debug, PartialEq, Eq)]
@@ -83,7 +87,7 @@ pub(super) async fn write(root: &Path, key: &str, bytes: &[u8]) {
     }
     drop(file);
     if tokio::fs::rename(&tmp_path, &path).await.is_ok() {
-        prune_with_policy(root, TransformCachePolicy::default()).await;
+        prune_with_policy(root, TransformCachePolicy::for_root(root)).await;
     } else {
         let _ = tokio::fs::remove_file(&tmp_path).await;
     }
@@ -97,10 +101,10 @@ struct TransformCachePolicy {
     max_age: Duration,
 }
 
-impl Default for TransformCachePolicy {
-    fn default() -> Self {
+impl TransformCachePolicy {
+    fn for_root(root: &Path) -> Self {
         Self {
-            max_bytes: TRANSFORM_CACHE_MAX_BYTES,
+            max_bytes: transform_cache_max_bytes(root),
             max_age: TRANSFORM_CACHE_MAX_AGE,
         }
     }
@@ -145,6 +149,59 @@ async fn prune_with_policy(root: &Path, policy: TransformCachePolicy) {
 
 fn cache_file_is_expired(file: &CacheFile, now: SystemTime, max_age: Duration) -> bool {
     now.duration_since(file.modified).unwrap_or_default() >= max_age
+}
+
+fn transform_cache_max_bytes(root: &Path) -> u64 {
+    filesystem_total_bytes(root)
+        .map(transform_cache_max_bytes_for_filesystem_bytes)
+        .unwrap_or(TRANSFORM_CACHE_FALLBACK_BYTES)
+}
+
+fn transform_cache_max_bytes_for_filesystem_bytes(total_bytes: u64) -> u64 {
+    total_bytes
+        .saturating_div(TRANSFORM_CACHE_FILESYSTEM_FRACTION)
+        .clamp(TRANSFORM_CACHE_MIN_BYTES, TRANSFORM_CACHE_MAX_BYTES)
+}
+
+#[cfg(unix)]
+fn filesystem_total_bytes(path: &Path) -> Result<u64, String> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let path = nearest_existing_path(path).ok_or_else(|| {
+        format!(
+            "no existing parent found for transform cache path {}",
+            path.display()
+        )
+    })?;
+    let c_path = CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| format!("path contains interior nul: {}", path.display()))?;
+    let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    let rc = unsafe { libc::statvfs(c_path.as_ptr(), stat.as_mut_ptr()) };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    let stat = unsafe { stat.assume_init() };
+    Ok((stat.f_blocks as u64).saturating_mul(stat.f_frsize))
+}
+
+#[cfg(not(unix))]
+fn filesystem_total_bytes(_path: &Path) -> Result<u64, String> {
+    Err("filesystem size checks require Unix".to_string())
+}
+
+fn nearest_existing_path(path: &Path) -> Option<&Path> {
+    let mut current = Some(path);
+    while let Some(candidate) = current {
+        if candidate.as_os_str().is_empty() {
+            return None;
+        }
+        if candidate.exists() {
+            return Some(candidate);
+        }
+        current = candidate.parent();
+    }
+    None
 }
 
 async fn collect_cache_files(root: &Path) -> Vec<CacheFile> {
@@ -450,6 +507,42 @@ mod tests {
         assert_eq!(
             default_cache_root(),
             std::env::temp_dir().join(CACHE_DIR_NAME)
+        );
+    }
+
+    #[test]
+    fn transform_cache_cap_uses_minimum_for_tiny_filesystems() {
+        assert_eq!(
+            transform_cache_max_bytes_for_filesystem_bytes(10 * GIB),
+            GIB
+        );
+    }
+
+    #[test]
+    fn transform_cache_cap_uses_five_percent_for_common_vps_filesystems() {
+        assert_eq!(
+            transform_cache_max_bytes_for_filesystem_bytes(40 * GIB),
+            2 * GIB
+        );
+        assert_eq!(
+            transform_cache_max_bytes_for_filesystem_bytes(80 * GIB),
+            4 * GIB
+        );
+    }
+
+    #[test]
+    fn transform_cache_cap_uses_maximum_for_large_filesystems() {
+        assert_eq!(
+            transform_cache_max_bytes_for_filesystem_bytes(200 * GIB),
+            4 * GIB
+        );
+    }
+
+    #[test]
+    fn transform_cache_cap_falls_back_when_filesystem_probe_fails() {
+        assert_eq!(
+            transform_cache_max_bytes(Path::new("")),
+            TRANSFORM_CACHE_FALLBACK_BYTES
         );
     }
 
