@@ -1,21 +1,26 @@
 import { WaveformIcon } from "@phosphor-icons/react";
 import { motion } from "motion/react";
+import { cn } from "@/lib/utils";
 import { Info } from "./info";
 import { formatTimestamp, shortRequestId, type MissionLogEvent } from "./types";
 
 type Props = {
   events: MissionLogEvent[];
   connected: boolean;
+  className?: string;
 };
 
-export function MissionLog({ events, connected }: Props) {
+export function MissionLog({ events, connected, className }: Props) {
   return (
     <aside
-      className="
+      className={cn(
+        `
         relative flex min-h-80 w-full shrink-0 flex-col border-t
         border-border/50 bg-muted/30
         lg:h-full lg:min-h-0 lg:w-96 lg:border-t-0 lg:border-l lg:bg-card
-      "
+      `,
+        className,
+      )}
     >
       <header className="flex items-center justify-between px-4 pt-5 pb-3">
         <h2

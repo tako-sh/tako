@@ -67,9 +67,11 @@ export function MissionControl({
             lg:flex-row lg:overflow-hidden
           "
         >
+          {/* Keep the rail first in the HTML stream; flex order preserves the visual layout. */}
+          <MissionLog events={events} connected={connected} className="order-2" />
           <div
             className="
-              relative flex-1 space-y-5 p-4
+              relative order-1 flex-1 space-y-5 p-4
               md:p-6 lg:overflow-y-auto xl:p-8
             "
           >
@@ -83,7 +85,6 @@ export function MissionControl({
             <RequestForm baseSlug={baseSlug} submitting={submitting} onSubmit={onSubmit} />
             <InFlightFeed requests={inFlight} />
           </div>
-          <MissionLog events={events} connected={connected} />
         </main>
       </div>
     </div>
