@@ -4,11 +4,11 @@ description: Security, performance, overengineering, and code quality audit
 
 # Sweep
 
-Combined security, performance, overengineering, and code quality audit. Commit progress along the way.
+Combined security, performance, overengineering, and code quality audit. Find and fix real problems only; if there is nothing high-confidence to report, that is a valid outcome. Commit auto-fixes along the way.
 
-## Phase 1 — Find everything
+## Phase 1 — Look for real issues
 
-Analyze the codebase for issues across all categories:
+Analyze the codebase for real, evidence-backed issues across these categories:
 
 - Security (injection, auth, secrets, supply chain, trust boundaries)
 - Performance (hot paths, blocking I/O, unnecessary allocations, algorithmic complexity)
@@ -22,7 +22,8 @@ Analyze the codebase for issues across all categories:
 2. Separate real boundaries from trusted internal paths. Do not demand guards inside trusted internal code unless the value crosses a user, network, filesystem, process, or third-party boundary there.
 3. Focus on realistic exploitability, real bottlenecks, and real maintenance cost — skip theoretical, stylistic, and "just in case" nits.
 4. Every issue must have concrete evidence (file:line) and a reason it matters in normal use or a plausible production failure.
-5. If tools/profilers can't run, say so and continue with static analysis.
+5. Do not force a finding to justify the sweep. If the evidence does not support a current issue, leave it out.
+6. If tools/profilers can't run, say so and continue with static analysis.
 
 ## Phase 2 — Fix what's obvious
 
@@ -31,7 +32,7 @@ For each issue found, decide:
 - **Auto-fix**: If the fix is trivial, safe, clearly correct, and doesn't require architectural decisions or my input — fix it immediately. Prefer deleting, simplifying, or moving checks to the real boundary over adding new code. Examples: dead code removal, removing unused abstraction layers, deleting unreachable fallback paths, collapsing redundant validation, obvious resource leaks, missing validation at a real external boundary.
 - **Skip**: If the fix requires my input, is risky, or involves tradeoffs — don't touch it, carry it to Phase 3.
 
-Auto-fixes must not add speculative guardrails, new configuration knobs, new abstractions, new retry/fallback paths, or validation for states that cannot occur in the current architecture. If a proposed fix starts with "in case someday," skip it.
+Auto-fixes must not add speculative guardrails, new configuration knobs, new abstractions, new retry/fallback paths, or validation for states that cannot occur in the current architecture. Do not refactor, tidy, or "improve" code just because it is nearby. If a proposed fix starts with "in case someday," "while I'm here," or "this might be useful later," skip it.
 
 Commit each batch of auto-fixes as you go (use the current branch). Group related fixes into logical commits with conventional commit messages.
 
@@ -39,7 +40,7 @@ After fixing, run a second audit pass to catch regressions or newly exposed issu
 
 ## Phase 3 — Report remaining issues
 
-Present **only P0/P1 issues and high-confidence unnecessary-complexity cleanup candidates** that remain after auto-fixes. Unnecessary complexity belongs here only when it has concrete current cost, such as confusing control flow, unused public surface, duplicate configuration paths, brittle tests, or extra code that makes normal changes harder. Use this exact format:
+Present **only P0/P1 issues and high-confidence unnecessary-complexity cleanup candidates** that remain after auto-fixes. Unnecessary complexity belongs here only when it has concrete current cost, such as confusing control flow, unused public surface, duplicate configuration paths, brittle tests, or extra code that makes normal changes harder. Do not include optional refactors, style cleanup, broad modernization, or improvements that are merely nice to have. Use this exact format:
 
 ```
 ### Remaining Issues
@@ -70,8 +71,10 @@ If no P0/P1 issues or high-confidence unnecessary-complexity cleanup candidates 
 ## Rules
 
 - Evidence only — no speculative warnings.
+- No forced outcomes. A sweep can legitimately end with no auto-fixes and no remaining issues.
 - Flag unnecessary complexity when it has concrete maintenance cost: abstractions with a single implementation, indirection that doesn't pay for itself, configurability nobody uses, redundant cross-layer validation, error handling for impossible states, fallback paths that cannot be reached, or solving problems that aren't real yet. Simple code that does the job beats clever code that anticipates hypotheticals.
 - When fixing unnecessary complexity, remove or simplify the unnecessary mechanism. Do not replace one speculative mechanism with another.
+- Do not refactor for taste, neatness, modernization, or broad cleanup. You are not here to create work; you are here to remove current risk or current drag.
 - Only add a guardrail when the current code crosses a real boundary or has an observed production failure mode. Internal calls between trusted components should rely on their contract.
 - Fewer high-confidence findings over many weak ones.
 - Don't report best practices unless the code demonstrably violates them in a way that matters.
