@@ -545,6 +545,7 @@ fn is_avif(bytes: &[u8]) -> bool {
 }
 
 fn assert_animation_dimensions(bytes: &[u8], width: u32, height: u32, frames: i32) {
+    let _permit = crate::transform::occupy_vips_transform_slot();
     let animation = libvips::VipsImage::new_from_buffer(bytes, "[n=-1]").expect("load animation");
     assert_eq!(
         animation.get_width(),

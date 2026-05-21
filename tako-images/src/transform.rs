@@ -7,7 +7,10 @@ use std::ffi::c_void;
 use std::mem::ManuallyDrop;
 use std::sync::{Condvar, Mutex, MutexGuard, OnceLock};
 
-const MAX_PARALLEL_TRANSFORMS: usize = 2;
+// Some libvips codec paths are process-global even when libvips worker
+// concurrency is set to one. Tako gets parallelism from the server worker pool,
+// so keep each process to one active transform.
+const MAX_PARALLEL_TRANSFORMS: usize = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransformLimits {
