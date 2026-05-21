@@ -178,27 +178,9 @@ fn read_image(source: &[u8], source_format: SourceFormat) -> Result<VipsImage, I
     let app = vips_app()?;
     app.error_clear();
     match source_format {
-        SourceFormat::Avif => ops::heifload_buffer_with_opts(
-            source,
-            &ops::HeifloadBufferOptions {
-                n: -1,
-                ..Default::default()
-            },
-        ),
-        SourceFormat::Gif => ops::gifload_buffer_with_opts(
-            source,
-            &ops::GifloadBufferOptions {
-                n: -1,
-                ..Default::default()
-            },
-        ),
-        SourceFormat::Webp => ops::webpload_buffer_with_opts(
-            source,
-            &ops::WebploadBufferOptions {
-                n: -1,
-                ..Default::default()
-            },
-        ),
+        SourceFormat::Avif => VipsImage::new_from_buffer(source, ""),
+        SourceFormat::Gif => VipsImage::new_from_buffer(source, "[n=-1]"),
+        SourceFormat::Webp => VipsImage::new_from_buffer(source, "[n=-1]"),
         SourceFormat::Jpeg | SourceFormat::Png => VipsImage::new_from_buffer(source, ""),
     }
     .map_err(|_| vips_transform_error(app))
@@ -389,38 +371,30 @@ fn encode_image(
             if page_height > 0 {
                 return Err(ImageError::UnsupportedFormat);
             }
-            let bytes = ops::heifsave_buffer_with_opts(
-                image,
-                &ops::HeifsaveBufferOptions {
-                    q: i32::from(quality),
-                    compression: ops::ForeignHeifCompression::Av1,
-                    keep: ops::ForeignKeep::None,
-                    page_height,
-                    profile: None,
-                    ..Default::default()
-                },
-            )
-            .map_err(|_| vips_transform_error(app))?;
+            let suffix = save_suffix_for_avif(quality);
+            let bytes = image
+                .image_write_to_buffer(&suffix)
+                .map_err(|_| vips_transform_error(app))?;
             Ok(copy_vips_allocated_buffer(bytes))
         }
         OutputFormat::Webp => {
-            let bytes = ops::webpsave_buffer_with_opts(
-                image,
-                &ops::WebpsaveBufferOptions {
-                    q: i32::from(quality),
-                    alpha_q: i32::from(quality),
-                    smart_subsample: true,
-                    preset: ops::ForeignWebpPreset::Photo,
-                    keep: ops::ForeignKeep::None,
-                    page_height,
-                    profile: None,
-                    ..Default::default()
-                },
-            )
-            .map_err(|_| vips_transform_error(app))?;
+            let suffix = save_suffix_for_webp(quality, page_height);
+            let bytes = image
+                .image_write_to_buffer(&suffix)
+                .map_err(|_| vips_transform_error(app))?;
             Ok(copy_vips_allocated_buffer(bytes))
         }
     }
+}
+
+fn save_suffix_for_avif(quality: u8) -> String {
+    format!(".avif[Q={quality},compression=av1,keep=none]")
+}
+
+fn save_suffix_for_webp(quality: u8, page_height: i32) -> String {
+    format!(
+        ".webp[Q={quality},alpha-q={quality},smart-subsample=true,preset=photo,keep=none,page-height={page_height}]"
+    )
 }
 
 fn frame_height_from_vips(image: &VipsImage) -> Result<u32, ImageError> {
