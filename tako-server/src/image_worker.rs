@@ -1,25 +1,27 @@
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use serde::{Deserialize, Serialize};
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::process::Stdio;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tako_images::{
     ImageCrop, ImageError, ImageFit, OutputFormat, TransformLimits, TransformOptions,
     TransformedImage, transform_image,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::process::Command;
-use tokio::sync::{Semaphore, SemaphorePermit, TryAcquireError};
+use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::sync::{Mutex, Semaphore, SemaphorePermit, TryAcquireError};
 use tokio::time::timeout;
 
 const IMAGE_WORKER_EXECUTION_TIMEOUT: Duration = Duration::from_secs(30);
+const IMAGE_WORKER_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const IMAGE_WORKER_STDERR_LIMIT: u64 = 4096;
-const IMAGE_WORKER_MIN_CONCURRENCY: usize = 2;
-const IMAGE_WORKER_MAX_CONCURRENCY: usize = 4;
-const IMAGE_WORKER_QUEUE_CAPACITY: usize = 128;
+const IMAGE_WORKER_FRAME_MAX_BYTES: usize = 64 * 1024 * 1024;
+const IMAGE_WORKER_MIN_CONCURRENCY: usize = 1;
+const IMAGE_WORKER_MAX_CONCURRENCY: usize = 2;
+const IMAGE_WORKER_QUEUE_CAPACITY: usize = 32;
 const IMAGE_LOG_SOURCE: &str = "images";
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -121,7 +123,7 @@ pub(crate) async fn transform_in_worker(
     let _permit = acquire_worker_slot().await?;
     let request = WorkerRequest::new(source, source_content_type, options, limits);
     let input = serde_json::to_vec(&request).map_err(|_| ImageError::TransformFailed)?;
-    let output = run_worker_process(app_name, input).await?;
+    let output = run_worker_pool_request(app_name, input).await?;
     decode_worker_response(&output, options.format)
 }
 
@@ -167,16 +169,55 @@ impl Drop for WorkerQueueSlot {
     }
 }
 
-async fn run_worker_process(app_name: &str, input: Vec<u8>) -> Result<Vec<u8>, ImageError> {
-    let exe = worker_executable_path()?;
-    let mut child = Command::new(exe)
-        .arg("--image-worker")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|error| {
+async fn run_worker_pool_request(app_name: &str, input: Vec<u8>) -> Result<Vec<u8>, ImageError> {
+    start_worker_reaper();
+    let mut worker = checkout_worker(app_name).await?;
+    let result = timeout(
+        IMAGE_WORKER_EXECUTION_TIMEOUT,
+        worker.request(app_name, &input),
+    )
+    .await;
+
+    match result {
+        Ok(Ok(output)) => {
+            checkin_worker(worker).await;
+            Ok(output)
+        }
+        Ok(Err(error)) => {
+            worker.stop().await;
+            Err(error)
+        }
+        Err(_) => {
+            tracing::warn!(
+                app = %app_name,
+                source = IMAGE_LOG_SOURCE,
+                timeout_ms = IMAGE_WORKER_EXECUTION_TIMEOUT.as_millis() as u64,
+                "Image worker request timed out"
+            );
+            worker.stop().await;
+            Err(ImageError::TransformFailed)
+        }
+    }
+}
+
+struct ImageWorkerProcess {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: ChildStdout,
+    idle_since: Instant,
+}
+
+impl ImageWorkerProcess {
+    async fn spawn(app_name: &str) -> Result<Self, ImageError> {
+        let exe = worker_executable_path()?;
+        let mut command = Command::new(exe);
+        command
+            .arg("--image-worker")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let mut child = command.spawn().map_err(|error| {
             tracing::warn!(
                 app = %app_name,
                 source = IMAGE_LOG_SOURCE,
@@ -185,84 +226,219 @@ async fn run_worker_process(app_name: &str, input: Vec<u8>) -> Result<Vec<u8>, I
             );
             ImageError::TransformFailed
         })?;
-    let mut stdin = child.stdin.take().ok_or(ImageError::TransformFailed)?;
-    let mut stdout = child.stdout.take().ok_or(ImageError::TransformFailed)?;
-    let mut stderr = child.stderr.take().ok_or(ImageError::TransformFailed)?;
 
-    match timeout(IMAGE_WORKER_EXECUTION_TIMEOUT, async move {
-        stdin.write_all(&input).await.map_err(|error| {
-            tracing::warn!(
-                app = %app_name,
-                source = IMAGE_LOG_SOURCE,
-                error = %error,
-                "Failed to write image worker request"
-            );
-            ImageError::TransformFailed
-        })?;
-        drop(stdin);
-
-        let mut output = Vec::new();
-        let mut stderr_output = Vec::new();
-        let read = stdout.read_to_end(&mut output);
-        let mut limited_stderr = (&mut stderr).take(IMAGE_WORKER_STDERR_LIMIT);
-        let read_stderr = limited_stderr.read_to_end(&mut stderr_output);
-        let wait = child.wait();
-        let (read_result, stderr_result, wait_result) = tokio::join!(read, read_stderr, wait);
-        read_result.map_err(|error| {
-            tracing::warn!(
-                app = %app_name,
-                source = IMAGE_LOG_SOURCE,
-                error = %error,
-                "Failed to read image worker response"
-            );
-            ImageError::TransformFailed
-        })?;
-        stderr_result.map_err(|error| {
-            tracing::warn!(
-                app = %app_name,
-                source = IMAGE_LOG_SOURCE,
-                error = %error,
-                "Failed to read image worker stderr"
-            );
-            ImageError::TransformFailed
-        })?;
-        let status = wait_result.map_err(|error| {
-            tracing::warn!(
-                app = %app_name,
-                source = IMAGE_LOG_SOURCE,
-                error = %error,
-                "Failed to wait for image worker process"
-            );
-            ImageError::TransformFailed
-        })?;
-        if !status.success() {
-            let stderr = worker_stderr_snippet(&stderr_output);
-            let stderr_truncated = stderr_output.len() >= IMAGE_WORKER_STDERR_LIMIT as usize;
-            tracing::warn!(
-                app = %app_name,
-                source = IMAGE_LOG_SOURCE,
-                status = %status,
-                stderr = %stderr,
-                stderr_truncated,
-                "Image worker process failed"
-            );
-            return Err(ImageError::TransformFailed);
+        if let Some(stderr) = child.stderr.take() {
+            drain_worker_stderr(app_name, stderr);
         }
-        Ok(output)
-    })
-    .await
-    {
-        Ok(result) => result,
-        Err(_) => {
-            tracing::warn!(
-                app = %app_name,
-                source = IMAGE_LOG_SOURCE,
-                timeout_ms = IMAGE_WORKER_EXECUTION_TIMEOUT.as_millis() as u64,
-                "Image worker process timed out"
-            );
-            Err(ImageError::TransformFailed)
+
+        let stdin = child.stdin.take().ok_or(ImageError::TransformFailed)?;
+        let stdout = child.stdout.take().ok_or(ImageError::TransformFailed)?;
+        Ok(Self {
+            child,
+            stdin,
+            stdout,
+            idle_since: Instant::now(),
+        })
+    }
+
+    fn is_running(&mut self, app_name: &str) -> bool {
+        match self.child.try_wait() {
+            Ok(None) => true,
+            Ok(Some(status)) => {
+                tracing::warn!(
+                    app = %app_name,
+                    source = IMAGE_LOG_SOURCE,
+                    status = %status,
+                    "Image worker process exited"
+                );
+                false
+            }
+            Err(error) => {
+                tracing::warn!(
+                    app = %app_name,
+                    source = IMAGE_LOG_SOURCE,
+                    error = %error,
+                    "Failed to inspect image worker process"
+                );
+                false
+            }
         }
     }
+
+    async fn request(&mut self, app_name: &str, input: &[u8]) -> Result<Vec<u8>, ImageError> {
+        write_worker_frame_async(&mut self.stdin, input)
+            .await
+            .map_err(|error| {
+                tracing::warn!(
+                    app = %app_name,
+                    source = IMAGE_LOG_SOURCE,
+                    error = %error,
+                    "Failed to write image worker request"
+                );
+                error
+            })?;
+
+        read_worker_frame_async(&mut self.stdout)
+            .await
+            .map_err(|error| {
+                tracing::warn!(
+                    app = %app_name,
+                    source = IMAGE_LOG_SOURCE,
+                    error = %error,
+                    "Failed to read image worker response"
+                );
+                error
+            })
+    }
+
+    async fn stop(mut self) {
+        let _ = self.child.kill().await;
+        let _ = self.child.wait().await;
+    }
+}
+
+async fn checkout_worker(app_name: &str) -> Result<ImageWorkerProcess, ImageError> {
+    let mut workers = worker_pool().lock().await;
+    while let Some(mut worker) = workers.pop() {
+        if worker.is_running(app_name) {
+            return Ok(worker);
+        }
+    }
+    drop(workers);
+    ImageWorkerProcess::spawn(app_name).await
+}
+
+async fn checkin_worker(mut worker: ImageWorkerProcess) {
+    worker.idle_since = Instant::now();
+    let mut workers = worker_pool().lock().await;
+    if workers.len() < worker_concurrency() {
+        workers.push(worker);
+    } else {
+        drop(workers);
+        worker.stop().await;
+    }
+}
+
+fn worker_pool() -> &'static Mutex<Vec<ImageWorkerProcess>> {
+    static POOL: OnceLock<Mutex<Vec<ImageWorkerProcess>>> = OnceLock::new();
+    POOL.get_or_init(|| Mutex::new(Vec::with_capacity(worker_concurrency())))
+}
+
+fn start_worker_reaper() {
+    static STARTED: OnceLock<()> = OnceLock::new();
+    STARTED.get_or_init(|| {
+        tokio::spawn(async {
+            loop {
+                tokio::time::sleep(IMAGE_WORKER_IDLE_TIMEOUT).await;
+                prune_idle_workers().await;
+            }
+        });
+    });
+}
+
+async fn prune_idle_workers() {
+    let now = Instant::now();
+    let mut expired = Vec::new();
+    let mut workers = worker_pool().lock().await;
+    let mut index = 0;
+    while index < workers.len() {
+        if now.saturating_duration_since(workers[index].idle_since) >= IMAGE_WORKER_IDLE_TIMEOUT {
+            expired.push(workers.swap_remove(index));
+        } else {
+            index += 1;
+        }
+    }
+    drop(workers);
+
+    for worker in expired {
+        worker.stop().await;
+    }
+}
+
+fn drain_worker_stderr(app_name: &str, mut stderr: tokio::process::ChildStderr) {
+    let app_name = app_name.to_string();
+    tokio::spawn(async move {
+        let mut buffer = Vec::new();
+        let mut chunk = [0_u8; 1024];
+        let mut stderr_truncated = false;
+        loop {
+            match stderr.read(&mut chunk).await {
+                Ok(0) => break,
+                Ok(read) => {
+                    let remaining =
+                        (IMAGE_WORKER_STDERR_LIMIT as usize).saturating_sub(buffer.len());
+                    if remaining == 0 {
+                        stderr_truncated = true;
+                        continue;
+                    }
+                    let retained = read.min(remaining);
+                    buffer.extend_from_slice(&chunk[..retained]);
+                    stderr_truncated |= retained < read;
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        app = %app_name,
+                        source = IMAGE_LOG_SOURCE,
+                        error = %error,
+                        "Failed to read image worker stderr"
+                    );
+                    return;
+                }
+            }
+        }
+
+        if !buffer.is_empty() {
+            let stderr = worker_stderr_snippet(&buffer);
+            tracing::warn!(
+                app = %app_name,
+                source = IMAGE_LOG_SOURCE,
+                stderr = %stderr,
+                stderr_truncated,
+                "Image worker wrote to stderr"
+            );
+        }
+    });
+}
+
+async fn write_worker_frame_async(writer: &mut ChildStdin, bytes: &[u8]) -> Result<(), ImageError> {
+    let len = worker_frame_len(bytes.len()).map_err(|_| ImageError::TransformFailed)?;
+    writer
+        .write_all(&len.to_be_bytes())
+        .await
+        .map_err(|_| ImageError::TransformFailed)?;
+    writer
+        .write_all(bytes)
+        .await
+        .map_err(|_| ImageError::TransformFailed)?;
+    writer
+        .flush()
+        .await
+        .map_err(|_| ImageError::TransformFailed)
+}
+
+async fn read_worker_frame_async(reader: &mut ChildStdout) -> Result<Vec<u8>, ImageError> {
+    let mut len = [0_u8; 4];
+    reader
+        .read_exact(&mut len)
+        .await
+        .map_err(|_| ImageError::TransformFailed)?;
+    let len = usize::try_from(u32::from_be_bytes(len)).map_err(|_| ImageError::TransformFailed)?;
+    if len > IMAGE_WORKER_FRAME_MAX_BYTES {
+        return Err(ImageError::TransformFailed);
+    }
+    let mut output = vec![0_u8; len];
+    reader
+        .read_exact(&mut output)
+        .await
+        .map_err(|_| ImageError::TransformFailed)?;
+    Ok(output)
+}
+
+fn worker_frame_len(len: usize) -> Result<u32, ()> {
+    if len > IMAGE_WORKER_FRAME_MAX_BYTES {
+        return Err(());
+    }
+    u32::try_from(len).map_err(|_| ())
 }
 
 fn worker_stderr_snippet(bytes: &[u8]) -> String {
@@ -291,16 +467,80 @@ fn worker_executable_path() -> Result<std::path::PathBuf, ImageError> {
 }
 
 pub(crate) fn run_stdio() -> Result<(), String> {
-    let mut input = Vec::new();
-    std::io::stdin()
-        .read_to_end(&mut input)
-        .map_err(|error| format!("read image worker request: {error}"))?;
-    let response = handle_request_bytes(&input);
-    let output = serde_json::to_vec(&response)
-        .map_err(|error| format!("encode image worker response: {error}"))?;
-    std::io::stdout()
-        .write_all(&output)
-        .map_err(|error| format!("write image worker response: {error}"))
+    apply_worker_resource_policy();
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    let mut reader = stdin.lock();
+    let mut writer = stdout.lock();
+
+    while let Some(input) = read_worker_frame_sync(&mut reader)? {
+        let response = handle_request_bytes(&input);
+        let output = serde_json::to_vec(&response)
+            .map_err(|error| format!("encode image worker response: {error}"))?;
+        write_worker_frame_sync(&mut writer, &output)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn apply_worker_resource_policy() {
+    // Keep image CPU below the proxy and app processes under contention.
+    unsafe {
+        let _ = libc::nice(10);
+    }
+}
+
+#[cfg(not(unix))]
+fn apply_worker_resource_policy() {}
+
+fn read_worker_frame_sync(reader: &mut impl Read) -> Result<Option<Vec<u8>>, String> {
+    let mut len = [0_u8; 4];
+    match read_exact_or_clean_eof(reader, &mut len)? {
+        Some(()) => {}
+        None => return Ok(None),
+    }
+    let len = usize::try_from(u32::from_be_bytes(len))
+        .map_err(|_| "image worker frame length is invalid".to_string())?;
+    if len > IMAGE_WORKER_FRAME_MAX_BYTES {
+        return Err("image worker frame is too large".to_string());
+    }
+    let mut input = vec![0_u8; len];
+    reader
+        .read_exact(&mut input)
+        .map_err(|error| format!("read image worker frame body: {error}"))?;
+    Ok(Some(input))
+}
+
+fn read_exact_or_clean_eof(
+    reader: &mut impl Read,
+    buffer: &mut [u8],
+) -> Result<Option<()>, String> {
+    let mut read = 0;
+    while read < buffer.len() {
+        match reader.read(&mut buffer[read..]) {
+            Ok(0) if read == 0 => return Ok(None),
+            Ok(0) => return Err("image worker frame ended early".to_string()),
+            Ok(n) => read += n,
+            Err(error) if error.kind() == ErrorKind::Interrupted => {}
+            Err(error) => return Err(format!("read image worker frame length: {error}")),
+        }
+    }
+    Ok(Some(()))
+}
+
+fn write_worker_frame_sync(writer: &mut impl Write, bytes: &[u8]) -> Result<(), String> {
+    let len =
+        worker_frame_len(bytes.len()).map_err(|_| "image worker frame is too large".to_string())?;
+    writer
+        .write_all(&len.to_be_bytes())
+        .map_err(|error| format!("write image worker frame length: {error}"))?;
+    writer
+        .write_all(bytes)
+        .map_err(|error| format!("write image worker frame body: {error}"))?;
+    writer
+        .flush()
+        .map_err(|error| format!("flush image worker frame: {error}"))
 }
 
 fn handle_request_bytes(input: &[u8]) -> WorkerResponse {
@@ -382,10 +622,14 @@ fn worker_slots() -> &'static Semaphore {
 }
 
 fn worker_concurrency() -> usize {
-    std::thread::available_parallelism()
+    let parallelism = std::thread::available_parallelism()
         .map(usize::from)
-        .unwrap_or(IMAGE_WORKER_MIN_CONCURRENCY)
-        .clamp(IMAGE_WORKER_MIN_CONCURRENCY, IMAGE_WORKER_MAX_CONCURRENCY)
+        .unwrap_or(IMAGE_WORKER_MIN_CONCURRENCY);
+    if parallelism <= 2 {
+        IMAGE_WORKER_MIN_CONCURRENCY
+    } else {
+        (parallelism / 4).clamp(IMAGE_WORKER_MIN_CONCURRENCY, IMAGE_WORKER_MAX_CONCURRENCY)
+    }
 }
 
 fn worker_queue_depth() -> &'static AtomicUsize {
