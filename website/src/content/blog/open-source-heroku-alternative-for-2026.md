@@ -64,15 +64,15 @@ release = ""   # share staging DB, skip migrations
 
 Tako isn't alone. The "open source Heroku" space in 2026 has real diversity, and each project picks a different point on the dashboard-vs-CLI and Docker-vs-native axes:
 
-| Tool                              | Stars | Interface     | Runtime      | Proxy       | Buildpacks                       | Release phase       | Scale-to-zero |
-| --------------------------------- | ----- | ------------- | ------------ | ----------- | -------------------------------- | ------------------- | ------------- |
-| [Coolify](https://coolify.io)     | ~52k  | Web UI        | Docker       | Traefik     | Nixpacks                         | Pre/post hooks      | No            |
-| [Dokku](https://dokku.com)        | ~32k  | CLI + plugins | Docker       | nginx       | Buildpacks, Nixpacks, Dockerfile | Procfile `release:` | No            |
-| [Dokploy](https://dokploy.com)    | ~32k  | Web UI        | Docker Swarm | Traefik     | Nixpacks                         | Hooks               | No            |
-| [CapRover](https://caprover.com)  | ~15k  | Web UI        | Docker Swarm | nginx       | Captain definition               | Custom              | No            |
-| [Kamal](https://kamal-deploy.org) | ~14k  | CLI           | Docker       | kamal-proxy | Dockerfile                       | `pre-deploy` hook   | No            |
-| [Piku](https://piku.github.io)    | ~7k   | git push      | Native       | nginx       | Procfile-style                   | Procfile `release:` | No            |
-| **Tako**                          | newer | CLI           | Native       | Pingora     | Presets                          | `release` field     | **Default**   |
+| Tool                                          | Stars | Interface     | Runtime      | Proxy       | Buildpacks                       | Release phase       | Scale-to-zero |
+| --------------------------------------------- | ----- | ------------- | ------------ | ----------- | -------------------------------- | ------------------- | ------------- |
+| [Coolify](https://coolify.io)                 | ~52k  | Web UI        | Docker       | Traefik     | Nixpacks                         | Pre/post hooks      | No            |
+| [Dokku](https://dokku.com)                    | ~32k  | CLI + plugins | Docker       | nginx       | Buildpacks, Nixpacks, Dockerfile | Procfile `release:` | No            |
+| [Dokploy](https://github.com/Dokploy/dokploy) | ~32k  | Web UI        | Docker Swarm | Traefik     | Nixpacks                         | Hooks               | No            |
+| [CapRover](https://caprover.com)              | ~15k  | Web UI        | Docker Swarm | nginx       | Captain definition               | Custom              | No            |
+| [Kamal](https://kamal-deploy.org)             | ~14k  | CLI           | Docker       | kamal-proxy | Dockerfile                       | `pre-deploy` hook   | No            |
+| [Piku](https://piku.github.io)                | ~7k   | git push      | Native       | nginx       | Procfile-style                   | Procfile `release:` | No            |
+| **Tako**                                      | newer | CLI           | Native       | Pingora     | Presets                          | `release` field     | **Default**   |
 
 A few things fall out of the table:
 
