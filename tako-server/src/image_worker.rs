@@ -599,7 +599,7 @@ fn decode_worker_response(
             width,
             height,
         } => {
-            if format != expected_format {
+            if !worker_output_format_matches_request(format, expected_format) {
                 return Err(ImageError::TransformFailed);
             }
             Ok(TransformedImage {
@@ -614,6 +614,10 @@ fn decode_worker_response(
         }
         WorkerResponse::Error { error } => Err(image_error_from_code(&error)),
     }
+}
+
+fn worker_output_format_matches_request(format: OutputFormat, requested: OutputFormat) -> bool {
+    format == requested || (requested == OutputFormat::Avif && format == OutputFormat::Webp)
 }
 
 fn worker_slots() -> &'static Semaphore {
@@ -761,15 +765,32 @@ mod tests {
     fn decode_worker_response_rejects_wrong_format() {
         let output = serde_json::to_vec(&WorkerResponse::Ok {
             bytes_base64: BASE64_STANDARD.encode([1, 2, 3]),
+            format: OutputFormat::Avif,
+            width: 16,
+            height: 8,
+        })
+        .expect("encode worker response");
+
+        let err = decode_worker_response(&output, OutputFormat::Webp).unwrap_err();
+
+        assert_eq!(err, ImageError::TransformFailed);
+    }
+
+    #[test]
+    fn decode_worker_response_accepts_webp_fallback_for_avif_request() {
+        let output = serde_json::to_vec(&WorkerResponse::Ok {
+            bytes_base64: BASE64_STANDARD.encode([1, 2, 3]),
             format: OutputFormat::Webp,
             width: 16,
             height: 8,
         })
         .expect("encode worker response");
 
-        let err = decode_worker_response(&output, OutputFormat::Avif).unwrap_err();
+        let transformed =
+            decode_worker_response(&output, OutputFormat::Avif).expect("decode fallback");
 
-        assert_eq!(err, ImageError::TransformFailed);
+        assert_eq!(transformed.format, OutputFormat::Webp);
+        assert_eq!(transformed.content_type, "image/webp");
     }
 
     #[cfg(target_os = "linux")]

@@ -6,6 +6,7 @@ use image::{ImageBuffer, ImageFormat, Rgb};
 
 const PNG_1X1_BASE64: &str =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+const GIF_32X16_TWO_FRAMES_BASE64: &str = "R0lGODlhIAAQAPAAAP8AAAAAACH/C05FVFNDQVBFMi4wAwEAAAAh+QQAAAAAACwAAAAAIAAQAAACFISPqcvtD6OctNqLs968+w+G4kgVACH5BAAAAAAALAAAAAAgABAAgAAA/wAAAAIUhI+py+0Po5y02ouz3rz7D4biSBUAOw==";
 
 #[test]
 fn hidden_image_worker_mode_returns_protocol_errors_on_stdout() {
@@ -147,6 +148,108 @@ fn hidden_image_worker_mode_transforms_large_jpeg_sources() {
     assert_eq!(response["format"], "webp");
     assert_eq!(response["width"], 1200);
     assert_eq!(response["height"], 675);
+    assert!(
+        response["bytes_base64"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("UklGR"))
+    );
+}
+
+#[test]
+fn hidden_image_worker_mode_transforms_animated_gif_sources() {
+    let request = serde_json::json!({
+        "source_base64": GIF_32X16_TWO_FRAMES_BASE64,
+        "source_content_type": "image/gif",
+        "format": "webp",
+        "width": 16,
+        "height": 16,
+        "fit": "cover",
+        "crop": "center",
+        "quality": 75,
+        "limits": {
+            "max_source_bytes": 8388608,
+            "max_image_width": 8000,
+            "max_image_height": 8000,
+            "max_decoded_pixels": 32000000
+        }
+    });
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tako-server"))
+        .arg("--image-worker")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn image worker");
+    write_worker_frame(
+        child.stdin.as_mut().expect("worker stdin"),
+        request.to_string().as_bytes(),
+    );
+    drop(child.stdin.take());
+
+    let output = child.wait_with_output().expect("wait for image worker");
+    let response = read_worker_frame(output.stdout.as_slice());
+
+    assert!(
+        output.status.success(),
+        "worker exited with {}\nstderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(response["status"], "ok");
+    assert_eq!(response["format"], "webp");
+    assert_eq!(response["width"], 16);
+    assert_eq!(response["height"], 16);
+    assert!(
+        response["bytes_base64"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("UklGR"))
+    );
+}
+
+#[test]
+fn hidden_image_worker_mode_falls_back_to_webp_for_animated_gif_avif_requests() {
+    let request = serde_json::json!({
+        "source_base64": GIF_32X16_TWO_FRAMES_BASE64,
+        "source_content_type": "image/gif",
+        "format": "avif",
+        "width": 16,
+        "height": 16,
+        "fit": "cover",
+        "crop": "center",
+        "quality": 75,
+        "limits": {
+            "max_source_bytes": 8388608,
+            "max_image_width": 8000,
+            "max_image_height": 8000,
+            "max_decoded_pixels": 32000000
+        }
+    });
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tako-server"))
+        .arg("--image-worker")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn image worker");
+    write_worker_frame(
+        child.stdin.as_mut().expect("worker stdin"),
+        request.to_string().as_bytes(),
+    );
+    drop(child.stdin.take());
+
+    let output = child.wait_with_output().expect("wait for image worker");
+    let response = read_worker_frame(output.stdout.as_slice());
+
+    assert!(
+        output.status.success(),
+        "worker exited with {}\nstderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(response["status"], "ok");
+    assert_eq!(response["format"], "webp");
+    assert_eq!(response["width"], 16);
+    assert_eq!(response["height"], 16);
     assert!(
         response["bytes_base64"]
             .as_str()

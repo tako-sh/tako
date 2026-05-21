@@ -61,7 +61,7 @@ Public image URLs have no expiration and use long immutable public cache headers
 
 ## Resize, crop, and format without a side service
 
-Tako's optimizer is intentionally narrow. It accepts local paths or remote `http`/`https` sources, rejects private and local remote hosts, and transforms JPEG, PNG, WebP, and AVIF sources by file signature. It emits WebP by default, or AVIF when you opt into the smaller, slower-to-encode format:
+Tako's optimizer is intentionally narrow. It accepts local paths or remote `http`/`https` sources, rejects private and local remote hosts, and transforms JPEG, PNG, GIF, WebP, and AVIF sources by file signature. Animated GIF and WebP sources keep animation for optimized resize and crop URLs, and animated AVIF requests fall back to WebP. It emits WebP by default, or AVIF for still images when you opt into the smaller, slower-to-encode format:
 
 ```ts
 const avif = createImageUrl("/avatars/u_123.png", {

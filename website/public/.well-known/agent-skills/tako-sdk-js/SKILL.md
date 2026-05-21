@@ -126,7 +126,7 @@ const avifUrl = imageUrl("https://cdn.example.com/uploads/avatars/u_123.png", {
 });
 ```
 
-The helper returns `/_tako/image?src=...&w=...` and is synchronous. Width must be one of `320, 640, 960, 1200, 1920`; quality is `1..100`; format is `webp` or `avif`. Omit `format` for the optimizer default; Tako defaults to WebP, and `format: "avif"` is only valid when the app's `[images].formats` allows AVIF. Local public paths are available by default. Remote URLs must match `[images].remote_patterns` in `tako.toml`. The server verifies the app's configured image guardrails before fetching or transforming.
+The helper returns `/_tako/image?src=...&w=...` and is synchronous. Width must be one of `320, 640, 960, 1200, 1920`; quality is `1..100`; format is `webp` or `avif`. Omit `format` for the optimizer default; Tako defaults to WebP, and `format: "avif"` is only valid when the app's `[images].formats` allows AVIF. Local public paths are available by default. Remote URLs must match `[images].remote_patterns` in `tako.toml`. Sources may be JPEG, PNG, GIF, WebP, or AVIF; animated GIF and WebP sources keep animation for optimized resize and crop URLs when emitted as WebP. AVIF output is available for still images; animated sources that request AVIF fall back to WebP. The server verifies the app's configured image guardrails before fetching or transforming.
 
 ## Storage
 

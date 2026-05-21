@@ -65,6 +65,7 @@ Omit `format` for the optimizer default. Tako defaults to WebP; set `format: "av
 `imageSrcSet` returns `{ src, srcSet, sizes }` for plain `<img>` usage. Layouts are `constrained` for images that scale down but stop at `width`, `full-width` for viewport-wide images, and `fixed` for fixed-width images. Pass `widths` and `sizes` for custom responsive markup.
 
 Public image URLs use `/_tako/image?src=...&w=...`. Local public paths work by default, and remote URLs must match `[images].remote_patterns` in `tako.toml`.
+Sources may be JPEG, PNG, GIF, WebP, or AVIF. Animated GIF and WebP sources keep their animation for optimized resize and crop URLs when emitted as WebP. AVIF output is available for still images; animated sources that request AVIF fall back to WebP.
 
 ## Storage
 

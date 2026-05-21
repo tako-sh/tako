@@ -85,7 +85,7 @@ The transform surface is intentionally small:
 | Smaller AVIF variant     | `{ format: "avif" }`                          | AVIF when the tradeoff is worth it     |
 | Public evergreen asset   | `{ public: true }`                            | Immutable public cache policy          |
 
-The limits are part of the product. Widths and heights come from a fixed set. Quality is `1..100`. Output is WebP by default or AVIF when requested. Source images are JPEG, PNG, WebP, or AVIF by file signature. Transform work uses libvips, strips metadata, respects EXIF orientation, and never upscales.
+The limits are part of the product. Widths and heights come from a fixed set. Quality is `1..100`. Output is WebP by default or AVIF when requested for still images. Source images are JPEG, PNG, GIF, WebP, or AVIF by file signature, and animated GIF/WebP sources keep animation for optimized resize and crop URLs. Animated AVIF requests fall back to WebP so motion is preserved. Transform work uses libvips, strips metadata, respects EXIF orientation, and never upscales.
 
 That is less flexible than a general media platform. It is also much harder to misuse.
 

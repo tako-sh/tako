@@ -122,6 +122,26 @@ fn does_not_upscale_images_smaller_than_requested_width() {
 }
 
 #[test]
+fn accepts_default_public_widths_at_transform_time() {
+    let img = ImageBuffer::from_fn(64, 32, |_x, _y| Rgba([0_u8, 128, 255, 255]));
+    let mut source = Cursor::new(Vec::new());
+    img.write_to(&mut source, ImageFormat::Png)
+        .expect("encode png");
+
+    for width in [320, 960] {
+        let transformed = transform_image(
+            source.get_ref(),
+            Some("image/png"),
+            transform_options(OutputFormat::Webp, width, 80),
+            &TransformLimits::default(),
+        )
+        .expect("transform image");
+
+        assert_eq!(transformed.width, 64);
+    }
+}
+
+#[test]
 fn accepts_jpeg_sources_and_emits_avif() {
     let img = ImageBuffer::from_fn(80, 40, |_x, _y| Rgb([255_u8, 0, 0]));
     let mut source = Cursor::new(Vec::new());
@@ -183,6 +203,159 @@ fn resizes_webp_sources_to_webp_when_requested() {
     assert_eq!(transformed.content_type, "image/webp");
     assert!(transformed.bytes.starts_with(b"RIFF"));
     assert_eq!(&transformed.bytes[8..12], b"WEBP");
+}
+
+#[test]
+fn preserves_gif_animation_when_emitting_webp() {
+    let source = BASE64_STANDARD
+        .decode(super::GIF_32X16_TWO_FRAMES)
+        .expect("decode gif");
+
+    let transformed = transform_image(
+        &source,
+        Some("image/gif"),
+        transform_options(OutputFormat::Webp, 16, 80),
+        &TransformLimits::default(),
+    )
+    .expect("transform image");
+
+    assert_eq!(transformed.width, 16);
+    assert_eq!(transformed.height, 8);
+    assert_eq!(transformed.content_type, "image/webp");
+    assert_animation_dimensions(&transformed.bytes, 16, 8, 2);
+}
+
+#[test]
+fn preserves_webp_animation_when_emitting_webp() {
+    let source = BASE64_STANDARD
+        .decode(super::GIF_32X16_TWO_FRAMES)
+        .expect("decode gif");
+    let webp = transform_image(
+        &source,
+        Some("image/gif"),
+        transform_options(OutputFormat::Webp, 16, 80),
+        &TransformLimits::default(),
+    )
+    .expect("transform gif to webp");
+
+    let transformed = transform_image(
+        &webp.bytes,
+        Some("image/webp"),
+        transform_options(OutputFormat::Webp, 16, 80),
+        &TransformLimits::default(),
+    )
+    .expect("transform image");
+
+    assert_eq!(transformed.width, 16);
+    assert_eq!(transformed.height, 8);
+    assert_eq!(transformed.content_type, "image/webp");
+    assert_animation_dimensions(&transformed.bytes, 16, 8, 2);
+}
+
+#[test]
+fn falls_back_to_webp_for_gif_animation_when_avif_requested() {
+    let source = BASE64_STANDARD
+        .decode(super::GIF_32X16_TWO_FRAMES)
+        .expect("decode gif");
+
+    let transformed = transform_image(
+        &source,
+        Some("image/gif"),
+        transform_options(OutputFormat::Avif, 16, 80),
+        &TransformLimits::default(),
+    )
+    .expect("transform image");
+
+    assert_eq!(transformed.width, 16);
+    assert_eq!(transformed.height, 8);
+    assert_eq!(transformed.content_type, "image/webp");
+    assert_eq!(transformed.format, OutputFormat::Webp);
+    assert!(transformed.bytes.starts_with(b"RIFF"));
+    assert_eq!(&transformed.bytes[8..12], b"WEBP");
+    assert_animation_dimensions(&transformed.bytes, 16, 8, 2);
+}
+
+#[test]
+fn falls_back_to_webp_for_webp_animation_when_avif_requested() {
+    let source = BASE64_STANDARD
+        .decode(super::GIF_32X16_TWO_FRAMES)
+        .expect("decode gif");
+    let webp = transform_image(
+        &source,
+        Some("image/gif"),
+        transform_options(OutputFormat::Webp, 16, 80),
+        &TransformLimits::default(),
+    )
+    .expect("transform gif to webp");
+
+    let transformed = transform_image(
+        &webp.bytes,
+        Some("image/webp"),
+        transform_options(OutputFormat::Avif, 16, 80),
+        &TransformLimits::default(),
+    )
+    .expect("transform image");
+
+    assert_eq!(transformed.width, 16);
+    assert_eq!(transformed.height, 8);
+    assert_eq!(transformed.content_type, "image/webp");
+    assert_eq!(transformed.format, OutputFormat::Webp);
+    assert!(transformed.bytes.starts_with(b"RIFF"));
+    assert_eq!(&transformed.bytes[8..12], b"WEBP");
+    assert_animation_dimensions(&transformed.bytes, 16, 8, 2);
+}
+
+#[test]
+fn center_cover_crops_gif_animation_when_emitting_webp() {
+    let source = BASE64_STANDARD
+        .decode(super::GIF_32X16_TWO_FRAMES)
+        .expect("decode gif");
+
+    let transformed = transform_image(
+        &source,
+        Some("image/gif"),
+        TransformOptions {
+            height: Some(16),
+            fit: Some(ImageFit::Cover),
+            crop: Some(ImageCrop::Center),
+            ..transform_options(OutputFormat::Webp, 16, 80)
+        },
+        &TransformLimits::default(),
+    )
+    .expect("transform image");
+
+    assert_eq!(transformed.width, 16);
+    assert_eq!(transformed.height, 16);
+    assert_eq!(transformed.content_type, "image/webp");
+    assert_animation_dimensions(&transformed.bytes, 16, 16, 2);
+}
+
+#[test]
+fn falls_back_to_webp_for_cropped_gif_animation_when_avif_requested() {
+    let source = BASE64_STANDARD
+        .decode(super::GIF_32X16_TWO_FRAMES)
+        .expect("decode gif");
+
+    let transformed = transform_image(
+        &source,
+        Some("image/gif"),
+        TransformOptions {
+            height: Some(16),
+            fit: Some(ImageFit::Cover),
+            crop: Some(ImageCrop::Smart),
+            ..transform_options(OutputFormat::Avif, 16, 80)
+        },
+        &TransformLimits::default(),
+    )
+    .expect("transform image");
+
+    assert_eq!(transformed.width, 16);
+    assert_eq!(transformed.height, 16);
+    assert_eq!(transformed.content_type, "image/webp");
+    assert_eq!(transformed.format, OutputFormat::Webp);
+    assert!(transformed.bytes.starts_with(b"RIFF"));
+    assert_eq!(&transformed.bytes[8..12], b"WEBP");
+    assert_animation_dimensions(&transformed.bytes, 16, 16, 2);
 }
 
 #[test]
@@ -366,7 +539,22 @@ fn transform_options(format: OutputFormat, width: u32, quality: u8) -> Transform
 fn is_avif(bytes: &[u8]) -> bool {
     bytes.len() >= 12
         && &bytes[4..8] == b"ftyp"
-        && bytes[8..].windows(4).any(|brand| brand == b"avif")
+        && bytes[8..]
+            .windows(4)
+            .any(|brand| brand == b"avif" || brand == b"avis")
+}
+
+fn assert_animation_dimensions(bytes: &[u8], width: u32, height: u32, frames: i32) {
+    let animation = libvips::VipsImage::new_from_buffer(bytes, "[n=-1]").expect("load animation");
+    assert_eq!(
+        animation.get_width(),
+        i32::try_from(width).expect("width fits")
+    );
+    assert_eq!(
+        animation.get_page_height(),
+        i32::try_from(height).expect("height fits")
+    );
+    assert_eq!(animation.get_n_pages(), frames);
 }
 
 const PRIVATE_XMP_MARKER: &[u8] = b"tako-private-xmp-marker";

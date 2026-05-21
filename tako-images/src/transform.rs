@@ -7,7 +7,6 @@ use std::ffi::c_void;
 use std::mem::ManuallyDrop;
 use std::sync::{Condvar, Mutex, MutexGuard, OnceLock};
 
-const STRIP_SOURCE_METADATA: &str = "strip";
 const MAX_PARALLEL_TRANSFORMS: usize = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +47,15 @@ pub struct TransformOptions {
     pub quality: u8,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SourceFormat {
+    Avif,
+    Gif,
+    Jpeg,
+    Png,
+    Webp,
+}
+
 pub fn transform_image(
     source: &[u8],
     _source_content_type: Option<&str>,
@@ -66,12 +74,12 @@ pub fn transform_image(
         return Err(ImageError::SourceTooLarge);
     }
 
-    validate_source_format(source)?;
+    let source_format = detect_source_format(source)?;
     let _permit = acquire_vips_transform_permit();
-    let source_image = read_image(source)?;
+    let source_image = read_image(source, source_format)?;
     let source_width = dimension_from_vips(source_image.get_width())?;
-    let source_height = dimension_from_vips(source_image.get_height())?;
-    enforce_dimension_limits(source_width, source_height, limits)?;
+    let source_height = frame_height_from_vips(&source_image)?;
+    enforce_dimension_limits(&source_image, source_width, source_height, limits)?;
 
     if source_width == 0 || source_height == 0 {
         return Err(ImageError::TransformFailed);
@@ -79,7 +87,7 @@ pub fn transform_image(
 
     let oriented_image = autorotate_image(&source_image)?;
     let oriented_width = dimension_from_vips(oriented_image.get_width())?;
-    let oriented_height = dimension_from_vips(oriented_image.get_height())?;
+    let oriented_height = frame_height_from_vips(&oriented_image)?;
     let scale = resize_scale(oriented_width, oriented_height, options.width, resize)?;
 
     let resized_image;
@@ -91,55 +99,64 @@ pub fn transform_image(
     };
 
     let cropped_image;
-    let output = if should_crop_image(resized, resize)? {
+    let (output, output_height) = if should_crop_image(resized, resize)? {
         let crop_width = resize.width.min(dimension_from_vips(resized.get_width())?);
         let crop_height = resize
             .height
             .ok_or(ImageError::TransformFailed)?
-            .min(dimension_from_vips(resized.get_height())?);
-        cropped_image = match resize.crop.unwrap_or(ImageCrop::Center) {
-            ImageCrop::Center => center_crop_image(resized, crop_width, crop_height)?,
-            ImageCrop::Smart => smart_crop_image(resized, crop_width, crop_height)?,
-        };
-        &cropped_image
+            .min(frame_height_from_vips(resized)?);
+        cropped_image = crop_image(
+            resized,
+            crop_width,
+            crop_height,
+            resize.crop.unwrap_or(ImageCrop::Center),
+        )?;
+        (&cropped_image, crop_height)
     } else {
-        resized
+        (resized, frame_height_from_vips(resized)?)
     };
 
     let width = dimension_from_vips(output.get_width())?;
-    let height = dimension_from_vips(output.get_height())?;
-    let bytes = encode_image(output, options.format, options.quality)?;
+    let height = output_height;
+    let output_format = output_format_for_image(output, options.format)?;
+    let bytes = encode_image(output, output_format, options.quality, height)?;
 
     Ok(TransformedImage {
         bytes,
-        content_type: options.format.content_type(),
-        format: options.format,
+        content_type: output_format.content_type(),
+        format: output_format,
         width,
         height,
     })
 }
 
-fn validate_source_format(source: &[u8]) -> Result<(), ImageError> {
+fn detect_source_format(source: &[u8]) -> Result<SourceFormat, ImageError> {
     if source.starts_with(&[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n']) {
-        return Ok(());
+        return Ok(SourceFormat::Png);
     }
     if source.starts_with(&[0xff, 0xd8, 0xff]) {
-        return Ok(());
+        return Ok(SourceFormat::Jpeg);
+    }
+    if source.starts_with(b"GIF87a") || source.starts_with(b"GIF89a") {
+        return Ok(SourceFormat::Gif);
     }
     if source.len() >= 12 && &source[0..4] == b"RIFF" && &source[8..12] == b"WEBP" {
-        return Ok(());
+        return Ok(SourceFormat::Webp);
     }
     if source.len() >= 12
         && &source[4..8] == b"ftyp"
-        && source[8..].windows(4).any(|brand| brand == b"avif")
+        && source[8..]
+            .windows(4)
+            .any(|brand| brand == b"avif" || brand == b"avis")
     {
-        return Ok(());
+        return Ok(SourceFormat::Avif);
     }
 
     Err(ImageError::UnsupportedFormat)
 }
 
 fn enforce_dimension_limits(
+    image: &VipsImage,
     width: u32,
     height: u32,
     limits: &TransformLimits,
@@ -147,17 +164,41 @@ fn enforce_dimension_limits(
     if width > limits.max_image_width || height > limits.max_image_height {
         return Err(ImageError::ImageTooLarge);
     }
-    let pixels = u64::from(width) * u64::from(height);
+    let pixels = u64::from(width) * u64::from(dimension_from_vips(image.get_height())?);
     if pixels > limits.max_decoded_pixels {
         return Err(ImageError::ImageTooLarge);
     }
     Ok(())
 }
 
-fn read_image(source: &[u8]) -> Result<VipsImage, ImageError> {
+fn read_image(source: &[u8], source_format: SourceFormat) -> Result<VipsImage, ImageError> {
     let app = vips_app()?;
     app.error_clear();
-    VipsImage::new_from_buffer(source, "").map_err(|_| vips_transform_error(app))
+    match source_format {
+        SourceFormat::Avif => ops::heifload_buffer_with_opts(
+            source,
+            &ops::HeifloadBufferOptions {
+                n: -1,
+                ..Default::default()
+            },
+        ),
+        SourceFormat::Gif => ops::gifload_buffer_with_opts(
+            source,
+            &ops::GifloadBufferOptions {
+                n: -1,
+                ..Default::default()
+            },
+        ),
+        SourceFormat::Webp => ops::webpload_buffer_with_opts(
+            source,
+            &ops::WebploadBufferOptions {
+                n: -1,
+                ..Default::default()
+            },
+        ),
+        SourceFormat::Jpeg | SourceFormat::Png => VipsImage::new_from_buffer(source, ""),
+    }
+    .map_err(|_| vips_transform_error(app))
 }
 
 fn autorotate_image(image: &VipsImage) -> Result<VipsImage, ImageError> {
@@ -168,7 +209,7 @@ fn autorotate_image(image: &VipsImage) -> Result<VipsImage, ImageError> {
 
 fn should_crop_image(image: &VipsImage, resize: NormalizedResize) -> Result<bool, ImageError> {
     let source_width = dimension_from_vips(image.get_width())?;
-    let source_height = dimension_from_vips(image.get_height())?;
+    let source_height = frame_height_from_vips(image)?;
     let Some(height) = resize.height else {
         return Ok(false);
     };
@@ -213,11 +254,101 @@ fn resize_image(image: &VipsImage, scale: f64) -> Result<VipsImage, ImageError> 
     ops::resize(image, scale).map_err(|_| vips_transform_error(app))
 }
 
+fn output_format_for_image(
+    image: &VipsImage,
+    requested: OutputFormat,
+) -> Result<OutputFormat, ImageError> {
+    if requested == OutputFormat::Avif && is_animated_image(image)? {
+        return Ok(OutputFormat::Webp);
+    }
+
+    Ok(requested)
+}
+
+fn crop_image(
+    image: &VipsImage,
+    width: u32,
+    height: u32,
+    crop: ImageCrop,
+) -> Result<VipsImage, ImageError> {
+    if is_animated_image(image)? {
+        return crop_animated_image(image, width, height, crop);
+    }
+
+    match crop {
+        ImageCrop::Center => center_crop_image(image, width, height),
+        ImageCrop::Smart => smart_crop_image(image, width, height),
+    }
+}
+
+fn crop_animated_image(
+    image: &VipsImage,
+    width: u32,
+    height: u32,
+    crop: ImageCrop,
+) -> Result<VipsImage, ImageError> {
+    let pages = n_pages_from_vips(image)?;
+    let frame_height = frame_height_from_vips(image)?;
+    let total_height = dimension_from_vips(image.get_height())?;
+    if u64::from(frame_height) * u64::from(pages) != u64::from(total_height) {
+        return Err(ImageError::TransformFailed);
+    }
+
+    let mut frames =
+        Vec::with_capacity(usize::try_from(pages).map_err(|_| ImageError::TransformFailed)?);
+    for page in 0..pages {
+        let frame = extract_animation_frame(image, page, frame_height)?;
+        let cropped = match crop {
+            ImageCrop::Center => center_crop_image(&frame, width, height)?,
+            ImageCrop::Smart => smart_crop_image(&frame, width, height)?,
+        };
+        frames.push(cropped);
+    }
+
+    join_animation_frames(frames)
+}
+
+fn extract_animation_frame(
+    image: &VipsImage,
+    page: u32,
+    frame_height: u32,
+) -> Result<VipsImage, ImageError> {
+    let app = vips_app()?;
+    app.error_clear();
+    let top = page
+        .checked_mul(frame_height)
+        .ok_or(ImageError::TransformFailed)?;
+    ops::extract_area(
+        image,
+        0,
+        i32::try_from(top).map_err(|_| ImageError::TransformFailed)?,
+        image.get_width(),
+        i32::try_from(frame_height).map_err(|_| ImageError::TransformFailed)?,
+    )
+    .map_err(|_| vips_transform_error(app))
+}
+
+fn join_animation_frames(frames: Vec<VipsImage>) -> Result<VipsImage, ImageError> {
+    let mut frames = frames.into_iter();
+    let Some(mut output) = frames.next() else {
+        return Err(ImageError::TransformFailed);
+    };
+
+    for frame in frames {
+        let app = vips_app()?;
+        app.error_clear();
+        output = ops::join(&output, &frame, ops::Direction::Vertical)
+            .map_err(|_| vips_transform_error(app))?;
+    }
+
+    Ok(output)
+}
+
 fn center_crop_image(image: &VipsImage, width: u32, height: u32) -> Result<VipsImage, ImageError> {
     let app = vips_app()?;
     app.error_clear();
     let image_width = dimension_from_vips(image.get_width())?;
-    let image_height = dimension_from_vips(image.get_height())?;
+    let image_height = frame_height_from_vips(image)?;
     let left = (image_width.saturating_sub(width)) / 2;
     let top = (image_height.saturating_sub(height)) / 2;
     ops::extract_area(
@@ -245,26 +376,85 @@ fn encode_image(
     image: &VipsImage,
     format: OutputFormat,
     quality: u8,
+    frame_height: u32,
 ) -> Result<Vec<u8>, ImageError> {
     let app = vips_app()?;
     app.error_clear();
+    let page_height = page_height_for_save(image, frame_height)?;
     match format {
         OutputFormat::Avif => {
-            let suffix = format!(".avif[Q={quality},compression=av1,{STRIP_SOURCE_METADATA}]");
-            let bytes = image
-                .image_write_to_buffer(&suffix)
-                .map_err(|_| vips_transform_error(app))?;
+            if page_height > 0 {
+                return Err(ImageError::UnsupportedFormat);
+            }
+            let bytes = ops::heifsave_buffer_with_opts(
+                image,
+                &ops::HeifsaveBufferOptions {
+                    q: i32::from(quality),
+                    compression: ops::ForeignHeifCompression::Av1,
+                    keep: ops::ForeignKeep::None,
+                    page_height,
+                    profile: None,
+                    ..Default::default()
+                },
+            )
+            .map_err(|_| vips_transform_error(app))?;
             Ok(copy_vips_allocated_buffer(bytes))
         }
         OutputFormat::Webp => {
-            let suffix = format!(
-                ".webp[Q={quality},alpha-q={quality},smart-subsample=true,preset=photo,{STRIP_SOURCE_METADATA}]"
-            );
-            let bytes = image
-                .image_write_to_buffer(&suffix)
-                .map_err(|_| vips_transform_error(app))?;
+            let bytes = ops::webpsave_buffer_with_opts(
+                image,
+                &ops::WebpsaveBufferOptions {
+                    q: i32::from(quality),
+                    alpha_q: i32::from(quality),
+                    smart_subsample: true,
+                    preset: ops::ForeignWebpPreset::Photo,
+                    keep: ops::ForeignKeep::None,
+                    page_height,
+                    profile: None,
+                    ..Default::default()
+                },
+            )
+            .map_err(|_| vips_transform_error(app))?;
             Ok(copy_vips_allocated_buffer(bytes))
         }
+    }
+}
+
+fn frame_height_from_vips(image: &VipsImage) -> Result<u32, ImageError> {
+    let total_height = dimension_from_vips(image.get_height())?;
+    let page_height = dimension_from_vips(image.get_page_height())?;
+    let pages = n_pages_from_vips(image)?;
+    if pages > 1 && total_height % pages == 0 {
+        if page_height > 0 && u64::from(page_height) * u64::from(pages) == u64::from(total_height) {
+            return Ok(page_height);
+        }
+        return Ok(total_height / pages);
+    }
+
+    if page_height > 0 && page_height <= total_height && total_height % page_height == 0 {
+        return Ok(page_height);
+    }
+
+    Ok(total_height)
+}
+
+fn page_height_for_save(image: &VipsImage, frame_height: u32) -> Result<i32, ImageError> {
+    let total_height = dimension_from_vips(image.get_height())?;
+    if frame_height > 0 && total_height > frame_height && total_height % frame_height == 0 {
+        return i32::try_from(frame_height).map_err(|_| ImageError::TransformFailed);
+    }
+
+    Ok(0)
+}
+
+fn is_animated_image(image: &VipsImage) -> Result<bool, ImageError> {
+    Ok(n_pages_from_vips(image)? > 1)
+}
+
+fn n_pages_from_vips(image: &VipsImage) -> Result<u32, ImageError> {
+    match image.get_n_pages() {
+        pages if pages <= 0 => Ok(1),
+        pages => u32::try_from(pages).map_err(|_| ImageError::TransformFailed),
     }
 }
 

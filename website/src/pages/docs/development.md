@@ -270,7 +270,7 @@ Public optimized images are served at:
 /_tako/image?src=/assets/hero.jpg&w=1200
 ```
 
-Local image sources are allowed by default. Remote image sources must match `[images].remote_patterns` in `tako.toml`; protocol-less remote patterns allow both `http` and `https`. WebP is the default output format. When `f` is omitted, output format is selected from `Accept` in `[images].formats` order.
+Local image sources are allowed by default. Remote image sources must match `[images].remote_patterns` in `tako.toml`; protocol-less remote patterns allow both `http` and `https`. Sources may be JPEG, PNG, GIF, WebP, or AVIF by file signature. Animated GIF and WebP sources preserve animation for resize, contain, center-cover, and smart-cover transforms when emitted as WebP. AVIF output is available for still transforms; animated sources that request AVIF fall back to WebP. WebP is the default output format. When `f` is omitted, output format is selected from `Accept` in `[images].formats` order.
 
 Use `imageUrl` for one optimized URL or `imageSrcSet` for plain `<img>` responsive sources.
 

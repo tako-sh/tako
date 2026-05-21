@@ -21,7 +21,7 @@ pub const PUBLIC_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
 pub const PRIVATE_CACHE_CONTROL: &str = "private, max-age=604800";
 
 const ALLOWED_DIMENSIONS: &[u32] = &[
-    16, 32, 48, 64, 96, 128, 256, 384, 640, 750, 828, 1080, 1200, 1920, 2048, 3840,
+    16, 32, 48, 64, 96, 128, 256, 320, 384, 640, 750, 828, 960, 1080, 1200, 1920, 2048, 3840,
 ];
 const DEFAULT_WIDTH: u32 = 1200;
 const DEFAULT_QUALITY: u8 = 75;

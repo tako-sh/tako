@@ -24,7 +24,7 @@ vars: {
       N4: "#AAA3B8"
       N5: "#E3DDE7"
       N6: "#F7F1EA"
-      N7: "#FFF9F4"
+      N7: "#F8F0E7"
     }
     dark-theme-overrides: {
       B1: "#2F2A44"
@@ -47,7 +47,7 @@ vars: {
       N4: "#AAA3B8"
       N5: "#E3DDE7"
       N6: "#F7F1EA"
-      N7: "#FFF9F4"
+      N7: "#F8F0E7"
     }
   }
 }

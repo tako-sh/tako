@@ -141,7 +141,7 @@ tako deploy
 
 For TanStack Start, `tako init` detects the app and offers the `tanstack-start` preset. That preset points Tako at the generated server entry and client assets, so your SSR handler, static files, and image optimizer all land in one deploy artifact. The [Tako config reference](/docs/tako-toml) has the full `[images]` field list when you want tighter local paths or remote sources.
 
-In production, public optimized responses use long immutable cache headers. Transforms preserve aspect ratio, do not upscale, apply EXIF orientation before encoding, strip source metadata, and emit WebP by default. Public AVIF variants are available when you add AVIF to `[images].formats` and request it explicitly, or put AVIF first when you want `Accept` negotiation to choose it. Sources are accepted by file signature for JPEG, PNG, WebP, and AVIF rather than trusting `Content-Type` alone.
+In production, public optimized responses use long immutable cache headers. Transforms preserve aspect ratio, do not upscale, apply EXIF orientation before encoding, strip source metadata, and emit WebP by default. Public AVIF variants are available for still images when you add AVIF to `[images].formats` and request it explicitly, or put AVIF first when you want `Accept` negotiation to choose it. Sources are accepted by file signature for JPEG, PNG, GIF, WebP, and AVIF rather than trusting `Content-Type` alone; animated GIF and WebP sources keep animation for optimized resize and crop URLs, and animated AVIF requests fall back to WebP.
 
 Here is the practical decision table:
 

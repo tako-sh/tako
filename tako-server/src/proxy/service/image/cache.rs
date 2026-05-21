@@ -59,9 +59,10 @@ pub(super) fn transform_cache_key(
 pub(super) async fn read(root: &Path, key: &str, format: OutputFormat) -> Option<CachedTransform> {
     let path = cache_path(root, key)?;
     let bytes = tokio::fs::read(path).await.ok()?;
+    let content_type = cached_content_type(&bytes, format);
     Some(CachedTransform {
         bytes,
-        content_type: content_type_for_format(format),
+        content_type,
     })
 }
 
@@ -382,6 +383,28 @@ fn content_type_for_format(format: OutputFormat) -> &'static str {
     }
 }
 
+fn cached_content_type(bytes: &[u8], requested_format: OutputFormat) -> &'static str {
+    if is_webp(bytes) {
+        return "image/webp";
+    }
+    if is_avif(bytes) {
+        return "image/avif";
+    }
+    content_type_for_format(requested_format)
+}
+
+fn is_webp(bytes: &[u8]) -> bool {
+    bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP"
+}
+
+fn is_avif(bytes: &[u8]) -> bool {
+    bytes.len() >= 12
+        && &bytes[4..8] == b"ftyp"
+        && bytes[8..]
+            .windows(4)
+            .any(|brand| brand == b"avif" || brand == b"avis")
+}
+
 fn fit_code(fit: ImageFit) -> &'static str {
     match fit {
         ImageFit::Cover => "cover",
@@ -637,6 +660,31 @@ mod tests {
             cached,
             CachedTransform {
                 bytes: b"cached-image".to_vec(),
+                content_type: "image/webp",
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn cache_read_detects_webp_bytes_for_avif_request_fallbacks() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let key = transform_cache_key(
+            "demo",
+            test_app_root(),
+            b"source",
+            &options(OutputFormat::Avif, 640),
+        );
+        let webp_bytes = b"RIFF\0\0\0\0WEBPcached-image";
+
+        write(temp.path(), &key, webp_bytes).await;
+        let cached = read(temp.path(), &key, OutputFormat::Avif)
+            .await
+            .expect("cached transform");
+
+        assert_eq!(
+            cached,
+            CachedTransform {
+                bytes: webp_bytes.to_vec(),
                 content_type: "image/webp",
             }
         );

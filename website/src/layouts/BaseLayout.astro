@@ -441,37 +441,31 @@ const pageStructuredData = structuredData
 
       .footer-note {
         display: flex;
+        flex-direction: column;
         align-items: center;
         justify-content: center;
-        flex-wrap: wrap;
-        gap: 8px 12px;
+        gap: 2px;
         color: var(--muted);
         padding: 8px 14px 20px;
         border-top: 1px solid var(--line);
         margin: 0 14px;
+        text-align: center;
+        font-family: var(--font-sans);
+        line-height: 1.35;
       }
 
       .footer-note-main {
-        font-family: "Poppins", sans-serif;
-        font-size: clamp(15px, 2vw, 18px);
+        display: block;
+        font-size: 15px;
         font-weight: 700;
         color: var(--ink);
       }
 
       .footer-note-mark {
-        display: inline-flex;
-        align-items: center;
-        min-height: 30px;
-        padding: 3px 12px 5px;
-        border: 1.5px solid rgba(232, 135, 131, 0.45);
-        border-radius: 999px;
-        background: rgba(232, 135, 131, 0.16);
-        color: var(--primary-text);
-        font-family: "Caveat", cursive;
-        font-size: 22px;
-        font-weight: 500;
-        line-height: 1;
-        transform: rotate(-1.5deg);
+        display: block;
+        color: var(--muted);
+        font-size: 14px;
+        font-weight: 600;
       }
 
       @media (max-width: 720px) {
