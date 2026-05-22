@@ -266,9 +266,7 @@ fn generated_files_creates_demo_channel_and_workflow_in_empty_dirs() {
     let channel =
         fs::read_to_string(dir.path().join("src").join("channels").join("demo.ts")).unwrap();
     assert!(channel.contains(r#"import { defineChannel } from "tako.sh";"#));
-    assert!(
-        channel.contains(r#"export default defineChannel({ name: "demo" }).$messageTypes<{}>();"#)
-    );
+    assert!(channel.contains(r#"export default defineChannel("demo").$messageTypes<{}>();"#));
 
     let workflow =
         fs::read_to_string(dir.path().join("src").join("workflows").join("demo.ts")).unwrap();
@@ -323,9 +321,7 @@ fn generated_files_populates_empty_channel_and_workflow_files() {
     assert!(result.wrote_scaffolds);
     let channel = fs::read_to_string(channels_dir.join("mission-log.ts")).unwrap();
     assert!(
-        channel.contains(
-            r#"export default defineChannel({ name: "mission-log" }).$messageTypes<{}>();"#
-        )
+        channel.contains(r#"export default defineChannel("mission-log").$messageTypes<{}>();"#)
     );
     let workflow = fs::read_to_string(workflows_dir.join("send-email.ts")).unwrap();
     assert!(
@@ -361,9 +357,7 @@ fn generated_files_adds_missing_default_exports_without_overwriting_existing_con
     assert!(channel.starts_with("import { defineChannel } from \"tako.sh\";\n"));
     assert!(channel.contains("const pattern = \"mission-log/:base\";"));
     assert!(
-        channel.contains(
-            r#"export default defineChannel({ name: "mission-log" }).$messageTypes<{}>();"#
-        )
+        channel.contains(r#"export default defineChannel("mission-log").$messageTypes<{}>();"#)
     );
 
     let workflow = fs::read_to_string(workflows_dir.join("send-email.ts")).unwrap();
@@ -390,7 +384,7 @@ fn generated_files_does_not_rewrite_existing_channel_names() {
         .join("sdk/javascript/src/index.ts");
     let sdk_url = format!("file://{}", sdk_entry.display());
     let channel_src = format!(
-        "import {{ defineChannel }} from {sdk_url:?};\nexport default defineChannel({{ name: \"wrong\" }});\n"
+        "import {{ defineChannel }} from {sdk_url:?};\nexport default defineChannel(\"wrong\");\n"
     );
     let workflow_src = "export default async function run() {}\n";
     fs::write(channels_dir.join("demo.ts"), &channel_src).unwrap();
@@ -410,12 +404,12 @@ fn generated_files_does_not_rewrite_existing_channel_names() {
 }
 
 #[test]
-fn generated_files_does_not_normalize_multiline_channel_name_literals() {
+fn generated_files_does_not_normalize_custom_channel_name_literals() {
     let dir = TempDir::new().unwrap();
     link_sdk_package(dir.path());
     let channels_dir = dir.path().join("src").join("channels");
     fs::create_dir_all(&channels_dir).unwrap();
-    let channel_src = "import { defineChannel } from \"tako.sh\";\nexport default defineChannel({\n  name: `custom-feed`,\n}).$messageTypes<{}>();\n";
+    let channel_src = "import { defineChannel } from \"tako.sh\";\nexport default defineChannel(`custom-feed`).$messageTypes<{}>();\n";
     fs::write(channels_dir.join("mission-log.ts"), channel_src).unwrap();
 
     let result = write_generated_files(dir.path()).unwrap();

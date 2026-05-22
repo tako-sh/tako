@@ -149,7 +149,7 @@ Tako resolves deployed `main` in this order:
 
 For JavaScript runtimes, if a preset points to `index.<ext>` or `src/index.<ext>`, Tako searches common root and `src/` entrypoint files before using the preset fallback.
 
-`app_root` only controls JS channel and workflow discovery. It does not change `main`, `assets`, build paths, package roots, or generated declaration placement.
+`app_root` only controls JS channel, stream, and workflow discovery. It does not change `main`, `assets`, build paths, package roots, or generated declaration placement.
 
 ## Variables And Secrets
 

@@ -57,16 +57,16 @@ export default {
 | ------------------ | ----------------------------------------------- | -------------------------------------------------------------------------------- |
 | `tako.sh`          | Isomorphic runtime + authoring helpers          | `tako`, `imageUrl`, channels, workflows, storage URL option types, runtime types |
 | `tako.sh/server`   | Server-only runtime re-export                   | `tako`, `TakoRuntime`                                                            |
-| `tako.sh/client`   | Browser-safe channel client                     | `Channel`                                                                        |
+| `tako.sh/client`   | Browser-safe channel client                     | `Channel`, `configureChannels`                                                   |
 | `tako.sh/react`    | React hook for channels                         | `useChannel`                                                                     |
 | `tako.sh/vite`     | Vite plugin for SSR builds                      | `tako()` plugin function                                                         |
 | `tako.sh/nextjs`   | Next.js standalone adapter + wrapper            | `withTako()`, `createNextjsAdapter()`, `createNextjsFetchHandler()`              |
 | `tako.sh/runtime`  | Browser-safe runtime internals                  | `loadSecrets`, `createLogger`, `Logger`                                          |
-| `tako.sh/internal` | Server-only plumbing for framework-adapter boot | `handleTakoEndpoint`, `initServerRuntime`, channel/workflow define helpers       |
+| `tako.sh/internal` | Server-only plumbing for framework-adapter boot | `handleTakoEndpoint`, `initServerRuntime`, channel/workflow helpers              |
 
 ## Runtime state: `tako.sh` + `tako.d.ts`
 
-`tako generate` emits a project-local `tako.d.ts` that augments `tako.sh` with typed environment names, typed `tako.secrets` keys, typed `tako.storages` names, channel metadata inferred from channel exports, and runtime env globals. It keeps an existing declaration in `app/`, `src/`, or the project root; otherwise it uses an existing legacy `tako.gen.ts` location, then `app/`, then `src/`, then the project root. `tako gen` and `tako g` are aliases. When `<app_root>/channels/` or `<app_root>/workflows/` already exists, it also scaffolds empty definition dirs/files so they default-export `defineChannel({ name: "<file-stem>" })` / `defineWorkflow(...)` stubs. Generated channel stubs use the file stem as the initial name, but `tako generate` does not rewrite existing explicit channel names. Generated `TakoChannels` entries use the declared channel name as the key and `import("tako.sh").InferChannel<typeof import("./channels/<file>").default>` for params, messages, and transport. App code imports `tako` from `tako.sh` for project runtime state:
+`tako generate` emits a project-local `tako.d.ts` that augments `tako.sh` with typed environment names, typed `tako.secrets` keys, typed `tako.storages` names, channel metadata, workflow metadata, and runtime env globals. It keeps an existing declaration in `app/`, `src/`, or the project root; otherwise it uses an existing legacy `tako.gen.ts` location, then `app/`, then `src/`, then the project root. `tako gen` and `tako g` are aliases. When `<app_root>/channels/` or `<app_root>/workflows/` already exists, it also scaffolds empty definition dirs/files so they default-export `defineChannel("<file-stem>")` or `defineWorkflow(...)` stubs. Generated channel stubs use the file stem as the initial name, but `tako generate` does not rewrite existing explicit names. Generated `TakoChannels` entries use the declared name as the key and `import("tako.sh").InferChannel<typeof import("./channels/<file>").default>` for params, messages, and transport metadata. App code imports `tako` from `tako.sh` for project runtime state:
 
 ```typescript
 import { tako } from "tako.sh";
@@ -109,7 +109,7 @@ export default function fetch(request: Request) {
 - Resists bulk serialization: `toString()`, `toJSON()` return `"[REDACTED]"`
 - Is typed — the `TakoSecrets` interface augmentation in `tako.d.ts` lists every key present in `.tako/secrets.json`
 
-The generated declaration file is type-only and is not imported by app code. In the browser, use `tako.sh/client` or `tako.sh/react`.
+The generated declaration file is type-only and is not imported by app code. In the browser, use `tako.sh/client` for channels, or `tako.sh/react` for channel hooks.
 
 ## Images
 
@@ -231,11 +231,11 @@ interface TakoStatus {
 
 ## Channels
 
-Durable pub-sub streams with SSE and WebSocket transport.
+Durable pub-sub routes with SSE and WebSocket transport, plus a bounded replay window. Production stores replay by deployed app id (`{name}/{env}`); local dev keeps replay in memory for the current daemon process.
 
 ### Defining channels (file-based)
 
-Drop one file per channel in `<app_root>/channels/*.ts` that default-exports `defineChannel({ name: "<name>", ... }).$messageTypes<M>()`. The `name` property is the wire channel name; generated files conventionally use the file stem, but discovery trusts the explicit name and rejects duplicate declared names. Server code imports the file directly to publish.
+Drop one file per channel in `<app_root>/channels/*.ts` that default-exports `defineChannel("<name>", ...).$messageTypes<M>()`. The first argument is the wire channel name; generated files conventionally use the file stem, but discovery trusts the explicit name and rejects duplicate declared names. Server code imports the file directly to publish.
 
 ```typescript
 // <app_root>/channels/chat.ts
@@ -246,8 +246,7 @@ interface ChatMessages {
   typing: { userId: string };
 }
 
-export default defineChannel({
-  name: "chat",
+export default defineChannel("chat", {
   paramsSchema: (t) => t.Object({ roomId: t.String({ minLength: 1 }) }),
   auth: {
     headerName: "authorization",
@@ -272,12 +271,13 @@ export default defineChannel({
 }).$messageTypes<ChatMessages>();
 ```
 
-- The explicit `name` property is the channel name. `defineChannel({ name: "chat" })` maps to `/_tako/channels/chat`; generated files conventionally use the file stem as the initial name.
+- The first argument is the channel name. `defineChannel("chat")` maps to `/_tako/channels/chat`; generated files conventionally use the file stem as the initial name.
 - `paramsSchema` serializes to JSON Schema; tako-server validates query params before app auth.
 - `.$messageTypes<M>()` is a type-level narrower that declares the message map — runtime no-op. Omit for channels with no typed messages.
 - `auth` is optional. Omit or set `false` for public channels.
 - `handler` presence decides transport: present → WebSocket, absent → SSE (broadcast-only). SSE channels reject client POST publishes.
-- Browser clients reconnect until explicitly closed. Network loss, laptop sleep, server restarts, and clean stream rotation are transient; the SDK retries with bounded backoff, wakes early on the browser `online` event, and resumes from the last received message id while it remains inside the replay window.
+- Every publish is stored before delivery. `replayWindowMs` defaults to 10 minutes and can be overridden per channel.
+- Browser clients reconnect until explicitly closed. Network loss, laptop sleep, server restarts, and clean connection rotation are transient; the SDK retries with bounded backoff, wakes early on the browser `online` event, and resumes from the last received message id while it remains inside the replay window.
 
 Auth return values: `false` deny · `true` allow anonymously · `{ subject }` allow with identity.
 

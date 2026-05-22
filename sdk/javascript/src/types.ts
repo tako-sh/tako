@@ -64,7 +64,7 @@ export type ChannelAuthResult = boolean | ChannelGrant | Promise<boolean | Chann
 
 /** Lifecycle knobs controlling replay, idle eviction, and keepalives per channel. */
 export interface ChannelLifecycleConfig {
-  /** @defaultValue 86_400_000 (24 h) */
+  /** @defaultValue 600_000 (10 min) */
   replayWindowMs?: number;
   /** @defaultValue 0 (no inactivity eviction) */
   inactivityTtlMs?: number;

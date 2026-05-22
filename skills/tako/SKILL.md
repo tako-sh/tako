@@ -122,12 +122,12 @@ Generates:
 
 - **Typed secrets** — reads secret names from `.tako/secrets.json` and emits a `TakoSecrets` augmentation in `tako.d.ts` for `tako.secrets` from `tako.sh`.
 - **Typed storages** — reads storage binding names from `tako.toml` and emits a `TakoStorages` augmentation for `tako.storages`.
-- **Runtime types** — augments `tako.sh` with environment names, channel metadata inferred from channel exports, and runtime env globals. App runtime values come from `tako.sh`.
-- **JS definition stubs** — when `<app_root>/channels/` or `<app_root>/workflows/` already exists, scaffolds `demo.ts` in empty dirs and adds missing default `defineChannel({ name: "<file-stem>" })` / `defineWorkflow(...)` exports to files that do not have a default export yet. Existing explicit channel names are not rewritten.
+- **Runtime types** — augments `tako.sh` with environment names, channel metadata, workflow metadata, and runtime env globals. App runtime values come from `tako.sh`.
+- **JS definition stubs** — when `<app_root>/channels/` or `<app_root>/workflows/` already exists, scaffolds `demo.ts` in empty dirs and adds missing default `defineChannel("<file-stem>")` or `defineWorkflow(...)` exports to files that do not have a default export yet. Existing explicit channel names are not rewritten.
 
 Workflow and channel payload types flow from their module types directly (no generated file needed for `.enqueue(payload)` or `.publish({type, data})`).
 
-Re-run after adding/removing secrets, storages, or workflow files. `tako dev` and `tako deploy` run it automatically.
+Re-run after adding/removing secrets, storages, channel files, or workflow files. `tako dev` and `tako deploy` run it automatically.
 
 ## Deployment
 

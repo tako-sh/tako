@@ -1,4 +1,4 @@
-//! Channel support for `tako dev`, backed by `tako-channels` (SQLite).
+//! Channel support for `tako dev`, backed by in-memory `tako-channels` stores.
 //!
 //! No auth in dev mode — all operations are allowed. Production uses
 //! `tako-server/src/proxy/service.rs` with per-request authorization.
@@ -6,8 +6,8 @@
 use pingora_core::Result;
 use pingora_http::ResponseHeader;
 use pingora_proxy::Session;
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tako_channels::{
     ChannelAuthResponse, ChannelPublishPayload, ChannelStore, parse_channel_route,
@@ -21,7 +21,7 @@ fn dev_auth_response() -> ChannelAuthResponse {
         ok: true,
         subject: None,
         transport: None,
-        replay_window_ms: 24 * 60 * 60 * 1000,
+        replay_window_ms: 10 * 60 * 1000,
         inactivity_ttl_ms: 0,
         keepalive_interval_ms: 25_000,
         max_connection_lifetime_ms: 2 * 60 * 60 * 1000,
@@ -30,20 +30,35 @@ fn dev_auth_response() -> ChannelAuthResponse {
 
 #[derive(Clone)]
 pub struct DevChannelStore {
-    store: Arc<ChannelStore>,
+    stores: Arc<Mutex<HashMap<String, Arc<ChannelStore>>>>,
 }
 
 impl DevChannelStore {
-    pub fn new(db_path: PathBuf) -> Self {
-        let store = ChannelStore::open(&db_path).unwrap_or_else(|e| {
-            panic!(
-                "failed to open dev channel store at {}: {e}",
-                db_path.display()
-            )
-        });
+    pub fn new() -> Self {
         Self {
-            store: Arc::new(store),
+            stores: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    fn store_for_app(&self, app_id: &str) -> Arc<ChannelStore> {
+        let app_id = app_id.trim();
+        let app_id = if app_id.is_empty() { "app" } else { app_id };
+        let key = tako_core::deployment_app_id_filename(app_id);
+
+        if let Some(store) = self.stores.lock().unwrap().get(&key) {
+            return store.clone();
+        }
+
+        let mut stores = self.stores.lock().unwrap();
+        if let Some(store) = stores.get(&key) {
+            return store.clone();
+        }
+
+        let store = Arc::new(ChannelStore::open_in_memory().unwrap_or_else(|e| {
+            panic!("failed to open in-memory dev channel store for {app_id}: {e}")
+        }));
+        stores.insert(key, store.clone());
+        store
     }
 
     /// Append a message to `channel` and return the stored record. Used
@@ -51,11 +66,13 @@ impl DevChannelStore {
     /// channel `.publish()` from app/workflow code).
     pub fn publish(
         &self,
+        app_id: &str,
         channel: &str,
         payload: &ChannelPublishPayload,
     ) -> Result<tako_channels::ChannelMessage, tako_channels::ChannelError> {
-        self.store.sync_channel(channel, &dev_auth_response())?;
-        self.store.append(channel, payload)
+        let store = self.store_for_app(app_id);
+        store.sync_channel(channel, &dev_auth_response())?;
+        store.append(channel, payload)
     }
 }
 
@@ -64,6 +81,7 @@ impl DevChannelStore {
 pub async fn try_handle(
     session: &mut Session,
     dev_store: &DevChannelStore,
+    app_id: &str,
     path: &str,
     method: &str,
 ) -> Result<bool> {
@@ -76,15 +94,16 @@ pub async fn try_handle(
     if method != "GET" {
         return write_json(session, 405, r#"{"error":"Method not allowed"}"#).await;
     }
-    serve_sse(session, dev_store, &route.channel).await
+    serve_sse(session, dev_store, app_id, &route.channel).await
 }
 
 async fn serve_sse(
     session: &mut Session,
     dev_store: &DevChannelStore,
+    app_id: &str,
     channel: &str,
 ) -> Result<bool> {
-    let store = &dev_store.store;
+    let store = dev_store.store_for_app(app_id);
     let auth = dev_auth_response();
 
     // Sync channel metadata (creates the channel if needed, prunes stale data).
@@ -214,10 +233,8 @@ mod tests {
 
     #[test]
     fn publish_and_read_via_store() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let db_path = temp.path().join("channels.sqlite3");
-        let dev_store = DevChannelStore::new(db_path);
-        let store = &dev_store.store;
+        let dev_store = DevChannelStore::new();
+        let store = dev_store.store_for_app("demo");
 
         // Sync the channel first.
         store.sync_channel("test", &dev_auth_response()).unwrap();
@@ -242,10 +259,8 @@ mod tests {
 
     #[test]
     fn publish_increments_ids() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let db_path = temp.path().join("channels.sqlite3");
-        let dev_store = DevChannelStore::new(db_path);
-        let store = &dev_store.store;
+        let dev_store = DevChannelStore::new();
+        let store = dev_store.store_for_app("demo");
 
         store.sync_channel("ch", &dev_auth_response()).unwrap();
 
@@ -256,5 +271,36 @@ mod tests {
         assert_eq!(store.append("ch", &p).unwrap().id, "1");
         assert_eq!(store.append("ch", &p).unwrap().id, "2");
         assert_eq!(store.append("ch", &p).unwrap().id, "3");
+    }
+
+    #[test]
+    fn dev_channel_store_keeps_apps_in_separate_dbs() {
+        let dev_store = DevChannelStore::new();
+        let payload = ChannelPublishPayload {
+            r#type: "message".to_string(),
+            data: serde_json::json!({"text": "hello"}),
+        };
+
+        let first = dev_store.publish("app/one", "chat", &payload).unwrap();
+        let second = dev_store.publish("app/two", "chat", &payload).unwrap();
+
+        assert_eq!(first.id, "1");
+        assert_eq!(second.id, "1");
+        assert_eq!(
+            dev_store
+                .store_for_app("app/one")
+                .read_after("chat", None, 100)
+                .unwrap()
+                .len(),
+            1,
+        );
+        assert_eq!(
+            dev_store
+                .store_for_app("app/two")
+                .read_after("chat", None, 100)
+                .unwrap()
+                .len(),
+            1,
+        );
     }
 }

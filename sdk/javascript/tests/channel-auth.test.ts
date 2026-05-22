@@ -11,8 +11,7 @@ describe("ChannelRegistry.register + resolve", () => {
     const reg = newRegistry();
     reg.register(
       "chat",
-      defineChannel({
-        name: "chat",
+      defineChannel("chat", {
         auth: { verify: async () => true },
       }),
     );
@@ -26,8 +25,7 @@ describe("ChannelRegistry.register + resolve", () => {
     const reg = newRegistry();
     reg.register(
       "chat",
-      defineChannel({
-        name: "chat",
+      defineChannel("chat", {
         auth: { verify: async () => true },
       }),
     );
@@ -36,8 +34,8 @@ describe("ChannelRegistry.register + resolve", () => {
 
   test("rejects duplicate channel names", () => {
     const reg = newRegistry();
-    reg.register("status", defineChannel({ name: "status" }));
-    expect(() => reg.register("status", defineChannel({ name: "status" }))).toThrow(/duplicate/);
+    reg.register("status", defineChannel("status"));
+    expect(() => reg.register("status", defineChannel("status"))).toThrow(/duplicate/);
   });
 });
 
@@ -54,7 +52,7 @@ describe("ChannelRegistry.authorize", () => {
 
   test("allows public channels without verify", async () => {
     const reg = newRegistry();
-    reg.register("status", defineChannel({ name: "status" }));
+    reg.register("status", defineChannel("status"));
     const resp = await reg.authorize({
       channel: "status",
       operation: "subscribe",
@@ -67,8 +65,7 @@ describe("ChannelRegistry.authorize", () => {
     const reg = newRegistry();
     reg.register(
       "chat",
-      defineChannel({
-        name: "chat",
+      defineChannel("chat", {
         auth: { verify: async () => true },
         handler: { msg: async (data: { text: string }) => data },
       }),
@@ -87,8 +84,7 @@ describe("ChannelRegistry.authorize", () => {
     let seen: unknown = null;
     reg.register(
       "chat",
-      defineChannel({
-        name: "chat",
+      defineChannel("chat", {
         auth: {
           verify: async (input) => {
             seen = { params: input.params, operation: input.operation, header: input.header };
@@ -115,8 +111,7 @@ describe("ChannelRegistry.authorize", () => {
     const reg = newRegistry();
     reg.register(
       "status",
-      defineChannel({
-        name: "status",
+      defineChannel("status", {
         auth: { verify: async () => true },
       }),
     );
@@ -132,8 +127,7 @@ describe("ChannelRegistry.authorize", () => {
     const reg = newRegistry();
     reg.register(
       "status",
-      defineChannel({
-        name: "status",
+      defineChannel("status", {
         auth: { verify: async () => ({ subject: "user-42" }) },
       }),
     );
@@ -150,8 +144,7 @@ describe("ChannelRegistry.authorize", () => {
     const reg = newRegistry();
     reg.register(
       "private",
-      defineChannel({
-        name: "private",
+      defineChannel("private", {
         auth: { verify: async () => false },
       }),
     );

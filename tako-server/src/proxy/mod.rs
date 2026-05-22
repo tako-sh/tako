@@ -65,9 +65,9 @@ pub struct TakoProxy {
     response_cache: Option<ResponseCacheRuntime>,
     /// Reused per-app static file server state for hot path requests
     static_servers: SyncRwLock<HashMap<String, Arc<AppStaticServer>>>,
-    /// Reused per-app channel stores. Keyed by app name; opened lazily
-    /// the first time an app's channel route is hit and dropped when the
-    /// app is unregistered.
+    /// Reused per-app channel stores. Keyed by deployed app id; opened
+    /// lazily the first time an app's channel route is hit and dropped
+    /// when the app is unregistered.
     channel_stores: SyncRwLock<HashMap<String, Arc<ChannelStore>>>,
     /// Per-IP concurrent request limiter (DDoS mitigation)
     ip_tracker: IpRequestTracker,

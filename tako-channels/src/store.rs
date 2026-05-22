@@ -5,10 +5,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::{ChannelAuthResponse, ChannelError, ChannelMessage, ChannelPublishPayload};
 
 const CHANNELS_DB_FILENAME: &str = "channels.sqlite3";
+const INCREMENTAL_VACUUM_PAGES: i64 = 128;
+const WAL_TRUNCATE_DELETED_ROWS_THRESHOLD: usize = 1024;
 
 /// Build the SQLite DB path from a data directory and app name.
-/// Callers provide their own path resolution: production uses
-/// `app_runtime_data_paths`, dev uses a local `.tako/dev/` layout.
+/// Callers provide their own app/env path resolution: production uses
+/// env-scoped `app_runtime_data_paths`. Local dev uses in-memory stores
+/// and does not call this helper.
 pub fn channels_db_path(data_dir: &std::path::Path) -> PathBuf {
     data_dir.join(CHANNELS_DB_FILENAME)
 }
@@ -20,7 +23,7 @@ fn now_unix_ms() -> i64 {
         .as_millis() as i64
 }
 
-/// Per-app SQLite-backed channel store.
+/// Per app/environment SQLite-backed channel store.
 ///
 /// The connection is opened once and reused; every operation locks a
 /// mutex and uses the cached connection. Callers should hold a single
@@ -43,6 +46,17 @@ impl ChannelStore {
         }
         let conn =
             rusqlite::Connection::open(path).map_err(|e| ChannelError::Storage(e.to_string()))?;
+        init_connection(&conn)?;
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
+    }
+
+    /// Open an in-memory channel DB. Used by local dev where replay only
+    /// needs to survive reconnects within the current daemon process.
+    pub fn open_in_memory() -> Result<Self, ChannelError> {
+        let conn = rusqlite::Connection::open_in_memory()
+            .map_err(|e| ChannelError::Storage(e.to_string()))?;
         init_connection(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
@@ -175,33 +189,42 @@ impl ChannelStore {
         )
         .map_err(|e| ChannelError::Storage(e.to_string()))?;
 
+        let mut deleted_rows = 0usize;
+
         if auth.replay_window_ms > 0 {
             let cutoff = now - auth.replay_window_ms as i64;
-            conn.execute(
-                "DELETE FROM channel_messages WHERE channel = ?1 AND created_at_unix_ms < ?2",
-                rusqlite::params![channel, cutoff],
-            )
-            .map_err(|e| ChannelError::Storage(e.to_string()))?;
+            deleted_rows += conn
+                .execute(
+                    "DELETE FROM channel_messages WHERE channel = ?1 AND created_at_unix_ms < ?2",
+                    rusqlite::params![channel, cutoff],
+                )
+                .map_err(|e| ChannelError::Storage(e.to_string()))?;
         }
 
-        conn.execute(
-            "DELETE FROM channel_messages
+        deleted_rows += conn
+            .execute(
+                "DELETE FROM channel_messages
              WHERE channel IN (
                 SELECT channel
                 FROM channel_metadata
                 WHERE inactivity_ttl_ms > 0
                   AND last_activity_unix_ms < (?1 - inactivity_ttl_ms)
              )",
-            rusqlite::params![now],
-        )
-        .map_err(|e| ChannelError::Storage(e.to_string()))?;
-        conn.execute(
-            "DELETE FROM channel_metadata
+                rusqlite::params![now],
+            )
+            .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        deleted_rows += conn
+            .execute(
+                "DELETE FROM channel_metadata
              WHERE inactivity_ttl_ms > 0
                AND last_activity_unix_ms < (?1 - inactivity_ttl_ms)",
-            rusqlite::params![now],
-        )
-        .map_err(|e| ChannelError::Storage(e.to_string()))?;
+                rusqlite::params![now],
+            )
+            .map_err(|e| ChannelError::Storage(e.to_string()))?;
+
+        if deleted_rows > 0 {
+            run_cleanup_maintenance(&conn, deleted_rows);
+        }
 
         Ok(())
     }
@@ -219,7 +242,8 @@ fn message_id(
 
 fn init_connection(conn: &rusqlite::Connection) -> Result<(), ChannelError> {
     conn.execute_batch(
-        "PRAGMA journal_mode = WAL;
+        "PRAGMA auto_vacuum = INCREMENTAL;
+         PRAGMA journal_mode = WAL;
          PRAGMA synchronous = NORMAL;
          PRAGMA busy_timeout = 5000;
          PRAGMA foreign_keys = ON;
@@ -286,4 +310,13 @@ fn ensure_channel_metadata_schema(conn: &rusqlite::Connection) -> Result<(), Cha
     }
 
     Ok(())
+}
+
+fn run_cleanup_maintenance(conn: &rusqlite::Connection, deleted_rows: usize) {
+    let vacuum_sql = format!("PRAGMA incremental_vacuum({INCREMENTAL_VACUUM_PAGES});");
+    let _ = conn.execute_batch(&vacuum_sql);
+
+    if deleted_rows >= WAL_TRUNCATE_DELETED_ROWS_THRESHOLD {
+        let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+    }
 }

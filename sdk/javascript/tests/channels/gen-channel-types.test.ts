@@ -16,8 +16,7 @@ describe("gen-channel-types", () => {
       join(channels, "chat.ts"),
       `
         import { defineChannel } from ${JSON.stringify(sdk)};
-        export default defineChannel({
-  name: "chat",
+        export default defineChannel("chat", {
           paramsSchema: (t) => t.Object({
             roomId: t.String(),
             limit: t.Optional(t.Integer()),
@@ -32,7 +31,7 @@ describe("gen-channel-types", () => {
       join(channels, "status.ts"),
       `
         import { defineChannel } from ${JSON.stringify(sdk)};
-        export default defineChannel({ name: "status" });
+        export default defineChannel("status");
       `,
     );
 
@@ -63,7 +62,7 @@ describe("gen-channel-types", () => {
       join(channels, "mission-log.ts"),
       `
         import { defineChannel } from ${JSON.stringify(sdk)};
-        export default defineChannel({ name: "expedition-feed" });
+        export default defineChannel("expedition-feed");
       `,
     );
 

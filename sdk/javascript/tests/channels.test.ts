@@ -20,8 +20,7 @@ describe("channels", () => {
     const reg = new ChannelRegistry();
     reg.register(
       "chat",
-      defineChannel({
-        name: "chat",
+      defineChannel("chat", {
         auth: {
           verify(input) {
             expect(input.channel).toBe("chat");
@@ -45,8 +44,7 @@ describe("channels", () => {
     const reg = new ChannelRegistry();
     reg.register(
       "chat",
-      defineChannel({
-        name: "chat",
+      defineChannel("chat", {
         auth: { verify: async () => ({ subject: "user-123" }) },
       }),
     );
@@ -59,7 +57,7 @@ describe("channels", () => {
 
     expect(result).toEqual({
       ok: true,
-      replayWindowMs: 86_400_000,
+      replayWindowMs: 600_000,
       inactivityTtlMs: 0,
       keepaliveIntervalMs: 25_000,
       maxConnectionLifetimeMs: 7_200_000,
@@ -253,8 +251,7 @@ describe("channels", () => {
     const reg = new ChannelRegistry();
     reg.register(
       "chat",
-      defineChannel({
-        name: "chat",
+      defineChannel("chat", {
         auth: { verify: async () => ({ subject: "user-123" }) },
         handler: { msg: async (d) => d },
         replayWindowMs: 86_400_000,

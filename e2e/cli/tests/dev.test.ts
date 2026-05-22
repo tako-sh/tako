@@ -231,7 +231,7 @@ describe.skipIf(SKIP)("tako dev fixtures", () => {
     }
   }, 90_000);
 
-  test("channels-workflows: streams direct and workflow publishes over SSE", async () => {
+  test("channels-workflows: direct and workflow publishes over SSE", async () => {
     const { tempDir, pd, lf } = prepareFixture("channels-workflows");
     const proc = startDev(pd, lf);
     const abort = new AbortController();

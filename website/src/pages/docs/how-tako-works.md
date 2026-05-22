@@ -8,7 +8,7 @@ description: "Learn how Tako handles local development, rolling deploys, TLS, he
 
 # How Tako Works
 
-Tako is a local CLI paired with a self-hosted server runtime. The CLI owns project config, local development, builds, deploy orchestration, secrets, generated files, and server inventory. `tako-server` runs on your hosts and owns routing, TLS, process supervision, workflow workers, channels, image optimization, health checks, scale-to-zero, and rolling updates.
+Tako is a local CLI paired with a self-hosted server runtime. The CLI owns project config, local development, builds, deploy orchestration, secrets, generated files, and server inventory. `tako-server` runs on your hosts and owns routing, TLS, process supervision, workflow workers, durable channels, image optimization, health checks, scale-to-zero, and rolling updates.
 
 The protocol is still v0. Runtime behavior lives in runtime plugins; presets stay small and only describe framework defaults such as entrypoints, asset roots, and dev commands.
 
@@ -96,7 +96,7 @@ servers = ["prod-a"]
 
 The proxy picks the most specific matching host and path. Static files are served from the deployed `public/` directory when possible; other requests go to an app instance. Unknown hosts return `404`.
 
-The `/_tako/*` path space is reserved after a route match. Tako uses it for channels, public image optimization, and signed local storage routes.
+The `/_tako/*` path space is reserved after a route match. Tako uses it for durable channels, public image optimization, and signed local storage routes.
 
 ## TLS
 
@@ -165,7 +165,7 @@ Workflows are durable runs owned by `tako-server`. SDKs talk to a shared interna
 
 Workflow workers can be always-on or scale-to-zero. With the default `workers = 0`, the server starts a worker on enqueue or cron tick, lets it process due work, and stops it after an idle window.
 
-Channels are public app routes under `/_tako/channels/<name>`. Definitions live in app code; durable channel storage and server-side publish go through Tako's runtime.
+Durable channels are public app routes under `/_tako/channels/<name>`. Definitions live in app code; every publish is stored before delivery. Production uses a bounded SQLite replay log scoped to the deployed app id (`{name}/{env}`); local dev keeps one in-memory replay store per registered app. WS/SSE clients use the log to resume across short disconnects. The default replay window is 10 minutes, and apps keep permanent history in their own database when they need one.
 
 ## Local Development
 

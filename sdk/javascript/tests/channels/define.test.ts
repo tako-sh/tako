@@ -7,8 +7,25 @@ import {
 } from "../../src/channels/define";
 
 describe("defineChannel", () => {
+  test("accepts name first", () => {
+    const exp = defineChannel("status");
+    expect(exp.definition.type).toBe(CHANNEL_SYMBOL);
+    expect(exp.definition.channel).toBe("status");
+    expect(exp.definition.auth).toBe(false);
+  });
+
+  test("accepts name first with params and handlers", () => {
+    const exp = defineChannel("chat", {
+      paramsSchema: (t) => t.Object({ roomId: t.String() }),
+      handler: { "chat.send": async (data) => data },
+    });
+    expect(exp.definition.channel).toBe("chat");
+    expect(exp.definition.transport).toBe("ws");
+    expect(exp({ roomId: "r1" }).name).toBe("chat?roomId=r1");
+  });
+
   test("public channel without auth", () => {
-    const exp = defineChannel({ name: "status" });
+    const exp = defineChannel("status");
     expect(exp.definition.type).toBe(CHANNEL_SYMBOL);
     expect(exp.definition.channel).toBe("status");
     expect(exp.definition.auth).toBe(false);
@@ -17,8 +34,7 @@ describe("defineChannel", () => {
   });
 
   test("serializes paramsSchema to JSON Schema", () => {
-    const exp = defineChannel({
-      name: "chat",
+    const exp = defineChannel("chat", {
       paramsSchema: (t) => t.Object({ roomId: t.String({ minLength: 1 }) }),
     });
     expect(exp.definition.paramsSchema).toMatchObject({
@@ -29,16 +45,14 @@ describe("defineChannel", () => {
   });
 
   test("declarative auth defaults headerName to authorization", () => {
-    const exp = defineChannel({
-      name: "private",
+    const exp = defineChannel("private", {
       auth: { verify: () => true },
     });
     expect(exp.definition.auth).toMatchObject({ headerName: "authorization" });
   });
 
   test("auth headerName false disables header", () => {
-    const exp = defineChannel({
-      name: "private",
+    const exp = defineChannel("private", {
       auth: { headerName: false, cookieName: "session", verify: () => true },
     });
     expect(exp.definition.auth).toMatchObject({
@@ -48,16 +62,14 @@ describe("defineChannel", () => {
   });
 
   test("handler presence implies ws transport", () => {
-    const exp = defineChannel({
-      name: "chat",
+    const exp = defineChannel("chat", {
       handler: { "chat.send": async (data) => data },
     }).$messageTypes<{ "chat.send": { text: string } }>();
     expect(exp.definition.transport).toBe("ws");
   });
 
   test("passes through lifecycle config", () => {
-    const exp = defineChannel({
-      name: "status",
+    const exp = defineChannel("status", {
       replayWindowMs: 1000,
       inactivityTtlMs: 2000,
       keepaliveIntervalMs: 3000,
@@ -70,15 +82,14 @@ describe("defineChannel", () => {
   });
 
   test("export is a typed handle when params absent", () => {
-    const exp = defineChannel({ name: "status" }).$messageTypes<{ ping: { at: number } }>();
+    const exp = defineChannel("status").$messageTypes<{ ping: { at: number } }>();
     expect(exp.name).toBe("status");
     expect(typeof exp.publish).toBe("function");
     expect(isChannelExport(exp)).toBe(true);
   });
 
   test("export is callable when params present", () => {
-    const exp = defineChannel({
-      name: "chat",
+    const exp = defineChannel("chat", {
       paramsSchema: (t) => t.Object({ roomId: t.String() }),
     });
     const handle = exp({ roomId: "r1" });
@@ -88,7 +99,7 @@ describe("defineChannel", () => {
 
 describe("isChannelExport", () => {
   test("true for output of defineChannel", () => {
-    expect(isChannelExport(defineChannel({ name: "status" }))).toBe(true);
+    expect(isChannelExport(defineChannel("status"))).toBe(true);
   });
 
   test("false for plain objects and bare definitions", () => {
@@ -101,7 +112,7 @@ describe("isChannelExport", () => {
 
 describe("isChannelDefinition", () => {
   test("true for the inner definition of a defineChannel result", () => {
-    expect(isChannelDefinition(defineChannel({ name: "status" }).definition)).toBe(true);
+    expect(isChannelDefinition(defineChannel("status").definition)).toBe(true);
   });
 
   test("false for plain objects", () => {

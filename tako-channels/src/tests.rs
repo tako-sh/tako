@@ -171,6 +171,20 @@ fn channel_store_appends_and_reads_messages() {
 }
 
 #[test]
+fn channel_store_enables_incremental_auto_vacuum_for_new_dbs() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let store = ChannelStore::open(&temp.path().join("channels.sqlite3")).unwrap();
+
+    let mode: i64 = store
+        .conn
+        .lock()
+        .query_row("PRAGMA auto_vacuum", [], |row| row.get(0))
+        .unwrap();
+
+    assert_eq!(mode, 2);
+}
+
+#[test]
 fn channel_store_defaults_missing_cursor_to_latest_message() {
     let temp = tempfile::TempDir::new().unwrap();
     let store = ChannelStore::open(&temp.path().join("channels.sqlite3")).unwrap();

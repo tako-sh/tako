@@ -80,6 +80,6 @@ Temporal Cloud bills per Action — roughly every workflow start, signal, activi
 
 Temporal is a durable-execution platform, and the cluster, the seven SDKs, and the Cloud product exist because Netflix-scale workloads actually need them. If that's your problem, go use Temporal — it will serve you well for a decade.
 
-Tako is building a different thing: [the platform layer between your code and the internet](/blog/durable-channels-built-in) for teams who want backend primitives — deploy, TLS, secrets, [channels](/blog/durable-channels-built-in), workflows — without standing up a separate cluster for each one. One `tako-server` on one box. One [`tako.toml`](/docs/tako-toml). Durable is just a keyword.
+Tako is building a different thing: [the platform layer between your code and the internet](/blog/durable-channels-built-in) for teams who want backend primitives — deploy, TLS, secrets, durable channels, workflows — without standing up a separate cluster for each one. One `tako-server` on one box. One [`tako.toml`](/docs/tako-toml).
 
 If you've been running Temporal in production for years, we're not here to move you. If you've been staring at the self-host docs thinking "I just need step retries for this side-project," [give Tako a try](/docs/cli).

@@ -97,7 +97,7 @@ With an SDK, we can add runtime capabilities that are type-safe, integrated, and
 - **Background jobs** — define a job handler in your code, trigger it from any request, let Tako manage the queue and retries server-side. No external job queue to run.
 - **Durable workflows** — long-running, resumable workflows where Tako persists state across steps. Your code defines the steps, the SDK handles checkpointing and recovery.
 - **Scheduled tasks** — cron-like tasks declared in code, executed by the server. Type-safe, version-deployed, no separate cron service.
-- **Durable channels** — persistent WebSocket and SSE connections managed by the proxy, surviving deploys and instance restarts. The SDK handles connection lifecycle, reconnection, and message routing.
+- **Durable channels** — WebSocket/SSE routes for connected browsers, plus bounded replay for reconnects. JavaScript apps keep the file-based shape: `channels/` for durable realtime. The SDK handles connection lifecycle, auth, and message typing.
 
 Each of these features needs both sides of the equation: server-side infrastructure _and_ application-level integration. A deploy tool without an SDK would need you to bring your own job queue, your own workflow engine, your own scheduler. The SDK is what lets Tako offer these as built-in primitives — type-safe, zero-config, and deployed alongside your app.
 

@@ -82,6 +82,6 @@ We kept the API to the handful of things that actually matter: [`ctx.run`, `ctx.
 
 Inngest and Trigger.dev are workflow platforms with big roadmaps — AI agents, realtime, fine-grained observability, managed cloud. If your whole job is background work at scale, a dedicated platform is a reasonable bet.
 
-Tako is building the other direction: [the platform layer between your code and the internet](/blog/durable-channels-built-in), with workflows as one feature among [channels](/blog/durable-channels-built-in), [secrets](/blog/secrets-without-env-files), [local dev](/docs/development), deploy, proxy, and TLS. All of it runs from one `tako-server` on one box, with a single config file. No queue vendor, no dashboard login, no per-run meter — just a `ctx` object in your workflow.
+Tako is building the other direction: [the platform layer between your code and the internet](/blog/durable-channels-built-in), with workflows as one feature among durable channels, [secrets](/blog/secrets-without-env-files), [local dev](/docs/development), deploy, proxy, and TLS. All of it runs from one `tako-server` on one box, with a single config file. No queue vendor, no dashboard login, no per-run meter — just a `ctx` object in your workflow.
 
 If you already love Inngest or Trigger.dev, keep loving them. If "one more vendor for this" is the thing that's been pushing you toward a different approach, [give Tako workflows a try](/docs/cli).

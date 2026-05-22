@@ -58,7 +58,7 @@ Guidelines:
 
 **Tako's vision (weave in where relevant):**
 
-Tako isn't just a deploy tool — it's becoming the platform layer between your code and the internet. Today it handles deployment, routing, TLS, secrets, and local dev. The roadmap includes backend primitives like WebSocket/SSE channels, queues, workflows, and image optimization — things most apps bolt on as separate services. Most competitors (Kamal, Dokku, Coolify) stop at "get your code running." Tako wants to provide the infrastructure your app needs so you don't have to.
+Tako isn't just a deploy tool — it's becoming the platform layer between your code and the internet. Today it handles deployment, routing, TLS, secrets, local dev, durable WebSocket/SSE channels, workflows, and image optimization — things most apps bolt on as separate services. In JavaScript apps, channel definitions live in `<app_root>/channels/`; every channel publish is stored in a bounded replay log so reconnecting clients can catch up without a separate realtime vendor. Most competitors (Kamal, Dokku, Coolify) stop at "get your code running." Tako wants to provide the infrastructure your app needs so you don't have to.
 
 Combined with multi-server environments and Cloudflare Argo smart routing, Tako lets you build your own edge network on cheap VPS boxes worldwide — competitive with Fly.io, but on your own hardware.
 

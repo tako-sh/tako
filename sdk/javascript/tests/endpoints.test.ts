@@ -243,8 +243,7 @@ describe("handleTakoEndpoint", () => {
     test("authorizes a matching channel definition", async () => {
       channels.register(
         "chat",
-        defineChannel({
-          name: "chat",
+        defineChannel("chat", {
           auth: {
             verify(input) {
               expect(input.header).toEqual({ scheme: "Bearer", value: "test" });
@@ -279,7 +278,7 @@ describe("handleTakoEndpoint", () => {
       expect(response!.status).toBe(200);
       expect(await response!.json()).toEqual({
         ok: true,
-        replayWindowMs: 86_400_000,
+        replayWindowMs: 600_000,
         inactivityTtlMs: 0,
         keepaliveIntervalMs: 25_000,
         maxConnectionLifetimeMs: 7_200_000,
@@ -290,8 +289,7 @@ describe("handleTakoEndpoint", () => {
     test("returns 403 when channel auth denies access", async () => {
       channels.register(
         "chat",
-        defineChannel({
-          name: "chat",
+        defineChannel("chat", {
           auth: {
             verify() {
               return false;
@@ -348,8 +346,7 @@ describe("handleTakoEndpoint", () => {
     test("returns channel lifecycle config in authorize responses", async () => {
       channels.register(
         "chat",
-        defineChannel({
-          name: "chat",
+        defineChannel("chat", {
           auth: {
             verify() {
               return { subject: "user-123" };
@@ -395,8 +392,7 @@ describe("handleTakoEndpoint", () => {
     test("returns fanout data for a handled type", async () => {
       channels.register(
         "chat",
-        defineChannel({
-          name: "chat",
+        defineChannel("chat", {
           auth: { verify: async () => true },
           handler: { msg: async (data: { text: string }) => ({ text: data.text.toUpperCase() }) },
         }),
@@ -460,14 +456,13 @@ describe("handleTakoEndpoint", () => {
     test("returns channel definition metadata", async () => {
       channels.register(
         "chat",
-        defineChannel({
-          name: "chat",
+        defineChannel("chat", {
           paramsSchema: (t) => t.Object({ roomId: t.String() }),
           auth: { cookieName: "session", verify: async () => true },
           handler: { msg: async (data: { text: string }) => data },
         }),
       );
-      channels.register("status", defineChannel({ name: "status" }));
+      channels.register("status", defineChannel("status"));
 
       const request = new Request(`http://test-app.tako${TAKO_INTERNAL_CHANNELS_REGISTRY_PATH}`, {
         headers: { [TAKO_INTERNAL_TOKEN_HEADER]: "test-token" },

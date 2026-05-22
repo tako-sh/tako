@@ -128,10 +128,10 @@ impl ServerState {
 
         let workflows = Arc::new(crate::workflows::WorkflowManager::new(data_dir.clone()));
 
-        // Server-side channel `.publish()` — writes straight to the
-        // per-app channel store via the shared internal socket. Stores are
-        // opened lazily per app and cached so repeated publishes reuse the
-        // same SQLite connection.
+        // Server-side channel `.publish()` writes straight to the channel
+        // store for the deployed app id via the shared internal socket.
+        // Stores are opened lazily and cached so repeated publishes reuse
+        // the same SQLite connection.
         {
             let data_dir = data_dir.clone();
             let stores: parking_lot::RwLock<HashMap<String, Arc<tako_channels::ChannelStore>>> =

@@ -134,7 +134,7 @@ The route table accepts four useful shapes:
 
 Once `request_filter` has the selected app, it handles edge-owned responses before forwarding to an app process.
 
-First, `/_tako/*` is reserved for Tako's public endpoints. Channels, image optimization, and signed storage URLs live there. Those requests are not ordinary app routes.
+First, `/_tako/*` is reserved for Tako's public endpoints. Durable channels, image optimization, and signed storage URLs live there. Those requests are not ordinary app routes.
 
 Second, static assets get a fast path. If a request looks like a file, Tako checks the deployed app's `public/` directory and serves the file directly when present. For path-prefixed routes, it also tries the prefix-stripped asset path. That is why an app mounted at `example.com/docs/*` can still serve a built asset like `/assets/main.js` when the browser asks for `/docs/assets/main.js`.
 

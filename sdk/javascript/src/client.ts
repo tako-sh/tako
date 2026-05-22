@@ -1,9 +1,8 @@
 /**
  * Browser-safe entry point for Tako.
  *
- * Exposes the client side of Tako channels — subscribing via SSE, connecting
- * via WebSocket, and publishing via fetch — without pulling in any of the
- * server-only modules (secrets reader, workflow RPC client, entrypoint
+ * Exposes the client side of Tako channels without pulling in any
+ * of the server-only modules (secrets reader, workflow RPC client, entrypoint
  * installer) that the default `tako.sh` entry imports.
  *
  * Use this in code that ships to the browser. For server handlers, use the

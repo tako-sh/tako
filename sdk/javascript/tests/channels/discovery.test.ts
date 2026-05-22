@@ -34,8 +34,8 @@ describe("discoverChannels", () => {
     await writeChannel(
       "status.ts",
       `import { defineChannel } from "${sdkImportPath()}";
-       export default defineChannel({
-  name: "status", auth: { verify: async () => true } });`,
+       export default defineChannel("status", {
+  auth: { verify: async () => true } });`,
     );
     const found = await discoverChannels(join(dir, "channels"));
     expect(found).toHaveLength(1);
@@ -47,7 +47,7 @@ describe("discoverChannels", () => {
     await writeChannel(
       "mission-log.ts",
       `import { defineChannel } from "${sdkImportPath()}";
-       export default defineChannel({ name: "mission-log" });`,
+       export default defineChannel("mission-log");`,
     );
     const found = await discoverChannels(join(dir, "channels"));
     expect(found[0]!.name).toBe("mission-log");
@@ -58,7 +58,7 @@ describe("discoverChannels", () => {
     await writeChannel(
       "mission-log.ts",
       `import { defineChannel } from "${sdkImportPath()}";
-       export default defineChannel({ name: "expedition-feed" });`,
+       export default defineChannel("expedition-feed");`,
     );
     const found = await discoverChannels(join(dir, "channels"));
     expect(found[0]!.name).toBe("expedition-feed");
@@ -69,12 +69,12 @@ describe("discoverChannels", () => {
     await writeChannel(
       "_skipped.ts",
       `import { defineChannel } from "${sdkImportPath()}";
-       export default defineChannel({ name: "_skipped" });`,
+       export default defineChannel("_skipped");`,
     );
     await writeChannel(
       ".hidden.ts",
       `import { defineChannel } from "${sdkImportPath()}";
-       export default defineChannel({ name: ".hidden" });`,
+       export default defineChannel(".hidden");`,
     );
     const found = await discoverChannels(join(dir, "channels"));
     expect(found).toEqual([]);
@@ -92,12 +92,12 @@ describe("discoverChannels", () => {
     await writeChannel(
       "mission-log.ts",
       `import { defineChannel } from "${sdkImportPath()}";
-       export default defineChannel({ name: "updates" });`,
+       export default defineChannel("updates");`,
     );
     await writeChannel(
       "updates.ts",
       `import { defineChannel } from "${sdkImportPath()}";
-       export default defineChannel({ name: "updates" });`,
+       export default defineChannel("updates");`,
     );
 
     await expectAsyncToThrow(

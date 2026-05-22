@@ -55,14 +55,14 @@ Tako is not trying to replace that whole universe. If your app is mostly AWS eve
 
 HTTP APIs are different. They often start as a simple request/response server and slowly collect normal server-shaped needs:
 
-| Need                   | What tends to happen on Lambda                                 | What happens on Tako                                                       |
-| ---------------------- | -------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| Web framework          | Adapt the framework into Lambda events                         | Run the framework's server output as an app                                |
-| Persistent connections | Reach for API Gateway WebSockets or another service            | Use built-in [channels](/blog/durable-channels-built-in) for WebSocket/SSE |
-| Background jobs        | Add SQS, EventBridge, Step Functions, or another workflow tool | Use built-in [workflows](/blog/durable-workflows-are-here)                 |
-| Local files            | Use `/tmp` for scratch, external storage for durable data      | Write durable app files under `TAKO_DATA_DIR`                              |
-| Long work              | Split around Lambda's invocation model and service quotas      | Run normal processes and move background work to workflows                 |
-| Predictable spend      | Model requests, duration, memory, gateway, and add-ons         | Pick a server size and watch the box                                       |
+| Need                   | What tends to happen on Lambda                                 | What happens on Tako                                                               |
+| ---------------------- | -------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| Web framework          | Adapt the framework into Lambda events                         | Run the framework's server output as an app                                        |
+| Persistent connections | Reach for API Gateway WebSockets or another service            | Use built-in [durable channels](/blog/durable-channels-built-in) for WebSocket/SSE |
+| Background jobs        | Add SQS, EventBridge, Step Functions, or another workflow tool | Use built-in [workflows](/blog/durable-workflows-are-here)                         |
+| Local files            | Use `/tmp` for scratch, external storage for durable data      | Write durable app files under `TAKO_DATA_DIR`                                      |
+| Long work              | Split around Lambda's invocation model and service quotas      | Run normal processes and move background work to workflows                         |
+| Predictable spend      | Model requests, duration, memory, gateway, and add-ons         | Pick a server size and watch the box                                               |
 
 The first few functions feel wonderfully small. The tenth route often starts to look like a web server that has been chopped into pieces.
 
@@ -133,7 +133,7 @@ This is not the same isolation model as Lambda. Tako does not create a fresh san
 
 The phrase "serverless" never meant servers disappeared. It meant the platform took responsibility for them.
 
-Tako takes responsibility for a smaller, more inspectable platform: the one running on your VPS. It manages routing, HTTPS, deploys, process lifecycle, logs, secrets, static assets, scale-to-zero, channels, and workflows. It is [open source on GitHub](https://github.com/lilienblum/tako), and you still own the machine. You can SSH into it. You can run SQLite. You can use native packages. You can put Cloudflare in front if you want a global network edge, or keep it boring with one region and one box.
+Tako takes responsibility for a smaller, more inspectable platform: the one running on your VPS. It manages routing, HTTPS, deploys, process lifecycle, logs, secrets, static assets, scale-to-zero, durable channels, and workflows. It is [open source on GitHub](https://github.com/lilienblum/tako), and you still own the machine. You can SSH into it. You can run SQLite. You can use native packages. You can put Cloudflare in front if you want a global network edge, or keep it boring with one region and one box.
 
 That makes Tako a good Lambda alternative when:
 

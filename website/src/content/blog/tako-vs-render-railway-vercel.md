@@ -82,9 +82,9 @@ The bigger shift is predictability. Render, Railway, and Vercel charge per servi
 
 ## What Tako is becoming
 
-Render and Railway handle your app's runtime. Vercel handles the frontend layer and edge. All three leave you reaching for separate services the moment you need WebSocket channels, durable queues, or long-running workflows — separate products, separate bills, separate config to maintain.
+Render and Railway handle your app's runtime. Vercel handles the frontend layer and edge. All three leave you reaching for separate services the moment you need durable WebSocket/SSE channels, queues, or long-running workflows — separate products, separate bills, separate config to maintain.
 
-Tako's direction is to absorb those concerns into the same binary that's already routing your traffic. [Durable channels](/blog/durable-channels-built-in) are already shipping. Queues and workflows are next. The SDKs — [JavaScript/TypeScript and Go](/docs) — are how your app talks to all of it without caring which server it lands on.
+Tako's direction is to absorb those concerns into the same binary that's already routing your traffic. [Durable channels](/blog/durable-channels-built-in) are the realtime side of that model, and [workflows](/blog/durable-workflows-are-here) cover long-running work. The SDKs — [JavaScript/TypeScript and Go](/docs) — are how your app talks to all of it without caring which server it lands on.
 
 The managed platforms have a head start on breadth. The advantage of doing it in one self-hosted binary is that every new primitive costs you nothing extra and runs on hardware you already paid for. [See how Tako works today](/docs/how-tako-works) for what's already shipped.
 

@@ -41,7 +41,7 @@ function toRelativeImportSpecifier(filePath: string): string {
 function renderWrappedEntrySource(compiledMain: string): string {
   const importSpecifier = toRelativeImportSpecifier(compiledMain);
   return `import entryModule, * as entryNamespace from ${JSON.stringify(importSpecifier)};
-import { handleTakoEndpoint, normalizeFetchResponse } from "tako.sh/internal";
+import { bootstrapChannels, handleTakoEndpoint, normalizeFetchResponse } from "tako.sh/internal";
 
 const fetchHandler =
   typeof entryModule === "function"
@@ -58,8 +58,11 @@ if (!fetchHandler) {
   );
 }
 
+const channels = bootstrapChannels({ appDir: process.cwd() }).then((result) => result.registry);
+
 export default async function(request) {
   const [appName = ""] = (process.env.TAKO_APP_NAME ?? "app").split("/");
+  const discoveredChannels = await channels;
   const takoResponse = await handleTakoEndpoint(request, {
     status: "healthy",
     app: appName || "app",
@@ -67,7 +70,7 @@ export default async function(request) {
     instance_id: process.env.TAKO_INSTANCE_ID ?? "unknown",
     pid: process.pid,
     uptime_seconds: 0,
-  });
+  }, discoveredChannels);
   if (takoResponse) return takoResponse;
   return normalizeFetchResponse(await fetchHandler(request));
 };
@@ -257,12 +260,14 @@ export function tako(): Plugin {
       // publish to channels during `tako dev` without boot-time setup.
       initServerRuntime();
 
-      // Discover channel definitions from `<appRoot>/channels/` once at startup.
-      // The registry feeds the internal channel-auth/dispatch endpoints.
+      // Discover channel definitions once at startup. The registry feeds the
+      // internal channel auth/registry endpoints.
       let channelsPromise: Promise<ChannelRegistry> | null = null;
       const getChannels = (): Promise<ChannelRegistry> => {
         if (!channelsPromise) {
-          channelsPromise = bootstrapChannels({ appDir: process.cwd() }).then((r) => r.registry);
+          channelsPromise = bootstrapChannels({ appDir: process.cwd() }).then(
+            (result) => result.registry,
+          );
         }
         return channelsPromise;
       };

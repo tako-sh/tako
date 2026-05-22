@@ -74,11 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // publish from the outside) and by the internal socket's
     // `Command::ChannelPublish` handler (server-side publish from app/workflow
     // code). Same store so both paths see the same messages.
-    let channels_db_path = paths::tako_data_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join("channels.sqlite3");
-    let channels = dev_channels::DevChannelStore::new(channels_db_path);
-
+    let channels = dev_channels::DevChannelStore::new();
     // Start the Pingora proxy in a dedicated thread.
     // We exit the whole process when the control-plane tells us to shut down.
     {
@@ -177,11 +173,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let channels = channels.clone();
         workflows.set_channel_publisher(std::sync::Arc::new(
-            move |_app: &str, channel: &str, payload: serde_json::Value| {
+            move |app: &str, channel: &str, payload: serde_json::Value| {
                 let typed: tako_channels::ChannelPublishPayload =
                     serde_json::from_value(payload).map_err(|e| format!("invalid payload: {e}"))?;
                 channels
-                    .publish(channel, &typed)
+                    .publish(app, channel, &typed)
                     .map(|msg| serde_json::to_value(msg).unwrap_or(serde_json::Value::Null))
                     .map_err(|e| e.to_string())
             },

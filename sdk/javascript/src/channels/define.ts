@@ -29,11 +29,6 @@ export interface ChannelConfig<
   Messages,
 > extends ChannelLifecycleConfig {
   /**
-   * Wire name for the channel. Use a stable kebab-case name, usually matching
-   * the filename in `<app_root>/channels/<name>.ts`.
-   */
-  name: string;
-  /**
    * TypeBox schema for query params required to bind this channel.
    *
    * Omit for an unparameterized channel.
@@ -253,30 +248,33 @@ function attachMeta<P, M, Transport extends ChannelLiveTransport, T extends obje
  *
  * type Messages = { msg: { text: string } };
  *
- * export default defineChannel({
- *   name: "chat",
+ * export default defineChannel("chat", {
  *   paramsSchema: (t) => t.Object({ roomId: t.String() }),
  * }).$messageTypes<Messages>();
  * ```
  */
 export function defineChannel<ParamsSchema extends TSchema>(
+  name: string,
   config: ChannelConfigWithParams<ParamsSchema> & {
     handler: ConfigChannelHandlerMap<Static<ParamsSchema>>;
   },
 ): ChannelExport<Static<ParamsSchema>, Record<string, unknown>, "ws">;
 export function defineChannel<ParamsSchema extends TSchema>(
+  name: string,
   config: ChannelConfigWithParams<ParamsSchema> & { handler?: undefined },
 ): ChannelExport<Static<ParamsSchema>, Record<string, unknown>, "sse">;
 export function defineChannel(
+  name: string,
   config: ChannelConfigWithoutParams & {
     handler: ConfigChannelHandlerMap<Record<string, never>>;
   },
 ): ChannelExport<Record<string, never>, Record<string, unknown>, "ws">;
 export function defineChannel(
-  config: ChannelConfigWithoutParams & { handler?: undefined },
+  name: string,
+  config?: ChannelConfigWithoutParams & { handler?: undefined },
 ): ChannelExport<Record<string, never>, Record<string, unknown>, "sse">;
-export function defineChannel(input: unknown): unknown {
-  const config = input as AnyChannelConfig;
+export function defineChannel(name: string, maybeConfig?: unknown): unknown {
+  const config = { ...(maybeConfig as object | undefined), name } as AnyChannelConfig;
   const schema = config.paramsSchema?.(Type) ?? Type.Object({});
   const auth: ChannelDefinition<unknown, Record<string, unknown>>["auth"] =
     config.auth === undefined || config.auth === false

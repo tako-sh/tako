@@ -96,7 +96,7 @@ PM2 is a production tool. Local dev is usually `npm run dev` plus whatever your 
 
 PM2 runs whatever process you give it. If your app needs durable background jobs, you wire up Redis + BullMQ (or Sidekiq-style equivalents) yourself. If you want WebSockets at scale, that's another service.
 
-Tako ships [durable workflows](/blog/durable-workflows-are-here) inside `tako-server`, with [scale-to-zero workers](/blog/workflow-workers-scale-to-zero) so idle queues cost nothing. [Channels for WebSocket and SSE](/blog/durable-channels-built-in), queues, and image optimization are on the roadmap — all in the same binary that's already running your app.
+Tako ships [durable workflows](/blog/durable-workflows-are-here) inside `tako-server`, with [scale-to-zero workers](/blog/workflow-workers-scale-to-zero) so idle queues cost nothing. [Durable channels](/blog/durable-channels-built-in), queues, and image optimization follow the same idea — all in the same binary that's already running your app.
 
 ## Different ambitions
 

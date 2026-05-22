@@ -135,12 +135,13 @@ pub(super) async fn register_app(
             },
         );
 
-        s.routes.set_routes_with_images(
+        s.routes.set_routes_with_images_and_channel_store_key(
             route_id,
             hosts.clone(),
             upstream_port,
             false,
             (*images).clone(),
+            app_name.clone(),
         );
         if let Some(ref mut mdns) = s.mdns {
             for host in &old_hosts {

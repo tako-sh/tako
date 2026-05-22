@@ -18,8 +18,7 @@ describe("InferChannel", () => {
           (<T>() => T extends B ? 1 : 2) ? true : false;
         type Expect<T extends true> = T;
 
-        const missionLog = defineChannel({
-          name: "mission-log",
+        const missionLog = defineChannel("mission-log", {
           paramsSchema: (t) => t.Object({ base: t.String() }),
         }).$messageTypes<{ event: { text: string } }>();
 
@@ -37,8 +36,7 @@ describe("InferChannel", () => {
         // @ts-expect-error SSE channels do not expose WebSocket connect().
         missionLog({ base: "shackleton" }).connect();
 
-        const chat = defineChannel({
-          name: "chat",
+        const chat = defineChannel("chat", {
           paramsSchema: (t) => t.Object({ roomId: t.String() }),
           handler: {
             msg: (data: { text: string }) => data,

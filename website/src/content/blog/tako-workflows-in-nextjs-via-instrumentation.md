@@ -5,7 +5,7 @@ description: "Drop a five-line instrumentation.ts into your Next.js app and Tako
 image: 747a4cd2df17
 ---
 
-Next.js ships a lifecycle hook called [`instrumentation.ts`](https://nextjs.org/docs/app/guides/instrumentation). We just exposed `initServerRuntime()` from `tako.sh/internal`. Snap them together and Tako's durable [workflows](/blog/durable-workflows-are-here), cross-process [signals](/blog/pause-a-workflow-until-a-human-clicks-approve), and [channel publishes](/blog/durable-channels-built-in) start working inside your Next.js routes and server actions. Five lines, one file.
+Next.js ships a lifecycle hook called [`instrumentation.ts`](https://nextjs.org/docs/app/guides/instrumentation). We just exposed `initServerRuntime()` from `tako.sh/internal`. Snap them together and Tako's durable [workflows](/blog/durable-workflows-are-here), cross-process [signals](/blog/pause-a-workflow-until-a-human-clicks-approve), and realtime publishes start working inside your Next.js routes and server actions. Five lines, one file.
 
 ## Why Next.js needs a boot hook
 

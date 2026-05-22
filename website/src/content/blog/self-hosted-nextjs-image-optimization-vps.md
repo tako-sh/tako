@@ -105,7 +105,7 @@ That last part matters. An image optimizer is a server-side fetcher and a CPU us
 
 ## What the VPS does
 
-After a request matches your app route, Tako reserves `/_tako/*` for platform endpoints. Channels live there, storage object URLs live there, and public optimized images live at `/_tako/image`. The route is part of the same [app serving model](/docs/how-tako-works) as your Next process.
+After a request matches your app route, Tako reserves `/_tako/*` for platform endpoints. Durable channels live there, storage object URLs live there, and public optimized images live at `/_tako/image`. The route is part of the same [app serving model](/docs/how-tako-works) as your Next process.
 
 ```d2
 direction: right

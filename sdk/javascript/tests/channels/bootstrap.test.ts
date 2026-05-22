@@ -31,8 +31,8 @@ describe("bootstrapChannels", () => {
     await writeFile(
       join(appDir, "channels", "status.ts"),
       `import { defineChannel } from "${sdkImportPath()}";
-       export default defineChannel({
-  name: "status", auth: { verify: async () => true } });`,
+       export default defineChannel("status", {
+  auth: { verify: async () => true } });`,
       "utf8",
     );
     const { registry, channelCount } = await bootstrapChannels({ appDir, appRoot: "." });
@@ -45,7 +45,7 @@ describe("bootstrapChannels", () => {
     await writeFile(
       join(appDir, "channels", "status.ts"),
       `import { defineChannel } from "${sdkImportPath()}";
-       export default defineChannel({ name: "health" });`,
+       export default defineChannel("health");`,
       "utf8",
     );
     const { registry, channelCount } = await bootstrapChannels({ appDir, appRoot: "." });
@@ -59,8 +59,8 @@ describe("bootstrapChannels", () => {
     await writeFile(
       join(appDir, "channels", "status.ts"),
       `import { defineChannel } from "${sdkImportPath()}";
-       export default defineChannel({
-  name: "status", auth: { verify: async () => true } });`,
+       export default defineChannel("status", {
+  auth: { verify: async () => true } });`,
       "utf8",
     );
     const first = await bootstrapChannels({ appDir, appRoot: "." });
@@ -76,8 +76,8 @@ describe("bootstrapChannels", () => {
     await writeFile(
       join(appDir, "channels", "mission-log.ts"),
       `import { defineChannel } from "${sdkImportPath()}";
-       export default defineChannel({
-  name: "mission-log", paramsSchema: (t) => t.Object({ base: t.String() }) });`,
+       export default defineChannel("mission-log", {
+  paramsSchema: (t) => t.Object({ base: t.String() }) });`,
       "utf8",
     );
     await writeFile(
@@ -100,7 +100,7 @@ describe("bootstrapChannels", () => {
     await writeFile(
       join(appDir, "src", "channels", "status.ts"),
       `import { defineChannel } from "${sdkImportPath()}";
-       export default defineChannel({ name: "status" });`,
+       export default defineChannel("status");`,
       "utf8",
     );
 

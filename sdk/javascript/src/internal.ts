@@ -50,6 +50,7 @@ export type {
   VerifyInput,
 } from "./channels/define";
 export { defineChannel, isChannelDefinition, isChannelExport } from "./channels/define";
+export { bootstrapChannels } from "./channels/bootstrap";
 
 export { loadSecrets } from "./tako/secrets";
 export { createLogger } from "./logger";

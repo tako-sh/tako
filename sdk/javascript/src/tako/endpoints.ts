@@ -7,7 +7,7 @@
  * - POST /channels/authorize — Channel auth callback
  */
 
-import type { ChannelRegistry } from "../channels";
+import { ChannelRegistry } from "../channels";
 import type { ChannelAuthorizeInput, TakoStatus } from "../types";
 import { dispatchWsMessage } from "../channels/handler";
 import { getInternalToken, getStorageBindings } from "./secrets";
@@ -97,7 +97,7 @@ function internalResponse(
 export async function handleTakoEndpoint(
   request: Request,
   status: TakoStatus,
-  channels: ChannelRegistry,
+  channels: ChannelRegistry = new ChannelRegistry(),
 ): Promise<Response | null> {
   const url = new URL(request.url);
   if (url.pathname.startsWith(TAKO_LOCAL_STORAGE_PREFIX)) {

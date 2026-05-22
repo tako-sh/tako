@@ -42,6 +42,8 @@ Running `tako dev` again for the same config attaches to the existing session wh
 
 When running from a source checkout, Tako prefers repo-local `target/debug` or `target/release` dev binaries. Installed CLIs use bundled or PATH binaries.
 
+Channel replay in local dev is process-local: `tako-dev-server` keeps one in-memory replay store per registered app and resets it when the daemon restarts.
+
 ## Routes
 
 Configure development routes in `tako.toml`:

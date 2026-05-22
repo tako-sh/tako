@@ -7,7 +7,7 @@ image: 75030c2f757f
 
 Most runtime config is reached through APIs that lie to you. `process.env` pretends every variable is a string and returns `undefined` when you typo a name. `process.env.DATBASE_URL` is a syntactically valid read that fails silently, then explodes somewhere downstream — usually at 2am, usually in production.
 
-Tako's JavaScript SDK ships a different shape. App code imports `tako` from `tako.sh`, and `tako generate` writes a project-local `tako.d.ts` file that teaches TypeScript your secret keys, environment names, and channel metadata. No app global, no guessing — just ES modules.
+Tako's JavaScript SDK ships a different shape. App code imports `tako` from `tako.sh`, and `tako generate` writes a project-local `tako.d.ts` file that teaches TypeScript your secret keys, environment names, channel metadata, and workflow metadata. No app global, no guessing — just ES modules.
 
 ## What the generated file gives you
 
@@ -46,6 +46,7 @@ Same shape on Bun and Node. No global install step, no kebab↔camel rule to rem
 | `.tako/secrets.json` (encrypted) | `interface TakoSecrets { readonly DATABASE_URL: string; ... }`                  |
 | `tako.toml` envs                 | <code>type Env = "development" \| "production" \| "staging"</code>              |
 | Channel files                    | `interface TakoChannels { ... }` metadata for discovered channel definitions    |
+| Workflow files                   | `interface TakoWorkflows { ... }` metadata for discovered workflow definitions  |
 | Runtime env                      | `process.env` / `import.meta.env` declarations for Tako-provided runtime values |
 
 Secret names are plaintext in [`.tako/secrets.json`](/blog/secrets-without-env-files) — the values aren't — so `tako generate` emits the type surface without ever touching your encryption key. When you add a secret with `tako secrets set`, `tako.d.ts` picks it up on the next `tako dev`, `tako deploy`, or `tako generate`.

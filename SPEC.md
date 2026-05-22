@@ -520,7 +520,7 @@ Show version information (same as `--version` flag).
 
 ### tako generate
 
-Refresh generated files for the current project: `tako.d.ts` for JS/TS apps (project-specific type augmentation for `tako.sh`) and `tako_secrets.go` for Go apps. `tako gen` and `tako g` are aliases. For JS/TS projects, `tako generate` keeps an existing `tako.d.ts` in `app/`, `src/`, or the project root. When creating the file for the first time, it uses an existing legacy `tako.gen.ts` location when present, otherwise `app/`, then `src/`, then the project root. Legacy `tako.gen.ts` files are removed on regeneration. If a JS/TS project already has `<app_root>/channels/` or `<app_root>/workflows/` directories, `tako generate` also scaffolds `demo.ts` in empty dirs and adds missing default `defineChannel(...)` / `defineWorkflow(...)` exports to existing definition files that have no default export yet. Generated channel stubs use the file stem as the initial channel `name`, but `tako generate` does not rewrite existing explicit channel names.
+Refresh generated files for the current project: `tako.d.ts` for JS/TS apps (project-specific type augmentation for `tako.sh`) and `tako_secrets.go` for Go apps. `tako gen` and `tako g` are aliases. For JS/TS projects, `tako generate` keeps an existing `tako.d.ts` in `app/`, `src/`, or the project root. When creating the file for the first time, it uses an existing legacy `tako.gen.ts` location when present, otherwise `app/`, then `src/`, then the project root. Legacy `tako.gen.ts` files are removed on regeneration. If a JS/TS project already has `<app_root>/channels/` or `<app_root>/workflows/` directories, `tako generate` also scaffolds `demo.ts` in empty dirs and adds missing default `defineChannel(...)` or `defineWorkflow(...)` exports to existing definition files that have no default export yet. Generated channel stubs use the file stem as the initial wire name, but `tako generate` does not rewrite existing explicit names.
 
 ### tako upgrade
 
@@ -557,6 +557,7 @@ Start (or connect to) a local development session for the current app, backed by
   - Pressing `b` (background) hands the running process off to the daemon and exits the CLI. The daemon monitors the process and keeps routes active.
   - Running `tako dev` again with the same selected config file attaches to the existing session if the app is running or idle.
   - Dev logs are written to a shared per-app/per-config stream at `{TAKO_HOME}/dev/logs/{app}-{hash}.jsonl`.
+  - Dev channel replay is process-local: the daemon keeps one in-memory replay store per registered app and resets it when `tako-dev-server` restarts.
   - Each persisted log record stores a single `timestamp` token (`hh:mm:ss`) instead of split hour/minute/second fields.
   - When a new owning session starts, Tako truncates that shared stream before writing fresh logs for the new session.
   - Attached clients replay the existing file contents, then follow new lines from the same stream.
@@ -1958,7 +1959,7 @@ await sendEmail.enqueue({ to: "u@e.co" });
 await chat({ roomId: "r1" }).publish({ type: "msg", data: { text: "hi" } });
 ```
 
-The `tako.sh` package exports `tako`, `imageUrl`, `imageSrcSet`, `defineChannel`, `defineWorkflow`, `signal`, `TakoError`, `InferChannel`, and `InferWorkflowPayload`. Storage URL option types are exported from `tako.sh`. The `tako.sh/runtime` subpath is reserved for browser-safe runtime internals. Server-adapter plumbing (`handleTakoEndpoint`, `initServerRuntime`, and the channel/workflow definition types) lives under `tako.sh/internal` and is intended for framework adapters. The `Channel` class is not exported from `tako.sh`: server code uses the accessor returned by `defineChannel(...).$messageTypes<M>()` (imported from your `<app_root>/channels/` file); browser code imports from `tako.sh/client` (or uses the `useChannel` hook from `tako.sh/react`). There is no `Tako` global.
+The `tako.sh` package exports `tako`, `imageUrl`, `imageSrcSet`, `defineChannel`, `defineWorkflow`, `signal`, `TakoError`, `InferChannel`, and `InferWorkflowPayload`. Storage URL option types are exported from `tako.sh`. The `tako.sh/runtime` subpath is reserved for browser-safe runtime internals. Server-adapter plumbing (`handleTakoEndpoint`, `initServerRuntime`, and the channel/workflow definition types) lives under `tako.sh/internal` and is intended for framework adapters. The `Channel` class is not exported from `tako.sh`: code uses the accessor returned by `defineChannel(...).$messageTypes<M>()` from the matching `<app_root>/channels/` file. Browser code imports `Channel` and `configureChannels` from `tako.sh/client`; React channel hooks remain available from `tako.sh/react`. There is no `Tako` global.
 
 ### Go SDK
 
@@ -2082,19 +2083,19 @@ Used by `tako-server` to dispatch incoming WebSocket frames to the app's declare
 
 ### Channels
 
-Channels are Tako-owned durable pub-sub streams on public app routes:
+Durable channels are Tako-owned pub-sub routes for app events:
 
 - `GET /_tako/channels/<name>` with `Accept: text/event-stream` serves SSE with replay + live tail
 - `GET /_tako/channels/<name>` with `Upgrade: websocket` upgrades to WebSocket
 
-Channels keep a bounded replay window so reconnecting clients can resume across disconnects and `tako-server` reloads. They are not a permanent history API.
+Every channel publish is stored before delivery. In production, the replay log is a SQLite DB scoped to the deployed app id (`{name}/{env}`), not to a release or instance. In local dev, replay is per registered app and in-memory for the current daemon process. The log is bounded by `replayWindowMs`, which defaults to 10 minutes. This makes production channel delivery durable across short disconnects, laptop sleep, browser reloads, `tako-server` reloads, and rolling deploys without making channels the app's permanent history API. Apps that need canonical history still store it in their own database and use channel replay as the reconnect bridge.
 
 - SSE resumes from `Last-Event-ID`
 - WebSocket resumes from `last_message_id` in the query string
 - If no cursor is provided, Tako starts from the latest retained message
 - If the requested cursor is older than the retained replay window, Tako returns `410 Gone`
 
-Browser clients keep reconnecting until explicitly closed. Network loss, laptop sleep, server restarts, and clean stream rotation are treated as transient disconnects: the SDK retries with bounded exponential backoff and jitter, wakes early when the browser reports it is back online, and resumes from the last received message id.
+Browser clients keep reconnecting until explicitly closed. Network loss, laptop sleep, server restarts, and clean connection rotation are treated as transient disconnects: the SDK retries with bounded exponential backoff and jitter, wakes early when the browser reports it is back online, and resumes from the last received message id.
 
 Channel WebSocket transport uses JSON text frames:
 
@@ -2102,11 +2103,11 @@ Channel WebSocket transport uses JSON text frames:
 - client-to-server text frames are parsed as `ChannelPublishPayload` objects, routed through the channel's declared `handler`, and the handler's return value is fanned out to subscribers
 - client-to-server frame payloads are capped at 128 MiB, matching the proxy request body limit
 
-Channel routes are exact and flat: `defineChannel({ name: "chat", ... })` is served at `/_tako/channels/chat`. Dynamic values are query params validated against the channel's declared JSON Schema, for example `/_tako/channels/chat?roomId=room-123`.
+Channel routes are exact and flat: `defineChannel("chat", ...)` is served at `/_tako/channels/chat`. Dynamic values are query params validated against the channel's declared JSON Schema, for example `/_tako/channels/chat?roomId=room-123`.
 
 ### Authoring channels
 
-**JS/TypeScript** — file-based discovery: drop a file into `<app_root>/channels/*.ts` with a default export of `defineChannel({ name: "<name>", ... }).$messageTypes<M>()`. The `name` property is the wire channel name and is the source of truth for the public route. Generated/scaffolded files use the file stem as the initial name, but users may choose a different explicit name; discovery rejects duplicate declared names. Generated `TakoChannels` metadata uses the declared channel name as its key and `import("tako.sh").InferChannel<typeof import("./channels/<file>").default>` to infer params, messages, and transport from the channel export. `paramsSchema` is a TypeBox schema that becomes both the TypeScript params type and the server-side JSON Schema used by `tako-server` before app auth. `.$messageTypes<M>()` is a type-level narrower that declares the message map; at runtime it returns the same export.
+**JS/TypeScript** — file-based discovery: drop a file into `<app_root>/channels/*.ts` with a default export of `defineChannel("<name>", ...).$messageTypes<M>()`. The first argument is the wire channel name and is the source of truth for the public route. Generated/scaffolded files use the file stem as the initial name, but users may choose a different explicit name; discovery rejects duplicate declared names. Generated `TakoChannels` metadata uses the declared channel name as its key and `import("tako.sh").InferChannel<typeof import("./channels/<file>").default>` to infer params, messages, and transport from the channel export. `paramsSchema` is a TypeBox schema that becomes both the TypeScript params type and the server-side JSON Schema used by `tako-server` before app auth. `.$messageTypes<M>()` is a type-level narrower that declares the message map; at runtime it returns the same export.
 
 ```ts
 // <app_root>/channels/chat.ts
@@ -2117,8 +2118,7 @@ type ChatMessages = {
   typing: { userId: string };
 };
 
-export default defineChannel({
-  name: "chat",
+export default defineChannel("chat", {
   paramsSchema: (t) => t.Object({ roomId: t.String({ minLength: 1 }) }),
   auth: {
     headerName: "authorization",
@@ -2142,7 +2142,10 @@ export default defineChannel({
 - **`paramsSchema`** — optional TypeBox schema. Omit it for channels with no params. The serialized JSON Schema is sent to `tako-server`, which rejects invalid query params before round-tripping to the app.
 - **`auth`** — optional. Omit or set `false` for public channels. Auth is declarative: `{ headerName, cookieName, verify }`. `headerName` defaults to `authorization`; set it to `false` for cookie-only auth. `verify(input)` receives `{ header?, cookie?, params, channel, operation }` and returns `false`, `true`, or `{ subject }`.
 - **`handler`** — optional map keyed by message type. Presence of `handler` makes the channel a **WebSocket** channel (bidirectional); absence makes it **SSE** (broadcast-only). Each handler returns the data to broadcast, or `void` / `undefined` to drop the message.
-- Lifecycle fields (`replayWindowMs`, `inactivityTtlMs`, `keepaliveIntervalMs`, `maxConnectionLifetimeMs`) — unchanged from before.
+- **`replayWindowMs`** — retained replay window for reconnecting clients. Defaults to 10 minutes. Set `0` to keep messages until manual database maintenance.
+- **`inactivityTtlMs`** — optional idle-channel cleanup window. Defaults to off.
+- **`keepaliveIntervalMs`** — SSE/WS heartbeat cadence. Defaults to 25 seconds.
+- **`maxConnectionLifetimeMs`** — maximum lifetime for a single connection. Defaults to 2 hours.
 
 **Transport inference:**
 
@@ -2186,7 +2189,7 @@ import missionLog from "../channels/mission-log";
 await missionLog({ base }).publish({ type: "event", data: event });
 ```
 
-Params are URL-encoded automatically. `publish` payloads are type-checked against the message map declared via `.$messageTypes<M>()`. The `Channel` class is not re-exported from `tako.sh` — browser code imports from `tako.sh/client` (or uses the `useChannel` hook from `tako.sh/react`).
+Params are URL-encoded automatically. `publish` payloads are type-checked against the message map declared via `.$messageTypes<M>()`. The `Channel` class is not re-exported from `tako.sh` — browser code imports it from `tako.sh/client` (or uses the `useChannel` hook from `tako.sh/react`).
 
 ## Workflows (Durable Runs)
 

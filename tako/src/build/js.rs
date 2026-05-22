@@ -507,7 +507,11 @@ impl StubKind {
     fn default_export_line(self, stem: &str) -> String {
         match self {
             Self::Channel => {
-                format!("export default defineChannel({{ name: {stem:?} }}).$messageTypes<{{}}>();")
+                let channel_name = format!("{stem:?}");
+                let mut line = String::from("export default defineChannel(");
+                line.push_str(&channel_name);
+                line.push_str(").$messageTypes<{}>();");
+                line
             }
             Self::Workflow => {
                 format!(

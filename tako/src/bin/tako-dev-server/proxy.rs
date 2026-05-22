@@ -82,11 +82,13 @@ struct AppRoute {
     active: bool,
     notify: Arc<Notify>,
     images: tako_images::ImagesConfig,
+    channel_store_key: String,
 }
 
 #[derive(Clone)]
 pub(crate) struct RouteTarget {
     pub(crate) app_id: String,
+    pub(crate) channel_store_key: String,
     pub(crate) upstream_port: u16,
     pub(crate) active: bool,
     pub(crate) images: tako_images::ImagesConfig,
@@ -121,6 +123,7 @@ impl Routes {
         );
     }
 
+    #[cfg(test)]
     pub fn set_routes_with_images(
         &self,
         app_id: String,
@@ -128,6 +131,25 @@ impl Routes {
         upstream_port: u16,
         active: bool,
         images: tako_images::ImagesConfig,
+    ) {
+        self.set_routes_with_images_and_channel_store_key(
+            app_id.clone(),
+            routes,
+            upstream_port,
+            active,
+            images,
+            app_id,
+        );
+    }
+
+    pub fn set_routes_with_images_and_channel_store_key(
+        &self,
+        app_id: String,
+        routes: Vec<String>,
+        upstream_port: u16,
+        active: bool,
+        images: tako_images::ImagesConfig,
+        channel_store_key: String,
     ) {
         {
             let mut ar = self.app_routes.lock().unwrap();
@@ -141,10 +163,12 @@ impl Routes {
             active,
             notify: Arc::new(Notify::new()),
             images: images.clone(),
+            channel_store_key: channel_store_key.clone(),
         });
         entry.upstream_port = upstream_port;
         entry.active = active;
         entry.images = images;
+        entry.channel_store_key = channel_store_key;
         if active {
             entry.notify.notify_waiters();
         }
@@ -202,6 +226,7 @@ impl Routes {
         let r = apps.get(&app_id)?.clone();
         Some(RouteTarget {
             app_id,
+            channel_store_key: r.channel_store_key,
             upstream_port: r.upstream_port,
             active: r.active,
             images: r.images,
@@ -341,12 +366,6 @@ impl ProxyHttp for DevProxy {
             path: path.clone(),
         });
 
-        // Intercept channel requests before normal routing.
-        if path.starts_with(tako_channels::CHANNELS_BASE_PATH) {
-            let method = session.req_header().method.as_str().to_string();
-            return crate::dev_channels::try_handle(session, &self.channels, &path, &method).await;
-        }
-
         let Some(mut target) = self.routes.lookup(&hostname, &path) else {
             let mut header = ResponseHeader::build(421, None)?;
             header.insert_header("Content-Type", "text/plain")?;
@@ -362,6 +381,20 @@ impl ProxyHttp for DevProxy {
                 .await?;
             return Ok(true);
         };
+
+        // Channel requests are scoped by the matched app. Each app gets a
+        // separate local dev replay store even when channel names overlap.
+        if path.starts_with(tako_channels::CHANNELS_BASE_PATH) {
+            let method = session.req_header().method.as_str().to_string();
+            return crate::dev_channels::try_handle(
+                session,
+                &self.channels,
+                &target.channel_store_key,
+                &path,
+                &method,
+            )
+            .await;
+        }
 
         if !target.active {
             let ready_port = self
@@ -444,6 +477,23 @@ mod tests {
 
         // Unrelated host should not match.
         assert!(routes.lookup("foo.other.test", "/").is_none());
+    }
+
+    #[test]
+    fn lookup_returns_channel_store_key() {
+        let routes = Routes::default();
+        routes.set_routes_with_images_and_channel_store_key(
+            "reg:/repo/tako.toml".to_string(),
+            vec!["app.test".to_string()],
+            3000,
+            true,
+            tako_images::ImagesConfig::default(),
+            "app".to_string(),
+        );
+
+        let hit = routes.lookup("app.test", "/").unwrap();
+        assert_eq!(hit.app_id, "reg:/repo/tako.toml");
+        assert_eq!(hit.channel_store_key, "app");
     }
 
     #[test]

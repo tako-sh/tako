@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub(crate) const DEFAULT_REPLAY_WINDOW_MS: u64 = 24 * 60 * 60 * 1000;
+pub(crate) const DEFAULT_REPLAY_WINDOW_MS: u64 = 10 * 60 * 1000;
 pub(crate) const DEFAULT_INACTIVITY_TTL_MS: u64 = 0;
 pub(crate) const DEFAULT_KEEPALIVE_INTERVAL_MS: u64 = 25 * 1000;
 pub(crate) const DEFAULT_MAX_CONNECTION_LIFETIME_MS: u64 = 2 * 60 * 60 * 1000;

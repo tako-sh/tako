@@ -1,11 +1,13 @@
 pub use tako_channels::*;
 
 use crate::instances::{INTERNAL_TOKEN_HEADER, Instance, internal_app_host_for_app_id};
-use crate::release::app_runtime_data_paths;
+use crate::release::{app_runtime_data_paths, requested_deployment_identity};
 use std::path::{Path, PathBuf};
 
 pub(crate) fn app_channels_db_path(data_dir: &Path, app_name: &str) -> PathBuf {
-    tako_channels::channels_db_path(&app_runtime_data_paths(data_dir, app_name).tako)
+    let (name, environment) = requested_deployment_identity(app_name);
+    let deployment_id = tako_core::deployment_app_id(&name, &environment);
+    tako_channels::channels_db_path(&app_runtime_data_paths(data_dir, &deployment_id).tako)
 }
 
 pub(crate) async fn authorize_channel_request(
@@ -67,5 +69,32 @@ pub(crate) async fn fetch_channel_registry(
         status => Err(ChannelError::BadRequest(format!(
             "channel registry returned {status}"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn channel_db_path_is_scoped_by_deployment_environment() {
+        let data_dir = Path::new("/opt/tako");
+
+        assert_eq!(
+            app_channels_db_path(data_dir, "my-app/production"),
+            Path::new("/opt/tako/apps/my-app/production/data/tako/channels.sqlite3")
+        );
+        assert_eq!(
+            app_channels_db_path(data_dir, "my-app/staging"),
+            Path::new("/opt/tako/apps/my-app/staging/data/tako/channels.sqlite3")
+        );
+    }
+
+    #[test]
+    fn bare_app_channel_db_path_defaults_to_production_environment() {
+        assert_eq!(
+            app_channels_db_path(Path::new("/opt/tako"), "my-app"),
+            Path::new("/opt/tako/apps/my-app/production/data/tako/channels.sqlite3")
+        );
     }
 }
