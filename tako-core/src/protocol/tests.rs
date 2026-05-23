@@ -99,7 +99,7 @@ fn test_deploy_command_serialization_includes_scaling() {
             "secret123".to_string(),
         )])),
         storages: None,
-        dns: None,
+        ssl: SslBinding::default(),
     };
     let json = serde_json::to_string(&cmd).unwrap();
     assert!(json.contains(r#""command":"deploy""#));
@@ -107,24 +107,24 @@ fn test_deploy_command_serialization_includes_scaling() {
 }
 
 #[test]
-fn test_deploy_command_serialization_includes_dns_binding() {
+fn test_deploy_command_serialization_includes_ssl_binding() {
     let cmd = Command::Deploy {
         app: "my-app".to_string(),
         version: "v1".to_string(),
         path: "/opt/tako/apps/my-app/releases/v1".to_string(),
-        routes: vec!["*.example.com".to_string()],
+        routes: vec!["example.com".to_string()],
         source_ip: SourceIpMode::Auto,
         secrets: None,
         storages: None,
-        dns: Some(DnsBinding {
-            provider: DnsProvider::Cloudflare,
+        ssl: SslBinding {
+            provider: SslProvider::Cloudflare,
             cloudflare_api_token: Some("token".to_string()),
-        }),
+        },
     };
 
     let json = serde_json::to_string(&cmd).unwrap();
 
-    assert!(json.contains(r#""dns":{"provider":"cloudflare""#));
+    assert!(json.contains(r#""ssl":{"provider":"cloudflare""#));
     assert!(json.contains(r#""cloudflare_api_token":"token""#));
 }
 
@@ -138,7 +138,7 @@ fn test_deploy_command_serialization_includes_source_ip_mode() {
         source_ip: SourceIpMode::TrustedProxy,
         secrets: None,
         storages: None,
-        dns: None,
+        ssl: SslBinding::default(),
     };
 
     let json = serde_json::to_string(&cmd).unwrap();
@@ -161,13 +161,13 @@ fn test_deploy_command_deserialization_defaults_secrets_when_missing() {
             source_ip,
             secrets,
             storages,
-            dns,
+            ssl,
             ..
         } => {
             assert_eq!(source_ip, SourceIpMode::Auto);
             assert!(secrets.is_none());
             assert!(storages.is_none());
-            assert!(dns.is_none());
+            assert_eq!(ssl.provider, SslProvider::LetsEncrypt);
         }
         _ => panic!("Expected deploy command"),
     }
@@ -493,7 +493,7 @@ fn test_deploy_with_none_secrets_keeps_existing() {
         source_ip: SourceIpMode::Auto,
         secrets: None,
         storages: None,
-        dns: None,
+        ssl: SslBinding::default(),
     };
     let json = serde_json::to_string(&cmd).unwrap();
     let parsed: Command = serde_json::from_str(&json).unwrap();
@@ -502,13 +502,13 @@ fn test_deploy_with_none_secrets_keeps_existing() {
             source_ip,
             secrets,
             storages,
-            dns,
+            ssl,
             ..
         } => {
             assert_eq!(source_ip, SourceIpMode::Auto);
             assert!(secrets.is_none());
             assert!(storages.is_none());
-            assert!(dns.is_none());
+            assert_eq!(ssl.provider, SslProvider::LetsEncrypt);
         }
         _ => panic!("Expected deploy command"),
     }

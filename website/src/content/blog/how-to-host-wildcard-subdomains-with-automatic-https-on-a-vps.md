@@ -108,20 +108,19 @@ The token needs enough access to find the zone and create/delete TXT records:
 
 Scope the token to the specific zone when you can. For this example, include only `example.com`. You do not need to grant account-wide access, and you do not need a Cloudflare Tunnel token or proxy setting for this flow.
 
-Configure the credential once for the production environment:
+Set up the credential once for the production environment:
 
 ```bash
-tako dns configure --env production --expires-on "in 90 days"
+tako credentials set ssl.cloudflare --env production --expires-on "in 90 days"
 ```
 
-If you omit `--expires-on`, Tako treats the token as having no known expiry. If you set an expiry, deploy will fail after that date and warn during the final 30 days before it. The token is encrypted in `.tako/secrets.json`; no DNS provider block is written to `tako.toml`.
+If you omit `--expires-on`, Tako treats the token as having no known expiry. If you set an expiry, deploy will fail after that date and warn during the final 30 days before it. The token is encrypted in `.tako/secrets.json` under the environment's provider credentials; no DNS provider block is written to `tako.toml`.
 
 You can also pass the token non-interactively:
 
 ```bash
-tako dns configure \
+printf '%s\n' "$CLOUDFLARE_API_TOKEN" | tako credentials set ssl.cloudflare \
   --env production \
-  --cloudflare-api-token "$CLOUDFLARE_API_TOKEN" \
   --expires-on "2026-08-18"
 ```
 
@@ -135,9 +134,9 @@ Now deploy normally:
 tako deploy --env production
 ```
 
-Before build work starts, the CLI validates the routes and secrets. If any route starts with `*.`, the selected environment must have DNS credentials. Missing or expired credentials stop the deploy early with a message pointing back to `tako dns configure --env production`.
+Before build work starts, the CLI validates the routes and secrets. If any Let’s Encrypt route starts with `*.`, the selected environment must have credential `ssl.cloudflare`. Missing or expired credentials stop the deploy early with a message pointing back to `tako credentials set ssl.cloudflare --env production`.
 
-When validation passes, the CLI decrypts the Cloudflare token locally and includes a DNS binding only for deploys that actually contain wildcard routes. The management request is signed, and `tako-server` stores the DNS binding encrypted in its SQLite state for that deployed app. Exact-host apps do not receive or retain DNS credentials.
+When validation passes, the CLI decrypts the Cloudflare token locally and includes it in the SSL binding for deploys that actually contain Let’s Encrypt wildcard routes. The management request is signed, and `tako-server` stores the SSL binding encrypted in its SQLite state for that deployed app. Exact-host Let’s Encrypt apps do not receive or retain provider credentials.
 
 The certificate flow is short-lived:
 
@@ -157,11 +156,11 @@ That gives you the useful part of wildcard hosting without a hand-written Nginx 
 | ---------------------- | --------------------------------------- |
 | Tenant host pattern    | `routes = ["*.app.example.com"]`        |
 | Public DNS             | Cloudflare DNS-only A/AAAA records      |
-| DNS-01 API token       | encrypted `.tako/secrets.json`          |
+| DNS-01 API token       | encrypted SSL credential                |
 | Wildcard cert issuance | `tako-server` ACME flow                 |
 | TLS selection          | SNI exact match, then wildcard fallback |
 | Tenant behavior        | your app reads the `Host` header        |
 
-If issuance fails, start with the [troubleshooting docs](/docs/troubleshooting). The usual problems are simple: the wildcard route was deployed without DNS credentials, the token cannot read the zone or edit DNS records, the DNS record is pointed at the wrong server, or the app expects `app.example.com` to match the wildcard route. It will not; add the exact route too.
+If issuance fails, start with the [troubleshooting docs](/docs/troubleshooting). The usual problems are simple: the wildcard route was deployed without provider credentials, the token cannot read the zone or edit DNS records, the DNS record is pointed at the wrong server, or the app expects `app.example.com` to match the wildcard route. It will not; add the exact route too.
 
 This is the part of self-hosting that should feel boring. One wildcard DNS record points at the box. One encrypted token lets Tako prove domain ownership. One wildcard route sends every tenant hostname to the app. The rest is just your code deciding what `alice` means.

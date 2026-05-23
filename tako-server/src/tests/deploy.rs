@@ -24,7 +24,7 @@ async fn deploy_rejects_invalid_app_name() {
             source_ip: tako_core::SourceIpMode::Auto,
             secrets: Some(HashMap::new()),
             storages: Some(HashMap::new()),
-            dns: None,
+            ssl: tako_core::SslBinding::default(),
         })
         .await;
 
@@ -35,7 +35,7 @@ async fn deploy_rejects_invalid_app_name() {
 }
 
 #[tokio::test]
-async fn state_store_persists_dns_credentials_per_app() {
+async fn state_store_persists_ssl_credentials_per_app() {
     let temp_dir = TempDir::new().unwrap();
     let cert_manager = Arc::new(CertManager::new(CertManagerConfig {
         cert_dir: temp_dir.path().join("certs"),
@@ -49,28 +49,28 @@ async fn state_store_persists_dns_credentials_per_app() {
     )
     .unwrap();
 
-    let dns = tako_core::DnsBinding {
-        provider: tako_core::DnsProvider::Cloudflare,
+    let ssl = tako_core::SslBinding {
+        provider: tako_core::SslProvider::Cloudflare,
         cloudflare_api_token: Some("token-a".to_string()),
     };
 
     state
         .state_store
-        .set_dns("my-app/production", &dns)
+        .set_ssl("my-app/production", &ssl)
         .unwrap();
 
     assert_eq!(
-        state.state_store.get_dns("my-app/production").unwrap(),
-        Some(dns)
+        state.state_store.get_ssl("my-app/production").unwrap(),
+        Some(ssl)
     );
     assert_eq!(
-        state.state_store.get_dns("other-app/production").unwrap(),
+        state.state_store.get_ssl("other-app/production").unwrap(),
         None
     );
 }
 
 #[tokio::test]
-async fn failed_deploy_does_not_persist_dns_credentials() {
+async fn failed_deploy_does_not_persist_ssl_credentials() {
     let temp_dir = TempDir::new().unwrap();
     let cert_manager = Arc::new(CertManager::new(CertManagerConfig {
         cert_dir: temp_dir.path().join("certs"),
@@ -110,10 +110,10 @@ async fn failed_deploy_does_not_persist_dns_credentials() {
             source_ip: tako_core::SourceIpMode::Auto,
             secrets: Some(HashMap::new()),
             storages: Some(HashMap::new()),
-            dns: Some(tako_core::DnsBinding {
-                provider: tako_core::DnsProvider::Cloudflare,
-                cloudflare_api_token: Some("token".to_string()),
-            }),
+            ssl: tako_core::SslBinding {
+                provider: tako_core::SslProvider::Cloudflare,
+                cloudflare_api_token: Some("ssl-token".to_string()),
+            },
         })
         .await;
 
@@ -121,7 +121,7 @@ async fn failed_deploy_does_not_persist_dns_credentials() {
         panic!("expected invalid release to be rejected");
     };
     assert!(message.contains("empty main field"), "got: {message}");
-    assert_eq!(state.state_store.get_dns(app_id).unwrap(), None);
+    assert_eq!(state.state_store.get_ssl(app_id).unwrap(), None);
 }
 
 #[tokio::test]
@@ -151,7 +151,7 @@ async fn deploy_rejects_release_path_outside_managed_root() {
             source_ip: tako_core::SourceIpMode::Auto,
             secrets: Some(HashMap::new()),
             storages: Some(HashMap::new()),
-            dns: None,
+            ssl: tako_core::SslBinding::default(),
         })
         .await;
 
@@ -196,7 +196,7 @@ async fn deploy_rejects_invalid_release_version() {
             source_ip: tako_core::SourceIpMode::Auto,
             secrets: Some(HashMap::new()),
             storages: Some(HashMap::new()),
-            dns: None,
+            ssl: tako_core::SslBinding::default(),
         })
         .await;
 

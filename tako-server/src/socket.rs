@@ -200,7 +200,7 @@ mod tests {
                 source_ip,
                 secrets,
                 storages,
-                dns,
+                ssl,
             } => {
                 assert_eq!(app, "my-app");
                 assert_eq!(version, "1.0.0");
@@ -209,7 +209,7 @@ mod tests {
                 assert_eq!(source_ip, tako_core::SourceIpMode::Auto);
                 assert!(secrets.is_none());
                 assert!(storages.is_none());
-                assert!(dns.is_none());
+                assert_eq!(ssl.provider, tako_core::SslProvider::LetsEncrypt);
             }
             _ => panic!("Expected Deploy command"),
         }

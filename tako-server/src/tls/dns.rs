@@ -36,6 +36,11 @@ pub(crate) struct DnsChallengeRecord {
     pub(crate) name: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DnsBinding {
+    pub(crate) cloudflare_api_token: Option<String>,
+}
+
 #[async_trait]
 pub(crate) trait DnsChallengeProvider: Send + Sync {
     async fn present(&self, domain: &str, value: &str) -> Result<DnsChallengeRecord, DnsError>;

@@ -141,10 +141,10 @@ pub enum Command {
         /// When `None`, the server keeps existing storage bindings for this app.
         #[serde(default)]
         storages: Option<HashMap<String, StorageBinding>>,
-        /// DNS credentials used for app route wildcard certificate issuance.
-        /// When `None`, app DNS credentials are cleared.
+        /// SSL certificate provider and optional provider credentials.
+        /// Defaults to Let's Encrypt when omitted.
         #[serde(default)]
-        dns: Option<DnsBinding>,
+        ssl: SslBinding,
     },
 
     /// Update the desired minimum number of instances for an app.
@@ -400,17 +400,30 @@ pub enum SourceIpMode {
     TrustedProxy,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
-pub enum DnsProvider {
+pub enum SslProvider {
+    #[serde(rename = "letsencrypt", alias = "lets-encrypt")]
+    #[default]
+    LetsEncrypt,
     Cloudflare,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DnsBinding {
-    pub provider: DnsProvider,
+pub struct SslBinding {
+    #[serde(default)]
+    pub provider: SslProvider,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cloudflare_api_token: Option<String>,
+}
+
+impl Default for SslBinding {
+    fn default() -> Self {
+        Self {
+            provider: SslProvider::LetsEncrypt,
+            cloudflare_api_token: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

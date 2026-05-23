@@ -22,7 +22,7 @@ impl crate::ServerState {
         source_ip: tako_core::SourceIpMode,
         secrets: Option<HashMap<String, String>>,
         storages: Option<HashMap<String, tako_core::StorageBinding>>,
-        dns: Option<tako_core::DnsBinding>,
+        ssl: tako_core::SslBinding,
     ) -> Response {
         tracing::info!(app = app_name, version = version, "Deploying app");
 
@@ -94,11 +94,11 @@ impl crate::ServerState {
         }
 
         let existing_app = self.app_manager.get_app(app_name);
-        let previous_dns = if existing_app.is_some() {
-            match self.state_store.get_dns(app_name) {
+        let previous_ssl = if existing_app.is_some() {
+            match self.state_store.get_ssl(app_name) {
                 Ok(value) => value,
                 Err(error) => {
-                    return Response::error(format!("Failed to read DNS credentials: {error}"));
+                    return Response::error(format!("Failed to read SSL credentials: {error}"));
                 }
             }
         } else {
@@ -115,7 +115,7 @@ impl crate::ServerState {
                 previous_config,
                 previous_routes,
                 previous_state,
-                previous_dns,
+                previous_ssl,
             ))
         } else {
             None
@@ -136,7 +136,7 @@ impl crate::ServerState {
             if let Err(e) = self.persist_credentials(app_name, &secrets, &storages) {
                 return Response::error(e);
             }
-            if let Err(e) = self.persist_dns_binding(app_name, dns.as_ref()) {
+            if let Err(e) = self.persist_ssl_binding(app_name, &ssl) {
                 return Response::error(e);
             }
             config.secrets = secrets;
@@ -166,7 +166,7 @@ impl crate::ServerState {
             if let Err(e) = self.persist_credentials(app_name, &secrets, &storages) {
                 return Response::error(e);
             }
-            if let Err(e) = self.persist_dns_binding(app_name, dns.as_ref()) {
+            if let Err(e) = self.persist_ssl_binding(app_name, &ssl) {
                 return Response::error(e);
             }
             config.secrets = secrets;
@@ -223,7 +223,7 @@ impl crate::ServerState {
                             previous_config,
                             previous_routes,
                             previous_state,
-                            previous_dns,
+                            previous_ssl,
                         )) = rollback_snapshot
                         {
                             self.restore_failed_rollout_snapshot(
@@ -232,7 +232,7 @@ impl crate::ServerState {
                                 previous_config,
                                 previous_routes,
                                 previous_state,
-                                previous_dns,
+                                previous_ssl,
                                 error.clone(),
                             )
                             .await;
@@ -261,7 +261,7 @@ impl crate::ServerState {
                             previous_config,
                             previous_routes,
                             previous_state,
-                            previous_dns,
+                            previous_ssl,
                         )) = rollback_snapshot
                         {
                             self.restore_failed_rollout_snapshot(
@@ -270,7 +270,7 @@ impl crate::ServerState {
                                 previous_config,
                                 previous_routes,
                                 previous_state,
-                                previous_dns,
+                                previous_ssl,
                                 error.clone(),
                             )
                             .await;
@@ -330,7 +330,7 @@ impl crate::ServerState {
                             previous_config,
                             previous_routes,
                             previous_state,
-                            previous_dns,
+                            previous_ssl,
                         )) = rollback_snapshot
                         {
                             self.restore_failed_rollout_snapshot(
@@ -339,7 +339,7 @@ impl crate::ServerState {
                                 previous_config,
                                 previous_routes,
                                 previous_state,
-                                previous_dns,
+                                previous_ssl,
                                 result
                                     .error
                                     .clone()
@@ -361,7 +361,7 @@ impl crate::ServerState {
                     }
                 }
                 Err(e) => {
-                    if let Some((previous_config, previous_routes, previous_state, previous_dns)) =
+                    if let Some((previous_config, previous_routes, previous_state, previous_ssl)) =
                         rollback_snapshot
                     {
                         self.restore_failed_rollout_snapshot(
@@ -370,7 +370,7 @@ impl crate::ServerState {
                             previous_config,
                             previous_routes,
                             previous_state,
-                            previous_dns,
+                            previous_ssl,
                             e.to_string(),
                         )
                         .await;
@@ -396,19 +396,19 @@ impl crate::ServerState {
         }
     }
 
-    fn persist_dns_binding(
+    fn persist_ssl_binding(
         &self,
         app_name: &str,
-        dns: Option<&tako_core::DnsBinding>,
+        ssl: &tako_core::SslBinding,
     ) -> Result<(), String> {
-        if let Some(dns) = dns {
+        if ssl.cloudflare_api_token.is_some() {
             self.state_store
-                .set_dns(app_name, dns)
-                .map_err(|e| format!("Failed to store DNS credentials: {e}"))
+                .set_ssl(app_name, ssl)
+                .map_err(|e| format!("Failed to store SSL credentials: {e}"))
         } else {
             self.state_store
-                .delete_dns(app_name)
-                .map_err(|e| format!("Failed to clear DNS credentials: {e}"))
+                .delete_ssl(app_name)
+                .map_err(|e| format!("Failed to clear SSL credentials: {e}"))
         }
     }
 
@@ -434,7 +434,7 @@ impl crate::ServerState {
         previous_config: AppConfig,
         previous_routes: Vec<String>,
         previous_state: AppState,
-        previous_dns: Option<tako_core::DnsBinding>,
+        previous_ssl: Option<tako_core::SslBinding>,
         error: String,
     ) {
         let previous_release_path =
@@ -451,15 +451,15 @@ impl crate::ServerState {
         if let Err(e) = self.state_store.set_storages(app_name, &previous_storages) {
             tracing::warn!(app = app_name, "Failed to restore previous storages: {}", e);
         }
-        match previous_dns {
-            Some(dns) => {
-                if let Err(e) = self.state_store.set_dns(app_name, &dns) {
-                    tracing::warn!(app = app_name, "Failed to restore previous DNS: {}", e);
+        match previous_ssl {
+            Some(ssl) => {
+                if let Err(e) = self.state_store.set_ssl(app_name, &ssl) {
+                    tracing::warn!(app = app_name, "Failed to restore previous SSL: {}", e);
                 }
             }
             None => {
-                if let Err(e) = self.state_store.delete_dns(app_name) {
-                    tracing::warn!(app = app_name, "Failed to clear restored DNS: {}", e);
+                if let Err(e) = self.state_store.delete_ssl(app_name) {
+                    tracing::warn!(app = app_name, "Failed to clear restored SSL: {}", e);
                 }
             }
         }

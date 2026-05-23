@@ -59,6 +59,7 @@ Operational behavior highlights:
 - `tako releases rollback <release-id>` rolls target servers back to a previous release id using the normal rolling-update path.
 - `tako servers add` expects a Tailscale MagicDNS name or Tailscale IP, verifies `tako@host` SSH recovery access, enrolls the authenticated SSH key for signed remote management, verifies private management HTTP, then stores detected target metadata (`arch`, `libc`) in each `[[servers]]` entry in `~/.tako/config.toml`. Use `--install` to install or repair `tako-server` over SSH before adding. Encrypted local SSH keys prompt interactively; pass `--ssh-passphrase` for one-line commands.
 - `tako deploy` requires valid target metadata for each selected server and does not probe targets during deploy.
+- Production environments use Let’s Encrypt certificates by default. Run `tako credentials set ssl.cloudflare --env <env>` for wildcard routes that need Cloudflare DNS-01, or set `ssl = "cloudflare"` and store the same credential to use Cloudflare Origin CA certificates. Deploy verifies required Cloudflare tokens are active before build/upload; Let’s Encrypt wildcard routes also verify zone read access.
 - New apps start with desired instance count `0`, and `tako deploy` still validates startup by briefly starting one warm instance; deploy fails if startup health checks fail.
 
 ## Run and Test
@@ -85,6 +86,7 @@ cargo run -p tako --bin tako -- deploy --help
 - Top-level `name` in `tako.toml` is optional; when omitted, app identity falls back to sanitized project directory name.
 - Setting `name` explicitly is recommended for stable identity and uniqueness per server; renaming identity later creates a new app path and requires manual cleanup of old deployments.
 - Non-development environments must define `route` or `routes`; development defaults to `{app}.test`.
+- `[envs.<name>].ssl` is optional and defaults to `letsencrypt`; Cloudflare SSL and Let’s Encrypt wildcard routes require encrypted credentials from `tako credentials set ssl.cloudflare`. Deploy verifies required Cloudflare tokens before build/upload.
 
 ## Related Docs
 

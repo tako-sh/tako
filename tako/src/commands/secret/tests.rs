@@ -96,12 +96,12 @@ fn ensure_secret_key_available_errors_when_existing_secrets_have_no_key() {
 }
 
 #[test]
-fn ensure_secret_key_available_errors_when_dns_credentials_have_no_key() {
+fn ensure_secret_key_available_errors_when_credentials_have_no_key() {
     with_temp_tako_home(|| {
         let json = r#"{
                 "production": {
                     "key_id": "0123456789abcdef",
-                    "dns": {"cloudflare_api_token": {"value": "opaque-encrypted-blob"}}
+                    "credentials": {"ssl.cloudflare": {"value": "opaque-encrypted-blob"}}
                 }
             }"#;
         let secrets = crate::config::SecretsStore::parse(json).unwrap();
@@ -152,6 +152,33 @@ fn load_or_create_key_for_set_creates_random_key_for_empty_env() {
         let key_store = crate::crypto::KeyStore::for_key_id(&key_id).unwrap();
         assert!(key_store.key_exists());
         assert_eq!(key_store.load_key().unwrap().as_bytes(), key.as_bytes());
+    });
+}
+
+#[test]
+fn load_or_create_key_for_set_errors_when_credentials_have_no_key() {
+    with_temp_tako_home(|| {
+        let json = r#"{
+                "production": {
+                    "key_id": "0123456789abcdef",
+                    "credentials": {"ssl.cloudflare": {"value": "opaque-encrypted-blob"}}
+                }
+            }"#;
+        let secrets = crate::config::SecretsStore::parse(json).unwrap();
+
+        let err = match load_or_create_key_for_set(
+            "production",
+            &secrets,
+            Some(Path::new("/tmp/tako")),
+        ) {
+            Ok(_) => panic!("existing credentials without a key should not create a new key"),
+            Err(error) => error,
+        };
+
+        assert_eq!(
+            err.to_string(),
+            "Unable to decrypt production secrets. Run `tako secrets key import` to import an exported key or passphrase."
+        );
     });
 }
 

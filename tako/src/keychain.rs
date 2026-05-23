@@ -3,6 +3,8 @@ use std::path::Path;
 #[cfg(target_os = "macos")]
 const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
 #[cfg(target_os = "macos")]
+const ERR_SEC_NO_DEFAULT_KEYCHAIN: i32 = -25307;
+#[cfg(target_os = "macos")]
 const ERR_SEC_MISSING_ENTITLEMENT: i32 = -34018;
 
 #[cfg(target_os = "macos")]
@@ -54,7 +56,7 @@ pub fn load_key(id: &str) -> Result<Option<crate::crypto::EncryptionKey>, String
                 .map_err(|e| e.to_string())
         }
         Err(e) if e.code() == ERR_SEC_ITEM_NOT_FOUND => Ok(None),
-        Err(e) if e.code() == ERR_SEC_MISSING_ENTITLEMENT => Ok(None),
+        Err(e) if keychain_is_unavailable(&e) => Ok(None),
         Err(e) => Err(keychain_error("read key from iCloud Keychain", e)),
     }
 }
@@ -73,7 +75,7 @@ pub fn delete_key(id: &str) -> Result<(), String> {
     match delete_generic_password_options(key_query_options(id)) {
         Ok(()) => Ok(()),
         Err(e) if e.code() == ERR_SEC_ITEM_NOT_FOUND => Ok(()),
-        Err(e) if e.code() == ERR_SEC_MISSING_ENTITLEMENT => Ok(()),
+        Err(e) if keychain_is_unavailable(&e) => Ok(()),
         Err(e) => Err(keychain_error("delete key from iCloud Keychain", e)),
     }
 }
@@ -169,10 +171,17 @@ fn validate_key_id(id: &str) -> Result<(), String> {
 
 #[cfg(target_os = "macos")]
 fn keychain_error(action: &str, error: security_framework::base::Error) -> String {
-    if error.code() == ERR_SEC_MISSING_ENTITLEMENT {
+    if keychain_is_unavailable(&error) {
         return unavailable_message().to_string();
     }
     format!("Failed to {action}: {error}")
+}
+
+#[cfg(target_os = "macos")]
+fn keychain_is_unavailable(error: &security_framework::base::Error) -> bool {
+    error.code() == ERR_SEC_MISSING_ENTITLEMENT
+        || error.code() == ERR_SEC_NO_DEFAULT_KEYCHAIN
+        || error.to_string().contains("No keychain is available")
 }
 
 #[cfg(test)]

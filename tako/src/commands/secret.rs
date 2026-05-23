@@ -248,7 +248,7 @@ fn secret_environment_options(
     options
 }
 
-fn resolve_secret_environment(
+pub(crate) fn resolve_secret_environment(
     context: &crate::commands::project_context::ProjectContext,
     requested: Option<&str>,
     label: &str,

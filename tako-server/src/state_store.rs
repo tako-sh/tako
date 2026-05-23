@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tako_core::UpgradeMode;
 
-pub const STATE_SCHEMA_VERSION: i32 = 5;
+pub const STATE_SCHEMA_VERSION: i32 = 6;
 
 #[derive(Debug, Clone)]
 pub struct PersistedApp {
@@ -95,7 +95,7 @@ impl SqliteStateStore {
             .map_err(StateStoreError::from)?;
         conn.execute("DELETE FROM app_storages WHERE app = ?1;", [&secret_key])
             .map_err(StateStoreError::from)?;
-        conn.execute("DELETE FROM app_dns WHERE app = ?1;", [&secret_key])
+        conn.execute("DELETE FROM app_ssl WHERE app = ?1;", [&secret_key])
             .map_err(StateStoreError::from)?;
         conn.execute(
             "DELETE FROM apps WHERE name = ?1 AND environment = ?2;",
@@ -353,13 +353,13 @@ impl SqliteStateStore {
         }
     }
 
-    pub fn set_dns(&self, app: &str, dns: &tako_core::DnsBinding) -> Result<(), StateStoreError> {
-        let json = serde_json::to_vec(dns)
-            .map_err(|e| StateStoreError::InvalidData(format!("serialize dns: {e}")))?;
+    pub fn set_ssl(&self, app: &str, ssl: &tako_core::SslBinding) -> Result<(), StateStoreError> {
+        let json = serde_json::to_vec(ssl)
+            .map_err(|e| StateStoreError::InvalidData(format!("serialize ssl: {e}")))?;
         let encrypted = encrypt_blob(&self.encryption_key, &json)?;
         let conn = self.open_connection()?;
         conn.execute(
-            "INSERT INTO app_dns (app, encrypted_data)
+            "INSERT INTO app_ssl (app, encrypted_data)
              VALUES (?1, ?2)
              ON CONFLICT(app) DO UPDATE SET encrypted_data = excluded.encrypted_data;",
             rusqlite::params![app, encrypted],
@@ -368,11 +368,11 @@ impl SqliteStateStore {
         Ok(())
     }
 
-    pub fn get_dns(&self, app: &str) -> Result<Option<tako_core::DnsBinding>, StateStoreError> {
+    pub fn get_ssl(&self, app: &str) -> Result<Option<tako_core::SslBinding>, StateStoreError> {
         let conn = self.open_connection()?;
         let blob: Option<Vec<u8>> = conn
             .query_row(
-                "SELECT encrypted_data FROM app_dns WHERE app = ?1;",
+                "SELECT encrypted_data FROM app_ssl WHERE app = ?1;",
                 [app],
                 |row| row.get(0),
             )
@@ -384,15 +384,15 @@ impl SqliteStateStore {
                 let json = decrypt_blob(&self.encryption_key, &encrypted)?;
                 serde_json::from_slice(&json)
                     .map(Some)
-                    .map_err(|e| StateStoreError::InvalidData(format!("deserialize dns: {e}")))
+                    .map_err(|e| StateStoreError::InvalidData(format!("deserialize ssl: {e}")))
             }
             None => Ok(None),
         }
     }
 
-    pub fn delete_dns(&self, app: &str) -> Result<(), StateStoreError> {
+    pub fn delete_ssl(&self, app: &str) -> Result<(), StateStoreError> {
         let conn = self.open_connection()?;
-        conn.execute("DELETE FROM app_dns WHERE app = ?1;", [app])
+        conn.execute("DELETE FROM app_ssl WHERE app = ?1;", [app])
             .map_err(StateStoreError::from)?;
         Ok(())
     }
@@ -466,19 +466,19 @@ impl SqliteStateStore {
             .map_err(StateStoreError::from)?;
         }
 
-        if from_version < 4 {
+        if from_version < 5 {
+            tx.execute_batch("ALTER TABLE apps ADD COLUMN source_ip TEXT NOT NULL DEFAULT 'auto';")
+                .map_err(StateStoreError::from)?;
+        }
+
+        if from_version < 6 {
             tx.execute_batch(
-                "CREATE TABLE IF NOT EXISTS app_dns (
+                "CREATE TABLE IF NOT EXISTS app_ssl (
                     app TEXT NOT NULL PRIMARY KEY,
                     encrypted_data BLOB NOT NULL
                 );",
             )
             .map_err(StateStoreError::from)?;
-        }
-
-        if from_version < 5 {
-            tx.execute_batch("ALTER TABLE apps ADD COLUMN source_ip TEXT NOT NULL DEFAULT 'auto';")
-                .map_err(StateStoreError::from)?;
         }
 
         self.ensure_default_rows_on(&tx)?;
@@ -529,7 +529,7 @@ impl SqliteStateStore {
                 encrypted_data BLOB NOT NULL
             );
 
-            CREATE TABLE IF NOT EXISTS app_dns (
+            CREATE TABLE IF NOT EXISTS app_ssl (
                 app TEXT NOT NULL PRIMARY KEY,
                 encrypted_data BLOB NOT NULL
             );",

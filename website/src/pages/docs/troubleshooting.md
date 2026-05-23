@@ -60,7 +60,7 @@ Unknown key '...'
 
 Common causes:
 
-- DNS provider settings in `tako.toml`. Use `tako dns configure --env <env>`.
+- DNS provider settings in `tako.toml`. Use `tako credentials set ssl.cloudflare --env <env>` for wildcard certificate credentials.
 - Global server inventory under app `[servers]`. Use `tako servers add`; app `[servers.<name>]` is only for per-app workflow overrides.
 - Namespaced presets such as `preset = "js/tanstack-start"`. Use `runtime = "bun"` and `preset = "tanstack-start"`.
 
@@ -192,24 +192,24 @@ tako storages add uploads --env production --provider local
 
 Local storage uses the built-in `local` resource and writes `storages = { uploads = "local" }`. It has no `[storages.local]` table, configurable path, or user-provided credentials.
 
-## Wildcard Routes Need DNS
+## Wildcard Routes Need SSL Credentials
 
-Wildcard production routes require DNS-01 credentials:
+Wildcard production routes require Cloudflare credentials for Let’s Encrypt DNS-01:
 
 ```toml
 [envs.production]
 routes = ["app.example.com", "*.app.example.com"]
 ```
 
-Configure Cloudflare DNS for that app environment:
+Set up the provider credential for that app environment:
 
 ```bash
-tako dns configure --env production --expires-on "in 90 days"
+tako credentials set ssl.cloudflare --env production --expires-on "in 90 days"
 ```
 
 The token must be able to read zones and edit DNS records. It is encrypted in `.tako/secrets.json`, not stored in `tako.toml`.
 
-Deploy fails early if wildcard routes need missing or expired DNS credentials. It warns when the token expires within 30 days.
+Deploy fails early if Let’s Encrypt wildcard routes need missing or expired provider credentials. It also verifies that the Cloudflare token is active and can read the matching zone before build/upload work starts. DNS record writes are not probed before deploy, so the token must still have DNS record edit access for certificate issuance. Deploy warns when the token expires within 30 days.
 
 ## Source IP Problems
 
@@ -366,14 +366,20 @@ If status fails:
 
 ## TLS Or Certificate Issues
 
-Exact public hostnames use HTTP-01 challenges. Wildcard hostnames use Cloudflare DNS-01. Local and private hostnames use self-signed certificates.
+Exact public hostnames use Let’s Encrypt HTTP-01 by default. Let’s Encrypt wildcard hostnames use Cloudflare DNS-01. Environments with `ssl = "cloudflare"` use Cloudflare Origin CA. Local and private hostnames use self-signed certificates.
 
 For public exact routes, make sure ports 80 and 443 reach `tako-server`.
 
-For wildcard routes, make sure DNS credentials are configured:
+For Let’s Encrypt wildcard routes, make sure the provider credential is set up:
 
 ```bash
-tako dns configure --env production
+tako credentials set ssl.cloudflare --env production
+```
+
+For Cloudflare SSL, make sure the environment is configured and traffic is proxied through Cloudflare:
+
+```bash
+tako credentials set ssl.cloudflare --env production
 ```
 
 For development TLS, rerun:

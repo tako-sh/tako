@@ -100,6 +100,12 @@ pub struct CertManager {
     certs: RwLock<HashMap<String, CertInfo>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StoredCertIssuer {
+    LetsEncrypt,
+    Cloudflare,
+}
+
 impl CertManager {
     pub fn new(config: CertManagerConfig) -> Self {
         Self {
@@ -274,6 +280,67 @@ impl CertManager {
         self.config.cert_dir.join(domain)
     }
 
+    pub(crate) fn cert_matches_ssl_provider(
+        &self,
+        cert: &CertInfo,
+        provider: tako_core::SslProvider,
+    ) -> bool {
+        if cert.is_self_signed {
+            return true;
+        }
+        match self.read_issuer_marker(&cert.domain) {
+            Some(StoredCertIssuer::Cloudflare) => provider == tako_core::SslProvider::Cloudflare,
+            Some(StoredCertIssuer::LetsEncrypt) | None => {
+                provider == tako_core::SslProvider::LetsEncrypt
+            }
+        }
+    }
+
+    pub(crate) fn store_certificate(
+        &self,
+        domain: &str,
+        cert_pem: &str,
+        private_key_pem: &str,
+        issuer: StoredCertIssuer,
+    ) -> Result<CertInfo, CertError> {
+        let domain_dir = self.domain_cert_dir(domain);
+        std::fs::create_dir_all(&domain_dir)?;
+
+        let cert_path = domain_dir.join("fullchain.pem");
+        let key_path = domain_dir.join("privkey.pem");
+
+        std::fs::write(&cert_path, cert_pem)?;
+        std::fs::write(&key_path, private_key_pem)?;
+        std::fs::write(domain_dir.join("issuer"), issuer_marker_value(issuer))?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))?;
+        }
+
+        let cert_info = CertInfo {
+            domain: domain.to_string(),
+            cert_path,
+            key_path,
+            expires_at: Self::parse_cert_expiry_from_bytes(cert_pem.as_bytes()).ok(),
+            is_wildcard: domain.starts_with("*."),
+            is_self_signed: false,
+        };
+
+        self.add_cert(cert_info.clone());
+        Ok(cert_info)
+    }
+
+    fn read_issuer_marker(&self, domain: &str) -> Option<StoredCertIssuer> {
+        let marker = std::fs::read_to_string(self.domain_cert_dir(domain).join("issuer")).ok()?;
+        match marker.trim() {
+            "cloudflare" => Some(StoredCertIssuer::Cloudflare),
+            "letsencrypt" => Some(StoredCertIssuer::LetsEncrypt),
+            _ => None,
+        }
+    }
+
     /// Get or create a self-signed certificate stored in the standard domain layout.
     ///
     /// This keeps private/local domains usable over HTTPS even when ACME cannot issue for them.
@@ -315,6 +382,13 @@ impl CertManager {
         let cert_info = self.load_cert_info(domain)?;
         self.add_cert(cert_info.clone());
         Ok(cert_info)
+    }
+}
+
+fn issuer_marker_value(issuer: StoredCertIssuer) -> &'static str {
+    match issuer {
+        StoredCertIssuer::LetsEncrypt => "letsencrypt",
+        StoredCertIssuer::Cloudflare => "cloudflare",
     }
 }
 

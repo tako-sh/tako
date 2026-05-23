@@ -1,6 +1,8 @@
 use clap::{Parser, Subcommand};
 
-use crate::commands::{self, delete, dns, releases, scale, secret, server, storage, upgrade};
+use crate::commands::{
+    self, credentials, delete, releases, scale, secret, server, storage, upgrade,
+};
 use clap::CommandFactory;
 
 const DEV_PUBLIC_PORT: u16 = 47831;
@@ -131,9 +133,9 @@ pub enum Commands {
     #[command(subcommand)]
     Storages(storage::StorageCommands),
 
-    /// DNS commands for wildcard certificates
-    #[command(subcommand)]
-    Dns(dns::DnsCommands),
+    /// Provider credentials used by Tako
+    #[command(subcommand, visible_alias = "creds")]
+    Credentials(credentials::CredentialCommands),
 
     /// Release history and rollback commands
     #[command(subcommand)]
@@ -251,7 +253,7 @@ impl Cli {
             Commands::Servers(cmd) => server::run(cmd),
             Commands::Secrets(cmd) => secret::run(cmd, self.config.as_deref()),
             Commands::Storages(cmd) => storage::run(cmd, self.config.as_deref()),
-            Commands::Dns(cmd) => dns::run(cmd, self.config.as_deref()),
+            Commands::Credentials(cmd) => credentials::run(cmd, self.config.as_deref()),
             Commands::Releases(cmd) => releases::run(cmd, self.config.as_deref()),
             Commands::Upgrade => upgrade::run(),
             Commands::Uninstall { yes } => commands::implode::run(yes),

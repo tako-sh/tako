@@ -288,15 +288,33 @@ Generated configs omit `source_ip`, which behaves like `auto`.
 
 For `trusted-proxy`, server-level `trusted_proxy.trusted_cidrs` and optional `trusted_proxy.client_ip_headers` live in `/opt/tako/config.json`, not `tako.toml`.
 
-## DNS Credentials
+## SSL Provider
 
-There is no DNS provider block in `tako.toml`. Wildcard routes require encrypted app-environment DNS credentials:
+Public route certificates use Let’s Encrypt by default. Set an environment to Cloudflare when traffic will be proxied through Cloudflare:
 
-```bash
-tako dns configure --env production
+```toml
+[envs.production]
+route = "app.example.com"
+ssl = "cloudflare"
 ```
 
-Cloudflare is the only supported DNS-01 provider. The token is encrypted in `.tako/secrets.json` under the environment's `dns` object. Deploy sends DNS credentials only when the selected environment has wildcard routes.
+Valid values are `letsencrypt` and `cloudflare`; omitted means `letsencrypt`. Cloudflare SSL uses credential `ssl.cloudflare`:
+
+```bash
+tako credentials set ssl.cloudflare --env production
+```
+
+Cloudflare SSL uses Origin CA certificates and can issue wildcard certificates without DNS-01 credentials.
+
+## SSL Credentials
+
+There is no DNS provider block in `tako.toml`. Let’s Encrypt wildcard routes use Cloudflare DNS-01 and require encrypted app-environment provider credentials:
+
+```bash
+tako credentials set ssl.cloudflare --env production
+```
+
+Cloudflare is the only supported DNS-01 provider. The token is encrypted in `.tako/secrets.json` under the environment's `credentials` object. Deploy sends provider credentials when the selected environment uses Let’s Encrypt with wildcard routes or Cloudflare SSL. Before build/upload, deploy verifies required Cloudflare tokens are active; Let’s Encrypt wildcard routes also verify zone read access.
 
 Cloudflare DNS-01 is only certificate validation. It does not require proxy mode; for wildcard second-level subdomains such as `*.app.example.com`, point DNS records directly at the Tako server and let Tako terminate TLS.
 

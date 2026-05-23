@@ -21,7 +21,7 @@ use crate::commands::project_context;
 use crate::config::{SecretsStore, ServerEntry, ServerTarget, ServersToml, TakoToml};
 use crate::output;
 use crate::validation::{
-    validate_dns_for_deployment, validate_full_config, validate_secrets_for_deployment,
+    validate_full_config, validate_secrets_for_deployment, validate_ssl_for_deployment,
     validate_storages_for_deployment,
 };
 use tracing::Instrument;
@@ -57,7 +57,7 @@ struct DeployConfig {
     source_ip: tako_core::SourceIpMode,
     secrets: HashMap<String, String>,
     storages: HashMap<String, tako_core::StorageBinding>,
-    dns: Option<tako_core::DnsBinding>,
+    ssl: tako_core::SslBinding,
     /// SHA-256 hash of the decrypted secrets for this deploy.
     secrets_hash: String,
     main: String,
@@ -95,7 +95,7 @@ struct BuildPhaseResult {
     manifest_main: String,
     deploy_secrets: HashMap<String, String>,
     deploy_storages: HashMap<String, tako_core::StorageBinding>,
-    deploy_dns: Option<tako_core::DnsBinding>,
+    deploy_ssl: tako_core::SslBinding,
     use_unified_target_process: bool,
     artifacts_by_target: HashMap<String, PathBuf>,
 }
@@ -265,13 +265,17 @@ async fn run_async(
     let routes = required_env_routes(&tako_config, &env)
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
     let source_ip = tako_config.get_source_ip_mode(&env);
+    let ssl_provider = tako_config.get_ssl_provider(&env);
 
-    let dns_result = validate_dns_for_deployment(&routes, &secrets, &env);
-    if dns_result.has_errors() {
-        return Err(format!("DNS errors:\n  {}", dns_result.errors.join("\n  ")).into());
+    let ssl_result = validate_ssl_for_deployment(&routes, ssl_provider, &secrets, &env);
+    if ssl_result.has_errors() {
+        return Err(format!("SSL errors:\n  {}", ssl_result.errors.join("\n  ")).into());
     }
-    for warning in dns_result.warnings {
+    for warning in ssl_result.warnings {
         output::warning(&format!("Validation: {}", warning));
+    }
+    if !output::is_dry_run() {
+        run_cloudflare_ssl_preflight(&env, ssl_provider, &routes, &secrets, &project_dir).await?;
     }
 
     let server_names = if output::is_dry_run() {
@@ -440,7 +444,7 @@ async fn run_async(
         manifest_main,
         deploy_secrets,
         deploy_storages,
-        deploy_dns,
+        deploy_ssl,
         use_unified_target_process: use_unified_js_target_process,
         artifacts_by_target,
     } = build_result.expect("build result should be present");
@@ -461,7 +465,7 @@ async fn run_async(
         source_ip,
         secrets: deploy_secrets,
         storages: deploy_storages,
-        dns: deploy_dns,
+        ssl: deploy_ssl,
         secrets_hash,
         main: manifest_main,
         use_unified_target_process: use_unified_js_target_process,
@@ -636,6 +640,38 @@ async fn run_async(
         }
         Err(format_partial_failure_error(errors.len()).into())
     }
+}
+
+async fn run_cloudflare_ssl_preflight(
+    env: &str,
+    ssl_provider: tako_core::SslProvider,
+    routes: &[String],
+    secrets: &SecretsStore,
+    project_dir: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let ssl = crate::commands::credentials::decrypt_ssl_binding(
+        env,
+        ssl_provider,
+        routes,
+        secrets,
+        Some(project_dir),
+    )?;
+    let Some(token) = ssl.cloudflare_api_token else {
+        return Ok(());
+    };
+
+    let result = output::with_spinner_async_simple("Checking Cloudflare credential", async move {
+        crate::cloudflare::preflight_ssl_cloudflare_credential(ssl_provider, routes, &token).await
+    })
+    .await;
+
+    result.map_err(|error| {
+        format!(
+            "Cloudflare credential check failed: {error}. Run `tako credentials set {} --env {env}` to update it.",
+            crate::config::SSL_CLOUDFLARE_CREDENTIAL_NAME
+        )
+        .into()
+    })
 }
 
 fn git_repo_root(project_dir: &Path) -> Option<PathBuf> {

@@ -205,7 +205,7 @@ fn test_acme_config_with_custom_values() {
 }
 
 #[tokio::test]
-async fn test_wildcard_requires_dns_credentials() {
+async fn test_wildcard_requires_cloudflare_credentials() {
     let (_temp, acme) = create_test_acme();
 
     let result = acme.request_certificate("*.example.com").await;
@@ -228,8 +228,7 @@ async fn test_wildcard_cloudflare_requires_registered_account() {
     };
     let acme = AcmeClient::new(acme_config, cert_manager);
 
-    let dns = tako_core::DnsBinding {
-        provider: tako_core::DnsProvider::Cloudflare,
+    let dns = super::super::dns::DnsBinding {
         cloudflare_api_token: Some("test-token".to_string()),
     };
     let result = acme

@@ -157,6 +157,10 @@ pub struct EnvConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_ip: Option<tako_core::SourceIpMode>,
 
+    /// Certificate provider for public route HTTPS.
+    #[serde(default)]
+    pub ssl: tako_core::SslProvider,
+
     /// Idle timeout in seconds (300 = 5 minutes).
     #[serde(default = "default_idle_timeout")]
     pub idle_timeout: u32,

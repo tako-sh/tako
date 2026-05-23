@@ -7,6 +7,7 @@
 //! - SNI-based certificate selection
 
 mod acme;
+pub(crate) mod cloudflare;
 mod dns;
 mod manager;
 mod self_signed;
@@ -14,6 +15,7 @@ mod sni;
 
 #[allow(unused_imports)]
 pub use acme::{AcmeClient, AcmeConfig, AcmeError, ChallengeHandler, ChallengeTokens};
+pub(crate) use dns::DnsBinding;
 #[allow(unused_imports)]
 pub use manager::{CertError, CertInfo, CertManager, CertManagerConfig};
 #[allow(unused_imports)]

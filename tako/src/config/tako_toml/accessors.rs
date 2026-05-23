@@ -100,6 +100,14 @@ impl Config {
             .unwrap_or_default()
     }
 
+    /// Get effective SSL provider for an environment.
+    pub fn get_ssl_provider(&self, env_name: &str) -> tako_core::SslProvider {
+        self.envs
+            .get(env_name)
+            .map(|env| env.ssl)
+            .unwrap_or_default()
+    }
+
     /// Get merged vars for an environment (global + per-env)
     pub fn get_merged_vars(&self, env_name: &str) -> HashMap<String, String> {
         let mut merged = self.vars.clone();

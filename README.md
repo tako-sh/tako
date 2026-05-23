@@ -49,10 +49,14 @@ tako servers add root@my-server --http-port 8080 --https-port 8443
 Deploy your app:
 
 ```bash
-tako init    # prompts for app name + route, offers wildcard DNS setup, writes tako.toml
+tako init    # prompts for app name + route, offers wildcard HTTPS setup, writes tako.toml
 tako servers add my-server
-# Optional: Cloudflare DNS-01 for wildcard certificates; traffic can stay DNS-only/direct.
-tako dns configure --env production --expires-on "in 90 days"
+# Optional: Let’s Encrypt wildcard certificates via Cloudflare DNS-01; traffic can stay DNS-only/direct.
+# Deploy verifies the token is active and can read the matching Cloudflare zone.
+tako credentials set ssl.cloudflare --env production --expires-on "in 90 days"
+# Optional: Cloudflare Origin CA certificates for Cloudflare-proxied apps.
+# Set ssl = "cloudflare" in tako.toml, then store the provider token:
+tako credentials set ssl.cloudflare --env production --expires-on "in 90 days"
 tako deploy
 ```
 
