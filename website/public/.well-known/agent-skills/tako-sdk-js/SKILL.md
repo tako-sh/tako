@@ -307,7 +307,8 @@ import { Channel } from "tako.sh/client";
 
 // SSE channel — listen to the raw EventSource
 const status = new Channel("status");
-const sub = status.subscribe();
+const token = await getToken();
+const sub = status.subscribe({ authorization: token });
 (sub.raw as EventSource).addEventListener("message", (e) => {
   const msg = JSON.parse(e.data) as { type: string; data: unknown };
   // ...
@@ -316,7 +317,7 @@ sub.close();
 
 // WebSocket channel with params
 const room = new Channel("chat", "ws", { roomId: "room1" });
-const socket = room.connect();
+const socket = room.connect({ authorization: token });
 (socket.raw as WebSocket).addEventListener("message", (e) => {
   const msg = JSON.parse(e.data);
   // ...
@@ -327,6 +328,8 @@ socket.send({ type: "typing", data: { userId: "me" } });
 await room.publish({ type: "msg", data: { text: "hi", userId: "me" } });
 ```
 
+`authorization` is optional. Omit it for public or cookie-auth channels; use `headers.Authorization` when the app expects a custom authorization value.
+
 For React apps, prefer `useChannel` from `tako.sh/react` — it wraps `Channel` with buffered state, reconnects, and an `onMessage` callback.
 
 ### React
@@ -336,9 +339,10 @@ For React apps, prefer `useChannel` from `tako.sh/react` — it wraps `Channel` 
 ```tsx
 import { useChannel } from "tako.sh/react";
 
-function ChatRoom({ room }: { room: string }) {
+function ChatRoom({ room, token }: { room: string; token?: string }) {
   const { messages, status, error } = useChannel<{ body: string }>("chat", {
     params: { roomId: room },
+    authorization: token,
   });
   if (error) return <p>error: {error.message}</p>;
   return (
