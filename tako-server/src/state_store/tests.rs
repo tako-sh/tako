@@ -5,7 +5,7 @@ const TEST_KEY: [u8; 32] = [0xAA; 32];
 
 fn temp_store() -> (TempDir, SqliteStateStore) {
     let temp = TempDir::new().unwrap();
-    let store = SqliteStateStore::new(temp.path().join("tako.db"), TEST_KEY);
+    let store = SqliteStateStore::new(temp.path().join("state.sqlite"), TEST_KEY);
     (temp, store)
 }
 
@@ -292,7 +292,7 @@ fn secrets_are_encrypted_at_rest() {
 #[test]
 fn secrets_encrypted_with_wrong_key_cannot_be_read() {
     let temp = TempDir::new().unwrap();
-    let db_path = temp.path().join("state.sqlite3");
+    let db_path = temp.path().join("state.sqlite");
 
     let store1 = SqliteStateStore::new(db_path.clone(), [0x11; 32]);
     store1.init().unwrap();
@@ -307,7 +307,7 @@ fn secrets_encrypted_with_wrong_key_cannot_be_read() {
 #[test]
 fn migrate_v1_to_current_adds_secret_tables() {
     let temp = TempDir::new().unwrap();
-    let db_path = temp.path().join("state.sqlite3");
+    let db_path = temp.path().join("state.sqlite");
 
     // Create a v1 database manually
     {

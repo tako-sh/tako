@@ -213,7 +213,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Open the SQLite state store (persistent registrations only; runtime state is in-memory).
     let db_path = paths::tako_data_dir()
         .unwrap_or_else(|_| PathBuf::from("."))
-        .join("dev-server.db");
+        .join("dev-server.sqlite");
     match state::DevStateStore::open(db_path) {
         Ok(db) => {
             // Kill any orphaned app processes from a previous (crashed) server run.

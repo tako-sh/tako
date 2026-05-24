@@ -570,7 +570,7 @@ Start (or connect to) a local development session for the current app, backed by
   - If daemon startup fails, `tako dev` reports the last lines from `{TAKO_HOME}/dev-server.log`.
   - `tako dev` waits up to ~15 seconds for the daemon socket after spawn before reporting startup failure.
   - The daemon performs an upfront bind-availability check for its HTTPS listen address and exits immediately with an explicit error when that address is unavailable.
-- `tako dev` **registers** the app with the daemon (selected config path is the unique key, state is persisted in SQLite at `{TAKO_HOME}/dev-server.db`).
+- `tako dev` **registers** the app with the daemon (selected config path is the unique key, state is persisted in SQLite at `{TAKO_HOME}/dev-server.sqlite`).
 - App statuses: `running` (actively serving), `idle` (process stopped, routes retained for wake-on-request), `stopped` (unregistered, routes removed).
 - The app starts immediately when `tako dev` starts (1 local instance) and transitions to idle after 30 minutes of no attached CLI clients.
   - After an idle transition, the next HTTP request triggers wake-on-request: the daemon spawns the app process and routes the request once the app is healthy.
@@ -1476,7 +1476,7 @@ Reference scripts in this repo:
 ├── config.json
 ├── identity.key
 ├── identity.pub
-├── tako.db
+├── state.sqlite
 ├── runtimes/
 │   └── {tool}/{version}/      # Downloaded runtime binaries
 ├── acme/
@@ -2246,7 +2246,7 @@ queue service.
 
 ### Architecture
 
-- **Queue file**: `{tako_data_dir}/apps/<app>/runs.db` — per-app SQLite with WAL. tako-server is the only process that reads/writes; SDKs reach it exclusively via the per-app unix socket.
+- **Queue file**: `{tako_data_dir}/apps/<app>/data/tako/workflows.sqlite` — per-app SQLite with WAL. tako-server is the only process that reads/writes; SDKs reach it exclusively via the per-app unix socket.
 - **Tables**:
   - `runs` — one row per run (status, attempts, lease, payload).
   - `steps` — one row per completed step `(run_id, name, result)`. First-write-wins via `INSERT OR IGNORE` so duplicate saves after a retried RPC don't overwrite.

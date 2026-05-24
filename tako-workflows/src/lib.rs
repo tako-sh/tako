@@ -1,6 +1,6 @@
 //! Durable workflow/task engine.
 //!
-//! Per-app queue stored in SQLite at `{data_dir}/apps/{app}/runs.db`. The
+//! Per-app queue stored in SQLite at `{data_dir}/apps/{app}/data/tako/workflows.sqlite`. The
 //! server writes on enqueue and cron-tick; a separately-supervised per-app
 //! worker process reads the DB and executes handlers.
 //!

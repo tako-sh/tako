@@ -2,7 +2,7 @@ use super::*;
 
 fn temp_store() -> (tempfile::TempDir, DevStateStore) {
     let tmp = tempfile::TempDir::new().unwrap();
-    let store = DevStateStore::open(tmp.path().join("dev-server.db")).unwrap();
+    let store = DevStateStore::open(tmp.path().join("dev-server.sqlite")).unwrap();
     (tmp, store)
 }
 

@@ -25,6 +25,8 @@ use super::enqueue_socket::{
 use super::in_flight::InFlightLimiter;
 use super::supervisor::{WorkerSpec, WorkerSupervisor};
 
+const WORKFLOWS_DB_FILENAME: &str = "workflows.sqlite";
+
 /// The single Tako internal socket. Named after its env var
 /// (`TAKO_INTERNAL_SOCKET`) and shared by all server-side SDK RPCs
 /// (workflow enqueue/worker loop, channel publish). Single source of truth
@@ -102,8 +104,12 @@ impl WorkflowManager {
         self.data_dir.join("apps").join(app)
     }
 
-    pub fn runs_db_path(&self, app: &str) -> PathBuf {
-        self.app_dir(app).join("runs.db")
+    pub fn app_tako_dir(&self, app: &str) -> PathBuf {
+        self.app_dir(app).join("data").join("tako")
+    }
+
+    pub fn workflows_db_path(&self, app: &str) -> PathBuf {
+        self.app_tako_dir(app).join(WORKFLOWS_DB_FILENAME)
     }
 
     /// Server-wide socket path. SDKs connect here.
@@ -173,7 +179,7 @@ impl WorkflowManager {
             return Ok(());
         }
 
-        let db_path = self.runs_db_path(app);
+        let db_path = self.workflows_db_path(app);
         let db = Arc::new(RunsDb::open(&db_path)?);
 
         let spec = spec_fn(db_path);
@@ -216,10 +222,10 @@ impl WorkflowManager {
     /// Stop the worker and remove per-app data files entirely.
     pub async fn delete(&self, app: &str, drain_timeout: Duration) {
         self.stop(app, drain_timeout).await;
-        let dir = self.app_dir(app);
-        let _ = std::fs::remove_file(dir.join("runs.db"));
-        let _ = std::fs::remove_file(dir.join("runs.db-wal"));
-        let _ = std::fs::remove_file(dir.join("runs.db-shm"));
+        let path = self.workflows_db_path(app);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_file_name(format!("{WORKFLOWS_DB_FILENAME}-wal")));
+        let _ = std::fs::remove_file(path.with_file_name(format!("{WORKFLOWS_DB_FILENAME}-shm")));
     }
 
     pub fn supervisor_for(&self, app: &str) -> Option<Arc<WorkerSupervisor>> {
@@ -318,7 +324,16 @@ mod tests {
             .await
             .unwrap();
         assert!(m.has("a"));
-        assert!(m.runs_db_path("a").exists());
+        assert_eq!(
+            m.workflows_db_path("a"),
+            tmp.path()
+                .join("apps")
+                .join("a")
+                .join("data")
+                .join("tako")
+                .join("workflows.sqlite")
+        );
+        assert!(m.workflows_db_path("a").exists());
 
         m.delete("a", Duration::from_secs(1)).await;
     }
@@ -350,13 +365,13 @@ mod tests {
             .unwrap();
         m.stop("a", Duration::from_secs(1)).await;
         assert!(!m.has("a"));
-        assert!(m.runs_db_path("a").exists());
+        assert!(m.workflows_db_path("a").exists());
 
         m.ensure("a", |db| dummy_spec(cwd.clone(), db))
             .await
             .unwrap();
         m.delete("a", Duration::from_secs(1)).await;
-        assert!(!m.runs_db_path("a").exists());
+        assert!(!m.workflows_db_path("a").exists());
     }
 
     #[tokio::test]

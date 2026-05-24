@@ -36,7 +36,7 @@ Routing policy notes:
 - Public HTTP/HTTPS: `--http-port` and `--https-port` (defaults: `80` and `443`)
 - Remote management HTTP: `9844` on the configured Tailscale address
 - Data root: `/opt/tako`
-- State DB: `/opt/tako/tako.db`
+- State DB: `/opt/tako/state.sqlite`
 - Server identity: `/opt/tako/identity.key`, `/opt/tako/identity.pub`
 - Remote management keys: `/opt/tako/management-authorized-keys`
 - App releases: `/opt/tako/apps/<app>/<env>/releases/<version>/`

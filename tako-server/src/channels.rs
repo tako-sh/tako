@@ -82,11 +82,11 @@ mod tests {
 
         assert_eq!(
             app_channels_db_path(data_dir, "my-app/production"),
-            Path::new("/opt/tako/apps/my-app/production/data/tako/channels.sqlite3")
+            Path::new("/opt/tako/apps/my-app/production/data/tako/channels.sqlite")
         );
         assert_eq!(
             app_channels_db_path(data_dir, "my-app/staging"),
-            Path::new("/opt/tako/apps/my-app/staging/data/tako/channels.sqlite3")
+            Path::new("/opt/tako/apps/my-app/staging/data/tako/channels.sqlite")
         );
     }
 
@@ -94,7 +94,7 @@ mod tests {
     fn bare_app_channel_db_path_defaults_to_production_environment() {
         assert_eq!(
             app_channels_db_path(Path::new("/opt/tako"), "my-app"),
-            Path::new("/opt/tako/apps/my-app/production/data/tako/channels.sqlite3")
+            Path::new("/opt/tako/apps/my-app/production/data/tako/channels.sqlite")
         );
     }
 }

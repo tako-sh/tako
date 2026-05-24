@@ -302,7 +302,7 @@ Workflow files live under:
 <app_root>/workflows/
 ```
 
-Dev uses the same architecture as production: `tako-dev-server` owns the runs database and internal socket, while worker subprocesses execute user workflow code.
+Dev uses the same architecture as production: `tako-dev-server` owns the workflow queue database and internal socket, while worker subprocesses execute user workflow code.
 
 Workers are scale-to-zero with a short idle timeout. They start on enqueue or cron tick, exit when idle, and are spawned fresh on the next wake so code edits apply without restarting `tako dev`.
 

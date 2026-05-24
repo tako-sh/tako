@@ -115,7 +115,10 @@ impl ServerState {
         let app_manager = Arc::new(AppManager::new(data_dir.clone()));
         let load_balancer = Arc::new(LoadBalancer::new(app_manager.clone()));
         let device_key = load_or_create_device_key(&data_dir.join("secret.key"))?;
-        let state_store = Arc::new(SqliteStateStore::new(data_dir.join("tako.db"), device_key));
+        let state_store = Arc::new(SqliteStateStore::new(
+            data_dir.join("state.sqlite"),
+            device_key,
+        ));
         state_store.init()?;
         let server_mode = state_store.server_mode()?;
         if server_mode == UpgradeMode::Upgrading {

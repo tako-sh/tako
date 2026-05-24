@@ -304,7 +304,7 @@ fn failed_rolling_update_keeps_previous_release_serving() {
         "failed deploy should restore previous secrets"
     );
 
-    let conn = rusqlite::Connection::open(server.data_dir().join("tako.db")).unwrap();
+    let conn = rusqlite::Connection::open(server.data_dir().join("state.sqlite")).unwrap();
     let ssl_rows: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM app_ssl WHERE app = ?1",

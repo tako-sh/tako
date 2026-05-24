@@ -266,7 +266,7 @@ async fn info_reports_connected_control_clients() {
 /// Helper: create a test State with a temp SQLite DB and return (state, _tmpdir).
 fn test_state() -> (Arc<Mutex<State>>, tempfile::TempDir) {
     let tmp = tempfile::TempDir::new().unwrap();
-    let db_path = tmp.path().join("dev-server.db");
+    let db_path = tmp.path().join("dev-server.sqlite");
     let db = state::DevStateStore::open(db_path).unwrap();
 
     let (shutdown_tx, _shutdown_rx) = watch::channel(false);

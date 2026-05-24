@@ -153,7 +153,7 @@ impl crate::ServerState {
         tracing::info!(app = app_name, "Deleting app");
 
         // Drain workflow resources (worker, cron, enqueue socket) + remove
-        // runs.db BEFORE we nuke app_root — the manager owns those files.
+        // workflow state BEFORE we nuke app_root — the manager owns those files.
         self.workflows
             .delete(app_name, Duration::from_secs(120))
             .await;

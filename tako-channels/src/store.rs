@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{ChannelAuthResponse, ChannelError, ChannelMessage, ChannelPublishPayload};
 
-const CHANNELS_DB_FILENAME: &str = "channels.sqlite3";
+const CHANNELS_DB_FILENAME: &str = "channels.sqlite";
 const INCREMENTAL_VACUUM_PAGES: i64 = 128;
 const WAL_TRUNCATE_DELETED_ROWS_THRESHOLD: usize = 1024;
 

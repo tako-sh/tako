@@ -109,7 +109,11 @@ fn enqueue_honors_custom_max_attempts_and_run_at() {
 #[test]
 fn open_creates_parent_directory() {
     let tmp = tempfile::tempdir().unwrap();
-    let path = tmp.path().join("nested").join("dir").join("runs.db");
+    let path = tmp
+        .path()
+        .join("nested")
+        .join("dir")
+        .join("workflows.sqlite");
     let db = RunsDb::open(&path).unwrap();
     db.enqueue("w", &serde_json::json!({}), &opts()).unwrap();
     assert!(path.exists());

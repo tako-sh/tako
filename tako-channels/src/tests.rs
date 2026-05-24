@@ -140,7 +140,7 @@ fn channel_def_meta_serializes_params_schema_inline() {
 #[test]
 fn channel_store_appends_and_reads_messages() {
     let temp = tempfile::TempDir::new().unwrap();
-    let store = ChannelStore::open(&temp.path().join("channels.sqlite3")).unwrap();
+    let store = ChannelStore::open(&temp.path().join("channels.sqlite")).unwrap();
 
     let first = store
         .append(
@@ -173,7 +173,7 @@ fn channel_store_appends_and_reads_messages() {
 #[test]
 fn channel_store_enables_incremental_auto_vacuum_for_new_dbs() {
     let temp = tempfile::TempDir::new().unwrap();
-    let store = ChannelStore::open(&temp.path().join("channels.sqlite3")).unwrap();
+    let store = ChannelStore::open(&temp.path().join("channels.sqlite")).unwrap();
 
     let mode: i64 = store
         .conn
@@ -187,7 +187,7 @@ fn channel_store_enables_incremental_auto_vacuum_for_new_dbs() {
 #[test]
 fn channel_store_defaults_missing_cursor_to_latest_message() {
     let temp = tempfile::TempDir::new().unwrap();
-    let store = ChannelStore::open(&temp.path().join("channels.sqlite3")).unwrap();
+    let store = ChannelStore::open(&temp.path().join("channels.sqlite")).unwrap();
 
     store
         .append(
@@ -214,7 +214,7 @@ fn channel_store_defaults_missing_cursor_to_latest_message() {
 #[test]
 fn channel_store_rejects_stale_cursors() {
     let temp = tempfile::TempDir::new().unwrap();
-    let db_path = temp.path().join("channels.sqlite3");
+    let db_path = temp.path().join("channels.sqlite");
     let store = ChannelStore::open(&db_path).unwrap();
 
     store
@@ -250,7 +250,7 @@ fn channel_store_rejects_stale_cursors() {
 #[test]
 fn channel_store_persists_lifecycle_and_prunes_inactive_channels() {
     let temp = tempfile::TempDir::new().unwrap();
-    let store = ChannelStore::open(&temp.path().join("channels.sqlite3")).unwrap();
+    let store = ChannelStore::open(&temp.path().join("channels.sqlite")).unwrap();
 
     store
         .sync_channel(
@@ -299,7 +299,7 @@ fn channel_store_reopen_preserves_existing_messages() {
     // Guards the invariant that data persists to disk: opening the same
     // path again (e.g. after a process restart) must see the prior rows.
     let temp = tempfile::TempDir::new().unwrap();
-    let db_path = temp.path().join("channels.sqlite3");
+    let db_path = temp.path().join("channels.sqlite");
 
     {
         let store = ChannelStore::open(&db_path).unwrap();
