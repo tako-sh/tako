@@ -11,11 +11,16 @@ use crate::release::{
     requested_deployment_identity, resolve_release_runtime_bin,
 };
 
+mod encryption;
 mod index;
 mod s3;
 mod scheduler;
 mod snapshot;
 
+use encryption::{
+    active_backup_key, decrypt_backup_file, encrypt_backup_file, find_backup_key,
+    validate_backup_key,
+};
 use index::{backup_index_key, backup_object_prefix, latest_backup};
 use s3::{
     DOWNLOAD_URL_EXPIRES_SECONDS, S3_URL_EXPIRES_SECONDS, download_object, prune_retention,
@@ -80,27 +85,34 @@ impl crate::ServerState {
         let work_dir = tmp_root.join(&backup_id);
         let snapshot_dir = work_dir.join("snapshot");
         let archive_path = work_dir.join("data.tar.zst");
+        let encrypted_archive_path = work_dir.join("data.tar.zst.enc");
+        let backup_key = active_backup_key(&backup)?.clone();
 
         let result: Result<BackupInfo, String> = async {
             let archive_result = tokio::task::spawn_blocking({
                 let data_root = data_paths.root.clone();
                 let snapshot_dir = snapshot_dir.clone();
                 let archive_path = archive_path.clone();
+                let encrypted_archive_path = encrypted_archive_path.clone();
+                let backup_key = backup_key.clone();
                 move || {
                     snapshot_data_tree(&data_root, &snapshot_dir)?;
                     create_backup_archive(&snapshot_dir, &archive_path)?;
-                    sha256_file_hex(&archive_path)
+                    let encryption =
+                        encrypt_backup_file(&archive_path, &encrypted_archive_path, &backup_key)?;
+                    let sha256_hex = sha256_file_hex(&encrypted_archive_path)?;
+                    Ok::<_, String>((sha256_hex, encryption))
                 }
             })
             .await
             .map_err(|e| format!("backup worker failed: {e}"))?;
-            let sha256_hex = archive_result?;
-            let size_bytes = tokio::fs::metadata(&archive_path)
+            let (sha256_hex, encryption) = archive_result?;
+            let size_bytes = tokio::fs::metadata(&encrypted_archive_path)
                 .await
                 .map_err(|e| {
                     format!(
                         "read backup archive metadata {}: {e}",
-                        archive_path.display()
+                        encrypted_archive_path.display()
                     )
                 })?
                 .len();
@@ -108,7 +120,7 @@ impl crate::ServerState {
             let (app_name, environment) = requested_deployment_identity(app);
             let server = self.backup_server_label();
             let prefix = backup_object_prefix(&app_name, &environment, &server);
-            let archive_key = format!("{prefix}/{backup_id}.tar.zst");
+            let archive_key = format!("{prefix}/{backup_id}.tar.zst.enc");
             let manifest_key = format!("{prefix}/{backup_id}.json");
 
             let info = BackupInfo {
@@ -121,11 +133,18 @@ impl crate::ServerState {
                 sha256_hex,
                 archive_key,
                 manifest_key,
+                encryption: Some(encryption),
             };
 
             let client = reqwest::Client::new();
             let mut index = self.read_backup_index(&backup, app).await?;
-            upload_file(&client, &backup.storage, &info.archive_key, &archive_path).await?;
+            upload_file(
+                &client,
+                &backup.storage,
+                &info.archive_key,
+                &encrypted_archive_path,
+            )
+            .await?;
             put_json_object(&client, &backup.storage, &info.manifest_key, &info).await?;
 
             index.backups.retain(|existing| existing.id != info.id);
@@ -244,6 +263,7 @@ impl crate::ServerState {
             .map_err(|e| format!("create restore temp dir {}: {e}", tmp_root.display()))?;
         let work_dir = tmp_root.join(format!("restore-{}", nanoid::nanoid!(8)));
         let archive_path = work_dir.join("data.tar.zst");
+        let encrypted_archive_path = work_dir.join("data.tar.zst.enc");
         let extract_dir = work_dir.join("extracted");
         tokio::fs::create_dir_all(&work_dir)
             .await
@@ -251,15 +271,39 @@ impl crate::ServerState {
 
         let result: Result<BackupInfo, String> = async {
             let client = reqwest::Client::new();
-            download_object(&client, &backup.storage, &info.archive_key, &archive_path).await?;
+            let download_path = if info.encryption.is_some() {
+                encrypted_archive_path.clone()
+            } else {
+                archive_path.clone()
+            };
+            download_object(&client, &backup.storage, &info.archive_key, &download_path).await?;
             let actual_sha256 = tokio::task::spawn_blocking({
-                let archive_path = archive_path.clone();
-                move || sha256_file_hex(&archive_path)
+                let download_path = download_path.clone();
+                move || sha256_file_hex(&download_path)
             })
             .await
             .map_err(|e| format!("restore checksum worker failed: {e}"))??;
             if actual_sha256 != info.sha256_hex {
                 Err("Downloaded backup checksum did not match manifest.".to_string())?;
+            }
+
+            if let Some(encryption) = &info.encryption {
+                let backup_key = find_backup_key(&backup, &encryption.key_id)?.clone();
+                tokio::task::spawn_blocking({
+                    let encrypted_archive_path = encrypted_archive_path.clone();
+                    let archive_path = archive_path.clone();
+                    let encryption = encryption.clone();
+                    move || {
+                        decrypt_backup_file(
+                            &encrypted_archive_path,
+                            &archive_path,
+                            &backup_key,
+                            &encryption,
+                        )
+                    }
+                })
+                .await
+                .map_err(|e| format!("restore decrypt worker failed: {e}"))??;
             }
 
             crate::extract_zstd_archive(&archive_path, &extract_dir)?;
@@ -328,6 +372,12 @@ fn validate_backup_binding(backup: &tako_core::BackupBinding) -> Result<(), Stri
     require_s3_field(&backup.storage.region, "region")?;
     require_s3_field(&backup.storage.access_key_id, "access_key_id")?;
     require_s3_field(&backup.storage.secret_access_key, "secret_access_key")?;
+    if backup.backup_keys.is_empty() {
+        return Err("Backup encryption key is missing.".to_string());
+    }
+    for key in &backup.backup_keys {
+        validate_backup_key(key)?;
+    }
     Ok(())
 }
 

@@ -288,7 +288,7 @@ tako secrets key export --env production
 tako secrets key import --env production
 ```
 
-Each secret entry stores an encrypted value and optional plaintext `expires_on` date metadata. Deploy compares a server secrets hash before sending secrets. If hashes match, secrets are omitted; if they differ, deploy sends decrypted secrets over signed HTTP management and `tako-server` stores them encrypted in SQLite.
+Each secret entry stores an encrypted value and optional plaintext `expires_on` date metadata. Backup keys, when backups are enabled, are also encrypted in `.tako/secrets.json` with the environment key. Deploy compares a server secrets hash before sending secrets. If hashes match, secrets are omitted; if they differ, deploy sends decrypted secrets over signed HTTP management and `tako-server` stores them encrypted in SQLite.
 
 Fresh HTTP instances and workflow workers receive secrets through fd 3. Secret syncs trigger worker restart and HTTP rolling restart.
 
@@ -336,7 +336,7 @@ tako storages credentials prod_backups --env production
 
 Tako backs up the deployed app data tree: `data/app/` for `TAKO_DATA_DIR` and `data/tako/` for Tako-managed channels/workflows state. Backup storage is private and not delivered through fd 3 unless it is also listed under `[envs.<env>].storages`.
 
-Backups run after successful deploys and roughly every 24 hours while the server is running. Retention defaults to 30 days. Objects are stored under `_tako/backups/{app}/{env}/{server}/`, so the same bucket can be shared with regular storage without key conflicts and multiple servers do not overwrite each other.
+Backups run after successful deploys and roughly every 24 hours while the server is running. Retention defaults to 30 days. Archives are encrypted before upload with a Tako-managed `backup_keys` entry protected by the environment key. Objects are stored under `_tako/backups/{app}/{env}/{server}/`, so the same bucket can be shared with regular storage without key conflicts and multiple servers do not overwrite each other.
 
 ```bash
 tako backups status --env production

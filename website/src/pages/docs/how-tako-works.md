@@ -48,7 +48,7 @@ The deploy flow is:
 5. Upload the artifact to each server over signed HTTP.
 6. Ask each server to prepare the release, install production dependencies, and download runtimes when needed.
 7. Run the optional release command once on the leader server.
-8. Sync routes, source-IP mode, secrets, storage bindings, backup binding, and SSL bindings through remote management.
+8. Sync routes, source-IP mode, secrets, storage bindings, backup binding and backup keys, and SSL bindings through remote management.
 9. Start healthy new instances, add them to traffic, then drain old instances.
 10. Finalize the release and create a post-deploy backup when backups are enabled.
 
@@ -155,13 +155,13 @@ Desired instances are runtime state on each server and survive deploys, rollback
 
 ## Secrets And Storage
 
-Project secrets are encrypted in `.tako/secrets.json`. Each environment has a key id, encrypted app secrets, optional encrypted storage credentials, and optional encrypted provider credentials. Expiry metadata is plaintext so deploy can fail early on expired credentials and warn on credentials expiring within 30 days.
+Project secrets are encrypted in `.tako/secrets.json`. Each environment has a key id, encrypted app secrets, optional encrypted backup keys, optional encrypted storage credentials, and optional encrypted provider credentials. Expiry metadata is plaintext so deploy can fail early on expired credentials and warn on credentials expiring within 30 days.
 
 Secrets and storage bindings are stored encrypted in server SQLite. Fresh HTTP instances and workflow workers receive them through fd 3 at spawn time, not through inherited process environment variables.
 
 Storage bindings are declared in `tako.toml` and exposed to JavaScript apps as `tako.storages.<name>`. S3-compatible credentials are encrypted in `.tako/secrets.json`. The built-in `local` resource has no user credentials and serves signed app-local URLs under `/_tako/storages/<binding>/<key>`.
 
-Backups reuse private S3-compatible storage resources but are not SDK bindings unless also declared in `[envs.<env>].storages`. The server backs up `data/app/` and `data/tako/` after successful deploys and roughly every 24 hours, storing archives under `_tako/backups/{app}/{env}/{server}/` with 30-day retention by default.
+Backups reuse private S3-compatible storage resources but are not SDK bindings unless also declared in `[envs.<env>].storages`. The server backs up `data/app/` and `data/tako/` after successful deploys and roughly every 24 hours, encrypting archives before storing them under `_tako/backups/{app}/{env}/{server}/` with 30-day retention by default.
 
 ## Workflows And Channels
 

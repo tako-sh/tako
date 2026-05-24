@@ -131,6 +131,68 @@ fn test_deploy_command_serialization_includes_ssl_binding() {
 }
 
 #[test]
+fn backup_binding_serializes_backup_keys() {
+    let binding = BackupBinding {
+        storage: StorageBinding {
+            provider: crate::StorageProvider::S3,
+            bucket: Some("bucket".to_string()),
+            endpoint: Some("https://s3.example.com".to_string()),
+            region: Some("auto".to_string()),
+            access_key_id: Some("access".to_string()),
+            secret_access_key: Some("secret".to_string()),
+            force_path_style: false,
+            public_base_url: None,
+            path: None,
+            signing_key: None,
+        },
+        backup_keys: vec![BackupKeyBinding {
+            id: "backup-key-0123456789abcdef".to_string(),
+            key_base64: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
+        }],
+        retention_days: DEFAULT_BACKUP_RETENTION_DAYS,
+    };
+
+    let json = serde_json::to_string(&binding).unwrap();
+    assert!(json.contains(r#""backup_keys":[{"id":"backup-key-0123456789abcdef""#));
+    let parsed: BackupBinding = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed.backup_keys.len(), 1);
+    assert_eq!(parsed.backup_keys[0].id, "backup-key-0123456789abcdef");
+}
+
+#[test]
+fn backup_info_serializes_encryption_metadata() {
+    let info = BackupInfo {
+        id: "b1".to_string(),
+        app: "demo".to_string(),
+        environment: "production".to_string(),
+        server: "la".to_string(),
+        created_at_unix_secs: 1_778_220_000,
+        size_bytes: 123,
+        sha256_hex: "abc".to_string(),
+        archive_key: "_tako/backups/demo/production/la/b1.tar.zst.enc".to_string(),
+        manifest_key: "_tako/backups/demo/production/la/b1.json".to_string(),
+        encryption: Some(BackupEncryptionInfo {
+            algorithm: "aes-256-gcm".to_string(),
+            key_id: "backup-key-0123456789abcdef".to_string(),
+            nonce_base64: "nonce".to_string(),
+            tag_base64: "tag".to_string(),
+        }),
+    };
+
+    let json = serde_json::to_string(&info).unwrap();
+    assert!(json.contains(r#""algorithm":"aes-256-gcm""#));
+    assert!(json.contains(r#""key_id":"backup-key-0123456789abcdef""#));
+    let parsed: BackupInfo = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        parsed
+            .encryption
+            .as_ref()
+            .map(|encryption| encryption.key_id.as_str()),
+        Some("backup-key-0123456789abcdef")
+    );
+}
+
+#[test]
 fn test_deploy_command_serialization_includes_source_ip_mode() {
     let cmd = Command::Deploy {
         app: "my-app".to_string(),

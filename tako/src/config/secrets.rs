@@ -1,10 +1,18 @@
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use time::{Date, Duration, Month, OffsetDateTime};
 
 use super::error::{ConfigError, Result};
+
+mod backup_keys;
+mod serialization;
+#[cfg(test)]
+mod tests;
+
+use backup_keys::validate_encrypted_backup_key_value;
+pub use backup_keys::{EncryptedBackupKey, validate_backup_key_id};
 
 const SECRETS_FILE_NAME: &str = "secrets.json";
 pub const SSL_CLOUDFLARE_CREDENTIAL_NAME: &str = "ssl.cloudflare";
@@ -18,6 +26,9 @@ pub const SSL_CLOUDFLARE_CREDENTIAL_NAME: &str = "ssl.cloudflare";
 pub struct EnvironmentSecrets {
     /// Local key id under Tako's data directory.
     pub key_id: String,
+    /// Backup encryption keys, encrypted with this environment key.
+    #[serde(default)]
+    pub backup_keys: Vec<EncryptedBackupKey>,
     /// App secret name to encrypted value.
     #[serde(default)]
     pub app: HashMap<String, EncryptedSecretValue>,
@@ -148,9 +159,10 @@ pub fn current_unix_timestamp() -> i64 {
 /// }
 /// ```
 ///
-/// App secret names, storage resource names, and credential names are plaintext
-/// (allows listing without decryption). Secret values, storage credentials, and
-/// provider credentials are encrypted with AES-256-GCM.
+/// App secret names, storage resource names, credential names, and backup key
+/// ids are plaintext (allows listing without decryption). Secret values,
+/// backup keys, storage credentials, and provider credentials are encrypted
+/// with AES-256-GCM.
 /// Keys are random per environment and stored locally under the environment key id.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct SecretsStore {
@@ -205,6 +217,10 @@ impl SecretsStore {
                 validate_secret_name(secret_name)?;
                 validate_encrypted_secret_value(&format!("Secret '{secret_name}' value"), secret)?;
             }
+            for backup_key in &env_secrets.backup_keys {
+                validate_backup_key_id(&backup_key.id)?;
+                validate_encrypted_backup_key_value(backup_key)?;
+            }
             for (storage_name, credentials) in &env_secrets.storages {
                 super::validate_storage_name(storage_name)?;
                 validate_encrypted_secret_value(
@@ -243,7 +259,7 @@ impl SecretsStore {
                 .map_err(|e| ConfigError::FileWrite(parent.to_path_buf(), e))?;
         }
 
-        let content = serde_json::to_string_pretty(&sorted_environments(&self.environments))?;
+        let content = serialization::to_pretty_json(&self.environments)?;
 
         // Write with restrictive permissions to protect encrypted secrets
         let mut opts = fs::OpenOptions::new();
@@ -320,6 +336,7 @@ impl SecretsStore {
                 .entry(env.to_string())
                 .or_insert_with(|| EnvironmentSecrets {
                     key_id: crate::crypto::generate_key_id(),
+                    backup_keys: Vec::new(),
                     app: HashMap::new(),
                     storages: HashMap::new(),
                     credentials: HashMap::new(),
@@ -337,6 +354,7 @@ impl SecretsStore {
             env.to_string(),
             EnvironmentSecrets {
                 key_id: key_id.to_string(),
+                backup_keys: Vec::new(),
                 app: HashMap::new(),
                 storages: HashMap::new(),
                 credentials: HashMap::new(),
@@ -358,6 +376,7 @@ impl SecretsStore {
 
         // Remove environment if no secrets remain.
         if env_secrets.app.is_empty()
+            && env_secrets.backup_keys.is_empty()
             && env_secrets.storages.is_empty()
             && env_secrets.credentials.is_empty()
         {
@@ -380,6 +399,7 @@ impl SecretsStore {
         // Remove empty environments
         self.environments.retain(|_, env_secrets| {
             !env_secrets.app.is_empty()
+                || !env_secrets.backup_keys.is_empty()
                 || !env_secrets.storages.is_empty()
                 || !env_secrets.credentials.is_empty()
         });
@@ -460,6 +480,7 @@ impl SecretsStore {
     pub fn env_has_encrypted_values(&self, env: &str) -> bool {
         self.environments.get(env).is_some_and(|env_secrets| {
             !env_secrets.app.is_empty()
+                || !env_secrets.backup_keys.is_empty()
                 || !env_secrets.storages.is_empty()
                 || !env_secrets.credentials.is_empty()
         })
@@ -521,6 +542,7 @@ impl SecretsStore {
         };
         env_secrets.credentials.remove(name);
         if env_secrets.app.is_empty()
+            && env_secrets.backup_keys.is_empty()
             && env_secrets.storages.is_empty()
             && env_secrets.credentials.is_empty()
         {
@@ -603,38 +625,6 @@ impl SecretsStore {
             .map(|env_secrets| env_secrets.app.len())
             .sum()
     }
-}
-
-/// Sorted representation for deterministic JSON output
-fn sorted_environments(
-    environments: &HashMap<String, EnvironmentSecrets>,
-) -> BTreeMap<&String, SortedEnvironmentSecrets<'_>> {
-    environments
-        .iter()
-        .map(|(env_name, env_secrets)| {
-            let sorted_app = env_secrets.app.iter().collect::<BTreeMap<_, _>>();
-            let sorted_storages = env_secrets.storages.iter().collect::<BTreeMap<_, _>>();
-            let sorted_credentials = env_secrets.credentials.iter().collect::<BTreeMap<_, _>>();
-            (
-                env_name,
-                SortedEnvironmentSecrets {
-                    key_id: &env_secrets.key_id,
-                    app: sorted_app,
-                    storages: sorted_storages,
-                    credentials: sorted_credentials,
-                },
-            )
-        })
-        .collect()
-}
-
-#[derive(Serialize)]
-struct SortedEnvironmentSecrets<'a> {
-    key_id: &'a str,
-    app: BTreeMap<&'a String, &'a EncryptedSecretValue>,
-    storages: BTreeMap<&'a String, &'a super::EncryptedStorageCredentials>,
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    credentials: BTreeMap<&'a String, &'a EncryptedSecretValue>,
 }
 
 fn normalize_optional_expires_on(expires_on: Option<String>) -> Result<Option<String>> {
@@ -789,6 +779,3 @@ pub fn validate_credential_name(name: &str) -> Result<()> {
         ))),
     }
 }
-
-#[cfg(test)]
-mod tests;

@@ -247,6 +247,12 @@ fn validate_imported_key_for_env(
                 .map_err(|_| format!("{source} does not decrypt {env} secrets."))?;
         }
     }
+    if let Some(encrypted_backup_keys) = secrets.get_backup_keys(env) {
+        for encrypted_key in encrypted_backup_keys {
+            crate::crypto::decrypt(&encrypted_key.value, key)
+                .map_err(|_| format!("{source} does not decrypt {env} backup keys."))?;
+        }
+    }
     if let Some(encrypted_credentials) = secrets.get_env_credentials(env) {
         for encrypted_value in encrypted_credentials.values() {
             crate::crypto::decrypt(&encrypted_value.value, key)
@@ -415,6 +421,9 @@ pub fn ensure_secret_key_available(
     usage_path: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let has_encrypted_values = secrets.get_env(env).is_some_and(|map| !map.is_empty())
+        || secrets
+            .get_backup_keys(env)
+            .is_some_and(|keys| !keys.is_empty())
         || secrets
             .get_storage_credentials_env(env)
             .is_some_and(|map| !map.is_empty())

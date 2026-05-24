@@ -294,6 +294,12 @@ Per-environment encrypted secrets (JSON format, AES-256-GCM encryption):
 {
   "production": {
     "key_id": "0123456789abcdef",
+    "backup_keys": [
+      {
+        "id": "backup-key-0123456789abcdef",
+        "value": "encrypted_value"
+      }
+    ],
     "app": {
       "DATABASE_URL": {
         "value": "encrypted_value",
@@ -333,7 +339,7 @@ Per-environment encrypted secrets (JSON format, AES-256-GCM encryption):
 }
 ```
 
-Each environment has a `key_id` (16 hex characters), an `app` map for app secrets, an optional `storages` map for encrypted storage credentials keyed by storage resource name, and an optional `credentials` map for encrypted provider credentials keyed by credential name. App secret names, storage resource names, and credential names are plaintext. Each encrypted secret field stores a `value` and may store `expires_on`; `value` is encrypted with AES-256-GCM, while `expires_on` is plaintext date metadata. Expiry values are dates (`YYYY-MM-DD`); `in N days` is normalized to the UTC date N days from now. Leaving expiry blank, omitting `--expires-on`, or passing `never` leaves `expires_on` out of `.tako/secrets.json`.
+Each environment has a `key_id` (16 hex characters), optional `backup_keys`, an `app` map for app secrets, an optional `storages` map for encrypted storage credentials keyed by storage resource name, and an optional `credentials` map for encrypted provider credentials keyed by credential name. App secret names, backup key ids, storage resource names, and credential names are plaintext. Each encrypted secret field stores a `value` and may store `expires_on`; `value` is encrypted with AES-256-GCM, while `expires_on` is plaintext date metadata. Backup key `value` fields are encrypted 32-byte backup encryption keys protected by the environment key. Expiry values are dates (`YYYY-MM-DD`); `in N days` is normalized to the UTC date N days from now. Leaving expiry blank, omitting `--expires-on`, or passing `never` leaves `expires_on` out of `.tako/secrets.json`.
 
 Deploy validates expiry before build/deploy work starts. Expired app secrets, expired S3 storage credentials used by the target environment, and expired provider credentials required by the selected certificate provider fail deployment with an update command. Credentials that expire within 30 days produce a deployment warning but do not block the deploy. Required Cloudflare credentials are checked with Cloudflare before build/upload work: deploy verifies token status for Cloudflare SSL and verifies token status plus zone read access for Let’s Encrypt wildcard routes.
 
@@ -390,12 +396,14 @@ region = "auto"
 
 Backup storage reuses declared `[storages.<resource>]` metadata and `.tako/secrets.json` S3 credentials. It must be S3-compatible and private: `provider = "local"` and `public_base_url` are rejected. A backup-only resource can share a bucket with app storage because Tako writes backups under `_tako/backups/{app}/{env}/{server}/`. The `{server}` segment comes from the deployed server identity/name so multiple servers in one environment do not overwrite each other's archives.
 
+Backup archives are encrypted before upload with AES-256-GCM. When backups are enabled, `tako deploy` and `tako backups now` create `backup_keys` for the environment if none exist. The keys are encrypted in `.tako/secrets.json` with the existing environment key; users still export/import only the environment key. The last `backup_keys` entry is used for new backups. Each backup manifest records its `backup_key_id`, so older backups can still be restored while their key remains in `.tako/secrets.json` and is synced to the server.
+
 When enabled, Tako backs up the entire per-app data tree under `{data_dir}/apps/{app}/{env}/data/`:
 
 - `app/` — app-owned data exposed as `TAKO_DATA_DIR`
 - `tako/` — Tako-owned per-app internal state such as channels and workflow SQLite files
 
-SQLite files are snapshotted with SQLite's online `VACUUM INTO` mechanism before archiving, and `-wal`/`-shm` companion files are not included separately. Archives are `tar.zst` files with a SHA-256 manifest and a remote JSON index. Retention defaults to 30 days. The server creates a backup after a successful deploy and then runs due backups roughly every 24 hours while `tako-server` is running. Backup failures after deploy are reported in the finalize response/logs but do not roll back an otherwise successful deploy.
+SQLite files are snapshotted with SQLite's online `VACUUM INTO` mechanism before archiving, and `-wal`/`-shm` companion files are not included separately. Archives are compressed as `tar.zst`, encrypted before upload, and stored with a SHA-256 manifest for the encrypted object plus a remote JSON index. Retention defaults to 30 days. The server creates a backup after a successful deploy and then runs due backups roughly every 24 hours while `tako-server` is running. Backup failures after deploy are reported in the finalize response/logs but do not roll back an otherwise successful deploy.
 
 ### SSL Provider Configuration And Credentials
 
@@ -1080,14 +1088,14 @@ Manage app data backups for the current project.
 tako backups now --env production
 tako backups list --env production
 tako backups status --env production
-tako backups download b123 --env production --server la --output ./backup.tar.zst
+tako backups download b123 --env production --server la --output ./backup.tar.zst.enc
 tako backups restore b123 --env production --server la --yes
 ```
 
 - `tako backups now [--env <env>] [--server <server>]` creates a backup immediately on the selected server(s).
 - `tako backups list [--env <env>] [--server <server>]` lists remote backup index entries, newest first.
 - `tako backups status [--env <env>]` reports whether backups are enabled per mapped server, plus last/next backup timing and retention.
-- `tako backups download <backup-id> [--env <env>] [--server <server>] [--output <path>]` downloads one backup archive. If the environment maps to multiple servers, `--server` is required. The output file defaults to `<backup-id>.tar.zst` and must not already exist.
+- `tako backups download <backup-id> [--env <env>] [--server <server>] [--output <path>]` downloads one backup object. If the environment maps to multiple servers, `--server` is required. Encrypted backups default to `<backup-id>.tar.zst.enc`; unencrypted backups default to `<backup-id>.tar.zst`. The output file must not already exist.
 - `tako backups restore <backup-id> [--env <env>] [--server <server>] [--yes|-y]` stops the selected server's app, replaces its data tree with the archive contents, reconciles workflows, and restarts according to the app's desired instance count. If the environment maps to multiple servers, `--server` is required.
 
 All backup commands default to `production`, require project context, and target the remote deployment id `{app}/{env}`. Backup commands use signed HTTP remote management, not SSH.
@@ -1156,7 +1164,7 @@ Deploy flow helpers:
    - Ask the server for a release upload plan over signed HTTP. If the release is not already present, upload the target-specific artifact to `POST /release-artifact`; the server verifies the declared size and SHA-256 digest, extracts the artifact into the release directory, and links release logs to the app's shared log directory.
    - Query server for the app's current secrets hash; if it matches the local secrets hash, skip sending secrets (server keeps existing). If hashes differ (or app is new), include decrypted secrets in the deploy command.
    - Include the decrypted SSL binding in the deploy command. If the binding has a Cloudflare token, `tako-server` stores it encrypted for certificate operations for that deployed app. Otherwise, the server clears stored SSL credentials for that app.
-   - Include the decrypted backup binding when `[envs.<env>].backup` is configured. If backup is omitted, `tako-server` clears any previous backup config for that deployed app.
+   - Include the decrypted backup binding and backup keys when `[envs.<env>].backup` is configured. If backup is omitted, `tako-server` clears any previous backup config for that deployed app.
    - `tako-server` acquires a per-app deploy lock in memory, reads non-secret runtime/app config from release `app.json`, creates per-app runtime data directories, and runs the runtime plugin's production install command
    - If another deploy for the same app environment is already running on that server, the deploy command fails immediately with a retry message
 10. Run release command on the leader server (when configured):
@@ -1777,6 +1785,12 @@ Response:
   },
   "backup": {
     "retention_days": 30,
+    "backup_keys": [
+      {
+        "id": "backup-key-0123456789abcdef",
+        "key_base64": "..."
+      }
+    ],
     "storage": {
       "provider": "s3",
       "bucket": "my-app-prod",
@@ -1790,12 +1804,16 @@ Response:
 }
 ```
 
-The `backup` field is optional. When present, the server stores the private backup target encrypted for that deployed app. When absent or `null`, the server clears backup configuration for the app.
+The `backup` field is optional. When present, the server stores the private backup target and backup encryption keys encrypted for that deployed app. When absent or `null`, the server clears backup configuration for the app.
 
 - `backup_now`, `list_backups`, `backup_status`, `backup_download_url`, and `restore_backup`:
 
 ```json
-{ "command": "backup_now", "app": "my-app/production" }
+{
+  "command": "backup_now",
+  "app": "my-app/production",
+  "backup": null
+}
 ```
 
 ```json
@@ -1822,7 +1840,7 @@ The `backup` field is optional. When present, the server stores the private back
 }
 ```
 
-`backup_now` creates and uploads a private archive for the app's data tree on that server. `list_backups` reads the remote backup index. `backup_status` reports enabled/disabled state, retention, last backup, and next due time. `backup_download_url` returns a short-lived private archive URL. `restore_backup` stops the app on that server, verifies the archive SHA-256, replaces the app data tree, reconciles workflows, and restarts according to the app's desired instance count.
+`backup_now` stores the provided backup binding when present, then creates and uploads an encrypted private archive for the app's data tree on that server. `list_backups` reads the remote backup index. `backup_status` reports enabled/disabled state, retention, last backup, and next due time. `backup_download_url` returns a short-lived private archive URL. `restore_backup` stops the app on that server, verifies the encrypted archive SHA-256, decrypts it, replaces the app data tree, reconciles workflows, and restarts according to the app's desired instance count.
 
 - `scale` (updates the desired instance count for an app on one server):
 

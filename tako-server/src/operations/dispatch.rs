@@ -114,16 +114,29 @@ impl crate::ServerState {
                     return resp;
                 }
                 self.deploy_app(
-                    &app, &version, &path, routes, source_ip, secrets, storages, ssl, backup,
+                    &app,
+                    &version,
+                    &path,
+                    routes,
+                    source_ip,
+                    secrets,
+                    storages,
+                    ssl,
+                    backup.map(|backup| *backup),
                 )
                 .await
             }
-            Command::BackupNow { app } => {
+            Command::BackupNow { app, backup } => {
                 if let Err(msg) = validate_app_name(&app) {
                     return Response::error(msg);
                 }
                 if let Some(resp) = self.reject_mutating_when_upgrading("backup-now").await {
                     return resp;
+                }
+                if let Some(backup) = backup.as_deref()
+                    && let Err(error) = self.state_store.set_backup(&app, Some(backup))
+                {
+                    return Response::error(format!("Failed to store backup config: {error}"));
                 }
                 self.backup_now(&app).await
             }

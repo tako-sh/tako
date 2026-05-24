@@ -200,10 +200,9 @@ describe("channels", () => {
       eventSourceFactory,
     });
 
-    expect(eventSourceFactory).toHaveBeenCalledWith(
-      "https://app.example.com/_tako/channels/chat",
-      { headers: { Authorization: "Bearer token-123" } },
-    );
+    expect(eventSourceFactory).toHaveBeenCalledWith("https://app.example.com/_tako/channels/chat", {
+      headers: { Authorization: "Bearer token-123" },
+    });
   });
 
   test("subscribe keeps fetch-based SSE alive after the stream ends", async () => {

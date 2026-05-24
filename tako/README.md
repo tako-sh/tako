@@ -58,7 +58,7 @@ Operational behavior highlights:
 - `tako deploy` writes `app.json` in the deployed app directory and `tako-server` uses it to resolve the runtime start command.
 - `tako releases list` shows release/build history for the current app and environment with commit metadata when available.
 - `tako releases rollback <release-id>` rolls target servers back to a previous release id using the normal rolling-update path.
-- `tako backups now/list/status/download/restore` manages private app data backups configured with `[envs.<env>].backup`.
+- `tako backups now/list/status/download/restore` manages encrypted private app data backups configured with `[envs.<env>].backup`; backup keys live encrypted in `.tako/secrets.json`.
 - `tako servers add` expects a Tailscale MagicDNS name or Tailscale IP, verifies `tako@host` SSH recovery access, enrolls the authenticated SSH key for signed remote management, verifies private management HTTP, then stores detected target metadata (`arch`, `libc`) in each `[[servers]]` entry in `~/.tako/config.toml`. Use `--install` to install or repair `tako-server` over SSH before adding. Encrypted local SSH keys prompt interactively; pass `--ssh-passphrase` for one-line commands.
 - `tako deploy` requires valid target metadata for each selected server and does not probe targets during deploy.
 - Production environments use Let’s Encrypt certificates by default. Run `tako credentials set ssl.cloudflare --env <env>` for wildcard routes that need Cloudflare DNS-01, or set `ssl = "cloudflare"` and store the same credential to use Cloudflare Origin CA certificates. Deploy verifies required Cloudflare tokens are active before build/upload; Let’s Encrypt wildcard routes also verify zone read access.

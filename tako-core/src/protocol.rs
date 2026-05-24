@@ -150,11 +150,16 @@ pub enum Command {
         /// Private backup target for this app/environment. When absent, any
         /// existing backup configuration for the app is cleared.
         #[serde(default)]
-        backup: Option<BackupBinding>,
+        backup: Option<Box<BackupBinding>>,
     },
 
-    /// Create a backup for the app immediately using its configured backup target.
-    BackupNow { app: String },
+    /// Create a backup for the app immediately. When backup is provided, the
+    /// server stores it before running the backup.
+    BackupNow {
+        app: String,
+        #[serde(default)]
+        backup: Option<Box<BackupBinding>>,
+    },
 
     /// List backups recorded in the app's remote backup index.
     ListBackups { app: String },
@@ -450,12 +455,28 @@ impl Default for SslBinding {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BackupBinding {
     pub storage: StorageBinding,
+    #[serde(default)]
+    pub backup_keys: Vec<BackupKeyBinding>,
     #[serde(default = "default_backup_retention_days")]
     pub retention_days: u16,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackupKeyBinding {
+    pub id: String,
+    pub key_base64: String,
+}
+
 fn default_backup_retention_days() -> u16 {
     DEFAULT_BACKUP_RETENTION_DAYS
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BackupEncryptionInfo {
+    pub algorithm: String,
+    pub key_id: String,
+    pub nonce_base64: String,
+    pub tag_base64: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -469,6 +490,8 @@ pub struct BackupInfo {
     pub sha256_hex: String,
     pub archive_key: String,
     pub manifest_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encryption: Option<BackupEncryptionInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

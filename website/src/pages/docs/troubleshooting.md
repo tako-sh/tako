@@ -190,7 +190,7 @@ Backup-only S3 resources use the same encrypted credential store but do not need
 tako storages credentials prod_backups --env production
 ```
 
-Backups require `backup = { storage = "prod_backups" }`, a declared private S3-compatible resource, and current credentials. `public_base_url` and `local` backup storage are rejected.
+Backups require `backup = { storage = "prod_backups" }`, a declared private S3-compatible resource, current credentials, and backup keys encrypted in `.tako/secrets.json`. `tako deploy` and `tako backups now` create backup keys automatically when needed. `public_base_url` and `local` backup storage are rejected.
 
 For local storage:
 
@@ -422,7 +422,7 @@ tako backups download <backup-id> --env production --server prod-a
 tako backups restore <backup-id> --env production --server prod-a --yes
 ```
 
-Use `tako backups list --env production` to see backup ids. Backup objects are stored under `_tako/backups/{app}/{env}/{server}/`; a backup from one server is not automatically restored to every server.
+Use `tako backups list --env production` to see backup ids. Backup objects are encrypted and stored under `_tako/backups/{app}/{env}/{server}/`; a backup from one server is not automatically restored to every server.
 
 ## Delete Is Ambiguous
 

@@ -216,7 +216,7 @@ async fn run_async(
     let ValidationResult {
         tako_config,
         mut servers,
-        secrets,
+        mut secrets,
         env,
         warnings,
     } = validation;
@@ -327,6 +327,12 @@ async fn run_async(
     // the live viewport.
     if !output::is_dry_run() {
         crate::commands::secret::ensure_secret_key_available(&env, &secrets, Some(&project_dir))?;
+        crate::commands::storage::ensure_backup_keys_for_env(
+            &project_dir,
+            &env,
+            &tako_config,
+            &mut secrets,
+        )?;
     }
 
     let deploy_task_tree = should_use_deploy_task_tree()

@@ -247,6 +247,10 @@ fn set_and_get_backup_round_trip() {
             path: None,
             signing_key: None,
         },
+        backup_keys: vec![tako_core::BackupKeyBinding {
+            id: "backup-key-0123456789abcdef".to_string(),
+            key_base64: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
+        }],
         retention_days: 30,
     };
 
@@ -274,6 +278,10 @@ fn set_backup_none_clears_existing_backup() {
             path: None,
             signing_key: None,
         },
+        backup_keys: vec![tako_core::BackupKeyBinding {
+            id: "backup-key-0123456789abcdef".to_string(),
+            key_base64: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
+        }],
         retention_days: 30,
     };
 

@@ -108,7 +108,24 @@ async fn run_async(
                 &tako_config,
                 &servers,
             )?;
-            backup_now(&target, &servers).await
+            let backup = if output::is_dry_run() {
+                None
+            } else {
+                let mut secrets = crate::config::SecretsStore::load_from_dir(&context.project_dir)?;
+                crate::commands::storage::ensure_backup_keys_for_env(
+                    &context.project_dir,
+                    &target.env,
+                    &tako_config,
+                    &mut secrets,
+                )?;
+                crate::commands::storage::decrypt_backup_binding(
+                    &target.env,
+                    &tako_config,
+                    &secrets,
+                    Some(&context.project_dir),
+                )?
+            };
+            backup_now(&target, &servers, backup).await
         }
         BackupCommands::List { env, server } => {
             let target = resolve_backup_target(
@@ -161,6 +178,7 @@ async fn run_async(
 async fn backup_now(
     target: &target::BackupTarget,
     servers: &ServersToml,
+    backup: Option<tako_core::BackupBinding>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     output::section("Backups");
     output::info(&format!(
@@ -178,6 +196,7 @@ async fn backup_now(
         servers,
         Command::BackupNow {
             app: target.remote_app_name.clone(),
+            backup: backup.map(Box::new),
         },
         "backup_now",
         &format!(
@@ -325,8 +344,6 @@ async fn download_backup(
     let server = servers
         .get(&server_name)
         .ok_or_else(|| format!("Server '{}' not found in config.toml", server_name))?;
-    let output_path = output_path.unwrap_or_else(|| PathBuf::from(format!("{backup_id}.tar.zst")));
-
     output::section("Backups");
     output::info(&format!(
         "{} ({}) from {}",
@@ -335,6 +352,8 @@ async fn download_backup(
         output::strong(&server_name)
     ));
     if output::is_dry_run() {
+        let output_path =
+            output_path.unwrap_or_else(|| PathBuf::from(format!("{backup_id}.tar.zst.enc")));
         output::dry_run_skip(&format!("Download backup to {}", output_path.display()));
         return Ok(());
     }
@@ -348,6 +367,13 @@ async fn download_backup(
         "backup_download_url",
     )
     .await?;
+    let output_path = output_path.unwrap_or_else(|| {
+        if download.backup.encryption.is_some() {
+            PathBuf::from(format!("{backup_id}.tar.zst.enc"))
+        } else {
+            PathBuf::from(format!("{backup_id}.tar.zst"))
+        }
+    });
 
     let bytes = output::with_spinner_async(
         "Downloading backup",
