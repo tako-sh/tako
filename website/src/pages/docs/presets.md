@@ -18,7 +18,7 @@ Presets are intentionally small. Runtime plugins own production install commands
 | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Runtime plugin | Runtime id, language, entrypoint candidates, runtime download, package manager, production install, start command, default build command, default dev command, runtime env vars. |
 | Preset         | Framework alias, default deployed `main`, default `assets`, optional dev command, and optional runtime-local dev override.                                                       |
-| `tako.toml`    | App choice of runtime and preset, explicit overrides, routes, vars, build stages, storage, SSL provider, source-IP mode, and deploy targets.                                     |
+| `tako.toml`    | App choice of runtime and preset, explicit overrides, routes, vars, build stages, storage, backups, SSL provider, source-IP mode, and deploy targets.                            |
 
 This split keeps presets predictable and keeps runtime behavior consistent across frameworks.
 

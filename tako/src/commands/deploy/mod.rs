@@ -58,6 +58,7 @@ struct DeployConfig {
     secrets: HashMap<String, String>,
     storages: HashMap<String, tako_core::StorageBinding>,
     ssl: tako_core::SslBinding,
+    backup: Option<tako_core::BackupBinding>,
     /// SHA-256 hash of the decrypted secrets for this deploy.
     secrets_hash: String,
     main: String,
@@ -96,6 +97,7 @@ struct BuildPhaseResult {
     deploy_secrets: HashMap<String, String>,
     deploy_storages: HashMap<String, tako_core::StorageBinding>,
     deploy_ssl: tako_core::SslBinding,
+    deploy_backup: Option<tako_core::BackupBinding>,
     use_unified_target_process: bool,
     artifacts_by_target: HashMap<String, PathBuf>,
 }
@@ -445,6 +447,7 @@ async fn run_async(
         deploy_secrets,
         deploy_storages,
         deploy_ssl,
+        deploy_backup,
         use_unified_target_process: use_unified_js_target_process,
         artifacts_by_target,
     } = build_result.expect("build result should be present");
@@ -466,6 +469,7 @@ async fn run_async(
         secrets: deploy_secrets,
         storages: deploy_storages,
         ssl: deploy_ssl,
+        backup: deploy_backup,
         secrets_hash,
         main: manifest_main,
         use_unified_target_process: use_unified_js_target_process,

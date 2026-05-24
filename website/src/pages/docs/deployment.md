@@ -77,6 +77,7 @@ name = "dashboard"
 routes = ["dashboard.example.com", "*.dashboard.example.com"]
 servers = ["prod-a", "prod-b"]
 source_ip = "direct"
+backup = { storage = "prod_backups" }
 idle_timeout = 300
 
 [envs.staging]
@@ -108,6 +109,7 @@ Before build or upload, deploy validates:
 - all server names exist and have target metadata
 - app secrets can be decrypted when required
 - storage credentials can be decrypted when configured
+- backup storage credentials can be decrypted when backups are configured
 - Provider credentials exist when Cloudflare SSL is selected or Let’s Encrypt wildcard routes require Cloudflare DNS-01
 - expiring or expired credentials are surfaced before work starts
 - required Cloudflare tokens are active; Let’s Encrypt wildcard routes also check zone read access
@@ -192,6 +194,7 @@ On each server, rolling update:
 5. Repeats until the target count is on the new release.
 6. Updates `current` to the new release.
 7. Cleans up releases older than 30 days.
+8. Creates a post-deploy app data backup when backups are enabled.
 
 Health checks use:
 
@@ -309,6 +312,39 @@ Storage bindings and non-secret S3 metadata live in `tako.toml`. S3 credentials 
 Deploy fails early if selected S3 credentials are expired, warns if they expire within 30 days, rejects local storage on multi-server deploy environments, sends runtime bindings over signed HTTP management, and stores server-side bindings encrypted in SQLite.
 
 Fresh HTTP instances and workflow workers receive storage bindings through fd 3 alongside secrets.
+
+## Backups
+
+Enable app data backups by pointing an environment at a private S3-compatible storage resource:
+
+```toml
+[envs.production]
+backup = { storage = "prod_backups" }
+
+[storages.prod_backups]
+provider = "s3"
+bucket = "app-data"
+endpoint = "https://<account>.r2.cloudflarestorage.com"
+region = "auto"
+```
+
+Set backup-only credentials without exposing the resource to app code:
+
+```bash
+tako storages credentials prod_backups --env production
+```
+
+Tako backs up the deployed app data tree: `data/app/` for `TAKO_DATA_DIR` and `data/tako/` for Tako-managed channels/workflows state. Backup storage is private and not delivered through fd 3 unless it is also listed under `[envs.<env>].storages`.
+
+Backups run after successful deploys and roughly every 24 hours while the server is running. Retention defaults to 30 days. Objects are stored under `_tako/backups/{app}/{env}/{server}/`, so the same bucket can be shared with regular storage without key conflicts and multiple servers do not overwrite each other.
+
+```bash
+tako backups status --env production
+tako backups now --env production
+tako backups list --env production --server prod-a
+tako backups download <backup-id> --env production --server prod-a
+tako backups restore <backup-id> --env production --server prod-a --yes
+```
 
 ## Images
 

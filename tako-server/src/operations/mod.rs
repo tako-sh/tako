@@ -1,3 +1,4 @@
+mod backup;
 mod deploy;
 mod dispatch;
 mod lifecycle;

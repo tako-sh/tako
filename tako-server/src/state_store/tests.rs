@@ -230,6 +230,60 @@ fn set_and_get_secrets_round_trip() {
 }
 
 #[test]
+fn set_and_get_backup_round_trip() {
+    let (_temp, store) = temp_store();
+    store.init().unwrap();
+
+    let backup = tako_core::BackupBinding {
+        storage: tako_core::StorageBinding {
+            provider: tako_core::StorageProvider::S3,
+            bucket: Some("demo-backups".to_string()),
+            endpoint: Some("https://s3.example.com".to_string()),
+            region: Some("us-east-1".to_string()),
+            access_key_id: Some("key".to_string()),
+            secret_access_key: Some("secret".to_string()),
+            force_path_style: false,
+            public_base_url: None,
+            path: None,
+            signing_key: None,
+        },
+        retention_days: 30,
+    };
+
+    store.set_backup("my-app", Some(&backup)).unwrap();
+
+    let loaded = store.get_backup("my-app").unwrap().unwrap();
+    assert_eq!(loaded, backup);
+}
+
+#[test]
+fn set_backup_none_clears_existing_backup() {
+    let (_temp, store) = temp_store();
+    store.init().unwrap();
+
+    let backup = tako_core::BackupBinding {
+        storage: tako_core::StorageBinding {
+            provider: tako_core::StorageProvider::S3,
+            bucket: Some("demo-backups".to_string()),
+            endpoint: Some("https://s3.example.com".to_string()),
+            region: Some("us-east-1".to_string()),
+            access_key_id: Some("key".to_string()),
+            secret_access_key: Some("secret".to_string()),
+            force_path_style: false,
+            public_base_url: None,
+            path: None,
+            signing_key: None,
+        },
+        retention_days: 30,
+    };
+
+    store.set_backup("my-app", Some(&backup)).unwrap();
+    store.set_backup("my-app", None).unwrap();
+
+    assert!(store.get_backup("my-app").unwrap().is_none());
+}
+
+#[test]
 fn get_secrets_returns_empty_when_not_set() {
     let (_temp, store) = temp_store();
     store.init().unwrap();

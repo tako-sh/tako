@@ -23,6 +23,7 @@ impl crate::ServerState {
         secrets: Option<HashMap<String, String>>,
         storages: Option<HashMap<String, tako_core::StorageBinding>>,
         ssl: tako_core::SslBinding,
+        backup: Option<tako_core::BackupBinding>,
     ) -> Response {
         tracing::info!(app = app_name, version = version, "Deploying app");
 
@@ -104,6 +105,16 @@ impl crate::ServerState {
         } else {
             None
         };
+        let previous_backup = if existing_app.is_some() {
+            match self.state_store.get_backup(app_name) {
+                Ok(value) => value,
+                Err(error) => {
+                    return Response::error(format!("Failed to read backup config: {error}"));
+                }
+            }
+        } else {
+            None
+        };
         let rollback_snapshot = if let Some(existing) = existing_app.as_ref() {
             let previous_config = existing.config.read().clone();
             let previous_routes = {
@@ -116,6 +127,7 @@ impl crate::ServerState {
                 previous_routes,
                 previous_state,
                 previous_ssl,
+                previous_backup,
             ))
         } else {
             None
@@ -137,6 +149,9 @@ impl crate::ServerState {
                 return Response::error(e);
             }
             if let Err(e) = self.persist_ssl_binding(app_name, &ssl) {
+                return Response::error(e);
+            }
+            if let Err(e) = self.persist_backup_binding(app_name, backup.as_ref()) {
                 return Response::error(e);
             }
             config.secrets = secrets;
@@ -167,6 +182,9 @@ impl crate::ServerState {
                 return Response::error(e);
             }
             if let Err(e) = self.persist_ssl_binding(app_name, &ssl) {
+                return Response::error(e);
+            }
+            if let Err(e) = self.persist_backup_binding(app_name, backup.as_ref()) {
                 return Response::error(e);
             }
             config.secrets = secrets;
@@ -224,6 +242,7 @@ impl crate::ServerState {
                             previous_routes,
                             previous_state,
                             previous_ssl,
+                            previous_backup,
                         )) = rollback_snapshot
                         {
                             self.restore_failed_rollout_snapshot(
@@ -233,6 +252,7 @@ impl crate::ServerState {
                                 previous_routes,
                                 previous_state,
                                 previous_ssl,
+                                previous_backup,
                                 error.clone(),
                             )
                             .await;
@@ -262,6 +282,7 @@ impl crate::ServerState {
                             previous_routes,
                             previous_state,
                             previous_ssl,
+                            previous_backup,
                         )) = rollback_snapshot
                         {
                             self.restore_failed_rollout_snapshot(
@@ -271,6 +292,7 @@ impl crate::ServerState {
                                 previous_routes,
                                 previous_state,
                                 previous_ssl,
+                                previous_backup,
                                 error.clone(),
                             )
                             .await;
@@ -331,6 +353,7 @@ impl crate::ServerState {
                             previous_routes,
                             previous_state,
                             previous_ssl,
+                            previous_backup,
                         )) = rollback_snapshot
                         {
                             self.restore_failed_rollout_snapshot(
@@ -340,6 +363,7 @@ impl crate::ServerState {
                                 previous_routes,
                                 previous_state,
                                 previous_ssl,
+                                previous_backup,
                                 result
                                     .error
                                     .clone()
@@ -361,8 +385,13 @@ impl crate::ServerState {
                     }
                 }
                 Err(e) => {
-                    if let Some((previous_config, previous_routes, previous_state, previous_ssl)) =
-                        rollback_snapshot
+                    if let Some((
+                        previous_config,
+                        previous_routes,
+                        previous_state,
+                        previous_ssl,
+                        previous_backup,
+                    )) = rollback_snapshot
                     {
                         self.restore_failed_rollout_snapshot(
                             app_name,
@@ -371,6 +400,7 @@ impl crate::ServerState {
                             previous_routes,
                             previous_state,
                             previous_ssl,
+                            previous_backup,
                             e.to_string(),
                         )
                         .await;
@@ -427,6 +457,16 @@ impl crate::ServerState {
         Ok(())
     }
 
+    fn persist_backup_binding(
+        &self,
+        app_name: &str,
+        backup: Option<&tako_core::BackupBinding>,
+    ) -> Result<(), String> {
+        self.state_store
+            .set_backup(app_name, backup)
+            .map_err(|e| format!("Failed to store backup config: {e}"))
+    }
+
     async fn restore_failed_rollout_snapshot(
         &self,
         app_name: &str,
@@ -435,6 +475,7 @@ impl crate::ServerState {
         previous_routes: Vec<String>,
         previous_state: AppState,
         previous_ssl: Option<tako_core::SslBinding>,
+        previous_backup: Option<tako_core::BackupBinding>,
         error: String,
     ) {
         let previous_release_path =
@@ -462,6 +503,16 @@ impl crate::ServerState {
                     tracing::warn!(app = app_name, "Failed to clear restored SSL: {}", e);
                 }
             }
+        }
+        if let Err(e) = self
+            .state_store
+            .set_backup(app_name, previous_backup.as_ref())
+        {
+            tracing::warn!(
+                app = app_name,
+                "Failed to restore previous backup config: {}",
+                e
+            );
         }
         {
             let mut route_table = self.routes.write().await;

@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 
 use crate::commands::{
-    self, credentials, delete, releases, scale, secret, server, storage, upgrade,
+    self, backups, credentials, delete, releases, scale, secret, server, storage, upgrade,
 };
 use clap::CommandFactory;
 
@@ -133,6 +133,10 @@ pub enum Commands {
     #[command(subcommand)]
     Storages(storage::StorageCommands),
 
+    /// App data backup commands
+    #[command(subcommand)]
+    Backups(backups::BackupCommands),
+
     /// Provider credentials used by Tako
     #[command(subcommand, visible_alias = "creds")]
     Credentials(credentials::CredentialCommands),
@@ -253,6 +257,7 @@ impl Cli {
             Commands::Servers(cmd) => server::run(cmd),
             Commands::Secrets(cmd) => secret::run(cmd, self.config.as_deref()),
             Commands::Storages(cmd) => storage::run(cmd, self.config.as_deref()),
+            Commands::Backups(cmd) => backups::run(cmd, self.config.as_deref()),
             Commands::Credentials(cmd) => credentials::run(cmd, self.config.as_deref()),
             Commands::Releases(cmd) => releases::run(cmd, self.config.as_deref()),
             Commands::Upgrade => upgrade::run(),

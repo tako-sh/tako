@@ -17,6 +17,7 @@ mod lb;
 mod management_auth;
 mod management_http;
 mod metrics;
+mod object_storage;
 mod operations;
 mod paths;
 mod proxy;

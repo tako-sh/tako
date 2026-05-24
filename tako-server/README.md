@@ -17,6 +17,7 @@ Rust crate for the remote Tako runtime and proxy.
 - Validate app ids, release ids, and deploy paths at the management socket boundary.
 - Persist app runtime registration (config/routes + release metadata) to SQLite and restore it on restart.
 - Read non-secret env vars from release `app.json` and secrets from encrypted SQLite state, then push secrets to instances over the internal HTTP endpoint.
+- Create, index, prune, download, and restore private app data backups when an app environment enables backups.
 - Serve durable channel pub-sub over `GET /_tako/channels/<name>` using SSE or WebSocket negotiation, with bounded app/env replay history stored locally.
 - Serve public optimized WebP image URLs under `/_tako/image`, with optional AVIF when configured, request guardrails, short-lived source caching, queued isolated child-process transforms, same-key in-flight dedupe, and a pruned origin disk cache for successful variants.
 - Persist server upgrade mode in SQLite and reject mutating commands while upgrading.
@@ -40,6 +41,7 @@ Routing policy notes:
 - Server identity: `/opt/tako/identity.key`, `/opt/tako/identity.pub`
 - Remote management keys: `/opt/tako/management-authorized-keys`
 - App releases: `/opt/tako/apps/<app>/<env>/releases/<version>/`
+- App data: `/opt/tako/apps/<app>/<env>/data/app/` and `/opt/tako/apps/<app>/<env>/data/tako/`
 - Image source cache: in-memory, scoped to each app release.
 - Image transform cache: system temp directory, usually `/tmp/tako-image-cache`.
 

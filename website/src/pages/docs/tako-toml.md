@@ -8,7 +8,7 @@ description: "Complete tako.toml reference covering routes, runtime settings, bu
 
 # `tako.toml` Reference
 
-`tako.toml` is the app config for identity, runtime selection, presets, builds, routes, non-secret variables, workflow workers, release commands, images, storage bindings, and deploy targets.
+`tako.toml` is the app config for identity, runtime selection, presets, builds, routes, non-secret variables, workflow workers, release commands, images, storage bindings, backups, and deploy targets.
 
 App-scoped commands read `./tako.toml` by default. Pass `-c` or `--config <CONFIG>` to choose another file; if the value has no `.toml` suffix, Tako appends it. The selected file's parent directory becomes the app directory.
 
@@ -74,6 +74,7 @@ storages = { uploads = "dev_uploads" }
 routes = ["app.example.com", "*.app.example.com"]
 servers = ["prod-a", "prod-b"]
 storages = { uploads = "prod_uploads" }
+backup = { storage = "prod_uploads" }
 source_ip = "direct"
 idle_timeout = 300
 
@@ -91,25 +92,25 @@ workers = 2
 
 ## Top-Level Fields
 
-| Field             | Type            | Meaning                                                                                                |
-| ----------------- | --------------- | ------------------------------------------------------------------------------------------------------ |
-| `name`            | string          | Stable app identity. Defaults to the config file's parent directory name.                              |
-| `runtime`         | string          | Runtime override: `bun`, `node`, or `go`. Add `@<version>` to pin deploys, for example `bun@1.2.3`.    |
-| `package_manager` | string          | JavaScript package manager override, optionally with a version such as `pnpm@9.1.0`.                   |
-| `preset`          | string          | Runtime-local official preset alias such as `tanstack-start`, `vite`, or `nextjs`.                     |
-| `dev`             | string array    | Custom `tako dev` command. Overrides preset and runtime dev defaults.                                  |
-| `app_root`        | string          | JS-only source root for `channels/` and `workflows/`. Defaults to `src`; use `.` for root-level files. |
-| `main`            | string          | Runtime entrypoint override written to deployed `app.json`.                                            |
-| `assets`          | string array    | Extra asset directories merged into deployed `public/`.                                                |
-| `release`         | string          | One-shot command run on the leader server before rolling update.                                       |
-| `build`           | table           | Single build command configuration.                                                                    |
-| `build_stages`    | array of tables | Multi-stage build configuration. Mutually exclusive with `build.run`.                                  |
-| `vars`            | tables          | Global and per-environment non-secret variables.                                                       |
-| `images`          | table           | Public image optimizer allowlists and output options.                                                  |
-| `workflows`       | table           | App-wide workflow worker defaults and named worker groups.                                             |
-| `envs`            | tables          | Environment routes, servers, storage bindings, source-IP mode, idle timeout, and release override.     |
-| `storages`        | tables          | Reusable S3-compatible storage resource metadata.                                                      |
-| `servers`         | tables          | Per-app per-server overrides. Today this is used for workflow workers.                                 |
+| Field             | Type            | Meaning                                                                                                           |
+| ----------------- | --------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `name`            | string          | Stable app identity. Defaults to the config file's parent directory name.                                         |
+| `runtime`         | string          | Runtime override: `bun`, `node`, or `go`. Add `@<version>` to pin deploys, for example `bun@1.2.3`.               |
+| `package_manager` | string          | JavaScript package manager override, optionally with a version such as `pnpm@9.1.0`.                              |
+| `preset`          | string          | Runtime-local official preset alias such as `tanstack-start`, `vite`, or `nextjs`.                                |
+| `dev`             | string array    | Custom `tako dev` command. Overrides preset and runtime dev defaults.                                             |
+| `app_root`        | string          | JS-only source root for `channels/` and `workflows/`. Defaults to `src`; use `.` for root-level files.            |
+| `main`            | string          | Runtime entrypoint override written to deployed `app.json`.                                                       |
+| `assets`          | string array    | Extra asset directories merged into deployed `public/`.                                                           |
+| `release`         | string          | One-shot command run on the leader server before rolling update.                                                  |
+| `build`           | table           | Single build command configuration.                                                                               |
+| `build_stages`    | array of tables | Multi-stage build configuration. Mutually exclusive with `build.run`.                                             |
+| `vars`            | tables          | Global and per-environment non-secret variables.                                                                  |
+| `images`          | table           | Public image optimizer allowlists and output options.                                                             |
+| `workflows`       | table           | App-wide workflow worker defaults and named worker groups.                                                        |
+| `envs`            | tables          | Environment routes, servers, storage bindings, backup target, source-IP mode, idle timeout, and release override. |
+| `storages`        | tables          | Reusable S3-compatible storage resource metadata.                                                                 |
+| `servers`         | tables          | Per-app per-server overrides. Today this is used for workflow workers.                                            |
 
 Unknown top-level keys are rejected.
 
@@ -249,6 +250,7 @@ On deployed servers, Tako validates each request before using origin caches. Sou
 route = "app.example.com"
 servers = ["prod-a"]
 storages = { uploads = "prod_uploads" }
+backup = { storage = "prod_uploads" }
 source_ip = "direct"
 idle_timeout = 300
 release = "bun run db:migrate"
@@ -260,6 +262,7 @@ release = "bun run db:migrate"
 | `routes`       | string array | Multiple routes. Mutually exclusive with `route`.                                            |
 | `servers`      | string array | Global server names from user `config.toml` to deploy this environment to.                   |
 | `storages`     | map          | App binding name to storage resource name.                                                   |
+| `backup`       | inline table | Private backup target, e.g. `{ storage = "prod_uploads" }`.                                  |
 | `source_ip`    | string       | Optional source-IP mode: `auto`, `direct`, `cloudflare-proxy`, or `trusted-proxy`.           |
 | `idle_timeout` | integer      | Seconds before an idle scale-to-zero app can stop. Default `300`.                            |
 | `release`      | string       | Per-environment release command override. Empty string clears the top-level release command. |
@@ -356,6 +359,19 @@ storages = { uploads = "local" }
 It has no `[storages.local]` table, configurable path, or credentials. In `development`, an undeclared storage resource also defaults to local storage. In deploy environments, every bound resource must be declared unless it is `local`.
 
 S3 credentials are stored with `tako storages add`, encrypted in `.tako/secrets.json`, and checked for expiry before deploy.
+
+## Backups
+
+Backups reuse a private S3-compatible storage resource:
+
+```toml
+[envs.production]
+backup = { storage = "prod_uploads" }
+```
+
+The referenced resource must be declared under `[storages.<resource>]`, cannot be `local`, and cannot set `public_base_url`. A backup-only resource can get credentials with `tako storages credentials <resource> --env <env>` without adding an app-facing storage binding.
+
+Backup storage is not exposed to app code as `tako.storages`. Tako writes backup objects under `_tako/backups/{app}/{env}/{server}/`, so the same bucket can be shared with normal storage bindings without object key conflicts.
 
 ## Release Commands
 

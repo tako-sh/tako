@@ -100,6 +100,7 @@ fn test_deploy_command_serialization_includes_scaling() {
         )])),
         storages: None,
         ssl: SslBinding::default(),
+        backup: None,
     };
     let json = serde_json::to_string(&cmd).unwrap();
     assert!(json.contains(r#""command":"deploy""#));
@@ -120,6 +121,7 @@ fn test_deploy_command_serialization_includes_ssl_binding() {
             provider: SslProvider::Cloudflare,
             cloudflare_api_token: Some("token".to_string()),
         },
+        backup: None,
     };
 
     let json = serde_json::to_string(&cmd).unwrap();
@@ -139,6 +141,7 @@ fn test_deploy_command_serialization_includes_source_ip_mode() {
         secrets: None,
         storages: None,
         ssl: SslBinding::default(),
+        backup: None,
     };
 
     let json = serde_json::to_string(&cmd).unwrap();
@@ -162,12 +165,14 @@ fn test_deploy_command_deserialization_defaults_secrets_when_missing() {
             secrets,
             storages,
             ssl,
+            backup,
             ..
         } => {
             assert_eq!(source_ip, SourceIpMode::Auto);
             assert!(secrets.is_none());
             assert!(storages.is_none());
             assert_eq!(ssl.provider, SslProvider::LetsEncrypt);
+            assert!(backup.is_none());
         }
         _ => panic!("Expected deploy command"),
     }
@@ -494,6 +499,7 @@ fn test_deploy_with_none_secrets_keeps_existing() {
         secrets: None,
         storages: None,
         ssl: SslBinding::default(),
+        backup: None,
     };
     let json = serde_json::to_string(&cmd).unwrap();
     let parsed: Command = serde_json::from_str(&json).unwrap();
@@ -503,12 +509,14 @@ fn test_deploy_with_none_secrets_keeps_existing() {
             secrets,
             storages,
             ssl,
+            backup,
             ..
         } => {
             assert_eq!(source_ip, SourceIpMode::Auto);
             assert!(secrets.is_none());
             assert!(storages.is_none());
             assert_eq!(ssl.provider, SslProvider::LetsEncrypt);
+            assert!(backup.is_none());
         }
         _ => panic!("Expected deploy command"),
     }

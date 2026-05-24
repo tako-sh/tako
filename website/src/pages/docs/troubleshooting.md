@@ -184,6 +184,14 @@ The command writes binding metadata to `tako.toml` and encrypted credentials to 
 
 Deploy fails early if selected S3 credentials are missing or expired, warns if they expire within 30 days, and checks that credentials do not exist for unbound resources.
 
+Backup-only S3 resources use the same encrypted credential store but do not need an app storage binding:
+
+```bash
+tako storages credentials prod_backups --env production
+```
+
+Backups require `backup = { storage = "prod_backups" }`, a declared private S3-compatible resource, and current credentials. `public_base_url` and `local` backup storage are rejected.
+
 For local storage:
 
 ```bash
@@ -404,6 +412,17 @@ Sources must be JPEG, PNG, GIF, WebP, or AVIF by file signature. Animated GIF an
 On deployed servers, successful transforms are cached in the system temp directory. Cache hits still require a valid request, so authorization and allowlists continue to apply. Tako also keeps source bytes briefly in memory, which lets one page reuse the same source across different transform parameters without fetching or reading it again. This origin caching is separate from HTTP `Cache-Control`, `Vary`, and ETag response headers; cache hits and duplicate in-flight misses do not enter the worker queue. Concurrent misses for the same source or transform key share one in-flight operation. Transform work runs in a shared internal pool of isolated image workers with conservative concurrency, idle scale-to-zero, and reduced OS priority where supported. Transform cache files are pruned after writes: files older than 30 days are removed first, then oldest files are removed until the cache fits 5% of the cache filesystem, clamped to 1-4 GiB with a 2 GiB fallback when filesystem size cannot be read. A saturated image worker queue returns `503 Service Unavailable`; transform fallbacks serve the original image with `Cache-Control: private, no-store` and are logged as app-scoped warnings visible through `tako logs`.
 
 Storage image URLs also require the storage binding to be configured and current. Public storage URLs require `public_base_url`.
+
+## Backup Commands Need A Server
+
+When an environment maps to multiple servers, downloads and restores need an explicit source/target:
+
+```bash
+tako backups download <backup-id> --env production --server prod-a
+tako backups restore <backup-id> --env production --server prod-a --yes
+```
+
+Use `tako backups list --env production` to see backup ids. Backup objects are stored under `_tako/backups/{app}/{env}/{server}/`; a backup from one server is not automatically restored to every server.
 
 ## Delete Is Ambiguous
 

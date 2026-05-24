@@ -16,7 +16,7 @@ The protocol is still v0. Runtime behavior lives in runtime plugins; presets sta
 
 | Piece               | Role                                                                                                                        |
 | ------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `tako`              | CLI for init, dev, deploy, server management, secrets, storage, logs, releases, scaling, and code generation.               |
+| `tako`              | CLI for init, dev, deploy, server management, secrets, storage, backups, logs, releases, scaling, and code generation.      |
 | `tako-server`       | Remote runtime with the proxy, TLS, supervisor, state store, workflow manager, image worker, and management API.            |
 | `tako.sh`           | JavaScript/TypeScript SDK for fetch handlers, readiness, status, channels, workflows, storage, images, and generated types. |
 | `tako.sh` Go module | Go SDK for `net/http` handlers, readiness, health checks, secrets, channels, and workflow RPCs.                             |
@@ -41,15 +41,16 @@ The same physical server can host multiple environments of the same app because 
 
 The deploy flow is:
 
-1. Validate config, routes, target servers, secrets, storage credentials, provider credentials when needed, and server target metadata.
+1. Validate config, routes, target servers, secrets, storage credentials, backup storage credentials, provider credentials when needed, and server target metadata.
 2. Resolve runtime, preset, package manager, entrypoint, asset roots, build commands, and runtime version.
 3. Copy the source bundle into a temporary build workspace and run local build steps.
 4. Merge assets, write `app.json`, verify the resolved `main`, and package the artifact.
 5. Upload the artifact to each server over signed HTTP.
 6. Ask each server to prepare the release, install production dependencies, and download runtimes when needed.
 7. Run the optional release command once on the leader server.
-8. Sync routes, source-IP mode, secrets, storage bindings, and SSL bindings through remote management.
+8. Sync routes, source-IP mode, secrets, storage bindings, backup binding, and SSL bindings through remote management.
 9. Start healthy new instances, add them to traffic, then drain old instances.
+10. Finalize the release and create a post-deploy backup when backups are enabled.
 
 Servers receive prebuilt artifacts. App build steps do not run on the server.
 
@@ -82,7 +83,7 @@ All non-probe requests require an enrolled SSH key signature. The signed request
 
 `tako servers add` verifies the host is reachable over Tailscale, verifies SSH recovery access as `tako@host`, enrolls the SSH key used for that recovery connection, checks the server identity, verifies signed HTTP access, and records target metadata before writing global `config.toml`.
 
-App/runtime commands such as deploy, status, logs, scale, releases, delete, and secret sync use signed HTTP management. SSH remains for setup, recovery, reload, upgrade, and uninstall flows.
+App/runtime commands such as deploy, status, logs, scale, releases, backups, delete, and secret sync use signed HTTP management. SSH remains for setup, recovery, reload, upgrade, and uninstall flows.
 
 ## Routing
 
@@ -159,6 +160,8 @@ Project secrets are encrypted in `.tako/secrets.json`. Each environment has a ke
 Secrets and storage bindings are stored encrypted in server SQLite. Fresh HTTP instances and workflow workers receive them through fd 3 at spawn time, not through inherited process environment variables.
 
 Storage bindings are declared in `tako.toml` and exposed to JavaScript apps as `tako.storages.<name>`. S3-compatible credentials are encrypted in `.tako/secrets.json`. The built-in `local` resource has no user credentials and serves signed app-local URLs under `/_tako/storages/<binding>/<key>`.
+
+Backups reuse private S3-compatible storage resources but are not SDK bindings unless also declared in `[envs.<env>].storages`. The server backs up `data/app/` and `data/tako/` after successful deploys and roughly every 24 hours, storing archives under `_tako/backups/{app}/{env}/{server}/` with 30-day retention by default.
 
 ## Workflows And Channels
 

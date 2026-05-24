@@ -1,0 +1,215 @@
+use std::io::Read;
+use std::path::Path;
+use std::time::Duration;
+
+use sha2::{Digest, Sha256};
+
+pub(super) fn snapshot_data_tree(source: &Path, destination: &Path) -> Result<(), String> {
+    if destination.exists() {
+        std::fs::remove_dir_all(destination)
+            .map_err(|e| format!("remove stale snapshot {}: {e}", destination.display()))?;
+    }
+    std::fs::create_dir_all(destination)
+        .map_err(|e| format!("create snapshot dir {}: {e}", destination.display()))?;
+    copy_snapshot_dir(source, destination)
+}
+
+fn copy_snapshot_dir(source: &Path, destination: &Path) -> Result<(), String> {
+    for entry in
+        std::fs::read_dir(source).map_err(|e| format!("read data dir {}: {e}", source.display()))?
+    {
+        let entry = entry.map_err(|e| format!("read data entry: {e}"))?;
+        let source_path = entry.path();
+        let dest_path = destination.join(entry.file_name());
+        let metadata = std::fs::symlink_metadata(&source_path)
+            .map_err(|e| format!("read metadata {}: {e}", source_path.display()))?;
+        let file_type = metadata.file_type();
+
+        if file_type.is_symlink() {
+            copy_symlink(&source_path, &dest_path)?;
+        } else if file_type.is_dir() {
+            std::fs::create_dir_all(&dest_path)
+                .map_err(|e| format!("create snapshot dir {}: {e}", dest_path.display()))?;
+            copy_snapshot_dir(&source_path, &dest_path)?;
+        } else if file_type.is_file() {
+            if is_sqlite_companion_file(&source_path) {
+                continue;
+            }
+            if is_sqlite_database(&source_path) {
+                snapshot_sqlite_database(&source_path, &dest_path)?;
+            } else {
+                std::fs::copy(&source_path, &dest_path).map_err(|e| {
+                    format!(
+                        "copy data file {} to {}: {e}",
+                        source_path.display(),
+                        dest_path.display()
+                    )
+                })?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn copy_symlink(source: &Path, destination: &Path) -> Result<(), String> {
+    let target = std::fs::read_link(source)
+        .map_err(|e| format!("read symlink {}: {e}", source.display()))?;
+    std::os::unix::fs::symlink(&target, destination)
+        .map_err(|e| format!("copy symlink {}: {e}", source.display()))
+}
+
+#[cfg(not(unix))]
+fn copy_symlink(source: &Path, _destination: &Path) -> Result<(), String> {
+    Err(format!(
+        "cannot back up symlink on this platform: {}",
+        source.display()
+    ))
+}
+
+fn is_sqlite_companion_file(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let Some(base) = name
+        .strip_suffix("-wal")
+        .or_else(|| name.strip_suffix("-shm"))
+    else {
+        return false;
+    };
+    is_sqlite_database(&path.with_file_name(base))
+}
+
+fn is_sqlite_database(path: &Path) -> bool {
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut header = [0_u8; 16];
+    file.read_exact(&mut header).is_ok() && &header == b"SQLite format 3\0"
+}
+
+fn snapshot_sqlite_database(source: &Path, destination: &Path) -> Result<(), String> {
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create sqlite backup dir {}: {e}", parent.display()))?;
+    }
+    let conn =
+        rusqlite::Connection::open_with_flags(source, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|e| format!("open sqlite database {}: {e}", source.display()))?;
+    conn.busy_timeout(Duration::from_secs(10))
+        .map_err(|e| format!("set sqlite busy timeout {}: {e}", source.display()))?;
+    let escaped = destination.to_string_lossy().replace('\'', "''");
+    conn.execute_batch(&format!("VACUUM main INTO '{escaped}';"))
+        .map_err(|e| format!("snapshot sqlite database {}: {e}", source.display()))
+}
+
+pub(super) fn create_backup_archive(
+    snapshot_dir: &Path,
+    archive_path: &Path,
+) -> Result<(), String> {
+    if let Some(parent) = archive_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create archive dir {}: {e}", parent.display()))?;
+    }
+    let file = std::fs::File::create(archive_path)
+        .map_err(|e| format!("create backup archive {}: {e}", archive_path.display()))?;
+    let encoder = zstd::stream::write::Encoder::new(file, 3)
+        .map_err(|e| format!("initialize zstd encoder: {e}"))?;
+    let mut archive = tar::Builder::new(encoder);
+    for name in ["app", "tako"] {
+        let path = snapshot_dir.join(name);
+        if path.exists() {
+            archive
+                .append_dir_all(name, &path)
+                .map_err(|e| format!("append {name} data to backup archive: {e}"))?;
+        }
+    }
+    let encoder = archive
+        .into_inner()
+        .map_err(|e| format!("finish backup tar stream: {e}"))?;
+    encoder
+        .finish()
+        .map_err(|e| format!("finish backup zstd stream: {e}"))?;
+    Ok(())
+}
+
+pub(super) fn restore_data_tree(extracted_dir: &Path, data_root: &Path) -> Result<(), String> {
+    if !extracted_dir.join("app").is_dir() || !extracted_dir.join("tako").is_dir() {
+        return Err("Backup archive is missing app/ or tako/ data directories.".to_string());
+    }
+    let parent = data_root
+        .parent()
+        .ok_or_else(|| format!("data root has no parent: {}", data_root.display()))?;
+    std::fs::create_dir_all(parent)
+        .map_err(|e| format!("create data parent {}: {e}", parent.display()))?;
+    let previous = parent.join(format!(".data-restore-prev-{}", nanoid::nanoid!(8)));
+    if data_root.exists() {
+        std::fs::rename(data_root, &previous).map_err(|e| {
+            format!(
+                "move existing data dir {} to {}: {e}",
+                data_root.display(),
+                previous.display()
+            )
+        })?;
+    }
+    match std::fs::rename(extracted_dir, data_root) {
+        Ok(()) => {
+            let _ = std::fs::remove_dir_all(previous);
+            Ok(())
+        }
+        Err(error) => {
+            if previous.exists() {
+                let _ = std::fs::rename(&previous, data_root);
+            }
+            Err(format!("restore data dir {}: {error}", data_root.display()))
+        }
+    }
+}
+
+pub(super) fn sha256_file_hex(path: &Path) -> Result<String, String> {
+    let mut file =
+        std::fs::File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0_u8; 128 * 1024];
+    loop {
+        let read = file
+            .read(&mut buf)
+            .map_err(|e| format!("read {}: {e}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buf[..read]);
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn snapshot_uses_sqlite_online_backup_for_sqlite_files() {
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("data");
+        let app = source.join("app");
+        let dest = temp.path().join("snapshot");
+        std::fs::create_dir_all(&app).unwrap();
+        let db_path = app.join("app.sqlite");
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)", [])
+                .unwrap();
+            conn.execute("INSERT INTO items (name) VALUES ('one')", [])
+                .unwrap();
+        }
+
+        snapshot_data_tree(&source, &dest).unwrap();
+
+        let restored = rusqlite::Connection::open(dest.join("app/app.sqlite")).unwrap();
+        let count: i64 = restored
+            .query_row("SELECT COUNT(*) FROM items", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+}

@@ -25,6 +25,7 @@ async fn deploy_rejects_invalid_app_name() {
             secrets: Some(HashMap::new()),
             storages: Some(HashMap::new()),
             ssl: tako_core::SslBinding::default(),
+            backup: None,
         })
         .await;
 
@@ -114,6 +115,7 @@ async fn failed_deploy_does_not_persist_ssl_credentials() {
                 provider: tako_core::SslProvider::Cloudflare,
                 cloudflare_api_token: Some("ssl-token".to_string()),
             },
+            backup: None,
         })
         .await;
 
@@ -152,6 +154,7 @@ async fn deploy_rejects_release_path_outside_managed_root() {
             secrets: Some(HashMap::new()),
             storages: Some(HashMap::new()),
             ssl: tako_core::SslBinding::default(),
+            backup: None,
         })
         .await;
 
@@ -197,6 +200,7 @@ async fn deploy_rejects_invalid_release_version() {
             secrets: Some(HashMap::new()),
             storages: Some(HashMap::new()),
             ssl: tako_core::SslBinding::default(),
+            backup: None,
         })
         .await;
 

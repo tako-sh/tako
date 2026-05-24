@@ -11,6 +11,8 @@ use crate::storage::StorageBinding;
 
 pub const PROTOCOL_VERSION: u32 = 0;
 pub const MANAGEMENT_AUTH_NAMESPACE: &str = "tako-management-rpc-v0";
+pub const DEFAULT_BACKUP_RETENTION_DAYS: u16 = 30;
+pub const BACKUP_INTERVAL_SECS: i64 = 24 * 60 * 60;
 const DEPLOYMENT_APP_ID_SEPARATOR: char = '/';
 
 pub fn management_auth_message(timestamp: &str, nonce: &str, body: &[u8]) -> Vec<u8> {
@@ -145,7 +147,26 @@ pub enum Command {
         /// Defaults to Let's Encrypt when omitted.
         #[serde(default)]
         ssl: SslBinding,
+        /// Private backup target for this app/environment. When absent, any
+        /// existing backup configuration for the app is cleared.
+        #[serde(default)]
+        backup: Option<BackupBinding>,
     },
+
+    /// Create a backup for the app immediately using its configured backup target.
+    BackupNow { app: String },
+
+    /// List backups recorded in the app's remote backup index.
+    ListBackups { app: String },
+
+    /// Get backup configuration and latest backup status for an app.
+    BackupStatus { app: String },
+
+    /// Create a short-lived download URL for a backup archive.
+    BackupDownloadUrl { app: String, backup_id: String },
+
+    /// Restore app data from a backup archive on this server.
+    RestoreBackup { app: String, backup_id: String },
 
     /// Update the desired minimum number of instances for an app.
     Scale { app: String, instances: u8 },
@@ -424,6 +445,55 @@ impl Default for SslBinding {
             cloudflare_api_token: None,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackupBinding {
+    pub storage: StorageBinding,
+    #[serde(default = "default_backup_retention_days")]
+    pub retention_days: u16,
+}
+
+fn default_backup_retention_days() -> u16 {
+    DEFAULT_BACKUP_RETENTION_DAYS
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BackupInfo {
+    pub id: String,
+    pub app: String,
+    pub environment: String,
+    pub server: String,
+    pub created_at_unix_secs: i64,
+    pub size_bytes: u64,
+    pub sha256_hex: String,
+    pub archive_key: String,
+    pub manifest_key: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BackupListResponse {
+    pub app: String,
+    pub backups: Vec<BackupInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BackupStatusResponse {
+    pub app: String,
+    pub enabled: bool,
+    #[serde(default)]
+    pub retention_days: Option<u16>,
+    #[serde(default)]
+    pub last_backup: Option<BackupInfo>,
+    #[serde(default)]
+    pub next_backup_at_unix_secs: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BackupDownloadUrlResponse {
+    pub backup: BackupInfo,
+    pub url: String,
+    pub expires_in_seconds: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

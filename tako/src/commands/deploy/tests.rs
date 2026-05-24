@@ -12,6 +12,7 @@ fn release_command_payload_includes_deploy_secrets() {
         secrets: HashMap::from([("DATABASE_URL".to_string(), "postgres://new".to_string())]),
         storages: HashMap::new(),
         ssl: tako_core::SslBinding::default(),
+        backup: None,
         secrets_hash: String::new(),
         main: "index.ts".to_string(),
         use_unified_target_process: false,

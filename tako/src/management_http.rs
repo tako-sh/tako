@@ -282,6 +282,8 @@ fn management_rpc_timeout_for_command(command: &Command) -> Duration {
             | Command::FinalizeRelease { .. }
             | Command::RunRelease { .. }
             | Command::Deploy { .. }
+            | Command::BackupNow { .. }
+            | Command::RestoreBackup { .. }
             | Command::Delete { .. }
             | Command::Rollback { .. }
     ) {
@@ -489,6 +491,7 @@ mod tests {
                 secrets: None,
                 storages: None,
                 ssl: tako_core::SslBinding::default(),
+                backup: None,
             }),
             MANAGEMENT_DEPLOY_RPC_TIMEOUT
         );

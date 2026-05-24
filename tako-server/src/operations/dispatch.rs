@@ -19,6 +19,7 @@ impl crate::ServerState {
                         "release_history".to_string(),
                         "rollback".to_string(),
                         "management_http_uploads".to_string(),
+                        "backups".to_string(),
                     ],
                     server_identity: self.runtime_config().server_identity.clone(),
                 };
@@ -101,6 +102,7 @@ impl crate::ServerState {
                 secrets,
                 storages,
                 ssl,
+                backup,
             } => {
                 if let Err(msg) = validate_app_name(&app) {
                     return Response::error(msg);
@@ -111,8 +113,46 @@ impl crate::ServerState {
                 if let Some(resp) = self.reject_mutating_when_upgrading("deploy").await {
                     return resp;
                 }
-                self.deploy_app(&app, &version, &path, routes, source_ip, secrets, storages, ssl)
-                    .await
+                self.deploy_app(
+                    &app, &version, &path, routes, source_ip, secrets, storages, ssl, backup,
+                )
+                .await
+            }
+            Command::BackupNow { app } => {
+                if let Err(msg) = validate_app_name(&app) {
+                    return Response::error(msg);
+                }
+                if let Some(resp) = self.reject_mutating_when_upgrading("backup-now").await {
+                    return resp;
+                }
+                self.backup_now(&app).await
+            }
+            Command::ListBackups { app } => {
+                if let Err(msg) = validate_app_name(&app) {
+                    return Response::error(msg);
+                }
+                self.list_backups(&app).await
+            }
+            Command::BackupStatus { app } => {
+                if let Err(msg) = validate_app_name(&app) {
+                    return Response::error(msg);
+                }
+                self.backup_status(&app).await
+            }
+            Command::BackupDownloadUrl { app, backup_id } => {
+                if let Err(msg) = validate_app_name(&app) {
+                    return Response::error(msg);
+                }
+                self.backup_download_url(&app, &backup_id).await
+            }
+            Command::RestoreBackup { app, backup_id } => {
+                if let Err(msg) = validate_app_name(&app) {
+                    return Response::error(msg);
+                }
+                if let Some(resp) = self.reject_mutating_when_upgrading("restore-backup").await {
+                    return resp;
+                }
+                self.restore_backup(&app, &backup_id).await
             }
             Command::Scale { app, instances } => {
                 if let Err(msg) = validate_app_name(&app) {

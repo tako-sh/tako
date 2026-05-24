@@ -89,6 +89,7 @@ API_URL = "https://staging-api.example.com"
 route = "api.example.com"  # Single route, or use 'routes' for multiple
 servers = ["la", "nyc"]
 storages = { uploads = "prod_uploads" }
+backup = { storage = "prod_uploads" } # Optional private app data backups
 idle_timeout = 300         # Optional, default: 5 minutes
 
 [envs.staging]
@@ -187,6 +188,7 @@ workers = 4
 - `tako init` installs the `tako.sh` SDK via the selected runtime's package-manager `add` command.
 - Server membership is declared per environment with `[envs.<name>].servers`.
 - Storage bindings are declared per environment with `[envs.<name>].storages = { app_name = "resource_name" }`. The key is the stable app-facing binding exposed as `tako.storages.<app_name>`; the value references a top-level `[storages.<resource_name>]` S3 resource or the built-in `local` resource.
+- App data backups are enabled per environment with `backup = { storage = "resource_name" }`. The resource must be a declared private S3-compatible `[storages.<resource_name>]` resource. Backup storage is not exposed as `tako.storages`; only `[envs.<env>].storages` creates SDK bindings.
 - SSL certificate issuance is selected per environment with optional `ssl = "letsencrypt"` or `ssl = "cloudflare"` under `[envs.<name>]`. Omitted means `letsencrypt`. Cloudflare SSL uses Cloudflare Origin CA certificates and requires encrypted credential `ssl.cloudflare` from `tako credentials set ssl.cloudflare --env <name>`. Let’s Encrypt exact routes need no credentials; Let’s Encrypt wildcard routes require the same credential because they use Cloudflare DNS-01 for certificate validation.
 - Tako-owned provider credentials are stored per environment in `.tako/secrets.json` by `tako credentials set <name> --env <name>`. Cloudflare is the only supported Cloudflare token provider for certificate operations. Deploy rejects expired app secrets, storage credentials, and required provider credentials before build/deploy work starts, warns when any of them expire within 30 days, and verifies required Cloudflare tokens before build/upload work. Cloudflare SSL verifies that the token is active. Let’s Encrypt wildcard routes also verify that the token can read the matching Cloudflare zone; DNS record writes are not probed before deploy.
 - Client source-IP handling is per environment through optional `source_ip` under `[envs.<name>]`. Omitted means automatic Cloudflare detection, then explicitly configured trusted proxy headers, then direct peer fallback.
@@ -367,6 +369,34 @@ public_base_url = "https://cdn.example.com/uploads"
 
 Storage binding and S3 resource names may contain lowercase letters, numbers, hyphens, and underscores. The resource name `local` is built in and must not be declared under `[storages]`; bind to it directly with `storages = { uploads = "local" }`. For S3 resources, `tako storages add` prompts for access credentials and optionally when they expire; `--expires-on` can provide the expiry directly. Deploy fails before build/deploy work starts if the selected environment's S3 credentials are expired and warns when they expire within 30 days. When credentials are current or expiry is unknown, deploy decrypts them locally, combines them with the selected `tako.toml` resource metadata, sends the runtime bindings over the signed management path, and `tako-server` stores the resulting bindings encrypted in server SQLite. Fresh app and worker processes receive bindings through the fd 3 bootstrap envelope as `storages`.
 
+`tako storages credentials <resource> --env <environment>` sets or rotates encrypted S3 credentials for a declared top-level storage resource without adding an app binding. This is the recommended setup path for backup-only storage resources. The same S3 bucket may be used for app storage and backups; backup objects are automatically written under Tako's reserved `_tako/backups/` prefix.
+
+### App Data Backups
+
+Backups are opt-in per environment:
+
+```toml
+[envs.production]
+route = "app.example.com"
+servers = ["la", "nyc"]
+backup = { storage = "r2" }
+
+[storages.r2]
+provider = "s3"
+bucket = "app-data"
+endpoint = "https://<account>.r2.cloudflarestorage.com"
+region = "auto"
+```
+
+Backup storage reuses declared `[storages.<resource>]` metadata and `.tako/secrets.json` S3 credentials. It must be S3-compatible and private: `provider = "local"` and `public_base_url` are rejected. A backup-only resource can share a bucket with app storage because Tako writes backups under `_tako/backups/{app}/{env}/{server}/`. The `{server}` segment comes from the deployed server identity/name so multiple servers in one environment do not overwrite each other's archives.
+
+When enabled, Tako backs up the entire per-app data tree under `{data_dir}/apps/{app}/{env}/data/`:
+
+- `app/` — app-owned data exposed as `TAKO_DATA_DIR`
+- `tako/` — Tako-owned per-app internal state such as channels and workflow SQLite files
+
+SQLite files are snapshotted with SQLite's online `VACUUM INTO` mechanism before archiving, and `-wal`/`-shm` companion files are not included separately. Archives are `tar.zst` files with a SHA-256 manifest and a remote JSON index. Retention defaults to 30 days. The server creates a backup after a successful deploy and then runs due backups roughly every 24 hours while `tako-server` is running. Backup failures after deploy are reported in the finalize response/logs but do not roll back an otherwise successful deploy.
+
 ### SSL Provider Configuration And Credentials
 
 Public route certificates use Let’s Encrypt by default. Exact Let’s Encrypt routes do not need provider credentials. Let’s Encrypt wildcard routes use Cloudflare DNS-01 to prove domain control and store the required Cloudflare token as credential `ssl.cloudflare`.
@@ -462,7 +492,7 @@ Rolling release model:
 - `--version`: Print version and exit (format: `<base>-<sha7>`).
 - `-v, --verbose`: Show verbose output as an append-only execution transcript with timestamps and log levels.
 - `--ci`: Deterministic non-interactive output (no colors, no spinners, no prompts). Can be combined with `--verbose`.
-- `--dry-run`: Show what would happen without performing any side effects. Skips server connections, file uploads, config writes, and remote commands. Prints `⏭ ... (dry run)` for each skipped action. Production deploy confirmation is auto-skipped. Supported by: `deploy`, `servers add`, `servers remove`, `delete`.
+- `--dry-run`: Show what would happen without performing any side effects. Skips server connections, file uploads, config writes, and remote commands. Prints `⏭ ... (dry run)` for each skipped action. Production deploy confirmation is auto-skipped. Supported by: `deploy`, `servers add`, `servers remove`, `delete`, and side-effecting backup commands (`backups now`, `backups download`, `backups restore`).
 - `-c, --config {config}`: Use an explicit app config file instead of `./tako.toml`. If the provided path does not end with `.toml`, Tako appends it automatically. App-scoped commands treat the selected file's parent directory as the project directory. This allows multiple config files in one folder.
 - `--ssh-passphrase {passphrase}`: Use the provided passphrase for encrypted local SSH private keys during SSH authentication and signed remote-management requests.
 
@@ -483,7 +513,7 @@ Config selection is global for app-scoped commands:
 - project directory: parent directory of the selected config file
 
 App-scoped commands that honor `-c/--config`: `init`, `dev`, `logs`, `deploy`, `releases`,
-`delete`, `secrets`, `storages`, `generate`, and `scale` when it is using project context.
+`backups`, `delete`, `secrets`, `storages`, `generate`, and `scale` when it is using project context.
 
 ### tako init
 
@@ -836,14 +866,14 @@ Service-manager reload/restart behavior:
 - On systemd hosts, installer configures `KillMode=mixed` and `TimeoutStopSec=30min`, allowing the main server process to receive the first stop signal while child processes still get time to handle graceful shutdown before forced termination.
 - On OpenRC hosts, installer configures `retry="TERM/1800/KILL/5"` in the init script so restart/stop waits up to 30 minutes before forced termination.
 
-`tako-server` persists app runtime registration (app config and routes) in SQLite under the data directory and restores it on startup so app routing/config survives reloads, restarts, and crashes. Env vars are stored in `app.json` in the release directory; secrets are stored encrypted (AES-256-GCM) in the same SQLite database using a per-device key. Fresh app and worker processes receive secrets through the fd 3 bootstrap envelope at spawn time. Secret updates store the new encrypted values, then drain/restart workflow workers and roll HTTP instances so fresh processes receive the new values; secrets never touch disk as plaintext. Each deployed app also gets a persistent runtime data tree under `{data_dir}/apps/{app}/data/`:
+`tako-server` persists app runtime registration (app config and routes) in SQLite under the data directory and restores it on startup so app routing/config survives reloads, restarts, and crashes. Env vars are stored in `app.json` in the release directory; secrets are stored encrypted (AES-256-GCM) in the same SQLite database using a per-device key. Fresh app and worker processes receive secrets through the fd 3 bootstrap envelope at spawn time. Secret updates store the new encrypted values, then drain/restart workflow workers and roll HTTP instances so fresh processes receive the new values; secrets never touch disk as plaintext. Each deployed app also gets a persistent runtime data tree under `{data_dir}/apps/{app}/{env}/data/`:
 
 - `app/` — app-owned data exposed to the process as `TAKO_DATA_DIR`
 - `tako/` — Tako-owned per-app internal state
 
 Deleting an app removes the entire `{data_dir}/apps/{app}` tree after the app is drained and stopped.
 
-During single-host upgrade orchestration, `tako-server` may enter an internal `upgrading` server mode that temporarily rejects mutating management commands (release preparation/finalization, `deploy`, `scale`, `stop`, `delete`, `rollback`, `update-secrets`) until the upgrade window ends.
+During single-host upgrade orchestration, `tako-server` may enter an internal `upgrading` server mode that temporarily rejects mutating management commands (release preparation/finalization, `deploy`, `backup_now`, `restore_backup`, `scale`, `stop`, `delete`, `rollback`, `update-secrets`) until the upgrade window ends.
 Upgrade mode transitions are guarded by a durable single-owner upgrade lock in SQLite so only one upgrade controller can hold the upgrade window at a time.
 
 ### tako servers upgrade [server-name]
@@ -1023,6 +1053,45 @@ Options:
 
 The command writes the environment binding to `tako.toml`. For `s3`, it also writes top-level resource metadata and encrypted credentials plus optional `expires_on` metadata to `.tako/secrets.json` under the selected environment's `storages` map. For `local`, it writes the binding to the built-in `local` resource and no `[storages.local]` table; local storage has no user-configured path or credentials. Deploy validates that every non-development storage binding references either a declared S3 resource or the built-in `local` resource, that S3 resources have unexpired credentials when expiry is known, warns when S3 credentials expire within 30 days, checks that credentials do not exist for unbound resources, and rejects local storage on multi-server deploy environments. There is no separate storage sync command.
 
+### tako storages credentials {resource}
+
+Set or rotate encrypted credentials for an existing top-level S3 storage resource without attaching it to the app runtime.
+
+```bash
+tako storages credentials r2 \
+  --env production \
+  --access-key-id ... \
+  --secret-access-key ...
+```
+
+Options:
+
+- `--env {environment}` defaults to `production`.
+- `--access-key-id {value}` and `--secret-access-key {value}` are optional; interactive runs prompt when omitted.
+- `--expires-on {when}` records optional credential expiry metadata with the same rules as `tako storages add`.
+
+The command requires `[storages.<resource>]` to exist and to be S3-compatible. It writes only `.tako/secrets.json`; it does not add or change `[envs.<env>].storages`, so the resource is not exposed as `tako.storages.<name>` unless a separate app binding exists.
+
+### tako backups now/list/status/download/restore
+
+Manage app data backups for the current project.
+
+```bash
+tako backups now --env production
+tako backups list --env production
+tako backups status --env production
+tako backups download b123 --env production --server la --output ./backup.tar.zst
+tako backups restore b123 --env production --server la --yes
+```
+
+- `tako backups now [--env <env>] [--server <server>]` creates a backup immediately on the selected server(s).
+- `tako backups list [--env <env>] [--server <server>]` lists remote backup index entries, newest first.
+- `tako backups status [--env <env>]` reports whether backups are enabled per mapped server, plus last/next backup timing and retention.
+- `tako backups download <backup-id> [--env <env>] [--server <server>] [--output <path>]` downloads one backup archive. If the environment maps to multiple servers, `--server` is required. The output file defaults to `<backup-id>.tar.zst` and must not already exist.
+- `tako backups restore <backup-id> [--env <env>] [--server <server>] [--yes|-y]` stops the selected server's app, replaces its data tree with the archive contents, reconciles workflows, and restarts according to the app's desired instance count. If the environment maps to multiple servers, `--server` is required.
+
+All backup commands default to `production`, require project context, and target the remote deployment id `{app}/{env}`. Backup commands use signed HTTP remote management, not SSH.
+
 ### tako deploy [--env {environment}] [--yes|-y]
 
 Build and deploy application to environment's servers.
@@ -1065,7 +1134,7 @@ Deploy flow helpers:
 
 **Steps:**
 
-1. Pre-deployment validation (secrets present and unexpired, S3 credentials present and unexpired for selected storage bindings, provider credentials present and unexpired when Cloudflare SSL is selected or Let’s Encrypt routes include wildcards, warnings for app/S3/provider credentials expiring within 30 days, server target metadata present/valid for all selected servers)
+1. Pre-deployment validation (secrets present and unexpired, S3 credentials present and unexpired for selected storage bindings and configured backup storage, provider credentials present and unexpired when Cloudflare SSL is selected or Let’s Encrypt routes include wildcards, warnings for app/S3/provider credentials expiring within 30 days, server target metadata present/valid for all selected servers)
 2. Resolve source bundle root (git root when available; otherwise app directory)
 3. Resolve app subdirectory from the selected config file's parent directory relative to source bundle root
 4. Resolve deploy runtime `main` (`main` from `tako.toml`; otherwise manifest main such as `package.json` `main`; otherwise preset `main`, with JS index fallback order: `index.<ext>` then `src/index.<ext>` for `ts`/`tsx`/`js`/`jsx` when applicable)
@@ -1087,6 +1156,7 @@ Deploy flow helpers:
    - Ask the server for a release upload plan over signed HTTP. If the release is not already present, upload the target-specific artifact to `POST /release-artifact`; the server verifies the declared size and SHA-256 digest, extracts the artifact into the release directory, and links release logs to the app's shared log directory.
    - Query server for the app's current secrets hash; if it matches the local secrets hash, skip sending secrets (server keeps existing). If hashes differ (or app is new), include decrypted secrets in the deploy command.
    - Include the decrypted SSL binding in the deploy command. If the binding has a Cloudflare token, `tako-server` stores it encrypted for certificate operations for that deployed app. Otherwise, the server clears stored SSL credentials for that app.
+   - Include the decrypted backup binding when `[envs.<env>].backup` is configured. If backup is omitted, `tako-server` clears any previous backup config for that deployed app.
    - `tako-server` acquires a per-app deploy lock in memory, reads non-secret runtime/app config from release `app.json`, creates per-app runtime data directories, and runs the runtime plugin's production install command
    - If another deploy for the same app environment is already running on that server, the deploy command fails immediately with a retry message
 10. Run release command on the leader server (when configured):
@@ -1103,6 +1173,7 @@ Deploy flow helpers:
 11. Rolling update and finalize on all servers:
     - `tako-server` performs first start or rolling update
     - Update `current` symlink and clean up old releases (>30 days)
+    - If backups are enabled, create a post-deploy app data backup on each finalized server
 
 **Version naming:**
 
@@ -1127,6 +1198,7 @@ Deploy flow helpers:
 - Release `app.json` contains resolved runtime metadata (`runtime`, `main`, `package_manager`), non-secret env vars, JS `app_root`, environment idle timeout, and optional release metadata (`commit_message`, `git_dirty`) used by `tako releases list`.
 - Deploy does not write a release `.env` file; non-secret env vars live in release `app.json`, secrets are stored encrypted in SQLite on the server, and `tako-server` injects runtime vars (`TAKO_BUILD`, `TAKO_DATA_DIR`, and `TAKO_APP_ROOT` for JS apps) when spawning HTTP instances and workflow workers.
 - Deploy queries each server's secrets hash before sending the deploy command. If the hash matches the local secrets, secrets are omitted from the payload and the server keeps its existing secrets. This avoids unnecessary secret transmission and ensures new servers or servers with stale secrets are automatically provisioned.
+- Deploy sends backup storage only through the backup binding. It is stored encrypted server-side and is never included in the fd 3 app bootstrap envelope unless it is also listed under `[envs.<env>].storages`.
 - Deploy requires valid `arch` and `libc` metadata in each selected `[[servers]]` entry.
 - Deploy does not probe server targets during deploy; missing/invalid target metadata fails deploy early with guidance to remove/re-add affected servers.
 - Deploy pre-validation still fails when target environment is missing secret keys used by other environments.
@@ -1460,7 +1532,7 @@ Reference scripts in this repo:
   byte-body endpoints instead of the JSON RPC path.
 - The Unix management socket remains the local server IPC path. SSH remains setup/recovery, not the normal remote management transport.
 - `tako servers add` expects the host to be the server's Tailscale MagicDNS name or Tailscale IP. MagicDNS hostnames default the local server name to the first DNS label; IP addresses require `--name`. It verifies the host resolves to a Tailscale address, verifies `tako@host` SSH recovery access, enrolls the SSH key that authenticated that connection, probes private HTTP management with `hello` and `server_info`, verifies signed HTTP access, and refuses to write `config.toml` if any check fails.
-- App-scoped runtime commands (`deploy`, `status`, `logs`, `scale`, `releases`, `delete`, and `secrets sync`) use signed HTTP remote management. SSH is not used for normal app/runtime management.
+- App-scoped runtime commands (`deploy`, `status`, `logs`, `scale`, `releases`, `backups`, `delete`, and `secrets sync`) use signed HTTP remote management. SSH is not used for normal app/runtime management.
 
 ### Zero-Downtime Operation
 
@@ -1577,7 +1649,7 @@ The SDK parses this from `process.argv` (JS) or `os.Args` (Go) at startup and ex
 }
 ```
 
-The SDK reads fd 3 once at startup and closes it. The envelope travels on a pipe (rather than env vars or argv) so the token, secrets, and storage credentials do not inherit into subprocesses the app spawns. The token authenticates `Host: <app>.tako` requests (health probes, channel auth callbacks). Secrets populate `tako.secrets`; storage bindings populate `tako.storages`. Generated `tako.d.ts` augments both project-specific surfaces. The pipe is always present — in dev mode with no secrets or storages, the envelope is `{"token": "...", "secrets": {}, "storages": {}}`.
+The SDK reads fd 3 once at startup and closes it. The envelope travels on a pipe (rather than env vars or argv) so the token, secrets, and storage credentials do not inherit into subprocesses the app spawns. The token authenticates `Host: <app>.tako` requests (health probes, channel auth callbacks). Secrets populate `tako.secrets`; storage bindings populate `tako.storages`. Backup storage is deliberately not included here unless the same resource is separately bound under `[envs.<env>].storages`. Generated `tako.d.ts` augments both project-specific surfaces. The pipe is always present — in dev mode with no secrets or storages, the envelope is `{"token": "...", "secrets": {}, "storages": {}}`.
 
 ### Messages (JSON over Unix Socket)
 
@@ -1604,7 +1676,8 @@ Response:
       "upgrade_mode_control",
       "server_runtime_info",
       "release_history",
-      "rollback"
+      "rollback",
+      "backups"
     ],
     "server_identity": "SHA256:..."
   }
@@ -1701,9 +1774,55 @@ Response:
   "ssl": {
     "provider": "cloudflare",
     "cloudflare_api_token": "..."
+  },
+  "backup": {
+    "retention_days": 30,
+    "storage": {
+      "provider": "s3",
+      "bucket": "my-app-prod",
+      "endpoint": "https://example.r2.cloudflarestorage.com",
+      "region": "auto",
+      "access_key_id": "...",
+      "secret_access_key": "...",
+      "force_path_style": false
+    }
   }
 }
 ```
+
+The `backup` field is optional. When present, the server stores the private backup target encrypted for that deployed app. When absent or `null`, the server clears backup configuration for the app.
+
+- `backup_now`, `list_backups`, `backup_status`, `backup_download_url`, and `restore_backup`:
+
+```json
+{ "command": "backup_now", "app": "my-app/production" }
+```
+
+```json
+{ "command": "list_backups", "app": "my-app/production" }
+```
+
+```json
+{ "command": "backup_status", "app": "my-app/production" }
+```
+
+```json
+{
+  "command": "backup_download_url",
+  "app": "my-app/production",
+  "backup_id": "b1710000000-AbCdEf12"
+}
+```
+
+```json
+{
+  "command": "restore_backup",
+  "app": "my-app/production",
+  "backup_id": "b1710000000-AbCdEf12"
+}
+```
+
+`backup_now` creates and uploads a private archive for the app's data tree on that server. `list_backups` reads the remote backup index. `backup_status` reports enabled/disabled state, retention, last backup, and next due time. `backup_download_url` returns a short-lived private archive URL. `restore_backup` stops the app on that server, verifies the archive SHA-256, replaces the app data tree, reconciles workflows, and restarts according to the app's desired instance count.
 
 - `scale` (updates the desired instance count for an app on one server):
 

@@ -153,6 +153,7 @@ async fn deploy_preserves_scaled_instance_count() {
             secrets: Some(HashMap::new()),
             storages: Some(HashMap::new()),
             ssl: tako_core::SslBinding::default(),
+            backup: None,
         })
         .await;
 
@@ -268,6 +269,7 @@ async fn deploy_on_demand_validates_startup_and_fails_for_unhealthy_build() {
             secrets: Some(HashMap::new()),
             storages: Some(HashMap::new()),
             ssl: tako_core::SslBinding::default(),
+            backup: None,
         })
         .await;
 
@@ -428,6 +430,7 @@ HTTPServer(("127.0.0.1", port), Handler).serve_forever()
             secrets: Some(HashMap::new()),
             storages: Some(HashMap::new()),
             ssl: tako_core::SslBinding::default(),
+            backup: None,
         })
         .await;
     assert!(

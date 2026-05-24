@@ -16,16 +16,16 @@ Progress, prompts, status, and logs go to stderr. Command results and machine-re
 
 ## Global Options
 
-| Option                          | Meaning                                                                                              |
-| ------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `--version`                     | Print the CLI version.                                                                               |
-| `-v`, `--verbose`               | Enable debug diagnostics and detailed progress logs.                                                 |
-| `--ci`                          | Disable interactive prompts and pretty UI.                                                           |
-| `--dry-run`                     | Show side effects without performing them. Supported by deploy, server add/remove, and delete flows. |
-| `-c`, `--config <CONFIG>`       | Use a specific app config file. If it has no `.toml` suffix, Tako appends it.                        |
-| `--ssh-passphrase <PASSPHRASE>` | Passphrase for encrypted SSH keys used by setup, recovery, and signed management requests.           |
+| Option                          | Meaning                                                                                                                     |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `--version`                     | Print the CLI version.                                                                                                      |
+| `-v`, `--verbose`               | Enable debug diagnostics and detailed progress logs.                                                                        |
+| `--ci`                          | Disable interactive prompts and pretty UI.                                                                                  |
+| `--dry-run`                     | Show side effects without performing them. Supported by deploy, server add/remove, delete, and side-effecting backup flows. |
+| `-c`, `--config <CONFIG>`       | Use a specific app config file. If it has no `.toml` suffix, Tako appends it.                                               |
+| `--ssh-passphrase <PASSPHRASE>` | Passphrase for encrypted SSH keys used by setup, recovery, and signed management requests.                                  |
 
-App-scoped commands treat the selected config file's parent directory as the app directory. This includes `init`, `dev`, `logs`, `deploy`, `releases`, `delete`, `secrets`, `storages`, `dns`, `generate`, and project-context `scale`.
+App-scoped commands treat the selected config file's parent directory as the app directory. This includes `init`, `dev`, `logs`, `deploy`, `releases`, `backups`, `delete`, `secrets`, `storages`, `dns`, `generate`, and project-context `scale`.
 
 ## `tako init`
 
@@ -110,9 +110,9 @@ tako deploy --env production --yes
 
 Interactive production deploys ask for confirmation only when the environment is implicit. Passing `--env production` or `--yes` makes the target explicit.
 
-Deploy validates secrets, storage credentials, required provider credentials, routes, target servers, and server target metadata before build work starts. Required Cloudflare credentials are checked with Cloudflare before build/upload: Cloudflare SSL verifies that the token is active, and Let’s Encrypt wildcard routes also verify zone read access. It builds locally, packages a `.tar.zst` artifact, uploads it over signed HTTP, prepares the release, optionally runs the release command, and performs a rolling update.
+Deploy validates secrets, storage credentials, configured backup storage, required provider credentials, routes, target servers, and server target metadata before build work starts. Required Cloudflare credentials are checked with Cloudflare before build/upload: Cloudflare SSL verifies that the token is active, and Let’s Encrypt wildcard routes also verify zone read access. It builds locally, packages a `.tar.zst` artifact, uploads it over signed HTTP, prepares the release, optionally runs the release command, performs a rolling update, and creates a post-deploy backup when enabled.
 
-Let’s Encrypt wildcard routes require `tako credentials set ssl.cloudflare --env <env>`. Environments using `ssl = "cloudflare"` require the same credential. Storage bindings configured with `tako storages add` are synced during deploy; there is no separate storage sync command.
+Let’s Encrypt wildcard routes require `tako credentials set ssl.cloudflare --env <env>`. Environments using `ssl = "cloudflare"` require the same credential. Storage bindings configured with `tako storages add` are synced during deploy; there is no separate storage sync command. Backup-only storage credentials can be set with `tako storages credentials <resource> --env <env>`.
 
 ## `tako logs`
 
@@ -331,6 +331,34 @@ tako storages add uploads \
 | `--public-base-url <URL>`     | HTTPS public base URL for public object URLs.              |
 
 The command writes binding metadata to `tako.toml`. S3 resources also write non-secret provider metadata and encrypted credentials. Local storage writes the binding to the built-in `local` resource, has no `[storages.local]` table, and has no credentials. Deploy syncs storage bindings.
+
+## `tako storages credentials`
+
+```bash
+tako storages credentials r2 --env production
+```
+
+Sets encrypted credentials for an existing top-level S3 storage resource without adding an app-facing binding. Use this for backup-only resources.
+
+## `tako backups`
+
+```bash
+tako backups now --env production
+tako backups list --env production
+tako backups status --env production
+tako backups download b123 --env production --server prod-a --output ./backup.tar.zst
+tako backups restore b123 --env production --server prod-a --yes
+```
+
+Backups use `backup = { storage = "<resource>" }` from the selected environment. The storage resource must be private S3-compatible storage. Backup objects are written under `_tako/backups/{app}/{env}/{server}/`.
+
+| Command         | Meaning                                                                                                                    |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `now`           | Create a backup immediately on the selected server(s).                                                                     |
+| `list` / `ls`   | List backup ids from the remote index.                                                                                     |
+| `status`        | Show enabled state, last backup, next due time, and retention.                                                             |
+| `download <id>` | Download an archive. Pass `--server` when the environment has multiple servers.                                            |
+| `restore <id>`  | Replace the selected server's app data with the backup archive. Pass `--server` when the environment has multiple servers. |
 
 ## `tako releases`
 

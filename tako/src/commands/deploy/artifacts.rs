@@ -188,6 +188,13 @@ pub(super) async fn prepare_build_phase(
         Some(&project_dir),
     )
     .map_err(|e| e.to_string())?;
+    let deploy_backup = crate::commands::storage::decrypt_backup_binding(
+        &env,
+        &tako_config,
+        &secrets,
+        Some(&project_dir),
+    )
+    .map_err(|e| e.to_string())?;
     let routes = tako_config.get_routes(&env).unwrap_or_default();
     let ssl_provider = tako_config.get_ssl_provider(&env);
     let deploy_ssl = crate::commands::credentials::decrypt_ssl_binding(
@@ -251,6 +258,7 @@ pub(super) async fn prepare_build_phase(
         deploy_secrets,
         deploy_storages,
         deploy_ssl,
+        deploy_backup,
         use_unified_target_process: should_use_unified_js_target_process(&runtime_tool),
         artifacts_by_target,
     })

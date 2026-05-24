@@ -1,0 +1,508 @@
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use tako_core::{
+    BACKUP_INTERVAL_SECS, BackupDownloadUrlResponse, BackupInfo, BackupListResponse,
+    BackupStatusResponse, Response,
+};
+
+use crate::object_storage::{S3Method, presign_s3_url};
+use crate::release::{
+    app_runtime_data_paths, ensure_app_runtime_data_dirs, release_app_path,
+    requested_deployment_identity, resolve_release_runtime_bin,
+};
+
+mod s3;
+mod snapshot;
+
+use s3::{
+    DOWNLOAD_URL_EXPIRES_SECONDS, S3_URL_EXPIRES_SECONDS, download_object, prune_retention,
+    put_json_object, upload_file,
+};
+use snapshot::{create_backup_archive, restore_data_tree, sha256_file_hex, snapshot_data_tree};
+
+const BACKUP_INDEX_VERSION: u8 = 1;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct BackupIndex {
+    version: u8,
+    backups: Vec<BackupInfo>,
+}
+
+impl Default for BackupIndex {
+    fn default() -> Self {
+        Self {
+            version: BACKUP_INDEX_VERSION,
+            backups: Vec::new(),
+        }
+    }
+}
+
+impl crate::ServerState {
+    pub(crate) async fn backup_now(&self, app: &str) -> Response {
+        match self.backup_app_now(app).await {
+            Ok(info) => Response::ok(info),
+            Err(error) => Response::error(error),
+        }
+    }
+
+    pub(crate) async fn list_backups(&self, app: &str) -> Response {
+        match self.list_backups_inner(app).await {
+            Ok(backups) => Response::ok(BackupListResponse {
+                app: app.to_string(),
+                backups,
+            }),
+            Err(error) => Response::error(error),
+        }
+    }
+
+    pub(crate) async fn backup_status(&self, app: &str) -> Response {
+        match self.backup_status_inner(app).await {
+            Ok(status) => Response::ok(status),
+            Err(error) => Response::error(error),
+        }
+    }
+
+    pub(crate) async fn backup_download_url(&self, app: &str, backup_id: &str) -> Response {
+        match self.backup_download_url_inner(app, backup_id).await {
+            Ok(response) => Response::ok(response),
+            Err(error) => Response::error(error),
+        }
+    }
+
+    pub(crate) async fn restore_backup(&self, app: &str, backup_id: &str) -> Response {
+        match self.restore_backup_inner(app, backup_id).await {
+            Ok(info) => Response::ok(info),
+            Err(error) => Response::error(error),
+        }
+    }
+
+    pub(crate) async fn backup_after_deploy(
+        &self,
+        app: &str,
+    ) -> Option<Result<BackupInfo, String>> {
+        self.state_store.get_backup(app).ok().flatten()?;
+        Some(self.backup_app_now(app).await)
+    }
+
+    pub(crate) fn start_backup_scheduler(self: Arc<Self>, handle: &tokio::runtime::Handle) {
+        handle.spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(60 * 60));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                interval.tick().await;
+                self.run_due_backups().await;
+            }
+        });
+    }
+
+    async fn run_due_backups(&self) {
+        let apps = match self.state_store.load_apps() {
+            Ok(apps) => apps,
+            Err(error) => {
+                tracing::warn!("Failed to load apps for backup scheduler: {error}");
+                return;
+            }
+        };
+
+        for persisted in apps {
+            let app = persisted.config.deployment_id();
+            let Some(backup) = self.state_store.get_backup(&app).ok().flatten() else {
+                continue;
+            };
+            let due = match self.read_backup_index(&backup, &app).await {
+                Ok(index) => {
+                    let last = latest_backup(index.backups.iter())
+                        .map(|backup| backup.created_at_unix_secs);
+                    last.is_none_or(|last| {
+                        now_unix_secs().saturating_sub(last) >= BACKUP_INTERVAL_SECS
+                    })
+                }
+                Err(error) => {
+                    tracing::warn!(app = %app, "Failed to read backup index: {error}");
+                    true
+                }
+            };
+            if due && let Err(error) = self.backup_app_now(&app).await {
+                tracing::warn!(app = %app, "Scheduled backup failed: {error}");
+            }
+        }
+    }
+
+    async fn backup_app_now(&self, app: &str) -> Result<BackupInfo, String> {
+        let backup = self
+            .state_store
+            .get_backup(app)
+            .map_err(|error| format!("read backup config: {error}"))?
+            .ok_or_else(|| format!("Backups are not configured for {app}."))?;
+        validate_backup_binding(&backup)?;
+
+        let data_paths = ensure_app_runtime_data_dirs(&self.runtime.data_dir, app)?;
+        let tmp_root = self.runtime.data_dir.join("tmp").join("backups");
+        tokio::fs::create_dir_all(&tmp_root)
+            .await
+            .map_err(|e| format!("create backup temp dir {}: {e}", tmp_root.display()))?;
+
+        let backup_id = format!("b{}-{}", now_unix_secs(), nanoid::nanoid!(8));
+        let work_dir = tmp_root.join(&backup_id);
+        let snapshot_dir = work_dir.join("snapshot");
+        let archive_path = work_dir.join("data.tar.zst");
+
+        let result: Result<BackupInfo, String> = async {
+            let archive_result = tokio::task::spawn_blocking({
+                let data_root = data_paths.root.clone();
+                let snapshot_dir = snapshot_dir.clone();
+                let archive_path = archive_path.clone();
+                move || {
+                    snapshot_data_tree(&data_root, &snapshot_dir)?;
+                    create_backup_archive(&snapshot_dir, &archive_path)?;
+                    sha256_file_hex(&archive_path)
+                }
+            })
+            .await
+            .map_err(|e| format!("backup worker failed: {e}"))?;
+            let sha256_hex = archive_result?;
+            let size_bytes = tokio::fs::metadata(&archive_path)
+                .await
+                .map_err(|e| {
+                    format!(
+                        "read backup archive metadata {}: {e}",
+                        archive_path.display()
+                    )
+                })?
+                .len();
+
+            let (app_name, environment) = requested_deployment_identity(app);
+            let server = self.backup_server_label();
+            let prefix = backup_object_prefix(&app_name, &environment, &server);
+            let archive_key = format!("{prefix}/{backup_id}.tar.zst");
+            let manifest_key = format!("{prefix}/{backup_id}.json");
+
+            let info = BackupInfo {
+                id: backup_id,
+                app: app_name,
+                environment,
+                server,
+                created_at_unix_secs: now_unix_secs(),
+                size_bytes,
+                sha256_hex,
+                archive_key,
+                manifest_key,
+            };
+
+            let client = reqwest::Client::new();
+            upload_file(&client, &backup.storage, &info.archive_key, &archive_path).await?;
+            put_json_object(&client, &backup.storage, &info.manifest_key, &info).await?;
+
+            let mut index = self
+                .read_backup_index(&backup, app)
+                .await
+                .unwrap_or_default();
+            index.backups.retain(|existing| existing.id != info.id);
+            index.backups.push(info.clone());
+            index.backups.sort_by(|a, b| {
+                b.created_at_unix_secs
+                    .cmp(&a.created_at_unix_secs)
+                    .then_with(|| b.id.cmp(&a.id))
+            });
+            prune_retention(&client, &backup.storage, &mut index, backup.retention_days).await;
+            put_json_object(
+                &client,
+                &backup.storage,
+                &backup_index_key(app, self),
+                &index,
+            )
+            .await?;
+
+            Ok(info)
+        }
+        .await;
+
+        let _ = tokio::fs::remove_dir_all(&work_dir).await;
+        result
+    }
+
+    async fn list_backups_inner(&self, app: &str) -> Result<Vec<BackupInfo>, String> {
+        let backup = self
+            .state_store
+            .get_backup(app)
+            .map_err(|error| format!("read backup config: {error}"))?
+            .ok_or_else(|| format!("Backups are not configured for {app}."))?;
+        let mut index = self.read_backup_index(&backup, app).await?;
+        index.backups.sort_by(|a, b| {
+            b.created_at_unix_secs
+                .cmp(&a.created_at_unix_secs)
+                .then_with(|| b.id.cmp(&a.id))
+        });
+        Ok(index.backups)
+    }
+
+    async fn backup_status_inner(&self, app: &str) -> Result<BackupStatusResponse, String> {
+        let Some(backup) = self
+            .state_store
+            .get_backup(app)
+            .map_err(|error| format!("read backup config: {error}"))?
+        else {
+            return Ok(BackupStatusResponse {
+                app: app.to_string(),
+                enabled: false,
+                retention_days: None,
+                last_backup: None,
+                next_backup_at_unix_secs: None,
+            });
+        };
+        let index = self
+            .read_backup_index(&backup, app)
+            .await
+            .unwrap_or_default();
+        let last_backup = latest_backup(index.backups.iter()).cloned();
+        let next_backup_at_unix_secs = last_backup
+            .as_ref()
+            .map(|backup| {
+                backup
+                    .created_at_unix_secs
+                    .saturating_add(BACKUP_INTERVAL_SECS)
+            })
+            .or_else(|| Some(now_unix_secs()));
+        Ok(BackupStatusResponse {
+            app: app.to_string(),
+            enabled: true,
+            retention_days: Some(backup.retention_days),
+            last_backup,
+            next_backup_at_unix_secs,
+        })
+    }
+
+    async fn backup_download_url_inner(
+        &self,
+        app: &str,
+        backup_id: &str,
+    ) -> Result<BackupDownloadUrlResponse, String> {
+        let backup = self
+            .state_store
+            .get_backup(app)
+            .map_err(|error| format!("read backup config: {error}"))?
+            .ok_or_else(|| format!("Backups are not configured for {app}."))?;
+        let info = self.find_backup(&backup, app, backup_id).await?;
+        let url = presign_s3_url(
+            &backup.storage,
+            &info.archive_key,
+            S3Method::Get,
+            DOWNLOAD_URL_EXPIRES_SECONDS,
+        )?;
+        Ok(BackupDownloadUrlResponse {
+            backup: info,
+            url,
+            expires_in_seconds: DOWNLOAD_URL_EXPIRES_SECONDS,
+        })
+    }
+
+    async fn restore_backup_inner(&self, app: &str, backup_id: &str) -> Result<BackupInfo, String> {
+        let backup = self
+            .state_store
+            .get_backup(app)
+            .map_err(|error| format!("read backup config: {error}"))?
+            .ok_or_else(|| format!("Backups are not configured for {app}."))?;
+        let info = self.find_backup(&backup, app, backup_id).await?;
+
+        let app_ref = self
+            .app_manager
+            .get_app(app)
+            .ok_or_else(|| format!("App not found: {app}"))?;
+        let config = app_ref.config.read().clone();
+        self.workflows.stop(app, Duration::from_secs(120)).await;
+        self.app_manager
+            .stop_app(app)
+            .await
+            .map_err(|error| format!("Stop failed before restore: {error}"))?;
+
+        let tmp_root = self.runtime.data_dir.join("tmp").join("restore");
+        tokio::fs::create_dir_all(&tmp_root)
+            .await
+            .map_err(|e| format!("create restore temp dir {}: {e}", tmp_root.display()))?;
+        let work_dir = tmp_root.join(format!("{}-{}", backup_id, nanoid::nanoid!(8)));
+        let archive_path = work_dir.join("data.tar.zst");
+        let extract_dir = work_dir.join("extracted");
+        tokio::fs::create_dir_all(&work_dir)
+            .await
+            .map_err(|e| format!("create restore work dir {}: {e}", work_dir.display()))?;
+
+        let result: Result<BackupInfo, String> = async {
+            let client = reqwest::Client::new();
+            download_object(&client, &backup.storage, &info.archive_key, &archive_path).await?;
+            let actual_sha256 = tokio::task::spawn_blocking({
+                let archive_path = archive_path.clone();
+                move || sha256_file_hex(&archive_path)
+            })
+            .await
+            .map_err(|e| format!("restore checksum worker failed: {e}"))??;
+            if actual_sha256 != info.sha256_hex {
+                Err("Downloaded backup checksum did not match manifest.".to_string())?;
+            }
+
+            crate::extract_zstd_archive(&archive_path, &extract_dir)?;
+            let data_root = app_runtime_data_paths(&self.runtime.data_dir, app).root;
+            restore_data_tree(&extract_dir, &data_root)?;
+            ensure_app_runtime_data_dirs(&self.runtime.data_dir, app)?;
+
+            let release_path = release_app_path(&self.runtime.data_dir, &config);
+            let runtime_bin_path =
+                resolve_release_runtime_bin(&release_path, &self.runtime.data_dir)
+                    .await
+                    .ok()
+                    .flatten();
+            self.sync_app_workflows(app, &release_path, runtime_bin_path.as_deref())
+                .await;
+            if config.min_instances > 0 {
+                self.app_manager
+                    .start_app(app)
+                    .await
+                    .map_err(|error| format!("Restart failed after restore: {error}"))?;
+                if let Some(app_ref) = self.app_manager.get_app(app) {
+                    app_ref.set_state(crate::socket::AppState::Running);
+                }
+            } else if let Some(app_ref) = self.app_manager.get_app(app) {
+                app_ref.set_state(crate::socket::AppState::Idle);
+                self.cold_start.reset(app);
+            }
+
+            Ok(info)
+        }
+        .await;
+
+        let _ = tokio::fs::remove_dir_all(&work_dir).await;
+        result
+    }
+
+    async fn find_backup(
+        &self,
+        backup: &tako_core::BackupBinding,
+        app: &str,
+        backup_id: &str,
+    ) -> Result<BackupInfo, String> {
+        let index = self.read_backup_index(backup, app).await?;
+        index
+            .backups
+            .into_iter()
+            .find(|backup| backup.id == backup_id)
+            .ok_or_else(|| format!("Backup not found: {backup_id}"))
+    }
+
+    async fn read_backup_index(
+        &self,
+        backup: &tako_core::BackupBinding,
+        app: &str,
+    ) -> Result<BackupIndex, String> {
+        validate_backup_binding(backup)?;
+        let key = backup_index_key(app, self);
+        let url = presign_s3_url(&backup.storage, &key, S3Method::Get, S3_URL_EXPIRES_SECONDS)?;
+        let response = reqwest::Client::new()
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| format!("read backup index: {e}"))?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(BackupIndex::default());
+        }
+        if !response.status().is_success() {
+            return Err(format!("read backup index returned {}", response.status()));
+        }
+        response
+            .json::<BackupIndex>()
+            .await
+            .map_err(|e| format!("parse backup index: {e}"))
+    }
+
+    fn backup_server_label(&self) -> String {
+        let raw = self
+            .runtime
+            .server_name
+            .as_deref()
+            .or(self.runtime.server_identity.as_deref())
+            .unwrap_or("server");
+        sanitize_key_segment(raw)
+    }
+}
+
+fn validate_backup_binding(backup: &tako_core::BackupBinding) -> Result<(), String> {
+    if backup.storage.provider != tako_core::StorageProvider::S3 {
+        return Err("Backup storage must be S3-compatible.".to_string());
+    }
+    if backup.storage.public_base_url.is_some() {
+        return Err("Backup storage must be private.".to_string());
+    }
+    require_s3_field(&backup.storage.bucket, "bucket")?;
+    require_s3_field(&backup.storage.endpoint, "endpoint")?;
+    require_s3_field(&backup.storage.region, "region")?;
+    require_s3_field(&backup.storage.access_key_id, "access_key_id")?;
+    require_s3_field(&backup.storage.secret_access_key, "secret_access_key")?;
+    Ok(())
+}
+
+fn require_s3_field(value: &Option<String>, field: &str) -> Result<(), String> {
+    if value.as_deref().is_none_or(|value| value.trim().is_empty()) {
+        return Err(format!("Backup storage is missing {field}."));
+    }
+    Ok(())
+}
+
+fn latest_backup<'a>(backups: impl Iterator<Item = &'a BackupInfo>) -> Option<&'a BackupInfo> {
+    backups.max_by(|a, b| {
+        a.created_at_unix_secs
+            .cmp(&b.created_at_unix_secs)
+            .then_with(|| a.id.cmp(&b.id))
+    })
+}
+
+fn now_unix_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}
+
+fn backup_index_key(app: &str, state: &crate::ServerState) -> String {
+    let (app_name, environment) = requested_deployment_identity(app);
+    format!(
+        "{}/index.json",
+        backup_object_prefix(&app_name, &environment, &state.backup_server_label())
+    )
+}
+
+fn backup_object_prefix(app: &str, environment: &str, server: &str) -> String {
+    format!(
+        "_tako/backups/{}/{}/{}",
+        sanitize_key_segment(app),
+        sanitize_key_segment(environment),
+        sanitize_key_segment(server)
+    )
+}
+
+fn sanitize_key_segment(value: &str) -> String {
+    let mut out = String::new();
+    for ch in value.trim().chars() {
+        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+            out.push(ch.to_ascii_lowercase());
+        } else if ch == '.' {
+            out.push('-');
+        }
+    }
+    if out.is_empty() {
+        "server".to_string()
+    } else {
+        out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backup_prefix_includes_app_env_and_server() {
+        assert_eq!(
+            backup_object_prefix("demo", "production", "la.1"),
+            "_tako/backups/demo/production/la-1"
+        );
+    }
+}

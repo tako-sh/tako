@@ -379,6 +379,7 @@ async fn send_deploy_command(
             secrets: deploy_secrets,
             storages: Some(config.storages.clone()),
             ssl: config.ssl.clone(),
+            backup: config.backup.clone(),
         })
         .await?;
     release_response_result(response).map_err(management_http::ManagementError::Message)?;

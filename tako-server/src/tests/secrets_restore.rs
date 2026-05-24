@@ -94,6 +94,7 @@ async fn deploy_without_secrets_keeps_existing() {
             secrets: None,
             storages: None,
             ssl: tako_core::SslBinding::default(),
+            backup: None,
         })
         .await;
 
@@ -161,6 +162,7 @@ async fn failed_deploy_does_not_persist_credentials_for_unregistered_app() {
             secrets: Some(secrets),
             storages: Some(storages),
             ssl: tako_core::SslBinding::default(),
+            backup: None,
         })
         .await;
 

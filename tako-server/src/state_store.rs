@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tako_core::UpgradeMode;
 
-pub const STATE_SCHEMA_VERSION: i32 = 6;
+pub const STATE_SCHEMA_VERSION: i32 = 7;
 
 #[derive(Debug, Clone)]
 pub struct PersistedApp {
@@ -96,6 +96,8 @@ impl SqliteStateStore {
         conn.execute("DELETE FROM app_storages WHERE app = ?1;", [&secret_key])
             .map_err(StateStoreError::from)?;
         conn.execute("DELETE FROM app_ssl WHERE app = ?1;", [&secret_key])
+            .map_err(StateStoreError::from)?;
+        conn.execute("DELETE FROM app_backups WHERE app = ?1;", [&secret_key])
             .map_err(StateStoreError::from)?;
         conn.execute(
             "DELETE FROM apps WHERE name = ?1 AND environment = ?2;",
@@ -397,6 +399,59 @@ impl SqliteStateStore {
         Ok(())
     }
 
+    pub fn set_backup(
+        &self,
+        app: &str,
+        backup: Option<&tako_core::BackupBinding>,
+    ) -> Result<(), StateStoreError> {
+        let conn = self.open_connection()?;
+        match backup {
+            Some(backup) => {
+                let json = serde_json::to_vec(backup).map_err(|e| {
+                    StateStoreError::InvalidData(format!("serialize backup config: {e}"))
+                })?;
+                let encrypted = encrypt_blob(&self.encryption_key, &json)?;
+                conn.execute(
+                    "INSERT INTO app_backups (app, encrypted_data)
+                     VALUES (?1, ?2)
+                     ON CONFLICT(app) DO UPDATE SET encrypted_data = excluded.encrypted_data;",
+                    rusqlite::params![app, encrypted],
+                )
+                .map_err(StateStoreError::from)?;
+            }
+            None => {
+                conn.execute("DELETE FROM app_backups WHERE app = ?1;", [app])
+                    .map_err(StateStoreError::from)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn get_backup(
+        &self,
+        app: &str,
+    ) -> Result<Option<tako_core::BackupBinding>, StateStoreError> {
+        let conn = self.open_connection()?;
+        let blob: Option<Vec<u8>> = conn
+            .query_row(
+                "SELECT encrypted_data FROM app_backups WHERE app = ?1;",
+                [app],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(StateStoreError::from)?;
+
+        match blob {
+            Some(encrypted) => {
+                let json = decrypt_blob(&self.encryption_key, &encrypted)?;
+                serde_json::from_slice(&json).map(Some).map_err(|e| {
+                    StateStoreError::InvalidData(format!("deserialize backup config: {e}"))
+                })
+            }
+            None => Ok(None),
+        }
+    }
+
     #[cfg(test)]
     pub fn delete_secrets(&self, app: &str) -> Result<(), StateStoreError> {
         let conn = self.open_connection()?;
@@ -481,6 +536,16 @@ impl SqliteStateStore {
             .map_err(StateStoreError::from)?;
         }
 
+        if from_version < 7 {
+            tx.execute_batch(
+                "CREATE TABLE IF NOT EXISTS app_backups (
+                    app TEXT NOT NULL PRIMARY KEY,
+                    encrypted_data BLOB NOT NULL
+                );",
+            )
+            .map_err(StateStoreError::from)?;
+        }
+
         self.ensure_default_rows_on(&tx)?;
         tx.execute_batch(&format!("PRAGMA user_version = {STATE_SCHEMA_VERSION};"))
             .map_err(StateStoreError::from)?;
@@ -530,6 +595,11 @@ impl SqliteStateStore {
             );
 
             CREATE TABLE IF NOT EXISTS app_ssl (
+                app TEXT NOT NULL PRIMARY KEY,
+                encrypted_data BLOB NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS app_backups (
                 app TEXT NOT NULL PRIMARY KEY,
                 encrypted_data BLOB NOT NULL
             );",

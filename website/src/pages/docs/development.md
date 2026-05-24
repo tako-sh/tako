@@ -266,6 +266,8 @@ Development can reference the built-in `local` resource or any undeclared storag
 
 Local storage URLs are app-relative signed GET/PUT routes under `/_tako/storages/<binding>/<key>`, so they resolve against whichever development route the client is already using.
 
+Environment backup storage is not exposed in dev or production SDK bindings unless the same resource is also listed under `[envs.<env>].storages`.
+
 ## Images In Dev
 
 Public optimized images are served at:

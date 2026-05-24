@@ -40,7 +40,26 @@ impl crate::ServerState {
 
     pub(crate) async fn finalize_release(&self, app: &str, version: &str) -> Response {
         match self.finalize_release_inner(app, version) {
-            Ok(()) => Response::ok(serde_json::json!({ "status": "finalized" })),
+            Ok(()) => {
+                let backup = match self.backup_after_deploy(app).await {
+                    Some(Ok(info)) => serde_json::json!({
+                        "status": "created",
+                        "id": info.id,
+                        "size_bytes": info.size_bytes
+                    }),
+                    Some(Err(error)) => {
+                        tracing::warn!(app, "Post-deploy backup failed: {error}");
+                        serde_json::json!({
+                            "status": "failed",
+                            "message": error
+                        })
+                    }
+                    None => serde_json::json!({
+                        "status": "disabled"
+                    }),
+                };
+                Response::ok(serde_json::json!({ "status": "finalized", "backup": backup }))
+            }
             Err(error) => Response::error(error),
         }
     }
