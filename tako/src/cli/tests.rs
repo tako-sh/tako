@@ -300,6 +300,42 @@ fn storages_add_parses_required_binding_options() {
 }
 
 #[test]
+fn storages_credentials_parses_resource_options() {
+    let cli = Cli::try_parse_from([
+        "tako",
+        "storages",
+        "credentials",
+        "backup_r2",
+        "--env",
+        "production",
+        "--access-key-id",
+        "key-id",
+        "--secret-access-key",
+        "secret",
+        "--expires-on",
+        "2099-01-01",
+    ])
+    .unwrap();
+
+    let Some(Commands::Storages(StorageCommands::Credentials {
+        resource,
+        env,
+        access_key_id,
+        secret_access_key,
+        expires_on,
+    })) = cli.command
+    else {
+        panic!("expected Storage::Credentials");
+    };
+
+    assert_eq!(resource, "backup_r2");
+    assert_eq!(env, "production");
+    assert_eq!(access_key_id.as_deref(), Some("key-id"));
+    assert_eq!(secret_access_key.as_deref(), Some("secret"));
+    assert_eq!(expires_on.as_deref(), Some("2099-01-01"));
+}
+
+#[test]
 fn servers_remove_parses() {
     let cli = Cli::try_parse_from(["tako", "servers", "remove", "prod"]).unwrap();
     let Commands::Servers(server::ServerCommands::Remove { name }) = cli.command.expect("command")

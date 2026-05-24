@@ -50,6 +50,24 @@ pub enum StorageCommands {
         #[arg(long)]
         public_base_url: Option<String>,
     },
+
+    /// Set S3 credentials for a storage resource without adding an app binding
+    Credentials {
+        /// Storage resource name from [storages.<resource>]
+        resource: String,
+        /// Environment to set credentials for
+        #[arg(long, default_value = "production")]
+        env: String,
+        /// Access key id. Prompted when omitted.
+        #[arg(long)]
+        access_key_id: Option<String>,
+        /// Secret access key. Prompted when omitted.
+        #[arg(long)]
+        secret_access_key: Option<String>,
+        /// Optional expiry date for S3 credentials. Use YYYY-MM-DD, "in 30 days", or never.
+        #[arg(long)]
+        expires_on: Option<String>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
@@ -93,6 +111,21 @@ pub fn run(
             force_path_style,
             public_base_url,
         }),
+        StorageCommands::Credentials {
+            resource,
+            env,
+            access_key_id,
+            secret_access_key,
+            expires_on,
+        } => set_storage_credentials(StorageCredentialsInput {
+            project_dir: &context.project_dir,
+            config_path: &context.config_path,
+            resource,
+            env,
+            access_key_id,
+            secret_access_key,
+            expires_on,
+        }),
     }
 }
 
@@ -111,6 +144,16 @@ struct StorageAddInput<'a> {
     expires_on: Option<String>,
     force_path_style: bool,
     public_base_url: Option<String>,
+}
+
+struct StorageCredentialsInput<'a> {
+    project_dir: &'a Path,
+    config_path: &'a Path,
+    resource: String,
+    env: String,
+    access_key_id: Option<String>,
+    secret_access_key: Option<String>,
+    expires_on: Option<String>,
 }
 
 fn add_storage(input: StorageAddInput<'_>) -> Result<(), Box<dyn std::error::Error>> {
@@ -169,30 +212,14 @@ fn add_storage(input: StorageAddInput<'_>) -> Result<(), Box<dyn std::error::Err
     )?;
 
     if matches!(input.provider, StorageProviderArg::S3) {
-        let mut secrets = crate::config::SecretsStore::load_from_dir(input.project_dir)?;
-        secrets.ensure_env_key_id(&input.env)?;
-        let key = crate::commands::secret::load_or_create_key_for_set(
-            &input.env,
-            &secrets,
-            Some(input.project_dir),
-        )?;
-
-        let access_key_id = read_storage_credential(input.access_key_id, "Access key id")?;
-        let secret_access_key =
-            read_storage_credential(input.secret_access_key, "Secret access key")?;
-        let expires_on =
-            crate::commands::secret::read_secret_expires_on(input.expires_on, "Expires on")?;
-
-        secrets.set_storage_credentials(
+        write_storage_credentials(
+            input.project_dir,
             &input.env,
             resource_name,
-            EncryptedStorageCredentials::new(
-                crate::crypto::encrypt(&access_key_id, &key)?,
-                crate::crypto::encrypt(&secret_access_key, &key)?,
-                expires_on,
-            ),
+            input.access_key_id,
+            input.secret_access_key,
+            input.expires_on,
         )?;
-        secrets.save_to_dir(input.project_dir)?;
     }
 
     output::success(&format!(
@@ -201,6 +228,71 @@ fn add_storage(input: StorageAddInput<'_>) -> Result<(), Box<dyn std::error::Err
         output::strong(&input.env)
     ));
     output::hint("Deploy to sync the storage binding to your server.");
+    Ok(())
+}
+
+fn set_storage_credentials(
+    input: StorageCredentialsInput<'_>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    crate::config::validate_environment_name(&input.env)?;
+    validate_storage_name(&input.resource)?;
+
+    let config = TakoToml::load_from_file(input.config_path)?;
+    let resource = config.storages.get(&input.resource).ok_or_else(|| {
+        format!(
+            "Storage resource '{}' is not declared in tako.toml.",
+            input.resource
+        )
+    })?;
+    if resource.provider != tako_core::StorageProvider::S3 {
+        return Err("Only S3-compatible storage resources use credentials.".into());
+    }
+
+    write_storage_credentials(
+        input.project_dir,
+        &input.env,
+        &input.resource,
+        input.access_key_id,
+        input.secret_access_key,
+        input.expires_on,
+    )?;
+
+    output::success(&format!(
+        "Updated storage credentials {} for {}.",
+        output::strong(&input.resource),
+        output::strong(&input.env)
+    ));
+    output::hint("Deploy to sync the storage credentials to your server.");
+    Ok(())
+}
+
+fn write_storage_credentials(
+    project_dir: &Path,
+    env: &str,
+    resource_name: &str,
+    access_key_id: Option<String>,
+    secret_access_key: Option<String>,
+    expires_on: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut secrets = crate::config::SecretsStore::load_from_dir(project_dir)?;
+    secrets.ensure_env_key_id(env)?;
+    let key =
+        crate::commands::secret::load_or_create_key_for_set(env, &secrets, Some(project_dir))?;
+
+    let access_key_id = read_storage_credential(access_key_id, "Access key id")?;
+    let secret_access_key = read_storage_credential(secret_access_key, "Secret access key")?;
+    let expires_on = crate::commands::secret::read_secret_expires_on(expires_on, "Expires on")?;
+
+    secrets.set_storage_credentials(
+        env,
+        resource_name,
+        EncryptedStorageCredentials::new(
+            crate::crypto::encrypt(&access_key_id, &key)?,
+            crate::crypto::encrypt(&secret_access_key, &key)?,
+            expires_on,
+        ),
+    )?;
+    secrets.save_to_dir(project_dir)?;
     Ok(())
 }
 
@@ -328,6 +420,29 @@ fn generate_local_storage_signing_key() -> Result<String, getrandom::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
+
+    fn with_temp_tako_home<T>(f: impl FnOnce() -> T) -> T {
+        let _lock = crate::paths::test_tako_home_env_lock();
+        let home = tempfile::TempDir::new().unwrap();
+        let previous = std::env::var_os("TAKO_HOME");
+        unsafe {
+            std::env::set_var("TAKO_HOME", home.path());
+        }
+
+        struct ResetEnv(Option<OsString>);
+        impl Drop for ResetEnv {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => unsafe { std::env::set_var("TAKO_HOME", value) },
+                    None => unsafe { std::env::remove_var("TAKO_HOME") },
+                }
+            }
+        }
+
+        let _reset = ResetEnv(previous);
+        f()
+    }
 
     #[test]
     fn add_local_storage_writes_builtin_local_binding_without_resource_table() {
@@ -388,5 +503,95 @@ mod tests {
                 .contains("Local storage uses the built-in resource name 'local'"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn set_storage_credentials_writes_secret_without_app_binding() {
+        with_temp_tako_home(|| {
+            let temp = tempfile::TempDir::new().unwrap();
+            let config_path = temp.path().join("tako.toml");
+            std::fs::write(
+                &config_path,
+                r#"
+name = "demo"
+
+[storages.backups]
+provider = "s3"
+bucket = "demo-backups"
+endpoint = "https://s3.example.com"
+region = "us-east-1"
+
+[envs.production]
+route = "demo.example.com"
+backup = { storage = "backups" }
+"#,
+            )
+            .unwrap();
+
+            set_storage_credentials(StorageCredentialsInput {
+                project_dir: temp.path(),
+                config_path: &config_path,
+                resource: "backups".to_string(),
+                env: "production".to_string(),
+                access_key_id: Some("key-id".to_string()),
+                secret_access_key: Some("secret".to_string()),
+                expires_on: Some("2099-01-01".to_string()),
+            })
+            .unwrap();
+
+            let config = TakoToml::load_from_file(&config_path).unwrap();
+            assert!(config.envs["production"].storages.is_empty());
+            assert_eq!(
+                config.envs["production"]
+                    .backup
+                    .as_ref()
+                    .map(|backup| backup.storage.as_str()),
+                Some("backups")
+            );
+
+            let secrets = crate::config::SecretsStore::load_from_dir(temp.path()).unwrap();
+            let credentials = secrets
+                .get_storage_credentials("production", "backups")
+                .expect("backup storage credentials");
+            assert_eq!(
+                credentials.access_key_id.expires_on.as_deref(),
+                Some("2099-01-01")
+            );
+        });
+    }
+
+    #[test]
+    fn set_storage_credentials_rejects_missing_resource() {
+        with_temp_tako_home(|| {
+            let temp = tempfile::TempDir::new().unwrap();
+            let config_path = temp.path().join("tako.toml");
+            std::fs::write(
+                &config_path,
+                r#"
+name = "demo"
+
+[envs.production]
+route = "demo.example.com"
+"#,
+            )
+            .unwrap();
+
+            let err = set_storage_credentials(StorageCredentialsInput {
+                project_dir: temp.path(),
+                config_path: &config_path,
+                resource: "backups".to_string(),
+                env: "production".to_string(),
+                access_key_id: Some("key-id".to_string()),
+                secret_access_key: Some("secret".to_string()),
+                expires_on: None,
+            })
+            .unwrap_err();
+
+            assert!(
+                err.to_string()
+                    .contains("Storage resource 'backups' is not declared"),
+                "{err}"
+            );
+        });
     }
 }
