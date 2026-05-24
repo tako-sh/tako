@@ -2200,7 +2200,6 @@ dependencies = [
  "socket2",
  "system-configuration",
  "tokio",
- "tower-layer",
  "tower-service",
  "tracing",
  "windows-registry",
@@ -4834,7 +4833,6 @@ dependencies = [
  "aws-lc-rs",
  "log",
  "once_cell",
- "ring",
  "rustls-pki-types",
  "rustls-webpki",
  "subtle",
@@ -4851,15 +4849,6 @@ dependencies = [
  "rustls-pki-types",
  "schannel",
  "security-framework",
-]
-
-[[package]]
-name = "rustls-pemfile"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dce314e5fee3f39953d46bb63bb8a46d40c2f8fb7cc5a3b6cab2bde9721d6e50"
-dependencies = [
- "rustls-pki-types",
 ]
 
 [[package]]
@@ -5547,12 +5536,8 @@ dependencies = [
  "getrandom 0.4.2",
  "hex",
  "hickory-proto",
- "http-body-util",
- "hyper",
- "hyper-util",
  "ignore",
  "indicatif",
- "ipnet",
  "libc",
  "notify",
  "notify-debouncer-mini",
@@ -5570,8 +5555,6 @@ dependencies = [
  "rusqlite",
  "russh",
  "russh-sftp",
- "rustls",
- "rustls-pemfile",
  "security-framework",
  "serde",
  "serde_json",
@@ -5590,7 +5573,6 @@ dependencies = [
  "thiserror 2.0.18",
  "time",
  "tokio",
- "tokio-rustls",
  "toml",
  "tracing",
  "tracing-subscriber",
@@ -5650,9 +5632,7 @@ dependencies = [
  "sha2 0.11.0",
  "tar",
  "tempfile",
- "thiserror 2.0.18",
  "tokio",
- "toml",
  "zip",
 ]
 
@@ -5688,7 +5668,6 @@ dependencies = [
  "reqwest",
  "rusqlite",
  "rustls",
- "rustls-pemfile",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -5738,7 +5717,6 @@ dependencies = [
  "nanoid",
  "parking_lot",
  "rusqlite",
- "serde",
  "serde_json",
  "tako-core",
  "tako-socket",

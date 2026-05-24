@@ -42,24 +42,17 @@ toml = "1.0"
 thiserror = "2.0"
 dirs = "6.0"
 bytes = "1"
-ipnet = "2.11"
 
 # File watching
 notify = "8.2"
 notify-debouncer-mini = "0.7"
 
 # HTTP proxy/server
-hyper = { version = "1.8", features = ["full"] }
-hyper-util = { version = "0.1", features = ["full"] }
-http-body-util = "0.1"
 openssl.workspace = true
 pingora-core = { version = "0.8", default-features = false, features = ["openssl"] }
 pingora-proxy = { version = "0.8", default-features = false, features = ["openssl"] }
 pingora-http = "0.8"
 hickory-proto = "0.26.1"
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-rustls-pemfile = "2.2"
-tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 
 # HTTP client for proxying
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "stream"] }
