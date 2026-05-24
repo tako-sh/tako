@@ -169,7 +169,7 @@ Workflows are durable runs owned by `tako-server`. SDKs talk to a shared interna
 
 Workflow workers can be always-on or scale-to-zero. With the default `workers = 0`, the server starts a worker on enqueue or cron tick, lets it process due work, and stops it after an idle window.
 
-Durable channels are public app routes under `/_tako/channels/<name>`. Definitions live in app code; every publish is stored before delivery. Production uses a bounded SQLite replay log scoped to the deployed app id (`{name}/{env}`); local dev keeps one in-memory replay store per registered app. WS/SSE clients use the log to resume across short disconnects. The default replay window is 10 minutes, and apps keep permanent history in their own database when they need one.
+Durable channels are public app routes under `/_tako/channels/<name>`. Definitions live in app code; every publish is stored before delivery. Production uses a bounded SQLite replay log scoped to the deployed app id (`{name}/{env}`); local dev keeps one in-memory replay store per registered app. WS/SSE clients use the log to resume across short disconnects. Browser clients can pass `authorization: token` for header-auth channels, or omit it for public and cookie-auth channels. The default replay window is 10 minutes, and apps keep permanent history in their own database when they need one.
 
 ## Local Development
 

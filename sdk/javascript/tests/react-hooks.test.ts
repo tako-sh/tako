@@ -100,6 +100,25 @@ describe("useChannel (sse)", () => {
     expect(es!.url).toBe("http://test/_tako/channels/chat?roomId=r1&limit=10");
   });
 
+  test("passes authorization shorthand to SSE subscriptions", () => {
+    let seenHeaders: Headers | null = null;
+    const authFactory = (url: string, init?: { headers?: Record<string, string> }) => {
+      seenHeaders = new Headers(init?.headers);
+      es = new MockEventSource(url);
+      return es;
+    };
+
+    renderHook(() =>
+      useChannel("chat", {
+        authorization: "token-123",
+        eventSourceFactory: authFactory,
+        baseUrl: "http://test",
+      }),
+    );
+
+    expect(seenHeaders?.get("Authorization")).toBe("Bearer token-123");
+  });
+
   test("appends messages on incoming events", () => {
     const { result } = renderHook(() =>
       useChannel("chat:1", { eventSourceFactory: factory, baseUrl: "http://test" }),

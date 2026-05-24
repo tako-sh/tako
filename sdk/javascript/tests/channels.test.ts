@@ -142,6 +142,70 @@ describe("channels", () => {
     expect(new Headers(init?.headers).get("Last-Event-ID")).toBe("7");
   });
 
+  test("subscribe maps authorization shorthand to a bearer header", async () => {
+    const fetchMock = mock((_url: string) =>
+      Promise.resolve(
+        new Response("data: hi\n\n", {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        }),
+      ),
+    );
+    configureChannels({ fetch: fetchMock as unknown as typeof fetch });
+
+    const channel = new Channel("chat");
+    const subscription = channel.subscribe({
+      baseUrl: "https://app.example.com",
+      authorization: "token-123",
+    });
+    await (subscription.raw as SseReader).drain({ connections: 1 });
+
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer token-123");
+  });
+
+  test("subscribe lets an explicit authorization header override the shorthand", async () => {
+    const fetchMock = mock((_url: string) =>
+      Promise.resolve(
+        new Response("data: hi\n\n", {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        }),
+      ),
+    );
+    configureChannels({ fetch: fetchMock as unknown as typeof fetch });
+
+    const channel = new Channel("chat");
+    const subscription = channel.subscribe({
+      baseUrl: "https://app.example.com",
+      headers: { Authorization: "Basic abc" },
+      authorization: "token-123",
+    });
+    await (subscription.raw as SseReader).drain({ connections: 1 });
+
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(new Headers(init?.headers).get("Authorization")).toBe("Basic abc");
+  });
+
+  test("subscribe passes authorization shorthand to custom SSE factories", () => {
+    const eventSourceFactory = mock((_url: string, _init?: unknown) => ({
+      kind: "eventsource",
+      close() {},
+    }));
+    const channel = new Channel("chat");
+
+    channel.subscribe({
+      baseUrl: "https://app.example.com",
+      authorization: "token-123",
+      eventSourceFactory,
+    });
+
+    expect(eventSourceFactory).toHaveBeenCalledWith(
+      "https://app.example.com/_tako/channels/chat",
+      { headers: { Authorization: "Bearer token-123" } },
+    );
+  });
+
   test("subscribe keeps fetch-based SSE alive after the stream ends", async () => {
     const seen: Array<string | null> = [];
     configureChannels({
@@ -238,6 +302,26 @@ describe("channels", () => {
     expect(sent[0]).toBe(
       JSON.stringify({ type: "tako.auth", token: "Bearer abc", lastMessageId: "42" }),
     );
+  });
+
+  test("connect sends authorization shorthand in the tako.auth envelope", async () => {
+    const sent: unknown[] = [];
+    const webSocketFactory = mock(() => ({
+      readyState: 1,
+      OPEN: 1,
+      send: (data: unknown) => sent.push(data),
+      close() {},
+    }));
+
+    const channel = new Channel("chat", "ws");
+    channel.connect({
+      baseUrl: "https://app.example.com",
+      authorization: "token-123",
+      webSocketFactory,
+    });
+    await Promise.resolve();
+
+    expect(sent[0]).toBe(JSON.stringify({ type: "tako.auth", token: "Bearer token-123" }));
   });
 
   test("connect throws when channel has no ws transport", () => {

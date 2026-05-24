@@ -77,6 +77,32 @@ function toWebSocketUrl(url: URL): string {
   return ws.toString();
 }
 
+function authorizationHeader(authorization?: string): string | undefined {
+  const value = authorization?.trim();
+  if (!value) return undefined;
+  return /^Bearer\s+/i.test(value) ? value : `Bearer ${value}`;
+}
+
+function explicitAuthorizationHeader(headers?: Record<string, string>): string | undefined {
+  if (!headers) return undefined;
+  for (const [name, value] of Object.entries(headers)) {
+    if (name.toLowerCase() === "authorization") {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function headersWithAuthorization(
+  headers: Record<string, string> | undefined,
+  authorization: string | undefined,
+): Record<string, string> | undefined {
+  const value = authorizationHeader(authorization);
+  if (!value) return headers;
+  if (explicitAuthorizationHeader(headers) !== undefined) return headers;
+  return { ...(headers ?? {}), Authorization: value };
+}
+
 function defaultWebSocketFactory(url: string): unknown {
   const ctor = getChannelsConfig().websocket;
   if (!ctor) {
@@ -136,17 +162,19 @@ function sendWhenOpen(raw: unknown, data: unknown): void {
   }
 }
 
-function sendAuthEnvelope(raw: unknown, lastMessageId?: string): void {
-  void getChannelsConfig()
-    .resolveOptionalToken()
-    .then((token) => {
-      if (!token) return;
-      sendWhenOpen(raw, {
-        type: "tako.auth",
-        token,
-        ...(lastMessageId !== undefined && { lastMessageId }),
-      });
+function sendAuthEnvelope(raw: unknown, lastMessageId?: string, tokenOverride?: string): void {
+  const tokenPromise =
+    tokenOverride !== undefined
+      ? Promise.resolve(tokenOverride)
+      : getChannelsConfig().resolveOptionalToken();
+  void tokenPromise.then((token) => {
+    if (!token) return;
+    sendWhenOpen(raw, {
+      type: "tako.auth",
+      token,
+      ...(lastMessageId !== undefined && { lastMessageId }),
     });
+  });
 }
 
 export class Channel {
@@ -180,9 +208,10 @@ export class Channel {
   subscribe(options: ChannelSubscribeOptions = {}): ChannelSubscription {
     const url = channelBaseUrl(this.name, options.baseUrl, this.params);
     const factory = options.eventSourceFactory;
+    const headers = headersWithAuthorization(options.headers, options.authorization);
     const init: { headers?: Record<string, string>; lastEventId?: string } = {};
-    if (options.headers !== undefined) {
-      init.headers = options.headers;
+    if (headers !== undefined) {
+      init.headers = headers;
     }
     if (options.lastEventId !== undefined) {
       init.lastEventId = options.lastEventId;
@@ -202,7 +231,7 @@ export class Channel {
       fetch: getChannelsConfig().fetch,
       onMessage: () => {},
       retryOnDisconnect: true,
-      ...(options.headers !== undefined && { headers: options.headers }),
+      ...(headers !== undefined && { headers }),
     };
     const reader = new SseReader(url.toString(), readerOptions);
     if (options.lastEventId !== undefined) {
@@ -228,7 +257,8 @@ export class Channel {
 
     const factory = options.webSocketFactory ?? defaultWebSocketFactory;
     const raw = factory(toWebSocketUrl(url));
-    sendAuthEnvelope(raw, options.lastMessageId);
+    const headers = headersWithAuthorization(options.headers, options.authorization);
+    sendAuthEnvelope(raw, options.lastMessageId, explicitAuthorizationHeader(headers));
     return {
       transport: "ws",
       raw,

@@ -2313,6 +2313,8 @@ WebSocket header auth is sent as the first text frame:
 { "type": "tako.auth", "token": "Bearer ...", "lastMessageId": "123" }
 ```
 
+Browser clients may pass `authorization: token` to `Channel.subscribe`, `Channel.connect`, or `useChannel` to send `Authorization: Bearer <token>` for header-auth channels. The option is optional; omit it for public channels and cookie-auth channels. `headers.Authorization` remains available for explicit authorization values.
+
 If an auth-required WebSocket does not send a valid first frame within five seconds, `tako-server` closes it with an errkit-generated app close code.
 
 **Go** — programmatic registration mirrors the same wire protocol:

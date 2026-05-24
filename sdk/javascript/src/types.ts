@@ -141,6 +141,8 @@ export interface ChannelSubscribeOptions {
   baseUrl?: string;
   /** Extra headers to send on the SSE request. */
   headers?: Record<string, string>;
+  /** Bearer token shorthand for header auth. Omit for public or cookie-auth channels. */
+  authorization?: string;
   /** Last seen message id — triggers replay from that point. */
   lastEventId?: string;
   /** Inject a custom SSE implementation (e.g. for tests). */
@@ -151,8 +153,10 @@ export interface ChannelSubscribeOptions {
 export interface ChannelConnectOptions {
   /** Override the base URL. Required outside the browser. */
   baseUrl?: string;
-  /** Extra headers to send on the upgrade request (factory permitting). */
+  /** Extra headers for auth; `Authorization` is sent in the first WebSocket auth frame. */
   headers?: Record<string, string>;
+  /** Bearer token shorthand for header auth. Omit for public or cookie-auth channels. */
+  authorization?: string;
   /** Last seen message id — replays missed frames before live traffic. */
   lastMessageId?: string;
   /** Inject a custom `WebSocket` implementation (e.g. for Node, tests). */

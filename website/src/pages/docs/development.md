@@ -296,6 +296,8 @@ Public channel routes use:
 
 SSE and WebSocket behavior matches production. Server-side channel publishes go through the internal socket, not back through the public HTTPS proxy.
 
+For browser clients, pass `authorization: token` only when a channel expects header auth. Public and cookie-auth channels do not need it.
+
 ## Workflows In Dev
 
 Workflow files live under:

@@ -126,6 +126,7 @@ export default defineChannel("chat", {
 - Call `.$messageTypes<T>()` to type the per-message-type payloads. Presence of a `handler` option (not shown) chooses transport: WebSocket when present, SSE otherwise.
 - Every publish is stored in Tako's bounded channel replay log before delivery. Production stores replay by deployed app id (`{name}/{env}`); local dev keeps replay in memory for the current daemon process. `replayWindowMs` defaults to 10 minutes and can be overridden per channel.
 - Browser subscriptions keep reconnecting until closed. The SDK retries through network loss, laptop sleep, server restarts, and clean connection rotation, then resumes from the last received message id inside the bounded replay window.
+- Browser clients can pass `authorization: token` to send `Authorization: Bearer <token>` on SSE channels or the equivalent WebSocket auth frame. Use `headers.Authorization` for custom authorization values, and omit both options for public or cookie-auth channels.
 
 Publish by importing the channel wherever you need it:
 

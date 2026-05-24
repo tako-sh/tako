@@ -13,7 +13,7 @@
  * import { Channel } from "tako.sh/client";
  *
  * const chat = new Channel("chat:room-123");
- * const sub = chat.subscribe({ headers: { Authorization: `Bearer ${token}` } });
+ * const sub = chat.subscribe({ authorization: token });
  * ```
  */
 
