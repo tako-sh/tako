@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tako_core::{
@@ -12,31 +11,17 @@ use crate::release::{
     requested_deployment_identity, resolve_release_runtime_bin,
 };
 
+mod index;
 mod s3;
+mod scheduler;
 mod snapshot;
 
+use index::{backup_index_key, backup_object_prefix, latest_backup};
 use s3::{
     DOWNLOAD_URL_EXPIRES_SECONDS, S3_URL_EXPIRES_SECONDS, download_object, prune_retention,
     put_json_object, upload_file,
 };
 use snapshot::{create_backup_archive, restore_data_tree, sha256_file_hex, snapshot_data_tree};
-
-const BACKUP_INDEX_VERSION: u8 = 1;
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct BackupIndex {
-    version: u8,
-    backups: Vec<BackupInfo>,
-}
-
-impl Default for BackupIndex {
-    fn default() -> Self {
-        Self {
-            version: BACKUP_INDEX_VERSION,
-            backups: Vec::new(),
-        }
-    }
-}
 
 impl crate::ServerState {
     pub(crate) async fn backup_now(&self, app: &str) -> Response {
@@ -74,58 +59,6 @@ impl crate::ServerState {
         match self.restore_backup_inner(app, backup_id).await {
             Ok(info) => Response::ok(info),
             Err(error) => Response::error(error),
-        }
-    }
-
-    pub(crate) async fn backup_after_deploy(
-        &self,
-        app: &str,
-    ) -> Option<Result<BackupInfo, String>> {
-        self.state_store.get_backup(app).ok().flatten()?;
-        Some(self.backup_app_now(app).await)
-    }
-
-    pub(crate) fn start_backup_scheduler(self: Arc<Self>, handle: &tokio::runtime::Handle) {
-        handle.spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(60 * 60));
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            loop {
-                interval.tick().await;
-                self.run_due_backups().await;
-            }
-        });
-    }
-
-    async fn run_due_backups(&self) {
-        let apps = match self.state_store.load_apps() {
-            Ok(apps) => apps,
-            Err(error) => {
-                tracing::warn!("Failed to load apps for backup scheduler: {error}");
-                return;
-            }
-        };
-
-        for persisted in apps {
-            let app = persisted.config.deployment_id();
-            let Some(backup) = self.state_store.get_backup(&app).ok().flatten() else {
-                continue;
-            };
-            let due = match self.read_backup_index(&backup, &app).await {
-                Ok(index) => {
-                    let last = latest_backup(index.backups.iter())
-                        .map(|backup| backup.created_at_unix_secs);
-                    last.is_none_or(|last| {
-                        now_unix_secs().saturating_sub(last) >= BACKUP_INTERVAL_SECS
-                    })
-                }
-                Err(error) => {
-                    tracing::warn!(app = %app, "Failed to read backup index: {error}");
-                    true
-                }
-            };
-            if due && let Err(error) = self.backup_app_now(&app).await {
-                tracing::warn!(app = %app, "Scheduled backup failed: {error}");
-            }
         }
     }
 
@@ -387,41 +320,6 @@ impl crate::ServerState {
             .find(|backup| backup.id == backup_id)
             .ok_or_else(|| format!("Backup not found: {backup_id}"))
     }
-
-    async fn read_backup_index(
-        &self,
-        backup: &tako_core::BackupBinding,
-        app: &str,
-    ) -> Result<BackupIndex, String> {
-        validate_backup_binding(backup)?;
-        let key = backup_index_key(app, self);
-        let url = presign_s3_url(&backup.storage, &key, S3Method::Get, S3_URL_EXPIRES_SECONDS)?;
-        let response = reqwest::Client::new()
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| format!("read backup index: {e}"))?;
-        if response.status() == reqwest::StatusCode::NOT_FOUND {
-            return Ok(BackupIndex::default());
-        }
-        if !response.status().is_success() {
-            return Err(format!("read backup index returned {}", response.status()));
-        }
-        response
-            .json::<BackupIndex>()
-            .await
-            .map_err(|e| format!("parse backup index: {e}"))
-    }
-
-    fn backup_server_label(&self) -> String {
-        let raw = self
-            .runtime
-            .server_name
-            .as_deref()
-            .or(self.runtime.server_identity.as_deref())
-            .unwrap_or("server");
-        sanitize_key_segment(raw)
-    }
 }
 
 fn validate_backup_binding(backup: &tako_core::BackupBinding) -> Result<(), String> {
@@ -446,63 +344,9 @@ fn require_s3_field(value: &Option<String>, field: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn latest_backup<'a>(backups: impl Iterator<Item = &'a BackupInfo>) -> Option<&'a BackupInfo> {
-    backups.max_by(|a, b| {
-        a.created_at_unix_secs
-            .cmp(&b.created_at_unix_secs)
-            .then_with(|| a.id.cmp(&b.id))
-    })
-}
-
-fn now_unix_secs() -> i64 {
+pub(super) fn now_unix_secs() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
-}
-
-fn backup_index_key(app: &str, state: &crate::ServerState) -> String {
-    let (app_name, environment) = requested_deployment_identity(app);
-    format!(
-        "{}/index.json",
-        backup_object_prefix(&app_name, &environment, &state.backup_server_label())
-    )
-}
-
-fn backup_object_prefix(app: &str, environment: &str, server: &str) -> String {
-    format!(
-        "_tako/backups/{}/{}/{}",
-        sanitize_key_segment(app),
-        sanitize_key_segment(environment),
-        sanitize_key_segment(server)
-    )
-}
-
-fn sanitize_key_segment(value: &str) -> String {
-    let mut out = String::new();
-    for ch in value.trim().chars() {
-        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-            out.push(ch.to_ascii_lowercase());
-        } else if ch == '.' {
-            out.push('-');
-        }
-    }
-    if out.is_empty() {
-        "server".to_string()
-    } else {
-        out
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn backup_prefix_includes_app_env_and_server() {
-        assert_eq!(
-            backup_object_prefix("demo", "production", "la.1"),
-            "_tako/backups/demo/production/la-1"
-        );
-    }
 }

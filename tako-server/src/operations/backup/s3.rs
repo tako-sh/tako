@@ -4,7 +4,7 @@ use crate::object_storage::{
     S3Method, S3PresignOptions, presign_s3_url, presign_s3_url_with_options,
 };
 
-use super::{BackupIndex, now_unix_secs};
+use super::{index::BackupIndex, now_unix_secs};
 
 pub(super) const DOWNLOAD_URL_EXPIRES_SECONDS: u32 = 15 * 60;
 pub(super) const S3_URL_EXPIRES_SECONDS: u32 = 60 * 60;
