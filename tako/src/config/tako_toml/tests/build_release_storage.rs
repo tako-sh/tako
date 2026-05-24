@@ -229,6 +229,32 @@ backup = { storage = "r2" }
 }
 
 #[test]
+fn backup_storage_rejects_names_with_whitespace() {
+    let err = Config::parse(
+        r#"
+name = "demo"
+
+[storages.r2]
+provider = "s3"
+bucket = "demo-backups"
+endpoint = "https://account.r2.cloudflarestorage.com"
+region = "auto"
+
+[envs.production]
+route = "demo.example.com"
+backup = { storage = " r2 " }
+"#,
+    )
+    .unwrap_err();
+
+    assert!(
+        err.to_string()
+            .contains("Storage name can only contain lowercase letters"),
+        "{err}"
+    );
+}
+
+#[test]
 fn backup_storage_cannot_use_local_resource() {
     let err = Config::parse(
         r#"

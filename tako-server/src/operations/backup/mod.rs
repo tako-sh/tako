@@ -124,13 +124,10 @@ impl crate::ServerState {
             };
 
             let client = reqwest::Client::new();
+            let mut index = self.read_backup_index(&backup, app).await?;
             upload_file(&client, &backup.storage, &info.archive_key, &archive_path).await?;
             put_json_object(&client, &backup.storage, &info.manifest_key, &info).await?;
 
-            let mut index = self
-                .read_backup_index(&backup, app)
-                .await
-                .unwrap_or_default();
             index.backups.retain(|existing| existing.id != info.id);
             index.backups.push(info.clone());
             index.backups.sort_by(|a, b| {
@@ -184,10 +181,7 @@ impl crate::ServerState {
                 next_backup_at_unix_secs: None,
             });
         };
-        let index = self
-            .read_backup_index(&backup, app)
-            .await
-            .unwrap_or_default();
+        let index = self.read_backup_index(&backup, app).await?;
         let last_backup = latest_backup(index.backups.iter()).cloned();
         let next_backup_at_unix_secs = last_backup
             .as_ref()
@@ -243,17 +237,12 @@ impl crate::ServerState {
             .get_app(app)
             .ok_or_else(|| format!("App not found: {app}"))?;
         let config = app_ref.config.read().clone();
-        self.workflows.stop(app, Duration::from_secs(120)).await;
-        self.app_manager
-            .stop_app(app)
-            .await
-            .map_err(|error| format!("Stop failed before restore: {error}"))?;
 
         let tmp_root = self.runtime.data_dir.join("tmp").join("restore");
         tokio::fs::create_dir_all(&tmp_root)
             .await
             .map_err(|e| format!("create restore temp dir {}: {e}", tmp_root.display()))?;
-        let work_dir = tmp_root.join(format!("{}-{}", backup_id, nanoid::nanoid!(8)));
+        let work_dir = tmp_root.join(format!("restore-{}", nanoid::nanoid!(8)));
         let archive_path = work_dir.join("data.tar.zst");
         let extract_dir = work_dir.join("extracted");
         tokio::fs::create_dir_all(&work_dir)
@@ -275,6 +264,11 @@ impl crate::ServerState {
 
             crate::extract_zstd_archive(&archive_path, &extract_dir)?;
             let data_root = app_runtime_data_paths(&self.runtime.data_dir, app).root;
+            self.workflows.stop(app, Duration::from_secs(120)).await;
+            self.app_manager
+                .stop_app(app)
+                .await
+                .map_err(|error| format!("Stop failed before restore: {error}"))?;
             restore_data_tree(&extract_dir, &data_root)?;
             ensure_app_runtime_data_dirs(&self.runtime.data_dir, app)?;
 

@@ -10,8 +10,11 @@ impl crate::ServerState {
         &self,
         app: &str,
     ) -> Option<Result<BackupInfo, String>> {
-        self.state_store.get_backup(app).ok().flatten()?;
-        Some(self.backup_app_now(app).await)
+        match self.state_store.get_backup(app) {
+            Ok(Some(_)) => Some(self.backup_app_now(app).await),
+            Ok(None) => None,
+            Err(error) => Some(Err(format!("read backup config: {error}"))),
+        }
     }
 
     pub(crate) fn start_backup_scheduler(self: Arc<Self>, handle: &tokio::runtime::Handle) {
@@ -36,8 +39,13 @@ impl crate::ServerState {
 
         for persisted in apps {
             let app = persisted.config.deployment_id();
-            let Some(backup) = self.state_store.get_backup(&app).ok().flatten() else {
-                continue;
+            let backup = match self.state_store.get_backup(&app) {
+                Ok(Some(backup)) => backup,
+                Ok(None) => continue,
+                Err(error) => {
+                    tracing::warn!(app = %app, "Failed to read backup config: {error}");
+                    continue;
+                }
             };
             let due = match self.read_backup_index(&backup, &app).await {
                 Ok(index) => {

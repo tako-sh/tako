@@ -195,7 +195,7 @@ impl Config {
 }
 
 fn validate_backup_config(config: &Config, env_name: &str, backup: &BackupConfig) -> Result<()> {
-    let resource_name = backup.storage.trim();
+    let resource_name = backup.storage.as_str();
     if resource_name.is_empty() {
         return Err(ConfigError::Validation(format!(
             "Environment '{env_name}' backup.storage cannot be empty"
