@@ -92,23 +92,29 @@ fn storage_credentials_do_not_appear_as_app_secret_names() {
 }
 
 #[test]
-fn parse_reads_dns_credentials_without_app_secret_name() {
+fn parse_reads_credentials_without_app_secret_name() {
     let json = r#"{
             "production": {
                 "key_id": "0123456789abcdef",
                 "app": {
                     "DATABASE_URL": {"value": "encrypted-db"}
                 },
-                "dns": {
-                    "cloudflare_api_token": {"value": "encrypted-token"}
+                "credentials": {
+                    "ssl.cloudflare": {"value": "encrypted-token"}
                 }
             }
         }"#;
 
     let store = SecretsStore::parse(json).unwrap();
-    let dns = store.get_dns_credentials("production").unwrap();
-    assert_eq!(dns.cloudflare_api_token.value, "encrypted-token");
+    let credential = store
+        .get_credential("production", "ssl.cloudflare")
+        .unwrap();
+    assert_eq!(credential.value, "encrypted-token");
     assert_eq!(store.all_secret_names(), vec!["DATABASE_URL".to_string()]);
+    assert_eq!(
+        store.all_credential_names(),
+        vec!["ssl.cloudflare".to_string()]
+    );
 }
 
 #[test]
@@ -134,8 +140,8 @@ fn parse_reads_secret_values_with_expires_on_metadata() {
                         }
                     }
                 },
-                "dns": {
-                    "cloudflare_api_token": {
+                "credentials": {
+                    "ssl.cloudflare": {
                         "value": "encrypted-token",
                         "expires_on": "2099-01-01"
                     }
@@ -156,8 +162,11 @@ fn parse_reads_secret_values_with_expires_on_metadata() {
         storage.access_key_id.expires_on.as_deref(),
         Some("2099-01-01")
     );
-    let dns = store.get_dns_credentials("production").unwrap();
-    assert_eq!(dns.cloudflare_api_token.value, "encrypted-token");
+    let credential = store
+        .get_credential("production", "ssl.cloudflare")
+        .unwrap();
+    assert_eq!(credential.value, "encrypted-token");
+    assert_eq!(credential.expires_on.as_deref(), Some("2099-01-01"));
 }
 
 #[test]
@@ -377,6 +386,26 @@ fn test_remove_last_secret_removes_environment() {
         .set("production", "API_KEY", "secret".to_string())
         .unwrap();
     store.remove("production", "API_KEY").unwrap();
+
+    assert!(!store.environments.contains_key("production"));
+}
+
+#[test]
+fn remove_last_credential_removes_environment() {
+    let mut store = SecretsStore::default();
+
+    store.ensure_env_key_id("production").unwrap();
+    store
+        .set_credential(
+            "production",
+            "ssl.cloudflare",
+            EncryptedSecretValue::new("encrypted-token".to_string(), None),
+        )
+        .unwrap();
+
+    store
+        .remove_credential("production", "ssl.cloudflare")
+        .unwrap();
 
     assert!(!store.environments.contains_key("production"));
 }

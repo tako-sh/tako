@@ -198,8 +198,8 @@ fn failed_rolling_update_keeps_previous_release_serving() {
         "path": app_dir_v1.to_string_lossy(),
         "routes": [old_host],
         "secrets": old_secrets,
-        "dns": {
-            "provider": "cloudflare",
+        "ssl": {
+            "provider": "letsencrypt",
             "cloudflare_api_token": "old-token"
         },
     }));
@@ -305,14 +305,14 @@ fn failed_rolling_update_keeps_previous_release_serving() {
     );
 
     let conn = rusqlite::Connection::open(server.data_dir().join("tako.db")).unwrap();
-    let dns_rows: i64 = conn
+    let ssl_rows: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM app_dns WHERE app = ?1",
+            "SELECT COUNT(*) FROM app_ssl WHERE app = ?1",
             [app_id],
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(dns_rows, 1, "failed deploy should restore previous DNS");
+    assert_eq!(ssl_rows, 1, "failed deploy should restore previous SSL");
 
     let new_host_status = server.https_status(new_host, "/").unwrap_or(0);
     assert_eq!(

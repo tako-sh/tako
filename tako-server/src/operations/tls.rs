@@ -1,6 +1,7 @@
 use crate::release::should_use_self_signed_route_cert;
 use crate::socket::Response;
-use crate::tls::{AcmeError, CertInfo};
+use crate::tls::cloudflare::CloudflareOriginCaClient;
+use crate::tls::{CertInfo, DnsBinding};
 
 impl crate::ServerState {
     pub async fn request_certificate(&self, domain: &str) -> Response {
@@ -26,12 +27,11 @@ impl crate::ServerState {
         app_name: &str,
         domain: &str,
     ) -> Option<CertInfo> {
-        if let Some(existing) = self.cert_manager.get_cert_for_host(domain) {
-            tracing::debug!(domain = %domain, "Certificate already exists");
-            return Some(existing);
-        }
-
         if should_use_self_signed_route_cert(domain) {
+            if let Some(existing) = self.cert_manager.get_cert_for_host(domain) {
+                tracing::debug!(domain = %domain, "Certificate already exists");
+                return Some(existing);
+            }
             match self.cert_manager.get_or_create_self_signed_cert(domain) {
                 Ok(cert) => {
                     tracing::info!(
@@ -54,21 +54,38 @@ impl crate::ServerState {
             }
         }
 
+        let ssl = match self.state_store.get_ssl(app_name) {
+            Ok(value) => value.unwrap_or_default(),
+            Err(error) => {
+                tracing::warn!(
+                    domain = %domain,
+                    app = app_name,
+                    error = %error,
+                    "Failed to load app SSL credentials"
+                );
+                tako_core::SslBinding::default()
+            }
+        };
+
+        if let Some(existing) = self.cert_manager.get_cert_for_host(domain)
+            && self
+                .cert_manager
+                .cert_matches_ssl_provider(&existing, ssl.provider)
+        {
+            tracing::debug!(domain = %domain, "Certificate already exists");
+            return Some(existing);
+        }
+
+        if ssl.provider == tako_core::SslProvider::Cloudflare {
+            return self
+                .request_cloudflare_origin_certificate(app_name, domain, &ssl)
+                .await;
+        }
+
         let acme_guard = self.acme_client.read().await;
         let acme = acme_guard.as_ref()?;
         let dns = if domain.starts_with("*.") {
-            match self.state_store.get_dns(app_name) {
-                Ok(value) => value,
-                Err(error) => {
-                    tracing::warn!(
-                        domain = %domain,
-                        app = app_name,
-                        error = %error,
-                        "Failed to load app DNS credentials"
-                    );
-                    None
-                }
-            }
+            cloudflare_dns_binding_from_ssl(&ssl)
         } else {
             None
         };
@@ -97,11 +114,66 @@ impl crate::ServerState {
         }
     }
 
-    pub(crate) async fn check_certificate_renewals(&self) -> Vec<Result<CertInfo, AcmeError>> {
-        let acme_guard = self.acme_client.read().await;
-        let Some(acme) = acme_guard.as_ref() else {
-            return Vec::new();
+    async fn request_cloudflare_origin_certificate(
+        &self,
+        app_name: &str,
+        domain: &str,
+        ssl: &tako_core::SslBinding,
+    ) -> Option<CertInfo> {
+        let token = match ssl
+            .cloudflare_api_token
+            .as_deref()
+            .filter(|token| !token.trim().is_empty())
+        {
+            Some(token) => token,
+            None => {
+                tracing::warn!(
+                    domain = %domain,
+                    app = app_name,
+                    "Cloudflare SSL requires a Cloudflare API token"
+                );
+                return None;
+            }
         };
+        let client = match CloudflareOriginCaClient::from_api_token(token) {
+            Ok(client) => client,
+            Err(error) => {
+                tracing::warn!(
+                    domain = %domain,
+                    app = app_name,
+                    error = %error,
+                    "Failed to initialize Cloudflare Origin CA client"
+                );
+                return None;
+            }
+        };
+        tracing::info!(domain = %domain, app = app_name, "Requesting Cloudflare Origin CA certificate");
+        match client
+            .request_certificate(domain, self.cert_manager.clone())
+            .await
+        {
+            Ok(cert) => {
+                tracing::info!(
+                    domain = %domain,
+                    expires_in_days = cert.days_until_expiry(),
+                    "Cloudflare Origin CA certificate issued successfully"
+                );
+                Some(cert)
+            }
+            Err(error) => {
+                tracing::warn!(
+                    domain = %domain,
+                    error = %error,
+                    "Failed to request Cloudflare Origin CA certificate"
+                );
+                None
+            }
+        }
+    }
+
+    pub(crate) async fn check_certificate_renewals(&self) -> Vec<Result<CertInfo, String>> {
+        let acme_guard = self.acme_client.read().await;
+        let acme = acme_guard.as_ref();
 
         let certs_to_renew = self.cert_manager.get_certs_needing_renewal();
         let mut results = Vec::new();
@@ -112,35 +184,59 @@ impl crate::ServerState {
                 days_until_expiry = cert.days_until_expiry(),
                 "Certificate needs renewal"
             );
+            let app = {
+                let route_table = self.routes.read().await;
+                route_table.app_for_route_domain(&cert.domain)
+            };
+            let ssl = match app.as_deref() {
+                Some(app) => self
+                    .state_store
+                    .get_ssl(app)
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default(),
+                None => tako_core::SslBinding::default(),
+            };
+            if ssl.provider == tako_core::SslProvider::Cloudflare {
+                results.push(
+                    self.request_cloudflare_origin_certificate(
+                        app.as_deref().unwrap_or("unknown"),
+                        &cert.domain,
+                        &ssl,
+                    )
+                    .await
+                    .ok_or_else(|| {
+                        format!("Cloudflare Origin CA renewal failed for {}", cert.domain)
+                    }),
+                );
+                continue;
+            }
+
+            let Some(acme) = acme else {
+                results.push(Err("ACME is disabled".to_string()));
+                continue;
+            };
             let dns = if cert.domain.starts_with("*.") {
-                let app = {
-                    let route_table = self.routes.read().await;
-                    route_table.app_for_route_domain(&cert.domain)
-                };
-                match app {
-                    Some(app) => match self.state_store.get_dns(&app) {
-                        Ok(value) => value,
-                        Err(error) => {
-                            tracing::warn!(
-                                app = %app,
-                                domain = %cert.domain,
-                                error = %error,
-                                "Failed to load app DNS credentials for certificate renewal"
-                            );
-                            None
-                        }
-                    },
-                    None => None,
-                }
+                cloudflare_dns_binding_from_ssl(&ssl)
             } else {
                 None
             };
-            let result = acme
-                .renew_certificate_with_dns(&cert.domain, dns.as_ref())
-                .await;
-            results.push(result);
+            results.push(
+                acme.renew_certificate_with_dns(&cert.domain, dns.as_ref())
+                    .await
+                    .map_err(|error| error.to_string()),
+            );
         }
 
         results
     }
+}
+
+fn cloudflare_dns_binding_from_ssl(ssl: &tako_core::SslBinding) -> Option<DnsBinding> {
+    ssl.cloudflare_api_token
+        .as_ref()
+        .filter(|token| !token.trim().is_empty())
+        .map(|token| DnsBinding {
+            cloudflare_api_token: Some(token.clone()),
+        })
 }

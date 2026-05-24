@@ -93,7 +93,7 @@ async fn deploy_without_secrets_keeps_existing() {
             source_ip: tako_core::SourceIpMode::Auto,
             secrets: None,
             storages: None,
-            dns: None,
+            ssl: tako_core::SslBinding::default(),
         })
         .await;
 
@@ -160,7 +160,7 @@ async fn failed_deploy_does_not_persist_credentials_for_unregistered_app() {
             source_ip: tako_core::SourceIpMode::Auto,
             secrets: Some(secrets),
             storages: Some(storages),
-            dns: None,
+            ssl: tako_core::SslBinding::default(),
         })
         .await;
 

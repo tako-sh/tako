@@ -7,6 +7,7 @@ use time::{Date, Duration, Month, OffsetDateTime};
 use super::error::{ConfigError, Result};
 
 const SECRETS_FILE_NAME: &str = "secrets.json";
+pub const SSL_CLOUDFLARE_CREDENTIAL_NAME: &str = "ssl.cloudflare";
 
 /// Per-environment secrets with a random key id.
 ///
@@ -23,9 +24,9 @@ pub struct EnvironmentSecrets {
     /// Storage resource name to encrypted credentials.
     #[serde(default)]
     pub storages: HashMap<String, super::EncryptedStorageCredentials>,
-    /// DNS credentials for wildcard certificate issuance.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dns: Option<EncryptedDnsCredentials>,
+    /// Tako/provider credential name to encrypted value.
+    #[serde(default)]
+    pub credentials: HashMap<String, EncryptedSecretValue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -65,12 +66,6 @@ impl EncryptedSecretValue {
         Ok(expires_on_unix > now_unix_secs
             && expires_on_unix <= now_unix_secs.saturating_add(window_secs))
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct EncryptedDnsCredentials {
-    pub cloudflare_api_token: EncryptedSecretValue,
 }
 
 pub fn secret_expires_on_prompt_hint() -> &'static str {
@@ -143,8 +138,8 @@ pub fn current_unix_timestamp() -> i64 {
 ///         }
 ///       }
 ///     },
-///     "dns": {
-///       "cloudflare_api_token": {
+///     "credentials": {
+///       "ssl.cloudflare": {
 ///         "value": "encrypted_base64_value",
 ///         "expires_on": "2026-12-31"
 ///       }
@@ -153,9 +148,9 @@ pub fn current_unix_timestamp() -> i64 {
 /// }
 /// ```
 ///
-/// App secret names and storage resource names are plaintext (allows listing
-/// without decryption). Secret values, storage credentials, and DNS credentials
-/// are encrypted with AES-256-GCM.
+/// App secret names, storage resource names, and credential names are plaintext
+/// (allows listing without decryption). Secret values, storage credentials, and
+/// provider credentials are encrypted with AES-256-GCM.
 /// Keys are random per environment and stored locally under the environment key id.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct SecretsStore {
@@ -221,10 +216,11 @@ impl SecretsStore {
                     &credentials.secret_access_key,
                 )?;
             }
-            if let Some(credentials) = &env_secrets.dns {
+            for (credential_name, credential) in &env_secrets.credentials {
+                validate_credential_name(credential_name)?;
                 validate_encrypted_secret_value(
-                    "Cloudflare API token",
-                    &credentials.cloudflare_api_token,
+                    &format!("Credential '{credential_name}' value"),
+                    credential,
                 )?;
             }
         }
@@ -326,7 +322,7 @@ impl SecretsStore {
                     key_id: crate::crypto::generate_key_id(),
                     app: HashMap::new(),
                     storages: HashMap::new(),
-                    dns: None,
+                    credentials: HashMap::new(),
                 });
 
         Ok(env_secrets.key_id.clone())
@@ -343,7 +339,7 @@ impl SecretsStore {
                 key_id: key_id.to_string(),
                 app: HashMap::new(),
                 storages: HashMap::new(),
-                dns: None,
+                credentials: HashMap::new(),
             },
         );
         Ok(())
@@ -363,7 +359,7 @@ impl SecretsStore {
         // Remove environment if no secrets remain.
         if env_secrets.app.is_empty()
             && env_secrets.storages.is_empty()
-            && env_secrets.dns.is_none()
+            && env_secrets.credentials.is_empty()
         {
             self.environments.remove(env);
         }
@@ -385,7 +381,7 @@ impl SecretsStore {
         self.environments.retain(|_, env_secrets| {
             !env_secrets.app.is_empty()
                 || !env_secrets.storages.is_empty()
-                || env_secrets.dns.is_some()
+                || !env_secrets.credentials.is_empty()
         });
 
         if removed_from.is_empty() {
@@ -455,6 +451,20 @@ impl SecretsStore {
             .map(|env_secrets| &env_secrets.storages)
     }
 
+    pub fn get_env_credentials(&self, env: &str) -> Option<&HashMap<String, EncryptedSecretValue>> {
+        self.environments
+            .get(env)
+            .map(|env_secrets| &env_secrets.credentials)
+    }
+
+    pub fn env_has_encrypted_values(&self, env: &str) -> bool {
+        self.environments.get(env).is_some_and(|env_secrets| {
+            !env_secrets.app.is_empty()
+                || !env_secrets.storages.is_empty()
+                || !env_secrets.credentials.is_empty()
+        })
+    }
+
     pub fn set_storage_credentials(
         &mut self,
         env: &str,
@@ -477,15 +487,21 @@ impl SecretsStore {
         Ok(())
     }
 
-    pub fn get_dns_credentials(&self, env: &str) -> Option<&EncryptedDnsCredentials> {
+    pub fn get_credential(&self, env: &str, name: &str) -> Option<&EncryptedSecretValue> {
         self.environments
             .get(env)
-            .and_then(|env_secrets| env_secrets.dns.as_ref())
+            .and_then(|env_secrets| env_secrets.credentials.get(name))
     }
 
-    pub fn set_dns_credentials(&mut self, env: &str, value: EncryptedDnsCredentials) -> Result<()> {
+    pub fn set_credential(
+        &mut self,
+        env: &str,
+        name: &str,
+        value: EncryptedSecretValue,
+    ) -> Result<()> {
         validate_environment_name(env)?;
-        validate_encrypted_secret_value("Cloudflare API token", &value.cloudflare_api_token)?;
+        validate_credential_name(name)?;
+        validate_encrypted_secret_value(&format!("Credential '{name}' value"), &value)?;
 
         let env_secrets = self.environments.get_mut(env).ok_or_else(|| {
             ConfigError::Validation(format!(
@@ -494,8 +510,41 @@ impl SecretsStore {
             ))
         })?;
 
-        env_secrets.dns = Some(value);
+        env_secrets.credentials.insert(name.to_string(), value);
         Ok(())
+    }
+
+    pub fn remove_credential(&mut self, env: &str, name: &str) -> Result<()> {
+        validate_credential_name(name)?;
+        let Some(env_secrets) = self.environments.get_mut(env) else {
+            return Ok(());
+        };
+        env_secrets.credentials.remove(name);
+        if env_secrets.app.is_empty()
+            && env_secrets.storages.is_empty()
+            && env_secrets.credentials.is_empty()
+        {
+            self.environments.remove(env);
+        }
+        Ok(())
+    }
+
+    pub fn contains_credential(&self, env: &str, name: &str) -> bool {
+        self.environments
+            .get(env)
+            .map(|env_secrets| env_secrets.credentials.contains_key(name))
+            .unwrap_or(false)
+    }
+
+    pub fn all_credential_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .environments
+            .values()
+            .flat_map(|env_secrets| env_secrets.credentials.keys().cloned())
+            .collect();
+        names.sort();
+        names.dedup();
+        names
     }
 
     /// Check for discrepancies (secrets missing in some environments)
@@ -565,13 +614,14 @@ fn sorted_environments(
         .map(|(env_name, env_secrets)| {
             let sorted_app = env_secrets.app.iter().collect::<BTreeMap<_, _>>();
             let sorted_storages = env_secrets.storages.iter().collect::<BTreeMap<_, _>>();
+            let sorted_credentials = env_secrets.credentials.iter().collect::<BTreeMap<_, _>>();
             (
                 env_name,
                 SortedEnvironmentSecrets {
                     key_id: &env_secrets.key_id,
                     app: sorted_app,
                     storages: sorted_storages,
-                    dns: env_secrets.dns.as_ref(),
+                    credentials: sorted_credentials,
                 },
             )
         })
@@ -583,8 +633,8 @@ struct SortedEnvironmentSecrets<'a> {
     key_id: &'a str,
     app: BTreeMap<&'a String, &'a EncryptedSecretValue>,
     storages: BTreeMap<&'a String, &'a super::EncryptedStorageCredentials>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    dns: Option<&'a EncryptedDnsCredentials>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    credentials: BTreeMap<&'a String, &'a EncryptedSecretValue>,
 }
 
 fn normalize_optional_expires_on(expires_on: Option<String>) -> Result<Option<String>> {
@@ -726,6 +776,18 @@ fn validate_secret_name(name: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+pub fn validate_credential_name(name: &str) -> Result<()> {
+    match name {
+        SSL_CLOUDFLARE_CREDENTIAL_NAME => Ok(()),
+        "" => Err(ConfigError::Validation(
+            "Credential name cannot be empty".to_string(),
+        )),
+        _ => Err(ConfigError::Validation(format!(
+            "Unknown credential '{name}'. Supported credentials: {SSL_CLOUDFLARE_CREDENTIAL_NAME}"
+        ))),
+    }
 }
 
 #[cfg(test)]

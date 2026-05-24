@@ -202,10 +202,10 @@ impl crate::ServerState {
                 app_name
             ));
         }
-        let dns = match self.state_store.get_dns(app_name) {
-            Ok(value) => value,
+        let ssl = match self.state_store.get_ssl(app_name) {
+            Ok(value) => value.unwrap_or_default(),
             Err(error) => {
-                return Response::error(format!("Failed to read DNS credentials: {error}"));
+                return Response::error(format!("Failed to read SSL credentials: {error}"));
             }
         };
         let source_ip = self
@@ -222,7 +222,7 @@ impl crate::ServerState {
             source_ip,
             None,
             None,
-            dns,
+            ssl,
         )
         .await
     }

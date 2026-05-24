@@ -152,7 +152,7 @@ async fn deploy_preserves_scaled_instance_count() {
             source_ip: tako_core::SourceIpMode::Auto,
             secrets: Some(HashMap::new()),
             storages: Some(HashMap::new()),
-            dns: None,
+            ssl: tako_core::SslBinding::default(),
         })
         .await;
 
@@ -267,7 +267,7 @@ async fn deploy_on_demand_validates_startup_and_fails_for_unhealthy_build() {
             source_ip: tako_core::SourceIpMode::Auto,
             secrets: Some(HashMap::new()),
             storages: Some(HashMap::new()),
-            dns: None,
+            ssl: tako_core::SslBinding::default(),
         })
         .await;
 
@@ -427,7 +427,7 @@ HTTPServer(("127.0.0.1", port), Handler).serve_forever()
             source_ip: tako_core::SourceIpMode::Auto,
             secrets: Some(HashMap::new()),
             storages: Some(HashMap::new()),
-            dns: None,
+            ssl: tako_core::SslBinding::default(),
         })
         .await;
     assert!(

@@ -1,5 +1,5 @@
 use super::*;
-use crate::commands::dns::DnsCommands;
+use crate::commands::credentials::CredentialCommands;
 use crate::commands::secret::SecretKeyCommands;
 use crate::commands::storage::{StorageCommands, StorageProviderArg};
 use clap::{CommandFactory, Parser};
@@ -395,30 +395,41 @@ fn servers_status_with_name_is_rejected() {
 }
 
 #[test]
-fn dns_configure_parses_cloudflare_token() {
+fn credentials_set_parses_provider_credential() {
     let cli = Cli::try_parse_from([
         "tako",
-        "dns",
-        "configure",
+        "credentials",
+        "set",
+        "ssl.cloudflare",
         "--env",
         "staging",
-        "--cloudflare-api-token",
-        "token",
         "--expires-on",
         "2099-01-01",
     ])
     .unwrap();
-    let Commands::Dns(DnsCommands::Configure {
+    let Commands::Credentials(CredentialCommands::Set {
+        name,
         env,
-        cloudflare_api_token,
         expires_on,
     }) = cli.command.expect("command")
     else {
-        panic!("expected Dns::Configure");
+        panic!("expected Credentials::Set");
     };
-    assert_eq!(env, "staging");
-    assert_eq!(cloudflare_api_token.as_deref(), Some("token"));
+    assert_eq!(name, "ssl.cloudflare");
+    assert_eq!(env.as_deref(), Some("staging"));
     assert_eq!(expires_on.as_deref(), Some("2099-01-01"));
+}
+
+#[test]
+fn creds_alias_parses_credentials_command() {
+    let cli =
+        Cli::try_parse_from(["tako", "creds", "rm", "ssl.cloudflare", "--env", "staging"]).unwrap();
+    let Commands::Credentials(CredentialCommands::Rm { name, env }) = cli.command.expect("command")
+    else {
+        panic!("expected Credentials::Rm");
+    };
+    assert_eq!(name, "ssl.cloudflare");
+    assert_eq!(env.as_deref(), Some("staging"));
 }
 
 #[test]

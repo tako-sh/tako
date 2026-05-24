@@ -38,7 +38,7 @@ Creates `tako.toml`. Interactive init detects or prompts for runtime, build pres
 
 For JavaScript runtimes, init installs `tako.sh` with the selected package manager. For Go, it runs `go get tako.sh`.
 
-If the production route is a wildcard route, init offers to configure Cloudflare DNS for wildcard HTTPS and stores the token encrypted in `.tako/secrets.json`.
+If the production route is a wildcard route, init offers to set up wildcard HTTPS and stores the Cloudflare token encrypted in `.tako/secrets.json`.
 
 ## `tako generate`
 
@@ -110,9 +110,9 @@ tako deploy --env production --yes
 
 Interactive production deploys ask for confirmation only when the environment is implicit. Passing `--env production` or `--yes` makes the target explicit.
 
-Deploy validates secrets, storage credentials, wildcard DNS credentials, routes, target servers, and server target metadata before build work starts. It builds locally, packages a `.tar.zst` artifact, uploads it over signed HTTP, prepares the release, optionally runs the release command, and performs a rolling update.
+Deploy validates secrets, storage credentials, required provider credentials, routes, target servers, and server target metadata before build work starts. Required Cloudflare credentials are checked with Cloudflare before build/upload: Cloudflare SSL verifies that the token is active, and Let’s Encrypt wildcard routes also verify zone read access. It builds locally, packages a `.tar.zst` artifact, uploads it over signed HTTP, prepares the release, optionally runs the release command, and performs a rolling update.
 
-Wildcard routes require `tako dns configure --env <env>`. Storage bindings configured with `tako storages add` are synced during deploy; there is no separate storage sync command.
+Let’s Encrypt wildcard routes require `tako credentials set ssl.cloudflare --env <env>`. Environments using `ssl = "cloudflare"` require the same credential. Storage bindings configured with `tako storages add` are synced during deploy; there is no separate storage sync command.
 
 ## `tako logs`
 
@@ -156,7 +156,7 @@ tako servers add prod-a.tailnet.ts.net --install --admin-user ubuntu
 
 Passing `admin-user@host` uses that admin user and enables install or repair when needed.
 
-`servers add` verifies Tailscale reachability, SSH recovery access, signed HTTP management, server identity, and target metadata. App routing, source-IP, storage, and DNS bindings are applied by `tako deploy`.
+`servers add` verifies Tailscale reachability, SSH recovery access, signed HTTP management, server identity, and target metadata. App routing, source-IP, storage, and SSL bindings are applied by `tako deploy`.
 
 ### `tako servers remove`
 
@@ -215,20 +215,28 @@ tako servers uninstall prod-a --yes
 
 Removes `tako-server`, service files, app data, runtime data, authorized keys, and the local server inventory entry.
 
-## `tako dns configure`
+## `tako credentials`
 
 ```bash
-tako dns configure --env production
-tako dns configure --env production --cloudflare-api-token "$TOKEN" --expires-on "in 90 days"
+tako credentials set ssl.cloudflare --env production --expires-on "in 90 days"
+tako creds set ssl.cloudflare --env production
+tako credentials list
 ```
 
-| Option                           | Meaning                                                      |
-| -------------------------------- | ------------------------------------------------------------ |
-| `--env <ENV>`                    | Environment to configure. Default `production`.              |
-| `--cloudflare-api-token <TOKEN>` | Token value. Prompted when omitted.                          |
-| `--expires-on <WHEN>`            | Optional expiry date: `YYYY-MM-DD`, `in N days`, or `never`. |
+Alias: `tako creds`.
 
-Stores encrypted Cloudflare DNS credentials in `.tako/secrets.json` under the selected environment's `dns` object. It does not edit `tako.toml`.
+| Command                       | Meaning                                                       |
+| ----------------------------- | ------------------------------------------------------------- |
+| `tako credentials set <NAME>` | Store an encrypted provider credential.                       |
+| `tako credentials rm <NAME>`  | Remove a provider credential from one environment.            |
+| `tako credentials list`       | List credential names and the environments where each is set. |
+
+| Option                | Meaning                                                                          |
+| --------------------- | -------------------------------------------------------------------------------- |
+| `--env <ENV>`         | Target environment. Interactive terminals can choose or create one when omitted. |
+| `--expires-on <WHEN>` | Optional expiry date: `YYYY-MM-DD`, `in N days`, or `never`.                     |
+
+Supported credential: `ssl.cloudflare`. Provider credentials are encrypted in `.tako/secrets.json` under the selected environment's `credentials` object. They are not exposed to app code, generated secret types, or `tako secrets sync`; deploy sends them only through the provider binding that needs them.
 
 ## `tako secrets`
 

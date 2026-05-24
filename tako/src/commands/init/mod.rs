@@ -1,9 +1,9 @@
-mod dns;
 mod generated;
 mod non_interactive;
 mod presets;
 mod project;
 mod scaffold;
+mod ssl;
 mod wizard;
 
 use std::fs;
@@ -12,11 +12,11 @@ use std::path::Path;
 use crate::build::{PresetGroup, detect_build_adapter};
 use crate::config::TakoToml;
 use crate::output;
-use dns::prompt_init_dns_token;
 use generated::{install_tako_sdk, write_init_generated_file};
 use non_interactive::run_non_interactive;
 use project::{display_config_path_for_prompt, ensure_project_gitignore_tracks_secrets};
 use scaffold::{TemplateParams, detect_local_runtime_version, generate_template, sanitize_route};
+use ssl::prompt_init_ssl_token;
 use wizard::{InteractiveInitSelection, prompt_interactive_config};
 
 pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>> {
@@ -96,7 +96,7 @@ pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>>
     });
 
     let production_route = sanitize_route(&production_route);
-    let init_dns_token = prompt_init_dns_token(&production_route)?;
+    let init_ssl_token = prompt_init_ssl_token(&production_route)?;
     let app_root_for_toml = if adapter.preset_group() == PresetGroup::Js {
         Some(app_root.trim())
     } else {
@@ -118,14 +118,13 @@ pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>>
     let parsed_template = TakoToml::parse(&template)?;
     fs::write(&tako_toml_path, template)?;
     ensure_project_gitignore_tracks_secrets(&project_dir)?;
-    let configured_init_dns = init_dns_token.is_some();
-    if let Some((token, expires_on)) = init_dns_token {
-        crate::commands::dns::configure_env_dns(
+    let configured_init_ssl = init_ssl_token.is_some();
+    if let Some((token, expires_on)) = init_ssl_token {
+        crate::commands::credentials::set_ssl_cloudflare_credential(
             &project_dir,
             "production",
-            Some(token),
+            &token,
             expires_on,
-            false,
         )?;
     }
 
@@ -136,15 +135,15 @@ pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>>
     if let Some(generated_file) =
         write_init_generated_file(&project_dir, adapter, parsed_template.js_app_root())?
     {
-        if configured_init_dns {
+        if configured_init_ssl {
             output::success(&format!(
-                "Created {config_name}, {generated_file}, and DNS secrets"
+                "Created {config_name}, {generated_file}, and SSL credentials"
             ));
         } else {
             output::success(&format!("Created {config_name} and {generated_file}"));
         }
-    } else if configured_init_dns {
-        output::success(&format!("Created {config_name} and DNS secrets"));
+    } else if configured_init_ssl {
+        output::success(&format!("Created {config_name} and SSL credentials"));
     } else {
         output::success(&format!("Created {config_name}"));
     }

@@ -388,7 +388,7 @@ route = "prod.example.com"
 }
 
 #[test]
-fn test_deploy_detects_missing_dns_secret_before_server_setup() {
+fn test_deploy_detects_missing_ssl_secret_before_server_setup() {
     let temp = TempDir::new().unwrap();
     let project_dir = temp.path().to_path_buf();
     let home = temp.path().join("home");
@@ -425,20 +425,20 @@ routes = ["*.example.com"]
 
     assert!(
         !output.status.success(),
-        "Deploy should fail when wildcard DNS credentials are missing"
+        "Deploy should fail when wildcard SSL credentials are missing"
     );
 
     let stderr = stderr_str(&output);
     assert!(
-        stderr.contains("DNS errors")
-            && stderr.contains("Wildcard routes require DNS credentials")
-            && stderr.contains("tako dns configure --env production"),
-        "Should fail locally with the DNS credential hint: {}",
+        stderr.contains("SSL errors")
+            && stderr.contains("Let’s Encrypt wildcard routes require credential ssl.cloudflare")
+            && stderr.contains("tako credentials set ssl.cloudflare --env production"),
+        "Should fail locally with the SSL credential hint: {}",
         stderr
     );
     assert!(
         !stderr.contains("No servers have been added"),
-        "DNS validation should run before server setup: {}",
+        "SSL validation should run before server setup: {}",
         stderr
     );
 }

@@ -88,6 +88,36 @@ idle_timeout = 0
 }
 
 #[test]
+fn test_parse_env_ssl_provider() {
+    let toml = r#"
+name = "app"
+
+[envs.production]
+route = "api.example.com"
+ssl = "cloudflare"
+"#;
+    let config = Config::parse(toml).unwrap();
+
+    assert_eq!(
+        config.get_ssl_provider("production"),
+        tako_core::SslProvider::Cloudflare
+    );
+}
+
+#[test]
+fn test_parse_env_ssl_provider_rejects_unknown_value() {
+    let toml = r#"
+name = "app"
+
+[envs.production]
+route = "api.example.com"
+ssl = "self-signed"
+"#;
+    let err = Config::parse(toml).unwrap_err();
+    assert!(err.to_string().contains("unknown variant"));
+}
+
+#[test]
 fn test_validate_assets_rejects_absolute_path() {
     let toml = r#"
 assets = ["/tmp/assets"]

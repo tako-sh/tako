@@ -117,6 +117,8 @@ The first dev run creates a root CA under `{TAKO_HOME}/ca/`:
 
 The private key is mode `0600`. Leaf certificates are generated on demand for app domains. The CA is scoped to `{TAKO_HOME}` so separate data directories do not share trust material.
 
+Production SSL provider settings such as `ssl = "cloudflare"` are not used by `tako dev`; local development always uses the local CA.
+
 ## App Lifecycle
 
 Dev app statuses:

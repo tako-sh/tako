@@ -41,14 +41,14 @@ The same physical server can host multiple environments of the same app because 
 
 The deploy flow is:
 
-1. Validate config, routes, target servers, secrets, storage credentials, DNS credentials, and server target metadata.
+1. Validate config, routes, target servers, secrets, storage credentials, provider credentials when needed, and server target metadata.
 2. Resolve runtime, preset, package manager, entrypoint, asset roots, build commands, and runtime version.
 3. Copy the source bundle into a temporary build workspace and run local build steps.
 4. Merge assets, write `app.json`, verify the resolved `main`, and package the artifact.
 5. Upload the artifact to each server over signed HTTP.
 6. Ask each server to prepare the release, install production dependencies, and download runtimes when needed.
 7. Run the optional release command once on the leader server.
-8. Sync routes, source-IP mode, secrets, storage bindings, and wildcard DNS bindings through remote management.
+8. Sync routes, source-IP mode, secrets, storage bindings, and SSL bindings through remote management.
 9. Start healthy new instances, add them to traffic, then drain old instances.
 
 Servers receive prebuilt artifacts. App build steps do not run on the server.
@@ -102,13 +102,14 @@ The `/_tako/*` path space is reserved after a route match. Tako uses it for dura
 
 Tako manages certificates automatically:
 
-- Exact public hostnames use HTTP-01 challenges.
-- Wildcard hostnames use Cloudflare DNS-01 after `tako dns configure --env <env>`.
+- Exact public hostnames use Let’s Encrypt HTTP-01 by default.
+- Wildcard hostnames use Let’s Encrypt DNS-01 after `tako credentials set ssl.cloudflare --env <env>`.
+- Environments with `ssl = "cloudflare"` use Cloudflare Origin CA after the same credential is set.
 - Local and private hostnames such as `localhost`, `.test`, `.local`, `.invalid`, `.example`, and `.home.arpa` use self-signed certificates.
 
-Cloudflare DNS tokens are encrypted in `.tako/secrets.json`, not written to `tako.toml`. Deploy fails early when wildcard routes need missing or expired DNS credentials and warns when credentials expire within 30 days.
+Cloudflare tokens for certificate operations are encrypted in `.tako/secrets.json` under the environment's provider credentials. Deploy fails early when selected providers need missing or expired credentials, verifies required tokens with Cloudflare before build/upload, and warns when credentials expire within 30 days. For Let’s Encrypt wildcard routes, the preflight also checks that the token can read the matching Cloudflare zone.
 
-Cloudflare DNS-01 does not require Cloudflare proxy mode. For wildcard second-level subdomains such as `*.app.example.com`, point DNS records directly at the Tako server so Tako can terminate TLS.
+Cloudflare DNS-01 does not require Cloudflare proxy mode. Cloudflare SSL uses Origin CA certificates for Cloudflare-proxied traffic.
 
 ## Source IPs
 
@@ -153,7 +154,7 @@ Desired instances are runtime state on each server and survive deploys, rollback
 
 ## Secrets And Storage
 
-Project secrets are encrypted in `.tako/secrets.json`. Each environment has a key id, encrypted app secrets, optional encrypted storage credentials, and optional encrypted DNS credentials. Expiry metadata is plaintext so deploy can fail early on expired credentials and warn on credentials expiring within 30 days.
+Project secrets are encrypted in `.tako/secrets.json`. Each environment has a key id, encrypted app secrets, optional encrypted storage credentials, and optional encrypted provider credentials. Expiry metadata is plaintext so deploy can fail early on expired credentials and warn on credentials expiring within 30 days.
 
 Secrets and storage bindings are stored encrypted in server SQLite. Fresh HTTP instances and workflow workers receive them through fd 3 at spawn time, not through inherited process environment variables.
 

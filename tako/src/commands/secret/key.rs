@@ -247,6 +247,12 @@ fn validate_imported_key_for_env(
                 .map_err(|_| format!("{source} does not decrypt {env} secrets."))?;
         }
     }
+    if let Some(encrypted_credentials) = secrets.get_env_credentials(env) {
+        for encrypted_value in encrypted_credentials.values() {
+            crate::crypto::decrypt(&encrypted_value.value, key)
+                .map_err(|_| format!("{source} does not decrypt {env} credentials."))?;
+        }
+    }
 
     Ok(())
 }
@@ -300,10 +306,15 @@ pub(crate) fn load_or_create_key_for_set(
     usage_path: Option<&Path>,
 ) -> Result<crate::crypto::EncryptionKey, Box<dyn std::error::Error>> {
     let key_store = key_store_for_env(env, secrets)?;
-    if let Some(key) = key_store.load_key_optional_with_usage_path(usage_path)? {
-        return Ok(key);
+    match key_store.load_key_optional_with_usage_path(usage_path) {
+        Ok(Some(key)) => return Ok(key),
+        Ok(None) => {}
+        Err(_) if secrets.env_has_encrypted_values(env) => {
+            return Err(missing_secret_key_message(env).into());
+        }
+        Err(_) => {}
     }
-    if secrets.get_env(env).is_some_and(|map| !map.is_empty()) {
+    if secrets.env_has_encrypted_values(env) {
         return Err(missing_secret_key_message(env).into());
     }
 
@@ -364,7 +375,7 @@ fn resolve_key_storage_choice(
     {
         use std::io::IsTerminal;
 
-        if !std::io::stdin().is_terminal() {
+        if !output::is_interactive() || !std::io::stdin().is_terminal() {
             return Ok(KeyStorageChoice::LocalFile);
         }
 
@@ -407,7 +418,9 @@ pub fn ensure_secret_key_available(
         || secrets
             .get_storage_credentials_env(env)
             .is_some_and(|map| !map.is_empty())
-        || secrets.get_dns_credentials(env).is_some();
+        || secrets
+            .get_env_credentials(env)
+            .is_some_and(|map| !map.is_empty());
     if !has_encrypted_values {
         return Ok(());
     }

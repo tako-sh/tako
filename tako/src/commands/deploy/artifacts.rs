@@ -189,21 +189,15 @@ pub(super) async fn prepare_build_phase(
     )
     .map_err(|e| e.to_string())?;
     let routes = tako_config.get_routes(&env).unwrap_or_default();
-    let deploy_dns = if crate::validation::routes_need_dns(&routes) {
-        Some(crate::commands::dns::decrypt_dns_binding(
-            &env,
-            &secrets,
-            Some(&project_dir),
-        )
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| {
-                format!(
-                    "Wildcard routes require DNS credentials. Run `tako dns configure --env {env}`."
-                )
-            })?)
-    } else {
-        None
-    };
+    let ssl_provider = tako_config.get_ssl_provider(&env);
+    let deploy_ssl = crate::commands::credentials::decrypt_ssl_binding(
+        &env,
+        ssl_provider,
+        &routes,
+        &secrets,
+        Some(&project_dir),
+    )
+    .map_err(|e| e.to_string())?;
 
     let app_json_bytes = serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?;
 
@@ -256,7 +250,7 @@ pub(super) async fn prepare_build_phase(
         manifest_main,
         deploy_secrets,
         deploy_storages,
-        deploy_dns,
+        deploy_ssl,
         use_unified_target_process: should_use_unified_js_target_process(&runtime_tool),
         artifacts_by_target,
     })

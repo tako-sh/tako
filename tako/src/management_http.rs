@@ -488,7 +488,7 @@ mod tests {
                 source_ip: tako_core::SourceIpMode::Direct,
                 secrets: None,
                 storages: None,
-                dns: None,
+                ssl: tako_core::SslBinding::default(),
             }),
             MANAGEMENT_DEPLOY_RPC_TIMEOUT
         );
