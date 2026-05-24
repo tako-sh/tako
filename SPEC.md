@@ -1095,7 +1095,7 @@ tako backups restore b123 --env production --server la --yes
 - `tako backups now [--env <env>] [--server <server>]` creates a backup immediately on the selected server(s).
 - `tako backups list [--env <env>] [--server <server>]` lists remote backup index entries, newest first.
 - `tako backups status [--env <env>]` reports whether backups are enabled per mapped server, plus last/next backup timing and retention.
-- `tako backups download <backup-id> [--env <env>] [--server <server>] [--output <path>]` downloads one backup object. If the environment maps to multiple servers, `--server` is required. Encrypted backups default to `<backup-id>.tar.zst.enc`; unencrypted backups default to `<backup-id>.tar.zst`. The output file must not already exist.
+- `tako backups download <backup-id> [--env <env>] [--server <server>] [--output <path>]` downloads one encrypted backup object. If the environment maps to multiple servers, `--server` is required. The default output path is `<backup-id>.tar.zst.enc`. The output file must not already exist.
 - `tako backups restore <backup-id> [--env <env>] [--server <server>] [--yes|-y]` stops the selected server's app, replaces its data tree with the archive contents, reconciles workflows, and restarts according to the app's desired instance count. If the environment maps to multiple servers, `--server` is required.
 
 All backup commands default to `production`, require project context, and target the remote deployment id `{app}/{env}`. Backup commands use signed HTTP remote management, not SSH.

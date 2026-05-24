@@ -171,12 +171,12 @@ fn backup_info_serializes_encryption_metadata() {
         sha256_hex: "abc".to_string(),
         archive_key: "_tako/backups/demo/production/la/b1.tar.zst.enc".to_string(),
         manifest_key: "_tako/backups/demo/production/la/b1.json".to_string(),
-        encryption: Some(BackupEncryptionInfo {
+        encryption: BackupEncryptionInfo {
             algorithm: "aes-256-gcm".to_string(),
             key_id: "backup-key-0123456789abcdef".to_string(),
             nonce_base64: "nonce".to_string(),
             tag_base64: "tag".to_string(),
-        }),
+        },
     };
 
     let json = serde_json::to_string(&info).unwrap();
@@ -184,12 +184,26 @@ fn backup_info_serializes_encryption_metadata() {
     assert!(json.contains(r#""key_id":"backup-key-0123456789abcdef""#));
     let parsed: BackupInfo = serde_json::from_str(&json).unwrap();
     assert_eq!(
-        parsed
-            .encryption
-            .as_ref()
-            .map(|encryption| encryption.key_id.as_str()),
-        Some("backup-key-0123456789abcdef")
+        parsed.encryption.key_id.as_str(),
+        "backup-key-0123456789abcdef"
     );
+}
+
+#[test]
+fn backup_info_requires_encryption_metadata() {
+    let json = r#"{
+        "id":"b1",
+        "app":"demo",
+        "environment":"production",
+        "server":"la",
+        "created_at_unix_secs":1778220000,
+        "size_bytes":123,
+        "sha256_hex":"abc",
+        "archive_key":"_tako/backups/demo/production/la/b1.tar.zst.enc",
+        "manifest_key":"_tako/backups/demo/production/la/b1.json"
+    }"#;
+
+    assert!(serde_json::from_str::<BackupInfo>(json).is_err());
 }
 
 #[test]

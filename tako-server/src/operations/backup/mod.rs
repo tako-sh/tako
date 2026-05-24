@@ -133,7 +133,7 @@ impl crate::ServerState {
                 sha256_hex,
                 archive_key,
                 manifest_key,
-                encryption: Some(encryption),
+                encryption,
             };
 
             let client = reqwest::Client::new();
@@ -271,15 +271,16 @@ impl crate::ServerState {
 
         let result: Result<BackupInfo, String> = async {
             let client = reqwest::Client::new();
-            let download_path = if info.encryption.is_some() {
-                encrypted_archive_path.clone()
-            } else {
-                archive_path.clone()
-            };
-            download_object(&client, &backup.storage, &info.archive_key, &download_path).await?;
+            download_object(
+                &client,
+                &backup.storage,
+                &info.archive_key,
+                &encrypted_archive_path,
+            )
+            .await?;
             let actual_sha256 = tokio::task::spawn_blocking({
-                let download_path = download_path.clone();
-                move || sha256_file_hex(&download_path)
+                let encrypted_archive_path = encrypted_archive_path.clone();
+                move || sha256_file_hex(&encrypted_archive_path)
             })
             .await
             .map_err(|e| format!("restore checksum worker failed: {e}"))??;
@@ -287,24 +288,22 @@ impl crate::ServerState {
                 Err("Downloaded backup checksum did not match manifest.".to_string())?;
             }
 
-            if let Some(encryption) = &info.encryption {
-                let backup_key = find_backup_key(&backup, &encryption.key_id)?.clone();
-                tokio::task::spawn_blocking({
-                    let encrypted_archive_path = encrypted_archive_path.clone();
-                    let archive_path = archive_path.clone();
-                    let encryption = encryption.clone();
-                    move || {
-                        decrypt_backup_file(
-                            &encrypted_archive_path,
-                            &archive_path,
-                            &backup_key,
-                            &encryption,
-                        )
-                    }
-                })
-                .await
-                .map_err(|e| format!("restore decrypt worker failed: {e}"))??;
-            }
+            let backup_key = find_backup_key(&backup, &info.encryption.key_id)?.clone();
+            tokio::task::spawn_blocking({
+                let encrypted_archive_path = encrypted_archive_path.clone();
+                let archive_path = archive_path.clone();
+                let encryption = info.encryption.clone();
+                move || {
+                    decrypt_backup_file(
+                        &encrypted_archive_path,
+                        &archive_path,
+                        &backup_key,
+                        &encryption,
+                    )
+                }
+            })
+            .await
+            .map_err(|e| format!("restore decrypt worker failed: {e}"))??;
 
             crate::extract_zstd_archive(&archive_path, &extract_dir)?;
             let data_root = app_runtime_data_paths(&self.runtime.data_dir, app).root;

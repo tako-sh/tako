@@ -490,8 +490,7 @@ pub struct BackupInfo {
     pub sha256_hex: String,
     pub archive_key: String,
     pub manifest_key: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub encryption: Option<BackupEncryptionInfo>,
+    pub encryption: BackupEncryptionInfo,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

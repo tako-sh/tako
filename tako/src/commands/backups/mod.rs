@@ -367,13 +367,8 @@ async fn download_backup(
         "backup_download_url",
     )
     .await?;
-    let output_path = output_path.unwrap_or_else(|| {
-        if download.backup.encryption.is_some() {
-            PathBuf::from(format!("{backup_id}.tar.zst.enc"))
-        } else {
-            PathBuf::from(format!("{backup_id}.tar.zst"))
-        }
-    });
+    let output_path =
+        output_path.unwrap_or_else(|| PathBuf::from(format!("{backup_id}.tar.zst.enc")));
 
     let bytes = output::with_spinner_async(
         "Downloading backup",
