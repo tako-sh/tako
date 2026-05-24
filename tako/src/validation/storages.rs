@@ -4,6 +4,11 @@ use crate::config::{SecretsStore, TakoToml};
 
 use super::{SECRET_EXPIRY_WARNING_DAYS, ValidationResult};
 
+enum StorageCredentialUse<'a> {
+    AppBinding { binding_name: &'a str },
+    Backup,
+}
+
 pub fn validate_storages_for_deployment(
     config: &TakoToml,
     secrets: &SecretsStore,
@@ -19,6 +24,7 @@ pub fn validate_storages_for_deployment(
     };
 
     let mut assigned_resources = HashSet::new();
+    let mut validated_s3_resources = HashSet::new();
     for (binding_name, resource_name) in &env.storages {
         assigned_resources.insert(resource_name.as_str());
         let Some(resource) = config.storage_resource_for_env(env_name, resource_name) else {
@@ -37,47 +43,41 @@ pub fn validate_storages_for_deployment(
                 }
             }
             tako_core::StorageProvider::S3 => {
-                let mut warned_expiring_on = HashSet::new();
-                let Some(credentials) = secrets.get_storage_credentials(env_name, resource_name)
-                else {
-                    result.error(format!(
-                        "Storage '{binding_name}' uses S3 resource '{resource_name}' but credentials are missing for environment '{env_name}'"
-                    ));
-                    continue;
-                };
-                for (field, secret) in [
-                    ("access key id", &credentials.access_key_id),
-                    ("secret access key", &credentials.secret_access_key),
-                ] {
-                    match secret.is_expired() {
-                        Ok(true) => {
-                            if let Some(expires_on) = &secret.expires_on {
-                                result.error(format!(
-                                    "Storage credentials for '{resource_name}' in environment '{env_name}' expired on {expires_on} ({field}). Run `tako storages add {binding_name} --env {env_name}` to update them."
-                                ));
-                            }
-                        }
-                        Ok(false) => {
-                            match secret.is_expiring_within_days(SECRET_EXPIRY_WARNING_DAYS) {
-                                Ok(true) => {
-                                    if let Some(expires_on) = &secret.expires_on
-                                        && warned_expiring_on.insert(expires_on.clone())
-                                    {
-                                        result.warn(format!(
-                                            "Storage credentials for '{resource_name}' in environment '{env_name}' expire within {SECRET_EXPIRY_WARNING_DAYS} days on {expires_on}. Run `tako storages add {binding_name} --env {env_name}` to rotate them."
-                                        ));
-                                    }
-                                }
-                                Ok(false) => {}
-                                Err(error) => result.error(format!(
-                                    "Storage credentials for '{resource_name}' in environment '{env_name}' have invalid expiry metadata: {error}"
-                                )),
-                            }
-                        }
-                        Err(error) => result.error(format!(
-                            "Storage credentials for '{resource_name}' in environment '{env_name}' have invalid expiry metadata: {error}"
-                        )),
-                    }
+                if validated_s3_resources.insert(resource_name.as_str()) {
+                    validate_s3_storage_credentials(
+                        &mut result,
+                        secrets,
+                        env_name,
+                        resource_name,
+                        StorageCredentialUse::AppBinding { binding_name },
+                    );
+                }
+            }
+        }
+    }
+
+    if let Some(backup) = &env.backup {
+        assigned_resources.insert(backup.storage.as_str());
+        let Some(resource) = config.storages.get(&backup.storage) else {
+            result.error(format!(
+                "Environment '{env_name}' backup references missing storage resource '{}'",
+                backup.storage
+            ));
+            return result;
+        };
+        match resource.provider {
+            tako_core::StorageProvider::Local => result.error(format!(
+                "Environment '{env_name}' backup uses local storage, but backups require S3-compatible storage"
+            )),
+            tako_core::StorageProvider::S3 => {
+                if validated_s3_resources.insert(backup.storage.as_str()) {
+                    validate_s3_storage_credentials(
+                        &mut result,
+                        secrets,
+                        env_name,
+                        &backup.storage,
+                        StorageCredentialUse::Backup,
+                    );
                 }
             }
         }
@@ -94,6 +94,84 @@ pub fn validate_storages_for_deployment(
     }
 
     result
+}
+
+fn validate_s3_storage_credentials(
+    result: &mut ValidationResult,
+    secrets: &SecretsStore,
+    env_name: &str,
+    resource_name: &str,
+    usage: StorageCredentialUse<'_>,
+) {
+    let Some(credentials) = secrets.get_storage_credentials(env_name, resource_name) else {
+        result.error(match usage {
+            StorageCredentialUse::AppBinding { binding_name } => format!(
+                "Storage '{binding_name}' uses S3 resource '{resource_name}' but credentials are missing for environment '{env_name}'"
+            ),
+            StorageCredentialUse::Backup => format!(
+                "Backup uses S3 resource '{resource_name}' but credentials are missing for environment '{env_name}'"
+            ),
+        });
+        return;
+    };
+
+    let mut warned_expiring_on = HashSet::new();
+    for (field, secret) in [
+        ("access key id", &credentials.access_key_id),
+        ("secret access key", &credentials.secret_access_key),
+    ] {
+        match secret.is_expired() {
+            Ok(true) => {
+                if let Some(expires_on) = &secret.expires_on {
+                    result.error(format!(
+                        "Storage credentials for '{resource_name}' in environment '{env_name}' expired on {expires_on} ({field}). {}",
+                        update_credentials_hint(env_name, &usage)
+                    ));
+                }
+            }
+            Ok(false) => match secret.is_expiring_within_days(SECRET_EXPIRY_WARNING_DAYS) {
+                Ok(true) => {
+                    if let Some(expires_on) = &secret.expires_on
+                        && warned_expiring_on.insert(expires_on.clone())
+                    {
+                        result.warn(format!(
+                            "Storage credentials for '{resource_name}' in environment '{env_name}' expire within {SECRET_EXPIRY_WARNING_DAYS} days on {expires_on}. {}",
+                            rotate_credentials_hint(env_name, &usage)
+                        ));
+                    }
+                }
+                Ok(false) => {}
+                Err(error) => result.error(format!(
+                    "Storage credentials for '{resource_name}' in environment '{env_name}' have invalid expiry metadata: {error}"
+                )),
+            },
+            Err(error) => result.error(format!(
+                "Storage credentials for '{resource_name}' in environment '{env_name}' have invalid expiry metadata: {error}"
+            )),
+        }
+    }
+}
+
+fn update_credentials_hint(env_name: &str, usage: &StorageCredentialUse<'_>) -> String {
+    match usage {
+        StorageCredentialUse::AppBinding { binding_name } => {
+            format!("Run `tako storages add {binding_name} --env {env_name}` to update them.")
+        }
+        StorageCredentialUse::Backup => {
+            "Update the backup storage credentials before deploying.".to_string()
+        }
+    }
+}
+
+fn rotate_credentials_hint(env_name: &str, usage: &StorageCredentialUse<'_>) -> String {
+    match usage {
+        StorageCredentialUse::AppBinding { binding_name } => {
+            format!("Run `tako storages add {binding_name} --env {env_name}` to rotate them.")
+        }
+        StorageCredentialUse::Backup => {
+            "Rotate the backup storage credentials before they expire.".to_string()
+        }
+    }
 }
 
 #[cfg(test)]
@@ -131,6 +209,25 @@ storages = { uploads = "prod_uploads" }
         .unwrap()
     }
 
+    fn config_with_backup_storage() -> TakoToml {
+        TakoToml::parse(
+            r#"
+name = "demo"
+
+[storages.backups]
+provider = "s3"
+bucket = "demo-backups"
+endpoint = "https://s3.example.com"
+region = "us-east-1"
+
+[envs.production]
+route = "demo.example.com"
+backup = { storage = "backups" }
+"#,
+        )
+        .unwrap()
+    }
+
     #[test]
     fn deploy_validation_fails_when_s3_credentials_are_missing() {
         let config = config_with_production_storage();
@@ -163,6 +260,44 @@ storages = { uploads = "prod_uploads" }
         assert!(result.has_errors());
         assert!(result.errors.iter().any(|error| {
             error.contains("old_uploads") && error.contains("no storage binding uses")
+        }));
+    }
+
+    #[test]
+    fn deploy_validation_allows_backup_storage_credentials_without_app_binding() {
+        let config = config_with_backup_storage();
+        let mut secrets = SecretsStore::default();
+        secrets
+            .set_env_key_id("production", "0123456789abcdef")
+            .unwrap();
+        secrets
+            .set_storage_credentials(
+                "production",
+                "backups",
+                EncryptedStorageCredentials::new(
+                    "encrypted-key".to_string(),
+                    "encrypted-secret".to_string(),
+                    Some("2099-01-01".to_string()),
+                ),
+            )
+            .unwrap();
+
+        let result = validate_storages_for_deployment(&config, &secrets, "production", 1);
+
+        assert!(!result.has_errors(), "{:?}", result.errors);
+    }
+
+    #[test]
+    fn deploy_validation_fails_when_backup_credentials_are_missing() {
+        let config = config_with_backup_storage();
+        let secrets = SecretsStore::default();
+
+        let result = validate_storages_for_deployment(&config, &secrets, "production", 1);
+
+        assert!(result.has_errors());
+        assert!(result.errors.iter().any(|error| {
+            error.contains("Backup uses S3 resource 'backups'")
+                && error.contains("credentials are missing")
         }));
     }
 

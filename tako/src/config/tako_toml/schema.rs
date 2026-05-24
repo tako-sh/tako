@@ -153,6 +153,10 @@ pub struct EnvConfig {
     #[serde(default)]
     pub storages: HashMap<String, String>,
 
+    /// Autopilot backup target for this environment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup: Option<BackupConfig>,
+
     /// Client source-IP mode for requests to this environment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_ip: Option<tako_core::SourceIpMode>,
@@ -168,6 +172,13 @@ pub struct EnvConfig {
     /// Per-environment release command override. An empty string explicitly
     /// clears the top-level `release` command for this environment.
     pub release: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct BackupConfig {
+    /// Private S3-compatible storage resource used for app data backups.
+    pub storage: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

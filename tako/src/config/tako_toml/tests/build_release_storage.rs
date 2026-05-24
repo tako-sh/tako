@@ -183,6 +183,121 @@ storages = { uploads = "prod_uploads", cache = "local" }
 }
 
 #[test]
+fn parses_backup_storage_reference() {
+    let config = Config::parse(
+        r#"
+name = "demo"
+
+[storages.r2]
+provider = "s3"
+bucket = "demo-backups"
+endpoint = "https://account.r2.cloudflarestorage.com"
+region = "auto"
+
+[envs.production]
+route = "demo.example.com"
+backup = { storage = "r2" }
+"#,
+    )
+    .unwrap();
+
+    let prod = config.envs.get("production").unwrap();
+    assert_eq!(
+        prod.backup.as_ref().map(|backup| backup.storage.as_str()),
+        Some("r2")
+    );
+}
+
+#[test]
+fn backup_storage_must_reference_configured_resource() {
+    let err = Config::parse(
+        r#"
+name = "demo"
+
+[envs.production]
+route = "demo.example.com"
+backup = { storage = "r2" }
+"#,
+    )
+    .unwrap_err();
+
+    assert!(
+        err.to_string()
+            .contains("Environment 'production' backup references missing storage resource 'r2'"),
+        "{err}"
+    );
+}
+
+#[test]
+fn backup_storage_cannot_use_local_resource() {
+    let err = Config::parse(
+        r#"
+name = "demo"
+
+[envs.production]
+route = "demo.example.com"
+backup = { storage = "local" }
+"#,
+    )
+    .unwrap_err();
+
+    assert!(
+        err.to_string()
+            .contains("Environment 'production' backup uses local storage"),
+        "{err}"
+    );
+}
+
+#[test]
+fn backup_storage_resource_must_be_private() {
+    let err = Config::parse(
+        r#"
+name = "demo"
+
+[storages.r2]
+provider = "s3"
+bucket = "demo-backups"
+endpoint = "https://account.r2.cloudflarestorage.com"
+region = "auto"
+public_base_url = "https://cdn.example.com"
+
+[envs.production]
+route = "demo.example.com"
+backup = { storage = "r2" }
+"#,
+    )
+    .unwrap_err();
+
+    assert!(
+        err.to_string()
+            .contains("Environment 'production' backup storage resource 'r2' must be private"),
+        "{err}"
+    );
+}
+
+#[test]
+fn backup_rejects_unknown_fields() {
+    let err = Config::parse(
+        r#"
+name = "demo"
+
+[storages.r2]
+provider = "s3"
+bucket = "demo-backups"
+endpoint = "https://account.r2.cloudflarestorage.com"
+region = "auto"
+
+[envs.production]
+route = "demo.example.com"
+backup = { storage = "r2", retention = "30d" }
+"#,
+    )
+    .unwrap_err();
+
+    assert!(err.to_string().contains("retention"), "{err}");
+}
+
+#[test]
 fn non_development_storage_bindings_must_reference_configured_resources() {
     let err = Config::parse(
         r#"

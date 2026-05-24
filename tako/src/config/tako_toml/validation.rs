@@ -180,6 +180,9 @@ impl Config {
                     )));
                 }
             }
+            if let Some(backup) = &env_config.backup {
+                validate_backup_config(self, env_name, backup)?;
+            }
         }
 
         for (resource_name, resource) in &self.storages {
@@ -189,6 +192,38 @@ impl Config {
 
         Ok(())
     }
+}
+
+fn validate_backup_config(config: &Config, env_name: &str, backup: &BackupConfig) -> Result<()> {
+    let resource_name = backup.storage.trim();
+    if resource_name.is_empty() {
+        return Err(ConfigError::Validation(format!(
+            "Environment '{env_name}' backup.storage cannot be empty"
+        )));
+    }
+    super::super::validate_storage_name(resource_name)?;
+    if resource_name == super::super::BUILTIN_LOCAL_STORAGE_RESOURCE_NAME {
+        return Err(ConfigError::Validation(format!(
+            "Environment '{env_name}' backup uses local storage, but backups require S3-compatible storage"
+        )));
+    }
+
+    let Some(resource) = config.storages.get(resource_name) else {
+        return Err(ConfigError::Validation(format!(
+            "Environment '{env_name}' backup references missing storage resource '{resource_name}'"
+        )));
+    };
+    if resource.provider != tako_core::StorageProvider::S3 {
+        return Err(ConfigError::Validation(format!(
+            "Environment '{env_name}' backup storage resource '{resource_name}' must use provider 's3'"
+        )));
+    }
+    if resource.public_base_url.is_some() {
+        return Err(ConfigError::Validation(format!(
+            "Environment '{env_name}' backup storage resource '{resource_name}' must be private; remove public_base_url or use a separate private storage resource"
+        )));
+    }
+    Ok(())
 }
 
 fn validate_storage_resource(name: &str, resource: &StorageResourceConfig) -> Result<()> {
