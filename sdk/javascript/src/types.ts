@@ -143,7 +143,7 @@ export interface ChannelSubscribeOptions {
   headers?: Record<string, string>;
   /** Last seen message id — triggers replay from that point. */
   lastEventId?: string;
-  /** Inject a custom `EventSource` implementation (e.g. for Node, tests). */
+  /** Inject a custom SSE implementation (e.g. for tests). */
   eventSourceFactory?: (url: string, init?: EventSourceFactoryInit) => unknown;
 }
 
@@ -166,7 +166,7 @@ export interface ChannelPublishOptions extends ChannelRequestOptions {}
 export interface ChannelSubscription {
   /** Always `"sse"` — subscriptions are server-sent events. */
   transport: "sse";
-  /** The underlying `EventSource` (or factory result). Escape hatch for advanced callers. */
+  /** The underlying SSE reader (or factory result). Escape hatch for advanced callers. */
   raw: unknown;
   /** End the subscription. */
   close: () => void;

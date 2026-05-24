@@ -239,7 +239,7 @@ export function useChannel<T = unknown>(
       };
     }
 
-    // SSE path — EventSource auto-reconnects natively.
+    // SSE path — SseReader keeps the fetch-based stream connected.
     const channel = new Channel(name, undefined, optionsRef.current.params ?? {});
     const sub = channel.subscribe(optionsRef.current as ChannelSubscribeOptions);
     const target = sub.raw as EventTarget;

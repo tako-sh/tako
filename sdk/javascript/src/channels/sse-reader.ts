@@ -1,3 +1,5 @@
+import { fetchEventSource, type EventSourceMessage } from "@microsoft/fetch-event-source";
+
 export interface SseReaderMessage {
   id?: string;
   type?: string;
@@ -22,6 +24,25 @@ interface DrainOptions {
 }
 
 type Listener = EventListenerOrEventListenerObject;
+type FetchEventSourceGlobal = typeof globalThis & {
+  window?: typeof globalThis;
+  document?: {
+    hidden: boolean;
+    addEventListener(type: string, listener: EventListenerOrEventListenerObject): void;
+    removeEventListener(type: string, listener: EventListenerOrEventListenerObject): void;
+  };
+};
+
+interface FetchEventSourceGlobalSnapshot {
+  global: FetchEventSourceGlobal;
+  hadWindow: boolean;
+  previousWindow: typeof globalThis | undefined;
+  hadDocument: boolean;
+  previousDocument: FetchEventSourceGlobal["document"];
+}
+
+let fetchEventSourceGlobalSnapshot: FetchEventSourceGlobalSnapshot | null = null;
+let fetchEventSourceGlobalRefs = 0;
 
 export class SseReader {
   lastEventId: string | undefined;
@@ -110,101 +131,72 @@ export class SseReader {
 
   async #run(): Promise<void> {
     let attempt = 0;
-    while (!this.#abort.signal.aborted) {
-      try {
-        await this.#connectOnce();
-        if (this.#abort.signal.aborted) {
-          this.#resolveStart?.();
-          return;
-        }
-        if (!this.#opts.retryOnDisconnect) {
-          this.#resolveStart?.();
-          return;
-        }
-        attempt = 0;
-        const err = new Error("SSE stream disconnected; reconnecting.");
-        this.#opts.onError?.(err);
-        this.dispatchEvent(new ErrorEvent("error", { error: err, message: err.message }));
-      } catch (error) {
-        if (this.#abort.signal.aborted) {
-          this.#resolveStart?.();
-          return;
-        }
-        const err = asError(error);
-        this.#opts.onError?.(err);
-        this.dispatchEvent(new ErrorEvent("error", { error: err, message: err.message }));
-        if (!this.#opts.retryOnDisconnect) {
-          this.#resolveStart?.();
-          return;
-        }
-      }
-
-      attempt++;
-      await delay(backoff(attempt, this.#opts), this.#abort.signal);
-    }
-    this.#resolveStart?.();
-  }
-
-  async #connectOnce(): Promise<void> {
     const fetchImpl = this.#opts.fetch ?? globalThis.fetch;
-    const headers = new Headers(this.#opts.headers);
-    if (this.lastEventId !== undefined) {
-      headers.set("Last-Event-ID", this.lastEventId);
-    }
-
-    const response = await fetchImpl(this.#url, {
-      headers,
-      signal: this.#abort.signal,
-    });
-    if (!response.ok) {
-      throw new Error(`SSE request failed with status ${response.status}.`);
-    }
-    if (!response.body) {
-      throw new Error("SSE response body is not readable.");
-    }
-
-    this.#connections++;
-    this.#resolveConnectionWaiters();
-    this.#resolveStart?.();
-    this.#opts.onOpen?.();
-    this.dispatchEvent(new Event("open"));
-
-    await this.#readBody(response.body);
-  }
-
-  async #readBody(body: ReadableStream<Uint8Array>): Promise<void> {
-    const reader = body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    const parser = new SseParser((message) => {
-      if (message.id !== undefined) {
-        this.lastEventId = message.id;
-      }
-      this.#opts.onMessage(message);
-      this.dispatchEvent(new MessageEvent("message", { data: message.data }));
-    });
+    const headers = headersRecord(this.#opts.headers, this.lastEventId);
+    const cleanupGlobals = installFetchEventSourceGlobals();
 
     try {
-      while (!this.#abort.signal.aborted) {
-        const { done, value } = await reader.read();
-        if (done) {
-          break;
-        }
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split(/\r\n|\r|\n/);
-        buffer = lines.pop() ?? "";
-        for (const line of lines) {
-          parser.line(line);
-        }
-      }
-      buffer += decoder.decode();
-      if (buffer.length > 0) {
-        parser.line(buffer);
-      }
-      parser.end();
+      await fetchEventSource(this.#url, {
+        fetch: fetchImpl,
+        headers,
+        signal: this.#abort.signal,
+        openWhenHidden: true,
+        onopen: async (response) => {
+          if (!response.ok) {
+            throw new Error(`SSE request failed with status ${response.status}.`);
+          }
+          if (!response.body) {
+            throw new Error("SSE response body is not readable.");
+          }
+          attempt = 0;
+          this.#connections++;
+          this.#resolveConnectionWaiters();
+          this.#resolveStart?.();
+          this.#opts.onOpen?.();
+          this.dispatchEvent(new Event("open"));
+        },
+        onmessage: (message) => this.#handleMessage(message),
+        onclose: () => {
+          if (!this.#opts.retryOnDisconnect) {
+            return;
+          }
+          throw new Error("SSE stream disconnected; reconnecting.");
+        },
+        onerror: (error) => {
+          if (this.#abort.signal.aborted) {
+            return;
+          }
+          const err = asError(error);
+          this.#opts.onError?.(err);
+          this.dispatchEvent(new ErrorEvent("error", { error: err, message: err.message }));
+          if (!this.#opts.retryOnDisconnect) {
+            throw err;
+          }
+          attempt++;
+          return backoff(attempt, this.#opts);
+        },
+      });
+    } catch {
+      // Errors are reported through onerror. A rejection means the stream is done.
     } finally {
-      reader.releaseLock();
+      cleanupGlobals();
+      this.#resolveStart?.();
+      this.#resolveConnectionWaiters();
     }
+  }
+
+  #handleMessage(message: EventSourceMessage): void {
+    if (message.id !== "") {
+      this.lastEventId = message.id;
+    }
+    if (message.data === "" && message.event === "" && message.id === "") {
+      return;
+    }
+    const parsed: SseReaderMessage = { data: message.data };
+    if (message.id !== "") parsed.id = message.id;
+    if (message.event !== "") parsed.type = message.event;
+    this.#opts.onMessage(parsed);
+    this.dispatchEvent(new MessageEvent("message", { data: message.data }));
   }
 
   #resolveConnectionWaiters(): void {
@@ -212,68 +204,6 @@ export class SseReader {
     for (const resolve of waiters) {
       resolve();
     }
-  }
-}
-
-class SseParser {
-  #eventType: string | undefined;
-  #eventId: string | undefined;
-  #data: string[] = [];
-  readonly #emit: (message: SseReaderMessage) => void;
-
-  constructor(emit: (message: SseReaderMessage) => void) {
-    this.#emit = emit;
-  }
-
-  line(line: string): void {
-    if (line === "") {
-      this.#dispatch();
-      return;
-    }
-    if (line.startsWith(":")) {
-      return;
-    }
-
-    const separator = line.indexOf(":");
-    const field = separator === -1 ? line : line.slice(0, separator);
-    const value =
-      separator === -1 ? "" : line.slice(separator + (line[separator + 1] === " " ? 2 : 1));
-
-    switch (field) {
-      case "event":
-        this.#eventType = value;
-        break;
-      case "data":
-        this.#data.push(value);
-        break;
-      case "id":
-        this.#eventId = value;
-        break;
-    }
-  }
-
-  end(): void {
-    this.#dispatch();
-  }
-
-  #dispatch(): void {
-    if (this.#data.length === 0) {
-      this.#eventType = undefined;
-      return;
-    }
-
-    const message: SseReaderMessage = {
-      data: this.#data.join("\n"),
-    };
-    if (this.#eventId !== undefined) {
-      message.id = this.#eventId;
-    }
-    if (this.#eventType !== undefined) {
-      message.type = this.#eventType;
-    }
-    this.#emit(message);
-    this.#data = [];
-    this.#eventType = undefined;
   }
 }
 
@@ -288,27 +218,93 @@ function backoff(attempt: number, opts: SseReaderOptions): number {
   return capped + Math.floor(capped * jitter * Math.random());
 }
 
-function delay(ms: number, signal: AbortSignal): Promise<void> {
-  if (signal.aborted) {
-    return Promise.resolve();
-  }
-  return new Promise((resolve) => {
-    let settled = false;
-    let timer: ReturnType<typeof setTimeout>;
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      signal.removeEventListener("abort", finish);
-      globalThis.removeEventListener?.("online", finish);
-      resolve();
-    };
-    timer = setTimeout(finish, ms);
-    signal.addEventListener("abort", finish, { once: true });
-    globalThis.addEventListener?.("online", finish, { once: true });
-  });
-}
-
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
+}
+
+function headersRecord(
+  headers: Record<string, string> | undefined,
+  lastEventId: string | undefined,
+): Record<string, string> {
+  const out = { ...(headers ?? {}) };
+  if (lastEventId !== undefined) {
+    out["Last-Event-ID"] = lastEventId;
+  }
+  return out;
+}
+
+function installFetchEventSourceGlobals(): () => void {
+  if (fetchEventSourceGlobalSnapshot) {
+    fetchEventSourceGlobalRefs++;
+    return uninstallFetchEventSourceGlobals;
+  }
+
+  const global = globalThis as FetchEventSourceGlobal;
+  const snapshot: FetchEventSourceGlobalSnapshot = {
+    global,
+    hadWindow: Object.hasOwn(global, "window"),
+    previousWindow: global.window,
+    hadDocument: Object.hasOwn(global, "document"),
+    previousDocument: global.document,
+  };
+  if (snapshot.hadWindow && snapshot.hadDocument) {
+    return () => {};
+  }
+
+  fetchEventSourceGlobalSnapshot = snapshot;
+  fetchEventSourceGlobalRefs = 1;
+
+  if (!snapshot.hadWindow) {
+    Object.defineProperty(global, "window", {
+      configurable: true,
+      writable: true,
+      value: globalThis,
+    });
+  }
+  if (!snapshot.hadDocument) {
+    Object.defineProperty(global, "document", {
+      configurable: true,
+      writable: true,
+      value: {
+        hidden: false,
+        addEventListener() {},
+        removeEventListener() {},
+      },
+    });
+  }
+
+  return uninstallFetchEventSourceGlobals;
+}
+
+function uninstallFetchEventSourceGlobals(): void {
+  if (!fetchEventSourceGlobalSnapshot) {
+    return;
+  }
+  fetchEventSourceGlobalRefs--;
+  if (fetchEventSourceGlobalRefs > 0) {
+    return;
+  }
+
+  const snapshot = fetchEventSourceGlobalSnapshot;
+  fetchEventSourceGlobalSnapshot = null;
+  fetchEventSourceGlobalRefs = 0;
+
+  if (snapshot.hadWindow) {
+    Object.defineProperty(snapshot.global, "window", {
+      configurable: true,
+      writable: true,
+      value: snapshot.previousWindow,
+    });
+  } else {
+    Reflect.deleteProperty(snapshot.global, "window");
+  }
+  if (snapshot.hadDocument) {
+    Object.defineProperty(snapshot.global, "document", {
+      configurable: true,
+      writable: true,
+      value: snapshot.previousDocument,
+    });
+  } else {
+    Reflect.deleteProperty(snapshot.global, "document");
+  }
 }
