@@ -48,28 +48,25 @@ fn write_tako_declarations_import_only_the_public_package_for_augmentation() {
 }
 
 #[test]
-fn write_tako_declarations_emit_runtime_env_global_augmentations() {
+fn write_tako_declarations_emit_user_env_global_augmentations() {
     let dir = TempDir::new().unwrap();
     write_tako_declarations(dir.path()).unwrap();
     let content = fs::read_to_string(dir.path().join("tako.d.ts")).unwrap();
 
     assert!(content.contains("/* prettier-ignore-start */"));
     assert!(!content.contains("__takoRuntimeEnvBrand"));
-    assert!(content.contains("interface TakoRuntimeEnv extends TakoUserEnv {"));
-    assert!(content.contains("interface ProcessEnv extends TakoRuntimeEnv {}"));
-    assert!(content.contains("interface ImportMetaEnv extends TakoRuntimeEnv {}"));
-    assert_eq!(content.matches("readonly ENV: Env;").count(), 1);
-    assert_eq!(content.matches("readonly PORT: string;").count(), 1);
-    assert_eq!(content.matches("readonly HOST: string;").count(), 1);
-    assert_eq!(content.matches("readonly TAKO_BUILD: string;").count(), 1);
-    assert_eq!(
-        content.matches("readonly TAKO_DATA_DIR: string;").count(),
-        1
-    );
+    assert!(content.contains(
+        r#"declare global {
+  namespace NodeJS {
+    interface ProcessEnv extends TakoUserEnv {}
+  }
+  interface ImportMetaEnv extends TakoUserEnv {}
+}"#
+    ));
 }
 
 #[test]
-fn write_tako_declarations_emit_user_vars_as_runtime_env_global_augmentations() {
+fn write_tako_declarations_emit_user_vars_as_global_env_augmentations() {
     let dir = TempDir::new().unwrap();
     fs::write(
         dir.path().join("tako.toml"),
@@ -93,7 +90,8 @@ MODEL = "deepseek/deepseek-chat"
     assert!(content.contains("readonly API_URL: string;"));
     assert!(content.contains("readonly APP_ID: string;"));
     assert!(content.contains("readonly MODEL: string;"));
-    assert!(content.contains("interface TakoRuntimeEnv extends TakoUserEnv {"));
+    assert!(content.contains("interface ProcessEnv extends TakoUserEnv {}"));
+    assert!(content.contains("interface ImportMetaEnv extends TakoUserEnv {}"));
 }
 
 #[test]
@@ -126,7 +124,9 @@ route = "staging.example.com"
     assert!(content.contains("   * Project-specific secret keys from `.tako/secrets.json`."));
     assert!(content.contains("   * const apiKey = tako.secrets.API_KEY;"));
     assert!(content.contains("    /** Secret `API_KEY`. Read it with `tako.secrets.API_KEY`. */"));
-    assert!(content.contains(" * Tako-provided runtime environment variables available on `process.env` and `import.meta.env`."));
+    assert!(content.contains(
+        " * User-defined environment variables available on `process.env` and `import.meta.env`."
+    ));
 }
 
 #[test]

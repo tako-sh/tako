@@ -2092,7 +2092,7 @@ export default function fetch(request: Request): Response | Promise<Response> {
 
 ### Runtime context (`tako.sh` + `tako.d.ts`)
 
-Tako v0 does not install any global. App code imports runtime state from `tako.sh`; `tako generate` emits a project-local `tako.d.ts` file that augments `tako.sh` with project-specific environment names, secret keys, storage bindings, channel metadata, workflow metadata, user-defined env var names, and runtime env globals. The declaration file keeps an existing `app/`, `src/`, or root location, otherwise uses an existing legacy `tako.gen.ts` location, then `app/`, then `src/`, then the project root. App code does not import the generated file:
+Tako v0 does not install any global. App code imports runtime state from `tako.sh`; `tako generate` emits a project-local `tako.d.ts` file that augments `tako.sh` with project-specific environment names, secret keys, storage bindings, channel metadata, workflow metadata, and user-defined env var names for `process.env` / `import.meta.env`. Tako-owned runtime values are typed through `tako.sh` exports such as `tako.env`, `tako.build`, and `tako.dataDir`, not through generated env-var globals. The declaration file keeps an existing `app/`, `src/`, or root location, otherwise uses an existing legacy `tako.gen.ts` location, then `app/`, then `src/`, then the project root. App code does not import the generated file:
 
 ```typescript
 import { tako } from "tako.sh";

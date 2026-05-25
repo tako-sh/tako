@@ -34,7 +34,7 @@ export default function fetch(req: Request): Response {
 }
 ```
 
-`tako.d.ts` is generated under the JavaScript `app_root` from `tako.toml` (`src` by default). It augments `tako.sh` with typed secrets, environment names, channel metadata, workflow metadata, and `process.env` / `import.meta.env` types for Tako runtime values and user vars. App code imports runtime values from `tako.sh`, not from the generated file.
+`tako.d.ts` is generated under the JavaScript `app_root` from `tako.toml` (`src` by default). It augments `tako.sh` with typed secrets, environment names, channel metadata, workflow metadata, and `process.env` / `import.meta.env` types for user vars. App code imports Tako runtime values from `tako.sh`, not from generated env-var globals.
 
 ## Images
 
