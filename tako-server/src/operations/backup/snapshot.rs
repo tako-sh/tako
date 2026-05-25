@@ -4,6 +4,10 @@ use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
+const TAKO_DATA_DIR: &str = "tako";
+const CHANNELS_DB_FILENAME: &str = "channels.sqlite";
+const CHANNELS_DB_COMPANION_FILENAMES: [&str; 2] = ["channels.sqlite-wal", "channels.sqlite-shm"];
+
 pub(super) fn snapshot_data_tree(source: &Path, destination: &Path) -> Result<(), String> {
     if destination.exists() {
         std::fs::remove_dir_all(destination)
@@ -11,15 +15,19 @@ pub(super) fn snapshot_data_tree(source: &Path, destination: &Path) -> Result<()
     }
     std::fs::create_dir_all(destination)
         .map_err(|e| format!("create snapshot dir {}: {e}", destination.display()))?;
-    copy_snapshot_dir(source, destination)
+    copy_snapshot_dir(source, source, destination)
 }
 
-fn copy_snapshot_dir(source: &Path, destination: &Path) -> Result<(), String> {
+fn copy_snapshot_dir(root: &Path, source: &Path, destination: &Path) -> Result<(), String> {
     for entry in
         std::fs::read_dir(source).map_err(|e| format!("read data dir {}: {e}", source.display()))?
     {
         let entry = entry.map_err(|e| format!("read data entry: {e}"))?;
         let source_path = entry.path();
+        let relative_path = source_path.strip_prefix(root).unwrap_or(&source_path);
+        if is_transient_channel_replay_file(relative_path) {
+            continue;
+        }
         let dest_path = destination.join(entry.file_name());
         let metadata = std::fs::symlink_metadata(&source_path)
             .map_err(|e| format!("read metadata {}: {e}", source_path.display()))?;
@@ -30,7 +38,7 @@ fn copy_snapshot_dir(source: &Path, destination: &Path) -> Result<(), String> {
         } else if file_type.is_dir() {
             std::fs::create_dir_all(&dest_path)
                 .map_err(|e| format!("create snapshot dir {}: {e}", dest_path.display()))?;
-            copy_snapshot_dir(&source_path, &dest_path)?;
+            copy_snapshot_dir(root, &source_path, &dest_path)?;
         } else if file_type.is_file() {
             if is_sqlite_companion_file(&source_path) {
                 continue;
@@ -49,6 +57,16 @@ fn copy_snapshot_dir(source: &Path, destination: &Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn is_transient_channel_replay_file(relative_path: &Path) -> bool {
+    if !matches!(relative_path.parent(), Some(parent) if parent == Path::new(TAKO_DATA_DIR)) {
+        return false;
+    }
+    let Some(name) = relative_path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    name == CHANNELS_DB_FILENAME || CHANNELS_DB_COMPANION_FILENAMES.contains(&name)
 }
 
 #[cfg(unix)]
@@ -154,6 +172,7 @@ pub(super) fn restore_data_tree(extracted_dir: &Path, data_root: &Path) -> Resul
     }
     match std::fs::rename(extracted_dir, data_root) {
         Ok(()) => {
+            remove_transient_channel_replay_store(data_root)?;
             let _ = std::fs::remove_dir_all(previous);
             Ok(())
         }
@@ -164,6 +183,26 @@ pub(super) fn restore_data_tree(extracted_dir: &Path, data_root: &Path) -> Resul
             Err(format!("restore data dir {}: {error}", data_root.display()))
         }
     }
+}
+
+fn remove_transient_channel_replay_store(data_root: &Path) -> Result<(), String> {
+    for name in [CHANNELS_DB_FILENAME]
+        .into_iter()
+        .chain(CHANNELS_DB_COMPANION_FILENAMES)
+    {
+        let path = data_root.join(TAKO_DATA_DIR).join(name);
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "remove transient channel replay file {}: {error}",
+                    path.display()
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn sha256_file_hex(path: &Path) -> Result<String, String> {
@@ -211,5 +250,59 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM items", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn snapshot_excludes_transient_channel_replay_store() {
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("data");
+        let tako = source.join("tako");
+        let dest = temp.path().join("snapshot");
+        std::fs::create_dir_all(&tako).unwrap();
+
+        let channels_db = tako.join("channels.sqlite");
+        {
+            let conn = rusqlite::Connection::open(&channels_db).unwrap();
+            conn.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY)", [])
+                .unwrap();
+        }
+        std::fs::write(tako.join("channels.sqlite-wal"), b"wal").unwrap();
+        std::fs::write(tako.join("channels.sqlite-shm"), b"shm").unwrap();
+
+        let workflows_db = tako.join("workflows.sqlite");
+        {
+            let conn = rusqlite::Connection::open(&workflows_db).unwrap();
+            conn.execute("CREATE TABLE runs (id INTEGER PRIMARY KEY)", [])
+                .unwrap();
+        }
+
+        snapshot_data_tree(&source, &dest).unwrap();
+
+        assert!(!dest.join("tako/channels.sqlite").exists());
+        assert!(!dest.join("tako/channels.sqlite-wal").exists());
+        assert!(!dest.join("tako/channels.sqlite-shm").exists());
+        assert!(dest.join("tako/workflows.sqlite").exists());
+    }
+
+    #[test]
+    fn restore_removes_transient_channel_replay_store_from_old_archives() {
+        let temp = TempDir::new().unwrap();
+        let extracted = temp.path().join("extracted");
+        let data_root = temp.path().join("apps/demo/production/data");
+        std::fs::create_dir_all(extracted.join("app")).unwrap();
+        std::fs::create_dir_all(extracted.join("tako")).unwrap();
+        std::fs::write(extracted.join("app/app.db"), b"app").unwrap();
+        std::fs::write(extracted.join("tako/channels.sqlite"), b"channels").unwrap();
+        std::fs::write(extracted.join("tako/channels.sqlite-wal"), b"wal").unwrap();
+        std::fs::write(extracted.join("tako/channels.sqlite-shm"), b"shm").unwrap();
+        std::fs::write(extracted.join("tako/workflows.sqlite"), b"workflows").unwrap();
+
+        restore_data_tree(&extracted, &data_root).unwrap();
+
+        assert!(data_root.join("app/app.db").exists());
+        assert!(!data_root.join("tako/channels.sqlite").exists());
+        assert!(!data_root.join("tako/channels.sqlite-wal").exists());
+        assert!(!data_root.join("tako/channels.sqlite-shm").exists());
+        assert!(data_root.join("tako/workflows.sqlite").exists());
     }
 }

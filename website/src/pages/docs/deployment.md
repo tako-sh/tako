@@ -334,7 +334,7 @@ Set backup-only credentials without exposing the resource to app code:
 tako storages credentials prod_backups --env production
 ```
 
-Tako backs up the deployed app data tree: `data/app/` for `TAKO_DATA_DIR` and `data/tako/` for Tako-managed channels/workflows state. Backup storage is private and not delivered through fd 3 unless it is also listed under `[envs.<env>].storages`.
+Tako backs up durable deployed app state: `data/app/` for `TAKO_DATA_DIR` and `data/tako/workflows.sqlite` for Tako-managed workflow state. Transient channel replay storage (`data/tako/channels.sqlite`) is excluded and starts empty after restore. Backup storage is private and not delivered through fd 3 unless it is also listed under `[envs.<env>].storages`.
 
 Backups run after successful deploys and roughly every 24 hours while the server is running. Retention defaults to 30 days. Archives are encrypted before upload with a Tako-managed `backup_keys` entry protected by the environment key. Objects are stored under `_tako/backups/{app}/{env}/{server}/`, so the same bucket can be shared with regular storage without key conflicts and multiple servers do not overwrite each other.
 

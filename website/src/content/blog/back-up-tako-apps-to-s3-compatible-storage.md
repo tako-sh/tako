@@ -9,7 +9,7 @@ The cute version of persistent app storage is "SQLite and uploads on a $5 VPS."
 
 The grown-up version is "and I can restore it when the disk disappears."
 
-Tako already gives every app a persistent data directory for SQLite files, uploads, workflow state, channel replay logs, and other file-backed state. We covered that in [Stateful Apps on Tako](/blog/stateful-apps-sqlite-uploads-tako-data-dir): deploys swap releases, but the data directory stays put.
+Tako already gives every app a persistent data directory for SQLite files, uploads, workflow state, transient channel replay logs, and other file-backed state. We covered that in [Stateful Apps on Tako](/blog/stateful-apps-sqlite-uploads-tako-data-dir): deploys swap releases, but the data directory stays put.
 
 Backups are the other half of that story. Add one private S3-compatible storage resource to `tako.toml`, give Tako encrypted credentials, and `tako-server` can archive app data after deploys, on a regular cadence, and on demand.
 
@@ -17,12 +17,12 @@ No cron script. No rsync folder on the same machine. No "I thought the VPS provi
 
 ## What gets backed up
 
-When backups are enabled, Tako backs up the whole per-app data tree for that app and environment. That includes app-owned files and Tako-owned runtime state:
+When backups are enabled, Tako backs up durable per-app state for that app and environment. That includes app-owned files and Tako-owned workflow state:
 
-| Path in the backup | What it contains                                                    |
-| ------------------ | ------------------------------------------------------------------- |
-| `app/`             | Your app data exposed through `TAKO_DATA_DIR` and SDK helpers       |
-| `tako/`            | Tako-owned per-app state such as channels and workflow SQLite files |
+| Path in the backup      | What it contains                                              |
+| ----------------------- | ------------------------------------------------------------- |
+| `app/`                  | Your app data exposed through `TAKO_DATA_DIR` and SDK helpers |
+| `tako/workflows.sqlite` | Tako-owned durable workflow queue and run state               |
 
 That matters because a modern app is rarely just one database file. A small project may have:
 
@@ -31,7 +31,8 @@ That matters because a modern app is rarely just one database file. A small proj
 | SQLite database    | `tako.dataDir/app.db`   |
 | Uploaded avatars   | `tako.dataDir/uploads/` |
 | Queue or job state | Tako workflow storage   |
-| Realtime replay    | Tako channel storage    |
+
+Tako intentionally does not back up `tako/channels.sqlite`. Channel replay is a bounded reconnect buffer, not the app's permanent event history. After restore, channel replay starts empty; apps that need canonical chat history, notifications, or audit events should keep that data in their own database and publish channels from it.
 
 The archive format is designed for app data, not just raw file copying. SQLite files are snapshotted with SQLite's online `VACUUM INTO` mechanism before archiving, so Tako does not need to include `-wal` and `-shm` companion files separately. The result is compressed as `tar.zst`, encrypted before upload with AES-256-GCM, and tracked with a SHA-256 manifest plus a remote JSON index.
 
@@ -167,7 +168,7 @@ tako backups restore b123 \
 
 If an environment runs on multiple servers, pass `--server`. Each server has its own app data tree, and Tako includes the server name in the backup prefix so one server's archives do not overwrite another's.
 
-During restore, Tako stops the selected server's app, replaces its data tree with the archive contents, reconciles workflows, and restarts according to the app's desired instance count. That is intentionally direct. Restoring production data should feel like a command you can understand while your pulse is not especially calm.
+During restore, Tako stops the selected server's app, replaces its data tree with the archive contents, clears transient channel replay storage, reconciles workflows, and restarts according to the app's desired instance count. That is intentionally direct. Restoring production data should feel like a command you can understand while your pulse is not especially calm.
 
 The operational habit is simple:
 

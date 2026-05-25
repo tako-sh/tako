@@ -350,15 +350,15 @@ tako backups download b123 --env production --server prod-a --output ./backup.ta
 tako backups restore b123 --env production --server prod-a --yes
 ```
 
-Backups use `backup = { storage = "<resource>" }` from the selected environment. The storage resource must be private S3-compatible storage. Backup archives are encrypted before upload with keys stored encrypted in `.tako/secrets.json`, and objects are written under `_tako/backups/{app}/{env}/{server}/`.
+Backups use `backup = { storage = "<resource>" }` from the selected environment. The storage resource must be private S3-compatible storage. Backup archives include app data and durable workflow state; transient channel replay storage is excluded and starts empty after restore. Archives are encrypted before upload with keys stored encrypted in `.tako/secrets.json`, and objects are written under `_tako/backups/{app}/{env}/{server}/`.
 
-| Command         | Meaning                                                                                                                    |
-| --------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `now`           | Create a backup immediately on the selected server(s).                                                                     |
-| `list` / `ls`   | List backup ids from the remote index.                                                                                     |
-| `status`        | Show enabled state, last backup, next due time, and retention.                                                             |
-| `download <id>` | Download an encrypted backup object. Pass `--server` when the environment has multiple servers.                            |
-| `restore <id>`  | Replace the selected server's app data with the backup archive. Pass `--server` when the environment has multiple servers. |
+| Command         | Meaning                                                                                                                                                         |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `now`           | Create a backup immediately on the selected server(s).                                                                                                          |
+| `list` / `ls`   | List backup ids from the remote index.                                                                                                                          |
+| `status`        | Show enabled state, last backup, next due time, and retention.                                                                                                  |
+| `download <id>` | Download an encrypted backup object. Pass `--server` when the environment has multiple servers.                                                                 |
+| `restore <id>`  | Replace the selected server's app data with the backup archive, then clear transient channel replay. Pass `--server` when the environment has multiple servers. |
 
 ## `tako releases`
 

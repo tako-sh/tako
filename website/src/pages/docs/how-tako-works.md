@@ -161,7 +161,7 @@ Secrets and storage bindings are stored encrypted in server SQLite. Fresh HTTP i
 
 Storage bindings are declared in `tako.toml` and exposed to JavaScript apps as `tako.storages.<name>`. S3-compatible credentials are encrypted in `.tako/secrets.json`. The built-in `local` resource has no user credentials and serves signed app-local URLs under `/_tako/storages/<binding>/<key>`.
 
-Backups reuse private S3-compatible storage resources but are not SDK bindings unless also declared in `[envs.<env>].storages`. The server backs up `data/app/` and `data/tako/` after successful deploys and roughly every 24 hours, encrypting archives before storing them under `_tako/backups/{app}/{env}/{server}/` with 30-day retention by default.
+Backups reuse private S3-compatible storage resources but are not SDK bindings unless also declared in `[envs.<env>].storages`. The server backs up `data/app/` and durable workflow state under `data/tako/` after successful deploys and roughly every 24 hours. Transient channel replay storage is excluded and starts empty after restore. Archives are encrypted before being stored under `_tako/backups/{app}/{env}/{server}/` with 30-day retention by default.
 
 ## Workflows And Channels
 

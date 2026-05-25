@@ -398,12 +398,12 @@ Backup storage reuses declared `[storages.<resource>]` metadata and `.tako/secre
 
 Backup archives are encrypted before upload with AES-256-GCM. When backups are enabled, `tako deploy` and `tako backups now` create `backup_keys` for the environment if none exist. The keys are encrypted in `.tako/secrets.json` with the existing environment key; users still export/import only the environment key. The last `backup_keys` entry is used for new backups. Each backup manifest records its `backup_key_id`, so older backups can still be restored while their key remains in `.tako/secrets.json` and is synced to the server.
 
-When enabled, Tako backs up the entire per-app data tree under `{data_dir}/apps/{app}/{env}/data/`:
+When enabled, Tako backs up durable per-app state under `{data_dir}/apps/{app}/{env}/data/`:
 
 - `app/` — app-owned data exposed as `TAKO_DATA_DIR`
-- `tako/` — Tako-owned per-app internal state such as channels and workflow SQLite files
+- `tako/workflows.sqlite` — Tako-owned durable workflow queue/state
 
-SQLite files are snapshotted with SQLite's online `VACUUM INTO` mechanism before archiving, and `-wal`/`-shm` companion files are not included separately. Archives are compressed as `tar.zst`, encrypted before upload, and stored with a SHA-256 manifest for the encrypted object plus a remote JSON index. Retention defaults to 30 days. The server creates a backup after a successful deploy and then runs due backups roughly every 24 hours while `tako-server` is running. Backup failures after deploy are reported in the finalize response/logs but do not roll back an otherwise successful deploy.
+Tako does not back up channel replay storage (`tako/channels.sqlite` and its SQLite companion files). Channel replay is a bounded reconnect buffer, not canonical app history, so restored apps start with empty channel replay storage. SQLite files are snapshotted with SQLite's online `VACUUM INTO` mechanism before archiving, and `-wal`/`-shm` companion files are not included separately. Archives are compressed as `tar.zst`, encrypted before upload, and stored with a SHA-256 manifest for the encrypted object plus a remote JSON index. Retention defaults to 30 days. The server creates a backup after a successful deploy and then runs due backups roughly every 24 hours while `tako-server` is running. Backup failures after deploy are reported in the finalize response/logs but do not roll back an otherwise successful deploy.
 
 ### SSL Provider Configuration And Credentials
 
@@ -1840,7 +1840,7 @@ The `backup` field is optional. When present, the server stores the private back
 }
 ```
 
-`backup_now` stores the provided backup binding when present, then creates and uploads an encrypted private archive for the app's data tree on that server. `list_backups` reads the remote backup index. `backup_status` reports enabled/disabled state, retention, last backup, and next due time. `backup_download_url` returns a short-lived private archive URL. `restore_backup` stops the app on that server, verifies the encrypted archive SHA-256, decrypts it, replaces the app data tree, reconciles workflows, and restarts according to the app's desired instance count.
+`backup_now` stores the provided backup binding when present, then creates and uploads an encrypted private archive for the app's durable data on that server. `list_backups` reads the remote backup index. `backup_status` reports enabled/disabled state, retention, last backup, and next due time. `backup_download_url` returns a short-lived private archive URL. `restore_backup` stops the app on that server, verifies the encrypted archive SHA-256, decrypts it, replaces the app data tree, clears transient channel replay storage, reconciles workflows, and restarts according to the app's desired instance count.
 
 - `scale` (updates the desired instance count for an app on one server):
 

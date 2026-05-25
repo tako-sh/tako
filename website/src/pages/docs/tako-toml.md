@@ -371,7 +371,7 @@ backup = { storage = "prod_uploads" }
 
 The referenced resource must be declared under `[storages.<resource>]`, cannot be `local`, and cannot set `public_base_url`. A backup-only resource can get credentials with `tako storages credentials <resource> --env <env>` without adding an app-facing storage binding.
 
-Backup storage is not exposed to app code as `tako.storages`. Tako creates encrypted `backup_keys` in `.tako/secrets.json` when backup-enabled deploys or manual backups first need them. Backup archives are encrypted before upload and written under `_tako/backups/{app}/{env}/{server}/`, so the same bucket can be shared with normal storage bindings without object key conflicts.
+Backup storage is not exposed to app code as `tako.storages`. Tako creates encrypted `backup_keys` in `.tako/secrets.json` when backup-enabled deploys or manual backups first need them. Backup archives include app data and durable workflow state, but exclude transient channel replay storage. Archives are encrypted before upload and written under `_tako/backups/{app}/{env}/{server}/`, so the same bucket can be shared with normal storage bindings without object key conflicts.
 
 ## Release Commands
 
