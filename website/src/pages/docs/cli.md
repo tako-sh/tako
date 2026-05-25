@@ -50,7 +50,7 @@ tako generate
 
 Generates project files from config:
 
-- JS/TS: `tako.d.ts` with typed runtime metadata, environments, secrets, storages, channels, and workflows.
+- JS/TS: `tako.d.ts` with typed runtime metadata, user vars, environments, secrets, storages, channels, and workflows.
 - Go: `tako_secrets.go` with typed secret accessors.
 
 For JS/TS projects, generation keeps an existing `tako.d.ts` in `app/`, `src/`, or the project root. Legacy `tako.gen.ts` files are removed on regeneration. If channel, stream, or workflow directories exist and are empty, generation scaffolds demo definitions.

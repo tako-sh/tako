@@ -135,6 +135,47 @@ fn read_storage_names(project_dir: &Path) -> Vec<String> {
     names_set.into_iter().collect()
 }
 
+/// Read user-defined environment variable names from `[vars]` and `[vars.*]`.
+fn read_var_names(project_dir: &Path) -> Vec<String> {
+    let config_path = project_dir.join("tako.toml");
+    let Ok(content) = fs::read_to_string(&config_path) else {
+        return Vec::new();
+    };
+
+    let Ok(parsed): Result<toml::Value, _> = toml::from_str(&content) else {
+        return Vec::new();
+    };
+
+    let Some(vars) = parsed.get("vars").and_then(|value| value.as_table()) else {
+        return Vec::new();
+    };
+
+    let mut names_set = std::collections::BTreeSet::new();
+    for (key, value) in vars {
+        if let Some(nested_table) = value.as_table() {
+            for (var_name, var_value) in nested_table {
+                if is_env_var_scalar(var_value) && var_name != "ENV" {
+                    names_set.insert(var_name.clone());
+                }
+            }
+        } else if is_env_var_scalar(value) && key != "ENV" {
+            names_set.insert(key.clone());
+        }
+    }
+    names_set.into_iter().collect()
+}
+
+fn is_env_var_scalar(value: &toml::Value) -> bool {
+    matches!(
+        value,
+        toml::Value::String(_)
+            | toml::Value::Integer(_)
+            | toml::Value::Float(_)
+            | toml::Value::Boolean(_)
+            | toml::Value::Datetime(_)
+    )
+}
+
 fn ts_property_name(name: &str) -> String {
     let mut chars = name.chars();
     let Some(first) = chars.next() else {
@@ -278,13 +319,33 @@ fn build_type_registry_block(env_names: &[String]) -> String {
     out
 }
 
-fn build_global_augmentations() -> String {
-    r#"/**
+fn build_user_env_block(var_names: &[String]) -> String {
+    if var_names.is_empty() {
+        return "interface TakoUserEnv {}\n\n".to_string();
+    }
+
+    let mut out = String::from(
+        "/**\n * User-defined environment variables from `[vars]` and `[vars.*]` in `tako.toml`.\n *\n * Values are strings because they come from the process environment.\n */\ninterface TakoUserEnv {\n",
+    );
+    for name in var_names {
+        out.push_str(&format!(
+            "  /** User-defined var `{name}` from `tako.toml`. */\n"
+        ));
+        out.push_str(&format!("  readonly {}: string;\n", ts_property_name(name)));
+    }
+    out.push_str("}\n\n");
+    out
+}
+
+fn build_global_augmentations(var_names: &[String]) -> String {
+    let mut out = build_user_env_block(var_names);
+    out.push_str(
+        r#"/**
  * Tako-provided runtime environment variables available on `process.env` and `import.meta.env`.
  *
  * Values are strings because they come from the process environment.
  */
-interface TakoRuntimeEnv {
+interface TakoRuntimeEnv extends TakoUserEnv {
   /** Current environment. Narrowed to `[envs.*]` declared in `tako.toml`. */
   readonly ENV: Env;
   /** Port Tako assigned to this app instance. */
@@ -303,8 +364,9 @@ declare global {
   }
   interface ImportMetaEnv extends TakoRuntimeEnv {}
 }
-"#
-    .to_string()
+"#,
+    );
+    out
 }
 
 /// Build the full `tako.d.ts` content.
@@ -312,6 +374,7 @@ fn build_declarations(
     secret_names: &[String],
     storage_names: &[String],
     env_names: &[String],
+    var_names: &[String],
     channel_types: &str,
 ) -> String {
     let mut out = String::from(TAKO_DTS_HEADER);
@@ -325,7 +388,7 @@ fn build_declarations(
         out.push('\n');
     }
     out.push_str("}\n\n");
-    out.push_str(&build_global_augmentations());
+    out.push_str(&build_global_augmentations(var_names));
     out
 }
 
@@ -360,8 +423,15 @@ fn write_tako_declarations_for_adapter_with_bun(
     let secret_names = read_secret_names(project_dir);
     let storage_names = read_storage_names(project_dir);
     let env_names = read_env_names(project_dir);
+    let var_names = read_var_names(project_dir);
     let channel_types = generate_channel_types_with_bun(project_dir, app_root, bun)?;
-    let content = build_declarations(&secret_names, &storage_names, &env_names, &channel_types);
+    let content = build_declarations(
+        &secret_names,
+        &storage_names,
+        &env_names,
+        &var_names,
+        &channel_types,
+    );
     let path = resolve_declaration_path(project_dir);
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()

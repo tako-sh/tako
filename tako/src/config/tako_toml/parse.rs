@@ -76,18 +76,22 @@ impl Config {
             && let Some(table) = vars.as_table()
         {
             for (key, value) in table {
-                if let Some(s) = value.as_str() {
-                    // Direct string value - global var
-                    config.vars.insert(key.clone(), s.to_string());
-                } else if let Some(nested_table) = value.as_table() {
+                if let Some(nested_table) = value.as_table() {
                     // Nested table - per-environment vars [vars.production], etc.
                     let mut env_vars = HashMap::new();
                     for (var_name, var_value) in nested_table {
-                        if let Some(s) = var_value.as_str() {
-                            env_vars.insert(var_name.clone(), s.to_string());
-                        }
+                        env_vars.insert(
+                            var_name.clone(),
+                            parse_var_value(var_value, &format!("[vars.{key}].{var_name}"))?,
+                        );
                     }
                     config.vars_per_env.insert(key.clone(), env_vars);
+                } else {
+                    // Direct scalar value - global var
+                    config.vars.insert(
+                        key.clone(),
+                        parse_var_value(value, &format!("[vars].{key}"))?,
+                    );
                 }
             }
         }
@@ -120,6 +124,19 @@ impl Config {
 
         config.validate()?;
         Ok(config)
+    }
+}
+
+fn parse_var_value(value: &toml::Value, path: &str) -> Result<String> {
+    match value {
+        toml::Value::String(value) => Ok(value.clone()),
+        toml::Value::Integer(value) => Ok(value.to_string()),
+        toml::Value::Float(value) => Ok(value.to_string()),
+        toml::Value::Boolean(value) => Ok(value.to_string()),
+        toml::Value::Datetime(value) => Ok(value.to_string()),
+        toml::Value::Array(_) | toml::Value::Table(_) => Err(ConfigError::Validation(format!(
+            "{path} must be a string, number, boolean, or datetime"
+        ))),
     }
 }
 

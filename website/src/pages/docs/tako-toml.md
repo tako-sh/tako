@@ -157,12 +157,17 @@ For JavaScript runtimes, if a preset points to `index.<ext>` or `src/index.<ext>
 ```toml
 [vars]
 APP_NAME = "my-app"
+APP_ID = 3609852
 
 [vars.production]
 LOG_LEVEL = "info"
 ```
 
 `[vars]` applies to every environment. `[vars.<env>]` overrides or adds values for one environment.
+
+Values may be TOML strings, numbers, booleans, or datetimes. Tako injects them as strings because process environment values are strings. Arrays and tables are not valid variable values.
+
+For JS/TS projects, generated `tako.d.ts` declares configured var names on `process.env` and `import.meta.env`, typed as strings.
 
 Tako derives `ENV` automatically and ignores user-provided `ENV`. Runtime plugins add runtime vars such as `NODE_ENV` for JavaScript and `BUN_ENV` for Bun.
 

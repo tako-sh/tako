@@ -135,6 +135,8 @@ workers = 4
 2. `[vars.{environment}]` - environment-specific
 3. Auto-set by Tako at runtime: `ENV={environment}` in both dev and deploy, `TAKO_BUILD={version}` on deploys, `TAKO_DATA_DIR=<app data dir>` in both deploy and dev, `TAKO_APP_ROOT` for JS apps, plus runtime env vars (e.g. `NODE_ENV` for all JS runtimes, `BUN_ENV` for Bun)
 
+Variable values may be TOML strings, numbers, booleans, or datetimes. Tako converts them to strings before injection because process environment values are strings. Arrays and tables are not valid variable values.
+
 `ENV` is reserved. If you set `ENV` in `[vars]` or `[vars.{environment}]`, Tako ignores it and prints a warning. `LOG_LEVEL` (and any other log-verbosity env var your framework reads) is owned by you — set it in `[vars]` / `[vars.<env>]` if you want it per environment.
 
 **Build/deploy behavior:**
@@ -580,7 +582,7 @@ Show version information (same as `--version` flag).
 
 ### tako generate
 
-Refresh generated files for the current project: `tako.d.ts` for JS/TS apps (project-specific type augmentation for `tako.sh`) and `tako_secrets.go` for Go apps. `tako gen` and `tako g` are aliases. For JS/TS projects, `tako generate` keeps an existing `tako.d.ts` in `app/`, `src/`, or the project root. When creating the file for the first time, it uses an existing legacy `tako.gen.ts` location when present, otherwise `app/`, then `src/`, then the project root. Legacy `tako.gen.ts` files are removed on regeneration. If a JS/TS project already has `<app_root>/channels/` or `<app_root>/workflows/` directories, `tako generate` also scaffolds `demo.ts` in empty dirs and adds missing default `defineChannel(...)` or `defineWorkflow(...)` exports to existing definition files that have no default export yet. Generated channel stubs use the file stem as the initial wire name, but `tako generate` does not rewrite existing explicit names.
+Refresh generated files for the current project: `tako.d.ts` for JS/TS apps (project-specific type augmentation for `tako.sh`) and `tako_secrets.go` for Go apps. `tako gen` and `tako g` are aliases. For JS/TS projects, `tako generate` keeps an existing `tako.d.ts` in `app/`, `src/`, or the project root. When creating the file for the first time, it uses an existing legacy `tako.gen.ts` location when present, otherwise `app/`, then `src/`, then the project root. The JS/TS declaration file includes user-defined variable names from `[vars]` and `[vars.<env>]` on `process.env` and `import.meta.env`, typed as strings. Legacy `tako.gen.ts` files are removed on regeneration. If a JS/TS project already has `<app_root>/channels/` or `<app_root>/workflows/` directories, `tako generate` also scaffolds `demo.ts` in empty dirs and adds missing default `defineChannel(...)` or `defineWorkflow(...)` exports to existing definition files that have no default export yet. Generated channel stubs use the file stem as the initial wire name, but `tako generate` does not rewrite existing explicit names.
 
 ### tako upgrade
 
@@ -686,7 +688,7 @@ Start (or connect to) a local development session for the current app, backed by
 
 **Environment variables:**
 
-- Loads from `[vars]` + `[vars.development]` in tako.toml
+- Loads from `[vars]` + `[vars.development]` in tako.toml; non-string TOML scalar values are stringified
 - `ENV=development`
 - `NODE_ENV=development`, plus runtime-specific vars (`BUN_ENV=development` for Bun)
 
@@ -2090,7 +2092,7 @@ export default function fetch(request: Request): Response | Promise<Response> {
 
 ### Runtime context (`tako.sh` + `tako.d.ts`)
 
-Tako v0 does not install any global. App code imports runtime state from `tako.sh`; `tako generate` emits a project-local `tako.d.ts` file that augments `tako.sh` with project-specific environment names, secret keys, channel metadata, and runtime env globals. The declaration file keeps an existing `app/`, `src/`, or root location, otherwise uses an existing legacy `tako.gen.ts` location, then `app/`, then `src/`, then the project root. App code does not import the generated file:
+Tako v0 does not install any global. App code imports runtime state from `tako.sh`; `tako generate` emits a project-local `tako.d.ts` file that augments `tako.sh` with project-specific environment names, secret keys, storage bindings, channel metadata, workflow metadata, user-defined env var names, and runtime env globals. The declaration file keeps an existing `app/`, `src/`, or root location, otherwise uses an existing legacy `tako.gen.ts` location, then `app/`, then `src/`, then the project root. App code does not import the generated file:
 
 ```typescript
 import { tako } from "tako.sh";

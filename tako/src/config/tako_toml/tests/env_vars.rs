@@ -37,6 +37,25 @@ DATABASE_URL = "postgres://staging"
 }
 
 #[test]
+fn test_parse_var_scalar_values_as_strings() {
+    let toml = r#"
+[vars]
+APP_ID = 3609852
+PUBLIC = true
+
+[vars.production]
+WORKERS = 2
+"#;
+    let config = Config::parse(toml).unwrap();
+
+    assert_eq!(config.vars.get("APP_ID"), Some(&"3609852".to_string()));
+    assert_eq!(config.vars.get("PUBLIC"), Some(&"true".to_string()));
+
+    let prod_vars = config.vars_per_env.get("production").unwrap();
+    assert_eq!(prod_vars.get("WORKERS"), Some(&"2".to_string()));
+}
+
+#[test]
 fn test_get_merged_vars() {
     let toml = r#"
 [vars]

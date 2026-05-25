@@ -211,7 +211,7 @@ Default: `src`.
 
 Use `app_root = "."` when `channels/`, `workflows/`, or `tako.d.ts` live next to `tako.toml`.
 
-`tako dev`, `tako deploy`, `tako generate`, and secret changes regenerate `tako.d.ts` as needed. The generated file augments `tako.sh` with project environment names, secret keys, storage binding names, channel metadata, workflow metadata, and runtime env globals.
+`tako dev`, `tako deploy`, `tako generate`, and secret changes regenerate `tako.d.ts` as needed. The generated file augments `tako.sh` with project environment names, secret keys, storage binding names, channel metadata, workflow metadata, user-defined env var names, and runtime env globals.
 
 ## Environment Variables
 
@@ -220,6 +220,8 @@ Dev loads:
 1. `[vars]`
 2. `[vars.development]`
 3. Tako runtime variables
+
+TOML string, number, boolean, and datetime var values are injected as strings. The generated `tako.d.ts` declares configured var names on `process.env` and `import.meta.env`.
 
 Common values:
 

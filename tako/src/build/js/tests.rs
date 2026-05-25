@@ -55,7 +55,7 @@ fn write_tako_declarations_emit_runtime_env_global_augmentations() {
 
     assert!(content.contains("/* prettier-ignore-start */"));
     assert!(!content.contains("__takoRuntimeEnvBrand"));
-    assert!(content.contains("interface TakoRuntimeEnv {"));
+    assert!(content.contains("interface TakoRuntimeEnv extends TakoUserEnv {"));
     assert!(content.contains("interface ProcessEnv extends TakoRuntimeEnv {}"));
     assert!(content.contains("interface ImportMetaEnv extends TakoRuntimeEnv {}"));
     assert_eq!(content.matches("readonly ENV: Env;").count(), 1);
@@ -66,6 +66,34 @@ fn write_tako_declarations_emit_runtime_env_global_augmentations() {
         content.matches("readonly TAKO_DATA_DIR: string;").count(),
         1
     );
+}
+
+#[test]
+fn write_tako_declarations_emit_user_vars_as_runtime_env_global_augmentations() {
+    let dir = TempDir::new().unwrap();
+    fs::write(
+        dir.path().join("tako.toml"),
+        r#"
+[vars]
+API_URL = "https://api.example.com"
+
+[vars.development]
+APP_ID = 3609852
+
+[vars.production]
+MODEL = "deepseek/deepseek-chat"
+"#,
+    )
+    .unwrap();
+
+    write_tako_declarations(dir.path()).unwrap();
+
+    let content = fs::read_to_string(dir.path().join("tako.d.ts")).unwrap();
+    assert!(content.contains("interface TakoUserEnv {"));
+    assert!(content.contains("readonly API_URL: string;"));
+    assert!(content.contains("readonly APP_ID: string;"));
+    assert!(content.contains("readonly MODEL: string;"));
+    assert!(content.contains("interface TakoRuntimeEnv extends TakoUserEnv {"));
 }
 
 #[test]
