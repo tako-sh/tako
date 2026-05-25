@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import ts from "typescript";
 import type {
   ChannelOperation,
   ChannelSocket,
@@ -10,6 +13,41 @@ import { defineChannel } from "../src/channels/define";
 import type { ChannelDefinition } from "../src/channels/define";
 import { defineWorkflow } from "../src/workflows/define";
 import type { WorkflowOpts } from "../src/workflows/types";
+
+function expectTypescriptToPass(source: string): void {
+  const sdkRoot = resolve(import.meta.dir, "..");
+  const filename = resolve(sdkRoot, ".tmp-typecheck", "secret-bag.ts");
+  mkdirSync(dirname(filename), { recursive: true });
+  writeFileSync(filename, source);
+
+  try {
+    const configPath = ts.findConfigFile(sdkRoot, ts.sys.fileExists, "tsconfig.json");
+    if (!configPath) throw new Error("Missing sdk/javascript/tsconfig.json");
+
+    const config = ts.readConfigFile(configPath, ts.sys.readFile);
+    if (config.error) {
+      throw new Error(ts.flattenDiagnosticMessageText(config.error.messageText, "\n"));
+    }
+
+    const parsed = ts.parseJsonConfigFileContent(
+      config.config,
+      ts.sys,
+      sdkRoot,
+      { noEmit: true },
+      configPath,
+    );
+    const program = ts.createProgram([filename], parsed.options);
+    const diagnostics = ts.getPreEmitDiagnostics(program);
+    const message = ts.formatDiagnosticsWithColorAndContext(diagnostics, {
+      getCanonicalFileName: (file) => file,
+      getCurrentDirectory: () => sdkRoot,
+      getNewLine: () => "\n",
+    });
+    expect(message).toBe("");
+  } finally {
+    rmSync(resolve(sdkRoot, ".tmp-typecheck"), { recursive: true, force: true });
+  }
+}
 
 describe("Types", () => {
   describe("FetchHandler", () => {
@@ -112,6 +150,24 @@ describe("Types", () => {
       const workflow = defineWorkflow("process-image", opts);
 
       expect(workflow.definition.opts.worker).toBe("media");
+    });
+  });
+
+  describe("secret bag types", () => {
+    test("accepts generated secret key maps as the public secret bag shape", () => {
+      expectTypescriptToPass(`
+        import type { TakoSecretBag } from "../src/index";
+
+        declare module "../src/index" {
+          interface TakoSecrets {
+            readonly DATABASE_URL: string;
+          }
+        }
+
+        const secrets: TakoSecretBag = { DATABASE_URL: "postgres://example" };
+        const url: string = secrets.DATABASE_URL;
+        void url;
+      `);
     });
   });
 });

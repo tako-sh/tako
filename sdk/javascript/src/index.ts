@@ -45,16 +45,8 @@ export type Env = TakoTypeRegistry extends { Env: infer T extends string }
   ? T
   : "development" | "production";
 
-/** Redaction helpers available on `tako.secrets`. */
-export interface TakoSecretRedactions {
-  /** `String(tako.secrets)` returns `"[REDACTED]"` to prevent accidental leaks. */
-  toString(): "[REDACTED]";
-  /** `JSON.stringify(tako.secrets)` returns `"[REDACTED]"` to prevent accidental leaks. */
-  toJSON(): "[REDACTED]";
-}
-
 /** Tako-managed secret bag with project-specific keys from `tako.d.ts`. */
-export type TakoSecretBag = Readonly<TakoSecrets> & TakoSecretRedactions;
+export type TakoSecretBag = Readonly<TakoSecrets>;
 
 const __takoEnv: Record<string, string> =
   typeof process !== "undefined" && process.env

@@ -69,12 +69,14 @@ declare module "tako.sh" {
   }
 }
 
+interface TakoUserEnv {}
+
 /**
  * Tako-provided runtime environment variables available on `process.env` and `import.meta.env`.
  *
  * Values are strings because they come from the process environment.
  */
-interface TakoRuntimeEnv {
+interface TakoRuntimeEnv extends TakoUserEnv {
   /** Current environment. Narrowed to `[envs.*]` declared in `tako.toml`. */
   readonly ENV: Env;
   /** Port Tako assigned to this app instance. */
