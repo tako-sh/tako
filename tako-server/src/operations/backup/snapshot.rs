@@ -155,6 +155,7 @@ pub(super) fn restore_data_tree(extracted_dir: &Path, data_root: &Path) -> Resul
     if !extracted_dir.join("app").is_dir() || !extracted_dir.join("tako").is_dir() {
         return Err("Backup archive is missing app/ or tako/ data directories.".to_string());
     }
+    remove_transient_channel_replay_store(extracted_dir)?;
     let parent = data_root
         .parent()
         .ok_or_else(|| format!("data root has no parent: {}", data_root.display()))?;
@@ -172,7 +173,6 @@ pub(super) fn restore_data_tree(extracted_dir: &Path, data_root: &Path) -> Resul
     }
     match std::fs::rename(extracted_dir, data_root) {
         Ok(()) => {
-            remove_transient_channel_replay_store(data_root)?;
             let _ = std::fs::remove_dir_all(previous);
             Ok(())
         }
@@ -304,5 +304,39 @@ mod tests {
         assert!(!data_root.join("tako/channels.sqlite-wal").exists());
         assert!(!data_root.join("tako/channels.sqlite-shm").exists());
         assert!(data_root.join("tako/workflows.sqlite").exists());
+    }
+
+    #[test]
+    fn restore_keeps_existing_data_when_transient_channel_cleanup_fails() {
+        let temp = TempDir::new().unwrap();
+        let extracted = temp.path().join("extracted");
+        let data_root = temp.path().join("apps/demo/production/data");
+
+        std::fs::create_dir_all(extracted.join("app")).unwrap();
+        std::fs::create_dir_all(extracted.join("tako/channels.sqlite")).unwrap();
+        std::fs::write(extracted.join("app/restored.db"), b"restored").unwrap();
+        std::fs::write(extracted.join("tako/workflows.sqlite"), b"workflows").unwrap();
+
+        std::fs::create_dir_all(data_root.join("app")).unwrap();
+        std::fs::create_dir_all(data_root.join("tako")).unwrap();
+        std::fs::write(data_root.join("app/current.db"), b"current").unwrap();
+        std::fs::write(
+            data_root.join("tako/workflows.sqlite"),
+            b"current-workflows",
+        )
+        .unwrap();
+
+        let error = restore_data_tree(&extracted, &data_root).unwrap_err();
+
+        assert!(
+            error.contains("remove transient channel replay file"),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read(data_root.join("app/current.db")).unwrap(),
+            b"current"
+        );
+        assert!(!data_root.join("app/restored.db").exists());
+        assert!(extracted.exists());
     }
 }
