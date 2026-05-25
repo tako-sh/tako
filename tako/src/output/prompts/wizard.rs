@@ -364,7 +364,8 @@ impl Wizard {
             }
             match prompt(b) {
                 Ok(value) => {
-                    let completion = format_pretty_text_prompt_completion(
+                    let completion = format_text_field_completion(
+                        &builder,
                         &prompt_label,
                         warning.as_deref(),
                         &value,
@@ -446,6 +447,16 @@ impl Wizard {
 
 fn wizard_select_escape_hint(first: bool) -> Option<&'static str> {
     if !first { Some("back") } else { None }
+}
+
+fn format_text_field_completion(
+    builder: &TextField<'_>,
+    prompt_label: &str,
+    warning: Option<&str>,
+    value: &str,
+) -> Vec<String> {
+    let display_value = builder.completion_display_value(value);
+    format_pretty_text_prompt_completion(prompt_label, warning, &display_value)
 }
 
 #[cfg(test)]
@@ -555,6 +566,21 @@ mod tests {
         assert!(w.fields[1].visited);
         assert!(w.fields[1].completion_lines.is_empty());
         assert_eq!(w.active_label.as_deref(), Some("A"));
+    }
+
+    #[test]
+    fn wizard_text_field_completion_masks_password_values() {
+        let builder = TextField::new("Set value").password();
+
+        let completion =
+            format_text_field_completion(&builder, "Set value", None, "super-secret-value");
+
+        assert!(completion.iter().any(|line| line.contains("••••••")));
+        assert!(
+            completion
+                .iter()
+                .all(|line| !line.contains("super-secret-value"))
+        );
     }
 
     #[test]

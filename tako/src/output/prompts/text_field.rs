@@ -106,6 +106,16 @@ impl<'a> TextField<'a> {
         self
     }
 
+    pub(super) fn completion_display_value(&self, value: &str) -> String {
+        if self.password && value.is_empty() && !self.required {
+            String::new()
+        } else if self.password {
+            theme_muted("••••••").to_string()
+        } else {
+            value.to_string()
+        }
+    }
+
     pub fn prompt(self) -> io::Result<String> {
         self.prompt_validated(|_| Ok(()))
     }
@@ -329,13 +339,7 @@ impl<'a> TextField<'a> {
 
             match validation {
                 Ok(()) => {
-                    let done_value = if self.password && value.is_empty() && !self.required {
-                        String::new()
-                    } else if self.password {
-                        theme_muted("••••••").to_string()
-                    } else {
-                        value.clone()
-                    };
+                    let done_value = self.completion_display_value(&value);
                     for line in super::format_pretty_text_prompt_completion(
                         self.label,
                         self.warning,
