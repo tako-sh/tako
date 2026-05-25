@@ -146,6 +146,7 @@ pub struct RuntimeApp {
     pub client_pid: Option<u32>,
     pub readiness_failure_hint: Option<String>,
     pub bootstrap_token: String,
+    pub secrets: HashMap<String, String>,
     pub storages: HashMap<String, tako_core::StorageBinding>,
 }
 

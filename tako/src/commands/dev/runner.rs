@@ -130,6 +130,7 @@ pub async fn run(
         worker_command,
         dev_hosts,
         env,
+        secrets,
         interactive,
     } = session;
 
@@ -172,6 +173,7 @@ pub async fn run(
             hosts: &reg_hosts,
             command: &cmd,
             env: &env_snapshot,
+            secrets: &secrets,
             images: &cfg.images,
             storages: &storages,
             readiness_failure_hint: readiness_failure_hint.as_deref(),

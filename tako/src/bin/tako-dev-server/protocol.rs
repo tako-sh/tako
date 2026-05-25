@@ -17,6 +17,8 @@ pub enum Request {
         command: Vec<String>,
         env: std::collections::HashMap<String, String>,
         #[serde(default)]
+        secrets: std::collections::HashMap<String, String>,
+        #[serde(default)]
         images: Box<tako_images::ImagesConfig>,
         #[serde(default)]
         storages: std::collections::HashMap<String, tako_core::StorageBinding>,
@@ -329,6 +331,10 @@ mod tests {
             env: std::collections::HashMap::from([(
                 "NODE_ENV".to_string(),
                 "development".to_string(),
+            )]),
+            secrets: std::collections::HashMap::from([(
+                "DATABASE_URL".to_string(),
+                "postgres://localhost/dev".to_string(),
             )]),
             images: Box::default(),
             storages: std::collections::HashMap::new(),

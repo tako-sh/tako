@@ -26,6 +26,7 @@ pub(super) struct RegisterAppArgs {
     pub(super) hosts: Vec<String>,
     pub(super) command: Vec<String>,
     pub(super) env: HashMap<String, String>,
+    pub(super) secrets: HashMap<String, String>,
     pub(super) images: Box<tako_images::ImagesConfig>,
     pub(super) storages: HashMap<String, tako_core::StorageBinding>,
     pub(super) client_pid: Option<u32>,
@@ -45,6 +46,7 @@ pub(super) async fn register_app(
         hosts,
         command,
         env,
+        secrets,
         images,
         storages,
         client_pid,
@@ -68,6 +70,7 @@ pub(super) async fn register_app(
     };
 
     let app_storages = storages.clone();
+    let app_secrets = secrets.clone();
 
     {
         let s = state.lock().unwrap();
@@ -131,6 +134,7 @@ pub(super) async fn register_app(
                 client_pid,
                 readiness_failure_hint,
                 bootstrap_token,
+                secrets,
                 storages,
             },
         );
@@ -189,6 +193,7 @@ pub(super) async fn register_app(
         let cwd = PathBuf::from(&project_dir);
         let app_root = worker_app_root.clone();
         let worker_storages = app_storages.clone();
+        let worker_secrets = app_secrets.clone();
         let cmd_os: Vec<OsString> = worker_cmd.iter().map(OsString::from).collect();
         let log_sink: Option<tako_workflows::WorkerLogSink> = worker_log_buffer.map(|buf| {
             std::sync::Arc::new(move |line: &str, is_stderr: bool| {
@@ -204,7 +209,7 @@ pub(super) async fn register_app(
             idle_timeout_ms: 3_000,
             command: cmd_os,
             cwd,
-            secrets: HashMap::new(),
+            secrets: worker_secrets,
             storages: worker_storages,
             log_sink,
         };

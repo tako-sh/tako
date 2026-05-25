@@ -304,6 +304,7 @@ fn insert_test_app(state: &Arc<Mutex<State>>, project_dir: &str, name: &str) {
             client_pid: None,
             readiness_failure_hint: None,
             bootstrap_token: "dev-token".to_string(),
+            secrets: std::collections::HashMap::new(),
             storages: std::collections::HashMap::new(),
         },
     );
@@ -838,6 +839,7 @@ fn kill_all_app_processes_sends_sigterm_to_tracked_pids() {
                 client_pid: None,
                 readiness_failure_hint: None,
                 bootstrap_token: "dev-token".to_string(),
+                secrets: std::collections::HashMap::new(),
                 storages: std::collections::HashMap::new(),
             },
         );
@@ -1100,6 +1102,7 @@ async fn unregister_app_kills_running_process() {
                 client_pid: None,
                 readiness_failure_hint: None,
                 bootstrap_token: "dev-token".to_string(),
+                secrets: std::collections::HashMap::new(),
                 storages: std::collections::HashMap::new(),
             },
         );
@@ -1188,6 +1191,7 @@ async fn wake_on_request_spawns_exactly_one_process() {
                 client_pid: None,
                 readiness_failure_hint: None,
                 bootstrap_token: "dev-token".to_string(),
+                secrets: std::collections::HashMap::new(),
                 storages: std::collections::HashMap::new(),
             },
         );
@@ -1302,6 +1306,7 @@ fn runtime_app_with_env(
         client_pid: None,
         readiness_failure_hint: None,
         bootstrap_token: "dev-token".to_string(),
+        secrets: std::collections::HashMap::new(),
         storages: std::collections::HashMap::new(),
     }
 }

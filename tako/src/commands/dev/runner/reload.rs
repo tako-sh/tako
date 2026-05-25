@@ -114,17 +114,21 @@ pub(super) fn spawn_config_reload_loop(
                 continue;
             }
 
-            if let Err(msg) =
-                inject_dev_secrets(&ctx.project_dir, &mut new_env).map_err(|e| e.to_string())
+            let new_secrets = match inject_dev_secrets(&ctx.project_dir, &mut new_env)
+                .map_err(|e| e.to_string())
             {
-                let _ = ctx
-                    .log_tx
-                    .send(ScopedLog::warn(
-                        "tako",
-                        format!("Failed to reload secrets: {}", msg),
-                    ))
-                    .await;
-            }
+                Ok(secrets) => secrets,
+                Err(msg) => {
+                    let _ = ctx
+                        .log_tx
+                        .send(ScopedLog::warn(
+                            "tako",
+                            format!("Failed to reload secrets: {}", msg),
+                        ))
+                        .await;
+                    HashMap::new()
+                }
+            };
 
             let _ = crate::build::js::write_generated_files_for_adapter_and_app_root(
                 &ctx.project_dir,
@@ -140,9 +144,12 @@ pub(super) fn spawn_config_reload_loop(
                 changed
             };
 
-            let should_register = hosts_changed || matches!(change, watcher::WatchChange::Config);
+            let should_register = should_register_for_change(change, hosts_changed);
             if should_register {
-                register_updated_app(&ctx, &cfg, &new_hosts, &new_env).await;
+                if change == watcher::WatchChange::Secrets {
+                    log_restart_reason(&ctx, change).await;
+                }
+                register_updated_app(&ctx, &cfg, &new_hosts, &new_env, &new_secrets).await;
             } else {
                 restart_app_for_change(&ctx, change).await;
             }
@@ -155,6 +162,7 @@ async fn register_updated_app(
     cfg: &crate::config::TakoToml,
     new_hosts: &[String],
     new_env: &HashMap<String, String>,
+    new_secrets: &HashMap<String, String>,
 ) {
     let storages = match super::load_dev_storages(&ctx.project_dir).map_err(|e| e.to_string()) {
         Ok(storages) => storages,
@@ -179,6 +187,7 @@ async fn register_updated_app(
             hosts: new_hosts,
             command: &ctx.command,
             env: new_env,
+            secrets: new_secrets,
             images: &cfg.images,
             storages: &storages,
             readiness_failure_hint: ctx.readiness_failure_hint.as_deref(),
@@ -198,6 +207,11 @@ async fn register_updated_app(
 }
 
 async fn restart_app_for_change(ctx: &ConfigReloadLoop, change: watcher::WatchChange) {
+    log_restart_reason(ctx, change).await;
+    let _ = crate::dev_server_client::restart_app(&ctx.config_key).await;
+}
+
+async fn log_restart_reason(ctx: &ConfigReloadLoop, change: watcher::WatchChange) {
     let restart_reason = match change {
         watcher::WatchChange::Config => "tako.toml changed, restarting…",
         watcher::WatchChange::Secrets => "Secrets changed, restarting…",
@@ -209,5 +223,37 @@ async fn restart_app_for_change(ctx: &ConfigReloadLoop, change: watcher::WatchCh
         .log_tx
         .send(ScopedLog::info("tako", restart_reason))
         .await;
-    let _ = crate::dev_server_client::restart_app(&ctx.config_key).await;
+}
+
+fn should_register_for_change(change: watcher::WatchChange, hosts_changed: bool) -> bool {
+    hosts_changed
+        || matches!(
+            change,
+            watcher::WatchChange::Config | watcher::WatchChange::Secrets
+        )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn secrets_changes_update_registered_app_before_respawn() {
+        assert!(should_register_for_change(
+            watcher::WatchChange::Secrets,
+            false
+        ));
+    }
+
+    #[test]
+    fn channel_and_workflow_changes_only_restart_current_registration() {
+        assert!(!should_register_for_change(
+            watcher::WatchChange::Channels,
+            false
+        ));
+        assert!(!should_register_for_change(
+            watcher::WatchChange::Workflows,
+            false
+        ));
+    }
 }

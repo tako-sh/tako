@@ -58,6 +58,7 @@ async fn readiness_times_out_when_route_becomes_active_without_fd4_signal() {
                 client_pid: None,
                 readiness_failure_hint: Some("custom readiness hint".to_string()),
                 bootstrap_token: "dev-token".to_string(),
+                secrets: std::collections::HashMap::new(),
                 storages: std::collections::HashMap::new(),
             },
         );
@@ -99,6 +100,10 @@ async fn spawn_app_exposes_bootstrap_envelope_on_fd3() {
         "BOOTSTRAP_OUT".to_string(),
         bootstrap_out.display().to_string(),
     );
+    let secrets = std::collections::HashMap::from([(
+        "DATABASE_URL".to_string(),
+        "postgres://localhost/dev".to_string(),
+    )]);
     let app = RuntimeApp {
         project_dir: tmp.path().display().to_string(),
         name: "bootstrap-test".to_string(),
@@ -117,6 +122,7 @@ async fn spawn_app_exposes_bootstrap_envelope_on_fd3() {
         client_pid: None,
         readiness_failure_hint: None,
         bootstrap_token: "dev-token".to_string(),
+        secrets: secrets.clone(),
         storages: std::collections::HashMap::new(),
     };
 
@@ -129,7 +135,10 @@ async fn spawn_app_exposes_bootstrap_envelope_on_fd3() {
     let raw = std::fs::read_to_string(bootstrap_out).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(parsed["token"], "dev-token");
-    assert_eq!(parsed["secrets"], serde_json::json!({}));
+    assert_eq!(
+        parsed["secrets"]["DATABASE_URL"].as_str(),
+        Some("postgres://localhost/dev")
+    );
     assert_eq!(parsed["storages"], serde_json::json!({}));
 }
 
@@ -149,6 +158,7 @@ fn readiness_failure_message_uses_client_hint() {
         client_pid: None,
         readiness_failure_hint: Some("custom readiness hint".to_string()),
         bootstrap_token: "dev-token".to_string(),
+        secrets: std::collections::HashMap::new(),
         storages: std::collections::HashMap::new(),
     };
 

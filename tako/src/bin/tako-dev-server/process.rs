@@ -302,10 +302,10 @@ fn create_readiness_pipe() -> std::io::Result<(OwnedFd, OwnedFd)> {
 #[cfg(unix)]
 fn create_bootstrap_pipe(
     token: &str,
+    secrets: &std::collections::HashMap<String, String>,
     storages: &std::collections::HashMap<String, tako_core::StorageBinding>,
 ) -> std::io::Result<(OwnedFd, std::thread::JoinHandle<std::io::Result<()>>)> {
-    let bytes =
-        tako_core::bootstrap::envelope_bytes(token, &std::collections::HashMap::new(), storages);
+    let bytes = tako_core::bootstrap::envelope_bytes(token, secrets, storages);
     tako_spawn::create_payload_pipe(bytes)
 }
 
@@ -402,7 +402,7 @@ async fn spawn_app(
     let write_raw: Option<std::os::fd::RawFd> = readiness_pipe.as_ref().map(|(_, w)| w.as_raw_fd());
     #[cfg(unix)]
     let (bootstrap_read, bootstrap_writer) =
-        create_bootstrap_pipe(&app.bootstrap_token, &app.storages)?;
+        create_bootstrap_pipe(&app.bootstrap_token, &app.secrets, &app.storages)?;
     #[cfg(unix)]
     let bootstrap_raw: std::os::fd::RawFd = bootstrap_read.as_raw_fd();
 

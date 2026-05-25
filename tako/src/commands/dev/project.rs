@@ -227,22 +227,22 @@ pub(super) fn inject_dev_data_dir(
     Ok(())
 }
 
-pub(super) fn inject_dev_secrets(
+pub(super) fn load_dev_secrets(
     project_dir: &Path,
-    env: &mut std::collections::HashMap<String, String>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<std::collections::HashMap<String, String>, Box<dyn std::error::Error>> {
     let secrets = crate::config::SecretsStore::load_from_dir(project_dir)?;
 
     let encrypted = match secrets.get_env("development") {
         Some(map) if !map.is_empty() => map,
-        _ => return Ok(()),
+        _ => return Ok(std::collections::HashMap::new()),
     };
 
     let key = crate::commands::secret::load_secret_key("development", &secrets, Some(project_dir))?;
+    let mut decrypted = std::collections::HashMap::new();
     for (name, encrypted_value) in encrypted {
         match crate::crypto::decrypt(&encrypted_value.value, &key) {
             Ok(value) => {
-                env.insert(name.clone(), value);
+                decrypted.insert(name.clone(), value);
             }
             Err(e) => {
                 tracing::warn!("Failed to decrypt development secret {}: {}", name, e);
@@ -250,7 +250,16 @@ pub(super) fn inject_dev_secrets(
         }
     }
 
-    Ok(())
+    Ok(decrypted)
+}
+
+pub(super) fn inject_dev_secrets(
+    project_dir: &Path,
+    env: &mut std::collections::HashMap<String, String>,
+) -> Result<std::collections::HashMap<String, String>, Box<dyn std::error::Error>> {
+    let secrets = load_dev_secrets(project_dir)?;
+    env.extend(secrets.clone());
+    Ok(secrets)
 }
 
 fn resolve_dev_build_adapter(project_dir: &Path, cfg: &TakoToml) -> Result<BuildAdapter, String> {

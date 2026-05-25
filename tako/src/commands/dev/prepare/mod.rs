@@ -34,6 +34,7 @@ pub(super) struct DevSession {
     pub worker_command: Option<Vec<String>>,
     pub dev_hosts: Vec<String>,
     pub env: HashMap<String, String>,
+    pub secrets: HashMap<String, String>,
     pub interactive: bool,
 }
 
@@ -180,7 +181,7 @@ pub(super) async fn prepare(
     }
     inject_dev_allowed_hosts(&dev_hosts, &mut env);
     inject_dev_data_dir(&project_dir, &mut env).map_err(|e| e.to_string())?;
-    inject_dev_secrets(&project_dir, &mut env).map_err(|e| e.to_string())?;
+    let secrets = inject_dev_secrets(&project_dir, &mut env).map_err(|e| e.to_string())?;
 
     if runtime_adapter.preset_group() == PresetGroup::Js {
         let _ = crate::build::js::write_generated_files_for_adapter_and_app_root(
@@ -306,6 +307,7 @@ pub(super) async fn prepare(
         worker_command,
         dev_hosts,
         env,
+        secrets,
         interactive,
     })))
 }
