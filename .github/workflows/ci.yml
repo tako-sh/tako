@@ -314,18 +314,9 @@ jobs:
 
       - name: Check links
         if: steps.changes.outputs.website == 'true'
-        run: |
-          cargo install lychee --locked
-          lychee \
-            --root-dir website/dist \
-            --exclude 'demo\.tako\.sh' \
-            --exclude 'dub\.sh' \
-            --exclude 'npmjs\.com' \
-            --exclude 'pkg\.go\.dev' \
-            --exclude 'x\.com' \
-            --exclude 'tako\.sh/blog' \
-            --exclude 'tako\.sh/docs' \
-            'website/dist/**/*.html'
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: --offline --root-dir website/dist 'website/dist/**/*.html'
 
   # x86_64 glibc — needed for CLI tests + E2E
   build-x86_64-glibc:

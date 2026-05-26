@@ -5,12 +5,6 @@ website:
     bun run --filter website check
     bun run --filter website build
     lychee \
+        --offline \
         --root-dir website/dist \
-        --exclude 'demo\.tako\.sh' \
-        --exclude 'dub\.sh' \
-        --exclude 'npmjs\.com' \
-        --exclude 'pkg\.go\.dev' \
-        --exclude 'x\.com' \
-        --exclude 'tako\.sh/blog' \
-        --exclude 'tako\.sh/docs' \
         'website/dist/**/*.html'
