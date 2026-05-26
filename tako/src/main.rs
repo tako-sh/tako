@@ -1,5 +1,4 @@
 mod cli;
-mod cloudflare;
 mod commands;
 mod dev_server_client;
 mod github;

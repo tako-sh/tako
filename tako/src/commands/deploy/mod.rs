@@ -276,9 +276,6 @@ async fn run_async(
     for warning in ssl_result.warnings {
         output::warning(&format!("Validation: {}", warning));
     }
-    if !output::is_dry_run() {
-        run_cloudflare_ssl_preflight(&env, ssl_provider, &routes, &secrets, &project_dir).await?;
-    }
 
     let server_names = if output::is_dry_run() {
         resolve_deploy_server_names(&tako_config, &servers, &env)
@@ -650,38 +647,6 @@ async fn run_async(
         }
         Err(format_partial_failure_error(errors.len()).into())
     }
-}
-
-async fn run_cloudflare_ssl_preflight(
-    env: &str,
-    ssl_provider: tako_core::SslProvider,
-    routes: &[String],
-    secrets: &SecretsStore,
-    project_dir: &Path,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let ssl = crate::commands::credentials::decrypt_ssl_binding(
-        env,
-        ssl_provider,
-        routes,
-        secrets,
-        Some(project_dir),
-    )?;
-    let Some(token) = ssl.cloudflare_api_token else {
-        return Ok(());
-    };
-
-    let result = output::with_spinner_async_simple("Checking Cloudflare credential", async move {
-        crate::cloudflare::preflight_ssl_cloudflare_credential(ssl_provider, routes, &token).await
-    })
-    .await;
-
-    result.map_err(|error| {
-        format!(
-            "Cloudflare credential check failed: {error}. Run `tako credentials set {} --env {env}` to update it.",
-            crate::config::SSL_CLOUDFLARE_CREDENTIAL_NAME
-        )
-        .into()
-    })
 }
 
 fn git_repo_root(project_dir: &Path) -> Option<PathBuf> {

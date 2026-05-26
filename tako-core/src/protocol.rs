@@ -90,6 +90,23 @@ pub enum Command {
     /// whether the artifact still needs to be uploaded.
     PrepareReleaseUpload { app: String, version: String },
 
+    /// Validate and stage deploy metadata that the server must use before the
+    /// final deploy command. This keeps provider credentials on the server side
+    /// after validation, so the final deploy command can avoid resending them.
+    PrepareDeploy {
+        app: String,
+        version: String,
+        path: String,
+        /// Route patterns for this app (host, wildcard, optional path).
+        routes: Vec<String>,
+        /// SSL certificate provider and optional provider credentials.
+        #[serde(default)]
+        ssl: SslBinding,
+    },
+
+    /// Clear staged deploy metadata without deleting the release artifact.
+    CleanupPreparedDeploy { app: String, version: String },
+
     /// Remove a partially uploaded/extracted release.
     CleanupRelease { app: String, version: String },
 

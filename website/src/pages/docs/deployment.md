@@ -112,7 +112,7 @@ Before build or upload, deploy validates:
 - backup storage credentials can be decrypted when backups are configured
 - Provider credentials exist when Cloudflare SSL is selected or Let’s Encrypt wildcard routes require Cloudflare DNS-01
 - expiring or expired credentials are surfaced before work starts
-- required Cloudflare tokens are active; Let’s Encrypt wildcard routes also check zone read access
+- required Cloudflare tokens are active from each target server; Let’s Encrypt wildcard routes also check zone read access during remote prepare
 
 If `production` has no server mapping and exactly one global server exists, interactive deploy can write that server into `[envs.production].servers`.
 

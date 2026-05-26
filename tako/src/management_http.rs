@@ -278,6 +278,8 @@ fn management_rpc_timeout_for_command(command: &Command) -> Duration {
     if matches!(
         command,
         Command::PrepareRelease { .. }
+            | Command::PrepareDeploy { .. }
+            | Command::CleanupPreparedDeploy { .. }
             | Command::CleanupRelease { .. }
             | Command::FinalizeRelease { .. }
             | Command::RunRelease { .. }

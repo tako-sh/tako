@@ -52,6 +52,33 @@ impl crate::ServerState {
                 }
                 self.prepare_release_upload(&app, &version).await
             }
+            Command::PrepareDeploy {
+                app,
+                version,
+                path,
+                routes,
+                ssl,
+            } => {
+                if let Err(msg) = validate_app_name(&app) {
+                    return Response::error(msg);
+                }
+                if let Err(msg) = validate_release_version(&version) {
+                    return Response::error(msg);
+                }
+                if let Some(resp) = self.reject_mutating_when_upgrading("prepare-deploy").await {
+                    return resp;
+                }
+                self.prepare_deploy(&app, &version, &path, routes, ssl).await
+            }
+            Command::CleanupPreparedDeploy { app, version } => {
+                if let Err(msg) = validate_app_name(&app) {
+                    return Response::error(msg);
+                }
+                if let Err(msg) = validate_release_version(&version) {
+                    return Response::error(msg);
+                }
+                self.cleanup_prepared_deploy(&app, &version).await
+            }
             Command::CleanupRelease { app, version } => {
                 if let Err(msg) = validate_app_name(&app) {
                     return Response::error(msg);

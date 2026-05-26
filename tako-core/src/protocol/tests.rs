@@ -63,7 +63,21 @@ fn release_upload_commands_roundtrip() {
             app: "my-app/production".to_string(),
             version: "v1".to_string(),
         },
+        Command::PrepareDeploy {
+            app: "my-app/production".to_string(),
+            version: "v1".to_string(),
+            path: "/opt/tako/apps/my-app/releases/v1".to_string(),
+            routes: vec!["*.example.com".to_string()],
+            ssl: SslBinding {
+                provider: SslProvider::LetsEncrypt,
+                cloudflare_api_token: Some("token".to_string()),
+            },
+        },
         Command::CleanupRelease {
+            app: "my-app/production".to_string(),
+            version: "v1".to_string(),
+        },
+        Command::CleanupPreparedDeploy {
             app: "my-app/production".to_string(),
             version: "v1".to_string(),
         },

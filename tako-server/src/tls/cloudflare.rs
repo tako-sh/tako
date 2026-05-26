@@ -17,7 +17,7 @@ pub(crate) enum CloudflareOriginCaError {
     #[error("invalid Cloudflare Origin CA domain: {0}")]
     InvalidDomain(String),
 
-    #[error("Cloudflare Origin CA API error: {0}")]
+    #[error("Cloudflare API error: {0}")]
     CloudflareApi(String),
 
     #[error("Cloudflare Origin CA HTTP error: {0}")]
@@ -52,6 +52,11 @@ struct CloudflareResponse<T> {
 struct CloudflareResponseError {
     code: Option<u64>,
     message: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct CloudflareTokenVerifyResult {
+    status: String,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -130,6 +135,24 @@ impl CloudflareOriginCaClient {
             .await?;
         let bytes = response_bytes(response).await?;
         Self::parse_create_certificate_response(&bytes)
+    }
+
+    pub(crate) async fn verify_token(&self) -> Result<(), CloudflareOriginCaError> {
+        let response = self
+            .http
+            .get(format!("{}/user/tokens/verify", self.api_base_url))
+            .bearer_auth(&self.api_token)
+            .send()
+            .await?;
+        let bytes = response_bytes(response).await?;
+        let token = parse_cloudflare_response::<CloudflareTokenVerifyResult>(&bytes)?;
+        if token.status != "active" {
+            return Err(CloudflareOriginCaError::CloudflareApi(format!(
+                "token is {}",
+                token.status
+            )));
+        }
+        Ok(())
     }
 
     pub(crate) fn parse_create_certificate_response(

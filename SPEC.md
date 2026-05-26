@@ -192,7 +192,7 @@ Variable values may be TOML strings, numbers, booleans, or datetimes. Tako conve
 - Storage bindings are declared per environment with `[envs.<name>].storages = { app_name = "resource_name" }`. The key is the stable app-facing binding exposed as `tako.storages.<app_name>`; the value references a top-level `[storages.<resource_name>]` S3 resource or the built-in `local` resource.
 - App data backups are enabled per environment with `backup = { storage = "resource_name" }`. The resource must be a declared private S3-compatible `[storages.<resource_name>]` resource. Backup storage is not exposed as `tako.storages`; only `[envs.<env>].storages` creates SDK bindings.
 - SSL certificate issuance is selected per environment with optional `ssl = "letsencrypt"` or `ssl = "cloudflare"` under `[envs.<name>]`. Omitted means `letsencrypt`. Cloudflare SSL uses Cloudflare Origin CA certificates and requires encrypted credential `ssl.cloudflare` from `tako credentials set ssl.cloudflare --env <name>`. Let’s Encrypt exact routes need no credentials; Let’s Encrypt wildcard routes require the same credential because they use Cloudflare DNS-01 for certificate validation.
-- Tako-owned provider credentials are stored per environment in `.tako/secrets.json` by `tako credentials set <name> --env <name>`. Cloudflare is the only supported Cloudflare token provider for certificate operations. Deploy rejects expired app secrets, storage credentials, and required provider credentials before build/deploy work starts, warns when any of them expire within 30 days, and verifies required Cloudflare tokens before build/upload work. Cloudflare SSL verifies that the token is active. Let’s Encrypt wildcard routes also verify that the token can read the matching Cloudflare zone; DNS record writes are not probed before deploy.
+- Tako-owned provider credentials are stored per environment in `.tako/secrets.json` by `tako credentials set <name> --env <name>`. Cloudflare is the only supported Cloudflare token provider for certificate operations. Deploy rejects expired app secrets, storage credentials, and required provider credentials before build/deploy work starts and warns when any of them expire within 30 days. Each target server verifies required Cloudflare tokens during remote prepare, before release commands, route changes, or app startup. Cloudflare SSL verifies that the token is active. Let’s Encrypt wildcard routes also verify that the token can read the matching Cloudflare zone from the server's egress IP; DNS record writes are not probed before deploy.
 - Client source-IP handling is per environment through optional `source_ip` under `[envs.<name>]`. Omitted means automatic Cloudflare detection, then explicitly configured trusted proxy headers, then direct peer fallback.
 - Top-level `[storages.<resource>]` config contains non-secret S3-compatible storage metadata. `provider` defaults to `s3`; `provider = "local"` is invalid in config. S3 resources require `bucket`, `endpoint`, and `region`; `endpoint` and optional `public_base_url` must use HTTPS.
 - `local` is a built-in storage resource name, not a top-level `[storages.local]` table. Bind an app storage to it with `storages = { uploads = "local" }`. In `development`, a storage binding may also reference any undeclared resource name and it defaults to local storage. In deploy environments, every bound resource must be declared unless the resource name is `local`; local storage can deploy only to single-server environments.
@@ -343,7 +343,7 @@ Per-environment encrypted secrets (JSON format, AES-256-GCM encryption):
 
 Each environment has a `key_id` (16 hex characters), optional `backup_keys`, an `app` map for app secrets, an optional `storages` map for encrypted storage credentials keyed by storage resource name, and an optional `credentials` map for encrypted provider credentials keyed by credential name. App secret names, backup key ids, storage resource names, and credential names are plaintext. Each encrypted secret field stores a `value` and may store `expires_on`; `value` is encrypted with AES-256-GCM, while `expires_on` is plaintext date metadata. Backup key `value` fields are encrypted 32-byte backup encryption keys protected by the environment key. Expiry values are dates (`YYYY-MM-DD`); `in N days` is normalized to the UTC date N days from now. Leaving expiry blank, omitting `--expires-on`, or passing `never` leaves `expires_on` out of `.tako/secrets.json`.
 
-Deploy validates expiry before build/deploy work starts. Expired app secrets, expired S3 storage credentials used by the target environment, and expired provider credentials required by the selected certificate provider fail deployment with an update command. Credentials that expire within 30 days produce a deployment warning but do not block the deploy. Required Cloudflare credentials are checked with Cloudflare before build/upload work: deploy verifies token status for Cloudflare SSL and verifies token status plus zone read access for Let’s Encrypt wildcard routes.
+Deploy validates expiry before build/deploy work starts. Expired app secrets, expired S3 storage credentials used by the target environment, and expired provider credentials required by the selected certificate provider fail deployment with an update command. Credentials that expire within 30 days produce a deployment warning but do not block the deploy. Required Cloudflare credentials are checked by each target server during remote prepare: Cloudflare SSL verifies token status, and Let’s Encrypt wildcard routes verify token status plus zone read access from the server's egress IP.
 
 `tako init` ensures the app's `.tako/` directory stays ignored while `.tako/secrets.json` remains trackable:
 
@@ -425,7 +425,7 @@ Set up Let’s Encrypt wildcard certificate credentials with:
 tako credentials set ssl.cloudflare --env production
 ```
 
-The command prompts for a Cloudflare API token and optionally asks when the token expires. `--expires-on` can provide the expiry directly. The token is encrypted in `.tako/secrets.json` under the selected environment's `credentials` object as `ssl.cloudflare`. Deploy validates that Let’s Encrypt wildcard routes have an unexpired credential when expiry is known, warns when the credential expires within 30 days, decrypts the selected environment's token locally, sends the SSL binding over the signed management path, and `tako-server` stores it encrypted in server SQLite for that deployed app.
+The command prompts for a Cloudflare API token and optionally asks when the token expires. `--expires-on` can provide the expiry directly. The token is encrypted in `.tako/secrets.json` under the selected environment's `credentials` object as `ssl.cloudflare`. Deploy validates that Let’s Encrypt wildcard routes have an unexpired credential when expiry is known, warns when the credential expires within 30 days, decrypts the selected environment's token locally, sends the SSL binding during remote prepare, and `tako-server` stores it encrypted in server SQLite for that deployed app after the final deploy command starts.
 
 Cloudflare DNS-01 is only used to prove domain control for wildcard certificates. It does not require Cloudflare proxy mode. For wildcard second-level subdomains such as `*.app.example.com`, use DNS-only/direct records that point at the Tako server so `tako-server` terminates TLS itself.
 
@@ -445,7 +445,7 @@ Set up the Cloudflare provider credential with:
 tako credentials set ssl.cloudflare --env production
 ```
 
-The command stores the encrypted Cloudflare API token plus optional `expires_on` metadata in `.tako/secrets.json` under that environment's `credentials` object. Deploy validates the provider credential, decrypts the token locally, sends the SSL binding over the signed management path, and `tako-server` stores it encrypted in server SQLite for that deployed app.
+The command stores the encrypted Cloudflare API token plus optional `expires_on` metadata in `.tako/secrets.json` under that environment's `credentials` object. Deploy validates provider credential expiry locally, decrypts the token locally, sends the SSL binding during remote prepare for server-side validation, and `tako-server` stores it encrypted in server SQLite for that deployed app after the final deploy command starts.
 
 Cloudflare SSL issues Origin CA certificates through Cloudflare's Origin CA API. These certificates are intended for Cloudflare-proxied traffic; direct browser connections to the origin will not trust them. Cloudflare SSL can issue wildcard route certificates without DNS-01 credentials.
 
@@ -934,7 +934,7 @@ Set a Tako-owned provider credential for the current app environment. Alias: `ta
 - `--env {environment}` selects the app environment. Interactive terminals can choose or create one when omitted.
 - `--expires-on {when}` optionally records the date when the credential expires. Interactive runs prompt when the flag is omitted. Non-interactive runs may omit it. `YYYY-MM-DD` is stored as-is; `in N days` is normalized to the UTC date N days from now; `never`, a blank prompt, or an omitted flag stores no `expires_on` field. Timestamp values are rejected.
 
-The command ensures the environment has an encryption key and stores the encrypted value plus optional `expires_on` metadata in `.tako/secrets.json` under that environment's `credentials` object. Provider credentials are not exposed to app code, are not included in generated secret types, and are not pushed by `tako secrets sync`. Deploy sends required provider credentials to servers only through the specific deployment binding that needs them, such as Cloudflare SSL or Let’s Encrypt wildcard certificate issuance. Deploy fails before build/deploy work starts if a required credential is missing, expired, disabled, invalid for Cloudflare, or unable to read a Cloudflare zone needed for Let’s Encrypt wildcard DNS-01, and warns if it expires within 30 days.
+The command ensures the environment has an encryption key and stores the encrypted value plus optional `expires_on` metadata in `.tako/secrets.json` under that environment's `credentials` object. Provider credentials are not exposed to app code, are not included in generated secret types, and are not pushed by `tako secrets sync`. Deploy sends required provider credentials to servers only through the specific deployment binding that needs them, such as Cloudflare SSL or Let’s Encrypt wildcard certificate issuance. Deploy fails before build/deploy work starts if a required credential is missing or expired, warns if it expires within 30 days, and fails during remote prepare if the target server cannot use the Cloudflare token or cannot read a Cloudflare zone needed for Let’s Encrypt wildcard DNS-01.
 
 ### tako credentials rm [--env {environment}] {name}
 
@@ -1730,6 +1730,32 @@ Response:
 }
 ```
 
+- `prepare_deploy` (validates and stages deploy metadata that must be checked from the server, including Cloudflare SSL credentials; called after artifact upload and before release preparation or release commands):
+
+```json
+{
+  "command": "prepare_deploy",
+  "app": "my-app/production",
+  "version": "1.0.0",
+  "path": "/opt/tako/apps/my-app/production/releases/1.0.0",
+  "routes": ["api.example.com", "*.example.com/admin/*"],
+  "ssl": {
+    "provider": "letsencrypt",
+    "cloudflare_api_token": "..."
+  }
+}
+```
+
+- `cleanup_prepared_deploy` (clears staged deploy metadata after a failed deploy attempt without deleting the release artifact):
+
+```json
+{
+  "command": "cleanup_prepared_deploy",
+  "app": "my-app/production",
+  "version": "1.0.0"
+}
+```
+
 - `cleanup_release` (removes a newly-created partial release after deploy failure):
 
 ```json
@@ -1756,7 +1782,7 @@ Response:
 { "command": "check_deploy_space", "min_free_bytes": 268435456 }
 ```
 
-- `deploy` (includes route patterns, source-IP mode, optional secrets payload, optional storage bindings, and SSL binding; env vars are read from `app.json` in the release dir). When `secrets` or `storages` are omitted or `null`, the server keeps existing values for the app. When `ssl.cloudflare_api_token` is absent or `null`, the server clears app SSL credentials:
+- `deploy` (includes route patterns, source-IP mode, optional secrets payload, optional storage bindings, and SSL provider selection; env vars are read from `app.json` in the release dir). When `secrets` or `storages` are omitted or `null`, the server keeps existing values for the app. When Cloudflare credentials were staged by `prepare_deploy`, `deploy` references that staged binding by sending the same provider with `ssl.cloudflare_api_token` omitted. If no Cloudflare credential is required and `ssl.cloudflare_api_token` is absent or `null`, the server clears app SSL credentials:
 
 ```json
 {
@@ -1782,8 +1808,7 @@ Response:
     }
   },
   "ssl": {
-    "provider": "cloudflare",
-    "cloudflare_api_token": "..."
+    "provider": "cloudflare"
   },
   "backup": {
     "retention_days": 30,
@@ -2041,14 +2066,14 @@ This requires OpenSSL (not rustls) for callback support.
 - Automatic renewal 30 days before expiry
 - HTTP-01 challenge uses the public HTTP port. Let's Encrypt reaches port 80, so custom HTTP ports require external port-80 forwarding, DNS-01, or manual certificates.
 - Zero-downtime renewal
-- DNS-01 challenges are supported for Let’s Encrypt wildcard certificates through Cloudflare DNS. Set up encrypted provider credentials with `tako credentials set ssl.cloudflare --env <env>`. Deploy rejects missing or expired credentials for wildcard routes, warns when they expire within 30 days, verifies the Cloudflare token is active and can read the matching zone, sends the selected environment's SSL binding to each server, and `tako-server` stores it encrypted per deployed app.
-- Cloudflare SSL uses Cloudflare Origin CA. Set `ssl = "cloudflare"` in `tako.toml` and set up encrypted provider credentials with `tako credentials set ssl.cloudflare --env <env>`. Deploy rejects missing or expired credentials, warns when they expire within 30 days, verifies the Cloudflare token is active, sends the selected environment's SSL binding to each server, and `tako-server` stores it encrypted per deployed app.
+- DNS-01 challenges are supported for Let’s Encrypt wildcard certificates through Cloudflare DNS. Set up encrypted provider credentials with `tako credentials set ssl.cloudflare --env <env>`. Deploy rejects missing or expired credentials for wildcard routes, warns when they expire within 30 days, verifies the Cloudflare token from each target server during remote prepare, stages the SSL binding for the final deploy command, and `tako-server` stores it encrypted per deployed app.
+- Cloudflare SSL uses Cloudflare Origin CA. Set `ssl = "cloudflare"` in `tako.toml` and set up encrypted provider credentials with `tako credentials set ssl.cloudflare --env <env>`. Deploy rejects missing or expired credentials, warns when they expire within 30 days, verifies the Cloudflare token from each target server during remote prepare, stages the SSL binding for the final deploy command, and `tako-server` stores it encrypted per deployed app.
 
 ### Wildcard Certificate Handling
 
 Routing supports wildcard hosts (e.g. `*.example.com`). For TLS:
 
-- Let’s Encrypt wildcard certificates are issued automatically via Cloudflare DNS-01 challenges when the deployed app environment has unexpired `ssl.cloudflare` credentials stored by `tako credentials`; deploy verifies the token is active and can read the matching Cloudflare zone, and warns when those credentials expire within 30 days
+- Let’s Encrypt wildcard certificates are issued automatically via Cloudflare DNS-01 challenges when the deployed app environment has unexpired `ssl.cloudflare` credentials stored by `tako credentials`; each target server verifies the token is active and can read the matching Cloudflare zone during remote prepare, and deploy warns when those credentials expire within 30 days
 - Cloudflare SSL wildcard certificates are issued through Cloudflare Origin CA and do not require DNS-01 credentials
 - Wildcard certificates are used when present in cert storage
 - If Let’s Encrypt wildcard routes are deployed without Cloudflare credentials, deploy fails with an error directing the user to run `tako credentials set ssl.cloudflare --env <env>`

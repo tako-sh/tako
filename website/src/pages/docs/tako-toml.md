@@ -322,7 +322,7 @@ There is no DNS provider block in `tako.toml`. Let’s Encrypt wildcard routes u
 tako credentials set ssl.cloudflare --env production
 ```
 
-Cloudflare is the only supported DNS-01 provider. The token is encrypted in `.tako/secrets.json` under the environment's `credentials` object. Deploy sends provider credentials when the selected environment uses Let’s Encrypt with wildcard routes or Cloudflare SSL. Before build/upload, deploy verifies required Cloudflare tokens are active; Let’s Encrypt wildcard routes also verify zone read access.
+Cloudflare is the only supported DNS-01 provider. The token is encrypted in `.tako/secrets.json` under the environment's `credentials` object. Deploy sends provider credentials when the selected environment uses Let’s Encrypt with wildcard routes or Cloudflare SSL. During remote prepare, each target server verifies required Cloudflare tokens are active; Let’s Encrypt wildcard routes also verify zone read access from the server's egress IP.
 
 Cloudflare DNS-01 is only certificate validation. It does not require proxy mode; for wildcard second-level subdomains such as `*.app.example.com`, point DNS records directly at the Tako server and let Tako terminate TLS.
 

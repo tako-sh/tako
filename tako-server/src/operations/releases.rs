@@ -1,14 +1,57 @@
 use crate::app_command::env_vars_from_release_dir;
 use crate::release::{
-    current_release_version, directory_modified_unix_secs, ensure_app_runtime_data_dirs,
-    inject_app_data_dir_env, prepare_release_runtime, read_release_manifest_metadata,
-    validate_release_path_for_app,
+    app_release_root, current_release_version, directory_modified_unix_secs,
+    ensure_app_runtime_data_dirs, inject_app_data_dir_env, prepare_release_runtime,
+    read_release_manifest_metadata, validate_deploy_routes, validate_release_path_for_app,
 };
 use crate::socket::Response;
 use std::collections::HashMap;
 use tako_core::{ListReleasesResponse, ReleaseInfo};
 
 impl crate::ServerState {
+    pub(crate) async fn prepare_deploy(
+        &self,
+        app_name: &str,
+        version: &str,
+        path: &str,
+        routes: Vec<String>,
+        ssl: tako_core::SslBinding,
+    ) -> Response {
+        if let Err(msg) = validate_deploy_routes(&routes) {
+            return Response::error(msg);
+        }
+        let release_path =
+            match validate_release_path_for_app(&self.runtime.data_dir, app_name, path) {
+                Ok(value) => value,
+                Err(msg) => return Response::error(msg),
+            };
+
+        if let Err(error) = self.validate_deploy_ssl_binding(&routes, &ssl).await {
+            return Response::error(format!("Cloudflare credential check failed: {error}"));
+        }
+
+        if crate::server_state::ssl_binding_needs_cloudflare_token(ssl.provider, &routes) {
+            self.stage_prepared_deploy_ssl(app_name, &release_path, routes, ssl)
+                .await;
+        } else {
+            self.clear_prepared_deploy_ssl(app_name, &release_path)
+                .await;
+        }
+
+        Response::ok(serde_json::json!({
+            "status": "prepared",
+            "app": app_name,
+            "version": version
+        }))
+    }
+
+    pub(crate) async fn cleanup_prepared_deploy(&self, app_name: &str, version: &str) -> Response {
+        let release_path = app_release_root(&self.runtime.data_dir, app_name, version);
+        self.clear_prepared_deploy_ssl(app_name, &release_path)
+            .await;
+        Response::ok(serde_json::json!({ "status": "cleaned" }))
+    }
+
     pub(crate) async fn prepare_release(&self, app_name: &str, path: &str) -> Response {
         let release_path =
             match validate_release_path_for_app(&self.runtime.data_dir, app_name, path) {

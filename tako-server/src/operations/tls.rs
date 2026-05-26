@@ -1,7 +1,8 @@
 use crate::release::should_use_self_signed_route_cert;
 use crate::socket::Response;
 use crate::tls::cloudflare::CloudflareOriginCaClient;
-use crate::tls::{CertInfo, DnsBinding};
+use crate::tls::{CertInfo, CloudflareDnsProvider, DnsBinding};
+use std::time::Duration;
 
 impl crate::ServerState {
     pub async fn request_certificate(&self, domain: &str) -> Response {
@@ -169,6 +170,39 @@ impl crate::ServerState {
                 None
             }
         }
+    }
+
+    pub(crate) async fn validate_deploy_ssl_binding(
+        &self,
+        routes: &[String],
+        ssl: &tako_core::SslBinding,
+    ) -> Result<(), String> {
+        if !crate::server_state::ssl_binding_needs_cloudflare_token(ssl.provider, routes) {
+            return Ok(());
+        }
+
+        let token = ssl
+            .cloudflare_api_token
+            .as_deref()
+            .filter(|token| !token.trim().is_empty())
+            .ok_or_else(|| "Cloudflare API token is missing".to_string())?;
+
+        let cloudflare =
+            CloudflareOriginCaClient::from_api_token(token).map_err(|error| error.to_string())?;
+        cloudflare
+            .verify_token()
+            .await
+            .map_err(|error| error.to_string())?;
+
+        if ssl.provider == tako_core::SslProvider::LetsEncrypt {
+            let dns = CloudflareDnsProvider::from_api_token(token, Duration::ZERO)
+                .map_err(|error| error.to_string())?;
+            dns.verify_wildcard_routes(routes)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+
+        Ok(())
     }
 
     pub(crate) async fn check_certificate_renewals(&self) -> Vec<Result<CertInfo, String>> {

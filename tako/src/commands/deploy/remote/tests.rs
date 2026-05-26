@@ -37,6 +37,19 @@ fn parse_existing_routes_from_error_response_returns_message() {
     assert!(err.contains("boom"));
 }
 
+#[test]
+fn deploy_ssl_binding_for_start_command_omits_provider_token() {
+    let ssl = tako_core::SslBinding {
+        provider: tako_core::SslProvider::Cloudflare,
+        cloudflare_api_token: Some("server-only-token".to_string()),
+    };
+
+    let prepared = ssl_binding_for_start_command(&ssl);
+
+    assert_eq!(prepared.provider, tako_core::SslProvider::Cloudflare);
+    assert_eq!(prepared.cloudflare_api_token, None);
+}
+
 fn sample_shared_build_group() -> ArtifactBuildGroup {
     ArtifactBuildGroup {
         build_target_label: "linux-aarch64-musl".to_string(),

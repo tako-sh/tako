@@ -71,6 +71,53 @@ async fn state_store_persists_ssl_credentials_per_app() {
 }
 
 #[tokio::test]
+async fn deploy_uses_prepared_ssl_credentials_when_start_payload_omits_token() {
+    let temp_dir = TempDir::new().unwrap();
+    let cert_manager = Arc::new(CertManager::new(CertManagerConfig {
+        cert_dir: temp_dir.path().join("certs"),
+        ..Default::default()
+    }));
+    let state = ServerState::new(
+        temp_dir.path().to_path_buf(),
+        cert_manager,
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+    let app_id = "my-app/production";
+    let release_dir = temp_dir
+        .path()
+        .join("apps")
+        .join("my-app%2Fproduction")
+        .join("releases")
+        .join("v1");
+    let routes = vec!["*.example.com".to_string()];
+    let prepared_ssl = tako_core::SslBinding {
+        provider: tako_core::SslProvider::LetsEncrypt,
+        cloudflare_api_token: Some("server-egress-token".to_string()),
+    };
+
+    state
+        .stage_prepared_deploy_ssl(app_id, &release_dir, routes.clone(), prepared_ssl.clone())
+        .await;
+
+    let resolved = state
+        .resolve_deploy_ssl_binding(
+            app_id,
+            &release_dir,
+            &routes,
+            tako_core::SslBinding {
+                provider: tako_core::SslProvider::LetsEncrypt,
+                cloudflare_api_token: None,
+            },
+        )
+        .await
+        .expect("prepared SSL binding should resolve");
+
+    assert_eq!(resolved, prepared_ssl);
+}
+
+#[tokio::test]
 async fn failed_deploy_does_not_persist_ssl_credentials() {
     let temp_dir = TempDir::new().unwrap();
     let cert_manager = Arc::new(CertManager::new(CertManagerConfig {

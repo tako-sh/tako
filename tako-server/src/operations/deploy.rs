@@ -41,6 +41,13 @@ impl crate::ServerState {
                 Ok(value) => value,
                 Err(msg) => return Response::error(msg),
             };
+        let ssl = match self
+            .resolve_deploy_ssl_binding(app_name, &release_path, &routes, ssl)
+            .await
+        {
+            Ok(value) => value,
+            Err(msg) => return Response::error(msg),
+        };
 
         let lock = self.get_deploy_lock(app_name).await;
         let _guard = match lock.try_lock() {

@@ -110,7 +110,7 @@ tako deploy --env production --yes
 
 Interactive production deploys ask for confirmation only when the environment is implicit. Passing `--env production` or `--yes` makes the target explicit.
 
-Deploy validates secrets, storage credentials, configured backup storage, required provider credentials, routes, target servers, and server target metadata before build work starts. Required Cloudflare credentials are checked with Cloudflare before build/upload: Cloudflare SSL verifies that the token is active, and Let’s Encrypt wildcard routes also verify zone read access. It builds locally, packages a `.tar.zst` artifact, uploads it over signed HTTP, prepares the release, optionally runs the release command, performs a rolling update, and creates a post-deploy backup when enabled.
+Deploy validates secrets, storage credentials, configured backup storage, required provider credentials, routes, target servers, and server target metadata before build work starts. Required Cloudflare credentials are checked by each target server during remote prepare: Cloudflare SSL verifies that the token is active, and Let’s Encrypt wildcard routes also verify zone read access. It builds locally, packages a `.tar.zst` artifact, uploads it over signed HTTP, prepares the release, optionally runs the release command, performs a rolling update, and creates a post-deploy backup when enabled.
 
 Let’s Encrypt wildcard routes require `tako credentials set ssl.cloudflare --env <env>`. Environments using `ssl = "cloudflare"` require the same credential. Storage bindings configured with `tako storages add` are synced during deploy; there is no separate storage sync command. Backup-only storage credentials can be set with `tako storages credentials <resource> --env <env>`.
 

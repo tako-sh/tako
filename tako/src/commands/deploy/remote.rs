@@ -178,6 +178,24 @@ async fn prepare_release_upload_plan(
     management_http::parse_ok_data(response, "release upload plan")
 }
 
+async fn prepare_deploy_metadata(
+    config: &DeployConfig,
+    client: &mut ManagementClient,
+    release_dir: &str,
+) -> Result<(), management_http::ManagementError> {
+    let response = client
+        .send(&Command::PrepareDeploy {
+            app: config.app_name.clone(),
+            version: config.version.clone(),
+            path: release_dir.to_string(),
+            routes: config.routes.clone(),
+            ssl: config.ssl.clone(),
+        })
+        .await?;
+    release_response_result(response).map_err(management_http::ManagementError::Message)?;
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn upload_release_artifact(
     client: &mut ManagementClient,
@@ -250,6 +268,13 @@ async fn prepare_release(
     Ok(())
 }
 
+pub(super) fn ssl_binding_for_start_command(ssl: &tako_core::SslBinding) -> tako_core::SslBinding {
+    tako_core::SslBinding {
+        provider: ssl.provider,
+        cloudflare_api_token: None,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn prepare_uploaded_release(
     config: &DeployConfig,
@@ -260,21 +285,22 @@ async fn prepare_uploaded_release(
     use_spinner: bool,
     task_tree: Option<&DeployTaskTreeController>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    if release_preexisted {
-        if let Some(task_tree) = task_tree {
-            task_tree.skip_deploy_step(server_name, "preparing", "skipped");
-        }
-        return Ok(());
-    }
-
     let result = if let Some(task_tree) = task_tree {
         run_task_tree_deploy_step(task_tree, server_name, "preparing", async {
-            prepare_release(config, client, release_dir).await
+            prepare_deploy_metadata(config, client, release_dir).await?;
+            if !release_preexisted {
+                prepare_release(config, client, release_dir).await?;
+            }
+            Ok::<_, management_http::ManagementError>(())
         })
         .await
     } else {
         run_deploy_step("Preparing…", "Prepared", use_spinner, async {
-            prepare_release(config, client, release_dir).await
+            prepare_deploy_metadata(config, client, release_dir).await?;
+            if !release_preexisted {
+                prepare_release(config, client, release_dir).await?;
+            }
+            Ok::<_, management_http::ManagementError>(())
         })
         .await
     };
@@ -378,7 +404,7 @@ async fn send_deploy_command(
             source_ip: config.source_ip,
             secrets: deploy_secrets,
             storages: Some(config.storages.clone()),
-            ssl: config.ssl.clone(),
+            ssl: ssl_binding_for_start_command(&config.ssl),
             backup: config.backup.clone().map(Box::new),
         })
         .await?;
@@ -391,6 +417,22 @@ async fn cleanup_release_on_host(host: &str, app: &str, version: &str) -> Result
         .await
         .map_err(|error| error.to_string())?;
     cleanup_release_with_client(&mut client, app, version).await
+}
+
+async fn cleanup_prepared_deploy_with_client(
+    client: &mut ManagementClient,
+    app: &str,
+    version: &str,
+) -> Result<(), String> {
+    let response = client
+        .send(&Command::CleanupPreparedDeploy {
+            app: app.to_string(),
+            version: version.to_string(),
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+    release_response_result(response)?;
+    Ok(())
 }
 
 async fn cleanup_release_with_client(
@@ -551,6 +593,14 @@ pub(super) async fn deploy_to_server(
         Ok(())
     }
     .await;
+
+    if result.is_err()
+        && let Err(error) =
+            cleanup_prepared_deploy_with_client(&mut client, &config.app_name, &config.version)
+                .await
+    {
+        tracing::warn!("Failed to cleanup prepared deploy metadata: {error}");
+    }
 
     if result.is_err()
         && !release_preexisted

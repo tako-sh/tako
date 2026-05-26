@@ -15,7 +15,7 @@ mod sni;
 
 #[allow(unused_imports)]
 pub use acme::{AcmeClient, AcmeConfig, AcmeError, ChallengeHandler, ChallengeTokens};
-pub(crate) use dns::DnsBinding;
+pub(crate) use dns::{CloudflareDnsProvider, DnsBinding};
 #[allow(unused_imports)]
 pub use manager::{CertError, CertInfo, CertManager, CertManagerConfig};
 #[allow(unused_imports)]

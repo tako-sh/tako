@@ -136,6 +136,13 @@ impl CloudflareDnsProvider {
         Err(DnsError::ZoneNotFound(normalize_domain(domain)?))
     }
 
+    pub(crate) async fn verify_wildcard_routes(&self, routes: &[String]) -> Result<(), DnsError> {
+        for route in routes.iter().filter(|route| route.starts_with("*.")) {
+            self.find_zone(route).await?;
+        }
+        Ok(())
+    }
+
     async fn list_zones(&self, name: &str) -> Result<Vec<CloudflareZone>, DnsError> {
         let encoded_name = utf8_percent_encode(name, NON_ALPHANUMERIC);
         let response = self
@@ -221,7 +228,11 @@ impl DnsChallengeProvider for CloudflareDnsProvider {
 }
 
 fn normalize_domain(domain: &str) -> Result<String, DnsError> {
-    let trimmed = domain.trim().trim_end_matches('.');
+    let host = domain
+        .trim()
+        .split_once('/')
+        .map_or(domain.trim(), |(host, _)| host);
+    let trimmed = host.trim_end_matches('.');
     let without_wildcard = trimmed.strip_prefix("*.").unwrap_or(trimmed);
 
     if without_wildcard.is_empty()
@@ -305,6 +316,14 @@ mod tests {
     fn cloudflare_zone_candidates_prefer_most_specific_zone() {
         assert_eq!(
             CloudflareDnsProvider::zone_candidates("*.api.example.com").unwrap(),
+            vec!["api.example.com".to_string(), "example.com".to_string()],
+        );
+    }
+
+    #[test]
+    fn cloudflare_zone_candidates_ignore_route_paths() {
+        assert_eq!(
+            CloudflareDnsProvider::zone_candidates("*.api.example.com/v1/*").unwrap(),
             vec!["api.example.com".to_string(), "example.com".to_string()],
         );
     }
