@@ -316,7 +316,16 @@ jobs:
         if: steps.changes.outputs.website == 'true'
         run: |
           cargo install lychee --locked
-          lychee --root-dir website/dist --exclude 'demo\.tako\.sh' --exclude 'dub\.sh' --exclude 'pkg\.go\.dev' --exclude 'npmjs\.com/package/tako\.sh' --exclude 'x\.com/dhh' --exclude 'tako\.sh/blog' --exclude 'tako\.sh/docs' 'website/dist/**/*.html'
+          lychee \
+            --root-dir website/dist \
+            --exclude 'demo\.tako\.sh' \
+            --exclude 'dub\.sh' \
+            --exclude 'npmjs\.com' \
+            --exclude 'pkg\.go\.dev' \
+            --exclude 'x\.com' \
+            --exclude 'tako\.sh/blog' \
+            --exclude 'tako\.sh/docs' \
+            'website/dist/**/*.html'
 
   # x86_64 glibc — needed for CLI tests + E2E
   build-x86_64-glibc:
