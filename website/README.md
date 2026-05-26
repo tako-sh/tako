@@ -20,14 +20,16 @@ Astro static site deployed with Cloudflare Workers static assets.
 - `/blog/{slug}/`: HTML blog post
 - `/blog/{slug}.md`: authored Markdown for a blog post
 - `/blog/{slug}.json`: structured blog post data, including frontmatter, headings, and Markdown
+- `/skills.md`: Markdown index of published Agent Skills for agents
 
 Installer redirects are configured in `public/_redirects` (Cloudflare static assets redirects). Agent-discovery `Link` response headers (RFC 8288) are configured in `public/_headers`.
 
 ## Agent Discovery
 
-- `_headers` — RFC 8288 `Link` headers pointing agents at docs, `llms.txt`, and the sitemap
+- `_headers` — RFC 8288 `Link` headers pointing agents at docs, `llms.txt`, `skills.md`, and the sitemap
 - `public/.well-known/http-message-signatures-directory` — Web Bot Auth JWKS (Ed25519 public key)
 - `public/.well-known/agent-skills/` — Agent Skills Discovery v0.2.0 index + `SKILL.md` copies; regenerated from `sdk/javascript/skills/` by `scripts/sync-agent-skills.ts` on each build
+- `/skills.md` — Markdown index that points agents at the structured Agent Skills index and each published `SKILL.md`
 - Blog posts expose explicit `.md` and `.json` endpoints from `src/pages/blog/`.
 - WebMCP tools (`navigator.modelContext.provideContext`) registered in `src/layouts/BaseLayout.astro` — `navigateToDocs`, `searchDocs`, `getStartedCommand`, `getInstallCommand`. Feature-detected, silently no-ops in browsers without the API.
 

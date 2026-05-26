@@ -6,7 +6,7 @@
       "type": "framework",
       "description": "Tako CLI commands: init, dev, deploy, secrets, storage, gen, scale, logs, rollback, servers, doctor. Includes output design patterns for interactive and plain modes.",
       "url": "https://tako.sh/.well-known/agent-skills/tako/SKILL.md",
-      "sha256": "0a86746554fcb606c49ecf9661a829b8c181fa3c672d43ede9447813e587ef8f"
+      "sha256": "b4fa37603d58570f57fc9ab8538f03967113a04e82688dc603addab65a198880"
     },
     {
       "name": "tako-sdk-go",
@@ -20,7 +20,7 @@
       "type": "framework",
       "description": "tako.sh SDK: fetch handler interface, tako runtime object, generated tako.d.ts type augmentation, defineChannel/defineWorkflow, Vite and Next.js adapters.",
       "url": "https://tako.sh/.well-known/agent-skills/tako-sdk-js/SKILL.md",
-      "sha256": "5a1170fb55695615418a9339ccc0a78616ca78082e9d54d7d71a61ea1b27c51f"
+      "sha256": "0288b81fad22c17a1c3b71f36793ac95a7cc538dc16ac2f0d9ea22dfe5702d78"
     }
   ]
 }

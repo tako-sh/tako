@@ -100,6 +100,11 @@ export const llmsCoreSections: LlmsSection[] = [
         url: "https://www.npmjs.com/package/tako.sh",
         description: "Package entry for the tako.sh JavaScript and TypeScript SDK.",
       },
+      {
+        title: "Agent Skills",
+        url: "/skills.md",
+        description: "Markdown index of task-specific Tako skills for agents.",
+      },
     ],
   },
 ];

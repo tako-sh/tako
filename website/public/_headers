@@ -1,6 +1,7 @@
 /*
   Link: </docs>; rel="service-doc"
   Link: </llms.txt>; rel="describedby"; type="text/plain"
+  Link: </skills.md>; rel="describedby"; type="text/markdown"
   Link: </sitemap-index.xml>; rel="sitemap"; type="application/xml"
 
 /.well-known/http-message-signatures-directory
@@ -13,6 +14,9 @@
   Content-Type: text/markdown; charset=utf-8
 
 /blog/*.md
+  Content-Type: text/markdown; charset=utf-8
+
+/skills.md
   Content-Type: text/markdown; charset=utf-8
 
 /blog/*.json
