@@ -187,19 +187,22 @@ impl crate::ServerState {
             .filter(|token| !token.trim().is_empty())
             .ok_or_else(|| "Cloudflare API token is missing".to_string())?;
 
-        let cloudflare =
-            CloudflareOriginCaClient::from_api_token(token).map_err(|error| error.to_string())?;
-        cloudflare
-            .verify_token()
-            .await
-            .map_err(|error| error.to_string())?;
-
-        if ssl.provider == tako_core::SslProvider::LetsEncrypt {
-            let dns = CloudflareDnsProvider::from_api_token(token, Duration::ZERO)
-                .map_err(|error| error.to_string())?;
-            dns.verify_wildcard_routes(routes)
-                .await
-                .map_err(|error| error.to_string())?;
+        match ssl.provider {
+            tako_core::SslProvider::LetsEncrypt => {
+                let dns = CloudflareDnsProvider::from_api_token(token, Duration::ZERO)
+                    .map_err(|error| error.to_string())?;
+                dns.verify_wildcard_routes(routes)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
+            tako_core::SslProvider::Cloudflare => {
+                let cloudflare = CloudflareOriginCaClient::from_api_token(token)
+                    .map_err(|error| error.to_string())?;
+                cloudflare
+                    .verify_token()
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
         }
 
         Ok(())

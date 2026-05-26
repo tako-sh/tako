@@ -138,6 +138,13 @@ impl CloudflareOriginCaClient {
     }
 
     pub(crate) async fn verify_token(&self) -> Result<(), CloudflareOriginCaError> {
+        // Cloudflare's /user/tokens/verify endpoint validates user-owned API
+        // tokens. Account-owned tokens (`cfat_...`) are valid Bearer tokens for
+        // product APIs, but this endpoint rejects them with "Invalid API Token".
+        if is_account_api_token(&self.api_token) {
+            return Ok(());
+        }
+
         let response = self
             .http
             .get(format!("{}/user/tokens/verify", self.api_base_url))
@@ -160,6 +167,10 @@ impl CloudflareOriginCaClient {
     ) -> Result<CreateCertificateResponse, CloudflareOriginCaError> {
         parse_cloudflare_response(body)
     }
+}
+
+fn is_account_api_token(token: &str) -> bool {
+    token.trim().starts_with("cfat_")
 }
 
 fn generate_origin_ca_csr(domain: &str) -> Result<(String, String), CloudflareOriginCaError> {
@@ -302,6 +313,25 @@ mod tests {
             err.to_string().contains("Authentication error"),
             "error should include Cloudflare message: {err}",
         );
+    }
+
+    #[test]
+    fn detects_account_api_tokens() {
+        assert!(is_account_api_token("cfat_abc"));
+        assert!(is_account_api_token("  cfat_abc"));
+        assert!(!is_account_api_token("cfut_abc"));
+        assert!(!is_account_api_token("legacy-token"));
+    }
+
+    #[tokio::test]
+    async fn verify_token_skips_user_verify_for_account_api_tokens() {
+        let client = CloudflareOriginCaClient::new(
+            "cfat_test_account_token".to_string(),
+            "http://127.0.0.1:1",
+        )
+        .unwrap();
+
+        client.verify_token().await.unwrap();
     }
 
     #[test]

@@ -217,7 +217,7 @@ tako credentials set ssl.cloudflare --env production --expires-on "in 90 days"
 
 The token must be able to read zones and edit DNS records. It is encrypted in `.tako/secrets.json`, not stored in `tako.toml`.
 
-Deploy fails early if Let’s Encrypt wildcard routes need missing or expired provider credentials. Each target server also verifies that the Cloudflare token is active and can read the matching zone during remote prepare. DNS record writes are not probed before deploy, so the token must still have DNS record edit access for certificate issuance. Deploy warns when the token expires within 30 days.
+Deploy fails early if Let’s Encrypt wildcard routes need missing or expired provider credentials. Each target server also verifies that the Cloudflare token can read the matching zone during remote prepare. DNS record writes are not probed before deploy, so the token must still have DNS record edit access for certificate issuance. Deploy warns when the token expires within 30 days.
 
 ## Source IP Problems
 

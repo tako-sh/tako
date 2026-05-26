@@ -112,7 +112,7 @@ Before build or upload, deploy validates:
 - backup storage credentials can be decrypted when backups are configured
 - Provider credentials exist when Cloudflare SSL is selected or Let’s Encrypt wildcard routes require Cloudflare DNS-01
 - expiring or expired credentials are surfaced before work starts
-- required Cloudflare tokens are active from each target server; Let’s Encrypt wildcard routes also check zone read access during remote prepare
+- required Cloudflare credentials are checked from each target server; Let’s Encrypt wildcard routes verify zone read access during remote prepare
 
 If `production` has no server mapping and exactly one global server exists, interactive deploy can write that server into `[envs.production].servers`.
 
@@ -233,7 +233,7 @@ Let’s Encrypt wildcard routes use Cloudflare DNS-01 and store the required Clo
 tako credentials set ssl.cloudflare --env production --expires-on "in 90 days"
 ```
 
-The token must be able to read zones and edit DNS records. It is encrypted in `.tako/secrets.json`. Deploy fails early when Let’s Encrypt wildcard routes need a missing or expired token, verifies that the token is active and can read the matching Cloudflare zone, and warns when the token expires within 30 days. DNS record writes are not probed before deploy.
+The token must be able to read zones and edit DNS records. It is encrypted in `.tako/secrets.json`. Deploy fails early when Let’s Encrypt wildcard routes need a missing or expired token, verifies that the token can read the matching Cloudflare zone from the target server, and warns when the token expires within 30 days. DNS record writes are not probed before deploy.
 
 Cloudflare SSL is selected in `tako.toml` and configured with encrypted credentials:
 

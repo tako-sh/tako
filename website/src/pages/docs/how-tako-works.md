@@ -108,7 +108,7 @@ Tako manages certificates automatically:
 - Environments with `ssl = "cloudflare"` use Cloudflare Origin CA after the same credential is set.
 - Local and private hostnames such as `localhost`, `.test`, `.local`, `.invalid`, `.example`, and `.home.arpa` use self-signed certificates.
 
-Cloudflare tokens for certificate operations are encrypted in `.tako/secrets.json` under the environment's provider credentials. Deploy fails early when selected providers need missing or expired credentials, verifies required tokens from each target server during remote prepare, and warns when credentials expire within 30 days. For Let’s Encrypt wildcard routes, remote prepare also checks that the token can read the matching Cloudflare zone from the server's egress IP.
+Cloudflare tokens for certificate operations are encrypted in `.tako/secrets.json` under the environment's provider credentials. Deploy fails early when selected providers need missing or expired credentials, checks required credentials from each target server during remote prepare, and warns when credentials expire within 30 days. For Let’s Encrypt wildcard routes, remote prepare verifies that the token can read the matching Cloudflare zone from the server's egress IP.
 
 Cloudflare DNS-01 does not require Cloudflare proxy mode. Cloudflare SSL uses Origin CA certificates for Cloudflare-proxied traffic.
 
