@@ -11,18 +11,18 @@ Tako plays the same sport differently. Same goal — your app, running close to 
 
 ## At a glance
 
-|                   | **Fly.io**                          | **Tako**                                               |
-| ----------------- | ----------------------------------- | ------------------------------------------------------ |
-| **Model**         | Hosted PaaS                         | Self-hosted platform                                   |
-| **Runtime unit**  | Firecracker micro-VM from OCI image | Native OS process                                      |
-| **Deploy input**  | Dockerfile / container image        | Built artifact over SFTP                               |
-| **Proxy**         | fly-proxy (anycast)                 | [Pingora](/blog/pingora-vs-caddy-vs-traefik) (Rust)    |
-| **Regions**       | 30+ built-in                        | Whichever VPS you rent, wherever you rent it           |
-| **Scale-to-zero** | Yes (autostop / autostart)          | Yes ([idle instances spin down](/docs/how-tako-works)) |
-| **Pricing**       | Per-VM, per-second, per-GB egress   | Whatever your VPS already costs                        |
-| **Lock-in**       | Fly platform                        | None — it's your box                                   |
-| **Local dev**     | Docker / separate tooling           | Built-in ([`tako dev`](/docs/development))             |
-| **CLI**           | `flyctl`                            | `tako`                                                 |
+|                   | **Fly.io**                          | **Tako**                                                |
+| ----------------- | ----------------------------------- | ------------------------------------------------------- |
+| **Model**         | Hosted PaaS                         | Self-hosted platform                                    |
+| **Runtime unit**  | Firecracker micro-VM from OCI image | Native OS process                                       |
+| **Deploy input**  | Dockerfile / container image        | Built artifact over SFTP                                |
+| **Proxy**         | fly-proxy (anycast)                 | [Pingora](/blog/pingora-vs-caddy-vs-traefik/) (Rust)    |
+| **Regions**       | 30+ built-in                        | Whichever VPS you rent, wherever you rent it            |
+| **Scale-to-zero** | Yes (autostop / autostart)          | Yes ([idle instances spin down](/docs/how-tako-works/)) |
+| **Pricing**       | Per-VM, per-second, per-GB egress   | Whatever your VPS already costs                         |
+| **Lock-in**       | Fly platform                        | None — it's your box                                    |
+| **Local dev**     | Docker / separate tooling           | Built-in ([`tako dev`](/docs/development/))             |
+| **CLI**           | `flyctl`                            | `tako`                                                  |
 
 ## Where Fly.io shines
 
@@ -42,11 +42,11 @@ The biggest difference isn't technical, it's structural. Fly runs on Fly's hardw
 
 Fly's deploy input is an OCI image. You write a Dockerfile, they convert it into a micro-VM. It works, but it puts a whole layer of tooling between your source and the process that actually serves requests.
 
-Tako has [no Docker requirement](/blog/why-we-dont-default-to-docker). You build locally with whatever toolchain you'd use anyway, and [`tako deploy`](/docs/deployment) sends the artifact straight to the server over SFTP. The thing running on the box is literally `bun run` (or `node`, or your Go binary) — a native process managed by `tako-server`. Fewer layers, fewer things to debug when something goes sideways.
+Tako has [no Docker requirement](/blog/why-we-dont-default-to-docker/). You build locally with whatever toolchain you'd use anyway, and [`tako deploy`](/docs/deployment/) sends the artifact straight to the server over SFTP. The thing running on the box is literally `bun run` (or `node`, or your Go binary) — a native process managed by `tako-server`. Fewer layers, fewer things to debug when something goes sideways.
 
 ### Your own map
 
-Fly gives you 30+ regions for free. Tako gives you however many regions you feel like paying for — and you choose the providers. Drop one line in [`tako.toml`](/docs/tako-toml):
+Fly gives you 30+ regions for free. Tako gives you however many regions you feel like paying for — and you choose the providers. Drop one line in [`tako.toml`](/docs/tako-toml/):
 
 ```toml
 [envs.production]
@@ -54,13 +54,13 @@ route = "myapp.com"
 servers = ["la", "fra", "sgp"]
 ```
 
-Register each box once with `tako servers add`, and the next [`tako deploy`](/docs/cli) ships to all three in parallel. Point Cloudflare geo-steering at them and users hit the closest one.
+Register each box once with `tako servers add`, and the next [`tako deploy`](/docs/cli/) ships to all three in parallel. Point Cloudflare geo-steering at them and users hit the closest one.
 
-It's a little more work up front, but you control the map. Want a region Fly doesn't offer? Rent a box there. Want a cheap regional provider in São Paulo or Warsaw? Nothing is stopping you. We walked through the whole setup in [Build Your Own Edge Network on Commodity Hardware](/blog/build-your-own-edge-network-on-commodity-hardware).
+It's a little more work up front, but you control the map. Want a region Fly doesn't offer? Rent a box there. Want a cheap regional provider in São Paulo or Warsaw? Nothing is stopping you. We walked through the whole setup in [Build Your Own Edge Network on Commodity Hardware](/blog/build-your-own-edge-network-on-commodity-hardware/).
 
 ### A platform that keeps growing
 
-Fly is a rock-solid runtime for your code. Tako wants to be more than a runtime. Deployment, routing, TLS, [secrets](/blog/secrets-without-env-files), [local dev with real HTTPS](/blog/local-dev-with-real-https), and [zero-downtime rolling deploys](/blog/zero-downtime-deploys-without-a-container-in-sight) ship today. WebSocket channels, queues, workflows, and image optimization are on the roadmap — backend primitives that otherwise live in a separate service, built into the same server binary that's already running your app.
+Fly is a rock-solid runtime for your code. Tako wants to be more than a runtime. Deployment, routing, TLS, [secrets](/blog/secrets-without-env-files/), [local dev with real HTTPS](/blog/local-dev-with-real-https/), and [zero-downtime rolling deploys](/blog/zero-downtime-deploys-without-a-container-in-sight/) ship today. WebSocket channels, queues, workflows, and image optimization are on the roadmap — backend primitives that otherwise live in a separate service, built into the same server binary that's already running your app.
 
 ## When each makes sense
 
@@ -70,4 +70,4 @@ Pick **Tako** if you already rent VPS boxes — or want to — and you'd rather 
 
 Both answers are reasonable. We're building Tako for the people who've read this far and already know which side they're on.
 
-[Start with the docs →](/docs)
+[Start with the docs →](/docs/)

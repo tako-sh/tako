@@ -63,12 +63,12 @@ const homeStructuredData = {
       </div>
     </div>
     <div class="hero-actions">
-      <a class="btn btn-primary" href="/docs/quickstart">get started</a>
+      <a class="btn btn-primary" href="/docs/quickstart/">get started</a>
       <a class="cta-link hero-actions-link hero-demo-link" href="https://demo.tako.sh" target="_blank" rel="noopener noreferrer">
         <span>live demo</span>
         <ExternalLinkIcon class="hero-demo-icon" aria-hidden="true" focusable="false" />
       </a>
-      <a class="cta-link hero-actions-link" href="/docs">or read the docs &rarr;</a>
+      <a class="cta-link hero-actions-link" href="/docs/">or read the docs &rarr;</a>
     </div>
   </section>
 
@@ -92,21 +92,21 @@ const homeStructuredData = {
     </div>
     <ol class="workflow-steps">
       <li class="workflow-step">
-        <a href="/docs/quickstart" class="workflow-link">
+        <a href="/docs/quickstart/" class="workflow-link">
           <span class="workflow-orb workflow-orb-1" aria-hidden="true">1</span>
           <code class="workflow-cmd">tako init</code>
           <p class="workflow-desc">Detect runtime, create config</p>
         </a>
       </li>
       <li class="workflow-step">
-        <a href="/docs/development" class="workflow-link">
+        <a href="/docs/development/" class="workflow-link">
           <span class="workflow-orb workflow-orb-2" aria-hidden="true">2</span>
           <code class="workflow-cmd">tako dev</code>
           <p class="workflow-desc">Develop locally with HTTPS</p>
         </a>
       </li>
       <li class="workflow-step">
-        <a href="/docs/deployment" class="workflow-link">
+        <a href="/docs/deployment/" class="workflow-link">
           <span class="workflow-orb workflow-orb-3" aria-hidden="true">3</span>
           <code class="workflow-cmd">tako deploy</code>
           <p class="workflow-desc">Build, upload, rolling update</p>
@@ -129,23 +129,23 @@ const homeStructuredData = {
     </div>
     <div class="feature-list">
       <!-- server -->
-      <a href="/docs/how-tako-works" class="feature-link" data-categories="server">
+      <a href="/docs/how-tako-works/" class="feature-link" data-categories="server">
         <span class="feature-link-title">Reverse proxy</span>
         <span class="feature-link-desc">Pingora-based with sensible defaults, zero config needed</span>
       </a>
-      <a href="/docs/how-tako-works#tls-and-certificates" class="feature-link" data-categories="server">
+      <a href="/docs/how-tako-works/#tls" class="feature-link" data-categories="server">
         <span class="feature-link-title">Automatic TLS</span>
         <span class="feature-link-desc">Let's Encrypt with wildcard support, auto-renewed</span>
       </a>
-      <a href="/docs/how-tako-works#health-checks-and-instance-lifecycle" class="feature-link" data-categories="server">
+      <a href="/docs/how-tako-works/#app-processes" class="feature-link" data-categories="server">
         <span class="feature-link-title">Health-based routing</span>
         <span class="feature-link-desc">Unhealthy instances get pulled from rotation automatically</span>
       </a>
-      <a href="/docs/how-tako-works#scaling" class="feature-link" data-categories="server,process">
+      <a href="/docs/how-tako-works/#scale-to-zero" class="feature-link" data-categories="server,process">
         <span class="feature-link-title">Scale to zero and back</span>
         <span class="feature-link-desc">Idle apps sleep, the next request wakes them</span>
       </a>
-      <a href="/docs/how-tako-works#images-and-storage" class="feature-link" data-categories="server,media">
+      <a href="/docs/deployment/#images" class="feature-link" data-categories="server,media">
         <span class="feature-link-title">Image optimization <span class="new-badge">new</span></span>
         <span class="feature-link-desc">Resize and serve WebP, with AVIF available when enabled</span>
       </a>
@@ -153,78 +153,78 @@ const homeStructuredData = {
         <span class="feature-link-title">Uploads and file storage <span class="soon-badge">soon</span></span>
         <span class="feature-link-desc">Signed browser uploads, private downloads, and public URLs backed by S3/R2</span>
       </span>
-      <a href="/docs/deployment" class="feature-link" data-categories="server,deploy">
+      <a href="/docs/deployment/" class="feature-link" data-categories="server,deploy">
         <span class="feature-link-title">Static files</span>
         <span class="feature-link-desc">Drop files in public/ &mdash; Tako serves them directly</span>
       </a>
       <!-- build & deploy -->
-      <a href="/docs/deployment" class="feature-link" data-categories="deploy">
+      <a href="/docs/deployment/" class="feature-link" data-categories="deploy">
         <span class="feature-link-title">Build locally, deploy anywhere</span>
         <span class="feature-link-desc">No CI required &mdash; build and deploy with a single command</span>
       </a>
-      <a href="/docs/deployment" class="feature-link" data-categories="server,deploy,process">
+      <a href="/docs/deployment/" class="feature-link" data-categories="server,deploy,process">
         <span class="feature-link-title">Rolling deploys</span>
         <span class="feature-link-desc">New instances first, traffic shifts after health checks</span>
       </a>
-      <a href="/docs/how-tako-works#rolling-updates" class="feature-link" data-categories="deploy,process">
+      <a href="/docs/deployment/#rolling-updates" class="feature-link" data-categories="deploy,process">
         <span class="feature-link-title">Instant rollback</span>
         <span class="feature-link-desc">Previous version stays ready, one command to revert</span>
       </a>
-      <a href="/docs/deployment" class="feature-link" data-categories="server,deploy">
+      <a href="/docs/deployment/" class="feature-link" data-categories="server,deploy">
         <span class="feature-link-title">Environments &amp; servers</span>
         <span class="feature-link-desc">Group servers by environment, deploy to the right one</span>
       </a>
-      <a href="/docs/how-tako-works" class="feature-link" data-categories="server">
+      <a href="/docs/how-tako-works/" class="feature-link" data-categories="server">
         <span class="feature-link-title">Bun, Node, Go &mdash; you name it</span>
         <span class="feature-link-desc">Runtimes detected and managed automatically</span>
       </a>
-      <a href="/docs/how-tako-works" class="feature-link" data-categories="server,deploy">
+      <a href="/docs/how-tako-works/" class="feature-link" data-categories="server,deploy">
         <span class="feature-link-title">Runtime on autopilot</span>
         <span class="feature-link-desc">Runtimes and package managers pinned and managed for you</span>
       </a>
-      <a href="/docs/presets" class="feature-link" data-categories="deploy,development">
+      <a href="/docs/presets/" class="feature-link" data-categories="deploy,development">
         <span class="feature-link-title">Presets</span>
         <span class="feature-link-desc">Framework-aware defaults for Next.js, TanStack Start, and more</span>
       </a>
       <!-- development -->
-      <a href="/docs/development" class="feature-link" data-categories="development">
+      <a href="/docs/development/" class="feature-link" data-categories="development">
         <span class="feature-link-title">Local DNS</span>
         <span class="feature-link-desc">Each app gets a real domain automatically &mdash; no ports to remember</span>
       </a>
-      <a href="/docs/development" class="feature-link" data-categories="development">
+      <a href="/docs/development/" class="feature-link" data-categories="development">
         <span class="feature-link-title">.local domains</span>
         <span class="feature-link-desc">Access any app from your phone, TV, or any device on your network</span>
       </a>
-      <a href="/docs/development" class="feature-link" data-categories="development">
+      <a href="/docs/development/" class="feature-link" data-categories="development">
         <span class="feature-link-title">Wildcard routing</span>
         <span class="feature-link-desc">Subdomains for every app and branch, resolved automatically</span>
       </a>
-      <a href="/docs/development" class="feature-link" data-categories="development">
+      <a href="/docs/development/" class="feature-link" data-categories="development">
         <span class="feature-link-title">Always-on dev</span>
         <span class="feature-link-desc">Never stop a server &mdash; idle apps cost nothing, wake when you need them</span>
       </a>
-      <a href="/docs/development" class="feature-link" data-categories="development">
+      <a href="/docs/development/" class="feature-link" data-categories="development">
         <span class="feature-link-title">Agent-friendly</span>
         <span class="feature-link-desc">Each worktree gets its own URL</span>
       </a>
       <!-- process management -->
-      <a href="/docs/cli" class="feature-link" data-categories="process">
+      <a href="/docs/cli/" class="feature-link" data-categories="process">
         <span class="feature-link-title">Logs</span>
         <span class="feature-link-desc">Stream live or pull recent history across all servers</span>
       </a>
-      <a href="/docs/cli" class="feature-link" data-categories="process,deploy">
+      <a href="/docs/cli/" class="feature-link" data-categories="process,deploy">
         <span class="feature-link-title">Secrets</span>
         <span class="feature-link-desc">Encrypted locally and on servers; keys can sync via iCloud Keychain</span>
       </a>
-      <a href="/docs/cli" class="feature-link" data-categories="process,server">
+      <a href="/docs/cli/" class="feature-link" data-categories="process,server">
         <span class="feature-link-title">Inspect &amp; monitor</span>
         <span class="feature-link-desc">Running instances, deploy history, all at a glance</span>
       </a>
-      <a href="/docs/how-tako-works#channels" class="feature-link" data-categories="server">
+      <a href="/docs/how-tako-works/#workflows-and-channels" class="feature-link" data-categories="server">
         <span class="feature-link-title">Durable channels <span class="new-badge">new</span></span>
         <span class="feature-link-desc">WebSocket and SSE routes with bounded replay</span>
       </a>
-      <a href="/docs/how-tako-works#workflows" class="feature-link" data-categories="server">
+      <a href="/docs/how-tako-works/#workflows-and-channels" class="feature-link" data-categories="server">
         <span class="feature-link-title">Durable workflows <span class="new-badge">new</span></span>
         <span class="feature-link-desc">Long-running tasks that survive restarts</span>
       </a>
@@ -238,8 +238,8 @@ const homeStructuredData = {
   <section class="cta-section">
     <p class="cta-text">Stop configuring.<br class="mobile-break"> Start shipping.</p>
     <div class="cta-actions">
-      <a href="/docs/quickstart" class="btn cta-btn">get started</a>
-      <a href="/docs/how-tako-works" class="cta-link">or read how Tako works &rarr;</a>
+      <a href="/docs/quickstart/" class="btn cta-btn">get started</a>
+      <a href="/docs/how-tako-works/" class="cta-link">or read how Tako works &rarr;</a>
     </div>
   </section>
 </BaseLayout>

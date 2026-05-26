@@ -9,7 +9,7 @@ One VPS is enough for more apps than people give it credit for.
 
 The hard part is not CPU. The hard part is the pile of glue around the apps: one Nginx config per hostname, one process manager stanza per service, one Certbot renewal path, one static-file exception, one "why is `/api` hitting the wrong app?" debugging session. Do that three times and your small server starts feeling like a tiny operations department.
 
-Tako's model is simpler: every app owns its own [`tako.toml`](/docs/tako-toml), every environment declares the routes it wants, and `tako-server` builds one route table across the box. Pingora terminates HTTPS on `:443`, selects the certificate by SNI, matches the request host/path, serves static assets when it can, and forwards the rest to the right app process.
+Tako's model is simpler: every app owns its own [`tako.toml`](/docs/tako-toml/), every environment declares the routes it wants, and `tako-server` builds one route table across the box. Pingora terminates HTTPS on `:443`, selects the certificate by SNI, matches the request host/path, serves static assets when it can, and forwards the rest to the right app process.
 
 This walkthrough hosts three apps on one VPS:
 
@@ -23,7 +23,7 @@ One server. Three deployments. Automatic HTTPS for the public hostnames.
 
 ## What you need
 
-You need a Linux VPS, a domain, the local [`tako` CLI](/docs/cli), and `tako-server` installed on the box. The server installer sets up the Rust server binary, the service manager unit, the `tako` control user, the `tako-app` runtime user, port binding capabilities, and the Pingora proxy.
+You need a Linux VPS, a domain, the local [`tako` CLI](/docs/cli/), and `tako-server` installed on the box. The server installer sets up the Rust server binary, the service manager unit, the `tako` control user, the `tako-app` runtime user, port binding capabilities, and the Pingora proxy.
 
 On your laptop:
 
@@ -232,4 +232,4 @@ The API can stay warm with two instances. The docs app can scale to zero and wak
 
 That is the point: the server stays one server, but the apps stay separate apps. Routes decide traffic. SNI decides certificates. App identity decides disk paths, secrets, logs, data, releases, and scaling.
 
-Start with one app, then add the second one without changing the first. The [deployment docs](/docs/deployment) cover the full deploy flow, and [how Tako works](/docs/how-tako-works) explains the proxy/process architecture underneath.
+Start with one app, then add the second one without changing the first. The [deployment docs](/docs/deployment/) cover the full deploy flow, and [how Tako works](/docs/how-tako-works/) explains the proxy/process architecture underneath.

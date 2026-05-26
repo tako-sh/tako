@@ -19,7 +19,7 @@ Most deployment tools don't even try to solve this. Kamal, Dokku, Coolify, Fly.i
 
 ## How `tako dev` works
 
-When you run [`tako dev`](/docs/development), Tako sets up three things automatically:
+When you run [`tako dev`](/docs/development/), Tako sets up three things automatically:
 
 | Layer     | What it does                                   | How                                                                   |
 | --------- | ---------------------------------------------- | --------------------------------------------------------------------- |
@@ -82,9 +82,9 @@ router -> app
 
 **It's a persistent daemon.** The dev server runs in the background with SQLite-backed state. You can `tako dev` in one project, background it with `b`, start another, and both are accessible at their own `.test` domains simultaneously. Come back tomorrow and your routes are still registered — the daemon wakes apps on incoming requests after they idle out.
 
-**It's the same architecture as production.** Your app uses the same [Tako SDK](/docs) entrypoint, the same environment variable merging, the same health check protocol. The proxy in dev is the same Pingora-based proxy that runs on your server. If it works at `https://myapp.test/`, it'll work when you [`tako deploy`](/docs/deployment).
+**It's the same architecture as production.** Your app uses the same [Tako SDK](/docs/) entrypoint, the same environment variable merging, the same health check protocol. The proxy in dev is the same Pingora-based proxy that runs on your server. If it works at `https://myapp.test/`, it'll work when you [`tako deploy`](/docs/deployment/).
 
-**It's actually zero config.** Tako detects your runtime from your lockfile, resolves your entrypoint from `package.json` or [presets](/docs/presets), generates certs, sets up DNS, and starts the proxy. The only thing in your [`tako.toml`](/docs/tako-toml) might be environment variables — and even those are optional.
+**It's actually zero config.** Tako detects your runtime from your lockfile, resolves your entrypoint from `package.json` or [presets](/docs/presets/), generates certs, sets up DNS, and starts the proxy. The only thing in your [`tako.toml`](/docs/tako-toml/) might be environment variables — and even those are optional.
 
 ## Multiple apps, multiple domains
 
@@ -110,6 +110,6 @@ cd your-project
 tako dev
 ```
 
-Your app is at `https://your-project.test/`. Check out the [development docs](/docs/development) for the full picture, or the [CLI reference](/docs/cli) for all the flags.
+Your app is at `https://your-project.test/`. Check out the [development docs](/docs/development/) for the full picture, or the [CLI reference](/docs/cli/) for all the flags.
 
 No nginx. No Caddyfile. No docker-compose. Just your code and a URL that works.

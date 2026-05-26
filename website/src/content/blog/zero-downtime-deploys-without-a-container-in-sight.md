@@ -7,11 +7,11 @@ image: 170a5555e1fb
 
 Zero-downtime deploys usually mean containers. Kubernetes rolling updates, Docker Swarm service convergence, Fly.io machine replacement. The assumption is that you need an abstraction layer — something that can spin up a fresh container, health-check it, and tear down the old one.
 
-Tako does all of that with native processes. No Docker, no container runtime, no image registry. Just your app, a [Pingora-based proxy](/blog/pingora-vs-caddy-vs-traefik), and a unix socket protocol that orchestrates the whole thing.
+Tako does all of that with native processes. No Docker, no container runtime, no image registry. Just your app, a [Pingora-based proxy](/blog/pingora-vs-caddy-vs-traefik/), and a unix socket protocol that orchestrates the whole thing.
 
 ## The rolling update sequence
 
-When you run [`tako deploy`](/docs/deployment), the CLI builds your app locally, uploads the artifact via SFTP, and sends a `Deploy` command over the server's unix socket. What happens next is a one-at-a-time rolling update:
+When you run [`tako deploy`](/docs/deployment/), the CLI builds your app locally, uploads the artifact via SFTP, and sends a `Deploy` command over the server's unix socket. What happens next is a one-at-a-time rolling update:
 
 ```d2
 direction: down
@@ -40,7 +40,7 @@ The key detail: the old instance isn't touched until the new one is verified hea
 
 Most deploy tools check health by poking a TCP port. If the socket accepts connections, the app must be ready. But that's a guess — your server might be listening while still loading config or running migrations.
 
-Tako uses an explicit readiness signal. The [SDK](/docs) handles this automatically:
+Tako uses an explicit readiness signal. The [SDK](/docs/) handles this automatically:
 
 1. Your app starts, runs any initialization (DB connections, cache warming)
 2. The SDK binds to an OS-assigned port (`PORT=0`)
@@ -55,7 +55,7 @@ Once ready, the server probes every 1 second with a request to the SDK's built-i
 
 This is where zero-downtime actually happens. When an old instance enters the `Draining` state:
 
-1. The [load balancer](/docs/how-tako-works) stops sending it new requests
+1. The [load balancer](/docs/how-tako-works/) stops sending it new requests
 2. In-flight requests continue to completion (up to 30 seconds)
 3. Once the in-flight counter hits zero, the process is killed
 
@@ -73,7 +73,7 @@ The CLI and server communicate over a unix socket at `/var/run/tako/tako.sock` u
 
 **`PrepareRelease`** — extracts the artifact, downloads the runtime (Bun or Node), and runs `npm ci` / `bun install`. This happens _before_ any instance swap, so dependency installation doesn't eat into your downtime window.
 
-**`Deploy`** — carries the app name, version, release path, routes, and (optionally) secrets. This triggers the rolling update. Secrets are delivered to each new instance via file descriptor 3 — they never touch disk or environment variables. If the secrets hash hasn't changed since the last deploy, they're [skipped entirely](/blog/secrets-without-env-files).
+**`Deploy`** — carries the app name, version, release path, routes, and (optionally) secrets. This triggers the rolling update. Secrets are delivered to each new instance via file descriptor 3 — they never touch disk or environment variables. If the secrets hash hasn't changed since the last deploy, they're [skipped entirely](/blog/secrets-without-env-files/).
 
 The two-phase design keeps instance startup fast. By the time `Deploy` fires, everything is already installed. The new process just needs to boot your app and signal readiness.
 
@@ -83,4 +83,4 @@ The entire flow — spawn, health-check, drain, kill — is the same pattern tha
 
 No Docker daemon. No image layers. No container networking. Just processes, a proxy, and a protocol.
 
-Check out the [deployment guide](/docs/deployment) for the full setup, or [how Tako works](/docs/how-tako-works) for the architecture behind it.
+Check out the [deployment guide](/docs/deployment/) for the full setup, or [how Tako works](/docs/how-tako-works/) for the architecture behind it.

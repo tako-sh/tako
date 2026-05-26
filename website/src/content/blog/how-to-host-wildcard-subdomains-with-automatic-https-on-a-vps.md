@@ -1,5 +1,6 @@
 ---
 title: "How to Host Wildcard Subdomains with Automatic HTTPS on a VPS"
+seoTitle: "Host Wildcard Subdomains with HTTPS"
 date: "2026-05-20T14:38"
 description: "Run tenant-style wildcard subdomains on a VPS with Tako routes, Cloudflare DNS-01 credentials, DNS-only records, and automatic HTTPS."
 image: ca44ba6463d9
@@ -22,7 +23,7 @@ The result is the shape most tenant apps want:
 
 ## Configure the Route Shape
 
-Start with the app route. Routes live in [`tako.toml`](/docs/tako-toml) at the environment level, not in a shared reverse-proxy config. A wildcard host must start with `*.` and only covers subdomains below that suffix. It does not cover the apex hostname itself, so list both when you want both:
+Start with the app route. Routes live in [`tako.toml`](/docs/tako-toml/) at the environment level, not in a shared reverse-proxy config. A wildcard host must start with `*.` and only covers subdomains below that suffix. It does not cover the apex hostname itself, so list both when you want both:
 
 ```toml
 name = "dashboard"
@@ -87,7 +88,7 @@ vps -> routes: "SNI + Host match"
 routes -> app: "tenant subdomain"
 ```
 
-Before deploying, make sure the server is installed and registered as usual. The [deployment docs](/docs/deployment) cover the full server setup, but the short version is:
+Before deploying, make sure the server is installed and registered as usual. The [deployment docs](/docs/deployment/) cover the full server setup, but the short version is:
 
 ```bash
 curl -fsSL https://tako.sh/install.sh | sh
@@ -161,6 +162,6 @@ That gives you the useful part of wildcard hosting without a hand-written Nginx 
 | TLS selection          | SNI exact match, then wildcard fallback |
 | Tenant behavior        | your app reads the `Host` header        |
 
-If issuance fails, start with the [troubleshooting docs](/docs/troubleshooting). The usual problems are simple: the wildcard route was deployed without provider credentials, the token cannot read the zone or edit DNS records, the DNS record is pointed at the wrong server, or the app expects `app.example.com` to match the wildcard route. It will not; add the exact route too.
+If issuance fails, start with the [troubleshooting docs](/docs/troubleshooting/). The usual problems are simple: the wildcard route was deployed without provider credentials, the token cannot read the zone or edit DNS records, the DNS record is pointed at the wrong server, or the app expects `app.example.com` to match the wildcard route. It will not; add the exact route too.
 
 This is the part of self-hosting that should feel boring. One wildcard DNS record points at the box. One encrypted token lets Tako prove domain ownership. One wildcard route sends every tenant hostname to the app. The rest is just your code deciding what `alice` means.

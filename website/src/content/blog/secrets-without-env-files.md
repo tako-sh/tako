@@ -29,7 +29,7 @@ Some tools improve on this by integrating with external vaults — 1Password, AW
 
 ### Encrypted at rest
 
-When you run [`tako secrets set`](/docs/cli), Tako encrypts the value with **AES-256-GCM** before writing it to `.tako/secrets.json`. The first secret set for an environment creates a random local key, cached under Tako's data directory.
+When you run [`tako secrets set`](/docs/cli/), Tako encrypts the value with **AES-256-GCM** before writing it to `.tako/secrets.json`. The first secret set for an environment creates a random local key, cached under Tako's data directory.
 
 ```bash
 $ tako secrets set DATABASE_URL --env production
@@ -91,7 +91,7 @@ pipe -> app: "read + close"
 
 Your app reads fd 3 once at startup, parses the JSON, and the pipe is closed. The secrets exist only in process memory — never written to disk on the server, never in environment variables, never visible in `/proc/<pid>/environ` or `ps auxe`.
 
-The [Tako SDK](/docs) handles this automatically. In JavaScript, `tako generate` emits a project-local `tako.d.ts` that types the `tako.secrets` bag from `tako.sh`:
+The [Tako SDK](/docs/) handles this automatically. In JavaScript, `tako generate` emits a project-local `tako.d.ts` that types the `tako.secrets` bag from `tako.sh`:
 
 ```typescript
 import { tako } from "tako.sh";
@@ -106,7 +106,7 @@ The SDK wraps secrets in a Proxy that redacts on `toString()` and `toJSON()` —
 
 ### Typed secrets with `tako generate`
 
-Run [`tako generate`](/docs/cli) and Tako reads your encrypted secrets file to generate type definitions — without decrypting the values (remember, names are plaintext).
+Run [`tako generate`](/docs/cli/) and Tako reads your encrypted secrets file to generate type definitions — without decrypting the values (remember, names are plaintext).
 
 **TypeScript** gets a `tako.d.ts` that augments `TakoSecrets`:
 
@@ -161,6 +161,6 @@ tako secrets set API_KEY --env development
 tako secrets list
 ```
 
-Check the [CLI reference](/docs/cli) for the full command set, or the [deployment docs](/docs/deployment) for how secrets flow during a deploy. The [development guide](/docs/development) covers how secrets work locally with `tako dev`.
+Check the [CLI reference](/docs/cli/) for the full command set, or the [deployment docs](/docs/deployment/) for how secrets flow during a deploy. The [development guide](/docs/development/) covers how secrets work locally with `tako dev`.
 
 Your secrets deserve better than a plaintext file in `.gitignore`.

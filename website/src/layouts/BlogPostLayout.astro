@@ -1,6 +1,7 @@
 ---
 import { Image } from "astro:assets";
 import type { ImageMetadata } from "astro";
+import BlogPostNav from "../components/BlogPostNav.astro";
 import BaseLayout from "./BaseLayout.astro";
 import { createCanonicalUrl, normalizeCanonicalPath } from "../utils/canonical";
 
@@ -16,14 +17,18 @@ const defaultAuthor = { name: "Tako-kun", link: "/" };
 
 export interface Props {
   title: string;
+  seoTitle?: string | undefined;
   date: string;
   author?: string | undefined;
   image?: string | undefined;
   imageAlt?: string | undefined;
   description?: string | undefined;
+  previousPost?: { title: string; href: string } | undefined;
+  nextPost?: { title: string; href: string } | undefined;
 }
 
 const title = Astro.props.title ?? "Tako Blog";
+const pageTitle = Astro.props.seoTitle ?? title;
 const date = Astro.props.date ?? "";
 const authorId = Astro.props.author ?? "";
 const { name: author, link: authorLink } = authors[authorId] ?? defaultAuthor;
@@ -31,6 +36,8 @@ const rawImage = Astro.props.image ?? "";
 const image = rawImage ? blogImages[`../assets/blog/${rawImage}.png`]?.default : undefined;
 const imageAlt = Astro.props.imageAlt ?? title;
 const description = Astro.props.description ?? title;
+const previousPost = Astro.props.previousPost;
+const nextPost = Astro.props.nextPost;
 const slug = normalizeCanonicalPath(Astro.url.pathname).replace(/\/$/, "").replace(/^\/blog\//, "").replace(/^\//, "");
 const ogPath = `/assets/blog/og/${slug}.png`;
 const ogImage = new URL(ogPath, Astro.site).href;
@@ -72,7 +79,7 @@ if (rawImage && !image) {
   throw new Error(`Missing blog image asset for ${rawImage}`);
 }
 ---
-<BaseLayout title={`${title} - Tako Blog`} description={description} image={ogImage} type="article">
+<BaseLayout title={pageTitle} description={description} image={ogImage} type="article">
   {date && <meta slot="head" property="article:published_time" content={date} />}
   {author && <meta slot="head" property="article:author" content={author} />}
   <link slot="head" rel="alternate" type="text/markdown" href={markdownURL} />
@@ -90,7 +97,7 @@ if (rawImage && !image) {
       </div>
     )}
     <div class="blog-top">
-      <a href="/blog" class="blog-back">&larr; back</a>
+      <a href="/blog/" class="blog-back">&larr; back</a>
     </div>
     <article class="blog-article content">
       <header class="blog-header">
@@ -105,6 +112,7 @@ if (rawImage && !image) {
         </div>
       </header>
       <slot />
+      <BlogPostNav previousPost={previousPost} nextPost={nextPost} />
     </article>
   </section>
 </BaseLayout>

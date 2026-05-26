@@ -9,7 +9,7 @@ Some workflows can't finish on their own. An order over a certain amount needs a
 
 The naïve answer is to poll a database column from a cron job. The slightly less naïve answer is to split the workflow into two and wire them together with a webhook. Both are awful — the first burns CPU, the second turns one logical process into three and loses you all your local variables.
 
-Tako's [durable workflow engine](/blog/durable-workflows-are-here) gives you a primitive that's just better: park the run on a named event, sleep the worker, and wake up exactly where you left off when the event fires.
+Tako's [durable workflow engine](/blog/durable-workflows-are-here/) gives you a primitive that's just better: park the run on a named event, sleep the worker, and wake up exactly where you left off when the event fires.
 
 ## The setup
 
@@ -66,9 +66,9 @@ export default async function fetch(req: Request) {
 }
 ```
 
-The signal lands on tako-server's [internal unix socket](/docs/tako-toml), the matching `event_waiters` row is consumed, the payload is stored as the result of the `waitFor` step, and the run flips back to `pending`. The supervisor wakes the worker, the worker re-claims the run, and execution resumes — `decision` is now `{ approved: true, by: "..." }` and the workflow ships the order.
+The signal lands on tako-server's [internal unix socket](/docs/tako-toml/), the matching `event_waiters` row is consumed, the payload is stored as the result of the `waitFor` step, and the run flips back to `pending`. The supervisor wakes the worker, the worker re-claims the run, and execution resumes — `decision` is now `{ approved: true, by: "..." }` and the workflow ships the order.
 
-Notice what _doesn't_ happen on resume: the `load-order` and `charge` steps don't re-run. Their results are already in the `steps` table, keyed by `(run_id, name)`, so on the next claim they return cached values instantly. That's the [`ctx.run`](/docs/tako-toml) checkpoint contract — at-least-once for the in-flight step, exactly-once for everything before it.
+Notice what _doesn't_ happen on resume: the `load-order` and `charge` steps don't re-run. Their results are already in the `steps` table, keyed by `(run_id, name)`, so on the next claim they return cached values instantly. That's the [`ctx.run`](/docs/tako-toml/) checkpoint contract — at-least-once for the in-flight step, exactly-once for everything before it.
 
 ## What "for days" actually means
 
@@ -87,6 +87,6 @@ park -> signal: "...3 days later..."
 signal -> worker2: "wake"
 ```
 
-While the run is parked, your VPS isn't holding anything open for it. The worker process is gone. tako-server can restart, the host can reboot, you can [redeploy](/blog/what-happens-when-you-run-tako-deploy) — the row stays in SQLite, the event waiter stays indexed, and `signal` will still find it three days from now. The 7-day `timeout` is just a safety valve; if it fires first, `waitFor` returns `null` and the workflow takes the cleanup path via `ctx.bail`.
+While the run is parked, your VPS isn't holding anything open for it. The worker process is gone. tako-server can restart, the host can reboot, you can [redeploy](/blog/what-happens-when-you-run-tako-deploy/) — the row stays in SQLite, the event waiter stays indexed, and `signal` will still find it three days from now. The 7-day `timeout` is just a safety valve; if it fires first, `waitFor` returns `null` and the workflow takes the cleanup path via `ctx.bail`.
 
-The same primitive covers webhook callbacks, multi-step onboarding flows that wait on user input, payment-confirmation hops, and anything else where the next step is "the world tells us something happened." One file, one default export, no external queue, no cron polling. Drop it in `src/workflows/`, run [`tako dev`](/docs/development), and the [embedded scale-to-zero worker](/blog/workflow-workers-scale-to-zero) wires up the rest.
+The same primitive covers webhook callbacks, multi-step onboarding flows that wait on user input, payment-confirmation hops, and anything else where the next step is "the world tells us something happened." One file, one default export, no external queue, no cron polling. Drop it in `src/workflows/`, run [`tako dev`](/docs/development/), and the [embedded scale-to-zero worker](/blog/workflow-workers-scale-to-zero/) wires up the rest.

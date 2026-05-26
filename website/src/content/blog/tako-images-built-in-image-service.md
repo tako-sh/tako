@@ -101,7 +101,7 @@ The useful shape is easier to scan as a table:
 | Smaller AVIF variant   | `{ format: "avif" }`                | AVIF output when the tradeoff is worth it                |
 | Public marketing asset | `{ public: true }`                  | Stable public URL with immutable cache headers           |
 
-The server side uses libvips for resize, crop, and encode work, and strips metadata from transformed output. Server installs include the host libvips runtime, so this is part of the same [`tako-server`](/docs/deployment) surface that already handles routing, TLS, deploys, and static assets.
+The server side uses libvips for resize, crop, and encode work, and strips metadata from transformed output. Server installs include the host libvips runtime, so this is part of the same [`tako-server`](/docs/deployment/) surface that already handles routing, TLS, deploys, and static assets.
 
 ```d2
 direction: right
@@ -136,9 +136,9 @@ vips -> browser: "WebP or AVIF + cache headers"
 
 Image optimization sits in the same awkward place as secrets, WebSocket channels, and workflows: too app-specific to be pure infrastructure, too operational to copy into every route handler. The app knows which source image to show, whether it is private, and which crop makes sense. The platform should own signature verification, SSRF protection, byte limits, resize math, cache headers, and the actual image transform.
 
-That split is why `createImageUrl()` is a small server-only SDK helper instead of a framework component. You can call it from a Hono handler, a TanStack Start server function, a Next.js server component, or plain fetch-handler code. The browser only gets a path. The proxy does the heavy work after the request matches your route, alongside the other reserved `/_tako/*` endpoints described in [How Tako Works](/docs/how-tako-works).
+That split is why `createImageUrl()` is a small server-only SDK helper instead of a framework component. You can call it from a Hono handler, a TanStack Start server function, a Next.js server component, or plain fetch-handler code. The browser only gets a path. The proxy does the heavy work after the request matches your route, alongside the other reserved `/_tako/*` endpoints described in [How Tako Works](/docs/how-tako-works/).
 
-It also keeps deployment simple. If you can deploy the app with [`tako deploy`](/docs/cli), the optimizer comes with it. Sources in `public/` are served locally when present; other local paths can be fetched from the matched app backend. Remote image sources are allowed only through the signed URL contract, with unsupported schemes, userinfo, fragments, local/private hosts, local/private DNS results, recursive optimizer URLs, and redirects rejected before transform work happens.
+It also keeps deployment simple. If you can deploy the app with [`tako deploy`](/docs/cli/), the optimizer comes with it. Sources in `public/` are served locally when present; other local paths can be fetched from the matched app backend. Remote image sources are allowed only through the signed URL contract, with unsupported schemes, userinfo, fragments, local/private hosts, local/private DNS results, recursive optimizer URLs, and redirects rejected before transform work happens.
 
 That is the difference from handing raw storage URLs straight to the browser. A CDN can store bytes. Tako can enforce your app's own policy because the URL was minted by your app, signed with your app's secret, and served by your app's platform boundary.
 
@@ -155,4 +155,4 @@ The image optimizer is not trying to be a giant media pipeline. It is the 80% pa
 | Caching  | Browser-only private cache by default, explicit immutable public cache  |
 | Sources  | Local app images or remote HTTP(S), with private/local targets rejected |
 
-That makes images feel like the rest of Tako: your code declares intent, and the platform takes the sharp edges. Read the full config and routing model in [`tako.toml`](/docs/tako-toml) and [deployment docs](/docs/deployment), or jump into the [Tako repo](https://github.com/lilienblum/tako) if you want to see the signed payload contract in code.
+That makes images feel like the rest of Tako: your code declares intent, and the platform takes the sharp edges. Read the full config and routing model in [`tako.toml`](/docs/tako-toml/) and [deployment docs](/docs/deployment/), or jump into the [Tako repo](https://github.com/lilienblum/tako) if you want to see the signed payload contract in code.

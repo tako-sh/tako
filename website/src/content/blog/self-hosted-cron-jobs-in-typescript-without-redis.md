@@ -25,7 +25,7 @@ A production cron job is not just a clock. The clock is the trigger; the durable
 | Retries          | Worker library retry policy                     | Run-level and step-level retries                       |
 | Worker lifecycle | Separate worker process to deploy and supervise | Tako-supervised worker, scale-to-zero by default       |
 
-Tako's workflow state is owned by `tako-server`, not the SDK. Your HTTP app and worker talk to the shared internal Unix socket; the server inserts runs, stores completed steps, ticks schedules, reclaims expired leases, and wakes workers. The full workflow architecture is documented in [the Tako docs](/docs), and the worker knobs live in [the `tako.toml` reference](/docs/tako-toml).
+Tako's workflow state is owned by `tako-server`, not the SDK. Your HTTP app and worker talk to the shared internal Unix socket; the server inserts runs, stores completed steps, ticks schedules, reclaims expired leases, and wakes workers. The full workflow architecture is documented in [the Tako docs](/docs/), and the worker knobs live in [the `tako.toml` reference](/docs/tako-toml/).
 
 ```d2
 direction: right
@@ -148,7 +148,7 @@ workers = 1
 concurrency = 20
 ```
 
-Named groups work too. Put noisy email jobs in `worker: "email"`, then give `[workflows.email]` its own process count. The deployment docs cover the broader release flow in [deployment](/docs/deployment), and the local loop is described in [development](/docs/development).
+Named groups work too. Put noisy email jobs in `worker: "email"`, then give `[workflows.email]` its own process count. The deployment docs cover the broader release flow in [deployment](/docs/deployment/), and the local loop is described in [development](/docs/development/).
 
 To try it locally:
 
@@ -164,6 +164,6 @@ To ship it:
 tako deploy production
 ```
 
-The workflow file deploys with the app. Secrets are available to the worker the same way they are available to HTTP instances, and the worker process is separate, so workflow-only dependencies do not bloat request handling. The CLI surface is in [the CLI reference](/docs/cli).
+The workflow file deploys with the app. Secrets are available to the worker the same way they are available to HTTP instances, and the worker process is separate, so workflow-only dependencies do not bloat request handling. The CLI surface is in [the CLI reference](/docs/cli/).
 
 Self-hosted cron should feel like application code, not like a small distributed systems project you accidentally adopted. Put the schedule next to the handler, name the steps that matter, make side effects idempotent, and let Tako keep the clock, queue, retries, dedupe, and sleeping worker lifecycle together on your VPS.

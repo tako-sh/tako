@@ -28,7 +28,7 @@ The result is boring in the good way:
 | Animated GIF  | Yes               | Yes            | Yes               | Yes              | Animated WebP         |
 | Animated WebP | Yes               | Yes            | Yes               | Yes              | Animated WebP         |
 
-Public image URLs still start with the small `imageUrl()` helper from `tako.sh`, which builds `/_tako/image?src=...&w=...` URLs for cacheable page images. The full transform engine underneath that endpoint also understands height, fit, and crop settings, and deployed servers run that work through the same isolated image worker pool described in the [deployment docs](/docs/deployment).
+Public image URLs still start with the small `imageUrl()` helper from `tako.sh`, which builds `/_tako/image?src=...&w=...` URLs for cacheable page images. The full transform engine underneath that endpoint also understands height, fit, and crop settings, and deployed servers run that work through the same isolated image worker pool described in the [deployment docs](/docs/deployment/).
 
 ```ts
 import { imageUrl } from "tako.sh";
@@ -38,22 +38,22 @@ const loop = imageUrl("/assets/spinner.gif", {
 });
 ```
 
-The app still declares intent: source, width, optional quality, optional format. `tako-server` enforces the configured guardrails from [`tako.toml`](/docs/tako-toml), fetches or reads the original, does the libvips work, and serves a cacheable result from your own route.
+The app still declares intent: source, width, optional quality, optional format. `tako-server` enforces the configured guardrails from [`tako.toml`](/docs/tako-toml/), fetches or reads the original, does the libvips work, and serves a cacheable result from your own route.
 
 ## What the optimizer preserves
 
 For animations, the important bit is not only "we got a smaller file." The important bit is that the file is still the same kind of user experience.
 
-The comparison below uses the GIF sample from this test. The original is an 88-frame GIF at `540x405`. The optimized version keeps the same `540x405` dimensions and emits animated WebP at quality 75. The visual detail changes because the codec changed; the motion, timing, frame count, and canvas size survive.
+The comparison below uses a downsampled preview from the GIF sample in this test, so the docs page stays fast. The full test source is an 88-frame GIF at `540x405`. The optimized version keeps the source dimensions and emits animated WebP at quality 75. The visual detail changes because the codec changed; the motion, timing, frame count, and canvas size survive.
 
 <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin:20px 0;">
   <figure style="margin:0;">
-    <img src="/assets/blog/gif-optimization/original-animation.gif" alt="Original animated GIF sample used to test Tako image optimization." loading="lazy" width="540" height="405" />
-    <figcaption><strong>Original GIF</strong><br />540x405, 88 frames, 5.2 MB</figcaption>
+    <img src="/assets/blog/gif-optimization/original-animation.gif" alt="Original animated GIF sample used to test Tako image optimization." loading="lazy" width="270" height="203" />
+    <figcaption><strong>GIF preview</strong><br />270x203, 28 frames, 660 KB</figcaption>
   </figure>
   <figure style="margin:0;">
-    <img src="/assets/blog/gif-optimization/optimized.webp" alt="Optimized animated WebP version of the same GIF sample." loading="lazy" width="540" height="405" />
-    <figcaption><strong>Optimized WebP</strong><br />540x405, 88 frames, q75, 2.0 MB</figcaption>
+    <img src="/assets/blog/gif-optimization/optimized.webp" alt="Optimized animated WebP version of the same GIF sample." loading="lazy" width="270" height="203" />
+    <figcaption><strong>WebP preview</strong><br />270x203, 28 frames, 264 KB</figcaption>
   </figure>
 </div>
 
@@ -73,7 +73,7 @@ Tiny flat-color loops, noisy screen recordings, and photographic clips all behav
 
 ## Where this fits in Tako
 
-Image optimization sits in the same product layer as [local development](/docs/development), routing, TLS, storage URLs, channels, and workflows. Your application decides which image belongs on the page. Tako owns the platform boundary around that decision: validation, source loading, transform work, response headers, and cache behavior.
+Image optimization sits in the same product layer as [local development](/docs/development/), routing, TLS, storage URLs, channels, and workflows. Your application decides which image belongs on the page. Tako owns the platform boundary around that decision: validation, source loading, transform work, response headers, and cache behavior.
 
 ```d2
 direction: right
@@ -114,8 +114,8 @@ That is more than "convert GIF to WebP." It is the platform doing the careful pa
 
 ## The practical shape
 
-Use GIF sources when that is what your app already has. Ask Tako for the size you actually render. Prefer WebP for animated output. Still-image format choices keep working as configured, and animated sources keep the motion by returning animated WebP when needed. Keep remote sources behind [`[images].remote_patterns`](/docs/tako-toml#images) so the optimizer can fail closed.
+Use GIF sources when that is what your app already has. Ask Tako for the size you actually render. Prefer WebP for animated output. Still-image format choices keep working as configured, and animated sources keep the motion by returning animated WebP when needed. Keep remote sources behind [`[images].remote_patterns`](/docs/tako-toml/#images) so the optimizer can fail closed.
 
 For still images, none of this changes the normal path. For animated images, the path finally stops being special. A short GIF can become an animated WebP thumbnail or a square smart-cropped avatar without losing the part users care about: it still moves.
 
-That is the kind of infrastructure we want Tako to absorb. Not a giant media pipeline. Just the common image work your app needs, running inside the same self-hosted boundary as deploys, HTTPS, routing, and cache policy. The full behavior is documented in [How Tako Works](/docs/how-tako-works), and the implementation is in the [Tako repo](https://github.com/lilienblum/tako) if you want to follow the frame strip all the way down.
+That is the kind of infrastructure we want Tako to absorb. Not a giant media pipeline. Just the common image work your app needs, running inside the same self-hosted boundary as deploys, HTTPS, routing, and cache policy. The full behavior is documented in [How Tako Works](/docs/how-tako-works/), and the implementation is in the [Tako repo](https://github.com/lilienblum/tako) if you want to follow the frame strip all the way down.

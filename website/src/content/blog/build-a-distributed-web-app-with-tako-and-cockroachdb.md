@@ -5,7 +5,7 @@ description: "Three VPS boxes, Tako for the app layer, CockroachDB for the data 
 image: f81c378820bd
 ---
 
-We've been telling the story of [building your own edge network on commodity hardware](/blog/build-your-own-edge-network-on-commodity-hardware) — three VPS boxes, [one `tako.toml`](/blog/one-config-many-servers), Cloudflare routing users to the nearest one. It's a nice story until your users start actually writing data. Because as soon as your database lives in one region, every query from Tokyo still round-trips to us-east-1 and the edge only got you halfway.
+We've been telling the story of [building your own edge network on commodity hardware](/blog/build-your-own-edge-network-on-commodity-hardware/) — three VPS boxes, [one `tako.toml`](/blog/one-config-many-servers/), Cloudflare routing users to the nearest one. It's a nice story until your users start actually writing data. Because as soon as your database lives in one region, every query from Tokyo still round-trips to us-east-1 and the edge only got you halfway.
 
 The other half is a database that can live on all three boxes at once. CockroachDB is one of the nicest answers to that we've found, and it pairs neatly with Tako.
 
@@ -70,7 +70,7 @@ The `--locality` flag is what makes this multi-region instead of just "three box
 
 ## The Tako side
 
-Everything Tako needs lives in one [`tako.toml`](/docs/tako-toml):
+Everything Tako needs lives in one [`tako.toml`](/docs/tako-toml/):
 
 ```toml
 name = "myapp"
@@ -91,7 +91,7 @@ tako secrets set DATABASE_URL --env production
 tako deploy
 ```
 
-Tako [builds the artifact once](/docs/deployment), SFTPs it to all three boxes in parallel, and each server runs its own rolling update. `DATABASE_URL` is [encrypted at rest and injected via fd 3](/blog/secrets-without-env-files) — no `.env` file, no plaintext on disk — and it's identical across regions because every node is reachable at `localhost`. Your app code never has to know which region it's running in.
+Tako [builds the artifact once](/docs/deployment/), SFTPs it to all three boxes in parallel, and each server runs its own rolling update. `DATABASE_URL` is [encrypted at rest and injected via fd 3](/blog/secrets-without-env-files/) — no `.env` file, no plaintext on disk — and it's identical across regions because every node is reachable at `localhost`. Your app code never has to know which region it's running in.
 
 ## Making reads actually fast
 
@@ -115,19 +115,19 @@ Writes still cross regions for consensus, but the reads — usually the bulk of 
 
 ## Who does what
 
-| Layer             | Tool                                   | Runs where                     |
-| ----------------- | -------------------------------------- | ------------------------------ |
-| DNS + geo-routing | Cloudflare                             | Cloudflare edge                |
-| TLS, proxy, app   | [Tako](/docs/how-tako-works)           | Each VPS                       |
-| Application       | Your code + the [`tako.sh` SDK](/docs) | Each VPS, managed by Tako      |
-| Data              | CockroachDB                            | Each VPS, as a systemd service |
+| Layer             | Tool                                    | Runs where                     |
+| ----------------- | --------------------------------------- | ------------------------------ |
+| DNS + geo-routing | Cloudflare                              | Cloudflare edge                |
+| TLS, proxy, app   | [Tako](/docs/how-tako-works/)           | Each VPS                       |
+| Application       | Your code + the [`tako.sh` SDK](/docs/) | Each VPS, managed by Tako      |
+| Data              | CockroachDB                             | Each VPS, as a systemd service |
 
 Nothing you don't own. Nothing you can't `ssh` into.
 
 ## The point
 
-Tako is an app platform, not a database — we're happy with that split. Our job is to make the stuff around your code (routing, TLS, secrets, rolling updates, [local dev with real HTTPS](/blog/local-dev-with-real-https)) disappear, so you can pair it with whatever you want underneath. CockroachDB is a great fit because its "drop a binary on every box" model matches Tako's.
+Tako is an app platform, not a database — we're happy with that split. Our job is to make the stuff around your code (routing, TLS, secrets, rolling updates, [local dev with real HTTPS](/blog/local-dev-with-real-https/)) disappear, so you can pair it with whatever you want underneath. CockroachDB is a great fit because its "drop a binary on every box" model matches Tako's.
 
 Three regions, two binaries per box, one config file, one passphrase-derived key for the secrets. The whole stack sitting on hardware you pay by the month for. No Kubernetes, no managed database bill, no control plane to babysit — just processes and data, where you want them.
 
-[Get started →](/docs)
+[Get started →](/docs/)

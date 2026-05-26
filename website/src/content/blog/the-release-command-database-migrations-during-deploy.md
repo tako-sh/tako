@@ -23,7 +23,7 @@ route = "app.example.com"
 servers = ["la", "nyc"]
 ```
 
-That's it. On every [`tako deploy`](/docs/deployment), after the artifact is extracted and production dependencies are installed, Tako runs `bun run db:migrate` exactly once — on the **leader server** (the first entry in `servers`), inside the freshly-unpacked release directory. Followers wait. If the migration succeeds, the rolling update begins on every server. If it fails, the deploy aborts everywhere, the partial release is cleaned up, and the old instances keep serving traffic on the old schema.
+That's it. On every [`tako deploy`](/docs/deployment/), after the artifact is extracted and production dependencies are installed, Tako runs `bun run db:migrate` exactly once — on the **leader server** (the first entry in `servers`), inside the freshly-unpacked release directory. Followers wait. If the migration succeeds, the rolling update begins on every server. If it fails, the deploy aborts everywhere, the partial release is cleaned up, and the old instances keep serving traffic on the old schema.
 
 It's a one-line config change for a problem that usually requires a CI pipeline.
 
@@ -49,7 +49,7 @@ followers -> result: "unblocks"
 result -> rolling: "on success"
 ```
 
-Every server unpacks the artifact and runs `bun install --production` in parallel — that part isn't gated. The new release directory exists on every box. Then the leader runs `sh -c "<release-command>"` once, with cwd set to the new release directory, while followers' `Preparing` task sits on `Waiting for release command`. The leader publishes its exit code, followers unblock, and the rolling update — [zero-downtime, health-checked, drained](/blog/zero-downtime-deploys-without-a-container-in-sight) — runs on every server in parallel.
+Every server unpacks the artifact and runs `bun install --production` in parallel — that part isn't gated. The new release directory exists on every box. Then the leader runs `sh -c "<release-command>"` once, with cwd set to the new release directory, while followers' `Preparing` task sits on `Waiting for release command`. The leader publishes its exit code, followers unblock, and the rolling update — [zero-downtime, health-checked, drained](/blog/zero-downtime-deploys-without-a-container-in-sight/) — runs on every server in parallel.
 
 Crucially, **no instance on any server starts on the new code** until the migration has succeeded on the leader. That's the whole point: by the time the first new process boots, the schema already matches what the code expects.
 
@@ -68,7 +68,7 @@ The leader is just the first server in the env's `servers` list. It has no speci
 | On failure       | Deploy aborts on every server, partial release removed, `current` symlink intact  |
 | Per-env override | `[envs.<env>].release` overrides top-level; `release = ""` clears it              |
 
-The release command runs with the **same environment an HTTP instance sees at spawn time**: merged `[vars]` + `[vars.<env>]` + decrypted [secrets](/blog/secrets-without-env-files) + the auto-injected `TAKO_BUILD`, `TAKO_DATA_DIR`, and `ENV`. Your `DATABASE_URL` is just there. No separate config layer for migrations versus app code.
+The release command runs with the **same environment an HTTP instance sees at spawn time**: merged `[vars]` + `[vars.<env>]` + decrypted [secrets](/blog/secrets-without-env-files/) + the auto-injected `TAKO_BUILD`, `TAKO_DATA_DIR`, and `ENV`. Your `DATABASE_URL` is just there. No separate config layer for migrations versus app code.
 
 ## Per-environment overrides
 
@@ -103,12 +103,12 @@ Schema changes are the obvious use case, but the release command is just "run th
 - **Asset upload** — push built static assets to a CDN bucket before instances start serving manifests that reference them
 - **Sentry release tagging** — `sentry-cli releases new $TAKO_BUILD` so error tracking lines up with the deploy
 
-The Tako [SDK](/docs) gives you `TAKO_BUILD` automatically, so your release script knows exactly which version it's preparing the world for.
+The Tako [SDK](/docs/) gives you `TAKO_BUILD` automatically, so your release script knows exactly which version it's preparing the world for.
 
 ## What it doesn't do
 
-The release command is intentionally one primitive, not a workflow engine. It runs once per deploy, on one server, with one timeout. If your migration takes longer than 10 minutes, that's a signal to break it into a [workflow](/blog/durable-workflows-are-here) — durable, resumable, observable — rather than a deploy-time blocker. If you need to coordinate across multiple steps with retries and human approval, [pause-a-workflow](/blog/pause-a-workflow-until-a-human-clicks-approve) is the better tool.
+The release command is intentionally one primitive, not a workflow engine. It runs once per deploy, on one server, with one timeout. If your migration takes longer than 10 minutes, that's a signal to break it into a [workflow](/blog/durable-workflows-are-here/) — durable, resumable, observable — rather than a deploy-time blocker. If you need to coordinate across multiple steps with retries and human approval, [pause-a-workflow](/blog/pause-a-workflow-until-a-human-clicks-approve/) is the better tool.
 
 But for the 95% of deploys where you just need `prisma migrate deploy` or `drizzle-kit push` to run once on the way in — that's now a single line in your config.
 
-Read the [`tako.toml` reference](/docs/tako-toml) for the full schema, or the [deployment guide](/docs/deployment) for how it slots into the rest of the pipeline.
+Read the [`tako.toml` reference](/docs/tako-toml/) for the full schema, or the [deployment guide](/docs/deployment/) for how it slots into the rest of the pipeline.

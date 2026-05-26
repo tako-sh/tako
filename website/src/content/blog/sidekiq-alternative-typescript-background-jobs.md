@@ -9,7 +9,7 @@ image: c5d323f04183
 
 But a lot of new apps are not Ruby apps. They are TypeScript apps running on Bun or Node, maybe with a little Next.js, Hono, TanStack Start, or Vite SSR around the edges. When those apps need background work, the usual answer is to rebuild the Sidekiq shape with Redis, a queue library, a worker process, a scheduler, retry rules, a dashboard, and deploy glue.
 
-Tako takes a different path. [Tako workflows](/blog/durable-workflows-are-here) put durable TypeScript background jobs inside the same platform that already deploys your app: per-app queue state, retries, step checkpoints, cron, sleeps, signals, named worker groups, logs, secrets, and workers that can scale to zero on your own VPS.
+Tako takes a different path. [Tako workflows](/blog/durable-workflows-are-here/) put durable TypeScript background jobs inside the same platform that already deploys your app: per-app queue state, retries, step checkpoints, cron, sleeps, signals, named worker groups, logs, secrets, and workers that can scale to zero on your own VPS.
 
 ## Sidekiq is a queue; Tako is app infrastructure
 
@@ -150,7 +150,7 @@ export default defineWorkflow("process-image", {
 });
 ```
 
-The email group can stay warm. The media group can scale to zero until the first image job lands. Each group gets its own worker subprocess, and server-specific overrides can tune the heavy group on a bigger machine. The full precedence rules are in the [`tako.toml` reference](/docs/tako-toml), and the production lifecycle is covered in [deployment docs](/docs/deployment).
+The email group can stay warm. The media group can scale to zero until the first image job lands. Each group gets its own worker subprocess, and server-specific overrides can tune the heavy group on a bigger machine. The full precedence rules are in the [`tako.toml` reference](/docs/tako-toml/), and the production lifecycle is covered in [deployment docs](/docs/deployment/).
 
 This matters because most background job systems eventually become scheduling systems for scarce resources. Some work is latency-sensitive. Some work is CPU-heavy. Some work needs lots of outbound network concurrency. Putting every job into one general worker pool is simple until it is not.
 
@@ -160,7 +160,7 @@ If you run Rails, use Sidekiq. That is the boring, correct answer for a huge num
 
 Sidekiq is also the better fit when your background work is part of a larger Ruby system, when Redis-compatible infrastructure is already a standard dependency, or when your team wants Sidekiq's specific operational model.
 
-Tako is for a different moment: you have a TypeScript app, you want Sidekiq-shaped reliability, but you do not want to add a Redis queue stack just to send email, resize images, sync webhooks, run cron, or wait for a human approval. You want the work to deploy with the app, read the same [secrets](/blog/secrets-without-env-files), stream through the same logs, and run on the VPS you already pay for.
+Tako is for a different moment: you have a TypeScript app, you want Sidekiq-shaped reliability, but you do not want to add a Redis queue stack just to send email, resize images, sync webhooks, run cron, or wait for a human approval. You want the work to deploy with the app, read the same [secrets](/blog/secrets-without-env-files/), stream through the same logs, and run on the VPS you already pay for.
 
 The local loop is the same shape too:
 
@@ -168,6 +168,6 @@ The local loop is the same shape too:
 tako dev
 ```
 
-`tako dev` runs the HTTP app and workflow runtime with the same architecture as production, so enqueues, logs, worker crashes, and code edits behave like the deploy target. The [development docs](/docs/development) go deeper on the local proxy and worker lifecycle; the [CLI reference](/docs/cli) covers deploy, logs, scaling, and rollbacks.
+`tako dev` runs the HTTP app and workflow runtime with the same architecture as production, so enqueues, logs, worker crashes, and code edits behave like the deploy target. The [development docs](/docs/development/) go deeper on the local proxy and worker lifecycle; the [CLI reference](/docs/cli/) covers deploy, logs, scaling, and rollbacks.
 
 Sidekiq proved that background jobs should feel ordinary. Tako borrows that lesson for TypeScript apps, then pulls the queue into the platform layer: one app, one deploy, one server, durable jobs included.

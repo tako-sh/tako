@@ -1,5 +1,6 @@
 ---
 title: "Cloudflare Pingora Architecture Diagram: How Tako Routes Requests, TLS, and Cold Starts"
+seoTitle: "Cloudflare Pingora Architecture Diagram"
 date: "2026-05-21T13:31"
 description: "A request-path diagram of Tako's Pingora proxy: SNI, route matching, static assets, cold starts, load balancing, and upstream proxying."
 image: 674ebe7d7a9b
@@ -7,7 +8,7 @@ image: 674ebe7d7a9b
 
 Pingora is not a config file with a proxy hiding behind it. It is a Rust framework for building programmable network services, which is exactly why we use it in Tako.
 
-In [our Pingora vs Caddy vs Traefik post](/blog/pingora-vs-caddy-vs-traefik), we talked about the decision. This post is the wiring diagram: what actually happens when a browser request hits a Tako server, how TLS is selected, where route matching happens, when the proxy serves a file directly, and how a scaled-to-zero app wakes up before the request is forwarded.
+In [our Pingora vs Caddy vs Traefik post](/blog/pingora-vs-caddy-vs-traefik/), we talked about the decision. This post is the wiring diagram: what actually happens when a browser request hits a Tako server, how TLS is selected, where route matching happens, when the proxy serves a file directly, and how a scaled-to-zero app wakes up before the request is forwarded.
 
 If you came here looking for a Cloudflare Pingora architecture diagram, this is not Cloudflare's internal edge. This is Tako's edge path, built on the same programmable proxy framework.
 
@@ -86,7 +87,7 @@ app -> browser: "response"
 
 The important part is where the decisions live. Tako does not generate an Nginx config, reload an external proxy, and hope the process manager agrees. The Pingora proxy, route table, load balancer, TLS manager, static file path, cold-start manager, and app process state all live in the same server process.
 
-That is why features like [zero-downtime deploys](/blog/zero-downtime-deploys-without-a-container-in-sight), [scale-to-zero](/docs/deployment), and [multiple apps on one VPS](/blog/how-to-host-multiple-apps-on-one-vps-with-automatic-https) are not separate layers. They are all request-path decisions.
+That is why features like [zero-downtime deploys](/blog/zero-downtime-deploys-without-a-container-in-sight/), [scale-to-zero](/docs/deployment/), and [multiple apps on one VPS](/blog/how-to-host-multiple-apps-on-one-vps-with-automatic-https/) are not separate layers. They are all request-path decisions.
 
 ## TLS happens before app routing
 
@@ -94,7 +95,7 @@ The first choice is not "which app gets this request?" It is "which certificate 
 
 For HTTPS, the browser sends SNI during the TLS handshake. Tako's TLS layer asks the certificate manager for an exact hostname match first, then tries a wildcard certificate match, then falls back to a default self-signed certificate when no matching certificate exists yet. That fallback lets the TLS handshake complete so the HTTP layer can return a normal status like `404` for an unknown host.
 
-Certificate behavior is tied to routes in [`tako.toml`](/docs/tako-toml):
+Certificate behavior is tied to routes in [`tako.toml`](/docs/tako-toml/):
 
 | Route shape          | Certificate behavior                            |
 | -------------------- | ----------------------------------------------- |
@@ -157,7 +158,7 @@ The cold-start manager uses a leader/waiter pattern:
 | Spawn or readiness fails                   | Return `502 Bad Gateway`                    |
 | More than 1000 requests wait               | Return `503 Service Unavailable`            |
 
-The app process itself is still a normal native process. Tako sets `HOST=127.0.0.1` and `PORT=0`, then the [SDK](/docs) binds an OS-assigned port and reports it back over file descriptor 4. The server probes the SDK status endpoint, marks the instance healthy, records cold-start metrics, and releases the waiting requests.
+The app process itself is still a normal native process. Tako sets `HOST=127.0.0.1` and `PORT=0`, then the [SDK](/docs/) binds an OS-assigned port and reports it back over file descriptor 4. The server probes the SDK status endpoint, marks the instance healthy, records cold-start metrics, and releases the waiting requests.
 
 There is no container image to unpack and no external proxy config to rewrite. The request that discovered the app was cold is the same request that waits for the instance to become routable.
 
@@ -183,6 +184,6 @@ That is the full shape: SNI first, route table second, Tako-owned endpoints and 
 
 A standalone reverse proxy is great when routing is the whole job. Tako's proxy has a different job. It needs to know whether a deploy is rolling out, whether an instance is healthy, whether a route belongs to a static asset, whether a request should wake a sleeping app, and whether a wildcard hostname needs DNS-01 certificate handling.
 
-Pingora gives us the programmable request lifecycle for that. Tako supplies the app model around it: [`tako.toml`](/docs/tako-toml), [`tako deploy`](/docs/deployment), local HTTPS in [`tako dev`](/docs/development), encrypted secrets, runtime readiness, workflows, channels, and image optimization.
+Pingora gives us the programmable request lifecycle for that. Tako supplies the app model around it: [`tako.toml`](/docs/tako-toml/), [`tako deploy`](/docs/deployment/), local HTTPS in [`tako dev`](/docs/development/), encrypted secrets, runtime readiness, workflows, channels, and image optimization.
 
 The result is a small edge inside your VPS: one Rust server process that terminates TLS, routes requests, manages app instances, and keeps the proxy aware of the deployment state it is serving.

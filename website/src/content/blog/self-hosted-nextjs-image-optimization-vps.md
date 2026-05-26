@@ -7,7 +7,7 @@ image: c282f5235ed5
 
 Next.js made images feel like a component. Drop in `<Image>`, give it a source, and let the platform worry about width variants, modern formats, cache headers, and remote source rules.
 
-That works beautifully when the platform is Vercel. It also works self-hosted with `next start`, because Next optimizes images at runtime. But when you deploy a Next.js app to your own VPS with Tako, there is a better place for that work to live: the same server boundary that already owns routing, TLS, static files, logs, and [zero-downtime deploys](/docs/deployment).
+That works beautifully when the platform is Vercel. It also works self-hosted with `next start`, because Next optimizes images at runtime. But when you deploy a Next.js app to your own VPS with Tako, there is a better place for that work to live: the same server boundary that already owns routing, TLS, static files, logs, and [zero-downtime deploys](/docs/deployment/).
 
 Tako lets you keep `next/image`. The handoff happens underneath it. `withTako()` configures Next's custom image loader so generated image URLs point at `/_tako/image`, then `tako-server` validates the request, loads the source, resizes with libvips, caches the result, and sends WebP by default.
 
@@ -78,7 +78,7 @@ Remote image rules exist in two places because they protect different boundaries
 
 Next's [`remotePatterns`](https://nextjs.org/docs/app/api-reference/components/image) setting keeps the component honest. If someone passes a remote `src` that does not match the configured protocol, hostname, port, path, and search constraints, Next rejects it.
 
-Tako's `[images]` config is the runtime boundary. It controls what `tako-server` is allowed to fetch and transform after a real browser request reaches your VPS. Local public paths are allowed by default. Remote URLs are denied until you allow them in [`tako.toml`](/docs/tako-toml):
+Tako's `[images]` config is the runtime boundary. It controls what `tako-server` is allowed to fetch and transform after a real browser request reaches your VPS. Local public paths are allowed by default. Remote URLs are denied until you allow them in [`tako.toml`](/docs/tako-toml/):
 
 ```toml
 runtime = "node"
@@ -105,7 +105,7 @@ That last part matters. An image optimizer is a server-side fetcher and a CPU us
 
 ## What the VPS does
 
-After a request matches your app route, Tako reserves `/_tako/*` for platform endpoints. Durable channels live there, storage object URLs live there, and public optimized images live at `/_tako/image`. The route is part of the same [app serving model](/docs/how-tako-works) as your Next process.
+After a request matches your app route, Tako reserves `/_tako/*` for platform endpoints. Durable channels live there, storage object URLs live there, and public optimized images live at `/_tako/image`. The route is part of the same [app serving model](/docs/how-tako-works/) as your Next process.
 
 ```d2
 direction: right
@@ -156,7 +156,7 @@ In practice, this keeps the failure mode narrow. A bad remote URL fails fast, an
 
 ## Deploy it like a Next app
 
-There is no separate image service to boot. Install the SDK, wrap the config, add any remote allowlists, then deploy the app through the normal [Tako CLI](/docs/cli) flow:
+There is no separate image service to boot. Install the SDK, wrap the config, add any remote allowlists, then deploy the app through the normal [Tako CLI](/docs/cli/) flow:
 
 ```bash
 bun add tako.sh

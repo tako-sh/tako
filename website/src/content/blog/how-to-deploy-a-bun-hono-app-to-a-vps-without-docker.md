@@ -5,7 +5,7 @@ description: "A literal Bun + Hono walkthrough: export app.fetch, run tako init,
 image: ad66c5107af2
 ---
 
-[Hono](https://hono.dev) is a tiny web framework with a very useful property: a Hono app already speaks the web `fetch` shape. On Bun, that means your server can be one file that exports `fetch: app.fetch`. On [Tako](/docs), that also means your deploy target is just a Bun process behind Pingora, TLS, health checks, and rolling updates.
+[Hono](https://hono.dev) is a tiny web framework with a very useful property: a Hono app already speaks the web `fetch` shape. On Bun, that means your server can be one file that exports `fetch: app.fetch`. On [Tako](/docs/), that also means your deploy target is just a Bun process behind Pingora, TLS, health checks, and rolling updates.
 
 No Dockerfile. No image registry. No Nginx config. Let's walk the whole thing from `app.fetch` to `tako deploy`.
 
@@ -61,7 +61,7 @@ bun run dev
 curl http://localhost:3000/api/health
 ```
 
-You now have a Hono API that is already shaped like a deployable Tako app. The [fetch handler pattern](/blog/the-fetch-handler-pattern) is doing the heavy lifting here: `Request` in, `Response` out, no framework adapter required.
+You now have a Hono API that is already shaped like a deployable Tako app. The [fetch handler pattern](/blog/the-fetch-handler-pattern/) is doing the heavy lifting here: `Request` in, `Response` out, no framework adapter required.
 
 ## Step 2 - Install Tako and prepare the VPS
 
@@ -77,7 +77,7 @@ On the VPS, install `tako-server` as root:
 sudo sh -c "$(curl -fsSL https://tako.sh/install-server.sh)"
 ```
 
-The server installer creates the `tako` service user, installs the `tako-server` binary, registers the service, prepares `/opt/tako`, and gives the proxy permission to bind ports 80 and 443. That one server process owns routing, ACME certificates, process supervision, rolling updates, and the encrypted secrets store. The [deployment guide](/docs/deployment) has the longer day-two version; for this tutorial, the installer is enough.
+The server installer creates the `tako` service user, installs the `tako-server` binary, registers the service, prepares `/opt/tako`, and gives the proxy permission to bind ports 80 and 443. That one server process owns routing, ACME certificates, process supervision, rolling updates, and the encrypted secrets store. The [deployment guide](/docs/deployment/) has the longer day-two version; for this tutorial, the installer is enough.
 
 Point a DNS A record at the VPS before the first deploy:
 
@@ -117,7 +117,7 @@ route = "api.example.com"
 servers = ["prod"]
 ```
 
-There is no Hono preset because Hono does not need one. Presets are useful when a framework needs build output normalization, assets, or a special dev command. Hono is already a fetch handler, so `main = "src/index.ts"` is enough. The [framework guide](/docs/framework-guides#fallback-fetch-handler-no-preset) calls this the fallback fetch-handler path, but for Hono it is the natural path.
+There is no Hono preset because Hono does not need one. Presets are useful when a framework needs build output normalization, assets, or a special dev command. Hono is already a fetch handler, so `main = "src/index.ts"` is enough. The [framework guide](/docs/framework-guides/#fallback-fetch-handler-no-preset) calls this the fallback fetch-handler path, but for Hono it is the natural path.
 
 If your API has a build step, add it. If it does not, leave it out:
 
@@ -144,7 +144,7 @@ For this project you should see a route like:
 https://hono-on-tako.test/
 ```
 
-That local HTTPS path is useful for OAuth callbacks, secure cookies, service workers, and any code that behaves differently on plain `http://localhost`. The [development docs](/docs/development) cover the local proxy, DNS, and LAN mode pieces.
+That local HTTPS path is useful for OAuth callbacks, secure cookies, service workers, and any code that behaves differently on plain `http://localhost`. The [development docs](/docs/development/) cover the local proxy, DNS, and LAN mode pieces.
 
 ## Step 5 - Deploy
 
@@ -199,20 +199,20 @@ local.code -> artifact: "tako deploy packages"
 artifact -> server: "SFTP upload"
 ```
 
-That same flow is what gives you rolling deploys. On the next `tako deploy`, each server starts a new instance, waits for it to become healthy, adds it to the load balancer, drains an old instance, then moves the `current` symlink to the new release. If the new process cannot start, the old release keeps serving. The [CLI reference](/docs/cli#tako-deploy) lists the flags, and [the rolling update section](/docs/deployment#rolling-updates) explains the production behavior.
+That same flow is what gives you rolling deploys. On the next `tako deploy`, each server starts a new instance, waits for it to become healthy, adds it to the load balancer, drains an old instance, then moves the `current` symlink to the new release. If the new process cannot start, the old release keeps serving. The [CLI reference](/docs/cli/#tako-deploy) lists the flags, and [the rolling update section](/docs/deployment/#rolling-updates) explains the production behavior.
 
 ## What you did not need
 
 The Hono app is already the server interface Tako wants, so the deployment stack stays small:
 
-| Usual VPS chore             | What happens here                                                             |
-| --------------------------- | ----------------------------------------------------------------------------- |
-| Write a `Dockerfile`        | Skip it; Bun runs the app as a native process                                 |
-| Push an image to a registry | Skip it; Tako uploads a deploy artifact over SFTP                             |
-| Configure Nginx and Certbot | Skip it; Pingora and ACME live in `tako-server`                               |
-| Hand-roll restart scripts   | Skip it; deploys are health-checked rolling updates                           |
-| Copy `.env` files around    | Use [`tako secrets`](/docs/cli#tako-secrets) when you need production secrets |
+| Usual VPS chore             | What happens here                                                              |
+| --------------------------- | ------------------------------------------------------------------------------ |
+| Write a `Dockerfile`        | Skip it; Bun runs the app as a native process                                  |
+| Push an image to a registry | Skip it; Tako uploads a deploy artifact over SFTP                              |
+| Configure Nginx and Certbot | Skip it; Pingora and ACME live in `tako-server`                                |
+| Hand-roll restart scripts   | Skip it; deploys are health-checked rolling updates                            |
+| Copy `.env` files around    | Use [`tako secrets`](/docs/cli/#tako-secrets) when you need production secrets |
 
 This is why Hono is such a clean fit for Tako. The app code stays portable: remove Tako later and the handler still works on Bun. While it runs on Tako, you get the platform pieces around it: HTTPS, routing, logs, deploy history, rollbacks, secrets, and scaling commands.
 
-Start with one endpoint and one VPS. When the app grows, add [multiple environments or servers](/docs/deployment#configure-the-project), scale the desired instance count with `tako scale`, and keep shipping with the same `tako deploy`.
+Start with one endpoint and one VPS. When the app grows, add [multiple environments or servers](/docs/deployment/#app-environment), scale the desired instance count with `tako scale`, and keep shipping with the same `tako deploy`.

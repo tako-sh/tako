@@ -139,12 +139,12 @@ For a typical indie or small-team app, the connection math goes like this:
 | 5,000            | Business — $299/mo | Pro — $399/mo + usage      | $5/mo                       |
 | 20,000           | Plus — $899/mo     | Pro — $399/mo + usage      | A bigger VPS — maybe $40/mo |
 
-A single modest VPS can hold many idle WebSocket connections. The bottleneck is usually message throughput and fanout design, not the connection count itself. If you outgrow one box, [add another](/docs/deployment) — same `tako.toml`, same app model.
+A single modest VPS can hold many idle WebSocket connections. The bottleneck is usually message throughput and fanout design, not the connection count itself. If you outgrow one box, [add another](/docs/deployment/) — same `tako.toml`, same app model.
 
 ## When each makes sense
 
 Pick **Pusher or Ably** if you need managed global fanout, presence today, MQTT bridging, enterprise SLAs, or you simply want someone else to operate realtime for you.
 
-Pick **Tako Channels** if you already run a VPS, do not want to pay per connection, and want durable realtime as a primitive of the same server that is [serving your HTTP traffic](/blog/pingora-vs-caddy-vs-traefik), [holding your secrets](/blog/secrets-without-env-files), and [running your workflows](/blog/durable-workflows-are-here).
+Pick **Tako Channels** if you already run a VPS, do not want to pay per connection, and want durable realtime as a primitive of the same server that is [serving your HTTP traffic](/blog/pingora-vs-caddy-vs-traefik/), [holding your secrets](/blog/secrets-without-env-files/), and [running your workflows](/blog/durable-workflows-are-here/).
 
-`tako init`, drop a file in `src/channels/`, `tako dev`, and you have a realtime feature running locally over [real HTTPS](/blog/local-dev-with-real-https) in about a minute. [Start with the docs ->](/docs)
+`tako init`, drop a file in `src/channels/`, `tako dev`, and you have a realtime feature running locally over [real HTTPS](/blog/local-dev-with-real-https/) in about a minute. [Start with the docs ->](/docs/)

@@ -29,12 +29,12 @@ export const llmsCoreSections: LlmsSection[] = [
       },
       {
         title: "Quickstart",
-        url: "/docs/quickstart",
+        url: "/docs/quickstart/",
         description: "Fastest path from install to local HTTPS development and first deploy.",
       },
       {
         title: "Docs Intro",
-        url: "/docs",
+        url: "/docs/",
         description: "High-level introduction to what Tako does well and who it is for.",
       },
     ],
@@ -44,18 +44,18 @@ export const llmsCoreSections: LlmsSection[] = [
     links: [
       {
         title: "How Tako Works",
-        url: "/docs/how-tako-works",
+        url: "/docs/how-tako-works/",
         description:
           "Architecture, request flow, rolling deploys, TLS, health checks, and scaling.",
       },
       {
         title: "Development",
-        url: "/docs/development",
+        url: "/docs/development/",
         description: "Local development workflow, HTTPS, DNS, routes, and dev behavior.",
       },
       {
         title: "Deployment",
-        url: "/docs/deployment",
+        url: "/docs/deployment/",
         description: "Server setup, deploy flow, scaling, secrets, and production operations.",
       },
     ],
@@ -65,23 +65,23 @@ export const llmsCoreSections: LlmsSection[] = [
     links: [
       {
         title: "CLI Reference",
-        url: "/docs/cli",
+        url: "/docs/cli/",
         description: "Commands, flags, output modes, and examples.",
       },
       {
         title: "tako.toml Reference",
-        url: "/docs/tako-toml",
+        url: "/docs/tako-toml/",
         description:
           "Complete app configuration reference for routes, builds, secrets, and scaling.",
       },
       {
         title: "Presets",
-        url: "/docs/presets",
+        url: "/docs/presets/",
         description: "Framework preset behavior and how presets merge with runtime defaults.",
       },
       {
         title: "Framework Guides",
-        url: "/docs/framework-guides",
+        url: "/docs/framework-guides/",
         description:
           "Framework-specific adapter examples for Next.js, Vite, TanStack Start, and fetch handlers.",
       },

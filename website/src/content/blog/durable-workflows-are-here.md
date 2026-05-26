@@ -31,7 +31,7 @@ export default defineWorkflow("fulfill-order", {
 });
 ```
 
-Each step is one row in a per-app SQLite queue at `{tako_data_dir}/apps/<app>/runs.db` with first-write-wins semantics. Retries are automatic — exponential backoff with jitter, capped at an hour, overridable per workflow (`retries: 4` means retry 4 times = 5 total attempts). The same contract every durable engine gives you: at-least-once, so make step bodies idempotent. See [the SPEC](/docs) for the full details.
+Each step is one row in a per-app SQLite queue at `{tako_data_dir}/apps/<app>/runs.db` with first-write-wins semantics. Retries are automatic — exponential backoff with jitter, capped at an hour, overridable per workflow (`retries: 4` means retry 4 times = 5 total attempts). The same contract every durable engine gives you: at-least-once, so make step bodies idempotent. See [the SPEC](/docs/) for the full details.
 
 ## Sleep for days, wait for signals
 
@@ -89,7 +89,7 @@ worker -> server: "claim / save step / complete"
 server -> db: "persist"
 ```
 
-The worker is a separate process so heavy deps — image libs, ML bindings — don't bloat your HTTP instances. Workers default to scale-to-zero: [same idea as your app](/blog/scale-to-zero-without-containers), the first enqueue or cron tick spins one up, an idle worker exits after five minutes. One knob in `tako.toml` pins them up:
+The worker is a separate process so heavy deps — image libs, ML bindings — don't bloat your HTTP instances. Workers default to scale-to-zero: [same idea as your app](/blog/scale-to-zero-without-containers/), the first enqueue or cron tick spins one up, an idle worker exits after five minutes. One knob in `tako.toml` pins them up:
 
 ```toml
 [workflows]
@@ -99,8 +99,8 @@ concurrency = 10
 
 ## Same server, same deploy
 
-Workflows ship with your app. No external queue to provision, no extra auth tokens, no network hop to a SaaS. Your handlers live in `src/workflows/*.ts` by default, they get [secrets on fd 3](/blog/secrets-without-env-files) like your HTTP code, they [deploy](/blog/what-happens-when-you-run-tako-deploy) with everything else, and they keep running across rolling updates.
+Workflows ship with your app. No external queue to provision, no extra auth tokens, no network hop to a SaaS. Your handlers live in `src/workflows/*.ts` by default, they get [secrets on fd 3](/blog/secrets-without-env-files/) like your HTTP code, they [deploy](/blog/what-happens-when-you-run-tako-deploy/) with everything else, and they keep running across rolling updates.
 
-Run `tako init`, drop a file into `src/workflows/`, `tako dev` boots the worker in-process for unified logs, and `tako deploy` sends the whole thing to your servers. Check [the docs](/docs/tako-toml) for the full config surface, or the [CLI reference](/docs/cli) for the commands.
+Run `tako init`, drop a file into `src/workflows/`, `tako dev` boots the worker in-process for unified logs, and `tako deploy` sends the whole thing to your servers. Check [the docs](/docs/tako-toml/) for the full config surface, or the [CLI reference](/docs/cli/) for the commands.
 
 Durable is finally just a keyword.

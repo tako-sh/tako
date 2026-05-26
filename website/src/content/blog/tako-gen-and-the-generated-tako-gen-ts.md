@@ -39,7 +39,7 @@ Same shape on Bun and Node. No global install step, no kebab↔camel rule to rem
 
 ## What `tako generate` generates
 
-[`tako generate`](/docs/cli) scans your project and writes a single file:
+[`tako generate`](/docs/cli/) scans your project and writes a single file:
 
 | Source                           | What `tako generate` emits                                                      |
 | -------------------------------- | ------------------------------------------------------------------------------- |
@@ -49,7 +49,7 @@ Same shape on Bun and Node. No global install step, no kebab↔camel rule to rem
 | Workflow files                   | `interface TakoWorkflows { ... }` metadata for discovered workflow definitions  |
 | Runtime env                      | `process.env` / `import.meta.env` declarations for Tako-provided runtime values |
 
-Secret names are plaintext in [`.tako/secrets.json`](/blog/secrets-without-env-files) — the values aren't — so `tako generate` emits the type surface without ever touching your encryption key. When you add a secret with `tako secrets set`, `tako.d.ts` picks it up on the next `tako dev`, `tako deploy`, or `tako generate`.
+Secret names are plaintext in [`.tako/secrets.json`](/blog/secrets-without-env-files/) — the values aren't — so `tako generate` emits the type surface without ever touching your encryption key. When you add a secret with `tako secrets set`, `tako.d.ts` picks it up on the next `tako dev`, `tako deploy`, or `tako generate`.
 
 The file lands somewhere TypeScript's default `include` will find: next to an existing copy if you have one, or inside `src/` or `app/` if those directories exist, or at the project root. No `tsconfig.json` edits needed.
 
@@ -67,7 +67,7 @@ A few more guarantees:
 
 ## Try it
 
-`tako generate` runs automatically during [`tako init`](/docs/cli), [`tako dev`](/docs/development), [`tako deploy`](/docs/deployment), and `tako secrets ...`. Most of the time you don't think about it. `tako gen` and `tako g` are aliases. When you want types updated manually:
+`tako generate` runs automatically during [`tako init`](/docs/cli/), [`tako dev`](/docs/development/), [`tako deploy`](/docs/deployment/), and `tako secrets ...`. Most of the time you don't think about it. `tako gen` and `tako g` are aliases. When you want types updated manually:
 
 ```bash
 tako secrets set STRIPE_KEY --env production
@@ -75,6 +75,6 @@ tako generate
 # Generated tako.d.ts
 ```
 
-For Go apps, `tako generate` emits a `tako_secrets.go` with a typed `Secrets` struct — same idea, same compile-time catch. See [the Go SDK post](/blog/the-go-sdk-is-here) for the shape of that side.
+For Go apps, `tako generate` emits a `tako_secrets.go` with a typed `Secrets` struct — same idea, same compile-time catch. See [the Go SDK post](/blog/the-go-sdk-is-here/) for the shape of that side.
 
 Typed runtime config isn't a new idea. Getting it for secrets and runtime state with zero ceremony — no app global, just `tako.sh` plus a generated declaration file — is what `tako generate` is for.

@@ -1,5 +1,6 @@
 ---
 title: "Self-Hosted Deployments over Tailscale: Signed Remote Management for VPS Apps"
+seoTitle: "Self-Hosted Deployments over Tailscale"
 date: "2026-05-08T02:12"
 description: "Tako keeps server management on private Tailscale HTTP and signs mutating RPCs with the SSH keys you already use for recovery."
 image: eaa03cb44e6f
@@ -7,7 +8,7 @@ image: eaa03cb44e6f
 
 SSH is a wonderful recovery tool. It is not a wonderful status API.
 
-For the first versions of Tako, the mental model was straightforward: the local [`tako` CLI](/docs/cli) talked to your server over SSH, and the server talked to its own Unix management socket. That works. It is also a little too honest about its ancestry. Every status check, secrets sync, deploy step, and future control-plane operation has to fit through an interactive login protocol that was designed for humans and shell commands.
+For the first versions of Tako, the mental model was straightforward: the local [`tako` CLI](/docs/cli/) talked to your server over SSH, and the server talked to its own Unix management socket. That works. It is also a little too honest about its ancestry. Every status check, secrets sync, deploy step, and future control-plane operation has to fit through an interactive login protocol that was designed for humans and shell commands.
 
 The newer shape is cleaner: SSH gets you onto the box, enrolls the key, and stays available for setup and recovery. Normal management traffic moves to a private HTTP RPC endpoint on the server's Tailscale address. The endpoint is not public internet API glitter. It is a tiny, typed `Command -> Response` path bound to the tailnet, and every non-probe command is signed by an enrolled SSH key.
 
@@ -21,12 +22,12 @@ That matters because the remote management listener is plain HTTP on port `9844`
 
 The installed server still serves your app on normal HTTP/HTTPS ports. Only management moves behind Tailscale:
 
-| Traffic type       | Listener              | Who should reach it          | What it is for                                    |
-| ------------------ | --------------------- | ---------------------------- | ------------------------------------------------- |
-| Public app traffic | `:80` / `:443`        | Browsers and API clients     | Routes declared in [`tako.toml`](/docs/tako-toml) |
-| Local server IPC   | Unix socket           | `tako-server` host only      | Internal management dispatch                      |
-| Remote management  | Tailscale IP, `:9844` | Machines in your tailnet     | CLI status, deploy, secrets, upgrade control      |
-| SSH                | `tako@host`           | Operators with recovery keys | Setup, enrollment, repair, fallback operations    |
+| Traffic type       | Listener              | Who should reach it          | What it is for                                     |
+| ------------------ | --------------------- | ---------------------------- | -------------------------------------------------- |
+| Public app traffic | `:80` / `:443`        | Browsers and API clients     | Routes declared in [`tako.toml`](/docs/tako-toml/) |
+| Local server IPC   | Unix socket           | `tako-server` host only      | Internal management dispatch                       |
+| Remote management  | Tailscale IP, `:9844` | Machines in your tailnet     | CLI status, deploy, secrets, upgrade control       |
+| SSH                | `tako@host`           | Operators with recovery keys | Setup, enrollment, repair, fallback operations     |
 
 The host you give `tako servers add` is expected to be the server's Tailscale MagicDNS name or Tailscale IP. MagicDNS names are the pleasant path: [Tailscale documents](https://tailscale.com/docs/features/sharing) the shape as `<hostname>.<tailnet-name>.ts.net`, so a box named `ams` can be added by name instead of by a `100.x.y.z` address.
 
@@ -132,7 +133,7 @@ But once the server is enrolled, common operations should feel like talking to a
 
 For users, the difference should mostly be that status and server discovery get quieter. `tako servers status` does not need a project directory; it reads your global server inventory and queries each configured host through signed remote management. The output is still the thing you care about: server health, app state, routes, instance counts, builds, and deploy timestamps.
 
-For Tako, this opens a nicer future. Deploys, logs, server upgrades, secrets sync, and eventually richer platform primitives can share one management transport instead of growing more SSH glue. The docs already describe Tako as the platform layer between your code and the internet: [deployment](/docs/deployment), routing, TLS, secrets, local dev, channels, and workflows. A platform layer needs a control plane that can grow without turning every feature into a remote shell script.
+For Tako, this opens a nicer future. Deploys, logs, server upgrades, secrets sync, and eventually richer platform primitives can share one management transport instead of growing more SSH glue. The docs already describe Tako as the platform layer between your code and the internet: [deployment](/docs/deployment/), routing, TLS, secrets, local dev, channels, and workflows. A platform layer needs a control plane that can grow without turning every feature into a remote shell script.
 
 There is a security reason too. The public internet should not be the default place to put server control APIs. A self-hosted tool can ask for a tiny bit more intentional setup: install Tailscale, add the server by MagicDNS name, keep SSH as recovery, and let normal management traffic stay inside the private network.
 

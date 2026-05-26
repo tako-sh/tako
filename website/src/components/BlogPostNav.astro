@@ -1,0 +1,110 @@
+---
+interface BlogPostLink {
+  title: string;
+  href: string;
+}
+
+export interface Props {
+  previousPost?: BlogPostLink | undefined;
+  nextPost?: BlogPostLink | undefined;
+}
+
+const previousPost = Astro.props.previousPost;
+const nextPost = Astro.props.nextPost;
+---
+{(previousPost || nextPost) && (
+  <nav class="blog-post-nav" aria-label="More blog posts">
+    {previousPost ? (
+      <a
+        class="blog-post-nav-link blog-post-nav-prev"
+        href={previousPost.href}
+        aria-label={`Older post: ${previousPost.title}`}
+      >
+        <span class="blog-post-nav-kicker">&larr; Older</span>
+        <span class="blog-post-nav-title">{previousPost.title}</span>
+      </a>
+    ) : <span class="blog-post-nav-spacer" aria-hidden="true"></span>}
+    {nextPost ? (
+      <a
+        class="blog-post-nav-link blog-post-nav-next"
+        href={nextPost.href}
+        aria-label={`Newer post: ${nextPost.title}`}
+      >
+        <span class="blog-post-nav-kicker">Newer &rarr;</span>
+        <span class="blog-post-nav-title">{nextPost.title}</span>
+      </a>
+    ) : <span class="blog-post-nav-spacer" aria-hidden="true"></span>}
+  </nav>
+)}
+
+<style>
+  .blog-post-nav {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 12px;
+    border-top: 2px solid var(--line);
+    margin-top: 40px;
+    padding-top: 18px;
+  }
+
+  .blog-post-nav-link {
+    min-width: 0;
+    border: 2px solid var(--line);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.48);
+    box-shadow: 0 6px 0 rgba(47, 42, 68, 0.08);
+    color: var(--ink);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 14px 16px;
+    text-decoration: none;
+    transition:
+      transform 0.16s ease,
+      box-shadow 0.16s ease,
+      background 0.16s ease;
+  }
+
+  .blog-post-nav-link:hover {
+    background: rgba(255, 249, 244, 0.85);
+    box-shadow: 0 9px 0 rgba(47, 42, 68, 0.1);
+    transform: translateY(-2px);
+  }
+
+  .blog-post-nav-next {
+    text-align: right;
+  }
+
+  .blog-post-nav-kicker {
+    color: var(--muted);
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+
+  .blog-post-nav-title {
+    font-family: var(--font-heading);
+    font-size: 18px;
+    line-height: 1.2;
+    overflow-wrap: anywhere;
+  }
+
+  .blog-post-nav-spacer {
+    display: block;
+  }
+
+  @media (max-width: 720px) {
+    .blog-post-nav {
+      grid-template-columns: 1fr;
+    }
+
+    .blog-post-nav-next {
+      text-align: left;
+    }
+
+    .blog-post-nav-spacer {
+      display: none;
+    }
+  }
+</style>

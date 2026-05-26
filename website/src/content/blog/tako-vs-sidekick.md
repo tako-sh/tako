@@ -11,20 +11,20 @@ Tako does the same job — get your app running on your own server — but makes
 
 ## At a glance
 
-|                        | **Sidekick**                       | **Tako**                                               |
-| ---------------------- | ---------------------------------- | ------------------------------------------------------ |
-| **Deploy method**      | Docker build → SSH transfer        | Build locally → SFTP upload                            |
-| **Server requirement** | Ubuntu + Docker + Traefik          | Any Linux box with SSH                                 |
-| **Proxy**              | Traefik (Go)                       | Pingora (Rust, Cloudflare)                             |
-| **CLI language**       | Go                                 | Rust                                                   |
-| **Config format**      | Dockerfile + CLI prompts           | TOML ([`tako.toml`](/docs/tako-toml))                  |
-| **Local dev**          | None                               | Built-in HTTPS + DNS ([`tako dev`](/docs/development)) |
-| **SDK**                | None                               | [JS/TS and Go SDKs](/docs)                             |
-| **Scale-to-zero**      | No                                 | Yes, with cold start                                   |
-| **Multi-server**       | Recent addition (select at deploy) | Declarative per-environment                            |
-| **Secrets**            | sops + age encryption              | AES-256-GCM, delivered via fd 3                        |
-| **Preview envs**       | Yes (git-hash subdomains)          | Yes (per-environment routing)                          |
-| **Stars**              | ~7.3k                              | New kid on the block                                   |
+|                        | **Sidekick**                       | **Tako**                                                |
+| ---------------------- | ---------------------------------- | ------------------------------------------------------- |
+| **Deploy method**      | Docker build → SSH transfer        | Build locally → SFTP upload                             |
+| **Server requirement** | Ubuntu + Docker + Traefik          | Any Linux box with SSH                                  |
+| **Proxy**              | Traefik (Go)                       | Pingora (Rust, Cloudflare)                              |
+| **CLI language**       | Go                                 | Rust                                                    |
+| **Config format**      | Dockerfile + CLI prompts           | TOML ([`tako.toml`](/docs/tako-toml/))                  |
+| **Local dev**          | None                               | Built-in HTTPS + DNS ([`tako dev`](/docs/development/)) |
+| **SDK**                | None                               | [JS/TS and Go SDKs](/docs/)                             |
+| **Scale-to-zero**      | No                                 | Yes, with cold start                                    |
+| **Multi-server**       | Recent addition (select at deploy) | Declarative per-environment                             |
+| **Secrets**            | sops + age encryption              | AES-256-GCM, delivered via fd 3                         |
+| **Preview envs**       | Yes (git-hash subdomains)          | Yes (per-environment routing)                           |
+| **Stars**              | ~7.3k                              | New kid on the block                                    |
 
 ## Where Sidekick shines
 
@@ -74,25 +74,25 @@ tako: Tako {
 
 Sidekick uses Traefik, which is a solid reverse proxy — automatic SSL, Docker-aware routing, wide community adoption. But Traefik is a general-purpose proxy designed for container orchestration. It's powerful, but it's also heavy for the single-server or few-server use case.
 
-Tako uses [Pingora](/blog/pingora-vs-caddy-vs-traefik), Cloudflare's Rust proxy framework — the same technology that handles a significant chunk of internet traffic. TLS termination, HTTP/2, WebSocket proxying, and health-check-based routing all happen in the same process. No sidecar containers, no separate proxy configuration to manage.
+Tako uses [Pingora](/blog/pingora-vs-caddy-vs-traefik/), Cloudflare's Rust proxy framework — the same technology that handles a significant chunk of internet traffic. TLS termination, HTTP/2, WebSocket proxying, and health-check-based routing all happen in the same process. No sidecar containers, no separate proxy configuration to manage.
 
 ### Scale-to-zero
 
 Sidekick keeps your containers running. If you've got a staging environment, an internal dashboard, and a webhook handler all on one VPS, they're all consuming memory whether anyone's using them or not.
 
-Tako supports [on-demand scaling](/docs/how-tako-works): instances spin down after an idle timeout and cold-start on the next request. For apps that don't need to be always-on, this is meaningful resource savings — especially on a [$5 VPS](/blog/your-5-dollar-vps-is-more-powerful-than-you-think) running multiple apps.
+Tako supports [on-demand scaling](/docs/how-tako-works/): instances spin down after an idle timeout and cold-start on the next request. For apps that don't need to be always-on, this is meaningful resource savings — especially on a [$5 VPS](/blog/your-5-dollar-vps-is-more-powerful-than-you-think/) running multiple apps.
 
 ### Local development included
 
 Sidekick is a deployment tool — there's no `sidekick dev`. Local development means running Docker Compose yourself or using whatever your framework provides.
 
-[`tako dev`](/docs/development) gives you real HTTPS with trusted certificates, local DNS routing (`*.test`), and a proxy that matches production behavior. Your app runs the same way locally as it does on the server — same SDK, same process model, same routing. One command, no setup.
+[`tako dev`](/docs/development/) gives you real HTTPS with trusted certificates, local DNS routing (`*.test`), and a proxy that matches production behavior. Your app runs the same way locally as it does on the server — same SDK, same process model, same routing. One command, no setup.
 
 ### Declarative multi-server
 
 Sidekick recently added multi-VPS support, letting you select which server to deploy to at deploy time. It's a step forward, but server assignment is still a runtime choice rather than a configured state.
 
-Tako makes server membership [declarative in `tako.toml`](/docs/deployment):
+Tako makes server membership [declarative in `tako.toml`](/docs/deployment/):
 
 ```toml
 [envs.production]
@@ -112,8 +112,8 @@ Sidekick is a clever tool that solves a real problem — and we appreciate that 
 
 That said, Sidekick's development has slowed significantly — the last tagged release was October 2024, and commits are sparse. Major requested features like Docker Compose support and database management remain unimplemented. For side projects and single-container apps, it works well. For growing production workloads, the runway is uncertain.
 
-Tako is headed somewhere different. Today it handles deployment, routing, TLS, secrets, and local dev. The roadmap includes backend primitives — WebSocket channels, queues, workflows — things most apps bolt on as separate services. Combined with [multi-server environments](/docs/deployment) and Cloudflare smart routing, Tako lets you build your own edge network on commodity hardware.
+Tako is headed somewhere different. Today it handles deployment, routing, TLS, secrets, and local dev. The roadmap includes backend primitives — WebSocket channels, queues, workflows — things most apps bolt on as separate services. Combined with [multi-server environments](/docs/deployment/) and Cloudflare smart routing, Tako lets you build your own edge network on commodity hardware.
 
 The question is what you need: a quick way to ship a Dockerized app to a VPS, or a platform that grows with your app. Both are valid answers.
 
-Check out [how Tako works](/docs/how-tako-works) to see the full architecture, or the [CLI docs](/docs/cli) to get started.
+Check out [how Tako works](/docs/how-tako-works/) to see the full architecture, or the [CLI docs](/docs/cli/) to get started.

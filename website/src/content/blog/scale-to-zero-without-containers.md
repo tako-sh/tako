@@ -32,13 +32,13 @@ zero -> cold: next request arrives
 cold -> back: "often 10s of ms"
 ```
 
-**Deploy.** When you run [`tako deploy`](/docs/deployment), the server starts one warm instance immediately — so your app is reachable right away. If that instance fails to start, the deploy fails. No surprise cold starts after shipping.
+**Deploy.** When you run [`tako deploy`](/docs/deployment/), the server starts one warm instance immediately — so your app is reachable right away. If that instance fails to start, the deploy fails. No surprise cold starts after shipping.
 
-**Serve.** Requests route to healthy instances through Tako's [Pingora-based proxy](/blog/pingora-vs-caddy-vs-traefik). Each instance tracks in-flight requests and the timestamp of its last request.
+**Serve.** Requests route to healthy instances through Tako's [Pingora-based proxy](/blog/pingora-vs-caddy-vs-traefik/). Each instance tracks in-flight requests and the timestamp of its last request.
 
 **Idle.** An idle monitor checks instances periodically. If an instance has no in-flight requests and has been idle longer than `idle_timeout` (default: 5 minutes), it gets stopped. The app drops to zero running instances.
 
-**Cold start.** The next request triggers a cold start. The proxy spawns a new process, waits for the app's readiness signal (`TAKO:READY:<port>` via the [SDK](/docs)), and routes the request once the instance is healthy. For lightweight APIs, that first response is often only tens of milliseconds slower. Heavier apps can take longer.
+**Cold start.** The next request triggers a cold start. The proxy spawns a new process, waits for the app's readiness signal (`TAKO:READY:<port>` via the [SDK](/docs/)), and routes the request once the instance is healthy. For lightweight APIs, that first response is often only tens of milliseconds slower. Heavier apps can take longer.
 
 ## What happens to requests during cold start
 
@@ -78,7 +78,7 @@ idle_timeout = 300  # seconds (default: 5 minutes)
 idle_timeout = 60   # aggressive timeout for staging
 ```
 
-For always-on apps, use [`tako scale`](/docs/cli) to set a minimum instance count:
+For always-on apps, use [`tako scale`](/docs/cli/) to set a minimum instance count:
 
 ```bash
 tako scale 2 --env production  # always keep 2 instances running
@@ -92,7 +92,7 @@ This isn't serverless. There's no per-request billing, no function isolation, no
 
 The cold start is a real process spawn, not a container unpause or a microVM boot. That's why it's fast: no image layers to unpack, no filesystem to mount, no network namespace to create. Just fork, exec, wait for readiness.
 
-And because Tako's proxy handles the queuing transparently, your app doesn't need to know it was cold-started. No special warming logic, no readiness hacks. The [SDK's status endpoint](/docs) is enough.
+And because Tako's proxy handles the queuing transparently, your app doesn't need to know it was cold-started. No special warming logic, no readiness hacks. The [SDK's status endpoint](/docs/) is enough.
 
 ## Try it
 
@@ -104,4 +104,4 @@ tako status  # see instance count drop to 0
 # visit your app — it cold-starts on the first request
 ```
 
-Check the [deployment docs](/docs/deployment) for the full setup, or [how Tako works](/docs/how-tako-works) for the architecture behind on-demand scaling.
+Check the [deployment docs](/docs/deployment/) for the full setup, or [how Tako works](/docs/how-tako-works/) for the architecture behind on-demand scaling.

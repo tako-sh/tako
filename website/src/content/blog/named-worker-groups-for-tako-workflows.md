@@ -7,7 +7,7 @@ image: eef4025ddeaa
 
 Workflow queues have one classic failure mode: a slow job clogs the pipe and everything else waits behind it. A 30-second image resize lands in the queue, every worker grabs one, and the password-reset email that should have gone out in 200ms sits in `pending` while your users refresh their inbox.
 
-That's head-of-line blocking. The fix is the same one every queue ends up shipping eventually: separate pools for separate kinds of work. As of today, [Tako workflows](/blog/durable-workflows-are-here) have it built in.
+That's head-of-line blocking. The fix is the same one every queue ends up shipping eventually: separate pools for separate kinds of work. As of today, [Tako workflows](/blog/durable-workflows-are-here/) have it built in.
 
 ## Pools, named after what they do
 
@@ -51,7 +51,7 @@ concurrency = 4      # but keep per-worker fan-out low
 workers = 4          # bump it up on the box that has more cores
 ```
 
-The precedence chain reads top-down — built-in defaults, then `[workflows]`, then `[workflows.<group>]`, then any `[servers.<name>.workflows.<group>]` override on a specific host. The full table is in [`tako.toml`](/docs/tako-toml).
+The precedence chain reads top-down — built-in defaults, then `[workflows]`, then `[workflows.<group>]`, then any `[servers.<name>.workflows.<group>]` override on a specific host. The full table is in [`tako.toml`](/docs/tako-toml/).
 
 ## Why isolation matters
 
@@ -74,10 +74,10 @@ ent2 -> server -> media
 server -> def: "everything else"
 ```
 
-Each pool keeps its own [scale-to-zero](/blog/scale-to-zero-without-containers) lifecycle: a group with `workers = 0` doesn't spawn until the first matching enqueue or cron tick lands, and idles back out when there's nothing to do. So the `media` group can sit at zero overnight and your VPS doesn't pay rent on it; the `email` group can stay warm because cold-starting an image library every 200ms email isn't free.
+Each pool keeps its own [scale-to-zero](/blog/scale-to-zero-without-containers/) lifecycle: a group with `workers = 0` doesn't spawn until the first matching enqueue or cron tick lands, and idles back out when there's nothing to do. So the `media` group can sit at zero overnight and your VPS doesn't pay rent on it; the `email` group can stay warm because cold-starting an image library every 200ms email isn't free.
 
 ## Per-server tuning
 
-The same precedence rules cascade into per-server blocks. If your `lax` box has more cores than your `cdg` box, give `media` four workers there and one elsewhere — same `tako.toml`, [different defaults per host](/blog/one-config-many-servers), no fork in the workflow code.
+The same precedence rules cascade into per-server blocks. If your `lax` box has more cores than your `cdg` box, give `media` four workers there and one elsewhere — same `tako.toml`, [different defaults per host](/blog/one-config-many-servers/), no fork in the workflow code.
 
 Drop `worker: "name"` into your handlers, add a `[workflows.<name>]` block to `tako.toml`, and `tako deploy`. The slow jobs get their own lane, the fast jobs stay fast, and your password resets stop waiting in line behind a thumbnail render.

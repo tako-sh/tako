@@ -62,11 +62,11 @@ server -> lb: add instance
 lb -> app: route traffic
 ```
 
-The new instance writes `TAKO:READY:<port>` to stdout only after it has read secrets, imported your code, and bound to a port. The server waits for that signal, runs a health probe, and only then adds the instance to the [load balancer](/docs/deployment). No dropped requests, no 502s.
+The new instance writes `TAKO:READY:<port>` to stdout only after it has read secrets, imported your code, and bound to a port. The server waits for that signal, runs a health probe, and only then adds the instance to the [load balancer](/docs/deployment/). No dropped requests, no 502s.
 
 ## Secrets That Don't Leak
 
-Secrets deserve special mention. Tako encrypts secrets with AES-256-GCM and [stores them in your repo](/docs/cli). At deploy time, the server passes them to your app through file descriptor 3 — not environment variables, not files on disk.
+Secrets deserve special mention. Tako encrypts secrets with AES-256-GCM and [stores them in your repo](/docs/cli/). At deploy time, the server passes them to your app through file descriptor 3 — not environment variables, not files on disk.
 
 The SDK reads fd 3 _before importing your code_, then exposes secrets through a `Proxy` that redacts itself. `tako generate` emits a project-local `tako.d.ts` that types `tako.secrets` from `tako.sh`:
 
@@ -82,7 +82,7 @@ Accidental logging? Handled. Serialization into error reports? Handled.
 
 ## Same Code, Dev and Prod
 
-One of the quieter benefits: [`tako dev`](/docs/development) runs your app through the exact same SDK entrypoint as production. Same fetch handler wrapping, same readiness protocol, same health endpoint. The only differences are the ones you'd expect — local HTTPS on `.test` instead of your production domain, debug log level by default.
+One of the quieter benefits: [`tako dev`](/docs/development/) runs your app through the exact same SDK entrypoint as production. Same fetch handler wrapping, same readiness protocol, same health endpoint. The only differences are the ones you'd expect — local HTTPS on `.test` instead of your production domain, debug log level by default.
 
 This means if your app starts correctly in dev, it starts correctly in production. No "works on my machine" surprises from a different server setup.
 
@@ -111,4 +111,4 @@ The entire public API is one type (`FetchHandler`) and one class (`Tako`) with a
 
 We think the best infrastructure is the kind that knows just enough about your app to do its job well — and nothing more. That's why Tako ships an SDK.
 
-Check out the [docs](/docs) to get started, or read more about [how Tako works](/docs/how-tako-works) under the hood.
+Check out the [docs](/docs/) to get started, or read more about [how Tako works](/docs/how-tako-works/) under the hood.

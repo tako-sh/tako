@@ -1,5 +1,6 @@
 ---
 title: "What Is Pingora? The Rust Proxy Framework Behind Cloudflare and Tako"
+seoTitle: "What Is Pingora? Rust Proxy Framework"
 date: "2026-05-21T13:52"
 description: "A plain-language guide to Pingora, Cloudflare's Rust proxy framework, and why Tako uses it to build programmable VPS app routing."
 image: 92cd16dbe117
@@ -13,7 +14,7 @@ That distinction matters. A normal reverse proxy is something you configure. Pin
 
 For Tako, that is the whole point. We do not need a proxy that only knows how to forward `example.com` to `127.0.0.1:3000`. We need a proxy that can participate in deploys, route matching, TLS selection, static asset serving, app health, cold starts, and scale-to-zero. Pingora gives us the request machinery; Tako supplies the app platform around it.
 
-This is the beginner version. For the lower-level request diagram, read [Cloudflare Pingora Architecture Diagram](/blog/cloudflare-pingora-architecture-diagram). For the proxy selection story, read [Pingora vs Caddy vs Traefik](/blog/pingora-vs-caddy-vs-traefik).
+This is the beginner version. For the lower-level request diagram, read [Cloudflare Pingora Architecture Diagram](/blog/cloudflare-pingora-architecture-diagram/). For the proxy selection story, read [Pingora vs Caddy vs Traefik](/blog/pingora-vs-caddy-vs-traefik/).
 
 ## Pingora in plain English
 
@@ -98,18 +99,18 @@ routes = ["api.example.com", "example.com/api/*"]
 servers = ["prod"]
 ```
 
-When you run [`tako deploy`](/docs/deployment), Tako uploads the app, prepares the runtime, registers routes, starts instances, waits for SDK readiness, probes health, and shifts traffic. `tako-server` then uses Pingora as the HTTP and HTTPS edge for that app state.
+When you run [`tako deploy`](/docs/deployment/), Tako uploads the app, prepares the runtime, registers routes, starts instances, waits for SDK readiness, probes health, and shifts traffic. `tako-server` then uses Pingora as the HTTP and HTTPS edge for that app state.
 
 Inside Tako, Pingora is the listener and request engine. Tako adds the app decisions:
 
-| Pingora provides          | Tako adds                                              |
-| ------------------------- | ------------------------------------------------------ |
-| HTTP and HTTPS listeners  | Route declarations from [`tako.toml`](/docs/tako-toml) |
-| Request lifecycle hooks   | App selection by host and path                         |
-| Upstream peer selection   | Healthy native process instances                       |
-| TLS integration points    | SNI certificate lookup and ACME management             |
-| Metrics and logging hooks | App-scoped logs and request metrics                    |
-| Proxy forwarding          | Static asset fast path, channels, images, cold starts  |
+| Pingora provides          | Tako adds                                               |
+| ------------------------- | ------------------------------------------------------- |
+| HTTP and HTTPS listeners  | Route declarations from [`tako.toml`](/docs/tako-toml/) |
+| Request lifecycle hooks   | App selection by host and path                          |
+| Upstream peer selection   | Healthy native process instances                        |
+| TLS integration points    | SNI certificate lookup and ACME management              |
+| Metrics and logging hooks | App-scoped logs and request metrics                     |
+| Proxy forwarding          | Static asset fast path, channels, images, cold starts   |
 
 That last row is the part a config-only proxy cannot know by itself. If a request matches `example.com/api/*`, Tako checks the route table, looks for Tako-owned endpoints, serves static assets when possible, and only then resolves a backend process.
 
@@ -139,6 +140,6 @@ You should care about Pingora when you want to build a proxy-like system rather 
 
 That is the short answer to "what is Pingora?" It is Cloudflare's Rust framework for programmable network services. It gives you the proxy engine, but not the product opinion.
 
-Tako is one product opinion built on top: a VPS app platform where [`tako.toml`](/docs/tako-toml), [`tako deploy`](/docs/deployment), TLS, routing, process health, scale-to-zero, and local dev through [`tako dev`](/docs/development) all share the same control plane.
+Tako is one product opinion built on top: a VPS app platform where [`tako.toml`](/docs/tako-toml/), [`tako deploy`](/docs/deployment/), TLS, routing, process health, scale-to-zero, and local dev through [`tako dev`](/docs/development/) all share the same control plane.
 
 Pingora is the framework. Tako is what we built with it.

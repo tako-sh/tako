@@ -7,7 +7,7 @@ image: 75e8f994d6cd
 
 You're building a responsive layout. You want to see how it looks on your actual phone, not Chrome's device emulator. The usual options are all bad: type your laptop's IP and a port number into your phone's browser, fight with self-signed cert warnings, or fire up an ngrok tunnel that broadcasts your half-built app to the public internet just so it can come back to a device three feet away.
 
-There's a better way. Press `l` in [`tako dev`](/docs/development).
+There's a better way. Press `l` in [`tako dev`](/docs/development/).
 
 ## What happens when you press `l`
 
@@ -64,7 +64,7 @@ phone -> proxy: "GET https://myapp.local/"
 proxy -> app: routed by Host header
 ```
 
-When you toggle LAN mode, the dev server spawns one mDNS publisher per registered route — `dns-sd` on macOS, `avahi-publish-address` on Linux. Each publisher advertises one concrete hostname. The dev proxy starts listening on `0.0.0.0:443` and routes by `Host` header, the same way [the production Tako proxy](/blog/pingora-vs-caddy-vs-traefik) does.
+When you toggle LAN mode, the dev server spawns one mDNS publisher per registered route — `dns-sd` on macOS, `avahi-publish-address` on Linux. Each publisher advertises one concrete hostname. The dev proxy starts listening on `0.0.0.0:443` and routes by `Host` header, the same way [the production Tako proxy](/blog/pingora-vs-caddy-vs-traefik/) does.
 
 One footnote: mDNS only knows how to advertise concrete records, so wildcard routes like `*.app.test` don't translate. Tako warns you about this and suggests adding an explicit subdomain. Everything else — subpaths, multiple apps, multiple terminals — just works.
 
@@ -72,4 +72,4 @@ One footnote: mDNS only knows how to advertise concrete records, so wildcard rou
 
 If you've got `tako` installed, you already have LAN mode. Run `tako dev` in any project, press `l`, scan the QR code on your phone, and open `https://<your-app>.local` in mobile Safari. Your responsive breakpoints, your touch targets, your iOS-only Safari quirks — all live, all over real HTTPS, all in about three seconds.
 
-New here? `brew install takoserver/tap/tako` and check out the [development docs](/docs/development) or the [CLI reference](/docs/cli) for everything `tako dev` can do beyond this one keystroke.
+New here? `brew install takoserver/tap/tako` and check out the [development docs](/docs/development/) or the [CLI reference](/docs/cli/) for everything `tako dev` can do beyond this one keystroke.

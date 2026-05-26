@@ -45,7 +45,7 @@ No adapter needed. No `toNodeHandler()`. The app _is_ the interface.
 
 There's one catch: Node.js still doesn't have a native fetch-based HTTP server. `http.createServer()` gives you `IncomingMessage` and `ServerResponse` — the same callback shape from 2009.
 
-The [Tako SDK](/docs) bridges this gap. When your app runs on Node, the SDK's entrypoint converts between the two worlds:
+The [Tako SDK](/docs/) bridges this gap. When your app runs on Node, the SDK's entrypoint converts between the two worlds:
 
 ```d2
 direction: right
@@ -91,20 +91,20 @@ function wrappedHandler(request: Request): Response {
 }
 ```
 
-The SDK reads [secrets from fd 3](/blog/secrets-without-env-files) before importing your code, intercepts internal health check requests, and signals readiness to the server. Your function stays clean — just `Request` in, `Response` out. The [Why Tako Ships an SDK](/blog/why-tako-ships-an-sdk) post covers this in more detail.
+The SDK reads [secrets from fd 3](/blog/secrets-without-env-files/) before importing your code, intercepts internal health check requests, and signals readiness to the server. Your function stays clean — just `Request` in, `Response` out. The [Why Tako Ships an SDK](/blog/why-tako-ships-an-sdk/) post covers this in more detail.
 
 ## Framework SSR works too
 
 What about full-stack frameworks that aren't just API servers? TanStack Start, Nuxt, SolidStart — they all have SSR builds that produce a server entry.
 
-Tako's [Vite plugin](/docs/presets) normalizes their output. After the framework builds, the plugin emits a thin wrapper that finds the fetch handler in the build output — whether it's a default export, a named `fetch` export, or a module with a `.fetch` method — and re-exports it in the shape Tako expects. Same pattern, same infrastructure, same [deploy flow](/docs/deployment).
+Tako's [Vite plugin](/docs/presets/) normalizes their output. After the framework builds, the plugin emits a thin wrapper that finds the fetch handler in the build output — whether it's a default export, a named `fetch` export, or a module with a `.fetch` method — and re-exports it in the shape Tako expects. Same pattern, same infrastructure, same [deploy flow](/docs/deployment/).
 
 ## The portability argument
 
 The fetch handler pattern isn't ours. It's the web platform's. If you ever move off Tako, your app is still a valid Bun server or Cloudflare Worker. Remove the SDK, add a small server binding, and you're done.
 
-This matters because deploy tools come and go. ([RIP Waypoint, RIP Nginx Unit.](/blog/tako-vs-coolify)) The web `Request`/`Response` API is an IETF standard backed by every major runtime. Betting on it means your app code outlives whatever infrastructure runs it.
+This matters because deploy tools come and go. ([RIP Waypoint, RIP Nginx Unit.](/blog/tako-vs-coolify/)) The web `Request`/`Response` API is an IETF standard backed by every major runtime. Betting on it means your app code outlives whatever infrastructure runs it.
 
 We think the best app interface is one you already know. If you've used `fetch()` to make an HTTP call, you already understand how to handle one.
 
-Check out the [docs](/docs) to get started, or the [CLI reference](/docs/cli) for the full command set.
+Check out the [docs](/docs/) to get started, or the [CLI reference](/docs/cli/) for the full command set.

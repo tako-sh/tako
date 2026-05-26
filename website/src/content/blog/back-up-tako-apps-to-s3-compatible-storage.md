@@ -9,7 +9,7 @@ The cute version of persistent app storage is "SQLite and uploads on a $5 VPS."
 
 The grown-up version is "and I can restore it when the disk disappears."
 
-Tako already gives every app a persistent data directory for SQLite files, uploads, workflow state, transient channel replay logs, and other file-backed state. We covered that in [Stateful Apps on Tako](/blog/stateful-apps-sqlite-uploads-tako-data-dir): deploys swap releases, but the data directory stays put.
+Tako already gives every app a persistent data directory for SQLite files, uploads, workflow state, transient channel replay logs, and other file-backed state. We covered that in [Stateful Apps on Tako](/blog/stateful-apps-sqlite-uploads-tako-data-dir/): deploys swap releases, but the data directory stays put.
 
 Backups are the other half of that story. Add one private S3-compatible storage resource to `tako.toml`, give Tako encrypted credentials, and `tako-server` can archive app data after deploys, on a regular cadence, and on demand.
 
@@ -38,7 +38,7 @@ The archive format is designed for app data, not just raw file copying. SQLite f
 
 The short version: Tako backs up the state your app needs to come back, and the object store receives encrypted archives.
 
-The [deployment docs](/docs/deployment) show where backups fit in the deploy flow, and the [`tako.toml` reference](/docs/tako-toml) has the exact config shape.
+The [deployment docs](/docs/deployment/) show where backups fit in the deploy flow, and the [`tako.toml` reference](/docs/tako-toml/) has the exact config shape.
 
 ## Configure a private S3-compatible resource
 
@@ -89,7 +89,7 @@ tako storages add uploads \
   --region auto
 ```
 
-The [CLI reference](/docs/cli) covers both `tako storages add` and `tako storages credentials`.
+The [CLI reference](/docs/cli/) covers both `tako storages add` and `tako storages credentials`.
 
 ## What happens during deploy
 
@@ -186,4 +186,4 @@ Tako makes small servers useful: persistent app data, local SQLite, uploads, wor
 
 Backups to S3-compatible storage keep the one-machine workflow practical without pretending the machine is immortal. Your app keeps using local files. Tako handles the archive, encryption, object key prefix, deploy hook, daily cadence, and restore command.
 
-Start with the [`tako.toml` backup reference](/docs/tako-toml), keep the [CLI backup commands](/docs/cli) nearby, and read [what happens during `tako deploy`](/blog/what-happens-when-you-run-tako-deploy) if you want the full deploy pipeline around it.
+Start with the [`tako.toml` backup reference](/docs/tako-toml/), keep the [CLI backup commands](/docs/cli/) nearby, and read [what happens during `tako deploy`](/blog/what-happens-when-you-run-tako-deploy/) if you want the full deploy pipeline around it.

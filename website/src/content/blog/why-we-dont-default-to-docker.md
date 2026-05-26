@@ -1,5 +1,6 @@
 ---
 title: "Why We Don't Default to Docker (and When You Should Still Use It)"
+seoTitle: "Why Tako Does Not Default to Docker"
 date: "2026-03-22T12:00"
 description: "Why we skip the Docker rebuild loop — and when containers still make sense."
 image: 9970fc7ceab1
@@ -43,23 +44,23 @@ _Times are illustrative and vary by setup, image size, and caching. Your mileage
 
 ## Tako's Approach: Direct Execution
 
-Tako runs your app as a process, not a container. When you run [`tako deploy`](/docs/deployment), here's what happens:
+Tako runs your app as a process, not a container. When you run [`tako deploy`](/docs/deployment/), here's what happens:
 
 1. Your project is copied to a clean working directory (respecting `.gitignore`)
 2. Build commands run locally on your machine
 3. The result is compressed and sent to your server via SFTP
 4. The server installs production dependencies and starts your app directly
 
-No image builds. No registry. No container runtime. Your app runs under the same [runtime](/docs/how-tako-works) (Bun or Node) in both development and production.
+No image builds. No registry. No container runtime. Your app runs under the same [runtime](/docs/how-tako-works/) (Bun or Node) in both development and production.
 
 This means:
 
 - **Fast iteration** — change, build, deploy in seconds
 - **Simple debugging** — SSH in, look at the process, tail the logs
 - **Lower resource usage** — no Docker daemon, no overlay filesystem, no image layers
-- **True dev/prod parity** — [`tako dev`](/docs/development) uses the same runtime and SDK as production
+- **True dev/prod parity** — [`tako dev`](/docs/development/) uses the same runtime and SDK as production
 
-The tradeoff is intentional. We support a focused set of runtimes — currently [Bun and Node.js](/docs/how-tako-works) for JavaScript apps, plus Go — and optimize deeply for them, rather than supporting anything-in-a-container at the cost of speed.
+The tradeoff is intentional. We support a focused set of runtimes — currently [Bun and Node.js](/docs/how-tako-works/) for JavaScript apps, plus Go — and optimize deeply for them, rather than supporting anything-in-a-container at the cost of speed.
 
 ## When Docker Is the Right Call
 
@@ -78,7 +79,7 @@ The key word is _opt-in_. We think the default should be the fastest, simplest p
 
 This isn't Docker vs Tako. It's about choosing the right level of abstraction for your workload.
 
-If you need containers, use containers. If you want fast deploys, minimal overhead, and a tool that gets out of your way — [give Tako a try](/docs/quickstart). One `tako.toml`, one command, and your app is live.
+If you need containers, use containers. If you want fast deploys, minimal overhead, and a tool that gets out of your way — [give Tako a try](/docs/quickstart/). One `tako.toml`, one command, and your app is live.
 
 ```bash
 tako init

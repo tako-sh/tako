@@ -1,5 +1,6 @@
 ---
 title: "The Open Source Cloudinary Alternative for Signed Image Resizing on a VPS"
+seoTitle: "Open Source Cloudinary Alternative for VPS Images"
 date: "2026-05-13T04:39"
 description: "Compare Cloudinary-style image transforms with Tako's self-hosted signed URLs, WebP/AVIF output, and app-owned cache policy."
 image: 0e292c22eac5
@@ -39,7 +40,7 @@ The returned URL is not a third-party domain and not a free-form query string. I
 
 The app server receives an app-scoped image secret through Tako's runtime bootstrap. The browser never sees it. When the browser requests the path, `tako-server` verifies the signature before it fetches or decodes the source image. If someone changes the source path, width, height, crop mode, output format, expiration, quality, or cache setting, the signature stops matching.
 
-Hosted media platforms make image delivery an external platform contract. Tako makes it an app-owned contract enforced by the proxy that already handles routing, TLS, channels, static assets, and deploys. The broader routing model is documented in [How Tako Works](/docs/how-tako-works), and the deploy surface is in [Deployment](/docs/deployment).
+Hosted media platforms make image delivery an external platform contract. Tako makes it an app-owned contract enforced by the proxy that already handles routing, TLS, channels, static assets, and deploys. The broader routing model is documented in [How Tako Works](/docs/how-tako-works/), and the deploy surface is in [Deployment](/docs/deployment/).
 
 | Concern              | Cloudinary / ImageKit style                     | Tako style                                     |
 | -------------------- | ----------------------------------------------- | ---------------------------------------------- |
@@ -128,7 +129,7 @@ Remote sources are allowed, but not casually. Tako rejects unsupported schemes, 
 
 That matters for self-hosted apps because the image optimizer sits next to your app. If a VPS app accepts an arbitrary remote image URL and then fetches it from the server side, it needs SSRF guardrails. Tako bakes those guardrails into the platform.
 
-The same pattern shows up elsewhere in Tako. Secrets are delivered through the runtime bootstrap, durable channels live under reserved `/_tako/*` routes, and workflows talk to the server over an internal socket. The app declares intent; the platform enforces the dangerous edges. The SDK shape is covered in the [framework guides](/docs/framework-guides), and the config surface lives in [`tako.toml`](/docs/tako-toml).
+The same pattern shows up elsewhere in Tako. Secrets are delivered through the runtime bootstrap, durable channels live under reserved `/_tako/*` routes, and workflows talk to the server over an internal socket. The app declares intent; the platform enforces the dangerous edges. The SDK shape is covered in the [framework guides](/docs/framework-guides/), and the config surface lives in [`tako.toml`](/docs/tako-toml/).
 
 ## When To Use Which
 
@@ -144,4 +145,4 @@ Tako is the open-source Cloudinary alternative only in the slice that many app d
 
 That is the broader Tako bet. A deployment platform should not stop at "your process is running." Real apps need HTTPS, routes, secrets, logs, workflows, channels, and images. You can assemble those from separate services, and sometimes you should. But when the primitive belongs to the app, Tako tries to keep it inside the same app-shaped boundary.
 
-Read the full image behavior in [How Tako Works](/docs/how-tako-works), deploy it through the normal [`tako deploy`](/docs/cli) flow, or browse the implementation in the [Tako repo](https://github.com/lilienblum/tako). The nice part is that there is no second platform to introduce. If your app runs on Tako, signed image resizing is already in the box.
+Read the full image behavior in [How Tako Works](/docs/how-tako-works/), deploy it through the normal [`tako deploy`](/docs/cli/) flow, or browse the implementation in the [Tako repo](https://github.com/lilienblum/tako). The nice part is that there is no second platform to introduce. If your app runs on Tako, signed image resizing is already in the box.

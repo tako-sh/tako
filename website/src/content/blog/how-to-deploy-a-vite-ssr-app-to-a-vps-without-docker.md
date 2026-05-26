@@ -7,7 +7,7 @@ image: cdeff33db1e3
 
 Vite's SSR story is refreshingly direct: make a browser build, make a server build, and run the server entry in production. Most tutorials finish by wrapping that in Express, a Dockerfile, or a hosted platform adapter.
 
-You do not need the container layer for that. With [Tako](/docs), the server bundle can run as a normal Node or Bun process on a VPS, while Tako handles HTTPS, routing, health checks, static assets, and [zero-downtime deploys](/blog/zero-downtime-deploys-without-a-container-in-sight).
+You do not need the container layer for that. With [Tako](/docs/), the server bundle can run as a normal Node or Bun process on a VPS, while Tako handles HTTPS, routing, health checks, static assets, and [zero-downtime deploys](/blog/zero-downtime-deploys-without-a-container-in-sight/).
 
 This walkthrough uses a plain Vite React SSR app, the `tako.sh/vite` plugin, and one explicit `tako.toml`. No Dockerfile, no image registry, no Nginx side quest.
 
@@ -74,7 +74,7 @@ export default async function fetch(request: Request): Promise<Response> {
 }
 ```
 
-This is deliberately small. If your app uses React Router, TanStack Router, or another SSR router, pass `url.pathname` into that router instead of rendering the same `<App />` for every path. The deployment shape stays the same: `Request` in, `Response` out. That [fetch handler pattern](/blog/the-fetch-handler-pattern) is the boundary Tako runs.
+This is deliberately small. If your app uses React Router, TanStack Router, or another SSR router, pass `url.pathname` into that router instead of rendering the same `<App />` for every path. The deployment shape stays the same: `Request` in, `Response` out. That [fetch handler pattern](/blog/the-fetch-handler-pattern/) is the boundary Tako runs.
 
 ## Step 2 - Add the Tako Vite plugin
 
@@ -92,7 +92,7 @@ export default defineConfig({
 
 On the production server build, the plugin writes a wrapper next to the compiled server bundle: `dist/server/tako-entry.mjs`. That wrapper imports your compiled Vite SSR entry, finds the fetch handler, adds Tako's internal status endpoint, and re-exports one default fetch handler for the runtime to launch.
 
-It also matters during `tako dev`. Vite normally prints a localhost URL and calls it a day. Tako waits for a readiness signal on file descriptor 4, then routes local HTTPS traffic through the dev proxy. The plugin binds Vite to loopback, accepts `.test` and `.tako.test` hosts, and reports the bound port back to the parent process so `tako dev` knows the app is actually ready. The [development docs](/docs/development) cover the local proxy flow in more detail.
+It also matters during `tako dev`. Vite normally prints a localhost URL and calls it a day. Tako waits for a readiness signal on file descriptor 4, then routes local HTTPS traffic through the dev proxy. The plugin binds Vite to loopback, accepts `.test` and `.tako.test` hosts, and reports the bound port back to the parent process so `tako dev` knows the app is actually ready. The [development docs](/docs/development/) cover the local proxy flow in more detail.
 
 Now replace the package scripts with the two-build SSR shape Vite documents for production:
 
@@ -158,7 +158,7 @@ Two lines do most of the SSR work:
 | `main = "dist/server/tako-entry.mjs"` | Launch the generated wrapper, not the raw Vite output                          |
 | `assets = ["dist/client"]`            | Merge the client build into deployed `public/` so `/assets/*.js` resolves fast |
 
-During deploy, Tako runs the build locally, merges configured asset directories into the artifact's `public/` directory, verifies `main`, packages the result, and uploads it over SFTP. On the server, static requests with file extensions are served directly from `public/` when present; everything else goes to your SSR process. The [Tako config docs](/docs/tako-toml) and [deployment guide](/docs/deployment) have the full field reference.
+During deploy, Tako runs the build locally, merges configured asset directories into the artifact's `public/` directory, verifies `main`, packages the result, and uploads it over SFTP. On the server, static requests with file extensions are served directly from `public/` when present; everything else goes to your SSR process. The [Tako config docs](/docs/tako-toml/) and [deployment guide](/docs/deployment/) have the full field reference.
 
 ## Step 4 - Deploy to the VPS
 
@@ -237,4 +237,4 @@ artifact -> vps: "SFTP"
 
 The request path is simple. `/assets/main-abc123.js` is a static file, so Tako serves it directly from the deployed `public/` directory. `/pricing`, `/dashboard`, or `/` goes to the Node process, which imports `dist/server/tako-entry.mjs`, calls your SSR fetch handler, and returns HTML.
 
-That separation is the whole trick. Vite still does the bundling. React still does the rendering. Tako supplies the deployment boundary around them: native process startup, health checks, static file serving, TLS, and rolling replacement. When you need secrets next, add them with [`tako secrets`](/blog/secrets-without-env-files). When you want to see every CLI shape, the [CLI reference](/docs/cli) is the map.
+That separation is the whole trick. Vite still does the bundling. React still does the rendering. Tako supplies the deployment boundary around them: native process startup, health checks, static file serving, TLS, and rolling replacement. When you need secrets next, add them with [`tako secrets`](/blog/secrets-without-env-files/). When you want to see every CLI shape, the [CLI reference](/docs/cli/) is the map.

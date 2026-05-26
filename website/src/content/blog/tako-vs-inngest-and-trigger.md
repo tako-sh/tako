@@ -5,7 +5,7 @@ description: "Inngest and Trigger.dev gave JavaScript a durable-step model worth
 image: fc35651d63c2
 ---
 
-Every app eventually grows a background-work problem, and for the past few years the best answer in JavaScript has been <a href="https://www.inngest.com" target="_blank" rel="noopener noreferrer">Inngest</a> or <a href="https://trigger.dev" target="_blank" rel="noopener noreferrer">Trigger.dev</a>. Both teams made durable steps, retries, crons, sleeps, and signals feel ordinary — you write async code, and the platform handles crashes, restarts, and "wait three days for a human to approve." That's a genuinely nice developer experience, and [Tako's new workflow engine](/blog/durable-workflows-are-here) borrows the shape of it on purpose.
+Every app eventually grows a background-work problem, and for the past few years the best answer in JavaScript has been <a href="https://www.inngest.com" target="_blank" rel="noopener noreferrer">Inngest</a> or <a href="https://trigger.dev" target="_blank" rel="noopener noreferrer">Trigger.dev</a>. Both teams made durable steps, retries, crons, sleeps, and signals feel ordinary — you write async code, and the platform handles crashes, restarts, and "wait three days for a human to approve." That's a genuinely nice developer experience, and [Tako's new workflow engine](/blog/durable-workflows-are-here/) borrows the shape of it on purpose.
 
 The difference is where the engine lives.
 
@@ -25,7 +25,7 @@ The difference is where the engine lives.
 
 Both companies deserve real credit. Inngest's team basically introduced the "TypeScript-native step functions" category to a generation of devs who'd never heard of Temporal. Trigger.dev pushed the ergonomics further — per-task machine sizing, a beautiful dashboard, Realtime, and, as of v3, a proper open-source license.
 
-The SDK primitives they landed on are the right primitives. Named durable steps for memoized side effects, durable sleep for long waits, event-driven pauses — this vocabulary is now the default way JavaScript developers reason about durable work, and we adopted the same vocabulary in Tako on purpose. If you know one of their SDKs, our [workflows docs](/docs/tako-toml) should feel familiar within ten seconds.
+The SDK primitives they landed on are the right primitives. Named durable steps for memoized side effects, durable sleep for long waits, event-driven pauses — this vocabulary is now the default way JavaScript developers reason about durable work, and we adopted the same vocabulary in Tako on purpose. If you know one of their SDKs, our [workflows docs](/docs/tako-toml/) should feel familiar within ten seconds.
 
 If you want a hosted workflow platform with dashboards, observability tooling, and someone paged when the queue gets backed up at 4am, those are the two names to look at first.
 
@@ -35,7 +35,7 @@ If you want a hosted workflow platform with dashboards, observability tooling, a
 
 Inngest and Trigger.dev are workflow platforms. Even self-hosted, you're running _another system_ next to your app: Inngest self-hosting is a multi-service install (event API, runner, executor, state store, dashboard); Trigger.dev's self-host is Postgres + Redis + web + workers wired together with Docker Compose or a Helm chart. That's fine — it's what a full workflow platform requires.
 
-Tako's workflow engine lives inside `tako-server`, the same process that already runs your app's HTTP proxy, TLS, and scale-to-zero supervision. The queue is a single SQLite file at `{tako_data_dir}/apps/<app>/runs.db`. The worker is a subprocess. The protocol is a unix socket. There is no second thing to deploy, monitor, or upgrade — [`tako deploy`](/blog/what-happens-when-you-run-tako-deploy) ships your HTTP handlers and your `workflows/*.ts` files in the same release.
+Tako's workflow engine lives inside `tako-server`, the same process that already runs your app's HTTP proxy, TLS, and scale-to-zero supervision. The queue is a single SQLite file at `{tako_data_dir}/apps/<app>/runs.db`. The worker is a subprocess. The protocol is a unix socket. There is no second thing to deploy, monitor, or upgrade — [`tako deploy`](/blog/what-happens-when-you-run-tako-deploy/) ships your HTTP handlers and your `workflows/*.ts` files in the same release.
 
 ```d2
 direction: right
@@ -76,12 +76,12 @@ Tako's workflow engine runs on the VPS you were going to pay for anyway. The mar
 
 ### Same primitives, smaller surface
 
-We kept the API to the handful of things that actually matter: [`ctx.run`, `ctx.sleep`, `ctx.waitFor`, `signal`, and cron via `defineWorkflow`'s `schedule` option](/docs). That's enough to express retries, long waits, human approvals, fan-out, and scheduled jobs. You can read the full contract in [SPEC.md](https://github.com/lilienblum/tako) in one sitting.
+We kept the API to the handful of things that actually matter: [`ctx.run`, `ctx.sleep`, `ctx.waitFor`, `signal`, and cron via `defineWorkflow`'s `schedule` option](/docs/). That's enough to express retries, long waits, human approvals, fan-out, and scheduled jobs. You can read the full contract in [SPEC.md](https://github.com/lilienblum/tako) in one sitting.
 
 ## Different ambition
 
 Inngest and Trigger.dev are workflow platforms with big roadmaps — AI agents, realtime, fine-grained observability, managed cloud. If your whole job is background work at scale, a dedicated platform is a reasonable bet.
 
-Tako is building the other direction: [the platform layer between your code and the internet](/blog/durable-channels-built-in), with workflows as one feature among durable channels, [secrets](/blog/secrets-without-env-files), [local dev](/docs/development), deploy, proxy, and TLS. All of it runs from one `tako-server` on one box, with a single config file. No queue vendor, no dashboard login, no per-run meter — just a `ctx` object in your workflow.
+Tako is building the other direction: [the platform layer between your code and the internet](/blog/durable-channels-built-in/), with workflows as one feature among durable channels, [secrets](/blog/secrets-without-env-files/), [local dev](/docs/development/), deploy, proxy, and TLS. All of it runs from one `tako-server` on one box, with a single config file. No queue vendor, no dashboard login, no per-run meter — just a `ctx` object in your workflow.
 
-If you already love Inngest or Trigger.dev, keep loving them. If "one more vendor for this" is the thing that's been pushing you toward a different approach, [give Tako workflows a try](/docs/cli).
+If you already love Inngest or Trigger.dev, keep loving them. If "one more vendor for this" is the thing that's been pushing you toward a different approach, [give Tako workflows a try](/docs/cli/).

@@ -27,16 +27,16 @@ const headingAnchors = Astro.props.headingAnchors ?? frontmatter.headingAnchors 
 const canonicalURL = createCanonicalUrl(Astro.url.pathname, Astro.site).href;
 
 const docsNav = [
-  { id: "intro", label: "Intro", href: "/docs" },
-  { id: "quickstart", label: "Quickstart", href: "/docs/quickstart" },
-  { id: "framework-guides", label: "Framework Guides", href: "/docs/framework-guides" },
-  { id: "how-tako-works", label: "How Tako Works", href: "/docs/how-tako-works" },
-  { id: "cli", label: "CLI Reference", href: "/docs/cli" },
-  { id: "tako-toml", label: "tako.toml Reference", href: "/docs/tako-toml" },
-  { id: "presets", label: "Presets", href: "/docs/presets" },
-  { id: "development", label: "Development", href: "/docs/development" },
-  { id: "deployment", label: "Deployment", href: "/docs/deployment" },
-  { id: "troubleshooting", label: "Troubleshooting", href: "/docs/troubleshooting" },
+  { id: "intro", label: "Intro", href: "/docs/" },
+  { id: "quickstart", label: "Quickstart", href: "/docs/quickstart/" },
+  { id: "framework-guides", label: "Framework Guides", href: "/docs/framework-guides/" },
+  { id: "how-tako-works", label: "How Tako Works", href: "/docs/how-tako-works/" },
+  { id: "cli", label: "CLI Reference", href: "/docs/cli/" },
+  { id: "tako-toml", label: "tako.toml Reference", href: "/docs/tako-toml/" },
+  { id: "presets", label: "Presets", href: "/docs/presets/" },
+  { id: "development", label: "Development", href: "/docs/development/" },
+  { id: "deployment", label: "Deployment", href: "/docs/deployment/" },
+  { id: "troubleshooting", label: "Troubleshooting", href: "/docs/troubleshooting/" },
 ];
 const currentDoc = docsNav.find((item) => item.id === current);
 const breadcrumbItems = [
@@ -44,7 +44,7 @@ const breadcrumbItems = [
   { "@type": "ListItem", position: 2, name: "Docs", item: "https://tako.sh/docs/" },
 ];
 
-if (currentDoc && currentDoc.href !== "/docs") {
+if (currentDoc && currentDoc.href !== "/docs/") {
   breadcrumbItems.push({
     "@type": "ListItem",
     position: 3,
@@ -64,7 +64,7 @@ const breadcrumbJsonLd = JSON.stringify({
   <section class="sheet" data-docs-sheet data-heading-anchors={headingAnchors ? "true" : "false"}>
     <div class="sheet-top">
       <div class="breadcrumb">
-        <a href="/">~</a> / <a href="/docs">docs</a> / <span>{heading}</span>
+        <a href="/">~</a> / <a href="/docs/">docs</a> / <span>{heading}</span>
       </div>
       <button
         type="button"

@@ -776,11 +776,10 @@ const pageStructuredData = structuredData
 						<a href="/" class="logo" aria-label="Tako home">
 							<Image
 								src="/assets/logo.svg"
-								alt=""
+								alt="Tako"
 								width={30}
 								height={30}
 								loading="eager"
-								aria-hidden="true"
 							/>
 							<span id="logo-text"></span>
 						</a>
@@ -788,7 +787,7 @@ const pageStructuredData = structuredData
 							<NavLinks />
 						</nav>
 						<div class="mobile-nav-controls nav-links">
-							<a href="/docs">docs</a>
+							<a href="/docs/">docs</a>
 							<a
 								href="https://github.com/lilienblum/tako"
 								target="_blank"
@@ -824,7 +823,7 @@ const pageStructuredData = structuredData
 								focusable="false"
 							/>demo</a
 						>
-						<a href="/blog"
+						<a href="/blog/"
 							><svg
 								xmlns="http://www.w3.org/2000/svg"
 								width="16"
@@ -891,27 +890,27 @@ const pageStructuredData = structuredData
 						<div class="footer-columns">
 							<div class="footer-col">
 								<h3 class="footer-col-title">Docs</h3>
-								<a href="/docs/quickstart">Quickstart</a>
-								<a href="/docs/how-tako-works">How Tako works</a
+								<a href="/docs/quickstart/">Quickstart</a>
+								<a href="/docs/how-tako-works/">How Tako works</a
 								>
-								<a href="/docs/cli">CLI reference</a>
-								<a href="/docs/tako-toml">tako.toml</a>
-								<a href="/docs/troubleshooting"
+								<a href="/docs/cli/">CLI reference</a>
+								<a href="/docs/tako-toml/">tako.toml</a>
+								<a href="/docs/troubleshooting/"
 									>Troubleshooting</a
 								>
 							</div>
 							<div class="footer-col">
 								<h3 class="footer-col-title">Guides</h3>
-								<a href="/docs/deployment">Deployment</a>
-								<a href="/docs/development">Development</a>
-								<a href="/docs/presets">Presets</a>
-								<a href="/docs/framework-guides"
+								<a href="/docs/deployment/">Deployment</a>
+								<a href="/docs/development/">Development</a>
+								<a href="/docs/presets/">Presets</a>
+								<a href="/docs/framework-guides/"
 									>Framework guides</a
 								>
 							</div>
 							<div class="footer-col">
 								<h3 class="footer-col-title">Project</h3>
-								<a href="/blog">Blog</a>
+								<a href="/blog/">Blog</a>
 								<a
 									href="https://github.com/lilienblum/tako"
 									target="_blank"
@@ -1163,9 +1162,9 @@ const pageStructuredData = structuredData
 								},
 								execute: function (input) {
 									window.location.assign(
-										"/docs/" + input.page,
+										"/docs/" + input.page + "/",
 									);
-									return "Navigating to /docs/" + input.page;
+									return "Navigating to /docs/" + input.page + "/";
 								},
 							},
 							{
@@ -1188,7 +1187,7 @@ const pageStructuredData = structuredData
 									var q = encodeURIComponent(
 										String(input.query).slice(0, 256),
 									);
-									window.location.assign("/docs?q=" + q);
+									window.location.assign("/docs/?q=" + q);
 									return (
 										'Opened docs with query "' +
 										input.query +

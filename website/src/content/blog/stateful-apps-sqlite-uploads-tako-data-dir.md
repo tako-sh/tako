@@ -1,5 +1,6 @@
 ---
 title: "Stateful Apps on Tako: SQLite and Uploads That Survive Deploys"
+seoTitle: "Stateful Apps on Tako: SQLite and Uploads"
 date: "2026-04-14T10:00"
 description: "Tako gives each app persistent storage for SQLite databases, uploads, and queue data, so rolling deploys do not wipe local state."
 image: a6572581d903
@@ -116,4 +117,4 @@ The data directory is available automatically on every deploy — no configurati
 tako deploy
 ```
 
-See the [deployment docs](/docs/deployment) for the full setup, the [development guide](/docs/development) for how data directories behave locally, and the [CLI reference](/docs/cli) for app lifecycle commands including `tako app delete`.
+See the [deployment docs](/docs/deployment/) for the full setup, the [development guide](/docs/development/) for how data directories behave locally, and the [CLI reference](/docs/cli/) for app lifecycle commands including `tako app delete`.

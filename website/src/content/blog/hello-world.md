@@ -35,7 +35,7 @@ tako init
 tako deploy
 ```
 
-The [quick start guide](/docs) walks you through everything step by step.
+The [quick start guide](/docs/) walks you through everything step by step.
 
 ## What's next
 

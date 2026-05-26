@@ -1,5 +1,6 @@
 ---
 title: "Cloudflare Origin CA vs Let’s Encrypt for Self-Hosted HTTPS on a VPS"
+seoTitle: "Cloudflare Origin CA vs Let’s Encrypt"
 date: "2026-05-24T14:34"
 description: "Compare Let’s Encrypt HTTP-01, Cloudflare DNS-01 wildcard certificates, and Cloudflare Origin CA for proxied Tako apps."
 image: ab9632db7a90
@@ -9,7 +10,7 @@ HTTPS is not one decision. It is two decisions pretending to be one.
 
 First: who should issue the certificate on your origin server? Second: how will browser traffic actually reach that origin? If browsers connect straight to your VPS, you want a publicly trusted certificate. If every request goes through Cloudflare first, a certificate trusted by Cloudflare can be exactly right. If your app owns tenant subdomains, the interesting part is not the CA at all. It is the validation method.
 
-Tako now has all three paths in the same [`tako.toml`](/docs/tako-toml) model: exact-host Let’s Encrypt by default, Let’s Encrypt wildcard certificates through Cloudflare DNS-01, and Cloudflare Origin CA for Cloudflare-proxied apps. The trick is picking the certificate path that matches the traffic path.
+Tako now has all three paths in the same [`tako.toml`](/docs/tako-toml/) model: exact-host Let’s Encrypt by default, Let’s Encrypt wildcard certificates through Cloudflare DNS-01, and Cloudflare Origin CA for Cloudflare-proxied apps. The trick is picking the certificate path that matches the traffic path.
 
 ## The three HTTPS paths
 
@@ -78,7 +79,7 @@ routes = ["api.example.com", "www.api.example.com"]
 servers = ["la"]
 ```
 
-There is no provider credential because the origin can prove each exact hostname through HTTP-01. The server still needs public HTTP reachability for issuance. The [deployment docs](/docs/deployment) cover the server install flow and public proxy ports; the short version is that Tako owns `:80` for ACME challenges and `:443` for normal HTTPS.
+There is no provider credential because the origin can prove each exact hostname through HTTP-01. The server still needs public HTTP reachability for issuance. The [deployment docs](/docs/deployment/) cover the server install flow and public proxy ports; the short version is that Tako owns `:80` for ACME challenges and `:443` for normal HTTPS.
 
 For tenant-style wildcard routes, keep Let’s Encrypt and add the Cloudflare credential:
 
@@ -101,7 +102,7 @@ tako credentials set ssl.cloudflare --env production
 
 Tako stores that token as an encrypted provider credential, not as an app secret. It is not exposed to your process and is not part of generated secret types. During deploy, Tako validates that the credential exists, has not expired when expiry metadata is known, and can read the matching Cloudflare zone. The server then uses the token to create short-lived DNS-01 TXT records for issuance and renewal.
 
-Use this when you want public, browser-trusted certificates and direct traffic to the VPS. It is also the right path when you need a wildcard route but do not want Cloudflare sitting in the request path. Our [wildcard subdomain guide](/blog/how-to-host-wildcard-subdomains-with-automatic-https-on-a-vps) walks through the DNS-only record shape in more detail.
+Use this when you want public, browser-trusted certificates and direct traffic to the VPS. It is also the right path when you need a wildcard route but do not want Cloudflare sitting in the request path. Our [wildcard subdomain guide](/blog/how-to-host-wildcard-subdomains-with-automatic-https-on-a-vps/) walks through the DNS-only record shape in more detail.
 
 For Cloudflare-proxied apps, make the proxy path explicit:
 
@@ -146,7 +147,7 @@ The credential story is also deliberately small. There is one provider credentia
 tako credentials set ssl.cloudflare --env production --expires-on "in 90 days"
 ```
 
-Deploy fails before build work starts if a required certificate credential is missing, expired, disabled, or invalid for the selected flow. If the credential expires within 30 days, deploy warns before you get surprised by a renewal later. The [CLI reference](/docs/cli) covers credential commands, and [troubleshooting](/docs/troubleshooting) is the place to start when certificate issuance fails.
+Deploy fails before build work starts if a required certificate credential is missing, expired, disabled, or invalid for the selected flow. If the credential expires within 30 days, deploy warns before you get surprised by a renewal later. The [CLI reference](/docs/cli/) covers credential commands, and [troubleshooting](/docs/troubleshooting/) is the place to start when certificate issuance fails.
 
 So the decision tree is short:
 

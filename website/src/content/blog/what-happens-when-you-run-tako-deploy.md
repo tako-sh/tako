@@ -23,13 +23,13 @@ Build and preflight run as concurrent tasks. By the time your build finishes, th
 
 The compressed artifact ships to your server via SFTP, landing at `/opt/tako/apps/{app}/releases/{version}/`. If you're re-deploying the same version (common while debugging), Tako detects the existing directory and skips the upload entirely.
 
-Once extracted, the server runs a **PrepareRelease** phase: download the runtime binary ([Bun or Node](/docs/how-tako-works)) if it isn't cached, then install production dependencies. This all happens _before_ any instance swap — dependency installation doesn't eat into your zero-downtime window.
+Once extracted, the server runs a **PrepareRelease** phase: download the runtime binary ([Bun or Node](/docs/how-tako-works/)) if it isn't cached, then install production dependencies. This all happens _before_ any instance swap — dependency installation doesn't eat into your zero-downtime window.
 
-[Secrets](/blog/secrets-without-env-files) get a shortcut too. Tako hashes your encrypted secrets and compares against what the server already has. Same hash? Skip the transmission. Changed? They're included in the deploy command and delivered to each new instance via file descriptor 3 — never written to disk on the server.
+[Secrets](/blog/secrets-without-env-files/) get a shortcut too. Tako hashes your encrypted secrets and compares against what the server already has. Same hash? Skip the transmission. Changed? They're included in the deploy command and delivered to each new instance via file descriptor 3 — never written to disk on the server.
 
 ## The swap
 
-This is where the [zero-downtime rolling update](/blog/zero-downtime-deploys-without-a-container-in-sight) happens. Tako sends a `Deploy` command over the server's unix socket, and the server replaces instances one at a time:
+This is where the [zero-downtime rolling update](/blog/zero-downtime-deploys-without-a-container-in-sight/) happens. Tako sends a `Deploy` command over the server's unix socket, and the server replaces instances one at a time:
 
 ```d2
 direction: right
@@ -55,7 +55,7 @@ drain -> live: kill old
 For each running instance, one at a time:
 
 1. **Spawn** — a new process starts with `PORT=0` (OS-assigned) and a unique internal token
-2. **Ready** — the [SDK](/docs) writes `TAKO:READY:12345` to stdout once your app is genuinely ready to serve, not just listening on a port
+2. **Ready** — the [SDK](/docs/) writes `TAKO:READY:12345` to stdout once your app is genuinely ready to serve, not just listening on a port
 3. **Health** — the server probes the SDK's built-in `/status` endpoint
 4. **Drain** — the old instance stops receiving new requests; in-flight requests finish (up to 30s)
 5. **Kill** — old process exits
@@ -74,6 +74,6 @@ If the new instance fails to start or its health check times out, Tako kills it 
 
 After the swap, a few housekeeping tasks run in the background: the `current` symlink atomically points to the new release, and release directories older than 30 days get pruned.
 
-The whole design optimizes for one thing: get your code change live as fast as possible, without dropping a single request. No Docker, no image registry, no container runtime — just your code, an SFTP transfer, and a [Pingora-powered](/blog/pingora-vs-caddy-vs-traefik) proxy that knows how to swap processes gracefully.
+The whole design optimizes for one thing: get your code change live as fast as possible, without dropping a single request. No Docker, no image registry, no container runtime — just your code, an SFTP transfer, and a [Pingora-powered](/blog/pingora-vs-caddy-vs-traefik/) proxy that knows how to swap processes gracefully.
 
-Read the [deployment guide](/docs/deployment) for setup, [how Tako works](/docs/how-tako-works) for the full architecture, or the [CLI reference](/docs/cli) for all the flags `tako deploy` accepts.
+Read the [deployment guide](/docs/deployment/) for setup, [how Tako works](/docs/how-tako-works/) for the full architecture, or the [CLI reference](/docs/cli/) for all the flags `tako deploy` accepts.

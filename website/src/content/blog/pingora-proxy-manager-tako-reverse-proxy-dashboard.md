@@ -1,5 +1,6 @@
 ---
 title: "Pingora Proxy Manager: Why Tako Is More Than a Reverse Proxy Dashboard"
+seoTitle: "Pingora Proxy Manager for Self-Hosted Apps"
 date: "2026-05-21T14:02"
 description: "A Pingora proxy manager handles routes. Tako coordinates deploys, TLS, readiness, process state, and scale-to-zero in one app control plane."
 image: 9409ef186dd0
@@ -47,7 +48,7 @@ routes = ["api.example.com", "example.com/api/*"]
 servers = ["prod"]
 ```
 
-That little block is not just proxy config. It participates in [`tako deploy`](/docs/deployment), certificate issuance, route conflict detection, runtime startup, static asset serving, load balancing, logs, and cold starts. The same app identity appears in [`tako.toml`](/docs/tako-toml), server state, the Pingora route table, TLS, and instance management.
+That little block is not just proxy config. It participates in [`tako deploy`](/docs/deployment/), certificate issuance, route conflict detection, runtime startup, static asset serving, load balancing, logs, and cold starts. The same app identity appears in [`tako.toml`](/docs/tako-toml/), server state, the Pingora route table, TLS, and instance management.
 
 Here is the shape:
 
@@ -122,7 +123,7 @@ A reverse proxy dashboard can manage certs too. The difference is ownership. In 
 
 The biggest philosophical split is scale-to-zero.
 
-If an always-on app has no healthy backend, the proxy should return `503`. Something is wrong. But if an app is intentionally scaled to zero with [`tako scale 0`](/docs/cli), "no backend" is not the end of the request. It is the beginning of a cold start.
+If an always-on app has no healthy backend, the proxy should return `503`. Something is wrong. But if an app is intentionally scaled to zero with [`tako scale 0`](/docs/cli/), "no backend" is not the end of the request. It is the beginning of a cold start.
 
 Tako's backend resolution handles that path:
 
@@ -146,7 +147,7 @@ Sort of, but only if you squint. The proxy matters. You would miss it immediatel
 
 If you want to manually manage reverse proxy hosts, upstreams, TLS, and access rules, a Pingora-powered proxy manager is a good category to explore.
 
-If you want a VPS app platform, the proxy is not the product. The product is the agreement between [`tako.toml`](/docs/tako-toml), [`tako deploy`](/docs/deployment), TLS, secrets, readiness, native process supervision, scale-to-zero, static assets, app logs, and local HTTPS through [`tako dev`](/docs/development).
+If you want a VPS app platform, the proxy is not the product. The product is the agreement between [`tako.toml`](/docs/tako-toml/), [`tako deploy`](/docs/deployment/), TLS, secrets, readiness, native process supervision, scale-to-zero, static assets, app logs, and local HTTPS through [`tako dev`](/docs/development/).
 
 That is why Tako does not expose Pingora as a dashboard full of knobs. Pingora is the request engine inside the platform. Tako is the control plane around it.
 

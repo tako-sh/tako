@@ -7,7 +7,7 @@ image: 2417b18e6b47
 
 Your workflow worker has a typo on line 3. It throws before it can claim a single run from the queue. The supervisor respawns it. It throws again. The queue fills up. Nothing runs. You find out hours later when someone asks why their password-reset email never arrived.
 
-That's the failure mode we just closed. [Tako's workflow workers](/blog/durable-workflows-are-here) are scale-to-zero by default — no worker running until the first enqueue or cron tick — and when one exits non-zero before claiming any runs, the supervisor marks the app unhealthy and the next `workflow.enqueue()` returns an error. No silent queueing, no phantom crash loop.
+That's the failure mode we just closed. [Tako's workflow workers](/blog/durable-workflows-are-here/) are scale-to-zero by default — no worker running until the first enqueue or cron tick — and when one exits non-zero before claiming any runs, the supervisor marks the app unhealthy and the next `workflow.enqueue()` returns an error. No silent queueing, no phantom crash loop.
 
 ## The lifecycle
 
@@ -63,7 +63,7 @@ concurrency = 10
 | `workers >= 1` | —       | Always-on. Respawn on any exit, including clean exits.                         |
 | `concurrency`  | 10      | Max parallel runs per worker.                                                  |
 
-See [`tako.toml`](/docs/tako-toml) for the full config surface and [SPEC.md](/docs) for the exact protocol.
+See [`tako.toml`](/docs/tako-toml/) for the full config surface and [SPEC.md](/docs/) for the exact protocol.
 
 ## What the user sees
 
@@ -71,4 +71,4 @@ Before the cooldown existed, a broken workflow meant silent accumulation. Rows p
 
 Now, the first enqueue after a cold crash returns `worker unhealthy: worker exited with status 1 after 84ms without claiming any runs`. That's the error your HTTP handler gets back from `sendEmail.enqueue()`, not a 500 from a crashed worker you never saw. The cooldown clears automatically once a worker claims a run — so a transient startup issue (a slow import, a cold filesystem) doesn't lock you out permanently.
 
-Same ethos as the rest of Tako: [cold starts are fast](/blog/scale-to-zero-without-containers), failures are loud, nothing hides. Check [the docs](/docs) to see the whole stack, or the [CLI reference](/docs/cli) for the commands.
+Same ethos as the rest of Tako: [cold starts are fast](/blog/scale-to-zero-without-containers/), failures are loud, nothing hides. Check [the docs](/docs/) to see the whole stack, or the [CLI reference](/docs/cli/) for the commands.

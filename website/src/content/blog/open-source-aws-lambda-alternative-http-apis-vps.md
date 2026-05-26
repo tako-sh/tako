@@ -1,5 +1,6 @@
 ---
 title: "The Open Source AWS Lambda Alternative for HTTP APIs on a VPS"
+seoTitle: "Open Source Lambda Alternative for VPS APIs"
 date: "2026-05-06T06:41"
 description: "Compare AWS Lambda HTTP APIs with Tako: fetch handlers, native processes, scale-to-zero, and owned VPS pricing."
 image: 0fc512199ec4
@@ -23,19 +24,19 @@ export default function fetch(request: Request): Response {
 }
 ```
 
-That is a complete Tako app. The interface is the same [fetch handler pattern](/blog/the-fetch-handler-pattern) used by modern runtimes and frameworks: `Request` in, `Response` out. On Bun, the SDK hosts it directly. On Node, the [`tako.sh` SDK](/docs) bridges Node's HTTP server to the same fetch shape. For Go, `tako.ListenAndServe()` wraps any `http.Handler`.
+That is a complete Tako app. The interface is the same [fetch handler pattern](/blog/the-fetch-handler-pattern/) used by modern runtimes and frameworks: `Request` in, `Response` out. On Bun, the SDK hosts it directly. On Node, the [`tako.sh` SDK](/docs/) bridges Node's HTTP server to the same fetch shape. For Go, `tako.ListenAndServe()` wraps any `http.Handler`.
 
 The difference is where the handler lives. Lambda runs inside AWS's managed execution environment. Tako runs as a normal OS process on your server, behind Tako's Pingora proxy.
 
-| Concern       | AWS Lambda HTTP API                                       | Tako on a VPS                                                                                               |
-| ------------- | --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| HTTP entry    | Function URL or API Gateway                               | Route in [`tako.toml`](/docs/tako-toml)                                                                     |
-| App shape     | Function handler receiving an event                       | Web-standard fetch handler or Go `http.Handler`                                                             |
-| Runtime       | AWS managed runtime environment                           | Native Bun, Node, or Go process                                                                             |
-| Billing unit  | Requests plus duration and configured memory              | The VPS bill you already chose                                                                              |
-| State         | Invocation model; use external services for durable state | Normal process plus [`TAKO_DATA_DIR`](/blog/stateful-apps-sqlite-uploads-tako-data-dir) for app-owned files |
-| Scale-to-zero | Built into the Lambda model                               | Opt in with [`tako scale 0`](/docs/cli)                                                                     |
-| Deployment    | Zip/image plus AWS config/IaC                             | Build locally, upload artifact, rolling update via [`tako deploy`](/docs/deployment)                        |
+| Concern       | AWS Lambda HTTP API                                       | Tako on a VPS                                                                                                |
+| ------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| HTTP entry    | Function URL or API Gateway                               | Route in [`tako.toml`](/docs/tako-toml/)                                                                     |
+| App shape     | Function handler receiving an event                       | Web-standard fetch handler or Go `http.Handler`                                                              |
+| Runtime       | AWS managed runtime environment                           | Native Bun, Node, or Go process                                                                              |
+| Billing unit  | Requests plus duration and configured memory              | The VPS bill you already chose                                                                               |
+| State         | Invocation model; use external services for durable state | Normal process plus [`TAKO_DATA_DIR`](/blog/stateful-apps-sqlite-uploads-tako-data-dir/) for app-owned files |
+| Scale-to-zero | Built into the Lambda model                               | Opt in with [`tako scale 0`](/docs/cli/)                                                                     |
+| Deployment    | Zip/image plus AWS config/IaC                             | Build locally, upload artifact, rolling update via [`tako deploy`](/docs/deployment/)                        |
 
 This is not "Lambda is bad." Lambda is very good at being Lambda. The trade is different: managed event compute versus owned-process HTTP hosting.
 
@@ -55,14 +56,14 @@ Tako is not trying to replace that whole universe. If your app is mostly AWS eve
 
 HTTP APIs are different. They often start as a simple request/response server and slowly collect normal server-shaped needs:
 
-| Need                   | What tends to happen on Lambda                                 | What happens on Tako                                                               |
-| ---------------------- | -------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| Web framework          | Adapt the framework into Lambda events                         | Run the framework's server output as an app                                        |
-| Persistent connections | Reach for API Gateway WebSockets or another service            | Use built-in [durable channels](/blog/durable-channels-built-in) for WebSocket/SSE |
-| Background jobs        | Add SQS, EventBridge, Step Functions, or another workflow tool | Use built-in [workflows](/blog/durable-workflows-are-here)                         |
-| Local files            | Use `/tmp` for scratch, external storage for durable data      | Write durable app files under `TAKO_DATA_DIR`                                      |
-| Long work              | Split around Lambda's invocation model and service quotas      | Run normal processes and move background work to workflows                         |
-| Predictable spend      | Model requests, duration, memory, gateway, and add-ons         | Pick a server size and watch the box                                               |
+| Need                   | What tends to happen on Lambda                                 | What happens on Tako                                                                |
+| ---------------------- | -------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| Web framework          | Adapt the framework into Lambda events                         | Run the framework's server output as an app                                         |
+| Persistent connections | Reach for API Gateway WebSockets or another service            | Use built-in [durable channels](/blog/durable-channels-built-in/) for WebSocket/SSE |
+| Background jobs        | Add SQS, EventBridge, Step Functions, or another workflow tool | Use built-in [workflows](/blog/durable-workflows-are-here/)                         |
+| Local files            | Use `/tmp` for scratch, external storage for durable data      | Write durable app files under `TAKO_DATA_DIR`                                       |
+| Long work              | Split around Lambda's invocation model and service quotas      | Run normal processes and move background work to workflows                          |
+| Predictable spend      | Model requests, duration, memory, gateway, and add-ons         | Pick a server size and watch the box                                                |
 
 The first few functions feel wonderfully small. The tenth route often starts to look like a web server that has been chopped into pieces.
 
@@ -85,7 +86,7 @@ tako init
 tako deploy
 ```
 
-Tako builds locally, uploads a compressed artifact over SFTP, runs production install on the server, starts a new instance, waits for readiness, moves traffic, and drains the old one. The [deployment docs](/docs/deployment) cover the full flow, but the important part is the shape: your app remains an app.
+Tako builds locally, uploads a compressed artifact over SFTP, runs production install on the server, starts a new instance, waits for readiness, moves traffic, and drains the old one. The [deployment docs](/docs/deployment/) cover the full flow, but the important part is the shape: your app remains an app.
 
 ## Scale-to-zero without becoming a function
 
@@ -97,7 +98,7 @@ Tako has that too, but it is process-based. By default, new deploys keep one des
 tako scale 0 --env production
 ```
 
-After the app is idle for its `idle_timeout`, Tako stops the process. The next request wakes it. While the cold start is in progress, the proxy queues waiters behind the first request, then releases them once the app is ready. The deeper version is in [Scale-to-Zero Without Containers](/blog/scale-to-zero-without-containers).
+After the app is idle for its `idle_timeout`, Tako stops the process. The next request wakes it. While the cold start is in progress, the proxy queues waiters behind the first request, then releases them once the app is ready. The deeper version is in [Scale-to-Zero Without Containers](/blog/scale-to-zero-without-containers/).
 
 ```d2
 direction: right
@@ -147,4 +148,4 @@ That makes Tako a good Lambda alternative when:
 
 The simplest summary is this: Lambda is managed event compute. Tako is owned HTTP infrastructure.
 
-If your API wants to be a function, Lambda is a great place to run it. If your API wants to be a real server but you still want the small-handler DX, [Tako](/docs) gives you that shape on hardware you control.
+If your API wants to be a function, Lambda is a great place to run it. If your API wants to be a real server but you still want the small-handler DX, [Tako](/docs/) gives you that shape on hardware you control.

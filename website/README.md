@@ -5,18 +5,19 @@ Astro static site deployed with Cloudflare Workers static assets.
 ## Routes
 
 - `/`: static landing page
-- `/docs`: docs Intro page ("The Why" section first) with docs navigation sidebar (mobile hamburger menu)
-- `/docs/quickstart`: user quickstart (local setup + remote setup)
-- `/docs/framework-guides`: framework adapter examples
-- `/docs/cli`: CLI command reference
-- `/docs/tako-toml`: `tako.toml` configuration reference
-- `/docs/development`: local development guide
-- `/docs/deployment`: deployment guide
-- `/docs/troubleshooting`: troubleshooting runbook
-- `/docs/how-tako-works`: how Tako works overview
+- `/docs/`: docs Intro page ("The Why" section first) with docs navigation sidebar (mobile hamburger menu)
+- `/docs/quickstart/`: user quickstart (local setup + remote setup)
+- `/docs/framework-guides/`: framework adapter examples
+- `/docs/cli/`: CLI command reference
+- `/docs/tako-toml/`: `tako.toml` configuration reference
+- `/docs/development/`: local development guide
+- `/docs/deployment/`: deployment guide
+- `/docs/troubleshooting/`: troubleshooting runbook
+- `/docs/how-tako-works/`: how Tako works overview
 - `/install.sh`: `301` redirect to GitHub-hosted POSIX `sh` installer script for `tako`
 - `/install-server.sh`: `301` redirect to GitHub-hosted POSIX `sh` installer script for `tako-server`
 - `/server-install.sh`: alias for `/install-server.sh` (same redirect target)
+- `/blog/{slug}/`: HTML blog post
 - `/blog/{slug}.md`: authored Markdown for a blog post
 - `/blog/{slug}.json`: structured blog post data, including frontmatter, headings, and Markdown
 

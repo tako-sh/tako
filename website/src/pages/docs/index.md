@@ -57,5 +57,5 @@ Tako is built to make local development smooth and production deploys boring (th
 
 Easy. Start here:
 
-- [Local setup](/docs/quickstart#local-setup)
-- [Remote setup](/docs/quickstart#remote-setup)
+- [Local setup](/docs/quickstart/#local-setup)
+- [Remote setup](/docs/quickstart/#remote-setup)

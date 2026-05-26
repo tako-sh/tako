@@ -47,22 +47,22 @@ That's a real tradeoff. But it doesn't have to be.
 
 ## What Tako handles
 
-[Tako](/docs) runs on your VPS and handles the platform layer — the stuff between your code and the internet. One binary, no Docker, no Kubernetes.
+[Tako](/docs/) runs on your VPS and handles the platform layer — the stuff between your code and the internet. One binary, no Docker, no Kubernetes.
 
 ```bash
 tako deploy production
 ```
 
-That command builds your app locally, uploads the artifact over SFTP, and performs a [zero-downtime rolling update](/docs/deployment) with health checks. If something goes wrong, `tako releases rollback` puts you back instantly.
+That command builds your app locally, uploads the artifact over SFTP, and performs a [zero-downtime rolling update](/docs/deployment/) with health checks. If something goes wrong, `tako releases rollback` puts you back instantly.
 
 Here's what you get out of the box:
 
-- **Automatic TLS** — [Let's Encrypt certificates](/docs/how-tako-works) issued and renewed for every route, including [wildcards](/docs/tako-toml)
-- **Routing** — Exact domains, wildcard subdomains, path-based routes, static files — all via [Pingora](/blog/pingora-vs-caddy-vs-traefik), Cloudflare's proxy framework
-- **Secrets** — [Encrypted at rest](/blog/secrets-without-env-files), per-environment, injected via file descriptor (never touch disk on the server)
-- **Local dev** — [`tako dev`](/blog/local-dev-with-real-https) gives you real HTTPS at `https://myapp.test` with zero config
-- **Scale to zero** — [Apps sleep when idle](/blog/scale-to-zero-without-containers) and wake on the next request, so one VPS can host many projects
-- **Multi-server** — Deploy across [multiple servers and environments](/blog/one-config-many-servers) from a single `tako.toml`
+- **Automatic TLS** — [Let's Encrypt certificates](/docs/how-tako-works/) issued and renewed for every route, including [wildcards](/docs/tako-toml/)
+- **Routing** — Exact domains, wildcard subdomains, path-based routes, static files — all via [Pingora](/blog/pingora-vs-caddy-vs-traefik/), Cloudflare's proxy framework
+- **Secrets** — [Encrypted at rest](/blog/secrets-without-env-files/), per-environment, injected via file descriptor (never touch disk on the server)
+- **Local dev** — [`tako dev`](/blog/local-dev-with-real-https/) gives you real HTTPS at `https://myapp.test` with zero config
+- **Scale to zero** — [Apps sleep when idle](/blog/scale-to-zero-without-containers/) and wake on the next request, so one VPS can host many projects
+- **Multi-server** — Deploy across [multiple servers and environments](/blog/one-config-many-servers/) from a single `tako.toml`
 
 Your `tako.toml` stays minimal:
 
@@ -80,9 +80,9 @@ routes = ["myapp.com"]
 
 Say you're running three small projects — a marketing site, an API, and a side project. On Render, that's $21-75/month minimum. On Railway, you'd likely exceed the Hobby credit on project two.
 
-On a single Hetzner CX22 with Tako, that's ~$6/month total. All three apps get their own domains, TLS, and zero-downtime deploys. When traffic is low, idle apps [scale to zero](/blog/scale-to-zero-without-containers) and free up resources for the ones that need them.
+On a single Hetzner CX22 with Tako, that's ~$6/month total. All three apps get their own domains, TLS, and zero-downtime deploys. When traffic is low, idle apps [scale to zero](/blog/scale-to-zero-without-containers/) and free up resources for the ones that need them.
 
-When you outgrow one box, add another server to your environment and [deploy across both](/blog/one-config-many-servers). Still cheaper than one Render Standard instance.
+When you outgrow one box, add another server to your environment and [deploy across both](/blog/one-config-many-servers/). Still cheaper than one Render Standard instance.
 
 ## Your hardware, your rules
 

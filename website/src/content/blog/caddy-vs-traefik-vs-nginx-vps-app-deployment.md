@@ -9,7 +9,7 @@ Choosing a reverse proxy for a VPS used to be most of the deployment conversatio
 
 But "deploy an app to a VPS" is bigger than proxying port `3000` to `example.com`. You also need to decide who owns process startup, rolling updates, health checks, changing ports, certificate renewal, static assets, logs, secrets, and the moment a cold app needs to wake up.
 
-That is the gap Tako is built around. This is not another "which proxy is fastest?" post. We already covered why Tako uses Pingora in [Pingora vs Caddy vs Traefik](/blog/pingora-vs-caddy-vs-traefik). This is about deployment shape: what Caddy, Traefik, and Nginx give you on a VPS, and why Tako folds the proxy into the same control plane as deploys and app processes.
+That is the gap Tako is built around. This is not another "which proxy is fastest?" post. We already covered why Tako uses Pingora in [Pingora vs Caddy vs Traefik](/blog/pingora-vs-caddy-vs-traefik/). This is about deployment shape: what Caddy, Traefik, and Nginx give you on a VPS, and why Tako folds the proxy into the same control plane as deploys and app processes.
 
 ## The short version
 
@@ -56,16 +56,16 @@ Nginx gives you sharp tools. A deployment platform still has to decide how to us
 
 A standalone proxy is responsible for traffic. A deployment platform is responsible for state.
 
-| Question                                            | Standalone proxy answer                     | Deployment-platform answer                                        |
-| --------------------------------------------------- | ------------------------------------------- | ----------------------------------------------------------------- |
-| Which app owns `example.com/api/*`?                 | Whatever the current config says            | The app environment declares it in [`tako.toml`](/docs/tako-toml) |
-| Which port is healthy right now?                    | A configured upstream or discovered service | The process that passed readiness and health checks               |
-| Can this request wake a stopped app?                | Usually no, unless another layer does it    | Yes, if the app is scaled to zero                                 |
-| When should the old version stop receiving traffic? | During a reload or external upstream switch | During the rolling deploy flow                                    |
-| Where do deploy logs and proxy diagnostics meet?    | Usually separate systems                    | One app-scoped log stream                                         |
-| Who owns certificate setup for new routes?          | Proxy or external ACME tooling              | The same deploy that registers the route                          |
+| Question                                            | Standalone proxy answer                     | Deployment-platform answer                                         |
+| --------------------------------------------------- | ------------------------------------------- | ------------------------------------------------------------------ |
+| Which app owns `example.com/api/*`?                 | Whatever the current config says            | The app environment declares it in [`tako.toml`](/docs/tako-toml/) |
+| Which port is healthy right now?                    | A configured upstream or discovered service | The process that passed readiness and health checks                |
+| Can this request wake a stopped app?                | Usually no, unless another layer does it    | Yes, if the app is scaled to zero                                  |
+| When should the old version stop receiving traffic? | During a reload or external upstream switch | During the rolling deploy flow                                     |
+| Where do deploy logs and proxy diagnostics meet?    | Usually separate systems                    | One app-scoped log stream                                          |
+| Who owns certificate setup for new routes?          | Proxy or external ACME tooling              | The same deploy that registers the route                           |
 
-That separation is manageable for one app. It gets noisy with several apps, staging environments, path-prefixed routes, wildcard domains, and low-traffic tools that should scale to zero. This is why Tako does not treat the proxy as a bolt-on: [`tako deploy`](/docs/deployment) already knows the app name, environment, routes, build version, runtime, release command, secrets, desired scale, and target server. The proxy should be able to ask that state directly.
+That separation is manageable for one app. It gets noisy with several apps, staging environments, path-prefixed routes, wildcard domains, and low-traffic tools that should scale to zero. This is why Tako does not treat the proxy as a bolt-on: [`tako deploy`](/docs/deployment/) already knows the app name, environment, routes, build version, runtime, release command, secrets, desired scale, and target server. The proxy should be able to ask that state directly.
 
 ```d2
 direction: right
@@ -116,10 +116,10 @@ routes = ["api.example.com", "example.com/api/*"]
 servers = ["prod"]
 ```
 
-Those routes drive TLS, conflict detection, static asset handling, and request matching. If the app is scaled to zero with [`tako scale`](/docs/cli), the next matching request can trigger a cold start and wait for the instance to become healthy. If the app has static files in `public/`, the proxy can serve them directly before waking or forwarding to the process.
+Those routes drive TLS, conflict detection, static asset handling, and request matching. If the app is scaled to zero with [`tako scale`](/docs/cli/), the next matching request can trigger a cold start and wait for the instance to become healthy. If the app has static files in `public/`, the proxy can serve them directly before waking or forwarding to the process.
 
 That is the whole control-plane argument: proxying, TLS, deploys, and process state are not four unrelated chores. They are four views of the same app.
 
 ## Which should you use?
 
-Use Tako when you want the VPS to feel more like a platform: [`tako.toml`](/docs/tako-toml) for routes, [`tako deploy`](/docs/deployment) for releases, built-in TLS, native process management, scale-to-zero, app logs, secrets, and local HTTPS through [`tako dev`](/docs/development).
+Use Tako when you want the VPS to feel more like a platform: [`tako.toml`](/docs/tako-toml/) for routes, [`tako deploy`](/docs/deployment/) for releases, built-in TLS, native process management, scale-to-zero, app logs, secrets, and local HTTPS through [`tako dev`](/docs/development/).

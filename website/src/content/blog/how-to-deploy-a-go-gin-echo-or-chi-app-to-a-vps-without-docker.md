@@ -1,5 +1,6 @@
 ---
 title: "How to Deploy a Go Gin, Echo, or Chi App to a VPS Without Docker"
+seoTitle: "Deploy Go Gin, Echo, or Chi to a VPS"
 date: "2026-05-03T13:27"
 description: "A concrete Go walkthrough: pass Gin, Echo, or Chi to tako.ListenAndServe, then deploy a native binary to a VPS without Docker."
 image: aae315e9f037
@@ -7,7 +8,7 @@ image: aae315e9f037
 
 Go web apps already have the interface Tako wants: `http.Handler`. Gin can be served by `net/http`. Echo has a server-compatible handler. Chi is proudly built around the standard library. That means the path from framework router to VPS deploy is small enough to fit in one sentence: build your router, pass it to `tako.ListenAndServe`, run `tako deploy`.
 
-No Dockerfile. No image registry. No Nginx side quest. Just a Go binary behind [Tako's deployment layer](/docs/deployment): HTTPS, routing, readiness, health checks, rolling updates, logs, secrets, and scaling commands.
+No Dockerfile. No image registry. No Nginx side quest. Just a Go binary behind [Tako's deployment layer](/docs/deployment/): HTTPS, routing, readiness, health checks, rolling updates, logs, secrets, and scaling commands.
 
 Let's walk through Gin first, then swap the framework for Echo or Chi.
 
@@ -177,7 +178,7 @@ Install `tako-server` on the VPS:
 sudo sh -c "$(curl -fsSL https://tako.sh/install-server.sh)"
 ```
 
-The server installer sets up the service user, installs the server binary, prepares `/opt/tako`, and gives the proxy permission to bind ports 80 and 443. From there, `tako-server` owns routing, TLS certificates, process supervision, health checks, release directories, and the encrypted secrets store. The [deployment docs](/docs/deployment) cover the full production model.
+The server installer sets up the service user, installs the server binary, prepares `/opt/tako`, and gives the proxy permission to bind ports 80 and 443. From there, `tako-server` owns routing, TLS certificates, process supervision, health checks, release directories, and the encrypted secrets store. The [deployment docs](/docs/deployment/) cover the full production model.
 
 Point DNS at the VPS before deploying:
 
@@ -241,7 +242,7 @@ You should get a `.test` URL for the app, for example:
 https://gin-on-tako.test/
 ```
 
-That local HTTPS path is useful for cookies, OAuth callbacks, browser APIs, and testing the same routing shape you will use in production. The [development docs](/docs/development) explain the local proxy, route activation, and LAN mode.
+That local HTTPS path is useful for cookies, OAuth callbacks, browser APIs, and testing the same routing shape you will use in production. The [development docs](/docs/development/) explain the local proxy, route activation, and LAN mode.
 
 ## Step 6 - Deploy the binary
 
@@ -296,15 +297,15 @@ The app is now a native Go process on your VPS, managed by Tako. Future deploys 
 
 The code stays normal Go. Tako handles the deployment chores around it:
 
-| Usual VPS chore                 | What happens with Tako                                                                   |
-| ------------------------------- | ---------------------------------------------------------------------------------------- |
-| Write a `Dockerfile`            | Skip it; deploy the compiled Go binary                                                   |
-| Push an image registry artifact | Skip it; Tako uploads a compressed release artifact over SFTP                            |
-| Configure Nginx and Certbot     | Skip it; `tako-server` handles HTTPS routing and certificates                            |
-| Poll logs over SSH              | Use [`tako logs`](/docs/cli#tako-logs)                                                   |
-| Copy `.env` files               | Use [`tako secrets`](/docs/cli#tako-secrets) and typed Go accessors from `tako generate` |
-| Restart processes by hand       | Deploys and scaling commands manage instances                                            |
+| Usual VPS chore                 | What happens with Tako                                                                    |
+| ------------------------------- | ----------------------------------------------------------------------------------------- |
+| Write a `Dockerfile`            | Skip it; deploy the compiled Go binary                                                    |
+| Push an image registry artifact | Skip it; Tako uploads a compressed release artifact over SFTP                             |
+| Configure Nginx and Certbot     | Skip it; `tako-server` handles HTTPS routing and certificates                             |
+| Poll logs over SSH              | Use [`tako logs`](/docs/cli/#tako-logs)                                                   |
+| Copy `.env` files               | Use [`tako secrets`](/docs/cli/#tako-secrets) and typed Go accessors from `tako generate` |
+| Restart processes by hand       | Deploys and scaling commands manage instances                                             |
 
-If you want to see complete working versions, the [Tako GitHub repo](https://github.com/lilienblum/tako/tree/master/examples/go) includes Gin, Echo, Chi, and plain `net/http` examples. The [Go SDK launch post](/blog/the-go-sdk-is-here) goes deeper on secrets, metadata helpers, channels, and why `http.Handler` is the right interface.
+If you want to see complete working versions, the [Tako GitHub repo](https://github.com/lilienblum/tako/tree/master/examples/go) includes Gin, Echo, Chi, and plain `net/http` examples. The [Go SDK launch post](/blog/the-go-sdk-is-here/) goes deeper on secrets, metadata helpers, channels, and why `http.Handler` is the right interface.
 
 Start with one router and one VPS. When the app grows, add more routes, secrets, environments, or servers in `tako.toml`. The deployment command stays the same: `tako deploy`.

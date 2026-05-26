@@ -1,5 +1,6 @@
 ---
 title: "Typed WebSocket Channels in TypeScript: Params, Auth, and Live Pub/Sub"
+seoTitle: "Typed WebSocket Channels in TypeScript"
 date: "2026-05-03T05:54"
 description: "Tako channels turn TypeBox params, auth, typed publish payloads, and browser WebSocket/SSE wiring into one TypeScript realtime model."
 image: a5263b3d6adb
@@ -45,7 +46,7 @@ export default defineChannel("presence", {
 
 TypeBox matters here because it gives Tako both sides of the shape. Per the [TypeBox docs](https://github.com/sinclairzx81/typebox), a schema is a JSON Schema object that can also infer a TypeScript type. Tako uses that JSON Schema to validate `/_tako/channels/presence?roomId=lobby` before asking your app to authorize anything, while TypeScript uses the same declaration to type `params.roomId` in your callback.
 
-No handler means receive-only SSE. A handler means WebSocket: clients can send JSON frames, each frame routes through the matching handler, and the handler's return value is what gets fanned out. See [How Tako Works](/docs/how-tako-works) for the current protocol view.
+No handler means receive-only SSE. A handler means WebSocket: clients can send JSON frames, each frame routes through the matching handler, and the handler's return value is what gets fanned out. See [How Tako Works](/docs/how-tako-works/) for the current protocol view.
 
 ## Auth happens before messages
 

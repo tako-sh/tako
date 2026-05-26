@@ -30,20 +30,20 @@ Any "Heroku alternative" is, implicitly, a re-implementation of that table.
 
 ## How Tako maps to it
 
-Tako is a CLI deploy tool with a Rust [Pingora-based proxy](/blog/pingora-vs-caddy-vs-traefik) that runs on a Linux box with SSH. It explicitly targets Heroku-shaped DX, but rebuilds each piece around native processes instead of containers.
+Tako is a CLI deploy tool with a Rust [Pingora-based proxy](/blog/pingora-vs-caddy-vs-traefik/) that runs on a Linux box with SSH. It explicitly targets Heroku-shaped DX, but rebuilds each piece around native processes instead of containers.
 
-| Heroku primitive       | Tako equivalent                                                                                                                                                                                  |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Buildpacks             | [Presets](/docs/presets) + runtime auto-detection (Bun, Node, Go) — no Docker in the loop                                                                                                        |
-| `git push heroku main` | `tako deploy` — build locally, ship via SFTP, rolling update                                                                                                                                     |
-| Add-ons                | Bring-your-own services via [secrets](/docs/cli) and `TAKO_DATA_DIR`. Durable channels, workflows, queues, and image optimization are [on the platform roadmap](/blog/durable-channels-built-in) |
-| Release phase          | [`release` field in tako.toml](/blog/the-release-command-database-migrations-during-deploy) — runs on the leader server, blocks rollout on failure                                               |
-| Review apps            | `[envs.preview]` environments with their own `route`, `servers`, and `release`                                                                                                                   |
-| Pipelines              | Multiple `[envs.<name>]` blocks promoted by re-deploying with `--env`                                                                                                                            |
-| Eco dynos              | [Scale-to-zero on by default](/blog/scale-to-zero-without-containers) — idle timeout, cold start, queue up to 1000 waiters                                                                       |
-| `heroku run`           | `tako logs`, `tako secrets`, SSH for one-off shell                                                                                                                                               |
+| Heroku primitive       | Tako equivalent                                                                                                                                                                                    |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Buildpacks             | [Presets](/docs/presets/) + runtime auto-detection (Bun, Node, Go) — no Docker in the loop                                                                                                         |
+| `git push heroku main` | `tako deploy` — build locally, ship via SFTP, rolling update                                                                                                                                       |
+| Add-ons                | Bring-your-own services via [secrets](/docs/cli/) and `TAKO_DATA_DIR`. Durable channels, workflows, queues, and image optimization are [on the platform roadmap](/blog/durable-channels-built-in/) |
+| Release phase          | [`release` field in tako.toml](/blog/the-release-command-database-migrations-during-deploy/) — runs on the leader server, blocks rollout on failure                                                |
+| Review apps            | `[envs.preview]` environments with their own `route`, `servers`, and `release`                                                                                                                     |
+| Pipelines              | Multiple `[envs.<name>]` blocks promoted by re-deploying with `--env`                                                                                                                              |
+| Eco dynos              | [Scale-to-zero on by default](/blog/scale-to-zero-without-containers/) — idle timeout, cold start, queue up to 1000 waiters                                                                        |
+| `heroku run`           | `tako logs`, `tako secrets`, SSH for one-off shell                                                                                                                                                 |
 
-A single [`tako.toml`](/docs/tako-toml) ties it together — preview, staging, production, with their own routes, secrets, and release commands:
+A single [`tako.toml`](/docs/tako-toml/) ties it together — preview, staging, production, with their own routes, secrets, and release commands:
 
 ```toml
 name = "my-app"
@@ -77,15 +77,15 @@ Tako isn't alone. The "open source Heroku" space in 2026 has real diversity, and
 A few things fall out of the table:
 
 - **Most options still ship Docker as the runtime substrate.** Piku and Tako are the two outliers that run your app as a native process. That's a clean tradeoff — Docker buys you a portable artifact and isolation, native buys you simpler servers and faster cold starts.
-- **Scale-to-zero is rare.** Heroku's Eco dynos popularized it; almost nobody in the self-hosted space ships it on by default. Tako does, because [we think it's the only honest way](/blog/scale-to-zero-without-containers) to run multiple low-traffic apps on one $6 VPS.
-- **Release phase is patchier than you'd expect.** Dokku and Piku inherit Heroku's Procfile `release:` line; Coolify and Dokploy use generic pre/post hooks; Kamal has `pre-deploy`. [Tako's `release` field](/blog/the-release-command-database-migrations-during-deploy) is the only one designed around multi-server leader/follower coordination, which matters once you have more than one box.
+- **Scale-to-zero is rare.** Heroku's Eco dynos popularized it; almost nobody in the self-hosted space ships it on by default. Tako does, because [we think it's the only honest way](/blog/scale-to-zero-without-containers/) to run multiple low-traffic apps on one $6 VPS.
+- **Release phase is patchier than you'd expect.** Dokku and Piku inherit Heroku's Procfile `release:` line; Coolify and Dokploy use generic pre/post hooks; Kamal has `pre-deploy`. [Tako's `release` field](/blog/the-release-command-database-migrations-during-deploy/) is the only one designed around multi-server leader/follower coordination, which matters once you have more than one box.
 
-We're not knocking the others — Coolify in particular has built something genuinely impressive, and we've [written about it](/blog/tako-vs-coolify) elsewhere. They're solving a slightly different problem: orchestrating containers and services through a UI. Tako is solving "make a CLI deploy feel like Heroku, on bare Linux, in Rust."
+We're not knocking the others — Coolify in particular has built something genuinely impressive, and we've [written about it](/blog/tako-vs-coolify/) elsewhere. They're solving a slightly different problem: orchestrating containers and services through a UI. Tako is solving "make a CLI deploy feel like Heroku, on bare Linux, in Rust."
 
 ## Where Tako goes past parity
 
-Heroku's DX was excellent for 2010. It hasn't really moved since then — and parity, by definition, stops there. Tako starts from that floor and builds one more story up: [durable channels](/blog/durable-channels-built-in) for realtime apps, [workflows](/blog/durable-workflows-are-here) for background jobs, and image optimization, all in the same `tako-server` binary that already routes traffic on your VPS.
+Heroku's DX was excellent for 2010. It hasn't really moved since then — and parity, by definition, stops there. Tako starts from that floor and builds one more story up: [durable channels](/blog/durable-channels-built-in/) for realtime apps, [workflows](/blog/durable-workflows-are-here/) for background jobs, and image optimization, all in the same `tako-server` binary that already routes traffic on your VPS.
 
 In Heroku terms: imagine if the add-ons weren't external services with their own bills, but built into the dyno manager. That's where we're going.
 
-If you're searching for the open source Heroku alternative for 2026, the right answer depends on whether you want a UI (Coolify), a Docker-with-buildpacks classic (Dokku), Docker-via-CLI (Kamal), or a CLI that drops Docker entirely and goes beyond deploy (Tako). Pick what fits — [our docs](/docs) are here when you want to try the last one.
+If you're searching for the open source Heroku alternative for 2026, the right answer depends on whether you want a UI (Coolify), a Docker-with-buildpacks classic (Dokku), Docker-via-CLI (Kamal), or a CLI that drops Docker entirely and goes beyond deploy (Tako). Pick what fits — [our docs](/docs/) are here when you want to try the last one.

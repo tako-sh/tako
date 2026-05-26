@@ -11,21 +11,21 @@ That is hard to beat if your goal is "think about servers as little as possible.
 
 But sometimes the goal changes. You already have a VPS. You want a flat bill. You want your app, logs, secrets, data directory, and deploy history on hardware you control. You still want the nice Next.js path, but you do not want the whole app to live inside a hosted platform account forever.
 
-That is where [Tako](/docs) fits: not a Vercel clone, and not a dashboard PaaS. It is an [open-source](https://github.com/lilienblum/tako) deploy and runtime layer for your own server. For a Next.js app, the interesting part is that Next.js already has the pieces needed to run outside Vercel cleanly.
+That is where [Tako](/docs/) fits: not a Vercel clone, and not a dashboard PaaS. It is an [open-source](https://github.com/lilienblum/tako) deploy and runtime layer for your own server. For a Next.js app, the interesting part is that Next.js already has the pieces needed to run outside Vercel cleanly.
 
 ## The real tradeoff
 
 The search phrase is "open source Vercel alternative," but the better question is narrower: where should this Next.js app run?
 
-| Question              | Vercel                                                                              | Tako                                                                             |
-| --------------------- | ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| Who owns the runtime? | Vercel                                                                              | You, on your VPS                                                                 |
-| Deploy input          | Git push, CLI, hooks, or API                                                        | Local build artifact over SFTP                                                   |
-| Next.js integration   | First-party hosted platform from the creators of Next.js                            | `withTako()` adapter plus the `nextjs` preset                                    |
-| Runtime shape         | Vercel-managed infrastructure for static assets, functions, and framework features  | Native Node or Bun process behind Pingora                                        |
-| Local development     | Vercel CLI and standard framework dev tools                                         | [`tako dev`](/docs/development) with local HTTPS, DNS, and proxy                 |
-| Rollouts              | Managed by Vercel                                                                   | [`tako deploy`](/docs/deployment) rolling update with health checks and rollback |
-| Best fit              | Zero infrastructure, preview-heavy team workflows, global managed frontend platform | Owned server, predictable infrastructure, backend primitives next to the app     |
+| Question              | Vercel                                                                              | Tako                                                                              |
+| --------------------- | ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Who owns the runtime? | Vercel                                                                              | You, on your VPS                                                                  |
+| Deploy input          | Git push, CLI, hooks, or API                                                        | Local build artifact over SFTP                                                    |
+| Next.js integration   | First-party hosted platform from the creators of Next.js                            | `withTako()` adapter plus the `nextjs` preset                                     |
+| Runtime shape         | Vercel-managed infrastructure for static assets, functions, and framework features  | Native Node or Bun process behind Pingora                                         |
+| Local development     | Vercel CLI and standard framework dev tools                                         | [`tako dev`](/docs/development/) with local HTTPS, DNS, and proxy                 |
+| Rollouts              | Managed by Vercel                                                                   | [`tako deploy`](/docs/deployment/) rolling update with health checks and rollback |
+| Best fit              | Zero infrastructure, preview-heavy team workflows, global managed frontend platform | Owned server, predictable infrastructure, backend primitives next to the app      |
 
 Vercel's own [Git deployment docs](https://vercel.com/docs/deployments/git) describe automatic deployments from Git, preview deployments for pull requests, production deployments from the production branch, and instant rollback when a custom-domain deployment is reverted. That flow is excellent. It is a product choice as much as a technical choice: source control is the deploy interface, and the platform owns the rest.
 
@@ -67,7 +67,7 @@ route = "app.example.com"
 servers = ["prod"]
 ```
 
-The [`nextjs` preset](/docs/presets) supplies `main = ".next/tako-entry.mjs"` and `dev = ["next", "dev"]`, so you are not hand-maintaining an entrypoint path. The [framework guide](/docs/framework-guides#nextjs) has the small setup version; this post is about why that setup changes the deployment decision.
+The [`nextjs` preset](/docs/presets/) supplies `main = ".next/tako-entry.mjs"` and `dev = ["next", "dev"]`, so you are not hand-maintaining an entrypoint path. The [framework guide](/docs/framework-guides/#nextjs) has the small setup version; this post is about why that setup changes the deployment decision.
 
 ```d2
 direction: right
@@ -105,11 +105,11 @@ That ownership shows up in a few practical places.
 
 First, deploys are normal server events, not platform events. `tako deploy` builds locally, uploads a versioned artifact, runs production install on the server, starts a fresh instance, waits for the internal health check, adds it to the load balancer, and drains the old one. If startup fails, the old instance keeps serving and the failed release is cleaned up. You can inspect release history with `tako releases list` and roll back with `tako releases rollback`.
 
-Second, secrets are part of the platform instead of scattered `.env` files. [`tako secrets set`](/docs/cli) stores encrypted project secrets locally, syncs them to mapped servers, and `tako-server` injects them into app processes without writing a release `.env` file. For Next.js apps, `tako.sh` gives typed runtime state and generated `tako.d.ts` declarations add typed secrets, so server code can import what it needs without leaning on untyped `process.env` reads.
+Second, secrets are part of the platform instead of scattered `.env` files. [`tako secrets set`](/docs/cli/) stores encrypted project secrets locally, syncs them to mapped servers, and `tako-server` injects them into app processes without writing a release `.env` file. For Next.js apps, `tako.sh` gives typed runtime state and generated `tako.d.ts` declarations add typed secrets, so server code can import what it needs without leaning on untyped `process.env` reads.
 
-Third, the backend pieces are moving closer to the app. Tako's realtime model uses [durable channels](/blog/durable-channels-built-in) for WebSocket/SSE traffic with bounded replay, alongside [durable workflows](/blog/durable-workflows-are-here) for retries, cron, sleeps, and `signal` / `waitFor`. A Next.js route can enqueue a workflow or publish a realtime event once the server runtime is initialized. That means a self-hosted Next.js app can grow realtime and background work without immediately buying three more services.
+Third, the backend pieces are moving closer to the app. Tako's realtime model uses [durable channels](/blog/durable-channels-built-in/) for WebSocket/SSE traffic with bounded replay, alongside [durable workflows](/blog/durable-workflows-are-here/) for retries, cron, sleeps, and `signal` / `waitFor`. A Next.js route can enqueue a workflow or publish a realtime event once the server runtime is initialized. That means a self-hosted Next.js app can grow realtime and background work without immediately buying three more services.
 
-Fourth, local dev uses the same philosophy as production. [`tako dev`](/docs/development) gives you real local HTTPS, `.test` DNS, and a local proxy. The Next.js adapter adds the allowed dev origins so `next dev` accepts those hostnames. You are not testing `localhost:3000` and hoping production behaves like a routed HTTPS app later.
+Fourth, local dev uses the same philosophy as production. [`tako dev`](/docs/development/) gives you real local HTTPS, `.test` DNS, and a local proxy. The Next.js adapter adds the allowed dev origins so `next dev` accepts those hostnames. You are not testing `localhost:3000` and hoping production behaves like a routed HTTPS app later.
 
 None of this means "never use Vercel." It means the tradeoff is real now. The easy path is not only hosted anymore.
 
@@ -130,8 +130,8 @@ The important word is "alternative," not "drop-in replacement." Vercel is a host
 
 If your app needs Vercel's hosted workflow, use it. It is good.
 
-If your app is a Next.js server that should live on your own VPS, Tako gives it a clean path: one adapter in `next.config.ts`, one `preset = "nextjs"` in [`tako.toml`](/docs/tako-toml), and one deploy command.
+If your app is a Next.js server that should live on your own VPS, Tako gives it a clean path: one adapter in `next.config.ts`, one `preset = "nextjs"` in [`tako.toml`](/docs/tako-toml/), and one deploy command.
 
 Same framework. Different owner.
 
-[Read the Next.js framework guide →](/docs/framework-guides#nextjs)
+[Read the Next.js framework guide →](/docs/framework-guides/#nextjs)

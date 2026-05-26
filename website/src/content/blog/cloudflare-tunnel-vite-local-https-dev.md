@@ -5,7 +5,7 @@ description: "Expose a Vite app from tako dev through a stable Cloudflare Tunnel
 image: 2f2df8e3df32
 ---
 
-Sometimes `.test` is exactly right. You want a local HTTPS hostname, secure cookies, service workers, OAuth callbacks, and no port juggling, so you run [`tako dev`](/docs/development) and open `https://my-app.test/`.
+Sometimes `.test` is exactly right. You want a local HTTPS hostname, secure cookies, service workers, OAuth callbacks, and no port juggling, so you run [`tako dev`](/docs/development/) and open `https://my-app.test/`.
 
 Sometimes the app has to leave your laptop.
 
@@ -49,13 +49,13 @@ routes -> vite: "allowed host"
 
 That last arrow is the whole point. The tunneled hostname is explicit application config, so the Vite dev server stays picky.
 
-| Layer              | Hostname it sees  | What accepts it                                                       |
-| ------------------ | ----------------- | --------------------------------------------------------------------- |
-| Browser            | `dev.example.com` | Cloudflare's public certificate and DNS route                         |
-| `cloudflared`      | `dev.example.com` | The tunnel ingress rule                                               |
-| Tako dev proxy     | `dev.example.com` | `[envs.development].routes` in [`tako.toml`](/docs/tako-toml)         |
-| Vite dev server    | `dev.example.com` | `tako.sh/vite` adds the route host to `server.allowedHosts`           |
-| Local fallback URL | `my-app.test`     | Tako-managed local DNS and HTTPS from [`tako dev`](/docs/development) |
+| Layer              | Hostname it sees  | What accepts it                                                        |
+| ------------------ | ----------------- | ---------------------------------------------------------------------- |
+| Browser            | `dev.example.com` | Cloudflare's public certificate and DNS route                          |
+| `cloudflared`      | `dev.example.com` | The tunnel ingress rule                                                |
+| Tako dev proxy     | `dev.example.com` | `[envs.development].routes` in [`tako.toml`](/docs/tako-toml/)         |
+| Vite dev server    | `dev.example.com` | `tako.sh/vite` adds the route host to `server.allowedHosts`            |
+| Local fallback URL | `my-app.test`     | Tako-managed local DNS and HTTPS from [`tako dev`](/docs/development/) |
 
 This is different from binding Vite to `0.0.0.0` or telling it to trust every host. Vite still listens on loopback. The public edge talks to Tako, not straight to Vite.
 
@@ -84,7 +84,7 @@ preset = "vite"
 routes = ["my-app.test", "dev.example.com"]
 ```
 
-The `.test` route is local and managed by Tako. The `dev.example.com` route is external: Tako will route it if traffic reaches the dev proxy, but it will not create DNS for it, advertise it in LAN mode, or rewrite it to `.local`. That split is intentional. [`LAN mode`](/blog/lan-mode-hand-your-app-to-a-phone) is for devices on your Wi-Fi; Cloudflare Tunnel is for traffic from the public internet.
+The `.test` route is local and managed by Tako. The `dev.example.com` route is external: Tako will route it if traffic reaches the dev proxy, but it will not create DNS for it, advertise it in LAN mode, or rewrite it to `.local`. That split is intentional. [`LAN mode`](/blog/lan-mode-hand-your-app-to-a-phone/) is for devices on your Wi-Fi; Cloudflare Tunnel is for traffic from the public internet.
 
 You can also list only the external route:
 
@@ -101,7 +101,7 @@ Run the app:
 tako dev
 ```
 
-At this point `https://my-app.test/` should work locally. If it does not, fix that first. The [development docs](/docs/development), [CLI reference](/docs/cli), and [`tako.toml` reference](/docs/tako-toml) cover the local daemon, TLS trust, and route syntax.
+At this point `https://my-app.test/` should work locally. If it does not, fix that first. The [development docs](/docs/development/), [CLI reference](/docs/cli/), and [`tako.toml` reference](/docs/tako-toml/) cover the local daemon, TLS trust, and route syntax.
 
 ## Configure Cloudflare Tunnel
 
@@ -171,4 +171,4 @@ curl -k -H "Host: dev.example.com" https://127.0.0.1:47831/
 
 If that returns your app, Tako is configured correctly and the problem is on the Cloudflare side. If that returns `421`, Tako is receiving the request but does not have the route. If Vite blocks it, the request made it all the way through the tunnel and proxy, but the app's Vite config is missing the Tako plugin.
 
-This setup is for development, not deployment. When you are ready to ship, use [`tako deploy`](/docs/deployment) and give the production environment its own public route. The neat part is that the local path and the production path share the same basic idea: routes are real config, the proxy routes by hostname, and the app does not need to know whether the request started three inches away or somewhere on the internet.
+This setup is for development, not deployment. When you are ready to ship, use [`tako deploy`](/docs/deployment/) and give the production environment its own public route. The neat part is that the local path and the production path share the same basic idea: routes are real config, the proxy routes by hostname, and the app does not need to know whether the request started three inches away or somewhere on the internet.

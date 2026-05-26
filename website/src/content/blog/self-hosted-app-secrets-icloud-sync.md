@@ -9,13 +9,13 @@ Secrets are easy until a second laptop shows up.
 
 One machine has the production database URL. Another needs to deploy. CI needs the same key for release builds. A teammate joins and asks where the Stripe token lives. The usual answer is a `.env` file, a password manager note, a Slack message you promise to delete, or a vault service that is technically correct and operationally one more thing.
 
-We already wrote about [why Tako does not inject secrets through `.env` files](/blog/secrets-without-env-files). That post covered the runtime side: AES-256-GCM at rest, fd 3 at spawn time, and typed accessors from `tako generate`.
+We already wrote about [why Tako does not inject secrets through `.env` files](/blog/secrets-without-env-files/). That post covered the runtime side: AES-256-GCM at rest, fd 3 at spawn time, and typed accessors from `tako generate`.
 
 This is the other half: sharing the keys that decrypt those secrets. Tako secrets now have stable per-environment key IDs, self-contained key export/import, passphrase-derived keys, and optional iCloud Keychain storage on macOS. The goal is boring on purpose: encrypted project state can live in git, while the key material follows the people and machines that are allowed to use it.
 
 ## The file is portable. The key is not.
 
-When you run [`tako secrets set`](/docs/cli), Tako writes encrypted values to `.tako/secrets.json`. That file is meant to be tracked. `tako init` updates `.gitignore` so the app's `.tako/` directory stays ignored while `.tako/secrets.json` remains visible to git.
+When you run [`tako secrets set`](/docs/cli/), Tako writes encrypted values to `.tako/secrets.json`. That file is meant to be tracked. `tako init` updates `.gitignore` so the app's `.tako/` directory stays ignored while `.tako/secrets.json` remains visible to git.
 
 The file looks like this:
 
@@ -143,11 +143,11 @@ tako secrets set STRIPE_KEY --env production
 tako secrets sync --env production
 ```
 
-[`tako secrets sync`](/docs/cli) treats the local `.tako/secrets.json` file as the source of truth. For each target environment, Tako decrypts locally using the cached key from iCloud Keychain or `keys/{key_id}`, then sends an `update_secrets` command to `tako-server`.
+[`tako secrets sync`](/docs/cli/) treats the local `.tako/secrets.json` file as the source of truth. For each target environment, Tako decrypts locally using the cached key from iCloud Keychain or `keys/{key_id}`, then sends an `update_secrets` command to `tako-server`.
 
-The server does not write a remote `.env` file. It stores secrets encrypted in SQLite using a per-device key. Fresh app instances and workflow workers receive secrets through the same fd 3 bootstrap envelope described in [the deployment docs](/docs/deployment). HTTP instances roll. Workflow workers drain and restart. New processes see the new value; old processes finish what they were already doing.
+The server does not write a remote `.env` file. It stores secrets encrypted in SQLite using a per-device key. Fresh app instances and workflow workers receive secrets through the same fd 3 bootstrap envelope described in [the deployment docs](/docs/deployment/). HTTP instances roll. Workflow workers drain and restart. New processes see the new value; old processes finish what they were already doing.
 
-Deploys use the same model. During [`tako deploy`](/blog/what-happens-when-you-run-tako-deploy), the CLI asks each server for the app's current secrets hash. If the hash matches, it skips the secrets payload entirely. If the server is new or stale, the deploy includes decrypted secrets and the server stores the update.
+Deploys use the same model. During [`tako deploy`](/blog/what-happens-when-you-run-tako-deploy/), the CLI asks each server for the app's current secrets hash. If the hash matches, it skips the secrets payload entirely. If the server is new or stale, the deploy includes decrypted secrets and the server stores the update.
 
 That is the whole shape:
 
@@ -165,4 +165,4 @@ This is still not a replacement for every vault. Big organizations have approval
 
 Tako is aiming at the very common middle: teams deploying apps to their own servers who want something better than `.env`, but do not want secret management to become the largest system in the room. A tracked encrypted file, stable environment key IDs, explicit key import/export, passphrases when you want them, iCloud Keychain when your Mac can use it, and fd 3 when the process starts.
 
-Secrets are one of the platform pieces Tako keeps close to the app: routing, TLS, deploys, logs, local dev, workflows, and now a key-sharing path that does not require pretending a plaintext file in `.gitignore` is infrastructure. Start with the [CLI reference](/docs/cli), skim [how Tako works](/docs/how-tako-works), or read the original [Secrets Without `.env` Files](/blog/secrets-without-env-files) if you want the runtime half of the story.
+Secrets are one of the platform pieces Tako keeps close to the app: routing, TLS, deploys, logs, local dev, workflows, and now a key-sharing path that does not require pretending a plaintext file in `.gitignore` is infrastructure. Start with the [CLI reference](/docs/cli/), skim [how Tako works](/docs/how-tako-works/), or read the original [Secrets Without `.env` Files](/blog/secrets-without-env-files/) if you want the runtime half of the story.

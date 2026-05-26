@@ -1,6 +1,6 @@
 ---
 layout: ../../layouts/DocsLayout.astro
-title: "Self-hosted app deployment: server setup, rolling deploys, and scaling - Tako Docs"
+title: "Self-Hosted Deployment - Tako Docs"
 heading: Deployment
 current: deployment
 description: "Guide to deploying apps with Tako on your own servers, including server setup, rolling deploys, scaling, secrets, and production operations."

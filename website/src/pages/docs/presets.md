@@ -1,6 +1,6 @@
 ---
 layout: ../../layouts/DocsLayout.astro
-title: "Framework presets for Next.js, TanStack Start, and more - Tako Docs"
+title: "Framework Presets - Tako Docs"
 heading: Presets
 current: presets
 description: "Learn how Tako presets provide framework-specific defaults for entrypoints, static assets, and dev commands across supported frameworks."
