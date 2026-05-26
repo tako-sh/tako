@@ -378,7 +378,9 @@ jobs:
 
       - name: Setup Bun
         if: steps.changes.outputs.skip != 'true'
-        uses: oven-sh/setup-bun@v2
+        run: |
+          curl -fsSL https://bun.sh/install | bash -s "bun-v1.3.14"
+          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
 
       - name: Publish
         if: steps.changes.outputs.skip != 'true'

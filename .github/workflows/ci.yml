@@ -22,19 +22,40 @@ jobs:
     name: Detect changes
     runs-on: ubuntu-latest
     outputs:
-      website_only: ${{ steps.filter.outputs.code == 'false' }}
+      website_only: ${{ steps.filter.outputs.website_only }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Check paths
         id: filter
-        uses: dorny/paths-filter@v4
-        with:
-          filters: |
-            code:
-              - '**'
-              - '!website/**'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "website_only=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+          else
+            base="${{ github.event.before }}"
+          fi
+
+          if [ -z "$base" ] || [[ "$base" =~ ^0+$ ]]; then
+            echo "website_only=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git diff --name-only "$base" "${{ github.sha }}" > changed-files.txt
+          if [ -s changed-files.txt ] && ! grep -Ev '^(website/|$)' changed-files.txt >/dev/null; then
+            echo "website_only=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "website_only=false" >> "$GITHUB_OUTPUT"
+          fi
 
   rust:
     name: Rust
@@ -46,15 +67,12 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt
+          rustup default stable
 
       - name: Install libvips
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libvips-dev libheif-plugin-aomenc
-
-      - name: Cache Rust artifacts
-        uses: Swatinem/rust-cache@v2
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -74,25 +92,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Check Go SDK changes
-        id: changes
-        uses: dorny/paths-filter@v4
-        with:
-          filters: |
-            go:
-              - 'go.mod'
-              - '*.go'
-              - 'internal/**'
-              - 'examples/go/**'
-
       - name: Setup Go
-        if: steps.changes.outputs.go == 'true'
         uses: actions/setup-go@v6
         with:
           go-version: "1.25"
 
       - name: Format check
-        if: steps.changes.outputs.go == 'true'
         run: |
           test -z "$(gofmt -l . examples/go/)" || {
             echo "Go files not formatted. Run: gofmt -w . examples/go/"
@@ -101,15 +106,12 @@ jobs:
           }
 
       - name: Vet
-        if: steps.changes.outputs.go == 'true'
         run: go vet ./...
 
       - name: Test
-        if: steps.changes.outputs.go == 'true'
         run: go test ./...
 
       - name: Build examples
-        if: steps.changes.outputs.go == 'true'
         run: |
           for dir in examples/go/*/; do
             echo "Building $dir..."
@@ -126,9 +128,9 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
+        run: |
+          curl -fsSL https://bun.sh/install | bash -s "bun-v${{ env.BUN_VERSION }}"
+          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -162,15 +164,15 @@ jobs:
       - name: Install libvips runtime
         run: sh scripts/install-libvips-runtime.sh
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-
       - name: Setup Node
         uses: actions/setup-node@v6
         with:
           node-version: 22
+
+      - name: Setup Bun
+        run: |
+          curl -fsSL https://bun.sh/install | bash -s "bun-v${{ env.BUN_VERSION }}"
+          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -214,15 +216,15 @@ jobs:
       - name: Install libvips
         run: sh scripts/install-libvips-runtime.sh
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-
       - name: Setup Node
         uses: actions/setup-node@v6
         with:
           node-version: 22
+
+      - name: Setup Bun
+        run: |
+          curl -fsSL https://bun.sh/install | bash -s "bun-v${{ env.BUN_VERSION }}"
+          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -251,14 +253,30 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Check website changes
         id: changes
-        uses: dorny/paths-filter@v4
-        with:
-          filters: |
-            website:
-              - 'website/**'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "website=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+          else
+            base="${{ github.event.before }}"
+          fi
+
+          if [ -n "$base" ] && ! [[ "$base" =~ ^0+$ ]] && git diff --name-only "$base" "${{ github.sha }}" | grep -E '^website/' >/dev/null; then
+            echo "website=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "website=false" >> "$GITHUB_OUTPUT"
+          fi
 
       # Astro requires Node >= 22.12.0; runner default is too old
       - name: Setup Node
@@ -269,9 +287,9 @@ jobs:
 
       - name: Setup Bun
         if: steps.changes.outputs.website == 'true'
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
+        run: |
+          curl -fsSL https://bun.sh/install | bash -s "bun-v${{ env.BUN_VERSION }}"
+          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
 
       - name: Install dependencies
         if: steps.changes.outputs.website == 'true'
@@ -296,9 +314,9 @@ jobs:
 
       - name: Check links
         if: steps.changes.outputs.website == 'true'
-        uses: lycheeverse/lychee-action@v2
-        with:
-          args: "--root-dir website/dist --exclude 'demo\\.tako\\.sh' --exclude 'dub\\.sh' --exclude 'pkg\\.go\\.dev' --exclude 'tako\\.sh/blog' --exclude 'tako\\.sh/docs' website/dist/**/*.html"
+        run: |
+          cargo install lychee --locked
+          lychee --root-dir website/dist --exclude 'demo\.tako\.sh' --exclude 'dub\.sh' --exclude 'pkg\.go\.dev' --exclude 'tako\.sh/blog' --exclude 'tako\.sh/docs' 'website/dist/**/*.html'
 
   # x86_64 glibc — needed for CLI tests + E2E
   build-x86_64-glibc:
@@ -373,7 +391,7 @@ jobs:
   build-aarch64-glibc:
     name: Build aarch64 (glibc)
     needs: [detect-changes]
-    if: needs.detect-changes.outputs.website_only != 'true' && github.event_name == 'push'
+    if: needs.detect-changes.outputs.website_only != 'true' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     # 24.04-arm is the only GitHub-hosted ARM runner available
     runs-on: ubuntu-24.04-arm
     # Build inside Debian 11 container for glibc 2.31 compat (same as x86_64)
@@ -417,7 +435,7 @@ jobs:
   build-aarch64-musl:
     name: Build aarch64 (musl)
     needs: [detect-changes]
-    if: needs.detect-changes.outputs.website_only != 'true' && github.event_name == 'push'
+    if: needs.detect-changes.outputs.website_only != 'true' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     # 24.04-arm is the only GitHub-hosted ARM runner available
     runs-on: ubuntu-24.04-arm
     steps:
@@ -444,7 +462,7 @@ jobs:
   build-darwin:
     name: Build macOS CLI (${{ matrix.arch }})
     needs: [detect-changes]
-    if: needs.detect-changes.outputs.website_only != 'true' && github.event_name == 'push'
+    if: needs.detect-changes.outputs.website_only != 'true' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -461,12 +479,9 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Cache Rust artifacts
-        uses: Swatinem/rust-cache@v2
+        run: |
+          rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
+          rustup default stable
 
       - name: Install libvips
         run: sh scripts/install-libvips-runtime.sh
