@@ -581,6 +581,7 @@ run_universal_http_checks() {
 start_tako_server() {
   local host=$1
   local server_bin=$2
+  local server_config='{"server_name":"e2e","trusted_proxy":{"trusted_cidrs":["172.16.0.0/12"]}}'
   scp_to "$server_bin" "$host" "/home/tako/tako-server"
   scp_to "$WORKSPACE/scripts/install-tako-server.sh" "$host" "/home/tako/install-tako-server.sh"
   ssh_exec "$host" "set -eu; chmod 0755 /home/tako/tako-server /home/tako/install-tako-server.sh; tar -cf - -C /home/tako tako-server | zstd -o /home/tako/tako-server.tar.zst; sha256sum /home/tako/tako-server.tar.zst | awk '{print \$1}' > /home/tako/tako-server.tar.zst.sha256"
@@ -588,6 +589,9 @@ start_tako_server() {
     ssh_exec "$host" "rm -f /home/tako/tako-server /home/tako/tako-server.tar.zst /home/tako/tako-server.tar.zst.sha256 /home/tako/install-tako-server.sh" >/dev/null 2>&1 || true
     return 2
   fi
+  # E2E marks requests as HTTPS through forwarded headers from the Docker bridge.
+  # Keep production defaults strict while making the test proxy relationship explicit.
+  ssh_exec "$host" "printf '%s\n' '$server_config' | sudo tee /opt/tako/config.json >/dev/null && sudo chown tako:tako /opt/tako/config.json && sudo chmod 0644 /opt/tako/config.json"
   ssh_exec "$host" "rm -f /home/tako/tako-server /home/tako/tako-server.tar.zst /home/tako/tako-server.tar.zst.sha256 /home/tako/install-tako-server.sh"
   ssh_exec "$host" "sudo pkill -x tako-server >/dev/null 2>&1 || true"
   ssh_exec "$host" "sudo rm -f /var/run/tako/tako.sock"

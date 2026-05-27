@@ -72,26 +72,13 @@ declare module "tako.sh" {
 interface TakoUserEnv {}
 
 /**
- * Tako-provided runtime environment variables available on `process.env` and `import.meta.env`.
+ * User-defined environment variables available on `process.env` and `import.meta.env`.
  *
- * Values are strings because they come from the process environment.
+ * Use `tako.sh` exports for Tako-provided runtime state such as env, port, build, and dataDir.
  */
-interface TakoRuntimeEnv extends TakoUserEnv {
-  /** Current environment. Narrowed to `[envs.*]` declared in `tako.toml`. */
-  readonly ENV: Env;
-  /** Port Tako assigned to this app instance. */
-  readonly PORT: string;
-  /** Host/address Tako bound this app instance to. */
-  readonly HOST: string;
-  /** Build identifier injected by Tako at deploy time. `"dev"` under `tako dev`. */
-  readonly TAKO_BUILD: string;
-  /** Persistent app-owned data directory — writes survive restarts and deploys. */
-  readonly TAKO_DATA_DIR: string;
-}
-
 declare global {
   namespace NodeJS {
-    interface ProcessEnv extends TakoRuntimeEnv {}
+    interface ProcessEnv extends TakoUserEnv {}
   }
-  interface ImportMetaEnv extends TakoRuntimeEnv {}
+  interface ImportMetaEnv extends TakoUserEnv {}
 }
