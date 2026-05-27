@@ -1,7 +1,8 @@
 use super::request::{
-    ClientIpResolution, client_ip_for_source_ip_mode, client_ip_from_trusted_headers,
-    forwarded_header_has_proto, forwarded_header_proto_is_https, https_redirect_host,
-    is_request_forwarded_https, strip_route_prefix_for_static_lookup, x_forwarded_proto_is_https,
+    ClientIpResolution, ForwardedHeaderTrust, client_ip_for_source_ip_mode,
+    client_ip_from_trusted_headers, forwarded_header_has_proto, forwarded_header_proto_is_https,
+    https_redirect_host, is_effective_request_https, is_request_forwarded_https,
+    strip_route_prefix_for_static_lookup, x_forwarded_proto_is_https,
 };
 use super::server::{create_tls_settings, listener_socket_options};
 use super::*;
@@ -526,18 +527,109 @@ fn production_error_bodies_are_generic_reason_phrases() {
 
 #[test]
 fn test_effective_request_https_prefers_transport_tls() {
-    assert!(is_effective_request_https(true, None, None));
+    let cloudflare_ips = CloudflareIpRanges::default();
+    let trusted_proxy = TrustedProxyConfig::default();
+
+    assert!(is_effective_request_https(
+        true,
+        "api.example.com",
+        None,
+        None,
+        None,
+        forwarded_header_trust(None, &cloudflare_ips, &trusted_proxy)
+    ));
 }
 
 #[test]
 fn test_effective_request_https_uses_forwarded_https_when_transport_is_http() {
-    assert!(is_effective_request_https(false, Some("https"), None));
+    let cloudflare_ips = CloudflareIpRanges::default();
+    let trusted_proxy =
+        TrustedProxyConfig::from_raw(false, &["10.0.0.0/8".to_string()], &[]).unwrap();
+
     assert!(is_effective_request_https(
         false,
+        "api.example.com",
         None,
-        Some("for=192.0.2.60;proto=https")
+        Some("https"),
+        None,
+        forwarded_header_trust(Some("10.1.2.3"), &cloudflare_ips, &trusted_proxy)
     ));
-    assert!(!is_effective_request_https(false, Some("http"), None));
+    assert!(is_effective_request_https(
+        false,
+        "api.example.com",
+        None,
+        None,
+        Some("for=192.0.2.60;proto=https"),
+        forwarded_header_trust(Some("10.1.2.3"), &cloudflare_ips, &trusted_proxy)
+    ));
+    assert!(!is_effective_request_https(
+        false,
+        "api.example.com",
+        None,
+        Some("http"),
+        None,
+        forwarded_header_trust(Some("10.1.2.3"), &cloudflare_ips, &trusted_proxy)
+    ));
+}
+
+#[test]
+fn test_effective_request_https_ignores_forwarded_https_from_untrusted_peer() {
+    let cloudflare_ips = CloudflareIpRanges::default();
+    let trusted_proxy = TrustedProxyConfig::default();
+
+    assert!(!is_effective_request_https(
+        false,
+        "api.example.com",
+        None,
+        Some("https"),
+        None,
+        forwarded_header_trust(Some("198.51.100.10"), &cloudflare_ips, &trusted_proxy)
+    ));
+    assert!(!is_effective_request_https(
+        false,
+        "api.example.com",
+        None,
+        None,
+        Some("for=192.0.2.60;proto=https"),
+        forwarded_header_trust(Some("198.51.100.10"), &cloudflare_ips, &trusted_proxy)
+    ));
+}
+
+#[test]
+fn test_effective_request_https_trusts_forwarded_https_from_cloudflare_and_loopback() {
+    let cloudflare_ips = CloudflareIpRanges::from_test_cidrs(&["198.51.100.0/24"]);
+    let trusted_proxy = TrustedProxyConfig::default();
+
+    assert!(is_effective_request_https(
+        false,
+        "api.example.com",
+        None,
+        Some("https"),
+        None,
+        forwarded_header_trust(Some("198.51.100.10"), &cloudflare_ips, &trusted_proxy)
+    ));
+
+    let cloudflare_ips = CloudflareIpRanges::default();
+    assert!(is_effective_request_https(
+        false,
+        "api.example.com",
+        None,
+        Some("https"),
+        None,
+        forwarded_header_trust(Some("127.0.0.1"), &cloudflare_ips, &trusted_proxy)
+    ));
+}
+
+fn forwarded_header_trust<'a>(
+    peer_ip: Option<&str>,
+    cloudflare_ips: &'a CloudflareIpRanges,
+    trusted_proxy: &'a TrustedProxyConfig,
+) -> ForwardedHeaderTrust<'a> {
+    ForwardedHeaderTrust {
+        peer_ip: peer_ip.map(|ip| ip.parse().unwrap()),
+        cloudflare_ips,
+        trusted_proxy,
+    }
 }
 
 #[test]

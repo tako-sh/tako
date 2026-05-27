@@ -38,10 +38,10 @@ use pingora_http::{RequestHeader, ResponseHeader};
 use pingora_proxy::ProxyHttp;
 #[cfg(test)]
 use request::{
-    build_proxy_cache_key, insert_body_headers, is_effective_request_https,
-    path_looks_like_static_asset, production_error_body, request_is_proxy_cacheable,
-    response_cacheability, should_assume_forwarded_private_request_https,
-    should_redirect_http_request, static_lookup_paths,
+    build_proxy_cache_key, insert_body_headers, path_looks_like_static_asset,
+    production_error_body, request_is_proxy_cacheable, response_cacheability,
+    should_assume_forwarded_private_request_https, should_redirect_http_request,
+    static_lookup_paths,
 };
 #[cfg(test)]
 use service::BackendResolution;

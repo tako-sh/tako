@@ -7,11 +7,10 @@ pub(crate) use backend::BackendResolution;
 
 use super::TakoProxy;
 use super::request::{
-    ClientIpResolution, build_proxy_cache_key, client_ip_for_source_ip_mode,
+    ClientIpResolution, ForwardedHeaderTrust, build_proxy_cache_key, client_ip_for_source_ip_mode,
     client_ip_from_session, create_production_error_response, https_redirect_host,
     insert_body_headers, is_effective_request_https, path_looks_like_static_asset, request_host,
-    request_is_proxy_cacheable, response_cacheability,
-    should_assume_forwarded_private_request_https, should_redirect_http_request,
+    request_is_proxy_cacheable, response_cacheability, should_redirect_http_request,
 };
 use crate::lb::Backend;
 use crate::metrics::RequestTimer;
@@ -203,14 +202,19 @@ impl ProxyHttp for TakoProxy {
             let forwarded = request_headers
                 .get("forwarded")
                 .and_then(|h| h.to_str().ok());
-            let is_effective_https =
-                is_effective_request_https(transport_https, x_forwarded_proto, forwarded)
-                    || should_assume_forwarded_private_request_https(
-                        hostname,
-                        x_forwarded_for,
-                        x_forwarded_proto,
-                        forwarded,
-                    );
+            let peer_ip = client_ip_from_session(session);
+            let is_effective_https = is_effective_request_https(
+                transport_https,
+                hostname,
+                x_forwarded_for,
+                x_forwarded_proto,
+                forwarded,
+                ForwardedHeaderTrust {
+                    peer_ip,
+                    cloudflare_ips: &self.cloudflare_ips,
+                    trusted_proxy: &self.config.trusted_proxy,
+                },
+            );
             ctx.is_https = is_effective_https;
 
             if should_redirect_http_request(is_effective_https, self.config.redirect_http_to_https)

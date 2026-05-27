@@ -12,20 +12,20 @@ description: "Complete CLI reference for Tako commands including init, dev, depl
 tako [--version] [-v|--verbose] [--ci] [--dry-run] [-c|--config <CONFIG>] [--ssh-passphrase <PASSPHRASE>] <command>
 ```
 
-Progress, prompts, status, and logs go to stderr. Command results and machine-readable data go to stdout.
+Progress, prompts, diagnostics, and logs go to stderr. Command results and machine-readable data go to stdout.
 
 ## Global Options
 
-| Option                          | Meaning                                                                                                                     |
-| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `--version`                     | Print the CLI version.                                                                                                      |
-| `-v`, `--verbose`               | Enable debug diagnostics and detailed progress logs.                                                                        |
-| `--ci`                          | Disable interactive prompts and pretty UI.                                                                                  |
-| `--dry-run`                     | Show side effects without performing them. Supported by deploy, server add/remove, delete, and side-effecting backup flows. |
-| `-c`, `--config <CONFIG>`       | Use a specific app config file. If it has no `.toml` suffix, Tako appends it.                                               |
-| `--ssh-passphrase <PASSPHRASE>` | Passphrase for encrypted SSH keys used by setup, recovery, and signed management requests.                                  |
+| Option                          | Meaning                                                                                                                         |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `--version`                     | Print the CLI version and exit.                                                                                                 |
+| `-v`, `--verbose`               | Append-only transcript with timestamps, log levels, and debug diagnostics.                                                      |
+| `--ci`                          | Deterministic non-interactive output: no colors, spinners, raw mode, or prompts.                                                |
+| `--dry-run`                     | Show side effects without performing them. Supported by deploy, servers add/remove, delete, and side-effecting backup commands. |
+| `-c`, `--config <CONFIG>`       | Use a config file other than `./tako.toml`; `.toml` is appended when omitted.                                                   |
+| `--ssh-passphrase <PASSPHRASE>` | Passphrase for encrypted local SSH keys used by SSH and signed management requests.                                             |
 
-App-scoped commands treat the selected config file's parent directory as the app directory. This includes `init`, `dev`, `logs`, `deploy`, `releases`, `backups`, `delete`, `secrets`, `storages`, `dns`, `generate`, and project-context `scale`.
+App-scoped commands treat the selected config file's parent directory as the app directory. This includes `init`, `dev`, `logs`, `deploy`, `releases`, `backups`, `delete`, `secrets`, `storages`, `generate`, and project-context `scale`.
 
 ## `tako init`
 
@@ -34,11 +34,9 @@ tako init
 tako init -c apps/web/tako.toml
 ```
 
-Creates `tako.toml`. Interactive init detects or prompts for runtime, build preset, entrypoint when needed, JS `app_root`, and production route. It writes server membership as commented guidance; add servers separately with `tako servers add` and map them under `[envs.<env>].servers`.
+Creates `tako.toml`, updates `.gitignore`, detects runtime and preset, asks for app name and production route, and installs the SDK package for JS/Go projects. If the production route is a wildcard route, init can collect and encrypt the Cloudflare credential needed for Let's Encrypt DNS-01.
 
-For JavaScript runtimes, init installs `tako.sh` with the selected package manager. For Go, it runs `go get tako.sh`.
-
-If the production route is a wildcard route, init offers to set up wildcard HTTPS and stores the Cloudflare token encrypted in `.tako/secrets.json`.
+Existing config files are protected: interactive runs ask before overwrite; non-interactive runs leave the file untouched.
 
 ## `tako generate`
 
@@ -48,23 +46,22 @@ Aliases: `tako gen`, `tako g`.
 tako generate
 ```
 
-Generates project files from config:
+Refreshes generated project files:
 
-- JS/TS: `tako.d.ts` with typed runtime metadata, user vars, environments, secrets, storages, channels, and workflows.
+- JS/TS: `tako.d.ts` with environment names, secret names, storage bindings, channel metadata, workflow metadata, and env var names.
 - Go: `tako_secrets.go` with typed secret accessors.
 
-For JS/TS projects, generation keeps an existing `tako.d.ts` in `app/`, `src/`, or the project root. Legacy `tako.gen.ts` files are removed on regeneration. If channel, stream, or workflow directories exist and are empty, generation scaffolds demo definitions.
+For JS/TS, generation keeps an existing `tako.d.ts` in `app/`, `src/`, or the project root. Legacy `tako.gen.ts` files are removed. Empty existing `channels/` or `workflows/` directories get demo definitions.
 
 ## `tako dev`
 
 ```bash
 tako dev
 tako dev --variant preview
+tako dev --var preview
 ```
 
-`tako dev` runs the app behind local HTTPS and real development routes. It starts or reuses the local dev daemon, prepares DNS and proxying, generates project files, injects secrets and storage bindings through fd 3, and waits for fd-4 readiness before routes become active.
-
-`--variant` selects a named development variant. Variants get isolated local runtime state while sharing project config.
+Starts or attaches to a local dev session behind trusted HTTPS and real hostnames. It starts the dev daemon, prepares DNS/proxy/CA setup, generates files, injects secrets and storage through fd 3, waits for fd-4 readiness, and registers routes.
 
 Interactive controls:
 
@@ -81,9 +78,10 @@ Subcommands:
 tako dev stop [name]
 tako dev stop --all
 tako dev list
+tako dev ls
 ```
 
-`tako dev list` also has alias `tako dev ls`.
+`stop` without a name stops the app for the selected config file. `--all` stops all registered dev apps. `list` shows currently registered dev apps.
 
 ## `tako doctor`
 
@@ -91,7 +89,7 @@ tako dev list
 tako doctor
 ```
 
-Reports local dev setup, daemon state, macOS or Linux proxy/DNS status, loopback configuration, and repair hints. It exits successfully when the dev daemon is simply not running.
+Prints a local diagnostic report for the dev daemon, macOS launchd proxy, Linux redirect/DNS setup, local CA, loopback address, and repair hints. If the dev daemon is simply not running, doctor reports that and exits successfully.
 
 ## `tako deploy`
 
@@ -106,13 +104,9 @@ tako deploy --env production --yes
 | `--env <ENV>` | Environment to deploy. Defaults to `production`. |
 | `-y`, `--yes` | Skip confirmation prompts.                       |
 
-`development` is reserved for `tako dev` and cannot be deployed.
+Deploy validates config, secrets, storage credentials, provider credentials, backup config, route setup, and server target metadata before build work starts. It builds locally, packages an artifact, uploads it over signed HTTP management, prepares each server release, optionally runs the `release` command once on the leader server, performs rolling updates, finalizes the release, and creates a post-deploy backup when enabled.
 
-Interactive production deploys ask for confirmation only when the environment is implicit. Passing `--env production` or `--yes` makes the target explicit.
-
-Deploy validates secrets, storage credentials, configured backup storage, required provider credentials, routes, target servers, and server target metadata before build work starts. Required Cloudflare credentials are checked by each target server during remote prepare: Let’s Encrypt wildcard routes verify zone read access, and Cloudflare SSL validates user-owned tokens when Cloudflare's verification endpoint supports the token format. It builds locally, packages a `.tar.zst` artifact, uploads it over signed HTTP, prepares the release, optionally runs the release command, performs a rolling update, and creates a post-deploy backup when enabled.
-
-Let’s Encrypt wildcard routes require `tako credentials set ssl.cloudflare --env <env>`. Environments using `ssl = "cloudflare"` require the same credential. Storage bindings configured with `tako storages add` are synced during deploy; there is no separate storage sync command. Backup-only storage credentials can be set with `tako storages credentials <resource> --env <env>`.
+`development` is reserved for `tako dev` and cannot be deployed. Interactive production deploys ask for confirmation only when the environment is implicit.
 
 ## `tako logs`
 
@@ -123,14 +117,14 @@ tako logs --env production --days 7
 tako logs --env production --json
 ```
 
-| Option        | Meaning                                                  |
-| ------------- | -------------------------------------------------------- |
-| `--env <ENV>` | Environment to read logs for. Defaults to `production`.  |
-| `--tail`      | Stream live logs.                                        |
-| `--days <N>`  | Fetch historical logs from the last N days. Default `3`. |
-| `--json`      | Emit JSON lines.                                         |
+| Option        | Meaning                                                        |
+| ------------- | -------------------------------------------------------------- |
+| `--env <ENV>` | Environment to read logs for. Defaults to `production`.        |
+| `--tail`      | Stream logs until interrupted. Conflicts with `--days`.        |
+| `--days <N>`  | Fetch historical logs from the last `N` days. Defaults to `3`. |
+| `--json`      | Emit JSONL for agents and automation.                          |
 
-Logs are fetched over signed HTTP management. Historical logs are sorted by timestamp across target servers. Interactive history output opens in a pager when stdout is a terminal.
+Logs are read from all mapped servers over signed HTTP management. Human output formats timestamps, level, source, and message, prefixes server names when needed, deduplicates consecutive repeats, and opens a pager in interactive history mode.
 
 ## `tako servers`
 
@@ -148,29 +142,27 @@ tako servers add prod-a.tailnet.ts.net --install --admin-user ubuntu
 | ---------------------- | ------------------------------------------------------------------ |
 | `--name <NAME>`        | Server name. Defaults to the host's first DNS label when possible. |
 | `--description <TEXT>` | Optional description shown in server lists.                        |
-| `--port <PORT>`        | SSH port. Default `22`.                                            |
-| `--http-port <PORT>`   | Public HTTP port used by installs.                                 |
-| `--https-port <PORT>`  | Public HTTPS port used by installs.                                |
+| `--port <PORT>`        | SSH port. Defaults to `22`.                                        |
+| `--http-port <PORT>`   | Public HTTP port used by installer flows.                          |
+| `--https-port <PORT>`  | Public HTTPS port used by installer flows.                         |
 | `--install`            | Install or repair `tako-server` before adding.                     |
 | `--admin-user <USER>`  | SSH user for `--install`.                                          |
 
-Passing `admin-user@host` uses that admin user and enables install or repair when needed.
-
-`servers add` verifies Tailscale reachability, SSH recovery access, signed HTTP management, server identity, and target metadata. App routing, source-IP, storage, and SSL bindings are applied by `tako deploy`.
+`admin-user@host` is shorthand for selecting an admin SSH user and enabling install/repair when needed. Add verifies Tailscale reachability, SSH recovery access, signed HTTP management, server identity, and target metadata before writing `config.toml`.
 
 ### `tako servers remove`
 
-Aliases: `tako servers rm`, `tako servers delete`.
+Aliases: `rm`, `delete`.
 
 ```bash
 tako servers remove prod-a
 ```
 
-Removes the server entry from global config. It does not uninstall the remote service.
+Removes a server from global config. It does not uninstall the remote service.
 
 ### `tako servers list`
 
-Alias: `tako servers ls`.
+Alias: `ls`.
 
 ```bash
 tako servers list
@@ -180,13 +172,13 @@ Lists configured servers, host, SSH port, public HTTP/HTTPS ports, and descripti
 
 ### `tako servers status`
 
-Alias: `tako servers info`.
+Alias: `info`.
 
 ```bash
 tako servers status
 ```
 
-Shows deployment status across configured servers. It does not require `tako.toml` and can run from any directory.
+Shows one snapshot of configured servers and deployed app/build state. It does not require `tako.toml` and can run from any directory.
 
 ### `tako servers reload`
 
@@ -195,7 +187,7 @@ tako servers reload prod-a
 tako servers reload prod-a --force
 ```
 
-Reloads `tako-server` without downtime by default. `--force` performs a full service restart.
+Reloads `tako-server` without downtime by default. `--force` performs a full service restart and may briefly interrupt apps.
 
 ### `tako servers upgrade`
 
@@ -204,7 +196,7 @@ tako servers upgrade
 tako servers upgrade prod-a
 ```
 
-Upgrades one server or all servers through graceful reload with rollback to the previous binary on failure. The upgrade checks the extracted binary for missing runtime libraries before replacing the active binary.
+Upgrades `tako-server` on one or all configured servers via service-manager reload. It installs the new binary, verifies checksums, enters upgrade mode, reloads the service, waits for readiness, and exits upgrade mode. Custom `TAKO_DOWNLOAD_BASE_URL` sources skip signature verification for the custom checksum manifest but still verify the archive SHA-256 after download.
 
 ### `tako servers uninstall`
 
@@ -213,49 +205,40 @@ tako servers uninstall prod-a
 tako servers uninstall prod-a --yes
 ```
 
-Removes `tako-server`, service files, app data, runtime data, authorized keys, and the local server inventory entry.
+Removes `tako-server`, services, helpers, binaries, data, sockets, and local server inventory entry for the selected server.
 
 ## `tako credentials`
 
+Alias group: `tako creds`.
+
 ```bash
 tako credentials set ssl.cloudflare --env production --expires-on "in 90 days"
-tako creds set ssl.cloudflare --env production
+tako credentials rm ssl.cloudflare --env production
 tako credentials list
 ```
 
-Alias: `tako creds`.
+| Command      | Meaning                                                                                |
+| ------------ | -------------------------------------------------------------------------------------- |
+| `set <NAME>` | Store an encrypted provider credential.                                                |
+| `rm <NAME>`  | Remove a provider credential from one environment. Aliases: `remove`, `delete`, `del`. |
+| `list`       | List credential names and environments. Aliases: `ls`, `show`.                         |
 
-| Command                       | Meaning                                                       |
-| ----------------------------- | ------------------------------------------------------------- |
-| `tako credentials set <NAME>` | Store an encrypted provider credential.                       |
-| `tako credentials rm <NAME>`  | Remove a provider credential from one environment.            |
-| `tako credentials list`       | List credential names and the environments where each is set. |
+Supported provider credential today: `ssl.cloudflare`.
 
-| Option                | Meaning                                                                          |
-| --------------------- | -------------------------------------------------------------------------------- |
-| `--env <ENV>`         | Target environment. Interactive terminals can choose or create one when omitted. |
-| `--expires-on <WHEN>` | Optional expiry date: `YYYY-MM-DD`, `in N days`, or `never`.                     |
-
-Supported credential: `ssl.cloudflare`. Provider credentials are encrypted in `.tako/secrets.json` under the selected environment's `credentials` object. They are not exposed to app code, generated secret types, or `tako secrets sync`; deploy sends them only through the provider binding that needs them.
+Provider credentials are encrypted in `.tako/secrets.json`, not exposed to app code, not included in generated secret types, and not pushed by `tako secrets sync`. Deploy sends them only through the deployment binding that needs them.
 
 ## `tako secrets`
 
 ### `tako secrets set`
 
-Alias: `tako secrets add`.
+Alias: `add`.
 
 ```bash
-tako secrets set DATABASE_URL --env production
-printf '%s\n' "$DATABASE_URL" | tako secrets set DATABASE_URL --env production --expires-on "in 90 days"
+tako secrets set DATABASE_URL --env production --expires-on "in 90 days"
+tako secrets set DATABASE_URL --env production --sync
 ```
 
-| Option                | Meaning                                                                          |
-| --------------------- | -------------------------------------------------------------------------------- |
-| `--env <ENV>`         | Target environment. Interactive terminals can choose or create one when omitted. |
-| `--expires-on <WHEN>` | Optional expiry date: `YYYY-MM-DD`, `in N days`, or `never`.                     |
-| `--sync`              | Sync to servers after saving.                                                    |
-
-Secret values are encrypted in `.tako/secrets.json`. Expired selected secrets fail deploy before build work starts; secrets expiring within 30 days produce a warning.
+Stores or updates an encrypted app secret. Interactive runs prompt for environment, value, optional expiry, and overwrite confirmation when needed. Non-interactive runs read one value line from stdin and require `--env`.
 
 ### `tako secrets rm`
 
@@ -266,7 +249,7 @@ tako secrets rm DATABASE_URL --env production
 tako secrets rm DATABASE_URL --sync
 ```
 
-Removes a secret from one environment or, when `--env` is omitted, all environments after confirmation.
+Removes a secret from one environment, or from all environments when `--env` is omitted. `--sync` pushes the resulting secret set to mapped servers.
 
 ### `tako secrets list`
 
@@ -276,7 +259,7 @@ Aliases: `ls`, `show`.
 tako secrets list
 ```
 
-Lists secret names and the environments where each is set. Values are never printed.
+Shows a presence table across environments. Values are never printed.
 
 ### `tako secrets sync`
 
@@ -285,7 +268,7 @@ tako secrets sync
 tako secrets sync --env production
 ```
 
-Syncs decrypted app secrets to deployed servers over signed HTTP management. The server stores them encrypted, drains/restarts workflow workers, and rolls HTTP instances so fresh processes receive the new values.
+Decrypts local secrets and sends `update_secrets` to mapped servers over signed HTTP management. Remote updates restart workflow workers and roll HTTP instances.
 
 ### `tako secrets key export`
 
@@ -293,7 +276,7 @@ Syncs decrypted app secrets to deployed servers over signed HTTP management. The
 tako secrets key export --env production
 ```
 
-Copies a self-contained environment key bundle to the clipboard after local export authentication.
+Exports a self-contained key bundle and copies it to the clipboard.
 
 ### `tako secrets key import`
 
@@ -302,43 +285,36 @@ tako secrets key import --env production
 tako secrets key import --passphrase --env production
 ```
 
-Imports an exported key or passphrase-derived key for an environment.
+Imports an exported key or passphrase-derived key. Non-interactive mode reads the exported key or passphrase from stdin.
 
-## `tako storages add`
+## `tako storages`
+
+### `tako storages add`
 
 ```bash
 tako storages add uploads \
   --env production \
+  --resource prod_uploads \
   --provider s3 \
-  --bucket my-app-prod \
-  --endpoint https://example.r2.cloudflarestorage.com \
-  --region auto
+  --bucket app-uploads \
+  --endpoint https://<account>.r2.cloudflarestorage.com \
+  --region auto \
+  --public-base-url https://cdn.example.com/uploads
+
+tako storages add uploads --env development --provider local
 ```
 
-| Option                        | Meaning                                                    |
-| ----------------------------- | ---------------------------------------------------------- |
-| `name`                        | App-facing binding name exposed as `tako.storages.<name>`. |
-| `--env <ENV>`                 | Environment to attach storage to. Default `production`.    |
-| `--resource <NAME>`           | Backing S3 resource name. Defaults to the binding name.    |
-| `--provider <local/s3>`       | Storage provider. Default `s3`.                            |
-| `--bucket <BUCKET>`           | Required for S3.                                           |
-| `--endpoint <URL>`            | Required HTTPS S3-compatible endpoint.                     |
-| `--region <REGION>`           | Region. Defaults to `auto`.                                |
-| `--access-key-id <VALUE>`     | Access key id. Prompted when omitted for S3.               |
-| `--secret-access-key <VALUE>` | Secret access key. Prompted when omitted for S3.           |
-| `--expires-on <WHEN>`         | Optional S3 credential expiry date.                        |
-| `--force-path-style`          | Use path-style bucket URLs.                                |
-| `--public-base-url <URL>`     | HTTPS public base URL for public object URLs.              |
+Attaches an app storage binding. `--env` defaults to `production`, `--provider` defaults to `s3`, and `--resource` defaults to the binding name for S3. S3 options include bucket, endpoint, region, access key id, secret access key, expiry, path-style signing, and public base URL.
 
-The command writes binding metadata to `tako.toml`. S3 resources also write non-secret provider metadata and encrypted credentials. Local storage writes the binding to the built-in `local` resource, has no `[storages.local]` table, and has no credentials. Deploy syncs storage bindings.
+For `local`, omit S3-only options. It writes a binding to the built-in `local` resource and no credentials.
 
-## `tako storages credentials`
+### `tako storages credentials`
 
 ```bash
-tako storages credentials r2 --env production
+tako storages credentials prod_uploads --env production
 ```
 
-Sets encrypted credentials for an existing top-level S3 storage resource without adding an app-facing binding. Use this for backup-only resources.
+Sets or rotates encrypted credentials for an existing top-level S3 resource without adding an app binding. This is useful for backup-only storage resources.
 
 ## `tako backups`
 
@@ -350,36 +326,24 @@ tako backups download b123 --env production --server prod-a --output ./backup.ta
 tako backups restore b123 --env production --server prod-a --yes
 ```
 
-Backups use `backup = { storage = "<resource>" }` from the selected environment. The storage resource must be private S3-compatible storage. Backup archives include app data and durable workflow state; transient channel replay storage is excluded and starts empty after restore. Archives are encrypted before upload with keys stored encrypted in `.tako/secrets.json`, and objects are written under `_tako/backups/{app}/{env}/{server}/`.
+| Command                | Meaning                                                                                          |
+| ---------------------- | ------------------------------------------------------------------------------------------------ |
+| `now`                  | Create backups immediately on selected server(s).                                                |
+| `list`                 | List remote backup index entries. Alias: `ls`.                                                   |
+| `status`               | Show enabled state, retention, latest backup, and next due time.                                 |
+| `download <backup-id>` | Download one encrypted archive. `--server` is required for multi-server environments.            |
+| `restore <backup-id>`  | Stop the selected app, replace its data tree, reconcile workflows, and restart to desired count. |
 
-| Command         | Meaning                                                                                                                                                         |
-| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `now`           | Create a backup immediately on the selected server(s).                                                                                                          |
-| `list` / `ls`   | List backup ids from the remote index.                                                                                                                          |
-| `status`        | Show enabled state, last backup, next due time, and retention.                                                                                                  |
-| `download <id>` | Download an encrypted backup object. Pass `--server` when the environment has multiple servers.                                                                 |
-| `restore <id>`  | Replace the selected server's app data with the backup archive, then clear transient channel replay. Pass `--server` when the environment has multiple servers. |
+Backup commands default to `production`, require project context, and use signed HTTP management.
 
 ## `tako releases`
 
-### `tako releases list`
-
-Alias: `tako releases ls`.
-
 ```bash
 tako releases list --env production
-```
-
-Lists deployed release history for the current app environment across target servers, including current marker, deploy time, commit message, and dirty/clean status when available.
-
-### `tako releases rollback`
-
-```bash
-tako releases rollback abc1234 --env production
 tako releases rollback abc1234 --env production --yes
 ```
 
-Rolls the current app environment back to a previous release id. Production rollback asks for confirmation in interactive terminals unless `--yes` is passed.
+`list` (alias `ls`) merges release history from mapped servers. `rollback` points the app/environment back to a previous release/build id on each mapped server. Production rollback asks for confirmation unless `--yes` is passed.
 
 ## `tako scale`
 
@@ -389,30 +353,17 @@ tako scale 2 --env production
 tako scale 0 --server prod-a --app my-app/production
 ```
 
-| Option            | Meaning                                                               |
-| ----------------- | --------------------------------------------------------------------- |
-| `instances`       | Desired instance count from `0` to `255`.                             |
-| `--env <ENV>`     | Project environment target.                                           |
-| `--server <NAME>` | Specific configured server.                                           |
-| `--app <APP>`     | App name or deployed app id when running outside a project directory. |
-
-Scale settings persist per targeted server across restarts, deploys, and rollbacks. `0` enables scale-to-zero.
+Changes the desired instance count per targeted server. The count persists across server restarts, deploys, and rollbacks. In project context, `--env` defaults to `production`; outside a project, provide `--server` and `--app`.
 
 ## `tako delete`
 
-Aliases: `tako rm`, `tako remove`, `tako undeploy`, `tako destroy`.
+Aliases: `rm`, `remove`, `undeploy`, `destroy`.
 
 ```bash
 tako delete --env production --server prod-a --yes
 ```
 
-| Option            | Meaning                           |
-| ----------------- | --------------------------------- |
-| `--env <ENV>`     | Environment to delete.            |
-| `--server <NAME>` | Server deployment to delete from. |
-| `-y`, `--yes`     | Skip confirmation.                |
-
-Delete uses signed HTTP management to remove one deployed app/environment/server target after draining instances and workers. In non-interactive mode, pass `--yes`, `--env`, and `--server`.
+Deletes exactly one deployment target. It drains and stops the app on that server, removes runtime registration, routes, state, and app data. Use `--server` when the environment maps to multiple servers.
 
 ## `tako upgrade`
 
@@ -420,7 +371,7 @@ Delete uses signed HTTP management to remove one deployed app/environment/server
 tako upgrade
 ```
 
-Upgrades the local CLI. Homebrew installs upgrade through Homebrew; other installs use the release installer path.
+Upgrades the local CLI installation. Homebrew installs use `brew upgrade tako`; other installs download the hosted CLI archive, verify its checksum, and preserve the installer layout. On macOS, the signed `Tako.app` bundle is installed atomically and `tako` remains a symlink to the CLI inside the app bundle.
 
 ## `tako uninstall`
 
@@ -429,12 +380,4 @@ tako uninstall
 tako uninstall --yes
 ```
 
-Removes local Tako development components and config after confirmation.
-
-## `tako version`
-
-```bash
-tako version
-```
-
-Prints the CLI version. `tako --version` is equivalent for simple version output.
+Removes the local Tako CLI, local data, dev daemon state, local CA trust, and platform-specific dev proxy/DNS/redirect setup. System-level cleanup may require sudo.

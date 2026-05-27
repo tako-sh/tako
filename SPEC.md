@@ -892,7 +892,7 @@ Upgrade `tako-server` on one or all configured servers via service-manager reloa
 
 1. CLI verifies `tako-server` is active on the host.
 2. CLI installs the new server binary on the host.
-   - CLI verifies the signed `tako-server-sha256s.txt` release manifest with an embedded public key, selects the expected SHA-256 for the target archive, and the remote host verifies that SHA-256 before extracting the archive into `/usr/local/bin/tako-server`
+   - CLI verifies the signed `tako-server-sha256s.txt` release manifest with an embedded public key, selects the expected SHA-256 for the target archive, and the remote host verifies that SHA-256 before extracting the archive into `/usr/local/bin/tako-server`. When `TAKO_DOWNLOAD_BASE_URL` is set for a custom release source, CLI skips signature verification for that custom manifest and still verifies the archive checksum after download.
    - before replacing the active binary, the remote host checks the extracted binary for missing runtime libraries and installs the libvips runtime only when the new binary needs it
    - custom `TAKO_DOWNLOAD_BASE_URL` overrides must use `https://`; non-HTTPS overrides are rejected unless `TAKO_ALLOW_INSECURE_DOWNLOAD_BASE=1` is set explicitly for local testing
    - CLI metadata downloads and remote host archive downloads use `GH_TOKEN` when set, falling back to `GITHUB_TOKEN`, for GitHub-hosted release URLs only
@@ -1476,7 +1476,8 @@ Reference scripts in this repo:
 - HTTP requests redirect to HTTPS (`307`, non-cacheable) by default.
 - Exception: `/.well-known/acme-challenge/*` stays on HTTP.
 - When HTTPS uses a non-default public port, deploy summaries include that port in printed route URLs and HTTP redirects target the configured HTTPS port.
-- Forwarded requests for private/local hostnames (`localhost`, `*.localhost`, single-label hosts, and reserved suffixes like `*.local`) are treated as already HTTPS when proxy proto metadata is missing, so local dev proxy setups do not enter redirect loops.
+- Forwarded HTTPS metadata (`X-Forwarded-Proto` and `Forwarded: proto=https`) is honored only from loopback peers, Cloudflare peers, or peers listed in server `trusted_proxy.trusted_cidrs`. Direct clients cannot bypass HTTPS redirects by spoofing those headers.
+- For trusted forwarded peers, requests for private/local hostnames (`localhost`, `*.localhost`, single-label hosts, and reserved suffixes like `*.local`) are treated as already HTTPS when proxy proto metadata is missing, so local dev proxy setups do not enter redirect loops.
 - Upstream response caching is enabled at the edge proxy for `GET`/`HEAD` requests (websocket upgrades are excluded).
 - Cache admission follows response headers (`Cache-Control` / `Expires`) with no implicit TTL defaults; responses without explicit cache directives are not stored.
 - Cache key includes request host + URI so different route hosts are isolated.
@@ -1526,7 +1527,7 @@ Reference scripts in this repo:
 ```
 
 - `server_name` — identity label for Prometheus metrics (defaults to hostname if absent).
-- `trusted_proxy` remains an advanced server-level escape hatch for PROXY protocol deployments and non-loopback trusted front proxies. It is not configured by the CLI. App/environment-level source-IP behavior is selected through `source_ip`. `trusted_cidrs` is required when `proxy_protocol = true` or `client_ip_headers` is set. Supported header names are `cf-connecting-ip`, `x-forwarded-for`, and `forwarded`.
+- `trusted_proxy` remains an advanced server-level escape hatch for PROXY protocol deployments and non-loopback trusted front proxies. It is not configured by the CLI. App/environment-level source-IP behavior is selected through `source_ip`. `trusted_cidrs` is required when `proxy_protocol = true` or `client_ip_headers` is set. Supported header names are `cf-connecting-ip`, `x-forwarded-for`, and `forwarded`. The same trusted-peer boundary controls whether forwarded HTTPS metadata affects redirects and upstream request headers.
 - Written by the installer for server identity. Read by `tako-server` at startup.
 
 **Server identity:** `tako-server` creates a stable Ed25519 identity at `{data_dir}/identity.key` and writes the public key to `{data_dir}/identity.pub`. The private key is mode `0600`, is preserved across restarts/upgrades, and is removed only by full server uninstall. `hello` and `server_info` include the OpenSSH SHA-256 fingerprint so the CLI can identify the server during add/probe flows.

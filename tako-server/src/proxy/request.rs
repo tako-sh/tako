@@ -51,12 +51,48 @@ pub(super) fn is_request_forwarded_https(
         || forwarded.is_some_and(forwarded_header_proto_is_https)
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct ForwardedHeaderTrust<'a> {
+    pub(super) peer_ip: Option<IpAddr>,
+    pub(super) cloudflare_ips: &'a CloudflareIpRanges,
+    pub(super) trusted_proxy: &'a TrustedProxyConfig,
+}
+
 pub(super) fn is_effective_request_https(
     transport_https: bool,
+    hostname: &str,
+    x_forwarded_for: Option<&str>,
     x_forwarded_proto: Option<&str>,
     forwarded: Option<&str>,
+    forwarded_header_trust: ForwardedHeaderTrust<'_>,
 ) -> bool {
-    transport_https || is_request_forwarded_https(x_forwarded_proto, forwarded)
+    if transport_https {
+        return true;
+    }
+
+    if !peer_trusts_forwarded_https(forwarded_header_trust) {
+        return false;
+    }
+
+    is_request_forwarded_https(x_forwarded_proto, forwarded)
+        || should_assume_forwarded_private_request_https(
+            hostname,
+            x_forwarded_for,
+            x_forwarded_proto,
+            forwarded,
+        )
+}
+
+fn peer_trusts_forwarded_https(forwarded_header_trust: ForwardedHeaderTrust<'_>) -> bool {
+    let Some(peer_ip) = forwarded_header_trust.peer_ip else {
+        return false;
+    };
+
+    peer_ip.is_loopback()
+        || forwarded_header_trust.cloudflare_ips.contains(&peer_ip)
+        || forwarded_header_trust
+            .trusted_proxy
+            .trusts_proxy_ip(&peer_ip)
 }
 
 pub(super) fn should_assume_forwarded_private_request_https(
