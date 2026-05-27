@@ -1,8 +1,6 @@
 ---
 name: cli-output
 description: "Rules and patterns for Tako CLI output across normal, --verbose, and --ci modes. Use this skill whenever writing or modifying any Tako CLI command output — including print statements, spinners, log lines, prompts, progress indicators, or error messages in the `tako/` crate. Also use when adding new commands, reviewing output consistency, or fixing output bugs. Triggers on any work touching `tako/src/output/`, `tako/src/commands/`, or CLI user-facing text."
-metadata:
-  internal: true
 ---
 
 # Tako CLI Output

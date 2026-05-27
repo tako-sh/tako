@@ -36,6 +36,8 @@ Tako's protocol is v0: do not keep any legacy code, backward compatibility shims
 
 12. **Write polished user-facing copy on the first pass** - Treat every CLI prompt, success message, warning, error, docs example, and website UI string as product copy. Before implementing or finalizing user-facing text, read the whole flow as the user will see it and tighten it. Copy should be short, natural, specific, and action-oriented. Avoid redundant nouns, repeated context, implementation terms, and stiff phrases when the UI already supplies the object, environment, target, or state. Prefer familiar verbs users would say themselves (`Set`, `Updated`, `Replace`, `Remove`, `Try again`) over internal or abstract wording (`configured`, `environment`, `override`, `operation`, `proceed`). Good copy should usually answer: what happened, what needs attention, or what action is next, with no extra explanation unless it prevents a real mistake.
 
+13. **Use internal CLI output guidance** - Before writing or modifying `tako` CLI output, read `.agents/internal/cli-output.md`. This internal guide is not an installable public skill.
+
 ## Project Structure
 
 **Rust Crates:**
