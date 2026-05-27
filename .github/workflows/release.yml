@@ -206,7 +206,6 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 1
-          token: ${{ secrets.GH_PAT }}
 
       - name: Find CI run
         id: ci-run
@@ -256,7 +255,7 @@ jobs:
         if: steps.builds.outputs.skipped != 'true'
         env:
           TAKO_SERVER_RELEASE_SIGNING_KEY_PEM: ${{ secrets.TAKO_SERVER_RELEASE_SIGNING_KEY_PEM }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -375,6 +374,7 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: lts/*
+          registry-url: https://registry.npmjs.org
 
       - name: Setup Bun
         if: steps.changes.outputs.skip != 'true'
@@ -384,6 +384,8 @@ jobs:
 
       - name: Publish
         if: steps.changes.outputs.skip != 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           sha="${{ github.event.workflow_run.head_sha || github.sha }}"
           short_sha="$(printf '%s' "$sha" | cut -c1-7)"
@@ -393,7 +395,10 @@ jobs:
           npm pkg set version="$version"
           bun install
           bun run build
-          npm publish --tag latest --provenance --access public
+          npm publish --tag latest --provenance --access public || {
+            echo "::error::npm publish failed. Configure npm trusted publishing for tako.sh or set NPM_TOKEN in the release environment."
+            exit 1
+          }
 
       - name: Update sdk-js-latest tag
         if: steps.changes.outputs.skip != 'true'
