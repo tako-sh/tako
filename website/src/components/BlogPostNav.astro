@@ -19,9 +19,12 @@ const nextPost = Astro.props.nextPost;
         class="blog-post-nav-link blog-post-nav-prev"
         href={previousPost.href}
         aria-label={`Older post: ${previousPost.title}`}
+        title={previousPost.title}
       >
-        <span class="blog-post-nav-kicker">&larr; Older</span>
-        <span class="blog-post-nav-title">{previousPost.title}</span>
+        <span class="blog-post-nav-copy">
+          <span class="blog-post-nav-kicker"><span aria-hidden="true">&larr;</span> Older post</span>
+          <span class="blog-post-nav-title">{previousPost.title}</span>
+        </span>
       </a>
     ) : <span class="blog-post-nav-spacer" aria-hidden="true"></span>}
     {nextPost ? (
@@ -29,9 +32,12 @@ const nextPost = Astro.props.nextPost;
         class="blog-post-nav-link blog-post-nav-next"
         href={nextPost.href}
         aria-label={`Newer post: ${nextPost.title}`}
+        title={nextPost.title}
       >
-        <span class="blog-post-nav-kicker">Newer &rarr;</span>
-        <span class="blog-post-nav-title">{nextPost.title}</span>
+        <span class="blog-post-nav-copy">
+          <span class="blog-post-nav-kicker">Newer post <span aria-hidden="true">&rarr;</span></span>
+          <span class="blog-post-nav-title">{nextPost.title}</span>
+        </span>
       </a>
     ) : <span class="blog-post-nav-spacer" aria-hidden="true"></span>}
   </nav>
@@ -41,70 +47,106 @@ const nextPost = Astro.props.nextPost;
   .blog-post-nav {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    gap: 12px;
+    gap: clamp(20px, 5vw, 56px);
     border-top: 2px solid var(--line);
-    margin-top: 40px;
+    margin-top: 38px;
     padding-top: 18px;
   }
 
-  .blog-post-nav-link {
+  .blog-post-nav .blog-post-nav-link {
     min-width: 0;
-    border: 2px solid var(--line);
-    border-radius: 8px;
-    background: rgba(255, 255, 255, 0.48);
-    box-shadow: 0 6px 0 rgba(47, 42, 68, 0.08);
     color: var(--ink);
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    padding: 14px 16px;
+    display: block;
+    padding: 2px 0 4px;
     text-decoration: none;
+    border-bottom: 0;
     transition:
-      transform 0.16s ease,
-      box-shadow 0.16s ease,
-      background 0.16s ease;
+      color 0.16s ease,
+      text-decoration-color 0.16s ease;
   }
 
-  .blog-post-nav-link:hover {
-    background: rgba(255, 249, 244, 0.85);
-    box-shadow: 0 9px 0 rgba(47, 42, 68, 0.1);
-    transform: translateY(-2px);
+  .blog-post-nav .blog-post-nav-link:hover {
+    border-bottom: 0;
+    color: var(--primary-text);
+  }
+
+  .blog-post-nav .blog-post-nav-link:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 3px;
+  }
+
+  .blog-post-nav-prev {
+    justify-self: start;
   }
 
   .blog-post-nav-next {
+    justify-self: end;
     text-align: right;
+  }
+
+  .blog-post-nav-copy {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
   }
 
   .blog-post-nav-kicker {
     color: var(--muted);
-    font-family: "IBM Plex Mono", ui-monospace, monospace;
-    font-size: 12px;
-    font-weight: 700;
-    text-transform: uppercase;
+    font-family: var(--font-sans);
+    font-size: 13px;
+    font-weight: 800;
+    line-height: 1.1;
+  }
+
+  .blog-post-nav-link:hover .blog-post-nav-kicker {
+    color: var(--primary-text);
   }
 
   .blog-post-nav-title {
-    font-family: var(--font-heading);
-    font-size: 18px;
-    line-height: 1.2;
-    overflow-wrap: anywhere;
+    min-width: 0;
+    font-family: var(--font-sans);
+    font-size: clamp(15px, 1.7vw, 17px);
+    font-weight: 800;
+    line-height: 1.22;
+    color: currentColor;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    text-decoration: underline;
+    text-decoration-color: transparent;
+    text-decoration-thickness: 2px;
+    text-underline-offset: 3px;
+  }
+
+  .blog-post-nav-link:hover .blog-post-nav-title {
+    text-decoration-color: currentColor;
   }
 
   .blog-post-nav-spacer {
-    display: block;
+    display: none;
   }
 
   @media (max-width: 720px) {
     .blog-post-nav {
       grid-template-columns: 1fr;
+      gap: 18px;
+    }
+
+    .blog-post-nav-prev,
+    .blog-post-nav-next {
+      text-align: left;
+      justify-self: stretch;
     }
 
     .blog-post-nav-next {
-      text-align: left;
+      padding-top: 18px;
+      border-top: 1px solid var(--line);
     }
 
-    .blog-post-nav-spacer {
-      display: none;
+    .blog-post-nav-next .blog-post-nav-copy {
+      text-align: left;
     }
   }
 </style>
