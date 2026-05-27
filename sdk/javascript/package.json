@@ -13,7 +13,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/lilienblum/tako.git",
+    "url": "git+https://github.com/tako-sh/tako.git",
     "directory": "sdk/javascript"
   },
   "bin": {

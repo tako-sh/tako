@@ -470,7 +470,7 @@ dev = ["next", "dev"]
   "schema_version": 1,
   "preset": {
     "preset_ref": "javascript/nextjs",
-    "repo": "lilienblum/tako",
+    "repo": "tako-sh/tako",
     "path": "presets/javascript.toml",
     "commit": "eb9c0c1dd0b123ce72c29397826966d831617d0a"
   }

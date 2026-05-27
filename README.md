@@ -1,6 +1,7 @@
 <a href="https://tako.sh" target="_blank" rel="noopener"><img src="assets/readme-banner.webp" alt="Tako - ship apps to your own servers" width="100%" /></a>
 
 [![npm: tako.sh](https://img.shields.io/npm/v/tako.sh?label=npm%3A%20tako.sh&color=9BC4B6)](https://www.npmjs.com/package/tako.sh)
+[![skills.sh](https://skills.sh/b/tako-sh/tako)](https://skills.sh/tako-sh/tako)
 
 ## What is Tako?
 
@@ -70,8 +71,18 @@ tako deploy
 - [Local Development](https://tako.sh/docs/development) — HTTPS, DNS, environment variables
 - [Deployment](https://tako.sh/docs/deployment) — deploy flow, rolling updates, rollbacks
 - [Troubleshooting](https://tako.sh/docs/troubleshooting) — common issues and fixes
-- [Examples](https://github.com/lilienblum/tako/tree/main/examples)
+- [Examples](https://github.com/tako-sh/tako/tree/main/examples)
 - [SDK](https://www.npmjs.com/package/tako.sh)
+
+## Agent Skills
+
+Install Tako skills for Codex, Claude Code, Cursor, and other skills.sh-compatible agents:
+
+```bash
+npx skills add tako-sh/tako
+```
+
+Install a specific skill with `--skill tako`, `--skill tako-sdk-js`, or `--skill tako-sdk-go`.
 
 ## License
 

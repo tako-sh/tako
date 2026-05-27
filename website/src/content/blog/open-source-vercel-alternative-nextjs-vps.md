@@ -11,7 +11,7 @@ That is hard to beat if your goal is "think about servers as little as possible.
 
 But sometimes the goal changes. You already have a VPS. You want a flat bill. You want your app, logs, secrets, data directory, and deploy history on hardware you control. You still want the nice Next.js path, but you do not want the whole app to live inside a hosted platform account forever.
 
-That is where [Tako](/docs/) fits: not a Vercel clone, and not a dashboard PaaS. It is an [open-source](https://github.com/lilienblum/tako) deploy and runtime layer for your own server. For a Next.js app, the interesting part is that Next.js already has the pieces needed to run outside Vercel cleanly.
+That is where [Tako](/docs/) fits: not a Vercel clone, and not a dashboard PaaS. It is an [open-source](https://github.com/tako-sh/tako) deploy and runtime layer for your own server. For a Next.js app, the interesting part is that Next.js already has the pieces needed to run outside Vercel cleanly.
 
 ## The real tradeoff
 

@@ -88,6 +88,6 @@ When you outgrow one box, add another server to your environment and [deploy acr
 
 Cloud platforms are great products. If you want managed databases, built-in CI, and a team dashboard out of the box, they deliver real value.
 
-But if you're an indie dev watching costs, a VPS gives you dramatically more compute per dollar. The only thing missing is the platform layer — and that's exactly [what Tako is](https://github.com/lilienblum/tako).
+But if you're an indie dev watching costs, a VPS gives you dramatically more compute per dollar. The only thing missing is the platform layer — and that's exactly [what Tako is](https://github.com/tako-sh/tako).
 
 Your $5 VPS was always powerful enough. It just needed the right tools.

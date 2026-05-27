@@ -198,16 +198,16 @@ mod tests {
     #[test]
     fn parse_github_repo_slug_accepts_https_ssh_and_slug_formats() {
         assert_eq!(
-            parse_github_repo_slug("https://github.com/lilienblum/tako"),
-            Some("lilienblum/tako".to_string())
+            parse_github_repo_slug("https://github.com/tako-sh/tako"),
+            Some("tako-sh/tako".to_string())
         );
         assert_eq!(
-            parse_github_repo_slug("git@github.com:lilienblum/tako.git"),
-            Some("lilienblum/tako".to_string())
+            parse_github_repo_slug("git@github.com:tako-sh/tako.git"),
+            Some("tako-sh/tako".to_string())
         );
         assert_eq!(
-            parse_github_repo_slug("lilienblum/tako"),
-            Some("lilienblum/tako".to_string())
+            parse_github_repo_slug("tako-sh/tako"),
+            Some("tako-sh/tako".to_string())
         );
     }
 
@@ -216,7 +216,7 @@ mod tests {
         assert_eq!(parse_github_repo_slug(""), None);
         assert_eq!(parse_github_repo_slug("lilienblum"), None);
         assert_eq!(
-            parse_github_repo_slug("https://example.com/lilienblum/tako"),
+            parse_github_repo_slug("https://example.com/tako-sh/tako"),
             None
         );
     }

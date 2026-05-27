@@ -1,5 +1,5 @@
 ---
-name: tako-sdk
+name: tako-sdk-js
 description: >-
   tako.sh SDK: fetch handler interface, tako runtime object, generated tako.d.ts type augmentation,
   defineChannel/defineWorkflow, Vite and Next.js adapters.
@@ -7,7 +7,7 @@ type: framework
 library: tako.sh
 library_version: "0.0.1"
 sources:
-  - lilienblum/tako:sdk/javascript/src
+  - tako-sh/tako:sdk/javascript/src
 ---
 
 # Tako SDK (`tako.sh`)

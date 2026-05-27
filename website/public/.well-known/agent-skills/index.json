@@ -6,21 +6,21 @@
       "type": "framework",
       "description": "Tako CLI commands: init, dev, deploy, secrets, storage, gen, scale, logs, rollback, servers, doctor. Includes output design patterns for interactive and plain modes.",
       "url": "https://tako.sh/.well-known/agent-skills/tako/SKILL.md",
-      "sha256": "b4fa37603d58570f57fc9ab8538f03967113a04e82688dc603addab65a198880"
+      "sha256": "2a21a48d97a3e14997f7324cda23d85f5ecc03b72924c3db4c041ed492f9a50e"
     },
     {
       "name": "tako-sdk-go",
       "type": "framework",
       "description": "tako.sh Go SDK: ListenAndServe for http.Handler, Listener for custom servers, typed secrets via tako generate, metadata helpers.",
       "url": "https://tako.sh/.well-known/agent-skills/tako-sdk-go/SKILL.md",
-      "sha256": "80fe79a28f4ab632b460e012b711858282c5ededc3bb8afa56c05a1b62c5d095"
+      "sha256": "6c784eabfac2cff01e73fa7ec4f9041fabe7dbbfcc50656e5fb3db96ea77e2f2"
     },
     {
       "name": "tako-sdk-js",
       "type": "framework",
       "description": "tako.sh SDK: fetch handler interface, tako runtime object, generated tako.d.ts type augmentation, defineChannel/defineWorkflow, Vite and Next.js adapters.",
       "url": "https://tako.sh/.well-known/agent-skills/tako-sdk-js/SKILL.md",
-      "sha256": "0288b81fad22c17a1c3b71f36793ac95a7cc538dc16ac2f0d9ea22dfe5702d78"
+      "sha256": "76c90a11a372909ead534dfb7ba7916fb09af185add55fa4b78c3ee538f97482"
     }
   ]
 }

@@ -681,7 +681,7 @@ fn prepare_build_phase_does_not_leave_unused_tmp_paths() {
     std::fs::write(project.path().join("package.json"), r#"{"name":"app"}"#).unwrap();
     std::fs::write(project.path().join("index.ts"), "export default {};\n").unwrap();
 
-    let repo = "lilienblum/tako";
+    let repo = "tako-sh/tako";
     let path = "presets/javascript.toml";
     let branch_sha = "d0ff9bec5b3d42a874b1bff544249b3a4c530d9f";
     let manifest = r#"

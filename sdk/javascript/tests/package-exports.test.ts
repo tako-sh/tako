@@ -94,4 +94,20 @@ describe("package exports", () => {
       expect(existsSync(resolve(skillsDir, slug, "SKILL.md"))).toBe(true);
     }
   });
+
+  test("publishes agent skills with unique install names", () => {
+    const skillsDir = resolve(sdkRoot, "skills");
+    const slugs = readdirSync(skillsDir).sort();
+    const names = new Set<string>();
+
+    for (const slug of slugs) {
+      const skill = readFileSync(resolve(skillsDir, slug, "SKILL.md"), "utf8");
+      const name = skill.match(/^name:\s*([a-z0-9-]+)\s*$/m)?.[1];
+
+      expect(name).toBe(slug);
+      if (!name) continue;
+      expect(names.has(name)).toBe(false);
+      names.add(name);
+    }
+  });
 });

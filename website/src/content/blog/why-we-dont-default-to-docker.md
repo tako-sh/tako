@@ -71,7 +71,7 @@ There are legitimate reasons to reach for containers:
 - **Existing infrastructure** — your team already has a container pipeline, registries, and tooling that works well
 - **Heterogeneous stacks** — you're running Go, Rust, Python, and Java services and need a single deployment model
 
-We respect these use cases. Docker as an opt-in runtime option is on our [roadmap](https://github.com/lilienblum/tako/issues/8) — because the right tool depends on the job, and sometimes that tool is a container.
+We respect these use cases. Docker as an opt-in runtime option is on our [roadmap](https://github.com/tako-sh/tako/issues/8) — because the right tool depends on the job, and sometimes that tool is a container.
 
 The key word is _opt-in_. We think the default should be the fastest, simplest path. For most web apps, that's direct execution.
 

@@ -35,7 +35,7 @@ Tako is built to make local development smooth and production deploys boring (th
 - Secrets and variables per environment. Scoped and ready.
 - Runtime status and log inspection via CLI.
 
-> Already enjoying Tako? Show it some love - drop a star on <a href="https://github.com/lilienblum/tako" target="_blank" rel="noopener noreferrer">GitHub</a>.
+> Already enjoying Tako? Show it some love - drop a star on <a href="https://github.com/tako-sh/tako" target="_blank" rel="noopener noreferrer">GitHub</a>.
 
 ## Who Tako Is For
 

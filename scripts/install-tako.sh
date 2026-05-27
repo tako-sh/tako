@@ -21,7 +21,7 @@ set -eu
 #   TAKO_ALLOW_INSECURE_DOWNLOAD_BASE
 #                           default: unset
 #                           set 1/true/yes/on to allow non-HTTPS download overrides for local testing
-#   TAKO_REPO_OWNER         default: lilienblum
+#   TAKO_REPO_OWNER         default: tako-sh
 #   TAKO_REPO_NAME          default: tako
 #   TAKO_RELEASE_TAG        default: latest
 #   GH_TOKEN/GITHUB_TOKEN   optional GitHub token for release downloads
@@ -165,7 +165,7 @@ TAKO_INSTALL_DIR="${TAKO_INSTALL_DIR:-$HOME/.local/bin}"
 TAKO_MACOS_APP_DIR="${TAKO_MACOS_APP_DIR:-$HOME/Applications}"
 TAKO_DOWNLOAD_BASE_URL="${TAKO_DOWNLOAD_BASE_URL:-}"
 TAKO_ALLOW_INSECURE_DOWNLOAD_BASE="${TAKO_ALLOW_INSECURE_DOWNLOAD_BASE:-}"
-TAKO_REPO_OWNER="${TAKO_REPO_OWNER:-lilienblum}"
+TAKO_REPO_OWNER="${TAKO_REPO_OWNER:-tako-sh}"
 TAKO_REPO_NAME="${TAKO_REPO_NAME:-tako}"
 TAKO_RELEASE_TAG="${TAKO_RELEASE_TAG:-latest}"
 

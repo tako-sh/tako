@@ -134,7 +134,7 @@ This is not the same isolation model as Lambda. Tako does not create a fresh san
 
 The phrase "serverless" never meant servers disappeared. It meant the platform took responsibility for them.
 
-Tako takes responsibility for a smaller, more inspectable platform: the one running on your VPS. It manages routing, HTTPS, deploys, process lifecycle, logs, secrets, static assets, scale-to-zero, durable channels, and workflows. It is [open source on GitHub](https://github.com/lilienblum/tako), and you still own the machine. You can SSH into it. You can run SQLite. You can use native packages. You can put Cloudflare in front if you want a global network edge, or keep it boring with one region and one box.
+Tako takes responsibility for a smaller, more inspectable platform: the one running on your VPS. It manages routing, HTTPS, deploys, process lifecycle, logs, secrets, static assets, scale-to-zero, durable channels, and workflows. It is [open source on GitHub](https://github.com/tako-sh/tako), and you still own the machine. You can SSH into it. You can run SQLite. You can use native packages. You can put Cloudflare in front if you want a global network edge, or keep it boring with one region and one box.
 
 That makes Tako a good Lambda alternative when:
 

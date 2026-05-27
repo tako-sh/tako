@@ -1,5 +1,5 @@
 ---
-name: tako-sdk
+name: tako-sdk-go
 description: >-
   tako.sh Go SDK: ListenAndServe for http.Handler, Listener for custom servers,
   typed secrets via tako generate, metadata helpers.
@@ -7,8 +7,8 @@ type: framework
 library: tako.sh
 library_version: "0.0.1"
 sources:
-  - lilienblum/tako:tako.go
-  - lilienblum/tako:internal
+  - tako-sh/tako:tako.go
+  - tako-sh/tako:internal
 ---
 
 # Tako SDK (`tako.sh` Go module)

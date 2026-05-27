@@ -174,7 +174,7 @@ mod tests {
         let url = tarball_url("darwin", "aarch64");
         assert_eq!(
             url,
-            "https://github.com/lilienblum/tako/releases/download/latest/tako-darwin-aarch64.tar.gz"
+            "https://github.com/tako-sh/tako/releases/download/latest/tako-darwin-aarch64.tar.gz"
         );
     }
 

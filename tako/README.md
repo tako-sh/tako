@@ -51,7 +51,7 @@ Operational behavior highlights:
 - Non-dry-run `tako deploy` acquires a project-local `.tako/deploy.lock` and fails fast if another local deploy is already running for the same project.
 - On macOS, `tako dev` uses a dedicated `127.77.0.1` loopback alias plus a launchd-managed dev proxy (`tako-dev-proxy`) so `https://{app}.test/` works on default ports without binding the main network interfaces.
 - Container builds stay ephemeral; dependency downloads are reused via per-target Docker cache volumes keyed by target label and builder image.
-- Containerized deploy builds default to `ghcr.io/lilienblum/tako-builder-musl:v1` for `*-musl` targets and `ghcr.io/lilienblum/tako-builder-glibc:v1` for `*-glibc` targets.
+- Containerized deploy builds default to `ghcr.io/tako-sh/tako-builder-musl:v1` for `*-musl` targets and `ghcr.io/tako-sh/tako-builder-glibc:v1` for `*-glibc` targets.
 - `tako deploy` caches target artifacts in `.tako/artifacts` and reuses verified cache hits when build inputs are unchanged; invalid cache entries are rebuilt automatically.
 - Local runtime version resolution runs `<tool> --version` directly, falling back to `latest`.
 - `tako deploy` merges build assets (preset assets + `build.assets`) into app `public/` after target build, in listed order.

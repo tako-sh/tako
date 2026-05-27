@@ -145,4 +145,4 @@ Tako is the open-source Cloudinary alternative only in the slice that many app d
 
 That is the broader Tako bet. A deployment platform should not stop at "your process is running." Real apps need HTTPS, routes, secrets, logs, workflows, channels, and images. You can assemble those from separate services, and sometimes you should. But when the primitive belongs to the app, Tako tries to keep it inside the same app-shaped boundary.
 
-Read the full image behavior in [How Tako Works](/docs/how-tako-works/), deploy it through the normal [`tako deploy`](/docs/cli/) flow, or browse the implementation in the [Tako repo](https://github.com/lilienblum/tako). The nice part is that there is no second platform to introduce. If your app runs on Tako, signed image resizing is already in the box.
+Read the full image behavior in [How Tako Works](/docs/how-tako-works/), deploy it through the normal [`tako deploy`](/docs/cli/) flow, or browse the implementation in the [Tako repo](https://github.com/tako-sh/tako). The nice part is that there is no second platform to introduce. If your app runs on Tako, signed image resizing is already in the box.

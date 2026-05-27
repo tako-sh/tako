@@ -1,7 +1,6 @@
 import { ArrowSquareOutIcon } from "@phosphor-icons/react";
 
-export const GITHUB_BASE =
-  "https://github.com/lilienblum/tako/tree/master/examples/javascript/demo";
+export const GITHUB_BASE = "https://github.com/tako-sh/tako/tree/master/examples/javascript/demo";
 
 type Props = {
   label: string;

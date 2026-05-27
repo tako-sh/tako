@@ -1,3 +1,3 @@
-module github.com/lilienblum/tako/sdk/go
+module github.com/tako-sh/tako/sdk/go
 
 go 1.22

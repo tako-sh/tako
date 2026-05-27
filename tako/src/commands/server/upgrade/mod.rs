@@ -14,7 +14,7 @@ const SERVER_BINARY_PATH: &str = "/usr/local/bin/tako-server";
 const SERVER_PREVIOUS_BINARY_PATH: &str = "/usr/local/bin/tako-server.prev";
 const SERVER_FILE_CAPABILITIES: &str = "cap_net_bind_service,cap_setuid,cap_setgid,cap_kill=+ep";
 
-const REPO_OWNER: &str = "lilienblum";
+const REPO_OWNER: &str = "tako-sh";
 const REPO_NAME: &str = "tako";
 const LATEST_TAG: &str = "latest";
 const SERVER_CHECKSUM_MANIFEST_ASSET: &str = "tako-server-sha256s.txt";

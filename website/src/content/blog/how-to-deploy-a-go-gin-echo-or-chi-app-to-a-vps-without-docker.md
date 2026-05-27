@@ -306,6 +306,6 @@ The code stays normal Go. Tako handles the deployment chores around it:
 | Copy `.env` files               | Use [`tako secrets`](/docs/cli/#tako-secrets) and typed Go accessors from `tako generate` |
 | Restart processes by hand       | Deploys and scaling commands manage instances                                             |
 
-If you want to see complete working versions, the [Tako GitHub repo](https://github.com/lilienblum/tako/tree/master/examples/go) includes Gin, Echo, Chi, and plain `net/http` examples. The [Go SDK launch post](/blog/the-go-sdk-is-here/) goes deeper on secrets, metadata helpers, channels, and why `http.Handler` is the right interface.
+If you want to see complete working versions, the [Tako GitHub repo](https://github.com/tako-sh/tako/tree/master/examples/go) includes Gin, Echo, Chi, and plain `net/http` examples. The [Go SDK launch post](/blog/the-go-sdk-is-here/) goes deeper on secrets, metadata helpers, channels, and why `http.Handler` is the right interface.
 
 Start with one router and one VPS. When the app grows, add more routes, secrets, environments, or servers in `tako.toml`. The deployment command stays the same: `tako deploy`.

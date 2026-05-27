@@ -76,7 +76,7 @@ Tako's workflow engine runs on the VPS you were going to pay for anyway. The mar
 
 ### Same primitives, smaller surface
 
-We kept the API to the handful of things that actually matter: [`ctx.run`, `ctx.sleep`, `ctx.waitFor`, `signal`, and cron via `defineWorkflow`'s `schedule` option](/docs/). That's enough to express retries, long waits, human approvals, fan-out, and scheduled jobs. You can read the full contract in [SPEC.md](https://github.com/lilienblum/tako) in one sitting.
+We kept the API to the handful of things that actually matter: [`ctx.run`, `ctx.sleep`, `ctx.waitFor`, `signal`, and cron via `defineWorkflow`'s `schedule` option](/docs/). That's enough to express retries, long waits, human approvals, fan-out, and scheduled jobs. You can read the full contract in [SPEC.md](https://github.com/tako-sh/tako) in one sitting.
 
 ## Different ambition
 

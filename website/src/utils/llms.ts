@@ -92,7 +92,7 @@ export const llmsCoreSections: LlmsSection[] = [
     links: [
       {
         title: "GitHub Repository",
-        url: "https://github.com/lilienblum/tako",
+        url: "https://github.com/tako-sh/tako",
         description: "Source code, examples, and repository docs.",
       },
       {

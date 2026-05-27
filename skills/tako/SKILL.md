@@ -8,7 +8,7 @@ type: framework
 library: tako.sh
 library_version: "0.0.1"
 sources:
-  - lilienblum/tako:tako/src/cli.rs
+  - tako-sh/tako:tako/src/cli.rs
 ---
 
 # Tako CLI

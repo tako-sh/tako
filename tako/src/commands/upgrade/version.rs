@@ -3,7 +3,7 @@ use crate::output;
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const BUILD_SHA: Option<&str> = option_env!("TAKO_BUILD_SHA");
 
-const REPO_OWNER: &str = "lilienblum";
+const REPO_OWNER: &str = "tako-sh";
 const REPO_NAME: &str = "tako";
 const LATEST_TAG: &str = "latest";
 

@@ -1,3 +1,3 @@
-/install.sh https://raw.githubusercontent.com/lilienblum/tako/master/scripts/install-tako.sh 301
-/install-server.sh https://raw.githubusercontent.com/lilienblum/tako/master/scripts/install-tako-server.sh 301
-/server-install.sh https://raw.githubusercontent.com/lilienblum/tako/master/scripts/install-tako-server.sh 301
+/install.sh https://raw.githubusercontent.com/tako-sh/tako/master/scripts/install-tako.sh 301
+/install-server.sh https://raw.githubusercontent.com/tako-sh/tako/master/scripts/install-tako-server.sh 301
+/server-install.sh https://raw.githubusercontent.com/tako-sh/tako/master/scripts/install-tako-server.sh 301

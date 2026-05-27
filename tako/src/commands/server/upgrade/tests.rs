@@ -21,7 +21,7 @@ fn server_binary_download_url_uses_latest_tag() {
     let url = server_binary_download_url(&target, None, false).unwrap();
     assert_eq!(
         url,
-        "https://github.com/lilienblum/tako/releases/download/latest/tako-server-linux-x86_64-glibc.tar.zst"
+        "https://github.com/tako-sh/tako/releases/download/latest/tako-server-linux-x86_64-glibc.tar.zst"
     );
 }
 

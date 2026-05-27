@@ -75,6 +75,7 @@ function renderSkillsMd(site: URL, skills: SkillSummary[]): string {
     "",
     `Structured discovery index: ${new URL("/.well-known/agent-skills/index.json", site).toString()}`,
     `Full site documentation index: ${new URL("/llms.txt", site).toString()}`,
+    "Install with skills.sh: `npx skills add tako-sh/tako`",
     "",
     "Fetch only the `SKILL.md` file that matches the current task.",
     "",

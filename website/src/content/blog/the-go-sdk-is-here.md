@@ -116,6 +116,6 @@ tako init
 
 Tako detects Go from `go.mod`, installs the `tako.sh` module, and scaffolds your project. Write your handlers, `tako dev` for local development with [real HTTPS](/blog/local-dev-with-real-https/), `tako deploy` when you're ready.
 
-The full API is small on purpose — `ListenAndServe`, `Listener`, `GetSecret`, plus metadata and channel helpers. Check the [docs](/docs/) for the complete reference, or browse the [examples on GitHub](https://github.com/lilienblum/tako/tree/master/examples/go) to see Gin, Echo, Chi, and net/http in action.
+The full API is small on purpose — `ListenAndServe`, `Listener`, `GetSecret`, plus metadata and channel helpers. Check the [docs](/docs/) for the complete reference, or browse the [examples on GitHub](https://github.com/tako-sh/tako/tree/master/examples/go) to see Gin, Echo, Chi, and net/http in action.
 
 Go is a language that values small interfaces and explicit control flow. We think `tako.ListenAndServe(handler)` fits right in.

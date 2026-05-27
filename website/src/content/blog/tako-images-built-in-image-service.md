@@ -155,4 +155,4 @@ The image optimizer is not trying to be a giant media pipeline. It is the 80% pa
 | Caching  | Browser-only private cache by default, explicit immutable public cache  |
 | Sources  | Local app images or remote HTTP(S), with private/local targets rejected |
 
-That makes images feel like the rest of Tako: your code declares intent, and the platform takes the sharp edges. Read the full config and routing model in [`tako.toml`](/docs/tako-toml/) and [deployment docs](/docs/deployment/), or jump into the [Tako repo](https://github.com/lilienblum/tako) if you want to see the signed payload contract in code.
+That makes images feel like the rest of Tako: your code declares intent, and the platform takes the sharp edges. Read the full config and routing model in [`tako.toml`](/docs/tako-toml/) and [deployment docs](/docs/deployment/), or jump into the [Tako repo](https://github.com/tako-sh/tako) if you want to see the signed payload contract in code.
