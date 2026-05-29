@@ -58,7 +58,7 @@ hickory-proto = "0.26.1"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "stream"] }
 
 # SSH client
-russh = "0.60"
+russh = "0.61"
 russh-sftp = "2.1"
 ssh-key = "0.6"
 async-trait = "0.1"
