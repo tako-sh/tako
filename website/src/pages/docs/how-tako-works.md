@@ -126,4 +126,4 @@ Workflow state is durable in SQLite. `ctx.run`, `ctx.sleep`, `ctx.waitFor`, retr
 
 Logs are app-scoped and include app stdout/stderr plus server diagnostics for startup, proxying, channels, image transforms, backups, workflows, and static file serving. `tako logs` reads them over signed HTTP management.
 
-`tako-server` exposes Prometheus metrics on localhost port `9898` by default. Metrics include request counts and durations, instance health, cold starts, deploys, TLS events, log drops, channels, workflows, and image worker activity.
+`tako-server` exposes Prometheus metrics on localhost port `9898` by default. Metrics include request counts and durations, instance health, cold starts, deploys, TLS events, log drops, channels, workflows, and image worker activity. Use `--metrics-port 0` to disable request/upstream metrics collection and the endpoint.

@@ -49,6 +49,18 @@ pub struct RequestCtx {
 }
 
 impl RequestCtx {
+    pub(super) fn start_request_metrics(&mut self, app_name: String, enabled: bool) {
+        if enabled {
+            self.request_timer = Some(RequestTimer::start(app_name));
+        }
+    }
+
+    pub(super) fn start_upstream_metrics(&mut self, enabled: bool) {
+        if enabled {
+            self.upstream_start = Some(Instant::now());
+        }
+    }
+
     pub(super) fn mark_backend_request_started(&mut self) {
         if let Some(ref backend) = self.backend {
             backend.request_started();
@@ -323,7 +335,7 @@ impl ProxyHttp for TakoProxy {
             }
         };
 
-        ctx.request_timer = Some(RequestTimer::start(app_name));
+        ctx.start_request_metrics(app_name, self.metrics_enabled());
         ctx.backend = Some(backend);
 
         Ok(false)
@@ -451,7 +463,7 @@ impl ProxyHttp for TakoProxy {
 
         ctx.mark_backend_request_started();
 
-        ctx.upstream_start = Some(Instant::now());
+        ctx.start_upstream_metrics(self.metrics_enabled());
 
         Ok(())
     }

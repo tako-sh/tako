@@ -113,6 +113,58 @@ fn test_proxy_config_default() {
 }
 
 #[test]
+fn proxy_metrics_enabled_follows_metrics_port() {
+    let manager = Arc::new(AppManager::new(PathBuf::from("/tmp/tako-test")));
+    let lb = Arc::new(LoadBalancer::new(manager));
+    let routes = Arc::new(tokio::sync::RwLock::new(RouteTable::default()));
+    let cold_start = Arc::new(ColdStartManager::new(ColdStartConfig::default()));
+
+    let enabled = TakoProxy::new(
+        lb.clone(),
+        routes.clone(),
+        ProxyConfig {
+            metrics_port: Some(9898),
+            ..Default::default()
+        },
+        cold_start.clone(),
+        CloudflareIpRanges::default(),
+    );
+    assert!(enabled.metrics_enabled());
+
+    let disabled = TakoProxy::new(
+        lb,
+        routes,
+        ProxyConfig {
+            metrics_port: None,
+            ..Default::default()
+        },
+        cold_start,
+        CloudflareIpRanges::default(),
+    );
+    assert!(!disabled.metrics_enabled());
+}
+
+#[test]
+fn request_context_skips_metric_timers_when_metrics_are_disabled() {
+    let mut ctx = service::RequestCtx {
+        backend: None,
+        backend_request_started: false,
+        is_https: false,
+        matched_route_path: None,
+        request_timer: None,
+        client_ip: None,
+        body_bytes_received: 0,
+        upstream_start: None,
+    };
+
+    ctx.start_request_metrics("test-app".to_string(), false);
+    ctx.start_upstream_metrics(false);
+
+    assert!(ctx.request_timer.is_none());
+    assert!(ctx.upstream_start.is_none());
+}
+
+#[test]
 fn trusted_proxy_config_matches_configured_cidrs() {
     let config = TrustedProxyConfig::from_raw(
         true,

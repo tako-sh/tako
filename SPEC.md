@@ -2017,7 +2017,7 @@ Tako-server exposes a Prometheus-compatible metrics endpoint for observability.
 
 **Endpoint:** `http://127.0.0.1:9898/` (localhost only, not publicly accessible)
 
-**CLI flag:** `--metrics-port <port>` (default: 9898, set to 0 to disable)
+**CLI flag:** `--metrics-port <port>` (default: 9898, set to 0 to disable request/upstream metrics collection and the endpoint)
 
 **Exposed metrics:**
 

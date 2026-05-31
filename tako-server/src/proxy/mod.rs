@@ -78,6 +78,10 @@ pub struct TakoProxy {
 }
 
 impl TakoProxy {
+    fn metrics_enabled(&self) -> bool {
+        self.config.metrics_port.is_some()
+    }
+
     pub fn new(
         lb: Arc<LoadBalancer>,
         routes: Arc<RwLock<RouteTable>>,

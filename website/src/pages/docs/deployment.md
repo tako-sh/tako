@@ -327,4 +327,4 @@ tako delete --env production --server prod-a --yes
 http://127.0.0.1:9898/metrics
 ```
 
-Metrics cover requests, upstream latency, instance health, cold starts, deploys, TLS events, channel activity, workflow activity, image workers, and log drops. Use `--metrics-port 0` on `tako-server` to disable the endpoint.
+Metrics cover requests, upstream latency, instance health, cold starts, deploys, TLS events, channel activity, workflow activity, image workers, and log drops. Use `--metrics-port 0` on `tako-server` to disable request/upstream metrics collection and the endpoint.
