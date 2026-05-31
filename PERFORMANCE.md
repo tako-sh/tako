@@ -57,3 +57,50 @@ Findings:
   processes could not use the internal workflow/channel Unix socket. A source
   fix was added in `tako-workflows`; the patched server produced clean 200-only
   feature results.
+
+## 2026-05-31 Released Active-Set Rerun
+
+Detailed report:
+<https://github.com/tako-sh/performance/blob/main/PERFORMANCE.md#released-active-set-rerun>
+
+Raw data and graphs:
+
+- HTTP results:
+  <https://github.com/tako-sh/performance/tree/main/results/20260531T113110Z/http-vm-local>
+- HTTP graph index:
+  <https://github.com/tako-sh/performance/blob/main/results/20260531T113110Z/http-vm-local/graphs/README.md>
+- Channel/workflow results:
+  <https://github.com/tako-sh/performance/tree/main/results/20260531T120513Z/tako-features-vm-local>
+- Channel/workflow graph index:
+  <https://github.com/tako-sh/performance/blob/main/results/20260531T120513Z/tako-features-vm-local/graphs/README.md>
+
+This rerun used released `tako-server 0.0.0-1c29253`, after the
+load-balancer active-set change. It skipped low concurrency and ran VM-local
+HTTPS load at c2500, c5000, c7500, c10000, and c15000 with 16 loopback source
+IPs, 10s warmups, and 30s measured windows.
+
+Released-rerun HTTP/TLS headline:
+
+| case         |   conc | 200 rps | p99 ms | client errors | note                                |
+| ------------ | -----: | ------: | -----: | ------------: | ----------------------------------- |
+| nginx single |  2,500 |  18,781 |    370 |         0.00% | clean high-load leader              |
+| Tako single  |  2,500 |  15,280 |    794 |         0.00% | clean, below nginx                  |
+| Caddy single |  2,500 |   7,205 |  2,152 |         0.00% | far behind                          |
+| Tako single  |  5,000 |  13,371 |  3,098 |         0.00% | overload, higher 200 rps than nginx |
+| nginx single |  5,000 |  12,729 |  1,038 |         0.00% | lower latency than Tako             |
+| Tako single  | 10,000 |  10,964 |  7,164 |         0.09% | overload survivability              |
+| nginx single | 10,000 |   3,294 |  6,626 |         1.92% | overload/failure mode               |
+| nginx single | 15,000 |   2,401 |  9,807 |         8.38% | failure mode                        |
+| Tako single  | 15,000 |      77 |  9,856 |        94.31% | failure mode                        |
+
+Current takeaway:
+
+- The active-set routing fix removed request-path health/state scanning, but
+  Tako LB still does not beat Tako single in the useful range.
+- On this 2 vCPU VM, nginx and Caddy LB modes are also slower than their
+  single-instance modes, so four app processes are not helping this tiny app.
+- Tako single can produce more raw 200 rps than nginx in overload rows, but
+  p99 latency is worse. Treat those rows as survivability data, not a steady
+  operating point.
+- The released server now passes channel/workflow benchmarks cleanly through
+  c4000; c8000 enters failure mode with 502/503 responses.
