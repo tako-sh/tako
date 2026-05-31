@@ -125,7 +125,7 @@ impl crate::ServerState {
         app: &Arc<App>,
         instance: &Arc<crate::instances::Instance>,
     ) -> Result<(), String> {
-        instance.set_state(InstanceState::Draining);
+        app.set_instance_state(instance, InstanceState::Draining);
         let deadline = tokio::time::Instant::now() + RollingUpdateConfig::default().drain_timeout;
         while instance.in_flight() > 0 {
             if tokio::time::Instant::now() >= deadline {

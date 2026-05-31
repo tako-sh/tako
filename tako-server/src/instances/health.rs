@@ -147,7 +147,7 @@ impl HealthChecker {
     }
 
     /// Check health of a single instance via HTTP probe
-    async fn check_instance(&self, app: &App, instance: &Instance) {
+    async fn check_instance(&self, app: &App, instance: &Arc<Instance>) {
         let current_state = instance.state();
 
         // Skip instances that are starting, draining, or already stopped
@@ -164,7 +164,7 @@ impl HealthChecker {
         // of waiting for the HTTP probe to time out.
         if !instance.is_alive().await {
             self.failure_counts.remove(&instance_key);
-            instance.set_state(InstanceState::Stopped);
+            app.set_instance_state(instance, InstanceState::Stopped);
             tracing::error!(
                 app = %app.name(),
                 instance = %instance.id,
@@ -205,7 +205,7 @@ impl HealthChecker {
 
             // Mark healthy on first successful probe.
             if current_state != InstanceState::Healthy {
-                instance.set_state(InstanceState::Healthy);
+                app.set_instance_state(instance, InstanceState::Healthy);
 
                 let event = if current_state == InstanceState::Unhealthy {
                     HealthEvent::Recovered {
@@ -246,7 +246,7 @@ impl HealthChecker {
             };
 
             if new_state != current_state {
-                instance.set_state(new_state);
+                app.set_instance_state(instance, new_state);
 
                 let event = match new_state {
                     InstanceState::Unhealthy => {

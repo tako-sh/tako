@@ -77,7 +77,7 @@ impl Spawner {
         .map_err(InstanceError::SpawnError)?;
 
         instance.set_process(child);
-        instance.set_state(InstanceState::Starting);
+        app.set_instance_state(&instance, InstanceState::Starting);
 
         // Notify about start
         let _ = app
@@ -96,7 +96,7 @@ impl Spawner {
         .await
         {
             Ok(Ok(())) => {
-                instance.set_state(InstanceState::Healthy);
+                app.set_instance_state(&instance, InstanceState::Healthy);
 
                 instance.drain_pipes();
 
@@ -117,12 +117,12 @@ impl Spawner {
                 Ok(())
             }
             Ok(Err(e)) => {
-                instance.set_state(InstanceState::Unhealthy);
+                app.set_instance_state(&instance, InstanceState::Unhealthy);
                 let _ = instance.kill().await;
                 Err(e)
             }
             Err(_) => {
-                instance.set_state(InstanceState::Unhealthy);
+                app.set_instance_state(&instance, InstanceState::Unhealthy);
                 let detail = startup_timeout_detail(instance.clone(), config.startup_timeout).await;
                 instance.cleanup_upstream();
                 Err(InstanceError::StartupTimeoutWithDetail(detail))

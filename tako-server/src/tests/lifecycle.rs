@@ -49,9 +49,9 @@ async fn scale_command_persists_zero_instances_across_restore() {
     }
 
     let first = app.allocate_instance();
-    first.set_state(InstanceState::Healthy);
+    app.set_instance_state(&first, InstanceState::Healthy);
     let second = app.allocate_instance();
-    second.set_state(InstanceState::Healthy);
+    app.set_instance_state(&second, InstanceState::Healthy);
 
     let response = state_a
         .handle_command(Command::Scale {
@@ -128,7 +128,7 @@ async fn deploy_preserves_scaled_instance_count() {
     }
 
     let old_instance = app.allocate_instance();
-    old_instance.set_state(InstanceState::Healthy);
+    app.set_instance_state(&old_instance, InstanceState::Healthy);
 
     let broken_release = temp
         .path()
@@ -480,7 +480,7 @@ async fn instance_idle_event_resets_cold_start_when_app_scales_to_zero() {
     app.set_state(AppState::Running);
 
     let instance = app.allocate_instance();
-    instance.set_state(InstanceState::Healthy);
+    app.set_instance_state(&instance, InstanceState::Healthy);
 
     // Simulate a prior successful cold start.
     state.cold_start.begin("idle-app");
@@ -526,8 +526,8 @@ async fn instance_ready_event_sets_health_metric() {
     app.set_state(AppState::Running);
 
     let instance = app.allocate_instance();
-    // Spawner sets state to Healthy directly before emitting Ready.
-    instance.set_state(InstanceState::Healthy);
+    // Spawner marks the instance serving before emitting Ready.
+    app.set_instance_state(&instance, InstanceState::Healthy);
 
     handle_instance_event(
         &state,
@@ -578,14 +578,14 @@ async fn status_includes_running_builds_for_each_version() {
     });
 
     let old = app.allocate_instance();
-    old.set_state(InstanceState::Healthy);
+    app.set_instance_state(&old, InstanceState::Healthy);
 
     let mut cfg = app.config.read().clone();
     cfg.version = "v2".to_string();
     app.update_config(cfg);
 
     let new = app.allocate_instance();
-    new.set_state(InstanceState::Healthy);
+    app.set_instance_state(&new, InstanceState::Healthy);
 
     let response = state
         .handle_command(Command::Status {

@@ -7,15 +7,9 @@
 
 use crate::instances::{App, AppManager, Instance};
 use dashmap::DashMap;
-use parking_lot::RwLock;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-
-struct HealthySnapshot {
-    generation: u64,
-    instances: Vec<Arc<Instance>>,
-}
 
 /// Load balancer for a single app
 pub struct AppLoadBalancer {
@@ -23,8 +17,6 @@ pub struct AppLoadBalancer {
     app: Arc<App>,
     /// Round-robin counter
     rr_counter: AtomicUsize,
-    /// Cached healthy instances for the current app lifecycle generation.
-    healthy_snapshot: RwLock<HealthySnapshot>,
 }
 
 impl AppLoadBalancer {
@@ -32,57 +24,13 @@ impl AppLoadBalancer {
         Self {
             app,
             rr_counter: AtomicUsize::new(0),
-            healthy_snapshot: RwLock::new(HealthySnapshot {
-                generation: u64::MAX,
-                instances: Vec::new(),
-            }),
         }
     }
 
     /// Get an instance to handle a request
     pub fn get_instance(&self) -> Option<Arc<Instance>> {
-        loop {
-            let generation = self.app.instance_generation();
-            {
-                let snapshot = self.healthy_snapshot.read();
-                if snapshot.generation == generation {
-                    return self.select_cached_instance(&snapshot.instances);
-                }
-            }
-
-            self.refresh_snapshot();
-        }
-    }
-
-    fn select_cached_instance(&self, instances: &[Arc<Instance>]) -> Option<Arc<Instance>> {
-        if instances.is_empty() {
-            return None;
-        }
-
-        let idx = self.rr_counter.fetch_add(1, Ordering::Relaxed) % instances.len();
-        Some(instances[idx].clone())
-    }
-
-    fn refresh_snapshot(&self) {
-        let (generation, instances) = self.read_healthy_snapshot();
-        let mut snapshot = self.healthy_snapshot.write();
-        if snapshot.generation != u64::MAX && snapshot.generation >= generation {
-            return;
-        }
-
-        snapshot.generation = generation;
-        snapshot.instances = instances;
-    }
-
-    fn read_healthy_snapshot(&self) -> (u64, Vec<Arc<Instance>>) {
-        loop {
-            let generation = self.app.instance_generation();
-            let instances = self.app.healthy_instances();
-            let after = self.app.instance_generation();
-            if generation == after {
-                return (after, instances);
-            }
-        }
+        let request_index = self.rr_counter.fetch_add(1, Ordering::Relaxed);
+        self.app.healthy_instance_for_request(request_index)
     }
 }
 
@@ -199,9 +147,9 @@ mod tests {
         let i1 = app.allocate_instance();
         let i2 = app.allocate_instance();
         let i3 = app.allocate_instance();
-        i1.set_state(InstanceState::Healthy);
-        i2.set_state(InstanceState::Healthy);
-        i3.set_state(InstanceState::Healthy);
+        app.set_instance_state(&i1, InstanceState::Healthy);
+        app.set_instance_state(&i2, InstanceState::Healthy);
+        app.set_instance_state(&i3, InstanceState::Healthy);
 
         let lb = AppLoadBalancer::new(app);
 
@@ -221,17 +169,17 @@ mod tests {
     fn test_no_healthy_instances() {
         let app = create_test_app();
         let i1 = app.allocate_instance();
-        i1.set_state(InstanceState::Starting); // Not healthy yet
+        app.set_instance_state(&i1, InstanceState::Starting); // Not healthy yet
 
         let lb = AppLoadBalancer::new(app);
         assert!(lb.get_instance().is_none());
     }
 
     #[test]
-    fn cached_healthy_instances_refresh_when_state_changes() {
+    fn active_instances_update_when_state_changes() {
         let app = create_test_app();
         let instance = app.allocate_instance();
-        instance.set_state(InstanceState::Healthy);
+        app.set_instance_state(&instance, InstanceState::Healthy);
 
         let lb = AppLoadBalancer::new(app.clone());
         let selected = lb
@@ -239,11 +187,11 @@ mod tests {
             .expect("healthy instance should be selected");
         assert_eq!(selected.id, instance.id);
 
-        instance.set_state(InstanceState::Unhealthy);
+        app.set_instance_state(&instance, InstanceState::Unhealthy);
         assert!(lb.get_instance().is_none());
 
         let replacement = app.allocate_instance();
-        replacement.set_state(InstanceState::Healthy);
+        app.set_instance_state(&replacement, InstanceState::Healthy);
         let selected = lb
             .get_instance()
             .expect("replacement instance should be selected");
@@ -263,7 +211,7 @@ mod tests {
 
         // Allocate and make healthy
         let instance = app.allocate_instance();
-        instance.set_state(InstanceState::Healthy);
+        app.set_instance_state(&instance, InstanceState::Healthy);
 
         lb.register_app(app);
 
@@ -285,7 +233,7 @@ mod tests {
         lb.register_app(app.clone());
 
         let instance = app.allocate_instance();
-        instance.set_state(InstanceState::Healthy);
+        app.set_instance_state(&instance, InstanceState::Healthy);
 
         let backend = lb.get_backend("my-app").unwrap();
         backend.request_started();
@@ -309,7 +257,7 @@ mod tests {
 
         let instance = app.allocate_instance();
         instance.set_port(47_831);
-        instance.set_state(InstanceState::Healthy);
+        app.set_instance_state(&instance, InstanceState::Healthy);
 
         let backend = lb
             .get_backend("my-app")
@@ -333,7 +281,7 @@ mod tests {
         lb.register_app(app.clone());
 
         let instance = app.allocate_instance();
-        instance.set_state(InstanceState::Healthy);
+        app.set_instance_state(&instance, InstanceState::Healthy);
 
         let backend = lb
             .get_backend("test-app")
@@ -357,7 +305,7 @@ mod tests {
 
         for _ in 0..8 {
             let instance = app.allocate_instance();
-            instance.set_state(InstanceState::Healthy);
+            app.set_instance_state(&instance, InstanceState::Healthy);
         }
 
         let start = Instant::now();

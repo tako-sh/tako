@@ -50,7 +50,7 @@ async fn proxy_context_finishes_only_requests_started_upstream() {
     lb.register_app(app.clone());
 
     let instance = app.allocate_instance();
-    instance.set_state(InstanceState::Healthy);
+    app.set_instance_state(&instance, InstanceState::Healthy);
 
     let routes = Arc::new(tokio::sync::RwLock::new(RouteTable::default()));
     let cold_start = Arc::new(ColdStartManager::new(
@@ -800,10 +800,11 @@ async fn resolve_backend_waits_for_ready_on_on_demand_apps() {
     cold_start.begin("test-app");
 
     let ready_cold_start = cold_start.clone();
+    let ready_app = app.clone();
     let ready_instance = instance.clone();
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(50)).await;
-        ready_instance.set_state(InstanceState::Healthy);
+        ready_app.set_instance_state(&ready_instance, InstanceState::Healthy);
         ready_cold_start.mark_ready("test-app");
     });
 

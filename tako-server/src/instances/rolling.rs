@@ -209,7 +209,11 @@ impl RollingUpdater {
     }
 
     /// Drain and stop an old instance
-    async fn drain_and_stop(&self, app: &App, instance: &Instance) -> Result<(), InstanceError> {
+    async fn drain_and_stop(
+        &self,
+        app: &App,
+        instance: &Arc<Instance>,
+    ) -> Result<(), InstanceError> {
         tracing::debug!(
             app = %app.name(),
             instance = %instance.id,
@@ -217,7 +221,7 @@ impl RollingUpdater {
         );
 
         // Mark as draining (load balancer should stop sending new requests)
-        instance.set_state(InstanceState::Draining);
+        app.set_instance_state(instance, InstanceState::Draining);
 
         // Wait until all in-flight requests finish or drain_timeout is reached
         let deadline = tokio::time::Instant::now() + self.config.drain_timeout;
@@ -397,7 +401,7 @@ mod tests {
     async fn test_drain_and_stop_sets_draining_state() {
         let app = create_test_app("test-app");
         let instance = app.allocate_instance();
-        instance.set_state(InstanceState::Healthy);
+        app.set_instance_state(&instance, InstanceState::Healthy);
 
         let spawner = Arc::new(Spawner::new());
         let updater = RollingUpdater::new(spawner, RollingUpdateConfig::default());
@@ -414,7 +418,7 @@ mod tests {
     async fn drain_and_stop_removes_instance_health_metric() {
         let app = create_test_app("rolling-metrics-app");
         let instance = app.allocate_instance();
-        instance.set_state(InstanceState::Healthy);
+        app.set_instance_state(&instance, InstanceState::Healthy);
 
         crate::metrics::init(Some("test-server"));
         crate::metrics::set_instance_health(&app.name(), &instance.id, true);
@@ -475,7 +479,7 @@ mod tests {
 
         // Create an existing "healthy" instance
         let old_instance = app.allocate_instance();
-        old_instance.set_state(InstanceState::Healthy);
+        app.set_instance_state(&old_instance, InstanceState::Healthy);
 
         // Verify old instance is healthy
         assert_eq!(app.get_healthy_instances().len(), 1);
@@ -514,9 +518,9 @@ mod tests {
         let i2 = app.allocate_instance();
         let i3 = app.allocate_instance();
 
-        i1.set_state(InstanceState::Healthy);
-        i2.set_state(InstanceState::Starting);
-        i3.set_state(InstanceState::Unhealthy);
+        app.set_instance_state(&i1, InstanceState::Healthy);
+        app.set_instance_state(&i2, InstanceState::Starting);
+        app.set_instance_state(&i3, InstanceState::Unhealthy);
 
         // Only one instance should be healthy
         let healthy = app.get_healthy_instances();
@@ -524,7 +528,7 @@ mod tests {
         assert_eq!(healthy[0].id, i1.id);
 
         // Mark i2 as healthy
-        i2.set_state(InstanceState::Healthy);
+        app.set_instance_state(&i2, InstanceState::Healthy);
 
         // Now two instances should be healthy
         let healthy = app.get_healthy_instances();

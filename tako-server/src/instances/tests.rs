@@ -192,9 +192,9 @@ fn test_get_healthy_instances() {
     let i2 = app.allocate_instance();
     let i3 = app.allocate_instance();
 
-    i1.set_state(InstanceState::Healthy);
-    i2.set_state(InstanceState::Starting);
-    i3.set_state(InstanceState::Healthy);
+    app.set_instance_state(&i1, InstanceState::Healthy);
+    app.set_instance_state(&i2, InstanceState::Starting);
+    app.set_instance_state(&i3, InstanceState::Healthy);
 
     let healthy = app.get_healthy_instances();
     assert_eq!(healthy.len(), 2);
@@ -206,32 +206,37 @@ fn healthy_instance_count_ignores_non_healthy_instances() {
     let app = App::new(AppConfig::default(), tx, noop_log_handle());
 
     let healthy = app.allocate_instance();
-    healthy.set_state(InstanceState::Healthy);
-    app.allocate_instance().set_state(InstanceState::Ready);
-    app.allocate_instance().set_state(InstanceState::Unhealthy);
+    app.set_instance_state(&healthy, InstanceState::Healthy);
+    let ready = app.allocate_instance();
+    app.set_instance_state(&ready, InstanceState::Ready);
+    let unhealthy = app.allocate_instance();
+    app.set_instance_state(&unhealthy, InstanceState::Unhealthy);
 
     assert_eq!(app.healthy_instance_count(), 1);
 }
 
 #[test]
-fn instance_generation_tracks_instance_and_state_changes() {
+fn active_instance_list_tracks_state_changes_and_removal() {
     let (tx, _rx) = mpsc::channel(16);
     let app = App::new(AppConfig::default(), tx, noop_log_handle());
 
-    let initial = app.instance_generation();
     let instance = app.allocate_instance();
-    let after_allocate = app.instance_generation();
-    assert!(after_allocate > initial);
+    assert_eq!(app.healthy_instance_count(), 0);
 
-    instance.set_state(InstanceState::Healthy);
-    let after_healthy = app.instance_generation();
-    assert!(after_healthy > after_allocate);
+    app.set_instance_state(&instance, InstanceState::Healthy);
+    assert_eq!(app.healthy_instance_count(), 1);
 
-    instance.set_state(InstanceState::Healthy);
-    assert_eq!(app.instance_generation(), after_healthy);
+    app.set_instance_state(&instance, InstanceState::Healthy);
+    assert_eq!(app.healthy_instance_count(), 1);
+
+    app.set_instance_state(&instance, InstanceState::Draining);
+    assert_eq!(app.healthy_instance_count(), 0);
+
+    app.set_instance_state(&instance, InstanceState::Healthy);
+    assert_eq!(app.healthy_instance_count(), 1);
 
     app.remove_instance(&instance.id);
-    assert!(app.instance_generation() > after_healthy);
+    assert_eq!(app.healthy_instance_count(), 0);
 }
 
 #[test]
@@ -239,10 +244,12 @@ fn healthy_instance_at_returns_only_healthy_instances() {
     let (tx, _rx) = mpsc::channel(16);
     let app = App::new(AppConfig::default(), tx, noop_log_handle());
 
-    app.allocate_instance().set_state(InstanceState::Ready);
+    let ready = app.allocate_instance();
+    app.set_instance_state(&ready, InstanceState::Ready);
     let healthy = app.allocate_instance();
-    healthy.set_state(InstanceState::Healthy);
-    app.allocate_instance().set_state(InstanceState::Unhealthy);
+    app.set_instance_state(&healthy, InstanceState::Healthy);
+    let unhealthy = app.allocate_instance();
+    app.set_instance_state(&unhealthy, InstanceState::Unhealthy);
 
     let selected = app
         .healthy_instance_at(0)

@@ -182,8 +182,6 @@ pub struct Instance {
     pid: AtomicU32,
     /// Current state
     state: AtomicU8,
-    /// App-level generation bumped when lifecycle data changes.
-    lifecycle_generation: Arc<AtomicU64>,
     /// When the instance started
     started_at: RwLock<Option<Instant>>,
     /// Total requests handled
@@ -203,15 +201,10 @@ pub struct Instance {
 impl Instance {
     #[cfg(test)]
     pub fn new(id: String, build_version: String, log_handle: AppLogHandle) -> Self {
-        Self::with_lifecycle_generation(id, build_version, log_handle, Arc::new(AtomicU64::new(0)))
+        Self::new_inner(id, build_version, log_handle)
     }
 
-    fn with_lifecycle_generation(
-        id: String,
-        build_version: String,
-        log_handle: AppLogHandle,
-        lifecycle_generation: Arc<AtomicU64>,
-    ) -> Self {
+    fn new_inner(id: String, build_version: String, log_handle: AppLogHandle) -> Self {
         Self {
             id,
             build_version,
@@ -220,7 +213,6 @@ impl Instance {
             process: RwLock::new(None),
             pid: AtomicU32::new(0),
             state: AtomicU8::new(encode_instance_state(InstanceState::Starting)),
-            lifecycle_generation,
             started_at: RwLock::new(None),
             requests_total: AtomicU64::new(0),
             in_flight: AtomicU64::new(0),
@@ -234,12 +226,12 @@ impl Instance {
         decode_instance_state(self.state.load(Ordering::Acquire))
     }
 
-    pub fn set_state(&self, state: InstanceState) {
+    /// Set raw lifecycle state. Use `App::set_instance_state` for transitions
+    /// that can add or remove the instance from request routing.
+    pub fn set_state(&self, state: InstanceState) -> InstanceState {
         let encoded = encode_instance_state(state);
         let previous = self.state.swap(encoded, Ordering::AcqRel);
-        if previous != encoded {
-            self.lifecycle_generation.fetch_add(1, Ordering::Release);
-        }
+        decode_instance_state(previous)
     }
 
     pub fn pid(&self) -> Option<u32> {
@@ -390,8 +382,8 @@ pub struct App {
     pub config: RwLock<AppConfig>,
     /// Running instances
     instances: DashMap<String, Arc<Instance>>,
-    /// Generation for instance set and state changes.
-    instance_generation: Arc<AtomicU64>,
+    /// Instances currently eligible for request routing.
+    healthy_instances: RwLock<Vec<Arc<Instance>>>,
     /// Current app state
     state: RwLock<AppState>,
 
@@ -420,7 +412,7 @@ impl App {
         Self {
             config: RwLock::new(config),
             instances: DashMap::new(),
-            instance_generation: Arc::new(AtomicU64::new(0)),
+            healthy_instances: RwLock::new(Vec::new()),
             state: RwLock::new(AppState::Stopped),
             last_error: RwLock::new(None),
             instance_tx,
@@ -456,20 +448,59 @@ impl App {
         self.last_error.read().clone()
     }
 
-    pub(crate) fn instance_generation(&self) -> u64 {
-        self.instance_generation.load(Ordering::Acquire)
-    }
-
-    fn bump_instance_generation(&self) {
-        self.instance_generation.fetch_add(1, Ordering::Release);
-    }
-
+    #[cfg(test)]
     pub(crate) fn healthy_instances(&self) -> Vec<Arc<Instance>> {
-        self.instances
+        self.healthy_instances.read().clone()
+    }
+
+    pub(crate) fn set_instance_state(
+        &self,
+        instance: &Arc<Instance>,
+        state: InstanceState,
+    ) -> InstanceState {
+        let previous = instance.set_state(state);
+        if previous == state {
+            return previous;
+        }
+
+        match (previous, state) {
+            (InstanceState::Healthy, InstanceState::Healthy) => {}
+            (InstanceState::Healthy, _) => self.remove_healthy_instance(&instance.id),
+            (_, InstanceState::Healthy) => self.add_healthy_instance(instance),
+            _ => {}
+        }
+
+        previous
+    }
+
+    pub(crate) fn healthy_instance_for_request(
+        &self,
+        request_index: usize,
+    ) -> Option<Arc<Instance>> {
+        let instances = self.healthy_instances.read();
+        if instances.is_empty() {
+            return None;
+        }
+
+        Some(instances[request_index % instances.len()].clone())
+    }
+
+    fn add_healthy_instance(&self, instance: &Arc<Instance>) {
+        let mut healthy_instances = self.healthy_instances.write();
+        if healthy_instances
             .iter()
-            .filter(|entry| entry.value().state() == InstanceState::Healthy)
-            .map(|entry| entry.value().clone())
-            .collect()
+            .any(|healthy| healthy.id == instance.id)
+        {
+            return;
+        }
+
+        healthy_instances.push(instance.clone());
+    }
+
+    fn remove_healthy_instance(&self, instance_id: &str) {
+        self.healthy_instances
+            .write()
+            .retain(|instance| instance.id != instance_id);
     }
 
     /// Get all healthy instances
@@ -480,19 +511,12 @@ impl App {
 
     #[cfg(test)]
     pub(crate) fn healthy_instance_count(&self) -> usize {
-        self.instances
-            .iter()
-            .filter(|entry| entry.value().state() == InstanceState::Healthy)
-            .count()
+        self.healthy_instances.read().len()
     }
 
     #[cfg(test)]
     pub(crate) fn healthy_instance_at(&self, healthy_index: usize) -> Option<Arc<Instance>> {
-        self.instances
-            .iter()
-            .filter(|entry| entry.value().state() == InstanceState::Healthy)
-            .nth(healthy_index)
-            .map(|entry| entry.value().clone())
+        self.healthy_instances.read().get(healthy_index).cloned()
     }
 
     pub(crate) fn has_starting_instance(&self) -> bool {
@@ -521,14 +545,12 @@ impl App {
     pub fn allocate_instance(&self) -> Arc<Instance> {
         let id = generate_instance_id();
         let config = self.config.read();
-        let instance = Arc::new(Instance::with_lifecycle_generation(
+        let instance = Arc::new(Instance::new_inner(
             id.clone(),
             config.version.clone(),
             self.log_handle.clone(),
-            self.instance_generation.clone(),
         ));
         self.instances.insert(id, instance.clone());
-        self.bump_instance_generation();
         instance
     }
 
@@ -536,7 +558,7 @@ impl App {
     pub fn remove_instance(&self, id: &str) -> Option<Arc<Instance>> {
         let removed = self.instances.remove(id).map(|(_, v)| v);
         if removed.is_some() {
-            self.bump_instance_generation();
+            self.remove_healthy_instance(id);
         }
         removed
     }
@@ -642,6 +664,7 @@ impl AppManager {
         // Kill all instances
         let instances = app.get_instances();
         for instance in instances {
+            app.set_instance_state(&instance, InstanceState::Draining);
             instance.kill().await.map_err(InstanceError::StopError)?;
             app.remove_instance(&instance.id);
         }
@@ -660,6 +683,7 @@ impl AppManager {
         for (name, app) in apps {
             app.set_state(AppState::Stopped);
             for instance in app.get_instances() {
+                app.set_instance_state(&instance, InstanceState::Draining);
                 if let Err(error) = instance.kill().await {
                     tracing::warn!(
                         app = %name,
