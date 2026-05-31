@@ -7,9 +7,15 @@
 
 use crate::instances::{App, AppManager, Instance};
 use dashmap::DashMap;
+use parking_lot::RwLock;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+struct HealthySnapshot {
+    generation: u64,
+    instances: Vec<Arc<Instance>>,
+}
 
 /// Load balancer for a single app
 pub struct AppLoadBalancer {
@@ -17,6 +23,8 @@ pub struct AppLoadBalancer {
     app: Arc<App>,
     /// Round-robin counter
     rr_counter: AtomicUsize,
+    /// Cached healthy instances for the current app lifecycle generation.
+    healthy_snapshot: RwLock<HealthySnapshot>,
 }
 
 impl AppLoadBalancer {
@@ -24,20 +32,57 @@ impl AppLoadBalancer {
         Self {
             app,
             rr_counter: AtomicUsize::new(0),
+            healthy_snapshot: RwLock::new(HealthySnapshot {
+                generation: u64::MAX,
+                instances: Vec::new(),
+            }),
         }
     }
 
     /// Get an instance to handle a request
     pub fn get_instance(&self) -> Option<Arc<Instance>> {
-        let healthy_count = self.app.healthy_instance_count();
-        if healthy_count == 0 {
+        loop {
+            let generation = self.app.instance_generation();
+            {
+                let snapshot = self.healthy_snapshot.read();
+                if snapshot.generation == generation {
+                    return self.select_cached_instance(&snapshot.instances);
+                }
+            }
+
+            self.refresh_snapshot();
+        }
+    }
+
+    fn select_cached_instance(&self, instances: &[Arc<Instance>]) -> Option<Arc<Instance>> {
+        if instances.is_empty() {
             return None;
         }
 
-        let idx = self.rr_counter.fetch_add(1, Ordering::Relaxed) % healthy_count;
-        self.app
-            .healthy_instance_at(idx)
-            .or_else(|| self.app.healthy_instance_at(0))
+        let idx = self.rr_counter.fetch_add(1, Ordering::Relaxed) % instances.len();
+        Some(instances[idx].clone())
+    }
+
+    fn refresh_snapshot(&self) {
+        let (generation, instances) = self.read_healthy_snapshot();
+        let mut snapshot = self.healthy_snapshot.write();
+        if snapshot.generation != u64::MAX && snapshot.generation >= generation {
+            return;
+        }
+
+        snapshot.generation = generation;
+        snapshot.instances = instances;
+    }
+
+    fn read_healthy_snapshot(&self) -> (u64, Vec<Arc<Instance>>) {
+        loop {
+            let generation = self.app.instance_generation();
+            let instances = self.app.healthy_instances();
+            let after = self.app.instance_generation();
+            if generation == after {
+                return (after, instances);
+            }
+        }
     }
 }
 
@@ -180,6 +225,29 @@ mod tests {
 
         let lb = AppLoadBalancer::new(app);
         assert!(lb.get_instance().is_none());
+    }
+
+    #[test]
+    fn cached_healthy_instances_refresh_when_state_changes() {
+        let app = create_test_app();
+        let instance = app.allocate_instance();
+        instance.set_state(InstanceState::Healthy);
+
+        let lb = AppLoadBalancer::new(app.clone());
+        let selected = lb
+            .get_instance()
+            .expect("healthy instance should be selected");
+        assert_eq!(selected.id, instance.id);
+
+        instance.set_state(InstanceState::Unhealthy);
+        assert!(lb.get_instance().is_none());
+
+        let replacement = app.allocate_instance();
+        replacement.set_state(InstanceState::Healthy);
+        let selected = lb
+            .get_instance()
+            .expect("replacement instance should be selected");
+        assert_eq!(selected.id, replacement.id);
     }
 
     #[tokio::test]

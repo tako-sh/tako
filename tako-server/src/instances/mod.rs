@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::process::Child;
 use tokio::sync::mpsc;
@@ -60,6 +60,29 @@ fn generate_instance_id() -> String {
 
 fn generate_internal_token() -> String {
     nanoid::nanoid!(32)
+}
+
+fn encode_instance_state(state: InstanceState) -> u8 {
+    match state {
+        InstanceState::Starting => 0,
+        InstanceState::Ready => 1,
+        InstanceState::Healthy => 2,
+        InstanceState::Unhealthy => 3,
+        InstanceState::Draining => 4,
+        InstanceState::Stopped => 5,
+    }
+}
+
+fn decode_instance_state(encoded: u8) -> InstanceState {
+    match encoded {
+        0 => InstanceState::Starting,
+        1 => InstanceState::Ready,
+        2 => InstanceState::Healthy,
+        3 => InstanceState::Unhealthy,
+        4 => InstanceState::Draining,
+        5 => InstanceState::Stopped,
+        _ => InstanceState::Unhealthy,
+    }
 }
 
 /// Configuration for an app
@@ -158,7 +181,9 @@ pub struct Instance {
     /// Process ID
     pid: AtomicU32,
     /// Current state
-    state: RwLock<InstanceState>,
+    state: AtomicU8,
+    /// App-level generation bumped when lifecycle data changes.
+    lifecycle_generation: Arc<AtomicU64>,
     /// When the instance started
     started_at: RwLock<Option<Instant>>,
     /// Total requests handled
@@ -176,7 +201,17 @@ pub struct Instance {
 }
 
 impl Instance {
+    #[cfg(test)]
     pub fn new(id: String, build_version: String, log_handle: AppLogHandle) -> Self {
+        Self::with_lifecycle_generation(id, build_version, log_handle, Arc::new(AtomicU64::new(0)))
+    }
+
+    fn with_lifecycle_generation(
+        id: String,
+        build_version: String,
+        log_handle: AppLogHandle,
+        lifecycle_generation: Arc<AtomicU64>,
+    ) -> Self {
         Self {
             id,
             build_version,
@@ -184,7 +219,8 @@ impl Instance {
             upstream: RwLock::new(None),
             process: RwLock::new(None),
             pid: AtomicU32::new(0),
-            state: RwLock::new(InstanceState::Starting),
+            state: AtomicU8::new(encode_instance_state(InstanceState::Starting)),
+            lifecycle_generation,
             started_at: RwLock::new(None),
             requests_total: AtomicU64::new(0),
             in_flight: AtomicU64::new(0),
@@ -195,11 +231,15 @@ impl Instance {
     }
 
     pub fn state(&self) -> InstanceState {
-        *self.state.read()
+        decode_instance_state(self.state.load(Ordering::Acquire))
     }
 
     pub fn set_state(&self, state: InstanceState) {
-        *self.state.write() = state;
+        let encoded = encode_instance_state(state);
+        let previous = self.state.swap(encoded, Ordering::AcqRel);
+        if previous != encoded {
+            self.lifecycle_generation.fetch_add(1, Ordering::Release);
+        }
     }
 
     pub fn pid(&self) -> Option<u32> {
@@ -350,6 +390,8 @@ pub struct App {
     pub config: RwLock<AppConfig>,
     /// Running instances
     instances: DashMap<String, Arc<Instance>>,
+    /// Generation for instance set and state changes.
+    instance_generation: Arc<AtomicU64>,
     /// Current app state
     state: RwLock<AppState>,
 
@@ -378,6 +420,7 @@ impl App {
         Self {
             config: RwLock::new(config),
             instances: DashMap::new(),
+            instance_generation: Arc::new(AtomicU64::new(0)),
             state: RwLock::new(AppState::Stopped),
             last_error: RwLock::new(None),
             instance_tx,
@@ -413,9 +456,15 @@ impl App {
         self.last_error.read().clone()
     }
 
-    /// Get all healthy instances
-    #[cfg(test)]
-    pub(crate) fn get_healthy_instances(&self) -> Vec<Arc<Instance>> {
+    pub(crate) fn instance_generation(&self) -> u64 {
+        self.instance_generation.load(Ordering::Acquire)
+    }
+
+    fn bump_instance_generation(&self) {
+        self.instance_generation.fetch_add(1, Ordering::Release);
+    }
+
+    pub(crate) fn healthy_instances(&self) -> Vec<Arc<Instance>> {
         self.instances
             .iter()
             .filter(|entry| entry.value().state() == InstanceState::Healthy)
@@ -423,6 +472,13 @@ impl App {
             .collect()
     }
 
+    /// Get all healthy instances
+    #[cfg(test)]
+    pub(crate) fn get_healthy_instances(&self) -> Vec<Arc<Instance>> {
+        self.healthy_instances()
+    }
+
+    #[cfg(test)]
     pub(crate) fn healthy_instance_count(&self) -> usize {
         self.instances
             .iter()
@@ -430,6 +486,7 @@ impl App {
             .count()
     }
 
+    #[cfg(test)]
     pub(crate) fn healthy_instance_at(&self, healthy_index: usize) -> Option<Arc<Instance>> {
         self.instances
             .iter()
@@ -464,18 +521,24 @@ impl App {
     pub fn allocate_instance(&self) -> Arc<Instance> {
         let id = generate_instance_id();
         let config = self.config.read();
-        let instance = Arc::new(Instance::new(
+        let instance = Arc::new(Instance::with_lifecycle_generation(
             id.clone(),
             config.version.clone(),
             self.log_handle.clone(),
+            self.instance_generation.clone(),
         ));
         self.instances.insert(id, instance.clone());
+        self.bump_instance_generation();
         instance
     }
 
     /// Remove an instance
     pub fn remove_instance(&self, id: &str) -> Option<Arc<Instance>> {
-        self.instances.remove(id).map(|(_, v)| v)
+        let removed = self.instances.remove(id).map(|(_, v)| v);
+        if removed.is_some() {
+            self.bump_instance_generation();
+        }
+        removed
     }
 
     /// Update configuration (for reloads/deploys)

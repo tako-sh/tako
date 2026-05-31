@@ -14,6 +14,23 @@ fn test_instance_state_transitions() {
 }
 
 #[test]
+fn instance_state_round_trips_all_variants() {
+    let instance = Instance::new("test-1".to_string(), "v1".to_string(), noop_log_handle());
+
+    for state in [
+        InstanceState::Starting,
+        InstanceState::Ready,
+        InstanceState::Healthy,
+        InstanceState::Unhealthy,
+        InstanceState::Draining,
+        InstanceState::Stopped,
+    ] {
+        instance.set_state(state);
+        assert_eq!(instance.state(), state);
+    }
+}
+
+#[test]
 fn stop_error_display_names_stop_failure() {
     let error = InstanceError::StopError(std::io::Error::from_raw_os_error(1));
 
@@ -194,6 +211,27 @@ fn healthy_instance_count_ignores_non_healthy_instances() {
     app.allocate_instance().set_state(InstanceState::Unhealthy);
 
     assert_eq!(app.healthy_instance_count(), 1);
+}
+
+#[test]
+fn instance_generation_tracks_instance_and_state_changes() {
+    let (tx, _rx) = mpsc::channel(16);
+    let app = App::new(AppConfig::default(), tx, noop_log_handle());
+
+    let initial = app.instance_generation();
+    let instance = app.allocate_instance();
+    let after_allocate = app.instance_generation();
+    assert!(after_allocate > initial);
+
+    instance.set_state(InstanceState::Healthy);
+    let after_healthy = app.instance_generation();
+    assert!(after_healthy > after_allocate);
+
+    instance.set_state(InstanceState::Healthy);
+    assert_eq!(app.instance_generation(), after_healthy);
+
+    app.remove_instance(&instance.id);
+    assert!(app.instance_generation() > after_healthy);
 }
 
 #[test]
