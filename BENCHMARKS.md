@@ -16,8 +16,11 @@ Latest clean single-VM HTTP/TLS run:
   lower-load clean rows
 - At c2500, Tako is within about 8% of nginx on successful RPS and has slightly
   better p99 in this run
-- c7500+ is overload behavior on this VM; CPU is saturated and p99 is already
-  in seconds
+- The high-load client-error rerun fixed benchmark harness artifacts
+  (short client timeout and loadgen connection/fd pressure). With the fixed
+  harness, Tako has 0 client errors and 0 non-200 responses through c20000.
+- c7500+ is still overload behavior on this VM; CPU is saturated and p99 is
+  already in seconds
 - Main next target: reduce Tako proxy RSS and downstream connection/session
   memory pressure under high concurrency
 
