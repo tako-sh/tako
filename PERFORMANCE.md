@@ -94,6 +94,10 @@ Released-rerun HTTP/TLS headline:
 
 Current takeaway:
 
+- A follow-up code fix after this run changes Tako's Pingora service from the
+  default one thread to host parallelism and raises the upstream keepalive pool
+  to 256. These published numbers are pre-fix and should be rerun before
+  treating the nginx gap as final.
 - Load-balanced mode is deferred until a larger or multi-node testbed; this VM
   is useful for single-upstream throughput and failure-mode behavior only.
 - Tako single can produce more raw 200 rps than nginx in overload rows, but

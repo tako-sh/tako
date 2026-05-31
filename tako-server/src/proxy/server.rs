@@ -125,9 +125,17 @@ fn proxy_server_conf() -> Result<ServerConf> {
             "Failed to create default Pingora server configuration",
         )
     })?;
+    conf.threads = proxy_service_threads();
+    conf.upstream_keepalive_pool_size = 256;
     conf.grace_period_seconds = Some(0);
     conf.graceful_shutdown_timeout_seconds = Some(5);
     Ok(conf)
+}
+
+fn proxy_service_threads() -> usize {
+    std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(1)
 }
 
 pub(crate) fn listener_socket_options() -> TcpSocketOptions {
@@ -298,5 +306,25 @@ pub(crate) fn create_tls_settings(
         );
 
         Ok(Some(tls_settings))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn proxy_server_conf_uses_available_parallelism() {
+        let conf = proxy_server_conf().expect("proxy server config");
+
+        assert_eq!(conf.threads, proxy_service_threads());
+        assert!(conf.threads >= 1);
+    }
+
+    #[test]
+    fn proxy_server_conf_keeps_more_upstream_connections() {
+        let conf = proxy_server_conf().expect("proxy server config");
+
+        assert_eq!(conf.upstream_keepalive_pool_size, 256);
     }
 }
