@@ -22,12 +22,13 @@ use pingora_core::upstreams::peer::HttpPeer;
 use pingora_http::{RequestHeader, ResponseHeader};
 use pingora_proxy::{FailToProxy, ProxyHttp, Session};
 use std::net::IpAddr;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 impl TakoProxy {
     pub(crate) async fn load_balancer_cleanup(&self, app_name: &str) {
         self.lb.unregister_app(app_name);
-        self.routes.write().await.remove_app_routes(app_name);
+        self.routes.write().remove_app_routes(app_name);
         self.static_servers.write().remove(app_name);
         self.channel_stores.write().remove(app_name);
         self.channel_registry.invalidate(app_name);
@@ -38,7 +39,7 @@ pub struct RequestCtx {
     pub(super) backend: Option<Backend>,
     pub(super) backend_request_started: bool,
     pub(super) is_https: bool,
-    pub(super) matched_route_path: Option<String>,
+    pub(super) matched_route_path: Option<Arc<str>>,
     pub(super) request_timer: Option<RequestTimer>,
     /// Client IP for per-IP rate limit tracking (released in logging phase)
     pub(super) client_ip: Option<IpAddr>,
@@ -49,9 +50,9 @@ pub struct RequestCtx {
 }
 
 impl RequestCtx {
-    pub(super) fn start_request_metrics(&mut self, app_name: String, enabled: bool) {
+    pub(super) fn start_request_metrics(&mut self, app_name: &str, enabled: bool) {
         if enabled {
-            self.request_timer = Some(RequestTimer::start(app_name));
+            self.request_timer = Some(RequestTimer::start(app_name.to_string()));
         }
     }
 
@@ -122,7 +123,7 @@ impl ProxyHttp for TakoProxy {
         let host = request_host(session.req_header()).to_string();
         let hostname = host.split(':').next().unwrap_or(&host);
 
-        let route_match = self.routes.read().await.select_with_route(hostname, &path);
+        let route_match = self.routes.read().select_with_route(hostname, &path);
 
         if let Some(route_match) = route_match.as_ref() {
             let resolution = match client_ip_from_session(session) {
@@ -337,7 +338,7 @@ impl ProxyHttp for TakoProxy {
             }
         };
 
-        ctx.start_request_metrics(app_name, self.metrics_enabled());
+        ctx.start_request_metrics(&app_name, self.metrics_enabled());
         ctx.backend = Some(backend);
 
         Ok(false)

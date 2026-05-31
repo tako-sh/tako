@@ -126,7 +126,7 @@ impl crate::ServerState {
         let rollback_snapshot = if let Some(existing) = existing_app.as_ref() {
             let previous_config = existing.config.read().clone();
             let previous_routes = {
-                let route_table = self.routes.read().await;
+                let route_table = self.routes.read();
                 route_table.routes_for_app(app_name)
             };
             let previous_state = existing.state();
@@ -215,7 +215,7 @@ impl crate::ServerState {
         };
 
         {
-            let mut route_table = self.routes.write().await;
+            let mut route_table = self.routes.write();
             route_table.set_app_routes_with_source_ip(
                 app_name.to_string(),
                 routes.clone(),
@@ -533,7 +533,7 @@ impl crate::ServerState {
             );
         }
         {
-            let mut route_table = self.routes.write().await;
+            let mut route_table = self.routes.write();
             route_table.set_app_routes_with_source_ip(
                 app_name.to_string(),
                 previous_routes,

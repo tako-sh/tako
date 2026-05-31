@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Runtime;
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::mpsc;
 
 /// Permissions for the tako data directory (typically `/opt/tako`).
 ///
@@ -332,12 +332,12 @@ fn spawn_cloudflare_ip_refresh(
     rt: &tokio::runtime::Runtime,
     cloudflare_ips: proxy::CloudflareIpRanges,
     cache_path: PathBuf,
-    routes: Arc<RwLock<crate::routing::RouteTable>>,
+    routes: Arc<parking_lot::RwLock<crate::routing::RouteTable>>,
 ) {
     rt.spawn(async move {
         loop {
             tokio::time::sleep(CLOUDFLARE_IP_REFRESH_INTERVAL).await;
-            if !routes.read().await.needs_cloudflare_ip_ranges() {
+            if !routes.read().needs_cloudflare_ip_ranges() {
                 continue;
             }
             refresh_cloudflare_ip_ranges_once(&cloudflare_ips, &cache_path).await;

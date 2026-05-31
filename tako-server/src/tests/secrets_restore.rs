@@ -240,7 +240,7 @@ async fn restore_from_state_store_rehydrates_apps_routes_and_secrets() {
     });
     state_a.load_balancer.register_app(app);
     {
-        let mut route_table = state_a.routes.write().await;
+        let mut route_table = state_a.routes.write();
         route_table.set_app_routes_with_source_ip(
             app_id.to_string(),
             vec![
@@ -269,7 +269,7 @@ async fn restore_from_state_store_rehydrates_apps_routes_and_secrets() {
         tako_core::SourceIpMode::CloudflareProxy
     );
     assert_eq!(restored.state(), crate::socket::AppState::Idle);
-    let route_table = state_b.routes.read().await;
+    let route_table = state_b.routes.read();
     assert_eq!(
         route_table.routes_for_app(app_id),
         vec![

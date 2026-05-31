@@ -2,6 +2,8 @@
 //!
 //! This is intentionally pure logic (no Pingora types) to keep it easy to test.
 
+use std::sync::Arc;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RouteEntry {
     pub app: String,
@@ -11,9 +13,9 @@ pub struct RouteEntry {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompiledRouteEntry {
-    pub app: String,
-    pub host: String,
-    pub path: Option<String>,
+    pub app: Arc<str>,
+    pub host: Arc<str>,
+    pub path: Option<Arc<str>>,
     pub source_ip: tako_core::SourceIpMode,
     pub specificity: (u8, usize, u8),
 }
@@ -27,8 +29,8 @@ pub struct RouteTable {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectedRoute {
-    pub app: String,
-    pub path: Option<String>,
+    pub app: Arc<str>,
+    pub path: Option<Arc<str>>,
     pub source_ip: tako_core::SourceIpMode,
 }
 
@@ -78,7 +80,7 @@ impl RouteTable {
 
     pub fn select(&self, host: &str, path: &str) -> Option<String> {
         self.select_with_route(host, path)
-            .map(|selected| selected.app)
+            .map(|selected| selected.app.to_string())
     }
 
     pub fn select_with_route(&self, host: &str, path: &str) -> Option<SelectedRoute> {
@@ -115,9 +117,9 @@ pub fn compile_routes(routes: &[RouteEntry]) -> Vec<CompiledRouteEntry> {
 
         let (pattern_host, pattern_path) = split_route(&entry.pattern);
         compiled.push(CompiledRouteEntry {
-            app: entry.app.clone(),
-            host: pattern_host.to_string(),
-            path: pattern_path.map(|p| p.to_string()),
+            app: Arc::from(entry.app.as_str()),
+            host: Arc::from(pattern_host),
+            path: pattern_path.map(Arc::from),
             source_ip: entry.source_ip,
             specificity: route_specificity(&entry.pattern),
         });
@@ -134,7 +136,7 @@ pub fn select_app_for_request_compiled(
     host: &str,
     path: &str,
 ) -> Option<String> {
-    select_route_for_request_compiled(routes, host, path).map(|selected| selected.app)
+    select_route_for_request_compiled(routes, host, path).map(|selected| selected.app.to_string())
 }
 
 pub fn select_route_for_request_compiled(

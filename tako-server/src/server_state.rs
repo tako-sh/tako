@@ -8,12 +8,13 @@ use crate::routing::RouteTable;
 use crate::socket::{AppState, Response};
 use crate::state_store::{SqliteStateStore, StateStoreError, load_or_create_device_key};
 use crate::tls::{AcmeClient, CertManager, ChallengeTokens};
+use parking_lot::RwLock as SyncRwLock;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tako_core::{ServerRuntimeInfo, UpgradeMode};
-use tokio::sync::RwLock;
+use tokio::sync::RwLock as AsyncRwLock;
 
 #[derive(Debug, Clone)]
 pub struct ServerRuntimeConfig {
@@ -77,14 +78,14 @@ pub struct ServerState {
     pub(crate) app_manager: Arc<AppManager>,
     pub(crate) load_balancer: Arc<LoadBalancer>,
     pub(crate) cert_manager: Arc<CertManager>,
-    pub(crate) acme_client: RwLock<Option<Arc<AcmeClient>>>,
+    pub(crate) acme_client: AsyncRwLock<Option<Arc<AcmeClient>>>,
     pub(crate) challenge_tokens: ChallengeTokens,
-    pub(crate) routes: Arc<RwLock<RouteTable>>,
-    pub(crate) deploy_locks: RwLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
-    prepared_deploy_ssl: RwLock<HashMap<PreparedDeployKey, PreparedDeploySsl>>,
+    pub(crate) routes: Arc<SyncRwLock<RouteTable>>,
+    pub(crate) deploy_locks: AsyncRwLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    prepared_deploy_ssl: AsyncRwLock<HashMap<PreparedDeployKey, PreparedDeploySsl>>,
     pub(crate) cold_start: Arc<crate::scaling::ColdStartManager>,
     pub(crate) state_store: Arc<SqliteStateStore>,
-    pub(crate) server_mode: RwLock<UpgradeMode>,
+    pub(crate) server_mode: AsyncRwLock<UpgradeMode>,
     pub(crate) runtime: ServerRuntimeConfig,
     pub(crate) workflows: Arc<crate::workflows::WorkflowManager>,
 }
@@ -193,16 +194,16 @@ impl ServerState {
             app_manager,
             load_balancer,
             cert_manager,
-            acme_client: RwLock::new(acme_client),
+            acme_client: AsyncRwLock::new(acme_client),
             challenge_tokens,
-            routes: Arc::new(RwLock::new(RouteTable::default())),
-            deploy_locks: RwLock::new(HashMap::new()),
-            prepared_deploy_ssl: RwLock::new(HashMap::new()),
+            routes: Arc::new(SyncRwLock::new(RouteTable::default())),
+            deploy_locks: AsyncRwLock::new(HashMap::new()),
+            prepared_deploy_ssl: AsyncRwLock::new(HashMap::new()),
             cold_start: Arc::new(crate::scaling::ColdStartManager::new(
                 crate::scaling::ColdStartConfig::default(),
             )),
             state_store,
-            server_mode: RwLock::new(server_mode),
+            server_mode: AsyncRwLock::new(server_mode),
             runtime,
             workflows,
         })
@@ -328,7 +329,7 @@ impl ServerState {
         Ok(prepared.ssl)
     }
 
-    pub fn routes(&self) -> Arc<RwLock<RouteTable>> {
+    pub fn routes(&self) -> Arc<SyncRwLock<RouteTable>> {
         self.routes.clone()
     }
 
@@ -555,7 +556,7 @@ impl ServerState {
             self.load_balancer.register_app(app.clone());
 
             {
-                let mut route_table = self.routes.write().await;
+                let mut route_table = self.routes.write();
                 route_table.set_app_routes_with_source_ip(
                     app_name.clone(),
                     routes,
@@ -599,7 +600,7 @@ impl ServerState {
         };
         let config = app.config.read().clone();
         let routes = {
-            let route_table = self.routes.read().await;
+            let route_table = self.routes.read();
             route_table.routes_for_app(app_name)
         };
         if let Err(e) = self.state_store.upsert_app(&config, &routes) {

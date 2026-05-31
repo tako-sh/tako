@@ -222,7 +222,7 @@ impl crate::ServerState {
                 "Certificate needs renewal"
             );
             let app = {
-                let route_table = self.routes.read().await;
+                let route_table = self.routes.read();
                 route_table.app_for_route_domain(&cert.domain)
             };
             let ssl = match app.as_deref() {

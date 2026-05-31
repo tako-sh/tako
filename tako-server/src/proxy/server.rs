@@ -3,13 +3,13 @@ use crate::proxy::proxy_protocol_service::{ProxyProtocolService, ProxyProtocolTl
 use crate::proxy::{CloudflareIpRanges, ProxyConfig, RouteTable, TakoProxy};
 use crate::scaling::ColdStartManager;
 use crate::tls::{CertManager, ChallengeTokens, SelfSignedGenerator, create_sni_callbacks};
+use parking_lot::RwLock;
 use pingora_core::listeners::TcpSocketOptions;
 use pingora_core::listeners::tls::TlsSettings;
 use pingora_core::prelude::*;
 use pingora_core::server::configuration::ServerConf;
 use pingora_core::services::listening::Service as ListeningService;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 
 /// Build and start the Pingora server with ACME and SNI support
 pub fn build_server_with_acme(

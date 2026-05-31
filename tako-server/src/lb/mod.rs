@@ -13,6 +13,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Load balancer for a single app
 pub struct AppLoadBalancer {
+    /// App name shared with selected backend handles
+    app_name: Arc<str>,
     /// App reference
     app: Arc<App>,
     /// Round-robin counter
@@ -21,7 +23,9 @@ pub struct AppLoadBalancer {
 
 impl AppLoadBalancer {
     pub fn new(app: Arc<App>) -> Self {
+        let app_name = Arc::from(app.name());
         Self {
+            app_name,
             app,
             rr_counter: AtomicUsize::new(0),
         }
@@ -31,6 +35,17 @@ impl AppLoadBalancer {
     pub fn get_instance(&self) -> Option<Arc<Instance>> {
         let request_index = self.rr_counter.fetch_add(1, Ordering::Relaxed);
         self.app.healthy_instance_for_request(request_index)
+    }
+
+    /// Get a backend to handle a request.
+    pub fn get_backend(&self) -> Option<Backend> {
+        let instance = self.get_instance()?;
+
+        Some(Backend {
+            app_name: self.app_name.clone(),
+            endpoint: instance.endpoint(),
+            instance,
+        })
     }
 }
 
@@ -64,13 +79,7 @@ impl LoadBalancer {
     /// Get a backend instance for a request
     pub fn get_backend(&self, app_name: &str) -> Option<Backend> {
         let lb = self.app_lbs.get(app_name)?;
-        let instance = lb.get_instance()?;
-
-        Some(Backend {
-            app_name: app_name.to_string(),
-            endpoint: instance.endpoint(),
-            instance,
-        })
+        lb.get_backend()
     }
 
     /// Get app manager
@@ -82,7 +91,7 @@ impl LoadBalancer {
 /// A selected backend for a request
 pub struct Backend {
     /// App name
-    pub app_name: String,
+    pub app_name: Arc<str>,
     /// Selected instance for request accounting and channel auth.
     instance: Arc<Instance>,
     /// Optional TCP endpoint for upstream proxying
@@ -198,6 +207,20 @@ mod tests {
         assert_eq!(selected.id, replacement.id);
     }
 
+    #[test]
+    fn backend_reuses_load_balancer_app_name() {
+        let app = create_test_app();
+        let instance = app.allocate_instance();
+        app.set_instance_state(&instance, InstanceState::Healthy);
+
+        let lb = AppLoadBalancer::new(app);
+        let first = lb.get_backend().expect("first backend");
+        let second = lb.get_backend().expect("second backend");
+
+        assert_eq!(first.app_name.as_ref(), "test-app");
+        assert!(Arc::ptr_eq(&first.app_name, &second.app_name));
+    }
+
     #[tokio::test]
     async fn test_global_load_balancer() {
         let manager = Arc::new(AppManager::new(PathBuf::from("/tmp/tako-test")));
@@ -216,7 +239,7 @@ mod tests {
         lb.register_app(app);
 
         let backend = lb.get_backend("my-app").unwrap();
-        assert_eq!(backend.app_name, "my-app");
+        assert_eq!(backend.app_name.as_ref(), "my-app");
         assert_eq!(backend.instance_id(), instance.id);
         assert_eq!(backend.endpoint(), None);
     }

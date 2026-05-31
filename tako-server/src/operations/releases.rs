@@ -236,7 +236,7 @@ impl crate::ServerState {
         }
 
         let routes = {
-            let route_table = self.routes.read().await;
+            let route_table = self.routes.read();
             route_table.routes_for_app(app_name)
         };
         if routes.is_empty() {

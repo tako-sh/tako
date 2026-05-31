@@ -37,7 +37,7 @@ async fn delete_command_removes_runtime_registration_and_routes() {
     let app = state.app_manager.register_app(config);
     state.load_balancer.register_app(app);
     {
-        let mut route_table = state.routes.write().await;
+        let mut route_table = state.routes.write();
         route_table.set_app_routes("my-app".to_string(), vec!["api.example.com".to_string()]);
     }
 
@@ -50,7 +50,7 @@ async fn delete_command_removes_runtime_registration_and_routes() {
     assert!(state.app_manager.get_app("my-app").is_none());
     assert!(!app_root.exists());
 
-    let route_table = state.routes.read().await;
+    let route_table = state.routes.read();
     assert!(route_table.routes_for_app("my-app").is_empty());
     assert_eq!(route_table.select("api.example.com", "/"), None);
 }

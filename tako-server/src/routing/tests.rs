@@ -565,9 +565,36 @@ fn test_route_table_select_with_route_returns_matched_path_pattern() {
     let matched = table
         .select_with_route("example.com", "/tanstack-start/assets/main.js")
         .expect("expected matching route");
-    assert_eq!(matched.app, "web");
-    assert_eq!(matched.path, Some("/tanstack-start/*".to_string()));
+    assert_eq!(matched.app.as_ref(), "web");
+    assert_eq!(matched.path.as_deref(), Some("/tanstack-start/*"));
     assert_eq!(matched.source_ip, tako_core::SourceIpMode::Auto);
+}
+
+#[test]
+fn route_table_select_with_route_reuses_compiled_route_strings() {
+    let mut table = RouteTable::default();
+    table.set_app_routes(
+        "web".to_string(),
+        vec!["example.com/tanstack-start/*".to_string()],
+    );
+
+    let first = table
+        .select_with_route("example.com", "/tanstack-start/assets/main.js")
+        .expect("expected first matching route");
+    let second = table
+        .select_with_route("example.com", "/tanstack-start/assets/main.css")
+        .expect("expected second matching route");
+
+    assert_eq!(first.app.as_ref(), "web");
+    assert_eq!(
+        first.path.as_ref().map(|path| path.as_ref()),
+        Some("/tanstack-start/*")
+    );
+    assert!(std::sync::Arc::ptr_eq(&first.app, &second.app));
+    assert!(std::sync::Arc::ptr_eq(
+        first.path.as_ref().expect("first route path"),
+        second.path.as_ref().expect("second route path")
+    ));
 }
 
 #[test]

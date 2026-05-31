@@ -19,7 +19,7 @@ use tempfile::TempDir;
 fn test_tako_proxy_creation() {
     let manager = Arc::new(AppManager::new(PathBuf::from("/tmp/tako-test")));
     let lb = Arc::new(LoadBalancer::new(manager));
-    let routes = Arc::new(tokio::sync::RwLock::new(RouteTable::default()));
+    let routes = Arc::new(parking_lot::RwLock::new(RouteTable::default()));
     let cold_start = Arc::new(ColdStartManager::new(
         crate::scaling::ColdStartConfig::default(),
     ));
@@ -52,7 +52,7 @@ async fn proxy_context_finishes_only_requests_started_upstream() {
     let instance = app.allocate_instance();
     app.set_instance_state(&instance, InstanceState::Healthy);
 
-    let routes = Arc::new(tokio::sync::RwLock::new(RouteTable::default()));
+    let routes = Arc::new(parking_lot::RwLock::new(RouteTable::default()));
     let cold_start = Arc::new(ColdStartManager::new(
         crate::scaling::ColdStartConfig::default(),
     ));
@@ -83,7 +83,7 @@ fn test_tako_proxy_with_acme() {
     let lb = Arc::new(LoadBalancer::new(manager));
     let tokens: ChallengeTokens = Arc::new(RwLock::new(HashMap::new()));
 
-    let routes = Arc::new(tokio::sync::RwLock::new(RouteTable::default()));
+    let routes = Arc::new(parking_lot::RwLock::new(RouteTable::default()));
     let cold_start = Arc::new(ColdStartManager::new(
         crate::scaling::ColdStartConfig::default(),
     ));
@@ -116,7 +116,7 @@ fn test_proxy_config_default() {
 fn proxy_metrics_enabled_follows_metrics_port() {
     let manager = Arc::new(AppManager::new(PathBuf::from("/tmp/tako-test")));
     let lb = Arc::new(LoadBalancer::new(manager));
-    let routes = Arc::new(tokio::sync::RwLock::new(RouteTable::default()));
+    let routes = Arc::new(parking_lot::RwLock::new(RouteTable::default()));
     let cold_start = Arc::new(ColdStartManager::new(ColdStartConfig::default()));
 
     let enabled = TakoProxy::new(
@@ -148,7 +148,7 @@ fn proxy_metrics_enabled_follows_metrics_port() {
 fn proxy_does_not_install_default_downstream_compression_module() {
     let manager = Arc::new(AppManager::new(PathBuf::from("/tmp/tako-test")));
     let lb = Arc::new(LoadBalancer::new(manager));
-    let routes = Arc::new(tokio::sync::RwLock::new(RouteTable::default()));
+    let routes = Arc::new(parking_lot::RwLock::new(RouteTable::default()));
     let cold_start = Arc::new(ColdStartManager::new(ColdStartConfig::default()));
     let proxy = TakoProxy::new(
         lb,
@@ -182,7 +182,7 @@ fn request_context_skips_metric_timers_when_metrics_are_disabled() {
         upstream_start: None,
     };
 
-    ctx.start_request_metrics("test-app".to_string(), false);
+    ctx.start_request_metrics("test-app", false);
     ctx.start_upstream_metrics(false);
 
     assert!(ctx.request_timer.is_none());
@@ -860,7 +860,7 @@ async fn resolve_backend_waits_for_ready_on_on_demand_apps() {
     });
     lb.register_app(app.clone());
 
-    let routes = Arc::new(tokio::sync::RwLock::new(RouteTable::default()));
+    let routes = Arc::new(parking_lot::RwLock::new(RouteTable::default()));
     let cold_start = Arc::new(ColdStartManager::new(ColdStartConfig {
         startup_timeout: Duration::from_secs(1),
         max_queued_requests: 100,
@@ -901,7 +901,7 @@ async fn resolve_backend_returns_startup_timeout_after_wait_timeout() {
     });
     lb.register_app(app);
 
-    let routes = Arc::new(tokio::sync::RwLock::new(RouteTable::default()));
+    let routes = Arc::new(parking_lot::RwLock::new(RouteTable::default()));
     let cold_start = Arc::new(ColdStartManager::new(ColdStartConfig {
         startup_timeout: Duration::from_millis(25),
         max_queued_requests: 100,
@@ -932,7 +932,7 @@ async fn resolve_backend_returns_startup_failed_when_cold_start_fails() {
     });
     lb.register_app(app);
 
-    let routes = Arc::new(tokio::sync::RwLock::new(RouteTable::default()));
+    let routes = Arc::new(parking_lot::RwLock::new(RouteTable::default()));
     let cold_start = Arc::new(ColdStartManager::new(ColdStartConfig {
         startup_timeout: Duration::from_secs(1),
         max_queued_requests: 100,
@@ -968,7 +968,7 @@ async fn resolve_backend_returns_queue_full_when_cold_start_queue_is_full() {
     });
     lb.register_app(app);
 
-    let routes = Arc::new(tokio::sync::RwLock::new(RouteTable::default()));
+    let routes = Arc::new(parking_lot::RwLock::new(RouteTable::default()));
     let cold_start = Arc::new(ColdStartManager::new(ColdStartConfig {
         startup_timeout: Duration::from_secs(1),
         max_queued_requests: 1,
@@ -1007,7 +1007,7 @@ async fn resolve_backend_returns_unavailable_for_non_on_demand_apps_without_back
     });
     lb.register_app(app);
 
-    let routes = Arc::new(tokio::sync::RwLock::new(RouteTable::default()));
+    let routes = Arc::new(parking_lot::RwLock::new(RouteTable::default()));
     let cold_start = Arc::new(ColdStartManager::new(ColdStartConfig::default()));
     let proxy = TakoProxy::new(
         lb,
@@ -1026,7 +1026,7 @@ async fn resolve_backend_returns_app_missing_when_app_not_registered() {
     let manager = Arc::new(AppManager::new(PathBuf::from("/tmp/tako-test")));
     let lb = Arc::new(LoadBalancer::new(manager));
 
-    let routes = Arc::new(tokio::sync::RwLock::new(RouteTable::default()));
+    let routes = Arc::new(parking_lot::RwLock::new(RouteTable::default()));
     let cold_start = Arc::new(ColdStartManager::new(ColdStartConfig::default()));
     let proxy = TakoProxy::new(
         lb,
@@ -1044,9 +1044,9 @@ async fn resolve_backend_returns_app_missing_when_app_not_registered() {
 async fn load_balancer_cleanup_removes_stale_routes_for_app() {
     let manager = Arc::new(AppManager::new(PathBuf::from("/tmp/tako-test")));
     let lb = Arc::new(LoadBalancer::new(manager));
-    let routes = Arc::new(tokio::sync::RwLock::new(RouteTable::default()));
+    let routes = Arc::new(parking_lot::RwLock::new(RouteTable::default()));
     {
-        let mut table = routes.write().await;
+        let mut table = routes.write();
         table.set_app_routes("test-app".to_string(), vec!["test.example.com".to_string()]);
         assert_eq!(
             table.select("test.example.com", "/"),
@@ -1064,7 +1064,7 @@ async fn load_balancer_cleanup_removes_stale_routes_for_app() {
 
     proxy.load_balancer_cleanup("test-app").await;
 
-    let table = routes.read().await;
+    let table = routes.read();
     assert!(table.routes_for_app("test-app").is_empty());
     assert_eq!(table.select("test.example.com", "/"), None);
 }
@@ -1073,7 +1073,7 @@ async fn load_balancer_cleanup_removes_stale_routes_for_app() {
 fn static_server_for_app_reuses_cached_server_for_same_root() {
     let manager = Arc::new(AppManager::new(PathBuf::from("/tmp/tako-test")));
     let lb = Arc::new(LoadBalancer::new(manager));
-    let routes = Arc::new(tokio::sync::RwLock::new(RouteTable::default()));
+    let routes = Arc::new(parking_lot::RwLock::new(RouteTable::default()));
     let cold_start = Arc::new(ColdStartManager::new(ColdStartConfig::default()));
     let proxy = TakoProxy::new(
         lb,
@@ -1094,7 +1094,7 @@ fn static_server_for_app_reuses_cached_server_for_same_root() {
 fn static_server_for_app_replaces_cached_server_when_root_changes() {
     let manager = Arc::new(AppManager::new(PathBuf::from("/tmp/tako-test")));
     let lb = Arc::new(LoadBalancer::new(manager));
-    let routes = Arc::new(tokio::sync::RwLock::new(RouteTable::default()));
+    let routes = Arc::new(parking_lot::RwLock::new(RouteTable::default()));
     let cold_start = Arc::new(ColdStartManager::new(ColdStartConfig::default()));
     let proxy = TakoProxy::new(
         lb,

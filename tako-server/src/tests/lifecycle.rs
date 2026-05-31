@@ -44,7 +44,7 @@ async fn scale_command_persists_zero_instances_across_restore() {
     });
     state_a.load_balancer.register_app(app.clone());
     {
-        let mut route_table = state_a.routes.write().await;
+        let mut route_table = state_a.routes.write();
         route_table.set_app_routes("my-app".to_string(), vec!["api.example.com".to_string()]);
     }
 
@@ -123,7 +123,7 @@ async fn deploy_preserves_scaled_instance_count() {
     });
     state.load_balancer.register_app(app.clone());
     {
-        let mut route_table = state.routes.write().await;
+        let mut route_table = state.routes.write();
         route_table.set_app_routes("my-app".to_string(), vec!["api.example.com".to_string()]);
     }
 
@@ -205,7 +205,7 @@ async fn delete_command_removes_persisted_state_for_next_boot() {
     });
     state_a.load_balancer.register_app(app);
     {
-        let mut route_table = state_a.routes.write().await;
+        let mut route_table = state_a.routes.write();
         route_table.set_app_routes(
             "my-app/production".to_string(),
             vec!["api.example.com".to_string()],

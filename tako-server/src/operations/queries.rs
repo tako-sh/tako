@@ -45,7 +45,7 @@ impl crate::ServerState {
     }
 
     pub(crate) async fn list_routes(&self) -> Response {
-        let route_table = self.routes.read().await;
+        let route_table = self.routes.read();
         let routes: Vec<serde_json::Value> = self
             .app_manager
             .list_apps()

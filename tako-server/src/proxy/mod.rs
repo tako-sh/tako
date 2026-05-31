@@ -30,7 +30,6 @@ use limits::IpRequestTracker;
 use parking_lot::RwLock as SyncRwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 
 #[cfg(test)]
 use pingora_http::{RequestHeader, ResponseHeader};
@@ -53,7 +52,7 @@ pub struct TakoProxy {
     /// Load balancer
     lb: Arc<LoadBalancer>,
     /// Route table (app_name -> route patterns)
-    routes: Arc<RwLock<RouteTable>>,
+    routes: Arc<SyncRwLock<RouteTable>>,
     /// Configuration
     config: ProxyConfig,
     /// ACME challenge handler (optional)
@@ -84,7 +83,7 @@ impl TakoProxy {
 
     pub fn new(
         lb: Arc<LoadBalancer>,
-        routes: Arc<RwLock<RouteTable>>,
+        routes: Arc<SyncRwLock<RouteTable>>,
         config: ProxyConfig,
         cold_start: Arc<ColdStartManager>,
         cloudflare_ips: CloudflareIpRanges,
@@ -111,7 +110,7 @@ impl TakoProxy {
     /// Create proxy with ACME challenge handling
     pub fn with_acme(
         lb: Arc<LoadBalancer>,
-        routes: Arc<RwLock<RouteTable>>,
+        routes: Arc<SyncRwLock<RouteTable>>,
         config: ProxyConfig,
         tokens: ChallengeTokens,
         cold_start: Arc<ColdStartManager>,

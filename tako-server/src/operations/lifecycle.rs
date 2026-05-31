@@ -174,7 +174,7 @@ impl crate::ServerState {
         self.cold_start.reset(app_name);
 
         {
-            let mut route_table = self.routes.write().await;
+            let mut route_table = self.routes.write();
             route_table.remove_app_routes(app_name);
         }
 
