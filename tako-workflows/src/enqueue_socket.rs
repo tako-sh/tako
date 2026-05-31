@@ -14,7 +14,8 @@
 //! Auth: filesystem permissions only (`chmod 0660`, owned by the service
 //! user/group so `tako-app` processes can connect).
 
-use std::os::unix::fs::PermissionsExt;
+use std::ffi::CString;
+use std::os::unix::{ffi::OsStrExt, fs::PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -128,7 +129,7 @@ pub fn spawn(
 
     let std_listener = std::os::unix::net::UnixListener::bind(&actual_path)?;
     std_listener.set_nonblocking(true)?;
-    let _ = std::fs::set_permissions(&actual_path, std::fs::Permissions::from_mode(0o660));
+    configure_socket_permissions(&actual_path)?;
 
     // Atomically swap symlink: write temp, rename over target.
     let temp_link = symlink_path.with_extension("tmp");
@@ -152,6 +153,88 @@ pub fn spawn(
         shutdown_tx: Some(shutdown_tx),
         join: Some(join),
     })
+}
+
+fn configure_socket_permissions(path: &Path) -> std::io::Result<()> {
+    if let Some(gid) = app_socket_gid_for_root(lookup_user_ids, is_root())? {
+        chown_group(path, gid)?;
+    }
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o660))
+}
+
+fn app_socket_gid_for_root(
+    lookup: impl Fn(&str) -> std::io::Result<Option<(u32, u32)>>,
+    is_root: bool,
+) -> std::io::Result<Option<u32>> {
+    if !is_root {
+        return Ok(None);
+    }
+    Ok(lookup("tako-app")?.map(|(_uid, gid)| gid))
+}
+
+fn is_root() -> bool {
+    // SAFETY: geteuid has no preconditions and returns the effective user id.
+    unsafe { libc::geteuid() == 0 }
+}
+
+fn lookup_user_ids(name: &str) -> std::io::Result<Option<(u32, u32)>> {
+    let name = CString::new(name).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "user name contains interior NUL byte",
+        )
+    })?;
+    let mut entry = std::mem::MaybeUninit::<libc::passwd>::uninit();
+    let mut result = std::ptr::null_mut();
+    let mut buf = vec![0u8; passwd_buffer_size()];
+
+    loop {
+        // SAFETY: name is a valid C string; entry, result, and buf point to
+        // writable storage for getpwnam_r.
+        let rc = unsafe {
+            libc::getpwnam_r(
+                name.as_ptr(),
+                entry.as_mut_ptr(),
+                buf.as_mut_ptr().cast(),
+                buf.len(),
+                &mut result,
+            )
+        };
+        if rc == 0 {
+            if result.is_null() {
+                return Ok(None);
+            }
+            // SAFETY: getpwnam_r returned success and result points at entry.
+            let entry = unsafe { entry.assume_init() };
+            return Ok(Some((entry.pw_uid, entry.pw_gid)));
+        }
+        if rc == libc::ERANGE {
+            buf.resize(buf.len() * 2, 0);
+            continue;
+        }
+        return Err(std::io::Error::from_raw_os_error(rc));
+    }
+}
+
+fn passwd_buffer_size() -> usize {
+    // SAFETY: sysconf has no preconditions for _SC_GETPW_R_SIZE_MAX.
+    let size = unsafe { libc::sysconf(libc::_SC_GETPW_R_SIZE_MAX) };
+    if size > 0 { size as usize } else { 16 * 1024 }
+}
+
+fn chown_group(path: &Path, gid: u32) -> std::io::Result<()> {
+    let path = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "path contains interior NUL byte",
+        )
+    })?;
+    // SAFETY: path is a valid C string. uid -1 means unchanged on Unix.
+    let rc = unsafe { libc::chown(path.as_ptr(), !0 as libc::uid_t, gid as libc::gid_t) };
+    if rc == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 async fn run(
