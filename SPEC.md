@@ -1480,10 +1480,7 @@ Reference scripts in this repo:
 - When HTTPS uses a non-default public port, deploy summaries include that port in printed route URLs and HTTP redirects target the configured HTTPS port.
 - Forwarded HTTPS metadata (`X-Forwarded-Proto` and `Forwarded: proto=https`) is honored only from loopback peers, Cloudflare peers, or peers listed in server `trusted_proxy.trusted_cidrs`. Direct clients cannot bypass HTTPS redirects by spoofing those headers.
 - For trusted forwarded peers, requests for private/local hostnames (`localhost`, `*.localhost`, single-label hosts, and reserved suffixes like `*.local`) are treated as already HTTPS when proxy proto metadata is missing, so local dev proxy setups do not enter redirect loops.
-- Upstream response caching is enabled at the edge proxy for `GET`/`HEAD` requests (websocket upgrades are excluded).
-- Cache admission follows response headers (`Cache-Control` / `Expires`) with no implicit TTL defaults; responses without explicit cache directives are not stored.
-- Cache key includes request host + URI so different route hosts are isolated.
-- Proxy cache storage is in-memory with bounded LRU eviction (256 MiB total, 8 MiB per cached response body).
+- Proxied upstream responses are not stored in a shared edge cache by default. Static assets and image optimization have separate cache behavior.
 - Per-IP rate limiting: maximum 2048 concurrent connections per client IP; excess requests receive `429`.
 - Maximum HTTP request body size: 128 MiB; larger requests receive `413`.
 - Maximum channel WebSocket frame payload size: 128 MiB; larger frames are rejected and the socket closes.

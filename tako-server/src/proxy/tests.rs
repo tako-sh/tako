@@ -106,7 +106,7 @@ fn test_proxy_config_default() {
     assert!(config.enable_https);
     assert!(!config.dev_mode);
     assert!(config.redirect_http_to_https);
-    assert!(config.response_cache.is_some());
+    assert!(config.response_cache.is_none());
     assert!(!config.trusted_proxy.proxy_protocol);
     assert!(config.trusted_proxy.trusted_cidrs.is_empty());
     assert!(config.trusted_proxy.client_ip_headers.is_empty());

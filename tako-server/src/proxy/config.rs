@@ -144,7 +144,7 @@ impl Default for ProxyConfig {
             dev_mode: false,
             cert_dir: PathBuf::from("/opt/tako/certs"),
             redirect_http_to_https: true,
-            response_cache: Some(ResponseCacheConfig::default()),
+            response_cache: None,
             metrics_port: Some(9898),
             trusted_proxy: TrustedProxyConfig::default(),
         }

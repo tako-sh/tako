@@ -15,7 +15,7 @@ mod service;
 mod static_files;
 
 pub(crate) use cloudflare_ips::CloudflareIpRanges;
-pub use config::{ProxyConfig, ResponseCacheConfig, TrustedClientIpHeader, TrustedProxyConfig};
+pub use config::{ProxyConfig, TrustedClientIpHeader, TrustedProxyConfig};
 pub use server::build_server_with_acme;
 #[allow(unused_imports)]
 pub use static_files::*;

@@ -277,7 +277,7 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         dev_mode: cfg!(debug_assertions),
         cert_dir,
         redirect_http_to_https: true,
-        response_cache: Some(proxy::ResponseCacheConfig::default()),
+        response_cache: None,
         metrics_port: if args.metrics_port == 0 {
             None
         } else {
