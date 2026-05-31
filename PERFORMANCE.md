@@ -13,6 +13,8 @@ Environment:
 - Server: Ubuntu 24.04.4 LTS VM, 2 vCPU AMD EPYC 9554P, 7.8 GiB RAM
 - Region observed from VM public address: Tokyo, Japan
 - Load generator: macOS laptop over Tailscale
+- VM-local high-load pass: load generator, proxy, and app all on the same VM,
+  with 16 loopback source IPs for high-concurrency runs
 - Route: `https://bench.test:18443`, same TLS certificate and app payloads for
   Tako, nginx, and Caddy
 - Exact hostnames, public IPs, private Tailscale IPs, and user identifiers are
@@ -29,12 +31,28 @@ Headline 500-concurrency HTTP/TLS results:
 | Tako load-balanced plaintext  | 10,229.89 |   48.82 |  70.15 |
 | Caddy load-balanced plaintext |  5,361.73 |   93.10 | 140.98 |
 
+VM-local high-load headline:
+
+| case                          |  conc | 200 rps | p99 ms | note                       |
+| ----------------------------- | ----: | ------: | -----: | -------------------------- |
+| nginx single plaintext        |   100 |  27,694 |      9 | best clean low-latency row |
+| Tako single plaintext         |   100 |  21,205 |     10 | best Tako low-latency row  |
+| Caddy load-balanced plaintext |   100 |  13,683 |     20 | best Caddy row             |
+| Tako single plaintext         | 2,500 |  14,379 |    876 | source-sharded overload    |
+| Tako single plaintext         | 5,000 |  12,446 |  3,753 | source-sharded overload    |
+
 Findings:
 
 - Tako single-instance proxying was about 7.4% behind nginx and much faster
   than Caddy in this cross-network TLS run.
-- Tako's load-balanced path was the main gap, about 20.1% behind nginx
-  load-balanced plaintext and slower than Tako single-instance.
+- The single 2 vCPU VM did not approach 60k-100k clean TLS rps. With TLS and
+  same-box load generation, the best clean low-latency row was nginx at 27.7k
+  rps; Tako's best low-latency row was 21.2k rps.
+- Tako has a built-in 2048 concurrent request cap per client IP. High-load
+  benchmarks above that must shard source IPs or apply equivalent limits to the
+  comparison proxies.
+- Tako's load-balanced path is still a profiling target in the useful latency
+  range, and Tako proxy RSS grows sharply under c2500-c10000 overload.
 - The released server failed the first channel/workflow benchmark because app
   processes could not use the internal workflow/channel Unix socket. A source
   fix was added in `tako-workflows`; the patched server produced clean 200-only
