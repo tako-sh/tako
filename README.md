@@ -73,7 +73,7 @@ tako deploy
 - [Troubleshooting](https://tako.sh/docs/troubleshooting) — common issues and fixes
 - [Examples](https://github.com/tako-sh/tako/tree/main/examples)
 - [SDK](https://www.npmjs.com/package/tako.sh)
-- [Performance](PERFORMANCE.md) — benchmark summary and raw-data links
+- [Benchmarks](BENCHMARKS.md) — current TLDR and raw-data links
 
 ## Agent Skills
 
