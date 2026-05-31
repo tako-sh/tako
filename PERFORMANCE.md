@@ -22,24 +22,21 @@ Environment:
 
 Headline 500-concurrency HTTP/TLS results:
 
-| case                          |       rps | mean ms | p95 ms |
-| ----------------------------- | --------: | ------: | -----: |
-| nginx single plaintext        | 13,691.31 |   36.45 |  45.04 |
-| Tako single plaintext         | 12,675.96 |   39.37 |  50.51 |
-| Caddy single plaintext        |  5,980.57 |   83.49 | 129.68 |
-| nginx load-balanced plaintext | 12,804.48 |   38.97 |  52.70 |
-| Tako load-balanced plaintext  | 10,229.89 |   48.82 |  70.15 |
-| Caddy load-balanced plaintext |  5,361.73 |   93.10 | 140.98 |
+| case                   |       rps | mean ms | p95 ms |
+| ---------------------- | --------: | ------: | -----: |
+| nginx single plaintext | 13,691.31 |   36.45 |  45.04 |
+| Tako single plaintext  | 12,675.96 |   39.37 |  50.51 |
+| Caddy single plaintext |  5,980.57 |   83.49 | 129.68 |
 
 VM-local high-load headline:
 
-| case                          |  conc | 200 rps | p99 ms | note                       |
-| ----------------------------- | ----: | ------: | -----: | -------------------------- |
-| nginx single plaintext        |   100 |  27,694 |      9 | best clean low-latency row |
-| Tako single plaintext         |   100 |  21,205 |     10 | best Tako low-latency row  |
-| Caddy load-balanced plaintext |   100 |  13,683 |     20 | best Caddy row             |
-| Tako single plaintext         | 2,500 |  14,379 |    876 | source-sharded overload    |
-| Tako single plaintext         | 5,000 |  12,446 |  3,753 | source-sharded overload    |
+| case                   |  conc | 200 rps | p99 ms | note                       |
+| ---------------------- | ----: | ------: | -----: | -------------------------- |
+| nginx single plaintext |   100 |  27,694 |      9 | best clean low-latency row |
+| Tako single plaintext  |   100 |  21,205 |     10 | best Tako low-latency row  |
+| Caddy single plaintext |   100 |  12,128 |     21 | best Caddy single row      |
+| Tako single plaintext  | 2,500 |  14,379 |    876 | source-sharded overload    |
+| Tako single plaintext  | 5,000 |  12,446 |  3,753 | source-sharded overload    |
 
 Findings:
 
@@ -51,8 +48,8 @@ Findings:
 - Tako has a built-in 2048 concurrent request cap per client IP. High-load
   benchmarks above that must shard source IPs or apply equivalent limits to the
   comparison proxies.
-- Tako's load-balanced path is still a profiling target in the useful latency
-  range, and Tako proxy RSS grows sharply under c2500-c10000 overload.
+- Load-balanced rows are intentionally excluded for this 2 vCPU exe-node
+  report; Tako proxy RSS grows sharply under c2500-c10000 overload.
 - The released server failed the first channel/workflow benchmark because app
   processes could not use the internal workflow/channel Unix socket. A source
   fix was added in `tako-workflows`; the patched server produced clean 200-only
@@ -75,9 +72,11 @@ Raw data and graphs:
   <https://github.com/tako-sh/performance/blob/main/results/20260531T120513Z/tako-features-vm-local/graphs/README.md>
 
 This rerun used released `tako-server 0.0.0-1c29253`, after the
-load-balancer active-set change. It skipped low concurrency and ran VM-local
-HTTPS load at c2500, c5000, c7500, c10000, and c15000 with 16 loopback source
-IPs, 10s warmups, and 30s measured windows.
+active-set routing change. It skipped low concurrency and ran VM-local HTTPS
+load at c2500, c5000, c7500, c10000, and c15000 with 16 loopback source IPs,
+10s warmups, and 30s measured windows. Load-balanced rows are excluded for
+this VM because four upstream app processes mostly measure CPU contention on a
+2 vCPU box.
 
 Released-rerun HTTP/TLS headline:
 
@@ -95,10 +94,8 @@ Released-rerun HTTP/TLS headline:
 
 Current takeaway:
 
-- The active-set routing fix removed request-path health/state scanning, but
-  Tako LB still does not beat Tako single in the useful range.
-- On this 2 vCPU VM, nginx and Caddy LB modes are also slower than their
-  single-instance modes, so four app processes are not helping this tiny app.
+- Load-balanced mode is deferred until a larger or multi-node testbed; this VM
+  is useful for single-upstream throughput and failure-mode behavior only.
 - Tako single can produce more raw 200 rps than nginx in overload rows, but
   p99 latency is worse. Treat those rows as survivability data, not a steady
   operating point.
