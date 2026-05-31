@@ -26,7 +26,7 @@ Tako is built to make local development smooth and production deploys boring (th
 
 - Rolling deploys with health-based traffic shifts, no babysitting required.
 - Zero-downtime server updates — one command and tako handles the handoff.
-- Built-in load balancer. Scales down to `0`, scales up as far as you need.
+- Built-in load balancer. Scales down to `0`, with server-side limits that prevent runaway process counts.
 - Was it `3000`? `5000`? Or `8081`? With Tako, local setup is portless on `https://*.test` (<a href="https://www.rfc-editor.org/rfc/rfc6761#section-6.2" target="_blank" rel="noopener noreferrer">RFC 6761</a>).
 - Remote production routes are HTTPS by default (HTTP redirects to HTTPS).
 - Subdomains? Custom path routes? Done.

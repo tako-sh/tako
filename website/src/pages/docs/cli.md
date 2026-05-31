@@ -353,7 +353,7 @@ tako scale 2 --env production
 tako scale 0 --server prod-a --app my-app/production
 ```
 
-Changes the desired instance count per targeted server. The count persists across server restarts, deploys, and rollbacks. In project context, `--env` defaults to `production`; outside a project, provide `--server` and `--app`.
+Changes the desired instance count per targeted server. The count persists across server restarts, deploys, and rollbacks. Requests above the app's effective server maximum fail instead of being silently capped. In project context, `--env` defaults to `production`; outside a project, provide `--server` and `--app`.
 
 ## `tako delete`
 

@@ -166,6 +166,50 @@ impl Default for AppConfig {
     }
 }
 
+pub(crate) fn validate_requested_instances(
+    requested_instances: u32,
+    max_instances: u32,
+) -> Result<(), String> {
+    let limit = effective_instance_limit(max_instances);
+    if requested_instances > limit {
+        return Err(format!(
+            "Requested {requested_instances} instances, but this server allows at most {limit}. Use fewer instances or spread traffic across more servers."
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn default_max_instances_for_host() -> u32 {
+    host_instance_limit_for_parallelism(host_parallelism())
+}
+
+pub(crate) fn effective_instance_limit(max_instances: u32) -> u32 {
+    max_instances.min(default_max_instances_for_host())
+}
+
+pub(crate) fn clamp_instances_to_limit(config: &mut AppConfig) -> Option<(u32, u32)> {
+    let limit = effective_instance_limit(config.max_instances);
+    if config.min_instances <= limit {
+        return None;
+    }
+
+    let requested = config.min_instances;
+    config.min_instances = limit;
+    Some((requested, limit))
+}
+
+fn host_parallelism() -> u32 {
+    std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(1)
+        .try_into()
+        .unwrap_or(u32::MAX)
+}
+
+fn host_instance_limit_for_parallelism(parallelism: u32) -> u32 {
+    parallelism.saturating_mul(2).max(1)
+}
+
 /// A running instance of an app
 pub struct Instance {
     /// Unique instance ID

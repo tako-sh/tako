@@ -1,4 +1,4 @@
-use crate::instances::AppManager;
+use crate::instances::{AppManager, clamp_instances_to_limit};
 use crate::lb::LoadBalancer;
 use crate::release::{apply_release_runtime_to_config, release_app_path};
 use crate::release::{
@@ -512,6 +512,16 @@ impl ServerState {
             if self.runtime.standby && config.min_instances > 1 {
                 config.min_instances = 1;
                 config.max_instances = config.max_instances.max(1);
+            }
+            if let Some((requested_instances, max_instances)) =
+                clamp_instances_to_limit(&mut config)
+            {
+                tracing::warn!(
+                    app = %app_name,
+                    requested_instances,
+                    max_instances,
+                    "Clamped restored app instance count to server maximum"
+                );
             }
 
             let should_start = config.min_instances > 0;

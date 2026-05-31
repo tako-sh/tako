@@ -141,7 +141,7 @@ Each server rolls independently:
 7. Prune releases older than 30 days.
 8. Create a post-deploy backup when backups are enabled.
 
-New app deploys start with desired instance count `1` per server. `tako scale` changes the desired count, and that value persists across restarts, deploys, and rollbacks. If desired count is `0`, rolling deploy still starts one warm instance for the new build so traffic is immediately served after deploy.
+New app deploys start with desired instance count `1` per server. `tako scale` changes the desired count, and that value persists across restarts, deploys, and rollbacks. New deploys default to a maximum of two app instances per available CPU; explicit scale or deploy requests above the effective server maximum fail. If desired count is `0`, rolling deploy still starts one warm instance for the new build so traffic is immediately served after deploy.
 
 ## Scaling
 

@@ -225,5 +225,6 @@ mod delete_upgrade;
 mod deploy;
 mod lifecycle;
 mod release_command;
+mod scale_limits;
 mod secrets_restore;
 mod workflows;

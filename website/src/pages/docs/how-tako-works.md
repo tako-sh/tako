@@ -98,7 +98,7 @@ Use `cloudflare-proxy` when all traffic must arrive through Cloudflare. Use `tru
 
 ## Process Model
 
-New deploys start with one desired instance per server. `tako scale` changes that desired count and persists it across restarts, deploys, and rollbacks. Scaling to zero keeps the app registered; the first request triggers a cold start.
+New deploys start with one desired instance per server. `tako scale` changes that desired count and persists it across restarts, deploys, and rollbacks. Each app also has an effective server maximum, defaulting to two app instances per available CPU for new deploys; explicit scale requests above that maximum fail. Scaling to zero keeps the app registered; the first request triggers a cold start.
 
 Rolling update happens one server at a time inside each server: start a new instance, wait for health, add it to the load balancer, drain an old instance, repeat, then update `current`.
 

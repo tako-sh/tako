@@ -1,4 +1,4 @@
-use crate::instances::{App, RollingUpdateConfig};
+use crate::instances::{App, RollingUpdateConfig, validate_requested_instances};
 use crate::metrics;
 use crate::release::{app_root, requested_deployment_identity};
 use crate::socket::{AppState, InstanceState, Response};
@@ -40,10 +40,13 @@ impl crate::ServerState {
         };
 
         let mut next_config = previous_config.clone();
-        next_config.min_instances = effective_instances as u32;
-        if next_config.max_instances < next_config.min_instances {
-            next_config.max_instances = next_config.min_instances.max(4);
+        if let Err(message) = validate_requested_instances(
+            u32::from(effective_instances),
+            previous_config.max_instances,
+        ) {
+            return Response::error(message);
         }
+        next_config.min_instances = effective_instances as u32;
         app.update_config(next_config.clone());
 
         let running_before = app

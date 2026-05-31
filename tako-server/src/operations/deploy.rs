@@ -1,6 +1,7 @@
 use crate::app_command::env_vars_from_release_dir;
 use crate::instances::{
-    App, AppConfig, RollingUpdateConfig, RollingUpdater, target_new_instances_for_build,
+    App, AppConfig, RollingUpdateConfig, RollingUpdater, default_max_instances_for_host,
+    target_new_instances_for_build, validate_requested_instances,
 };
 use crate::release::{
     app_release_root, apply_release_runtime_to_config, ensure_app_runtime_data_dirs,
@@ -151,6 +152,11 @@ impl crate::ServerState {
             ) {
                 return Response::error(format!("Invalid app release: {}", error));
             }
+            if let Err(error) =
+                validate_requested_instances(config.min_instances, config.max_instances)
+            {
+                return Response::error(format!("Deploy failed: {error}"));
+            }
             inject_app_data_dir_env(&mut config.env_vars, &data_paths);
             if let Err(e) = self.persist_credentials(app_name, &secrets, &storages) {
                 return Response::error(e);
@@ -173,7 +179,7 @@ impl crate::ServerState {
                 version: version.to_string(),
                 source_ip,
                 min_instances: 1,
-                max_instances: 4,
+                max_instances: default_max_instances_for_host(),
                 ..Default::default()
             };
             let mut config = config;
@@ -183,6 +189,11 @@ impl crate::ServerState {
                 runtime_bin_path.as_deref(),
             ) {
                 return Response::error(format!("Invalid app release: {}", error));
+            }
+            if let Err(error) =
+                validate_requested_instances(config.min_instances, config.max_instances)
+            {
+                return Response::error(format!("Deploy failed: {error}"));
             }
             inject_app_data_dir_env(&mut config.env_vars, &data_paths);
             if let Err(e) = self.persist_credentials(app_name, &secrets, &storages) {

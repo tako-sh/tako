@@ -241,6 +241,7 @@ Variable values may be TOML strings, numbers, booleans, or datetimes. Tako conve
 - Desired instances are runtime app state stored on each server, not `tako.toml` config.
 - New app deploys start with desired instances `1` on each server. The first request after deploy hits a hot instance — no cold start. Opt into scale-to-zero with `tako scale 0 --env <environment>` from a project directory, or `tako scale 0 --server <server> --app <app>/<env>` outside one.
 - `tako scale` changes the desired instance count per targeted server, and that value persists across server restarts, deploys, and rollbacks.
+- Each app has a server-side maximum instance count. New deploys default that maximum to two app instances per available CPU. Explicit scale or deploy requests above the effective server maximum fail instead of silently capping. During server restore, invalid persisted counts above the maximum are clamped and logged so startup stays safe.
 - Desired instances `0`: On-demand with scale-to-zero. Deploy keeps one warm instance running so the app is immediately reachable after deploy. Instances are stopped after idle timeout.
   - Once scaled to zero, the next request triggers a cold start and waits for readiness up to startup timeout (default 30 seconds). If no healthy instance is ready before timeout, proxy returns `504 Gateway Timeout` with a generic body.
   - If cold start setup fails before readiness, proxy returns `502 Bad Gateway` with a generic body.
@@ -1306,6 +1307,7 @@ Change the desired instance count for a deployed app.
 - In project context, `tako scale --server <server>` defaults to `production`.
 - When both `--env` and `--server` are provided, the server must belong to that environment.
 - Scale uses persisted runtime app state on the server, so the desired instance count survives deploys, rollbacks, and server restarts.
+- Scale fails if the requested count is above the app's effective server maximum.
 - Scaling to `0` drains and stops excess instances after in-flight requests finish (or drain timeout).
 
 ### tako delete [--env {environment}] [--server {server}] [--yes|-y]

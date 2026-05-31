@@ -38,6 +38,35 @@ fn stop_error_display_names_stop_failure() {
 }
 
 #[test]
+fn host_instance_limit_allows_two_app_processes_per_cpu() {
+    assert_eq!(host_instance_limit_for_parallelism(1), 2);
+    assert_eq!(host_instance_limit_for_parallelism(2), 4);
+    assert_eq!(host_instance_limit_for_parallelism(8), 16);
+}
+
+#[test]
+fn effective_instance_limit_uses_lower_app_or_host_limit() {
+    assert_eq!(
+        effective_instance_limit(10),
+        10.min(default_max_instances_for_host())
+    );
+    assert_eq!(effective_instance_limit(0), 0);
+    assert_eq!(
+        effective_instance_limit(u32::MAX),
+        default_max_instances_for_host()
+    );
+}
+
+#[test]
+fn validate_requested_instances_rejects_above_effective_limit() {
+    let limit = effective_instance_limit(4);
+
+    assert!(validate_requested_instances(limit, 4).is_ok());
+    let error = validate_requested_instances(limit.saturating_add(1), 4).unwrap_err();
+    assert!(error.contains(&format!("at most {limit}")));
+}
+
+#[test]
 fn test_instance_request_tracking() {
     let instance = Instance::new("test-1".to_string(), "v1".to_string(), noop_log_handle());
     assert_eq!(instance.requests_total(), 0);
