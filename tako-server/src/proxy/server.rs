@@ -126,7 +126,7 @@ fn proxy_server_conf() -> Result<ServerConf> {
         )
     })?;
     conf.threads = proxy_service_threads();
-    conf.upstream_keepalive_pool_size = 256;
+    conf.upstream_keepalive_pool_size = upstream_keepalive_pool_size_for_threads(conf.threads);
     conf.grace_period_seconds = Some(0);
     conf.graceful_shutdown_timeout_seconds = Some(5);
     Ok(conf)
@@ -136,6 +136,10 @@ fn proxy_service_threads() -> usize {
     std::thread::available_parallelism()
         .map(std::num::NonZeroUsize::get)
         .unwrap_or(1)
+}
+
+fn upstream_keepalive_pool_size_for_threads(threads: usize) -> usize {
+    256 * threads.max(1)
 }
 
 pub(crate) fn listener_socket_options() -> TcpSocketOptions {
@@ -322,9 +326,19 @@ mod tests {
     }
 
     #[test]
-    fn proxy_server_conf_keeps_more_upstream_connections() {
+    fn upstream_keepalive_pool_scales_with_proxy_threads() {
+        assert_eq!(upstream_keepalive_pool_size_for_threads(1), 256);
+        assert_eq!(upstream_keepalive_pool_size_for_threads(2), 512);
+        assert_eq!(upstream_keepalive_pool_size_for_threads(8), 2048);
+    }
+
+    #[test]
+    fn proxy_server_conf_scales_upstream_keepalive_pool_with_threads() {
         let conf = proxy_server_conf().expect("proxy server config");
 
-        assert_eq!(conf.upstream_keepalive_pool_size, 256);
+        assert_eq!(
+            conf.upstream_keepalive_pool_size,
+            upstream_keepalive_pool_size_for_threads(conf.threads)
+        );
     }
 }
