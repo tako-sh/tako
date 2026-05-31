@@ -97,6 +97,8 @@ impl ProxyHttp for TakoProxy {
         }
     }
 
+    fn init_downstream_modules(&self, _modules: &mut pingora_core::modules::http::HttpModules) {}
+
     async fn request_filter(&self, session: &mut Session, ctx: &mut Self::CTX) -> Result<bool> {
         if let Some(cl) = session
             .req_header()

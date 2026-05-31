@@ -145,6 +145,31 @@ fn proxy_metrics_enabled_follows_metrics_port() {
 }
 
 #[test]
+fn proxy_does_not_install_default_downstream_compression_module() {
+    let manager = Arc::new(AppManager::new(PathBuf::from("/tmp/tako-test")));
+    let lb = Arc::new(LoadBalancer::new(manager));
+    let routes = Arc::new(tokio::sync::RwLock::new(RouteTable::default()));
+    let cold_start = Arc::new(ColdStartManager::new(ColdStartConfig::default()));
+    let proxy = TakoProxy::new(
+        lb,
+        routes,
+        ProxyConfig::default(),
+        cold_start,
+        CloudflareIpRanges::default(),
+    );
+    let mut modules = pingora_core::modules::http::HttpModules::new();
+
+    proxy.init_downstream_modules(&mut modules);
+    let module_ctx = modules.build_ctx();
+
+    assert!(
+        module_ctx
+            .get::<pingora_core::modules::http::compression::ResponseCompression>()
+            .is_none()
+    );
+}
+
+#[test]
 fn request_context_skips_metric_timers_when_metrics_are_disabled() {
     let mut ctx = service::RequestCtx {
         backend: None,
