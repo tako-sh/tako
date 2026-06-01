@@ -276,6 +276,7 @@ Scope agreement → Code (TDD) → SPEC.md + README.md updates → Cleanup
 Reusable agent commands live in `commands/`. Read the referenced file for full instructions before executing.
 
 - **`commands/sweep.md`** — Security, performance, and code quality audit. Fixes trivial issues, reports the rest.
+- **`commands/performance.md`** — Run and publish Tako proxy performance benchmarks, update the performance repo report, and keep the main repo summary short.
 - **`commands/spec-sync.md`** — Reconcile SPEC.md with code, then regenerate all SPEC-derived website docs.
 - **`commands/code-scanning-resolve.md`** — Resolve all open GitHub code scanning alerts (fix, dismiss, or ask for input).
 - **`commands/blog-post.md`** — Create a new blog post from a topic/idea. Researches context, writes the post, verifies build.
