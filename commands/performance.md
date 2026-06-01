@@ -138,6 +138,10 @@ Prefer the published Tako release for release benchmarks. Build locally only
 when intentionally benchmarking an unreleased patch, and label it clearly in
 `RESULTS.md`.
 
+Install the benchmarked release on the VM and pass its absolute path as
+`TAKO_SERVER_BIN`. Verify the running process version before the final run so a
+stale `/usr/local/bin/tako-server` cannot silently become the measured binary.
+
 If the user asked to benchmark a release that is not available yet, wait for or
 verify the release before running the final benchmark. A patched/local build can
 be used for diagnosis, but do not present it as a release result.
@@ -154,8 +158,9 @@ work on the hot path.
 ```bash
 cd ~/github/tako-performance
 BENCH_VM=<ssh-host> \
+TAKO_SERVER_BIN=/opt/tako-performance/bin/<tako-server-release> \
 SOURCE_IPS='127.0.0.2,127.0.0.3,127.0.0.4,127.0.0.5,127.0.0.6,127.0.0.7,127.0.0.8,127.0.0.9,127.0.0.10,127.0.0.11,127.0.0.12,127.0.0.13,127.0.0.14,127.0.0.15,127.0.0.16,127.0.0.17' \
-PROXIES='nginx caddy tako' \
+PROXIES='nginx tako caddy' \
 MODES=single \
 ENDPOINTS=plaintext \
 CONCURRENCY_LIST='1000 2500 5000 7500 10000 15000 20000' \
@@ -164,8 +169,12 @@ DURATION=30s \
 REQUEST_TIMEOUT=60s \
 METRICS_INTERVAL=1 \
 METRICS_CONNECTIONS=1 \
+COOLDOWN_SECONDS=10 \
 ./scripts/run-vm-local-http-benchmarks.sh
 ```
+
+Keep Caddy last in the ordered proxy list for the small-VM run. Its overload
+rows can leave the VM hot enough to bias the immediately following row.
 
 If the user mainly wants overload behavior, run the full list above. If the user
 mainly wants production capacity, add a separate lower-load/SLO-oriented run and
@@ -178,6 +187,7 @@ Run this separately from the proxy comparison:
 ```bash
 cd ~/github/tako-performance
 BENCH_VM=<ssh-host> \
+TAKO_SERVER_BIN=/opt/tako-performance/bin/<tako-server-release> \
 SOURCE_IPS='127.0.0.2,127.0.0.3,127.0.0.4,127.0.0.5,127.0.0.6,127.0.0.7,127.0.0.8,127.0.0.9,127.0.0.10,127.0.0.11,127.0.0.12,127.0.0.13,127.0.0.14,127.0.0.15,127.0.0.16,127.0.0.17' \
 CONCURRENCY_LIST='500 1000 2000 4000 8000' \
 WARMUP=10s \
@@ -185,6 +195,7 @@ DURATION=30s \
 REQUEST_TIMEOUT=60s \
 METRICS_INTERVAL=1 \
 METRICS_CONNECTIONS=1 \
+COOLDOWN_SECONDS=10 \
 ./scripts/run-vm-local-tako-feature-benchmarks.sh
 ```
 
@@ -234,6 +245,8 @@ Examples of issues to fix before publishing:
 - client errors caused by load-generator timeouts, file-descriptor limits, or
   local source-port exhaustion;
 - metrics graphs distorted by stale samplers or negative process CPU deltas;
+- process metrics accidentally including unrelated system services, such as the
+  VM's default nginx;
 - wrong proxy mode, URL, Host/SNI, TLS, source IPs, or timeout settings;
 - an obvious Tako hot-path regression already fixed locally and awaiting a
   release.
