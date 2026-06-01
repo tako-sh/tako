@@ -56,6 +56,8 @@ user explicitly asks for a local/patched build.
 - Do not expose sensitive data in public files. Never commit real SSH hosts,
   public IPs, private IPs, local usernames, local absolute paths, peer names,
   tokens, secrets, or Tailscale identifiers.
+- It is okay to name the server provider or VM platform, such as "exe.dev", if
+  that does not reveal the exact host, account, peer, or private network.
 - Real hostnames may be used in local commands, but public docs must use
   placeholders such as `<ssh-host>` and controlled benchmark names such as
   `bench.test`.
@@ -98,8 +100,9 @@ memory to distort results.
 ssh <ssh-host> 'uname -a; lsb_release -a 2>/dev/null || cat /etc/os-release; nproc; free -h; df -h /'
 ```
 
-If region or ping matters, measure it for the current server. Report only a
-sanitized region/latency summary, not exact hostnames or IPs.
+If region or ping matters, measure it for the current server. Report the
+provider/platform, sanitized region, and latency summary, but not exact
+hostnames or IPs.
 
 5. Confirm benchmark tools are current and clean:
 
@@ -232,7 +235,8 @@ In `~/github/tako-performance`:
 2. Keep the report public-safe and concise.
 3. Include:
    - release/build under test;
-   - VM shape, OS, region, and ping summary without exact host/IP;
+   - provider/platform, VM shape, OS, region, and ping summary without exact
+     host/IP;
    - methodology;
    - graph links;
    - raw result directory links;
