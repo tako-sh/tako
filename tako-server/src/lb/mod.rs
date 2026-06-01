@@ -32,6 +32,7 @@ impl AppLoadBalancer {
     }
 
     /// Get an instance to handle a request
+    #[cfg(test)]
     pub fn get_instance(&self) -> Option<Arc<Instance>> {
         let request_index = self.rr_counter.fetch_add(1, Ordering::Relaxed);
         self.app.healthy_instance_for_request(request_index)
@@ -39,12 +40,13 @@ impl AppLoadBalancer {
 
     /// Get a backend to handle a request.
     pub fn get_backend(&self) -> Option<Backend> {
-        let instance = self.get_instance()?;
+        let request_index = self.rr_counter.fetch_add(1, Ordering::Relaxed);
+        let healthy = self.app.healthy_backend_for_request(request_index)?;
 
         Some(Backend {
             app_name: self.app_name.clone(),
-            endpoint: instance.endpoint(),
-            instance,
+            endpoint: healthy.endpoint,
+            instance: healthy.instance,
         })
     }
 }
@@ -219,6 +221,39 @@ mod tests {
 
         assert_eq!(first.app_name.as_ref(), "test-app");
         assert!(Arc::ptr_eq(&first.app_name, &second.app_name));
+    }
+
+    #[test]
+    fn backend_uses_cached_healthy_endpoint() {
+        let app = create_test_app();
+        let instance = app.allocate_instance();
+        instance.set_port(47_831);
+        app.set_instance_state(&instance, InstanceState::Healthy);
+
+        let lb = AppLoadBalancer::new(app);
+        let backend = lb.get_backend().expect("backend should be selected");
+
+        assert_eq!(
+            backend.endpoint(),
+            Some("127.0.0.1:47831".parse().expect("loopback socket addr"))
+        );
+    }
+
+    #[test]
+    fn healthy_endpoint_refreshes_when_instance_is_marked_healthy_again() {
+        let app = create_test_app();
+        let instance = app.allocate_instance();
+        app.set_instance_state(&instance, InstanceState::Healthy);
+        instance.set_port(47_831);
+        app.set_instance_state(&instance, InstanceState::Healthy);
+
+        let lb = AppLoadBalancer::new(app);
+        let backend = lb.get_backend().expect("backend should be selected");
+
+        assert_eq!(
+            backend.endpoint(),
+            Some("127.0.0.1:47831".parse().expect("loopback socket addr"))
+        );
     }
 
     #[tokio::test]

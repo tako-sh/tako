@@ -5,6 +5,7 @@ use pingora_cache::{CacheKey, CacheMetaDefaults, RespCacheable};
 use pingora_core::prelude::*;
 use pingora_http::{RequestHeader, ResponseHeader};
 use pingora_proxy::Session;
+use std::fmt::{self, Write as _};
 use std::net::IpAddr;
 use std::path::Path;
 use std::sync::OnceLock;
@@ -391,6 +392,44 @@ pub(super) fn request_host(req: &pingora_http::RequestHeader) -> &str {
         .map(|a| a.as_str())
         .or_else(|| req.headers.get("host").and_then(|h| h.to_str().ok()))
         .unwrap_or("")
+}
+
+pub(super) fn ip_header_value(ip: IpAddr) -> hyper::header::HeaderValue {
+    let mut buffer = IpHeaderBuffer::new();
+    write!(&mut buffer, "{ip}").expect("IP address fits header buffer");
+    hyper::header::HeaderValue::from_bytes(buffer.as_slice())
+        .expect("IP address formats as a valid header value")
+}
+
+struct IpHeaderBuffer {
+    bytes: [u8; 45],
+    len: usize,
+}
+
+impl IpHeaderBuffer {
+    fn new() -> Self {
+        Self {
+            bytes: [0; 45],
+            len: 0,
+        }
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
+}
+
+impl fmt::Write for IpHeaderBuffer {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        let end = self.len + s.len();
+        if end > self.bytes.len() {
+            return Err(fmt::Error);
+        }
+
+        self.bytes[self.len..end].copy_from_slice(s.as_bytes());
+        self.len = end;
+        Ok(())
+    }
 }
 
 pub(super) fn path_looks_like_static_asset(path: &str) -> bool {

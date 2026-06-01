@@ -242,6 +242,12 @@ pub struct Instance {
     log_handle: AppLogHandle,
 }
 
+#[derive(Clone)]
+pub(crate) struct HealthyInstance {
+    pub(crate) instance: Arc<Instance>,
+    pub(crate) endpoint: Option<SocketAddr>,
+}
+
 impl Instance {
     #[cfg(test)]
     pub fn new(id: String, build_version: String, log_handle: AppLogHandle) -> Self {
@@ -427,8 +433,9 @@ pub struct App {
     pub config: RwLock<AppConfig>,
     /// Running instances
     instances: DashMap<String, Arc<Instance>>,
-    /// Instances currently eligible for request routing.
-    healthy_instances: RwLock<Vec<Arc<Instance>>>,
+    /// Instances currently eligible for request routing, with immutable
+    /// request-path data captured when each instance becomes healthy.
+    healthy_instances: RwLock<Vec<HealthyInstance>>,
     /// Current app state
     state: RwLock<AppState>,
 
@@ -495,7 +502,11 @@ impl App {
 
     #[cfg(test)]
     pub(crate) fn healthy_instances(&self) -> Vec<Arc<Instance>> {
-        self.healthy_instances.read().clone()
+        self.healthy_instances
+            .read()
+            .iter()
+            .map(|healthy| healthy.instance.clone())
+            .collect()
     }
 
     pub(crate) fn set_instance_state(
@@ -505,6 +516,9 @@ impl App {
     ) -> InstanceState {
         let previous = instance.set_state(state);
         if previous == state {
+            if state == InstanceState::Healthy {
+                self.refresh_healthy_instance(instance);
+            }
             return previous;
         }
 
@@ -518,10 +532,19 @@ impl App {
         previous
     }
 
+    #[cfg(test)]
     pub(crate) fn healthy_instance_for_request(
         &self,
         request_index: usize,
     ) -> Option<Arc<Instance>> {
+        self.healthy_backend_for_request(request_index)
+            .map(|healthy| healthy.instance)
+    }
+
+    pub(crate) fn healthy_backend_for_request(
+        &self,
+        request_index: usize,
+    ) -> Option<HealthyInstance> {
         let instances = self.healthy_instances.read();
         if instances.is_empty() {
             return None;
@@ -534,18 +557,31 @@ impl App {
         let mut healthy_instances = self.healthy_instances.write();
         if healthy_instances
             .iter()
-            .any(|healthy| healthy.id == instance.id)
+            .any(|healthy| healthy.instance.id == instance.id)
         {
             return;
         }
 
-        healthy_instances.push(instance.clone());
+        healthy_instances.push(HealthyInstance {
+            instance: instance.clone(),
+            endpoint: instance.endpoint(),
+        });
+    }
+
+    fn refresh_healthy_instance(&self, instance: &Arc<Instance>) {
+        let mut healthy_instances = self.healthy_instances.write();
+        if let Some(healthy) = healthy_instances
+            .iter_mut()
+            .find(|healthy| healthy.instance.id == instance.id)
+        {
+            healthy.endpoint = instance.endpoint();
+        }
     }
 
     fn remove_healthy_instance(&self, instance_id: &str) {
         self.healthy_instances
             .write()
-            .retain(|instance| instance.id != instance_id);
+            .retain(|healthy| healthy.instance.id != instance_id);
     }
 
     /// Get all healthy instances
@@ -561,7 +597,10 @@ impl App {
 
     #[cfg(test)]
     pub(crate) fn healthy_instance_at(&self, healthy_index: usize) -> Option<Arc<Instance>> {
-        self.healthy_instances.read().get(healthy_index).cloned()
+        self.healthy_instances
+            .read()
+            .get(healthy_index)
+            .map(|healthy| healthy.instance.clone())
     }
 
     pub(crate) fn has_starting_instance(&self) -> bool {

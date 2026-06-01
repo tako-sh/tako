@@ -9,7 +9,7 @@ use super::TakoProxy;
 use super::request::{
     ClientIpResolution, ForwardedHeaderTrust, build_proxy_cache_key, client_ip_for_source_ip_mode,
     client_ip_from_session, create_production_error_response, https_redirect_host,
-    insert_body_headers, is_effective_request_https, path_looks_like_static_asset,
+    insert_body_headers, ip_header_value, is_effective_request_https, path_looks_like_static_asset,
     path_uses_tako_handler, request_host, request_is_proxy_cacheable, response_cacheability,
     should_redirect_http_request,
 };
@@ -64,6 +64,10 @@ impl RequestCtx {
     }
 
     pub(super) fn mark_backend_request_started(&mut self) {
+        if self.backend_request_started {
+            return;
+        }
+
         if let Some(ref backend) = self.backend {
             backend.request_started();
             self.backend_request_started = true;
@@ -464,7 +468,7 @@ impl ProxyHttp for TakoProxy {
 
         if let Some(ip) = ctx.client_ip {
             upstream_request
-                .insert_header("X-Forwarded-For", ip.to_string())
+                .insert_header("X-Forwarded-For", ip_header_value(ip))
                 .unwrap();
         } else {
             let _ = upstream_request.remove_header("X-Forwarded-For");

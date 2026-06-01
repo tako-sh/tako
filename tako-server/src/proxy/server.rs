@@ -127,6 +127,7 @@ fn proxy_server_conf() -> Result<ServerConf> {
     })?;
     conf.threads = proxy_service_threads();
     conf.upstream_keepalive_pool_size = upstream_keepalive_pool_size_for_threads(conf.threads);
+    conf.max_retries = 1;
     conf.grace_period_seconds = Some(0);
     conf.graceful_shutdown_timeout_seconds = Some(5);
     Ok(conf)
@@ -340,5 +341,12 @@ mod tests {
             conf.upstream_keepalive_pool_size,
             upstream_keepalive_pool_size_for_threads(conf.threads)
         );
+    }
+
+    #[test]
+    fn proxy_server_conf_uses_single_upstream_attempt() {
+        let conf = proxy_server_conf().expect("proxy server config");
+
+        assert_eq!(conf.max_retries, 1);
     }
 }

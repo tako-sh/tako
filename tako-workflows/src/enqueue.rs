@@ -82,20 +82,21 @@ impl RunsDb {
         let max_attempts = opts.max_attempts.unwrap_or(DEFAULT_MAX_ATTEMPTS) as i64;
         let unique_key = opts.unique_key.as_deref();
         let payload_json = serde_json::to_string(payload)?;
+        let id = nanoid::nanoid!();
 
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
 
         if let Some(key) = unique_key {
-            let existing: Option<String> = tx
-                .query_row(
+            let existing: Option<String> = {
+                let mut stmt = tx.prepare_cached(
                     "SELECT id FROM runs WHERE unique_key = ?1 AND status IN ('pending','running') LIMIT 1",
-                    params![key],
-                    |row| row.get(0),
-                )
-                .optional()?;
+                )?;
+                stmt.query_row(params![key], |row| row.get(0)).optional()?
+            };
             if let Some(id) = existing {
                 tx.commit()?;
+                drop(conn);
                 return Ok(EnqueueRunResponse {
                     id,
                     deduplicated: true,
@@ -103,13 +104,14 @@ impl RunsDb {
             }
         }
 
-        let id = nanoid::nanoid!();
-        tx.execute(
-            "INSERT INTO runs
-             (id, name, payload, status, attempts, max_attempts, run_at, lease_until, worker_id,
-              last_error, created_at, unique_key)
-             VALUES (?1, ?2, ?3, 'pending', 0, ?4, ?5, NULL, NULL, NULL, ?6, ?7)",
-            params![
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT INTO runs
+                 (id, name, payload, status, attempts, max_attempts, run_at, lease_until, worker_id,
+                  last_error, created_at, unique_key)
+                 VALUES (?1, ?2, ?3, 'pending', 0, ?4, ?5, NULL, NULL, NULL, ?6, ?7)",
+            )?;
+            stmt.execute(params![
                 id,
                 name,
                 payload_json,
@@ -117,9 +119,10 @@ impl RunsDb {
                 run_at,
                 now_ms,
                 unique_key
-            ],
-        )?;
+            ])?;
+        }
         tx.commit()?;
+        drop(conn);
 
         Ok(EnqueueRunResponse {
             id,
@@ -158,8 +161,6 @@ impl RunsDb {
              RETURNING id, name, payload, status, attempts, max_attempts, run_at",
             placeholders
         );
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare(&sql)?;
         let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(3 + names.len());
         params.push(Box::new(worker_id.to_string()));
         params.push(Box::new(lease_until));
@@ -168,42 +169,56 @@ impl RunsDb {
             params.push(Box::new(n.clone()));
         }
         let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
-        let row_opt = stmt
-            .query_row(&refs[..], |row| {
-                let payload: String = row.get(2)?;
-                Ok(RunPayload {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    payload: serde_json::from_str(&payload).unwrap_or(serde_json::Value::Null),
-                    status: row.get(3)?,
-                    attempts: row.get::<_, i64>(4)? as u32,
-                    max_attempts: row.get::<_, i64>(5)? as u32,
-                    run_at_ms: row.get(6)?,
-                    step_state: serde_json::Value::Object(Default::default()),
-                })
-            })
-            .optional()?;
 
-        let Some(mut payload) = row_opt else {
-            return Ok(None);
+        let (claimed, step_rows) = {
+            let conn = self.conn.lock();
+            let mut stmt = conn.prepare_cached(&sql)?;
+            let row_opt = stmt
+                .query_row(&refs[..], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, i64>(4)? as u32,
+                        row.get::<_, i64>(5)? as u32,
+                        row.get::<_, i64>(6)?,
+                    ))
+                })
+                .optional()?;
+            drop(stmt);
+
+            let Some(claimed) = row_opt else {
+                return Ok(None);
+            };
+
+            let mut step_stmt =
+                conn.prepare_cached("SELECT name, result FROM steps WHERE run_id = ?1")?;
+            let rows = step_stmt.query_map(params![claimed.0.as_str()], |row| {
+                let name: String = row.get(0)?;
+                let result: String = row.get(1)?;
+                Ok((name, result))
+            })?;
+            let step_rows = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            (claimed, step_rows)
         };
 
-        // Hydrate persisted step results into step_state.
-        let mut step_stmt = conn.prepare("SELECT name, result FROM steps WHERE run_id = ?1")?;
         let mut state_map = serde_json::Map::new();
-        let rows = step_stmt.query_map(params![payload.id], |row| {
-            let name: String = row.get(0)?;
-            let result: String = row.get(1)?;
-            Ok((name, result))
-        })?;
-        for r in rows {
-            let (name, result) = r?;
+        for (name, result) in step_rows {
             let value = serde_json::from_str(&result).unwrap_or(serde_json::Value::Null);
             state_map.insert(name, value);
         }
-        payload.step_state = serde_json::Value::Object(state_map);
 
-        Ok(Some(payload))
+        Ok(Some(RunPayload {
+            id: claimed.0,
+            name: claimed.1,
+            payload: serde_json::from_str(&claimed.2).unwrap_or(serde_json::Value::Null),
+            status: claimed.3,
+            attempts: claimed.4,
+            max_attempts: claimed.5,
+            run_at_ms: claimed.6,
+            step_state: serde_json::Value::Object(state_map),
+        }))
     }
 
     /// All of these lifecycle writes are guarded by `worker_id = ?1 AND

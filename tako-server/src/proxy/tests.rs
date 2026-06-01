@@ -1,7 +1,7 @@
 use super::request::{
     ClientIpResolution, ForwardedHeaderTrust, client_ip_for_source_ip_mode,
     client_ip_from_trusted_headers, forwarded_header_has_proto, forwarded_header_proto_is_https,
-    https_redirect_host, is_effective_request_https, is_request_forwarded_https,
+    https_redirect_host, ip_header_value, is_effective_request_https, is_request_forwarded_https,
     path_uses_tako_handler, strip_route_prefix_for_static_lookup, x_forwarded_proto_is_https,
 };
 use super::server::{create_tls_settings, listener_socket_options};
@@ -69,6 +69,8 @@ async fn proxy_context_finishes_only_requests_started_upstream() {
     ctx.finish_backend_request();
     assert_eq!(instance.in_flight(), 0);
 
+    ctx.mark_backend_request_started();
+    assert_eq!(instance.in_flight(), 1);
     ctx.mark_backend_request_started();
     assert_eq!(instance.in_flight(), 1);
     ctx.finish_backend_request();
@@ -459,6 +461,15 @@ fn direct_source_ip_ignores_cloudflare_header() {
         resolution,
         ClientIpResolution::Accepted("198.51.100.1".parse().unwrap())
     );
+}
+
+#[test]
+fn ip_header_value_formats_client_ips() {
+    let ipv4 = ip_header_value("198.51.100.1".parse().unwrap());
+    let ipv6 = ip_header_value("2001:db8::1".parse().unwrap());
+
+    assert_eq!(ipv4.to_str().ok(), Some("198.51.100.1"));
+    assert_eq!(ipv6.to_str().ok(), Some("2001:db8::1"));
 }
 
 #[test]

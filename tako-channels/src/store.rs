@@ -68,29 +68,36 @@ impl ChannelStore {
         channel: &str,
         payload: &ChannelPublishPayload,
     ) -> Result<ChannelMessage, ChannelError> {
+        let data_json = serde_json::to_string(&payload.data)
+            .map_err(|e| ChannelError::BadRequest(format!("serialize payload: {e}")))?;
         let mut conn = self.conn.lock();
         let tx = conn
             .transaction()
             .map_err(|e| ChannelError::Storage(e.to_string()))?;
-        tx.execute(
-            "UPDATE channel_metadata SET last_activity_unix_ms = ?2 WHERE channel = ?1",
-            rusqlite::params![channel, now_unix_ms()],
-        )
-        .map_err(|e| ChannelError::Storage(e.to_string()))?;
-        tx.execute(
-            "INSERT INTO channel_messages (channel, type, data_json) VALUES (?1, ?2, ?3)",
-            rusqlite::params![
-                channel,
-                payload.r#type,
-                serde_json::to_string(&payload.data)
-                    .map_err(|e| ChannelError::BadRequest(format!("serialize payload: {e}")))?,
-            ],
-        )
-        .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        {
+            let mut stmt = tx
+                .prepare_cached(
+                    "UPDATE channel_metadata SET last_activity_unix_ms = ?2 WHERE channel = ?1",
+                )
+                .map_err(|e| ChannelError::Storage(e.to_string()))?;
+            stmt.execute(rusqlite::params![channel, now_unix_ms()])
+                .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        }
+        {
+            let mut stmt = tx
+                .prepare_cached(
+                    "INSERT INTO channel_messages (channel, type, data_json) VALUES (?1, ?2, ?3)",
+                )
+                .map_err(|e| ChannelError::Storage(e.to_string()))?;
+            stmt.execute(rusqlite::params![channel, payload.r#type, data_json])
+                .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        }
 
         let id = tx.last_insert_rowid();
         tx.commit()
             .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        drop(conn);
+
         Ok(ChannelMessage {
             id: id.to_string(),
             channel: channel.to_string(),
@@ -105,38 +112,45 @@ impl ChannelStore {
         after: Option<i64>,
         limit: u32,
     ) -> Result<Vec<ChannelMessage>, ChannelError> {
-        let conn = self.conn.lock();
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, channel, type, data_json
-                 FROM channel_messages
-                 WHERE channel = ?1 AND (?2 IS NULL OR id > ?2)
-                 ORDER BY id ASC
-                 LIMIT ?3",
-            )
-            .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        let rows = {
+            let conn = self.conn.lock();
+            let mut stmt = conn
+                .prepare_cached(
+                    "SELECT id, channel, type, data_json
+                     FROM channel_messages
+                     WHERE channel = ?1 AND (?2 IS NULL OR id > ?2)
+                     ORDER BY id ASC
+                     LIMIT ?3",
+                )
+                .map_err(|e| ChannelError::Storage(e.to_string()))?;
 
-        let rows = stmt
-            .query_map(rusqlite::params![channel, after, i64::from(limit)], |row| {
-                let data_json: String = row.get(3)?;
-                let data = serde_json::from_str(&data_json).map_err(|err| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        3,
-                        rusqlite::types::Type::Text,
-                        Box::new(err),
-                    )
-                })?;
+            let rows = stmt
+                .query_map(rusqlite::params![channel, after, i64::from(limit)], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                })
+                .map_err(|e| ChannelError::Storage(e.to_string()))?;
+
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|e| ChannelError::Storage(e.to_string()))?
+        };
+
+        rows.into_iter()
+            .map(|(id, channel, r#type, data_json)| {
+                let data = serde_json::from_str(&data_json)
+                    .map_err(|e| ChannelError::Storage(e.to_string()))?;
                 Ok(ChannelMessage {
-                    id: row.get::<_, i64>(0)?.to_string(),
-                    channel: row.get(1)?,
-                    r#type: row.get(2)?,
+                    id: id.to_string(),
+                    channel,
+                    r#type,
                     data,
                 })
             })
-            .map_err(|e| ChannelError::Storage(e.to_string()))?;
-
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|e| ChannelError::Storage(e.to_string()))
+            .collect()
     }
 
     pub fn replay_cursor(

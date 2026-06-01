@@ -32,28 +32,11 @@ impl IpRequestTracker {
 
     pub(super) fn release(&self, ip: IpAddr) {
         if let Some(entry) = self.connections.get(&ip) {
-            loop {
-                let current = entry.value().load(AtomicOrdering::Relaxed);
-                if current == 0 {
-                    return;
-                }
-                if entry
-                    .value()
-                    .compare_exchange_weak(
-                        current,
-                        current - 1,
-                        AtomicOrdering::Relaxed,
-                        AtomicOrdering::Relaxed,
-                    )
-                    .is_ok()
-                {
-                    if current == 1 {
-                        drop(entry);
-                        self.connections
-                            .remove_if(&ip, |_, v| v.load(AtomicOrdering::Relaxed) == 0);
-                    }
-                    return;
-                }
+            let current = entry.value().fetch_sub(1, AtomicOrdering::Relaxed);
+            if current == 1 {
+                drop(entry);
+                self.connections
+                    .remove_if(&ip, |_, v| v.load(AtomicOrdering::Relaxed) == 0);
             }
         }
     }
