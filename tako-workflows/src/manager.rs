@@ -19,8 +19,8 @@ use parking_lot::RwLock;
 use super::cron::{self, CronTickerHandle};
 use super::enqueue::{RunsDb, RunsDbError};
 use super::enqueue_socket::{
-    AppHandlers, AppLookup, ChannelPublishFn, EnqueueSocketHandle, HealthCheck, OnClaimed,
-    OnEnqueue, spawn as spawn_internal_socket,
+    AppHandlers, AppLookup, ChannelPublishFn, EnqueueSocketHandle, OnEnqueue,
+    spawn as spawn_internal_socket,
 };
 use super::in_flight::InFlightLimiter;
 use super::supervisor::{WorkerSpec, WorkerSupervisor};
@@ -39,8 +39,7 @@ pub fn internal_socket_path(data_dir: &Path) -> PathBuf {
 /// Per-app workflow resources. Dropping the entry shuts down the worker
 /// (drained on the way out) and the cron ticker.
 pub struct AppWorkflow {
-    db: Arc<RunsDb>,
-    limiter: Arc<InFlightLimiter>,
+    handlers: AppHandlers,
     supervisor: Arc<WorkerSupervisor>,
     cron: Option<CronTickerHandle>,
 }
@@ -48,6 +47,10 @@ pub struct AppWorkflow {
 impl AppWorkflow {
     pub fn supervisor(&self) -> Arc<WorkerSupervisor> {
         self.supervisor.clone()
+    }
+
+    fn handlers(&self) -> AppHandlers {
+        self.handlers.clone()
     }
 
     async fn shutdown(mut self, drain_timeout: Duration) {
@@ -127,30 +130,7 @@ impl WorkflowManager {
         let apps = self.apps.clone();
         let lookup: AppLookup = Arc::new(move |app: &str| {
             let apps = apps.read();
-            apps.get(app).map(|entry| {
-                let sup = entry.supervisor.clone();
-                let sup_for_enqueue = sup.clone();
-                let sup_for_health = sup.clone();
-                let sup_for_claim = sup.clone();
-                let on_enqueue: OnEnqueue = Arc::new(move || {
-                    // wake() errors surface via health_check on the next
-                    // enqueue; the log_sink inside the supervisor carries
-                    // any human-readable detail.
-                    let _ = sup_for_enqueue.wake();
-                });
-                let health_check: HealthCheck =
-                    Arc::new(move || sup_for_health.check_startup_health());
-                let on_claimed: OnClaimed = Arc::new(move || {
-                    sup_for_claim.notify_claimed();
-                });
-                AppHandlers {
-                    db: entry.db.clone(),
-                    limiter: entry.limiter.clone(),
-                    on_enqueue,
-                    health_check,
-                    on_claimed,
-                }
-            })
+            apps.get(app).map(AppWorkflow::handlers)
         });
         let publisher = self.channel_publish.lock().clone();
         *guard = Some(spawn_internal_socket(
@@ -199,9 +179,26 @@ impl WorkflowManager {
         });
         let cron_handle = cron::spawn_with_limiter(db.clone(), limiter.clone(), on_enqueue);
 
-        let entry = AppWorkflow {
+        let sup_for_enqueue = supervisor.clone();
+        let sup_for_health = supervisor.clone();
+        let sup_for_claim = supervisor.clone();
+        let handlers = AppHandlers {
             db,
             limiter,
+            on_enqueue: Arc::new(move || {
+                // wake() errors surface via health_check on the next
+                // enqueue; the log_sink inside the supervisor carries
+                // any human-readable detail.
+                let _ = sup_for_enqueue.wake();
+            }),
+            health_check: Arc::new(move || sup_for_health.check_startup_health()),
+            on_claimed: Arc::new(move || {
+                sup_for_claim.notify_claimed();
+            }),
+        };
+
+        let entry = AppWorkflow {
+            handlers,
             supervisor,
             cron: Some(cron_handle),
         };
@@ -297,6 +294,7 @@ pub fn worker_spec_for_bun(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::enqueue_socket::{HealthCheck, OnClaimed};
     use std::collections::HashMap as StdHashMap;
 
     fn dummy_spec(cwd: PathBuf, _db: PathBuf) -> WorkerSpec {
@@ -391,5 +389,39 @@ mod tests {
             assert!(!m.has(name));
         }
         assert!(m.socket.lock().is_none());
+    }
+
+    #[test]
+    fn app_workflow_reuses_prebuilt_handlers() {
+        let db = Arc::new(RunsDb::open_in_memory().unwrap());
+        let limiter = Arc::new(InFlightLimiter::new(1));
+        let supervisor = Arc::new(WorkerSupervisor::new(dummy_spec(
+            std::env::temp_dir(),
+            std::env::temp_dir().join("workflows.sqlite"),
+        )));
+        let on_enqueue: OnEnqueue = Arc::new(|| {});
+        let health_check: HealthCheck = Arc::new(|| Ok(()));
+        let on_claimed: OnClaimed = Arc::new(|| {});
+
+        let workflow = AppWorkflow {
+            handlers: AppHandlers {
+                db,
+                limiter,
+                on_enqueue,
+                health_check,
+                on_claimed,
+            },
+            supervisor,
+            cron: None,
+        };
+
+        let first = workflow.handlers();
+        let second = workflow.handlers();
+
+        assert!(Arc::ptr_eq(&first.db, &second.db));
+        assert!(Arc::ptr_eq(&first.limiter, &second.limiter));
+        assert!(Arc::ptr_eq(&first.on_enqueue, &second.on_enqueue));
+        assert!(Arc::ptr_eq(&first.health_check, &second.health_check));
+        assert!(Arc::ptr_eq(&first.on_claimed, &second.on_claimed));
     }
 }

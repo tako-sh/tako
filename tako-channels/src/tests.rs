@@ -171,6 +171,66 @@ fn channel_store_appends_and_reads_messages() {
 }
 
 #[test]
+fn channel_store_append_updates_channel_activity() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let store = ChannelStore::open(&temp.path().join("channels.sqlite")).unwrap();
+
+    store
+        .sync_channel(
+            "chat:room-123",
+            &ChannelAuthResponse {
+                ok: true,
+                subject: None,
+                transport: None,
+                replay_window_ms: DEFAULT_REPLAY_WINDOW_MS,
+                inactivity_ttl_ms: 0,
+                keepalive_interval_ms: DEFAULT_KEEPALIVE_INTERVAL_MS,
+                max_connection_lifetime_ms: DEFAULT_MAX_CONNECTION_LIFETIME_MS,
+            },
+        )
+        .unwrap();
+    let before: i64 = store
+        .conn
+        .lock()
+        .query_row(
+            "SELECT last_activity_unix_ms FROM channel_metadata WHERE channel = ?1",
+            ["chat:room-123"],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    let message = store
+        .append(
+            "chat:room-123",
+            &ChannelPublishPayload {
+                r#type: "message".to_string(),
+                data: serde_json::json!({ "text": "hi" }),
+            },
+        )
+        .unwrap();
+
+    let conn = store.conn.lock();
+    let after: i64 = conn
+        .query_row(
+            "SELECT last_activity_unix_ms FROM channel_metadata WHERE channel = ?1",
+            ["chat:room-123"],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let persisted: String = conn
+        .query_row(
+            "SELECT data_json FROM channel_messages WHERE id = ?1",
+            [message.id.parse::<i64>().unwrap()],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    assert!(after >= before);
+    assert_eq!(persisted, r#"{"text":"hi"}"#);
+}
+
+#[test]
 fn channel_store_enables_incremental_auto_vacuum_for_new_dbs() {
     let temp = tempfile::TempDir::new().unwrap();
     let store = ChannelStore::open(&temp.path().join("channels.sqlite")).unwrap();

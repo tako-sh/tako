@@ -43,6 +43,7 @@ pub type HealthCheck = Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
 pub type OnClaimed = Arc<dyn Fn() + Send + Sync>;
 
 /// Per-app handlers the internal socket needs to service one connection.
+#[derive(Clone)]
 pub struct AppHandlers {
     pub db: Arc<RunsDb>,
     pub limiter: Arc<crate::in_flight::InFlightLimiter>,

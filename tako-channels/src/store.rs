@@ -68,13 +68,16 @@ impl ChannelStore {
         channel: &str,
         payload: &ChannelPublishPayload,
     ) -> Result<ChannelMessage, ChannelError> {
-        let conn = self.conn.lock();
-        conn.execute(
+        let mut conn = self.conn.lock();
+        let tx = conn
+            .transaction()
+            .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        tx.execute(
             "UPDATE channel_metadata SET last_activity_unix_ms = ?2 WHERE channel = ?1",
             rusqlite::params![channel, now_unix_ms()],
         )
         .map_err(|e| ChannelError::Storage(e.to_string()))?;
-        conn.execute(
+        tx.execute(
             "INSERT INTO channel_messages (channel, type, data_json) VALUES (?1, ?2, ?3)",
             rusqlite::params![
                 channel,
@@ -85,7 +88,9 @@ impl ChannelStore {
         )
         .map_err(|e| ChannelError::Storage(e.to_string()))?;
 
-        let id = conn.last_insert_rowid();
+        let id = tx.last_insert_rowid();
+        tx.commit()
+            .map_err(|e| ChannelError::Storage(e.to_string()))?;
         Ok(ChannelMessage {
             id: id.to_string(),
             channel: channel.to_string(),
