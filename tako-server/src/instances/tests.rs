@@ -71,12 +71,12 @@ fn test_instance_request_tracking() {
     let instance = Instance::new("test-1".to_string(), "v1".to_string(), noop_log_handle());
     assert_eq!(instance.requests_total(), 0);
 
-    instance.request_started();
-    instance.request_finished();
-    instance.request_started();
-    instance.request_finished();
-    instance.request_started();
-    instance.request_finished();
+    instance.request_started_on_shard(0);
+    instance.request_finished_on_shard(0);
+    instance.request_started_on_shard(1);
+    instance.request_finished_on_shard(1);
+    instance.request_started_on_shard(65);
+    instance.request_finished_on_shard(65);
 
     assert_eq!(instance.requests_total(), 3);
 }
@@ -86,14 +86,14 @@ fn request_finished_updates_idle_clock_only_when_instance_becomes_idle() {
     let instance = Instance::new("test-1".to_string(), "v1".to_string(), noop_log_handle());
     instance.last_request_ms.store(1, Ordering::Relaxed);
 
-    instance.request_started();
-    instance.request_started();
-    instance.request_finished();
+    instance.request_started_on_shard(0);
+    instance.request_started_on_shard(1);
+    instance.request_finished_on_shard(0);
 
     assert_eq!(instance.in_flight(), 1);
     assert_eq!(instance.last_request_ms.load(Ordering::Relaxed), 1);
 
-    instance.request_finished();
+    instance.request_finished_on_shard(1);
 
     assert_eq!(instance.in_flight(), 0);
     assert!(instance.last_request_ms.load(Ordering::Relaxed) > 1);

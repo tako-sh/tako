@@ -180,14 +180,14 @@ mod tests {
         ));
 
         // Can't stop while in-flight.
-        instance.request_started();
+        instance.request_started_on_shard(0);
         assert!(!monitor.should_stop_instance(
             &instance,
             Duration::from_secs(0),
             0, // min
             1  // current
         ));
-        instance.request_finished();
+        instance.request_finished_on_shard(0);
 
         // Can stop if above min_instances and idle
         // (but idle_time() will be very small, so this test is limited)

@@ -5,7 +5,7 @@
 //! - Health-aware routing
 //! - On-demand instance spawning
 
-use crate::instances::{App, AppManager, Instance};
+use crate::instances::{App, AppManager, Instance, request_counter_shard};
 use dashmap::DashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -41,12 +41,14 @@ impl AppLoadBalancer {
     /// Get a backend to handle a request.
     pub fn get_backend(&self) -> Option<Backend> {
         let request_index = self.rr_counter.fetch_add(1, Ordering::Relaxed);
+        let counter_shard = request_counter_shard(request_index);
         let healthy = self.app.healthy_backend_for_request(request_index)?;
 
         Some(Backend {
             app_name: self.app_name.clone(),
             endpoint: healthy.endpoint,
             instance: healthy.instance,
+            counter_shard,
         })
     }
 }
@@ -98,6 +100,8 @@ pub struct Backend {
     instance: Arc<Instance>,
     /// Optional TCP endpoint for upstream proxying
     endpoint: Option<SocketAddr>,
+    /// Per-request shard for hot request counters.
+    counter_shard: usize,
 }
 
 impl std::fmt::Debug for Backend {
@@ -124,11 +128,11 @@ impl Backend {
     }
 
     pub fn request_started(&self) {
-        self.instance.request_started();
+        self.instance.request_started_on_shard(self.counter_shard);
     }
 
     pub fn request_finished(&self) {
-        self.instance.request_finished();
+        self.instance.request_finished_on_shard(self.counter_shard);
     }
 }
 
