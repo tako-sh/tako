@@ -2,7 +2,7 @@ use super::request::{
     ClientIpResolution, ForwardedHeaderTrust, client_ip_for_source_ip_mode,
     client_ip_from_trusted_headers, forwarded_header_has_proto, forwarded_header_proto_is_https,
     https_redirect_host, is_effective_request_https, is_request_forwarded_https,
-    strip_route_prefix_for_static_lookup, x_forwarded_proto_is_https,
+    path_uses_tako_handler, strip_route_prefix_for_static_lookup, x_forwarded_proto_is_https,
 };
 use super::server::{create_tls_settings, listener_socket_options};
 use super::*;
@@ -820,6 +820,15 @@ fn test_path_looks_like_static_asset() {
     assert!(!path_looks_like_static_asset("/"));
     assert!(!path_looks_like_static_asset("/dashboard/settings"));
     assert!(!path_looks_like_static_asset("/assets/main"));
+}
+
+#[test]
+fn plain_proxy_paths_skip_tako_handler_probes() {
+    assert!(!path_uses_tako_handler("/plaintext"));
+    assert!(!path_uses_tako_handler("/api/users"));
+    assert!(path_uses_tako_handler("/assets/main.js"));
+    assert!(path_uses_tako_handler(tako_images::PUBLIC_IMAGE_BASE_PATH));
+    assert!(path_uses_tako_handler(tako_channels::CHANNELS_BASE_PATH));
 }
 
 #[test]

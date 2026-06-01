@@ -329,9 +329,10 @@ impl Instance {
     }
 
     pub fn request_finished(&self) {
-        self.in_flight.fetch_sub(1, Ordering::Relaxed);
-        self.last_request_ms
-            .store(now_unix_millis(), Ordering::Relaxed);
+        if self.in_flight.fetch_sub(1, Ordering::Relaxed) == 1 {
+            self.last_request_ms
+                .store(now_unix_millis(), Ordering::Relaxed);
+        }
     }
 
     pub fn in_flight(&self) -> u64 {

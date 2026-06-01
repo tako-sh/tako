@@ -58,3 +58,35 @@ impl IpRequestTracker {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tracker_allows_requests_until_per_ip_limit() {
+        let tracker = IpRequestTracker::new();
+        let ip = "203.0.113.10".parse().unwrap();
+
+        for _ in 0..MAX_REQUESTS_PER_IP {
+            assert!(tracker.try_acquire(ip));
+        }
+
+        assert!(!tracker.try_acquire(ip));
+    }
+
+    #[test]
+    fn tracker_releases_capacity_for_ip() {
+        let tracker = IpRequestTracker::new();
+        let ip = "203.0.113.10".parse().unwrap();
+
+        for _ in 0..MAX_REQUESTS_PER_IP {
+            assert!(tracker.try_acquire(ip));
+        }
+        assert!(!tracker.try_acquire(ip));
+
+        tracker.release(ip);
+
+        assert!(tracker.try_acquire(ip));
+    }
+}

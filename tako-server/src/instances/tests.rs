@@ -82,6 +82,24 @@ fn test_instance_request_tracking() {
 }
 
 #[test]
+fn request_finished_updates_idle_clock_only_when_instance_becomes_idle() {
+    let instance = Instance::new("test-1".to_string(), "v1".to_string(), noop_log_handle());
+    instance.last_request_ms.store(1, Ordering::Relaxed);
+
+    instance.request_started();
+    instance.request_started();
+    instance.request_finished();
+
+    assert_eq!(instance.in_flight(), 1);
+    assert_eq!(instance.last_request_ms.load(Ordering::Relaxed), 1);
+
+    instance.request_finished();
+
+    assert_eq!(instance.in_flight(), 0);
+    assert!(instance.last_request_ms.load(Ordering::Relaxed) > 1);
+}
+
+#[test]
 fn test_app_allocate_instances() {
     let (tx, _rx) = mpsc::channel(16);
     let config = AppConfig {

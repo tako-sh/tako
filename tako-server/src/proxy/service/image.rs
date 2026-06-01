@@ -40,8 +40,9 @@ impl TakoProxy {
         if !is_image_request_path(path) {
             return Ok(false);
         }
-        let method = session.req_header().method.as_str().to_string();
-        if method != "GET" && method != "HEAD" {
+        let method = session.req_header().method.as_str();
+        let is_head = method == "HEAD";
+        if method != "GET" && !is_head {
             return write_image_error(session, 405, "Method Not Allowed").await;
         }
 
@@ -144,7 +145,7 @@ impl TakoProxy {
             .write_response_header(Box::new(header), false)
             .await?;
 
-        if method == "HEAD" {
+        if is_head {
             session.write_response_body(None, true).await?;
         } else {
             session

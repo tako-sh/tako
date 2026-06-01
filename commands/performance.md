@@ -64,6 +64,13 @@ user explicitly asks for a local/patched build.
 - Before committing public reports, scan for sensitive strings.
 - Keep all proxies under equivalent conditions: same URL, Host, SNI, TLS cert,
   upstream app behavior, warmup, duration, source IP set, and concurrency list.
+- Keep request protection comparable. Tako's current proxy path enforces a
+  2048 concurrent request cap per derived client IP. Configure nginx with the
+  matching per-IP `limit_conn` guard and status `429`. Caddy must use the
+  benchmark repo's Caddy binary built with `github.com/mholt/caddy-ratelimit`;
+  keep its default ceiling high enough not to impose a different RPS bottleneck,
+  and document that this is a request-rate window limiter, not the exact same
+  concurrent-request primitive.
 - Do not compare Tako load-balanced mode on the 2 vCPU exe-node; it mostly
   measures process contention, not load-balancer quality.
 - Do not treat high-load client errors as proxy failures until error samples
@@ -139,6 +146,10 @@ be used for diagnosis, but do not present it as a release result.
 
 Use VM-local load generation for the small exe-node so public internet latency
 and the laptop do not dominate the result.
+
+The performance repo configs are expected to include nginx `limit_conn` and the
+Caddy rate-limit module so Tako is not the only proxy doing per-client limiter
+work on the hot path.
 
 ```bash
 cd ~/github/tako-performance

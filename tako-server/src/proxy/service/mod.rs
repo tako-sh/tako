@@ -9,8 +9,9 @@ use super::TakoProxy;
 use super::request::{
     ClientIpResolution, ForwardedHeaderTrust, build_proxy_cache_key, client_ip_for_source_ip_mode,
     client_ip_from_session, create_production_error_response, https_redirect_host,
-    insert_body_headers, is_effective_request_https, path_looks_like_static_asset, request_host,
-    request_is_proxy_cacheable, response_cacheability, should_redirect_http_request,
+    insert_body_headers, is_effective_request_https, path_looks_like_static_asset,
+    path_uses_tako_handler, request_host, request_is_proxy_cacheable, response_cacheability,
+    should_redirect_http_request,
 };
 use crate::lb::Backend;
 use crate::metrics::RequestTimer;
@@ -119,11 +120,11 @@ impl ProxyHttp for TakoProxy {
             return Ok(true);
         }
 
-        let path = session.req_header().uri.path().to_string();
-        let host = request_host(session.req_header()).to_string();
-        let hostname = host.split(':').next().unwrap_or(&host);
+        let path = session.req_header().uri.path();
+        let host = request_host(session.req_header());
+        let hostname = host.split(':').next().unwrap_or(host);
 
-        let route_match = self.routes.read().select_with_route(hostname, &path);
+        let route_match = self.routes.read().select_with_route(hostname, path);
 
         if let Some(route_match) = route_match.as_ref() {
             let resolution = match client_ip_from_session(session) {
@@ -176,9 +177,9 @@ impl ProxyHttp for TakoProxy {
         }
 
         if let Some(ref handler) = self.challenge_handler
-            && handler.is_challenge_request(&path)
+            && handler.is_challenge_request(path)
         {
-            if let Some(response) = handler.handle_challenge(&path) {
+            if let Some(response) = handler.handle_challenge(path) {
                 tracing::info!(path = %path, "Serving ACME challenge response");
                 let mut header = ResponseHeader::build(200, None)?;
                 insert_body_headers(&mut header, "text/plain", &response)?;
@@ -207,29 +208,33 @@ impl ProxyHttp for TakoProxy {
                 .digest()
                 .map(|d| d.ssl_digest.is_some())
                 .unwrap_or(false);
-            let request_headers = &session.req_header().headers;
-            let x_forwarded_for = request_headers
-                .get("x-forwarded-for")
-                .and_then(|h| h.to_str().ok());
-            let x_forwarded_proto = request_headers
-                .get("x-forwarded-proto")
-                .and_then(|h| h.to_str().ok());
-            let forwarded = request_headers
-                .get("forwarded")
-                .and_then(|h| h.to_str().ok());
-            let peer_ip = client_ip_from_session(session);
-            let is_effective_https = is_effective_request_https(
-                transport_https,
-                hostname,
-                x_forwarded_for,
-                x_forwarded_proto,
-                forwarded,
-                ForwardedHeaderTrust {
-                    peer_ip,
-                    cloudflare_ips: &self.cloudflare_ips,
-                    trusted_proxy: &self.config.trusted_proxy,
-                },
-            );
+            let is_effective_https = if transport_https {
+                true
+            } else {
+                let request_headers = &session.req_header().headers;
+                let x_forwarded_for = request_headers
+                    .get("x-forwarded-for")
+                    .and_then(|h| h.to_str().ok());
+                let x_forwarded_proto = request_headers
+                    .get("x-forwarded-proto")
+                    .and_then(|h| h.to_str().ok());
+                let forwarded = request_headers
+                    .get("forwarded")
+                    .and_then(|h| h.to_str().ok());
+                let peer_ip = client_ip_from_session(session);
+                is_effective_request_https(
+                    false,
+                    hostname,
+                    x_forwarded_for,
+                    x_forwarded_proto,
+                    forwarded,
+                    ForwardedHeaderTrust {
+                        peer_ip,
+                        cloudflare_ips: &self.cloudflare_ips,
+                        trusted_proxy: &self.config.trusted_proxy,
+                    },
+                )
+            };
             ctx.is_https = is_effective_https;
 
             if should_redirect_http_request(is_effective_https, self.config.redirect_http_to_https)
@@ -239,8 +244,8 @@ impl ProxyHttp for TakoProxy {
                     .uri
                     .path_and_query()
                     .map(|pq| pq.as_str())
-                    .unwrap_or(&path);
-                let redirect_host = https_redirect_host(&host, self.config.https_port);
+                    .unwrap_or(path);
+                let redirect_host = https_redirect_host(host, self.config.https_port);
                 let redirect_url = format!("https://{}{}", redirect_host, path_and_query);
                 let body = "Redirecting to HTTPS";
 
@@ -272,39 +277,43 @@ impl ProxyHttp for TakoProxy {
         let app_name = route_match.app;
         ctx.matched_route_path = route_match.path;
 
-        let matched_route_path = ctx.matched_route_path.clone();
-        if self
-            .try_handle_image_request(
-                session,
-                ctx,
-                &app_name,
-                &path,
-                &host,
-                matched_route_path.as_deref(),
-            )
-            .await?
-        {
-            return Ok(true);
-        }
-
-        if self
-            .try_handle_channel_request(session, ctx, &app_name, &path, &host)
-            .await?
-        {
-            return Ok(true);
-        }
-
-        if path_looks_like_static_asset(&path)
-            && self
-                .try_serve_static_asset(
+        if path_uses_tako_handler(path) {
+            let path = path.to_string();
+            let host = host.to_string();
+            let matched_route_path = ctx.matched_route_path.clone();
+            if self
+                .try_handle_image_request(
                     session,
+                    ctx,
                     &app_name,
                     &path,
-                    ctx.matched_route_path.as_deref(),
+                    &host,
+                    matched_route_path.as_deref(),
                 )
                 .await?
-        {
-            return Ok(true);
+            {
+                return Ok(true);
+            }
+
+            if self
+                .try_handle_channel_request(session, ctx, &app_name, &path, &host)
+                .await?
+            {
+                return Ok(true);
+            }
+
+            if path_looks_like_static_asset(&path)
+                && self
+                    .try_serve_static_asset(
+                        session,
+                        &app_name,
+                        &path,
+                        ctx.matched_route_path.as_deref(),
+                    )
+                    .await?
+            {
+                return Ok(true);
+            }
         }
 
         let backend = match self.resolve_backend(&app_name).await {

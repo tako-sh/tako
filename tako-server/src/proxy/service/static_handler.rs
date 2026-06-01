@@ -43,8 +43,9 @@ impl TakoProxy {
         request_path: &str,
         matched_route_path: Option<&str>,
     ) -> Result<bool> {
-        let method = session.req_header().method.as_str().to_string();
-        if method != "GET" && method != "HEAD" {
+        let method = session.req_header().method.as_str();
+        let is_head = method == "HEAD";
+        if method != "GET" && !is_head {
             return Ok(false);
         }
 
@@ -60,7 +61,7 @@ impl TakoProxy {
         for lookup_path in static_lookup_paths(request_path, matched_route_path) {
             match static_server.resolve(&lookup_path) {
                 Ok(file) => {
-                    let mut file_handle = if method == "HEAD" {
+                    let mut file_handle = if is_head {
                         None
                     } else {
                         match tokio::fs::File::open(&file.path).await {
@@ -85,7 +86,7 @@ impl TakoProxy {
                         .write_response_header(Box::new(header), false)
                         .await?;
 
-                    if method == "HEAD" {
+                    if is_head {
                         session.write_response_body(None, true).await?;
                         return Ok(true);
                     }
