@@ -210,27 +210,6 @@ fn host_instance_limit_for_parallelism(parallelism: u32) -> u32 {
     parallelism.saturating_mul(2).max(1)
 }
 
-const REQUEST_COUNTER_SHARDS: usize = 64;
-
-pub(crate) fn request_counter_shard(request_index: usize) -> usize {
-    request_index % REQUEST_COUNTER_SHARDS
-}
-
-#[repr(align(64))]
-struct RequestCounters {
-    requests_total: AtomicU64,
-    in_flight: AtomicU64,
-}
-
-impl RequestCounters {
-    fn new() -> Self {
-        Self {
-            requests_total: AtomicU64::new(0),
-            in_flight: AtomicU64::new(0),
-        }
-    }
-}
-
 /// A running instance of an app
 pub struct Instance {
     /// Unique instance ID
@@ -249,8 +228,11 @@ pub struct Instance {
     state: AtomicU8,
     /// When the instance started
     started_at: RwLock<Option<Instant>>,
-    /// Request counters sharded to reduce cache-line contention on hot instances.
-    request_counters: [RequestCounters; REQUEST_COUNTER_SHARDS],
+    /// Total requests handled
+    requests_total: AtomicU64,
+
+    /// In-flight requests (best-effort; used to avoid killing while serving)
+    in_flight: AtomicU64,
     /// Last request completion time as millis since UNIX_EPOCH (for idle timeout)
     last_request_ms: AtomicU64,
     /// Last health-check heartbeat time as millis since UNIX_EPOCH
@@ -282,7 +264,8 @@ impl Instance {
             pid: AtomicU32::new(0),
             state: AtomicU8::new(encode_instance_state(InstanceState::Starting)),
             started_at: RwLock::new(None),
-            request_counters: std::array::from_fn(|_| RequestCounters::new()),
+            requests_total: AtomicU64::new(0),
+            in_flight: AtomicU64::new(0),
             last_request_ms: AtomicU64::new(now_unix_millis()),
             last_heartbeat_ms: AtomicU64::new(now_unix_millis()),
             log_handle,
@@ -346,41 +329,24 @@ impl Instance {
         self.process.write().take()
     }
 
-    pub(crate) fn request_started_on_shard(&self, shard: usize) {
-        let counters = self.request_counters(shard);
-        counters.requests_total.fetch_add(1, Ordering::Relaxed);
-        counters.in_flight.fetch_add(1, Ordering::Relaxed);
+    pub fn request_started(&self) {
+        self.requests_total.fetch_add(1, Ordering::Relaxed);
+        self.in_flight.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub(crate) fn request_finished_on_shard(&self, shard: usize) {
-        if self
-            .request_counters(shard)
-            .in_flight
-            .fetch_sub(1, Ordering::Relaxed)
-            == 1
-            && self.in_flight() == 0
-        {
+    pub fn request_finished(&self) {
+        if self.in_flight.fetch_sub(1, Ordering::Relaxed) == 1 {
             self.last_request_ms
                 .store(now_unix_millis(), Ordering::Relaxed);
         }
     }
 
     pub fn in_flight(&self) -> u64 {
-        self.request_counters
-            .iter()
-            .map(|counters| counters.in_flight.load(Ordering::Relaxed))
-            .sum()
+        self.in_flight.load(Ordering::Relaxed)
     }
 
     pub fn requests_total(&self) -> u64 {
-        self.request_counters
-            .iter()
-            .map(|counters| counters.requests_total.load(Ordering::Relaxed))
-            .sum()
-    }
-
-    fn request_counters(&self, shard: usize) -> &RequestCounters {
-        &self.request_counters[request_counter_shard(shard)]
+        self.requests_total.load(Ordering::Relaxed)
     }
 
     pub fn uptime(&self) -> Duration {

@@ -11,6 +11,8 @@ analysis live in the dedicated performance repository:
 Latest clean single-VM HTTP/TLS run:
 
 - Tako release: `tako-server 0.0.0-770afb0`
+- Note: the experimental memory-counter/TLS-cache patch in `770afb0` was
+  reverted after this run because it did not produce a reliable benchmark win.
 - Setup: load generator, proxy, and app all on one 2 vCPU Ubuntu VM
 - Result: Tako clearly beats Caddy, but still trails nginx on raw HTTPS reverse
   proxy throughput and most p99 latency rows

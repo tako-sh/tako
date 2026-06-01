@@ -11,8 +11,7 @@ use pingora_core::protocols::{GetSocketDigest, SocketDigest, Stream};
 use pingora_core::server::ShutdownWatch;
 use pingora_core::services::Service as ServiceTrait;
 use pingora_core::tls::ssl::{
-    AlpnError, SslAcceptor, SslAcceptorBuilder, SslFiletype, SslMethod, SslRef,
-    SslSessionCacheMode, select_next_proto,
+    AlpnError, SslAcceptor, SslAcceptorBuilder, SslFiletype, SslMethod, SslRef, select_next_proto,
 };
 use pingora_core::{Error, ErrorType, OrErr, Result};
 use pingora_proxy::{HttpProxy, http_proxy};
@@ -352,7 +351,7 @@ impl ProxyProtocolTlsAcceptor {
         mut builder: SslAcceptorBuilder,
         callbacks: Option<TlsAcceptCallbacks>,
     ) -> Self {
-        configure_tls_acceptor_builder(&mut builder);
+        enable_h2(&mut builder);
         Self {
             acceptor: builder.build(),
             callbacks,
@@ -451,15 +450,6 @@ fn enable_h2(builder: &mut SslAcceptorBuilder) {
     builder.set_alpn_select_callback(prefer_h2);
 }
 
-fn configure_tls_acceptor_builder(builder: &mut SslAcceptorBuilder) {
-    enable_h2(builder);
-    disable_tls_session_cache(builder);
-}
-
-fn disable_tls_session_cache(builder: &mut SslAcceptorBuilder) {
-    builder.set_session_cache_mode(SslSessionCacheMode::OFF);
-}
-
 fn prefer_h2<'a>(_ssl: &mut SslRef, alpn_in: &'a [u8]) -> Result<&'a [u8], AlpnError> {
     if alpn_in.is_empty() {
         return Err(AlpnError::NOACK);
@@ -481,16 +471,5 @@ mod tests {
             .expect_err("idle downstream should time out waiting for PROXY header");
 
         assert_eq!(error.etype, ErrorType::ReadTimedout);
-    }
-
-    #[test]
-    fn tls_acceptor_disables_internal_session_cache() {
-        let mut builder = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls())
-            .expect("TLS builder should initialize");
-
-        disable_tls_session_cache(&mut builder);
-
-        let previous_mode = builder.set_session_cache_mode(SslSessionCacheMode::SERVER);
-        assert_eq!(previous_mode, SslSessionCacheMode::OFF);
     }
 }
