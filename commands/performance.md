@@ -13,19 +13,28 @@ Use the dedicated performance repository for harness code, raw data, graphs, and
 the detailed report. Use this repo only for the high-level `BENCHMARKS.md`
 summary.
 
+This command is an end-to-end workflow. Do not stop at a plan or raw benchmark
+output unless blocked: prepare the VM, run the tests, inspect the results, fix
+obvious harness or simple Tako issues, rerun when needed, update reports,
+sanitize, validate, commit, and push.
+
 ## Inputs
+
+The user should provide a benchmark server for each run. Do not assume a server
+from a previous chat still exists or is still accessible.
 
 The user may provide:
 
 - benchmark VM SSH host;
+- optional target IP or local-only mode;
 - target Tako release or branch;
 - whether to compare latest release, a patched build, or both;
 - whether to run only HTTP proxy tests or also channel/workflow tests;
 - whether a larger/multi-node server is available for load-balancer tests.
 
-If the VM host or target release is not clear, ask one concise question before
-running anything destructive or long-lived. Otherwise make reasonable
-assumptions and proceed.
+If the VM host is not clear, ask for it before doing any remote work. If the
+target release is not clear, use the latest published Tako release unless the
+user explicitly asks for a local/patched build.
 
 ## Defaults
 
@@ -33,6 +42,8 @@ assumptions and proceed.
 - Public repo: `git@github.com:tako-sh/performance.git`
 - Main repo summary: `BENCHMARKS.md`
 - Detailed report: `RESULTS.md`
+- Benchmark server: supplied by the user for that run; never reuse an old host
+  from memory or thread history without the user confirming it.
 - Timed HTTP path: VM-local, HTTPS, HTTP/1.1, same certificate and route for
   nginx, Caddy, and Tako.
 - Load-balanced mode: skip on the small exe-node/2 vCPU VM. Only run LB on a
@@ -81,7 +92,16 @@ ssh <ssh-host> ps -eo pid,ppid,pcpu,pmem,comm,args --sort=-pcpu
 Abort or explain before continuing if another process is consuming enough CPU or
 memory to distort results.
 
-4. Confirm benchmark tools are current and clean:
+4. Capture non-sensitive server details for the report:
+
+```bash
+ssh <ssh-host> 'uname -a; lsb_release -a 2>/dev/null || cat /etc/os-release; nproc; free -h; df -h /'
+```
+
+If region or ping matters, measure it for the current server. Report only a
+sanitized region/latency summary, not exact hostnames or IPs.
+
+5. Confirm benchmark tools are current and clean:
 
 ```bash
 cd ~/github/tako-performance
@@ -107,6 +127,10 @@ BENCH_VM=<ssh-host> ./scripts/sync-to-vm.sh
 Prefer the published Tako release for release benchmarks. Build locally only
 when intentionally benchmarking an unreleased patch, and label it clearly in
 `RESULTS.md`.
+
+If the user asked to benchmark a release that is not available yet, wait for or
+verify the release before running the final benchmark. A patched/local build can
+be used for diagnosis, but do not present it as a release result.
 
 ## Phase 3 — Run HTTP Proxy Benchmark
 
@@ -178,6 +202,27 @@ Classify results honestly:
 - Capacity result: latency and error rates still within an explicit SLO.
 - Harness artifact: error samples point to loadgen timeout, local address
   exhaustion, file descriptors, or other client-side limits.
+
+## Phase 5b — Fix Obvious Issues And Rerun
+
+If inspection shows a benchmark-harness artifact, fix the harness in
+`~/github/tako-performance`, validate it, sync it to the VM, and rerun the
+affected cases before updating `RESULTS.md`.
+
+If inspection shows a simple, high-confidence Tako issue, fix it in
+`~/github/tako` with tests where required, commit it, wait for or produce the
+intended benchmark build, and rerun the affected cases. Do not publish a result
+whose main conclusion is based on a known-bad harness or a known-fixed local
+bug unless the report clearly labels it as superseded/diagnostic.
+
+Examples of issues to fix before publishing:
+
+- client errors caused by load-generator timeouts, file-descriptor limits, or
+  local source-port exhaustion;
+- metrics graphs distorted by stale samplers or negative process CPU deltas;
+- wrong proxy mode, URL, Host/SNI, TLS, source IPs, or timeout settings;
+- an obvious Tako hot-path regression already fixed locally and awaiting a
+  release.
 
 ## Phase 6 — Update Reports
 
