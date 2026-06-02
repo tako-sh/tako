@@ -10,21 +10,26 @@ analysis live in the dedicated performance repository:
 
 Latest clean single-VM HTTP/TLS run:
 
-- Tako release: `tako-server 0.0.0-770afb0`
-- Note: the experimental memory-counter/TLS-cache patch in `770afb0` was
-  reverted after this run because it did not produce a reliable benchmark win.
+- Tako release: `tako-server 0.0.0-09b3dc6`
 - Setup: load generator, proxy, and app all on one 2 vCPU Ubuntu VM
-- Result: Tako clearly beats Caddy, but still trails nginx on raw HTTPS reverse
-  proxy throughput and most p99 latency rows
-- Heavy rows: c5000 `12.4k` Tako 200 RPS vs `17.2k` nginx; c10000 `10.2k`
-  vs `13.0k`; c15000 `8.2k` vs `12.7k`; c20000 `6.8k` vs `13.1k`
+- Provider: exe.dev
+- Result: nginx and HAProxy lead raw HTTPS reverse-proxy throughput; Tako
+  clearly beats Caddy and Envoy in heavy rows and stays cleaner under overload
+- Heavy rows: c5000 `12.5k` Tako 200 RPS vs `17.7k` nginx / `17.1k` HAProxy;
+  c10000 `10.4k` vs `15.3k` / `14.8k`; c15000 `8.6k` vs `11.4k` / `13.2k`;
+  c20000 `7.3k` vs `11.0k` / `11.2k`
 - Tako stayed clean through c20000: 0 client errors and 0 non-200 responses.
-  Caddy overloaded; nginx had small 500/error rates at c10000/c15000 in this
-  run.
+  Envoy and Caddy overloaded in heavy rows; nginx showed small error/non-200
+  rates at c15000; HAProxy stayed clean but had much worse p99 latency at high
+  concurrency.
 - Channels/workflows are clean through c4000. At c8000, channel publish returns
-  6.0% non-200 responses and workflow enqueue returns 23.8%.
-- Main next target: reduce Tako proxy RSS, downstream connection/session memory
-  pressure, and p99 latency; Tako peaked around 2.5 GiB proxy RSS at c20000
+  5.9% non-200 responses and workflow enqueue returns 21.3%.
+- Keep RSS in the report. Follow-up controls show the high keepalive RSS is
+  mostly Pingora/TLS reverse-proxy connection state, not a Tako-specific leak.
+- Main next target: improve raw RPS and p99 latency versus nginx/HAProxy; Tako
+  peaked around 2.7 GiB proxy RSS at c20000, but full Tako was only about
+  14 MiB above a comparable fixed Pingora reverse proxy at 5k live keepalive
+  connections.
 
 Load-balanced mode is intentionally excluded from the exe-node result set. It
 needs a larger or multi-node testbed.

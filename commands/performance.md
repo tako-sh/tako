@@ -45,7 +45,7 @@ user explicitly asks for a local/patched build.
 - Benchmark server: supplied by the user for that run; never reuse an old host
   from memory or thread history without the user confirming it.
 - Timed HTTP path: VM-local, HTTPS, HTTP/1.1, same certificate and route for
-  nginx, Caddy, and Tako.
+  nginx, HAProxy, Envoy, Caddy, and Tako.
 - Load-balanced mode: skip on the small exe-node/2 vCPU VM. Only run LB on a
   larger or multi-node testbed.
 - History policy: KISS. Keep the latest authoritative report and raw result
@@ -64,13 +64,14 @@ user explicitly asks for a local/patched build.
 - Before committing public reports, scan for sensitive strings.
 - Keep all proxies under equivalent conditions: same URL, Host, SNI, TLS cert,
   upstream app behavior, warmup, duration, source IP set, and concurrency list.
-- Keep request protection comparable. Tako's current proxy path enforces a
-  2048 concurrent request cap per derived client IP. Configure nginx with the
-  matching per-IP `limit_conn` guard and status `429`. Caddy must use the
-  benchmark repo's Caddy binary built with `github.com/mholt/caddy-ratelimit`;
-  keep its default ceiling high enough not to impose a different RPS bottleneck,
-  and document that this is a request-rate window limiter, not the exact same
-  concurrent-request primitive.
+- Keep request/connection protection comparable without making the limiter the
+  benchmark. Tako's released default enforces 2048 active requests per derived
+  client IP, so high-concurrency runs must use the documented 16 loopback source
+  IPs. Configure nginx and HAProxy with high per-IP connection guards. Caddy
+  must use the benchmark repo's Caddy binary built with
+  `github.com/mholt/caddy-ratelimit`; keep its ceiling high enough not to
+  impose a different RPS bottleneck. Envoy must use the benchmark repo config
+  with high local-rate-limit and raised cluster circuit-breaker thresholds.
 - Do not compare Tako load-balanced mode on the 2 vCPU exe-node; it mostly
   measures process contention, not load-balancer quality.
 - Do not treat high-load client errors as proxy failures until error samples
@@ -151,16 +152,24 @@ be used for diagnosis, but do not present it as a release result.
 Use VM-local load generation for the small exe-node so public internet latency
 and the laptop do not dominate the result.
 
-The performance repo configs are expected to include nginx `limit_conn` and the
-Caddy rate-limit module so Tako is not the only proxy doing per-client limiter
-work on the hot path.
+The performance repo configs are expected to include nginx `limit_conn`,
+HAProxy stick-table connection tracking, Envoy local rate limiting, and the
+Caddy rate-limit module so Tako is not the only proxy doing per-client
+protection work on the hot path.
+
+For controlled high-concurrency runs, use the documented 16 loopback source IPs.
+The production default is 2048 active requests per client IP; a single source IP
+can fail at exactly 2048 with `429`, which measures the safety limiter instead
+of proxy throughput. If a future released build supports
+`TAKO_MAX_REQUESTS_PER_IP`, it can also be passed, but do not depend on it for
+current release comparisons.
 
 ```bash
 cd ~/github/tako-performance
 BENCH_VM=<ssh-host> \
 TAKO_SERVER_BIN=/opt/tako-performance/bin/<tako-server-release> \
 SOURCE_IPS='127.0.0.2,127.0.0.3,127.0.0.4,127.0.0.5,127.0.0.6,127.0.0.7,127.0.0.8,127.0.0.9,127.0.0.10,127.0.0.11,127.0.0.12,127.0.0.13,127.0.0.14,127.0.0.15,127.0.0.16,127.0.0.17' \
-PROXIES='nginx tako caddy' \
+PROXIES='nginx haproxy envoy tako caddy' \
 MODES=single \
 ENDPOINTS=plaintext \
 CONCURRENCY_LIST='1000 2500 5000 7500 10000 15000 20000' \
@@ -214,6 +223,38 @@ For every run, inspect:
 - max TLS connections.
 
 Use raw JSON/CSV evidence. Do not rely only on the summary graph.
+
+Known local profiling notes to avoid repeating:
+
+- High proxy RSS at large downstream connection counts is not OpenSSL alone. A
+  local macOS 5k HTTPS keepalive control measured roughly 191 MB RSS for raw
+  Tokio + OpenSSL, roughly 356 MB for a Pingora-only HTTPS responder with no
+  upstream proxying, and roughly 524-558 MB for full Tako after deploy.
+- A follow-up Linux control on the 2 vCPU exe.dev VM confirmed the useful
+  split: raw Tokio + OpenSSL was ~136.6 MB at 5k HTTPS keepalive connections,
+  a Pingora-only HTTPS responder was ~341.4 MB, a fixed-upstream Pingora
+  reverse proxy was ~535.3 MB, and full Tako was ~549.0 MB. Full Tako's
+  post-deploy baseline was ~51.9 MB. The large 341->535 MB jump is the generic
+  Pingora reverse-proxy path, not Tako routing/LB. Tako's overhead above the
+  comparable fixed Pingora reverse proxy was only ~14 MB at 5k live
+  connections in that control.
+- A fixed-upstream Pingora reverse-proxy RPS control on the same small VM was
+  not faster than Tako: it measured roughly 7.1k RPS at c10000, 4.7k at c15000,
+  and 1.6k at c20000 with 502s. Treat this as diagnostic evidence that the
+  remaining nginx gap is not explained by Tako route lookup, load-balancer
+  lookup, or limiter accounting alone.
+- A local patched Tako build with a cheaper existing-IP limiter path did not
+  produce a stable headline win. Keep the cleanup if it stays simple, but do
+  not claim it as the reason for improved results without repeatable A/B rows.
+- Do not over-interpret the local macOS post-deploy baseline. `vmmap -summary`
+  showed large framework/IOAccelerator mappings, so Linux VM RSS is the source
+  of truth for published numbers.
+- `SSL_MODE_RELEASE_BUFFERS` and `MIMALLOC_PURGE_DELAY=0` did not materially
+  reduce retained RSS in the local profiling runs.
+- Disabling downstream keepalive, or setting the keepalive request limit to
+  `0`/`1`, hides much of the RSS but is not comparable to nginx, HAProxy,
+  Envoy, or Caddy and hurts RPS. Keep the bounded keepalive request limit
+  instead.
 
 Helpful command:
 
