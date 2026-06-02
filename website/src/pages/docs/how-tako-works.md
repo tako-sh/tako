@@ -96,6 +96,8 @@ Generated configs omit `source_ip`, which behaves like `auto`: Cloudflare peers 
 
 Use `cloudflare-proxy` when all traffic must arrive through Cloudflare. Use `trusted-proxy` for a configured front proxy. Use `direct` to ignore proxy headers.
 
+The resolved client IP is also used for the per-IP active request limit. The default is 2048 active requests per client IP; `TAKO_MAX_REQUESTS_PER_IP` can override it for controlled benchmarks or deliberately tuned deployments.
+
 ## Process Model
 
 New deploys start with one desired instance per server. `tako scale` changes that desired count and persists it across restarts, deploys, and rollbacks. Each app also has an effective server maximum, defaulting to two app instances per available CPU for new deploys; explicit scale requests above that maximum fail. Scaling to zero keeps the app registered; the first request triggers a cold start.

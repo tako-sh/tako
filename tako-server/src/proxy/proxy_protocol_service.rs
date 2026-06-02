@@ -57,6 +57,8 @@ impl ProxyProtocolService {
     ) -> Self {
         let mut app_logic = http_proxy(conf, app);
         let mut options = pingora_core::apps::HttpServerOptions::default();
+        // Keep this aligned with the normal listener: it bounds retained
+        // downstream keepalive memory without turning keepalive off.
         options.keepalive_request_limit = Some(1000);
         app_logic.server_options = Some(options);
 

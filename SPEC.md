@@ -1481,7 +1481,7 @@ Reference scripts in this repo:
 - Forwarded HTTPS metadata (`X-Forwarded-Proto` and `Forwarded: proto=https`) is honored only from loopback peers, Cloudflare peers, or peers listed in server `trusted_proxy.trusted_cidrs`. Direct clients cannot bypass HTTPS redirects by spoofing those headers.
 - For trusted forwarded peers, requests for private/local hostnames (`localhost`, `*.localhost`, single-label hosts, and reserved suffixes like `*.local`) are treated as already HTTPS when proxy proto metadata is missing, so local dev proxy setups do not enter redirect loops.
 - Proxied upstream responses are not stored in a shared edge cache by default. Static assets and image optimization have separate cache behavior.
-- Per-IP rate limiting: maximum 2048 concurrent connections per client IP; excess requests receive `429`.
+- Per-IP rate limiting: maximum 2048 concurrent active requests per client IP by default; excess requests receive `429`. `TAKO_MAX_REQUESTS_PER_IP` can override the server process default for controlled benchmarks or deliberately tuned deployments.
 - Maximum HTTP request body size: 128 MiB; larger requests receive `413`.
 - Maximum channel WebSocket frame payload size: 128 MiB; larger frames are rejected and the socket closes.
 - Production browser-facing `tako-server` 5xx responses use generic reason-phrase bodies such as `Internal Server Error`, `Bad Gateway`, `Service Unavailable`, or `Gateway Timeout`; detailed app-scoped startup, proxy, channel storage, and static file diagnostics are recorded in the app log stream instead of returned in response bodies.

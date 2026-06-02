@@ -1,7 +1,7 @@
 use ipnet::IpNet;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -41,6 +41,10 @@ pub(crate) struct CloudflareIpRanges {
 
 impl CloudflareIpRanges {
     pub(crate) fn contains(&self, ip: &IpAddr) -> bool {
+        if is_obviously_not_cloudflare_ip(ip) {
+            return false;
+        }
+
         self.cidrs.read().iter().any(|cidr| cidr.contains(ip))
     }
 
@@ -91,6 +95,27 @@ impl CloudflareIpRanges {
             cidrs: Arc::new(RwLock::new(cidrs)),
         })
     }
+}
+
+fn is_obviously_not_cloudflare_ip(ip: &IpAddr) -> bool {
+    // Cloudflare publishes public edge ranges. Skip local/private peers before
+    // taking the hot-path CIDR lock.
+    match ip {
+        IpAddr::V4(ip) => is_non_public_ipv4(*ip),
+        IpAddr::V6(ip) => is_non_public_ipv6(*ip),
+    }
+}
+
+fn is_non_public_ipv4(ip: Ipv4Addr) -> bool {
+    ip.is_loopback()
+        || ip.is_private()
+        || ip.is_link_local()
+        || ip.is_unspecified()
+        || ip.is_broadcast()
+}
+
+fn is_non_public_ipv6(ip: Ipv6Addr) -> bool {
+    ip.is_loopback() || ip.is_unspecified() || ip.is_unique_local() || ip.is_unicast_link_local()
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -233,6 +258,26 @@ mod tests {
         assert!(ranges.contains(&"173.245.48.1".parse().unwrap()));
         assert!(ranges.contains(&"2400:cb00::1".parse().unwrap()));
         assert!(!ranges.contains(&"203.0.113.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn non_public_addresses_never_match_cloudflare_ranges() {
+        let ranges = CloudflareIpRanges::from_static();
+
+        for ip in [
+            "127.0.0.1",
+            "10.0.0.1",
+            "172.16.0.1",
+            "192.168.0.1",
+            "169.254.1.1",
+            "0.0.0.0",
+            "::1",
+            "::",
+            "fc00::1",
+            "fe80::1",
+        ] {
+            assert!(!ranges.contains(&ip.parse().unwrap()), "{ip}");
+        }
     }
 
     #[test]

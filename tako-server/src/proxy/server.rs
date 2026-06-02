@@ -82,6 +82,8 @@ pub fn build_server_with_acme(
 
         if let Some(app) = proxy_service.app_logic_mut() {
             let mut opts = pingora_core::apps::HttpServerOptions::default();
+            // Pingora keeps per-connection memory while downstream keepalive is
+            // open. This frees it periodically without disabling keepalive.
             opts.keepalive_request_limit = Some(1000);
             app.server_options = Some(opts);
         }
@@ -125,6 +127,8 @@ fn proxy_server_conf() -> Result<ServerConf> {
             "Failed to create default Pingora server configuration",
         )
     })?;
+    // Pingora defaults to one worker. Use the VM's available CPUs so the proxy
+    // baseline is comparable to nginx/Caddy under sustained load.
     conf.threads = proxy_service_threads();
     conf.upstream_keepalive_pool_size = upstream_keepalive_pool_size_for_threads(conf.threads);
     conf.max_retries = 1;
