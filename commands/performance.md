@@ -249,12 +249,20 @@ Known local profiling notes to avoid repeating:
 - Do not over-interpret the local macOS post-deploy baseline. `vmmap -summary`
   showed large framework/IOAccelerator mappings, so Linux VM RSS is the source
   of truth for published numbers.
-- `SSL_MODE_RELEASE_BUFFERS` and `MIMALLOC_PURGE_DELAY=0` did not materially
-  reduce retained RSS in the local profiling runs.
+- `SSL_MODE_RELEASE_BUFFERS` did not materially reduce retained RSS in profiling
+  runs. `MIMALLOC_PURGE_DELAY=0` repeatedly lowered post-burst retained Tako RSS
+  on the Linux exe.dev VM, but it did not reduce the live c20000 RSS peak that
+  appears in published benchmark rows. Do not set it as the production service
+  default unless prod data shows retained RSS matters more than the extra purge
+  churn risk.
 - Disabling downstream keepalive, or setting the keepalive request limit to
   `0`/`1`, hides much of the RSS but is not comparable to nginx, HAProxy,
   Envoy, or Caddy and hurts RPS. Keep the bounded keepalive request limit
   instead.
+- A temporary Pingora 0.8 H1 body-buffer patch that reduced the internal
+  `BODY_BUFFER_SIZE` from 64 KiB to 4 KiB did not improve the raw fixed-proxy
+  c20000 RSS/RPS control. Do not vendor or fork Pingora for that change without
+  stronger evidence.
 
 Helpful command:
 
