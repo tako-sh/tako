@@ -10,6 +10,7 @@
     "deploy": "bun run build && wrangler deploy"
   },
   "dependencies": {
+    "@astrojs/markdown-remark": "7.2.0",
     "@astrojs/rss": "^4.0.18",
     "@astrojs/sitemap": "^3.7.2",
     "astro": "catalog:dev",

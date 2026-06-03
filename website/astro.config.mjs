@@ -1,10 +1,12 @@
 import { defineConfig } from "astro/config";
-import { readdirSync, statSync } from "node:fs";
+import { unified } from "@astrojs/markdown-remark";
+import { existsSync, readdirSync, statSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { SNIPPET_THEME } from "./src/config/snippet-theme.js";
 import { remarkD2Theme } from "./src/remark/remark-d2-theme.js";
-import astroD2 from "astro-d2";
+import { remarkAstroD2 } from "./node_modules/astro-d2/libs/remark.ts";
 import sitemap from "@astrojs/sitemap";
 
 const workspaceRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -12,6 +14,54 @@ const websiteRoot = fileURLToPath(new URL(".", import.meta.url));
 const pagesRoot = fileURLToPath(new URL("./src/pages", import.meta.url));
 const contentRoot = fileURLToPath(new URL("./src/content", import.meta.url));
 const defaultLastModified = statSync(path.join(websiteRoot, "public")).mtime;
+// astro-d2 0.10.0 still injects deprecated markdown.remarkPlugins.
+// Register its transformer through Astro's unified processor until upstream moves.
+const d2Config = {
+  appendix: false,
+  experimental: {
+    useD2js: true,
+  },
+  inline: false,
+  layout: "dagre",
+  output: "d2",
+  pad: 40,
+  sketch: true,
+  skipGeneration: false,
+  theme: {
+    default: "102",
+    dark: false,
+  },
+};
+const d2RemarkConfig = {
+  ...d2Config,
+  base: "/",
+  publicDir: new URL("./public/", import.meta.url),
+  root: new URL("./", import.meta.url),
+};
+
+function d2MarkdownIntegration() {
+  return {
+    name: "tako-d2-markdown",
+    hooks: {
+      "astro:config:setup": async ({ command, config, logger }) => {
+        if (command !== "build") {
+          return;
+        }
+
+        const dataStore = new URL("data-store.json", config.cacheDir);
+        if (existsSync(dataStore)) {
+          logger.info("Invalidating content layer cache...");
+          await rm(dataStore, { force: true });
+        }
+
+        await rm(new URL(`${d2Config.output}/`, config.publicDir), {
+          force: true,
+          recursive: true,
+        });
+      },
+    },
+  };
+}
 
 function normalizeCanonicalPath(pathname) {
   if (pathname === "/" || pathname === "/index.html") {
@@ -96,10 +146,15 @@ export default defineConfig({
   output: "static",
 
   markdown: {
-    remarkPlugins: [remarkD2Theme],
-    shikiConfig: {
-      theme: SNIPPET_THEME,
-    },
+    processor: unified({
+      remarkPlugins: [remarkD2Theme, [remarkAstroD2, d2RemarkConfig]],
+      shikiConfig: {
+        theme: SNIPPET_THEME,
+        langAlias: {
+          d2: "plaintext",
+        },
+      },
+    }),
   },
 
   vite: {
@@ -114,15 +169,7 @@ export default defineConfig({
   },
 
   integrations: [
-    astroD2({
-      experimental: {
-        useD2js: true,
-      },
-      sketch: true,
-      theme: { default: "102", dark: false },
-      pad: 40,
-      skipGeneration: false,
-    }),
+    d2MarkdownIntegration(),
     sitemap({
       serialize(item) {
         const itemUrl = new URL(item.url);

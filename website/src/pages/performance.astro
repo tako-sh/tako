@@ -1,0 +1,778 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+import PerformanceChart from "../components/PerformanceChart.astro";
+import ExternalLinkIcon from "lucide-astro/ExternalLink";
+import {
+  featureCharts,
+  heavyRows,
+  httpCharts,
+  performanceStructuredData,
+} from "../data/performance";
+
+---
+
+<BaseLayout
+  title="Tako Performance"
+  description="Tako benchmark results with raw proxy throughput, p99 latency, CPU, memory, channels, workflows, and methodology."
+  structuredData={performanceStructuredData}
+>
+  <section class="perf-hero" aria-labelledby="performance-title">
+    <div class="perf-hero-copy">
+      <p class="perf-kicker">Latest public benchmark</p>
+      <h1 id="performance-title">Serious load, measured in public.</h1>
+      <p class="perf-lede">
+        A single small VM pushed through heavy HTTPS concurrency with CPU, memory, latency, clean-response behavior, and raw rows published for inspection.
+      </p>
+      <div class="perf-actions" aria-label="Performance report links">
+        <a class="perf-button" href="https://github.com/tako-sh/performance/blob/main/RESULTS.md" target="_blank" rel="noopener noreferrer">
+          raw report
+          <ExternalLinkIcon class="perf-link-icon" aria-hidden="true" focusable="false" />
+        </a>
+        <a class="perf-link" href="#method">methodology</a>
+      </div>
+    </div>
+  </section>
+
+  <section class="verdict-band" id="summary" aria-label="Benchmark summary">
+    <p><strong>TLDR:</strong> Tako stayed clean through c20000 on a small <a href="https://exe.dev" target="_blank" rel="noopener noreferrer nofollow">exe.dev</a> VM while doing app-aware routing, limiter accounting, forwarding headers, and instance selection.</p>
+    <dl class="verdict-proof" aria-label="TLDR evidence">
+      <div>
+        <dt>largest run</dt>
+        <dd>c20000</dd>
+      </div>
+      <div>
+        <dt>non-200</dt>
+        <dd>0</dd>
+      </div>
+      <div>
+        <dt>client errors</dt>
+        <dd>0</dd>
+      </div>
+    </dl>
+  </section>
+
+  <section class="hardware-band" id="hardware" aria-label="Benchmark hardware">
+    <div>
+      <span class="fact-label">Benchmark VM</span>
+      <strong>exe.dev, Tokyo</strong>
+      <p>Load generator, proxy, and app all share this host.</p>
+    </div>
+    <div>
+      <span class="fact-label">CPU</span>
+      <strong>2 vCPU</strong>
+      <p>AMD EPYC 9554P on KVM.</p>
+    </div>
+    <div>
+      <span class="fact-label">Memory</span>
+      <strong>7.8 GiB RAM</strong>
+      <p>No swap configured.</p>
+    </div>
+    <div>
+      <span class="fact-label">OS</span>
+      <strong>Ubuntu 24.04.4</strong>
+      <p>Linux 6.12.90.</p>
+    </div>
+  </section>
+
+  <section class="facts" id="key-results" aria-label="Key results">
+    <div>
+      <span class="fact-label">Tako at c5000</span>
+      <strong>12.5k clean 200 RPS</strong>
+      <p>0 non-200, 0 client errors.</p>
+    </div>
+    <div>
+      <span class="fact-label">Tako at c20000</span>
+      <strong>7.3k clean 200 RPS</strong>
+      <p>Stable at the largest tested HTTP concurrency.</p>
+    </div>
+    <div>
+      <span class="fact-label">Clean through c20000</span>
+      <strong>all 200 responses</strong>
+      <p>0 client errors in every heavy Tako row.</p>
+    </div>
+    <div>
+      <span class="fact-label">Features</span>
+      <strong>clean through c4000</strong>
+      <p>Channels and workflows both stay clean through c4000.</p>
+    </div>
+  </section>
+
+  <section class="chart-section" aria-labelledby="proxy-results">
+    <div class="section-head">
+      <p class="section-kicker">Proxy comparison</p>
+      <div class="section-title-row">
+        <h2 id="proxy-results">Raw HTTPS proxy path<a class="heading-anchor" href="#proxy-results" aria-label="Link to section: Raw HTTPS proxy path" title="Link to this section">#</a></h2>
+      </div>
+      <p>
+        Same route, same self-signed TLS certificate, same upstream application, same benchmark VM. The heavy rows show the real capacity of one small VM when load generator, proxy, and app all share two vCPUs.
+      </p>
+    </div>
+
+    <div class="chart-grid">
+      {httpCharts.map((chartConfig) => <PerformanceChart chart={chartConfig} />)}
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <caption>Heavy rows, clean 200 RPS and sampled resources</caption>
+        <thead>
+          <tr>
+            <th scope="col">proxy</th>
+            <th scope="col">c5000</th>
+            <th scope="col">c10000</th>
+            <th scope="col">c20000</th>
+            <th scope="col">c20000 p99</th>
+            <th scope="col">proxy RSS</th>
+            <th scope="col">readout</th>
+          </tr>
+        </thead>
+        <tbody>
+          {heavyRows.map((row) => (
+            <tr>
+              <th scope="row">{row.proxy}</th>
+              <td>{row.c5000}</td>
+              <td>{row.c10000}</td>
+              <td>{row.c20000}</td>
+              <td>{row.p99}</td>
+              <td>{row.rss}</td>
+              <td>{row.note}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="chart-section feature-section" aria-labelledby="feature-results">
+    <div class="section-head">
+      <p class="section-kicker">Channels and workflows</p>
+      <div class="section-title-row">
+        <h2 id="feature-results">Built-in feature paths, measured separately<a class="heading-anchor" href="#feature-results" aria-label="Link to section: Built-in feature paths" title="Link to this section">#</a></h2>
+      </div>
+      <p>
+        These rows exercise more than the proxy. The app uses the JavaScript SDK, publishes durable channel messages, and enqueues workflows with persisted steps while everything shares the same 2 vCPU budget.
+      </p>
+    </div>
+
+    <div class="chart-grid chart-grid-feature">
+      {featureCharts.map((chartConfig) => <PerformanceChart chart={chartConfig} />)}
+    </div>
+  </section>
+
+  <section class="explain-grid" aria-labelledby="what-it-means">
+    <div>
+      <p class="section-kicker">What it means</p>
+      <div class="section-title-row">
+        <h2 id="what-it-means">App-aware routing under load.<a class="heading-anchor" href="#what-it-means" aria-label="Link to section: App-aware routing under load" title="Link to this section">#</a></h2>
+      </div>
+    </div>
+    <div class="explain-copy">
+      <p>
+        Tako stayed clean while doing product work a static reverse proxy does not need to do: route lookup, source IP derivation, per-client limiter accounting, app and instance selection, in-flight accounting, upstream peer construction, and forwarding header normalization.
+      </p>
+      <p>
+        The report still keeps static proxy references, p99, memory, and clean-run percentages in view because those are the tuning levers. Future runs can isolate larger-VM behavior, external same-region load generation, and narrower Pingora session and upstream-proxy costs under 10k to 20k live TLS connections.
+      </p>
+    </div>
+  </section>
+
+  <section class="method-section" aria-labelledby="method">
+    <div class="section-head">
+      <p class="section-kicker">Method</p>
+      <div class="section-title-row">
+        <h2 id="method">Same conditions, public raw data.<a class="heading-anchor" href="#method" aria-label="Link to section: benchmark method" title="Link to this section">#</a></h2>
+      </div>
+      <p>
+        The public report intentionally omits hostnames, public IPs, private network addresses, peer names, and user identifiers.
+      </p>
+    </div>
+
+    <div class="method-list">
+      <div>
+        <strong>HTTP path</strong>
+        <p>Load generator, proxy, and app all run on the VM. The route is <code>bench.test:18443</code>, resolved to loopback, with Host and SNI set to <code>bench.test</code>.</p>
+      </div>
+      <div>
+        <strong>Proxy matrix</strong>
+        <p>Tako <code>tako-server 0.0.0-09b3dc6</code>, nginx 1.24.0, HAProxy 2.8.16, Envoy 1.38.0, Caddy 2.11.3 with rate limiting.</p>
+      </div>
+      <div>
+        <strong>Timing</strong>
+        <p>10 second warmup, 30 second measurement window, HTTP/1.1 over TLS, 60 second request timeout, metrics sampled from <code>/proc</code> once per second.</p>
+      </div>
+    </div>
+
+    <div class="raw-links">
+      <a href="https://github.com/tako-sh/performance/tree/main/results/20260602T052009Z/http-vm-local" target="_blank" rel="noopener noreferrer">
+        HTTP raw rows
+        <ExternalLinkIcon class="perf-link-icon" aria-hidden="true" focusable="false" />
+      </a>
+      <a href="https://github.com/tako-sh/performance/tree/main/results/20260602T061100Z/tako-features-vm-local" target="_blank" rel="noopener noreferrer">
+        feature raw rows
+        <ExternalLinkIcon class="perf-link-icon" aria-hidden="true" focusable="false" />
+      </a>
+      <a href="https://github.com/tako-sh/performance" target="_blank" rel="noopener noreferrer">
+        benchmark harness
+        <ExternalLinkIcon class="perf-link-icon" aria-hidden="true" focusable="false" />
+      </a>
+    </div>
+  </section>
+</BaseLayout>
+
+<script>
+  const headingRows = Array.from(document.querySelectorAll(".section-title-row"));
+  for (const row of headingRows) {
+    const heading = row.querySelector("h2[id]");
+    const anchor = row.querySelector(".heading-anchor");
+    const hash = anchor?.getAttribute("href")?.replace(/^#/, "");
+    if (!(heading instanceof HTMLElement) || !hash) {
+      continue;
+    }
+
+    heading.classList.add("clickable-heading");
+    heading.addEventListener("click", (event) => {
+      if (!(event.target instanceof Element)) {
+        return;
+      }
+      if (event.target.closest("a")) {
+        return;
+      }
+      if (window.getSelection()?.toString()) {
+        return;
+      }
+      window.location.hash = hash;
+    });
+  }
+</script>
+
+<style>
+  :global(:root) {
+    --site-width: min(1220px, 94vw);
+  }
+
+  .perf-hero {
+    display: flex;
+    justify-content: center;
+    padding: clamp(38px, 8vw, 82px) 0 28px;
+  }
+
+  .perf-hero-copy {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    width: min(100%, 820px);
+    max-width: 820px;
+    text-align: center;
+  }
+
+  .perf-kicker,
+  .section-kicker,
+  .chart-eyebrow,
+  .fact-label {
+    font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--primary-text);
+  }
+
+  .perf-hero h1 {
+    margin-top: 12px;
+    max-width: 760px;
+    font-size: clamp(42px, 7vw, 64px);
+    line-height: 1.02;
+    letter-spacing: 0;
+  }
+
+  .perf-lede {
+    max-width: 680px;
+    margin-top: 20px;
+    color: var(--muted);
+    font-size: 21px;
+    line-height: 1.36;
+  }
+
+  .perf-actions,
+  .raw-links {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 10px;
+    margin-top: 26px;
+  }
+
+  .perf-button,
+  .perf-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    min-height: 44px;
+    padding: 0 18px;
+    border-radius: 999px;
+    text-decoration: none;
+    font-weight: 800;
+    transition: transform 150ms ease, border-color 150ms ease, background 150ms ease;
+  }
+
+  .perf-button {
+    border: 1.5px solid var(--primary);
+    background: var(--primary);
+    color: var(--ink);
+  }
+
+  .perf-link {
+    border: 1.5px solid rgba(47, 42, 68, 0.16);
+    background: color-mix(in oklch, var(--panel-strong) 78%, transparent);
+    color: var(--ink);
+  }
+
+  .perf-button:hover,
+  .perf-link:hover {
+    transform: translateY(-1px);
+  }
+
+  .raw-links {
+    gap: 14px 22px;
+    justify-content: flex-start;
+    margin-top: 22px;
+  }
+
+  .raw-links a {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    color: var(--ink);
+    font-weight: 800;
+    text-decoration: underline;
+    text-decoration-color: rgba(232, 135, 131, 0.58);
+    text-decoration-thickness: 2px;
+    text-underline-offset: 4px;
+    transition: color 150ms ease, text-decoration-color 150ms ease;
+  }
+
+  .raw-links a:hover {
+    color: var(--accent);
+    text-decoration-color: currentColor;
+  }
+
+  .perf-link-icon {
+    width: 0.92em;
+    height: 0.92em;
+    stroke-width: 2.5;
+  }
+
+  .verdict-band {
+    --verdict-corner: 34px;
+    --verdict-corner-thickness: 3px;
+    --verdict-corner-color: color-mix(in oklch, var(--primary) 70%, var(--ink));
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: clamp(18px, 4vw, 56px);
+    margin: clamp(20px, 3vw, 34px) 0 clamp(26px, 4vw, 44px);
+    padding: clamp(16px, 2.2vw, 22px) clamp(22px, 4vw, 34px);
+  }
+
+  .verdict-band::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background:
+      linear-gradient(var(--verdict-corner-color), var(--verdict-corner-color)) top left / var(--verdict-corner) var(--verdict-corner-thickness) no-repeat,
+      linear-gradient(var(--verdict-corner-color), var(--verdict-corner-color)) top left / var(--verdict-corner-thickness) var(--verdict-corner) no-repeat,
+      linear-gradient(var(--verdict-corner-color), var(--verdict-corner-color)) top right / var(--verdict-corner) var(--verdict-corner-thickness) no-repeat,
+      linear-gradient(var(--verdict-corner-color), var(--verdict-corner-color)) top right / var(--verdict-corner-thickness) var(--verdict-corner) no-repeat,
+      linear-gradient(var(--verdict-corner-color), var(--verdict-corner-color)) bottom left / var(--verdict-corner) var(--verdict-corner-thickness) no-repeat,
+      linear-gradient(var(--verdict-corner-color), var(--verdict-corner-color)) bottom left / var(--verdict-corner-thickness) var(--verdict-corner) no-repeat,
+      linear-gradient(var(--verdict-corner-color), var(--verdict-corner-color)) bottom right / var(--verdict-corner) var(--verdict-corner-thickness) no-repeat,
+      linear-gradient(var(--verdict-corner-color), var(--verdict-corner-color)) bottom right / var(--verdict-corner-thickness) var(--verdict-corner) no-repeat;
+    opacity: 0.72;
+  }
+
+  .verdict-band p {
+    max-width: 780px;
+    color: var(--ink);
+    font-size: clamp(18px, 2vw, 21px);
+    line-height: 1.42;
+    text-wrap: pretty;
+  }
+
+  .verdict-band a {
+    color: inherit;
+    font-weight: 800;
+    text-decoration: underline;
+    text-decoration-color: rgba(232, 135, 131, 0.62);
+    text-decoration-thickness: 2px;
+    text-underline-offset: 4px;
+  }
+
+  .verdict-band a:hover {
+    color: var(--accent);
+    text-decoration-color: currentColor;
+  }
+
+  .verdict-proof {
+    display: grid;
+    justify-self: end;
+    width: min(100%, 430px);
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 18px;
+    margin: 0;
+  }
+
+  .verdict-proof div {
+    min-width: 0;
+    text-align: center;
+  }
+
+  .verdict-proof dt {
+    font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--primary-text);
+  }
+
+  .verdict-proof dd {
+    margin-top: 4px;
+    color: var(--ink);
+    font-family: var(--font-heading);
+    font-size: 21px;
+    font-weight: 700;
+    line-height: 1;
+  }
+
+  .hardware-band,
+  .facts {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0;
+    margin-top: 0;
+    border-bottom: 2px solid rgba(47, 42, 68, 0.12);
+  }
+
+  .hardware-band {
+    background: color-mix(in oklch, var(--primary) 8%, transparent);
+  }
+
+  .hardware-band div {
+    padding: 16px 20px 17px;
+  }
+
+  .facts div {
+    padding: 22px 20px 24px;
+  }
+
+  .hardware-band div + div {
+    padding-left: 20px;
+    border-left: 1px solid rgba(47, 42, 68, 0.12);
+  }
+
+  .facts div + div {
+    padding-left: 20px;
+    border-left: 1px solid rgba(47, 42, 68, 0.12);
+  }
+
+  .hardware-band strong,
+  .facts strong {
+    display: block;
+    margin-top: 8px;
+    font-family: var(--font-heading);
+    font-size: 22px;
+    line-height: 1.1;
+  }
+
+  .hardware-band p,
+  .facts p {
+    margin-top: 9px;
+    color: var(--muted);
+    font-size: 14px;
+    line-height: 1.38;
+  }
+
+  .hardware-band p {
+    margin-top: 7px;
+  }
+
+  .chart-section,
+  .explain-grid,
+  .method-section,
+  .hardware-band,
+  .facts {
+    margin-top: 56px;
+    scroll-margin-top: 110px;
+  }
+
+  .hardware-band,
+  .facts {
+    margin-top: 0;
+  }
+
+  .section-head {
+    max-width: 820px;
+  }
+
+  .section-head h2,
+  .explain-grid h2 {
+    margin-top: 8px;
+    font-size: 38px;
+    line-height: 1.08;
+    letter-spacing: 0;
+  }
+
+  .section-title-row h2[id] {
+    scroll-margin-top: 110px;
+  }
+
+  .section-title-row .clickable-heading {
+    cursor: pointer;
+  }
+
+  .section-title-row .clickable-heading:hover {
+    text-decoration: underline;
+    text-decoration-color: rgba(232, 135, 131, 0.65);
+    text-decoration-thickness: 2px;
+    text-underline-offset: 0.16em;
+  }
+
+  .heading-anchor {
+    display: inline-block;
+    margin-left: 8px;
+    font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 0.75em;
+    line-height: 1;
+    color: var(--primary);
+    text-decoration: none;
+    opacity: 0;
+    cursor: pointer;
+    transition: opacity 0.14s ease;
+  }
+
+  .section-title-row .clickable-heading:hover .heading-anchor,
+  .heading-anchor:focus-visible {
+    opacity: 1;
+  }
+
+  .heading-anchor:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 3px;
+  }
+
+  .section-head p:not(.section-kicker),
+  .explain-copy p {
+    margin-top: 12px;
+    color: var(--muted);
+    font-size: 18px;
+    line-height: 1.52;
+  }
+
+  .chart-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 18px;
+    margin-top: 24px;
+  }
+
+  .chart-grid-feature {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .table-wrap {
+    margin-top: 20px;
+    overflow-x: auto;
+    border: 1.5px solid rgba(47, 42, 68, 0.14);
+    border-radius: 8px;
+    background: var(--panel-strong);
+  }
+
+  table {
+    width: 100%;
+    min-width: 820px;
+    border-collapse: collapse;
+  }
+
+  caption {
+    padding: 15px 18px 4px;
+    text-align: left;
+    color: var(--muted);
+    font-weight: 800;
+  }
+
+  th,
+  td {
+    padding: 12px 18px;
+    border-bottom: 1px solid rgba(47, 42, 68, 0.1);
+    text-align: left;
+    white-space: nowrap;
+  }
+
+  th {
+    color: var(--ink);
+    font-weight: 800;
+  }
+
+  td {
+    color: var(--muted);
+  }
+
+  tbody tr:last-child th,
+  tbody tr:last-child td {
+    border-bottom: 0;
+  }
+
+  .explain-grid {
+    display: grid;
+    grid-template-columns: minmax(240px, 0.65fr) minmax(0, 1.35fr);
+    gap: 28px;
+    align-items: start;
+    padding: 30px;
+    border-radius: 8px;
+    background: color-mix(in oklch, var(--primary) 13%, var(--panel-strong));
+    border: 1.5px solid rgba(47, 42, 68, 0.13);
+  }
+
+  .explain-copy p:first-child {
+    margin-top: 0;
+  }
+
+  .method-list {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px;
+    margin-top: 22px;
+  }
+
+  .method-list div {
+    padding: 20px;
+    border-radius: 8px;
+    background: var(--panel);
+    border: 1.5px solid rgba(47, 42, 68, 0.13);
+  }
+
+  .method-list strong {
+    display: block;
+    font-family: var(--font-heading);
+    font-size: 18px;
+  }
+
+  .method-list p {
+    margin-top: 8px;
+    color: var(--muted);
+    line-height: 1.45;
+  }
+
+  .method-list code {
+    padding: 1px 5px 2px;
+    border-radius: 5px;
+    background: color-mix(in oklch, var(--primary) 12%, var(--panel-strong));
+    color: var(--ink);
+    font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 0.92em;
+    font-weight: 700;
+  }
+
+  @media (max-width: 980px) {
+    .explain-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .hardware-band,
+    .facts,
+    .method-list {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  @media (max-width: 640px) {
+    .explain-grid {
+      padding: 22px;
+    }
+
+    .perf-hero {
+      padding: 34px 0 22px;
+    }
+
+    .perf-hero h1 {
+      font-size: 42px;
+    }
+
+    .perf-lede,
+    .section-head p:not(.section-kicker),
+    .explain-copy p {
+      font-size: 16px;
+    }
+
+    .section-head h2,
+    .explain-grid h2 {
+      font-size: 30px;
+    }
+
+    .facts,
+    .method-list {
+      grid-template-columns: 1fr;
+    }
+
+    .hardware-band {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .verdict-band {
+      --verdict-corner: 24px;
+      --verdict-corner-thickness: 2px;
+      grid-template-columns: 1fr;
+      gap: 14px;
+      margin: 18px 0 24px;
+      padding: 14px 16px;
+    }
+
+    .verdict-band p {
+      font-size: 16px;
+    }
+
+    .verdict-proof {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .verdict-proof div {
+      min-width: 0;
+    }
+
+    .verdict-proof dt {
+      font-size: 10px;
+    }
+
+    .verdict-proof dd {
+      font-size: 18px;
+    }
+
+    .hardware-band div {
+      padding: 14px 10px;
+      border-left: 0;
+      border-top: 1px solid rgba(47, 42, 68, 0.1);
+    }
+
+    .hardware-band div + div {
+      padding-left: 10px;
+      border-left: 1px solid rgba(47, 42, 68, 0.1);
+    }
+
+    .hardware-band div:nth-child(3) {
+      padding-left: 10px;
+      border-left: 0;
+    }
+
+    .facts div,
+    .facts div + div {
+      padding: 18px 10px;
+      border-left: 0;
+      border-top: 1px solid rgba(47, 42, 68, 0.1);
+    }
+  }
+</style>

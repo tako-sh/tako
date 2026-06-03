@@ -1,0 +1,239 @@
+---
+import type { BenchPoint, ChartConfig, ChartUnit } from "../data/performance";
+
+interface Props {
+  chart: ChartConfig;
+}
+
+const { chart } = Astro.props;
+const xAxisPoints = chart.series.at(0)?.points ?? [];
+
+const chartBox = {
+  width: 980,
+  height: 380,
+  left: 64,
+  top: 28,
+  right: 28,
+  bottom: 54,
+};
+
+const plotWidth = chartBox.width - chartBox.left - chartBox.right;
+const plotHeight = chartBox.height - chartBox.top - chartBox.bottom;
+
+const xFor = (index: number, count: number): number =>
+  chartBox.left + (count <= 1 ? 0 : (index / (count - 1)) * plotWidth);
+
+const yFor = (value: number, max: number): number =>
+  chartBox.top + (1 - value / max) * plotHeight;
+
+const linePoints = (points: BenchPoint[], key: keyof BenchPoint, max: number): string =>
+  points
+    .map((point, index) => `${xFor(index, points.length).toFixed(1)},${yFor(Number(point[key]), max).toFixed(1)}`)
+    .join(" ");
+
+const formatValue = (value: number, unit: ChartUnit): string => {
+  if (unit === "rps") {
+    return value >= 1000 ? `${Number((value / 1000).toFixed(value >= 10000 ? 0 : 1))}k` : String(value);
+  }
+  if (unit === "ms") {
+    return value >= 1000 ? `${Number((value / 1000).toFixed(value >= 10000 ? 0 : 1))}s` : `${value}ms`;
+  }
+  if (unit === "mib") {
+    return value >= 1024 ? `${Number((value / 1024).toFixed(1))}GiB` : `${value}MiB`;
+  }
+  return `${value}%`;
+};
+---
+
+<figure class="chart-panel">
+  <div class="chart-copy">
+    <p class="chart-eyebrow">{chart.eyebrow}</p>
+    <h3>{chart.title}</h3>
+    <p>{chart.description}</p>
+  </div>
+  <div class="chart-scroll">
+    <svg
+      viewBox={`0 0 ${chartBox.width} ${chartBox.height}`}
+      role="img"
+      aria-label={`${chart.title}. ${chart.description}`}
+    >
+      <rect class="chart-bg" x="0" y="0" width={chartBox.width} height={chartBox.height} rx="8"></rect>
+      {
+        chart.ticks.map((tick) => (
+          <g>
+            <line
+              class="chart-grid-line"
+              x1={chartBox.left}
+              x2={chartBox.width - chartBox.right}
+              y1={yFor(tick, chart.max)}
+              y2={yFor(tick, chart.max)}
+            />
+            <text class="chart-tick" x={chartBox.left - 12} y={yFor(tick, chart.max) + 4} text-anchor="end">
+              {formatValue(tick, chart.unit)}
+            </text>
+          </g>
+        ))
+      }
+      <line class="chart-axis" x1={chartBox.left} x2={chartBox.width - chartBox.right} y1={chartBox.height - chartBox.bottom} y2={chartBox.height - chartBox.bottom} />
+      {
+        xAxisPoints.map((point, index) => (
+          <text class="chart-x" x={xFor(index, xAxisPoints.length)} y={chartBox.height - 22} text-anchor="middle">
+            {point.conc >= 1000 ? `c${point.conc / 1000}k` : `c${point.conc}`}
+          </text>
+        ))
+      }
+      {
+        chart.series.map((series) => (
+          <g>
+            <polyline
+              class:list={["chart-line", series.id === "tako" && "chart-line-tako"]}
+              points={linePoints(series.points, chart.key, chart.max)}
+              stroke={series.color}
+            />
+            {
+              series.points.map((point, index) => (
+                <circle
+                  class:list={["chart-point", series.id === "tako" && "chart-point-tako"]}
+                  cx={xFor(index, series.points.length)}
+                  cy={yFor(Number(point[chart.key]), chart.max)}
+                  r={series.id === "tako" ? 4.8 : 3.6}
+                  fill={series.color}
+                >
+                  <title>{`${series.label} c${point.conc}: ${formatValue(Number(point[chart.key]), chart.unit)}`}</title>
+                </circle>
+              ))
+            }
+          </g>
+        ))
+      }
+    </svg>
+  </div>
+  <ul class="legend" aria-label={`${chart.title} legend`}>
+    {
+      chart.series.map((series) => (
+        <li>
+          <span style={`--legend-color:${series.color}`}></span>
+          {series.label}
+        </li>
+      ))
+    }
+  </ul>
+</figure>
+
+<style>
+  .chart-panel {
+    min-width: 0;
+    margin: 0;
+    border: 1.5px solid rgba(47, 42, 68, 0.15);
+    border-radius: 8px;
+    background: var(--panel-strong);
+    overflow: hidden;
+  }
+
+  .chart-copy {
+    padding: 20px 20px 12px;
+  }
+
+  .chart-eyebrow {
+    font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--primary-text);
+  }
+
+  .chart-copy h3 {
+    margin-top: 6px;
+    font-size: 22px;
+    line-height: 1.14;
+    letter-spacing: 0;
+  }
+
+  .chart-copy p:not(.chart-eyebrow) {
+    margin-top: 8px;
+    color: var(--muted);
+    line-height: 1.42;
+  }
+
+  .chart-scroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+    padding: 0 10px 6px;
+  }
+
+  .chart-scroll svg {
+    width: 100%;
+    min-width: 820px;
+    height: auto;
+    display: block;
+  }
+
+  .chart-bg {
+    fill: color-mix(in oklch, var(--paper) 78%, var(--bg));
+  }
+
+  .chart-grid-line {
+    stroke: rgba(47, 42, 68, 0.11);
+    stroke-width: 1;
+  }
+
+  .chart-axis {
+    stroke: rgba(47, 42, 68, 0.28);
+    stroke-width: 1.5;
+  }
+
+  .chart-tick,
+  .chart-x {
+    fill: rgba(47, 42, 68, 0.62);
+    font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 12px;
+  }
+
+  .chart-line {
+    fill: none;
+    stroke-width: 2.3;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    opacity: 0.82;
+  }
+
+  .chart-line-tako {
+    stroke-width: 3.6;
+    opacity: 1;
+  }
+
+  .chart-point {
+    stroke: var(--paper);
+    stroke-width: 1.6;
+  }
+
+  .chart-point-tako {
+    stroke-width: 2.2;
+  }
+
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 14px;
+    padding: 0 20px 18px;
+    list-style: none;
+  }
+
+  .legend li {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 700;
+  }
+
+  .legend span {
+    width: 12px;
+    height: 12px;
+    border-radius: 999px;
+    background: var(--legend-color);
+  }
+</style>
