@@ -3,6 +3,7 @@ import { createServer } from "node:net";
 import type { Server, Socket } from "node:net";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { closeInternalSocketPoolsForTests } from "../../src/tako/socket";
 import { WorkflowsClient } from "../../src/workflows/rpc-client";
 import type { Run } from "../../src/workflows/types";
 import type { RegisteredWorkflow, WorkflowHandler } from "../../src/workflows/worker";
@@ -168,6 +169,7 @@ describe("Worker", () => {
   let client: WorkflowsClient;
 
   beforeEach(async () => {
+    closeInternalSocketPoolsForTests();
     dir = await mkdtemp(join("/tmp", "tako-worker-"));
     mock = new MockServer();
     await mock.start(dir);
@@ -175,6 +177,7 @@ describe("Worker", () => {
   });
 
   afterEach(async () => {
+    closeInternalSocketPoolsForTests();
     await mock.close();
     await rm(dir, { recursive: true, force: true });
   });

@@ -1323,6 +1323,7 @@ ExecStart=/usr/local/bin/tako-server --socket $TAKO_SOCKET --data-dir $TAKO_HOME
 ExecReload=/bin/kill -HUP \$MAINPID
 Restart=always
 RestartSec=1
+LimitNOFILE=1048576
 KillMode=mixed
 TimeoutStopSec=30min
 RuntimeDirectory=tako
@@ -1347,6 +1348,10 @@ retry="TERM/1800/KILL/5"
 
 depend() {
   need net
+}
+
+start_pre() {
+  ulimit -n 1048576 2>/dev/null || ulimit -n 65535 2>/dev/null || true
 }
 
 extra_started_commands="reload"
@@ -1382,6 +1387,7 @@ Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/usr/local/bin/tako-server --standby --socket $TAKO_SOCKET --data-dir $TAKO_HOME $TAKO_PUBLIC_PORT_ARGS --instance-port-offset 1000
 Restart=always
 RestartSec=1
+LimitNOFILE=1048576
 KillMode=mixed
 TimeoutStopSec=30min
 RuntimeDirectory=tako

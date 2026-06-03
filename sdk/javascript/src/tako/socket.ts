@@ -12,6 +12,7 @@
  */
 
 import { createConnection } from "node:net";
+import type { Socket } from "node:net";
 import { setChannelSocketPublisher } from "../channels";
 import { createLogger } from "../logger";
 import type { ChannelMessage, ChannelPublishInput } from "../types";
@@ -29,6 +30,19 @@ interface RpcResponse {
 }
 
 const logger = createLogger("sdk.rpc");
+const DEFAULT_INTERNAL_SOCKET_POOL_SIZE = 64;
+const RPC_TIMEOUT_MS = 30_000;
+
+type ResolveResponse = (value: RpcResponse) => void;
+type RejectResponse = (reason: unknown) => void;
+
+interface PendingRpc {
+  cmd: unknown;
+  resolve: ResolveResponse;
+  reject: RejectResponse;
+}
+
+const internalSocketPools = new Map<string, InternalSocketPool>();
 
 /**
  * Log the raw failure and return a sanitized `TakoError`. Callers throw the
@@ -108,7 +122,7 @@ export function installChannelSocketPublisherFromEnv(): boolean {
 
 /** Send a single JSONL command and resolve to `data` (or throw on error). */
 export async function callInternal(socketPath: string, cmd: unknown): Promise<unknown> {
-  const resp = await roundTrip(socketPath, cmd);
+  const resp = await internalSocketPool(socketPath).call(cmd);
   if (resp.status === "error") {
     logger.error("rpc rejected", { code: "TAKO_RPC_ERROR", message: resp.message });
     throw new TakoError("TAKO_RPC_ERROR", "Internal Server Error", {
@@ -118,42 +132,207 @@ export async function callInternal(socketPath: string, cmd: unknown): Promise<un
   return resp.data ?? null;
 }
 
-function roundTrip(socketPath: string, cmd: unknown): Promise<RpcResponse> {
-  return new Promise<RpcResponse>((resolve, reject) => {
-    const socket = createConnection(socketPath);
-    let buf = "";
-    let settled = false;
+function internalSocketPool(socketPath: string): InternalSocketPool {
+  const existing = internalSocketPools.get(socketPath);
+  if (existing) return existing;
+  const created = new InternalSocketPool(socketPath, DEFAULT_INTERNAL_SOCKET_POOL_SIZE);
+  internalSocketPools.set(socketPath, created);
+  return created;
+}
 
-    const settle = (fn: () => void): void => {
-      if (settled) return;
-      settled = true;
-      socket.removeAllListeners();
-      socket.destroy();
-      fn();
-    };
+export function closeInternalSocketPoolsForTests(): void {
+  for (const pool of internalSocketPools.values()) {
+    pool.close();
+  }
+  internalSocketPools.clear();
+}
 
-    socket.once("error", (err) => settle(() => reject(wrapSocketError("TAKO_UNAVAILABLE", err))));
-    socket.once("connect", () => {
-      socket.write(`${JSON.stringify(cmd)}\n`);
+class InternalSocketPool {
+  private readonly idle: RpcConnection[] = [];
+  private readonly active = new Set<RpcConnection>();
+  private readonly pending: PendingRpc[] = [];
+
+  // JSONL responses do not carry request ids, so each socket lane keeps at
+  // most one in-flight RPC. Parallelism comes from bounded lanes; sequential
+  // calls reuse idle sockets instead of reconnecting for every publish/enqueue.
+  constructor(
+    private readonly socketPath: string,
+    private readonly maxConnections: number,
+  ) {}
+
+  call(cmd: unknown): Promise<RpcResponse> {
+    return new Promise<RpcResponse>((resolve, reject) => {
+      this.pending.push({ cmd, resolve, reject });
+      this.drain();
     });
-    socket.on("data", (chunk: Buffer) => {
-      buf += chunk.toString("utf8");
-      const nl = buf.indexOf("\n");
-      if (nl === -1) return;
-      const line = buf.slice(0, nl);
-      try {
-        settle(() => resolve(JSON.parse(line) as RpcResponse));
-      } catch (err) {
-        settle(() => reject(wrapSocketError("TAKO_PROTOCOL", err)));
+  }
+
+  close(): void {
+    while (this.pending.length > 0) {
+      const pending = this.pending.shift();
+      pending?.reject(wrapSocketError("TAKO_UNAVAILABLE", new Error("rpc pool closed")));
+    }
+    for (const conn of this.active) {
+      conn.close();
+    }
+    this.active.clear();
+    this.idle.length = 0;
+  }
+
+  private drain(): void {
+    while (this.pending.length > 0) {
+      const conn = this.nextConnection();
+      if (!conn) return;
+
+      const request = this.pending.shift();
+      if (!request) {
+        this.returnConnection(conn);
+        return;
+      }
+
+      conn
+        .send(request.cmd)
+        .then(request.resolve, request.reject)
+        .finally(() => {
+          this.returnConnection(conn);
+          this.drain();
+        });
+    }
+  }
+
+  private nextConnection(): RpcConnection | null {
+    const idle = this.idle.pop();
+    if (idle) return idle;
+
+    if (this.active.size >= this.maxConnections) {
+      return null;
+    }
+
+    const conn = new RpcConnection(this.socketPath, () => {
+      this.active.delete(conn);
+      const idx = this.idle.indexOf(conn);
+      if (idx !== -1) {
+        this.idle.splice(idx, 1);
       }
     });
-    socket.once("end", () => {
-      settle(() =>
-        reject(wrapSocketError("TAKO_PROTOCOL", new Error("socket closed without response"))),
-      );
+    this.active.add(conn);
+    return conn;
+  }
+
+  private returnConnection(conn: RpcConnection): void {
+    if (!conn.closed && this.active.has(conn)) {
+      this.idle.push(conn);
+    }
+  }
+}
+
+class RpcConnection {
+  private readonly socket: Socket;
+  private readonly connected: Promise<void>;
+  private buf = "";
+  private current: PendingRpc | null = null;
+  private timeout: ReturnType<typeof setTimeout> | null = null;
+  closed = false;
+
+  constructor(
+    socketPath: string,
+    private readonly onClose: () => void,
+  ) {
+    this.socket = createConnection(socketPath);
+    this.connected = new Promise<void>((resolve, reject) => {
+      this.socket.once("connect", resolve);
+      this.socket.once("error", reject);
     });
-    socket.setTimeout(30_000, () => {
-      settle(() => reject(wrapSocketError("TAKO_TIMEOUT", new Error("rpc timed out"))));
+
+    this.socket.on("data", (chunk) => this.onData(chunk));
+    this.socket.on("error", (err) => {
+      this.failCurrent("TAKO_UNAVAILABLE", err);
+      this.markClosed();
     });
-  });
+    this.socket.on("end", () => {
+      this.failCurrent("TAKO_PROTOCOL", new Error("socket closed without response"));
+      this.markClosed();
+    });
+    this.socket.on("close", () => this.markClosed());
+  }
+
+  async send(cmd: unknown): Promise<RpcResponse> {
+    if (this.closed) {
+      throw wrapSocketError("TAKO_UNAVAILABLE", new Error("socket is closed"));
+    }
+    if (this.current) {
+      throw wrapSocketError("TAKO_PROTOCOL", new Error("socket lane is busy"));
+    }
+
+    await this.connected.catch((err) => {
+      this.markClosed();
+      throw wrapSocketError("TAKO_UNAVAILABLE", err);
+    });
+
+    if (this.closed) {
+      throw wrapSocketError("TAKO_UNAVAILABLE", new Error("socket is closed"));
+    }
+
+    return new Promise<RpcResponse>((resolve, reject) => {
+      this.current = { cmd, resolve, reject };
+      this.timeout = setTimeout(() => {
+        this.failCurrent("TAKO_TIMEOUT", new Error("rpc timed out"));
+        this.close();
+      }, RPC_TIMEOUT_MS);
+
+      this.socket.write(`${JSON.stringify(cmd)}\n`, (err) => {
+        if (!err) return;
+        this.failCurrent("TAKO_UNAVAILABLE", err);
+        this.close();
+      });
+    });
+  }
+
+  close(): void {
+    this.markClosed();
+    this.socket.destroy();
+  }
+
+  private onData(chunk: Buffer | string): void {
+    this.buf += typeof chunk === "string" ? chunk : chunk.toString("utf8");
+    const nl = this.buf.indexOf("\n");
+    if (nl === -1) return;
+
+    const line = this.buf.slice(0, nl);
+    this.buf = this.buf.slice(nl + 1);
+    const current = this.takeCurrent();
+    if (!current) {
+      this.close();
+      return;
+    }
+
+    try {
+      current.resolve(JSON.parse(line) as RpcResponse);
+    } catch (err) {
+      current.reject(wrapSocketError("TAKO_PROTOCOL", err));
+      this.close();
+    }
+  }
+
+  private failCurrent(code: TakoErrorCode, cause: unknown): void {
+    const current = this.takeCurrent();
+    if (!current) return;
+    current.reject(wrapSocketError(code, cause));
+  }
+
+  private takeCurrent(): PendingRpc | null {
+    const current = this.current;
+    this.current = null;
+    if (this.timeout) {
+      clearTimeout(this.timeout);
+      this.timeout = null;
+    }
+    return current;
+  }
+
+  private markClosed(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.onClose();
+  }
 }

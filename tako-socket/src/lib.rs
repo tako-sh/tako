@@ -81,10 +81,10 @@ where
     W: AsyncWrite + Unpin,
     T: Serialize,
 {
-    let json = serde_json::to_string(value)
+    let mut json = serde_json::to_vec(value)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    writer.write_all(json.as_bytes()).await?;
-    writer.write_all(b"\n").await?;
+    json.push(b'\n');
+    writer.write_all(&json).await?;
     Ok(())
 }
 
@@ -126,7 +126,43 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
     use tokio::io::BufReader;
+
+    struct CountingWriter {
+        bytes: Vec<u8>,
+        writes: usize,
+    }
+
+    impl CountingWriter {
+        fn new() -> Self {
+            Self {
+                bytes: Vec::new(),
+                writes: 0,
+            }
+        }
+    }
+
+    impl AsyncWrite for CountingWriter {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            self.writes += 1;
+            self.bytes.extend_from_slice(buf);
+            Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
 
     #[tokio::test]
     async fn roundtrips_struct_over_jsonl() {
@@ -157,6 +193,17 @@ mod tests {
         write_json_line(&mut bw, &b_send).await.unwrap();
         let a_recv: Msg = read_json_line(&mut ar).await.unwrap().unwrap();
         assert_eq!(a_recv, b_send);
+    }
+
+    #[tokio::test]
+    async fn write_json_line_emits_one_framed_write() {
+        let mut writer = CountingWriter::new();
+        write_json_line(&mut writer, &serde_json::json!({ "ok": true }))
+            .await
+            .unwrap();
+
+        assert_eq!(writer.writes, 1);
+        assert_eq!(writer.bytes, b"{\"ok\":true}\n");
     }
 
     #[tokio::test]

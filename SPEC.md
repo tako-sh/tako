@@ -1447,6 +1447,7 @@ Installer SSH key behavior:
 - Installer configures service capability support for privileged binds, app-user switching, and stopping app processes after switching users:
   - systemd: `AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL`, `CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL`
   - non-systemd/OpenRC hosts: installer applies `setcap cap_net_bind_service,cap_setuid,cap_setgid,cap_kill=+ep /usr/local/bin/tako-server`; install fails if the capability cannot be granted
+- Installer configures a high file-descriptor limit for the `tako-server` service so the proxy and spawned app processes can handle high connection counts without inheriting a low default shell limit.
 - Installer configures graceful stop semantics:
   - systemd: `KillMode=mixed`, `TimeoutStopSec=30min`
   - OpenRC: `retry="TERM/1800/KILL/5"`

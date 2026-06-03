@@ -3,6 +3,7 @@ import { createServer } from "node:net";
 import type { Server } from "node:net";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { closeInternalSocketPoolsForTests } from "../../src/tako/socket";
 import { WorkflowsClient } from "../../src/workflows/rpc-client";
 import { WorkflowEngine } from "../../src/workflows/engine";
 import { expectAsyncToThrow } from "../assertions";
@@ -47,11 +48,13 @@ describe("WorkflowEngine enqueue (RPC)", () => {
   let server: Server | undefined;
 
   beforeEach(async () => {
+    closeInternalSocketPoolsForTests();
     dir = await mkdtemp(join("/tmp", "tako-engine-"));
     sock = join(dir, "srv.sock");
   });
 
   afterEach(async () => {
+    closeInternalSocketPoolsForTests();
     server?.close();
     server = undefined;
     await rm(dir, { recursive: true, force: true });

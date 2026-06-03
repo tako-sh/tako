@@ -97,10 +97,15 @@ git -C ~/github/tako-performance status --short --branch
 ssh <ssh-host> uptime
 ssh <ssh-host> free -h
 ssh <ssh-host> ps -eo pid,ppid,pcpu,pmem,comm,args --sort=-pcpu
+ssh <ssh-host> 'systemctl show tako-server -p LimitNOFILE 2>/dev/null || true'
 ```
 
 Abort or explain before continuing if another process is consuming enough CPU or
 memory to distort results.
+
+Also confirm the app processes used by the benchmark inherit a high file
+descriptor limit. A low app-side `nofile` limit can turn high-concurrency rows
+into upstream `502`s that look like proxy or SQLite failures.
 
 4. Capture non-sensitive server details for the report:
 
@@ -142,6 +147,11 @@ when intentionally benchmarking an unreleased patch, and label it clearly in
 Install the benchmarked release on the VM and pass its absolute path as
 `TAKO_SERVER_BIN`. Verify the running process version before the final run so a
 stale `/usr/local/bin/tako-server` cannot silently become the measured binary.
+
+For feature benchmarks, run separate rows for accepted enqueue/publish pressure
+and for worker execution pressure when investigating failures. The combined row
+is useful as an end-to-end product test, but it mixes app HTTP handling, SDK
+internal-socket RPC, SQLite persistence, and workflow worker writes.
 
 If the user asked to benchmark a release that is not available yet, wait for or
 verify the release before running the final benchmark. A patched/local build can

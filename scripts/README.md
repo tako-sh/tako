@@ -23,8 +23,8 @@ Repository scripts used by installers, CI checks, and local development workflow
   - Enrolls `TAKO_SSH_PUBKEY` for both `tako` SSH login and signed remote management.
   - If `TAKO_SSH_PUBKEY` is unset, prompts for a public key from the terminal (`/dev/tty`) when available, including common piped installs; invalid key lines are re-prompted. If key input cannot be read, installer tries the invoking sudo user's `~/.ssh/authorized_keys` first, then warns/skips if no valid key is found.
   - Installs service definitions based on host init system:
-    - systemd unit with `Type=notify`, `ExecReload=/bin/kill -HUP $MAINPID`, and capability bounding for bind, app-user switching, and app-process stop capabilities.
-    - OpenRC init script with `reload` support and `retry="TERM/1800/KILL/5"` graceful-stop semantics.
+    - systemd unit with `Type=notify`, `ExecReload=/bin/kill -HUP $MAINPID`, high file-descriptor limits, and capability bounding for bind, app-user switching, and app-process stop capabilities.
+    - OpenRC init script with high file-descriptor limits, `reload` support, and `retry="TERM/1800/KILL/5"` graceful-stop semantics.
   - Installs required runtime dependencies (including Unix-socket-capable `nc` with `-U` support, sqlite runtime libraries, libvips image codec packages, Linux namespace networking tools `ip`/`iptables`/`sysctl`, and `proto`) via the host package manager when available.
   - Falls back to the official `proto` installer if not already present.
 - `check_critical_coverage.sh`: coverage gate for selected critical source files.

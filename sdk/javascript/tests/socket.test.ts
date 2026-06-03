@@ -9,6 +9,7 @@ import {
   APP_NAME_ENV,
   assertInternalSocketEnvConsistency,
   callInternal,
+  closeInternalSocketPoolsForTests,
   installChannelSocketPublisherFromEnv,
   INTERNAL_SOCKET_ENV,
   internalSocketFromEnv,
@@ -85,10 +86,12 @@ describe("callInternal error wrapping", () => {
   let dir: string;
 
   beforeEach(async () => {
+    closeInternalSocketPoolsForTests();
     dir = await mkdtemp(join("/tmp", "tako-sock-err-"));
   });
 
   afterEach(async () => {
+    closeInternalSocketPoolsForTests();
     await rm(dir, { recursive: true, force: true });
   });
 
@@ -142,6 +145,77 @@ describe("callInternal error wrapping", () => {
       server.close();
     }
   });
+
+  test("reuses an internal socket for sequential RPCs", async () => {
+    const sock = join(dir, "pooled.sock");
+    let connectionCount = 0;
+    const received: unknown[] = [];
+
+    const server = await new Promise<Server>((resolve, reject) => {
+      const s = createServer((socket) => {
+        connectionCount += 1;
+        let buffer = "";
+        socket.on("data", (chunk: Buffer) => {
+          buffer += chunk.toString("utf8");
+          for (;;) {
+            const nl = buffer.indexOf("\n");
+            if (nl === -1) return;
+            const line = buffer.slice(0, nl);
+            buffer = buffer.slice(nl + 1);
+            received.push(JSON.parse(line));
+            socket.write(`${JSON.stringify({ status: "ok", data: { count: received.length } })}\n`);
+          }
+        });
+      });
+      s.once("error", reject);
+      s.listen(sock, () => resolve(s));
+    });
+
+    try {
+      expect(await callInternal(sock, { command: "one" })).toEqual({ count: 1 });
+      expect(await callInternal(sock, { command: "two" })).toEqual({ count: 2 });
+      expect(connectionCount).toBe(1);
+      expect(received).toEqual([{ command: "one" }, { command: "two" }]);
+    } finally {
+      server.close();
+    }
+  });
+
+  test("keeps parallel RPCs on separate pool lanes", async () => {
+    const sock = join(dir, "parallel.sock");
+    let connectionCount = 0;
+
+    const server = await new Promise<Server>((resolve, reject) => {
+      const s = createServer((socket) => {
+        connectionCount += 1;
+        let buffer = "";
+        socket.on("data", (chunk: Buffer) => {
+          buffer += chunk.toString("utf8");
+          const nl = buffer.indexOf("\n");
+          if (nl === -1) return;
+          const line = buffer.slice(0, nl);
+          const req = JSON.parse(line) as { id: string; delay?: number };
+          setTimeout(() => {
+            socket.write(`${JSON.stringify({ status: "ok", data: { id: req.id } })}\n`);
+          }, req.delay ?? 0);
+        });
+      });
+      s.once("error", reject);
+      s.listen(sock, () => resolve(s));
+    });
+
+    try {
+      const [slow, fast] = await Promise.all([
+        callInternal(sock, { id: "slow", delay: 50 }),
+        callInternal(sock, { id: "fast" }),
+      ]);
+      expect(slow).toEqual({ id: "slow" });
+      expect(fast).toEqual({ id: "fast" });
+      expect(connectionCount).toBe(2);
+    } finally {
+      server.close();
+    }
+  });
 });
 
 describe("installChannelSocketPublisherFromEnv", () => {
@@ -149,12 +223,14 @@ describe("installChannelSocketPublisherFromEnv", () => {
   let server: Server | null = null;
 
   beforeEach(async () => {
+    closeInternalSocketPoolsForTests();
     clearEnv();
     setChannelSocketPublisher(null);
     dir = await mkdtemp(join("/tmp", "tako-chan-sock-"));
   });
 
   afterEach(async () => {
+    closeInternalSocketPoolsForTests();
     clearEnv();
     setChannelSocketPublisher(null);
     if (server) {
