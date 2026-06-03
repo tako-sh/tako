@@ -50,6 +50,11 @@ jobs:
             exit 0
           fi
 
+          if ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            echo "website_only=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           git diff --name-only "$base" "${{ github.sha }}" > changed-files.txt
           if [ -s changed-files.txt ] && ! grep -Ev '^(website/|$)' changed-files.txt >/dev/null; then
             echo "website_only=true" >> "$GITHUB_OUTPUT"
@@ -272,7 +277,7 @@ jobs:
             base="${{ github.event.before }}"
           fi
 
-          if [ -n "$base" ] && ! [[ "$base" =~ ^0+$ ]] && git diff --name-only "$base" "${{ github.sha }}" | grep -E '^website/' >/dev/null; then
+          if [ -n "$base" ] && ! [[ "$base" =~ ^0+$ ]] && git cat-file -e "$base^{commit}" 2>/dev/null && git diff --name-only "$base" "${{ github.sha }}" | grep -E '^website/' >/dev/null; then
             echo "website=true" >> "$GITHUB_OUTPUT"
           else
             echo "website=false" >> "$GITHUB_OUTPUT"
