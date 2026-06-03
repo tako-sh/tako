@@ -1,5 +1,6 @@
 ---
 title: "Tako vs Kamal"
+seoTitle: "Tako vs Kamal for Self-Hosted Deploys"
 date: "2026-04-05T00:00"
 description: "How Tako and Kamal approach self-hosted deployment differently — Docker vs native processes, registries vs SFTP, and what each gets right."
 image: b111b39dbd57

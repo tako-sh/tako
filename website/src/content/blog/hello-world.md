@@ -1,5 +1,6 @@
 ---
 title: Hello, world
+seoTitle: "Hello, world: Tako is live"
 date: "2026-03-17T12:00"
 author: dan
 description: "Tako is live — a complete platform for running apps on your own servers. Deployment, routing, TLS, secrets, and local dev in a single tool."

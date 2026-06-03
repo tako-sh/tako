@@ -8,43 +8,106 @@
         "role": "neutral",
         "displayName": "Warm Console Background",
         "canonical": "oklch(94.2% 0.018 72)",
-        "tonalRamp": ["oklch(18% 0.018 72)", "oklch(28% 0.018 72)", "oklch(39% 0.018 72)", "oklch(50% 0.018 72)", "oklch(62% 0.018 72)", "oklch(74% 0.018 72)", "oklch(86% 0.018 72)", "oklch(94.2% 0.018 72)"]
+        "tonalRamp": [
+          "oklch(18% 0.018 72)",
+          "oklch(28% 0.018 72)",
+          "oklch(39% 0.018 72)",
+          "oklch(50% 0.018 72)",
+          "oklch(62% 0.018 72)",
+          "oklch(74% 0.018 72)",
+          "oklch(86% 0.018 72)",
+          "oklch(94.2% 0.018 72)"
+        ]
       },
       "paper": {
         "role": "neutral",
         "displayName": "Paper Surface",
         "canonical": "oklch(96.4% 0.014 72)",
-        "tonalRamp": ["oklch(20% 0.014 72)", "oklch(31% 0.014 72)", "oklch(42% 0.014 72)", "oklch(54% 0.014 72)", "oklch(66% 0.014 72)", "oklch(78% 0.014 72)", "oklch(90% 0.014 72)", "oklch(96.4% 0.014 72)"]
+        "tonalRamp": [
+          "oklch(20% 0.014 72)",
+          "oklch(31% 0.014 72)",
+          "oklch(42% 0.014 72)",
+          "oklch(54% 0.014 72)",
+          "oklch(66% 0.014 72)",
+          "oklch(78% 0.014 72)",
+          "oklch(90% 0.014 72)",
+          "oklch(96.4% 0.014 72)"
+        ]
       },
       "ink": {
         "role": "neutral",
         "displayName": "Tako Ink",
         "canonical": "#2f2a44",
-        "tonalRamp": ["oklch(16% 0.055 292)", "oklch(24% 0.055 292)", "oklch(34% 0.055 292)", "oklch(46% 0.055 292)", "oklch(58% 0.055 292)", "oklch(70% 0.055 292)", "oklch(84% 0.055 292)", "oklch(94% 0.055 292)"]
+        "tonalRamp": [
+          "oklch(16% 0.055 292)",
+          "oklch(24% 0.055 292)",
+          "oklch(34% 0.055 292)",
+          "oklch(46% 0.055 292)",
+          "oklch(58% 0.055 292)",
+          "oklch(70% 0.055 292)",
+          "oklch(84% 0.055 292)",
+          "oklch(94% 0.055 292)"
+        ]
       },
       "primary": {
         "role": "primary",
         "displayName": "Tako Coral",
         "canonical": "#e88783",
-        "tonalRamp": ["oklch(19% 0.085 25)", "oklch(30% 0.095 25)", "oklch(42% 0.105 25)", "oklch(54% 0.115 25)", "oklch(66% 0.12 25)", "oklch(76% 0.095 25)", "oklch(86% 0.06 25)", "oklch(95% 0.025 25)"]
+        "tonalRamp": [
+          "oklch(19% 0.085 25)",
+          "oklch(30% 0.095 25)",
+          "oklch(42% 0.105 25)",
+          "oklch(54% 0.115 25)",
+          "oklch(66% 0.12 25)",
+          "oklch(76% 0.095 25)",
+          "oklch(86% 0.06 25)",
+          "oklch(95% 0.025 25)"
+        ]
       },
       "primary-text": {
         "role": "primary",
         "displayName": "Coral Ink",
         "canonical": "#c4605c",
-        "tonalRamp": ["oklch(18% 0.09 25)", "oklch(28% 0.1 25)", "oklch(40% 0.11 25)", "oklch(52% 0.115 25)", "oklch(64% 0.1 25)", "oklch(76% 0.075 25)", "oklch(88% 0.045 25)", "oklch(96% 0.02 25)"]
+        "tonalRamp": [
+          "oklch(18% 0.09 25)",
+          "oklch(28% 0.1 25)",
+          "oklch(40% 0.11 25)",
+          "oklch(52% 0.115 25)",
+          "oklch(64% 0.1 25)",
+          "oklch(76% 0.075 25)",
+          "oklch(88% 0.045 25)",
+          "oklch(96% 0.02 25)"
+        ]
       },
       "secondary": {
         "role": "secondary",
         "displayName": "Server Mint",
         "canonical": "#9bc4b6",
-        "tonalRamp": ["oklch(18% 0.055 170)", "oklch(29% 0.06 170)", "oklch(40% 0.065 170)", "oklch(52% 0.07 170)", "oklch(64% 0.065 170)", "oklch(76% 0.05 170)", "oklch(88% 0.03 170)", "oklch(96% 0.015 170)"]
+        "tonalRamp": [
+          "oklch(18% 0.055 170)",
+          "oklch(29% 0.06 170)",
+          "oklch(40% 0.065 170)",
+          "oklch(52% 0.07 170)",
+          "oklch(64% 0.065 170)",
+          "oklch(76% 0.05 170)",
+          "oklch(88% 0.03 170)",
+          "oklch(96% 0.015 170)"
+        ]
       },
       "gold": {
         "role": "tertiary",
         "displayName": "Benchmark Gold",
         "canonical": "#d6a63e",
-        "tonalRamp": ["oklch(18% 0.07 82)", "oklch(30% 0.085 82)", "oklch(42% 0.1 82)", "oklch(54% 0.11 82)", "oklch(66% 0.1 82)", "oklch(78% 0.075 82)", "oklch(88% 0.045 82)", "oklch(96% 0.02 82)"]
+        "tonalRamp": [
+          "oklch(18% 0.07 82)",
+          "oklch(30% 0.085 82)",
+          "oklch(42% 0.1 82)",
+          "oklch(54% 0.11 82)",
+          "oklch(66% 0.1 82)",
+          "oklch(78% 0.075 82)",
+          "oklch(88% 0.045 82)",
+          "oklch(96% 0.02 82)"
+        ]
       }
     },
     "typographyMeta": {

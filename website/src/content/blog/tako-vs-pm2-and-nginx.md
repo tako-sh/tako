@@ -1,5 +1,6 @@
 ---
 title: "Tako vs PM2 + Nginx"
+seoTitle: "Tako vs PM2 and Nginx for Node Apps"
 date: "2026-04-21T01:34"
 description: "PM2 + Nginx is the quiet default for self-hosted Node — a stack of four tools glued together with shell scripts. Tako collapses it into one CLI."
 image: fde56a5e241f

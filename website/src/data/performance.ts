@@ -710,7 +710,7 @@ export const heavyRows = [
 export const performanceStructuredData = {
   "@context": "https://schema.org",
   "@type": "WebPage",
-  name: "Tako Performance",
+  name: "Tako Performance Benchmarks for Self-Hosted Apps",
   url: "https://tako.sh/performance/",
   description:
     "Single-VM Tako performance results with proxy, CPU, memory, clean-run, channel, and workflow benchmark graphs.",

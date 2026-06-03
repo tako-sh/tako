@@ -1,5 +1,6 @@
 ---
 title: "Tako vs Sidekick"
+seoTitle: "Tako vs Sidekick for VPS App Deploys"
 date: "2026-04-12T05:21"
 description: "Sidekick turns a VPS into a Docker-powered mini-PaaS. Tako skips Docker entirely. Here's how the two CLI deploy tools compare."
 image: bd807fb514a9

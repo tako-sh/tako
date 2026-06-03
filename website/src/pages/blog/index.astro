@@ -10,7 +10,7 @@ const authors: Record<string, string> = {
 const posts = await getCollection("blog");
 const sorted = posts.sort((a, b) => new Date(b.data.date).getTime() - new Date(a.data.date).getTime());
 ---
-<BaseLayout title="Tako Blog" description="Updates, ideas, and progress from the Tako project.">
+<BaseLayout title="Tako Blog: Self-Hosted App Notes" description="Updates, ideas, and progress from the Tako project.">
   <section class="blog-list-sheet">
     <div class="blog-list-header">
       <h1 class="blog-list-title">Blog</h1>

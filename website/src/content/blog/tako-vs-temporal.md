@@ -1,5 +1,6 @@
 ---
 title: "Tako vs Temporal"
+seoTitle: "Tako vs Temporal for Durable Workflows"
 date: "2026-04-19T11:38"
 description: "Temporal defined the durable-workflow model for a generation of backends. Tako borrows the shape but runs it embedded in the per-app server — no cluster, no Cassandra, no Elasticsearch."
 image: fd05510ccf49

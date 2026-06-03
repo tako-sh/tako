@@ -1,5 +1,6 @@
 ---
 title: "The Go SDK Is Here"
+seoTitle: "The Tako Go SDK Is Here"
 date: "2026-04-12T05:28"
 description: "Tako's Go SDK wraps any http.Handler — Gin, Echo, Chi, or plain net/http — with health checks, secrets, and graceful shutdown in one line."
 image: 9ffa67280af1
