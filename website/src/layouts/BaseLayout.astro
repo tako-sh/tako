@@ -5,6 +5,7 @@ import StarIcon from "lucide-astro/Star";
 import ExternalLinkIcon from "lucide-astro/ExternalLink";
 import PostHog from "../components/posthog.astro";
 import { createCanonicalUrl } from "../utils/canonical";
+import { getPageOgImageForPath } from "../data/page-og";
 
 export interface Props {
 	title?: string;
@@ -18,13 +19,17 @@ export interface Props {
 const {
 	title = "Tako - Ship it like FTP",
 	description = "Everything you need to run apps on your own hardware. Routes, logs, secrets, rolling deploys, local dev — one tool.",
-	image = "https://tako.sh/assets/og.png",
+	image: imageOverride,
 	type = "website",
 	structuredData,
 	noCanonical = false,
 } = Astro.props;
 
 const canonicalURL = createCanonicalUrl(Astro.url.pathname, Astro.site);
+const image =
+	imageOverride ??
+	getPageOgImageForPath(Astro.url.pathname, Astro.site) ??
+	"https://tako.sh/assets/og.png";
 const organizationSchema = {
 	"@context": "https://schema.org",
 	"@type": "Organization",
