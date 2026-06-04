@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use tokio::io::BufReader;
 use tokio::net::UnixStream;
 
-use crate::protocol::{Request, Response};
+use crate::protocol::{RegisterAppRequest, Request, Response};
 use tako_socket::{read_json_line, write_json_line};
 
 use super::lan::handle_toggle_lan;
@@ -52,21 +52,22 @@ pub(crate) async fn handle_client(
                     subscriptions::StreamDisposition::Done => return Ok(()),
                 }
             }
-            Request::RegisterApp {
-                config_path,
-                project_dir,
-                app_name,
-                variant,
-                hosts,
-                command,
-                env,
-                secrets,
-                images,
-                storages,
-                client_pid,
-                readiness_failure_hint,
-                worker_command,
-            } => {
+            Request::RegisterApp(request) => {
+                let RegisterAppRequest {
+                    config_path,
+                    project_dir,
+                    app_name,
+                    variant,
+                    hosts,
+                    command,
+                    env,
+                    secrets,
+                    images,
+                    storages,
+                    client_pid,
+                    readiness_failure_hint,
+                    worker_command,
+                } = *request;
                 apps::register_app(
                     Arc::clone(&state),
                     apps::RegisterAppArgs {

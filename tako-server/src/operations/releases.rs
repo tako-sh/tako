@@ -257,17 +257,18 @@ impl crate::ServerState {
             .map(|app| app.config.read().source_ip)
             .unwrap_or_default();
 
-        self.deploy_app(
+        let target_path = target_path.to_string_lossy();
+        self.deploy_app(super::deploy::DeployRequest {
             app_name,
             version,
-            &target_path.to_string_lossy(),
+            path: &target_path,
             routes,
             source_ip,
-            None,
-            None,
+            secrets: None,
+            storages: None,
             ssl,
-            None,
-        )
+            backup: None,
+        })
         .await
     }
 }

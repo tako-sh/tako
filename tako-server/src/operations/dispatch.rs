@@ -140,17 +140,17 @@ impl crate::ServerState {
                 if let Some(resp) = self.reject_mutating_when_upgrading("deploy").await {
                     return resp;
                 }
-                self.deploy_app(
-                    &app,
-                    &version,
-                    &path,
+                self.deploy_app(super::deploy::DeployRequest {
+                    app_name: &app,
+                    version: &version,
+                    path: &path,
                     routes,
                     source_ip,
                     secrets,
                     storages,
                     ssl,
-                    backup.map(|backup| *backup),
-                )
+                    backup: backup.map(|backup| *backup),
+                })
                 .await
             }
             Command::BackupNow { app, backup } => {

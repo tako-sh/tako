@@ -13,19 +13,40 @@ use crate::socket::{AppState, Response};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+pub(crate) struct DeployRequest<'a> {
+    pub(crate) app_name: &'a str,
+    pub(crate) version: &'a str,
+    pub(crate) path: &'a str,
+    pub(crate) routes: Vec<String>,
+    pub(crate) source_ip: tako_core::SourceIpMode,
+    pub(crate) secrets: Option<HashMap<String, String>>,
+    pub(crate) storages: Option<HashMap<String, tako_core::StorageBinding>>,
+    pub(crate) ssl: tako_core::SslBinding,
+    pub(crate) backup: Option<tako_core::BackupBinding>,
+}
+
+struct RollbackSnapshot {
+    config: AppConfig,
+    routes: Vec<String>,
+    state: AppState,
+    ssl: Option<tako_core::SslBinding>,
+    backup: Option<tako_core::BackupBinding>,
+}
+
 impl crate::ServerState {
-    pub(crate) async fn deploy_app(
-        &self,
-        app_name: &str,
-        version: &str,
-        path: &str,
-        routes: Vec<String>,
-        source_ip: tako_core::SourceIpMode,
-        secrets: Option<HashMap<String, String>>,
-        storages: Option<HashMap<String, tako_core::StorageBinding>>,
-        ssl: tako_core::SslBinding,
-        backup: Option<tako_core::BackupBinding>,
-    ) -> Response {
+    pub(crate) async fn deploy_app(&self, request: DeployRequest<'_>) -> Response {
+        let DeployRequest {
+            app_name,
+            version,
+            path,
+            routes,
+            source_ip,
+            secrets,
+            storages,
+            ssl,
+            backup,
+        } = request;
+
         tracing::info!(app = app_name, version = version, "Deploying app");
 
         if let Err(msg) = validate_app_name(app_name) {
@@ -130,13 +151,13 @@ impl crate::ServerState {
                 route_table.routes_for_app(app_name)
             };
             let previous_state = existing.state();
-            Some((
-                previous_config,
-                previous_routes,
-                previous_state,
-                previous_ssl,
-                previous_backup,
-            ))
+            Some(RollbackSnapshot {
+                config: previous_config,
+                routes: previous_routes,
+                state: previous_state,
+                ssl: previous_ssl,
+                backup: previous_backup,
+            })
         } else {
             None
         };
@@ -255,22 +276,11 @@ impl crate::ServerState {
                     }
                     Err(e) => {
                         let error = e.to_string();
-                        if let Some((
-                            previous_config,
-                            previous_routes,
-                            previous_state,
-                            previous_ssl,
-                            previous_backup,
-                        )) = rollback_snapshot
-                        {
+                        if let Some(snapshot) = rollback_snapshot {
                             self.restore_failed_rollout_snapshot(
                                 app_name,
                                 &app,
-                                previous_config,
-                                previous_routes,
-                                previous_state,
-                                previous_ssl,
-                                previous_backup,
+                                snapshot,
                                 error.clone(),
                             )
                             .await;
@@ -295,22 +305,11 @@ impl crate::ServerState {
                     }
                     Err(e) => {
                         let error = e.to_string();
-                        if let Some((
-                            previous_config,
-                            previous_routes,
-                            previous_state,
-                            previous_ssl,
-                            previous_backup,
-                        )) = rollback_snapshot
-                        {
+                        if let Some(snapshot) = rollback_snapshot {
                             self.restore_failed_rollout_snapshot(
                                 app_name,
                                 &app,
-                                previous_config,
-                                previous_routes,
-                                previous_state,
-                                previous_ssl,
-                                previous_backup,
+                                snapshot,
                                 error.clone(),
                             )
                             .await;
@@ -366,22 +365,11 @@ impl crate::ServerState {
                             }))
                         }
                     } else {
-                        if let Some((
-                            previous_config,
-                            previous_routes,
-                            previous_state,
-                            previous_ssl,
-                            previous_backup,
-                        )) = rollback_snapshot
-                        {
+                        if let Some(snapshot) = rollback_snapshot {
                             self.restore_failed_rollout_snapshot(
                                 app_name,
                                 &app,
-                                previous_config,
-                                previous_routes,
-                                previous_state,
-                                previous_ssl,
-                                previous_backup,
+                                snapshot,
                                 result
                                     .error
                                     .clone()
@@ -403,22 +391,11 @@ impl crate::ServerState {
                     }
                 }
                 Err(e) => {
-                    if let Some((
-                        previous_config,
-                        previous_routes,
-                        previous_state,
-                        previous_ssl,
-                        previous_backup,
-                    )) = rollback_snapshot
-                    {
+                    if let Some(snapshot) = rollback_snapshot {
                         self.restore_failed_rollout_snapshot(
                             app_name,
                             &app,
-                            previous_config,
-                            previous_routes,
-                            previous_state,
-                            previous_ssl,
-                            previous_backup,
+                            snapshot,
                             e.to_string(),
                         )
                         .await;
@@ -489,20 +466,16 @@ impl crate::ServerState {
         &self,
         app_name: &str,
         app: &Arc<App>,
-        previous_config: AppConfig,
-        previous_routes: Vec<String>,
-        previous_state: AppState,
-        previous_ssl: Option<tako_core::SslBinding>,
-        previous_backup: Option<tako_core::BackupBinding>,
+        snapshot: RollbackSnapshot,
         error: String,
     ) {
         let previous_release_path =
-            app_release_root(&self.runtime.data_dir, app_name, &previous_config.version);
-        let previous_secrets = previous_config.secrets.clone();
-        let previous_storages = previous_config.storages.clone();
-        let previous_source_ip = previous_config.source_ip;
-        app.update_config(previous_config);
-        app.set_state(previous_state);
+            app_release_root(&self.runtime.data_dir, app_name, &snapshot.config.version);
+        let previous_secrets = snapshot.config.secrets.clone();
+        let previous_storages = snapshot.config.storages.clone();
+        let previous_source_ip = snapshot.config.source_ip;
+        app.update_config(snapshot.config);
+        app.set_state(snapshot.state);
         app.set_last_error(format!("Rolling update failed: {error}"));
         if let Err(e) = self.state_store.set_secrets(app_name, &previous_secrets) {
             tracing::warn!(app = app_name, "Failed to restore previous secrets: {}", e);
@@ -510,7 +483,7 @@ impl crate::ServerState {
         if let Err(e) = self.state_store.set_storages(app_name, &previous_storages) {
             tracing::warn!(app = app_name, "Failed to restore previous storages: {}", e);
         }
-        match previous_ssl {
+        match snapshot.ssl {
             Some(ssl) => {
                 if let Err(e) = self.state_store.set_ssl(app_name, &ssl) {
                     tracing::warn!(app = app_name, "Failed to restore previous SSL: {}", e);
@@ -524,7 +497,7 @@ impl crate::ServerState {
         }
         if let Err(e) = self
             .state_store
-            .set_backup(app_name, previous_backup.as_ref())
+            .set_backup(app_name, snapshot.backup.as_ref())
         {
             tracing::warn!(
                 app = app_name,
@@ -536,7 +509,7 @@ impl crate::ServerState {
             let mut route_table = self.routes.write();
             route_table.set_app_routes_with_source_ip(
                 app_name.to_string(),
-                previous_routes,
+                snapshot.routes,
                 previous_source_ip,
             );
         }

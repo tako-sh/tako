@@ -6,35 +6,7 @@ pub enum Request {
     Ping,
     Info,
     /// Register a persistent app by config path.
-    RegisterApp {
-        config_path: String,
-        project_dir: String,
-        app_name: String,
-        #[serde(default)]
-        variant: Option<String>,
-        #[serde(default)]
-        hosts: Vec<String>,
-        command: Vec<String>,
-        env: std::collections::HashMap<String, String>,
-        #[serde(default)]
-        secrets: std::collections::HashMap<String, String>,
-        #[serde(default)]
-        images: Box<tako_images::ImagesConfig>,
-        #[serde(default)]
-        storages: std::collections::HashMap<String, tako_core::StorageBinding>,
-        #[serde(default)]
-        client_pid: Option<u32>,
-        #[serde(default)]
-        readiness_failure_hint: Option<String>,
-        /// Command to spawn the workflow worker subprocess on demand (first
-        /// `program`, rest are args). Present iff the project has a
-        /// configured workflows directory — the client resolves the runtime-specific
-        /// entrypoint (e.g. `bun run .../bun-worker.mjs`) and hands it over
-        /// so the daemon doesn't need to re-do runtime detection. Omitted
-        /// when there are no workflows to run.
-        #[serde(default)]
-        worker_command: Option<Vec<String>>,
-    },
+    RegisterApp(Box<RegisterAppRequest>),
     /// Unregister (stop) an app by config path.
     UnregisterApp {
         config_path: String,
@@ -73,6 +45,36 @@ pub enum Request {
     ListApps,
     SubscribeEvents,
     StopServer,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RegisterAppRequest {
+    pub config_path: String,
+    pub project_dir: String,
+    pub app_name: String,
+    #[serde(default)]
+    pub variant: Option<String>,
+    #[serde(default)]
+    pub hosts: Vec<String>,
+    pub command: Vec<String>,
+    pub env: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    pub secrets: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    pub images: Box<tako_images::ImagesConfig>,
+    #[serde(default)]
+    pub storages: std::collections::HashMap<String, tako_core::StorageBinding>,
+    #[serde(default)]
+    pub client_pid: Option<u32>,
+    #[serde(default)]
+    pub readiness_failure_hint: Option<String>,
+    /// Command to spawn the workflow worker subprocess on demand (first
+    /// `program`, rest are args). Present iff the project has a configured
+    /// workflows directory. The client resolves the runtime-specific entrypoint
+    /// and hands it over so the daemon doesn't need to re-do runtime detection.
+    /// Omitted when there are no workflows to run.
+    #[serde(default)]
+    pub worker_command: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -321,7 +323,7 @@ mod tests {
 
     #[test]
     fn serde_roundtrip_register_app() {
-        let req = Request::RegisterApp {
+        let req = Request::RegisterApp(Box::new(RegisterAppRequest {
             config_path: "/home/user/proj/tako.toml".to_string(),
             project_dir: "/home/user/proj".to_string(),
             app_name: "my-app".to_string(),
@@ -345,7 +347,7 @@ mod tests {
                 "run".to_string(),
                 "node_modules/tako.sh/dist/entrypoints/bun-worker.mjs".to_string(),
             ]),
-        };
+        }));
         let json = serde_json::to_string(&req).unwrap();
         assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), req);
 

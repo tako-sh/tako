@@ -287,7 +287,7 @@ impl Routes {
             }
         }
         // Most specific first. Stable order for ties.
-        entries.sort_by(|a, b| b.specificity.cmp(&a.specificity));
+        entries.sort_by_key(|entry| std::cmp::Reverse(entry.specificity));
         *self.compiled.lock().unwrap() = entries;
     }
 }
