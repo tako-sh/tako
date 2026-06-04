@@ -22,8 +22,9 @@ Latest clean single-VM HTTP/TLS run:
   Envoy and Caddy overloaded in heavy rows; nginx showed small error/non-200
   rates at c15000; HAProxy stayed clean but had much worse p99 latency at high
   concurrency.
-- Channels/workflows are clean through c4000. At c8000, channel publish returns
-  5.9% non-200 responses and workflow enqueue returns 21.3%.
+- Current master feature rerun: channels/workflows are clean through c8000.
+  At c8000, channel publish reaches `4.6k` 200 RPS and workflow enqueue reaches
+  `4.0k`, with 0 non-200 responses and 0 client errors.
 - Keep RSS in the report. Follow-up controls show the high keepalive RSS is
   mostly Pingora/TLS reverse-proxy connection state, not a Tako-specific leak.
 - Main next target: improve raw RPS and p99 latency versus nginx/HAProxy; Tako
