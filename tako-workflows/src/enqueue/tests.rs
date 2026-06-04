@@ -107,6 +107,51 @@ fn enqueue_honors_custom_max_attempts_and_run_at() {
 }
 
 #[test]
+fn has_runnable_work_detects_due_pending_runs_only() {
+    let db = RunsDb::open_in_memory().unwrap();
+    let due = now_ms() - 1;
+    let future = now_ms() + 60_000;
+
+    assert!(!db.has_runnable_work().unwrap());
+
+    let future_run = db
+        .enqueue(
+            "w",
+            &serde_json::json!({}),
+            &EnqueueOpts {
+                run_at_ms: Some(future),
+                ..opts()
+            },
+        )
+        .unwrap();
+    assert!(!db.has_runnable_work().unwrap());
+
+    db.enqueue(
+        "w",
+        &serde_json::json!({}),
+        &EnqueueOpts {
+            run_at_ms: Some(due),
+            ..opts()
+        },
+    )
+    .unwrap();
+    assert!(db.has_runnable_work().unwrap());
+
+    db.claim("w1", &["w".into()], 30_000).unwrap();
+    assert!(!db.has_runnable_work().unwrap());
+
+    {
+        let conn = db.conn.lock();
+        conn.execute(
+            "UPDATE runs SET run_at = ?1 WHERE id = ?2",
+            params![due, future_run.id],
+        )
+        .unwrap();
+    }
+    assert!(db.has_runnable_work().unwrap());
+}
+
+#[test]
 fn open_creates_parent_directory() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp

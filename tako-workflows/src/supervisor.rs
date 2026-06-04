@@ -4,10 +4,10 @@
 //!
 //! - `workers >= 1` (always-on): spawn N workers on `start`, respawn any that
 //!   exit unexpectedly.
-//! - `workers == 0` (scale-to-zero): no workers until `wake()` is called
-//!   (from enqueue or cron tick). `wake()` spawns one worker if none is
-//!   running. When the worker idles out and exits, we don't respawn —
-//!   the next `wake()` starts a fresh one.
+//! - `workers == 0` (scale-to-zero): no workers until the dispatcher calls
+//!   `wake()` after durable work becomes runnable. `wake()` spawns one worker
+//!   if none is running. When the worker idles out and exits, we don't respawn
+//!   until the dispatcher sees runnable work again.
 //!
 //! `shutdown(timeout)` SIGTERMs all workers, waits, and SIGKILLs anything
 //! still alive after the timeout. Used by the drain path.
@@ -150,10 +150,11 @@ impl WorkerSupervisor {
         Ok(())
     }
 
-    /// Called on enqueue/cron tick. For scale-to-zero (`workers == 0`),
-    /// spawns a worker if none is running. For always-on, respawns any
-    /// that died. Holds the state lock across the spawn calls so two
-    /// concurrent wakes can't both see an empty slot and over-spawn.
+    /// Called by the dispatcher after enqueue/signal/cron/reclaim make
+    /// runnable work visible. For scale-to-zero (`workers == 0`), spawns a
+    /// worker if none is running. For always-on, respawns any that died. Holds
+    /// the state lock across the spawn calls so concurrent wakes can't both
+    /// see an empty slot and over-spawn.
     ///
     /// Returns `Unhealthy` during the cooldown window after a crash-loop
     /// detection — caller should surface this to the user instead of

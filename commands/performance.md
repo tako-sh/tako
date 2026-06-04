@@ -1,5 +1,5 @@
 ---
-description: Run and publish Tako proxy performance benchmarks
+description: Run and publish Tako proxy performance benchmarks and website report
 ---
 
 $ARGUMENTS
@@ -7,11 +7,12 @@ $ARGUMENTS
 # Performance Benchmark
 
 Run a repeatable Tako performance benchmark, update the public performance
-report, and leave the main Tako repo with only a short TLDR link.
+report and `/performance` website page, and leave the main Tako repo with only
+a short TLDR link.
 
-Use the dedicated performance repository for harness code, raw data, graphs, and
-the detailed report. Use this repo only for the high-level `BENCHMARKS.md`
-summary.
+Use the dedicated performance repository for harness code, raw data, graphs,
+and the detailed report. Use this repo only for the high-level `BENCHMARKS.md`
+summary and website pages that summarize the public report.
 
 This command is an end-to-end workflow. Do not stop at a plan or raw benchmark
 output unless blocked: prepare the VM, run the tests, inspect the results, fix
@@ -41,6 +42,9 @@ user explicitly asks for a local/patched build.
 - Performance repo: `~/github/tako-performance`
 - Public repo: `git@github.com:tako-sh/performance.git`
 - Main repo summary: `BENCHMARKS.md`
+- Website performance page: `website/src/pages/performance.astro`
+- Website performance data: `website/src/data/performance.ts`
+- Homepage performance teaser: `website/src/pages/index.astro`
 - Detailed report: `RESULTS.md`
 - Benchmark server: supplied by the user for that run; never reuse an old host
   from memory or thread history without the user confirming it.
@@ -334,7 +338,17 @@ In `~/github/tako-performance`:
 In `~/github/tako`:
 
 1. Update `BENCHMARKS.md` with only a TLDR and links to the performance repo.
-2. Do not duplicate full tables or raw data in the main repo.
+2. Update `website/src/data/performance.ts` with the latest chart points,
+   chart scales, table rows, and structured-data wording needed by
+   `/performance`.
+3. Update `website/src/pages/performance.astro` so the hero, TLDR evidence,
+   hardware facts, key result cards, methodology, proxy versions, and raw
+   result links match the finalized public report.
+4. Update the performance teaser in `website/src/pages/index.astro` when the
+   headline numbers or comparison claims changed.
+5. Keep website copy concise and public-safe. The page should summarize the
+   latest report and link to raw data; do not duplicate full tables or raw data
+   in the main repo.
 
 ## Phase 7 — Sanitize
 
@@ -345,7 +359,10 @@ rg -n "workbench|exe\\.xyz|/Users/|tailscale|Tailscale|exedev|ssh-rsa|BEGIN .*KE
   ~/github/tako-performance/README.md \
   ~/github/tako-performance/RESULTS.md \
   ~/github/tako-performance/results \
-  ~/github/tako/BENCHMARKS.md
+  ~/github/tako/BENCHMARKS.md \
+  ~/github/tako/website/src/data/performance.ts \
+  ~/github/tako/website/src/pages/performance.astro \
+  ~/github/tako/website/src/pages/index.astro
 ```
 
 Investigate any hit. Keep legitimate generic words only when they do not expose
@@ -362,6 +379,7 @@ go build ./cmd/...
 git diff --check
 
 cd ~/github/tako
+bun run --cwd website build
 git diff --check
 ```
 
@@ -378,7 +396,11 @@ Commit main repo summary:
 
 ```bash
 cd ~/github/tako
-git add BENCHMARKS.md
+git add \
+  BENCHMARKS.md \
+  website/src/data/performance.ts \
+  website/src/pages/performance.astro \
+  website/src/pages/index.astro
 git commit -m "docs(benchmarks): update performance summary"
 git push origin master
 ```

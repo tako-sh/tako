@@ -388,7 +388,7 @@ workers = 2
 workers = 4
 ```
 
-`workers` is the number of always-on worker processes. `0` means scale-to-zero. `concurrency` is the maximum parallel runs per worker and defaults to `10`.
+`workers` is the number of always-on worker processes. `0` means scale-to-zero: Tako starts a worker when runnable workflow work appears, then lets it exit after the idle window. `concurrency` is the maximum parallel runs per worker and defaults to `10`.
 
 Precedence for unnamed workflows is built-in defaults, `[workflows]`, then `[servers.<name>.workflows]`.
 

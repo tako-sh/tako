@@ -526,7 +526,7 @@ concurrency = 20
 workers = 4
 ```
 
-- `workers = 0` — scale-to-zero: worker spawned on first enqueue/cron tick, exits after 300s idle.
+- `workers = 0` — scale-to-zero: worker starts when runnable work appears from enqueue, signal, cron, delayed retry/sleep, or lease reclaim, then exits after 300s idle.
 - Precedence for `worker: "email"`: `[servers.<name>.workflows.email]` > `[servers.<name>.workflows]` > `[workflows.email]` > `[workflows]` > defaults.
 - If `<app_root>/workflows/` exists but no workflow config exists, the app is implicitly scale-to-zero on every server.
 

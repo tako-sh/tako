@@ -279,7 +279,7 @@ export default defineWorkflow<{ to: string }>("send-email", {
 });
 ```
 
-Dev uses the same architecture as production: `tako-dev-server` owns the runs DB and starts a worker subprocess on demand. Workers are scale-to-zero in dev with a short idle timeout, so code edits take effect on the next enqueue.
+Dev uses the same architecture as production: `tako-dev-server` owns the runs DB, dispatches runnable workflow work, and starts a worker subprocess on demand. Workers are scale-to-zero in dev with a short idle timeout, so code edits take effect on the next runnable enqueue, signal, or cron tick.
 
 Broken workflow imports fail fast. If the worker exits non-zero before claiming any run, enqueue returns a worker-unhealthy error instead of silently queueing work.
 

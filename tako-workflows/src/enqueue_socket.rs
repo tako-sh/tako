@@ -3,8 +3,8 @@
 //! One socket per tako-server instance handles every server-side SDK RPC:
 //! workflow enqueue + worker RPCs, server-side channel `publish()`, and any
 //! future server-routed command. Commands carry an `app` field; the
-//! handler uses a lookup closure to find the app's `RunsDb` and supervisor
-//! wake function (channel publish takes a separate route).
+//! handler uses a lookup closure to find the app's `RunsDb` and dispatch
+//! signaler (channel publish takes a separate route).
 //!
 //! Path convention: `{data_dir}/internal.sock` (symlink) →
 //! `{data_dir}/internal-{pid}.sock` (the actual bound socket). Mirrors
@@ -27,8 +27,9 @@ use tokio::sync::oneshot;
 use super::cron::register_schedules;
 use super::enqueue::RunsDb;
 
-/// Callback fired whenever an enqueue or signal succeeds for a given app.
-/// Used to wake the supervisor (so `workers = 0` scale-to-zero spawns).
+/// Callback fired whenever a durable write means work might be runnable.
+/// The manager wires this to a dispatcher, not directly to the supervisor,
+/// so enqueue acceptance and worker wake are separate steps.
 pub type OnEnqueue = Arc<dyn Fn() + Send + Sync>;
 
 /// Pre-enqueue probe: returns `Err(reason)` when the worker can't currently

@@ -17,6 +17,7 @@ use std::time::Duration;
 use parking_lot::RwLock;
 
 use super::cron::{self, CronTickerHandle};
+use super::dispatcher::WorkDispatcher;
 use super::enqueue::{RunsDb, RunsDbError};
 use super::enqueue_socket::{
     AppHandlers, AppLookup, ChannelPublishFn, EnqueueSocketHandle, OnEnqueue,
@@ -36,11 +37,12 @@ pub fn internal_socket_path(data_dir: &Path) -> PathBuf {
     data_dir.join("internal.sock")
 }
 
-/// Per-app workflow resources. Dropping the entry shuts down the worker
-/// (drained on the way out) and the cron ticker.
+/// Per-app workflow resources. Dropping the entry shuts down dispatch,
+/// cron, and the worker supervisor.
 pub struct AppWorkflow {
     handlers: AppHandlers,
     supervisor: Arc<WorkerSupervisor>,
+    dispatcher: Option<WorkDispatcher>,
     cron: Option<CronTickerHandle>,
 }
 
@@ -54,10 +56,13 @@ impl AppWorkflow {
     }
 
     async fn shutdown(mut self, drain_timeout: Duration) {
-        self.supervisor.shutdown(drain_timeout).await;
         if let Some(cron) = self.cron.take() {
             cron.shutdown().await;
         }
+        if let Some(dispatcher) = self.dispatcher.take() {
+            dispatcher.shutdown().await;
+        }
+        self.supervisor.shutdown(drain_timeout).await;
     }
 }
 
@@ -173,24 +178,35 @@ impl WorkflowManager {
         let supervisor = Arc::new(WorkerSupervisor::new(spec));
         supervisor.start().await?;
 
-        let sup_for_cron = supervisor.clone();
+        let sup_for_dispatcher = supervisor.clone();
+        let db_for_dispatcher = db.clone();
+        let dispatcher = WorkDispatcher::spawn(
+            Arc::new(move || {
+                // wake() errors surface via health_check on the next
+                // enqueue; the log_sink inside the supervisor carries
+                // any human-readable detail.
+                let _ = sup_for_dispatcher.wake();
+            }),
+            Arc::new(move || match db_for_dispatcher.has_runnable_work() {
+                Ok(has_work) => has_work,
+                Err(e) => {
+                    tracing::warn!(error = %e, "workflow runnable-work check failed");
+                    false
+                }
+            }),
+        );
+        let dispatch_signal = dispatcher.signaler();
         let on_enqueue: OnEnqueue = Arc::new(move || {
-            let _ = sup_for_cron.wake();
+            dispatch_signal.signal();
         });
-        let cron_handle = cron::spawn_with_limiter(db.clone(), limiter.clone(), on_enqueue);
+        let cron_handle = cron::spawn_with_limiter(db.clone(), limiter.clone(), on_enqueue.clone());
 
-        let sup_for_enqueue = supervisor.clone();
         let sup_for_health = supervisor.clone();
         let sup_for_claim = supervisor.clone();
         let handlers = AppHandlers {
             db,
             limiter,
-            on_enqueue: Arc::new(move || {
-                // wake() errors surface via health_check on the next
-                // enqueue; the log_sink inside the supervisor carries
-                // any human-readable detail.
-                let _ = sup_for_enqueue.wake();
-            }),
+            on_enqueue,
             health_check: Arc::new(move || sup_for_health.check_startup_health()),
             on_claimed: Arc::new(move || {
                 sup_for_claim.notify_claimed();
@@ -200,6 +216,7 @@ impl WorkflowManager {
         let entry = AppWorkflow {
             handlers,
             supervisor,
+            dispatcher: Some(dispatcher),
             cron: Some(cron_handle),
         };
 
@@ -412,6 +429,7 @@ mod tests {
                 on_claimed,
             },
             supervisor,
+            dispatcher: None,
             cron: None,
         };
 

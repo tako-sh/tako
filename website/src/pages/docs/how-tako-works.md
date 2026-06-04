@@ -120,7 +120,7 @@ Backups capture app-owned data and durable workflow state. Transient channel rep
 
 JavaScript channels live in `<app_root>/channels/*.ts` and export `defineChannel(...)`. Routes are exact and flat under `/_tako/channels/<name>`.
 
-JavaScript workflows live in `<app_root>/workflows/*.ts` and export `defineWorkflow(...)`. Workflow workers can be always-on or scale-to-zero. The default is `workers = 0`, so the server starts a worker on enqueue or cron tick and stops it after an idle window.
+JavaScript workflows live in `<app_root>/workflows/*.ts` and export `defineWorkflow(...)`. Workflow workers can be always-on or scale-to-zero. The default is `workers = 0`, so the server starts a worker when runnable work appears from enqueue, signal, cron, delayed retry/sleep, or lease reclaim, then stops it after an idle window.
 
 Workflow state is durable in SQLite. `ctx.run`, `ctx.sleep`, `ctx.waitFor`, retries, unique enqueue keys, schedules, and signals survive process restarts.
 

@@ -9,8 +9,9 @@
 //!
 //! The same tick also calls `RunsDb::reclaim_expired()` so runs whose worker
 //! died holding a lease (SIGKILL, OOM, host crash, server-side drop without
-//! graceful drain) come back to `pending` once `lease_until` passes — and the
-//! wake callback spins the supervisor up to re-run them.
+//! graceful drain) come back to `pending` once `lease_until` passes. The
+//! callback notifies the dispatcher; the dispatcher wakes a worker only when
+//! runnable work exists.
 
 use std::str::FromStr;
 use std::sync::Arc;
@@ -176,8 +177,9 @@ impl Drop for CronTickerHandle {
 
 /// Fire one tick: enqueue due cron schedules + reclaim any leases that
 /// expired since the last tick. Fires `on_enqueue` when either produced
-/// work so the supervisor wakes up. Extracted from the spawn loop so
-/// tests can drive it without waiting on wall-clock time.
+/// work so the dispatcher can wake a worker if a run is due. Extracted
+/// from the spawn loop so tests can drive it without waiting on wall-clock
+/// time.
 ///
 /// `limiter`, when provided, has its per-worker count decremented once
 /// per reclaimed row so dead workers' in-flight budgets drain back to
@@ -228,8 +230,9 @@ pub fn tick_and_reclaim(
 }
 
 /// Start a cron ticker for an app. `on_enqueue` fires whenever a tick
-/// enqueued a scheduled task or reclaimed an expired lease — the
-/// supervisor wires this to `wake()` so scale-to-zero workers spin up.
+/// enqueued a scheduled task or reclaimed an expired lease. The manager wires
+/// this to the dispatcher so scale-to-zero workers spin up only when work is
+/// runnable.
 pub fn spawn(db: Arc<RunsDb>, on_enqueue: Arc<dyn Fn() + Send + Sync>) -> CronTickerHandle {
     spawn_inner(db, None, on_enqueue)
 }

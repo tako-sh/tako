@@ -511,6 +511,23 @@ impl RunsDb {
         )?;
         Ok(count as u64)
     }
+
+    /// Returns true when at least one pending run is due for workers to
+    /// claim now. Future `run_at` rows stay durable without waking a
+    /// scale-to-zero worker until the dispatcher scan sees them become due.
+    pub fn has_runnable_work(&self) -> Result<bool, RunsDbError> {
+        let conn = self.conn.lock();
+        let exists: i64 = conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM runs
+                WHERE status='pending' AND run_at <= ?1
+                LIMIT 1
+             )",
+            params![now_ms()],
+            |row| row.get(0),
+        )?;
+        Ok(exists != 0)
+    }
 }
 
 pub(crate) fn now_ms() -> i64 {

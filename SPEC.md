@@ -2413,13 +2413,13 @@ queue service.
 
 ### Architecture
 
-- **Queue file**: `{tako_data_dir}/apps/<app>/data/tako/workflows.sqlite` — per-app SQLite with WAL. tako-server is the only process that reads/writes; SDKs reach it exclusively via the per-app unix socket.
+- **Queue file**: `{tako_data_dir}/apps/<app>/data/tako/workflows.sqlite` — per-app SQLite with WAL. tako-server is the only process that reads/writes; SDKs reach it exclusively via the shared internal unix socket.
 - **Tables**:
   - `runs` — one row per run (status, attempts, lease, payload).
   - `steps` — one row per completed step `(run_id, name, result)`. First-write-wins via `INSERT OR IGNORE` so duplicate saves after a retried RPC don't overwrite.
   - `event_waiters` — runs parked on `ctx.waitFor`, indexed by `event_name` for fast lookup on `signal`.
   - `schedules`, `leader_leases` — cron infrastructure.
-- **tako-server (Rust)** — owns the DB, exposes the per-app unix socket, runs the cron ticker, and supervises the worker subprocess. The ticker also calls `reclaim_expired()` every second: any run stuck in `status='running'` past its `lease_until` is moved back to `pending` and the supervisor is woken so a fresh worker picks it up. This is how runs recover from a worker that died mid-execution (SIGKILL, OOM, host crash, server-level restart without graceful drain).
+- **tako-server (Rust)** — owns the DB, exposes the internal unix socket, runs the cron ticker, dispatches runnable work, and supervises the worker subprocess. `EnqueueRun` returns after the run is committed to SQLite; worker startup is a separate dispatch step. The dispatcher coalesces enqueue/signal/cron/reclaim notifications and scans for due pending runs every second, waking a worker only when `status='pending' AND run_at <= now`. The ticker also calls `reclaim_expired()` every second: any run stuck in `status='running'` past its `lease_until` is moved back to `pending`, and the dispatcher wakes a fresh worker when it is runnable. This is how runs recover from a worker that died mid-execution (SIGKILL, OOM, host crash, server-level restart without graceful drain).
 - **Worker process (JS or Go)** — loads user code, claims runs, executes handlers. Separate from HTTP instances so heavy workflow deps don't bloat the request-serving process.
 - **SDK** — each workflow module's default export provides `.enqueue(payload, opts?)`; `signal(event, payload?)` is a top-level export from `tako.sh` that throws `TakoError("TAKO_UNAVAILABLE")` when called outside an installed workflow runtime. Workers use the same RPC client for claim/heartbeat/save/complete/cancel/fail/defer/wait. **No SQLite in any SDK.**
 
@@ -2442,7 +2442,7 @@ workers = 4
 
 Fields:
 
-- **`workers`** — number of always-on worker processes. `0` = scale-to-zero: tako-server spawns the worker on the first enqueue or cron tick, and the worker exits after it has been idle (no claimed runs) long enough for the supervisor's idle window. Default `0`.
+- **`workers`** — number of always-on worker processes. `0` = scale-to-zero: tako-server starts a worker when runnable workflow work appears from enqueue, signal, cron, delayed retry/sleep, or lease reclaim. The worker exits after it has been idle (no claimed runs) long enough for the supervisor's idle window. Default `0`.
 - **`concurrency`** — max parallel runs per worker. Default `10`.
 
 Precedence for unnamed workflows: built-in defaults (`workers = 0`, `concurrency = 10`) < `[workflows]` < `[servers.<name>.workflows]`.
@@ -2518,13 +2518,13 @@ If the worker crashes between `fn` returning and the SaveStep RPC completing, `f
 
 ### Durable `ctx.sleep`
 
-`ctx.sleep(name, ms)` waits until the wake time. Short waits (< 30s) run inline; longer waits **defer the run** via `DeferRun` — the worker exits the handler, the run goes back to `pending` with `run_at = wakeAt`, the supervisor wakes the worker on schedule. Crash-safe across days.
+`ctx.sleep(name, ms)` waits until the wake time. Short waits (< 30s) run inline; longer waits **defer the run** via `DeferRun` — the worker exits the handler, the run goes back to `pending` with `run_at = wakeAt`, and the dispatcher wakes a worker once the run is due. Crash-safe across days.
 
 ### Events: `signal` / `waitFor`
 
 `ctx.waitFor(name, { timeout })` parks the run waiting for a named event. The handler exits, the run goes to `pending` with no `run_at`, an `event_waiters` row is inserted, and the worker can release.
 
-`signal(name, payload?)` from `tako.sh` (or the equivalent internal-socket call in Go) wakes every parked waiter with matching name. The payload is materialized as the waiter's step result and the run is set runnable. `signal` is runtime-guarded: calling it from browser code (where the workflow runtime is not installed) throws a `TakoError("TAKO_UNAVAILABLE")` instead of silently no-oping.
+`signal(name, payload?)` from `tako.sh` (or the equivalent internal-socket call in Go) wakes every parked waiter with matching name. The payload is materialized as the waiter's step result, the run is set runnable, and the dispatcher wakes a worker if needed. `signal` is runtime-guarded: calling it from browser code (where the workflow runtime is not installed) throws a `TakoError("TAKO_UNAVAILABLE")` instead of silently no-oping.
 
 ```ts
 // Worker handler — pause until approval arrives
@@ -2578,7 +2578,7 @@ Both work via sentinel exceptions caught by the worker. Useful for "this work is
 
 ### Dev mode
 
-`tako dev` uses the same workflow architecture as production: tako-dev-server owns the runs DB, enqueue socket, and a `WorkerSupervisor` that spawns a worker subprocess on demand. The worker is **scale-to-zero** (`workers: 0`, `idle_timeout_ms: 3_000`) so it only runs while there's real work, and every wake re-spawns it fresh — so code edits take effect on the next enqueue without restarting `tako dev`. Worker stdout/stderr is tee'd into the same log stream as the app process, with `scope: "worker"` so the CLI can prefix it.
+`tako dev` uses the same workflow architecture as production: tako-dev-server owns the runs DB, internal socket, dispatcher, and a `WorkerSupervisor` that spawns a worker subprocess on demand. The worker is **scale-to-zero** (`workers: 0`, `idle_timeout_ms: 3_000`) so it only runs while there's runnable work, and each post-idle dispatch starts a fresh worker — so code edits take effect on the next runnable enqueue/signal/cron tick without restarting `tako dev`. Worker stdout/stderr is tee'd into the same log stream as the app process, with `scope: "worker"` so the CLI can prefix it.
 
 On every `RegisterApp`, the dev-server registers the app with its embedded `WorkflowManager` — same `ensure()` call as production — so the first workflow enqueue or channel publish from user code doesn't race the registration.
 
