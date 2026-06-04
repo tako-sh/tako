@@ -79,13 +79,6 @@ export function MissionLog({ events, connected, className }: Props) {
 function LogEntry({ event }: { event: MissionLogEvent }) {
   const isError = event.level === "error";
   const isWarn = event.level === "warn";
-  const isSystem = event.source === "System";
-
-  const sourceTagClass = isError
-    ? "text-destructive font-bold"
-    : isWarn
-      ? "text-[--color-tertiary] font-bold"
-      : "text-primary";
 
   const wrapperClass = isError
     ? "flex gap-2 bg-destructive/10 px-2 py-1.5 -mx-2 rounded"
@@ -111,7 +104,6 @@ function LogEntry({ event }: { event: MissionLogEvent }) {
         [{formatTimestamp(event.timestamp)}]
       </span>
       <div className="flex-1 wrap-break-word">
-        {isSystem && <span className={sourceTagClass}>[System] </span>}
         {reqId && <span className="text-muted-foreground/70">{reqId} </span>}
         {event.message}
       </div>

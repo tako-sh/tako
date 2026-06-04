@@ -90,7 +90,7 @@ export default defineWorkflow<OrderShipmentPayload>("order-shipment", {
 
         if (shouldStepFail(requestId, stepName, attempt)) {
           await emit(`${stepName}-failed-${attempt}`, {
-            source: "System",
+            source: base,
             level: "warn",
             message: `${labelFor(stepName, "failed")} (attempt ${attempt}/${MAX_ATTEMPTS})`,
             step: stepName,
