@@ -243,7 +243,7 @@ const homeStructuredData = {
     </div>
     <div class="performance-copy">
       <p>
-        Tako can handle <span class="performance-traffic">heavy traffic</span> even on modest hardware: one small VM served 12.5k HTTPS 200 RPS at 5k concurrency, with zero client errors up to 20k concurrency.
+        Tako can handle <span class="performance-mark performance-traffic">heavy traffic</span> even on modest hardware: one small VM served 12.5k HTTPS 200 RPS at 5k concurrency, with <span class="performance-mark performance-clean">zero client errors</span> up to 20k concurrency.
         In the same public run, it outpaced <a href="https://www.envoyproxy.io/" class="performance-reference-link" target="_blank" rel="noopener noreferrer nofollow">Envoy</a> and <a href="https://caddyserver.com/" class="performance-reference-link" target="_blank" rel="noopener noreferrer nofollow">Caddy</a> under heavy HTTPS load.
         <a href="/performance/" class="performance-link">Read report &rarr;</a>
       </p>
@@ -915,7 +915,7 @@ const homeStructuredData = {
     text-decoration-color: currentColor;
   }
 
-  .performance-traffic {
+  .performance-mark {
     display: inline;
     position: relative;
     isolation: isolate;
@@ -924,9 +924,16 @@ const homeStructuredData = {
     padding: 0 0.16em 0.06em;
     margin: 0 -0.06em;
     border-radius: 2px;
-    background: linear-gradient(to top, rgba(232, 135, 131, 0.28) 0 42%, transparent 42%);
     -webkit-box-decoration-break: clone;
     box-decoration-break: clone;
+  }
+
+  .performance-traffic {
+    background: linear-gradient(to top, rgba(232, 135, 131, 0.28) 0 42%, transparent 42%);
+  }
+
+  .performance-clean {
+    background: linear-gradient(to top, color-mix(in srgb, var(--secondary) 42%, transparent) 0 42%, transparent 42%);
   }
 
   .performance-copy a.performance-reference-link,
