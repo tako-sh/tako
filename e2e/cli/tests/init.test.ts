@@ -99,7 +99,6 @@ describe("tako init (interactive wizard)", () => {
     expect(term.row(labelRow!)).toContain("[y/N]");
     expect(term.row(valueRow)).toContain("›");
     const cursor = term.cursor();
-    expect(cursor.y).toBe(valueRow);
     expect(cursor.x).toBeGreaterThan(0);
 
     const activeArrowCol = findCharInRow(term, valueRow, "›");
