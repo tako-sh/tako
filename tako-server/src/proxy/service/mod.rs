@@ -7,6 +7,7 @@ pub(crate) use backend::BackendResolution;
 
 use super::TakoProxy;
 use super::compression::ResponseCompression;
+use super::observe::RequestObservation;
 use super::request::{
     ClientIpResolution, ForwardedHeaderTrust, build_proxy_cache_key, client_ip_for_source_ip_mode,
     client_ip_from_session, create_production_error_response, https_redirect_host,
@@ -18,7 +19,7 @@ use crate::lb::Backend;
 use crate::metrics::RequestTimer;
 use async_trait::async_trait;
 use bytes::Bytes;
-use pingora_cache::{CacheKey, RespCacheable};
+use pingora_cache::{CacheKey, CacheMeta, ForcedFreshness, HitHandler, RespCacheable};
 use pingora_core::prelude::*;
 use pingora_core::upstreams::peer::HttpPeer;
 use pingora_http::{RequestHeader, ResponseHeader};
@@ -50,6 +51,7 @@ pub struct RequestCtx {
     /// Set when the upstream request is sent; observed when response headers arrive.
     pub(super) upstream_start: Option<Instant>,
     pub(super) compression: ResponseCompression,
+    pub(super) observation: RequestObservation,
 }
 
 impl RequestCtx {
@@ -63,6 +65,7 @@ impl RequestCtx {
         if enabled {
             self.upstream_start = Some(Instant::now());
         }
+        self.observation.start_upstream();
     }
 
     pub(super) fn mark_backend_request_started(&mut self) {
@@ -86,6 +89,10 @@ impl RequestCtx {
         }
         self.backend_request_started = false;
     }
+
+    pub(super) fn record_backend(&mut self, backend: &Backend) {
+        self.observation.set_instance(backend.instance_id());
+    }
 }
 
 #[async_trait]
@@ -103,12 +110,15 @@ impl ProxyHttp for TakoProxy {
             body_bytes_received: 0,
             upstream_start: None,
             compression: ResponseCompression::new(),
+            observation: RequestObservation::new(),
         }
     }
 
     fn init_downstream_modules(&self, _modules: &mut pingora_core::modules::http::HttpModules) {}
 
     async fn request_filter(&self, session: &mut Session, ctx: &mut Self::CTX) -> Result<bool> {
+        ctx.observation.initialize_request_id(session.req_header());
+
         if let Some(cl) = session
             .req_header()
             .headers
@@ -131,9 +141,14 @@ impl ProxyHttp for TakoProxy {
         let host = request_host(session.req_header());
         let hostname = host.split(':').next().unwrap_or(host);
 
+        let route_lookup_started_at = Instant::now();
         let route_match = self.routes.read().select_with_route(hostname, path);
+        ctx.observation
+            .set_route_lookup_elapsed(route_lookup_started_at.elapsed());
 
         if let Some(route_match) = route_match.as_ref() {
+            ctx.observation
+                .set_app_route(&route_match.app, route_match.path.as_deref());
             let resolution = match client_ip_from_session(session) {
                 Some(peer_ip) => Some(client_ip_for_source_ip_mode(
                     session.req_header(),
@@ -158,6 +173,7 @@ impl ProxyHttp for TakoProxy {
                     ClientIpResolution::Accepted(ip) => ip,
                     ClientIpResolution::RejectCloudflareProxy
                     | ClientIpResolution::RejectTrustedProxy => {
+                        ctx.observation.set_handler("proxy", "forbidden");
                         let body = "Forbidden";
                         let mut header = ResponseHeader::build(403, None)?;
                         insert_body_headers(&mut header, "text/plain", body)?;
@@ -169,6 +185,7 @@ impl ProxyHttp for TakoProxy {
                     }
                 };
                 if !self.ip_tracker.try_acquire(ip) {
+                    ctx.observation.set_handler("proxy", "rate_limited");
                     let body = "Too Many Requests";
                     let mut header = ResponseHeader::build(429, None)?;
                     header.insert_header("Retry-After", "1")?;
@@ -187,6 +204,7 @@ impl ProxyHttp for TakoProxy {
             && handler.is_challenge_request(path)
         {
             if let Some(response) = handler.handle_challenge(path) {
+                ctx.observation.set_handler("acme", "served");
                 tracing::info!(path = %path, "Serving ACME challenge response");
                 let mut header = ResponseHeader::build(200, None)?;
                 insert_body_headers(&mut header, "text/plain", &response)?;
@@ -198,6 +216,7 @@ impl ProxyHttp for TakoProxy {
                     .await?;
                 return Ok(true);
             } else {
+                ctx.observation.set_handler("acme", "not_found");
                 tracing::warn!(path = %path, "ACME challenge token not found");
                 let body = "Token not found";
                 let mut header = ResponseHeader::build(404, None)?;
@@ -246,6 +265,7 @@ impl ProxyHttp for TakoProxy {
 
             if should_redirect_http_request(is_effective_https, self.config.redirect_http_to_https)
             {
+                ctx.observation.set_handler("redirect", "https");
                 let path_and_query = session
                     .req_header()
                     .uri
@@ -271,6 +291,7 @@ impl ProxyHttp for TakoProxy {
         let route_match = match route_match {
             Some(route_match) => route_match,
             None => {
+                ctx.observation.set_handler("proxy", "not_found");
                 let body = "Not Found";
                 let mut header = ResponseHeader::build(404, None)?;
                 insert_body_headers(&mut header, "text/plain", body)?;
@@ -283,6 +304,8 @@ impl ProxyHttp for TakoProxy {
         };
         let app_name = route_match.app;
         ctx.matched_route_path = route_match.path;
+        ctx.observation
+            .set_app_route(&app_name, ctx.matched_route_path.as_deref());
 
         if path_uses_tako_handler(path) {
             let path = path.to_string();
@@ -309,39 +332,66 @@ impl ProxyHttp for TakoProxy {
                 return Ok(true);
             }
 
-            if path_looks_like_static_asset(&path)
-                && self
+            if path_looks_like_static_asset(&path) {
+                let matched_route_path = ctx.matched_route_path.clone();
+                if self
                     .try_serve_static_asset(
                         session,
+                        ctx,
                         &app_name,
                         &path,
-                        ctx.matched_route_path.as_deref(),
+                        matched_route_path.as_deref(),
                     )
                     .await?
-            {
-                return Ok(true);
+                {
+                    return Ok(true);
+                }
             }
         }
 
         let backend = match self.resolve_backend(&app_name).await {
-            BackendResolution::Ready(backend) => backend,
+            BackendResolution::Ready {
+                backend,
+                cold_start_wait,
+            } => {
+                if let Some(cold_start_wait) = cold_start_wait {
+                    ctx.observation.set_cold_start_wait(cold_start_wait);
+                }
+                ctx.record_backend(&backend);
+                ctx.observation.set_handler("proxy", "upstream");
+                backend
+            }
             BackendResolution::StartupTimeout => {
+                if let Some(elapsed) = self.cold_start.elapsed(&app_name) {
+                    ctx.observation.set_cold_start_wait(elapsed);
+                }
+                ctx.observation.set_handler("proxy", "startup_timeout");
                 tracing::warn!(app = %app_name, "App startup timed out");
                 return create_production_error_response(session, 504).await;
             }
             BackendResolution::StartupFailed => {
+                if let Some(elapsed) = self.cold_start.elapsed(&app_name) {
+                    ctx.observation.set_cold_start_wait(elapsed);
+                }
+                ctx.observation.set_handler("proxy", "startup_failed");
                 tracing::warn!(app = %app_name, "App failed to start");
                 return create_production_error_response(session, 502).await;
             }
             BackendResolution::QueueFull => {
+                if let Some(elapsed) = self.cold_start.elapsed(&app_name) {
+                    ctx.observation.set_cold_start_wait(elapsed);
+                }
+                ctx.observation.set_handler("proxy", "queue_full");
                 tracing::warn!(app = %app_name, "App startup queue is full");
                 return create_production_error_response(session, 503).await;
             }
             BackendResolution::Unavailable => {
+                ctx.observation.set_handler("proxy", "unavailable");
                 tracing::warn!(app = %app_name, "No healthy backend");
                 return create_production_error_response(session, 503).await;
             }
             BackendResolution::AppMissing => {
+                ctx.observation.set_handler("proxy", "app_missing");
                 self.load_balancer_cleanup(&app_name).await;
                 let body = "Not Found";
                 let mut header = ResponseHeader::build(404, None)?;
@@ -400,6 +450,30 @@ impl ProxyHttp for TakoProxy {
             .set_max_file_size_bytes(cache.max_file_size_bytes);
 
         Ok(())
+    }
+
+    fn cache_miss(&self, session: &mut Session, ctx: &mut Self::CTX) {
+        session.cache.cache_miss();
+        ctx.observation.set_cache_result("miss");
+    }
+
+    async fn cache_hit_filter(
+        &self,
+        _session: &mut Session,
+        _meta: &CacheMeta,
+        _hit_handler: &mut HitHandler,
+        is_fresh: bool,
+        ctx: &mut Self::CTX,
+    ) -> Result<Option<ForcedFreshness>>
+    where
+        Self::CTX: Send + Sync,
+    {
+        if is_fresh {
+            ctx.observation.set_cache_result("hit");
+        } else {
+            ctx.observation.set_cache_result("stale");
+        }
+        Ok(None)
     }
 
     fn cache_key_callback(&self, session: &Session, _ctx: &mut Self::CTX) -> Result<CacheKey> {
@@ -468,6 +542,9 @@ impl ProxyHttp for TakoProxy {
         upstream_request
             .insert_header("X-Forwarded-Proto", proto)
             .unwrap();
+        upstream_request
+            .insert_header("X-Request-ID", ctx.observation.request_id())
+            .unwrap();
 
         if let Some(ip) = ctx.client_ip {
             upstream_request
@@ -490,9 +567,11 @@ impl ProxyHttp for TakoProxy {
     async fn upstream_response_filter(
         &self,
         _session: &mut Session,
-        _upstream_response: &mut ResponseHeader,
+        upstream_response: &mut ResponseHeader,
         ctx: &mut Self::CTX,
     ) -> Result<()> {
+        upstream_response.insert_header("X-Request-ID", ctx.observation.request_id())?;
+        ctx.observation.finish_upstream_response();
         if let (Some(start), Some(backend)) = (ctx.upstream_start.take(), ctx.backend.as_ref()) {
             crate::metrics::record_upstream_duration(
                 &backend.app_name,
@@ -581,19 +660,27 @@ impl ProxyHttp for TakoProxy {
 
         let path = session.req_header().uri.path();
         let method = session.req_header().method.as_str();
-        let app = ctx
-            .backend
-            .as_ref()
-            .map(|backend| &*backend.app_name)
-            .unwrap_or("-");
+        let app = ctx.observation.app();
+        let instance = ctx.observation.instance();
 
-        tracing::debug!(
+        tracing::info!(
             app = app,
+            source = "proxy",
+            request_id = ctx.observation.request_id(),
             host = host,
             method = method,
             path = path,
+            route = ctx.observation.route(),
+            instance = instance,
             status = status,
             https = ctx.is_https,
+            handler = ctx.observation.handler(),
+            handler_result = ctx.observation.handler_result(),
+            cache = ctx.observation.cache_result(),
+            total_ms = ctx.observation.total_ms(),
+            route_lookup_ms = ctx.observation.route_lookup_ms(),
+            cold_start_wait_ms = ctx.observation.cold_start_wait_ms(),
+            upstream_response_ms = ctx.observation.upstream_response_ms(),
             compression_algorithm = ctx.compression.algorithm_log_value(),
             compression_skip_reason = ctx.compression.skip_reason_log_value(),
             compression_vary_required = ctx.compression.vary_required(),

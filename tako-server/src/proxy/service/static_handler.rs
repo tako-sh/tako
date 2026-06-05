@@ -2,6 +2,7 @@ use super::super::request::{
     create_production_error_response, insert_body_headers, static_lookup_paths, stream_static_file,
 };
 use super::super::{AppStaticServer, StaticConfig, StaticFileError, TakoProxy};
+use super::RequestCtx;
 use pingora_core::prelude::*;
 use pingora_http::ResponseHeader;
 use pingora_proxy::Session;
@@ -39,6 +40,7 @@ impl TakoProxy {
     pub(crate) async fn try_serve_static_asset(
         &self,
         session: &mut Session,
+        ctx: &mut RequestCtx,
         app_name: &str,
         request_path: &str,
         matched_route_path: Option<&str>,
@@ -46,27 +48,32 @@ impl TakoProxy {
         let method = session.req_header().method.as_str();
         let is_head = method == "HEAD";
         if method != "GET" && !is_head {
+            ctx.observation.set_handler("static", "bypass");
             return Ok(false);
         }
 
         let Some(app) = self.lb.app_manager().get_app(app_name) else {
+            ctx.observation.set_handler("static", "bypass");
             return Ok(false);
         };
         let app_root = app.config.read().path.clone();
         let static_server = self.static_server_for_app(app_name, &app_root);
         if !static_server.is_available() {
+            ctx.observation.set_handler("static", "bypass");
             return Ok(false);
         }
 
         for lookup_path in static_lookup_paths(request_path, matched_route_path) {
             match static_server.resolve(&lookup_path) {
                 Ok(file) => {
+                    ctx.observation.set_handler("static", "hit");
                     let mut file_handle = if is_head {
                         None
                     } else {
                         match tokio::fs::File::open(&file.path).await {
                             Ok(opened) => Some(opened),
                             Err(error) => {
+                                ctx.observation.set_handler("static", "error");
                                 tracing::error!(
                                     app = %app_name,
                                     path = %file.path.display(),
@@ -99,6 +106,7 @@ impl TakoProxy {
                 }
                 Err(StaticFileError::NotFound(_)) => {}
                 Err(StaticFileError::PathTraversal(_)) | Err(StaticFileError::InvalidPath(_)) => {
+                    ctx.observation.set_handler("static", "error");
                     let body = "Bad Request";
                     let mut header = ResponseHeader::build(400, None)?;
                     insert_body_headers(&mut header, "text/plain", body)?;
@@ -112,6 +120,7 @@ impl TakoProxy {
             }
         }
 
+        ctx.observation.set_handler("static", "miss");
         Ok(false)
     }
 }

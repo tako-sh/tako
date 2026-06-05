@@ -188,7 +188,7 @@ impl TakoProxy {
     pub(crate) async fn try_handle_channel_request(
         &self,
         session: &mut Session,
-        _ctx: &mut RequestCtx,
+        ctx: &mut RequestCtx,
         app_name: &str,
         path: &str,
         _host: &str,
@@ -199,13 +199,28 @@ impl TakoProxy {
                 return Ok(false);
             }
             Err(error) => {
+                ctx.observation.set_handler("channel", "error");
                 return self.write_channel_error(session, error).await;
             }
         };
+        ctx.observation.set_handler("channel", "pending");
 
         let backend = match self.resolve_backend(app_name).await {
-            BackendResolution::Ready(backend) => backend,
+            BackendResolution::Ready {
+                backend,
+                cold_start_wait,
+            } => {
+                if let Some(cold_start_wait) = cold_start_wait {
+                    ctx.observation.set_cold_start_wait(cold_start_wait);
+                }
+                ctx.record_backend(&backend);
+                backend
+            }
             BackendResolution::StartupTimeout => {
+                if let Some(elapsed) = self.cold_start.elapsed(app_name) {
+                    ctx.observation.set_cold_start_wait(elapsed);
+                }
+                ctx.observation.set_handler("channel", "startup_timeout");
                 tracing::warn!(app = %app_name, "Channel auth unavailable: app startup timed out");
                 return self
                     .write_channel_error(session, ChannelError::AuthUnavailable)
@@ -215,6 +230,10 @@ impl TakoProxy {
             | BackendResolution::QueueFull
             | BackendResolution::Unavailable
             | BackendResolution::AppMissing => {
+                if let Some(elapsed) = self.cold_start.elapsed(app_name) {
+                    ctx.observation.set_cold_start_wait(elapsed);
+                }
+                ctx.observation.set_handler("channel", "unavailable");
                 tracing::warn!(app = %app_name, "Channel auth unavailable: backend unavailable");
                 return self
                     .write_channel_error(session, ChannelError::AuthUnavailable)
@@ -236,6 +255,7 @@ impl TakoProxy {
         {
             Ok(meta) => meta,
             Err(error) => {
+                ctx.observation.set_handler_result("error");
                 return self.write_channel_error(session, error).await;
             }
         };
@@ -271,6 +291,7 @@ impl TakoProxy {
             && header.is_none()
             && cookie.is_none()
         {
+            ctx.observation.set_handler_result("unauthorized");
             return self
                 .write_channel_error(session, ChannelError::Unauthorized)
                 .await;
@@ -278,6 +299,7 @@ impl TakoProxy {
 
         if is_websocket {
             if session.req_header().method.as_str() != "GET" {
+                ctx.observation.set_handler_result("error");
                 return self
                     .write_json_response(
                         session,
@@ -287,6 +309,7 @@ impl TakoProxy {
                     .await;
             }
             if meta.transport != Some(ChannelTransport::Ws) {
+                ctx.observation.set_handler_result("unsupported");
                 return self
                     .write_channel_error(session, ChannelError::Unsupported)
                     .await;
@@ -294,6 +317,7 @@ impl TakoProxy {
             let query_cursor = match parse_ws_last_message_id(session.req_header().uri.query()) {
                 Ok(cursor) => cursor,
                 Err(error) => {
+                    ctx.observation.set_handler_result("error");
                     return self.write_channel_error(session, error).await;
                 }
             };
@@ -301,6 +325,7 @@ impl TakoProxy {
                 Ok(store) => store,
                 Err(error) => {
                     tracing::error!("channel store unavailable for {app_name}: {error}");
+                    ctx.observation.set_handler_result("error");
                     return self
                         .write_channel_error(
                             session,
@@ -312,6 +337,7 @@ impl TakoProxy {
 
             if use_first_frame_auth {
                 let Some(endpoint) = instance.endpoint() else {
+                    ctx.observation.set_handler_result("unavailable");
                     return self
                         .write_channel_error(session, ChannelError::AuthUnavailable)
                         .await;
@@ -324,6 +350,7 @@ impl TakoProxy {
                     cookie,
                 };
                 drop(backend);
+                ctx.observation.set_handler_result("websocket");
                 return self
                     .write_channel_websocket(
                         session,
@@ -348,14 +375,19 @@ impl TakoProxy {
 
             let auth_result = match auth_result {
                 Ok(result) => result,
-                Err(error) => return self.write_channel_error(session, error).await,
+                Err(error) => {
+                    ctx.observation.set_handler_result("error");
+                    return self.write_channel_error(session, error).await;
+                }
             };
             if auth_result.transport != Some(ChannelTransport::Ws) {
+                ctx.observation.set_handler_result("unsupported");
                 return self
                     .write_channel_error(session, ChannelError::Unsupported)
                     .await;
             }
             drop(backend);
+            ctx.observation.set_handler_result("websocket");
             return self
                 .write_channel_websocket(
                     session,
@@ -380,7 +412,10 @@ impl TakoProxy {
 
         let auth_result = match auth_result {
             Ok(result) => result,
-            Err(error) => return self.write_channel_error(session, error).await,
+            Err(error) => {
+                ctx.observation.set_handler_result("error");
+                return self.write_channel_error(session, error).await;
+            }
         };
         drop(backend);
 
@@ -388,6 +423,7 @@ impl TakoProxy {
             Ok(store) => store,
             Err(error) => {
                 tracing::error!("channel store unavailable for {app_name}: {error}");
+                ctx.observation.set_handler_result("error");
                 return self
                     .write_channel_error(
                         session,
@@ -397,10 +433,12 @@ impl TakoProxy {
             }
         };
         if let Err(error) = store.sync_channel(&route.channel, &auth_result) {
+            ctx.observation.set_handler_result("error");
             return self.write_channel_error(session, error).await;
         }
 
         if session.req_header().method.as_str() != "GET" {
+            ctx.observation.set_handler_result("error");
             return self
                 .write_json_response(
                     session,
@@ -420,8 +458,12 @@ impl TakoProxy {
         .and_then(|cursor| store.replay_cursor(&route.channel, cursor))
         {
             Ok(cursor) => cursor,
-            Err(error) => return self.write_channel_error(session, error).await,
+            Err(error) => {
+                ctx.observation.set_handler_result("error");
+                return self.write_channel_error(session, error).await;
+            }
         };
+        ctx.observation.set_handler_result("sse");
         self.write_channel_events(session, &store, &route.channel, cursor, &auth_result)
             .await
     }

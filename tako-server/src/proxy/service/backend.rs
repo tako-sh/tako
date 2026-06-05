@@ -1,9 +1,13 @@
 use super::super::TakoProxy;
 use crate::lb::Backend;
 use crate::scaling::WaitForReadyOutcome;
+use std::time::Duration;
 
 pub(crate) enum BackendResolution {
-    Ready(Backend),
+    Ready {
+        backend: Backend,
+        cold_start_wait: Option<Duration>,
+    },
     StartupTimeout,
     StartupFailed,
     QueueFull,
@@ -14,7 +18,10 @@ pub(crate) enum BackendResolution {
 impl TakoProxy {
     pub(crate) async fn resolve_backend(&self, app_name: &str) -> BackendResolution {
         if let Some(backend) = self.lb.get_backend(app_name) {
-            return BackendResolution::Ready(backend);
+            return BackendResolution::Ready {
+                backend,
+                cold_start_wait: None,
+            };
         }
 
         let Some(app) = self.lb.app_manager().get_app(app_name) else {
@@ -46,12 +53,18 @@ impl TakoProxy {
             });
         }
 
+        let wait_started_at = std::time::Instant::now();
         match self.cold_start.wait_for_ready_outcome(app_name).await {
-            WaitForReadyOutcome::Ready => self
-                .lb
-                .get_backend(app_name)
-                .map(BackendResolution::Ready)
-                .unwrap_or(BackendResolution::StartupFailed),
+            WaitForReadyOutcome::Ready => {
+                self.lb
+                    .get_backend(app_name)
+                    .map_or(BackendResolution::StartupFailed, |backend| {
+                        BackendResolution::Ready {
+                            backend,
+                            cold_start_wait: Some(wait_started_at.elapsed()),
+                        }
+                    })
+            }
             WaitForReadyOutcome::Timeout => BackendResolution::StartupTimeout,
             WaitForReadyOutcome::Failed => BackendResolution::StartupFailed,
             WaitForReadyOutcome::QueueFull => BackendResolution::QueueFull,

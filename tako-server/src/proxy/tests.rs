@@ -183,6 +183,7 @@ fn request_context_skips_metric_timers_when_metrics_are_disabled() {
         body_bytes_received: 0,
         upstream_start: None,
         compression: super::compression::ResponseCompression::new(),
+        observation: super::observe::RequestObservation::new(),
     };
 
     ctx.start_request_metrics("test-app", false);
@@ -907,7 +908,7 @@ async fn resolve_backend_waits_for_ready_on_on_demand_apps() {
     });
 
     let resolution = proxy.resolve_backend("test-app").await;
-    assert!(matches!(resolution, BackendResolution::Ready(_)));
+    assert!(matches!(resolution, BackendResolution::Ready { .. }));
 }
 
 #[tokio::test]
