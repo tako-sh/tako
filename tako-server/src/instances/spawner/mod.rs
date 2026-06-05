@@ -9,9 +9,7 @@ use super::{App, Instance, InstanceError, InstanceEvent, InstanceState};
 #[cfg(test)]
 use health_probe::probe_endpoint_tcp;
 use readiness::{startup_timeout_detail, wait_for_ready};
-use spawn_command::{
-    build_instance_args, build_instance_env, resolve_app_user, spawn_child_process,
-};
+use spawn_command::{build_instance_args, build_instance_env, spawn_child_process};
 use std::path::PathBuf;
 use std::sync::Arc;
 #[cfg(test)]
@@ -20,9 +18,8 @@ use tokio::time::timeout;
 
 /// Spawns and monitors app instances
 pub struct Spawner {
-    /// UID/GID of the `tako-app` user for process isolation (Unix only).
-    #[cfg(unix)]
-    app_user: Result<Option<(u32, u32)>, String>,
+    /// Server data directory used to derive app cgroup paths.
+    data_dir: PathBuf,
     /// Path to the shared Tako internal socket. When present, injected into
     /// every spawned instance as `TAKO_INTERNAL_SOCKET` so workflow `.enqueue()`
     /// and channel `.publish()` from app code work. `None` in tests.
@@ -32,10 +29,14 @@ pub struct Spawner {
 impl Spawner {
     pub fn new() -> Self {
         Self {
-            #[cfg(unix)]
-            app_user: resolve_app_user().map_err(|error| error.to_string()),
+            data_dir: PathBuf::new(),
             internal_socket: None,
         }
+    }
+
+    pub fn with_data_dir(mut self, path: PathBuf) -> Self {
+        self.data_dir = path;
+        self
     }
 
     pub fn with_internal_socket(mut self, path: PathBuf) -> Self {
@@ -61,16 +62,15 @@ impl Spawner {
         let extra_args = build_instance_args(&instance);
 
         #[cfg(unix)]
-        let app_user = app_user_for_spawn(&self.app_user, crate::unix::is_root())
-            .map_err(InstanceError::SpawnError)?;
-        #[cfg(not(unix))]
-        let app_user = None;
+        let isolation = crate::isolation::app_process_isolation(&self.data_dir, &app_name)
+            .map_err(|error| InstanceError::SpawnError(std::io::Error::other(error)))?;
 
         let (child, readiness_fd) = spawn_child_process(
             &config,
             &env,
             &extra_args,
-            app_user,
+            #[cfg(unix)]
+            isolation,
             instance.internal_token(),
             &config.secrets,
         )
@@ -172,33 +172,6 @@ impl Spawner {
             .await,
             Ok(true)
         )
-    }
-}
-
-#[cfg(unix)]
-fn app_user_for_spawn(
-    app_user: &Result<Option<(u32, u32)>, String>,
-    is_root: bool,
-) -> std::io::Result<Option<(u32, u32)>> {
-    match app_user {
-        Ok(Some(user)) => Ok(Some(*user)),
-        Ok(None) if is_root => Err(std::io::Error::other(
-            "tako-app user not found; refusing to spawn app process as root",
-        )),
-        Ok(None) => {
-            tracing::warn!("tako-app user not found; app processes will run as current user");
-            Ok(None)
-        }
-        Err(error) if is_root => Err(std::io::Error::other(format!(
-            "failed to resolve tako-app user: {error}"
-        ))),
-        Err(error) => {
-            tracing::warn!(
-                error = %error,
-                "Failed to resolve tako-app user; app processes will run as current user"
-            );
-            Ok(None)
-        }
     }
 }
 

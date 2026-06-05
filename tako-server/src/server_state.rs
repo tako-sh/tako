@@ -464,6 +464,16 @@ impl ServerState {
 
         let secrets = self.state_store.get_secrets(app_name).unwrap_or_default();
         let storages = self.state_store.get_storages(app_name).unwrap_or_default();
+        let isolation = match crate::isolation::app_process_isolation(
+            &self.runtime.data_dir,
+            app_name,
+        ) {
+            Ok(isolation) => isolation,
+            Err(error) => {
+                tracing::warn!(app = app_name, error = %error, "Skipping workflow engine: failed to prepare app isolation");
+                return;
+            }
+        };
 
         let app = app_name.to_string();
         let app_for_spec = app.clone();
@@ -484,6 +494,7 @@ impl ServerState {
                     worker_env,
                     secrets,
                     storages,
+                    Some(isolation),
                 )
             })
             .await;

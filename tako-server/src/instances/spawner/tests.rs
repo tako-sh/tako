@@ -22,39 +22,16 @@ fn test_spawner_creation() {
 
 #[test]
 #[cfg(unix)]
-fn resolve_app_user_returns_none_gracefully_for_missing_user() {
-    assert!(
-        crate::unix::lookup_user_ids("this-user-definitely-does-not-exist-tako-test")
-            .unwrap()
-            .is_none(),
-        "expected nonexistent user to return none"
-    );
-    // resolve_app_user looks up "tako-app"; on dev machines it won't exist.
-    // Calling Spawner::new() must not panic regardless.
-    let _spawner = Spawner::new();
-}
+fn app_process_isolation_uses_current_user_when_not_root() {
+    let temp = tempfile::tempdir().unwrap();
+    if crate::unix::is_root() {
+        return;
+    }
 
-#[test]
-#[cfg(unix)]
-fn app_user_for_spawn_fails_closed_for_root_lookup_error() {
-    let err = app_user_for_spawn(&Err("lookup failed".to_string()), true).unwrap_err();
-    assert_eq!(err.kind(), std::io::ErrorKind::Other);
-    assert!(err.to_string().contains("lookup failed"));
-}
-
-#[test]
-#[cfg(unix)]
-fn app_user_for_spawn_fails_closed_for_root_missing_user() {
-    let err = app_user_for_spawn(&Ok(None), true).unwrap_err();
-    assert_eq!(err.kind(), std::io::ErrorKind::Other);
-    assert!(err.to_string().contains("refusing to spawn"));
-}
-
-#[test]
-#[cfg(unix)]
-fn app_user_for_spawn_falls_back_for_non_root_lookup_error() {
-    let app_user = app_user_for_spawn(&Err("lookup failed".to_string()), false).unwrap();
-    assert_eq!(app_user, None);
+    let isolation =
+        crate::isolation::app_process_isolation(temp.path(), "demo/production").unwrap();
+    assert!(isolation.user.is_none());
+    assert!(isolation.cgroup.is_none());
 }
 
 #[test]
@@ -74,7 +51,19 @@ fn spawn_child_process_returns_permission_denied_when_app_user_switch_fails() {
         &config,
         &HashMap::new(),
         &[],
-        Some((0, 0)),
+        tako_spawn::ProcessIsolation {
+            user: Some(tako_spawn::UserIds {
+                uid: 0,
+                gid: 0,
+                supplementary_gids: Vec::new(),
+            }),
+            resource_limits: tako_spawn::ResourceLimits {
+                open_files: None,
+                processes: None,
+                address_space_bytes: None,
+            },
+            ..Default::default()
+        },
         "token",
         &HashMap::new(),
     );
@@ -106,7 +95,14 @@ async fn spawn_child_process_does_not_inherit_server_env() {
         &config,
         &HashMap::new(),
         &[],
-        None,
+        tako_spawn::ProcessIsolation {
+            resource_limits: tako_spawn::ResourceLimits {
+                open_files: None,
+                processes: None,
+                address_space_bytes: None,
+            },
+            ..Default::default()
+        },
         "token",
         &HashMap::new(),
     )

@@ -96,6 +96,14 @@ impl crate::ServerState {
                 return Response::error(format!("Failed to create app data dirs: {error}"));
             }
         };
+        if let Err(error) = crate::isolation::prepare_app_filesystem_isolation(
+            &self.runtime.data_dir,
+            app_name,
+            Some(&release_path),
+            &data_paths,
+        ) {
+            return Response::error(format!("Failed to prepare app isolation: {error}"));
+        }
 
         let secrets = if let Some(new_secrets) = secrets {
             new_secrets

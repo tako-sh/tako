@@ -64,6 +64,8 @@ pub struct WorkerSpec {
     /// parent's stdio (production default — lets journald/systemd capture
     /// it).
     pub log_sink: Option<WorkerLogSink>,
+    /// Optional production process isolation for server-managed workers.
+    pub isolation: Option<tako_spawn::ProcessIsolation>,
 }
 
 impl WorkerSpec {
@@ -399,6 +401,10 @@ impl WorkerSupervisor {
                 .map_err(SupervisorError::Spawn)?;
         #[cfg(unix)]
         let bootstrap_fd: RawFd = bootstrap_read_end.as_raw_fd();
+        #[cfg(unix)]
+        let isolation = self.spec.isolation.clone();
+        #[cfg(unix)]
+        let cgroup = isolation.as_ref().and_then(|value| value.cgroup.clone());
 
         #[cfg(unix)]
         unsafe {
@@ -408,6 +414,9 @@ impl WorkerSupervisor {
                         return Err(std::io::Error::last_os_error());
                     }
                     libc::close(bootstrap_fd);
+                }
+                if let Some(isolation) = &isolation {
+                    tako_spawn::install_process_isolation(isolation)?;
                 }
                 Ok(())
             });
@@ -442,6 +451,15 @@ impl WorkerSupervisor {
         };
         #[cfg(not(unix))]
         let mut child = spawn_result?;
+
+        #[cfg(unix)]
+        if let Some(cgroup) = cgroup
+            && let Some(pid) = child.id()
+            && let Err(error) = tako_spawn::assign_pid_to_cgroup(&cgroup, pid)
+        {
+            let _ = child.start_kill();
+            return Err(SupervisorError::Spawn(error));
+        }
 
         if let Some(sink) = &self.spec.log_sink {
             if let Some(stdout) = child.stdout.take() {

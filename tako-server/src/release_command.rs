@@ -9,6 +9,8 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
 
+#[cfg(unix)]
+use tako_spawn::ProcessIsolation;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command as TokioCommand;
 use tokio::time::timeout;
@@ -35,8 +37,17 @@ pub async fn run(
     command_line: &str,
     cwd: &Path,
     env: &HashMap<String, String>,
+    #[cfg(unix)] isolation: Option<ProcessIsolation>,
 ) -> Result<ReleaseCommandOutcome, String> {
-    run_with_timeout(command_line, cwd, env, RELEASE_COMMAND_TIMEOUT).await
+    run_with_timeout(
+        command_line,
+        cwd,
+        env,
+        RELEASE_COMMAND_TIMEOUT,
+        #[cfg(unix)]
+        isolation,
+    )
+    .await
 }
 
 async fn run_with_timeout(
@@ -44,6 +55,7 @@ async fn run_with_timeout(
     cwd: &Path,
     env: &HashMap<String, String>,
     timeout_duration: Duration,
+    #[cfg(unix)] isolation: Option<ProcessIsolation>,
 ) -> Result<ReleaseCommandOutcome, String> {
     let mut cmd = TokioCommand::new("sh");
     cmd.args(["-c", command_line])
@@ -53,10 +65,28 @@ async fn run_with_timeout(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
+    #[cfg(unix)]
+    let cgroup = isolation.as_ref().and_then(|value| value.cgroup.clone());
+    #[cfg(unix)]
+    if let Some(isolation) = isolation {
+        unsafe {
+            cmd.pre_exec(move || tako_spawn::install_process_isolation(&isolation));
+        }
+    }
 
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("Failed to spawn release command: {e}"))?;
+    #[cfg(unix)]
+    if let Some(cgroup) = cgroup
+        && let Some(pid) = child.id()
+        && let Err(error) = tako_spawn::assign_pid_to_cgroup(&cgroup, pid)
+    {
+        let _ = child.start_kill();
+        return Err(format!(
+            "Failed to assign release command to cgroup: {error}"
+        ));
+    }
 
     let mut stdout_pipe = child.stdout.take().expect("piped stdout");
     let mut stderr_pipe = child.stderr.take().expect("piped stderr");
@@ -106,7 +136,9 @@ mod tests {
     #[tokio::test]
     async fn runs_successful_command() {
         let dir = TempDir::new().unwrap();
-        let outcome = run("echo hello", dir.path(), &empty_env()).await.unwrap();
+        let outcome = run("echo hello", dir.path(), &empty_env(), None)
+            .await
+            .unwrap();
         assert!(outcome.succeeded());
         assert_eq!(outcome.exit_code, Some(0));
         assert!(outcome.stdout.contains("hello"));
@@ -116,7 +148,7 @@ mod tests {
     #[tokio::test]
     async fn captures_nonzero_exit() {
         let dir = TempDir::new().unwrap();
-        let outcome = run("exit 7", dir.path(), &empty_env()).await.unwrap();
+        let outcome = run("exit 7", dir.path(), &empty_env(), None).await.unwrap();
         assert!(!outcome.succeeded());
         assert_eq!(outcome.exit_code, Some(7));
     }
@@ -126,7 +158,9 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let mut env = empty_env();
         env.insert("FOO".to_string(), "bar-value".to_string());
-        let outcome = run("printf %s \"$FOO\"", dir.path(), &env).await.unwrap();
+        let outcome = run("printf %s \"$FOO\"", dir.path(), &env, None)
+            .await
+            .unwrap();
         assert!(outcome.succeeded());
         assert_eq!(outcome.stdout, "bar-value");
     }
@@ -136,7 +170,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let marker = dir.path().join("marker.txt");
         std::fs::write(&marker, "hi").unwrap();
-        let outcome = run("ls marker.txt", dir.path(), &empty_env())
+        let outcome = run("ls marker.txt", dir.path(), &empty_env(), None)
             .await
             .unwrap();
         assert!(outcome.succeeded());
@@ -146,7 +180,7 @@ mod tests {
     #[tokio::test]
     async fn captures_stderr() {
         let dir = TempDir::new().unwrap();
-        let outcome = run("echo oops 1>&2; exit 1", dir.path(), &empty_env())
+        let outcome = run("echo oops 1>&2; exit 1", dir.path(), &empty_env(), None)
             .await
             .unwrap();
         assert_eq!(outcome.exit_code, Some(1));
@@ -163,6 +197,7 @@ mod tests {
             dir.path(),
             &empty_env(),
             Duration::from_millis(25),
+            None,
         )
         .await
         .unwrap();
@@ -180,9 +215,30 @@ mod tests {
             "printf %s \"${RELEASE_TEST_LEAK:-EMPTY}\"",
             dir.path(),
             &empty_env(),
+            None,
         )
         .await
         .unwrap();
         assert_eq!(outcome.stdout, "EMPTY");
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn applies_release_command_umask() {
+        let dir = TempDir::new().unwrap();
+        let isolation = ProcessIsolation {
+            resource_limits: tako_spawn::ResourceLimits {
+                open_files: None,
+                processes: None,
+                address_space_bytes: None,
+            },
+            umask: Some(0o027),
+            ..Default::default()
+        };
+        let outcome = run("umask", dir.path(), &empty_env(), Some(isolation))
+            .await
+            .unwrap();
+        assert!(outcome.succeeded());
+        assert_eq!(outcome.stdout.trim(), "0027");
     }
 }

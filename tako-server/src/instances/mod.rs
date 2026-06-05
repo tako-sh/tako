@@ -674,7 +674,11 @@ impl AppManager {
         let internal_socket = tako_workflows::internal_socket_path(&data_dir);
         Self {
             apps: DashMap::new(),
-            spawner: Arc::new(Spawner::new().with_internal_socket(internal_socket)),
+            spawner: Arc::new(
+                Spawner::new()
+                    .with_data_dir(data_dir.clone())
+                    .with_internal_socket(internal_socket),
+            ),
             event_tx: tx,
             event_rx: RwLock::new(Some(rx)),
             data_dir,
