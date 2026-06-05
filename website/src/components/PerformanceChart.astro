@@ -6,7 +6,9 @@ interface Props {
 }
 
 const { chart } = Astro.props;
-const xAxisPoints = chart.series.at(0)?.points ?? [];
+const xAxisValues = Array.from(new Set(chart.series.flatMap((series) => series.points.map((point) => point.conc)))).sort(
+  (a, b) => a - b,
+);
 
 const chartBox = {
   width: 980,
@@ -23,12 +25,14 @@ const plotHeight = chartBox.height - chartBox.top - chartBox.bottom;
 const xFor = (index: number, count: number): number =>
   chartBox.left + (count <= 1 ? 0 : (index / (count - 1)) * plotWidth);
 
+const xForConc = (conc: number): number => xFor(xAxisValues.indexOf(conc), xAxisValues.length);
+
 const yFor = (value: number, max: number): number =>
   chartBox.top + (1 - value / max) * plotHeight;
 
 const linePoints = (points: BenchPoint[], key: keyof BenchPoint, max: number): string =>
   points
-    .map((point, index) => `${xFor(index, points.length).toFixed(1)},${yFor(Number(point[key]), max).toFixed(1)}`)
+    .map((point) => `${xForConc(point.conc).toFixed(1)},${yFor(Number(point[key]), max).toFixed(1)}`)
     .join(" ");
 
 const formatValue = (value: number, unit: ChartUnit): string => {
@@ -76,9 +80,9 @@ const formatValue = (value: number, unit: ChartUnit): string => {
       }
       <line class="chart-axis" x1={chartBox.left} x2={chartBox.width - chartBox.right} y1={chartBox.height - chartBox.bottom} y2={chartBox.height - chartBox.bottom} />
       {
-        xAxisPoints.map((point, index) => (
-          <text class="chart-x" x={xFor(index, xAxisPoints.length)} y={chartBox.height - 22} text-anchor="middle">
-            {point.conc >= 1000 ? `c${point.conc / 1000}k` : `c${point.conc}`}
+        xAxisValues.map((conc) => (
+          <text class="chart-x" x={xForConc(conc)} y={chartBox.height - 22} text-anchor="middle">
+            {conc >= 1000 ? `c${conc / 1000}k` : `c${conc}`}
           </text>
         ))
       }
@@ -91,10 +95,10 @@ const formatValue = (value: number, unit: ChartUnit): string => {
               stroke={series.color}
             />
             {
-              series.points.map((point, index) => (
+              series.points.map((point) => (
                 <circle
                   class:list={["chart-point", series.id === "tako" && "chart-point-tako"]}
-                  cx={xFor(index, series.points.length)}
+                  cx={xForConc(point.conc)}
                   cy={yFor(Number(point[chart.key]), chart.max)}
                   r={series.id === "tako" ? 4.8 : 3.6}
                   fill={series.color}

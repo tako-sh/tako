@@ -6,9 +6,12 @@ import {
   featureCharts,
   heavyRows,
   httpCharts,
+  memoryRows,
   performanceStructuredData,
 } from "../data/performance";
+import type { SummaryMetric } from "../data/performance";
 
+const metricClasses = (metric: SummaryMetric) => ["metric-cell", !metric.clean && "metric-cell-overload"];
 ---
 
 <BaseLayout
@@ -104,7 +107,7 @@ import {
         <h2 id="proxy-results">Raw HTTPS proxy path<a class="heading-anchor" href="#proxy-results" aria-label="Link to section: Raw HTTPS proxy path" title="Link to this section">#</a></h2>
       </div>
       <p>
-        Same route, same self-signed TLS certificate, same upstream application, same benchmark VM. The heavy rows show the real capacity of one small VM when load generator, proxy, and app all share two vCPUs.
+        Same route, same self-signed TLS certificate, same upstream application, same benchmark VM. The heavy rows show saturation behavior on one small VM; Memory uses a focused five-proxy rerun with process PSS sampling.
       </p>
     </div>
 
@@ -114,7 +117,7 @@ import {
 
     <div class="table-wrap">
       <table>
-        <caption>Heavy rows, clean 200 RPS and sampled resources</caption>
+        <caption>Heavy rows; secondary labels show the percentage of requests that returned 200</caption>
         <thead>
           <tr>
             <th scope="col">proxy</th>
@@ -122,20 +125,67 @@ import {
             <th scope="col">c10000</th>
             <th scope="col">c20000</th>
             <th scope="col">c20000 p99</th>
-            <th scope="col">proxy RSS</th>
-            <th scope="col">readout</th>
+            <th scope="col">notes</th>
           </tr>
         </thead>
         <tbody>
           {heavyRows.map((row) => (
             <tr>
               <th scope="row">{row.proxy}</th>
+              <td>
+                <span class:list={metricClasses(row.c5000)}>
+                  <span class="metric-value">{row.c5000.value}</span>
+                  {row.c5000.detail && <span class="metric-detail">{row.c5000.detail}</span>}
+                </span>
+              </td>
+              <td>
+                <span class:list={metricClasses(row.c10000)}>
+                  <span class="metric-value">{row.c10000.value}</span>
+                  {row.c10000.detail && <span class="metric-detail">{row.c10000.detail}</span>}
+                </span>
+              </td>
+              <td>
+                <span class:list={metricClasses(row.c20000)}>
+                  <span class="metric-value">{row.c20000.value}</span>
+                  {row.c20000.detail && <span class="metric-detail">{row.c20000.detail}</span>}
+                </span>
+              </td>
+              <td>
+                <span class:list={metricClasses(row.p99)}>
+                  <span class="metric-value">{row.p99.value}</span>
+                  {row.p99.detail && <span class="metric-detail">{row.p99.detail}</span>}
+                </span>
+              </td>
+              <td>{row.note}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="table-wrap">
+      <p class="table-note">
+        <strong>Caddy c20000 is not equal capacity.</strong> Its Memory is lower than Tako's, but Caddy only returned 94.14% 200 while Tako returned 100% 200.
+      </p>
+      <table>
+        <caption>Memory detail from the focused PSS rerun</caption>
+        <thead>
+          <tr>
+            <th scope="col">proxy</th>
+            <th scope="col">c5000 Memory</th>
+            <th scope="col">c10000 Memory</th>
+            <th scope="col">c20000 Memory</th>
+            <th scope="col">c20000 200%</th>
+          </tr>
+        </thead>
+        <tbody>
+          {memoryRows.map((row) => (
+            <tr>
+              <th scope="row">{row.proxy}</th>
               <td>{row.c5000}</td>
               <td>{row.c10000}</td>
               <td>{row.c20000}</td>
-              <td>{row.p99}</td>
-              <td>{row.rss}</td>
-              <td>{row.note}</td>
+              <td>{row.c20000Detail}</td>
             </tr>
           ))}
         </tbody>
@@ -171,7 +221,7 @@ import {
         Tako stayed clean while doing product work a static reverse proxy does not need to do: route lookup, source IP derivation, per-client limiter accounting, app and instance selection, in-flight accounting, upstream peer construction, and forwarding header normalization.
       </p>
       <p>
-        The report still keeps static proxy references, p99, memory, and clean-run percentages in view because those are the tuning levers. Future runs can isolate larger-VM behavior, external same-region load generation, and narrower Pingora session and upstream-proxy costs under 10k to 20k live TLS connections.
+        The report still keeps static proxy references, p99, Memory, and clean-run percentages in view because those are the tuning levers. Future runs can isolate larger-VM behavior, external same-region load generation, and narrower Pingora session and upstream-proxy costs under 10k to 20k live TLS connections.
       </p>
     </div>
   </section>
@@ -587,6 +637,15 @@ import {
     background: var(--panel-strong);
   }
 
+  .table-note {
+    margin: 0;
+    padding: 18px 18px 0;
+    color: var(--ink);
+    font-size: 15px;
+    line-height: 1.45;
+    max-width: 900px;
+  }
+
   table {
     width: 100%;
     min-width: 820px;
@@ -615,6 +674,27 @@ import {
 
   td {
     color: var(--muted);
+  }
+
+  .metric-cell {
+    display: inline-flex;
+    flex-direction: column;
+    gap: 2px;
+    vertical-align: top;
+  }
+
+  .metric-value {
+    color: var(--muted);
+  }
+
+  .metric-cell-overload .metric-value {
+    color: var(--ink);
+  }
+
+  .metric-detail {
+    color: color-mix(in oklch, var(--muted) 74%, var(--paper));
+    font-size: 13px;
+    line-height: 1.2;
   }
 
   tbody tr:last-child th,

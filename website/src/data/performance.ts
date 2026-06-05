@@ -31,6 +31,29 @@ export type ChartConfig = {
   series: Series[];
 };
 
+export type SummaryMetric = {
+  value: string;
+  clean: boolean;
+  detail?: string;
+};
+
+export type SummaryRow = {
+  proxy: string;
+  c5000: SummaryMetric;
+  c10000: SummaryMetric;
+  c20000: SummaryMetric;
+  p99: SummaryMetric;
+  note: string;
+};
+
+export type MemoryComparisonRow = {
+  proxy: string;
+  c5000: string;
+  c10000: string;
+  c20000: string;
+  c20000Detail: string;
+};
+
 const withFailure = (points: Omit<BenchPoint, "failure">[]): BenchPoint[] =>
   points.map((point) => ({
     ...point,
@@ -587,6 +610,78 @@ const featureSeries: Series[] = [
   },
 ];
 
+const memoryPoint = (
+  conc: number,
+  memory: number,
+  rps200: number,
+  okPct: number,
+  clientError: number,
+): BenchPoint => ({
+  conc,
+  rps200,
+  p99: 0,
+  non200: Number((100 - okPct - clientError).toFixed(2)),
+  clientError,
+  failure: Number((100 - okPct).toFixed(2)),
+  cpu: 0,
+  proxyCpu: 0,
+  proxyRss: memory,
+  appRss: 0,
+});
+
+const memorySeries: Series[] = [
+  {
+    id: "nginx-memory",
+    label: "nginx",
+    color: "oklch(33% 0.03 285)",
+    points: [
+      memoryPoint(5000, 159, 17975, 100, 0),
+      memoryPoint(10000, 159, 17141, 100, 0),
+      memoryPoint(20000, 451, 10287, 99.43, 0),
+    ],
+  },
+  {
+    id: "haproxy-memory",
+    label: "HAProxy",
+    color: "oklch(60% 0.09 168)",
+    points: [
+      memoryPoint(5000, 248, 17901, 100, 0),
+      memoryPoint(10000, 406, 15738, 100, 0),
+      memoryPoint(20000, 624, 11905, 100, 0),
+    ],
+  },
+  {
+    id: "tako-memory",
+    label: "Tako",
+    color: "oklch(64% 0.14 22)",
+    points: [
+      memoryPoint(5000, 511, 12895, 100, 0),
+      memoryPoint(10000, 911, 10979, 100, 0),
+      memoryPoint(20000, 1700, 7818, 100, 0),
+    ],
+  },
+  {
+    id: "envoy-memory",
+    label: "Envoy",
+    color: "oklch(62% 0.12 78)",
+    points: [
+      memoryPoint(5000, 323, 4761, 99.76, 0.24),
+      memoryPoint(10000, 554, 8566, 91.25, 0),
+      memoryPoint(20000, 1004, 624, 51.41, 0.66),
+    ],
+  },
+  {
+    id: "caddy-memory",
+    label: "Caddy",
+    color: "oklch(49% 0.08 296)",
+    points: [
+      memoryPoint(5000, 621, 5258, 99.96, 0),
+      memoryPoint(10000, 1213, 1822, 100, 0),
+      memoryPoint(20000, 1511, 1610, 94.14, 5.86),
+    ],
+  },
+];
+
 export const httpCharts: ChartConfig[] = [
   {
     title: "HTTP 200 RPS by concurrency",
@@ -622,15 +717,15 @@ export const httpCharts: ChartConfig[] = [
     series: proxySeries,
   },
   {
-    title: "Proxy memory by concurrency",
+    title: "Memory by concurrency",
     eyebrow: "memory",
     description:
-      "Memory is published beside throughput so connection cost stays visible. The high-concurrency Tako rows include Pingora/TLS keepalive state from live downstream connections.",
+      "Memory is measured with process PSS, which avoids counting shared pages twice. At c20000, Caddy shows lower Memory than Tako, but Caddy also times out part of the load; compare the Memory line with the 200% labels below.",
     key: "proxyRss",
-    max: 2800,
-    ticks: [0, 700, 1400, 2100, 2800],
+    max: 1800,
+    ticks: [0, 450, 900, 1350, 1800],
     unit: "mib",
-    series: proxySeries,
+    series: memorySeries,
   },
 ];
 
@@ -659,51 +754,84 @@ export const featureCharts: ChartConfig[] = [
   },
 ];
 
-export const heavyRows = [
+export const heavyRows: SummaryRow[] = [
   {
     proxy: "nginx",
-    c5000: "17.7k",
-    c10000: "15.3k",
-    c20000: "11.0k",
-    p99: "3.8s",
-    rss: "262 MiB",
+    c5000: { value: "17.7k", clean: true },
+    c10000: { value: "15.3k", clean: true },
+    c20000: { value: "11.0k", clean: true },
+    p99: { value: "3.8s", clean: true },
     note: "Static-proxy RPS reference",
   },
   {
     proxy: "HAProxy",
-    c5000: "17.1k",
-    c10000: "14.8k",
-    c20000: "11.2k",
-    p99: "15.7s",
-    rss: "896 MiB",
+    c5000: { value: "17.1k", clean: true },
+    c10000: { value: "14.8k", clean: true },
+    c20000: { value: "11.2k", clean: true },
+    p99: { value: "15.7s", clean: true },
     note: "High RPS, wider p99",
   },
   {
     proxy: "Tako",
-    c5000: "12.5k",
-    c10000: "10.4k",
-    c20000: "7.3k",
-    p99: "15.5s",
-    rss: "2.7 GiB",
+    c5000: { value: "12.5k", clean: true },
+    c10000: { value: "10.4k", clean: true },
+    c20000: { value: "7.3k", clean: true },
+    p99: { value: "15.5s", clean: true },
     note: "Clean through c20000",
   },
   {
     proxy: "Envoy",
-    c5000: "4.7k",
-    c10000: "3.7k",
-    c20000: "0.8k",
-    p99: "26.6s",
-    rss: "999 MiB",
-    note: "High-load pressure",
+    c5000: { value: "4.7k", clean: false, detail: "99.72% 200" },
+    c10000: { value: "3.7k", clean: false, detail: "96.45% 200" },
+    c20000: { value: "0.8k", clean: false, detail: "58.70% 200" },
+    p99: { value: "26.6s", clean: false, detail: "58.70% 200" },
+    note: "58.70% 200 at c20000",
   },
   {
     proxy: "Caddy",
-    c5000: "5.2k",
-    c10000: "1.7k",
-    c20000: "1.3k",
-    p99: "26.4s",
-    rss: "1.5 GiB",
-    note: "High-load pressure",
+    c5000: { value: "5.2k", clean: false, detail: "99.86% 200" },
+    c10000: { value: "1.7k", clean: false, detail: "99.94% 200" },
+    c20000: { value: "1.3k", clean: false, detail: "92.49% 200" },
+    p99: { value: "26.4s", clean: false, detail: "92.49% 200" },
+    note: "92.49% 200 at c20000",
+  },
+];
+
+export const memoryRows: MemoryComparisonRow[] = [
+  {
+    proxy: "nginx",
+    c5000: "159 MiB",
+    c10000: "159 MiB",
+    c20000: "451 MiB",
+    c20000Detail: "99.43% 200",
+  },
+  {
+    proxy: "HAProxy",
+    c5000: "248 MiB",
+    c10000: "406 MiB",
+    c20000: "624 MiB",
+    c20000Detail: "100% 200",
+  },
+  {
+    proxy: "Tako",
+    c5000: "511 MiB",
+    c10000: "911 MiB",
+    c20000: "1.7 GiB",
+    c20000Detail: "100% 200",
+  },
+  {
+    proxy: "Envoy",
+    c5000: "323 MiB",
+    c10000: "554 MiB",
+    c20000: "1.0 GiB",
+    c20000Detail: "51.41% 200",
+  },
+  {
+    proxy: "Caddy",
+    c5000: "621 MiB",
+    c10000: "1.2 GiB",
+    c20000: "1.5 GiB",
+    c20000Detail: "94.14% 200",
   },
 ];
 

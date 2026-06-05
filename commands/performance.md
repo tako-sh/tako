@@ -233,13 +233,39 @@ For every run, inspect:
 - client error percentage;
 - `error_kinds` and `error_samples`;
 - CPU and RAM graphs;
-- proxy RSS and loadgen RSS;
+- proxy server process memory and load-generator memory;
+- proxy `VmRSS`, `RssAnon`, PSS, and private dirty when available from
+  `/proc/<pid>/status` and `/proc/<pid>/smaps_rollup`;
 - max TLS connections.
 
 Use raw JSON/CSV evidence. Do not rely only on the summary graph.
+Publish public Memory comparisons only on comparable rows: same endpoint,
+same TLS mode, same sampling method, and either the same health threshold or an
+explicit 200% label beside every degraded row. For c20000, prefer PSS/private
+Memory from `/proc/<pid>/smaps_rollup`; do not relabel RSS as Memory for a
+Rust-vs-Go efficiency claim.
 
 Known local profiling notes to avoid repeating:
 
+- The published `proxy_rss_bytes` value is already process-scoped to the proxy
+  server PID; it is not whole-VM memory and does not include the app or
+  load-generator process. However, PID RSS still includes resident shared and
+  file-backed mappings, so use user-facing wording like "server process memory"
+  and do not claim private Rust-vs-Go heap efficiency from RSS alone. For memory
+  efficiency claims, add or inspect `smaps_rollup` fields such as PSS,
+  `RssAnon`, and private dirty.
+- A 2026-06-05 TLS `smaps_rollup` diagnostic showed why the public Memory
+  view should use clean comparable rows. At c1000/c2500/c4000, all 100% 200,
+  process PSS was Caddy 208/386/553 MiB, fixed Pingora 140/321/487 MiB, and
+  Tako 144/261/374 MiB. Private dirty showed the same shape: Caddy
+  171/349/515 MiB, fixed Pingora 131/312/478 MiB, and Tako 115/232/345 MiB.
+  This contradicts a naive c20000 RSS reading where Caddy was already degraded
+  and Tako was still clean.
+- A 2026-06-05 five-proxy rerun added `proxy_pss_bytes` and
+  `proxy_private_bytes` to the harness. Use that shape for public Memory:
+  nginx/HAProxy/Tako/Envoy/Caddy through c20000, with c20000 200% beside the
+  Memory values. The c20000 PSS row was nginx 451 MiB, HAProxy 624 MiB, Tako
+  1700 MiB, Envoy 1004 MiB, and Caddy 1511 MiB.
 - High proxy RSS at large downstream connection counts is not OpenSSL alone. A
   local macOS 5k HTTPS keepalive control measured roughly 191 MB RSS for raw
   Tokio + OpenSSL, roughly 356 MB for a Pingora-only HTTPS responder with no
