@@ -7,7 +7,7 @@
     "build": "bun ./scripts/sync-agent-skills.ts && astro build",
     "check": "astro check",
     "preview": "astro preview",
-    "deploy": "bun run build && wrangler deploy"
+    "deploy": "wrangler deploy"
   },
   "dependencies": {
     "@astrojs/markdown-remark": "7.2.0",
