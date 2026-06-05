@@ -19,6 +19,14 @@ pub(crate) enum DnsError {
     #[error("no Cloudflare zone found for {0}")]
     ZoneNotFound(String),
 
+    #[error(
+        "could not verify Cloudflare zone access for {domain}: {source}. Use a Cloudflare token with Zone Read and DNS Write for the zone, and include this server's egress IP in any token IP restriction."
+    )]
+    ZoneAccess {
+        domain: String,
+        source: Box<DnsError>,
+    },
+
     #[error("Cloudflare API error: {0}")]
     CloudflareApi(String),
 
@@ -138,7 +146,14 @@ impl CloudflareDnsProvider {
 
     pub(crate) async fn verify_wildcard_routes(&self, routes: &[String]) -> Result<(), DnsError> {
         for route in routes.iter().filter(|route| route.starts_with("*.")) {
-            self.find_zone(route).await?;
+            let domain = normalize_domain(route)?;
+            self.find_zone(route).await.map_err(|error| match error {
+                DnsError::InvalidDomain(_) => error,
+                error => DnsError::ZoneAccess {
+                    domain,
+                    source: Box::new(error),
+                },
+            })?;
         }
         Ok(())
     }
@@ -361,5 +376,22 @@ mod tests {
             err.to_string().contains("Invalid access token"),
             "error should include Cloudflare message: {err}",
         );
+    }
+
+    #[test]
+    fn wildcard_zone_access_errors_explain_required_cloudflare_permissions() {
+        let err = DnsError::ZoneAccess {
+            domain: "demo.tako.sh".to_string(),
+            source: Box::new(DnsError::CloudflareApi(
+                "HTTP 403 Forbidden: Invalid access token (9109)".to_string(),
+            )),
+        };
+        let message = err.to_string();
+
+        assert!(message.contains("demo.tako.sh"), "got: {message}");
+        assert!(message.contains("Invalid access token"), "got: {message}");
+        assert!(message.contains("Zone Read"), "got: {message}");
+        assert!(message.contains("DNS Write"), "got: {message}");
+        assert!(message.contains("egress IP"), "got: {message}");
     }
 }

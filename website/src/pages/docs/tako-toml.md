@@ -268,6 +268,8 @@ Wildcard Let's Encrypt routes use Cloudflare DNS-01 and require encrypted provid
 tako credentials set ssl.cloudflare --env production
 ```
 
+Use a Cloudflare User API token with Zone Read and DNS Write for the matching Cloudflare zone. If the token is IP-restricted, include each target server's egress IP.
+
 Cloudflare Origin CA is selected per environment:
 
 ```toml

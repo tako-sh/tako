@@ -254,7 +254,7 @@ tako credentials set ssl.cloudflare --env production --expires-on "in 90 days"
 
 Cloudflare SSL also requires `ssl.cloudflare`. Provider credentials are encrypted under the environment's `credentials` object and are not exposed to app code or `tako secrets sync`.
 
-Deploy verifies required Cloudflare credentials from each target server during remote prepare. For Let's Encrypt wildcard routes, the token must be able to read the matching Cloudflare zone; DNS record write access is still needed later for certificate issuance.
+Deploy verifies required Cloudflare credentials from each target server during remote prepare. For Let's Encrypt wildcard routes, use a Cloudflare User API token with Zone Read and DNS Write for the matching Cloudflare zone, and include each target server's egress IP in any token IP restriction.
 
 ## Storage And Backups
 

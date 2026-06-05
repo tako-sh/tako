@@ -78,7 +78,7 @@ Routes are host patterns with optional paths. After a route matches, Tako reserv
 | `/_tako/image`                    | Public optimized images.                 |
 | `/_tako/storages/<binding>/<key>` | Signed local-storage GET/PUT routes.     |
 
-Tako terminates TLS on `tako-server`. Public exact routes use Let's Encrypt HTTP-01 by default. Public wildcard routes use Let's Encrypt DNS-01 with Cloudflare credentials. `ssl = "cloudflare"` uses Cloudflare Origin CA and also requires encrypted `ssl.cloudflare` credentials.
+Tako terminates TLS on `tako-server`. Public exact routes use Let's Encrypt HTTP-01 by default. Public wildcard routes use Let's Encrypt DNS-01 with a Cloudflare User API token that can read the zone and write DNS records. `ssl = "cloudflare"` uses Cloudflare Origin CA and also requires encrypted `ssl.cloudflare` credentials.
 
 HTTP redirects to HTTPS by default, except `/.well-known/acme-challenge/*`. Forwarded HTTPS metadata is trusted only from loopback peers, Cloudflare peers, or peers listed in `trusted_proxy.trusted_cidrs`; direct clients cannot spoof `X-Forwarded-Proto` or `Forwarded: proto=https` to bypass redirects.
 

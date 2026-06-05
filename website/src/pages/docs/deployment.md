@@ -74,7 +74,7 @@ Before build work starts, deploy checks:
 - provider credentials exist and are not expired when Cloudflare SSL or Let's Encrypt wildcard routes need them
 - credentials expiring within 30 days are surfaced as warnings
 
-Required Cloudflare credentials are also checked from each target server during remote prepare. Let's Encrypt wildcard routes verify zone read access from the server's egress IP.
+Required Cloudflare credentials are also checked from each target server during remote prepare. Let's Encrypt wildcard routes use Cloudflare User API tokens, verify zone read access from the server's egress IP, and require DNS Write for certificate issuance.
 
 ## Build And Package
 
@@ -166,6 +166,8 @@ Public exact routes use Let's Encrypt HTTP-01 by default. Wildcard Let's Encrypt
 tako credentials set ssl.cloudflare --env production
 ```
 
+Use a Cloudflare User API token with Zone Read and DNS Write for the matching Cloudflare zone. If the token is IP-restricted, include each target server's egress IP.
+
 Cloudflare Origin CA is selected per environment:
 
 ```toml
@@ -225,6 +227,8 @@ Provider credentials use `tako credentials`, not `tako secrets`, and are not exp
 ```bash
 tako credentials set ssl.cloudflare --env production
 ```
+
+For Let’s Encrypt wildcard DNS-01, `ssl.cloudflare` must be a Cloudflare User API token with Zone Read and DNS Write for the matching Cloudflare zone.
 
 ## Storage
 
