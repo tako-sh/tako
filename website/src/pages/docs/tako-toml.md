@@ -346,7 +346,7 @@ Per-environment `release` overrides it. An empty string disables the inherited c
 release = ""
 ```
 
-Release commands run as `sh -c "<command>"` inside the new release directory with non-secret vars and decrypted secrets. If the command fails, deploy aborts on every server, removes partial release directories, leaves `current` untouched, and old instances keep serving.
+Release commands run as `sh -c "<command>"` inside the new release directory as the app's per-app Unix identity, with non-secret vars and decrypted secrets. If the command fails, deploy aborts on every server, removes partial release directories, leaves `current` untouched, and old instances keep serving.
 
 ## Images
 

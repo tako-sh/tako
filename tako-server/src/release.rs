@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::time::Duration;
+#[cfg(unix)]
+use tako_spawn::ProcessIsolation;
 use tokio::process::Command as TokioCommand;
 
 pub(crate) const TAKO_APP_DATA_DIR_ENV: &str = "TAKO_DATA_DIR";
@@ -219,36 +221,12 @@ fn derive_build_state(instances: &[InstanceStatus]) -> AppState {
 }
 
 #[cfg(unix)]
-fn resolve_app_user_for_install() -> std::io::Result<Option<(u32, u32)>> {
-    crate::unix::lookup_user_ids("tako-app")
-}
-
-#[cfg(unix)]
-fn drop_privileges_if_root(cmd: &mut TokioCommand) -> Result<(), String> {
-    if let Some((uid, gid)) =
-        app_user_for_install(resolve_app_user_for_install(), crate::unix::is_root())?
-    {
-        cmd.uid(uid);
-        cmd.gid(gid);
-    }
-
-    Ok(())
-}
-
-#[cfg(unix)]
-fn app_user_for_install(
-    lookup: std::io::Result<Option<(u32, u32)>>,
-    is_root: bool,
-) -> Result<Option<(u32, u32)>, String> {
-    if !is_root {
-        return Ok(None);
-    }
-
-    match lookup.map_err(|e| format!("Failed to resolve tako-app user: {e}"))? {
-        Some(user) => Ok(Some(user)),
-        None => {
-            Err("tako-app user not found; refusing to run production install as root".to_string())
-        }
+fn install_release_process_isolation(cmd: &mut TokioCommand, isolation: Option<ProcessIsolation>) {
+    let Some(isolation) = isolation else {
+        return;
+    };
+    unsafe {
+        cmd.pre_exec(move || tako_spawn::install_process_isolation(&isolation));
     }
 }
 
@@ -256,6 +234,7 @@ pub(crate) async fn prepare_release_runtime(
     release_dir: &Path,
     env: &HashMap<String, String>,
     data_dir: &Path,
+    #[cfg(unix)] isolation: Option<ProcessIsolation>,
 ) -> Result<Option<String>, String> {
     let manifest = load_release_manifest(release_dir)?;
     let runtime = &manifest.runtime;
@@ -319,9 +298,14 @@ pub(crate) async fn prepare_release_runtime(
         && let Some(install_cmd) = &def.package_manager.install
     {
         tracing::info!(runtime = %runtime, install_dir = %install_dir.display(), "Running production install: {}", install_cmd);
-        let output =
-            run_production_install_command(install_cmd.as_str(), &install_dir, &install_env)
-                .await?;
+        let output = run_production_install_command(
+            install_cmd.as_str(),
+            &install_dir,
+            &install_env,
+            #[cfg(unix)]
+            isolation.clone(),
+        )
+        .await?;
         if !output.status.success() {
             return Err(format_process_failure(
                 "production install",
@@ -339,6 +323,7 @@ async fn run_production_install_command(
     install_cmd: &str,
     install_dir: &Path,
     install_env: &HashMap<String, String>,
+    #[cfg(unix)] isolation: Option<ProcessIsolation>,
 ) -> Result<std::process::Output, String> {
     let mut cmd = TokioCommand::new("sh");
     cmd.args(["-c", install_cmd])
@@ -351,8 +336,26 @@ async fn run_production_install_command(
     }
     cmd.envs(install_env);
     #[cfg(unix)]
-    drop_privileges_if_root(&mut cmd)?;
-    cmd.output()
+    let cgroup = isolation.as_ref().and_then(|value| value.cgroup.clone());
+    #[cfg(unix)]
+    install_release_process_isolation(&mut cmd, isolation);
+    cmd.stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to run production install: {e}"))?;
+    #[cfg(unix)]
+    if let Some(cgroup) = cgroup
+        && let Some(pid) = child.id()
+        && let Err(error) = tako_spawn::assign_pid_to_cgroup(&cgroup, pid)
+    {
+        let _ = child.start_kill();
+        return Err(format!(
+            "Failed to assign production install to cgroup: {error}"
+        ));
+    }
+    child
+        .wait_with_output()
         .await
         .map_err(|e| format!("Failed to run production install: {e}"))
 }
@@ -647,6 +650,7 @@ mod tests {
             "printf %s \"${TAKO_SERVER_PARENT_SECRET:-missing}\"",
             temp.path(),
             &env,
+            None,
         )
         .await
         .unwrap();
@@ -656,27 +660,30 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&output.stdout), "missing");
     }
 
-    #[test]
+    #[tokio::test]
     #[cfg(unix)]
-    fn app_user_for_install_fails_closed_for_root_lookup_error() {
-        let err =
-            app_user_for_install(Err(std::io::Error::other("lookup failed")), true).unwrap_err();
-        assert!(err.contains("lookup failed"));
-    }
+    async fn production_install_applies_process_isolation() {
+        let temp = TempDir::new().unwrap();
+        let mut env = HashMap::new();
+        if let Ok(path) = std::env::var("PATH") {
+            env.insert("PATH".to_string(), path);
+        }
+        let isolation = ProcessIsolation {
+            resource_limits: tako_spawn::ResourceLimits {
+                open_files: None,
+                processes: None,
+                address_space_bytes: None,
+            },
+            umask: Some(0o027),
+            ..Default::default()
+        };
 
-    #[test]
-    #[cfg(unix)]
-    fn app_user_for_install_fails_closed_for_root_missing_user() {
-        let err = app_user_for_install(Ok(None), true).unwrap_err();
-        assert!(err.contains("refusing to run production install as root"));
-    }
+        let output = run_production_install_command("umask", temp.path(), &env, Some(isolation))
+            .await
+            .unwrap();
 
-    #[test]
-    #[cfg(unix)]
-    fn app_user_for_install_ignores_lookup_error_when_not_root() {
-        let app_user =
-            app_user_for_install(Err(std::io::Error::other("lookup failed")), false).unwrap();
-        assert_eq!(app_user, None);
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "0027");
     }
 
     struct EnvGuard {

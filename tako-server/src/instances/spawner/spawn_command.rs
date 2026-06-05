@@ -3,21 +3,9 @@ use std::collections::HashMap;
 #[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::path::Path;
-use tokio::process::Command;
-
 #[cfg(unix)]
-pub(super) fn resolve_app_user() -> std::io::Result<Option<(u32, u32)>> {
-    match crate::unix::lookup_user_ids("tako-app")? {
-        Some((uid, gid)) => {
-            tracing::info!(uid, gid, "Resolved tako-app user for app process isolation");
-            Ok(Some((uid, gid)))
-        }
-        None => {
-            tracing::warn!("tako-app user not found");
-            Ok(None)
-        }
-    }
-}
+use tako_spawn::ProcessIsolation;
+use tokio::process::Command;
 
 pub(super) fn build_instance_env(
     config: &AppConfig,
@@ -48,6 +36,7 @@ pub(super) fn build_instance_args(instance: &Instance) -> Vec<String> {
     vec!["--instance".to_string(), instance.id.clone()]
 }
 
+#[cfg(test)]
 pub(super) fn app_child_parent_death_signal() -> Option<i32> {
     #[cfg(target_os = "linux")]
     {
@@ -113,7 +102,7 @@ fn build_child_command(
     config: &AppConfig,
     env: &HashMap<String, String>,
     extra_args: &[String],
-    app_user: Option<(u32, u32)>,
+    #[cfg(unix)] isolation: ProcessIsolation,
     secrets_fd: Option<RawFd>,
     readiness_fd: Option<RawFd>,
 ) -> std::io::Result<Command> {
@@ -121,12 +110,6 @@ fn build_child_command(
     let binary = resolve_binary_from_env(&config.command[0], env);
     let mut child_cmd = Command::new(&binary);
     child_cmd.args(&config.command[1..]).args(extra_args);
-
-    #[cfg(unix)]
-    if let Some((uid, gid)) = app_user {
-        child_cmd.uid(uid);
-        child_cmd.gid(gid);
-    }
 
     child_cmd.current_dir(&config.path).env_clear();
     for key in ["PATH", "HOME"] {
@@ -144,8 +127,6 @@ fn build_child_command(
     #[cfg(unix)]
     unsafe {
         child_cmd.pre_exec(move || {
-            install_parent_death_signal(app_child_parent_death_signal())?;
-            clear_ambient_capabilities()?;
             if let Some(fd) = secrets_fd {
                 if fd != 3 {
                     if libc::dup2(fd, 3) == -1 {
@@ -166,6 +147,7 @@ fn build_child_command(
             } else {
                 libc::close(4);
             }
+            tako_spawn::install_process_isolation(&isolation)?;
             Ok(())
         });
     }
@@ -173,60 +155,11 @@ fn build_child_command(
     Ok(child_cmd)
 }
 
-#[cfg(target_os = "linux")]
-fn clear_ambient_capabilities() -> std::io::Result<()> {
-    let result = unsafe {
-        libc::prctl(
-            libc::PR_CAP_AMBIENT,
-            libc::PR_CAP_AMBIENT_CLEAR_ALL,
-            0,
-            0,
-            0,
-        )
-    };
-    if result == -1 {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(())
-}
-
-#[cfg(not(target_os = "linux"))]
-fn clear_ambient_capabilities() -> std::io::Result<()> {
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn install_parent_death_signal(signal: Option<i32>) -> std::io::Result<()> {
-    let Some(signal) = signal else {
-        return Ok(());
-    };
-
-    // SAFETY: This runs in the child after fork and before exec. `prctl`,
-    // `getppid`, and `_exit` are used only with plain integer arguments.
-    let result = unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, signal) };
-    if result == -1 {
-        return Err(std::io::Error::last_os_error());
-    }
-
-    // If the parent died between fork and PR_SET_PDEATHSIG, avoid execing an
-    // immediately orphaned app process.
-    if unsafe { libc::getppid() } == 1 {
-        unsafe { libc::_exit(1) };
-    }
-
-    Ok(())
-}
-
-#[cfg(not(target_os = "linux"))]
-fn install_parent_death_signal(_signal: Option<i32>) -> std::io::Result<()> {
-    Ok(())
-}
-
 pub(super) fn spawn_child_process(
     config: &AppConfig,
     env: &HashMap<String, String>,
     extra_args: &[String],
-    app_user: Option<(u32, u32)>,
+    #[cfg(unix)] isolation: ProcessIsolation,
     token: &str,
     secrets: &HashMap<String, String>,
 ) -> std::io::Result<(tokio::process::Child, Option<OwnedFd>)> {
@@ -248,12 +181,29 @@ pub(super) fn spawn_child_process(
     #[cfg(not(unix))]
     let readiness_raw_fd = None;
 
-    let mut child_cmd =
-        build_child_command(config, env, extra_args, app_user, raw_fd, readiness_raw_fd)?;
+    #[cfg(unix)]
+    let cgroup = isolation.cgroup.clone();
+    let mut child_cmd = build_child_command(
+        config,
+        env,
+        extra_args,
+        #[cfg(unix)]
+        isolation,
+        raw_fd,
+        readiness_raw_fd,
+    )?;
     let spawn_result = child_cmd.spawn();
 
     match spawn_result {
-        Ok(child) => {
+        Ok(mut child) => {
+            #[cfg(unix)]
+            if let Some(cgroup) = cgroup
+                && let Some(pid) = child.id()
+                && let Err(error) = tako_spawn::assign_pid_to_cgroup(&cgroup, pid)
+            {
+                let _ = child.start_kill();
+                return Err(error);
+            }
             #[cfg(unix)]
             {
                 drop(readiness_write_end);

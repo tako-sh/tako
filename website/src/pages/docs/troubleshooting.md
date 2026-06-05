@@ -193,7 +193,7 @@ Without a pin, deploy runs the local runtime's `--version` and falls back to `la
 
 ### Deploy fails during release command
 
-The `release` command runs once on the leader server before rolling update. If it exits non-zero, times out, or is signaled, deploy aborts everywhere, removes partial release directories, leaves `current` untouched, and old instances keep serving.
+The `release` command runs once on the leader server as the app's per-app Unix identity before rolling update. If it exits non-zero, times out, or is signaled, deploy aborts everywhere, removes partial release directories, leaves `current` untouched, and old instances keep serving.
 
 Disable an inherited release command for one environment:
 

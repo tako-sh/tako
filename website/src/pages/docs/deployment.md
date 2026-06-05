@@ -18,7 +18,7 @@ Install `tako-server` on a Linux host:
 sudo sh -c "$(curl -fsSL https://tako.sh/install-server.sh)"
 ```
 
-The installer creates the `tako` service user, the `tako-app` runtime user, `/opt/tako`, `/var/run/tako`, service units with high file-descriptor limits, maintenance helpers, restricted sudoers policy, public HTTP/HTTPS listeners, local metrics, libvips runtime support, and private Tailscale management.
+The installer creates the `tako` service user, the shared `tako-app` socket-access group, `/opt/tako`, `/var/run/tako`, service units with high file-descriptor limits, maintenance helpers, restricted sudoers policy, public HTTP/HTTPS listeners, local metrics, libvips runtime support, and private Tailscale management.
 
 Custom public proxy ports:
 
@@ -107,7 +107,7 @@ Uploads go through private signed management:
 POST /release-artifact
 ```
 
-The server verifies declared size and SHA-256, extracts into `/opt/tako/apps/{app}/{env}/releases/{version}/`, links release logs to the app log directory, runs the runtime plugin's production install command, and prepares runtime metadata.
+The server verifies declared size and SHA-256, extracts into `/opt/tako/apps/{app}/{env}/releases/{version}/`, links release logs to the app log directory, prepares the per-app Unix identity and filesystem permissions, runs the runtime plugin's production install command as that app identity, and prepares runtime metadata.
 
 Small management commands use `POST /rpc`. Logs use `POST /logs`. App/runtime management uses signed HTTP over Tailscale; SSH is for setup, recovery, reload, upgrade, and uninstall.
 
@@ -119,7 +119,7 @@ Set a one-shot release command for migrations or cache preparation:
 release = "bun run db:migrate"
 ```
 
-The command runs once on the leader server, inside the new release directory, before rolling update. Followers wait for the leader result. If it fails, deploy aborts on every server, removes partial release directories, leaves `current` unchanged, and old instances keep serving.
+The command runs once on the leader server, inside the new release directory as the app's per-app Unix identity, before rolling update. Followers wait for the leader result. If it fails, deploy aborts on every server, removes partial release directories, leaves `current` unchanged, and old instances keep serving.
 
 Disable an inherited command for one environment:
 

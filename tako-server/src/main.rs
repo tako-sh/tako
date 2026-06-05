@@ -13,6 +13,7 @@ mod defaults;
 mod identity;
 mod image_worker;
 mod instances;
+mod isolation;
 mod lb;
 mod management_auth;
 mod management_http;

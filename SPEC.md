@@ -167,7 +167,8 @@ Variable values may be TOML strings, numbers, booleans, or datetimes. Tako conve
   environment. An empty string (`release = ""`) explicitly clears the
   inherited top-level command for that env.
 - The release command runs as `sh -c "<command>"` with cwd set to the
-  new release directory and the same env an HTTP instance receives
+  new release directory, the app's per-app Unix identity on root-managed
+  production servers, and the same env an HTTP instance receives
   (merged `[vars]` + `[vars.<env>]` + secrets + `TAKO_BUILD` +
   `TAKO_DATA_DIR` + `ENV` + runtime defaults). Secrets are injected as
   env vars (release commands are one-shot; the fd 3 mechanism is
@@ -882,6 +883,8 @@ Service-manager reload/restart behavior:
 - `app/` — app-owned data exposed to the process as `TAKO_DATA_DIR`
 - `tako/` — Tako-owned per-app internal state
 
+On root-managed production servers, release directories and `data/app/` are owned by the per-app Unix user/group and are not readable by other deployed app identities by default. `data/tako/` remains owned by `tako-server` and is not exposed to app code. Spawned app and worker processes keep fd 3 bootstrap, fd 4 readiness for HTTP instances, and `127.0.0.1` loopback routing, then apply a conservative umask, `NoNewPrivileges` where supported, dropped ambient capabilities where supported, and per-app resource controls. Linux cgroup v2 is used when available to assign app processes to a per-app cgroup with default memory, CPU, and process-count limits; file-descriptor limits are applied per process.
+
 Deleting an app removes the entire `{data_dir}/apps/{app}` tree after the app is drained and stopped.
 
 During single-host upgrade orchestration, `tako-server` may enter an internal `upgrading` server mode that temporarily rejects mutating management commands (release preparation/finalization, `deploy`, `backup_now`, `restore_backup`, `scale`, `stop`, `delete`, `rollback`, `update-secrets`) until the upgrade window ends.
@@ -1198,7 +1201,7 @@ Deploy flow helpers:
 - Deploy target app path is the selected config file's parent directory relative to the source bundle root.
 - Build uses a build dir: copies project from source root into `.tako/build` (respecting `.gitignore`), symlinks `node_modules/` from the original tree (build tools read but don't modify), runs build commands in the build dir, then archives the result excluding `node_modules/`. Source and build archives preserve symlinks as symlinks; directory symlinks are not followed, and source hashes track symlink targets for cache invalidation.
 - These paths are always force-excluded from the deploy archive: `.git/`, `.tako/`, `.env*`, `node_modules/`. Additional exclusions come from `[build].exclude` and `.gitignore`.
-- Servers receive prebuilt artifacts and do not run app build steps during deploy. After extracting the artifact, `tako-server` runs the runtime plugin's production install command (e.g. `bun install --production`) before starting instances. Production install runs with the release env plus minimal process env (`PATH`, `HOME` when available); it does not inherit arbitrary `tako-server` service environment variables. When `tako-server` is root, production install runs as `tako-app`; if `tako-app` cannot be resolved, install fails instead of running as root.
+- Servers receive prebuilt artifacts and do not run app build steps during deploy. After extracting the artifact, `tako-server` runs the runtime plugin's production install command (e.g. `bun install --production`) before starting instances. Production install runs with the release env plus minimal process env (`PATH`, `HOME` when available); it does not inherit arbitrary `tako-server` service environment variables. When `tako-server` is root, each deployed app id (`{app}/{env}`) gets a deterministic Unix user and primary group (`tako-<hash>`). Production install, release commands, HTTP instances, and workflow workers for that app run as that per-app user, with the shared `tako-app` group retained only as a supplementary group for access to Tako's internal socket. If the per-app identity or shared group cannot be resolved or created, root `tako-server` fails closed instead of running app code as root.
 - Build logic runs in the build dir against the resolved stage list (precedence: `[[build_stages]]` → `[build]` → runtime default). Each stage runs `install` then `run` in declaration order.
 - Deploy uses the version pin from `runtime = "<id>@<version>"` when set. Otherwise it resolves runtime version by running `<tool> --version` directly, falling back to `latest`.
 - Artifact include precedence: in simple build mode, `build.include` -> `**/*`. In multi-stage mode, `**/*` is used (stages control output via `exclude` patterns only).
@@ -1399,7 +1402,7 @@ Apps specify routes at environment level (not per-server). Routes support:
 
 Users run a server setup script (or equivalent manual steps) to:
 
-1. Create dedicated OS users: `tako` for SSH access and running `tako-server`, plus `tako-app` for app and worker processes
+1. Create dedicated OS users/groups: `tako` for SSH access and running `tako-server`, plus the shared `tako-app` group used by app and worker processes to reach the internal socket
 2. Install `tako-server` to `/usr/local/bin/tako-server`
 3. Install and enable a host service definition for `tako-server`:
    - systemd unit on systemd hosts
@@ -1434,7 +1437,7 @@ Installer SSH key behavior:
 - Installer ensures `nc` (netcat) is available so CLI management commands can talk to `/var/run/tako/tako.sock`.
 - Installer installs the host libvips runtime used by the built-in image optimizer before starting `tako-server`.
 - Installer ensures basic networking tools are available for server operation.
-- Installer creates both `tako` and `tako-app` OS users. `tako-server` runs as `tako`; app and worker processes run as `tako-app`. If a root `tako-server` cannot resolve `tako-app`, it refuses to run production install or spawn app processes as root.
+- Installer creates the `tako` OS user and the shared `tako-app` group. `tako-server` runs as `tako`; root-managed app and worker processes run as per-app Unix users created from the deployed app id and keep `tako-app` only as a supplementary group. If a root `tako-server` cannot resolve or create the per-app identity or shared group, it refuses to run production install, release commands, HTTP instances, or workflow workers as root.
 - Installer prepares the `/opt/tako` and `/var/run/tako` roots without recursively traversing existing app releases.
 - Installer installs restricted maintenance helpers and scoped sudoers policy so the `tako` SSH user can perform non-interactive server upgrade/reload operations.
 - When the installer installs or accepts `TAKO_SSH_PUBKEY`, it also enrolls that public key for signed remote management in `/opt/tako/management-authorized-keys`.
@@ -1901,7 +1904,7 @@ The `backup` field is optional. When present, the server stores the private back
 }
 ```
 
-The server validates the app name and release version, acquires the per-app deploy lock, derives base env from release `app.json`, overlays command `vars`, injects `TAKO_BUILD`, `TAKO_DATA_DIR`, and command `secrets`, then runs `sh -c "<command_line>"` in the release directory from a cleared service environment. Parent `PATH` is inserted only when the app/release env did not already provide it. Deploy sends the freshly decrypted secrets in the `run_release` payload so first deploys and secret rotations run against the same env the new HTTP instances will receive. Success returns exit metadata; non-zero exit or timeout returns an error response with a stderr tail.
+The server validates the app name and release version, acquires the per-app deploy lock, derives base env from release `app.json`, overlays command `vars`, injects `TAKO_BUILD`, `TAKO_DATA_DIR`, and command `secrets`, then runs `sh -c "<command_line>"` in the release directory from a cleared service environment and the app's per-app Unix identity on root-managed production servers. Parent `PATH` is inserted only when the app/release env did not already provide it. Deploy sends the freshly decrypted secrets in the `run_release` payload so first deploys and secret rotations run against the same env the new HTTP instances will receive. Success returns exit metadata; non-zero exit or timeout returns an error response with a stderr tail.
 
 Server-side validation on `deploy` and app-scoped commands:
 
@@ -1971,7 +1974,7 @@ Server-side validation on `deploy` and app-scoped commands:
 
 **Instance communication model:**
 
-- App processes run as `tako-app` and do not connect to the management socket. If a root `tako-server` cannot resolve `tako-app`, spawning fails closed instead of running app code as root.
+- App and workflow worker processes run as the per-app Unix user for their deployed app id and do not connect to the management socket. The shared `tako-app` group is retained only for internal socket permissions. If a root `tako-server` cannot resolve or create the per-app identity, spawning fails closed instead of running app code as root.
 - `tako-server` controls lifecycle directly (spawn/stop/rolling update). Startup readiness is signaled by the SDK via fd 4; ongoing health is verified via active HTTP probing.
 - App processes receive `PORT=0` and `HOST=127.0.0.1`, bind to an OS-assigned loopback port, and write the actual port to fd 4. The server then routes traffic and health probes to that endpoint.
 - Secrets are passed to instances via fd 3 (file descriptor 3) at spawn time. The server creates a pipe, writes JSON-serialized secrets to the write end, and the child process reads fd 3 at startup before any user code runs. EBADF on fd 3 means the process is not running under Tako (dev mode).
@@ -2573,7 +2576,7 @@ Both work via sentinel exceptions caught by the worker. Useful for "this work is
 
 - Single shared internal socket at `{tako_data_dir}/internal.sock` (symlink → `internal-{pid}.sock`, atomically swapped during upgrades for zero-downtime handoff — same pattern as the mgmt socket). Workflow RPCs and server-side channel publishes both land here, hence the role-neutral name.
 - Every command carries an `app` field so one socket routes for every deployed app.
-- Auth: filesystem permissions only (`chmod 0660`, owned by the service user/group so `tako-app` processes can connect).
+- Auth: filesystem permissions plus app-scoped runtime tokens. The socket is `chmod 0660` and group-accessible to the shared `tako-app` group so per-app users can connect through their supplementary group.
 - SDKs read `TAKO_INTERNAL_SOCKET` and `TAKO_APP_NAME` env vars. HTTP instance and workflow worker spawners (tako-server in production and tako-dev-server in `tako dev`) share one env contract defined in `tako-core::instance_env::TakoRuntimeEnv` so the dev and prod runtimes can't drift. The SDK asserts the pair is set together at import time — a half-set env (one var without the other) is a platform bug and crashes the process on boot rather than silently failing at the first workflow enqueue or channel publish.
 - From any process: `EnqueueRun`, `Signal`, `ChannelPublish` (server-side publish goes straight to the channel store instead of round-tripping through the HTTPS proxy).
 - From worker processes: `ClaimRun`, `HeartbeatRun`, `SaveStep`, `CompleteRun`, `CancelRun`, `FailRun`, `DeferRun`, `WaitForEvent`, `RegisterSchedules`.

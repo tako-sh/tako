@@ -48,7 +48,7 @@ A deploy builds locally and ships a prepared artifact to each server:
 5. Run build stages in order, merge configured assets into `public/`, and write `app.json`.
 6. Package a target-specific artifact and reuse the local artifact cache when inputs match.
 7. Upload over signed private HTTP management.
-8. Prepare the release on each server and run production install there.
+8. Prepare the release on each server, apply per-app Unix identity/permissions, and run production install there.
 9. Run the optional `release` command once on the leader server.
 10. Roll new instances into traffic, finalize `current`, prune old releases, and create a post-deploy backup when enabled.
 

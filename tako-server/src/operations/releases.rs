@@ -71,9 +71,33 @@ impl crate::ServerState {
             Ok(paths) => paths,
             Err(error) => return Response::error(format!("Release preparation failed: {error}")),
         };
+        if let Err(error) = crate::isolation::prepare_app_filesystem_isolation(
+            &self.runtime.data_dir,
+            app_name,
+            Some(&release_path),
+            &data_paths,
+        ) {
+            return Response::error(format!("Release preparation failed: {error}"));
+        }
         inject_app_data_dir_env(&mut release_env, &data_paths);
 
-        match prepare_release_runtime(&release_path, &release_env, &self.runtime.data_dir).await {
+        let isolation =
+            match crate::isolation::app_process_isolation(&self.runtime.data_dir, app_name) {
+                Ok(isolation) => isolation,
+                Err(error) => {
+                    return Response::error(format!("Release preparation failed: {error}"));
+                }
+            };
+
+        match prepare_release_runtime(
+            &release_path,
+            &release_env,
+            &self.runtime.data_dir,
+            #[cfg(unix)]
+            Some(isolation),
+        )
+        .await
+        {
             Ok(_) => Response::ok(serde_json::json!({ "status": "prepared" })),
             Err(error) => Response::error(format!("Release preparation failed: {error}")),
         }
@@ -124,6 +148,14 @@ impl crate::ServerState {
                 return Response::error(format!("Failed to create app data dirs: {error}"));
             }
         };
+        if let Err(error) = crate::isolation::prepare_app_filesystem_isolation(
+            &self.runtime.data_dir,
+            app_name,
+            Some(&release_path),
+            &data_paths,
+        ) {
+            return Response::error(format!("Failed to prepare app isolation: {error}"));
+        }
 
         let mut env = env_vars;
         env.extend(vars);
@@ -134,7 +166,21 @@ impl crate::ServerState {
             env.entry("PATH".to_string()).or_insert(path);
         }
 
-        match release_command::run(command_line, &release_path, &env).await {
+        let isolation =
+            match crate::isolation::app_process_isolation(&self.runtime.data_dir, app_name) {
+                Ok(isolation) => isolation,
+                Err(error) => return Response::error(format!("Release command failed: {error}")),
+            };
+
+        match release_command::run(
+            command_line,
+            &release_path,
+            &env,
+            #[cfg(unix)]
+            Some(isolation),
+        )
+        .await
+        {
             Err(spawn_err) => Response::error(format!("Release command failed: {spawn_err}")),
             Ok(outcome) if outcome.succeeded() => Response::ok(serde_json::json!({
                 "status": "released",

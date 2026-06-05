@@ -14,6 +14,7 @@ fn sleep_spec(cwd: PathBuf, workers: u32, sleep_secs: &str) -> WorkerSpec {
         secrets: HashMap::new(),
         storages: HashMap::new(),
         log_sink: None,
+        isolation: None,
     }
 }
 
@@ -81,6 +82,7 @@ async fn shutdown_reaps_children_that_ignore_sigterm() {
         secrets: HashMap::new(),
         storages: HashMap::new(),
         log_sink: None,
+        isolation: None,
     };
     let sup = WorkerSupervisor::new(spec);
     sup.start().await.unwrap();
@@ -118,6 +120,7 @@ fn failing_spec(cwd: PathBuf) -> WorkerSpec {
         secrets: HashMap::new(),
         storages: HashMap::new(),
         log_sink: None,
+        isolation: None,
     }
 }
 
@@ -181,6 +184,7 @@ async fn clean_idle_exit_does_not_mark_unhealthy() {
         secrets: HashMap::new(),
         storages: HashMap::new(),
         log_sink: None,
+        isolation: None,
     };
     let sup = WorkerSupervisor::new(spec);
     sup.wake().unwrap();
@@ -202,6 +206,7 @@ async fn background_reaper_collects_clean_idle_exit_without_poll() {
         secrets: HashMap::new(),
         storages: HashMap::new(),
         log_sink: None,
+        isolation: None,
     };
     let sup = WorkerSupervisor::new(spec);
     sup.wake().unwrap();
@@ -301,6 +306,7 @@ async fn effective_env_sets_concurrency_and_idle_timeout() {
         secrets: HashMap::new(),
         storages: HashMap::new(),
         log_sink: None,
+        isolation: None,
     };
     let env = spec.effective_env();
     assert_eq!(

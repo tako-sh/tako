@@ -212,6 +212,7 @@ pub(super) async fn register_app(
             secrets: worker_secrets,
             storages: worker_storages,
             log_sink,
+            isolation: None,
         };
         if let Err(e) = workflows.ensure(&app_name, spec_fn).await {
             tracing::warn!(
