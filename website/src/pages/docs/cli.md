@@ -126,7 +126,7 @@ tako logs --env production --json
 
 Logs are read from all mapped servers over signed HTTP management. Human output formats timestamps, level, source, and message, prefixes server names when needed, deduplicates consecutive repeats, and opens a pager in interactive history mode.
 
-Verbose server diagnostics can include response compression fields such as algorithm, skip reason, and compressed/uncompressed byte counts.
+Proxy diagnostics include request ID, selected app and instance, route, handler/cache result, status, total latency, cold-start wait time, upstream response-header latency, and response compression fields when available. Tako forwards the request ID to upstream apps as `X-Request-ID` so app logs can correlate with proxy events.
 
 ## `tako servers`
 

@@ -8,6 +8,7 @@ mod cloudflare_ips;
 mod compression;
 mod config;
 mod limits;
+mod observe;
 mod proxy_protocol;
 mod proxy_protocol_service;
 mod request;

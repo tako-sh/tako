@@ -381,3 +381,9 @@ tako logs --env production --json
 ```
 
 Structured app and worker JSON records are preserved and annotated with `source`, `instance_id`, and `server` when multiple servers are involved.
+
+### Request is slow or fails through the proxy
+
+Run `tako logs --env production --tail` while reproducing the request. Proxy diagnostics appear with source `proxy` and include `request_id`, app, instance, route, handler/cache result, status, total latency, cold-start wait time, and upstream response-header latency when the request reaches an app instance.
+
+Pass your own `X-Request-ID` header when reproducing a request, or use the generated `request_id` from the proxy log line to correlate proxy diagnostics with app logs.

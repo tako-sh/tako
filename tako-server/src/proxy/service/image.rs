@@ -31,7 +31,7 @@ impl TakoProxy {
     pub(crate) async fn try_handle_image_request(
         &self,
         session: &mut Session,
-        _ctx: &mut RequestCtx,
+        ctx: &mut RequestCtx,
         app_name: &str,
         path: &str,
         host: &str,
@@ -40,13 +40,16 @@ impl TakoProxy {
         if !is_image_request_path(path) {
             return Ok(false);
         }
+        ctx.observation.set_handler("image", "pending");
         let method = session.req_header().method.as_str();
         let is_head = method == "HEAD";
         if method != "GET" && !is_head {
+            ctx.observation.set_handler_result("error");
             return write_image_error(session, 405, "Method Not Allowed").await;
         }
 
         let Some(app) = self.lb.app_manager().get_app(app_name) else {
+            ctx.observation.set_handler_result("error");
             return write_image_error(session, 404, "Not Found").await;
         };
         let (app_root, images) = {
@@ -63,6 +66,7 @@ impl TakoProxy {
             match verify_image_request(path, session.req_header().uri.query(), accept, &images) {
                 Ok(verified) => verified,
                 Err(error) => {
+                    ctx.observation.set_handler_result("error");
                     let status = image_error_status(&error);
                     return write_image_error(session, status, image_error_body(status)).await;
                 }
@@ -82,6 +86,7 @@ impl TakoProxy {
         {
             Ok(source) => source,
             Err(error) => {
+                ctx.observation.set_handler_result("error");
                 let status = image_error_status(&error);
                 log_image_request_error(app_name, &error, status);
                 return write_image_error(session, status, image_error_body(status)).await;
@@ -100,11 +105,14 @@ impl TakoProxy {
         let cache_key =
             cache::transform_cache_key(app_name, &app_root, source.bytes(), &transform_options);
         let response = match cache::read(&cache_root, &cache_key, transform_options.format).await {
-            Some(cached) => ImageResponseBody {
-                bytes: cached.bytes,
-                content_type: cached.content_type.to_string(),
-                cacheable: true,
-            },
+            Some(cached) => {
+                ctx.observation.set_handler_result("hit");
+                ImageResponseBody {
+                    bytes: cached.bytes,
+                    content_type: cached.content_type.to_string(),
+                    cacheable: true,
+                }
+            }
             None => match transform_uncached_image(
                 app_name,
                 source,
@@ -115,8 +123,16 @@ impl TakoProxy {
             )
             .await
             {
-                Ok(response) => response,
+                Ok(response) => {
+                    if response.cacheable {
+                        ctx.observation.set_handler_result("miss");
+                    } else {
+                        ctx.observation.set_handler_result("fallback");
+                    }
+                    response
+                }
                 Err(error) => {
+                    ctx.observation.set_handler_result("error");
                     let status = image_error_status(&error);
                     log_image_request_error(app_name, &error, status);
                     return write_image_error(session, status, image_error_body(status)).await;
@@ -240,7 +256,7 @@ impl TakoProxy {
         limits: &TransformLimits,
     ) -> Result<ImageSourceBytes, ImageError> {
         let backend = match self.resolve_backend(app_name).await {
-            BackendResolution::Ready(backend) => backend,
+            BackendResolution::Ready { backend, .. } => backend,
             _ => return Err(ImageError::TransformFailed),
         };
         let endpoint = backend.endpoint().ok_or(ImageError::TransformFailed)?;
