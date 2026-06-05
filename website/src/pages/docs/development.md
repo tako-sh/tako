@@ -37,6 +37,8 @@ On non-macOS platforms without the portless proxy path, the registered HTTPS dae
 
 The daemon keeps running after the app backgrounds, and it can host multiple dev apps.
 
+The local dev proxy does not apply Tako's deployed-response Brotli/gzip compression, so browser debugging shows the app response body directly.
+
 ## Interactive Controls
 
 | Key      | Action                                        |

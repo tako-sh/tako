@@ -182,6 +182,7 @@ fn request_context_skips_metric_timers_when_metrics_are_disabled() {
         client_ip: None,
         body_bytes_received: 0,
         upstream_start: None,
+        compression: super::compression::ResponseCompression::new(),
     };
 
     ctx.start_request_metrics("test-app", false);

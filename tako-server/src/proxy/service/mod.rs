@@ -6,6 +6,7 @@ mod static_handler;
 pub(crate) use backend::BackendResolution;
 
 use super::TakoProxy;
+use super::compression::ResponseCompression;
 use super::request::{
     ClientIpResolution, ForwardedHeaderTrust, build_proxy_cache_key, client_ip_for_source_ip_mode,
     client_ip_from_session, create_production_error_response, https_redirect_host,
@@ -48,6 +49,7 @@ pub struct RequestCtx {
     pub(super) body_bytes_received: u64,
     /// Set when the upstream request is sent; observed when response headers arrive.
     pub(super) upstream_start: Option<Instant>,
+    pub(super) compression: ResponseCompression,
 }
 
 impl RequestCtx {
@@ -100,6 +102,7 @@ impl ProxyHttp for TakoProxy {
             client_ip: None,
             body_bytes_received: 0,
             upstream_start: None,
+            compression: ResponseCompression::new(),
         }
     }
 
@@ -501,21 +504,25 @@ impl ProxyHttp for TakoProxy {
 
     async fn response_filter(
         &self,
-        _session: &mut Session,
-        _upstream_response: &mut ResponseHeader,
-        _ctx: &mut Self::CTX,
+        session: &mut Session,
+        upstream_response: &mut ResponseHeader,
+        ctx: &mut Self::CTX,
     ) -> Result<()> {
+        if ctx.backend.is_some() {
+            ctx.compression
+                .prepare(session.req_header(), upstream_response)?;
+        }
         Ok(())
     }
 
-    fn upstream_response_body_filter(
+    fn response_body_filter(
         &self,
         _session: &mut Session,
-        _body: &mut Option<Bytes>,
-        _end_of_stream: bool,
-        _ctx: &mut Self::CTX,
+        body: &mut Option<Bytes>,
+        end_of_stream: bool,
+        ctx: &mut Self::CTX,
     ) -> Result<Option<Duration>> {
-        Ok(None)
+        ctx.compression.filter_body(body, end_of_stream)
     }
 
     async fn fail_to_proxy(
@@ -574,13 +581,24 @@ impl ProxyHttp for TakoProxy {
 
         let path = session.req_header().uri.path();
         let method = session.req_header().method.as_str();
+        let app = ctx
+            .backend
+            .as_ref()
+            .map(|backend| &*backend.app_name)
+            .unwrap_or("-");
 
         tracing::debug!(
+            app = app,
             host = host,
             method = method,
             path = path,
             status = status,
             https = ctx.is_https,
+            compression_algorithm = ctx.compression.algorithm_log_value(),
+            compression_skip_reason = ctx.compression.skip_reason_log_value(),
+            compression_vary_required = ctx.compression.vary_required(),
+            compression_uncompressed_bytes = ctx.compression.uncompressed_bytes(),
+            compression_compressed_bytes = ctx.compression.compressed_bytes(),
             "Request completed"
         );
     }

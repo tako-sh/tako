@@ -24,6 +24,8 @@ servers = ["prod-a"]
 
 Generated configs stay small. Defaults such as `source_ip = "auto"`, `idle_timeout = 300`, `ssl = "letsencrypt"`, and `app_root = "src"` are omitted unless you set them.
 
+Deployed response compression is automatic server behavior, not a `tako.toml` option. `tako-server` negotiates Brotli or gzip for safe proxied app responses and leaves local dev proxy responses uncompressed.
+
 ## Full Example
 
 ```toml

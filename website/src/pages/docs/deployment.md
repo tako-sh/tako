@@ -181,6 +181,8 @@ When HTTPS uses a non-default public port, deploy summaries include that port an
 
 Tako only honors `X-Forwarded-Proto` and `Forwarded: proto=https` from loopback peers, Cloudflare peers, or peers listed in server `trusted_proxy.trusted_cidrs`. Direct clients that spoof those headers still receive normal HTTP-to-HTTPS redirects.
 
+Deployed proxied app responses are compressed by `tako-server` when the client advertises Brotli or gzip and the response is safe to transform. Eligible text, JSON, JavaScript, CSS, XML, WASM, and SVG responses with `Content-Length >= 1024` get `Content-Encoding` plus `Vary: Accept-Encoding`; streaming, SSE, WebSocket/upgrade, already encoded, `no-transform`, small, and binary responses pass through unchanged.
+
 ## Source IPs
 
 ```toml
@@ -328,3 +330,5 @@ http://127.0.0.1:9898/metrics
 ```
 
 Metrics cover requests, upstream latency, instance health, cold starts, deploys, TLS events, channel activity, workflow activity, image workers, and log drops. Use `--metrics-port 0` on `tako-server` to disable request/upstream metrics collection and the endpoint.
+
+Request debug logs also include response compression algorithm, skip reason, and byte-count fields for diagnosing transfer behavior.
