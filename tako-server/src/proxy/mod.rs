@@ -5,6 +5,7 @@
 //! Handles ACME HTTP-01 challenges for Let's Encrypt certificate issuance.
 
 mod cloudflare_ips;
+mod compression;
 mod config;
 mod limits;
 mod proxy_protocol;

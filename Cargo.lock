@@ -5647,9 +5647,11 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "base64",
+ "brotli",
  "bytes",
  "clap",
  "dashmap",
+ "flate2",
  "hex",
  "hostname",
  "http-body-util",

@@ -12,6 +12,8 @@ Presets are framework manifests. They give Tako default entrypoints, static asse
 
 Presets do not store secrets, routes, servers, storage credentials, or deployment policy. Those stay in `tako.toml` and `.tako/secrets.json`.
 
+Presets also do not control response compression. Deployed app responses are compressed automatically by `tako-server` when the proxy can safely transform them.
+
 ## How Presets Fit
 
 | Layer          | What it controls                                                                                                                     |

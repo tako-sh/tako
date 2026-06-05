@@ -82,6 +82,8 @@ Tako terminates TLS on `tako-server`. Public exact routes use Let's Encrypt HTTP
 
 HTTP redirects to HTTPS by default, except `/.well-known/acme-challenge/*`. Forwarded HTTPS metadata is trusted only from loopback peers, Cloudflare peers, or peers listed in `trusted_proxy.trusted_cidrs`; direct clients cannot spoof `X-Forwarded-Proto` or `Forwarded: proto=https` to bypass redirects.
 
+For deployed app traffic, `tako-server` compresses safe proxied responses with Brotli or gzip when the browser advertises support. It adds `Vary: Accept-Encoding` when response bytes can vary by client encoding, skips already-compressed, streaming, SSE, upgrade, `no-transform`, small, and binary responses, and leaves local dev proxy responses uncompressed.
+
 ## Source IPs
 
 `source_ip` is selected per environment:
@@ -127,5 +129,7 @@ Workflow state is durable in SQLite. `ctx.run`, `ctx.sleep`, `ctx.waitFor`, retr
 ## Observability
 
 Logs are app-scoped and include app stdout/stderr plus server diagnostics for startup, proxying, channels, image transforms, backups, workflows, and static file serving. `tako logs` reads them over signed HTTP management.
+
+Proxy diagnostics include response compression algorithm, skip reason, and compressed/uncompressed byte counts when available.
 
 `tako-server` exposes Prometheus metrics on localhost port `9898` by default. Metrics include request counts and durations, instance health, cold starts, deploys, TLS events, log drops, channels, workflows, and image worker activity. Use `--metrics-port 0` to disable request/upstream metrics collection and the endpoint.

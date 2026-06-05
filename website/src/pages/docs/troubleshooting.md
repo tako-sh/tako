@@ -336,6 +336,10 @@ Make sure the immediate peer IP is loopback, a Cloudflare IP, or listed in `trus
 
 Use `source_ip = "direct"` when you want to ignore all proxy headers.
 
+### Response is not compressed
+
+Deployed app responses are compressed only when the browser sends `Accept-Encoding` with Brotli or gzip and the upstream response is transformable. Tako skips streaming responses, SSE, WebSockets/upgrades, `Cache-Control: no-transform`, existing `Content-Encoding`, responses below 1024 bytes, unknown-length bodies, and unsupported binary content types. Use verbose server logs to inspect the response compression algorithm or skip reason.
+
 ## Images
 
 ### Public image request is rejected
