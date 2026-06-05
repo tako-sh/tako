@@ -241,7 +241,7 @@ For every run, inspect:
 Use raw JSON/CSV evidence. Do not rely only on the summary graph.
 Publish public Memory comparisons only on comparable rows: same endpoint,
 same TLS mode, same sampling method, and either the same health threshold or an
-explicit 200% label beside every degraded row. For c20000, prefer PSS/private
+explicit 200 rate beside every degraded row. For c20000, prefer PSS/private
 Memory from `/proc/<pid>/smaps_rollup`; do not relabel RSS as Memory for a
 Rust-vs-Go efficiency claim.
 
@@ -263,7 +263,7 @@ Known local profiling notes to avoid repeating:
   and Tako was still clean.
 - A 2026-06-05 five-proxy rerun added `proxy_pss_bytes` and
   `proxy_private_bytes` to the harness. Use that shape for public Memory:
-  nginx/HAProxy/Tako/Envoy/Caddy through c20000, with c20000 200% beside the
+  nginx/HAProxy/Tako/Envoy/Caddy through c20000, with c20000 200 rate beside the
   Memory values. The c20000 PSS row was nginx 451 MiB, HAProxy 624 MiB, Tako
   1700 MiB, Envoy 1004 MiB, and Caddy 1511 MiB.
 - High proxy RSS at large downstream connection counts is not OpenSSL alone. A

@@ -720,7 +720,7 @@ export const httpCharts: ChartConfig[] = [
     title: "Memory by concurrency",
     eyebrow: "memory",
     description:
-      "Memory is measured with process PSS, which avoids counting shared pages twice. At c20000, Caddy shows lower Memory than Tako, but Caddy also times out part of the load; compare the Memory line with the 200% labels below.",
+      "Memory is measured with process PSS, which avoids counting shared pages twice. At c20000, Caddy shows lower Memory than Tako, but Caddy also times out part of the load; compare the Memory line with the 200 labels below.",
     key: "proxyRss",
     max: 1800,
     ticks: [0, 450, 900, 1350, 1800],
