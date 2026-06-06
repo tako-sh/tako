@@ -8,6 +8,7 @@ publish = false
 jsonschema = { version = "0.46.3", default-features = false }
 parking_lot = "0.12"
 percent-encoding = "2.3"
+postgres = "0.19"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
 rusqlite = { version = "0.39", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }

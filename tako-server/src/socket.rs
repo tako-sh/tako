@@ -199,6 +199,7 @@ mod tests {
                 routes,
                 source_ip,
                 secrets,
+                runtime_credentials: _,
                 storages,
                 ssl,
                 backup,

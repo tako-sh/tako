@@ -144,6 +144,15 @@ impl ServerState {
         let server_mode = UpgradeMode::Normal;
 
         let workflows = Arc::new(crate::workflows::WorkflowManager::new(data_dir.clone()));
+        {
+            let state_store = state_store.clone();
+            workflows.set_postgres_url_resolver(Arc::new(move |app| {
+                state_store
+                    .get_runtime_credentials(app)
+                    .ok()
+                    .and_then(|credentials| credentials.get("postgres_url").cloned())
+            }));
+        }
 
         // Server-side channel `.publish()` writes straight to the channel
         // store for the deployed app id via the shared internal socket.
@@ -151,6 +160,7 @@ impl ServerState {
         // the same SQLite connection.
         {
             let data_dir = data_dir.clone();
+            let state_store = state_store.clone();
             let stores: parking_lot::RwLock<HashMap<String, Arc<tako_channels::ChannelStore>>> =
                 parking_lot::RwLock::new(HashMap::new());
             workflows.set_channel_publisher(std::sync::Arc::new(
@@ -166,7 +176,15 @@ impl ServerState {
                         if let Some(existing) = guard.get(app) {
                             existing.clone()
                         } else {
-                            let config = crate::channels::app_channel_store_config(&data_dir, app);
+                            let postgres_url = state_store
+                                .get_runtime_credentials(app)
+                                .ok()
+                                .and_then(|credentials| credentials.get("postgres_url").cloned());
+                            let config = crate::channels::app_channel_store_config_with_postgres(
+                                &data_dir,
+                                app,
+                                postgres_url.as_deref(),
+                            );
                             let opened = Arc::new(
                                 tako_channels::ChannelStore::open_config(config)
                                     .map_err(|e| format!("open channel store: {e}"))?,
@@ -223,6 +241,13 @@ impl ServerState {
 
     pub fn cold_start(&self) -> Arc<crate::scaling::ColdStartManager> {
         self.cold_start.clone()
+    }
+
+    pub(crate) fn runtime_postgres_url(&self, app: &str) -> Option<String> {
+        self.state_store
+            .get_runtime_credentials(app)
+            .ok()
+            .and_then(|credentials| credentials.get("postgres_url").cloned())
     }
 
     pub async fn set_acme_client(&self, client: Arc<AcmeClient>) {

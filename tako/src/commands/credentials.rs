@@ -1,7 +1,9 @@
 use clap::Subcommand;
 use std::path::Path;
 
-use crate::config::{EncryptedSecretValue, SSL_CLOUDFLARE_CREDENTIAL_NAME};
+use crate::config::{
+    EncryptedSecretValue, POSTGRES_CREDENTIAL_NAME, SSL_CLOUDFLARE_CREDENTIAL_NAME,
+};
 use crate::output;
 
 #[derive(Subcommand)]
@@ -307,6 +309,23 @@ pub(crate) fn decrypt_ssl_binding(
     })
 }
 
+pub(crate) fn decrypt_runtime_credentials(
+    env: &str,
+    secrets: &crate::config::SecretsStore,
+    usage_path: Option<&Path>,
+) -> Result<std::collections::HashMap<String, String>, Box<dyn std::error::Error>> {
+    let Some(encrypted) = secrets.get_credential(env, POSTGRES_CREDENTIAL_NAME) else {
+        return Ok(std::collections::HashMap::new());
+    };
+
+    let key = crate::commands::secret::load_secret_key(env, secrets, usage_path)?;
+    let value = crate::crypto::decrypt(&encrypted.value, &key)
+        .map_err(|e| format!("Failed to decrypt credential '{POSTGRES_CREDENTIAL_NAME}': {e}"))?;
+    let mut decrypted = std::collections::HashMap::with_capacity(1);
+    decrypted.insert(POSTGRES_CREDENTIAL_NAME.to_string(), value);
+    Ok(decrypted)
+}
+
 fn validate_cloudflare_token_for_ssl_binding(
     provider: tako_core::SslProvider,
     routes: &[String],
@@ -403,6 +422,39 @@ mod tests {
             err.to_string(),
             "Cloudflare SSL requires credential ssl.cloudflare. Run `tako credentials set ssl.cloudflare --env production`."
         );
+    }
+
+    #[test]
+    fn decrypt_runtime_credentials_only_includes_postgres_url() {
+        with_temp_tako_home(|| {
+            let project = tempfile::TempDir::new().unwrap();
+            set_credential_value(
+                project.path(),
+                "production",
+                SSL_CLOUDFLARE_CREDENTIAL_NAME,
+                "cloudflare-token",
+                None,
+            )
+            .unwrap();
+            set_credential_value(
+                project.path(),
+                "production",
+                POSTGRES_CREDENTIAL_NAME,
+                "postgres://runtime",
+                None,
+            )
+            .unwrap();
+
+            let secrets = crate::config::SecretsStore::load_from_dir(project.path()).unwrap();
+            let runtime =
+                decrypt_runtime_credentials("production", &secrets, Some(project.path())).unwrap();
+
+            assert_eq!(runtime.len(), 1);
+            assert_eq!(
+                runtime.get(POSTGRES_CREDENTIAL_NAME).map(String::as_str),
+                Some("postgres://runtime")
+            );
+        });
     }
 
     #[test]

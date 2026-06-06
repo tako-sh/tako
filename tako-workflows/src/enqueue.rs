@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tako_core::{EnqueueOpts, EnqueueRunResponse, RunPayload};
 
+use super::postgres_store::PostgresRunsDb;
 use super::schema;
 
 const DEFAULT_MAX_ATTEMPTS: u32 = 3;
@@ -53,7 +54,7 @@ const MAX_LEASE_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 /// millisecond value we store in sqlite. Prevents `u64::MAX as i64 → -1`
 /// from producing a negative `lease_until` that would be reclaimed
 /// instantly.
-fn clamp_lease_ms(lease_ms: u64) -> i64 {
+pub(crate) fn clamp_lease_ms(lease_ms: u64) -> i64 {
     lease_ms.min(MAX_LEASE_MS) as i64
 }
 
@@ -61,6 +62,8 @@ fn clamp_lease_ms(lease_ms: u64) -> i64 {
 pub enum RunsDbError {
     #[error("sqlite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
+    #[error("postgres error: {0}")]
+    Postgres(#[from] postgres::Error),
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
     #[error("{0}")]
@@ -77,6 +80,7 @@ pub struct RunsDb {
 
 enum RunsDbBackend {
     Sqlite(SqliteRunsDb),
+    Postgres(PostgresRunsDb),
 }
 
 struct SqliteRunsDb {
@@ -87,9 +91,13 @@ impl RunsDb {
     pub fn open_config(config: WorkflowStoreConfig) -> Result<Self, RunsDbError> {
         match config {
             WorkflowStoreConfig::Sqlite { path } => Self::open_sqlite(&path),
-            WorkflowStoreConfig::Postgres { schema, .. } => Err(RunsDbError::UnsupportedBackend(
-                format!("postgres workflow storage is not implemented yet (schema {schema})"),
-            )),
+            WorkflowStoreConfig::Postgres {
+                url,
+                schema,
+                app_id,
+            } => Ok(Self {
+                backend: RunsDbBackend::Postgres(PostgresRunsDb::open(&url, &schema, &app_id)?),
+            }),
         }
     }
 
@@ -130,6 +138,9 @@ impl RunsDb {
     fn sqlite(&self) -> &SqliteRunsDb {
         match &self.backend {
             RunsDbBackend::Sqlite(db) => db,
+            RunsDbBackend::Postgres(_) => {
+                panic!("sqlite connection requested for postgres workflow store")
+            }
         }
     }
 
@@ -141,6 +152,9 @@ impl RunsDb {
         payload: &serde_json::Value,
         opts: &EnqueueOpts,
     ) -> Result<EnqueueRunResponse, RunsDbError> {
+        if let RunsDbBackend::Postgres(db) = &self.backend {
+            return db.enqueue(name, payload, opts);
+        }
         let now_ms = now_ms();
         let run_at = opts.run_at_ms.unwrap_or(now_ms);
         let max_attempts = opts.max_attempts.unwrap_or(DEFAULT_MAX_ATTEMPTS) as i64;
@@ -194,6 +208,7 @@ impl RunsDb {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn lock_conn(&self) -> parking_lot::MutexGuard<'_, Connection> {
         self.sqlite().conn.lock()
     }
@@ -207,6 +222,9 @@ impl RunsDb {
         names: &[String],
         lease_ms: u64,
     ) -> Result<Option<RunPayload>, RunsDbError> {
+        if let RunsDbBackend::Postgres(db) = &self.backend {
+            return db.claim(worker_id, names, lease_ms);
+        }
         if names.is_empty() {
             return Ok(None);
         }
@@ -291,6 +309,9 @@ impl RunsDb {
     /// `StaleWorker` so the SDK can log/raise rather than silently
     /// marking the run in a state the new worker didn't intend.
     pub fn heartbeat(&self, id: &str, worker_id: &str, lease_ms: u64) -> Result<(), RunsDbError> {
+        if let RunsDbBackend::Postgres(db) = &self.backend {
+            return db.heartbeat(id, worker_id, lease_ms);
+        }
         let lease_until = now_ms().saturating_add(clamp_lease_ms(lease_ms));
         let conn = self.sqlite().conn.lock();
         let rows = conn.execute(
@@ -316,6 +337,9 @@ impl RunsDb {
         step_name: &str,
         result: &serde_json::Value,
     ) -> Result<(), RunsDbError> {
+        if let RunsDbBackend::Postgres(db) = &self.backend {
+            return db.save_step(run_id, worker_id, step_name, result);
+        }
         let r = serde_json::to_string(result)?;
         let conn = self.sqlite().conn.lock();
         let rows = conn.execute(
@@ -343,6 +367,9 @@ impl RunsDb {
     }
 
     pub fn complete(&self, id: &str, worker_id: &str) -> Result<(), RunsDbError> {
+        if let RunsDbBackend::Postgres(db) = &self.backend {
+            return db.complete(id, worker_id);
+        }
         let conn = self.sqlite().conn.lock();
         let rows = conn.execute(
             "UPDATE runs SET status='succeeded', worker_id=NULL, lease_until=NULL
@@ -361,6 +388,9 @@ impl RunsDb {
         worker_id: &str,
         reason: Option<&str>,
     ) -> Result<(), RunsDbError> {
+        if let RunsDbBackend::Postgres(db) = &self.backend {
+            return db.cancel(id, worker_id, reason);
+        }
         let conn = self.sqlite().conn.lock();
         let rows = conn.execute(
             "UPDATE runs SET status='cancelled', last_error=?1, worker_id=NULL, lease_until=NULL
@@ -381,6 +411,9 @@ impl RunsDb {
         next_run_at_ms: Option<i64>,
         finalize: bool,
     ) -> Result<(), RunsDbError> {
+        if let RunsDbBackend::Postgres(db) = &self.backend {
+            return db.fail(id, worker_id, error, next_run_at_ms, finalize);
+        }
         let conn = self.sqlite().conn.lock();
         let rows = if finalize {
             conn.execute(
@@ -418,6 +451,9 @@ impl RunsDb {
         worker_id: &str,
         wake_at_ms: Option<i64>,
     ) -> Result<(), RunsDbError> {
+        if let RunsDbBackend::Postgres(db) = &self.backend {
+            return db.defer(id, worker_id, wake_at_ms);
+        }
         let conn = self.sqlite().conn.lock();
         let run_at = wake_at_ms.unwrap_or(i64::MAX);
         let rows = conn.execute(
@@ -433,6 +469,9 @@ impl RunsDb {
     }
 
     pub fn reclaim_expired(&self) -> Result<u64, RunsDbError> {
+        if let RunsDbBackend::Postgres(db) = &self.backend {
+            return db.reclaim_expired();
+        }
         let conn = self.sqlite().conn.lock();
         let changes = conn.execute(
             "UPDATE runs SET status='pending', worker_id=NULL, lease_until=NULL
@@ -446,6 +485,9 @@ impl RunsDb {
     /// `worker_id`s whose runs were reclaimed, one entry per reclaimed
     /// row (so callers can decrement per-worker in-flight counters).
     pub fn reclaim_expired_with_workers(&self) -> Result<Vec<String>, RunsDbError> {
+        if let RunsDbBackend::Postgres(db) = &self.backend {
+            return db.reclaim_expired_with_workers();
+        }
         let mut conn = self.sqlite().conn.lock();
         let tx = conn.transaction()?;
         let workers: Vec<String> = {
@@ -472,6 +514,9 @@ impl RunsDb {
     pub fn in_flight_by_worker(
         &self,
     ) -> Result<std::collections::HashMap<String, u32>, RunsDbError> {
+        if let RunsDbBackend::Postgres(db) = &self.backend {
+            return db.in_flight_by_worker();
+        }
         let conn = self.sqlite().conn.lock();
         let mut stmt = conn.prepare(
             "SELECT worker_id, COUNT(*) FROM runs
@@ -502,6 +547,9 @@ impl RunsDb {
         event_name: &str,
         timeout_at_ms: Option<i64>,
     ) -> Result<(), RunsDbError> {
+        if let RunsDbBackend::Postgres(db) = &self.backend {
+            return db.wait_for_event(run_id, worker_id, step_name, event_name, timeout_at_ms);
+        }
         let mut conn = self.sqlite().conn.lock();
         let tx = conn.transaction()?;
         let rows = tx.execute(
@@ -531,6 +579,9 @@ impl RunsDb {
         event_name: &str,
         payload: &serde_json::Value,
     ) -> Result<u64, RunsDbError> {
+        if let RunsDbBackend::Postgres(db) = &self.backend {
+            return db.signal(event_name, payload);
+        }
         let payload_json = serde_json::to_string(payload)?;
         let now = now_ms();
         let mut conn = self.sqlite().conn.lock();
@@ -567,6 +618,9 @@ impl RunsDb {
     }
 
     pub fn pending_count(&self) -> Result<u64, RunsDbError> {
+        if let RunsDbBackend::Postgres(db) = &self.backend {
+            return db.pending_count();
+        }
         let conn = self.sqlite().conn.lock();
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM runs WHERE status='pending'",
@@ -580,6 +634,9 @@ impl RunsDb {
     /// claim now. Future `run_at` rows stay durable without waking a
     /// scale-to-zero worker until the dispatcher scan sees them become due.
     pub fn has_runnable_work(&self) -> Result<bool, RunsDbError> {
+        if let RunsDbBackend::Postgres(db) = &self.backend {
+            return db.has_runnable_work();
+        }
         let conn = self.sqlite().conn.lock();
         let exists: i64 = conn.query_row(
             "SELECT EXISTS(
@@ -592,6 +649,76 @@ impl RunsDb {
         )?;
         Ok(exists != 0)
     }
+
+    pub(crate) fn replace_schedules(
+        &self,
+        schedules: &[tako_core::ScheduleSpec],
+    ) -> Result<(), RunsDbError> {
+        if let RunsDbBackend::Postgres(db) = &self.backend {
+            return db.replace_schedules(schedules);
+        }
+        let mut conn = self.sqlite().conn.lock();
+        let tx = conn.transaction()?;
+
+        let names: Vec<String> = schedules.iter().map(|s| s.name.clone()).collect();
+        if names.is_empty() {
+            tx.execute("DELETE FROM schedules", [])?;
+        } else {
+            let placeholders = names.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let sql = format!("DELETE FROM schedules WHERE name NOT IN ({})", placeholders);
+            let params: Vec<&dyn rusqlite::ToSql> =
+                names.iter().map(|n| n as &dyn rusqlite::ToSql).collect();
+            tx.execute(&sql, &params[..])?;
+        }
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        for s in schedules {
+            tx.execute(
+                "INSERT INTO schedules (name, cron, last_run_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(name) DO UPDATE SET cron = excluded.cron",
+                params![s.name, s.cron, now_ms],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub(crate) fn list_schedules(&self) -> Result<Vec<ScheduleRow>, RunsDbError> {
+        if let RunsDbBackend::Postgres(db) = &self.backend {
+            return db.list_schedules();
+        }
+        let conn = self.sqlite().conn.lock();
+        let mut stmt = conn.prepare("SELECT name, cron, last_run_at FROM schedules")?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(ScheduleRow {
+                    name: row.get(0)?,
+                    cron: row.get(1)?,
+                    last_run_at: row.get(2)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub(crate) fn set_schedule_last_run_at(&self, name: &str, ts: i64) -> Result<(), RunsDbError> {
+        if let RunsDbBackend::Postgres(db) = &self.backend {
+            return db.set_schedule_last_run_at(name, ts);
+        }
+        let conn = self.sqlite().conn.lock();
+        conn.execute(
+            "UPDATE schedules SET last_run_at = ?1 WHERE name = ?2",
+            params![ts, name],
+        )?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ScheduleRow {
+    pub(crate) name: String,
+    pub(crate) cron: String,
+    pub(crate) last_run_at: Option<i64>,
 }
 
 pub(crate) fn now_ms() -> i64 {

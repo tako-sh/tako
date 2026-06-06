@@ -14,6 +14,17 @@ pub(crate) fn app_channel_store_config(data_dir: &Path, app_name: &str) -> Chann
     ChannelStoreConfig::sqlite(app_channels_db_path(data_dir, app_name))
 }
 
+pub(crate) fn app_channel_store_config_with_postgres(
+    data_dir: &Path,
+    app_name: &str,
+    postgres_url: Option<&str>,
+) -> ChannelStoreConfig {
+    if let Some(url) = postgres_url {
+        return ChannelStoreConfig::postgres(url, app_name);
+    }
+    app_channel_store_config(data_dir, app_name)
+}
+
 pub(crate) async fn authorize_channel_request(
     app_name: &str,
     instance: &Instance,
@@ -109,6 +120,22 @@ mod tests {
             ChannelStoreConfig::Sqlite {
                 path: Path::new("/opt/tako/apps/my-app/staging/data/tako/channels.sqlite")
                     .to_path_buf(),
+            },
+        );
+    }
+
+    #[test]
+    fn channel_store_config_uses_postgres_when_url_is_set() {
+        assert_eq!(
+            app_channel_store_config_with_postgres(
+                Path::new("/opt/tako"),
+                "my-app/staging",
+                Some("postgres://db")
+            ),
+            ChannelStoreConfig::Postgres {
+                url: "postgres://db".to_string(),
+                schema: POSTGRES_CHANNELS_SCHEMA.to_string(),
+                app_id: "my-app/staging".to_string(),
             },
         );
     }

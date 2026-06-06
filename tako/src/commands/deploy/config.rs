@@ -255,14 +255,6 @@ pub(super) fn validate_runtime_state_storage_for_deploy(
         return result;
     };
 
-    if server_count > 1 {
-        result.error(format!(
-            "Remote channel/workflow storage for {POSTGRES_CREDENTIAL_NAME} is not available yet. {}",
-            remote_storage_unavailable_action(workflow_storage, has_channels)
-        ));
-        return result;
-    }
-
     match credential.is_expired() {
         Ok(true) => {
             if let Some(expires_on) = &credential.expires_on {
@@ -314,27 +306,14 @@ fn missing_postgres_storage_action(
 ) -> String {
     match (workflow_storage, has_channels) {
         (_, true) => format!(
-            "Run `tako credentials set {POSTGRES_CREDENTIAL_NAME} --env {env}` for shared channel/workflow storage once the Postgres backend is available."
+            "Run `tako credentials set {POSTGRES_CREDENTIAL_NAME} --env {env}` for shared channel/workflow storage."
         ),
         (WorkflowStorageIntent::RequiresRemote, false) => format!(
-            "Mark every workflow with `local: true` for per-server local storage, or run `tako credentials set {POSTGRES_CREDENTIAL_NAME} --env {env}` for remote workflow storage once the Postgres backend is available."
+            "Mark every workflow with `local: true` for per-server local storage, or run `tako credentials set {POSTGRES_CREDENTIAL_NAME} --env {env}` for remote workflow storage."
         ),
         _ => format!(
-            "Run `tako credentials set {POSTGRES_CREDENTIAL_NAME} --env {env}` for remote runtime state storage once the Postgres backend is available."
+            "Run `tako credentials set {POSTGRES_CREDENTIAL_NAME} --env {env}` for remote runtime state storage."
         ),
-    }
-}
-
-fn remote_storage_unavailable_action(
-    workflow_storage: WorkflowStorageIntent,
-    has_channels: bool,
-) -> &'static str {
-    if has_channels {
-        "Channels need shared replay/fanout state in multi-server environments."
-    } else if workflow_storage == WorkflowStorageIntent::RequiresRemote {
-        "Mark every workflow with `local: true` if per-server local cron and workflow queues are acceptable."
-    } else {
-        "Remote runtime state is not available for this project yet."
     }
 }
 

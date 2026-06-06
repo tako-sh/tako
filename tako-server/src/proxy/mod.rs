@@ -70,6 +70,7 @@ pub struct TakoProxy {
     /// lazily the first time an app's channel route is hit and dropped
     /// when the app is unregistered.
     channel_stores: SyncRwLock<HashMap<String, Arc<ChannelStore>>>,
+    channel_postgres_url: SyncRwLock<Option<ChannelPostgresUrlResolver>>,
     /// Per-IP concurrent request limiter (DDoS mitigation)
     ip_tracker: IpRequestTracker,
     /// Cloudflare proxy CIDRs used for app-level source IP modes.
@@ -77,6 +78,8 @@ pub struct TakoProxy {
     /// Channel metadata cache hydrated from app internal endpoints.
     channel_registry: ChannelRegistry,
 }
+
+type ChannelPostgresUrlResolver = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
 impl TakoProxy {
     fn metrics_enabled(&self) -> bool {
@@ -103,6 +106,7 @@ impl TakoProxy {
             response_cache,
             static_servers: SyncRwLock::new(HashMap::new()),
             channel_stores: SyncRwLock::new(HashMap::new()),
+            channel_postgres_url: SyncRwLock::new(None),
             ip_tracker: IpRequestTracker::new(),
             cloudflare_ips,
             channel_registry: ChannelRegistry::new(),
@@ -131,10 +135,15 @@ impl TakoProxy {
             response_cache,
             static_servers: SyncRwLock::new(HashMap::new()),
             channel_stores: SyncRwLock::new(HashMap::new()),
+            channel_postgres_url: SyncRwLock::new(None),
             ip_tracker: IpRequestTracker::new(),
             cloudflare_ips,
             channel_registry: ChannelRegistry::new(),
         }
+    }
+
+    pub(crate) fn set_channel_postgres_url_resolver(&self, resolver: ChannelPostgresUrlResolver) {
+        *self.channel_postgres_url.write() = Some(resolver);
     }
 }
 

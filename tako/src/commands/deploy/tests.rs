@@ -13,6 +13,7 @@ fn release_command_payload_includes_deploy_secrets() {
         routes: vec![],
         source_ip: tako_core::SourceIpMode::Auto,
         secrets: HashMap::from([("DATABASE_URL".to_string(), "postgres://new".to_string())]),
+        runtime_credentials: HashMap::new(),
         storages: HashMap::new(),
         ssl: tako_core::SslBinding::default(),
         backup: None,
@@ -138,7 +139,7 @@ fn workflow_storage_validation_rejects_multi_server_without_postgres_url() {
 }
 
 #[test]
-fn workflow_storage_validation_rejects_multi_server_until_postgres_backend_is_available() {
+fn workflow_storage_validation_allows_multi_server_with_postgres_url() {
     let temp = TempDir::new().unwrap();
     write_workflow(
         &temp,
@@ -172,10 +173,9 @@ fn workflow_storage_validation_rejects_multi_server_until_postgres_backend_is_av
         2,
     );
 
-    assert!(result.has_errors());
     assert!(
-        result.errors[0].contains("not available yet"),
-        "{:?}",
+        !result.has_errors(),
+        "unexpected errors: {:?}",
         result.errors
     );
 }
@@ -456,7 +456,7 @@ fn runtime_state_storage_validation_rejects_unreadable_channels_dir() {
 }
 
 #[test]
-fn runtime_state_storage_validation_rejects_multi_server_channels_until_postgres_backend_exists() {
+fn runtime_state_storage_validation_allows_multi_server_channels_with_postgres_url() {
     let temp = TempDir::new().unwrap();
     write_channel(&temp, "chat.ts", r#"export default defineChannel("chat");"#);
     let mut config = TakoToml::default();
@@ -486,10 +486,9 @@ fn runtime_state_storage_validation_rejects_multi_server_channels_until_postgres
         2,
     );
 
-    assert!(result.has_errors());
     assert!(
-        result.errors[0].contains("not available yet"),
-        "{:?}",
+        !result.has_errors(),
+        "unexpected errors: {:?}",
         result.errors
     );
 }

@@ -19,7 +19,6 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use cron::Schedule;
-use rusqlite::params;
 use tako_core::{EnqueueOpts, ScheduleSpec};
 use tokio::sync::oneshot;
 
@@ -41,64 +40,15 @@ pub fn register_schedules(db: &RunsDb, schedules: &[ScheduleSpec]) -> Result<(),
         })?;
     }
 
-    let mut conn = db.lock_conn();
-    let tx = conn.transaction()?;
-
-    let names: Vec<String> = schedules.iter().map(|s| s.name.clone()).collect();
-    if names.is_empty() {
-        tx.execute("DELETE FROM schedules", [])?;
-    } else {
-        let placeholders = names.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let sql = format!("DELETE FROM schedules WHERE name NOT IN ({})", placeholders);
-        let params: Vec<&dyn rusqlite::ToSql> =
-            names.iter().map(|n| n as &dyn rusqlite::ToSql).collect();
-        tx.execute(&sql, &params[..])?;
-    }
-
-    let now_ms = chrono::Utc::now().timestamp_millis();
-    for s in schedules {
-        // Set `last_run_at` to now on first insert so subsequent tick_once
-        // enqueues the *next* boundary (not the 30 years of boundaries
-        // preceding now). On conflict we leave the existing timestamp alone.
-        tx.execute(
-            "INSERT INTO schedules (name, cron, last_run_at) VALUES (?1, ?2, ?3)
-             ON CONFLICT(name) DO UPDATE SET cron = excluded.cron",
-            params![s.name, s.cron, now_ms],
-        )?;
-    }
-    tx.commit()?;
-    Ok(())
+    db.replace_schedules(schedules)
 }
 
-#[derive(Debug, Clone)]
-struct ScheduleRow {
-    name: String,
-    cron: String,
-    last_run_at: Option<i64>,
-}
-
-fn list_schedules(db: &RunsDb) -> Result<Vec<ScheduleRow>, RunsDbError> {
-    let conn = db.lock_conn();
-    let mut stmt = conn.prepare("SELECT name, cron, last_run_at FROM schedules")?;
-    let rows = stmt
-        .query_map([], |row| {
-            Ok(ScheduleRow {
-                name: row.get(0)?,
-                cron: row.get(1)?,
-                last_run_at: row.get(2)?,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(rows)
+fn list_schedules(db: &RunsDb) -> Result<Vec<super::enqueue::ScheduleRow>, RunsDbError> {
+    db.list_schedules()
 }
 
 fn set_last_run_at(db: &RunsDb, name: &str, ts: i64) -> Result<(), RunsDbError> {
-    let conn = db.lock_conn();
-    conn.execute(
-        "UPDATE schedules SET last_run_at = ?1 WHERE name = ?2",
-        params![ts, name],
-    )?;
-    Ok(())
+    db.set_schedule_last_run_at(name, ts)
 }
 
 /// Fire any schedules whose next boundary is at or before `now_ms`. Returns

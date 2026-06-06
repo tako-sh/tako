@@ -311,6 +311,10 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         Some(cert_manager),
         state.cold_start(),
         cloudflare_ips,
+        Some({
+            let state = state.clone();
+            Arc::new(move |app: &str| state.runtime_postgres_url(app))
+        }),
     )?;
 
     sd_notify_ready();

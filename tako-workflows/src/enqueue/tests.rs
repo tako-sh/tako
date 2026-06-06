@@ -16,7 +16,7 @@ fn enqueue_inserts_a_pending_row() {
 }
 
 #[test]
-fn workflow_store_config_names_postgres_schema_and_fails_closed() {
+fn workflow_store_config_names_postgres_schema() {
     assert_eq!(POSTGRES_WORKFLOWS_SCHEMA, "tako_workflows");
     assert_eq!(
         WorkflowStoreConfig::postgres("postgres://example", "workflow-app/production").clone(),
@@ -26,12 +26,59 @@ fn workflow_store_config_names_postgres_schema_and_fails_closed() {
             app_id: "workflow-app/production".to_string(),
         },
     );
+}
 
-    let err = match RunsDb::open_postgres("postgres://example", "workflow-app/production") {
-        Ok(_) => panic!("postgres workflow storage should fail closed until implemented"),
-        Err(err) => err,
+#[test]
+fn postgres_workflow_store_round_trips_when_url_is_set() {
+    let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
+        return;
     };
-    assert!(format!("{err}").contains("postgres workflow storage is not implemented yet"));
+    let app_id = format!(
+        "workflow-test/{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let db = RunsDb::open_postgres(&url, &app_id).unwrap();
+    let result = db
+        .enqueue(
+            "send-email",
+            &serde_json::json!({"to":"a@b.c"}),
+            &EnqueueOpts {
+                unique_key: Some("email-1".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let duplicate = db
+        .enqueue(
+            "send-email",
+            &serde_json::json!({"to":"a@b.c"}),
+            &EnqueueOpts {
+                unique_key: Some("email-1".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(duplicate.id, result.id);
+    assert!(duplicate.deduplicated);
+
+    let run = db
+        .claim("worker-1", &["send-email".to_string()], 30_000)
+        .unwrap()
+        .unwrap();
+    assert_eq!(run.id, result.id);
+    db.save_step(
+        &run.id,
+        "worker-1",
+        "step-1",
+        &serde_json::json!({"ok": true}),
+    )
+    .unwrap();
+    db.complete(&run.id, "worker-1").unwrap();
+    assert_eq!(db.pending_count().unwrap(), 0);
 }
 
 #[test]

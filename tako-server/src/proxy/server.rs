@@ -20,6 +20,7 @@ pub fn build_server_with_acme(
     cert_manager: Option<Arc<CertManager>>,
     cold_start: Arc<ColdStartManager>,
     cloudflare_ips: CloudflareIpRanges,
+    channel_postgres_url: Option<Arc<dyn Fn(&str) -> Option<String> + Send + Sync>>,
 ) -> Result<Server> {
     let mut server = Server::new_with_opt_and_conf(None, proxy_server_conf()?);
     server.bootstrap();
@@ -42,6 +43,9 @@ pub fn build_server_with_acme(
             cloudflare_ips,
         )
     };
+    if let Some(resolver) = channel_postgres_url {
+        proxy.set_channel_postgres_url_resolver(resolver);
+    }
 
     if config.trusted_proxy.proxy_protocol {
         let mut proxy_service = ProxyProtocolService::new(

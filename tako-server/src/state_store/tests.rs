@@ -66,6 +66,44 @@ fn init_rejects_newer_unknown_schema() {
 }
 
 #[test]
+fn runtime_credentials_round_trip_separately_from_app_secrets() {
+    let (_temp, store) = temp_store();
+    store.init().unwrap();
+
+    let app = "my-app/production";
+    store
+        .set_secrets(
+            app,
+            &HashMap::from([("API_KEY".to_string(), "app-secret".to_string())]),
+        )
+        .unwrap();
+    store
+        .set_runtime_credentials(
+            app,
+            &HashMap::from([("postgres_url".to_string(), "postgres://db".to_string())]),
+        )
+        .unwrap();
+
+    assert_eq!(
+        store
+            .get_secrets(app)
+            .unwrap()
+            .get("API_KEY")
+            .map(String::as_str),
+        Some("app-secret")
+    );
+    assert_eq!(
+        store
+            .get_runtime_credentials(app)
+            .unwrap()
+            .get("postgres_url")
+            .map(String::as_str),
+        Some("postgres://db")
+    );
+    assert!(!store.get_secrets(app).unwrap().contains_key("postgres_url"));
+}
+
+#[test]
 fn upsert_and_load_round_trip() {
     let (_temp, store) = temp_store();
     store.init().unwrap();

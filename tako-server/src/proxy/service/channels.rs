@@ -1,7 +1,7 @@
 use super::{BackendResolution, RequestCtx};
 use crate::channels::{
     ChannelAuthResponse, ChannelAuthScheme, ChannelDefinitionMeta, ChannelError,
-    ChannelHeaderValue, ChannelOperation, ChannelStore, ChannelTransport, app_channel_store_config,
+    ChannelHeaderValue, ChannelOperation, ChannelStore, ChannelTransport,
     authorize_channel_request, fetch_channel_registry, parse_channel_route,
     parse_message_id_cursor, parse_ws_last_message_id,
 };
@@ -34,7 +34,16 @@ impl TakoProxy {
             return Ok(existing.clone());
         }
 
-        let config = app_channel_store_config(self.lb.app_manager().data_dir(), app_name);
+        let postgres_url = self
+            .channel_postgres_url
+            .read()
+            .as_ref()
+            .and_then(|resolver| resolver(app_name));
+        let config = crate::channels::app_channel_store_config_with_postgres(
+            self.lb.app_manager().data_dir(),
+            app_name,
+            postgres_url.as_deref(),
+        );
         let store = Arc::new(ChannelStore::open_config(config).map_err(|error| {
             Error::explain(
                 ErrorType::InternalError,

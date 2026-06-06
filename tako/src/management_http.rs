@@ -491,6 +491,7 @@ mod tests {
                 routes: vec!["demo.tako.sh".to_string()],
                 source_ip: tako_core::SourceIpMode::Direct,
                 secrets: None,
+                runtime_credentials: None,
                 storages: None,
                 ssl: tako_core::SslBinding::default(),
                 backup: None,

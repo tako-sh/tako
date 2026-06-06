@@ -158,6 +158,7 @@ async fn deploy_rejects_persisted_instances_above_app_limit() {
             routes: vec!["api.example.com".to_string()],
             source_ip: tako_core::SourceIpMode::Auto,
             secrets: Some(HashMap::new()),
+            runtime_credentials: None,
             storages: Some(HashMap::new()),
             ssl: tako_core::SslBinding::default(),
             backup: None,

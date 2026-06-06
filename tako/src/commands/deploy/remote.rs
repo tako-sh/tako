@@ -403,6 +403,7 @@ async fn send_deploy_command(
             routes: config.routes.clone(),
             source_ip: config.source_ip,
             secrets: deploy_secrets,
+            runtime_credentials: Some(config.runtime_credentials.clone()),
             storages: Some(config.storages.clone()),
             ssl: ssl_binding_for_start_command(&config.ssl),
             backup: config.backup.clone().map(Box::new),

@@ -171,7 +171,7 @@ fn channel_store_appends_and_reads_messages() {
 }
 
 #[test]
-fn channel_store_config_names_postgres_schema_and_fails_closed() {
+fn channel_store_config_names_postgres_schema() {
     assert_eq!(POSTGRES_CHANNELS_SCHEMA, "tako_channels");
     assert_eq!(
         ChannelStoreConfig::postgres("postgres://example", "chat-app/production").clone(),
@@ -181,12 +181,62 @@ fn channel_store_config_names_postgres_schema_and_fails_closed() {
             app_id: "chat-app/production".to_string(),
         },
     );
+}
 
-    let err = match ChannelStore::open_postgres("postgres://example", "chat-app/production") {
-        Ok(_) => panic!("postgres channel storage should fail closed until implemented"),
-        Err(err) => err,
+#[test]
+fn postgres_channel_store_round_trips_when_url_is_set() {
+    let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
+        return;
     };
-    assert!(format!("{err}").contains("postgres channel storage is not implemented yet"));
+    let app_id = format!(
+        "channel-test/{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let store = ChannelStore::open_postgres(&url, &app_id).unwrap();
+
+    store
+        .sync_channel(
+            "chat",
+            &ChannelAuthResponse {
+                ok: true,
+                subject: None,
+                transport: None,
+                replay_window_ms: DEFAULT_REPLAY_WINDOW_MS,
+                inactivity_ttl_ms: 0,
+                keepalive_interval_ms: DEFAULT_KEEPALIVE_INTERVAL_MS,
+                max_connection_lifetime_ms: DEFAULT_MAX_CONNECTION_LIFETIME_MS,
+            },
+        )
+        .unwrap();
+    let first = store
+        .append(
+            "chat",
+            &ChannelPublishPayload {
+                r#type: "message".to_string(),
+                data: serde_json::json!({ "text": "hello" }),
+            },
+        )
+        .unwrap();
+    let second = store
+        .append(
+            "chat",
+            &ChannelPublishPayload {
+                r#type: "message".to_string(),
+                data: serde_json::json!({ "text": "there" }),
+            },
+        )
+        .unwrap();
+
+    let messages = store
+        .read_after("chat", first.id.parse::<i64>().ok(), 100)
+        .unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].id, second.id);
+    assert_eq!(messages[0].data, serde_json::json!({ "text": "there" }));
 }
 
 #[test]

@@ -181,6 +181,12 @@ pub(super) async fn prepare_build_phase(
     );
     let deploy_secrets =
         decrypt_deploy_secrets(&env, &secrets, Some(&project_dir)).map_err(|e| e.to_string())?;
+    let deploy_runtime_credentials = crate::commands::credentials::decrypt_runtime_credentials(
+        &env,
+        &secrets,
+        Some(&project_dir),
+    )
+    .map_err(|e| e.to_string())?;
     let deploy_storages = crate::commands::storage::decrypt_storage_bindings(
         &env,
         &tako_config,
@@ -256,6 +262,7 @@ pub(super) async fn prepare_build_phase(
         version,
         manifest_main,
         deploy_secrets,
+        deploy_runtime_credentials,
         deploy_storages,
         deploy_ssl,
         deploy_backup,

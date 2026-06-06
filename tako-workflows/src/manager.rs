@@ -84,6 +84,7 @@ pub struct WorkflowManager {
     data_dir: PathBuf,
     apps: Arc<RwLock<HashMap<String, AppWorkflow>>>,
     socket: parking_lot::Mutex<Option<EnqueueSocketHandle>>,
+    postgres_url: parking_lot::Mutex<Option<PostgresUrlResolver>>,
     /// Server-side channel `publish` relay used by SDK channel handles.
     /// Snapshotted at `start_socket` time and passed into the socket's
     /// accept loop.
@@ -93,6 +94,8 @@ pub struct WorkflowManager {
     /// one silently overwrite the other (leaking the loser's children).
     ensure_gate: tokio::sync::Mutex<()>,
 }
+
+type PostgresUrlResolver = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
 #[derive(thiserror::Error, Debug)]
 pub enum WorkflowManagerError {
@@ -110,6 +113,7 @@ impl WorkflowManager {
             data_dir: data_dir.into(),
             apps: Arc::new(RwLock::new(HashMap::new())),
             socket: parking_lot::Mutex::new(None),
+            postgres_url: parking_lot::Mutex::new(None),
             channel_publish: parking_lot::Mutex::new(None),
             ensure_gate: tokio::sync::Mutex::new(()),
         }
@@ -120,6 +124,10 @@ impl WorkflowManager {
     /// `start_socket` — the publisher is snapshotted at that point.
     pub fn set_channel_publisher(&self, publisher: ChannelPublishFn) {
         *self.channel_publish.lock() = Some(publisher);
+    }
+
+    pub fn set_postgres_url_resolver(&self, resolver: PostgresUrlResolver) {
+        *self.postgres_url.lock() = Some(resolver);
     }
 
     pub fn app_dir(&self, app: &str) -> PathBuf {
@@ -135,6 +143,14 @@ impl WorkflowManager {
     }
 
     pub fn workflow_store_config(&self, app: &str) -> WorkflowStoreConfig {
+        if let Some(url) = self
+            .postgres_url
+            .lock()
+            .as_ref()
+            .and_then(|resolver| resolver(app))
+        {
+            return WorkflowStoreConfig::postgres(url, app.to_string());
+        }
         WorkflowStoreConfig::sqlite(self.workflows_db_path(app))
     }
 
@@ -384,6 +400,7 @@ pub fn worker_spec_for_bun(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::POSTGRES_WORKFLOWS_SCHEMA;
     use crate::enqueue_socket::{HealthCheck, OnClaimed};
     use std::collections::HashMap as StdHashMap;
 
@@ -458,6 +475,22 @@ mod tests {
                     .join("data")
                     .join("tako")
                     .join("workflows.sqlite"),
+            },
+        );
+    }
+
+    #[test]
+    fn workflow_store_config_uses_postgres_when_resolver_returns_url() {
+        let tmp = tempfile::tempdir().unwrap();
+        let m = WorkflowManager::new(tmp.path());
+        m.set_postgres_url_resolver(Arc::new(|_| Some("postgres://db".to_string())));
+
+        assert_eq!(
+            m.workflow_store_config("a/production"),
+            WorkflowStoreConfig::Postgres {
+                url: "postgres://db".to_string(),
+                schema: POSTGRES_WORKFLOWS_SCHEMA.to_string(),
+                app_id: "a/production".to_string(),
             },
         );
     }

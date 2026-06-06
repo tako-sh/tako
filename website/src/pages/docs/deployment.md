@@ -72,8 +72,8 @@ Before build work starts, deploy checks:
 - selected S3 storage credentials exist and are not expired
 - backup storage credentials exist and are not expired when backups are enabled
 - provider credentials exist and are not expired when Cloudflare SSL or Let's Encrypt wildcard routes need them
-- multi-server channel deploys are blocked until shared Postgres channel storage exists
-- multi-server workflow deploys set `local: true` in every `defineWorkflow(...)` option object until shared workflow storage is available
+- multi-server channel deploys have `postgres_url` set for shared Postgres channel storage
+- multi-server workflow deploys have `postgres_url` set, or every `defineWorkflow(...)` option object sets `local: true`
 - credentials expiring within 30 days are surfaced as warnings
 
 Required Cloudflare credentials are also checked from each target server during remote prepare. Let's Encrypt wildcard routes use Cloudflare User API tokens, verify zone read access from the server's egress IP, and require DNS Write for certificate issuance.

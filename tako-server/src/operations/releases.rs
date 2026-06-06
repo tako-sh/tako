@@ -311,6 +311,7 @@ impl crate::ServerState {
             routes,
             source_ip,
             secrets: None,
+            runtime_credentials: None,
             storages: None,
             ssl,
             backup: None,

@@ -20,6 +20,7 @@ pub(crate) struct DeployRequest<'a> {
     pub(crate) routes: Vec<String>,
     pub(crate) source_ip: tako_core::SourceIpMode,
     pub(crate) secrets: Option<HashMap<String, String>>,
+    pub(crate) runtime_credentials: Option<HashMap<String, String>>,
     pub(crate) storages: Option<HashMap<String, tako_core::StorageBinding>>,
     pub(crate) ssl: tako_core::SslBinding,
     pub(crate) backup: Option<tako_core::BackupBinding>,
@@ -31,6 +32,7 @@ struct RollbackSnapshot {
     state: AppState,
     ssl: Option<tako_core::SslBinding>,
     backup: Option<tako_core::BackupBinding>,
+    runtime_credentials: HashMap<String, String>,
 }
 
 impl crate::ServerState {
@@ -42,6 +44,7 @@ impl crate::ServerState {
             routes,
             source_ip,
             secrets,
+            runtime_credentials,
             storages,
             ssl,
             backup,
@@ -110,6 +113,13 @@ impl crate::ServerState {
         } else {
             self.state_store.get_secrets(app_name).unwrap_or_default()
         };
+        let runtime_credentials = if let Some(new_runtime_credentials) = runtime_credentials {
+            new_runtime_credentials
+        } else {
+            self.state_store
+                .get_runtime_credentials(app_name)
+                .unwrap_or_default()
+        };
         let storages = if let Some(new_storages) = storages {
             new_storages
         } else {
@@ -165,6 +175,10 @@ impl crate::ServerState {
                 state: previous_state,
                 ssl: previous_ssl,
                 backup: previous_backup,
+                runtime_credentials: self
+                    .state_store
+                    .get_runtime_credentials(app_name)
+                    .unwrap_or_default(),
             })
         } else {
             None
@@ -187,7 +201,9 @@ impl crate::ServerState {
                 return Response::error(format!("Deploy failed: {error}"));
             }
             inject_app_data_dir_env(&mut config.env_vars, &data_paths);
-            if let Err(e) = self.persist_credentials(app_name, &secrets, &storages) {
+            if let Err(e) =
+                self.persist_credentials(app_name, &secrets, &runtime_credentials, &storages)
+            {
                 return Response::error(e);
             }
             if let Err(e) = self.persist_ssl_binding(app_name, &ssl) {
@@ -225,7 +241,9 @@ impl crate::ServerState {
                 return Response::error(format!("Deploy failed: {error}"));
             }
             inject_app_data_dir_env(&mut config.env_vars, &data_paths);
-            if let Err(e) = self.persist_credentials(app_name, &secrets, &storages) {
+            if let Err(e) =
+                self.persist_credentials(app_name, &secrets, &runtime_credentials, &storages)
+            {
                 return Response::error(e);
             }
             if let Err(e) = self.persist_ssl_binding(app_name, &ssl) {
@@ -449,11 +467,15 @@ impl crate::ServerState {
         &self,
         app_name: &str,
         secrets: &HashMap<String, String>,
+        runtime_credentials: &HashMap<String, String>,
         storages: &HashMap<String, tako_core::StorageBinding>,
     ) -> Result<(), String> {
         self.state_store
             .set_secrets(app_name, secrets)
             .map_err(|e| format!("Failed to store secrets: {e}"))?;
+        self.state_store
+            .set_runtime_credentials(app_name, runtime_credentials)
+            .map_err(|e| format!("Failed to store runtime credentials: {e}"))?;
         self.state_store
             .set_storages(app_name, storages)
             .map_err(|e| format!("Failed to store storages: {e}"))?;
@@ -480,6 +502,7 @@ impl crate::ServerState {
         let previous_release_path =
             app_release_root(&self.runtime.data_dir, app_name, &snapshot.config.version);
         let previous_secrets = snapshot.config.secrets.clone();
+        let previous_runtime_credentials = snapshot.runtime_credentials.clone();
         let previous_storages = snapshot.config.storages.clone();
         let previous_source_ip = snapshot.config.source_ip;
         app.update_config(snapshot.config);
@@ -487,6 +510,16 @@ impl crate::ServerState {
         app.set_last_error(format!("Rolling update failed: {error}"));
         if let Err(e) = self.state_store.set_secrets(app_name, &previous_secrets) {
             tracing::warn!(app = app_name, "Failed to restore previous secrets: {}", e);
+        }
+        if let Err(e) = self
+            .state_store
+            .set_runtime_credentials(app_name, &previous_runtime_credentials)
+        {
+            tracing::warn!(
+                app = app_name,
+                "Failed to restore previous runtime credentials: {}",
+                e
+            );
         }
         if let Err(e) = self.state_store.set_storages(app_name, &previous_storages) {
             tracing::warn!(app = app_name, "Failed to restore previous storages: {}", e);

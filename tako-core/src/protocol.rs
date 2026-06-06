@@ -156,6 +156,10 @@ pub enum Command {
         /// When `None`, the server keeps existing secrets for this app.
         #[serde(default)]
         secrets: Option<HashMap<String, String>>,
+        /// Tako runtime/provider credentials used by the server only. These
+        /// are not injected into app processes.
+        #[serde(default)]
+        runtime_credentials: Option<HashMap<String, String>>,
         /// Storage bindings injected into app processes at spawn time.
         /// When `None`, the server keeps existing storage bindings for this app.
         #[serde(default)]
