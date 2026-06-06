@@ -180,12 +180,18 @@ fn classify_path(
     }
 
     let channels_dir = app_root.join("channels");
-    if path == channels_dir || path.starts_with(&channels_dir) {
+    if path == channels_dir {
+        return (!path.exists()).then_some(WatchChange::Channels);
+    }
+    if path.starts_with(&channels_dir) {
         return Some(WatchChange::Channels);
     }
 
     let workflows_dir = app_root.join("workflows");
-    if path == workflows_dir || path.starts_with(&workflows_dir) {
+    if path == workflows_dir {
+        return (!path.exists()).then_some(WatchChange::Workflows);
+    }
+    if path.starts_with(&workflows_dir) {
         return Some(WatchChange::Workflows);
     }
 
@@ -198,8 +204,9 @@ mod tests {
 
     #[test]
     fn relevant_paths_include_config_secrets_channels_workflows_and_generated_declarations() {
-        let project_dir = PathBuf::from("/tmp/demo");
-        let app_root = PathBuf::from("/tmp/demo/src");
+        let temp = tempfile::TempDir::new().unwrap();
+        let project_dir = temp.path().join("demo");
+        let app_root = project_dir.join("src");
         let config_path = project_dir.join("tako.toml");
 
         assert_eq!(
@@ -220,15 +227,6 @@ mod tests {
                 &project_dir,
                 &app_root,
                 &config_path,
-                &app_root.join("channels")
-            ),
-            Some(WatchChange::Channels)
-        );
-        assert_eq!(
-            classify_path(
-                &project_dir,
-                &app_root,
-                &config_path,
                 &app_root.join("channels").join("demo.ts")
             ),
             Some(WatchChange::Channels)
@@ -239,6 +237,24 @@ mod tests {
                 &app_root,
                 &config_path,
                 &app_root.join("workflows").join("demo.ts")
+            ),
+            Some(WatchChange::Workflows)
+        );
+        assert_eq!(
+            classify_path(
+                &project_dir,
+                &app_root,
+                &config_path,
+                &app_root.join("channels")
+            ),
+            Some(WatchChange::Channels)
+        );
+        assert_eq!(
+            classify_path(
+                &project_dir,
+                &app_root,
+                &config_path,
+                &app_root.join("workflows")
             ),
             Some(WatchChange::Workflows)
         );
@@ -304,6 +320,45 @@ mod tests {
                 &project_dir.join("src").join("index.ts")
             ),
             None
+        );
+    }
+
+    #[test]
+    fn existing_channel_and_workflow_directory_events_are_ignored() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project_dir = temp.path().join("demo");
+        let app_root = project_dir.join("src");
+        let config_path = project_dir.join("tako.toml");
+        let channels_dir = app_root.join("channels");
+        let workflows_dir = app_root.join("workflows");
+        std::fs::create_dir_all(&channels_dir).unwrap();
+        std::fs::create_dir_all(&workflows_dir).unwrap();
+
+        assert_eq!(
+            classify_path(&project_dir, &app_root, &config_path, &channels_dir),
+            None
+        );
+        assert_eq!(
+            classify_path(&project_dir, &app_root, &config_path, &workflows_dir),
+            None
+        );
+        assert_eq!(
+            classify_path(
+                &project_dir,
+                &app_root,
+                &config_path,
+                &channels_dir.join("demo.ts")
+            ),
+            Some(WatchChange::Channels)
+        );
+        assert_eq!(
+            classify_path(
+                &project_dir,
+                &app_root,
+                &config_path,
+                &workflows_dir.join("broadcast.ts")
+            ),
+            Some(WatchChange::Workflows)
         );
     }
 }

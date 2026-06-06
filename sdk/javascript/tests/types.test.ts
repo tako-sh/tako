@@ -168,6 +168,6 @@ describe("Types", () => {
         const url: string = secrets.DATABASE_URL;
         void url;
       `);
-    });
+    }, 30_000);
   });
 });

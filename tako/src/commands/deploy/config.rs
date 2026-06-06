@@ -223,7 +223,7 @@ pub(super) fn resolve_deploy_server_targets(
     Ok(resolved)
 }
 
-pub(super) fn validate_workflow_storage_for_deploy(
+pub(super) fn validate_runtime_state_storage_for_deploy(
     project_dir: &Path,
     tako_config: &TakoToml,
     secrets: &SecretsStore,
@@ -232,18 +232,21 @@ pub(super) fn validate_workflow_storage_for_deploy(
 ) -> ValidationResult {
     let mut result = ValidationResult::new();
     let workflow_storage = project_workflow_storage(project_dir, tako_config);
-    if workflow_storage == WorkflowStorageIntent::NoWorkflows {
+    let has_channels = project_has_channels(project_dir, tako_config);
+    if workflow_storage == WorkflowStorageIntent::NoWorkflows && !has_channels {
         return result;
     }
 
-    if server_count > 1 && workflow_storage == WorkflowStorageIntent::AllLocal {
+    if server_count > 1 && workflow_storage == WorkflowStorageIntent::AllLocal && !has_channels {
         return result;
     }
 
     let postgres_credential = secrets.get_credential(env, POSTGRES_CREDENTIAL_NAME);
     if server_count > 1 && postgres_credential.is_none() {
         result.error(format!(
-            "Workflows in environment '{env}' target {server_count} servers. Mark every workflow with `local: true` for per-server local storage, or run `tako credentials set {POSTGRES_CREDENTIAL_NAME} --env {env}` for remote workflow storage once the Postgres backend is available."
+            "{} in environment '{env}' target {server_count} servers. {}",
+            runtime_state_subject(workflow_storage, has_channels),
+            missing_postgres_storage_action(workflow_storage, has_channels, env)
         ));
         return result;
     }
@@ -254,7 +257,8 @@ pub(super) fn validate_workflow_storage_for_deploy(
 
     if server_count > 1 {
         result.error(format!(
-            "Remote workflow storage for {POSTGRES_CREDENTIAL_NAME} is not available yet. Mark every workflow with `local: true` if per-server local cron and workflow queues are acceptable."
+            "Remote channel/workflow storage for {POSTGRES_CREDENTIAL_NAME} is not available yet. {}",
+            remote_storage_unavailable_action(workflow_storage, has_channels)
         ));
         return result;
     }
@@ -288,6 +292,52 @@ pub(super) fn validate_workflow_storage_for_deploy(
     result
 }
 
+fn runtime_state_subject(
+    workflow_storage: WorkflowStorageIntent,
+    has_channels: bool,
+) -> &'static str {
+    match (
+        workflow_storage != WorkflowStorageIntent::NoWorkflows,
+        has_channels,
+    ) {
+        (true, true) => "Channels and workflows",
+        (true, false) => "Workflows",
+        (false, true) => "Channels",
+        (false, false) => "Runtime state",
+    }
+}
+
+fn missing_postgres_storage_action(
+    workflow_storage: WorkflowStorageIntent,
+    has_channels: bool,
+    env: &str,
+) -> String {
+    match (workflow_storage, has_channels) {
+        (_, true) => format!(
+            "Run `tako credentials set {POSTGRES_CREDENTIAL_NAME} --env {env}` for shared channel/workflow storage once the Postgres backend is available."
+        ),
+        (WorkflowStorageIntent::RequiresRemote, false) => format!(
+            "Mark every workflow with `local: true` for per-server local storage, or run `tako credentials set {POSTGRES_CREDENTIAL_NAME} --env {env}` for remote workflow storage once the Postgres backend is available."
+        ),
+        _ => format!(
+            "Run `tako credentials set {POSTGRES_CREDENTIAL_NAME} --env {env}` for remote runtime state storage once the Postgres backend is available."
+        ),
+    }
+}
+
+fn remote_storage_unavailable_action(
+    workflow_storage: WorkflowStorageIntent,
+    has_channels: bool,
+) -> &'static str {
+    if has_channels {
+        "Channels need shared replay/fanout state in multi-server environments."
+    } else if workflow_storage == WorkflowStorageIntent::RequiresRemote {
+        "Mark every workflow with `local: true` if per-server local cron and workflow queues are acceptable."
+    } else {
+        "Remote runtime state is not available for this project yet."
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WorkflowStorageIntent {
     NoWorkflows,
@@ -312,7 +362,7 @@ fn project_workflow_storage(project_dir: &Path, tako_config: &TakoToml) -> Workf
             return WorkflowStorageIntent::RequiresRemote;
         };
         let path = entry.path();
-        if !is_workflow_source_file(&path) {
+        if !is_js_runtime_source_file(&path) {
             continue;
         }
         saw_workflow = true;
@@ -331,7 +381,27 @@ fn project_workflow_storage(project_dir: &Path, tako_config: &TakoToml) -> Workf
     }
 }
 
-fn is_workflow_source_file(path: &Path) -> bool {
+fn project_has_channels(project_dir: &Path, tako_config: &TakoToml) -> bool {
+    let channels_dir =
+        crate::build::js::js_app_root_dir(project_dir, tako_config.js_app_root()).join("channels");
+    let entries = match std::fs::read_dir(channels_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return false,
+        Err(_) => return true,
+    };
+
+    for entry in entries {
+        let Ok(entry) = entry else {
+            return true;
+        };
+        if is_js_runtime_source_file(&entry.path()) {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_js_runtime_source_file(path: &Path) -> bool {
     let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
     };

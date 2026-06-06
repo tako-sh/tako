@@ -104,7 +104,7 @@ tako deploy --env production --yes
 | `--env <ENV>` | Environment to deploy. Defaults to `production`. |
 | `-y`, `--yes` | Skip confirmation prompts.                       |
 
-Deploy validates config, secrets, storage credentials, provider credentials, workflow storage, backup config, route setup, and server target metadata before build work starts. It builds locally, packages an artifact, uploads it over signed HTTP management, prepares each server release, optionally runs the `release` command once on the leader server, performs rolling updates, finalizes the release, and creates a post-deploy backup when enabled.
+Deploy validates config, secrets, storage credentials, provider credentials, runtime state storage, backup config, route setup, and server target metadata before build work starts. It builds locally, packages an artifact, uploads it over signed HTTP management, prepares each server release, optionally runs the `release` command once on the leader server, performs rolling updates, finalizes the release, and creates a post-deploy backup when enabled.
 
 `development` is reserved for `tako dev` and cannot be deployed. Interactive production deploys ask for confirmation only when the environment is implicit.
 
@@ -228,7 +228,7 @@ tako credentials list
 
 Supported provider credentials today: `ssl.cloudflare` and `postgres_url`.
 
-Provider credentials are encrypted in `.tako/secrets.json`, not exposed to app code, not included in generated secret types, and not pushed by `tako secrets sync`. Deploy sends them only through the deployment binding that needs them. `postgres_url` is accepted and expiry-validated, but remote workflow storage is not yet available.
+Provider credentials are encrypted in `.tako/secrets.json`, not exposed to app code, not included in generated secret types, and not pushed by `tako secrets sync`. Deploy sends them only through the deployment binding that needs them. `postgres_url` is accepted and expiry-validated, but shared channel/workflow storage is not yet available.
 
 ## `tako secrets`
 

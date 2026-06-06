@@ -270,13 +270,13 @@ tako credentials set ssl.cloudflare --env production
 
 Use a Cloudflare User API token with Zone Read and DNS Write for the matching Cloudflare zone. If the token is IP-restricted, include each target server's egress IP.
 
-Remote workflow storage will use the environment credential `postgres_url`, not `tako.toml`:
+Shared channel/workflow storage will use the environment credential `postgres_url`, not `tako.toml`:
 
 ```bash
 tako credentials set postgres_url --env production
 ```
 
-If an environment has `<app_root>/workflows/` and deploys to more than one server, deploy is blocked until the remote workflow backend is available unless every workflow definition opts into per-server local execution with `local: true`.
+If an environment has `<app_root>/channels/` and deploys to more than one server, deploy is blocked until shared channel storage is available. If an environment has `<app_root>/workflows/` and deploys to more than one server, deploy is blocked until shared workflow storage is available unless every workflow definition opts into per-server local execution with `local: true`.
 
 Cloudflare Origin CA is selected per environment:
 
@@ -406,7 +406,7 @@ Precedence for unnamed workflows is built-in defaults, `[workflows]`, then `[ser
 
 Precedence for named workers is built-in defaults, `[workflows]`, `[workflows.<group>]`, `[servers.<name>.workflows]`, then `[servers.<name>.workflows.<group>]`.
 
-Workflow storage currently uses local SQLite. Multi-server workflow deploys are blocked by default; set `local: true` in every `defineWorkflow(...)` option object only when per-server duplicated cron and workflow execution is acceptable. `postgres_url` is accepted for the future remote backend, whose Tako-owned tables will live in schema `tako_workflows`.
+Channel replay and workflow storage currently use local SQLite. Multi-server channel deploys are blocked until shared channel storage exists. Multi-server workflow deploys are blocked by default; set `local: true` in every `defineWorkflow(...)` option object only when per-server duplicated cron and workflow execution is acceptable. `postgres_url` is accepted for the future remote backend. Runtime state will be selected through internal storage adapters: SQLite for local mode and Postgres for shared mode. Workflow tables will live in schema `tako_workflows`; channel tables will live in schema `tako_channels`.
 
 ## Per-Server App Overrides
 

@@ -110,7 +110,7 @@ Health probes call `Host: <app>.tako` on `/status`. The JS SDK supplies this int
 
 ## Secrets, Storage, And Backups
 
-Project secrets, storage credentials, provider credentials, and backup keys are encrypted in `.tako/secrets.json`. Expiry dates are plaintext metadata so deploy can fail on expired selected credentials and warn for credentials expiring within 30 days. `postgres_url` is a Tako-owned credential reserved for remote workflow storage.
+Project secrets, storage credentials, provider credentials, and backup keys are encrypted in `.tako/secrets.json`. Expiry dates are plaintext metadata so deploy can fail on expired selected credentials and warn for credentials expiring within 30 days. `postgres_url` is a Tako-owned credential reserved for shared channel/workflow storage.
 
 Server-side secrets and storage bindings are stored encrypted in SQLite. Fresh HTTP instances and workflow workers receive them through fd 3 at spawn time rather than through inherited service environment variables.
 
@@ -124,7 +124,7 @@ JavaScript channels live in `<app_root>/channels/*.ts` and export `defineChannel
 
 JavaScript workflows live in `<app_root>/workflows/*.ts` and export `defineWorkflow(...)`. Workflow workers can be always-on or scale-to-zero. The default is `workers = 0`, so the server starts a worker when runnable work appears from enqueue, signal, cron, delayed retry/sleep, or lease reclaim, then stops it after an idle window. Each worker startup replaces the server-side cron schedule set with the schedules in the current release, so removed schedules are deregistered.
 
-Workflow state is durable in local SQLite for single-server environments. Multi-server environments with `<app_root>/workflows/` are blocked by default because local state would be split across servers. Setting `local: true` in every `defineWorkflow(...)` option object allows per-server local queues and cron when duplicated execution is acceptable. `postgres_url` can be stored now and is the credential name the remote backend will use.
+Channel replay and workflow state are durable in local SQLite for single-server environments. Multi-server environments with `<app_root>/channels/` are blocked until shared channel storage exists. Multi-server environments with `<app_root>/workflows/` are blocked by default unless every workflow opts into per-server local execution with `local: true`. `postgres_url` can be stored now and is the credential name the remote backend will use. Internally, shared runtime state will be selected through storage adapters: SQLite for local mode and Postgres for shared mode. Workflows will use schema `tako_workflows` and channels will use schema `tako_channels`.
 
 ## Observability
 

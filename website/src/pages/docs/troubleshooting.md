@@ -49,7 +49,7 @@ Use `--env <name>` when targeting a different environment.
 
 Use the current config shape:
 
-- Provider credentials are not in `tako.toml`. Use `tako credentials set ssl.cloudflare --env <env>` for Cloudflare certificates. `postgres_url` is accepted for the future remote workflow backend.
+- Provider credentials are not in `tako.toml`. Use `tako credentials set ssl.cloudflare --env <env>` for Cloudflare certificates. `postgres_url` is accepted for the future shared channel/workflow backend.
 - Presets are not namespaced. Use `runtime = "bun"` and `preset = "tanstack-start"`.
 - Storage resources are top-level `[storages.<name>]` tables plus `[envs.<env>].storages` bindings.
 - The built-in `local` storage resource is not declared as `[storages.local]`.
@@ -252,7 +252,7 @@ Let's Encrypt wildcard routes require Cloudflare DNS-01 credentials:
 tako credentials set ssl.cloudflare --env production --expires-on "in 90 days"
 ```
 
-Cloudflare SSL also requires `ssl.cloudflare`. Multi-server workflow deploys require `local: true` in every `defineWorkflow(...)` option object until remote workflow storage is available. Provider credentials are encrypted under the environment's `credentials` object and are not exposed to app code or `tako secrets sync`.
+Cloudflare SSL also requires `ssl.cloudflare`. Multi-server channel deploys are blocked until shared channel storage exists, and multi-server workflow deploys require `local: true` in every `defineWorkflow(...)` option object until shared workflow storage is available. Provider credentials are encrypted under the environment's `credentials` object and are not exposed to app code or `tako secrets sync`.
 
 Deploy verifies required Cloudflare credentials from each target server during remote prepare. For Let's Encrypt wildcard routes, use a Cloudflare User API token with Zone Read and DNS Write for the matching Cloudflare zone, and include each target server's egress IP in any token IP restriction.
 

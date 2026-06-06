@@ -440,7 +440,7 @@ export default defineWorkflow<{ userId: string; to: string }>("send-email", {
 });
 ```
 
-Use `local: true` only when per-server local queues and cron are acceptable. Until remote workflow storage is implemented, every workflow in a multi-server deploy must set `local: true`.
+Use `local: true` only when per-server local queues and cron are acceptable. Until shared workflow storage is implemented, every workflow in a multi-server deploy must set `local: true`. Multi-server channel deploys are blocked until shared channel storage exists because publish/replay must reach subscribers connected to every server.
 
 ### Enqueuing
 

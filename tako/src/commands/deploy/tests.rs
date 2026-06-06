@@ -121,7 +121,7 @@ fn workflow_storage_validation_rejects_multi_server_without_postgres_url() {
     );
     let secrets = SecretsStore::default();
 
-    let result = config::validate_workflow_storage_for_deploy(
+    let result = config::validate_runtime_state_storage_for_deploy(
         temp.path(),
         &config,
         &secrets,
@@ -164,7 +164,7 @@ fn workflow_storage_validation_rejects_multi_server_until_postgres_backend_is_av
         )
         .unwrap();
 
-    let result = config::validate_workflow_storage_for_deploy(
+    let result = config::validate_runtime_state_storage_for_deploy(
         temp.path(),
         &config,
         &secrets,
@@ -193,7 +193,7 @@ fn workflow_storage_validation_ignores_multi_server_without_workflows_dir() {
     );
     let secrets = SecretsStore::default();
 
-    let result = config::validate_workflow_storage_for_deploy(
+    let result = config::validate_runtime_state_storage_for_deploy(
         temp.path(),
         &config,
         &secrets,
@@ -226,7 +226,7 @@ fn workflow_storage_validation_rejects_unreadable_workflows_dir() {
     );
     let secrets = SecretsStore::default();
 
-    let result = config::validate_workflow_storage_for_deploy(
+    let result = config::validate_runtime_state_storage_for_deploy(
         temp.path(),
         &config,
         &secrets,
@@ -262,7 +262,7 @@ fn workflow_storage_validation_allows_define_workflow_local_true_multi_server_wo
     );
     let secrets = SecretsStore::default();
 
-    let result = config::validate_workflow_storage_for_deploy(
+    let result = config::validate_runtime_state_storage_for_deploy(
         temp.path(),
         &config,
         &secrets,
@@ -301,7 +301,7 @@ fn workflow_storage_validation_rejects_mixed_local_and_remote_multi_server_workf
     );
     let secrets = SecretsStore::default();
 
-    let result = config::validate_workflow_storage_for_deploy(
+    let result = config::validate_runtime_state_storage_for_deploy(
         temp.path(),
         &config,
         &secrets,
@@ -339,7 +339,7 @@ export default defineWorkflow("daily", { handler: async () => opts });
     );
     let secrets = SecretsStore::default();
 
-    let result = config::validate_workflow_storage_for_deploy(
+    let result = config::validate_runtime_state_storage_for_deploy(
         temp.path(),
         &config,
         &secrets,
@@ -377,7 +377,7 @@ export default defineWorkflow("daily", { local: true, handler: async () => {} })
     );
     let secrets = SecretsStore::default();
 
-    let result = config::validate_workflow_storage_for_deploy(
+    let result = config::validate_runtime_state_storage_for_deploy(
         temp.path(),
         &config,
         &secrets,
@@ -392,8 +392,148 @@ export default defineWorkflow("daily", { local: true, handler: async () => {} })
     );
 }
 
+#[test]
+fn runtime_state_storage_validation_rejects_multi_server_channels_without_postgres_url() {
+    let temp = TempDir::new().unwrap();
+    write_channel(&temp, "chat.ts", r#"export default defineChannel("chat");"#);
+    let mut config = TakoToml::default();
+    config.app_root = Some("src".to_string());
+    config.envs.insert(
+        "production".to_string(),
+        EnvConfig {
+            servers: vec!["sfo".to_string(), "iad".to_string()],
+            ..Default::default()
+        },
+    );
+    let secrets = SecretsStore::default();
+
+    let result = config::validate_runtime_state_storage_for_deploy(
+        temp.path(),
+        &config,
+        &secrets,
+        "production",
+        2,
+    );
+
+    assert!(result.has_errors());
+    assert!(result.errors[0].contains("Channels"), "{:?}", result.errors);
+    assert!(
+        result.errors[0].contains("postgres_url"),
+        "{:?}",
+        result.errors
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn runtime_state_storage_validation_rejects_unreadable_channels_dir() {
+    let temp = TempDir::new().unwrap();
+    let channels_dir = temp.path().join("src/channels");
+    fs::create_dir_all(&channels_dir).unwrap();
+    fs::set_permissions(&channels_dir, fs::Permissions::from_mode(0o000)).unwrap();
+    let mut config = TakoToml::default();
+    config.app_root = Some("src".to_string());
+    config.envs.insert(
+        "production".to_string(),
+        EnvConfig {
+            servers: vec!["sfo".to_string(), "iad".to_string()],
+            ..Default::default()
+        },
+    );
+    let secrets = SecretsStore::default();
+
+    let result = config::validate_runtime_state_storage_for_deploy(
+        temp.path(),
+        &config,
+        &secrets,
+        "production",
+        2,
+    );
+
+    fs::set_permissions(&channels_dir, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(result.has_errors());
+    assert!(result.errors[0].contains("Channels"), "{:?}", result.errors);
+}
+
+#[test]
+fn runtime_state_storage_validation_rejects_multi_server_channels_until_postgres_backend_exists() {
+    let temp = TempDir::new().unwrap();
+    write_channel(&temp, "chat.ts", r#"export default defineChannel("chat");"#);
+    let mut config = TakoToml::default();
+    config.app_root = Some("src".to_string());
+    config.envs.insert(
+        "production".to_string(),
+        EnvConfig {
+            servers: vec!["sfo".to_string(), "iad".to_string()],
+            ..Default::default()
+        },
+    );
+    let mut secrets = SecretsStore::default();
+    secrets.ensure_env_key_id("production").unwrap();
+    secrets
+        .set_credential(
+            "production",
+            POSTGRES_CREDENTIAL_NAME,
+            EncryptedSecretValue::new("encrypted".to_string(), None),
+        )
+        .unwrap();
+
+    let result = config::validate_runtime_state_storage_for_deploy(
+        temp.path(),
+        &config,
+        &secrets,
+        "production",
+        2,
+    );
+
+    assert!(result.has_errors());
+    assert!(
+        result.errors[0].contains("not available yet"),
+        "{:?}",
+        result.errors
+    );
+}
+
+#[test]
+fn runtime_state_storage_validation_channels_override_all_local_workflows() {
+    let temp = TempDir::new().unwrap();
+    write_workflow(
+        &temp,
+        "daily.ts",
+        r#"export default defineWorkflow("daily", { local: true, handler: async () => {} });"#,
+    );
+    write_channel(&temp, "chat.ts", r#"export default defineChannel("chat");"#);
+    let mut config = TakoToml::default();
+    config.app_root = Some("src".to_string());
+    config.envs.insert(
+        "production".to_string(),
+        EnvConfig {
+            servers: vec!["sfo".to_string(), "iad".to_string()],
+            ..Default::default()
+        },
+    );
+    let secrets = SecretsStore::default();
+
+    let result = config::validate_runtime_state_storage_for_deploy(
+        temp.path(),
+        &config,
+        &secrets,
+        "production",
+        2,
+    );
+
+    assert!(result.has_errors());
+    assert!(result.errors[0].contains("Channels"), "{:?}", result.errors);
+}
+
 fn write_workflow(temp: &TempDir, name: &str, source: &str) {
     let workflows_dir = temp.path().join("src/workflows");
     fs::create_dir_all(&workflows_dir).unwrap();
     fs::write(workflows_dir.join(name), source).unwrap();
+}
+
+fn write_channel(temp: &TempDir, name: &str, source: &str) {
+    let channels_dir = temp.path().join("src/channels");
+    fs::create_dir_all(&channels_dir).unwrap();
+    fs::write(channels_dir.join(name), source).unwrap();
 }
