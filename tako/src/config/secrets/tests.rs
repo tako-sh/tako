@@ -260,6 +260,11 @@ fn test_validate_secret_name_invalid_chars() {
 }
 
 #[test]
+fn validate_credential_name_accepts_postgres_url() {
+    assert!(validate_credential_name("postgres_url").is_ok());
+}
+
+#[test]
 fn test_validate_environment_name_valid() {
     assert!(validate_environment_name("production").is_ok());
     assert!(validate_environment_name("staging").is_ok());

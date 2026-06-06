@@ -332,6 +332,39 @@ impl WorkerSupervisor {
         }
     }
 
+    /// Ask children to drain and wait for natural exit without SIGKILL.
+    ///
+    /// Worker entrypoints handle SIGTERM by stopping claims and awaiting
+    /// in-flight runs. Used when a deploy replaces/removes workflow code:
+    /// running work should finish where it started, while new claims move to
+    /// the replacement runtime or stop entirely.
+    pub async fn shutdown_gracefully(&self) {
+        let mut children: Vec<ChildEntry> = {
+            let mut state = self.state.lock();
+            state.shutting_down = true;
+            state.children.drain(..).collect()
+        };
+
+        for entry in &children {
+            #[cfg(unix)]
+            unsafe {
+                if let Some(pid) = entry.child.id() {
+                    libc::kill(pid as i32, libc::SIGTERM);
+                }
+            }
+            #[cfg(not(unix))]
+            let _ = entry;
+        }
+
+        loop {
+            children.retain_mut(|entry| matches!(entry.child.try_wait(), Ok(None)));
+            if children.is_empty() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
     fn spawn_reaper(state: Weak<Mutex<State>>, log_sink: Option<WorkerLogSink>) {
         let Ok(handle) = tokio::runtime::Handle::try_current() else {
             return;

@@ -84,10 +84,13 @@ async fn sync_app_workflows_restarts_existing_entry_and_stops_removed_workflows(
     );
 
     state.sync_app_workflows(app_id, &release_v3, None).await;
-    assert!(
-        !state.workflows.has(app_id),
-        "deploying a release without workflows/ should stop the old workflow runtime"
-    );
+    for _ in 0..20 {
+        if !state.workflows.has(app_id) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("deploying a release without workflows/ should retire the old workflow runtime");
 }
 
 #[tokio::test]

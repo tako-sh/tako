@@ -89,6 +89,7 @@ cargo run -p tako --bin tako -- deploy --help
 - Setting `name` explicitly is recommended for stable identity and uniqueness per server; renaming identity later creates a new app path and requires manual cleanup of old deployments.
 - Non-development environments must define `route` or `routes`; development defaults to `{app}.test`.
 - `[envs.<name>].ssl` is optional and defaults to `letsencrypt`; Cloudflare SSL and Let’s Encrypt wildcard routes require encrypted credentials from `tako credentials set ssl.cloudflare`. Deploy checks required Cloudflare credentials from each target server during remote prepare.
+- Environments with `<app_root>/workflows/` can deploy to one server with local SQLite workflow storage. Multi-server workflow deploys require every workflow definition to set `local: true` until remote workflow storage is available. Local workflows use per-server local queues and cron, not globally exactly-once execution.
 
 ## Related Docs
 

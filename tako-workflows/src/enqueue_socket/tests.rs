@@ -8,11 +8,20 @@ fn test_limiter() -> Arc<crate::in_flight::InFlightLimiter> {
     Arc::new(crate::in_flight::InFlightLimiter::new(10))
 }
 
+fn accepting_new_work() -> Arc<std::sync::atomic::AtomicBool> {
+    Arc::new(std::sync::atomic::AtomicBool::new(true))
+}
+
+fn draining_work() -> Arc<std::sync::atomic::AtomicBool> {
+    Arc::new(std::sync::atomic::AtomicBool::new(false))
+}
+
 fn lookup_for(map: std::collections::HashMap<String, Arc<RunsDb>>) -> AppLookup {
     Arc::new(move |app: &str| {
         map.get(app).map(|db| AppHandlers {
             db: db.clone(),
             limiter: test_limiter(),
+            accepting_new_work: accepting_new_work(),
             on_enqueue: Arc::new(|| {}),
             health_check: Arc::new(|| Ok(())),
             on_claimed: Arc::new(|| {}),
@@ -95,6 +104,7 @@ async fn enqueue_rejects_when_health_check_fails() {
         Some(AppHandlers {
             db: db_for_lookup.clone(),
             limiter: test_limiter(),
+            accepting_new_work: accepting_new_work(),
             on_enqueue: Arc::new(|| {}),
             health_check: Arc::new(|| Err("bootstrap crashed".to_string())),
             on_claimed: Arc::new(|| {}),
@@ -126,6 +136,55 @@ async fn enqueue_rejects_when_health_check_fails() {
 }
 
 #[tokio::test]
+async fn draining_runtime_rejects_enqueue_and_claims_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let sock = tmp.path().join("internal.sock");
+    let db = Arc::new(RunsDb::open_in_memory().unwrap());
+    db.enqueue("w", &serde_json::json!({}), &EnqueueOpts::default())
+        .unwrap();
+
+    let db_for_lookup = db.clone();
+    let lookup: AppLookup = Arc::new(move |_app: &str| {
+        Some(AppHandlers {
+            db: db_for_lookup.clone(),
+            limiter: test_limiter(),
+            accepting_new_work: draining_work(),
+            on_enqueue: Arc::new(|| {}),
+            health_check: Arc::new(|| Ok(())),
+            on_claimed: Arc::new(|| {}),
+        })
+    });
+    let handle = spawn(&sock, lookup, None).unwrap();
+
+    let stream = UnixStream::connect(&sock).await.unwrap();
+    let (r, mut w) = stream.into_split();
+    let mut r = BufReader::new(r);
+
+    let enqueue = Command::EnqueueRun {
+        app: "a".into(),
+        name: "w".into(),
+        payload: serde_json::json!({}),
+        opts: EnqueueOpts::default(),
+    };
+    write_json_line(&mut w, &enqueue).await.unwrap();
+    let resp: Response = read_json_line(&mut r).await.unwrap().unwrap();
+    assert!(resp.error_message().unwrap().contains("draining"));
+
+    let claim = Command::ClaimRun {
+        app: "a".into(),
+        worker_id: "w1".into(),
+        names: vec!["w".into()],
+        lease_ms: 30_000,
+    };
+    write_json_line(&mut w, &claim).await.unwrap();
+    let resp: Response = read_json_line(&mut r).await.unwrap().unwrap();
+    assert!(resp.data().unwrap().is_null());
+    assert_eq!(db.pending_count().unwrap(), 1);
+
+    handle.shutdown().await;
+}
+
+#[tokio::test]
 async fn claim_run_fires_on_claimed() {
     let tmp = tempfile::tempdir().unwrap();
     let sock = tmp.path().join("internal.sock");
@@ -143,6 +202,7 @@ async fn claim_run_fires_on_claimed() {
         Some(AppHandlers {
             db: db_for_lookup.clone(),
             limiter: test_limiter(),
+            accepting_new_work: accepting_new_work(),
             on_enqueue: Arc::new(|| {}),
             health_check: Arc::new(|| Ok(())),
             on_claimed: on_claimed.clone(),
@@ -188,6 +248,7 @@ async fn claim_respects_in_flight_limiter() {
         Some(AppHandlers {
             db: db_for_lookup.clone(),
             limiter: limiter_for_lookup.clone(),
+            accepting_new_work: accepting_new_work(),
             on_enqueue: Arc::new(|| {}),
             health_check: Arc::new(|| Ok(())),
             on_claimed: Arc::new(|| {}),
@@ -257,6 +318,7 @@ async fn claim_without_work_does_not_hold_a_slot() {
         Some(AppHandlers {
             db: db_for_lookup.clone(),
             limiter: limiter_for_lookup.clone(),
+            accepting_new_work: accepting_new_work(),
             on_enqueue: Arc::new(|| {}),
             health_check: Arc::new(|| Ok(())),
             on_claimed: Arc::new(|| {}),
@@ -303,6 +365,7 @@ async fn complete_releases_a_slot() {
         Some(AppHandlers {
             db: db_for_lookup.clone(),
             limiter: limiter_for_lookup.clone(),
+            accepting_new_work: accepting_new_work(),
             on_enqueue: Arc::new(|| {}),
             health_check: Arc::new(|| Ok(())),
             on_claimed: Arc::new(|| {}),
@@ -380,6 +443,7 @@ async fn on_enqueue_fires_for_signal_with_waiters_only() {
         Some(AppHandlers {
             db: db_for_lookup.clone(),
             limiter: test_limiter(),
+            accepting_new_work: accepting_new_work(),
             on_enqueue: on_enq.clone(),
             health_check: Arc::new(|| Ok(())),
             on_claimed: Arc::new(|| {}),

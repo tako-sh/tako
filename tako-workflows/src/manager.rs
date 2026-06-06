@@ -12,6 +12,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use parking_lot::RwLock;
@@ -44,6 +45,7 @@ pub struct AppWorkflow {
     supervisor: Arc<WorkerSupervisor>,
     dispatcher: Option<WorkDispatcher>,
     cron: Option<CronTickerHandle>,
+    accepting_new_work: Arc<AtomicBool>,
 }
 
 impl AppWorkflow {
@@ -56,6 +58,7 @@ impl AppWorkflow {
     }
 
     async fn shutdown(mut self, drain_timeout: Duration) {
+        self.accepting_new_work.store(false, Ordering::SeqCst);
         if let Some(cron) = self.cron.take() {
             cron.shutdown().await;
         }
@@ -63,6 +66,17 @@ impl AppWorkflow {
             dispatcher.shutdown().await;
         }
         self.supervisor.shutdown(drain_timeout).await;
+    }
+
+    async fn drain_existing_work(mut self) {
+        self.accepting_new_work.store(false, Ordering::SeqCst);
+        if let Some(cron) = self.cron.take() {
+            cron.shutdown().await;
+        }
+        if let Some(dispatcher) = self.dispatcher.take() {
+            dispatcher.shutdown().await;
+        }
+        self.supervisor.shutdown_gracefully().await;
     }
 }
 
@@ -146,8 +160,9 @@ impl WorkflowManager {
         Ok(())
     }
 
-    /// Configure (or reconfigure) workflows for an app. Called on deploy.
-    /// Idempotent: a re-deploy of an app already under management is a no-op.
+    /// Configure or reconfigure workflows for an app. Called on deploy.
+    /// The replacement runtime is built before swapping it into the lookup map,
+    /// so a failed replacement keeps the existing runtime active.
     pub async fn ensure(
         &self,
         app: &str,
@@ -156,13 +171,9 @@ impl WorkflowManager {
         // Serialize concurrent ensures of the same app (rare, but a deploy
         // race can otherwise start two supervisors + two cron tickers and
         // silently drop the first when the second inserts). Held across
-        // the DB open + supervisor.start().await so the re-check below
-        // sees the first winner's entry.
+        // the DB open + supervisor.start().await so replacements for the
+        // same app cannot interleave.
         let _gate = self.ensure_gate.lock().await;
-
-        if self.apps.read().contains_key(app) {
-            return Ok(());
-        }
 
         let db_path = self.workflows_db_path(app);
         let db = Arc::new(RunsDb::open(&db_path)?);
@@ -203,9 +214,11 @@ impl WorkflowManager {
 
         let sup_for_health = supervisor.clone();
         let sup_for_claim = supervisor.clone();
+        let accepting_new_work = Arc::new(AtomicBool::new(true));
         let handlers = AppHandlers {
             db,
             limiter,
+            accepting_new_work: accepting_new_work.clone(),
             on_enqueue,
             health_check: Arc::new(move || sup_for_health.check_startup_health()),
             on_claimed: Arc::new(move || {
@@ -218,10 +231,16 @@ impl WorkflowManager {
             supervisor,
             dispatcher: Some(dispatcher),
             cron: Some(cron_handle),
+            accepting_new_work,
         };
 
         let mut apps = self.apps.write();
-        apps.insert(app.to_string(), entry);
+        let old_entry = apps.insert(app.to_string(), entry);
+        drop(apps);
+
+        if let Some(old_entry) = old_entry {
+            tokio::spawn(old_entry.drain_existing_work());
+        }
         Ok(())
     }
 
@@ -231,6 +250,50 @@ impl WorkflowManager {
         if let Some(entry) = entry {
             entry.shutdown(drain_timeout).await;
         }
+    }
+
+    /// Retire the active workflow runtime without killing in-flight runs.
+    /// New enqueues/claims stop immediately; running workers receive SIGTERM,
+    /// drain, and can still write lifecycle updates through the retained
+    /// handlers until they exit.
+    pub async fn retire(&self, app: &str) {
+        let Some(mut entry) = self.apps.write().remove(app) else {
+            return;
+        };
+
+        entry.accepting_new_work.store(false, Ordering::SeqCst);
+        if let Some(cron) = entry.cron.take() {
+            cron.shutdown().await;
+        }
+        if let Some(dispatcher) = entry.dispatcher.take() {
+            dispatcher.shutdown().await;
+        }
+
+        let handlers = entry.handlers.clone();
+        let supervisor = entry.supervisor.clone();
+        let accepting_new_work = entry.accepting_new_work.clone();
+        let draining_entry = AppWorkflow {
+            handlers,
+            supervisor,
+            dispatcher: None,
+            cron: None,
+            accepting_new_work,
+        };
+
+        self.apps.write().insert(app.to_string(), draining_entry);
+
+        let apps = self.apps.clone();
+        let app = app.to_string();
+        tokio::spawn(async move {
+            entry.supervisor.shutdown_gracefully().await;
+            let mut apps = apps.write();
+            if apps
+                .get(&app)
+                .is_some_and(|current| Arc::ptr_eq(&current.supervisor, &entry.supervisor))
+            {
+                apps.remove(&app);
+            }
+        });
     }
 
     /// Stop the worker and remove per-app data files entirely.
@@ -332,6 +395,22 @@ mod tests {
         }
     }
 
+    fn invalid_start_spec(cwd: PathBuf, _db: PathBuf) -> WorkerSpec {
+        WorkerSpec {
+            app: "t".into(),
+            workers: 1,
+            concurrency: 1,
+            idle_timeout_ms: 0,
+            command: Vec::new(),
+            cwd,
+            env: StdHashMap::new(),
+            secrets: StdHashMap::new(),
+            storages: StdHashMap::new(),
+            log_sink: None,
+            isolation: None,
+        }
+    }
+
     #[tokio::test]
     async fn ensure_creates_db_and_supervisor() {
         let tmp = tempfile::tempdir().unwrap();
@@ -357,7 +436,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ensure_is_noop_on_second_call() {
+    async fn ensure_replaces_existing_runtime_without_deleting_db() {
         let tmp = tempfile::tempdir().unwrap();
         let m = WorkflowManager::new(tmp.path());
         let cwd = tmp.path().to_path_buf();
@@ -365,9 +444,35 @@ mod tests {
         m.ensure("a", |db| dummy_spec(cwd.clone(), db))
             .await
             .unwrap();
+        let first = m.supervisor_for("a").unwrap();
         m.ensure("a", |db| dummy_spec(cwd.clone(), db))
             .await
             .unwrap();
+        let second = m.supervisor_for("a").unwrap();
+        assert!(m.has("a"));
+        assert!(!Arc::ptr_eq(&first, &second));
+        assert!(m.workflows_db_path("a").exists());
+        m.delete("a", Duration::from_secs(1)).await;
+    }
+
+    #[tokio::test]
+    async fn ensure_keeps_existing_runtime_when_replacement_fails_to_start() {
+        let tmp = tempfile::tempdir().unwrap();
+        let m = WorkflowManager::new(tmp.path());
+        let cwd = tmp.path().to_path_buf();
+
+        m.ensure("a", |db| dummy_spec(cwd.clone(), db))
+            .await
+            .unwrap();
+        let first = m.supervisor_for("a").unwrap();
+        let err = m
+            .ensure("a", |db| invalid_start_spec(cwd.clone(), db))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, WorkflowManagerError::Supervisor(_)));
+        let current = m.supervisor_for("a").unwrap();
+        assert!(Arc::ptr_eq(&first, &current));
         assert!(m.has("a"));
         m.delete("a", Duration::from_secs(1)).await;
     }
@@ -415,6 +520,7 @@ mod tests {
     fn app_workflow_reuses_prebuilt_handlers() {
         let db = Arc::new(RunsDb::open_in_memory().unwrap());
         let limiter = Arc::new(InFlightLimiter::new(1));
+        let accepting_new_work = Arc::new(AtomicBool::new(true));
         let supervisor = Arc::new(WorkerSupervisor::new(dummy_spec(
             std::env::temp_dir(),
             std::env::temp_dir().join("workflows.sqlite"),
@@ -427,6 +533,7 @@ mod tests {
             handlers: AppHandlers {
                 db,
                 limiter,
+                accepting_new_work: accepting_new_work.clone(),
                 on_enqueue,
                 health_check,
                 on_claimed,
@@ -434,6 +541,7 @@ mod tests {
             supervisor,
             dispatcher: None,
             cron: None,
+            accepting_new_work,
         };
 
         let first = workflow.handlers();

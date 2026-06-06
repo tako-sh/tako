@@ -50,8 +50,10 @@ pub fn validate_secrets_for_deployment(secrets: &SecretsStore, env_name: &str) -
     // First check if environment has any secrets at all
     let env_secrets = secrets.get_env(env_name);
     if env_secrets.is_none() || env_secrets.map(|s| s.is_empty()).unwrap_or(true) {
-        // If no environments have secrets, this is fine
-        if secrets.is_empty() {
+        // If no environments have app secrets, this is fine. Provider
+        // credentials and storage credentials are validated by their own
+        // deploy checks.
+        if secrets.total_count() == 0 {
             return result;
         }
 
@@ -179,6 +181,27 @@ mod tests {
         assert!(result.warnings.iter().any(|w| {
             w.contains("ONLY_PROD") && w.contains("missing in: staging") && w.contains("production")
         }));
+    }
+
+    #[test]
+    fn deploy_validation_allows_credentials_without_app_secrets() {
+        let mut secrets = SecretsStore::default();
+        secrets.ensure_env_key_id("production").unwrap();
+        secrets
+            .set_credential(
+                "production",
+                crate::config::POSTGRES_CREDENTIAL_NAME,
+                crate::config::EncryptedSecretValue::new("encrypted".to_string(), None),
+            )
+            .unwrap();
+
+        let result = validate_secrets_for_deployment(&secrets, "production");
+
+        assert!(
+            !result.has_errors(),
+            "unexpected errors: {:?}",
+            result.errors
+        );
     }
 
     #[test]

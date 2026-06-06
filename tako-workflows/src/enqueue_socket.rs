@@ -18,6 +18,7 @@ use std::ffi::CString;
 use std::os::unix::{ffi::OsStrExt, fs::PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tako_core::{Command, Response};
 use tako_socket::serve_jsonl_connection;
@@ -48,6 +49,7 @@ pub type OnClaimed = Arc<dyn Fn() + Send + Sync>;
 pub struct AppHandlers {
     pub db: Arc<RunsDb>,
     pub limiter: Arc<crate::in_flight::InFlightLimiter>,
+    pub accepting_new_work: Arc<AtomicBool>,
     pub on_enqueue: OnEnqueue,
     pub health_check: HealthCheck,
     pub on_claimed: OnClaimed,
@@ -336,6 +338,7 @@ fn handle_command(
     let AppHandlers {
         db,
         limiter,
+        accepting_new_work,
         on_enqueue,
         health_check,
         on_claimed,
@@ -348,6 +351,9 @@ fn handle_command(
             opts,
             ..
         } => {
+            if !accepting_new_work.load(Ordering::SeqCst) {
+                return Response::error("workflow runtime is draining".to_string());
+            }
             if let Err(reason) = (health_check)() {
                 return Response::error(format!("worker unhealthy: {reason}"));
             }
@@ -359,16 +365,24 @@ fn handle_command(
                 Err(e) => Response::error(format!("enqueue failed: {e}")),
             }
         }
-        Command::RegisterSchedules { schedules, .. } => match register_schedules(&db, &schedules) {
-            Ok(()) => Response::ok(serde_json::json!({ "count": schedules.len() })),
-            Err(e) => Response::error(format!("register_schedules failed: {e}")),
-        },
+        Command::RegisterSchedules { schedules, .. } => {
+            if !accepting_new_work.load(Ordering::SeqCst) {
+                return Response::ok(serde_json::json!({ "count": 0 }));
+            }
+            match register_schedules(&db, &schedules) {
+                Ok(()) => Response::ok(serde_json::json!({ "count": schedules.len() })),
+                Err(e) => Response::error(format!("register_schedules failed: {e}")),
+            }
+        }
         Command::ClaimRun {
             worker_id,
             names,
             lease_ms,
             ..
         } => {
+            if !accepting_new_work.load(Ordering::SeqCst) {
+                return Response::ok(serde_json::Value::Null);
+            }
             // Leaky bucket: refuse the claim without touching the queue
             // if the worker is already holding its max concurrent runs.
             // The SDK sees `Ok(None)` (same shape as "queue empty") and

@@ -86,11 +86,10 @@ export async function bootstrapWorker(
     return { started: false, reason: "no workflows discovered", workflowCount: 0 };
   }
 
-  // Tell the server about any cron schedules.
+  // Replace server-side cron schedules, including clearing all stale schedules
+  // when the current release has workflows but no cron schedules.
   const schedules = workflowsEngine.collectSchedules();
-  if (schedules.length > 0) {
-    await client.registerSchedules(schedules);
-  }
+  await client.registerSchedules(schedules);
 
   workflowsEngine.startWorker({ concurrency, idleTimeoutMs });
   return { started: true, workflowCount: count };

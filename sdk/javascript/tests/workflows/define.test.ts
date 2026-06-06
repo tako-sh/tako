@@ -15,11 +15,11 @@ describe("WORKFLOW_SYMBOL", () => {
 describe("defineWorkflow", () => {
   test("returns an export with enqueue + definition", () => {
     const fn = async () => {};
-    const exp = defineWorkflow("my-job", { handler: fn, schedule: "0 9 * * *" });
+    const exp = defineWorkflow("my-job", { handler: fn, schedule: "0 9 * * *", local: true });
     expect(exp.definition.type).toBe(WORKFLOW_SYMBOL);
     expect(exp.definition.name).toBe("my-job");
     expect(exp.definition.handler).toBe(fn);
-    expect(exp.definition.opts).toEqual({ schedule: "0 9 * * *" });
+    expect(exp.definition.opts).toEqual({ schedule: "0 9 * * *", local: true });
     expect(typeof exp.enqueue).toBe("function");
   });
 

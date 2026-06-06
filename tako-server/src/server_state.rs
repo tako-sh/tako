@@ -395,10 +395,6 @@ impl ServerState {
         release_path: &std::path::Path,
         runtime_bin_path: Option<&str>,
     ) {
-        const WORKFLOW_DRAIN_TIMEOUT: Duration = Duration::from_secs(120);
-
-        self.workflows.stop(app_name, WORKFLOW_DRAIN_TIMEOUT).await;
-
         let manifest = match crate::app_command::load_release_manifest(release_path) {
             Ok(manifest) => manifest,
             Err(e) => {
@@ -434,6 +430,7 @@ impl ServerState {
             app_path.join(js_app_root).join("workflows")
         };
         if !workflows_dir.is_dir() {
+            self.workflows.retire(app_name).await;
             return;
         }
 
@@ -449,6 +446,7 @@ impl ServerState {
                 path = %worker_entry.display(),
                 "Skipping workflow engine: worker entrypoint not found in release"
             );
+            self.workflows.retire(app_name).await;
             return;
         }
 

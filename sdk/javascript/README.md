@@ -166,6 +166,10 @@ export default defineWorkflow<{ userId: string }>("send-email", {
 
 Set `worker: "name"` in the workflow opts to assign a workflow to a named worker group; omitted workflows belong to the `default` group.
 
+Set `local: true` in the workflow opts when a multi-server deploy should use per-server local queues and cron for that workflow. Local cron runs once per server and enqueue uniqueness is scoped to each server.
+
+When a worker starts, Tako replaces the server-side cron schedule set with the schedules in the current release. Removing `schedule` from a workflow deregisters its cron entry on the next worker startup.
+
 Enqueue from anywhere — route handlers, other workflows, scripts:
 
 ```ts

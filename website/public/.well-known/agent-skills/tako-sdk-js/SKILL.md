@@ -422,6 +422,7 @@ export default defineWorkflow<{ userId: string; to: string }>("send-email", {
   retries: 3, // retries after first attempt (default 2)
   schedule: "0 9 * * *", // cron: daily at 9am (5-field)
   worker: "email", // optional worker group; omitted means "default"
+  local: true, // optional per-server local storage/cron for multi-server deploys
   concurrency: 10, // max parallel runs per worker (default 10)
   timeoutMs: 30_000, // handler timeout (default Infinity)
   backoff: { base: 1_000, max: 3_600_000 }, // exponential backoff
@@ -438,6 +439,8 @@ export default defineWorkflow<{ userId: string; to: string }>("send-email", {
   },
 });
 ```
+
+Use `local: true` only when per-server local queues and cron are acceptable. Until remote workflow storage is implemented, every workflow in a multi-server deploy must set `local: true`.
 
 ### Enqueuing
 

@@ -32,6 +32,7 @@ use config::{
     resolve_deploy_environment, resolve_deploy_server_names,
     resolve_deploy_server_names_with_setup, resolve_deploy_server_targets,
     resolve_effective_build_adapter, run_bun_lockfile_preflight, should_run_bun_lockfile_preflight,
+    validate_workflow_storage_for_deploy,
 };
 use format::{
     common_https_port_for_servers, format_build_plan_target_label, format_parallel_deploy_step,
@@ -300,6 +301,24 @@ async fn run_async(
     let server_targets = resolve_deploy_server_targets(&servers, &server_names)
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
     tracing::debug!("{}", format_servers_summary(&server_names));
+
+    let workflow_storage_result = validate_workflow_storage_for_deploy(
+        &project_dir,
+        &tako_config,
+        &secrets,
+        &env,
+        server_names.len(),
+    );
+    if workflow_storage_result.has_errors() {
+        return Err(format!(
+            "Workflow storage errors:\n  {}",
+            workflow_storage_result.errors.join("\n  ")
+        )
+        .into());
+    }
+    for warning in workflow_storage_result.warnings {
+        output::warning(&format!("Validation: {}", warning));
+    }
 
     let storage_result =
         validate_storages_for_deployment(&tako_config, &secrets, &env, server_names.len());

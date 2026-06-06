@@ -16,6 +16,7 @@ pub use backup_keys::{EncryptedBackupKey, validate_backup_key_id};
 
 const SECRETS_FILE_NAME: &str = "secrets.json";
 pub const SSL_CLOUDFLARE_CREDENTIAL_NAME: &str = "ssl.cloudflare";
+pub const POSTGRES_CREDENTIAL_NAME: &str = "postgres_url";
 
 /// Per-environment secrets with a random key id.
 ///
@@ -770,12 +771,12 @@ fn validate_secret_name(name: &str) -> Result<()> {
 
 pub fn validate_credential_name(name: &str) -> Result<()> {
     match name {
-        SSL_CLOUDFLARE_CREDENTIAL_NAME => Ok(()),
+        SSL_CLOUDFLARE_CREDENTIAL_NAME | POSTGRES_CREDENTIAL_NAME => Ok(()),
         "" => Err(ConfigError::Validation(
             "Credential name cannot be empty".to_string(),
         )),
         _ => Err(ConfigError::Validation(format!(
-            "Unknown credential '{name}'. Supported credentials: {SSL_CLOUDFLARE_CREDENTIAL_NAME}"
+            "Unknown credential '{name}'. Supported credentials: {SSL_CLOUDFLARE_CREDENTIAL_NAME}, {POSTGRES_CREDENTIAL_NAME}"
         ))),
     }
 }

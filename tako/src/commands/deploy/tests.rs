@@ -1,5 +1,8 @@
 use super::*;
+use crate::config::{EncryptedSecretValue, EnvConfig, POSTGRES_CREDENTIAL_NAME};
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use tempfile::TempDir;
 
 #[test]
@@ -97,4 +100,300 @@ fn acquire_project_deploy_lock_allows_reacquire_after_drop() {
         std::process::id().to_string()
     );
     drop(second);
+}
+
+#[test]
+fn workflow_storage_validation_rejects_multi_server_without_postgres_url() {
+    let temp = TempDir::new().unwrap();
+    write_workflow(
+        &temp,
+        "daily.ts",
+        r#"export default defineWorkflow("daily", { handler: async () => {} });"#,
+    );
+    let mut config = TakoToml::default();
+    config.app_root = Some("src".to_string());
+    config.envs.insert(
+        "production".to_string(),
+        EnvConfig {
+            servers: vec!["sfo".to_string(), "iad".to_string()],
+            ..Default::default()
+        },
+    );
+    let secrets = SecretsStore::default();
+
+    let result = config::validate_workflow_storage_for_deploy(
+        temp.path(),
+        &config,
+        &secrets,
+        "production",
+        2,
+    );
+
+    assert!(result.has_errors());
+    assert!(
+        result.errors[0].contains("postgres_url"),
+        "{:?}",
+        result.errors
+    );
+}
+
+#[test]
+fn workflow_storage_validation_rejects_multi_server_until_postgres_backend_is_available() {
+    let temp = TempDir::new().unwrap();
+    write_workflow(
+        &temp,
+        "daily.ts",
+        r#"export default defineWorkflow("daily", { handler: async () => {} });"#,
+    );
+    let mut config = TakoToml::default();
+    config.app_root = Some("src".to_string());
+    config.envs.insert(
+        "production".to_string(),
+        EnvConfig {
+            servers: vec!["sfo".to_string(), "iad".to_string()],
+            ..Default::default()
+        },
+    );
+    let mut secrets = SecretsStore::default();
+    secrets.ensure_env_key_id("production").unwrap();
+    secrets
+        .set_credential(
+            "production",
+            POSTGRES_CREDENTIAL_NAME,
+            EncryptedSecretValue::new("encrypted".to_string(), None),
+        )
+        .unwrap();
+
+    let result = config::validate_workflow_storage_for_deploy(
+        temp.path(),
+        &config,
+        &secrets,
+        "production",
+        2,
+    );
+
+    assert!(result.has_errors());
+    assert!(
+        result.errors[0].contains("not available yet"),
+        "{:?}",
+        result.errors
+    );
+}
+
+#[test]
+fn workflow_storage_validation_ignores_multi_server_without_workflows_dir() {
+    let temp = TempDir::new().unwrap();
+    let mut config = TakoToml::default();
+    config.envs.insert(
+        "production".to_string(),
+        EnvConfig {
+            servers: vec!["sfo".to_string(), "iad".to_string()],
+            ..Default::default()
+        },
+    );
+    let secrets = SecretsStore::default();
+
+    let result = config::validate_workflow_storage_for_deploy(
+        temp.path(),
+        &config,
+        &secrets,
+        "production",
+        2,
+    );
+
+    assert!(
+        !result.has_errors(),
+        "unexpected errors: {:?}",
+        result.errors
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn workflow_storage_validation_rejects_unreadable_workflows_dir() {
+    let temp = TempDir::new().unwrap();
+    let workflows_dir = temp.path().join("src/workflows");
+    fs::create_dir_all(&workflows_dir).unwrap();
+    fs::set_permissions(&workflows_dir, fs::Permissions::from_mode(0o000)).unwrap();
+    let mut config = TakoToml::default();
+    config.app_root = Some("src".to_string());
+    config.envs.insert(
+        "production".to_string(),
+        EnvConfig {
+            servers: vec!["sfo".to_string(), "iad".to_string()],
+            ..Default::default()
+        },
+    );
+    let secrets = SecretsStore::default();
+
+    let result = config::validate_workflow_storage_for_deploy(
+        temp.path(),
+        &config,
+        &secrets,
+        "production",
+        2,
+    );
+
+    fs::set_permissions(&workflows_dir, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(result.has_errors());
+    assert!(
+        result.errors[0].contains("local: true"),
+        "{:?}",
+        result.errors
+    );
+}
+
+#[test]
+fn workflow_storage_validation_allows_define_workflow_local_true_multi_server_workflows() {
+    let temp = TempDir::new().unwrap();
+    write_workflow(
+        &temp,
+        "daily.ts",
+        r#"export default defineWorkflow("daily", { local: true, handler: async () => {} });"#,
+    );
+    let mut config = TakoToml::default();
+    config.app_root = Some("src".to_string());
+    config.envs.insert(
+        "production".to_string(),
+        EnvConfig {
+            servers: vec!["sfo".to_string(), "iad".to_string()],
+            ..Default::default()
+        },
+    );
+    let secrets = SecretsStore::default();
+
+    let result = config::validate_workflow_storage_for_deploy(
+        temp.path(),
+        &config,
+        &secrets,
+        "production",
+        2,
+    );
+
+    assert!(
+        !result.has_errors(),
+        "unexpected errors: {:?}",
+        result.errors
+    );
+}
+
+#[test]
+fn workflow_storage_validation_rejects_mixed_local_and_remote_multi_server_workflows() {
+    let temp = TempDir::new().unwrap();
+    write_workflow(
+        &temp,
+        "local.ts",
+        r#"export default defineWorkflow("local", { local: true, handler: async () => {} });"#,
+    );
+    write_workflow(
+        &temp,
+        "remote.ts",
+        r#"export default defineWorkflow("remote", { handler: async () => {} });"#,
+    );
+    let mut config = TakoToml::default();
+    config.app_root = Some("src".to_string());
+    config.envs.insert(
+        "production".to_string(),
+        EnvConfig {
+            servers: vec!["sfo".to_string(), "iad".to_string()],
+            ..Default::default()
+        },
+    );
+    let secrets = SecretsStore::default();
+
+    let result = config::validate_workflow_storage_for_deploy(
+        temp.path(),
+        &config,
+        &secrets,
+        "production",
+        2,
+    );
+
+    assert!(result.has_errors());
+    assert!(
+        result.errors[0].contains("local: true"),
+        "{:?}",
+        result.errors
+    );
+}
+
+#[test]
+fn workflow_storage_validation_rejects_unrelated_local_true_outside_define_workflow() {
+    let temp = TempDir::new().unwrap();
+    write_workflow(
+        &temp,
+        "daily.ts",
+        r#"
+const opts = { local: true };
+export default defineWorkflow("daily", { handler: async () => opts });
+"#,
+    );
+    let mut config = TakoToml::default();
+    config.app_root = Some("src".to_string());
+    config.envs.insert(
+        "production".to_string(),
+        EnvConfig {
+            servers: vec!["sfo".to_string(), "iad".to_string()],
+            ..Default::default()
+        },
+    );
+    let secrets = SecretsStore::default();
+
+    let result = config::validate_workflow_storage_for_deploy(
+        temp.path(),
+        &config,
+        &secrets,
+        "production",
+        2,
+    );
+
+    assert!(result.has_errors());
+    assert!(
+        result.errors[0].contains("local: true"),
+        "{:?}",
+        result.errors
+    );
+}
+
+#[test]
+fn workflow_storage_validation_handles_non_ascii_source_when_scanning_local_true() {
+    let temp = TempDir::new().unwrap();
+    write_workflow(
+        &temp,
+        "daily.ts",
+        r#"
+// café
+export default defineWorkflow("daily", { local: true, handler: async () => {} });
+"#,
+    );
+    let mut config = TakoToml::default();
+    config.app_root = Some("src".to_string());
+    config.envs.insert(
+        "production".to_string(),
+        EnvConfig {
+            servers: vec!["sfo".to_string(), "iad".to_string()],
+            ..Default::default()
+        },
+    );
+    let secrets = SecretsStore::default();
+
+    let result = config::validate_workflow_storage_for_deploy(
+        temp.path(),
+        &config,
+        &secrets,
+        "production",
+        2,
+    );
+
+    assert!(
+        !result.has_errors(),
+        "unexpected errors: {:?}",
+        result.errors
+    );
+}
+
+fn write_workflow(temp: &TempDir, name: &str, source: &str) {
+    let workflows_dir = temp.path().join("src/workflows");
+    fs::create_dir_all(&workflows_dir).unwrap();
+    fs::write(workflows_dir.join(name), source).unwrap();
 }
