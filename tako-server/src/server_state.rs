@@ -166,9 +166,9 @@ impl ServerState {
                         if let Some(existing) = guard.get(app) {
                             existing.clone()
                         } else {
-                            let path = crate::channels::app_channels_db_path(&data_dir, app);
+                            let config = crate::channels::app_channel_store_config(&data_dir, app);
                             let opened = Arc::new(
-                                tako_channels::ChannelStore::open(&path)
+                                tako_channels::ChannelStore::open_config(config)
                                     .map_err(|e| format!("open channel store: {e}"))?,
                             );
                             guard.insert(app.to_string(), opened.clone());

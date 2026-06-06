@@ -7,6 +7,33 @@ use crate::{ChannelAuthResponse, ChannelError, ChannelMessage, ChannelPublishPay
 const CHANNELS_DB_FILENAME: &str = "channels.sqlite";
 const INCREMENTAL_VACUUM_PAGES: i64 = 128;
 const WAL_TRUNCATE_DELETED_ROWS_THRESHOLD: usize = 1024;
+pub const POSTGRES_CHANNELS_SCHEMA: &str = "tako_channels";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChannelStoreConfig {
+    Sqlite {
+        path: PathBuf,
+    },
+    Postgres {
+        url: String,
+        schema: String,
+        app_id: String,
+    },
+}
+
+impl ChannelStoreConfig {
+    pub fn sqlite(path: impl Into<PathBuf>) -> Self {
+        Self::Sqlite { path: path.into() }
+    }
+
+    pub fn postgres(url: impl Into<String>, app_id: impl Into<String>) -> Self {
+        Self::Postgres {
+            url: url.into(),
+            schema: POSTGRES_CHANNELS_SCHEMA.to_string(),
+            app_id: app_id.into(),
+        }
+    }
+}
 
 /// Build the SQLite DB path from a data directory and app name.
 /// Callers provide their own app/env path resolution: production uses
@@ -23,6 +50,14 @@ fn now_unix_ms() -> i64 {
         .as_millis() as i64
 }
 
+pub struct ChannelStore {
+    backend: ChannelStoreBackend,
+}
+
+enum ChannelStoreBackend {
+    Sqlite(SqliteChannelStore),
+}
+
 /// Per app/environment SQLite-backed channel store.
 ///
 /// The connection is opened once and reused; every operation locks a
@@ -30,16 +65,29 @@ fn now_unix_ms() -> i64 {
 /// `ChannelStore` for each DB path and share it across requests (e.g.
 /// behind an `Arc`): constructing a new `ChannelStore` reruns pragmas
 /// and schema init on every call.
-pub struct ChannelStore {
+struct SqliteChannelStore {
     pub(crate) conn: Mutex<rusqlite::Connection>,
 }
 
 impl ChannelStore {
+    pub fn open_config(config: ChannelStoreConfig) -> Result<Self, ChannelError> {
+        match config {
+            ChannelStoreConfig::Sqlite { path } => Self::open_sqlite(&path),
+            ChannelStoreConfig::Postgres { schema, .. } => Err(ChannelError::Storage(format!(
+                "postgres channel storage is not implemented yet (schema {schema})"
+            ))),
+        }
+    }
+
     /// Open (or create) the channel DB at `path` and run the idempotent
     /// schema init. Safe to call repeatedly against the same path because
     /// SQLite supports multiple connections per file, but callers are
     /// expected to hold the returned store for the process's lifetime.
     pub fn open(path: &Path) -> Result<Self, ChannelError> {
+        Self::open_sqlite(path)
+    }
+
+    pub fn open_sqlite(path: &Path) -> Result<Self, ChannelError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| ChannelError::Storage(format!("create channel dir: {e}")))?;
@@ -48,8 +96,14 @@ impl ChannelStore {
             rusqlite::Connection::open(path).map_err(|e| ChannelError::Storage(e.to_string()))?;
         init_connection(&conn)?;
         Ok(Self {
-            conn: Mutex::new(conn),
+            backend: ChannelStoreBackend::Sqlite(SqliteChannelStore {
+                conn: Mutex::new(conn),
+            }),
         })
+    }
+
+    pub fn open_postgres(url: &str, app_id: &str) -> Result<Self, ChannelError> {
+        Self::open_config(ChannelStoreConfig::postgres(url, app_id))
     }
 
     /// Open an in-memory channel DB. Used by local dev where replay only
@@ -59,8 +113,21 @@ impl ChannelStore {
             .map_err(|e| ChannelError::Storage(e.to_string()))?;
         init_connection(&conn)?;
         Ok(Self {
-            conn: Mutex::new(conn),
+            backend: ChannelStoreBackend::Sqlite(SqliteChannelStore {
+                conn: Mutex::new(conn),
+            }),
         })
+    }
+
+    fn sqlite(&self) -> &SqliteChannelStore {
+        match &self.backend {
+            ChannelStoreBackend::Sqlite(store) => store,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn sqlite_conn(&self) -> parking_lot::MutexGuard<'_, rusqlite::Connection> {
+        self.sqlite().conn.lock()
     }
 
     pub fn append(
@@ -70,7 +137,7 @@ impl ChannelStore {
     ) -> Result<ChannelMessage, ChannelError> {
         let data_json = serde_json::to_string(&payload.data)
             .map_err(|e| ChannelError::BadRequest(format!("serialize payload: {e}")))?;
-        let mut conn = self.conn.lock();
+        let mut conn = self.sqlite().conn.lock();
         let tx = conn
             .transaction()
             .map_err(|e| ChannelError::Storage(e.to_string()))?;
@@ -113,7 +180,7 @@ impl ChannelStore {
         limit: u32,
     ) -> Result<Vec<ChannelMessage>, ChannelError> {
         let rows = {
-            let conn = self.conn.lock();
+            let conn = self.sqlite().conn.lock();
             let mut stmt = conn
                 .prepare_cached(
                     "SELECT id, channel, type, data_json
@@ -158,7 +225,7 @@ impl ChannelStore {
         channel: &str,
         requested: Option<i64>,
     ) -> Result<Option<i64>, ChannelError> {
-        let conn = self.conn.lock();
+        let conn = self.sqlite().conn.lock();
         let latest = message_id(&conn, channel, "MAX")?;
         let Some(requested) = requested else {
             return Ok(latest);
@@ -180,7 +247,7 @@ impl ChannelStore {
         channel: &str,
         auth: &ChannelAuthResponse,
     ) -> Result<(), ChannelError> {
-        let conn = self.conn.lock();
+        let conn = self.sqlite().conn.lock();
         let now = now_unix_ms();
         conn.execute(
             "INSERT INTO channel_metadata (

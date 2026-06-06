@@ -10,6 +10,10 @@ pub(crate) fn app_channels_db_path(data_dir: &Path, app_name: &str) -> PathBuf {
     tako_channels::channels_db_path(&app_runtime_data_paths(data_dir, &deployment_id).tako)
 }
 
+pub(crate) fn app_channel_store_config(data_dir: &Path, app_name: &str) -> ChannelStoreConfig {
+    ChannelStoreConfig::sqlite(app_channels_db_path(data_dir, app_name))
+}
+
 pub(crate) async fn authorize_channel_request(
     app_name: &str,
     instance: &Instance,
@@ -95,6 +99,17 @@ mod tests {
         assert_eq!(
             app_channels_db_path(Path::new("/opt/tako"), "my-app"),
             Path::new("/opt/tako/apps/my-app/production/data/tako/channels.sqlite")
+        );
+    }
+
+    #[test]
+    fn channel_store_config_uses_local_sqlite_path() {
+        assert_eq!(
+            app_channel_store_config(Path::new("/opt/tako"), "my-app/staging"),
+            ChannelStoreConfig::Sqlite {
+                path: Path::new("/opt/tako/apps/my-app/staging/data/tako/channels.sqlite")
+                    .to_path_buf(),
+            },
         );
     }
 }

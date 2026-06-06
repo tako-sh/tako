@@ -171,6 +171,25 @@ fn channel_store_appends_and_reads_messages() {
 }
 
 #[test]
+fn channel_store_config_names_postgres_schema_and_fails_closed() {
+    assert_eq!(POSTGRES_CHANNELS_SCHEMA, "tako_channels");
+    assert_eq!(
+        ChannelStoreConfig::postgres("postgres://example", "chat-app/production").clone(),
+        ChannelStoreConfig::Postgres {
+            url: "postgres://example".to_string(),
+            schema: "tako_channels".to_string(),
+            app_id: "chat-app/production".to_string(),
+        },
+    );
+
+    let err = match ChannelStore::open_postgres("postgres://example", "chat-app/production") {
+        Ok(_) => panic!("postgres channel storage should fail closed until implemented"),
+        Err(err) => err,
+    };
+    assert!(format!("{err}").contains("postgres channel storage is not implemented yet"));
+}
+
+#[test]
 fn channel_store_append_updates_channel_activity() {
     let temp = tempfile::TempDir::new().unwrap();
     let store = ChannelStore::open(&temp.path().join("channels.sqlite")).unwrap();
@@ -190,8 +209,7 @@ fn channel_store_append_updates_channel_activity() {
         )
         .unwrap();
     let before: i64 = store
-        .conn
-        .lock()
+        .sqlite_conn()
         .query_row(
             "SELECT last_activity_unix_ms FROM channel_metadata WHERE channel = ?1",
             ["chat:room-123"],
@@ -210,7 +228,7 @@ fn channel_store_append_updates_channel_activity() {
         )
         .unwrap();
 
-    let conn = store.conn.lock();
+    let conn = store.sqlite_conn();
     let after: i64 = conn
         .query_row(
             "SELECT last_activity_unix_ms FROM channel_metadata WHERE channel = ?1",
@@ -236,8 +254,7 @@ fn channel_store_enables_incremental_auto_vacuum_for_new_dbs() {
     let store = ChannelStore::open(&temp.path().join("channels.sqlite")).unwrap();
 
     let mode: i64 = store
-        .conn
-        .lock()
+        .sqlite_conn()
         .query_row("PRAGMA auto_vacuum", [], |row| row.get(0))
         .unwrap();
 
@@ -296,8 +313,7 @@ fn channel_store_rejects_stale_cursors() {
         )
         .unwrap();
     store
-        .conn
-        .lock()
+        .sqlite_conn()
         .execute("DELETE FROM channel_messages WHERE id = 1", [])
         .unwrap();
 
@@ -342,7 +358,7 @@ fn channel_store_persists_lifecycle_and_prunes_inactive_channels() {
         )
         .unwrap();
 
-    let conn = store.conn.lock();
+    let conn = store.sqlite_conn();
     let channels = conn
         .prepare("SELECT channel FROM channel_metadata ORDER BY channel ASC")
         .unwrap()

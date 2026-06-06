@@ -9,13 +9,40 @@
 
 use parking_lot::Mutex;
 use rusqlite::{Connection, OptionalExtension, params};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tako_core::{EnqueueOpts, EnqueueRunResponse, RunPayload};
 
 use super::schema;
 
 const DEFAULT_MAX_ATTEMPTS: u32 = 3;
+pub const POSTGRES_WORKFLOWS_SCHEMA: &str = "tako_workflows";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkflowStoreConfig {
+    Sqlite {
+        path: PathBuf,
+    },
+    Postgres {
+        url: String,
+        schema: String,
+        app_id: String,
+    },
+}
+
+impl WorkflowStoreConfig {
+    pub fn sqlite(path: impl Into<PathBuf>) -> Self {
+        Self::Sqlite { path: path.into() }
+    }
+
+    pub fn postgres(url: impl Into<String>, app_id: impl Into<String>) -> Self {
+        Self::Postgres {
+            url: url.into(),
+            schema: POSTGRES_WORKFLOWS_SCHEMA.to_string(),
+            app_id: app_id.into(),
+        }
+    }
+}
 
 /// Cap for client-supplied `lease_ms`. One week is far longer than any
 /// legitimate workflow step; anything larger is a misuse or hostile input
@@ -36,6 +63,8 @@ pub enum RunsDbError {
     Sqlite(#[from] rusqlite::Error),
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("{0}")]
+    UnsupportedBackend(String),
     /// The run is no longer owned by the caller (lease expired and was
     /// reclaimed by another worker, or the run already terminated).
     #[error("stale worker: run is no longer owned by this worker")]
@@ -43,11 +72,32 @@ pub enum RunsDbError {
 }
 
 pub struct RunsDb {
+    backend: RunsDbBackend,
+}
+
+enum RunsDbBackend {
+    Sqlite(SqliteRunsDb),
+}
+
+struct SqliteRunsDb {
     conn: Mutex<Connection>,
 }
 
 impl RunsDb {
+    pub fn open_config(config: WorkflowStoreConfig) -> Result<Self, RunsDbError> {
+        match config {
+            WorkflowStoreConfig::Sqlite { path } => Self::open_sqlite(&path),
+            WorkflowStoreConfig::Postgres { schema, .. } => Err(RunsDbError::UnsupportedBackend(
+                format!("postgres workflow storage is not implemented yet (schema {schema})"),
+            )),
+        }
+    }
+
     pub fn open(path: &Path) -> Result<Self, RunsDbError> {
+        Self::open_sqlite(path)
+    }
+
+    pub fn open_sqlite(path: &Path) -> Result<Self, RunsDbError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
                 RunsDbError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
@@ -56,8 +106,14 @@ impl RunsDb {
         let conn = Connection::open(path)?;
         schema::init(&conn)?;
         Ok(Self {
-            conn: Mutex::new(conn),
+            backend: RunsDbBackend::Sqlite(SqliteRunsDb {
+                conn: Mutex::new(conn),
+            }),
         })
+    }
+
+    pub fn open_postgres(url: &str, app_id: &str) -> Result<Self, RunsDbError> {
+        Self::open_config(WorkflowStoreConfig::postgres(url, app_id))
     }
 
     #[cfg(test)]
@@ -65,8 +121,16 @@ impl RunsDb {
         let conn = Connection::open_in_memory()?;
         schema::init(&conn)?;
         Ok(Self {
-            conn: Mutex::new(conn),
+            backend: RunsDbBackend::Sqlite(SqliteRunsDb {
+                conn: Mutex::new(conn),
+            }),
         })
+    }
+
+    fn sqlite(&self) -> &SqliteRunsDb {
+        match &self.backend {
+            RunsDbBackend::Sqlite(db) => db,
+        }
     }
 
     /// Insert a new run, or return the id of an existing non-terminal run
@@ -84,7 +148,7 @@ impl RunsDb {
         let payload_json = serde_json::to_string(payload)?;
         let id = nanoid::nanoid!();
 
-        let mut conn = self.conn.lock();
+        let mut conn = self.sqlite().conn.lock();
         let tx = conn.transaction()?;
 
         if let Some(key) = unique_key {
@@ -131,7 +195,7 @@ impl RunsDb {
     }
 
     pub(crate) fn lock_conn(&self) -> parking_lot::MutexGuard<'_, Connection> {
-        self.conn.lock()
+        self.sqlite().conn.lock()
     }
 
     /// Atomically claim the oldest eligible run for one of `names`. Bumps
@@ -171,7 +235,7 @@ impl RunsDb {
         let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
 
         let (claimed, step_rows) = {
-            let conn = self.conn.lock();
+            let conn = self.sqlite().conn.lock();
             let mut stmt = conn.prepare_cached(&sql)?;
             let row_opt = stmt
                 .query_row(&refs[..], |row| {
@@ -228,7 +292,7 @@ impl RunsDb {
     /// marking the run in a state the new worker didn't intend.
     pub fn heartbeat(&self, id: &str, worker_id: &str, lease_ms: u64) -> Result<(), RunsDbError> {
         let lease_until = now_ms().saturating_add(clamp_lease_ms(lease_ms));
-        let conn = self.conn.lock();
+        let conn = self.sqlite().conn.lock();
         let rows = conn.execute(
             "UPDATE runs SET lease_until = ?1
              WHERE id = ?2 AND worker_id = ?3 AND status='running'",
@@ -253,7 +317,7 @@ impl RunsDb {
         result: &serde_json::Value,
     ) -> Result<(), RunsDbError> {
         let r = serde_json::to_string(result)?;
-        let conn = self.conn.lock();
+        let conn = self.sqlite().conn.lock();
         let rows = conn.execute(
             "INSERT OR IGNORE INTO steps (run_id, name, result, completed_at)
              SELECT ?1, ?2, ?3, ?4
@@ -279,7 +343,7 @@ impl RunsDb {
     }
 
     pub fn complete(&self, id: &str, worker_id: &str) -> Result<(), RunsDbError> {
-        let conn = self.conn.lock();
+        let conn = self.sqlite().conn.lock();
         let rows = conn.execute(
             "UPDATE runs SET status='succeeded', worker_id=NULL, lease_until=NULL
              WHERE id = ?1 AND worker_id = ?2 AND status='running'",
@@ -297,7 +361,7 @@ impl RunsDb {
         worker_id: &str,
         reason: Option<&str>,
     ) -> Result<(), RunsDbError> {
-        let conn = self.conn.lock();
+        let conn = self.sqlite().conn.lock();
         let rows = conn.execute(
             "UPDATE runs SET status='cancelled', last_error=?1, worker_id=NULL, lease_until=NULL
              WHERE id = ?2 AND worker_id = ?3 AND status='running'",
@@ -317,7 +381,7 @@ impl RunsDb {
         next_run_at_ms: Option<i64>,
         finalize: bool,
     ) -> Result<(), RunsDbError> {
-        let conn = self.conn.lock();
+        let conn = self.sqlite().conn.lock();
         let rows = if finalize {
             conn.execute(
                 "UPDATE runs SET status='dead', last_error=?1, worker_id=NULL, lease_until=NULL
@@ -354,7 +418,7 @@ impl RunsDb {
         worker_id: &str,
         wake_at_ms: Option<i64>,
     ) -> Result<(), RunsDbError> {
-        let conn = self.conn.lock();
+        let conn = self.sqlite().conn.lock();
         let run_at = wake_at_ms.unwrap_or(i64::MAX);
         let rows = conn.execute(
             "UPDATE runs SET status='pending', worker_id=NULL, lease_until=NULL,
@@ -369,7 +433,7 @@ impl RunsDb {
     }
 
     pub fn reclaim_expired(&self) -> Result<u64, RunsDbError> {
-        let conn = self.conn.lock();
+        let conn = self.sqlite().conn.lock();
         let changes = conn.execute(
             "UPDATE runs SET status='pending', worker_id=NULL, lease_until=NULL
              WHERE status='running' AND lease_until IS NOT NULL AND lease_until < ?1",
@@ -382,7 +446,7 @@ impl RunsDb {
     /// `worker_id`s whose runs were reclaimed, one entry per reclaimed
     /// row (so callers can decrement per-worker in-flight counters).
     pub fn reclaim_expired_with_workers(&self) -> Result<Vec<String>, RunsDbError> {
-        let mut conn = self.conn.lock();
+        let mut conn = self.sqlite().conn.lock();
         let tx = conn.transaction()?;
         let workers: Vec<String> = {
             let mut stmt = tx.prepare(
@@ -408,7 +472,7 @@ impl RunsDb {
     pub fn in_flight_by_worker(
         &self,
     ) -> Result<std::collections::HashMap<String, u32>, RunsDbError> {
-        let conn = self.conn.lock();
+        let conn = self.sqlite().conn.lock();
         let mut stmt = conn.prepare(
             "SELECT worker_id, COUNT(*) FROM runs
              WHERE status='running' AND worker_id IS NOT NULL
@@ -438,7 +502,7 @@ impl RunsDb {
         event_name: &str,
         timeout_at_ms: Option<i64>,
     ) -> Result<(), RunsDbError> {
-        let mut conn = self.conn.lock();
+        let mut conn = self.sqlite().conn.lock();
         let tx = conn.transaction()?;
         let rows = tx.execute(
             "UPDATE runs SET status='pending', worker_id=NULL, lease_until=NULL,
@@ -469,7 +533,7 @@ impl RunsDb {
     ) -> Result<u64, RunsDbError> {
         let payload_json = serde_json::to_string(payload)?;
         let now = now_ms();
-        let mut conn = self.conn.lock();
+        let mut conn = self.sqlite().conn.lock();
         let tx = conn.transaction()?;
 
         // Materialize the event payload as a step result for every waiter.
@@ -503,7 +567,7 @@ impl RunsDb {
     }
 
     pub fn pending_count(&self) -> Result<u64, RunsDbError> {
-        let conn = self.conn.lock();
+        let conn = self.sqlite().conn.lock();
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM runs WHERE status='pending'",
             [],
@@ -516,7 +580,7 @@ impl RunsDb {
     /// claim now. Future `run_at` rows stay durable without waking a
     /// scale-to-zero worker until the dispatcher scan sees them become due.
     pub fn has_runnable_work(&self) -> Result<bool, RunsDbError> {
-        let conn = self.conn.lock();
+        let conn = self.sqlite().conn.lock();
         let exists: i64 = conn.query_row(
             "SELECT EXISTS(
                 SELECT 1 FROM runs

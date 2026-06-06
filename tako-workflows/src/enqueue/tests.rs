@@ -16,6 +16,25 @@ fn enqueue_inserts_a_pending_row() {
 }
 
 #[test]
+fn workflow_store_config_names_postgres_schema_and_fails_closed() {
+    assert_eq!(POSTGRES_WORKFLOWS_SCHEMA, "tako_workflows");
+    assert_eq!(
+        WorkflowStoreConfig::postgres("postgres://example", "workflow-app/production").clone(),
+        WorkflowStoreConfig::Postgres {
+            url: "postgres://example".to_string(),
+            schema: "tako_workflows".to_string(),
+            app_id: "workflow-app/production".to_string(),
+        },
+    );
+
+    let err = match RunsDb::open_postgres("postgres://example", "workflow-app/production") {
+        Ok(_) => panic!("postgres workflow storage should fail closed until implemented"),
+        Err(err) => err,
+    };
+    assert!(format!("{err}").contains("postgres workflow storage is not implemented yet"));
+}
+
+#[test]
 fn enqueue_deduplicates_on_unique_key() {
     let db = RunsDb::open_in_memory().unwrap();
     let key = Some("cron:5m:0".into());
@@ -94,7 +113,7 @@ fn enqueue_honors_custom_max_attempts_and_run_at() {
         )
         .unwrap();
 
-    let conn = db.conn.lock();
+    let conn = db.lock_conn();
     let (run_at, max_attempts): (i64, i64) = conn
         .query_row(
             "SELECT run_at, max_attempts FROM runs WHERE id = ?1",
@@ -141,7 +160,7 @@ fn has_runnable_work_detects_due_pending_runs_only() {
     assert!(!db.has_runnable_work().unwrap());
 
     {
-        let conn = db.conn.lock();
+        let conn = db.lock_conn();
         conn.execute(
             "UPDATE runs SET run_at = ?1 WHERE id = ?2",
             params![due, future_run.id],
@@ -179,7 +198,7 @@ fn deduplication_frees_slot_once_original_is_terminal() {
         .unwrap();
 
     {
-        let conn = db.conn.lock();
+        let conn = db.lock_conn();
         conn.execute(
             "UPDATE runs SET status='succeeded' WHERE id = ?1",
             params![r1.id],
@@ -254,7 +273,7 @@ fn complete_marks_succeeded_and_keeps_steps() {
         .unwrap();
     db.complete(&r.id, "w1").unwrap();
 
-    let conn = db.conn.lock();
+    let conn = db.lock_conn();
     let status: String = conn
         .query_row(
             "SELECT status FROM runs WHERE id = ?1",
@@ -280,7 +299,7 @@ fn cancel_marks_cancelled_with_reason() {
     db.claim("w1", &["w".into()], 30_000).unwrap();
     db.cancel(&r.id, "w1", Some("user cancelled")).unwrap();
 
-    let conn = db.conn.lock();
+    let conn = db.lock_conn();
     let (status, last_error): (String, Option<String>) = conn
         .query_row(
             "SELECT status, last_error FROM runs WHERE id = ?1",
@@ -302,7 +321,7 @@ fn defer_sets_run_at_and_decrements_attempts() {
     let wake = now_ms() + 60_000;
     db.defer(&r.id, "w1", Some(wake)).unwrap();
 
-    let conn = db.conn.lock();
+    let conn = db.lock_conn();
     let (status, run_at, attempts): (String, i64, i64) = conn
         .query_row(
             "SELECT status, run_at, attempts FROM runs WHERE id = ?1",
@@ -323,7 +342,7 @@ fn defer_with_none_parks_indefinitely() {
     db.claim("w1", &["w".into()], 30_000).unwrap();
     db.defer(&r.id, "w1", None).unwrap();
 
-    let conn = db.conn.lock();
+    let conn = db.lock_conn();
     let run_at: i64 = conn
         .query_row(
             "SELECT run_at FROM runs WHERE id = ?1",
@@ -342,7 +361,7 @@ fn reclaim_expired_moves_past_due_leases_back_to_pending() {
     // that died mid-run and never completed / heartbeated.
     db.claim("w1", &["w".into()], 30_000).unwrap();
     {
-        let conn = db.conn.lock();
+        let conn = db.lock_conn();
         conn.execute(
             "UPDATE runs SET lease_until = ?1 WHERE id = ?2",
             params![now_ms() - 1_000, r.id],

@@ -13,7 +13,7 @@ pub use client::{
 };
 pub use close_codes::ChannelCloseCode;
 pub use routing::{parse_channel_route, parse_message_id_cursor, parse_ws_last_message_id};
-pub use store::{ChannelStore, channels_db_path};
+pub use store::{ChannelStore, ChannelStoreConfig, POSTGRES_CHANNELS_SCHEMA, channels_db_path};
 pub use types::{
     ChannelAuthResponse, ChannelAuthScheme, ChannelAuthVerifyRequest, ChannelDefinitionMeta,
     ChannelError, ChannelHeaderValue, ChannelMessage, ChannelOperation, ChannelPublishPayload,

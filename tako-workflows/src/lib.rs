@@ -1,8 +1,8 @@
 //! Durable workflow/task engine.
 //!
-//! Per-app queue stored in SQLite at `{data_dir}/apps/{app}/data/tako/workflows.sqlite`. The
-//! server writes on enqueue and cron-tick; a per-app dispatcher wakes a
-//! separately-supervised worker process when due pending work is runnable.
+//! Per-app queue stored through an internal adapter. SQLite currently backs local
+//! state at `{data_dir}/apps/{app}/data/tako/workflows.sqlite`; Postgres is the
+//! intended shared backend.
 //!
 //! Module layout:
 //! - `schema` — SQLite DDL and connection init
@@ -22,7 +22,7 @@ pub mod supervisor;
 #[allow(unused_imports)]
 pub use dispatcher::{DispatchSignal, WorkDispatcher};
 #[allow(unused_imports)]
-pub use enqueue::RunsDb;
+pub use enqueue::{POSTGRES_WORKFLOWS_SCHEMA, RunsDb, WorkflowStoreConfig};
 #[allow(unused_imports)]
 pub use enqueue_socket::{
     AppHandlers, AppLookup, ChannelPublishFn, EnqueueSocketHandle, HealthCheck, OnClaimed,

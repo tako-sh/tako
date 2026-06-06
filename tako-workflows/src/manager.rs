@@ -19,7 +19,7 @@ use parking_lot::RwLock;
 
 use super::cron::{self, CronTickerHandle};
 use super::dispatcher::WorkDispatcher;
-use super::enqueue::{RunsDb, RunsDbError};
+use super::enqueue::{RunsDb, RunsDbError, WorkflowStoreConfig};
 use super::enqueue_socket::{
     AppHandlers, AppLookup, ChannelPublishFn, EnqueueSocketHandle, OnEnqueue,
     spawn as spawn_internal_socket,
@@ -134,6 +134,10 @@ impl WorkflowManager {
         self.app_tako_dir(app).join(WORKFLOWS_DB_FILENAME)
     }
 
+    pub fn workflow_store_config(&self, app: &str) -> WorkflowStoreConfig {
+        WorkflowStoreConfig::sqlite(self.workflows_db_path(app))
+    }
+
     /// Server-wide socket path. SDKs connect here.
     pub fn socket_path(&self) -> PathBuf {
         internal_socket_path(&self.data_dir)
@@ -175,8 +179,12 @@ impl WorkflowManager {
         // same app cannot interleave.
         let _gate = self.ensure_gate.lock().await;
 
-        let db_path = self.workflows_db_path(app);
-        let db = Arc::new(RunsDb::open(&db_path)?);
+        let store_config = self.workflow_store_config(app);
+        let db_path = match &store_config {
+            WorkflowStoreConfig::Sqlite { path } => path.clone(),
+            WorkflowStoreConfig::Postgres { .. } => self.workflows_db_path(app),
+        };
+        let db = Arc::new(RunsDb::open_config(store_config)?);
 
         let spec = spec_fn(db_path);
         let limiter = Arc::new(InFlightLimiter::new(spec.concurrency));
@@ -433,6 +441,25 @@ mod tests {
         assert!(m.workflows_db_path("a").exists());
 
         m.delete("a", Duration::from_secs(1)).await;
+    }
+
+    #[test]
+    fn workflow_store_config_uses_local_sqlite_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let m = WorkflowManager::new(tmp.path());
+
+        assert_eq!(
+            m.workflow_store_config("a"),
+            WorkflowStoreConfig::Sqlite {
+                path: tmp
+                    .path()
+                    .join("apps")
+                    .join("a")
+                    .join("data")
+                    .join("tako")
+                    .join("workflows.sqlite"),
+            },
+        );
     }
 
     #[tokio::test]

@@ -1,7 +1,7 @@
 use super::{BackendResolution, RequestCtx};
 use crate::channels::{
     ChannelAuthResponse, ChannelAuthScheme, ChannelDefinitionMeta, ChannelError,
-    ChannelHeaderValue, ChannelOperation, ChannelStore, ChannelTransport, app_channels_db_path,
+    ChannelHeaderValue, ChannelOperation, ChannelStore, ChannelTransport, app_channel_store_config,
     authorize_channel_request, fetch_channel_registry, parse_channel_route,
     parse_message_id_cursor, parse_ws_last_message_id,
 };
@@ -34,8 +34,8 @@ impl TakoProxy {
             return Ok(existing.clone());
         }
 
-        let path = app_channels_db_path(self.lb.app_manager().data_dir(), app_name);
-        let store = Arc::new(ChannelStore::open(&path).map_err(|error| {
+        let config = app_channel_store_config(self.lb.app_manager().data_dir(), app_name);
+        let store = Arc::new(ChannelStore::open_config(config).map_err(|error| {
             Error::explain(
                 ErrorType::InternalError,
                 format!("Failed to open channel store for {app_name}: {error}"),
