@@ -1,5 +1,8 @@
 use super::logger::noop_log_handle;
 use super::*;
+use std::path::PathBuf;
+use std::sync::atomic::Ordering;
+use tokio::sync::mpsc;
 
 #[test]
 fn test_instance_state_transitions() {
