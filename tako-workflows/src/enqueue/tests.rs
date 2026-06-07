@@ -1,4 +1,5 @@
 use super::*;
+use rusqlite::params;
 
 fn opts() -> EnqueueOpts {
     EnqueueOpts::default()
