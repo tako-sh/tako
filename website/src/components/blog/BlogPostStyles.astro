@@ -1,0 +1,495 @@
+<style is:global>
+  .blog-sheet {
+    border: 2px solid var(--line);
+    border-radius: var(--panel-radius);
+    background: var(--panel);
+    box-shadow: 0 18px 45px rgba(47, 42, 68, 0.1);
+    margin: 0 auto;
+    overflow: hidden;
+    position: relative;
+  }
+
+  .blog-hero {
+    margin-bottom: clamp(-80px, -6vw, -48px);
+    pointer-events: none;
+  }
+
+  .blog-hero img {
+    display: block;
+    width: 100%;
+    height: clamp(280px, 42vw, 520px);
+    object-fit: cover;
+    -webkit-mask-image: linear-gradient(to bottom, black 78%, transparent 100%);
+    mask-image: linear-gradient(to bottom, black 78%, transparent 100%);
+  }
+
+  .blog-top,
+  .blog-article {
+    padding: 0 clamp(18px, 4vw, 36px);
+  }
+
+  .blog-top {
+    padding-top: clamp(18px, 4vw, 36px);
+    margin-bottom: 12px;
+  }
+
+  .blog-article {
+    padding-bottom: clamp(18px, 4vw, 36px);
+  }
+
+  .blog-sheet.has-hero .blog-top {
+    position: absolute;
+    top: clamp(14px, 3vw, 24px);
+    left: clamp(14px, 3vw, 24px);
+    padding: 0;
+    margin: 0;
+    z-index: 2;
+  }
+
+  .blog-sheet.has-hero .blog-article {
+    padding-top: clamp(22px, 4vw, 36px);
+  }
+
+  .blog-back {
+    font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 14px;
+    color: var(--muted);
+    text-decoration: none;
+  }
+
+  .blog-sheet.has-hero .blog-back {
+    display: inline-flex;
+    align-items: center;
+    padding: 7px 14px;
+    border-radius: 999px;
+    background: var(--panel-glass);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    color: var(--ink);
+    border: 1px solid rgba(47, 42, 68, 0.1);
+    box-shadow: 0 2px 8px rgba(47, 42, 68, 0.12);
+  }
+
+  .blog-back:hover {
+    color: var(--accent);
+  }
+
+  .blog-sheet.has-hero .blog-back:hover {
+    background: var(--panel-strong);
+  }
+
+  .blog-back:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+  }
+
+  .blog-header {
+    margin-bottom: 24px;
+  }
+
+  .blog-header h1 {
+    margin-top: 0;
+  }
+
+  .blog-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+    font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 14px;
+    color: var(--muted);
+  }
+
+  .blog-meta-sep {
+    opacity: 0.5;
+  }
+
+  .blog-author {
+    color: var(--muted);
+    text-decoration: none;
+  }
+
+  .blog-author:hover {
+    color: var(--accent);
+  }
+
+  .blog-author:focus-visible,
+  .blog-article.content a:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+  }
+
+  .blog-article.content {
+    line-height: 1.55;
+    font-size: clamp(16px, 1.5vw, 19px);
+    color: var(--muted);
+  }
+
+  .blog-article.content img {
+    max-width: 100%;
+    height: auto;
+  }
+
+  .blog-article.content h1,
+  .blog-article.content h2,
+  .blog-article.content h3,
+  .blog-article.content h4 {
+    font-family: var(--font-heading);
+    color: var(--ink);
+    margin-top: 28px;
+    margin-bottom: 12px;
+    line-height: 1.2;
+  }
+
+  .blog-article.content h1 {
+    font-size: clamp(28px, 4.2vw, 36px);
+  }
+
+  .blog-article.content h2 {
+    font-size: clamp(24px, 3.6vw, 30px);
+  }
+
+  .blog-article.content h3 {
+    font-size: clamp(20px, 3vw, 24px);
+  }
+
+  .blog-article.content p,
+  .blog-article.content ul,
+  .blog-article.content ol,
+  .blog-article.content blockquote,
+  .blog-article.content pre {
+    margin: 14px 0;
+  }
+
+  .blog-article.content ul,
+  .blog-article.content ol {
+    padding-left: 24px;
+  }
+
+  .blog-article.content li {
+    margin: 7px 0;
+  }
+
+  .blog-article.content a {
+    color: var(--accent);
+    text-decoration: none;
+    border-bottom: 2px solid transparent;
+  }
+
+  .blog-article.content a:hover {
+    border-bottom-color: var(--accent);
+  }
+
+  .blog-article.content code {
+    font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 0.85em;
+    padding: 2px 6px;
+    border-radius: 8px;
+    background: rgba(232, 135, 131, 0.12);
+    color: var(--ink);
+  }
+
+  .blog-article.content pre {
+    padding: 18px 20px;
+    border: 2px solid var(--line);
+    border-radius: 16px;
+    background: var(--paper);
+    overflow-x: auto;
+    font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--ink);
+  }
+
+  .blog-article.content pre code {
+    padding: 0;
+    background: none;
+  }
+
+  .blog-article.content blockquote {
+    background: var(--mint-soft);
+    border-radius: 14px;
+    padding: 14px 18px;
+    color: var(--ink);
+  }
+
+  .blog-article.content strong {
+    color: var(--ink);
+  }
+
+  .blog-article.content .table-scroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    margin: 18px 0;
+  }
+
+  .blog-article.content .diagram-shell {
+    margin: 18px 0;
+    position: relative;
+  }
+
+  .diagram-lightbox-toolbar .diagram-button {
+    appearance: none;
+    -webkit-appearance: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    border: 1px solid rgba(47, 42, 68, 0.12);
+    border-radius: 999px;
+    background: var(--panel-glass);
+    backdrop-filter: blur(6px);
+    color: var(--ink);
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    font: inherit;
+    font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+    box-shadow: 0 2px 8px rgba(47, 42, 68, 0.07);
+  }
+
+  .diagram-lightbox-toolbar .diagram-button svg {
+    display: block;
+    width: 18px;
+    height: 18px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    pointer-events: none;
+  }
+
+  .blog-article.content .diagram-viewport {
+    overflow: hidden;
+    padding: 0;
+    max-height: none;
+  }
+
+  .blog-article.content .diagram-canvas {
+    width: 100%;
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+  }
+
+  .blog-article.content .diagram-image {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    cursor: zoom-in !important;
+  }
+
+  .diagram-lightbox-toolbar .diagram-button:hover:not(:disabled) {
+    background: rgba(232, 135, 131, 0.14);
+  }
+
+  .diagram-lightbox-toolbar .diagram-button:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+
+  .diagram-lightbox-toolbar .diagram-button:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+  }
+
+  .diagram-lightbox {
+    border: 0;
+    padding: 0;
+    max-width: none;
+    max-height: none;
+    width: 100vw;
+    height: 100vh;
+    z-index: 300;
+    background: transparent;
+    opacity: 0;
+    transition: opacity 180ms cubic-bezier(0.25, 1, 0.5, 1);
+  }
+
+  .diagram-lightbox::backdrop {
+    background: rgba(24, 21, 39, 0.56);
+    opacity: 0;
+    transition: opacity 180ms cubic-bezier(0.25, 1, 0.5, 1);
+  }
+
+  .diagram-lightbox.is-open {
+    opacity: 1;
+  }
+
+  .diagram-lightbox.is-open::backdrop {
+    opacity: 1;
+  }
+
+  .diagram-lightbox-panel {
+    position: fixed;
+    inset: 24px;
+    border-radius: 24px;
+    background: var(--panel-strong);
+    box-shadow: 0 30px 80px rgba(24, 21, 39, 0.28);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    opacity: 0;
+    transform: translateY(12px) scale(0.985);
+    transition:
+      opacity 180ms cubic-bezier(0.25, 1, 0.5, 1),
+      transform 180ms cubic-bezier(0.25, 1, 0.5, 1);
+  }
+
+  .diagram-lightbox.is-open .diagram-lightbox-panel {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+
+  .diagram-lightbox.is-closing {
+    opacity: 0;
+  }
+
+  .diagram-lightbox.is-closing .diagram-lightbox-panel {
+    opacity: 0;
+    transform: translateY(8px) scale(0.99);
+  }
+
+  .diagram-lightbox-toolbar {
+    display: flex;
+    justify-content: flex-end;
+    gap: 4px;
+    padding: 8px 8px 0;
+    flex-wrap: wrap;
+  }
+
+  .diagram-lightbox-close {
+    width: 44px;
+  }
+
+  .diagram-lightbox-viewport {
+    flex: 1;
+    overflow: auto;
+    -webkit-overflow-scrolling: touch;
+    padding: 12px;
+    cursor: grab;
+    touch-action: none;
+  }
+
+  .diagram-lightbox-canvas {
+    min-width: fit-content;
+    min-height: 100%;
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+  }
+
+  .diagram-lightbox-image {
+    display: block;
+    max-width: none;
+    height: auto;
+    user-select: none;
+    cursor: grab !important;
+  }
+
+  .diagram-lightbox.is-dragging .diagram-lightbox-viewport,
+  .diagram-lightbox.is-dragging .diagram-lightbox-image {
+    cursor: grabbing !important;
+  }
+
+  .blog-article.content table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 15px;
+    border: 2px solid var(--line);
+  }
+
+  .blog-article.content th,
+  .blog-article.content td {
+    border: 1px solid var(--line);
+    padding: 8px 10px;
+  }
+
+  .blog-article.content th {
+    font-family: "Nunito", sans-serif;
+    color: var(--ink);
+    background: rgba(155, 196, 182, 0.18);
+  }
+
+  .blog-article.content hr {
+    border: none;
+    border-top: 2px solid var(--line);
+    margin: 26px 0;
+  }
+
+  .blog-article.content .d2-diagram svg {
+    max-width: 100%;
+    height: auto;
+  }
+
+  @media (max-width: 720px) {
+    .diagram-lightbox-toolbar .diagram-button {
+      width: 46px;
+      height: 46px;
+      font-size: 12px;
+    }
+
+    .diagram-lightbox-panel {
+      inset: 10px;
+      border-radius: 18px;
+    }
+
+    .diagram-lightbox-toolbar {
+      gap: 4px;
+      padding: 6px 6px 0;
+    }
+
+    .diagram-lightbox-viewport {
+      padding: 10px;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .diagram-lightbox,
+    .diagram-lightbox::backdrop,
+    .diagram-lightbox-panel {
+      transition: none !important;
+    }
+  }
+
+  .blog-article.content :is(h2, h3, h4, h5, h6)[id] {
+    scroll-margin-top: 108px;
+    cursor: pointer;
+  }
+
+  .blog-article.content :is(h2, h3, h4, h5, h6)[id]:hover {
+    text-decoration: underline;
+    text-decoration-thickness: 2px;
+    text-underline-offset: 0.16em;
+    text-decoration-color: rgba(232, 135, 131, 0.65);
+  }
+
+  .blog-article.content .heading-anchor {
+    display: inline-block;
+    margin-left: 8px;
+    font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 0.75em;
+    line-height: 1;
+    color: var(--accent);
+    text-decoration: none;
+    border-bottom: none;
+    opacity: 0;
+    cursor: pointer;
+    transition: opacity 0.14s ease;
+  }
+
+  .blog-article.content .heading-anchor:hover {
+    border-bottom: none;
+    text-decoration: none;
+  }
+
+  .blog-article.content :is(h2, h3, h4, h5, h6)[id]:hover .heading-anchor {
+    opacity: 1;
+  }
+
+</style>

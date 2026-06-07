@@ -1,0 +1,299 @@
+<script is:inline>
+  (function() {
+    var article = document.querySelector(".blog-article");
+    if (!article) return;
+    var headings = article.querySelectorAll("h2[id], h3[id], h4[id], h5[id], h6[id]");
+    for (var i = 0; i < headings.length; i++) {
+      var h = headings[i];
+      var id = h.getAttribute("id");
+      if (!id || h.querySelector(".heading-anchor")) continue;
+      var a = document.createElement("a");
+      a.className = "heading-anchor";
+      a.href = "#" + id;
+      a.textContent = "#";
+      a.setAttribute("aria-hidden", "true");
+      h.append(a);
+      h.style.cursor = "pointer";
+      h.addEventListener("click", (function(id) {
+        return function(e) {
+          if (e.target.closest("a") || window.getSelection().toString()) return;
+          window.location.hash = id;
+        };
+      })(id));
+    }
+    var tables = article.querySelectorAll("table");
+    for (var j = 0; j < tables.length; j++) {
+      var wrap = document.createElement("div");
+      wrap.className = "table-scroll";
+      tables[j].parentNode.insertBefore(wrap, tables[j]);
+      wrap.appendChild(tables[j]);
+    }
+
+    var diagrams = article.querySelectorAll('img[src^="/d2/"]');
+    for (var k = 0; k < diagrams.length; k++) {
+      enhanceDiagram(diagrams[k]);
+    }
+
+    function enhanceDiagram(img) {
+      if (!img.parentNode || img.closest(".diagram-shell")) return;
+
+      var shell = document.createElement("figure");
+      shell.className = "diagram-shell";
+
+      var viewport = document.createElement("div");
+      viewport.className = "diagram-viewport";
+
+      var canvas = document.createElement("div");
+      canvas.className = "diagram-canvas";
+
+      img.parentNode.insertBefore(shell, img);
+      shell.appendChild(viewport);
+      viewport.appendChild(canvas);
+      canvas.appendChild(img);
+
+      img.classList.add("diagram-image");
+      img.draggable = false;
+
+      img.addEventListener("click", function() {
+        openLightbox(img);
+      });
+    }
+
+    function openLightbox(sourceImg) {
+      var existing = document.querySelector(".diagram-lightbox");
+      if (existing) existing.close();
+
+      var shell = document.createElement("dialog");
+      shell.className = "diagram-lightbox";
+      shell.setAttribute("aria-label", sourceImg.alt || "Diagram viewer");
+      shell.tabIndex = -1;
+
+      var panel = document.createElement("div");
+      panel.className = "diagram-lightbox-panel";
+
+      var toolbar = document.createElement("div");
+      toolbar.className = "diagram-lightbox-toolbar";
+
+      var zoomOut = makeLightboxButton(iconMinus(), "Zoom out");
+      var zoomIn = makeLightboxButton(iconPlus(), "Zoom in");
+      var close = makeLightboxButton(iconClose(), "Close viewer");
+      close.classList.add("diagram-lightbox-close");
+
+      toolbar.appendChild(zoomOut);
+      toolbar.appendChild(zoomIn);
+      toolbar.appendChild(close);
+
+      var viewport = document.createElement("div");
+      viewport.className = "diagram-lightbox-viewport";
+
+      var canvas = document.createElement("div");
+      canvas.className = "diagram-lightbox-canvas";
+
+      var clone = sourceImg.cloneNode();
+      clone.className = "diagram-lightbox-image";
+      clone.draggable = false;
+
+      shell.appendChild(panel);
+      panel.appendChild(toolbar);
+      panel.appendChild(viewport);
+      viewport.appendChild(canvas);
+      canvas.appendChild(clone);
+      document.body.appendChild(shell);
+
+      var naturalWidth = Number(sourceImg.getAttribute("width")) || sourceImg.naturalWidth || 0;
+      var naturalHeight = Number(sourceImg.getAttribute("height")) || sourceImg.naturalHeight || 0;
+      var zoom = 1;
+      var minZoom = 1;
+      var maxZoom = 5;
+      var isClosing = false;
+      var isDragging = false;
+      var dragStartX = 0;
+      var dragStartY = 0;
+      var dragScrollLeft = 0;
+      var dragScrollTop = 0;
+
+      function makeLightboxButton(icon, title) {
+        var button = document.createElement("button");
+        button.type = "button";
+        button.className = "diagram-button";
+        button.innerHTML = icon;
+        button.setAttribute("aria-label", title);
+        button.title = title;
+        return button;
+      }
+
+      function iconPlus() {
+        return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14"></path><path d="M5 12h14"></path></svg>';
+      }
+
+      function iconMinus() {
+        return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"></path></svg>';
+      }
+
+      function iconClose() {
+        return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg>';
+      }
+
+      function clamp(value, min, max) {
+        return Math.min(max, Math.max(min, value));
+      }
+
+      function updateBaseZoom() {
+        var width = Math.max(1, viewport.clientWidth - 24);
+        var height = Math.max(1, viewport.clientHeight - 24);
+        if (!naturalWidth) naturalWidth = clone.naturalWidth || width;
+        if (!naturalHeight) naturalHeight = clone.naturalHeight || height;
+        minZoom = Math.min(1, width / naturalWidth, height / naturalHeight);
+      }
+
+      function updateButtons() {
+        zoomOut.disabled = zoom <= minZoom;
+        zoomIn.disabled = zoom >= maxZoom;
+      }
+
+      function applyZoom(nextZoom, keepCenter) {
+        updateBaseZoom();
+        var oldWidth = clone.getBoundingClientRect().width || naturalWidth;
+        var oldHeight = clone.getBoundingClientRect().height || naturalHeight;
+        var centerX = viewport.scrollLeft + viewport.clientWidth / 2;
+        var centerY = viewport.scrollTop + viewport.clientHeight / 2;
+
+        zoom = clamp(nextZoom, minZoom, maxZoom);
+        clone.style.width = Math.round(naturalWidth * zoom) + "px";
+
+        if (keepCenter && oldWidth > 0 && oldHeight > 0) {
+          requestAnimationFrame(function() {
+            var newWidth = clone.getBoundingClientRect().width || oldWidth;
+            var newHeight = clone.getBoundingClientRect().height || oldHeight;
+            viewport.scrollLeft = Math.max(0, centerX * (newWidth / oldWidth) - viewport.clientWidth / 2);
+            viewport.scrollTop = Math.max(0, centerY * (newHeight / oldHeight) - viewport.clientHeight / 2);
+            updateButtons();
+          });
+        } else {
+          viewport.scrollLeft = 0;
+          viewport.scrollTop = 0;
+          updateButtons();
+        }
+      }
+
+      async function closeLightbox() {
+        if (isClosing) return;
+        isClosing = true;
+        isDragging = false;
+        shell.classList.remove("is-dragging");
+        document.removeEventListener("keydown", onKeydown);
+        shell.removeEventListener("cancel", onCancel);
+        shell.removeEventListener("click", onDialogClick);
+
+        var prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        shell.classList.remove("is-open");
+        shell.classList.add("is-closing");
+
+        var animations = [];
+        if (!prefersReducedMotion && typeof panel.animate === "function") {
+          animations.push(panel.animate(
+            [
+              { opacity: 1, transform: "translateY(0) scale(1)" },
+              { opacity: 0, transform: "translateY(10px) scale(0.985)" },
+            ],
+            {
+              duration: 180,
+              easing: "cubic-bezier(0.25, 1, 0.5, 1)",
+              fill: "forwards",
+            },
+          ));
+        }
+
+        if (!prefersReducedMotion && typeof shell.animate === "function") {
+          animations.push(shell.animate(
+            [
+              { opacity: 1 },
+              { opacity: 0 },
+            ],
+            {
+              duration: 180,
+              easing: "cubic-bezier(0.25, 1, 0.5, 1)",
+              fill: "forwards",
+            },
+          ));
+        }
+
+        if (animations.length > 0) {
+          await Promise.allSettled(
+            animations.map(function(animation) {
+              return animation.finished;
+            }),
+          );
+        }
+
+        if (shell.open) shell.close();
+        shell.remove();
+      }
+
+      function onKeydown(event) {
+        if (event.key === "Escape") closeLightbox();
+      }
+
+      function onCancel(event) {
+        event.preventDefault();
+        closeLightbox();
+      }
+
+      function onDialogClick(event) {
+        if (event.target === shell) closeLightbox();
+      }
+
+      function onPointerDown(event) {
+        if (event.button !== 0) return;
+        isDragging = true;
+        dragStartX = event.clientX;
+        dragStartY = event.clientY;
+        dragScrollLeft = viewport.scrollLeft;
+        dragScrollTop = viewport.scrollTop;
+        shell.classList.add("is-dragging");
+        viewport.setPointerCapture(event.pointerId);
+      }
+
+      function onPointerMove(event) {
+        if (!isDragging) return;
+        viewport.scrollLeft = dragScrollLeft - (event.clientX - dragStartX);
+        viewport.scrollTop = dragScrollTop - (event.clientY - dragStartY);
+      }
+
+      function onPointerUp(event) {
+        if (!isDragging) return;
+        isDragging = false;
+        shell.classList.remove("is-dragging");
+        if (viewport.hasPointerCapture(event.pointerId)) {
+          viewport.releasePointerCapture(event.pointerId);
+        }
+      }
+
+      zoomOut.addEventListener("click", function() {
+        applyZoom(zoom - 0.25, true);
+      });
+      zoomIn.addEventListener("click", function() {
+        applyZoom(zoom + 0.25, true);
+      });
+      close.addEventListener("click", closeLightbox);
+      viewport.addEventListener("scroll", updateButtons, { passive: true });
+      viewport.addEventListener("pointerdown", onPointerDown);
+      viewport.addEventListener("pointermove", onPointerMove);
+      viewport.addEventListener("pointerup", onPointerUp);
+      viewport.addEventListener("pointercancel", onPointerUp);
+      window.addEventListener("resize", function() {
+        applyZoom(zoom, false);
+      }, { once: true });
+      document.addEventListener("keydown", onKeydown);
+      shell.addEventListener("cancel", onCancel);
+      shell.addEventListener("click", onDialogClick);
+
+      shell.showModal();
+      requestAnimationFrame(function() {
+        shell.classList.add("is-open");
+      });
+      applyZoom(minZoom, false);
+      shell.focus();
+    }
+  })();
+</script>

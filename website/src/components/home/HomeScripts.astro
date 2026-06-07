@@ -1,0 +1,351 @@
+<script is:inline type="module">
+  const installCommand = "curl -fsSL https://tako.sh/install.sh | sh";
+  const typedCmd = document.getElementById("typed-cmd");
+  const copyBtn = document.getElementById("copy");
+  const copyBtnLabel = copyBtn?.querySelector("[data-copy-label]");
+  const hanger = document.getElementById("mit-hanger");
+  const pin = document.getElementById("mit-pin");
+  const tag = document.getElementById("mit-tag");
+
+  let typingTimeout = null;
+
+  const setCopyButtonText = (visible, aria) => {
+    if (copyBtnLabel instanceof HTMLElement) {
+      copyBtnLabel.textContent = visible;
+    }
+    if (copyBtn instanceof HTMLElement) {
+      copyBtn.setAttribute("aria-label", aria);
+      copyBtn.setAttribute("title", aria);
+    }
+  };
+
+  const setCopyButtonCopied = (copied) => {
+    if (copyBtn instanceof HTMLElement) {
+      copyBtn.classList.toggle("is-copied", copied);
+    }
+  };
+
+  const writeCommand = (command, animate) => {
+    if (!(typedCmd instanceof HTMLElement)) {
+      return;
+    }
+
+    if (typeof typingTimeout === "number") {
+      clearTimeout(typingTimeout);
+      typingTimeout = null;
+    }
+
+    if (!animate) {
+      typedCmd.textContent = command;
+      return;
+    }
+
+    typedCmd.textContent = "";
+    let i = 0;
+    const writeChar = () => {
+      if (!(typedCmd instanceof HTMLElement) || i >= command.length) {
+        return;
+      }
+      typedCmd.textContent += command.charAt(i);
+      i += 1;
+      typingTimeout = window.setTimeout(writeChar, 35 + Math.random() * 28);
+    };
+    typingTimeout = window.setTimeout(writeChar, 620);
+  };
+
+  writeCommand(installCommand, true);
+
+  copyBtn?.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(installCommand);
+      setCopyButtonCopied(true);
+      setCopyButtonText("copied", "copied");
+      window.posthog?.capture("install_command_copied");
+      setTimeout(() => {
+        setCopyButtonCopied(false);
+        setCopyButtonText("copy", "copy install command");
+      }, 1400);
+    } catch {
+      setCopyButtonCopied(false);
+      setCopyButtonText("failed", "copy failed");
+      setTimeout(() => {
+        setCopyButtonText("copy", "copy install command");
+      }, 1400);
+    }
+  });
+
+  if (hanger instanceof HTMLElement && pin instanceof HTMLElement && tag instanceof HTMLElement) {
+    const restAngle = 0;
+    const isCompactScreen = window.matchMedia("(max-width: 640px)").matches;
+    const restLength = isCompactScreen ? 54 : 62;
+    const minLength = 30;
+    const maxLength = 220;
+    let angle = -0.42;
+    let angularVelocity = 1.1;
+    let length = restLength * 0.5;
+    let lengthVelocity = 210;
+    let dragging = false;
+    let animating = false;
+    const gravity = 1200;
+    const angularDamping = 2.8;
+    const angleSpring = 2.2;
+    const lengthSpring = 19;
+    const posePrecision = {
+      angle: 0.001,
+      length: 1,
+      tilt: 0.001,
+    };
+    const settleThreshold = {
+      angle: 0.002,
+      angularVelocity: 0.02,
+      length: 0.2,
+      lengthVelocity: 2,
+    };
+    const lastPose = {
+      angle: Number.NaN,
+      length: Number.NaN,
+      tilt: Number.NaN,
+    };
+
+    let lastFrame = performance.now();
+    let dragSampleTime = lastFrame;
+    let dragAngleSample = angle;
+    let dragLengthSample = length;
+
+    const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+    const quantize = (value, step) => Math.round(value / step) * step;
+    const formatRad = (value) => value.toFixed(3);
+    const isNearRest = () => {
+      return (
+        Math.abs(angle - restAngle) < settleThreshold.angle &&
+        Math.abs(angularVelocity) < settleThreshold.angularVelocity &&
+        Math.abs(length - restLength) < settleThreshold.length &&
+        Math.abs(lengthVelocity) < settleThreshold.lengthVelocity
+      );
+    };
+
+    const applyPose = () => {
+      const nextAngle = quantize(angle, posePrecision.angle);
+      const nextLength = quantize(length, posePrecision.length);
+      const nextTilt = quantize(-angle * 0.36, posePrecision.tilt);
+
+      if (nextAngle !== lastPose.angle) {
+        hanger.style.setProperty("--swing-angle", `${formatRad(nextAngle)}rad`);
+        lastPose.angle = nextAngle;
+      }
+      if (nextLength !== lastPose.length) {
+        hanger.style.setProperty("--thread-length", `${nextLength}px`);
+        lastPose.length = nextLength;
+      }
+      if (nextTilt !== lastPose.tilt) {
+        hanger.style.setProperty("--card-tilt", `${formatRad(nextTilt)}rad`);
+        lastPose.tilt = nextTilt;
+      }
+    };
+
+    const setFromPointer = (x, y) => {
+      const rect = pin.getBoundingClientRect();
+      const anchorX = rect.left + rect.width / 2;
+      const anchorY = rect.top + rect.height / 2;
+      const dx = x - anchorX;
+      const dy = y - anchorY;
+      angle = -Math.atan2(dx, dy);
+      length = clamp(Math.hypot(dx, dy), minLength, maxLength);
+    };
+
+    const endDrag = (pointerId) => {
+      if (!dragging) {
+        return;
+      }
+      dragging = false;
+      if (typeof pointerId === "number" && tag.hasPointerCapture(pointerId)) {
+        tag.releasePointerCapture(pointerId);
+      }
+      angularVelocity = clamp(angularVelocity, -7.5, 7.5);
+      lengthVelocity = clamp(lengthVelocity, -220, 220);
+      tag.style.cursor = "grab";
+      document.body.style.userSelect = "";
+    };
+
+    const startAnimation = () => {
+      if (!animating && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        animating = true;
+        lastFrame = performance.now();
+        requestAnimationFrame(tick);
+      }
+    };
+
+    tag.addEventListener("pointerdown", (event) => {
+      dragging = true;
+      tag.setPointerCapture(event.pointerId);
+      angularVelocity = 0;
+      lengthVelocity = 0;
+      setFromPointer(event.clientX, event.clientY);
+      dragSampleTime = performance.now();
+      dragAngleSample = angle;
+      dragLengthSample = length;
+      applyPose();
+      startAnimation();
+      tag.style.cursor = "grabbing";
+      document.body.style.userSelect = "none";
+    });
+
+    tag.addEventListener("pointermove", (event) => {
+      if (!dragging) {
+        return;
+      }
+      setFromPointer(event.clientX, event.clientY);
+      const now = performance.now();
+      const dt = Math.max((now - dragSampleTime) / 1000, 1 / 240);
+      angularVelocity = (angle - dragAngleSample) / dt;
+      lengthVelocity = (length - dragLengthSample) / dt;
+      dragSampleTime = now;
+      dragAngleSample = angle;
+      dragLengthSample = length;
+      applyPose();
+    });
+
+    tag.addEventListener("pointerup", (event) => {
+      endDrag(event.pointerId);
+    });
+
+    tag.addEventListener("pointercancel", (event) => {
+      endDrag(event.pointerId);
+    });
+
+    tag.addEventListener("lostpointercapture", () => {
+      dragging = false;
+      tag.style.cursor = "grab";
+      document.body.style.userSelect = "";
+    });
+
+    const tick = (now) => {
+      const dt = Math.min((now - lastFrame) / 1000, 0.033);
+      lastFrame = now;
+
+      if (!dragging) {
+        // Let the hanger fully settle by removing breeze in the near-rest band.
+        const breeze = isNearRest() ? 0 : Math.sin(now * 0.0017) * 0.18 + Math.sin(now * 0.00061) * 0.08;
+        const gravityForce = -(gravity / Math.max(length, 1)) * Math.sin(angle);
+        const springForce = (restAngle - angle) * angleSpring;
+        angularVelocity += (gravityForce + springForce + breeze - angularVelocity * angularDamping) * dt;
+        angle += angularVelocity * dt;
+
+        lengthVelocity += (restLength - length) * lengthSpring * dt;
+        lengthVelocity *= Math.exp(-5.0 * dt);
+        length += lengthVelocity * dt;
+        length = clamp(length, minLength, maxLength);
+
+        if (isNearRest()) {
+          angle = restAngle;
+          angularVelocity = 0;
+          length = restLength;
+          lengthVelocity = 0;
+        }
+      }
+
+      applyPose();
+
+      if (!dragging && isNearRest()) {
+        animating = false;
+      } else {
+        requestAnimationFrame(tick);
+      }
+    };
+
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reducedMotion) {
+      angle = restAngle;
+      length = restLength;
+      applyPose();
+    } else {
+      applyPose();
+      animating = true;
+      requestAnimationFrame(tick);
+    }
+  }
+
+  // Feature filtering
+  {
+    const tags = Array.from(document.querySelectorAll(".included-tag[data-category]"));
+    const features = Array.from(document.querySelectorAll(".feature-link[data-categories]"));
+    const featureList = document.querySelector(".feature-list");
+    const showAllBtn = document.querySelector("[data-feature-show-all]");
+    let activeCategory = null;
+
+    function setExpanded(expanded) {
+      if (featureList) featureList.classList.toggle("is-expanded", expanded);
+      if (showAllBtn) showAllBtn.style.display = expanded ? "none" : "";
+    }
+
+    function applyFilter(category) {
+      activeCategory = category;
+
+      if (!category) {
+        for (const el of tags) el.classList.remove("is-active");
+        for (const el of features) el.classList.remove("is-muted");
+        setExpanded(false);
+        return;
+      }
+
+      for (const el of tags) {
+        el.classList.toggle("is-active", el.dataset.category === category);
+      }
+
+      for (const el of features) {
+        const cats = (el.dataset.categories || "").split(",");
+        el.classList.toggle("is-muted", !cats.includes(category));
+      }
+
+      setExpanded(true);
+    }
+
+    for (const t of tags) {
+      t.addEventListener("click", () => {
+        const category = t.dataset.category;
+        if (activeCategory === category) {
+          applyFilter(null);
+        } else {
+          applyFilter(category);
+          window.posthog?.capture("feature_filter_applied", { category });
+        }
+      });
+    }
+
+    if (showAllBtn) {
+      showAllBtn.addEventListener("click", () => setExpanded(true));
+    }
+  }
+
+  // CTA button tracking
+  for (const btn of document.querySelectorAll(".cta-section .btn, .hero-actions .btn")) {
+    btn.addEventListener("click", () => {
+      window.posthog?.capture("cta_clicked", {
+        label: btn.textContent?.trim(),
+        href: btn.getAttribute("href"),
+      });
+    });
+  }
+
+  // Workflow step tracking
+  for (const link of document.querySelectorAll(".workflow-link")) {
+    link.addEventListener("click", () => {
+      const cmd = link.querySelector(".workflow-cmd")?.textContent?.trim();
+      window.posthog?.capture("workflow_step_clicked", {
+        command: cmd,
+        href: link.getAttribute("href"),
+      });
+    });
+  }
+
+  // Feature link tracking
+  for (const link of document.querySelectorAll(".feature-link[href]")) {
+    link.addEventListener("click", () => {
+      const title = link.querySelector(".feature-link-title")?.textContent?.trim();
+      window.posthog?.capture("feature_link_clicked", {
+        feature: title,
+        href: link.getAttribute("href"),
+      });
+    });
+  }
+</script>

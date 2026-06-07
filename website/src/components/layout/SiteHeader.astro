@@ -1,0 +1,136 @@
+---
+import { Image } from "astro:assets";
+import NavLinks from "../NavLinks.astro";
+import StarIcon from "lucide-astro/Star";
+import ExternalLinkIcon from "lucide-astro/ExternalLink";
+---
+<header class="header">
+				<div class="container">
+					<div class="header-inner">
+						<a href="/" class="logo" aria-label="Tako home">
+							<Image
+								src="/assets/logo.svg"
+								alt="Tako"
+								width={30}
+								height={30}
+								loading="eager"
+							/>
+							<span id="logo-text"></span>
+						</a>
+						<nav class="nav nav-links desktop-nav">
+							<NavLinks />
+						</nav>
+						<div class="mobile-nav-controls nav-links">
+							<a href="/docs/">docs</a>
+							<a
+								href="https://github.com/tako-sh/tako"
+								target="_blank"
+								rel="noopener noreferrer"
+								class="github-star"
+							>
+								<StarIcon
+									class="star-icon"
+									aria-hidden="true"
+									focusable="false"
+								/>
+								<span>github</span>
+							</a>
+							<button
+								class="hamburger"
+								aria-label="Toggle menu"
+								aria-expanded="false"
+							>
+								<span class="hamburger-line"></span>
+								<span class="hamburger-line"></span>
+								<span class="hamburger-line"></span>
+							</button>
+						</div>
+					</div>
+					<nav class="mobile-menu" id="mobile-menu" inert>
+						<a href="/performance/"
+							><svg
+								xmlns="http://www.w3.org/2000/svg"
+								width="16"
+								height="16"
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								stroke-width="2"
+								stroke-linecap="round"
+								stroke-linejoin="round"
+								aria-hidden="true"
+								focusable="false"
+								style="vertical-align: -2px; margin-right: 6px;"
+								><path d="M3 3v18h18"></path><path
+									d="m19 9-5 5-4-4-3 3"
+								></path></svg
+							>performance</a
+						>
+						<a
+							href="https://demo.tako.sh"
+							target="_blank"
+							rel="noopener noreferrer"
+							><ExternalLinkIcon
+								class="mobile-menu-icon"
+								aria-hidden="true"
+								focusable="false"
+							/>demo</a
+						>
+						<a href="/blog/"
+							><svg
+								xmlns="http://www.w3.org/2000/svg"
+								width="16"
+								height="16"
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								stroke-width="2"
+								stroke-linecap="round"
+								stroke-linejoin="round"
+								aria-hidden="true"
+								focusable="false"
+								style="vertical-align: -2px; margin-right: 6px;"
+								><path d="M12 20h9"></path><path
+									d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"
+								></path></svg
+							>blog</a
+						>
+						<a
+							href="https://twitter.com/intent/follow?screen_name=lilienblum"
+							target="_blank"
+							rel="noopener noreferrer"
+							><svg
+								xmlns="http://www.w3.org/2000/svg"
+								width="16"
+								height="16"
+								viewBox="0 0 24 24"
+								fill="currentColor"
+								aria-hidden="true"
+								focusable="false"
+								style="vertical-align: -2px; margin-right: 6px;"
+								><path
+									d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"
+								></path></svg
+							>follow progress</a
+						>
+						<a
+							href="https://discord.gg/2bvHr6gdbB"
+							target="_blank"
+							rel="noopener noreferrer"
+							><svg
+								xmlns="http://www.w3.org/2000/svg"
+								width="16"
+								height="16"
+								viewBox="0 0 24 24"
+								fill="currentColor"
+								aria-hidden="true"
+								focusable="false"
+								style="vertical-align: -2px; margin-right: 6px;"
+								><path
+									d="M20.317 4.369a19.791 19.791 0 0 0-4.885-1.515 13.074 13.074 0 0 0-.625 1.29 18.27 18.27 0 0 0-5.614 0 12.64 12.64 0 0 0-.633-1.29 19.736 19.736 0 0 0-4.885 1.515C.533 9.046-.32 13.58.105 18.057a19.9 19.9 0 0 0 5.993 3.034 14.648 14.648 0 0 0 1.285-2.083 12.923 12.923 0 0 1-2.025-.968c.17-.124.336-.252.496-.383a14.242 14.242 0 0 0 12.292 0c.162.132.328.26.497.383-.647.38-1.326.704-2.028.968.36.733.79 1.43 1.285 2.083a19.856 19.856 0 0 0 6.0-3.034c.5-5.177-.838-9.673-3.583-13.688ZM8.02 15.331c-1.183 0-2.157-1.086-2.157-2.42 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.419-2.157 2.419Zm7.975 0c-1.183 0-2.157-1.086-2.157-2.42 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.947 2.419-2.157 2.419Z"
+								></path></svg
+							>discord</a
+						>
+					</nav>
+				</div>
+			</header>
