@@ -1,0 +1,23 @@
+---
+const isEnabled = import.meta.env.PROD;
+---
+
+{
+	isEnabled && (
+		<>
+			<script
+				is:inline
+				async
+				src="https://www.googletagmanager.com/gtag/js?id=G-8WPCBNYKTC"
+			/>
+			<script is:inline>
+				window.dataLayer = window.dataLayer || [];
+				window.gtag = function gtag() {
+					window.dataLayer.push(arguments);
+				};
+				window.gtag("js", new Date());
+				window.gtag("config", "G-8WPCBNYKTC");
+			</script>
+		</>
+	)
+}

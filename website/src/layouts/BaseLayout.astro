@@ -2,6 +2,7 @@
 import PostHog from "../components/posthog.astro";
 import BaseScripts from "../components/layout/BaseScripts.astro";
 import BaseStyles from "../components/layout/BaseStyles.astro";
+import GoogleAnalytics from "../components/GoogleAnalytics.astro";
 import SiteFooter from "../components/layout/SiteFooter.astro";
 import SiteHeader from "../components/layout/SiteHeader.astro";
 import { createCanonicalUrl } from "../utils/canonical";
@@ -141,6 +142,7 @@ const pageStructuredData = structuredData
 		}
 		<BaseStyles />
 		<slot name="head" />
+		<GoogleAnalytics />
 		<PostHog />
 	</head>
 	<body>
