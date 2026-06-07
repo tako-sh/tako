@@ -226,7 +226,7 @@ tako credentials list
 | `rm <NAME>`  | Remove a provider credential from one environment. Aliases: `remove`, `delete`, `del`. |
 | `list`       | List credential names and environments. Aliases: `ls`, `show`.                         |
 
-Supported provider credentials today: `ssl.cloudflare` and `postgres_url`.
+Supported provider credentials today: `ssl.cloudflare` and `postgres_url`. Credential names are lowercased before validation, so `POSTGRES_URL` is stored as `postgres_url`.
 
 Provider credentials are encrypted in `.tako/secrets.json`, not exposed to app code, not included in generated secret types, and not pushed by `tako secrets sync`. Deploy sends them only through the deployment binding that needs them. `postgres_url` selects shared Postgres storage for channels and workflows.
 

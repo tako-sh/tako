@@ -62,32 +62,33 @@ fn set_credential_command(
     requested_env: Option<&str>,
     requested_expires_on: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    crate::config::validate_credential_name(name)?;
+    let name = normalize_credential_name(name);
+    crate::config::validate_credential_name(&name)?;
     let env = crate::commands::secret::resolve_secret_environment(
         context,
         requested_env,
         "Credential environment",
     )?;
     let secrets = crate::config::SecretsStore::load_from_dir(&context.project_dir)?;
-    if !confirm_credential_override(&secrets, name, &env)? {
+    if !confirm_credential_override(&secrets, &name, &env)? {
         return Ok(());
     }
-    let value = read_credential_value(None, credential_value_prompt(name, &secrets, &env))?;
+    let value = read_credential_value(None, credential_value_prompt(&name, &secrets, &env))?;
     let expires_on =
         crate::commands::secret::read_secret_expires_on(requested_expires_on, "Expires on")?;
-    let existed = secrets.contains_credential(&env, name);
-    set_credential_value(&context.project_dir, &env, name, &value, expires_on)?;
+    let existed = secrets.contains_credential(&env, &name);
+    set_credential_value(&context.project_dir, &env, &name, &value, expires_on)?;
 
     if existed {
         output::success(&format!(
             "Updated credential {} in {}",
-            output::strong(name),
+            output::strong(&name),
             output::strong(&env)
         ));
     } else {
         output::success(&format!(
             "Set credential {} in {}",
-            output::strong(name),
+            output::strong(&name),
             output::strong(&env)
         ));
     }
@@ -100,21 +101,22 @@ fn remove_credential_command(
     name: &str,
     requested_env: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    crate::config::validate_credential_name(name)?;
+    let name = normalize_credential_name(name);
+    crate::config::validate_credential_name(&name)?;
     let env = crate::commands::secret::resolve_secret_environment(
         context,
         requested_env,
         "Credential environment",
     )?;
     let mut secrets = crate::config::SecretsStore::load_from_dir(&context.project_dir)?;
-    if !secrets.contains_credential(&env, name) {
+    if !secrets.contains_credential(&env, &name) {
         return Err(format!("Credential '{name}' not found in environment '{env}'").into());
     }
 
     let confirm = output::confirm(
         &format!(
             "Remove credential {} from {}?",
-            output::strong(name),
+            output::strong(&name),
             output::strong(&env)
         ),
         false,
@@ -124,14 +126,18 @@ fn remove_credential_command(
         return Ok(());
     }
 
-    secrets.remove_credential(&env, name)?;
+    secrets.remove_credential(&env, &name)?;
     secrets.save_to_dir(&context.project_dir)?;
     output::success(&format!(
         "Removed credential {} from {}",
-        output::strong(name),
+        output::strong(&name),
         output::strong(&env)
     ));
     Ok(())
+}
+
+fn normalize_credential_name(name: &str) -> String {
+    name.to_ascii_lowercase()
 }
 
 fn list_credentials(
@@ -272,13 +278,14 @@ fn set_credential_value(
     value: &str,
     expires_on: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    crate::config::validate_credential_name(name)?;
+    let name = normalize_credential_name(name);
+    crate::config::validate_credential_name(&name)?;
     let mut secrets = crate::config::SecretsStore::load_from_dir(project_dir)?;
     secrets.ensure_env_key_id(env)?;
     let key =
         crate::commands::secret::load_or_create_key_for_set(env, &secrets, Some(project_dir))?;
     let encrypted = crate::crypto::encrypt(value, &key)?;
-    secrets.set_credential(env, name, EncryptedSecretValue::new(encrypted, expires_on))?;
+    secrets.set_credential(env, &name, EncryptedSecretValue::new(encrypted, expires_on))?;
     secrets.save_to_dir(project_dir)?;
     Ok(())
 }
@@ -404,6 +411,34 @@ mod tests {
                 .get_credential("production", SSL_CLOUDFLARE_CREDENTIAL_NAME)
                 .unwrap();
             assert_eq!(credential.expires_on.as_deref(), Some("2099-01-01"));
+        });
+    }
+
+    #[test]
+    fn set_credential_value_normalizes_input_name_to_lowercase() {
+        with_temp_tako_home(|| {
+            let project = tempfile::TempDir::new().unwrap();
+
+            set_credential_value(
+                project.path(),
+                "production",
+                "POSTGRES_URL",
+                "postgres://runtime",
+                None,
+            )
+            .unwrap();
+
+            let secrets = crate::config::SecretsStore::load_from_dir(project.path()).unwrap();
+            assert!(
+                secrets
+                    .get_credential("production", POSTGRES_CREDENTIAL_NAME)
+                    .is_some()
+            );
+            assert!(
+                secrets
+                    .get_credential("production", "POSTGRES_URL")
+                    .is_none()
+            );
         });
     }
 
