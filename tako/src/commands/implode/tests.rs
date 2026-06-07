@@ -1,3 +1,4 @@
+use super::server::build_server_implode_script;
 use super::*;
 use tempfile::TempDir;
 
@@ -81,7 +82,7 @@ fn server_implode_script_removes_service_files() {
 fn macos_system_targets_include_dev_proxy_when_present() {
     // This is a detection test — it verifies the function runs without panic.
     // Actual file presence depends on the machine state.
-    let targets = gather_macos_system_targets();
+    let targets = super::system::gather_macos_system_targets();
     // Each target should have a non-empty description and at least one command
     for t in &targets {
         assert!(!t.description.is_empty());
@@ -92,7 +93,7 @@ fn macos_system_targets_include_dev_proxy_when_present() {
 #[cfg(target_os = "linux")]
 #[test]
 fn linux_system_targets_include_service_when_present() {
-    let targets = gather_linux_system_targets();
+    let targets = super::system::gather_linux_system_targets();
     for t in &targets {
         assert!(!t.description.is_empty());
         assert!(!t.commands.is_empty());
