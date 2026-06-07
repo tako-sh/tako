@@ -2,17 +2,18 @@ use crate::output;
 use tracing::Instrument;
 
 mod connection;
+mod lifecycle;
 mod naming;
 mod ports;
 
 pub(super) use connection::detect_server_target;
 use connection::{
-    WizardConnectionResult, check_tako_connection, configure_tako_server_with_service_user,
-    install_tako_server_with_admin, trace_management_probe, verify_remote_management,
-    verify_tailscale_host,
+    WizardConnectionResult, check_tako_connection, trace_management_probe,
+    verify_remote_management, verify_tailscale_host,
 };
 #[cfg(test)]
 use connection::{parse_detected_arch, parse_detected_libc, remote_management_unavailable_message};
+use lifecycle::{VerifyLabels, install_start_and_verify, start_and_verify};
 use naming::{
     append_unique_suggestions, default_server_name_from_host, next_available_server_name,
     push_unique_suggestion, record_server_history,
@@ -50,26 +51,6 @@ pub struct AddServerOptions<'a> {
     pub install_if_missing: bool,
     pub allow_install_prompt: bool,
     pub admin_user: Option<&'a str>,
-}
-
-async fn start_tako_server(
-    host: &str,
-    port: u16,
-    public_ports: ServerPublicPorts,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let start_scope = output::scope(host);
-    let _t = output::timed(&format!("Start tako-server on {host}:{port}"));
-    output::with_spinner_async_err(
-        "Starting tako-server",
-        "tako-server started",
-        "Start failed",
-        configure_tako_server_with_service_user(host, port, Some(public_ports))
-            .instrument(start_scope),
-    )
-    .await?;
-    drop(_t);
-
-    Ok(())
 }
 
 pub(super) async fn run_add_server_wizard(
@@ -234,36 +215,16 @@ pub(super) async fn run_add_server_wizard(
                 let admin_user = output::TextField::new("Admin SSH user")
                     .with_default(admin_user_default.unwrap_or("root"))
                     .prompt()?;
-                let install_scope = output::scope(&host);
-                let _t = output::timed(&format!("Install tako-server on {host}:{port}"));
-                output::with_spinner_async_err(
-                    "Installing tako-server",
-                    "tako-server installed",
-                    "Install failed",
-                    install_tako_server_with_admin(
-                        &host,
-                        port,
-                        &admin_user,
-                        Some(public_ports),
-                        crate::ssh::InstallServerMode::BootstrapOnly,
-                    )
-                    .instrument(install_scope),
+                result = Ok(install_start_and_verify(
+                    &host,
+                    port,
+                    &admin_user,
+                    public_ports,
+                    VerifyLabels::INSTALL,
+                    true,
                 )
-                .await?;
-                drop(_t);
+                .await?);
                 detected_public_ports = Some(public_ports);
-                start_tako_server(&host, port, public_ports).await?;
-
-                let verify_scope = output::scope(&host);
-                let _t = output::timed(&format!("Verify tako-server on {host}:{port}"));
-                result = output::with_spinner_async_err(
-                    "Verifying install",
-                    "Install verified",
-                    "Verification failed",
-                    check_tako_connection(&host, port).instrument(verify_scope),
-                )
-                .await;
-                drop(_t);
             }
         }
 
@@ -276,19 +237,12 @@ pub(super) async fn run_add_server_wizard(
             let should_start = output::confirm("Start tako-server now?", true)?;
             if should_start {
                 let public_ports = install_public_ports(initial_public_ports)?;
-                start_tako_server(&host, port, public_ports).await?;
+                result =
+                    Ok(
+                        start_and_verify(&host, port, public_ports, VerifyLabels::SERVER, true)
+                            .await?,
+                    );
                 detected_public_ports = Some(public_ports);
-
-                let verify_scope = output::scope(&host);
-                let _t = output::timed(&format!("Verify tako-server on {host}:{port}"));
-                result = output::with_spinner_async_err(
-                    "Verifying server",
-                    "Server verified",
-                    "Verification failed",
-                    check_tako_connection(&host, port).instrument(verify_scope),
-                )
-                .await;
-                drop(_t);
             }
         }
 
@@ -584,29 +538,16 @@ pub async fn add_server(
         if install_if_missing && needs_install {
             let admin_user = admin_user.unwrap_or("root");
             let install_ports = install_public_ports(public_ports)?;
-            output::with_spinner_async_err(
-                "Installing tako-server",
-                "tako-server installed",
-                "Install failed",
-                install_tako_server_with_admin(
-                    host,
-                    port,
-                    admin_user,
-                    Some(install_ports),
-                    crate::ssh::InstallServerMode::BootstrapOnly,
-                ),
+            result = Ok(install_start_and_verify(
+                host,
+                port,
+                admin_user,
+                install_ports,
+                VerifyLabels::INSTALL,
+                false,
             )
-            .await?;
+            .await?);
             resolved_public_ports = Some(install_ports);
-            start_tako_server(host, port, install_ports).await?;
-
-            result = output::with_spinner_async_err(
-                "Verifying install",
-                "Install verified",
-                "Verification failed",
-                check_tako_connection(host, port),
-            )
-            .await;
         } else if allow_install_prompt && needs_install && output::is_interactive() {
             let should_install = output::confirm("Install tako-server now?", true)?;
             if should_install {
@@ -614,29 +555,16 @@ pub async fn add_server(
                 let admin_user = output::TextField::new("Admin SSH user")
                     .with_default(admin_user.unwrap_or("root"))
                     .prompt()?;
-                output::with_spinner_async_err(
-                    "Installing tako-server",
-                    "tako-server installed",
-                    "Install failed",
-                    install_tako_server_with_admin(
-                        host,
-                        port,
-                        &admin_user,
-                        Some(install_ports),
-                        crate::ssh::InstallServerMode::BootstrapOnly,
-                    ),
+                result = Ok(install_start_and_verify(
+                    host,
+                    port,
+                    &admin_user,
+                    install_ports,
+                    VerifyLabels::INSTALL,
+                    false,
                 )
-                .await?;
+                .await?);
                 resolved_public_ports = Some(install_ports);
-                start_tako_server(host, port, install_ports).await?;
-
-                result = output::with_spinner_async_err(
-                    "Verifying install",
-                    "Install verified",
-                    "Verification failed",
-                    check_tako_connection(host, port),
-                )
-                .await;
             }
         }
 
@@ -654,16 +582,12 @@ pub async fn add_server(
             };
             if should_configure {
                 let configure_ports = install_public_ports(public_ports)?;
-                start_tako_server(host, port, configure_ports).await?;
+                result =
+                    Ok(
+                        start_and_verify(host, port, configure_ports, VerifyLabels::SERVER, false)
+                            .await?,
+                    );
                 resolved_public_ports = Some(configure_ports);
-
-                result = output::with_spinner_async_err(
-                    "Verifying server",
-                    "Server verified",
-                    "Verification failed",
-                    check_tako_connection(host, port),
-                )
-                .await;
             }
         }
 
