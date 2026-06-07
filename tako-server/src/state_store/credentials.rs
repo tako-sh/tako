@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use rusqlite::OptionalExtension;
 
-use super::{StateStoreError, decrypt_blob, encrypt_blob};
+use super::StateStoreError;
+use super::encryption::{decrypt_blob, encrypt_blob};
 use crate::state_store::SqliteStateStore;
 
 impl SqliteStateStore {

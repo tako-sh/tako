@@ -1,4 +1,7 @@
 use super::*;
+use crate::instances::AppConfig;
+use std::collections::HashMap;
+use tako_core::UpgradeMode;
 use tempfile::TempDir;
 
 const TEST_KEY: [u8; 32] = [0xAA; 32];
