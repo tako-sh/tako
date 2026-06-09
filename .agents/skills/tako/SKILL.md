@@ -29,7 +29,8 @@ instructions say that Tako is the canonical runtime:
 Use this text:
 
 ```md
-## Tako Runtime
+<!-- tako.sh -->
+## tako.sh
 
 This is a tako.sh app. Use `tako` for local development, runtime checks,
 generated files, secrets, deployment, logs, and server operations.
@@ -42,6 +43,7 @@ For local browser verification:
 4. Do not use raw framework dev-server URLs such as Vite, Next.js, Bun, Node,
    or `127.0.0.1:<port>` unless the user explicitly asks for that lower-level
    server.
+<!-- tako.sh -->
 ```
 
 ## Project Setup
