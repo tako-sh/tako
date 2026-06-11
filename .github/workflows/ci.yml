@@ -339,7 +339,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo build -p tako-server --release
-          cargo build -p tako --bin tako --bin tako-dev-server --bin tako-dev-proxy --release
+          cargo build -p tako-cli --bin tako --bin tako-dev-server --bin tako-dev-proxy --release
 
       - name: Upload server binary
         uses: actions/upload-artifact@v7
@@ -409,7 +409,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo build -p tako-server --release
-          cargo build -p tako --bin tako --bin tako-dev-server --bin tako-dev-proxy --release
+          cargo build -p tako-cli --bin tako --bin tako-dev-server --bin tako-dev-proxy --release
 
       - name: Upload server binary
         uses: actions/upload-artifact@v7
@@ -488,7 +488,7 @@ jobs:
           TAKO_BUILD_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          cargo build -p tako --bin tako --bin tako-dev-server --bin tako-dev-proxy --release --target ${{ matrix.target }}
+          cargo build -p tako-cli --bin tako --bin tako-dev-server --bin tako-dev-proxy --release --target ${{ matrix.target }}
           sh scripts/package-tako-app.sh \
             target/${{ matrix.target }}/release/tako \
             target/${{ matrix.target }}/release/Tako.app
