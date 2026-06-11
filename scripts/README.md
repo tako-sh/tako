@@ -7,6 +7,7 @@ Repository scripts used by installers, CI checks, and local development workflow
 - `install-tako.sh`: POSIX installer for local `tako`, `tako-dev-server`, and `tako-dev-proxy`. It verifies the release archive SHA-256 checksum before extraction. On macOS it verifies `Tako.app` and helper signatures, installs `Tako.app`, symlinks `tako` to the signed CLI inside the app bundle, and installs libvips with Homebrew when available.
 - `install-libvips-runtime.sh`: CI helper that installs the libvips runtime used by downloaded Tako binaries on macOS and apt-based Linux runners.
 - `package-tako-app.sh`: Packages the Rust `tako` binary as `Tako.app` for macOS signing and iCloud Keychain entitlements.
+- `bump-rust-sdk-version.ts`: Bumps the published Rust SDK crate version in `sdk/rust/Cargo.toml` and `Cargo.lock`. Prefer `just sdk-rust patch|minor|major`.
 - `install-tako-server.sh`: POSIX installer for `tako-server` on Linux hosts.
   - Both installers download assets from the rolling `latest` release (override with `TAKO_RELEASE_TAG`).
   - GitHub-hosted downloads use `GH_TOKEN` when set, falling back to `GITHUB_TOKEN`.

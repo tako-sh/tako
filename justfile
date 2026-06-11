@@ -26,3 +26,7 @@ ci: fmt lint test::all
 
 
 e2e fixture="e2e/fixtures/javascript/tanstack-start": (test::e2e fixture)
+
+# Bump the published Rust SDK crate version.
+sdk-rust part:
+    bun scripts/bump-rust-sdk-version.ts {{ part }}

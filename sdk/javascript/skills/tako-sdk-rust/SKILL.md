@@ -171,7 +171,16 @@ if let Some(uploads) = storages.get("uploads") {
 
 ## When Editing The Rust SDK
 
-Run focused validation before committing:
+For SDK changes that should publish a new crate version, bump the manifest first:
+
+```bash
+just sdk-rust patch   # 0.2.0 -> 0.2.1
+just sdk-rust minor   # 0.2.0 -> 0.3.0
+just sdk-rust major   # 0.2.0 -> 1.0.0
+```
+
+This updates `sdk/rust/Cargo.toml` and `Cargo.lock`. Run focused validation
+before committing:
 
 ```bash
 cargo test -p tako --locked
@@ -180,4 +189,5 @@ cargo publish -p tako --dry-run --locked
 
 If the working tree is dirty during local package validation, add
 `--allow-dirty`. Never run a real `cargo publish` locally for routine changes;
-the release workflow publishes from `master` with `CARGO_REGISTRY_TOKEN`.
+the release workflow publishes the exact manifest version from `master` with
+`CARGO_REGISTRY_TOKEN`.
