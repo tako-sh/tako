@@ -353,6 +353,9 @@ fn rejects_remote_sources_with_private_or_local_hosts() {
     for source in [
         "http://127.0.0.1/avatar.png",
         "http://[::1]/avatar.png",
+        "http://[::ffff:127.0.0.1]/avatar.png",
+        "http://[::ffff:10.0.0.1]/avatar.png",
+        "http://[::ffff:169.254.169.254]/avatar.png",
         "http://localhost/avatar.png",
         "http://assets.localhost/avatar.png",
     ] {

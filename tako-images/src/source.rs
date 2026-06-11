@@ -234,6 +234,10 @@ fn ipv4_is_private_or_local(ip: Ipv4Addr) -> bool {
 }
 
 fn ipv6_is_private_or_local(ip: Ipv6Addr) -> bool {
+    if let Some(mapped) = ip.to_ipv4_mapped() {
+        return ipv4_is_private_or_local(mapped);
+    }
+
     ip.is_loopback()
         || ip.is_unspecified()
         || ip.is_multicast()
