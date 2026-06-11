@@ -1,6 +1,7 @@
 <a href="https://tako.sh" target="_blank" rel="noopener"><img src="assets/readme-banner.webp" alt="Tako - ship apps to your own servers" width="100%" /></a>
 
 [![npm: tako.sh](https://img.shields.io/npm/v/tako.sh?label=npm%3A%20tako.sh&color=9BC4B6)](https://www.npmjs.com/package/tako.sh)
+[![cargo: tako](https://img.shields.io/crates/v/tako?label=cargo%3A%20tako&color=9BC4B6)](https://crates.io/crates/tako)
 [![skills.sh](https://skills.sh/b/tako-sh/tako)](https://skills.sh/tako-sh/tako)
 
 ## What is Tako?
