@@ -192,19 +192,22 @@
 
   .blog-article.content pre {
     padding: 18px 20px;
-    border: 2px solid var(--line);
+    border: 2px solid var(--code-line);
     border-radius: 16px;
-    background: var(--paper);
+    background: var(--code-bg) !important;
     overflow-x: auto;
+    max-width: 100%;
+    -webkit-overflow-scrolling: touch;
     font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
     font-size: 13px;
     line-height: 1.5;
-    color: var(--ink);
+    color: var(--code-text) !important;
   }
 
   .blog-article.content pre code {
     padding: 0;
     background: none;
+    color: inherit;
   }
 
   .blog-article.content blockquote {

@@ -115,13 +115,13 @@ export default defineConfig({
   markdown: {
     processor: unified({
       remarkPlugins: [remarkD2Theme],
-      shikiConfig: {
-        theme: SNIPPET_THEME,
-        langAlias: {
-          d2: "plaintext",
-        },
-      },
     }),
+    shikiConfig: {
+      theme: SNIPPET_THEME,
+      langAlias: {
+        d2: "plaintext",
+      },
+    },
   },
 
   vite: {

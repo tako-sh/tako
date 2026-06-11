@@ -1,75 +1,75 @@
 export const SNIPPET_THEME = {
-  name: "tako-sunrise",
+  name: "catppuccin-latte-readable",
   type: "light",
   colors: {
-    "editor.background": "#F7F1EA",
-    "editor.foreground": "#2F2A44",
-    "editorLineNumber.foreground": "#9188A6",
-    "editor.selectionBackground": "#F4D6D1",
-    "editorCursor.foreground": "#2F2A44",
-    "editorIndentGuide.background": "#E8DFD7",
+    "editor.background": "#eff1f5",
+    "editor.foreground": "#4c4f69",
+    "editorLineNumber.foreground": "#8c8fa1",
+    "editor.selectionBackground": "#ccd0da",
+    "editorCursor.foreground": "#4c4f69",
+    "editorIndentGuide.background": "#dce0e8",
   },
   tokenColors: [
     {
       scope: ["comment", "punctuation.definition.comment"],
       settings: {
-        foreground: "#8A809E",
+        foreground: "#5c5f77",
         fontStyle: "italic",
       },
     },
     {
       scope: ["keyword", "storage", "storage.type"],
       settings: {
-        foreground: "#D06F6B",
+        foreground: "#8839ef",
       },
     },
     {
       scope: ["string", "string.quoted", "string.template"],
       settings: {
-        foreground: "#2D8D67",
+        foreground: "#2b7a1f",
       },
     },
     {
       scope: ["constant.numeric", "constant.character", "constant.language"],
       settings: {
-        foreground: "#C86A4E",
+        foreground: "#a84300",
       },
     },
     {
       scope: ["entity.name.function", "support.function", "meta.function-call"],
       settings: {
-        foreground: "#2A67D4",
+        foreground: "#1c5bd5",
       },
     },
     {
       scope: ["entity.name.type", "support.type", "storage.type.class"],
       settings: {
-        foreground: "#7D4CA8",
+        foreground: "#8a5600",
       },
     },
     {
       scope: ["operator", "keyword.operator"],
       settings: {
-        foreground: "#1B8A98",
+        foreground: "#0b6f76",
       },
     },
     {
       scope: ["variable", "identifier"],
       settings: {
-        foreground: "#2F2A44",
+        foreground: "#4c4f69",
       },
     },
     {
       scope: ["punctuation", "meta.brace", "delimiter"],
       settings: {
-        foreground: "#766E87",
+        foreground: "#5c5f77",
       },
     },
     {
       scope: ["invalid"],
       settings: {
-        foreground: "#FFF9F4",
-        background: "#C83A3A",
+        foreground: "#eff1f5",
+        background: "#d20f39",
       },
     },
   ],
