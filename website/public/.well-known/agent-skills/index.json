@@ -27,7 +27,7 @@
       "type": "framework",
       "description": "Tako Rust SDK: bind_listener for fd-4 readiness, read_bootstrap for fd-3 secrets/internal token, runtime metadata, internal socket RPC, workflows, channels, storage helpers, and internal status helpers for Rust HTTP frameworks.",
       "url": "https://tako.sh/.well-known/agent-skills/tako-sdk-rust/SKILL.md",
-      "sha256": "926e78f64a71464faccc08d18f837524f4a5d3deac2b40f8d2d68c6c4317ebe6"
+      "sha256": "30c8addc97604dbec42854e12f2a0cdcfb990266e59423c56405a052955b59a3"
     }
   ]
 }

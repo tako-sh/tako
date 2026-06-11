@@ -40,7 +40,9 @@ describe("storage URLs", () => {
     expect(parsed.searchParams.get("X-Amz-Date")).toBe("20260513T123456Z");
     expect(parsed.searchParams.get("X-Amz-Expires")).toBe("3600");
     expect(parsed.searchParams.get("response-content-type")).toBe("image/png");
-    expect(parsed.searchParams.get("X-Amz-Signature")).toMatch(/^[0-9a-f]{64}$/);
+    expect(parsed.searchParams.get("X-Amz-Signature")).toBe(
+      "314b05cbab13c08d06ad922dce295280c00bb0da327735b43e5ba7ae8402210b",
+    );
   });
 
   test("creates signed upload URLs with content-type in signed headers", async () => {
@@ -53,6 +55,9 @@ describe("storage URLs", () => {
 
     const parsed = new URL(url);
     expect(parsed.searchParams.get("X-Amz-SignedHeaders")).toBe("content-type;host");
+    expect(parsed.searchParams.get("X-Amz-Signature")).toBe(
+      "12ad576d23a91feb868e6e395a92e0cb0f0321262085693838f5dcdd330b8b76",
+    );
   });
 
   test("creates public optimized image URLs when public_base_url is requested", async () => {

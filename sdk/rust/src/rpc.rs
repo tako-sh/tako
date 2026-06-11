@@ -368,8 +368,10 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::{
+        fs,
         io::{BufRead, BufReader, Write},
         os::unix::net::UnixListener,
+        path::PathBuf,
         sync::{Arc, Mutex},
         thread,
     };
@@ -454,7 +456,7 @@ mod tests {
 
     impl TestSocket {
         fn start(handler: impl Fn(Value) -> Value + Send + Sync + 'static) -> Self {
-            let dir = tempfile::tempdir().unwrap();
+            let dir = socket_tempdir("rpc").unwrap();
             let path = dir.path().join("rpc.sock");
             let listener = UnixListener::bind(&path).unwrap();
             let commands = Arc::new(Mutex::new(Vec::new()));
@@ -485,5 +487,16 @@ mod tests {
         fn path(&self) -> PathBuf {
             self.path.clone()
         }
+    }
+
+    fn socket_tempdir(prefix: &str) -> std::io::Result<TempDir> {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/tako-rust-sdk-tests")
+            .canonicalize()
+            .unwrap_or_else(|_| {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/tako-rust-sdk-tests")
+            });
+        fs::create_dir_all(&root)?;
+        tempfile::Builder::new().prefix(prefix).tempdir_in(root)
     }
 }

@@ -130,10 +130,14 @@ function canonicalUri(url: URL): string {
 function canonicalQuery(params: URLSearchParams): string {
   return Array.from(params.entries())
     .sort(([aKey, aValue], [bKey, bValue]) =>
-      aKey === bKey ? aValue.localeCompare(bValue) : aKey.localeCompare(bKey),
+      aKey === bKey ? compareAscii(aValue, bValue) : compareAscii(aKey, bKey),
     )
     .map(([key, value]) => `${rfc3986Encode(key)}=${rfc3986Encode(value)}`)
     .join("&");
+}
+
+function compareAscii(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
 }
 
 async function deriveSigningKey(

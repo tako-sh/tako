@@ -82,7 +82,7 @@ while worker.run_once()? {}
 
 ## Storage
 
-`tako::StorageBag` parses storage bindings from `runtime.storages()`. The Rust SDK supports local signed GET/PUT URLs and S3 public object URLs when `public_base_url` is configured.
+`tako::StorageBag` parses storage bindings from `runtime.storages()`. The Rust SDK supports local signed GET/PUT URLs, S3 SigV4 signed GET/PUT URLs, optional public S3 URLs when `public_base_url` is configured, download response header overrides, and upload content-type signing.
 
 ## Runtime Defaults
 

@@ -218,7 +218,7 @@ const uploadUrl = await tako.storages.uploads.createUploadUrl("avatars/u_123.png
 
 Local storage URLs are app-relative signed routes under `/_tako/storages/<binding>/<key>`.
 
-Rust apps can parse the same storage binding map with `tako::StorageBag`. The Rust SDK supports local signed GET/PUT URLs and S3 public object URLs when `public_base_url` is configured.
+Rust apps can parse the same storage binding map with `tako::StorageBag`. The Rust SDK supports local signed GET/PUT URLs, S3 SigV4 signed GET/PUT URLs, optional public S3 URLs when `public_base_url` is configured, download response header overrides, and upload content-type signing.
 
 Backup storage is not exposed through the SDK unless the same resource is also listed under `[envs.<env>].storages`.
 

@@ -2250,14 +2250,14 @@ The crate exposes `INTERNAL_STATUS_PATH`, `INTERNAL_TOKEN_HEADER`, `is_internal_
 
 #### Exports
 
-| Export                                                                            | Purpose                                                                                              |
-| --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `tako::bind_listener()` / `tako::read_bootstrap()`                                | Implements fd-4 readiness and fd-3 bootstrap parsing.                                                |
-| `tako::Runtime::from_env(bootstrap)`                                              | Exposes `ENV`, `HOST`, `PORT`, `TAKO_BUILD`, `TAKO_DATA_DIR`, app name, secrets, and storages.       |
-| `tako::Client`                                                                    | Blocking internal-socket client for enqueue, signal, worker lifecycle commands, and channel publish. |
-| `tako::enqueue(...)`, `tako::signal(...)`, `tako::publish_channel(...)`           | Top-level convenience wrappers that build `Client::from_env()`.                                      |
-| `tako::Worker`, `tako::WorkflowContext`, `tako::StepApi`, `tako::WorkflowOptions` | Rust workflow worker API for claim, schedule registration, checkpointed steps, bail/fail/defer/wait. |
-| `tako::StorageBag`, `tako::Storage`, `tako::StorageBinding`, `tako::UrlOptions`   | Storage binding parsing plus local signed object URLs and public S3 object URLs.                     |
+| Export                                                                            | Purpose                                                                                                          |
+| --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `tako::bind_listener()` / `tako::read_bootstrap()`                                | Implements fd-4 readiness and fd-3 bootstrap parsing.                                                            |
+| `tako::Runtime::from_env(bootstrap)`                                              | Exposes `ENV`, `HOST`, `PORT`, `TAKO_BUILD`, `TAKO_DATA_DIR`, app name, secrets, and storages.                   |
+| `tako::Client`                                                                    | Blocking internal-socket client for enqueue, signal, worker lifecycle commands, and channel publish.             |
+| `tako::enqueue(...)`, `tako::signal(...)`, `tako::publish_channel(...)`           | Top-level convenience wrappers that build `Client::from_env()`.                                                  |
+| `tako::Worker`, `tako::WorkflowContext`, `tako::StepApi`, `tako::WorkflowOptions` | Rust workflow worker API for claim, schedule registration, checkpointed steps, bail/fail/defer/wait.             |
+| `tako::StorageBag`, `tako::Storage`, `tako::StorageBinding`, `tako::UrlOptions`   | Storage binding parsing plus local signed object URLs, S3 SigV4 signed URLs, and optional public S3 object URLs. |
 
 `Client::from_env()` reads `TAKO_INTERNAL_SOCKET` and `TAKO_APP_NAME`. It also accepts the older `TAKO_WORKFLOW_SOCKET` name as a compatibility fallback. Every command carries the app name and uses the same JSONL internal socket protocol as the JavaScript and Go SDKs: `enqueue_run`, `register_schedules`, `claim_run`, `heartbeat_run`, `save_step`, `complete_run`, `cancel_run`, `defer_run`, `wait_for_event`, `signal`, `fail_run`, and `channel_publish`.
 

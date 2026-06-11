@@ -64,7 +64,7 @@ The SDK only talks to tako-server over the internal socket. It does not open or 
 
 ## Storage
 
-Storage bindings are delivered in the fd-3 bootstrap envelope. `tako::StorageBag` parses the binding map and supports local signed GET/PUT URLs plus S3 public URLs when `public_base_url` is configured.
+Storage bindings are delivered in the fd-3 bootstrap envelope. `tako::StorageBag` parses the binding map and supports local signed GET/PUT URLs, S3 SigV4 signed GET/PUT URLs, optional public S3 URLs when `public_base_url` is configured, download response header overrides, and upload content-type signing.
 
 ## Test
 
