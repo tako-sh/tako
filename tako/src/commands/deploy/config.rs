@@ -237,7 +237,7 @@ pub(super) fn resolve_build_adapter(
     {
         return BuildAdapter::from_id(adapter_override).ok_or_else(|| {
             format!(
-                "Invalid runtime '{}'; expected one of: bun, node, go",
+                "Invalid runtime '{}'; expected one of: bun, node, go, rust",
                 adapter_override
             )
         });

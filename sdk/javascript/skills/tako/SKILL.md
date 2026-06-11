@@ -2,7 +2,7 @@
 name: tako
 description: >-
   Tako CLI commands and project runtime workflow. Use when a repository contains
-  tako.toml, imports tako.sh or tako.sh/vite, or describes itself as a tako.sh
+  tako.toml, imports tako.sh or tako.sh/vite, imports the Rust tako crate, or describes itself as a tako.sh
   app. Covers init, dev, deploy, secrets, storage, gen, scale, logs, rollback,
   servers, doctor, and output design patterns.
 type: framework
@@ -42,7 +42,7 @@ For local browser verification:
 2. If the app is not running, start it with `tako dev`.
 3. Open the Tako-provided `.test` URL or configured development route.
 4. Do not use raw framework dev-server URLs such as Vite, Next.js, Bun, Node,
-or `127.0.0.1:<port>` unless the user explicitly asks for that lower-level
+Cargo, or `127.0.0.1:<port>` unless the user explicitly asks for that lower-level
 server.
 <!-- tako.sh -->
 ```
@@ -51,13 +51,13 @@ server.
 
 ### `tako init`
 
-Initialize a new Tako project. Auto-detects runtime (Go, Bun, Node) from project files (`go.mod`, `package.json`).
+Initialize a new Tako project. Auto-detects runtime (Bun, Node, Go, Rust) from project files (`package.json`, `go.mod`, `Cargo.toml`).
 
 ```bash
 tako init
 ```
 
-Runs a wizard that prompts for app name, runtime, build preset, entrypoint, assets path, and production route. Creates `tako.toml` and installs the SDK (`go get tako.sh` or `npm install tako.sh`).
+Runs a wizard that prompts for app name, runtime, build preset, entrypoint, assets path, and production route. Creates `tako.toml` and installs the SDK (`npm install tako.sh`, `go get tako.sh`, or `cargo add tako`).
 
 ### `tako doctor`
 

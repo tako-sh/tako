@@ -51,9 +51,11 @@ Tako's protocol is v0: do not keep any legacy code, backward compatibility shims
 
 - `presets/` - Preset definitions (e.g. tanstack-start)
 
-**SDK (current implementation):**
+**SDKs (current implementation):**
 
 - `sdk/javascript/` - `tako.sh` JavaScript/TypeScript SDK package (npm)
+- `sdk/go/` - `tako.sh` Go module
+- `sdk/rust/` - `tako` Rust crate
 
 **Website:**
 
@@ -72,14 +74,18 @@ cargo build --release
 cargo test
 
 # Test specific crate
-cargo test -p tako
+cargo test -p tako-cli
 cargo test -p tako-runtime
 cargo test -p tako-server
+cargo test -p tako
 
-# SDK (current JS/TS implementation)
+# SDK (JS/TS implementation)
 cd sdk/javascript && bun install
 bun run build && bun run typecheck
 bun test
+
+# Rust SDK
+cargo test -p tako
 ```
 
 ## Commit Messages

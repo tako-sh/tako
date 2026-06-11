@@ -152,7 +152,7 @@ pub(super) fn format_missing_dev_server_spawn_error(
 ) -> String {
     if running_from_source_checkout {
         return format!(
-            "failed to spawn 'tako-dev-server' ({spawn_error}). If you're running from a source checkout, build it with: cargo build -p tako --bin tako-dev-server"
+            "failed to spawn 'tako-dev-server' ({spawn_error}). If you're running from a source checkout, build it with: cargo build -p tako-cli --bin tako-dev-server"
         );
     }
 

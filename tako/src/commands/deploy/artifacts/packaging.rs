@@ -47,6 +47,7 @@ pub(super) async fn build_target_artifacts(
     let has_multiple_targets = target_groups.len() > 1;
     let mut artifacts = HashMap::new();
     let runtime_adapter = BuildAdapter::from_id(runtime_tool).unwrap_or(BuildAdapter::Unknown);
+    let runtime_version_tool = runtime_adapter.version_probe_tool();
 
     for target_group in target_groups.iter().cloned() {
         let build_target_label = target_group.build_target_label;
@@ -124,7 +125,7 @@ pub(super) async fn build_target_artifacts(
                 task_tree.mark_build_step_running(&tree_target_label, "probe-runtime");
             }
             let version_result =
-                resolve_runtime_version_from_workspace_quiet(&workspace, runtime_tool);
+                resolve_runtime_version_from_workspace_quiet(&workspace, runtime_version_tool);
             match version_result {
                 Ok(version) => {
                     if let Some(task_tree) = &task_tree {
@@ -153,21 +154,22 @@ pub(super) async fn build_target_artifacts(
             output::with_spinner(&runtime_probe_label, &runtime_probe_success, || {
                 let _t = output::timed(&format!(
                     "Probe {} version in {}",
-                    runtime_tool,
+                    runtime_version_tool,
                     workspace.display()
                 ));
-                let version = resolve_runtime_version_from_workspace(&workspace, runtime_tool);
+                let version =
+                    resolve_runtime_version_from_workspace(&workspace, runtime_version_tool);
                 if let Ok(v) = &version {
-                    tracing::debug!("Detected {} {}", runtime_tool, v);
+                    tracing::debug!("Detected {} {}", runtime_version_tool, v);
                 }
                 version
             })?
         } else {
             tracing::debug!("{}", runtime_probe_label);
-            let _t = output::timed(&format!("Probe {} version", runtime_tool));
-            let version = resolve_runtime_version_from_workspace(&workspace, runtime_tool)?;
+            let _t = output::timed(&format!("Probe {} version", runtime_version_tool));
+            let version = resolve_runtime_version_from_workspace(&workspace, runtime_version_tool)?;
             drop(_t);
-            tracing::debug!("Detected {} {}", runtime_tool, version);
+            tracing::debug!("Detected {} {}", runtime_version_tool, version);
             version
         };
         let package_manager_version = package_manager_tool.map(|tool| {

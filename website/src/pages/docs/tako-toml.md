@@ -94,7 +94,7 @@ workers = 2
 | Key                     | Type   | Meaning                                                                                                                          |
 | ----------------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------- |
 | `name`                  | string | Required app name. Used for deploy ids, data paths, default dev hostnames, and generated examples.                               |
-| `runtime`               | string | Runtime id, optionally pinned as `<id>@<version>`, for example `bun@1.2.3`, `node@22.0.0`, or `go`.                              |
+| `runtime`               | string | Runtime id, optionally pinned as `<id>@<version>`, for example `bun@1.2.3`, `node@22.0.0`, `go`, or `rust`.                      |
 | `package_manager`       | string | JS package-manager override: `bun`, `npm`, `pnpm`, or `yarn`, optionally with a version suffix.                                  |
 | `preset`                | string | Framework preset alias such as `vite`, `tanstack-start`, or `nextjs`.                                                            |
 | `app_root`              | string | JS app root for `channels/`, `workflows/`, and preferred `tako.d.ts` placement. Defaults to `src`. Use `.` for root-level files. |
@@ -122,7 +122,7 @@ runtime = "bun"
 preset = "vite"
 ```
 
-JavaScript runtimes detect package managers from `package.json` `packageManager`, then lockfiles, unless `package_manager` is set. Go uses `go` and has no production dependency install.
+JavaScript runtimes detect package managers from `package.json` `packageManager`, then lockfiles, unless `package_manager` is set. Go uses `go` and has no production dependency install. Rust uses Cargo, builds a release binary, and runs that stable `app` binary in production.
 
 Runtime version pins are written as part of `runtime`:
 

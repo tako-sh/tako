@@ -8,7 +8,7 @@ PTY-based tests that verify rendered terminal output (colors, formatting, spinne
 just test::cli
 ```
 
-Requires the `tako` binary to be built first (`cargo build -p tako`).
+Requires the `tako` binary to be built first (`cargo build -p tako-cli`).
 
 ## Native Image Dependency
 

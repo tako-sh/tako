@@ -385,7 +385,7 @@ fn generate_custom_ca(common_name: &str, organization: &str) -> LocalCA {
 /// Manual diagnostic — inspects the real Tako CA state on this
 /// machine. Never runs in CI (gated by `#[ignore]`). Useful when
 /// debugging trust problems:
-/// `cargo test -p tako check_real_trust_state -- --ignored --nocapture`
+/// `cargo test -p tako-cli check_real_trust_state -- --ignored --nocapture`
 #[cfg(target_os = "macos")]
 #[test]
 #[ignore = "manual — reads the real user's Tako CA"]

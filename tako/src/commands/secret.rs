@@ -15,8 +15,8 @@ pub use key::{ensure_secret_key_available, load_secret_key};
 use key::{export_key, import_key};
 use sync::{list_secrets, sync_secrets};
 
-/// Refresh generated files (`tako.d.ts` for JS/TS, `tako_secrets.go` for
-/// Go) after a secret change. Best-effort — a generation failure doesn't block
+/// Refresh generated files (`tako.d.ts` for JS/TS, `tako_secrets.go` for Go)
+/// after a secret change. Best-effort — a generation failure doesn't block
 /// the secret write itself.
 fn refresh_generated_files_after_secret_change(project_dir: &Path, config_path: &Path) {
     let tako_config = match TakoToml::load_from_file(config_path) {
@@ -41,7 +41,7 @@ fn refresh_generated_files_after_secret_change(project_dir: &Path, config_path: 
         PresetGroup::Go => {
             let _ = build::go::write_secret_accessors(project_dir);
         }
-        PresetGroup::Unknown => {}
+        PresetGroup::Rust | PresetGroup::Unknown => {}
     }
 }
 

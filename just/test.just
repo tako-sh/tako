@@ -9,7 +9,7 @@ unit: unit-rust unit-js unit-go
 
 unit-rust:
     cargo test --workspace --lib --bins
-    cargo test -p tako --test cli_integration
+    cargo test -p tako-cli --test cli_integration
 
 unit-js:
     bun test --cwd sdk/javascript
@@ -30,7 +30,7 @@ sdk-go:
     for dir in examples/go/*/; do echo "Building $dir..." && (cd "$dir" && go build -o /dev/null .); done
 
 cli:
-    cargo build -p tako --bin tako
+    cargo build -p tako-cli --bin tako
     TAKO_BIN="$(pwd)/target/debug/tako" bun test --cwd e2e/cli
 
 e2e fixture="":

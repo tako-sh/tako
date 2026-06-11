@@ -47,6 +47,9 @@ pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>>
                 output::success("tako_secrets.go is up to date");
             }
         }
+        PresetGroup::Rust => {
+            output::success("No generated files for Rust apps");
+        }
         PresetGroup::Unknown => {
             return Err("Could not detect project language. Set `runtime` in tako.toml.".into());
         }

@@ -10,6 +10,7 @@ members = [
   "tako-spawn",
   "tako-workflows",
   "tako-images",
+  "sdk/rust",
 ]
 
 [workspace.package]

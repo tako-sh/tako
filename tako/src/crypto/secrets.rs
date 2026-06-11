@@ -586,7 +586,7 @@ mod tests {
     }
 
     /// One-off helper to generate real encrypted secrets.json for Go examples.
-    /// Run with: cargo test -p tako -- generate_go_example_secrets --ignored --nocapture
+    /// Run with: cargo test -p tako-cli -- generate_go_example_secrets --ignored --nocapture
     #[test]
     #[ignore]
     fn generate_go_example_secrets() {

@@ -217,7 +217,7 @@ fn locate_proxy_source_binary() -> Result<PathBuf, Box<dyn std::error::Error>> {
             return Ok(found);
         }
         return Err(
-            "failed to locate 'tako-dev-proxy'. Build it with: cargo build -p tako --bin tako-dev-proxy"
+            "failed to locate 'tako-dev-proxy'. Build it with: cargo build -p tako-cli --bin tako-dev-proxy"
                 .into(),
         );
     }

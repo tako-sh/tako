@@ -48,7 +48,7 @@ pub(super) fn run_non_interactive(
         .and_then(|c| c.envs.get("production").and_then(|e| e.route.clone()))
         .unwrap_or_else(|| format!("{}.example.com", app_name.trim()));
 
-    let runtime_version = detect_local_runtime_version(adapter.id());
+    let runtime_version = detect_local_runtime_version(adapter.version_probe_tool());
     let app_root = if adapter.preset_group() == PresetGroup::Js {
         Some(
             existing

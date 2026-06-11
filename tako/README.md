@@ -33,7 +33,7 @@ Primary subcommands:
 - `generate`
 - `uninstall`
 
-Use `cargo run -p tako --bin tako -- --help` for current flags and subcommand help.
+Use `cargo run -p tako-cli --bin tako -- --help` for current flags and subcommand help.
 
 Operational behavior highlights:
 
@@ -69,16 +69,16 @@ Operational behavior highlights:
 From repository root:
 
 ```bash
-cargo run -p tako --bin tako -- --help
-cargo run -p tako --bin tako-dev-server -- --help
-cargo run -p tako --bin tako-dev-proxy -- --help
-cargo test -p tako
+cargo run -p tako-cli --bin tako -- --help
+cargo run -p tako-cli --bin tako-dev-server -- --help
+cargo run -p tako-cli --bin tako-dev-proxy -- --help
+cargo test -p tako-cli
 ```
 
 Run a focused command from source:
 
 ```bash
-cargo run -p tako --bin tako -- deploy --help
+cargo run -p tako-cli --bin tako -- deploy --help
 ```
 
 ## Config Requirements

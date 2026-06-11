@@ -4,9 +4,9 @@
     {
       "name": "tako",
       "type": "framework",
-      "description": "Tako CLI commands: init, dev, deploy, secrets, storage, gen, scale, logs, rollback, servers, doctor. Includes output design patterns for interactive and plain modes.",
+      "description": "Tako CLI commands and project runtime workflow. Use when a repository contains tako.toml, imports tako.sh or tako.sh/vite, imports the Rust tako crate, or describes itself as a tako.sh app. Covers init, dev, deploy, secrets, storage, gen, scale, logs, rollback, servers, doctor, and output design patterns.",
       "url": "https://tako.sh/.well-known/agent-skills/tako/SKILL.md",
-      "sha256": "2a21a48d97a3e14997f7324cda23d85f5ecc03b72924c3db4c041ed492f9a50e"
+      "sha256": "c5e9fa92ad5070e2686b0f2e516210eee007b3258db7b5d397b04261a8712d9b"
     },
     {
       "name": "tako-sdk-go",
@@ -21,6 +21,13 @@
       "description": "tako.sh SDK: fetch handler interface, tako runtime object, generated tako.d.ts type augmentation, defineChannel/defineWorkflow, Vite and Next.js adapters.",
       "url": "https://tako.sh/.well-known/agent-skills/tako-sdk-js/SKILL.md",
       "sha256": "d306089371113fb0b39c7f2e95fb6f69b4ee5d70726b4076b4a17358d9827e49"
+    },
+    {
+      "name": "tako-sdk-rust",
+      "type": "framework",
+      "description": "Tako Rust SDK: bind_listener for fd-4 readiness, read_bootstrap for fd-3 secrets/internal token, runtime metadata, internal socket RPC, workflows, channels, storage helpers, and internal status helpers for Rust HTTP frameworks.",
+      "url": "https://tako.sh/.well-known/agent-skills/tako-sdk-rust/SKILL.md",
+      "sha256": "926e78f64a71464faccc08d18f837524f4a5d3deac2b40f8d2d68c6c4317ebe6"
     }
   ]
 }

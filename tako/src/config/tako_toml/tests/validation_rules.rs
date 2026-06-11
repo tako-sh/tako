@@ -223,7 +223,7 @@ runtime = "python"
     let err = Config::parse(unknown).unwrap_err();
     assert!(
         err.to_string()
-            .contains("runtime must be one of: bun, node, go")
+            .contains("runtime must be one of: bun, node, go, rust")
     );
 
     let empty_version = r#"

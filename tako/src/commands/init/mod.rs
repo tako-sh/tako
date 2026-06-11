@@ -85,7 +85,7 @@ pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>>
         .filter(|preset| *preset != adapter.default_preset())
         .map(str::to_string);
 
-    let runtime_version = detect_local_runtime_version(adapter.id());
+    let runtime_version = detect_local_runtime_version(adapter.version_probe_tool());
 
     let detected_pm = tako_runtime::detect_package_manager(&project_dir);
     let pm_for_toml = detected_pm.map(|pm| pm.id().to_string()).filter(|pm_id| {

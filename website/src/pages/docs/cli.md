@@ -34,7 +34,7 @@ tako init
 tako init -c apps/web/tako.toml
 ```
 
-Creates `tako.toml`, updates `.gitignore`, detects runtime and preset, asks for app name and production route, and installs the SDK package for JS/Go projects. If the production route is a wildcard route, init can collect and encrypt the Cloudflare credential needed for Let's Encrypt DNS-01.
+Creates `tako.toml`, updates `.gitignore`, detects runtime and preset, asks for app name and production route, and installs the SDK package for JS, Go, and Rust projects. If the production route is a wildcard route, init can collect and encrypt the Cloudflare credential needed for Let's Encrypt DNS-01.
 
 Existing config files are protected: interactive runs ask before overwrite; non-interactive runs leave the file untouched.
 
@@ -50,6 +50,7 @@ Refreshes generated project files:
 
 - JS/TS: `tako.d.ts` with environment names, secret names, storage bindings, channel metadata, workflow metadata, and env var names.
 - Go: `tako_secrets.go` with typed secret accessors.
+- Rust: no generated files today.
 
 For JS/TS, generation keeps an existing `tako.d.ts` in `app/`, `src/`, or the project root. Legacy `tako.gen.ts` files are removed. Empty existing `channels/` or `workflows/` directories get demo definitions.
 

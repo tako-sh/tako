@@ -92,7 +92,7 @@ fn parse_event_line_rejects_request_started_without_path() {
 fn missing_daemon_spawn_hint_for_source_checkout_recommends_build() {
     let err = std::io::Error::from(std::io::ErrorKind::NotFound);
     let msg = format_missing_dev_server_spawn_error(true, &err);
-    assert!(msg.contains("build it with: cargo build -p tako --bin tako-dev-server"));
+    assert!(msg.contains("build it with: cargo build -p tako-cli --bin tako-dev-server"));
     assert!(!msg.contains("Reinstall Tako CLI"));
 }
 
@@ -102,7 +102,7 @@ fn missing_daemon_spawn_hint_for_installed_cli_recommends_reinstall() {
     let msg = format_missing_dev_server_spawn_error(false, &err);
     assert!(msg.contains("Reinstall Tako CLI and retry"));
     assert!(msg.contains("curl -fsSL https://tako.sh/install.sh | sh"));
-    assert!(!msg.contains("build it with: cargo build -p tako --bin tako-dev-server"));
+    assert!(!msg.contains("build it with: cargo build -p tako-cli --bin tako-dev-server"));
 }
 
 #[test]

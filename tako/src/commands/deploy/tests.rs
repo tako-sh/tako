@@ -111,15 +111,7 @@ fn workflow_storage_validation_rejects_multi_server_without_postgres_url() {
         "daily.ts",
         r#"export default defineWorkflow("daily", { handler: async () => {} });"#,
     );
-    let mut config = TakoToml::default();
-    config.app_root = Some("src".to_string());
-    config.envs.insert(
-        "production".to_string(),
-        EnvConfig {
-            servers: vec!["sfo".to_string(), "iad".to_string()],
-            ..Default::default()
-        },
-    );
+    let config = multi_server_js_config();
     let secrets = SecretsStore::default();
 
     let result = config::validate_runtime_state_storage_for_deploy(
@@ -146,15 +138,7 @@ fn workflow_storage_validation_allows_multi_server_with_postgres_url() {
         "daily.ts",
         r#"export default defineWorkflow("daily", { handler: async () => {} });"#,
     );
-    let mut config = TakoToml::default();
-    config.app_root = Some("src".to_string());
-    config.envs.insert(
-        "production".to_string(),
-        EnvConfig {
-            servers: vec!["sfo".to_string(), "iad".to_string()],
-            ..Default::default()
-        },
-    );
+    let config = multi_server_js_config();
     let mut secrets = SecretsStore::default();
     secrets.ensure_env_key_id("production").unwrap();
     secrets
@@ -215,15 +199,7 @@ fn workflow_storage_validation_rejects_unreadable_workflows_dir() {
     let workflows_dir = temp.path().join("src/workflows");
     fs::create_dir_all(&workflows_dir).unwrap();
     fs::set_permissions(&workflows_dir, fs::Permissions::from_mode(0o000)).unwrap();
-    let mut config = TakoToml::default();
-    config.app_root = Some("src".to_string());
-    config.envs.insert(
-        "production".to_string(),
-        EnvConfig {
-            servers: vec!["sfo".to_string(), "iad".to_string()],
-            ..Default::default()
-        },
-    );
+    let config = multi_server_js_config();
     let secrets = SecretsStore::default();
 
     let result = config::validate_runtime_state_storage_for_deploy(
@@ -251,15 +227,7 @@ fn workflow_storage_validation_allows_define_workflow_local_true_multi_server_wo
         "daily.ts",
         r#"export default defineWorkflow("daily", { local: true, handler: async () => {} });"#,
     );
-    let mut config = TakoToml::default();
-    config.app_root = Some("src".to_string());
-    config.envs.insert(
-        "production".to_string(),
-        EnvConfig {
-            servers: vec!["sfo".to_string(), "iad".to_string()],
-            ..Default::default()
-        },
-    );
+    let config = multi_server_js_config();
     let secrets = SecretsStore::default();
 
     let result = config::validate_runtime_state_storage_for_deploy(
@@ -290,15 +258,7 @@ fn workflow_storage_validation_rejects_mixed_local_and_remote_multi_server_workf
         "remote.ts",
         r#"export default defineWorkflow("remote", { handler: async () => {} });"#,
     );
-    let mut config = TakoToml::default();
-    config.app_root = Some("src".to_string());
-    config.envs.insert(
-        "production".to_string(),
-        EnvConfig {
-            servers: vec!["sfo".to_string(), "iad".to_string()],
-            ..Default::default()
-        },
-    );
+    let config = multi_server_js_config();
     let secrets = SecretsStore::default();
 
     let result = config::validate_runtime_state_storage_for_deploy(
@@ -328,15 +288,7 @@ const opts = { local: true };
 export default defineWorkflow("daily", { handler: async () => opts });
 "#,
     );
-    let mut config = TakoToml::default();
-    config.app_root = Some("src".to_string());
-    config.envs.insert(
-        "production".to_string(),
-        EnvConfig {
-            servers: vec!["sfo".to_string(), "iad".to_string()],
-            ..Default::default()
-        },
-    );
+    let config = multi_server_js_config();
     let secrets = SecretsStore::default();
 
     let result = config::validate_runtime_state_storage_for_deploy(
@@ -366,15 +318,7 @@ fn workflow_storage_validation_handles_non_ascii_source_when_scanning_local_true
 export default defineWorkflow("daily", { local: true, handler: async () => {} });
 "#,
     );
-    let mut config = TakoToml::default();
-    config.app_root = Some("src".to_string());
-    config.envs.insert(
-        "production".to_string(),
-        EnvConfig {
-            servers: vec!["sfo".to_string(), "iad".to_string()],
-            ..Default::default()
-        },
-    );
+    let config = multi_server_js_config();
     let secrets = SecretsStore::default();
 
     let result = config::validate_runtime_state_storage_for_deploy(
@@ -396,15 +340,7 @@ export default defineWorkflow("daily", { local: true, handler: async () => {} })
 fn runtime_state_storage_validation_rejects_multi_server_channels_without_postgres_url() {
     let temp = TempDir::new().unwrap();
     write_channel(&temp, "chat.ts", r#"export default defineChannel("chat");"#);
-    let mut config = TakoToml::default();
-    config.app_root = Some("src".to_string());
-    config.envs.insert(
-        "production".to_string(),
-        EnvConfig {
-            servers: vec!["sfo".to_string(), "iad".to_string()],
-            ..Default::default()
-        },
-    );
+    let config = multi_server_js_config();
     let secrets = SecretsStore::default();
 
     let result = config::validate_runtime_state_storage_for_deploy(
@@ -431,15 +367,7 @@ fn runtime_state_storage_validation_rejects_unreadable_channels_dir() {
     let channels_dir = temp.path().join("src/channels");
     fs::create_dir_all(&channels_dir).unwrap();
     fs::set_permissions(&channels_dir, fs::Permissions::from_mode(0o000)).unwrap();
-    let mut config = TakoToml::default();
-    config.app_root = Some("src".to_string());
-    config.envs.insert(
-        "production".to_string(),
-        EnvConfig {
-            servers: vec!["sfo".to_string(), "iad".to_string()],
-            ..Default::default()
-        },
-    );
+    let config = multi_server_js_config();
     let secrets = SecretsStore::default();
 
     let result = config::validate_runtime_state_storage_for_deploy(
@@ -459,15 +387,7 @@ fn runtime_state_storage_validation_rejects_unreadable_channels_dir() {
 fn runtime_state_storage_validation_allows_multi_server_channels_with_postgres_url() {
     let temp = TempDir::new().unwrap();
     write_channel(&temp, "chat.ts", r#"export default defineChannel("chat");"#);
-    let mut config = TakoToml::default();
-    config.app_root = Some("src".to_string());
-    config.envs.insert(
-        "production".to_string(),
-        EnvConfig {
-            servers: vec!["sfo".to_string(), "iad".to_string()],
-            ..Default::default()
-        },
-    );
+    let config = multi_server_js_config();
     let mut secrets = SecretsStore::default();
     secrets.ensure_env_key_id("production").unwrap();
     secrets
@@ -502,15 +422,7 @@ fn runtime_state_storage_validation_channels_override_all_local_workflows() {
         r#"export default defineWorkflow("daily", { local: true, handler: async () => {} });"#,
     );
     write_channel(&temp, "chat.ts", r#"export default defineChannel("chat");"#);
-    let mut config = TakoToml::default();
-    config.app_root = Some("src".to_string());
-    config.envs.insert(
-        "production".to_string(),
-        EnvConfig {
-            servers: vec!["sfo".to_string(), "iad".to_string()],
-            ..Default::default()
-        },
-    );
+    let config = multi_server_js_config();
     let secrets = SecretsStore::default();
 
     let result = config::validate_runtime_state_storage_for_deploy(
@@ -535,4 +447,18 @@ fn write_channel(temp: &TempDir, name: &str, source: &str) {
     let channels_dir = temp.path().join("src/channels");
     fs::create_dir_all(&channels_dir).unwrap();
     fs::write(channels_dir.join(name), source).unwrap();
+}
+
+fn multi_server_js_config() -> TakoToml {
+    TakoToml {
+        app_root: Some("src".to_string()),
+        envs: HashMap::from([(
+            "production".to_string(),
+            EnvConfig {
+                servers: vec!["sfo".to_string(), "iad".to_string()],
+                ..Default::default()
+            },
+        )]),
+        ..Default::default()
+    }
 }

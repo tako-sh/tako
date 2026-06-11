@@ -271,7 +271,7 @@ fn resolve_dev_build_adapter(project_dir: &Path, cfg: &TakoToml) -> Result<Build
     {
         return BuildAdapter::from_id(adapter_override).ok_or_else(|| {
             format!(
-                "Invalid runtime '{}'; expected one of: bun, node, go",
+                "Invalid runtime '{}'; expected one of: bun, node, go, rust",
                 adapter_override
             )
         });
@@ -372,7 +372,7 @@ pub(super) fn resolve_dev_worker_command(
             "--experimental-strip-types".to_string(),
             format!("{base}/node-worker.mjs"),
         ]),
-        BuildAdapter::Go | BuildAdapter::Unknown => None,
+        BuildAdapter::Go | BuildAdapter::Rust | BuildAdapter::Unknown => None,
     }
 }
 
