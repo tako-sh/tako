@@ -85,6 +85,9 @@ jobs:
       - name: Run workspace tests
         run: cargo test --workspace --locked --lib --bins
 
+      - name: Check Rust SDK package
+        run: cargo publish -p tako --dry-run --locked
+
       - name: Run perf smoke tests
         run: cargo test -p tako-server --locked perf_smoke_
 

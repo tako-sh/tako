@@ -2,7 +2,13 @@
 name = "tako"
 version = "0.1.0"
 edition = "2024"
-publish = false
+description = "Official Rust SDK for Tako applications"
+license = "MIT"
+repository = "https://github.com/tako-sh/tako"
+homepage = "https://tako.sh"
+readme = "README.md"
+keywords = ["deployment", "sdk", "tako"]
+categories = ["web-programming"]
 
 [lib]
 name = "tako"

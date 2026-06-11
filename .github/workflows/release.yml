@@ -403,3 +403,81 @@ jobs:
         run: |
           git tag -f sdk-js-latest
           git push -f origin sdk-js-latest
+
+  publish-rust-sdk:
+    name: Publish Rust SDK
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 100
+
+      - name: Check for Rust SDK changes
+        id: changes
+        run: |
+          if git fetch origin tag sdk-rust-latest --no-tags 2>/dev/null; then
+            if ! git diff --name-only sdk-rust-latest -- sdk/rust/ | grep -q .; then
+              echo "No Rust SDK changes since sdk-rust-latest, skipping"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - name: Setup Rust
+        if: steps.changes.outputs.skip != 'true'
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Publish
+        if: steps.changes.outputs.skip != 'true'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${CARGO_REGISTRY_TOKEN}" ]; then
+            echo "::error::Missing secret CARGO_REGISTRY_TOKEN in the release environment."
+            exit 1
+          fi
+
+          sha="${{ github.event.workflow_run.head_sha || github.sha }}"
+          short_sha="$(printf '%s' "$sha" | cut -c1-7)"
+          base_version="$(python3 -c 'import tomllib; print(tomllib.load(open("sdk/rust/Cargo.toml", "rb"))["package"]["version"])')"
+          major_minor="${base_version%.*}"
+          version="${major_minor}.${GITHUB_RUN_NUMBER}"
+          echo "Publishing Rust SDK: $version (${short_sha})"
+          export RUST_SDK_VERSION="$version"
+
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          manifest = Path("sdk/rust/Cargo.toml")
+          version = os.environ["RUST_SDK_VERSION"]
+          lines = manifest.read_text().splitlines()
+          for index, line in enumerate(lines):
+              if line.startswith("version = "):
+                  lines[index] = f'version = "{version}"'
+                  break
+          else:
+              raise SystemExit("version field not found in sdk/rust/Cargo.toml")
+          manifest.write_text("\n".join(lines) + "\n")
+          PY
+
+          cargo publish -p tako --dry-run --allow-dirty
+          cargo publish -p tako --allow-dirty || {
+            echo "::error::cargo publish failed. Set CARGO_REGISTRY_TOKEN in the release environment and confirm the tako crate owner allows this token."
+            exit 1
+          }
+
+      - name: Update sdk-rust-latest tag
+        if: steps.changes.outputs.skip != 'true'
+        run: |
+          git tag -f sdk-rust-latest
+          git push -f origin sdk-rust-latest
