@@ -146,8 +146,7 @@ impl Spawner {
     ) -> Result<(), InstanceError> {
         let app_name = config.deployment_id();
         let instance_id = instance.id.clone();
-        let host_port =
-            allocate_loopback_port().map_err(InstanceError::SpawnError)?;
+        let host_port = allocate_loopback_port().map_err(InstanceError::SpawnError)?;
         let env = build_container_env(&config, container_port);
         let child = spawn_container_process(
             &config,
