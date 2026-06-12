@@ -22,7 +22,7 @@ pub(crate) use config::effective_instance_limit;
 #[cfg(test)]
 pub(crate) use config::host_instance_limit_for_parallelism;
 pub(crate) use config::{
-    AppConfig, clamp_instances_to_limit, default_max_instances_for_host,
+    AppConfig, AppLaunch, clamp_instances_to_limit, default_max_instances_for_host,
     validate_requested_instances,
 };
 pub use error::InstanceError;

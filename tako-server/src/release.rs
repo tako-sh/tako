@@ -1,5 +1,8 @@
-use crate::app_command::{command_from_manifest, load_release_manifest, safe_subdir};
-use crate::instances::AppConfig;
+use crate::app_command::{ReleaseKind, command_from_manifest, load_release_manifest, safe_subdir};
+use crate::container_runtime::{
+    DEFAULT_CONTAINER_PORT, build_release_image, image_tag_for_manifest,
+};
+use crate::instances::{AppConfig, AppLaunch};
 use crate::socket::{AppState, BuildStatus, InstanceState, InstanceStatus};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -173,7 +176,16 @@ pub(crate) fn apply_release_runtime_to_config(
     runtime_bin: Option<&str>,
 ) -> Result<(), String> {
     let manifest = load_release_manifest(&release_path)?;
-    config.command = command_from_manifest(&manifest, &release_path, runtime_bin)?;
+    if manifest.release_kind == ReleaseKind::Container {
+        config.command.clear();
+        config.launch = AppLaunch::Container {
+            image: image_tag_for_manifest(&manifest)?,
+            port: manifest.container_port.unwrap_or(DEFAULT_CONTAINER_PORT),
+        };
+    } else {
+        config.command = command_from_manifest(&manifest, &release_path, runtime_bin)?;
+        config.launch = AppLaunch::Native;
+    }
     config.env_vars = manifest.env_vars;
     config.images = manifest.images;
     config.idle_timeout = Duration::from_secs(u64::from(manifest.idle_timeout));
@@ -237,6 +249,11 @@ pub(crate) async fn prepare_release_runtime(
     #[cfg(unix)] isolation: Option<ProcessIsolation>,
 ) -> Result<Option<String>, String> {
     let manifest = load_release_manifest(release_dir)?;
+    if manifest.release_kind == ReleaseKind::Container {
+        build_release_image(release_dir, &manifest).await?;
+        return Ok(None);
+    }
+
     let runtime = &manifest.runtime;
     if runtime.trim().is_empty() {
         return Err(format!(
@@ -365,6 +382,10 @@ pub(crate) async fn resolve_release_runtime_bin(
     data_dir: &Path,
 ) -> Result<Option<String>, String> {
     let manifest = load_release_manifest(release_dir)?;
+    if manifest.release_kind == ReleaseKind::Container {
+        return Ok(None);
+    }
+
     let runtime = &manifest.runtime;
     if runtime.trim().is_empty() {
         return Err(format!(
@@ -635,6 +656,28 @@ mod tests {
             env.get(TAKO_APP_DATA_DIR_ENV).map(String::as_str),
             Some("/tmp/app/data/app")
         );
+    }
+
+    #[test]
+    fn apply_release_runtime_to_config_sets_container_launch() {
+        let temp = TempDir::new().unwrap();
+        std::fs::write(
+            temp.path().join("app.json"),
+            r#"{"release_kind":"container","app_name":"my-app","environment":"production","version":"v1","runtime":"container","main":"","idle_timeout":300,"container_file":"Dockerfile","container_port":3000}"#,
+        )
+        .unwrap();
+
+        let mut config = AppConfig::default();
+        apply_release_runtime_to_config(&mut config, temp.path().to_path_buf(), None).unwrap();
+
+        assert_eq!(
+            config.launch,
+            AppLaunch::Container {
+                image: "tako/my-app-production:v1".to_string(),
+                port: 3000
+            }
+        );
+        assert!(config.command.is_empty());
     }
 
     #[tokio::test]

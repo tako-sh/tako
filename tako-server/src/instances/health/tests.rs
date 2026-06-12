@@ -1,6 +1,6 @@
 use super::*;
-use crate::instances::AppConfig;
 use crate::instances::logger::noop_log_handle;
+use crate::instances::{AppConfig, AppLaunch};
 use tokio::sync::mpsc;
 
 fn create_test_app() -> Arc<App> {
@@ -176,8 +176,14 @@ async fn test_probe_uses_tcp_when_port_is_configured() {
         let _ = tokio::io::AsyncWriteExt::write_all(&mut socket, response.as_bytes()).await;
     });
 
-    let healthy =
-        probe_instance_health(&instance, "tako", "/status", Duration::from_millis(200)).await;
+    let healthy = probe_instance_health(
+        &instance,
+        "tako",
+        "/status",
+        true,
+        Duration::from_millis(200),
+    )
+    .await;
     assert!(healthy.is_ok());
 }
 
@@ -233,8 +239,14 @@ async fn test_probe_reads_split_response_headers() {
         }
     });
 
-    let healthy =
-        probe_instance_health(&instance, "tako", "/status", Duration::from_millis(200)).await;
+    let healthy = probe_instance_health(
+        &instance,
+        "tako",
+        "/status",
+        true,
+        Duration::from_millis(200),
+    )
+    .await;
     assert!(healthy.is_ok());
 }
 
@@ -245,9 +257,15 @@ async fn test_probe_reports_connect_failure_reason() {
     let instance = app.allocate_instance();
     instance.set_port(0);
 
-    let failure = probe_instance_health(&instance, "tako", "/status", Duration::from_millis(200))
-        .await
-        .expect_err("closed port should fail");
+    let failure = probe_instance_health(
+        &instance,
+        "tako",
+        "/status",
+        true,
+        Duration::from_millis(200),
+    )
+    .await
+    .expect_err("closed port should fail");
 
     assert_eq!(failure.reason, "connect_failed");
     assert!(!failure.detail.is_empty());
@@ -273,11 +291,58 @@ async fn test_probe_reports_missing_internal_token_reason() {
         let _ = tokio::io::AsyncWriteExt::write_all(&mut socket, response.as_bytes()).await;
     });
 
-    let failure = probe_instance_health(&instance, "tako", "/status", Duration::from_millis(200))
-        .await
-        .expect_err("response without echoed token should fail");
+    let failure = probe_instance_health(
+        &instance,
+        "tako",
+        "/status",
+        true,
+        Duration::from_millis(200),
+    )
+    .await
+    .expect_err("response without echoed token should fail");
 
     assert_eq!(failure.reason, "missing_internal_token");
+}
+
+#[tokio::test]
+async fn test_container_probe_accepts_plain_success_status() {
+    let Ok(listener) = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await else {
+        return;
+    };
+    let port = listener.local_addr().expect("listener addr").port();
+
+    let (tx, _rx) = mpsc::channel(16);
+    let app = App::new(
+        AppConfig {
+            launch: AppLaunch::Container {
+                image: "tako/my-app:v1".to_string(),
+                port: 3000,
+            },
+            ..Default::default()
+        },
+        tx,
+        noop_log_handle(),
+    );
+    let instance = app.allocate_instance();
+    instance.set_port(port);
+
+    tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("accept");
+        let mut request_buf = [0_u8; 2048];
+        let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut request_buf).await;
+        let response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+        let _ = tokio::io::AsyncWriteExt::write_all(&mut socket, response.as_bytes()).await;
+    });
+
+    let healthy = probe_instance_health(
+        &instance,
+        "tako",
+        "/status",
+        false,
+        Duration::from_millis(200),
+    )
+    .await;
+    assert!(healthy.is_ok());
 }
 
 #[tokio::test]

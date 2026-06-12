@@ -4,8 +4,8 @@ use super::readiness::{
     format_startup_exit_error, format_startup_timeout_error, truncate_chars, wait_for_ready,
 };
 use super::spawn_command::{
-    app_child_parent_death_signal, build_instance_args, build_instance_env, create_bootstrap_pipe,
-    spawn_child_process,
+    app_child_parent_death_signal, build_container_env, build_instance_args, build_instance_env,
+    create_bootstrap_pipe, spawn_child_process,
 };
 use super::*;
 use crate::instances::INTERNAL_TOKEN_HEADER;
@@ -293,6 +293,29 @@ fn build_instance_args_has_instance_only() {
     assert!(args.contains(&"--instance".to_string()));
     assert!(args.contains(&instance.id));
     assert_eq!(args.len(), 2);
+}
+
+#[test]
+fn build_container_env_uses_container_network_contract() {
+    let config = AppConfig {
+        name: "my-app".to_string(),
+        environment: "production".to_string(),
+        env_vars: HashMap::from([
+            ("HOST".to_string(), "127.0.0.1".to_string()),
+            ("PORT".to_string(), "0".to_string()),
+        ]),
+        ..Default::default()
+    };
+
+    let env = build_container_env(&config, 3000);
+
+    assert_eq!(
+        env.get("TAKO_APP_NAME").map(String::as_str),
+        Some("my-app/production")
+    );
+    assert_eq!(env.get("HOST").map(String::as_str), Some("0.0.0.0"));
+    assert_eq!(env.get("PORT").map(String::as_str), Some("3000"));
+    assert_eq!(env.get("NODE_ENV").map(String::as_str), Some("production"));
 }
 
 #[test]

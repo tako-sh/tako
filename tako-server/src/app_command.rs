@@ -34,7 +34,17 @@ pub(crate) fn safe_subdir(base: &Path, subpath: &str) -> Result<PathBuf, String>
 
 #[derive(Debug, Clone, serde::Deserialize)]
 pub(crate) struct ReleaseManifest {
+    #[serde(default)]
+    pub release_kind: ReleaseKind,
+    #[serde(default)]
+    pub app_name: String,
+    #[serde(default)]
+    pub environment: String,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
     pub runtime: String,
+    #[serde(default)]
     pub main: String,
     #[serde(default)]
     pub workflow_worker_main: Option<String>,
@@ -55,6 +65,18 @@ pub(crate) struct ReleaseManifest {
     /// Path from the archive root to where deps should be installed (lockfile dir). Empty = archive root.
     #[serde(default)]
     pub install_dir: String,
+    #[serde(default)]
+    pub container_file: Option<String>,
+    #[serde(default)]
+    pub container_port: Option<u16>,
+}
+
+#[derive(Debug, Clone, Copy, serde::Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ReleaseKind {
+    #[default]
+    Native,
+    Container,
 }
 
 pub(crate) fn load_release_manifest(release_dir: &Path) -> Result<ReleaseManifest, String> {
@@ -94,6 +116,12 @@ pub(crate) fn command_from_manifest(
     runtime_bin: Option<&str>,
 ) -> Result<Vec<String>, String> {
     let manifest_path = release_dir.join("app.json");
+    if manifest.release_kind == ReleaseKind::Container {
+        return Err(format!(
+            "deploy manifest {} is a container release, not a native release",
+            manifest_path.display()
+        ));
+    }
     if manifest.main.trim().is_empty() {
         return Err(format!(
             "deploy manifest {} has empty main field",
@@ -350,6 +378,38 @@ mod tests {
 
         let manifest = load_release_manifest(dir.path()).unwrap();
         assert!(manifest.runtime_version.is_none());
+        assert_eq!(manifest.release_kind, ReleaseKind::Native);
+    }
+
+    #[test]
+    fn container_release_manifest_deserializes_metadata() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("app.json"),
+            r#"{"release_kind":"container","app_name":"my-app","environment":"production","version":"v1","runtime":"container","main":"","idle_timeout":300,"container_file":"Dockerfile","container_port":3000}"#,
+        )
+        .unwrap();
+
+        let manifest = load_release_manifest(dir.path()).unwrap();
+        assert_eq!(manifest.release_kind, ReleaseKind::Container);
+        assert_eq!(manifest.app_name, "my-app");
+        assert_eq!(manifest.environment, "production");
+        assert_eq!(manifest.version, "v1");
+        assert_eq!(manifest.container_file.as_deref(), Some("Dockerfile"));
+        assert_eq!(manifest.container_port, Some(3000));
+    }
+
+    #[test]
+    fn command_for_release_dir_rejects_container_manifest() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("app.json"),
+            r#"{"release_kind":"container","runtime":"container","main":"","idle_timeout":300,"container_file":"Dockerfile"}"#,
+        )
+        .unwrap();
+
+        let err = command_for_release_dir(dir.path()).unwrap_err();
+        assert!(err.contains("container release"));
     }
 
     #[test]

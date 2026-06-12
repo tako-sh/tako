@@ -58,7 +58,6 @@ impl DeployReleaseKind {
     }
 }
 
-
 pub(super) fn resolve_deploy_version_and_source_hash(
     executor: &BuildExecutor,
     source_root: &Path,

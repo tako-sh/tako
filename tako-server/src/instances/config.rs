@@ -17,6 +17,8 @@ pub struct AppConfig {
     pub path: PathBuf,
     /// Runtime command derived from app.json
     pub command: Vec<String>,
+    /// How instances for this release are launched.
+    pub launch: AppLaunch,
     /// Non-secret environment variables (read from app.json in release dir)
     pub env_vars: HashMap<String, String>,
     /// Secret environment variables (loaded from encrypted server state)
@@ -39,6 +41,12 @@ pub struct AppConfig {
     pub startup_timeout: Duration,
     /// Idle timeout (for on-demand scaling)
     pub idle_timeout: Duration,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AppLaunch {
+    Native,
+    Container { image: String, port: u16 },
 }
 
 impl AppConfig {
@@ -70,6 +78,7 @@ impl Default for AppConfig {
             version: String::new(),
             path: PathBuf::new(),
             command: vec![],
+            launch: AppLaunch::Native,
             env_vars: HashMap::new(),
             secrets: HashMap::new(),
             storages: HashMap::new(),

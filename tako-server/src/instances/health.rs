@@ -4,7 +4,7 @@
 //! `/status` on each instance.
 //! This replaces passive heartbeat-only detection with active probing.
 
-use super::{App, INTERNAL_TOKEN_HEADER, Instance, InstanceState};
+use super::{App, AppLaunch, INTERNAL_TOKEN_HEADER, Instance, InstanceState};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -181,11 +181,12 @@ impl HealthChecker {
         }
 
         // Build health check target using app's configured path and internal host header
-        let (health_host, health_path) = {
+        let (health_host, health_path, require_internal_token) = {
             let config = app.config.read();
             (
                 config.health_check_host.clone(),
                 config.health_check_path.clone(),
+                !matches!(config.launch, AppLaunch::Container { .. }),
             )
         };
 
@@ -194,6 +195,7 @@ impl HealthChecker {
             instance,
             &health_host,
             &health_path,
+            require_internal_token,
             self.config.probe_timeout,
         )
         .await;
@@ -314,6 +316,7 @@ async fn probe_instance_health(
     instance: &Instance,
     health_host: &str,
     health_path: &str,
+    require_internal_token: bool,
     probe_timeout: Duration,
 ) -> Result<(), HealthProbeFailure> {
     let Some(endpoint) = instance.endpoint() else {
@@ -326,7 +329,7 @@ async fn probe_instance_health(
         endpoint,
         health_host,
         health_path,
-        instance.internal_token(),
+        require_internal_token.then_some(instance.internal_token()),
         probe_timeout,
     )
     .await
@@ -336,7 +339,7 @@ async fn probe_endpoint_tcp(
     endpoint: std::net::SocketAddr,
     health_host: &str,
     health_path: &str,
-    internal_token: &str,
+    internal_token: Option<&str>,
     probe_timeout: Duration,
 ) -> Result<(), HealthProbeFailure> {
     use tokio::io::AsyncWriteExt;
@@ -353,8 +356,11 @@ async fn probe_endpoint_tcp(
             ));
         }
     };
+    let token_header = internal_token
+        .map(|token| format!("{INTERNAL_TOKEN_HEADER}: {token}\r\n"))
+        .unwrap_or_default();
     let request = format!(
-        "GET {health_path} HTTP/1.1\r\nHost: {health_host}\r\n{INTERNAL_TOKEN_HEADER}: {internal_token}\r\nConnection: close\r\n\r\n"
+        "GET {health_path} HTTP/1.1\r\nHost: {health_host}\r\n{token_header}Connection: close\r\n\r\n"
     );
     match timeout(probe_timeout, socket.write_all(request.as_bytes())).await {
         Ok(Ok(())) => {}
@@ -370,7 +376,7 @@ async fn probe_endpoint_tcp(
     }
 
     let response = read_http_response_headers(&mut socket, probe_timeout).await?;
-    http_response_is_internal_success(&response, internal_token)
+    http_response_is_success(&response, internal_token)
 }
 
 async fn read_http_response_headers(
@@ -431,9 +437,9 @@ fn http_status_is_success(status_line: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn http_response_is_internal_success(
+fn http_response_is_success(
     response: &str,
-    expected_token: &str,
+    expected_token: Option<&str>,
 ) -> Result<(), HealthProbeFailure> {
     let mut lines = response.lines();
     let status_line = lines.next().unwrap_or_default();
@@ -443,6 +449,9 @@ fn http_response_is_internal_success(
             status_line.to_string(),
         ));
     }
+    let Some(expected_token) = expected_token else {
+        return Ok(());
+    };
 
     let has_token = lines
         .take_while(|line| !line.is_empty())

@@ -1,4 +1,7 @@
 use super::super::{AppConfig, Instance};
+use crate::container_runtime::{
+    ContainerEngine, build_container_run_args, detect_container_engine,
+};
 use std::collections::HashMap;
 #[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -34,6 +37,19 @@ pub(super) fn build_instance_env(
 /// Build the extra CLI args for the entrypoint (internal protocol, not env vars).
 pub(super) fn build_instance_args(instance: &Instance) -> Vec<String> {
     vec!["--instance".to_string(), instance.id.clone()]
+}
+
+pub(super) fn build_container_env(
+    config: &AppConfig,
+    container_port: u16,
+) -> HashMap<String, String> {
+    let mut env = config.env_vars.clone();
+    env.insert("TAKO_APP_NAME".to_string(), config.deployment_id());
+    env.insert("HOST".to_string(), "0.0.0.0".to_string());
+    env.insert("PORT".to_string(), container_port.to_string());
+    env.entry("NODE_ENV".to_string())
+        .or_insert_with(|| "production".to_string());
+    env
 }
 
 #[cfg(test)]
@@ -235,6 +251,61 @@ pub(super) fn spawn_child_process(
     }
     // The parent-owned pipe ends drop here after spawn, leaving the child with
     // only the ABI fds it needs across exec.
+}
+
+pub(super) fn spawn_container_process(
+    config: &AppConfig,
+    image: &str,
+    container_port: u16,
+    host_port: u16,
+    env: &HashMap<String, String>,
+    secrets: &HashMap<String, String>,
+    instance: &Instance,
+) -> std::io::Result<tokio::process::Child> {
+    let engine = detect_container_engine().map_err(std::io::Error::other)?;
+    spawn_container_process_with_engine(
+        engine,
+        config,
+        image,
+        container_port,
+        host_port,
+        env,
+        secrets,
+        instance,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn spawn_container_process_with_engine(
+    engine: ContainerEngine,
+    config: &AppConfig,
+    image: &str,
+    container_port: u16,
+    host_port: u16,
+    env: &HashMap<String, String>,
+    secrets: &HashMap<String, String>,
+    instance: &Instance,
+) -> std::io::Result<tokio::process::Child> {
+    let name = format!(
+        "tako-{}-{}",
+        config.deployment_id().replace('/', "-"),
+        instance.id
+    );
+    let args = build_container_run_args(&name, image, host_port, container_port, env, secrets);
+    let mut child_cmd = Command::new(engine.binary());
+    child_cmd
+        .args(args)
+        .current_dir(&config.path)
+        .env_clear()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    for key in ["PATH", "HOME"] {
+        if let Ok(value) = std::env::var(key) {
+            child_cmd.env(key, value);
+        }
+    }
+    child_cmd.spawn()
 }
 
 #[cfg(unix)]

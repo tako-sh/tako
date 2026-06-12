@@ -9,6 +9,7 @@ mod archive;
 mod boot;
 mod channels;
 mod channels_ws;
+mod container_runtime;
 mod defaults;
 mod identity;
 mod image_worker;

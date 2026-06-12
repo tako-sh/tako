@@ -7,7 +7,7 @@ pub(super) async fn probe_endpoint_tcp(
     endpoint: SocketAddr,
     health_check_path: &str,
     health_check_host: &str,
-    internal_token: &str,
+    internal_token: Option<&str>,
     probe_timeout: Duration,
 ) -> Result<bool, std::io::Error> {
     use tokio::io::AsyncWriteExt;
@@ -16,8 +16,11 @@ pub(super) async fn probe_endpoint_tcp(
         Ok(result) => result?,
         Err(_) => return Ok(false),
     };
+    let token_header = internal_token
+        .map(|token| format!("{INTERNAL_TOKEN_HEADER}: {token}\r\n"))
+        .unwrap_or_default();
     let request = format!(
-        "GET {health_check_path} HTTP/1.1\r\nHost: {health_check_host}\r\n{INTERNAL_TOKEN_HEADER}: {internal_token}\r\nConnection: close\r\n\r\n"
+        "GET {health_check_path} HTTP/1.1\r\nHost: {health_check_host}\r\n{token_header}Connection: close\r\n\r\n"
     );
     match timeout(probe_timeout, socket.write_all(request.as_bytes())).await {
         Ok(result) => result?,
@@ -27,7 +30,7 @@ pub(super) async fn probe_endpoint_tcp(
     let Some(response) = read_http_response_headers(&mut socket, probe_timeout).await? else {
         return Ok(false);
     };
-    Ok(http_response_is_internal_success(&response, internal_token))
+    Ok(http_response_is_success(&response, internal_token))
 }
 
 const MAX_HEALTH_RESPONSE_BYTES: usize = 4096;
@@ -82,12 +85,15 @@ fn http_status_is_success(status_line: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn http_response_is_internal_success(response: &str, expected_token: &str) -> bool {
+fn http_response_is_success(response: &str, expected_token: Option<&str>) -> bool {
     let mut lines = response.lines();
     let status_line = lines.next().unwrap_or_default();
     if !http_status_is_success(status_line) {
         return false;
     }
+    let Some(expected_token) = expected_token else {
+        return true;
+    };
 
     lines
         .take_while(|line| !line.is_empty())
