@@ -69,7 +69,7 @@ There are legitimate reasons to reach for containers:
 - **Complex native dependencies** — if your app needs system libraries, GPU drivers, or specific OS packages that are painful to manage directly
 - **Strict isolation requirements** — multi-tenant environments where process-level isolation isn't enough
 - **Existing infrastructure** — your team already has a container pipeline, registries, and tooling that works well
-- **Heterogeneous stacks** — you're running Go, Rust, Python, and Java services and need a single deployment model
+- **Heterogeneous stacks** — you're running Go, Python, and Java services and need a single deployment model
 
 We respect these use cases. Docker as an opt-in runtime option is on our [roadmap](https://github.com/tako-sh/tako/issues/8) — because the right tool depends on the job, and sometimes that tool is a container.
 

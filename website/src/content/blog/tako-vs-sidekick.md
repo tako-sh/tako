@@ -31,7 +31,7 @@ Tako does the same job — get your app running on your own server — but makes
 
 Sidekick's onboarding is genuinely impressive. Run `sidekick init`, point it at a VPS, and it installs Docker, configures Traefik, sets up SSL, and hardens SSH — all in one command. For someone who's never deployed to a VPS before, that's a powerful "it just works" moment.
 
-The Docker model has real advantages too. If your app already has a Dockerfile, Sidekick doesn't care what language or runtime you're using. Node, Go, Python, Rust — if it builds in Docker, Sidekick can deploy it. That's broad compatibility for free.
+The Docker model has real advantages too. If your app already has a Dockerfile, Sidekick doesn't care what language or runtime you're using. Node, Go, Python, Java — if it builds in Docker, Sidekick can deploy it. That's broad compatibility for free.
 
 Preview environments are a nice touch: `sidekick deploy preview` tags a Docker image with the current git commit hash and spins it up on a subdomain. Quick way to share a branch with your team.
 

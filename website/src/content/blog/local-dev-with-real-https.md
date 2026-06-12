@@ -105,7 +105,7 @@ Open two terminals, `tako dev` in each. Your frontend calls `https://api.test/` 
 ## Try it
 
 ```bash
-brew install takoserver/tap/tako   # or cargo install tako
+brew install takoserver/tap/tako
 cd your-project
 tako dev
 ```

@@ -28,7 +28,7 @@ Tako skips the container layer entirely. Your app runs as a native process under
 
 ## Where Dokku Shines
 
-Dokku's Docker-first model means it can run _anything_ — Python, Ruby, Java, Elixir, Rust, or a hand-rolled Dockerfile. If your stack is heterogeneous or you need specific system libraries baked into a container image, Dokku handles that naturally.
+Dokku's Docker-first model means it can run _anything_ — Python, Ruby, Java, Elixir, or a hand-rolled Dockerfile. If your stack is heterogeneous or you need specific system libraries baked into a container image, Dokku handles that naturally.
 
 The plugin ecosystem is mature. Need Postgres? `dokku postgres:create mydb`. Redis? Same pattern. Let's Encrypt? One plugin. After 13 years, most common needs have a plugin.
 
