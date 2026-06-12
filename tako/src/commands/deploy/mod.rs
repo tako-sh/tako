@@ -413,10 +413,12 @@ async fn run_async(
                     }
                     Err(error) => {
                         if let Some(task_tree) = &deploy_task_tree {
-                            task_tree.abort_incomplete("Aborted");
                             if build_result.is_none() {
                                 build_handle.abort();
                             }
+                            task_tree.abort_incomplete("Aborted");
+                            task_tree.set_error_summary("Deploy failed".to_string());
+                            task_tree.finalize();
                             return Err(output::silent_exit_error().into());
                         }
                         if build_result.is_none() {
@@ -434,10 +436,13 @@ async fn run_async(
                     Ok(build) => build_result = Some(build),
                     Err(error) => {
                         if let Some(task_tree) = &deploy_task_tree {
-                            task_tree.abort_incomplete("Aborted");
+                            task_tree.fail_current_build_target(error.clone());
                             if preflight_result.is_none() {
                                 preflight_handle.abort();
                             }
+                            task_tree.abort_incomplete("Aborted");
+                            task_tree.set_error_summary("Deploy failed".to_string());
+                            task_tree.finalize();
                             return Err(output::silent_exit_error().into());
                         }
                         if preflight_result.is_none() {

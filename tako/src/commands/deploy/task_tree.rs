@@ -203,6 +203,24 @@ impl DeployTaskTreeController {
         );
     }
 
+    pub(super) fn fail_current_build_target(&self, detail: impl Into<String>) {
+        let detail = detail.into();
+        let mut state = self.state.lock().unwrap();
+        if let Some(task) = state
+            .builds
+            .iter_mut()
+            .find(|task| matches!(task.state, TaskState::Running { .. } | TaskState::Pending))
+        {
+            let elapsed = match task.state {
+                TaskState::Running { started_at } => Some(started_at.elapsed()),
+                _ => None,
+            };
+            task.state = TaskState::Failed { elapsed };
+            task.detail = Some(detail);
+        }
+        self.refresh_locked(&state);
+    }
+
     pub(super) fn cancel_pending_build_children(&self, target_label: &str, reason: &str) {
         self.cancel_pending_children(&build_target_task_id(target_label), reason);
     }

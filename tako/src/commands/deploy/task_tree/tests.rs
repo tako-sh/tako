@@ -500,6 +500,29 @@ fn deploy_task_tree_build_failure_aborts_deploy_work() {
 }
 
 #[test]
+fn deploy_task_tree_records_early_build_phase_failure() {
+    let controller =
+        DeployTaskTreeController::new(&["prod-a".to_string()], &[sample_shared_build_group()]);
+
+    controller.mark_build_target_running("shared target");
+    controller.fail_current_build_target("Failed to create build dir");
+    controller.abort_incomplete("Aborted");
+    controller.set_error_summary("Deploy failed".to_string());
+
+    let snapshot = controller.snapshot();
+    let lines = ui::render_plain_lines(&build_deploy_tree(&snapshot));
+
+    assert!(lines.iter().any(|line| line == "✘ Building"));
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "  Failed to create build dir")
+    );
+    assert!(lines.iter().any(|line| line == "⊘ Deploying to prod-a…"));
+    assert_eq!(lines.last(), Some(&"Deploy failed".to_string()));
+}
+
+#[test]
 fn deploy_task_tree_omits_startup_summary_lines() {
     let controller =
         DeployTaskTreeController::new(&["prod-a".to_string()], &[sample_shared_build_group()]);
