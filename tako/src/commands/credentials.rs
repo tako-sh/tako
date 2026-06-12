@@ -466,24 +466,16 @@ pub(crate) fn decrypt_runtime_credentials(
 }
 
 fn validate_cloudflare_token_for_ssl_binding(
-    provider: tako_core::SslProvider,
-    routes: &[String],
+    _provider: tako_core::SslProvider,
+    _routes: &[String],
     token: &str,
 ) -> Result<(), String> {
-    if provider == tako_core::SslProvider::LetsEncrypt
-        && crate::validation::letsencrypt_routes_need_cloudflare_token(routes)
-        && is_cloudflare_account_api_token(token)
-    {
+    if token.trim().is_empty() {
         return Err(format!(
-            "Let’s Encrypt wildcard routes require a Cloudflare User API token for DNS-01. Cloudflare Account API tokens cannot be used for zone discovery. Create one in Cloudflare My Profile > API Tokens with Zone Read and DNS Write, then run `tako credentials set {SSL_CLOUDFLARE_CREDENTIAL_NAME}`."
+            "Credential {SSL_CLOUDFLARE_CREDENTIAL_NAME} cannot be empty."
         ));
     }
-
     Ok(())
-}
-
-fn is_cloudflare_account_api_token(token: &str) -> bool {
-    token.trim().starts_with("cfat_")
 }
 
 pub(crate) fn missing_ssl_cloudflare_credential_message(
@@ -742,18 +734,13 @@ mod tests {
     }
 
     #[test]
-    fn letsencrypt_wildcard_rejects_cloudflare_account_api_tokens() {
-        let err = validate_cloudflare_token_for_ssl_binding(
+    fn letsencrypt_wildcard_accepts_cloudflare_account_api_tokens() {
+        validate_cloudflare_token_for_ssl_binding(
             tako_core::SslProvider::LetsEncrypt,
             &["*.example.com".to_string()],
             "cfat_test_account_token",
         )
-        .unwrap_err();
-
-        assert!(err.contains("User API token"), "got: {err}");
-        assert!(err.contains("Account API tokens"), "got: {err}");
-        assert!(err.contains("Zone Read"), "got: {err}");
-        assert!(err.contains("DNS Write"), "got: {err}");
+        .unwrap();
     }
 
     #[test]

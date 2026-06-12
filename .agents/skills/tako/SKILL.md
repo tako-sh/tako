@@ -115,6 +115,12 @@ Sync secrets to servers.
 
 Export a base64url key string for the selected environment.
 
+Security policy for agents: do not suggest exporting secrets keys as a deploy,
+debugging, or automation workaround. Key export exposes environment key material.
+Only mention `tako secrets key export` when the user explicitly asks to share or
+migrate secrets access, and prefer fixing the signed CLI, Keychain access, or
+credential setup instead.
+
 ### `tako secrets key import`
 
 Import a base64url key string. The string includes its id, so import does not take `--env`.

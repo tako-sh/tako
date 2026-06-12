@@ -268,7 +268,7 @@ Wildcard Let's Encrypt routes use Cloudflare DNS-01 and require encrypted provid
 tako credentials set ssl.cloudflare --env production
 ```
 
-Use a Cloudflare User API token with Zone Read and DNS Write for the matching Cloudflare zone. If the token is IP-restricted, include each target server's egress IP.
+Use a Cloudflare user or account API token with Zone Read and DNS Write for the matching Cloudflare zone. If the token is IP-restricted, include each target server's egress IP.
 
 Shared channel/workflow storage uses the environment credential `postgres_url`, not `tako.toml`:
 
