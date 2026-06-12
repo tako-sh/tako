@@ -119,6 +119,27 @@ pub(crate) fn build_container_run_args(
     env: &HashMap<String, String>,
     secrets: &HashMap<String, String>,
 ) -> Vec<String> {
+    let mut args = vec![
+        "run".to_string(),
+        "--rm".to_string(),
+        "--name".to_string(),
+        name.to_string(),
+        "--publish".to_string(),
+        format!("127.0.0.1:{host_port}:{container_port}"),
+    ];
+    for key in build_container_run_env(env, secrets, container_port).keys() {
+        args.push("--env".to_string());
+        args.push(key.clone());
+    }
+    args.push(image.to_string());
+    args
+}
+
+pub(crate) fn build_container_run_env(
+    env: &HashMap<String, String>,
+    secrets: &HashMap<String, String>,
+    container_port: u16,
+) -> BTreeMap<String, String> {
     let mut merged = BTreeMap::new();
     for (key, value) in env {
         merged.insert(key.clone(), value.clone());
@@ -128,21 +149,7 @@ pub(crate) fn build_container_run_args(
     }
     merged.insert("HOST".to_string(), "0.0.0.0".to_string());
     merged.insert("PORT".to_string(), container_port.to_string());
-
-    let mut args = vec![
-        "run".to_string(),
-        "--rm".to_string(),
-        "--name".to_string(),
-        name.to_string(),
-        "--publish".to_string(),
-        format!("127.0.0.1:{host_port}:{container_port}"),
-    ];
-    for (key, value) in merged {
-        args.push("--env".to_string());
-        args.push(format!("{key}={value}"));
-    }
-    args.push(image.to_string());
-    args
+    merged
 }
 
 fn sanitize_image_component(value: &str) -> String {
@@ -255,7 +262,7 @@ mod tests {
     }
 
     #[test]
-    fn build_container_run_args_merges_env_and_secrets() {
+    fn build_container_run_args_names_env_without_values() {
         let args = build_container_run_args(
             "tako-my-app-abc",
             "tako/my-app:v1",
@@ -267,9 +274,26 @@ mod tests {
 
         assert!(args.contains(&"--rm".to_string()));
         assert!(args.contains(&"127.0.0.1:49152:3000".to_string()));
-        assert!(args.contains(&"ENV=production".to_string()));
-        assert!(args.contains(&"API_KEY=secret".to_string()));
-        assert!(args.contains(&"HOST=0.0.0.0".to_string()));
-        assert!(args.contains(&"PORT=3000".to_string()));
+        assert!(args.contains(&"ENV".to_string()));
+        assert!(args.contains(&"API_KEY".to_string()));
+        assert!(args.contains(&"HOST".to_string()));
+        assert!(args.contains(&"PORT".to_string()));
+        assert!(!args.contains(&"ENV=production".to_string()));
+        assert!(!args.contains(&"API_KEY=secret".to_string()));
+        assert!(!args.contains(&"HOST=0.0.0.0".to_string()));
+        assert!(!args.contains(&"PORT=3000".to_string()));
+    }
+
+    #[test]
+    fn build_container_run_env_merges_env_and_secrets() {
+        let env = HashMap::from([("ENV".to_string(), "production".to_string())]);
+        let secrets = HashMap::from([("API_KEY".to_string(), "secret".to_string())]);
+
+        let merged = build_container_run_env(&env, &secrets, DEFAULT_CONTAINER_PORT);
+
+        assert_eq!(merged.get("ENV").map(String::as_str), Some("production"));
+        assert_eq!(merged.get("API_KEY").map(String::as_str), Some("secret"));
+        assert_eq!(merged.get("HOST").map(String::as_str), Some("0.0.0.0"));
+        assert_eq!(merged.get("PORT").map(String::as_str), Some("3000"));
     }
 }

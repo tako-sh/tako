@@ -1,6 +1,6 @@
 use super::super::{AppConfig, Instance};
 use crate::container_runtime::{
-    ContainerEngine, build_container_run_args, detect_container_engine,
+    ContainerEngine, build_container_run_args, build_container_run_env, detect_container_engine,
 };
 use std::collections::HashMap;
 #[cfg(unix)]
@@ -304,6 +304,9 @@ pub(super) fn spawn_container_process_with_engine(
         if let Ok(value) = std::env::var(key) {
             child_cmd.env(key, value);
         }
+    }
+    for (key, value) in build_container_run_env(env, secrets, container_port) {
+        child_cmd.env(key, value);
     }
     child_cmd.spawn()
 }
