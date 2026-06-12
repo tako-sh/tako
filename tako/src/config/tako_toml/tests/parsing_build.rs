@@ -23,6 +23,16 @@ dev = ["vite", "dev"]
 }
 
 #[test]
+fn test_parse_container_release_file() {
+    let toml = r#"
+runtime = "go"
+container = "Dockerfile"
+"#;
+    let config = Config::parse(toml).unwrap();
+    assert_eq!(config.container, Some("Dockerfile".to_string()));
+}
+
+#[test]
 fn test_parse_environment_source_ip_mode() {
     let toml = r#"
 name = "app"

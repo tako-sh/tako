@@ -13,6 +13,10 @@ pub struct Config {
     /// Build runtime override used for default preset selection when `preset` is omitted.
     pub runtime: Option<String>,
 
+    /// Containerfile used for container releases. When set, production releases
+    /// are built from this file instead of the native runtime artifact flow.
+    pub container: Option<String>,
+
     /// Pinned runtime version parsed from `runtime = "<id>@<version>"`.
     /// Used by deploy instead of auto-detecting.
     #[serde(default, skip)]

@@ -43,9 +43,9 @@ A deploy builds locally and ships a prepared artifact to each server:
 
 1. Validate config, routes, target servers, secrets, storage credentials, backup storage, provider credentials, and server target metadata.
 2. Resolve the source root from git when available, otherwise from the app directory.
-3. Resolve runtime, package manager, preset, `main`, assets, build stages, and version metadata.
+3. Resolve runtime, package manager, preset, release mode, `main`, assets, build stages, and version metadata.
 4. Copy sources into `.tako/build`, respecting `.gitignore`, force-excluding `.git/`, `.tako/`, `.env*`, and `node_modules/`.
-5. Run build stages in order, merge configured assets into `public/`, and write `app.json`.
+5. Run native build stages in order, merge configured assets into `public/`, and write `app.json`; container releases use the configured container file instead.
 6. Package a target-specific artifact and reuse the local artifact cache when inputs match.
 7. Upload over signed private HTTP management.
 8. Prepare the release on each server, apply per-app Unix identity/permissions, and run production install there.

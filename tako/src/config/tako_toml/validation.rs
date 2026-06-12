@@ -57,6 +57,10 @@ impl Config {
                 ));
             }
         }
+        if let Some(container) = &self.container {
+            validate_relative_file(container, "container")?;
+            validate_container_release_config(self)?;
+        }
         if let Some(version) = &self.runtime_version_pin
             && version.trim().is_empty()
         {
@@ -291,6 +295,7 @@ pub(super) fn validate_top_level_keys(raw: &toml::Value) -> Result<()> {
             key.as_str(),
             "name"
                 | "runtime"
+                | "container"
                 | "package_manager"
                 | "preset"
                 | "dev"
@@ -334,6 +339,84 @@ fn validate_relative_dir(value: &str, field: &str) -> Result<()> {
         return Err(ConfigError::Validation(format!(
             "'{field}' must not contain '..'"
         )));
+    }
+    Ok(())
+}
+
+fn validate_relative_file(value: &str, field: &str) -> Result<()> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(ConfigError::Validation(format!("{field} cannot be empty")));
+    }
+    let path = Path::new(trimmed);
+    if path.is_absolute() {
+        return Err(ConfigError::Validation(format!(
+            "{field} must be a relative path"
+        )));
+    }
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(ConfigError::Validation(format!(
+            "{field} must not contain '..'"
+        )));
+    }
+    if path
+        .components()
+        .any(|component| matches!(component, Component::CurDir))
+    {
+        return Err(ConfigError::Validation(format!(
+            "{field} must not contain '.' path segments"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_container_release_config(config: &Config) -> Result<()> {
+    if config
+        .main
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        return Err(ConfigError::Validation(
+            "container releases cannot set main; the image command starts the app".to_string(),
+        ));
+    }
+    if !config.assets.is_empty() {
+        return Err(ConfigError::Validation(
+            "container releases cannot set assets; use the Dockerfile and .dockerignore to control the image"
+                .to_string(),
+        ));
+    }
+    if config
+        .build
+        .run
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+        || config
+            .build
+            .install
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        || config
+            .build
+            .cwd
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        || !config.build.include.is_empty()
+        || !config.build.exclude.is_empty()
+    {
+        return Err(ConfigError::Validation(
+            "container releases cannot use [build]; the Dockerfile owns production build steps"
+                .to_string(),
+        ));
+    }
+    if !config.build_stages.is_empty() {
+        return Err(ConfigError::Validation(
+            "container releases cannot use [[build_stages]]; the Dockerfile owns production build steps"
+                .to_string(),
+        ));
     }
     Ok(())
 }

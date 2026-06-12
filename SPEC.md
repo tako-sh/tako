@@ -49,6 +49,7 @@ The config file's parent directory is the app directory (there is no separate `a
 name = "my-app"              # Optional but recommended stable identity used by deploy/dev
 main = "server/index.mjs"   # Optional override; required only when preset does not define `main`
 runtime = "bun@1.2.3"        # Optional override and version pin; defaults to detected adapter/version
+container = "Dockerfile"     # Optional container release file; omit for native releases
 package_manager = "bun"      # Optional override; auto-detected from package.json or lockfiles
 preset = "tanstack-start"   # Optional app preset; provides `main`, `assets`, and `dev` defaults
 app_root = "src"             # Optional JS app root for channels/workflows; default: "src"
@@ -153,6 +154,8 @@ Variable values may be TOML strings, numbers, booleans, or datetimes. Tako conve
 - For JS adapters (`bun`, `node`), when preset `main` is `index.<ext>` or `src/index.<ext>` (`ext`: `ts`, `tsx`, `js`, `jsx`), deploy/dev resolve in this order: existing `index.<ext>`, then existing `src/index.<ext>`, then preset `main`.
 - If neither `tako.toml main`, manifest main, nor preset `main` is set, deploy/dev fail with guidance.
 - Top-level `runtime` is optional; when set to `bun`, `node`, or `go`, it overrides adapter detection for default preset selection in `tako deploy`/`tako dev`. Add `@<version>` (for example `bun@1.2.3`) to pin the deploy runtime version. Without a pin, deploy auto-detects with `<runtime> --version`. `tako init` pins the locally-installed version by default.
+- Top-level `container` is optional. When set, production releases are built from the referenced container file instead of the native runtime artifact flow. The path is relative to the config file's parent directory and must not be absolute or contain `..`.
+- Native release packaging fields are invalid with `container`: `main`, `assets`, `[build]`, and `[[build_stages]]`. The container file and `.dockerignore` own production build inputs and outputs for container releases.
 - Top-level `package_manager` is optional; when set (e.g. `"npm"`, `"pnpm"`, `"yarn"`, `"bun"`), it overrides auto-detection from `package.json` `packageManager` field or lockfiles.
 - Top-level `preset` is optional. Presets are metadata-only (`name`, `main`, `assets`, `dev`) providing entrypoint, asset, and dev-command defaults. They do not contain build, install, or start commands.
 - Top-level `dev` is optional; when set (e.g. `["vite", "dev"]`), it overrides both preset and runtime default dev commands for `tako dev`.

@@ -95,6 +95,7 @@ workers = 2
 | ----------------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------- |
 | `name`                  | string | Required app name. Used for deploy ids, data paths, default dev hostnames, and generated examples.                               |
 | `runtime`               | string | Runtime id, optionally pinned as `<id>@<version>`, for example `bun@1.2.3`, `node@22.0.0`, or `go`.                              |
+| `container`             | string | Container file for container releases, for example `Dockerfile`. Omit for native releases.                                       |
 | `package_manager`       | string | JS package-manager override: `bun`, `npm`, `pnpm`, or `yarn`, optionally with a version suffix.                                  |
 | `preset`                | string | Framework preset alias such as `vite`, `tanstack-start`, or `nextjs`.                                                            |
 | `app_root`              | string | JS app root for `channels/`, `workflows/`, and preferred `tako.d.ts` placement. Defaults to `src`. Use `.` for root-level files. |
@@ -131,6 +132,20 @@ runtime = "node@22.3.0"
 ```
 
 Deploy uses the pin when present. Otherwise it runs the local runtime's `--version` and falls back to `latest`.
+
+## Container Releases
+
+Set `container` when production should be built and run from a container file:
+
+```toml
+runtime = "go"
+container = "Dockerfile"
+dev = ["go", "run", "."]
+```
+
+The path is relative to the app directory. Container releases use the app root as the build context, and `.dockerignore` controls what enters the image.
+
+Container releases do not use native release packaging fields: `main`, `assets`, `[build]`, or `[[build_stages]]`. Keep production build steps in the container file.
 
 ## Entrypoints And Assets
 

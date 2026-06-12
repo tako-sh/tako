@@ -41,6 +41,7 @@ impl Config {
         let name = parse_optional_string(&raw, "name")?;
         let main = parse_optional_string(&raw, "main")?;
         let (runtime, runtime_version_pin) = parse_runtime_spec(&raw)?;
+        let container = parse_optional_string(&raw, "container")?;
         let package_manager = parse_optional_string(&raw, "package_manager")?;
         let preset = parse_optional_string(&raw, "preset")?;
         let dev = parse_string_array(&raw, "dev")?.unwrap_or_default();
@@ -56,6 +57,7 @@ impl Config {
             name,
             main,
             runtime,
+            container,
             runtime_version_pin,
             package_manager,
             preset,

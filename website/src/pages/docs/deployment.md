@@ -83,6 +83,8 @@ Required Cloudflare credentials are also checked from each target server during 
 
 Deploy resolves runtime, package manager, preset, entrypoint, app root, assets, build stages, non-secret vars, release metadata, and runtime version.
 
+When `container = "Dockerfile"` is set, deploy uses the referenced container file as the production release source instead of native build stages, entrypoint validation, and asset merging. The app directory is the build context and `.dockerignore` controls image inputs.
+
 Build stage precedence:
 
 1. `[[build_stages]]`

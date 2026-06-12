@@ -165,6 +165,65 @@ exclude = ["../secret/**"]
 }
 
 #[test]
+fn test_validate_container_rejects_invalid_paths() {
+    let empty = r#"
+container = ""
+"#;
+    let err = Config::parse(empty).unwrap_err();
+    assert!(err.to_string().contains("container cannot be empty"));
+
+    let absolute = r#"
+container = "/tmp/Dockerfile"
+"#;
+    let err = Config::parse(absolute).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("container must be a relative path")
+    );
+
+    let parent = r#"
+container = "../Dockerfile"
+"#;
+    let err = Config::parse(parent).unwrap_err();
+    assert!(err.to_string().contains("container must not contain '..'"));
+}
+
+#[test]
+fn test_validate_container_rejects_native_release_fields() {
+    let main = r#"
+container = "Dockerfile"
+main = "server/index.mjs"
+"#;
+    let err = Config::parse(main).unwrap_err();
+    assert!(err.to_string().contains("cannot set main"));
+
+    let assets = r#"
+container = "Dockerfile"
+assets = ["dist/client"]
+"#;
+    let err = Config::parse(assets).unwrap_err();
+    assert!(err.to_string().contains("cannot set assets"));
+
+    let build = r#"
+container = "Dockerfile"
+
+[build]
+run = "bun run build"
+"#;
+    let err = Config::parse(build).unwrap_err();
+    assert!(err.to_string().contains("cannot use [build]"));
+
+    let build_stages = r#"
+container = "Dockerfile"
+
+[[build_stages]]
+run = "bun run build"
+"#;
+    let err = Config::parse(build_stages).unwrap_err();
+    assert!(err.to_string().contains("cannot use [[build_stages]]"));
+}
+
+#[test]
 fn test_validate_build_stage_cwd_rejects_absolute_paths() {
     let absolute = r#"
 [[build_stages]]
