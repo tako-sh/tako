@@ -1,5 +1,7 @@
 use super::super::cache::artifact_cache_paths;
-use super::packaging::{merge_assets_locally, package_target_artifact};
+use super::packaging::{
+    build_container_target_artifacts, merge_assets_locally, package_target_artifact,
+};
 use super::runtime_version::{
     RUNTIME_VERSION_OUTPUT_FILE, extract_semver_from_version_output,
     resolve_runtime_version_from_workspace, save_package_manager_version_to_manifest,
@@ -554,6 +556,55 @@ fn resolve_runtime_version_from_workspace_ignores_old_runtime_version_file() {
 }
 
 #[test]
+fn build_container_target_artifacts_packages_source_and_manifest() {
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("source");
+    std::fs::create_dir_all(source.join("src")).unwrap();
+    std::fs::write(source.join("Dockerfile"), "FROM scratch\n").unwrap();
+    std::fs::write(source.join("src/app.js"), "console.log('ok');\n").unwrap();
+    std::fs::write(source.join(".env.production"), "SECRET=hidden\n").unwrap();
+
+    let cache_dir = temp.path().join("cache");
+    std::fs::create_dir_all(&cache_dir).unwrap();
+    let manifest = br#"{"release_kind":"container","runtime":"container","main":"","container_file":"Dockerfile","container_port":3000}"#;
+    let groups = vec![ArtifactBuildGroup {
+        build_target_label: "linux-x86_64-glibc".to_string(),
+        cache_target_label: "container".to_string(),
+        target_labels: vec![
+            "linux-x86_64-glibc".to_string(),
+            "linux-aarch64-glibc".to_string(),
+        ],
+        display_target_label: None,
+    }];
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let artifacts = runtime
+        .block_on(build_container_target_artifacts(
+            &source, &source, &cache_dir, manifest, "v1", &groups, None,
+        ))
+        .unwrap();
+
+    assert_eq!(artifacts.len(), 2);
+    assert_eq!(
+        artifacts.get("linux-x86_64-glibc"),
+        artifacts.get("linux-aarch64-glibc")
+    );
+
+    let unpacked = temp.path().join("unpacked");
+    BuildExecutor::extract_archive(artifacts.get("linux-x86_64-glibc").unwrap(), &unpacked)
+        .unwrap();
+    assert!(unpacked.join("Dockerfile").exists());
+    assert!(unpacked.join("src/app.js").exists());
+    assert!(unpacked.join("app.json").exists());
+    assert!(!unpacked.join(".env.production").exists());
+
+    let manifest_raw = std::fs::read_to_string(unpacked.join("app.json")).unwrap();
+    let manifest: serde_json::Value = serde_json::from_str(&manifest_raw).unwrap();
+    assert_eq!(manifest["release_kind"], "container");
+    assert_eq!(manifest["container_file"], "Dockerfile");
+}
+
+#[test]
 fn package_target_artifact_packages_workspace_root_contents() {
     let temp = TempDir::new().unwrap();
     let workspace = temp.path().join("workspace");
@@ -691,10 +742,13 @@ fn build_stage_summary_output_is_shown_when_non_empty() {
 }
 
 #[test]
-fn prepare_build_phase_rejects_container_release_before_native_build() {
+fn prepare_build_phase_packages_container_release_without_native_entrypoint() {
     let project = TempDir::new().unwrap();
-    let mut tako_config = TakoToml::default();
-    tako_config.container = Some("Dockerfile".to_string());
+    std::fs::write(project.path().join("Dockerfile"), "FROM scratch\n").unwrap();
+    let tako_config = TakoToml {
+        container: Some("Dockerfile".to_string()),
+        ..Default::default()
+    };
 
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let result = runtime.block_on(prepare_build_phase(
@@ -706,18 +760,36 @@ fn prepare_build_phase_rejects_container_release_before_native_build() {
         tako_config,
         crate::config::SecretsStore::default(),
         "javascript/vite".to_string(),
-        BuildAdapter::Node,
-        vec![],
-        vec![],
+        BuildAdapter::Unknown,
+        vec![(
+            "local".to_string(),
+            crate::config::ServerTarget {
+                arch: "x86_64".to_string(),
+                libc: "glibc".to_string(),
+            },
+        )],
+        vec![ArtifactBuildGroup {
+            build_target_label: "linux-x86_64-glibc".to_string(),
+            cache_target_label: "container".to_string(),
+            target_labels: vec!["linux-x86_64-glibc".to_string()],
+            display_target_label: None,
+        }],
         None,
     ));
-    let err = match result {
-        Ok(_) => panic!("container deploy should not enter native build preparation"),
-        Err(error) => error,
-    };
+    let build_phase = result.unwrap();
 
-    assert!(err.contains("Container deploys are not implemented yet"));
-    assert!(err.contains("container = \"Dockerfile\""));
+    assert_eq!(build_phase.manifest_main, "container");
+    assert!(build_phase.use_unified_target_process);
+    let archive = build_phase
+        .artifacts_by_target
+        .get("linux-x86_64-glibc")
+        .unwrap();
+    let unpacked = project.path().join("unpacked");
+    BuildExecutor::extract_archive(archive, &unpacked).unwrap();
+    let manifest_raw = std::fs::read_to_string(unpacked.join("app.json")).unwrap();
+    let manifest: serde_json::Value = serde_json::from_str(&manifest_raw).unwrap();
+    assert_eq!(manifest["release_kind"], "container");
+    assert_eq!(manifest["container_file"], "Dockerfile");
 }
 
 #[test]

@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::app::require_app_name_from_config_path;
-use crate::build::{PresetGroup, js};
+use crate::build::{BuildAdapter, PresetGroup, js};
 use crate::commands::project_context;
 use crate::config::{SecretsStore, ServerEntry, ServerTarget, ServersToml, TakoToml};
 use crate::output;
@@ -215,11 +215,17 @@ async fn run_async(
 
     let eff_app_dir = project_dir.clone();
 
-    let preflight_preset_ref = resolve_build_preset_ref(&eff_app_dir, &tako_config)
-        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
-    let preflight_runtime_adapter =
-        resolve_effective_build_adapter(&eff_app_dir, &tako_config, &preflight_preset_ref)
+    let is_container_release = tako_config.container.is_some();
+    let (preflight_preset_ref, preflight_runtime_adapter) = if is_container_release {
+        ("container".to_string(), BuildAdapter::Unknown)
+    } else {
+        let preset_ref = resolve_build_preset_ref(&eff_app_dir, &tako_config)
             .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+        let runtime_adapter =
+            resolve_effective_build_adapter(&eff_app_dir, &tako_config, &preset_ref)
+                .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+        (preset_ref, runtime_adapter)
+    };
 
     let source_root = source_bundle_root(&project_dir, preflight_runtime_adapter.id());
 
@@ -320,8 +326,8 @@ async fn run_async(
         output::warning(&format!("Validation: {}", warning));
     }
 
-    let use_unified_js_target_process =
-        should_use_unified_js_target_process(preflight_runtime_adapter.id());
+    let use_unified_js_target_process = is_container_release
+        || should_use_unified_js_target_process(preflight_runtime_adapter.id());
     if let Some(server_targets_summary) =
         format_server_targets_summary(&server_targets, use_unified_js_target_process)
     {

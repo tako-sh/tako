@@ -6,6 +6,8 @@ use crate::config::{EncryptedSecretValue, SecretsStore, TakoToml};
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub(super) struct DeployArchiveManifest {
+    #[serde(default, skip_serializing_if = "DeployReleaseKind::is_native")]
+    pub(super) release_kind: DeployReleaseKind,
     pub(super) app_name: String,
     pub(super) environment: String,
     pub(super) version: String,
@@ -35,7 +37,27 @@ pub(super) struct DeployArchiveManifest {
     /// Empty string means install at the archive root.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(super) install_dir: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) container_file: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) container_port: Option<u16>,
 }
+
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[derive(Default)]
+pub(super) enum DeployReleaseKind {
+    #[default]
+    Native,
+    Container,
+}
+
+impl DeployReleaseKind {
+    fn is_native(&self) -> bool {
+        matches!(self, Self::Native)
+    }
+}
+
 
 pub(super) fn resolve_deploy_version_and_source_hash(
     executor: &BuildExecutor,
@@ -189,6 +211,7 @@ pub(super) fn build_deploy_archive_manifest(
     env_vars.insert("TAKO_BUILD".to_string(), version.to_string());
 
     DeployArchiveManifest {
+        release_kind: DeployReleaseKind::Native,
         app_name: app_name.to_string(),
         environment: environment.to_string(),
         version: version.to_string(),
@@ -205,6 +228,54 @@ pub(super) fn build_deploy_archive_manifest(
         git_dirty,
         app_dir,
         install_dir,
+        container_file: None,
+        container_port: None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn build_container_deploy_archive_manifest(
+    app_name: &str,
+    environment: &str,
+    version: &str,
+    container_file: &str,
+    idle_timeout: u32,
+    commit_message: Option<String>,
+    git_dirty: Option<bool>,
+    app_env_vars: HashMap<String, String>,
+    env_secrets: Option<&HashMap<String, EncryptedSecretValue>>,
+    images: tako_images::ImagesConfig,
+    app_dir: String,
+) -> DeployArchiveManifest {
+    let mut secret_names = env_secrets
+        .map(|map| map.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    secret_names.sort();
+
+    let mut env_vars =
+        build_manifest_env_vars(app_env_vars, HashMap::new(), environment, "container");
+    env_vars.insert("TAKO_BUILD".to_string(), version.to_string());
+
+    DeployArchiveManifest {
+        release_kind: DeployReleaseKind::Container,
+        app_name: app_name.to_string(),
+        environment: environment.to_string(),
+        version: version.to_string(),
+        runtime: "container".to_string(),
+        main: String::new(),
+        workflow_worker_main: None,
+        idle_timeout,
+        env_vars,
+        secret_names,
+        images,
+        package_manager: None,
+        package_manager_version: None,
+        commit_message,
+        git_dirty,
+        app_dir,
+        install_dir: String::new(),
+        container_file: Some(container_file.to_string()),
+        container_port: Some(3000),
     }
 }
 
@@ -307,6 +378,47 @@ mod tests {
         );
         assert_eq!(manifest.commit_message.as_deref(), Some("feat: ship it"));
         assert_eq!(manifest.git_dirty, Some(false));
+        assert_eq!(manifest.release_kind, DeployReleaseKind::Native);
+        assert_eq!(manifest.container_file, None);
+    }
+
+    #[test]
+    fn build_container_deploy_archive_manifest_marks_container_release() {
+        let secrets = HashMap::from([(
+            "API_KEY".to_string(),
+            EncryptedSecretValue::new("x".to_string(), None),
+        )]);
+
+        let manifest = build_container_deploy_archive_manifest(
+            "my-app",
+            "production",
+            "v123",
+            "Dockerfile",
+            300,
+            Some("feat: ship it".to_string()),
+            Some(false),
+            HashMap::from([("APP_ENV".to_string(), "prod".to_string())]),
+            Some(&secrets),
+            tako_images::ImagesConfig::default(),
+            "apps/web".to_string(),
+        );
+
+        assert_eq!(manifest.release_kind, DeployReleaseKind::Container);
+        assert_eq!(manifest.runtime, "container");
+        assert_eq!(manifest.main, "");
+        assert_eq!(manifest.container_file.as_deref(), Some("Dockerfile"));
+        assert_eq!(manifest.container_port, Some(3000));
+        assert_eq!(manifest.app_dir, "apps/web");
+        assert_eq!(manifest.secret_names, vec!["API_KEY".to_string()]);
+        assert_eq!(
+            manifest.env_vars.get("TAKO_BUILD"),
+            Some(&"v123".to_string())
+        );
+        assert_eq!(
+            manifest.env_vars.get("ENV"),
+            Some(&"production".to_string())
+        );
+        assert_eq!(manifest.env_vars.get("APP_ENV"), Some(&"prod".to_string()));
     }
 
     #[test]

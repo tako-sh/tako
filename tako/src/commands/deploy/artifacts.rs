@@ -16,8 +16,8 @@ use super::format::{
     should_use_unified_js_target_process,
 };
 use super::manifest::{
-    build_deploy_archive_manifest, decrypt_deploy_secrets, resolve_deploy_main,
-    resolve_deploy_version_and_source_hash, resolve_git_commit_message,
+    build_container_deploy_archive_manifest, build_deploy_archive_manifest, decrypt_deploy_secrets,
+    resolve_deploy_main, resolve_deploy_version_and_source_hash, resolve_git_commit_message,
 };
 use super::task_tree::{ArtifactBuildGroup, DeployTaskTreeController};
 
@@ -27,7 +27,7 @@ use local_build::{
     copy_dir_contents, resolve_build_stages, run_local_build, summarize_build_stages,
 };
 use local_build::{local_build_cache_root, persist_local_build_caches, restore_local_build_caches};
-use packaging::build_target_artifacts;
+use packaging::{build_container_target_artifacts, build_target_artifacts};
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn prepare_build_phase(
@@ -44,12 +44,6 @@ pub(super) async fn prepare_build_phase(
     build_groups: Vec<ArtifactBuildGroup>,
     task_tree: Option<DeployTaskTreeController>,
 ) -> Result<BuildPhaseResult, String> {
-    if let Some(container_file) = &tako_config.container {
-        return Err(format!(
-            "Container deploys are not implemented yet. Remove `container = \"{container_file}\"` to deploy with Tako's native release flow."
-        ));
-    }
-
     let phase = if task_tree.is_none() {
         Some(output::PhaseSpinner::start("Building…"))
     } else {
@@ -85,6 +79,88 @@ pub(super) async fn prepare_build_phase(
     let git_commit_message = resolve_git_commit_message(&source_root);
     let git_dirty = executor.is_git_dirty().ok();
     tracing::debug!("Version: {}", version);
+
+    if let Some(container_file) = tako_config.container.as_deref() {
+        let env_idle_timeout = tako_config.get_idle_timeout(&env);
+        let app_dir = project_dir
+            .strip_prefix(&source_root)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let manifest = build_container_deploy_archive_manifest(
+            &app_name,
+            &env,
+            &version,
+            container_file,
+            env_idle_timeout,
+            git_commit_message.clone(),
+            git_dirty,
+            tako_config.get_merged_vars(&env),
+            secrets.get_env(&env),
+            tako_config.images.clone(),
+            app_dir,
+        );
+        let deploy_secrets = decrypt_deploy_secrets(&env, &secrets, Some(&project_dir))
+            .map_err(|e| e.to_string())?;
+        let deploy_runtime_credentials = crate::commands::credentials::decrypt_runtime_credentials(
+            &env,
+            &secrets,
+            Some(&project_dir),
+        )
+        .map_err(|e| e.to_string())?;
+        let deploy_storages = crate::commands::storage::decrypt_storage_bindings(
+            &env,
+            &tako_config,
+            &secrets,
+            Some(&project_dir),
+        )
+        .map_err(|e| e.to_string())?;
+        let deploy_backup = crate::commands::storage::decrypt_backup_binding(
+            &env,
+            &tako_config,
+            &secrets,
+            Some(&project_dir),
+        )
+        .map_err(|e| e.to_string())?;
+        let routes = tako_config.get_routes(&env).unwrap_or_default();
+        let ssl_provider = tako_config.get_ssl_provider(&env);
+        let deploy_ssl = crate::commands::credentials::decrypt_ssl_binding(
+            &env,
+            ssl_provider,
+            &routes,
+            &secrets,
+            Some(&project_dir),
+        )
+        .map_err(|e| e.to_string())?;
+
+        let app_json_bytes = serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?;
+        let artifacts_by_target = build_container_target_artifacts(
+            &project_dir,
+            &source_root,
+            cache.cache_dir(),
+            &app_json_bytes,
+            &version,
+            &build_groups,
+            task_tree.clone(),
+        )
+        .await?;
+
+        drop(build_phase_timer);
+        if let Some(phase) = phase {
+            phase.finish("Built");
+        }
+
+        return Ok(BuildPhaseResult {
+            version,
+            manifest_main: "container".to_string(),
+            deploy_secrets,
+            deploy_runtime_credentials,
+            deploy_storages,
+            deploy_ssl,
+            deploy_backup,
+            use_unified_target_process: true,
+            artifacts_by_target,
+        });
+    }
 
     let (mut build_preset, resolved_preset) = {
         let _t = output::timed(&format!("Resolve preset ref {preset_ref}"));

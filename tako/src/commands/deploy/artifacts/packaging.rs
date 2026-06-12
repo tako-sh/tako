@@ -415,6 +415,102 @@ pub(super) async fn build_target_artifacts(
     Ok(artifacts)
 }
 
+pub(super) async fn build_container_target_artifacts(
+    project_dir: &Path,
+    source_root: &Path,
+    cache_dir: &Path,
+    app_manifest_bytes: &[u8],
+    version: &str,
+    target_groups: &[ArtifactBuildGroup],
+    task_tree: Option<DeployTaskTreeController>,
+) -> Result<HashMap<String, PathBuf>, String> {
+    let mut artifacts = HashMap::new();
+
+    for target_group in target_groups.iter().cloned() {
+        let tree_target_label = target_group
+            .display_target_label
+            .as_deref()
+            .unwrap_or("shared target")
+            .to_string();
+        let build_dir = project_dir.join(".tako/build");
+        crate::build::cleanup_workdir(&build_dir);
+
+        if let Some(task_tree) = &task_tree {
+            task_tree.mark_build_step_running(&tree_target_label, "package-artifact");
+        } else {
+            output::bullet(&format_prepare_artifact_message(
+                target_group.display_target_label.as_deref(),
+            ));
+        }
+
+        let result = (|| -> Result<u64, String> {
+            crate::build::create_workdir(source_root, &build_dir)
+                .map_err(|e| format!("Failed to create container build context: {e}"))?;
+            std::fs::write(build_dir.join("app.json"), app_manifest_bytes)
+                .map_err(|e| format!("Failed to write app.json: {e}"))?;
+
+            let target_label_for_path =
+                (target_groups.len() > 1).then_some(target_group.cache_target_label.as_str());
+            let cache_paths = artifact_cache_paths(cache_dir, version, target_label_for_path);
+            package_target_artifact(
+                &build_dir,
+                &build_dir,
+                &[],
+                &["**/*".to_string()],
+                &[],
+                &cache_paths,
+                &target_group.build_target_label,
+            )?;
+            cache_paths
+                .artifact_path
+                .metadata()
+                .map_err(|e| format!("Failed to read artifact metadata: {e}"))
+                .map(|metadata| metadata.len())
+        })();
+
+        crate::build::cleanup_workdir(&build_dir);
+        let artifact_size = match result {
+            Ok(size) => size,
+            Err(error) => {
+                if let Some(task_tree) = &task_tree {
+                    task_tree.fail_build_step(
+                        &tree_target_label,
+                        "package-artifact",
+                        error.clone(),
+                    );
+                    task_tree.fail_build_target(&tree_target_label, error.clone());
+                }
+                return Err(error);
+            }
+        };
+
+        let target_label_for_path =
+            (target_groups.len() > 1).then_some(target_group.cache_target_label.as_str());
+        let cache_paths = artifact_cache_paths(cache_dir, version, target_label_for_path);
+        for target_label in &target_group.target_labels {
+            artifacts.insert(target_label.clone(), cache_paths.artifact_path.clone());
+        }
+        if let Some(task_tree) = &task_tree {
+            task_tree.succeed_build_step(
+                &tree_target_label,
+                "package-artifact",
+                Some(format_size(artifact_size)),
+            );
+            task_tree.succeed_build_target(&tree_target_label, Some(format_size(artifact_size)));
+        }
+        tracing::debug!(
+            "{}",
+            format_artifact_ready_message(
+                target_group.display_target_label.as_deref(),
+                &format_path_relative_to(project_dir, &cache_paths.artifact_path),
+                &format_size(artifact_size),
+            )
+        );
+    }
+
+    Ok(artifacts)
+}
+
 pub(super) fn merge_assets_locally(
     workspace_root: &Path,
     asset_roots: &[String],
