@@ -45,10 +45,10 @@ A deploy builds locally and ships a prepared artifact to each server:
 2. Resolve the source root from git when available, otherwise from the app directory.
 3. Resolve runtime, package manager, preset, release mode, `main`, assets, build stages, and version metadata.
 4. Copy sources into `.tako/build`, respecting `.gitignore`, force-excluding `.git/`, `.tako/`, `.env*`, and `node_modules/`.
-5. Run native build stages in order, merge configured assets into `public/`, and write `app.json`; container releases use the configured container file instead.
+5. Run native build stages in order, merge configured assets into `public/`, and write `app.json`; container releases package source with the configured container file instead.
 6. Package a target-specific artifact and reuse the local artifact cache when inputs match.
 7. Upload over signed private HTTP management.
-8. Prepare the release on each server, apply per-app Unix identity/permissions, and run production install there.
+8. Prepare the release on each server, apply per-app Unix identity/permissions, and run production install for native releases or Docker/Podman image build for container releases.
 9. Run the optional `release` command once on the leader server.
 10. Roll new instances into traffic, finalize `current`, prune old releases, and create a post-deploy backup when enabled.
 
@@ -106,13 +106,13 @@ New deploys start with one desired instance per server. `tako scale` changes tha
 
 Rolling update happens one server at a time inside each server: start a new instance, wait for health, add it to the load balancer, drain an old instance, repeat, then update `current`.
 
-Health probes call `Host: <app>.tako` on `/status`. The JS SDK supplies this internal status response before user routing. Go apps use the SDK status handling. Production browser-facing 5xx responses stay generic while detailed diagnostics go to app logs.
+Health probes call `Host: <app>.tako` on `/status`. Native JS and Go apps use SDK status handling and echo an internal probe token. Container releases treat any 2xx response on `/status` as healthy. Production browser-facing 5xx responses stay generic while detailed diagnostics go to app logs.
 
 ## Secrets, Storage, And Backups
 
 Project secrets, storage credentials, provider credentials, and backup keys are encrypted in `.tako/secrets.json`. Expiry dates are plaintext metadata so deploy can fail on expired selected credentials and warn for credentials expiring within 30 days. `postgres_url` is a Tako-owned credential reserved for shared channel/workflow storage.
 
-Server-side secrets and storage bindings are stored encrypted in SQLite. Fresh HTTP instances and workflow workers receive them through fd 3 at spawn time rather than through inherited service environment variables.
+Server-side secrets and storage bindings are stored encrypted in SQLite. Native HTTP instances and workflow workers receive them through fd 3 at spawn time rather than through inherited service environment variables. Container releases receive app secrets as environment variables in v0 and do not mount storage bindings, workflow workers, the internal socket, or `TAKO_DATA_DIR`.
 
 App storage bindings are declared under `[envs.<env>].storages` and exposed as `tako.storages.<name>`. Backup storage is separate unless the same resource is also listed as an app storage binding.
 

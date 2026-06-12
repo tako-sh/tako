@@ -37,6 +37,8 @@ On non-macOS platforms without the portless proxy path, the registered HTTPS dae
 
 The daemon keeps running after the app backgrounds, and it can host multiple dev apps.
 
+If `container = "Dockerfile"` is set for deploys, `tako dev` still runs the configured dev command, preset dev command, or native runtime default. It does not build or run the container file locally.
+
 The local dev proxy does not apply Tako's deployed-response Brotli/gzip compression, so browser debugging shows the app response body directly.
 
 ## Interactive Controls

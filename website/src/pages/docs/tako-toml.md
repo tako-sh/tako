@@ -143,9 +143,13 @@ container = "Dockerfile"
 dev = ["go", "run", "."]
 ```
 
-The path is relative to the app directory. Container releases use the app root as the build context, and `.dockerignore` controls what enters the image.
+The path is relative to the app directory. Container releases use the app root as the build context, and `.dockerignore` controls what enters the image. `tako dev` still uses the configured dev command, preset dev command, or native runtime default.
 
 Container releases do not use native release packaging fields: `main`, `assets`, `[build]`, or `[[build_stages]]`. Keep production build steps in the container file.
+
+The target server must have Docker or Podman installed. The container must listen on `$PORT` (`3000` today), bind `0.0.0.0`, and return 2xx on `/status`. App secrets are injected as environment variables for container releases in v0.
+
+Container releases are HTTP-only in v0. The fd-3 bootstrap, fd-4 readiness handshake, internal socket, storage bindings, workflow workers, and `TAKO_DATA_DIR` are native-runtime features and are not mounted into the container.
 
 ## Entrypoints And Assets
 

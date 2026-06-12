@@ -83,7 +83,7 @@ Required Cloudflare credentials are also checked from each target server during 
 
 Deploy resolves runtime, package manager, preset, entrypoint, app root, assets, build stages, non-secret vars, release metadata, and runtime version.
 
-When `container = "Dockerfile"` is set, deploy uses the referenced container file as the production release source instead of native build stages, entrypoint validation, and asset merging. The app directory is the build context and `.dockerignore` controls image inputs.
+When `container = "Dockerfile"` is set, deploy packages source for a container release instead of native build stages, entrypoint validation, and asset merging. The app directory is the build context and `.dockerignore` controls image inputs. `tako dev` still uses the configured dev command, preset dev command, or native runtime default.
 
 Build stage precedence:
 
@@ -112,7 +112,11 @@ Uploads go through private signed management:
 POST /release-artifact
 ```
 
-The server verifies declared size and SHA-256, extracts into `/opt/tako/apps/{app}/{env}/releases/{version}/`, links release logs to the app log directory, prepares the per-app Unix identity and filesystem permissions, runs the runtime plugin's production install command as that app identity, and prepares runtime metadata.
+The server verifies declared size and SHA-256, extracts into `/opt/tako/apps/{app}/{env}/releases/{version}/`, links release logs to the app log directory, prepares the per-app Unix identity and filesystem permissions, and prepares runtime metadata.
+
+Native releases run the runtime plugin's production install command as the app identity. Container releases require Docker or Podman on the target server; `tako-server` builds the uploaded app directory with the configured container file and tags the image as `tako/{app}-{env}:{version}`.
+
+Container releases are HTTP-only in v0. The fd-3 bootstrap, fd-4 readiness handshake, internal socket, storage bindings, workflow workers, and `TAKO_DATA_DIR` are native-runtime features and are not mounted into the container.
 
 Small management commands use `POST /rpc`. Logs use `POST /logs`. App/runtime management uses signed HTTP over Tailscale; SSH is for setup, recovery, reload, upgrade, and uninstall.
 
@@ -147,6 +151,10 @@ Each server rolls independently:
 8. Create a post-deploy backup when backups are enabled.
 
 New app deploys start with desired instance count `1` per server. `tako scale` changes the desired count, and that value persists across restarts, deploys, and rollbacks. New deploys default to a maximum of two app instances per available CPU; explicit scale or deploy requests above the effective server maximum fail. If desired count is `0`, rolling deploy still starts one warm instance for the new build so traffic is immediately served after deploy.
+
+Native instances bind a private loopback port through the SDK fd-4 readiness handshake. Container instances run with `HOST=0.0.0.0` and `PORT=3000`, published only on a server-assigned loopback host port.
+
+Health probes call `Host: <app>.tako` on `/status`. Native JS and Go apps use SDK status handling and echo an internal probe token. Container releases treat any 2xx response on `/status` as healthy.
 
 ## Scaling
 
@@ -225,7 +233,7 @@ Project secrets are encrypted in `.tako/secrets.json`:
 tako secrets set DATABASE_URL --env production
 ```
 
-Deploy compares the server's current secrets hash before sending secrets. Matching hashes skip secret transmission; stale or new servers receive the decrypted selected secrets over signed HTTP management. `tako-server` stores them encrypted in SQLite and injects them into fresh processes through fd 3.
+Deploy compares the server's current secrets hash before sending secrets. Matching hashes skip secret transmission; stale or new servers receive the decrypted selected secrets over signed HTTP management. `tako-server` stores them encrypted in SQLite. Native releases inject secrets into fresh processes through fd 3; container releases inject app secrets as environment variables in v0.
 
 Provider credentials use `tako credentials`, not `tako secrets`, and are not exposed to app code:
 
