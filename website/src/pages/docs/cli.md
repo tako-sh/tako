@@ -232,7 +232,7 @@ tako credentials list
 
 Supported provider credentials today: `ssl.cloudflare` and `postgres_url`. Credential names are lowercased before validation, so `POSTGRES_URL` is stored as `postgres_url`. Interactive terminals show a selector when `NAME` is omitted.
 
-Provider credentials are encrypted in `.tako/secrets.json`, not exposed to app code, not included in generated secret types, and not pushed by `tako secrets sync`. Deploy sends them only through the deployment binding that needs them. `postgres_url` selects shared Postgres storage for channels and workflows.
+Provider credentials are for deployed environments. `development` is omitted from the selector and rejected by `--env`; use `production` or another deployment environment. Provider credentials are encrypted in `.tako/secrets.json`, not exposed to app code, not included in generated secret types, and not pushed by `tako secrets sync`. Deploy sends them only through the deployment binding that needs them. `postgres_url` selects shared Postgres storage for channels and workflows.
 
 ## `tako secrets`
 

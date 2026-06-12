@@ -937,10 +937,10 @@ Remove tako-server and all data from a remote server.
 
 ### tako credentials set [--env {environment}] [--expires-on {when}] [{name}]
 
-Set a Tako-owned provider credential for the current app environment. Alias: `tako creds set ...`.
+Set a Tako-owned provider credential for a deployed app environment. Alias: `tako creds set ...`.
 
 - `{name}` is a provider credential name. Credential names are lowercased before validation, so `POSTGRES_URL` is stored as `postgres_url`. Supported values: `ssl.cloudflare` and `postgres_url`. Interactive terminals can select a supported credential when `{name}` is omitted.
-- `--env {environment}` selects the app environment. Interactive terminals can choose or create one when omitted.
+- `--env {environment}` selects the deployment environment. `development` is rejected because provider credentials are only used by deploy. Interactive terminals can choose an existing non-development environment when omitted; the selector offers `production` by default and does not create new environments.
 - `--expires-on {when}` optionally records the date when the credential expires. Interactive runs prompt when the flag is omitted. Non-interactive runs may omit it. `YYYY-MM-DD` is stored as-is; `in N days` is normalized to the UTC date N days from now; `never`, a blank prompt, or an omitted flag stores no `expires_on` field. Timestamp values are rejected.
 
 The command ensures the environment has an encryption key and stores the encrypted value plus optional `expires_on` metadata in `.tako/secrets.json` under that environment's `credentials` object. Provider credentials are not exposed to app code, are not included in generated secret types, and are not pushed by `tako secrets sync`. Deploy sends required provider credentials to servers only through the specific deployment binding that needs them, such as Cloudflare SSL, Let’s Encrypt wildcard certificate issuance, or shared runtime state storage. `postgres_url` selects shared Postgres channel/workflow storage. Deploy fails before build/deploy work starts if a required credential is missing or expired, warns if it expires within 30 days, and fails during remote prepare if the target server cannot read a Cloudflare zone needed for Let’s Encrypt wildcard DNS-01 or cannot validate a supported Cloudflare SSL token.

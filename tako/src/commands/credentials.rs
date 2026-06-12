@@ -64,11 +64,7 @@ fn set_credential_command(
     requested_expires_on: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let name = resolve_credential_name(requested_name)?;
-    let env = crate::commands::secret::resolve_secret_environment(
-        context,
-        requested_env,
-        "Credential environment",
-    )?;
+    let env = resolve_credential_environment(context, requested_env)?;
     let secrets = crate::config::SecretsStore::load_from_dir(&context.project_dir)?;
     if !confirm_credential_override(&secrets, &name, &env)? {
         return Ok(());
@@ -103,11 +99,7 @@ fn remove_credential_command(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let name = normalize_credential_name(name);
     crate::config::validate_credential_name(&name)?;
-    let env = crate::commands::secret::resolve_secret_environment(
-        context,
-        requested_env,
-        "Credential environment",
-    )?;
+    let env = resolve_credential_environment(context, requested_env)?;
     let mut secrets = crate::config::SecretsStore::load_from_dir(&context.project_dir)?;
     if !secrets.contains_credential(&env, &name) {
         return Err(format!("Credential '{name}' not found in environment '{env}'").into());
@@ -181,6 +173,64 @@ fn resolve_credential_name(requested: Option<&str>) -> Result<String, Box<dyn st
         .map_err(Into::into)
 }
 
+fn credential_environment_options(
+    tako_config: &crate::config::TakoToml,
+    secrets: &crate::config::SecretsStore,
+) -> Vec<(String, String)> {
+    let mut names = BTreeSet::new();
+    names.extend(tako_config.get_environment_names());
+    names.extend(secrets.environment_names());
+    names.remove("development");
+
+    let mut options = Vec::new();
+    names.remove("production");
+    options.push(("production".to_string(), "production".to_string()));
+    options.extend(names.into_iter().map(|name| (name.clone(), name)));
+    options
+}
+
+fn validate_requested_credential_environment(
+    env: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    crate::config::validate_environment_name(env)?;
+    if env == "development" {
+        return Err(
+            "Provider credentials are for deployed environments. Use a deployment environment like production."
+                .into(),
+        );
+    }
+    Ok(env.to_string())
+}
+
+fn resolve_credential_environment(
+    context: &crate::commands::project_context::ProjectContext,
+    requested: Option<&str>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    if let Some(env) = requested {
+        return validate_requested_credential_environment(env);
+    }
+
+    if !output::is_interactive() {
+        return Err(
+            "Missing required environment. Pass --env with a deployment environment or run interactively to choose one."
+                .into(),
+        );
+    }
+
+    let tako_config = crate::config::TakoToml::load_from_file(&context.config_path)?;
+    let secrets = crate::config::SecretsStore::load_from_dir(&context.project_dir)?;
+    let mut wizard = output::Wizard::new().with_fields(&[("Environment", false)]);
+    wizard
+        .select(
+            "Environment",
+            "Credential environment",
+            credential_environment_options(&tako_config, &secrets),
+            &[],
+            0,
+        )
+        .map_err(Into::into)
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct CredentialStatusRow {
     name: String,
@@ -194,6 +244,7 @@ fn credential_status_rows(
     let mut envs = BTreeSet::new();
     envs.extend(tako_config.get_environment_names());
     envs.extend(secrets.environment_names());
+    envs.remove("development");
     let envs: Vec<String> = envs.into_iter().collect();
 
     let mut names = BTreeSet::new();
@@ -550,6 +601,10 @@ mod tests {
     fn credential_status_rows_include_supported_credentials_and_config_envs() {
         let mut config = crate::config::TakoToml::default();
         config.envs.insert(
+            "development".to_string(),
+            crate::config::EnvConfig::default(),
+        );
+        config.envs.insert(
             "production".to_string(),
             crate::config::EnvConfig::default(),
         );
@@ -588,6 +643,41 @@ mod tests {
                     ]
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn credential_environment_options_exclude_development_and_new_environment() {
+        let mut config = crate::config::TakoToml::default();
+        config.envs.insert(
+            "development".to_string(),
+            crate::config::EnvConfig::default(),
+        );
+        config
+            .envs
+            .insert("staging".to_string(), crate::config::EnvConfig::default());
+        let mut secrets = crate::config::SecretsStore::default();
+        secrets.ensure_env_key_id("qa").unwrap();
+
+        let options = credential_environment_options(&config, &secrets);
+
+        assert_eq!(
+            options,
+            vec![
+                ("production".to_string(), "production".to_string()),
+                ("qa".to_string(), "qa".to_string()),
+                ("staging".to_string(), "staging".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn requested_credential_environment_rejects_development() {
+        let err = validate_requested_credential_environment("development").unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            "Provider credentials are for deployed environments. Use a deployment environment like production."
         );
     }
 
