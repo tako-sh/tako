@@ -2,9 +2,9 @@
 name: tako
 description: >-
   Tako CLI commands and project runtime workflow. Use when a repository contains
-  tako.toml, imports tako.sh or tako.sh/vite, imports the Rust tako crate, or describes itself as a tako.sh
-  app. Covers init, dev, deploy, secrets, storage, gen, scale, logs, rollback,
-  servers, doctor, and output design patterns.
+  tako.toml, imports tako.sh or tako.sh/vite, uses the Go SDK, or describes
+  itself as a tako.sh app. Covers init, dev, deploy, secrets, storage, gen,
+  scale, logs, rollback, servers, doctor, and output design patterns.
 type: framework
 library: tako.sh
 library_version: "0.0.1"
