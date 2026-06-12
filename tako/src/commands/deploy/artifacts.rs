@@ -44,6 +44,12 @@ pub(super) async fn prepare_build_phase(
     build_groups: Vec<ArtifactBuildGroup>,
     task_tree: Option<DeployTaskTreeController>,
 ) -> Result<BuildPhaseResult, String> {
+    if let Some(container_file) = &tako_config.container {
+        return Err(format!(
+            "Container deploys are not implemented yet. Remove `container = \"{container_file}\"` to deploy with Tako's native release flow."
+        ));
+    }
+
     let phase = if task_tree.is_none() {
         Some(output::PhaseSpinner::start("Building…"))
     } else {

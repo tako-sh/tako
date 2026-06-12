@@ -691,6 +691,36 @@ fn build_stage_summary_output_is_shown_when_non_empty() {
 }
 
 #[test]
+fn prepare_build_phase_rejects_container_release_before_native_build() {
+    let project = TempDir::new().unwrap();
+    let mut tako_config = TakoToml::default();
+    tako_config.container = Some("Dockerfile".to_string());
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let result = runtime.block_on(prepare_build_phase(
+        project.path().to_path_buf(),
+        project.path().to_path_buf(),
+        project.path().to_path_buf(),
+        "app".to_string(),
+        "production".to_string(),
+        tako_config,
+        crate::config::SecretsStore::default(),
+        "javascript/vite".to_string(),
+        BuildAdapter::Node,
+        vec![],
+        vec![],
+        None,
+    ));
+    let err = match result {
+        Ok(_) => panic!("container deploy should not enter native build preparation"),
+        Err(error) => error,
+    };
+
+    assert!(err.contains("Container deploys are not implemented yet"));
+    assert!(err.contains("container = \"Dockerfile\""));
+}
+
+#[test]
 fn prepare_build_phase_does_not_leave_unused_tmp_paths() {
     let _lock = crate::paths::test_tako_home_env_lock();
     let previous = std::env::var_os("TAKO_HOME");
