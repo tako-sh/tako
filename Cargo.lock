@@ -5624,21 +5624,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tako"
-version = "0.2.0"
-dependencies = [
- "hex",
- "hmac 0.12.1",
- "libc",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror 2.0.18",
- "url",
-]
-
-[[package]]
 name = "tako-channels"
 version = "0.0.0"
 dependencies = [

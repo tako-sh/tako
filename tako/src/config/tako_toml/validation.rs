@@ -53,7 +53,7 @@ impl Config {
             }
             if BuildAdapter::from_id(trimmed).is_none() {
                 return Err(ConfigError::Validation(
-                    "runtime must be one of: bun, node, go, rust".to_string(),
+                    "runtime must be one of: bun, node, go".to_string(),
                 ));
             }
         }

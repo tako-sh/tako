@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use crate::build::{BuildAdapter, detect_build_adapter};
 use crate::config::{POSTGRES_CREDENTIAL_NAME, SecretsStore, TakoToml};
 use crate::validation::{SECRET_EXPIRY_WARNING_DAYS, ValidationResult};
 
@@ -105,6 +106,17 @@ enum WorkflowStorageIntent {
 }
 
 fn project_workflow_storage(project_dir: &Path, tako_config: &TakoToml) -> WorkflowStorageIntent {
+    let adapter = tako_config
+        .runtime
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .and_then(BuildAdapter::from_id)
+        .unwrap_or_else(|| detect_build_adapter(project_dir));
+    if adapter == BuildAdapter::Go && project_dir.join("cmd/worker/main.go").is_file() {
+        return WorkflowStorageIntent::RequiresRemote;
+    }
+
     let workflows_dir =
         crate::build::js::js_app_root_dir(project_dir, tako_config.js_app_root()).join("workflows");
     let entries = match std::fs::read_dir(workflows_dir) {

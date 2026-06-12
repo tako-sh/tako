@@ -20,10 +20,8 @@ const FALLBACK_OFFICIAL_PRESET_REPO: &str = "tako-sh/presets";
 const PACKAGE_REPOSITORY_URL: &str = env!("CARGO_PKG_REPOSITORY");
 const OFFICIAL_JS_GROUP_PRESETS_PATH: &str = "presets/javascript.toml";
 const OFFICIAL_GO_GROUP_PRESETS_PATH: &str = "presets/go.toml";
-const OFFICIAL_RUST_GROUP_PRESETS_PATH: &str = "presets/rust.toml";
 const EMBEDDED_JS_GROUP_PRESETS: &str = include_str!("../../../presets/javascript.toml");
 const EMBEDDED_GO_GROUP_PRESETS: &str = include_str!("../../../presets/go.toml");
-const EMBEDDED_RUST_GROUP_PRESETS: &str = include_str!("../../../presets/rust.toml");
 
 /// Lightweight preset metadata: just name, main, and assets.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,7 +101,6 @@ pub(super) fn official_group_manifest_path(group: PresetGroup) -> Option<&'stati
     match group {
         PresetGroup::Js => Some(OFFICIAL_JS_GROUP_PRESETS_PATH),
         PresetGroup::Go => Some(OFFICIAL_GO_GROUP_PRESETS_PATH),
-        PresetGroup::Rust => Some(OFFICIAL_RUST_GROUP_PRESETS_PATH),
         PresetGroup::Unknown => None,
     }
 }
@@ -112,7 +109,6 @@ pub(super) fn embedded_group_manifest_content(path: &str) -> Option<&'static str
     match path {
         OFFICIAL_JS_GROUP_PRESETS_PATH => Some(EMBEDDED_JS_GROUP_PRESETS),
         OFFICIAL_GO_GROUP_PRESETS_PATH => Some(EMBEDDED_GO_GROUP_PRESETS),
-        OFFICIAL_RUST_GROUP_PRESETS_PATH => Some(EMBEDDED_RUST_GROUP_PRESETS),
         _ => None,
     }
 }
@@ -186,7 +182,7 @@ fn parse_official_alias_preset_content(
         return parse_group_preset_content(path, content, preset_name);
     }
     if BuildAdapter::from_id(alias).is_some() {
-        // Base runtime presets (bun, node, go, rust) may not have a section in
+        // Base runtime presets (bun, node, go) may not have a section in
         // the presets file — they use runtime defaults instead.
         return match parse_group_preset_content(path, content, alias) {
             Ok(preset) => Ok(preset),

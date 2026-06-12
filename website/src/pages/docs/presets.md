@@ -28,13 +28,12 @@ The app config always wins over preset defaults. Set `main`, `assets`, `dev`, or
 
 Built-in presets are grouped by runtime family.
 
-| Family     | Preset           | Defaults                                                                                                         |
-| ---------- | ---------------- | ---------------------------------------------------------------------------------------------------------------- |
-| JavaScript | `vite`           | Dev command `vite dev`.                                                                                          |
-| JavaScript | `tanstack-start` | Main `dist/server/tako-entry.mjs`, assets `dist/client`, dev command `vite dev`.                                 |
-| JavaScript | `nextjs`         | Main `.next/tako-entry.mjs`, dev command `next dev`.                                                             |
-| Go         | none today       | The Go runtime base preset builds `CGO_ENABLED=0 go build -o app .` and runs `go run .` in dev.                  |
-| Rust       | none today       | The Rust runtime base preset builds with Cargo, copies the release binary to `app`, and runs `cargo run` in dev. |
+| Family     | Preset           | Defaults                                                                                                                                                 |
+| ---------- | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| JavaScript | `vite`           | Dev command `vite dev`.                                                                                                                                  |
+| JavaScript | `tanstack-start` | Main `dist/server/tako-entry.mjs`, assets `dist/client`, dev command `vite dev`.                                                                         |
+| JavaScript | `nextjs`         | Main `.next/tako-entry.mjs`, dev command `next dev`.                                                                                                     |
+| Go         | none today       | The Go runtime base preset builds `CGO_ENABLED=0 go build -o app .`, builds `worker` from `cmd/worker/main.go` when present, and runs `go run .` in dev. |
 
 Example:
 

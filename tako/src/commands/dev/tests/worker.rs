@@ -11,8 +11,22 @@ fn resolve_dev_worker_command_returns_none_without_workflows_dir() {
 fn resolve_dev_worker_command_returns_none_for_non_js_runtime() {
     let temp = TempDir::new().unwrap();
     std::fs::create_dir_all(temp.path().join("src").join("workflows")).unwrap();
-    assert!(resolve_dev_worker_command(temp.path(), "src", BuildAdapter::Go).is_none());
     assert!(resolve_dev_worker_command(temp.path(), "src", BuildAdapter::Unknown).is_none());
+}
+
+#[test]
+fn resolve_dev_worker_command_go_points_at_cmd_worker() {
+    let temp = TempDir::new().unwrap();
+    std::fs::create_dir_all(temp.path().join("cmd").join("worker")).unwrap();
+    std::fs::write(
+        temp.path().join("cmd").join("worker").join("main.go"),
+        "package main",
+    )
+    .unwrap();
+
+    let cmd = resolve_dev_worker_command(temp.path(), "src", BuildAdapter::Go).unwrap();
+
+    assert_eq!(cmd, vec!["go", "run", "./cmd/worker"]);
 }
 
 #[test]

@@ -36,6 +36,8 @@ pub(crate) fn safe_subdir(base: &Path, subpath: &str) -> Result<PathBuf, String>
 pub(crate) struct ReleaseManifest {
     pub runtime: String,
     pub main: String,
+    #[serde(default)]
+    pub workflow_worker_main: Option<String>,
     pub idle_timeout: u32,
     #[serde(default)]
     pub env_vars: HashMap<String, String>,

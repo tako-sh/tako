@@ -88,14 +88,9 @@ describe("package exports", () => {
     expect(packageJson.files).toContain("skills");
     expect(skillsStat.isDirectory()).toBe(true);
     expect(skillsStat.isSymbolicLink()).toBe(false);
-    expect(readdirSync(skillsDir).sort()).toEqual([
-      "tako",
-      "tako-sdk-go",
-      "tako-sdk-js",
-      "tako-sdk-rust",
-    ]);
+    expect(readdirSync(skillsDir).sort()).toEqual(["tako", "tako-sdk-go", "tako-sdk-js"]);
 
-    for (const slug of ["tako", "tako-sdk-go", "tako-sdk-js", "tako-sdk-rust"]) {
+    for (const slug of ["tako", "tako-sdk-go", "tako-sdk-js"]) {
       expect(existsSync(resolve(skillsDir, slug, "SKILL.md"))).toBe(true);
     }
   });

@@ -28,7 +28,7 @@ pub use types::{
 };
 
 /// Known runtime IDs.
-pub const KNOWN_RUNTIME_IDS: &[&str] = &["bun", "node", "go", "rust"];
+pub const KNOWN_RUNTIME_IDS: &[&str] = &["bun", "node", "go"];
 
 #[cfg(test)]
 mod tests {

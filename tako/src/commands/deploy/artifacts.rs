@@ -126,6 +126,7 @@ pub(super) async fn prepare_build_phase(
         &tako_config,
         build_preset.main.as_deref(),
     )?;
+    let workflow_worker_main = resolve_workflow_worker_main(&eff_app_dir, runtime_adapter);
     tracing::debug!(
         "{}",
         format_entry_point_summary(&eff_app_dir.join(&manifest_main),)
@@ -168,6 +169,7 @@ pub(super) async fn prepare_build_phase(
         &version,
         runtime_adapter.id(),
         &manifest_main,
+        workflow_worker_main,
         env_idle_timeout,
         deploy_pm,
         git_commit_message.clone(),
@@ -269,6 +271,18 @@ pub(super) async fn prepare_build_phase(
         use_unified_target_process: should_use_unified_js_target_process(&runtime_tool),
         artifacts_by_target,
     })
+}
+
+pub(super) fn resolve_workflow_worker_main(
+    project_dir: &Path,
+    runtime_adapter: BuildAdapter,
+) -> Option<String> {
+    match runtime_adapter {
+        BuildAdapter::Go if project_dir.join("cmd/worker/main.go").is_file() => {
+            Some("worker".to_string())
+        }
+        _ => None,
+    }
 }
 
 pub(super) fn build_artifact_include_patterns(config: &TakoToml) -> Vec<String> {

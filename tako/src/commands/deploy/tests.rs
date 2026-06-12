@@ -414,6 +414,34 @@ fn runtime_state_storage_validation_allows_multi_server_channels_with_postgres_u
 }
 
 #[test]
+fn workflow_storage_validation_rejects_multi_server_go_worker_without_postgres_url() {
+    let temp = TempDir::new().unwrap();
+    fs::create_dir_all(temp.path().join("cmd/worker")).unwrap();
+    fs::write(temp.path().join("cmd/worker/main.go"), "package main").unwrap();
+    let config = TakoToml {
+        runtime: Some("go".to_string()),
+        ..Default::default()
+    };
+
+    let result = config::validate_runtime_state_storage_for_deploy(
+        temp.path(),
+        &config,
+        &SecretsStore::default(),
+        "production",
+        2,
+    );
+
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|error| error.contains("Workflows")),
+        "{:?}",
+        result.errors
+    );
+}
+
+#[test]
 fn runtime_state_storage_validation_channels_override_all_local_workflows() {
     let temp = TempDir::new().unwrap();
     write_workflow(

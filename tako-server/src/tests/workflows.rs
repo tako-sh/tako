@@ -278,6 +278,56 @@ async fn sync_app_workflows_injects_release_env_and_app_data_dir_into_worker() {
 }
 
 #[tokio::test]
+async fn sync_app_workflows_registers_go_worker_binary_from_manifest() {
+    let temp = TempDir::new().unwrap();
+    let app_id = "go-app/production";
+    let cert_manager = Arc::new(CertManager::new(CertManagerConfig {
+        cert_dir: temp.path().join("certs"),
+        ..Default::default()
+    }));
+    let state = ServerState::new(
+        temp.path().to_path_buf(),
+        cert_manager,
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+
+    let release = temp
+        .path()
+        .join("apps")
+        .join("go-app")
+        .join("production")
+        .join("releases")
+        .join("v1");
+    std::fs::create_dir_all(&release).unwrap();
+    std::fs::write(release.join("worker"), "cat <&3 >/dev/null\nsleep 600\n").unwrap();
+    std::fs::write(
+        release.join("app.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "runtime": "go",
+            "main": "app",
+            "workflow_worker_main": "worker",
+            "idle_timeout": 300,
+            "env_vars": {
+                "TAKO_BUILD": "v1"
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    state
+        .sync_app_workflows(app_id, &release, Some("/bin/sh"))
+        .await;
+
+    assert!(
+        state.workflows.has(app_id),
+        "Go releases with workflow_worker_main should register a worker supervisor"
+    );
+}
+
+#[tokio::test]
 async fn update_secrets_restarts_workflows_even_without_http_instances() {
     let temp = TempDir::new().unwrap();
     let app_id = "workflow-app/production";

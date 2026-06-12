@@ -444,40 +444,65 @@ impl ServerState {
         let mut worker_env = manifest.env_vars;
         inject_app_data_dir_env(&mut worker_env, &data_paths);
 
-        let js_app_root = worker_env
-            .get("TAKO_APP_ROOT")
-            .map(String::as_str)
-            .filter(|root| !root.trim().is_empty())
-            .unwrap_or("src");
-        let workflows_dir = if js_app_root == "." {
-            app_path.join("workflows")
-        } else {
-            app_path.join(js_app_root).join("workflows")
+        let worker_command = match manifest.runtime.as_str() {
+            "go" => {
+                let Some(worker_main) = manifest.workflow_worker_main.as_deref() else {
+                    self.workflows.retire(app_name).await;
+                    return;
+                };
+                let worker_bin = app_path.join(worker_main);
+                if !worker_bin.exists() {
+                    tracing::warn!(
+                        app = app_name,
+                        path = %worker_bin.display(),
+                        "Skipping workflow engine: Go worker binary not found in release"
+                    );
+                    self.workflows.retire(app_name).await;
+                    return;
+                }
+                match runtime_bin_path {
+                    Some(bin) => vec![std::ffi::OsString::from(bin), worker_bin.into()],
+                    None => vec![worker_bin.into()],
+                }
+            }
+            _ => {
+                let js_app_root = worker_env
+                    .get("TAKO_APP_ROOT")
+                    .map(String::as_str)
+                    .filter(|root| !root.trim().is_empty())
+                    .unwrap_or("src");
+                let workflows_dir = if js_app_root == "." {
+                    app_path.join("workflows")
+                } else {
+                    app_path.join(js_app_root).join("workflows")
+                };
+                if !workflows_dir.is_dir() {
+                    self.workflows.retire(app_name).await;
+                    return;
+                }
+
+                let worker_entry = app_path
+                    .join("node_modules")
+                    .join("tako.sh")
+                    .join("dist")
+                    .join("entrypoints")
+                    .join("bun-worker.mjs");
+                if !worker_entry.exists() {
+                    tracing::warn!(
+                        app = app_name,
+                        path = %worker_entry.display(),
+                        "Skipping workflow engine: worker entrypoint not found in release"
+                    );
+                    self.workflows.retire(app_name).await;
+                    return;
+                }
+
+                let runtime_bin = runtime_bin_path
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|| std::path::PathBuf::from("bun"));
+                vec![runtime_bin.into(), worker_entry.into()]
+            }
         };
-        if !workflows_dir.is_dir() {
-            self.workflows.retire(app_name).await;
-            return;
-        }
-
-        let worker_entry = app_path
-            .join("node_modules")
-            .join("tako.sh")
-            .join("dist")
-            .join("entrypoints")
-            .join("bun-worker.mjs");
-        if !worker_entry.exists() {
-            tracing::warn!(
-                app = app_name,
-                path = %worker_entry.display(),
-                "Skipping workflow engine: worker entrypoint not found in release"
-            );
-            self.workflows.retire(app_name).await;
-            return;
-        }
-
-        let runtime_bin = runtime_bin_path
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| std::path::PathBuf::from("bun"));
 
         if let Err(e) = self.workflows.start_socket() {
             tracing::warn!(error = %e, "Failed to start internal socket");
@@ -501,18 +526,16 @@ impl ServerState {
         let app = app_name.to_string();
         let app_for_spec = app.clone();
         let worker_cwd = app_path;
-        let worker_bin = worker_entry;
         let manager = self.workflows.clone();
         let result = manager
             .ensure(&app, move |_db_path| {
-                crate::workflows::worker_spec_for_bun(
+                crate::workflows::worker_spec_for_command(
                     &app_for_spec,
                     0,       // workers (scale-to-zero)
                     500,     // concurrency
                     300_000, // idle_timeout_ms (5 min)
                     &internal_socket,
-                    &runtime_bin,
-                    &worker_bin,
+                    worker_command,
                     &worker_cwd,
                     worker_env,
                     secrets,

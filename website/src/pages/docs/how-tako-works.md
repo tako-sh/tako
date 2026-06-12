@@ -122,9 +122,9 @@ Backups capture app-owned data and durable workflow state. Transient channel rep
 
 JavaScript channels live in `<app_root>/channels/*.ts` and export `defineChannel(...)`. Routes are exact and flat under `/_tako/channels/<name>`.
 
-JavaScript workflows live in `<app_root>/workflows/*.ts` and export `defineWorkflow(...)`. Workflow workers can be always-on or scale-to-zero. The default is `workers = 0`, so the server starts a worker when runnable work appears from enqueue, signal, cron, delayed retry/sleep, or lease reclaim, then stops it after an idle window. Each worker startup replaces the server-side cron schedule set with the schedules in the current release, so removed schedules are deregistered.
+JavaScript workflows live in `<app_root>/workflows/*.ts` and export `defineWorkflow(...)`. Go workflows live in a separate `cmd/worker/main.go` binary so workflow dependencies stay out of the HTTP server binary. Workflow workers can be always-on or scale-to-zero. The default is `workers = 0`, so the server starts a worker when runnable work appears from enqueue, signal, cron, delayed retry/sleep, or lease reclaim, then stops it after an idle window. Each worker startup replaces the server-side cron schedule set with the schedules in the current release, so removed schedules are deregistered.
 
-Channel replay and workflow state are durable in local SQLite by default. Set environment credential `postgres_url` to use shared Postgres storage instead: workflows use schema `tako_workflows` and channels use schema `tako_channels`. Multi-server environments with `<app_root>/channels/` require `postgres_url`. Multi-server environments with `<app_root>/workflows/` require `postgres_url` unless every workflow opts into per-server local execution with `local: true`.
+Channel replay and workflow state are durable in local SQLite by default. Set environment credential `postgres_url` to use shared Postgres storage instead: workflows use schema `tako_workflows` and channels use schema `tako_channels`. Multi-server environments with `<app_root>/channels/` require `postgres_url`. Multi-server environments with JS `<app_root>/workflows/` require `postgres_url` unless every workflow opts into per-server local execution with `local: true`; multi-server Go workflow apps require `postgres_url`.
 
 ## Observability
 

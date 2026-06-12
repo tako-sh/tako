@@ -51,7 +51,7 @@ pub(super) fn write_init_generated_file(
                 Ok(None)
             }
         }
-        PresetGroup::Rust | PresetGroup::Unknown => Ok(None),
+        PresetGroup::Unknown => Ok(None),
     }
 }
 

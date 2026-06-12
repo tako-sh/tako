@@ -41,7 +41,7 @@ fn refresh_generated_files_after_secret_change(project_dir: &Path, config_path: 
         PresetGroup::Go => {
             let _ = build::go::write_secret_accessors(project_dir);
         }
-        PresetGroup::Rust | PresetGroup::Unknown => {}
+        PresetGroup::Unknown => {}
     }
 }
 

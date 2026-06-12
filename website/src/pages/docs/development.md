@@ -185,14 +185,6 @@ import { tako } from "tako.sh";
 const databaseUrl = tako.secrets.DATABASE_URL;
 ```
 
-Rust apps read the same envelope before serving:
-
-```rust
-let bootstrap = tako::read_bootstrap()?;
-let runtime = tako::Runtime::from_env(bootstrap)?;
-let database_url = runtime.secret("DATABASE_URL");
-```
-
 Changing secrets restarts the app so fresh processes receive the new fd-3 data.
 
 ## Storage
@@ -217,8 +209,6 @@ const uploadUrl = await tako.storages.uploads.createUploadUrl("avatars/u_123.png
 ```
 
 Local storage URLs are app-relative signed routes under `/_tako/storages/<binding>/<key>`.
-
-Rust apps can parse the same storage binding map with `tako::StorageBag`. The Rust SDK supports local signed GET/PUT URLs, S3 SigV4 signed GET/PUT URLs, optional public S3 URLs when `public_base_url` is configured, download response header overrides, and upload content-type signing.
 
 Backup storage is not exposed through the SDK unless the same resource is also listed under `[envs.<env>].storages`.
 
@@ -293,23 +283,9 @@ export default defineWorkflow<{ to: string }>("send-email", {
 
 Dev uses the same architecture as production: `tako-dev-server` owns the runs DB, dispatches runnable workflow work, and starts a worker subprocess on demand. Workers are scale-to-zero in dev with a short idle timeout, so code edits take effect on the next runnable enqueue, signal, or cron tick.
 
+Go workflow handlers live in `cmd/worker/main.go`. When that file exists, `tako dev` runs the HTTP app with `go run .` and the worker with `go run ./cmd/worker`.
+
 Broken workflow imports fail fast. If the worker exits non-zero before claiming any run, enqueue returns a worker-unhealthy error instead of silently queueing work.
-
-Rust workflows use explicit worker registration instead of JS file discovery:
-
-```rust
-let mut worker = tako::Worker::from_env()?;
-worker.register("send-email", |ctx, payload| {
-  let to: String = ctx.step.run("parse", || {
-    Ok(payload["to"].as_str().unwrap_or_default().to_string())
-  })?;
-  println!("send {to}");
-  Ok(())
-})?;
-
-worker.register_schedules()?;
-while worker.run_once()? {}
-```
 
 ## Images
 

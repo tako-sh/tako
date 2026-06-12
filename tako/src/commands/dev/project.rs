@@ -271,7 +271,7 @@ fn resolve_dev_build_adapter(project_dir: &Path, cfg: &TakoToml) -> Result<Build
     {
         return BuildAdapter::from_id(adapter_override).ok_or_else(|| {
             format!(
-                "Invalid runtime '{}'; expected one of: bun, node, go, rust",
+                "Invalid runtime '{}'; expected one of: bun, node, go",
                 adapter_override
             )
         });
@@ -342,8 +342,8 @@ fn resolve_runtime_default_dev_command(
 }
 
 /// Build the command that spawns the workflow worker subprocess in dev.
-/// Returns `None` when the project has no configured workflows directory
-/// (nothing to run) or the runtime isn't JS (only JS workflows are supported).
+/// Returns `None` when the project has no configured worker entrypoint
+/// for the selected runtime.
 ///
 /// The worker entrypoint path mirrors production: it lives in the linked
 /// SDK under `node_modules/tako.sh/dist/entrypoints/{runtime}-worker.mjs`.
@@ -358,7 +358,14 @@ pub(super) fn resolve_dev_worker_command(
         .join("workflows")
         .is_dir()
     {
-        return None;
+        return match runtime_adapter {
+            BuildAdapter::Go if project_dir.join("cmd/worker/main.go").is_file() => Some(vec![
+                "go".to_string(),
+                "run".to_string(),
+                "./cmd/worker".to_string(),
+            ]),
+            _ => None,
+        };
     }
     let base = "node_modules/tako.sh/dist/entrypoints";
     match runtime_adapter {
@@ -372,7 +379,13 @@ pub(super) fn resolve_dev_worker_command(
             "--experimental-strip-types".to_string(),
             format!("{base}/node-worker.mjs"),
         ]),
-        BuildAdapter::Go | BuildAdapter::Rust | BuildAdapter::Unknown => None,
+        BuildAdapter::Go if project_dir.join("cmd/worker/main.go").is_file() => Some(vec![
+            "go".to_string(),
+            "run".to_string(),
+            "./cmd/worker".to_string(),
+        ]),
+        BuildAdapter::Go => None,
+        BuildAdapter::Unknown => None,
     }
 }
 

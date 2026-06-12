@@ -128,6 +128,28 @@ fn should_report_artifact_include_patterns_shows_custom_patterns() {
 }
 
 #[test]
+fn resolve_go_workflow_worker_main_detects_conventional_worker() {
+    let temp = TempDir::new().unwrap();
+    std::fs::create_dir_all(temp.path().join("cmd/worker")).unwrap();
+    std::fs::write(temp.path().join("cmd/worker/main.go"), "package main").unwrap();
+
+    assert_eq!(
+        resolve_workflow_worker_main(temp.path(), crate::build::BuildAdapter::Go).as_deref(),
+        Some("worker")
+    );
+}
+
+#[test]
+fn resolve_go_workflow_worker_main_ignores_projects_without_worker() {
+    let temp = TempDir::new().unwrap();
+
+    assert_eq!(
+        resolve_workflow_worker_main(temp.path(), crate::build::BuildAdapter::Go),
+        None
+    );
+}
+
+#[test]
 fn resolve_build_stages_prefers_config_stages() {
     let build = crate::config::BuildConfig {
         run: Some("should-not-run".to_string()),

@@ -11,6 +11,8 @@ pub(super) struct DeployArchiveManifest {
     pub(super) version: String,
     pub(super) runtime: String,
     pub(super) main: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) workflow_worker_main: Option<String>,
     pub(super) idle_timeout: u32,
     pub(super) env_vars: BTreeMap<String, String>,
     pub(super) secret_names: Vec<String>,
@@ -163,6 +165,7 @@ pub(super) fn build_deploy_archive_manifest(
     version: &str,
     runtime_name: &str,
     main: &str,
+    workflow_worker_main: Option<String>,
     idle_timeout: u32,
     package_manager: Option<String>,
     commit_message: Option<String>,
@@ -191,6 +194,7 @@ pub(super) fn build_deploy_archive_manifest(
         version: version.to_string(),
         runtime: runtime_name.to_string(),
         main: main.to_string(),
+        workflow_worker_main,
         idle_timeout,
         env_vars,
         secret_names,
@@ -279,6 +283,7 @@ mod tests {
             "v123",
             "bun",
             "server/index.ts",
+            None,
             300,
             Some("bun".to_string()),
             Some("feat: ship it".to_string()),
@@ -346,6 +351,7 @@ mod tests {
             "v1",
             "bun",
             "server/index.mjs",
+            None,
             600,
             None,
             None,
@@ -363,6 +369,7 @@ mod tests {
         assert_eq!(manifest.version, "v1");
         assert_eq!(manifest.runtime, "bun");
         assert_eq!(manifest.main, "server/index.mjs");
+        assert_eq!(manifest.workflow_worker_main, None);
         assert_eq!(manifest.idle_timeout, 600);
         assert_eq!(manifest.git_dirty, Some(true));
         assert_eq!(

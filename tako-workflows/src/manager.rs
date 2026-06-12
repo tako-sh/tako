@@ -371,6 +371,38 @@ pub fn worker_spec_for_bun(
     storages: std::collections::HashMap<String, tako_core::StorageBinding>,
     isolation: Option<tako_spawn::ProcessIsolation>,
 ) -> WorkerSpec {
+    env.entry("NODE_ENV".to_string())
+        .or_insert_with(|| "production".to_string());
+
+    worker_spec_for_command(
+        app,
+        workers,
+        concurrency,
+        idle_timeout_ms,
+        internal_socket,
+        vec![bun_path.into(), worker_entry.into()],
+        app_cwd,
+        env,
+        secrets,
+        storages,
+        isolation,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn worker_spec_for_command(
+    app: &str,
+    workers: u32,
+    concurrency: u32,
+    idle_timeout_ms: u64,
+    internal_socket: &Path,
+    command: Vec<std::ffi::OsString>,
+    app_cwd: &Path,
+    mut env: std::collections::HashMap<String, String>,
+    secrets: std::collections::HashMap<String, String>,
+    storages: std::collections::HashMap<String, tako_core::StorageBinding>,
+    isolation: Option<tako_spawn::ProcessIsolation>,
+) -> WorkerSpec {
     env.insert(
         tako_core::instance_env::TAKO_APP_NAME_ENV.into(),
         app.to_string(),
@@ -379,15 +411,13 @@ pub fn worker_spec_for_bun(
         tako_core::instance_env::TAKO_INTERNAL_SOCKET_ENV.into(),
         internal_socket.to_string_lossy().to_string(),
     );
-    env.entry("NODE_ENV".to_string())
-        .or_insert_with(|| "production".to_string());
 
     WorkerSpec {
         app: app.to_string(),
         workers,
         concurrency,
         idle_timeout_ms,
-        command: vec![bun_path.into(), worker_entry.into()],
+        command,
         cwd: app_cwd.to_path_buf(),
         env,
         secrets,

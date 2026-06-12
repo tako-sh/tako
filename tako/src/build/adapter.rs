@@ -7,7 +7,6 @@ use tako_runtime::{PluginContext, RuntimeDef};
 pub enum PresetGroup {
     Js,
     Go,
-    Rust,
     Unknown,
 }
 
@@ -16,7 +15,6 @@ impl PresetGroup {
         match self {
             PresetGroup::Js => "javascript",
             PresetGroup::Go => "go",
-            PresetGroup::Rust => "rust",
             PresetGroup::Unknown => "unknown",
         }
     }
@@ -27,7 +25,6 @@ pub enum BuildAdapter {
     Bun,
     Node,
     Go,
-    Rust,
     Unknown,
 }
 
@@ -37,7 +34,6 @@ impl BuildAdapter {
             "bun" => Some(BuildAdapter::Bun),
             "node" => Some(BuildAdapter::Node),
             "go" => Some(BuildAdapter::Go),
-            "rust" => Some(BuildAdapter::Rust),
             _ => None,
         }
     }
@@ -47,7 +43,6 @@ impl BuildAdapter {
             BuildAdapter::Bun => "bun",
             BuildAdapter::Node => "node",
             BuildAdapter::Go => "go",
-            BuildAdapter::Rust => "rust",
             BuildAdapter::Unknown => "unknown",
         }
     }
@@ -60,7 +55,6 @@ impl BuildAdapter {
         match self {
             BuildAdapter::Bun | BuildAdapter::Node => PresetGroup::Js,
             BuildAdapter::Go => PresetGroup::Go,
-            BuildAdapter::Rust => PresetGroup::Rust,
             BuildAdapter::Unknown => PresetGroup::Unknown,
         }
     }
@@ -70,10 +64,7 @@ impl BuildAdapter {
     }
 
     pub fn version_probe_tool(self) -> &'static str {
-        match self {
-            BuildAdapter::Rust => "rustc",
-            other => other.id(),
-        }
+        self.id()
     }
 
     /// Produce a RuntimeDef using the plugin system with project context.
@@ -128,10 +119,6 @@ pub fn detect_build_adapter(project_dir: &Path) -> BuildAdapter {
 
     if project_dir.join("go.mod").is_file() {
         return BuildAdapter::Go;
-    }
-
-    if project_dir.join("Cargo.toml").is_file() {
-        return BuildAdapter::Rust;
     }
 
     if project_dir.join("package.json").is_file() {
@@ -328,12 +315,11 @@ mod tests {
         let bun = builtin_base_preset_content_for_alias("bun").expect("bun preset");
         let node = builtin_base_preset_content_for_alias("node").expect("node preset");
         let go = builtin_base_preset_content_for_alias("go").expect("go preset");
-        let rust = builtin_base_preset_content_for_alias("rust").expect("rust preset");
 
         assert!(bun.contains("main = \"src/index.ts\""));
         assert!(node.contains("main = \"index.js\""));
         assert!(go.contains("main = \"app\""));
-        assert!(rust.contains("main = \"app\""));
+        assert!(builtin_base_preset_content_for_alias("rust").is_none());
     }
 
     #[test]
@@ -341,7 +327,7 @@ mod tests {
         assert_eq!(BuildAdapter::from_id("bun"), Some(BuildAdapter::Bun));
         assert_eq!(BuildAdapter::from_id("node"), Some(BuildAdapter::Node));
         assert_eq!(BuildAdapter::from_id("go"), Some(BuildAdapter::Go));
-        assert_eq!(BuildAdapter::from_id("rust"), Some(BuildAdapter::Rust));
+        assert_eq!(BuildAdapter::from_id("rust"), None);
         assert_eq!(BuildAdapter::from_id("python"), None);
     }
 
@@ -350,17 +336,15 @@ mod tests {
         assert_eq!(BuildAdapter::Bun.preset_group(), PresetGroup::Js);
         assert_eq!(BuildAdapter::Node.preset_group(), PresetGroup::Js);
         assert_eq!(BuildAdapter::Go.preset_group(), PresetGroup::Go);
-        assert_eq!(BuildAdapter::Rust.preset_group(), PresetGroup::Rust);
         assert_eq!(BuildAdapter::Unknown.preset_group(), PresetGroup::Unknown);
         assert_eq!(PresetGroup::Js.id(), "javascript");
         assert_eq!(PresetGroup::Go.id(), "go");
-        assert_eq!(PresetGroup::Rust.id(), "rust");
     }
 
     #[test]
-    fn rust_uses_rustc_for_version_probing() {
-        assert_eq!(BuildAdapter::Rust.version_probe_tool(), "rustc");
+    fn version_probe_tool_matches_runtime_id() {
         assert_eq!(BuildAdapter::Bun.version_probe_tool(), "bun");
+        assert_eq!(BuildAdapter::Go.version_probe_tool(), "go");
     }
 
     #[test]
@@ -371,19 +355,19 @@ mod tests {
     }
 
     #[test]
-    fn detect_build_adapter_uses_cargo_toml_for_rust() {
+    fn detect_build_adapter_ignores_cargo_toml() {
         let temp = TempDir::new().unwrap();
         std::fs::write(
             temp.path().join("Cargo.toml"),
             "[package]\nname = \"demo\"\nversion = \"0.1.0\"",
         )
         .unwrap();
-        assert_eq!(detect_build_adapter(temp.path()), BuildAdapter::Rust);
+        assert_eq!(detect_build_adapter(temp.path()), BuildAdapter::Unknown);
     }
 
     #[test]
     fn builtin_base_preset_content_parses_as_valid_preset() {
-        for alias in &["bun", "node", "go", "rust"] {
+        for alias in &["bun", "node", "go"] {
             let content = builtin_base_preset_content_for_alias(alias).unwrap();
             let parsed: toml::Value = toml::from_str(&content).unwrap_or_else(|e| {
                 panic!("failed to parse generated preset for {alias}: {e}\n---\n{content}")

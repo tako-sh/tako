@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use crate::plugin::{PluginContext, RuntimePlugin};
 use crate::types::{
     EntrypointDef, EnvsDef, PackageManagerDef, PackageManagerDevDef, PresetDef, RuntimeDef,
@@ -9,7 +11,13 @@ use crate::types::{
 pub struct GoPlugin;
 
 impl GoPlugin {
-    fn build_def(&self) -> RuntimeDef {
+    fn build_def(&self, project_dir: Option<&Path>) -> RuntimeDef {
+        let build = if project_dir.is_some_and(has_conventional_worker_binary) {
+            "CGO_ENABLED=0 go build -o app . && CGO_ENABLED=0 go build -o worker ./cmd/worker"
+        } else {
+            "CGO_ENABLED=0 go build -o app ."
+        };
+
         RuntimeDef {
             id: "go".to_string(),
             language: "go".to_string(),
@@ -26,7 +34,7 @@ impl GoPlugin {
                     "go.sum".to_string(),
                 ],
                 start: vec!["{main}".to_string()],
-                build: Some("CGO_ENABLED=0 go build -o app .".to_string()),
+                build: Some(build.to_string()),
             },
             server: ServerDef {
                 entrypoint_path: None,
@@ -57,13 +65,17 @@ impl RuntimePlugin for GoPlugin {
         "go"
     }
 
-    fn runtime_def(&self, _ctx: &PluginContext) -> RuntimeDef {
-        self.build_def()
+    fn runtime_def(&self, ctx: &PluginContext) -> RuntimeDef {
+        self.build_def(Some(ctx.project_dir))
     }
 
     fn default_runtime_def(&self) -> RuntimeDef {
-        self.build_def()
+        self.build_def(None)
     }
+}
+
+fn has_conventional_worker_binary(project_dir: &Path) -> bool {
+    project_dir.join("cmd/worker/main.go").is_file()
 }
 
 // ── Tests ──────────────────────────────────────────────────────────
@@ -87,6 +99,26 @@ mod tests {
         assert_eq!(
             def.preset.build.as_deref(),
             Some("CGO_ENABLED=0 go build -o app .")
+        );
+    }
+
+    #[test]
+    fn go_plugin_builds_conventional_worker_binary_when_present() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join("cmd/worker")).unwrap();
+        std::fs::write(temp.path().join("cmd/worker/main.go"), "package main").unwrap();
+
+        let ctx = PluginContext {
+            project_dir: temp.path(),
+            package_manager: None,
+        };
+        let def = GoPlugin.runtime_def(&ctx);
+
+        assert_eq!(
+            def.preset.build.as_deref(),
+            Some(
+                "CGO_ENABLED=0 go build -o app . && CGO_ENABLED=0 go build -o worker ./cmd/worker"
+            )
         );
     }
 

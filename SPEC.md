@@ -8,7 +8,7 @@ Tako is a deployment and development platform consisting of:
 
 - **`tako` CLI** - Local tool for development, deployment, server/secret management
 - **`tako-server`** - Remote server binary that manages app processes, routing, and rolling updates
-- **SDKs** - Runtime helpers for JavaScript/TypeScript (`tako.sh`), Go (`tako.sh`), and Rust (`tako`)
+- **SDKs** - Runtime helpers for JavaScript/TypeScript (`tako.sh`) and Go (`tako.sh`)
 
 Built in Rust (2024 edition). Uses Pingora (Cloudflare's proxy) for production-grade performance.
 
@@ -20,7 +20,7 @@ Built in Rust (2024 edition). Uses Pingora (Cloudflare's proxy) for production-g
 
 **Reliability:** Strong test coverage, graceful edge case handling, users can delete files/folders safely with recovery paths.
 
-**Extensibility:** Support multiple runtimes (Bun, Node, Go, Rust). Runtime-agnostic architecture.
+**Extensibility:** Support JavaScript runtimes (Bun, Node) and Go as native app runtimes, with runtime behavior isolated in plugins.
 
 ## Configuration
 
@@ -152,7 +152,7 @@ Variable values may be TOML strings, numbers, booleans, or datetimes. Tako conve
 - If `main` is omitted in `tako.toml`, deploy/dev check the manifest main field (e.g. `package.json` `main`), then fall back to preset `main`.
 - For JS adapters (`bun`, `node`), when preset `main` is `index.<ext>` or `src/index.<ext>` (`ext`: `ts`, `tsx`, `js`, `jsx`), deploy/dev resolve in this order: existing `index.<ext>`, then existing `src/index.<ext>`, then preset `main`.
 - If neither `tako.toml main`, manifest main, nor preset `main` is set, deploy/dev fail with guidance.
-- Top-level `runtime` is optional; when set to `bun`, `node`, `go`, or `rust`, it overrides adapter detection for default preset selection in `tako deploy`/`tako dev`. Add `@<version>` (for example `bun@1.2.3`) to pin the deploy runtime version. Without a pin, deploy auto-detects with `<runtime> --version`. `tako init` pins the locally-installed version by default.
+- Top-level `runtime` is optional; when set to `bun`, `node`, or `go`, it overrides adapter detection for default preset selection in `tako deploy`/`tako dev`. Add `@<version>` (for example `bun@1.2.3`) to pin the deploy runtime version. Without a pin, deploy auto-detects with `<runtime> --version`. `tako init` pins the locally-installed version by default.
 - Top-level `package_manager` is optional; when set (e.g. `"npm"`, `"pnpm"`, `"yarn"`, `"bun"`), it overrides auto-detection from `package.json` `packageManager` field or lockfiles.
 - Top-level `preset` is optional. Presets are metadata-only (`name`, `main`, `assets`, `dev`) providing entrypoint, asset, and dev-command defaults. They do not contain build, install, or start commands.
 - Top-level `dev` is optional; when set (e.g. `["vite", "dev"]`), it overrides both preset and runtime default dev commands for `tako dev`.
@@ -188,7 +188,7 @@ Variable values may be TOML strings, numbers, booleans, or datetimes. Tako conve
 - Official preset definitions live in the `tako-sh/presets` GitHub repo (overridable via the `PACKAGE_REPOSITORY_URL` env var for testing). Fetched branch manifests are cached locally for roughly one hour; on fetch failure, Tako falls back to any previously cached copy or the manifests embedded in the CLI binary. GitHub preset fetches use `GH_TOKEN` when set, falling back to `GITHUB_TOKEN`.
 - Deploy restores local JS build caches from workspace-root `.turbo/` and app-root `.next/cache/` into the temporary build workspace when present, then excludes those cache directories from the final deploy artifact.
 - Runtime behavior (install commands, launch args, entrypoint resolution) lives in runtime plugins (`tako-runtime/src/plugins/`), not in presets.
-- `tako init` installs the selected runtime's SDK via the runtime package-manager `add` command: `tako.sh` for JS/Go and `tako` for Rust.
+- `tako init` installs the selected runtime's SDK via the runtime package-manager `add` command: `tako.sh` for JS/Go.
 - Server membership is declared per environment with `[envs.<name>].servers`.
 - Storage bindings are declared per environment with `[envs.<name>].storages = { app_name = "resource_name" }`. The key is the stable app-facing binding exposed as `tako.storages.<app_name>`; the value references a top-level `[storages.<resource_name>]` S3 resource or the built-in `local` resource.
 - App data backups are enabled per environment with `backup = { storage = "resource_name" }`. The resource must be a declared private S3-compatible `[storages.<resource_name>]` resource. Backup storage is not exposed as `tako.storages`; only `[envs.<env>].storages` creates SDK bindings.
@@ -203,7 +203,7 @@ Variable values may be TOML strings, numbers, booleans, or datetimes. Tako conve
 - `tako dev` resolves the dev command with this priority:
   1. `dev` in `tako.toml` (user override, e.g. `dev = ["custom", "cmd"]`)
   2. Preset `dev` command (e.g. vite preset uses `vite dev`)
-  3. Runtime default: JS runtimes run through the SDK HTTP entrypoint (`bun run node_modules/tako.sh/dist/entrypoints/bun-server.mjs {main}`, or `node --experimental-strip-types node_modules/tako.sh/dist/entrypoints/node-server.mjs {main}`), Go uses `go run .`, and Rust uses `cargo run`
+  3. Runtime default: JS runtimes run through the SDK HTTP entrypoint (`bun run node_modules/tako.sh/dist/entrypoints/bun-server.mjs {main}`, or `node --experimental-strip-types node_modules/tako.sh/dist/entrypoints/node-server.mjs {main}`), and Go uses `go run .`
 - `tako dev` marks an app running only after the app writes its bound loopback port to fd 4. Direct Vite dev commands (for example `vite` or `vite dev`) must use the `tako.sh/vite` plugin for fd-4 readiness; if the command looks like Vite and no readiness signal arrives, the CLI reports a Vite-specific plugin hint. Tako does not parse Vite stdout URLs as readiness.
 - The dev entrypoints host the HTTP server. Workflow workers run as a **separate, scale-to-zero subprocess** managed by tako-dev-server's embedded `WorkflowManager` — same architecture as production, but `workers: 0` with a 3s idle timeout so the worker only exists while there's real work. The SDK wraps `export default function fetch()` or `export default { fetch }` into a proper HTTP server on `PORT`; worker stdout/stderr is tee'd into the CLI log stream with `scope: "worker"`.
 - Process exit detection: `tako dev` polls `try_wait()` every 500ms to detect when the app process exits. On exit, the route goes idle (proxy stops forwarding) and the next HTTP request triggers a restart. A route is activated only after fd-4 readiness succeeds.
@@ -212,7 +212,7 @@ Variable values may be TOML strings, numbers, booleans, or datetimes. Tako conve
 - Deploy sends app vars + runtime vars to `tako-server` in the `deploy` command payload (non-secret env vars in `app.json`); secrets and storage bindings are sent separately and stored encrypted in SQLite. `tako-server` passes secrets and storage bindings to HTTP instances and workflow workers via fd 3 (file descriptor 3) at spawn time — the server writes JSON to a pipe and the child process reads fd 3 before any user code runs.
 - `[build]` section has `run` (build command), `install` (optional pre-build install command), `cwd` (optional working directory relative to project root; absolute paths and `..` are rejected), plus `include`/`exclude` for artifact filtering. `[build]` is a shortcut for a single-stage `[[build_stages]]` list.
 - `[build]` and `[[build_stages]]` are mutually exclusive: having both `build.run` and `[[build_stages]]` is an error. `[build].include`/`[build].exclude` cannot be used alongside `[[build_stages]]`; use per-stage `exclude` instead.
-- Build stage resolution precedence (first non-empty wins): `[[build_stages]]` → `[build]` (normalized to a single stage) → runtime default. The runtime default is the runtime plugin's build command: `bun/npm/pnpm/yarn run --if-present build` for JS runtimes, `cargo build --release --locked` with a stable `app` binary output for Rust, and no default for Go. When nothing resolves, the build phase is a no-op.
+- Build stage resolution precedence (first non-empty wins): `[[build_stages]]` → `[build]` (normalized to a single stage) → runtime default. The runtime default is the runtime plugin's build command: `bun/npm/pnpm/yarn run --if-present build` for JS runtimes, and `CGO_ENABLED=0 go build -o app .` for Go. If a Go project has `cmd/worker/main.go`, the Go default also builds `CGO_ENABLED=0 go build -o worker ./cmd/worker`. When nothing resolves, the build phase is a no-op.
 - App-level custom build stages can be declared in `tako.toml` under `[[build_stages]]` (top-level array):
   - `name` (optional display label)
   - `cwd` (optional, relative to app root; `..` is allowed for monorepo traversal but guarded against escaping the workspace root; symlink escapes outside the source root fail deploy)
@@ -224,7 +224,7 @@ Variable values may be TOML strings, numbers, booleans, or datetimes. Tako conve
 - During `tako deploy`, source files are bundled from source root (`git` root when available, otherwise app directory).
 - Deploy always force-excludes `.git/`, `.tako/`, `.env*`, and `node_modules/` from the deploy archive. Additional exclusions come from `[build].exclude` and `.gitignore`.
 - After extracting the deploy artifact, `tako-server` runs the runtime plugin's production install command (e.g. `bun install --production`) before starting instances.
-- When `runtime` includes `@<version>`, deploy uses that version directly. Otherwise, runtime version resolution runs the runtime probe tool's `--version` directly, falling back to `latest`. Rust uses `rustc --version` for this metadata.
+- When `runtime` includes `@<version>`, deploy uses that version directly. Otherwise, runtime version resolution runs the runtime probe tool's `--version` directly, falling back to `latest`.
 - Deploy saves the resolved runtime version into `app.json` (`runtime_version` field).
 - Built target artifacts are cached locally under `.tako/artifacts/` using a deterministic cache key that includes source hash, target label, resolved preset source/commit, build commands, include/exclude patterns, asset roots, and app subdirectory.
 - Cached artifacts are checksum/size verified before reuse; invalid cache entries are automatically discarded and rebuilt.
@@ -407,7 +407,7 @@ When enabled, Tako backs up durable per-app state under `{data_dir}/apps/{app}/{
 - `app/` — app-owned data exposed as `TAKO_DATA_DIR`
 - `tako/workflows.sqlite` — Tako-owned durable workflow queue/state
 
-Workflow storage uses local SQLite at `{data_dir}/apps/{app}/{env}/data/tako/workflows.sqlite` unless the environment has credential `postgres_url`, in which case the server uses Postgres schema `tako_workflows` keyed by deployed app id. If a deployed environment targets more than one server and the JS app has `<app_root>/workflows/`, deploy fails before build/deploy work starts unless `postgres_url` is set or every workflow definition opts into per-server local execution with `defineWorkflow(..., { local: true, ... })`. Local workflows use each server's own local queue and cron schedule set; cron runs once per server and enqueued work is not globally deduplicated.
+Workflow storage uses local SQLite at `{data_dir}/apps/{app}/{env}/data/tako/workflows.sqlite` unless the environment has credential `postgres_url`, in which case the server uses Postgres schema `tako_workflows` keyed by deployed app id. If a deployed environment targets more than one server and the JS app has `<app_root>/workflows/`, deploy fails before build/deploy work starts unless `postgres_url` is set or every workflow definition opts into per-server local execution with `defineWorkflow(..., { local: true, ... })`. If a Go app has `cmd/worker/main.go` and targets more than one server, deploy requires `postgres_url` because Go workflows do not have a source-level local-only annotation. Local workflows use each server's own local queue and cron schedule set; cron runs once per server and enqueued work is not globally deduplicated.
 
 Channel replay uses local SQLite at `{data_dir}/apps/{app}/{env}/data/tako/channels.sqlite` unless the environment has credential `postgres_url`, in which case the server uses Postgres schema `tako_channels` keyed by deployed app id. Multi-server channel deploys require `postgres_url` because a publish on one server must be visible to subscribers and reconnecting clients on every server. Channel messages are inserted durably before fanout; production subscribers poll the selected replay store for new retained rows.
 
@@ -557,15 +557,14 @@ Template behavior:
 - Prompts for required app `name` (default from selected-config parent directory-derived app name).
 - Prompts for required production route (`[envs.production].route`) with default `{name}.example.com`.
 - If the production route is a wildcard route, prompts to set up Cloudflare DNS for wildcard HTTPS. When accepted, init optionally asks when the token expires and encrypts the Cloudflare API token in `.tako/secrets.json` under the production environment's `credentials` object as `ssl.cloudflare`.
-- Detects adapter (`bun`, `node`, `go`, `rust`, fallback `unknown`) and prompts for runtime selection.
+- Detects adapter (`bun`, `node`, `go`, fallback `unknown`) and prompts for runtime selection.
 - For JS runtimes, prompts for `app_root` after runtime selection. The default is `src` for new projects, `src` or `app` when existing Tako JS files live there, and `.` when existing `tako.d.ts`, legacy `tako.gen.ts`, `channels/`, or `workflows/` live next to `tako.toml`. The generated config omits `app_root` when the selected root is the default `src`, and writes it only for non-default roots.
-- After generating `tako.toml`, init installs the SDK package via the selected runtime's package-manager `add` command (for JS: `bun add tako.sh`, etc.; for Go: `go get tako.sh`; for Rust: `cargo add tako`).
+- After generating `tako.toml`, init installs the SDK package via the selected runtime's package-manager `add` command (for JS: `bun add tako.sh`, etc.; for Go: `go get tako.sh`).
 - In interactive mode, init fetches runtime-family preset names from official family manifest files (`presets/<language>.toml`) and shows `Fetching presets...` while loading.
 - For built-in base adapters, init defaults to:
   - Bun: `bun`
   - Node: `node`
   - Go: `go`
-  - Rust: `rust`
 - Init prints the full "Detected" summary block only in verbose mode; default output keeps setup concise and action-oriented.
 - If no family presets are available after fetch, init skips preset selection and uses the runtime base preset.
 - When "custom preset reference" is selected, init leaves top-level `preset` unset (commented) but still writes top-level `runtime`.
@@ -1153,7 +1152,7 @@ Deploy flow helpers:
 
 **Steps:**
 
-1. Pre-deployment validation (secrets present and unexpired, S3 credentials present and unexpired for selected storage bindings and configured backup storage, provider credentials present and unexpired when Cloudflare SSL is selected, Let’s Encrypt routes include wildcards, or shared channel/workflow storage is required, multi-server channel deploys require `postgres_url`, multi-server workflow deploys require `postgres_url` unless every workflow definition sets `local: true`, warnings for app/S3/provider credentials expiring within 30 days, server target metadata present/valid for all selected servers)
+1. Pre-deployment validation (secrets present and unexpired, S3 credentials present and unexpired for selected storage bindings and configured backup storage, provider credentials present and unexpired when Cloudflare SSL is selected, Let’s Encrypt routes include wildcards, or shared channel/workflow storage is required, multi-server channel deploys require `postgres_url`, multi-server JS workflow deploys require `postgres_url` unless every workflow definition sets `local: true`, multi-server Go workflow deploys require `postgres_url`, warnings for app/S3/provider credentials expiring within 30 days, server target metadata present/valid for all selected servers)
 2. Resolve source bundle root (git root when available; otherwise app directory)
 3. Resolve app subdirectory from the selected config file's parent directory relative to source bundle root
 4. Resolve deploy runtime `main` (`main` from `tako.toml`; otherwise manifest main such as `package.json` `main`; otherwise preset `main`, with JS index fallback order: `index.<ext>` then `src/index.<ext>` for `ts`/`tsx`/`js`/`jsx` when applicable)
@@ -2224,63 +2223,9 @@ For frameworks that manage their own server (e.g. Fiber on fasthttp), use `tako.
 - The compiled binary runs directly (`launch_args: ["{main}"]`), no SDK entrypoint wrapper. The `tako` package wires up the protocol from inside the user's own binary.
 - `tako.ListenAndServe()` handles the full protocol: CLI arg parsing (`--instance`), TCP serving, `Host: <app>.tako` endpoint interception, graceful shutdown on `SIGTERM`/`SIGINT` with a 10s drain window.
 - Deploy auto-injects `GOOS=linux` and `GOARCH` for cross-compilation to the target server.
-- Default build: `CGO_ENABLED=0 go build -o app .` producing a static binary.
+- Default build: `CGO_ENABLED=0 go build -o app .` producing a static HTTP binary. When `cmd/worker/main.go` exists, the default build also runs `CGO_ENABLED=0 go build -o worker ./cmd/worker` and the deploy manifest records `workflow_worker_main = "worker"` so `tako-server` can supervise the worker subprocess.
+- In `tako dev`, a Go project with `cmd/worker/main.go` runs workflows through `go run ./cmd/worker` as a separate scale-to-zero worker subprocess.
 - Secrets: `tako.GetSecret("name")` provides access to Tako-managed secrets. Run `tako generate` to generate a typed `Secrets` struct in `tako_secrets.go`.
-
-### Rust SDK
-
-#### Installation
-
-```bash
-cargo add tako
-```
-
-#### Interface
-
-Rust apps use the `tako` crate to bind to Tako's HTTP runtime contract:
-
-```rust
-let bootstrap = tako::read_bootstrap()?;
-let listener = tako::bind_listener()?;
-```
-
-`tako::bind_listener()` reads `HOST` and `PORT`, binds the TCP listener, and writes the selected port to fd 4. `tako::read_bootstrap()` reads the fd-3 bootstrap envelope containing the internal token, secrets, and storage metadata.
-
-The crate exposes `INTERNAL_STATUS_PATH`, `INTERNAL_TOKEN_HEADER`, `is_internal_status_request(...)`, and `internal_status_response(...)` so Rust HTTP frameworks can answer `Host: <app>.tako` + `GET /status` health probes and echo the internal token header.
-
-#### Exports
-
-| Export                                                                            | Purpose                                                                                                          |
-| --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `tako::bind_listener()` / `tako::read_bootstrap()`                                | Implements fd-4 readiness and fd-3 bootstrap parsing.                                                            |
-| `tako::Runtime::from_env(bootstrap)`                                              | Exposes `ENV`, `HOST`, `PORT`, `TAKO_BUILD`, `TAKO_DATA_DIR`, app name, secrets, and storages.                   |
-| `tako::Client`                                                                    | Blocking internal-socket client for enqueue, signal, worker lifecycle commands, and channel publish.             |
-| `tako::enqueue(...)`, `tako::signal(...)`, `tako::publish_channel(...)`           | Top-level convenience wrappers that build `Client::from_env()`.                                                  |
-| `tako::Worker`, `tako::WorkflowContext`, `tako::StepApi`, `tako::WorkflowOptions` | Rust workflow worker API for claim, schedule registration, checkpointed steps, bail/fail/defer/wait.             |
-| `tako::StorageBag`, `tako::Storage`, `tako::StorageBinding`, `tako::UrlOptions`   | Storage binding parsing plus local signed object URLs, S3 SigV4 signed URLs, and optional public S3 object URLs. |
-
-`Client::from_env()` reads `TAKO_INTERNAL_SOCKET` and `TAKO_APP_NAME`. It also accepts the older `TAKO_WORKFLOW_SOCKET` name as a compatibility fallback. Every command carries the app name and uses the same JSONL internal socket protocol as the JavaScript and Go SDKs: `enqueue_run`, `register_schedules`, `claim_run`, `heartbeat_run`, `save_step`, `complete_run`, `cancel_run`, `defer_run`, `wait_for_event`, `signal`, `fail_run`, and `channel_publish`.
-
-Rust workflow workers are explicit Rust code rather than file-discovered modules:
-
-```rust
-let mut worker = tako::Worker::from_env()?;
-worker.register("send-email", |ctx, payload| {
-    let to: String = ctx.step.run("parse", || {
-        Ok(payload["to"].as_str().unwrap_or_default().to_string())
-    })?;
-    println!("send {to}");
-    Ok(())
-})?;
-worker.register_schedules()?;
-while worker.run_once()? {}
-```
-
-Rust deploys use the Rust runtime plugin:
-
-- Dev command: `cargo run`
-- Default build: `cargo build --release --locked`, then copy the release binary to `app`
-- Production launch: run the compiled `app` binary directly
 
 ### Vite Plugin
 
@@ -2314,7 +2259,6 @@ import { withTako } from "tako.sh/nextjs";
 
 - Internal fetch handler adapters for Bun/Node runtimes (used by entrypoint binaries)
 - Go SDK with `tako.ListenAndServe()` for native http.Handler support
-- Rust SDK with fd-3 bootstrap, fd-4 readiness, and internal status helpers
 - Deployed app serving over private TCP with `PORT`/`HOST`; `tako dev` also uses TCP (`PORT`)
 - Internal status endpoint (`Host: <app>.tako` + `/status`)
 - Internal channel auth endpoint (`Host: <app>.tako` + `POST /channels/authorize`)
@@ -2556,7 +2500,16 @@ Set `worker: "name"` in the workflow opts to assign a workflow to a named worker
 
 Set `local: true` in the workflow opts to force that workflow onto per-server local SQLite storage. In multi-server environments, deploy uses shared Postgres workflow storage when `postgres_url` is set; otherwise every JS workflow source file must opt into `local: true` or deploy fails before build/deploy work starts. Local cron schedules run once per server and local enqueue uniqueness is scoped to each server. Channels do not have a local opt-out for multi-server deploys because channel publish/replay must reach subscribers connected to every server.
 
-**Go** — explicit registration in a separate `cmd/worker/main.go` binary. Go's separate-binary design is intentional: a single-binary design would link CGO-heavy workflow deps (image libs, ML bindings) into the HTTP server binary.
+**Go** — explicit registration in a separate `cmd/worker/main.go` binary. Go's separate-binary design is intentional: a single-binary design would link workflow dependencies (image libraries, ML bindings, mail clients, queue integrations) into the HTTP server binary.
+
+The HTTP app remains the default Go package and serves through `tako.ListenAndServe()`:
+
+```text
+main.go
+cmd/worker/main.go
+```
+
+`tako dev` runs the HTTP process with `go run .` and starts the workflow process with `go run ./cmd/worker` when that file exists. `tako deploy` builds the HTTP binary to `app` and the worker binary to `worker`; `app.json` records `workflow_worker_main = "worker"` so `tako-server` supervises that worker as a separate scale-to-zero subprocess.
 
 ### Enqueuing
 

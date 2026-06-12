@@ -34,6 +34,7 @@ pub use in_flight::InFlightLimiter;
 #[allow(unused_imports)]
 pub use manager::{
     WorkflowManager, WorkflowManagerError, internal_socket_path, worker_spec_for_bun,
+    worker_spec_for_command,
 };
 #[allow(unused_imports)]
 pub use supervisor::{WorkerLogSink, WorkerSpec, WorkerSupervisor};

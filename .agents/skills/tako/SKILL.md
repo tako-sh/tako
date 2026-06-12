@@ -51,13 +51,13 @@ For local browser verification:
 
 ### `tako init`
 
-Initialize a new Tako project. Auto-detects runtime (Bun, Node, Go, Rust) from project files (`package.json`, `go.mod`, `Cargo.toml`).
+Initialize a new Tako project. Auto-detects runtime (Bun, Node, Go) from project files (`package.json`, `go.mod`).
 
 ```bash
 tako init
 ```
 
-Runs a wizard that prompts for app name, runtime, build preset, entrypoint, assets path, and production route. Creates `tako.toml` and installs the SDK (`npm install tako.sh`, `go get tako.sh`, or `cargo add tako`).
+Runs a wizard that prompts for app name, runtime, build preset, entrypoint, assets path, and production route. Creates `tako.toml` and installs the SDK (`npm install tako.sh` or `go get tako.sh`).
 
 ### `tako doctor`
 

@@ -94,7 +94,7 @@ workers = 2
 | Key                     | Type   | Meaning                                                                                                                          |
 | ----------------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------- |
 | `name`                  | string | Required app name. Used for deploy ids, data paths, default dev hostnames, and generated examples.                               |
-| `runtime`               | string | Runtime id, optionally pinned as `<id>@<version>`, for example `bun@1.2.3`, `node@22.0.0`, `go`, or `rust`.                      |
+| `runtime`               | string | Runtime id, optionally pinned as `<id>@<version>`, for example `bun@1.2.3`, `node@22.0.0`, or `go`.                              |
 | `package_manager`       | string | JS package-manager override: `bun`, `npm`, `pnpm`, or `yarn`, optionally with a version suffix.                                  |
 | `preset`                | string | Framework preset alias such as `vite`, `tanstack-start`, or `nextjs`.                                                            |
 | `app_root`              | string | JS app root for `channels/`, `workflows/`, and preferred `tako.d.ts` placement. Defaults to `src`. Use `.` for root-level files. |
@@ -122,7 +122,7 @@ runtime = "bun"
 preset = "vite"
 ```
 
-JavaScript runtimes detect package managers from `package.json` `packageManager`, then lockfiles, unless `package_manager` is set. Go uses `go` and has no production dependency install. Rust uses Cargo, builds a release binary, and runs that stable `app` binary in production.
+JavaScript runtimes detect package managers from `package.json` `packageManager`, then lockfiles, unless `package_manager` is set. Go uses `go`, has no production dependency install, builds `app` as the HTTP binary, and builds `worker` from `cmd/worker/main.go` when that conventional worker entrypoint exists.
 
 Runtime version pins are written as part of `runtime`:
 
@@ -276,7 +276,7 @@ Shared channel/workflow storage uses the environment credential `postgres_url`, 
 tako credentials set postgres_url --env production
 ```
 
-If an environment has `<app_root>/channels/` and deploys to more than one server, deploy requires `postgres_url`. If an environment has `<app_root>/workflows/` and deploys to more than one server, deploy requires `postgres_url` unless every workflow definition opts into per-server local execution with `local: true`.
+If an environment has `<app_root>/channels/` and deploys to more than one server, deploy requires `postgres_url`. If an environment has `<app_root>/workflows/` and deploys to more than one server, deploy requires `postgres_url` unless every workflow definition opts into per-server local execution with `local: true`. Go apps with `cmd/worker/main.go` require `postgres_url` in multi-server environments because Go workflows do not have a source-level local-only annotation.
 
 Cloudflare Origin CA is selected per environment:
 
@@ -406,7 +406,7 @@ Precedence for unnamed workflows is built-in defaults, `[workflows]`, then `[ser
 
 Precedence for named workers is built-in defaults, `[workflows]`, `[workflows.<group>]`, `[servers.<name>.workflows]`, then `[servers.<name>.workflows.<group>]`.
 
-Channel replay and workflow storage use local SQLite unless `postgres_url` is set for the environment. With `postgres_url`, runtime state uses Postgres through the internal storage adapters: workflow tables live in schema `tako_workflows`; channel tables live in schema `tako_channels`. Multi-server channel deploys require `postgres_url`. Multi-server workflow deploys require `postgres_url` unless every workflow opts into per-server local execution with `local: true`.
+Channel replay and workflow storage use local SQLite unless `postgres_url` is set for the environment. With `postgres_url`, runtime state uses Postgres through the internal storage adapters: workflow tables live in schema `tako_workflows`; channel tables live in schema `tako_channels`. Multi-server channel deploys require `postgres_url`. Multi-server JS workflow deploys require `postgres_url` unless every workflow opts into per-server local execution with `local: true`; multi-server Go workflow deploys require `postgres_url`.
 
 ## Per-Server App Overrides
 
