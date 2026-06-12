@@ -1,4 +1,5 @@
 use clap::Subcommand;
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use crate::config::{
@@ -11,7 +12,7 @@ pub enum CredentialCommands {
     /// Set a provider credential used by Tako
     Set {
         /// Credential name
-        name: String,
+        name: Option<String>,
 
         /// Environment to set the credential for
         #[arg(long)]
@@ -39,31 +40,30 @@ pub enum CredentialCommands {
 }
 
 pub fn run(
-    cmd: CredentialCommands,
+    cmd: Option<CredentialCommands>,
     config_path: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let context = crate::commands::project_context::resolve_existing(config_path)?;
     match cmd {
-        CredentialCommands::Set {
+        Some(CredentialCommands::Set {
             name,
             env,
             expires_on,
-        } => set_credential_command(&context, &name, env.as_deref(), expires_on),
-        CredentialCommands::Rm { name, env } => {
+        }) => set_credential_command(&context, name.as_deref(), env.as_deref(), expires_on),
+        Some(CredentialCommands::Rm { name, env }) => {
             remove_credential_command(&context, &name, env.as_deref())
         }
-        CredentialCommands::List => list_credentials(&context),
+        Some(CredentialCommands::List) | None => list_credentials(&context),
     }
 }
 
 fn set_credential_command(
     context: &crate::commands::project_context::ProjectContext,
-    name: &str,
+    requested_name: Option<&str>,
     requested_env: Option<&str>,
     requested_expires_on: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let name = normalize_credential_name(name);
-    crate::config::validate_credential_name(&name)?;
+    let name = resolve_credential_name(requested_name)?;
     let env = crate::commands::secret::resolve_secret_environment(
         context,
         requested_env,
@@ -140,54 +140,135 @@ fn normalize_credential_name(name: &str) -> String {
     name.to_ascii_lowercase()
 }
 
+fn credential_options() -> Vec<(String, String, &'static str)> {
+    vec![
+        (
+            SSL_CLOUDFLARE_CREDENTIAL_NAME.to_string(),
+            SSL_CLOUDFLARE_CREDENTIAL_NAME.to_string(),
+            "Cloudflare certificates",
+        ),
+        (
+            POSTGRES_CREDENTIAL_NAME.to_string(),
+            POSTGRES_CREDENTIAL_NAME.to_string(),
+            "Shared channel and workflow storage",
+        ),
+    ]
+}
+
+fn resolve_credential_name(requested: Option<&str>) -> Result<String, Box<dyn std::error::Error>> {
+    if let Some(name) = requested {
+        let name = normalize_credential_name(name);
+        crate::config::validate_credential_name(&name)?;
+        return Ok(name);
+    }
+
+    if !output::is_interactive() {
+        return Err(
+            "Missing required credential name. Run `tako credentials set <name>` or run interactively to choose one."
+                .into(),
+        );
+    }
+
+    let options = credential_options();
+    let hints: Vec<&str> = options.iter().map(|(_, _, hint)| *hint).collect();
+    let choices = options
+        .iter()
+        .map(|(label, name, _)| (label.clone(), name.clone()))
+        .collect();
+    let mut wizard = output::Wizard::new().with_fields(&[("Credential", false)]);
+    wizard
+        .select("Credential", "Credential", choices, &hints, 0)
+        .map_err(Into::into)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct CredentialStatusRow {
+    name: String,
+    envs: Vec<(String, bool)>,
+}
+
+fn credential_status_rows(
+    tako_config: &crate::config::TakoToml,
+    secrets: &crate::config::SecretsStore,
+) -> (Vec<String>, Vec<CredentialStatusRow>) {
+    let mut envs = BTreeSet::new();
+    envs.extend(tako_config.get_environment_names());
+    envs.extend(secrets.environment_names());
+    let envs: Vec<String> = envs.into_iter().collect();
+
+    let mut names = BTreeSet::new();
+    names.extend(
+        credential_options()
+            .into_iter()
+            .map(|(_, credential, _)| credential),
+    );
+    names.extend(secrets.all_credential_names());
+
+    let rows = names
+        .into_iter()
+        .map(|name| CredentialStatusRow {
+            envs: envs
+                .iter()
+                .map(|env| (env.clone(), secrets.contains_credential(env, &name)))
+                .collect(),
+            name,
+        })
+        .collect();
+
+    (envs, rows)
+}
+
 fn list_credentials(
     context: &crate::commands::project_context::ProjectContext,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let secrets = crate::config::SecretsStore::load_from_dir(&context.project_dir)?;
-    let all_names = secrets.all_credential_names();
-    if all_names.is_empty() {
-        output::warning("No credentials configured.");
-        output::muted(&format!(
-            "Run {} to add one.",
-            output::strong("tako credentials set ssl.cloudflare")
-        ));
-        return Ok(());
-    }
+    let tako_config = crate::config::TakoToml::load_from_file(&context.config_path)?;
+    let (all_envs, rows) = credential_status_rows(&tako_config, &secrets);
 
     output::section("Credentials");
-    let all_envs = secrets.environment_names();
     if output::is_pretty() {
-        eprint!("{:<30}", "CREDENTIAL");
-        for env in &all_envs {
-            eprint!(" {:<15}", env.to_uppercase());
-        }
-        eprintln!();
-
-        eprint!("{}", "-".repeat(30));
-        for _ in &all_envs {
-            eprint!(" {}", "-".repeat(15));
-        }
-        eprintln!();
-
-        for name in &all_names {
-            eprint!("{:<30}", name);
+        if all_envs.is_empty() {
+            eprintln!("{:<30} {:<15}", "CREDENTIAL", "STATUS");
+            eprintln!("{} {}", "-".repeat(30), "-".repeat(15));
+        } else {
+            eprint!("{:<30}", "CREDENTIAL");
             for env in &all_envs {
-                if secrets.contains_credential(env, name) {
-                    eprint!(" {:<15}", "[set]");
-                } else {
-                    eprint!(" {:<15}", "-");
+                eprint!(" {:<15}", env.to_uppercase());
+            }
+            eprintln!();
+
+            eprint!("{}", "-".repeat(30));
+            for _ in &all_envs {
+                eprint!(" {}", "-".repeat(15));
+            }
+            eprintln!();
+        }
+
+        for row in &rows {
+            eprint!("{:<30}", row.name);
+            if row.envs.is_empty() {
+                eprint!(" {:<15}", "-");
+            } else {
+                for (_, is_set) in &row.envs {
+                    eprint!(" {:<15}", if *is_set { "[set]" } else { "-" });
                 }
             }
             eprintln!();
         }
     } else {
-        for name in &all_names {
-            let envs_with_credential: Vec<&str> = all_envs
+        for row in &rows {
+            if row.envs.is_empty() {
+                tracing::info!("{}: not set", row.name);
+                continue;
+            }
+
+            let statuses = row
+                .envs
                 .iter()
-                .filter(|env| secrets.contains_credential(env, name))
-                .map(|s| s.as_str())
-                .collect();
-            tracing::info!("{name}: set in {}", envs_with_credential.join(", "));
+                .map(|(env, is_set)| format!("{env}={}", if *is_set { "set" } else { "-" }))
+                .collect::<Vec<_>>()
+                .join(", ");
+            tracing::info!("{}: {}", row.name, statuses);
         }
     }
 
@@ -440,6 +521,84 @@ mod tests {
                     .is_none()
             );
         });
+    }
+
+    #[test]
+    fn credential_selector_options_include_supported_credentials() {
+        let options = credential_options();
+
+        assert_eq!(
+            options
+                .iter()
+                .map(|(label, _, _)| label.as_str())
+                .collect::<Vec<_>>(),
+            vec![SSL_CLOUDFLARE_CREDENTIAL_NAME, POSTGRES_CREDENTIAL_NAME]
+        );
+        assert_eq!(
+            options
+                .into_iter()
+                .map(|(_, credential, _)| credential)
+                .collect::<Vec<_>>(),
+            vec![
+                SSL_CLOUDFLARE_CREDENTIAL_NAME.to_string(),
+                POSTGRES_CREDENTIAL_NAME.to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn credential_status_rows_include_supported_credentials_and_config_envs() {
+        let mut config = crate::config::TakoToml::default();
+        config.envs.insert(
+            "production".to_string(),
+            crate::config::EnvConfig::default(),
+        );
+        config
+            .envs
+            .insert("staging".to_string(), crate::config::EnvConfig::default());
+
+        let mut secrets = crate::config::SecretsStore::default();
+        secrets.ensure_env_key_id("production").unwrap();
+        secrets
+            .set_credential(
+                "production",
+                SSL_CLOUDFLARE_CREDENTIAL_NAME,
+                EncryptedSecretValue::new("encrypted-token".to_string(), None),
+            )
+            .unwrap();
+
+        let (envs, rows) = credential_status_rows(&config, &secrets);
+
+        assert_eq!(envs, vec!["production", "staging"]);
+        assert_eq!(
+            rows,
+            vec![
+                CredentialStatusRow {
+                    name: POSTGRES_CREDENTIAL_NAME.to_string(),
+                    envs: vec![
+                        ("production".to_string(), false),
+                        ("staging".to_string(), false)
+                    ]
+                },
+                CredentialStatusRow {
+                    name: SSL_CLOUDFLARE_CREDENTIAL_NAME.to_string(),
+                    envs: vec![
+                        ("production".to_string(), true),
+                        ("staging".to_string(), false)
+                    ]
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn missing_credential_name_requires_interactive_selector() {
+        let err = resolve_credential_name(None).unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            "Missing required credential name. Run `tako credentials set <name>` or run interactively to choose one."
+        );
     }
 
     #[test]

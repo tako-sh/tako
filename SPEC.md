@@ -935,11 +935,11 @@ Remove tako-server and all data from a remote server.
    - Removes data directory (`/opt/tako/`) and the management socket directory (`/var/run/tako/`).
 4. Removes the server from the local `config.toml` server list.
 
-### tako credentials set [--env {environment}] [--expires-on {when}] {name}
+### tako credentials set [--env {environment}] [--expires-on {when}] [{name}]
 
 Set a Tako-owned provider credential for the current app environment. Alias: `tako creds set ...`.
 
-- `{name}` is a provider credential name. Credential names are lowercased before validation, so `POSTGRES_URL` is stored as `postgres_url`. Supported values: `ssl.cloudflare` and `postgres_url`.
+- `{name}` is a provider credential name. Credential names are lowercased before validation, so `POSTGRES_URL` is stored as `postgres_url`. Supported values: `ssl.cloudflare` and `postgres_url`. Interactive terminals can select a supported credential when `{name}` is omitted.
 - `--env {environment}` selects the app environment. Interactive terminals can choose or create one when omitted.
 - `--expires-on {when}` optionally records the date when the credential expires. Interactive runs prompt when the flag is omitted. Non-interactive runs may omit it. `YYYY-MM-DD` is stored as-is; `in N days` is normalized to the UTC date N days from now; `never`, a blank prompt, or an omitted flag stores no `expires_on` field. Timestamp values are rejected.
 
@@ -953,7 +953,7 @@ Aliases: `tako credentials remove ...`, `tako credentials delete ...`, `tako cre
 
 ### tako credentials list
 
-List Tako-owned provider credential names and the environments where each one is set. Values are never printed.
+List supported Tako-owned provider credential names and whether each configured environment has a value set. Values are never printed. Running `tako credentials` without a subcommand shows the same overview.
 
 Aliases: `tako credentials ls`, `tako credentials show`, `tako creds list`.
 

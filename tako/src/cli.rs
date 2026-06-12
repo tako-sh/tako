@@ -138,8 +138,11 @@ pub enum Commands {
     Backups(backups::BackupCommands),
 
     /// Provider credentials used by Tako
-    #[command(subcommand, visible_alias = "creds")]
-    Credentials(credentials::CredentialCommands),
+    #[command(visible_alias = "creds")]
+    Credentials {
+        #[command(subcommand)]
+        command: Option<credentials::CredentialCommands>,
+    },
 
     /// Release history and rollback commands
     #[command(subcommand)]
@@ -258,7 +261,7 @@ impl Cli {
             Commands::Secrets(cmd) => secret::run(cmd, self.config.as_deref()),
             Commands::Storages(cmd) => storage::run(cmd, self.config.as_deref()),
             Commands::Backups(cmd) => backups::run(cmd, self.config.as_deref()),
-            Commands::Credentials(cmd) => credentials::run(cmd, self.config.as_deref()),
+            Commands::Credentials { command } => credentials::run(command, self.config.as_deref()),
             Commands::Releases(cmd) => releases::run(cmd, self.config.as_deref()),
             Commands::Upgrade => upgrade::run(),
             Commands::Uninstall { yes } => commands::implode::run(yes),
