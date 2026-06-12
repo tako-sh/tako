@@ -34,16 +34,16 @@ That config is the VPS equivalent of "this app has a production environment." Th
 
 The difference is what each environment controls:
 
-| Concern | Elastic Beanstalk | Tako |
-| --- | --- | --- |
-| Owner | AWS account resources | Your Linux server |
-| Environment target | EC2-backed Elastic Beanstalk environment | `[envs.<name>]` mapped to one or more Tako servers |
-| Deploy input | Source bundle/application version through console, EB CLI, API, or CI/CD | Local build artifact uploaded by `tako deploy` |
-| Runtime shape | Elastic Beanstalk platform: OS, runtime, web/app server, EB components | Native Bun, Node, or Go process behind Pingora |
-| Routing | AWS load balancer / environment URL / custom domain setup | Route in `tako.toml`, served by `tako-server` |
-| App secrets | AWS-side environment/config mechanisms | Encrypted `.tako/secrets.json`, delivered to processes through fd 3 |
-| Logs | Elastic Beanstalk environment logs and AWS observability | `tako logs` over signed remote management |
-| Management | AWS console, EB CLI, AWS CLI, API | `tako` CLI over private signed HTTP on Tailscale |
+| Concern            | Elastic Beanstalk                                                        | Tako                                                                |
+| ------------------ | ------------------------------------------------------------------------ | ------------------------------------------------------------------- |
+| Owner              | AWS account resources                                                    | Your Linux server                                                   |
+| Environment target | EC2-backed Elastic Beanstalk environment                                 | `[envs.<name>]` mapped to one or more Tako servers                  |
+| Deploy input       | Source bundle/application version through console, EB CLI, API, or CI/CD | Local build artifact uploaded by `tako deploy`                      |
+| Runtime shape      | Elastic Beanstalk platform: OS, runtime, web/app server, EB components   | Native Bun, Node, or Go process behind Pingora                      |
+| Routing            | AWS load balancer / environment URL / custom domain setup                | Route in `tako.toml`, served by `tako-server`                       |
+| App secrets        | AWS-side environment/config mechanisms                                   | Encrypted `.tako/secrets.json`, delivered to processes through fd 3 |
+| Logs               | Elastic Beanstalk environment logs and AWS observability                 | `tako logs` over signed remote management                           |
+| Management         | AWS console, EB CLI, AWS CLI, API                                        | `tako` CLI over private signed HTTP on Tailscale                    |
 
 Elastic Beanstalk shines when you want AWS to own the AWS environment. Tako exists for the moment when you want the same "environment around my app" feeling, but the environment is a box you picked.
 
@@ -90,14 +90,14 @@ It also gives teams multiple interfaces. You can work through the console, EB CL
 
 Tako takes the opposite bet: the server is not an AWS resource graph. It is a Linux host running one platform binary.
 
-| If you want... | Elastic Beanstalk is a fit when... | Tako is a fit when... |
-| --- | --- | --- |
-| Managed cloud integration | AWS services are already the center of the app | The app mostly needs HTTP, TLS, logs, secrets, and process lifecycle |
-| Autoscaling | You want AWS Auto Scaling and load balancer machinery | You want explicit `tako scale` and optional scale-to-zero on your server |
-| Deployment workflow | Console/EB CLI/AWS API fit your team | A small CLI and repo-local `tako.toml` fit your team |
-| Network ownership | VPCs, IAM, ALB, and AWS account boundaries are the control plane | Tailscale private management plus public app routes are enough |
-| Runtime ownership | You want AWS-managed platform versions | You want native processes on hardware you control |
-| Platform scope | You want AWS to own the environment | You want open-source infrastructure on your VPS |
+| If you want...            | Elastic Beanstalk is a fit when...                               | Tako is a fit when...                                                    |
+| ------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| Managed cloud integration | AWS services are already the center of the app                   | The app mostly needs HTTP, TLS, logs, secrets, and process lifecycle     |
+| Autoscaling               | You want AWS Auto Scaling and load balancer machinery            | You want explicit `tako scale` and optional scale-to-zero on your server |
+| Deployment workflow       | Console/EB CLI/AWS API fit your team                             | A small CLI and repo-local `tako.toml` fit your team                     |
+| Network ownership         | VPCs, IAM, ALB, and AWS account boundaries are the control plane | Tailscale private management plus public app routes are enough           |
+| Runtime ownership         | You want AWS-managed platform versions                           | You want native processes on hardware you control                        |
+| Platform scope            | You want AWS to own the environment                              | You want open-source infrastructure on your VPS                          |
 
 That last row is the whole trade. Beanstalk abstracts AWS. Tako abstracts a server.
 
