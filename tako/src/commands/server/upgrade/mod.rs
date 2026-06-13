@@ -345,6 +345,40 @@ fn remote_binary_replace_command(url: &str, expected_sha256: &str) -> String {
     SshClient::run_with_root_or_sudo(&script)
 }
 
+#[cfg(test)]
+fn remote_binary_replace_uploaded_archive_command(path: &str, expected_sha256: &str) -> String {
+    use crate::shell::shell_single_quote;
+    let path_q = shell_single_quote(path);
+    let sha_check = verify_downloaded_sha256_script("\"$archive\"", expected_sha256);
+    let runtime_deps = remote_verify_server_runtime_deps_script("\"$bin\"");
+    let podman_runtime = remote_install_podman_runtime_script();
+    let script = format!(
+        "set -eu; \
+         archive={path_q}; \
+         tmp=$(mktemp -d); \
+         trap 'rm -rf \"$tmp\"' EXIT; \
+         {sha_check}; \
+         zstd -d \"$archive\" --stdout | tar -x -C \"$tmp\"; \
+         bin=$(find \"$tmp\" -type f -name tako-server | head -n 1); \
+         if [ -z \"$bin\" ]; then echo 'error: archive did not contain tako-server binary' >&2; exit 1; fi; \
+         {runtime_deps}; \
+         if [ -f {SERVER_BINARY_PATH} ]; then install -m 0755 {SERVER_BINARY_PATH} {SERVER_PREVIOUS_BINARY_PATH}; fi; \
+         install -m 0755 \"$bin\" {SERVER_BINARY_PATH}; \
+         {podman_runtime}; \
+         if command -v setcap >/dev/null 2>&1; then setcap {SERVER_FILE_CAPABILITIES} {SERVER_BINARY_PATH} 2>/dev/null || true; fi"
+    );
+    run_with_root_or_sudo_without_env_for_tests(&script)
+}
+
+#[cfg(test)]
+fn run_with_root_or_sudo_without_env_for_tests(shell_script: &str) -> String {
+    let escaped = shell_script.replace('\'', "'\\''");
+    format!(
+        "if [ \"$(id -u)\" -eq 0 ]; then sh -c '{0}'; elif command -v sudo >/dev/null 2>&1; then sudo sh -c '{0}'; else echo \"error: this operation requires root privileges (run as root or install/configure sudo)\" >&2; exit 1; fi",
+        escaped
+    )
+}
+
 fn remote_restore_previous_binary_command() -> String {
     let script = format!(
         "set -eu; \

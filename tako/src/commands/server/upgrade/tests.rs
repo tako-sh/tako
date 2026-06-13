@@ -52,7 +52,7 @@ fn server_binary_download_url_allows_insecure_custom_base_with_explicit_override
 
 #[test]
 fn remote_binary_replace_preserves_app_user_switch_capabilities() {
-    let command = remote_binary_replace_command("https://example.com/tako.tar.zst", "a");
+    let command = remote_binary_replace_uploaded_archive_command("/tmp/tako.tar.zst", "a");
     assert!(command.contains("cap_net_bind_service,cap_setuid,cap_setgid,cap_kill=+ep"));
 }
 
@@ -99,16 +99,16 @@ fn verify_signed_server_checksum_manifest_rejects_tampering() {
 
 #[test]
 fn remote_binary_replace_command_uses_root_shell_wrapper_and_verifies_sha256() {
-    let cmd = remote_binary_replace_command(
-        "https://example.com/tako-server.tar.zst",
+    let cmd = remote_binary_replace_uploaded_archive_command(
+        "/tmp/tako-server.tar.zst",
         "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
     );
     assert!(cmd.contains("then sh -c '"));
     assert!(cmd.contains("sudo sh -c '"));
-    assert!(cmd.contains("curl -fsSL"));
-    assert!(cmd.contains("GH_TOKEN"));
-    assert!(cmd.contains("GITHUB_TOKEN"));
-    assert!(cmd.contains("Authorization: Bearer"));
+    assert!(!cmd.contains("curl -fsSL"));
+    assert!(!cmd.contains("GH_TOKEN"));
+    assert!(!cmd.contains("GITHUB_TOKEN"));
+    assert!(!cmd.contains("Authorization: Bearer"));
     assert!(cmd.contains("libvips42t64"));
     assert!(cmd.contains("libheif-plugin-aomenc"));
     assert!(cmd.contains("libheif-plugin-aomdec"));
@@ -127,8 +127,8 @@ fn remote_binary_replace_command_uses_root_shell_wrapper_and_verifies_sha256() {
 
 #[test]
 fn remote_binary_replace_installs_runtime_deps_only_after_extracting_binary() {
-    let cmd = remote_binary_replace_command(
-        "https://example.com/tako-server.tar.zst",
+    let cmd = remote_binary_replace_uploaded_archive_command(
+        "/tmp/tako-server.tar.zst",
         "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
     );
 
@@ -157,8 +157,8 @@ fn remote_binary_replace_installs_runtime_deps_only_after_extracting_binary() {
 
 #[test]
 fn remote_binary_replace_reports_missing_non_libvips_runtime_dependencies() {
-    let cmd = remote_binary_replace_command(
-        "https://example.com/tako-server.tar.zst",
+    let cmd = remote_binary_replace_uploaded_archive_command(
+        "/tmp/tako-server.tar.zst",
         "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
     );
 
