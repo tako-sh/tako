@@ -1,0 +1,13 @@
+<svg width="1200" height="630" viewBox="0 0 1200 630" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <clipPath id="frame">
+      <rect width="1200" height="630" />
+    </clipPath>
+  </defs>
+  <g clip-path="url(#frame)">
+    <image href="og-bg-draft.png" width="1200" height="630" preserveAspectRatio="xMidYMid slice" />
+    <text x="58" y="154" font-family="Poppins, Nunito, sans-serif" font-size="96" font-weight="700" letter-spacing="0" fill="#2F2A44">tako</text>
+    <text x="283" y="154" font-family="Poppins, Nunito, sans-serif" font-size="96" font-weight="700" letter-spacing="0" fill="#C4605C">.sh</text>
+    <text x="62" y="230" font-family="Poppins, Nunito, sans-serif" font-size="42" font-weight="700" letter-spacing="0" fill="#2F2A44">Ship it like FTP</text>
+  </g>
+</svg>
