@@ -256,7 +256,7 @@ tako secrets key import --passphrase --env production
 
 ### Wildcard TLS credentials are missing
 
-Let's Encrypt wildcard routes require Cloudflare DNS-01 credentials:
+Let's Encrypt wildcard routes require Cloudflare DNS-01 credentials. Exact Let's Encrypt routes also use DNS-01 when these credentials exist:
 
 ```bash
 tako credentials set ssl.cloudflare --env production --expires-on "in 90 days"
@@ -264,7 +264,7 @@ tako credentials set ssl.cloudflare --env production --expires-on "in 90 days"
 
 Cloudflare SSL also requires `ssl.cloudflare`. Multi-server channel deploys require `postgres_url`; multi-server JS workflow deploys require `postgres_url` unless every workflow uses `local: true` in its `defineWorkflow(...)` option object. Multi-server Go workflow deploys require `postgres_url`. Provider credentials are encrypted under the environment's `credentials` object and are not exposed to app code or `tako secrets sync`.
 
-Deploy verifies required Cloudflare credentials from each target server during remote prepare. For Let's Encrypt wildcard routes, use a Cloudflare user or account API token with Zone Read and DNS Write for the matching Cloudflare zone, and include each target server's egress IP in any token IP restriction.
+Deploy verifies required Cloudflare credentials from each target server during remote prepare. For Let's Encrypt DNS-01 routes, use a Cloudflare user or account API token with Zone Read and DNS Write for the matching Cloudflare zone, and include each target server's egress IP in any token IP restriction.
 
 ## Storage And Backups
 

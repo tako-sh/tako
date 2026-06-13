@@ -297,7 +297,7 @@ Public route certificates use Let's Encrypt by default:
 ssl = "letsencrypt"
 ```
 
-Wildcard Let's Encrypt routes use Cloudflare DNS-01 and require encrypted provider credentials:
+Wildcard Let's Encrypt routes use Cloudflare DNS-01 and require encrypted provider credentials. Exact Let's Encrypt routes use DNS-01 too when this credential exists:
 
 ```bash
 tako credentials set ssl.cloudflare --env production

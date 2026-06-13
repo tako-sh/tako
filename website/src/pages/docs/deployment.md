@@ -77,7 +77,7 @@ Before build work starts, deploy checks:
 - multi-server Go workflow deploys have `postgres_url` set
 - credentials expiring within 30 days are surfaced as warnings
 
-Required Cloudflare credentials are also checked from each target server during remote prepare. Let's Encrypt wildcard routes use Cloudflare user or account API tokens, verify zone read access from the server's egress IP, and require DNS Write for certificate issuance.
+Required Cloudflare credentials are also checked from each target server during remote prepare. Let's Encrypt DNS-01 routes use Cloudflare user or account API tokens, verify zone read access from the server's egress IP, and require DNS Write for certificate issuance.
 
 ## Build And Package
 
@@ -184,7 +184,7 @@ tako scale 0 --server prod-a --app my-app/production
 
 ## HTTPS And Certificates
 
-Public exact routes use Let's Encrypt HTTP-01 by default. Wildcard Let's Encrypt routes use Cloudflare DNS-01 and require:
+Public exact routes use Let's Encrypt HTTP-01 by default. If the environment has `ssl.cloudflare`, exact routes use Cloudflare DNS-01 instead. Wildcard Let's Encrypt routes always use Cloudflare DNS-01 and require:
 
 ```bash
 tako credentials set ssl.cloudflare --env production
@@ -252,7 +252,7 @@ Provider credentials use `tako credentials`, not `tako secrets`, and are not exp
 tako credentials set ssl.cloudflare --env production
 ```
 
-For Let’s Encrypt wildcard DNS-01, `ssl.cloudflare` must be a Cloudflare user or account API token with Zone Read and DNS Write for the matching Cloudflare zone.
+For Let’s Encrypt DNS-01, `ssl.cloudflare` must be a Cloudflare user or account API token with Zone Read and DNS Write for the matching Cloudflare zone.
 
 ## Storage
 

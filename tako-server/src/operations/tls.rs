@@ -85,11 +85,7 @@ impl crate::ServerState {
 
         let acme_guard = self.acme_client.read().await;
         let acme = acme_guard.as_ref()?;
-        let dns = if domain.starts_with("*.") {
-            cloudflare_dns_binding_from_ssl(&ssl)
-        } else {
-            None
-        };
+        let dns = cloudflare_dns_binding_from_ssl(&ssl);
 
         tracing::info!(domain = %domain, app = app_name, "Requesting certificate for route");
         match acme
@@ -253,11 +249,7 @@ impl crate::ServerState {
                 results.push(Err("ACME is disabled".to_string()));
                 continue;
             };
-            let dns = if cert.domain.starts_with("*.") {
-                cloudflare_dns_binding_from_ssl(&ssl)
-            } else {
-                None
-            };
+            let dns = cloudflare_dns_binding_from_ssl(&ssl);
             results.push(
                 acme.renew_certificate_with_dns(&cert.domain, dns.as_ref())
                     .await
@@ -276,4 +268,21 @@ fn cloudflare_dns_binding_from_ssl(ssl: &tako_core::SslBinding) -> Option<DnsBin
         .map(|token| DnsBinding {
             cloudflare_api_token: Some(token.clone()),
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cloudflare_dns_binding_uses_available_token_for_any_domain() {
+        let ssl = tako_core::SslBinding {
+            provider: tako_core::SslProvider::LetsEncrypt,
+            cloudflare_api_token: Some("token".to_string()),
+        };
+
+        let binding = cloudflare_dns_binding_from_ssl(&ssl).expect("dns binding");
+
+        assert_eq!(binding.cloudflare_api_token.as_deref(), Some("token"));
+    }
 }

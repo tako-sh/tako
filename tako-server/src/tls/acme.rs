@@ -1,8 +1,8 @@
 //! ACME client for Let's Encrypt certificate issuance
 //!
 //! Uses instant-acme for the ACME protocol implementation.
-//! Supports HTTP-01 challenges for non-wildcard domains and
-//! Cloudflare DNS-01 challenges for wildcard certificates.
+//! Supports HTTP-01 challenges and Cloudflare DNS-01 challenges when an app
+//! provides Cloudflare credentials.
 
 use super::dns::{
     CLOUDFLARE_DNS_PROVIDER, CloudflareDnsProvider, DnsBinding, DnsChallengeProvider,
@@ -288,8 +288,8 @@ impl AcmeClient {
 
     /// Request a certificate for a domain.
     ///
-    /// Wildcard domains (starting with `*.`) require app Cloudflare credentials.
-    /// All other domains use HTTP-01 via instant-acme.
+    /// Domains use DNS-01 when Cloudflare credentials are provided. Wildcard
+    /// domains require DNS-01. Other domains fall back to HTTP-01.
     pub async fn request_certificate(&self, domain: &str) -> Result<CertInfo, AcmeError> {
         self.request_certificate_with_dns(domain, None).await
     }
@@ -304,7 +304,7 @@ impl AcmeClient {
             return Err(AcmeError::InvalidDomain(domain.to_string()));
         }
 
-        if domain.starts_with("*.") {
+        if dns.is_some() || domain.starts_with("*.") {
             return self.request_certificate_dns01(domain, dns).await;
         }
 
@@ -454,7 +454,7 @@ impl AcmeClient {
             .map_err(AcmeError::CertError)
     }
 
-    /// Request a wildcard certificate using Cloudflare DNS-01 challenge records.
+    /// Request a certificate using Cloudflare DNS-01 challenge records.
     async fn request_certificate_dns01(
         &self,
         domain: &str,
@@ -492,7 +492,7 @@ impl AcmeClient {
         tracing::info!(
             domain = domain,
             provider = CLOUDFLARE_DNS_PROVIDER,
-            "Requesting wildcard certificate via DNS-01"
+            "Requesting certificate via DNS-01"
         );
 
         let identifiers = [Identifier::Dns(domain.to_string())];
@@ -557,7 +557,7 @@ impl AcmeClient {
             domain = domain,
             cert_path = %cert_info.cert_path.display(),
             expires_in_days = cert_info.days_until_expiry(),
-            "Wildcard certificate issued via Cloudflare DNS-01"
+            "Certificate issued via Cloudflare DNS-01"
         );
 
         Ok(cert_info)
