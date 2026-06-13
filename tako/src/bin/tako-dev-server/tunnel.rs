@@ -1,4 +1,5 @@
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures_util::{SinkExt, StreamExt};
@@ -14,6 +15,8 @@ use crate::protocol::{self, Response};
 use crate::control::State;
 
 const DEFAULT_TUNNEL_BASE_URL: &str = "https://tako.website";
+const TUNNEL_API_TIMEOUT: Duration = Duration::from_secs(15);
+const TUNNEL_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Clone)]
 pub(crate) struct TunnelRegistration {
@@ -264,7 +267,12 @@ struct TunnelSnapshot {
 
 async fn create_tunnel(base_url: &str, app_name: &str) -> Result<CreatedTunnel, String> {
     let url = format!("{}/v1/tunnels", base_url.trim_end_matches('/'));
-    let response = reqwest::Client::new()
+    let client = reqwest::Client::builder()
+        .connect_timeout(TUNNEL_API_TIMEOUT)
+        .timeout(TUNNEL_API_TIMEOUT)
+        .build()
+        .map_err(|error| format!("failed to build tunnel HTTP client: {error}"))?;
+    let response = client
         .post(url)
         .json(&serde_json::json!({ "app": app_name }))
         .send()
@@ -285,9 +293,13 @@ async fn run_tunnel_connection(
     connect_url: String,
     snapshot: TunnelSnapshot,
 ) -> Result<(), String> {
-    let (socket, _) = tokio_tungstenite::connect_async(&connect_url)
-        .await
-        .map_err(|error| format!("failed to connect tunnel websocket: {error}"))?;
+    let (socket, _) = tokio::time::timeout(
+        TUNNEL_CONNECT_TIMEOUT,
+        tokio_tungstenite::connect_async(&connect_url),
+    )
+    .await
+    .map_err(|_| "timed out connecting tunnel websocket".to_string())?
+    .map_err(|error| format!("failed to connect tunnel websocket: {error}"))?;
     push_scoped_log(
         &snapshot.log_buffer,
         "Info",
