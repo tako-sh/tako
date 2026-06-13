@@ -83,6 +83,21 @@ fn parse_event_line_parses_request_started_event() {
 }
 
 #[test]
+fn parse_event_line_parses_tunnel_mode_changed_event() {
+    let line = r#"{"type":"Event","event":{"type":"TunnelModeChanged","config_path":"/proj/tako.toml","app_name":"app","enabled":true,"url":"https://app-a8f3k2zz.tako.website","expires_at":1778220000}}"#;
+    assert_eq!(
+        parse_event_line(line),
+        Some(DevServerEvent::TunnelModeChanged {
+            config_path: "/proj/tako.toml".to_string(),
+            app_name: "app".to_string(),
+            enabled: true,
+            url: Some("https://app-a8f3k2zz.tako.website".to_string()),
+            expires_at: Some(1_778_220_000),
+        })
+    );
+}
+
+#[test]
 fn parse_event_line_rejects_request_started_without_path() {
     let line = r#"{"type":"Event","event":{"type":"RequestStarted","host":"a.test"}}"#;
     assert_eq!(parse_event_line(line), None);

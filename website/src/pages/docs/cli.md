@@ -58,6 +58,7 @@ Refreshes generated project files:
 tako dev
 tako dev --variant preview
 tako dev --var preview
+tako dev --tunnel
 ```
 
 Starts or attaches to a local dev session behind trusted HTTPS and real hostnames. It starts the dev daemon, prepares DNS/proxy/CA setup, generates files, injects secrets and storage through fd 3, waits for fd-4 readiness, and registers routes.
@@ -67,6 +68,7 @@ Interactive controls:
 | Key      | Action                                                             |
 | -------- | ------------------------------------------------------------------ |
 | `l`      | Toggle LAN mode for managed local routes.                          |
+| `t`      | Toggle a temporary public tunnel URL.                              |
 | `r`      | Restart the app.                                                   |
 | `b`      | Leave the app running in the background and exit the attached CLI. |
 | `Ctrl+c` | Stop the app and exit.                                             |
@@ -80,7 +82,7 @@ tako dev list
 tako dev ls
 ```
 
-`stop` without a name stops the app for the selected config file. `--all` stops all registered dev apps. `list` shows currently registered dev apps.
+`stop` without a name stops the app for the selected config file. `--all` stops all registered dev apps. `list` shows currently registered dev apps and any active tunnel URLs.
 
 ## `tako doctor`
 

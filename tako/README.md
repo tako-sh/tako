@@ -50,6 +50,7 @@ Operational behavior highlights:
 - `tako deploy` builds native artifacts locally before upload. Set top-level `start = ["./app"]` to run a prebuilt native artifact without server-side runtime installation. When top-level `container = "Dockerfile"` is set, deploy packages source and the server builds/runs the image with Podman.
 - Non-dry-run `tako deploy` acquires a project-local `.tako/deploy.lock` and fails fast if another local deploy is already running for the same project.
 - On macOS, `tako dev` uses a dedicated `127.77.0.1` loopback alias plus a launchd-managed dev proxy (`tako-dev-proxy`) so `https://{app}.test/` works on default ports without binding the main network interfaces.
+- `tako dev --tunnel` starts with a temporary public tunnel URL, and pressing `t` in the interactive dev UI toggles it. The tunnel URL is shown in `tako dev list` while active.
 - Container release builds use the app directory as the Podman build context. The configured container file and `.dockerignore` own production build inputs.
 - `tako deploy` caches target artifacts in `.tako/artifacts` and reuses verified cache hits when build inputs are unchanged; invalid cache entries are rebuilt automatically.
 - Local runtime version resolution runs `<tool> --version` directly, falling back to `latest`.

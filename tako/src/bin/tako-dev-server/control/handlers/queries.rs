@@ -10,16 +10,21 @@ pub(super) fn list_registered_apps(state: &Arc<Mutex<State>>) -> Response {
     let apps = s
         .apps
         .iter()
-        .map(|(config_path, a)| protocol::RegisteredAppInfo {
-            config_path: config_path.clone(),
-            project_dir: a.project_dir.clone(),
-            app_name: a.name.clone(),
-            variant: a.variant.clone(),
-            hosts: a.hosts.clone(),
-            upstream_port: a.upstream_port,
-            status: if a.is_idle { "idle" } else { "running" }.to_string(),
-            pid: a.pid,
-            client_pid: a.client_pid,
+        .map(|(config_path, a)| {
+            let (tunnel_url, tunnel_expires_at) = tunnel_info(a);
+            protocol::RegisteredAppInfo {
+                config_path: config_path.clone(),
+                project_dir: a.project_dir.clone(),
+                app_name: a.name.clone(),
+                variant: a.variant.clone(),
+                hosts: a.hosts.clone(),
+                upstream_port: a.upstream_port,
+                status: if a.is_idle { "idle" } else { "running" }.to_string(),
+                pid: a.pid,
+                client_pid: a.client_pid,
+                tunnel_url,
+                tunnel_expires_at,
+            }
         })
         .collect();
     Response::RegisteredApps { apps }
@@ -30,15 +35,27 @@ pub(super) fn list_apps(state: &Arc<Mutex<State>>) -> Response {
     let apps = s
         .apps
         .values()
-        .map(|a| AppInfo {
-            app_name: a.name.clone(),
-            variant: a.variant.clone(),
-            hosts: a.hosts.clone(),
-            upstream_port: a.upstream_port,
-            pid: a.pid,
+        .map(|a| {
+            let (tunnel_url, tunnel_expires_at) = tunnel_info(a);
+            AppInfo {
+                app_name: a.name.clone(),
+                variant: a.variant.clone(),
+                hosts: a.hosts.clone(),
+                upstream_port: a.upstream_port,
+                pid: a.pid,
+                tunnel_url,
+                tunnel_expires_at,
+            }
         })
         .collect();
     Response::Apps { apps }
+}
+
+fn tunnel_info(app: &crate::state::RuntimeApp) -> (Option<String>, Option<u64>) {
+    app.tunnel
+        .as_ref()
+        .map(|tunnel| (Some(tunnel.url.clone()), Some(tunnel.expires_at)))
+        .unwrap_or((None, None))
 }
 
 pub(super) fn info(state: &Arc<Mutex<State>>) -> Response {

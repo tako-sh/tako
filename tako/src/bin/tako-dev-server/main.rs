@@ -12,6 +12,7 @@ mod redirect;
 mod route_pattern;
 mod state;
 mod tls_accept;
+mod tunnel;
 
 use std::sync::{Arc, Mutex};
 

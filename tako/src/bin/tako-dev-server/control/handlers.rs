@@ -12,6 +12,7 @@ use tako_socket::{read_json_line, write_json_line};
 
 use super::lan::handle_toggle_lan;
 use super::state::State;
+use crate::tunnel::handle_toggle_tunnel;
 
 pub(crate) async fn handle_client(
     stream: UnixStream,
@@ -113,6 +114,10 @@ pub(crate) async fn handle_client(
             Request::ListApps => queries::list_apps(&state),
             Request::Info => queries::info(&state),
             Request::ToggleLan { enabled } => handle_toggle_lan(&state, enabled).await,
+            Request::ToggleTunnel {
+                config_path,
+                enabled,
+            } => handle_toggle_tunnel(&state, config_path, enabled).await,
             Request::StopServer => queries::stop_server(&state),
         };
 

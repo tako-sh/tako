@@ -37,6 +37,13 @@ pub enum DevServerEvent {
         lan_ip: Option<String>,
         ca_url: Option<String>,
     },
+    TunnelModeChanged {
+        config_path: String,
+        app_name: String,
+        enabled: bool,
+        url: Option<String>,
+        expires_at: Option<u64>,
+    },
     AppLaunching {
         config_path: String,
         app_name: String,
@@ -219,6 +226,13 @@ pub(super) fn parse_event_line(line: &str) -> Option<DevServerEvent> {
                 .get("ca_url")
                 .and_then(|v| v.as_str())
                 .map(String::from),
+        }),
+        "TunnelModeChanged" => Some(DevServerEvent::TunnelModeChanged {
+            config_path: event.get("config_path")?.as_str()?.to_string(),
+            app_name: event.get("app_name")?.as_str()?.to_string(),
+            enabled: event.get("enabled")?.as_bool()?,
+            url: event.get("url").and_then(|v| v.as_str()).map(String::from),
+            expires_at: event.get("expires_at").and_then(|v| v.as_u64()),
         }),
         "AppLaunching" => Some(DevServerEvent::AppLaunching {
             config_path: event.get("config_path")?.as_str()?.to_string(),

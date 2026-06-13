@@ -67,6 +67,10 @@ pub struct DevArgs {
     /// Run a variant of the app (e.g. --variant foo → myapp-foo.test)
     #[arg(long, visible_alias = "var")]
     pub variant: Option<String>,
+
+    /// Start with a temporary public tunnel URL enabled
+    #[arg(long)]
+    pub tunnel: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -245,6 +249,7 @@ impl Cli {
                     None => rt.block_on(commands::dev::run(
                         DEV_PUBLIC_PORT,
                         args.variant,
+                        args.tunnel,
                         self.config.as_deref(),
                     )),
                     Some(DevSubcommands::Stop { name, all }) => {

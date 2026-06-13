@@ -147,6 +147,11 @@ pub enum DevEvent {
         lan_ip: Option<String>,
         ca_url: Option<String>,
     },
+    TunnelModeChanged {
+        enabled: bool,
+        url: Option<String>,
+        expires_at: Option<u64>,
+    },
     ExitWithMessage(String),
 }
 

@@ -44,6 +44,7 @@ Start local development server with built-in HTTPS proxy and `.test` domain.
 ```bash
 tako dev
 tako dev --variant staging    # myapp-staging.test
+tako dev --tunnel             # start with a temporary public URL
 tako dev stop [name]          # stop a running dev app
 tako dev list                   # list registered dev apps
 ```
@@ -52,6 +53,7 @@ Features:
 
 - Local HTTPS via auto-generated certificates
 - `.test` domain resolution
+- Temporary public tunnel URLs via `tako dev --tunnel` or `t` in the interactive UI
 - File watching and automatic restart
 - Hot reload passthrough for framework dev servers
 

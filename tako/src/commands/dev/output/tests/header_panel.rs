@@ -18,6 +18,12 @@ fn format_header_has_all_logo_rows() {
 }
 
 #[test]
+fn format_keymap_includes_tunnel_toggle() {
+    let plain = strip_ansi(&format_keymap());
+    assert!(plain.contains("t tunnel"));
+}
+
+#[test]
 fn format_panel_has_border_and_app_name_with_runtime() {
     let panel = format_panel(
         "myapp",

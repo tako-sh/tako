@@ -20,6 +20,7 @@ fn dev_default_parses_without_subcommand() {
     };
     assert!(command.is_none());
     assert!(args.variant.is_none());
+    assert!(!args.tunnel);
 }
 
 #[test]
@@ -30,6 +31,16 @@ fn dev_parses_variant_flag() {
     };
     assert!(command.is_none());
     assert_eq!(args.variant.as_deref(), Some("foo"));
+}
+
+#[test]
+fn dev_parses_tunnel_flag() {
+    let cli = Cli::try_parse_from(["tako", "dev", "--tunnel"]).unwrap();
+    let Commands::Dev { command, args } = cli.command.expect("command") else {
+        panic!("expected Dev");
+    };
+    assert!(command.is_none());
+    assert!(args.tunnel);
 }
 
 #[test]

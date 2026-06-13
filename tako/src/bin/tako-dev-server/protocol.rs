@@ -40,6 +40,11 @@ pub enum Request {
     ToggleLan {
         enabled: bool,
     },
+    /// Toggle public tunnel mode for one registered app.
+    ToggleTunnel {
+        config_path: String,
+        enabled: bool,
+    },
     /// List all registered apps.
     ListRegisteredApps,
     ListApps,
@@ -126,6 +131,14 @@ pub enum Response {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ca_url: Option<String>,
     },
+    TunnelToggled {
+        config_path: String,
+        enabled: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expires_at: Option<u64>,
+    },
     Stopping,
     Error {
         message: String,
@@ -169,6 +182,15 @@ pub enum DevEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ca_url: Option<String>,
     },
+    TunnelModeChanged {
+        config_path: String,
+        app_name: String,
+        enabled: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expires_at: Option<u64>,
+    },
     AppLaunching {
         config_path: String,
         app_name: String,
@@ -210,6 +232,10 @@ pub struct RegisteredAppInfo {
     pub status: String,
     pub pid: Option<u32>,
     pub client_pid: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tunnel_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tunnel_expires_at: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -221,6 +247,10 @@ pub struct AppInfo {
     pub hosts: Vec<String>,
     pub upstream_port: u16,
     pub pid: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tunnel_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tunnel_expires_at: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -426,6 +456,8 @@ mod tests {
                 status: "running".to_string(),
                 pid: Some(111),
                 client_pid: Some(222),
+                tunnel_url: None,
+                tunnel_expires_at: None,
             }],
         };
         let json = serde_json::to_string(&resp).unwrap();
@@ -488,6 +520,25 @@ mod tests {
     }
 
     #[test]
+    fn serde_roundtrip_toggle_tunnel() {
+        let req = Request::ToggleTunnel {
+            config_path: "/proj/tako.toml".to_string(),
+            enabled: true,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), req);
+
+        let resp = Response::TunnelToggled {
+            config_path: "/proj/tako.toml".to_string(),
+            enabled: true,
+            url: Some("https://app-a8f3k2zz.tako.website".to_string()),
+            expires_at: Some(1_778_220_000),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert_eq!(serde_json::from_str::<Response>(&json).unwrap(), resp);
+    }
+
+    #[test]
     fn serde_roundtrip_app_lifecycle_events() {
         for event in [
             DevEvent::AppLaunching {
@@ -531,6 +582,21 @@ mod tests {
                 enabled: true,
                 lan_ip: Some("192.168.1.42".to_string()),
                 ca_url: Some("http://192.168.1.42/ca.pem".to_string()),
+            },
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert_eq!(serde_json::from_str::<Response>(&json).unwrap(), resp);
+    }
+
+    #[test]
+    fn serde_roundtrip_tunnel_mode_changed_event() {
+        let resp = Response::Event {
+            event: DevEvent::TunnelModeChanged {
+                config_path: "/proj/tako.toml".to_string(),
+                app_name: "app".to_string(),
+                enabled: true,
+                url: Some("https://app-a8f3k2zz.tako.website".to_string()),
+                expires_at: Some(1_778_220_000),
             },
         };
         let json = serde_json::to_string(&resp).unwrap();

@@ -8,6 +8,7 @@ use super::super::{ScopedLog, output};
 pub(super) fn spawn_control_loop(
     config_key: String,
     initial_lan_enabled: bool,
+    initial_tunnel_enabled: bool,
     mut control_rx: mpsc::Receiver<output::ControlCmd>,
     log_tx: mpsc::Sender<ScopedLog>,
     should_exit_tx: watch::Sender<bool>,
@@ -15,6 +16,7 @@ pub(super) fn spawn_control_loop(
 ) {
     tokio::spawn(async move {
         let mut lan_enabled = initial_lan_enabled;
+        let mut tunnel_enabled = initial_tunnel_enabled;
         while let Some(cmd_in) = control_rx.recv().await {
             match cmd_in {
                 output::ControlCmd::Restart => {
@@ -47,6 +49,28 @@ pub(super) fn spawn_control_loop(
                                 .send(ScopedLog::error(
                                     "tako",
                                     format!("LAN toggle failed: {}", msg),
+                                ))
+                                .await;
+                        }
+                    }
+                }
+                output::ControlCmd::ToggleTunnel => {
+                    let current = crate::dev_server_client::registered_tunnel_enabled(&config_key)
+                        .await
+                        .unwrap_or(tunnel_enabled);
+                    let target = !current;
+                    let result = crate::dev_server_client::toggle_tunnel(&config_key, target)
+                        .await
+                        .map_err(|e| e.to_string());
+                    match result {
+                        Ok((enabled, _, _)) => {
+                            tunnel_enabled = enabled;
+                        }
+                        Err(msg) => {
+                            let _ = log_tx
+                                .send(ScopedLog::error(
+                                    "tako",
+                                    format!("Tunnel toggle failed: {}", msg),
                                 ))
                                 .await;
                         }

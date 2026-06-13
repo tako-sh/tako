@@ -33,6 +33,8 @@ Start local development from your app directory:
 ```bash
 bun add tako.sh   # or: npm install tako.sh
 tako dev
+# optional temporary public URL:
+tako dev --tunnel
 ```
 
 Set up a deployment host:

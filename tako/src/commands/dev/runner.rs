@@ -87,16 +87,20 @@ pub async fn ls() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    println!("{:<20} {:<10} {:<30} CONFIG", "NAME", "STATUS", "URL");
+    println!(
+        "{:<20} {:<10} {:<30} {:<30} CONFIG",
+        "NAME", "STATUS", "URL", "TUNNEL"
+    );
     for app in &apps {
         let url = if let Some(host) = app.hosts.first() {
             format!("https://{}/", host)
         } else {
             String::new()
         };
+        let tunnel = app.tunnel_url.as_deref().unwrap_or("-");
         println!(
-            "{:<20} {:<10} {:<30} {}",
-            app.app_name, app.status, url, app.config_path
+            "{:<20} {:<10} {:<30} {:<30} {}",
+            app.app_name, app.status, url, tunnel, app.config_path
         );
     }
     Ok(())
@@ -105,9 +109,10 @@ pub async fn ls() -> Result<(), Box<dyn std::error::Error>> {
 pub async fn run(
     public_port: u16,
     variant: Option<String>,
+    tunnel: bool,
     config_path: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let session = match prepare(public_port, variant, config_path).await? {
+    let session = match prepare(public_port, variant, tunnel, config_path).await? {
         PrepareOutcome::Ready(s) => *s,
         PrepareOutcome::AlreadyConnected => return Ok(()),
     };
@@ -189,6 +194,7 @@ pub async fn run(
                 .and_then(|v| v.as_bool())
         })
         .unwrap_or(false);
+    let initial_tunnel_enabled = false;
 
     events::spawn_log_forwarder(config_key.clone(), log_tx.clone());
 
@@ -267,11 +273,16 @@ pub async fn run(
     control::spawn_control_loop(
         config_key.clone(),
         initial_lan_enabled,
+        initial_tunnel_enabled,
         control_rx,
         log_tx.clone(),
         should_exit_tx.clone(),
         terminate_requested.clone(),
     );
+
+    if tunnel {
+        let _ = control_tx.send(output::ControlCmd::ToggleTunnel).await;
+    }
 
     reload::spawn_config_reload_loop(
         reload::ConfigReloadLoop {

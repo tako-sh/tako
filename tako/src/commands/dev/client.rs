@@ -19,6 +19,7 @@ pub(super) struct ConnectedDevClient {
     pub(super) project_dir: PathBuf,
     pub(super) url: String,
     pub(super) pid: Option<u32>,
+    pub(super) tunnel_enabled: bool,
 }
 
 pub(super) fn parse_log_line(line: &str) -> Option<ScopedLog> {
@@ -55,6 +56,7 @@ pub(super) fn host_and_port_from_url(url: &str) -> Option<(String, u16)> {
 pub(super) async fn run_connected_dev_client(
     app_name: &str,
     interactive: bool,
+    tunnel: bool,
     session: ConnectedDevClient,
     display_hosts: Vec<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -62,6 +64,7 @@ pub(super) async fn run_connected_dev_client(
         .map(|(_, p)| p)
         .unwrap_or(443);
     let mut lan_enabled = false;
+    let mut tunnel_enabled = session.tunnel_enabled;
 
     if let Ok(info) = crate::dev_server_client::info().await {
         public_port = info
@@ -189,6 +192,21 @@ pub(super) async fn run_connected_dev_client(
                                 })
                                 .await;
                         }
+                        DevServerEvent::TunnelModeChanged {
+                            ref config_path,
+                            enabled,
+                            ref url,
+                            expires_at,
+                            ..
+                        } if config_path == &config_key => {
+                            let _ = event_tx
+                                .send(DevEvent::TunnelModeChanged {
+                                    enabled,
+                                    url: url.clone(),
+                                    expires_at,
+                                })
+                                .await;
+                        }
                         _ => {}
                     }
                 }
@@ -273,9 +291,36 @@ pub(super) async fn run_connected_dev_client(
                             }
                         }
                     }
+                    output::ControlCmd::ToggleTunnel => {
+                        let current =
+                            crate::dev_server_client::registered_tunnel_enabled(&config_key)
+                                .await
+                                .unwrap_or(tunnel_enabled);
+                        let target = !current;
+                        let result = crate::dev_server_client::toggle_tunnel(&config_key, target)
+                            .await
+                            .map_err(|e| e.to_string());
+                        match result {
+                            Ok((enabled, _, _)) => {
+                                tunnel_enabled = enabled;
+                            }
+                            Err(msg) => {
+                                let _ = log_tx
+                                    .send(ScopedLog::error(
+                                        "tako",
+                                        format!("Tunnel toggle failed: {}", msg),
+                                    ))
+                                    .await;
+                            }
+                        }
+                    }
                 }
             }
         });
+    }
+
+    if tunnel && !tunnel_enabled {
+        let _ = control_tx.send(output::ControlCmd::ToggleTunnel).await;
     }
 
     if interactive {
@@ -340,7 +385,8 @@ pub(super) async fn run_connected_dev_client(
                                 | DevEvent::AppReady
                                 | DevEvent::AppPid(_)
                                 | DevEvent::AppProcessExited(_)
-                                | DevEvent::LanModeChanged { .. } => {}
+                                | DevEvent::LanModeChanged { .. }
+                                | DevEvent::TunnelModeChanged { .. } => {}
                             }
                         }
                         else => break,

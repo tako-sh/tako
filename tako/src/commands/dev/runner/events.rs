@@ -111,6 +111,21 @@ pub(super) async fn spawn_dev_event_forwarder(
                             })
                             .await;
                     }
+                    DevServerEvent::TunnelModeChanged {
+                        ref config_path,
+                        enabled,
+                        ref url,
+                        expires_at,
+                        ..
+                    } if config_path == &config_key => {
+                        let _ = event_tx
+                            .send(DevEvent::TunnelModeChanged {
+                                enabled,
+                                url: url.clone(),
+                                expires_at,
+                            })
+                            .await;
+                    }
                     _ => {}
                 }
             }
@@ -209,6 +224,15 @@ fn handle_non_interactive_event(event: DevEvent) -> bool {
                 }
             } else {
                 println!("LAN mode disabled");
+            }
+        }
+        DevEvent::TunnelModeChanged { enabled, url, .. } => {
+            if enabled {
+                if let Some(url) = url {
+                    println!("Tunnel: {url}");
+                }
+            } else {
+                println!("Tunnel turned off");
             }
         }
         DevEvent::ExitWithMessage(msg) => {

@@ -24,6 +24,8 @@ pub struct RegisteredAppInfo {
     pub status: String,
     pub pid: Option<u32>,
     pub client_pid: Option<u32>,
+    pub tunnel_url: Option<String>,
+    pub tunnel_expires_at: Option<u64>,
 }
 
 pub struct RegisterAppRequest<'a> {
@@ -113,9 +115,24 @@ pub async fn list_registered_apps() -> Result<Vec<RegisteredAppInfo>, Box<dyn st
                     .get("client_pid")
                     .and_then(|p| p.as_u64())
                     .map(|p| p as u32),
+                tunnel_url: a
+                    .get("tunnel_url")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+                tunnel_expires_at: a.get("tunnel_expires_at").and_then(|v| v.as_u64()),
             })
         })
         .collect())
+}
+
+pub async fn registered_tunnel_enabled(
+    config_path: &str,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    Ok(list_registered_apps()
+        .await?
+        .into_iter()
+        .find(|app| app.config_path == config_path)
+        .is_some_and(|app| app.tunnel_url.is_some()))
 }
 
 pub async fn register_app(

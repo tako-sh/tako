@@ -28,6 +28,7 @@ fn kill_all_app_processes_sends_sigterm_to_tracked_pids() {
                 log_buffer: state::LogBuffer::new(),
                 pid: Some(pid),
                 client_pid: None,
+                tunnel: None,
                 readiness_failure_hint: None,
                 bootstrap_token: "dev-token".to_string(),
                 secrets: std::collections::HashMap::new(),

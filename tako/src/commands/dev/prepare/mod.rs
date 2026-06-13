@@ -46,6 +46,7 @@ pub(super) enum PrepareOutcome {
 pub(super) async fn prepare(
     public_port: u16,
     variant: Option<String>,
+    tunnel: bool,
     config_path: Option<&Path>,
 ) -> Result<PrepareOutcome, Box<dyn std::error::Error>> {
     let context = crate::commands::project_context::resolve_existing(config_path)?;
@@ -283,9 +284,10 @@ pub(super) async fn prepare(
             project_dir: project_dir.clone(),
             url,
             pid: existing.pid,
+            tunnel_enabled: existing.tunnel_url.is_some(),
         };
         let display_hosts = compute_display_routes(&cfg, &domain, base_domain.as_deref());
-        run_connected_dev_client(&app_name, interactive, session, display_hosts).await?;
+        run_connected_dev_client(&app_name, interactive, tunnel, session, display_hosts).await?;
         return Ok(PrepareOutcome::AlreadyConnected);
     }
 

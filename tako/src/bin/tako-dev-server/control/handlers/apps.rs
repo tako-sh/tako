@@ -132,6 +132,7 @@ pub(super) async fn register_app(
                 log_buffer,
                 pid: None,
                 client_pid,
+                tunnel: None,
                 readiness_failure_hint,
                 bootstrap_token,
                 secrets,
@@ -243,11 +244,24 @@ pub(super) fn unregister_app(state: &Arc<Mutex<State>>, config_path: String) -> 
         state::remove_pid_file(&app.project_dir, &config_path);
     }
 
-    let app_name = if let Some(app) = s.apps.remove(&config_path) {
+    let app_name = if let Some(mut app) = s.apps.remove(&config_path) {
         if let Some(ref mut mdns) = s.mdns {
             for host in &app.hosts {
                 mdns.unpublish(split_route_pattern(host).0);
             }
+        }
+        if let Some(tunnel) = app.tunnel.take() {
+            tunnel.abort_handle.abort();
+            push_scoped_log(&app.log_buffer, "Info", "tako", "Tunnel turned off");
+            s.events.broadcast(Response::Event {
+                event: protocol::DevEvent::TunnelModeChanged {
+                    config_path: config_path.clone(),
+                    app_name: app.name.clone(),
+                    enabled: false,
+                    url: None,
+                    expires_at: None,
+                },
+            });
         }
         app.name
     } else {

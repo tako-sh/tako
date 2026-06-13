@@ -272,7 +272,8 @@ pub(in crate::commands::dev) fn format_keymap() -> String {
     let cols = terminal_cols().max(20);
     let text = if cols < 60 {
         format!(
-            "l {}   r {}   b {}   ^c/q {}",
+            "t {}   l {}   r {}   b {}   ^c/q {}",
+            muted("tunnel"),
             muted("lan"),
             muted("restart"),
             muted("background"),
@@ -280,7 +281,8 @@ pub(in crate::commands::dev) fn format_keymap() -> String {
         )
     } else {
         format!(
-            "l {}   r {}   b {}   ctrl+c/q {}",
+            "t {}   l {}   r {}   b {}   ctrl+c/q {}",
+            muted("tunnel"),
             muted("lan"),
             muted("restart"),
             muted("background"),
@@ -288,9 +290,9 @@ pub(in crate::commands::dev) fn format_keymap() -> String {
         )
     };
     let plain = if cols < 60 {
-        "l lan   r restart   b background   ^c/q stop"
+        "t tunnel   l lan   r restart   b background   ^c/q stop"
     } else {
-        "l lan   r restart   b background   ctrl+c/q stop"
+        "t tunnel   l lan   r restart   b background   ctrl+c/q stop"
     };
     let pad = cols.saturating_sub(measure_text_width(plain) + 1);
     format!("{}{text} ", " ".repeat(pad))
