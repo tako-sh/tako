@@ -8,12 +8,12 @@ import { installConsoleBridge } from "../console-bridge";
 import { installErrorHooks } from "../error-hooks";
 import { installStdioBridge } from "../stdio-bridge";
 import { startNodeServer } from "../node-http";
-import { initBootstrapFromFd, readViaInheritedFd } from "../secrets-fd";
+import { initBootstrapFromFd, readBootstrapData } from "../secrets-fd";
 
 installStdioBridge("app");
 installErrorHooks("app");
 installConsoleBridge("app");
-initBootstrapFromFd(readViaInheritedFd);
+initBootstrapFromFd(readBootstrapData);
 const { run, host, port, setDraining } = createEntrypoint();
 
 void run(async (handleRequest) => {

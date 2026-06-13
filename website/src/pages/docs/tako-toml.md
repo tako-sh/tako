@@ -147,9 +147,9 @@ The path is relative to the app directory. Container releases use the app root a
 
 Container releases do not use native release packaging fields: `main`, `assets`, `[build]`, or `[[build_stages]]`. Keep production build steps in the container file.
 
-The target server must have Docker or Podman installed. The container must listen on `$PORT` (`3000` today), bind `0.0.0.0`, and return 2xx on `/status`. App secrets are injected as environment variables for container releases in v0.
+The target server must have Docker or Podman installed. The container must listen on `$PORT` (`3000` today), bind `0.0.0.0`, and use the Tako SDK so `/status` echoes the internal health-probe token. Secrets and storage bindings arrive through `TAKO_BOOTSTRAP_DATA`, not as individual environment variables.
 
-Container releases are HTTP-only in v0. The fd-3 bootstrap, fd-4 readiness handshake, internal socket, storage bindings, workflow workers, and `TAKO_DATA_DIR` are native-runtime features and are not mounted into the container.
+Container releases are HTTP-only in v0. The fd-3 bootstrap pipe, fd-4 readiness handshake, internal socket, workflow workers, and `TAKO_DATA_DIR` are native-runtime features and are not mounted into the container.
 
 ## Entrypoints And Assets
 

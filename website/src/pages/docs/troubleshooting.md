@@ -191,9 +191,9 @@ runtime = "bun@1.2.3"
 
 ### Container deploy cannot build or start
 
-Container releases require Docker or Podman on the target server. The container must listen on `$PORT` (`3000` today), bind `0.0.0.0`, and return 2xx on `/status`.
+Container releases require Docker or Podman on the target server. The container must listen on `$PORT` (`3000` today), bind `0.0.0.0`, and use the Tako SDK so `/status` echoes the internal health-probe token.
 
-Container releases are HTTP-only in v0. Use native releases when the app needs Tako storage bindings, workflows, the internal socket, or `TAKO_DATA_DIR`.
+Container releases are HTTP-only in v0. Use native releases when the app needs workflows, the internal socket, or `TAKO_DATA_DIR`.
 
 Without a pin, deploy runs the local runtime's `--version` and falls back to `latest`.
 

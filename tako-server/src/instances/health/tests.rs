@@ -305,7 +305,7 @@ async fn test_probe_reports_missing_internal_token_reason() {
 }
 
 #[tokio::test]
-async fn test_container_probe_accepts_plain_success_status() {
+async fn test_container_probe_requires_internal_token() {
     let Ok(listener) = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await else {
         return;
     };
@@ -334,15 +334,16 @@ async fn test_container_probe_accepts_plain_success_status() {
         let _ = tokio::io::AsyncWriteExt::write_all(&mut socket, response.as_bytes()).await;
     });
 
-    let healthy = probe_instance_health(
+    let failure = probe_instance_health(
         &instance,
         "tako",
         "/status",
-        false,
+        true,
         Duration::from_millis(200),
     )
     .await;
-    assert!(healthy.is_ok());
+    let failure = failure.expect_err("plain container status must not satisfy SDK health probe");
+    assert_eq!(failure.reason, "missing_internal_token");
 }
 
 #[tokio::test]

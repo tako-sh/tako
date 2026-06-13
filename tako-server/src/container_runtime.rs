@@ -2,6 +2,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 
+use tako_core::StorageBinding;
+use tako_core::bootstrap::{TAKO_BOOTSTRAP_DATA_ENV, envelope_string};
 use tokio::process::Command as TokioCommand;
 
 use crate::app_command::{ReleaseManifest, safe_subdir};
@@ -117,7 +119,9 @@ pub(crate) fn build_container_run_args(
     host_port: u16,
     container_port: u16,
     env: &HashMap<String, String>,
+    token: &str,
     secrets: &HashMap<String, String>,
+    storages: &HashMap<String, StorageBinding>,
 ) -> Vec<String> {
     let mut args = vec![
         "run".to_string(),
@@ -127,7 +131,7 @@ pub(crate) fn build_container_run_args(
         "--publish".to_string(),
         format!("127.0.0.1:{host_port}:{container_port}"),
     ];
-    for key in build_container_run_env(env, secrets, container_port).keys() {
+    for key in build_container_run_env(env, token, secrets, storages, container_port).keys() {
         args.push("--env".to_string());
         args.push(key.clone());
     }
@@ -137,18 +141,21 @@ pub(crate) fn build_container_run_args(
 
 pub(crate) fn build_container_run_env(
     env: &HashMap<String, String>,
+    token: &str,
     secrets: &HashMap<String, String>,
+    storages: &HashMap<String, StorageBinding>,
     container_port: u16,
 ) -> BTreeMap<String, String> {
     let mut merged = BTreeMap::new();
     for (key, value) in env {
         merged.insert(key.clone(), value.clone());
     }
-    for (key, value) in secrets {
-        merged.insert(key.clone(), value.clone());
-    }
     merged.insert("HOST".to_string(), "0.0.0.0".to_string());
     merged.insert("PORT".to_string(), container_port.to_string());
+    merged.insert(
+        TAKO_BOOTSTRAP_DATA_ENV.to_string(),
+        envelope_string(token, secrets, storages),
+    );
     merged
 }
 
@@ -269,31 +276,46 @@ mod tests {
             49152,
             3000,
             &HashMap::from([("ENV".to_string(), "production".to_string())]),
+            "tok",
             &HashMap::from([("API_KEY".to_string(), "secret".to_string())]),
+            &HashMap::new(),
         );
 
         assert!(args.contains(&"--rm".to_string()));
         assert!(args.contains(&"127.0.0.1:49152:3000".to_string()));
         assert!(args.contains(&"ENV".to_string()));
-        assert!(args.contains(&"API_KEY".to_string()));
+        assert!(args.contains(&TAKO_BOOTSTRAP_DATA_ENV.to_string()));
+        assert!(!args.contains(&"API_KEY".to_string()));
         assert!(args.contains(&"HOST".to_string()));
         assert!(args.contains(&"PORT".to_string()));
         assert!(!args.contains(&"ENV=production".to_string()));
         assert!(!args.contains(&"API_KEY=secret".to_string()));
+        assert!(!args.iter().any(|arg| arg.contains("secret")));
         assert!(!args.contains(&"HOST=0.0.0.0".to_string()));
         assert!(!args.contains(&"PORT=3000".to_string()));
     }
 
     #[test]
-    fn build_container_run_env_merges_env_and_secrets() {
+    fn build_container_run_env_passes_sdk_bootstrap_data() {
         let env = HashMap::from([("ENV".to_string(), "production".to_string())]);
         let secrets = HashMap::from([("API_KEY".to_string(), "secret".to_string())]);
 
-        let merged = build_container_run_env(&env, &secrets, DEFAULT_CONTAINER_PORT);
+        let merged = build_container_run_env(
+            &env,
+            "tok",
+            &secrets,
+            &HashMap::new(),
+            DEFAULT_CONTAINER_PORT,
+        );
 
         assert_eq!(merged.get("ENV").map(String::as_str), Some("production"));
-        assert_eq!(merged.get("API_KEY").map(String::as_str), Some("secret"));
+        assert_eq!(merged.get("API_KEY"), None);
         assert_eq!(merged.get("HOST").map(String::as_str), Some("0.0.0.0"));
         assert_eq!(merged.get("PORT").map(String::as_str), Some("3000"));
+
+        let bootstrap: serde_json::Value =
+            serde_json::from_str(merged.get(TAKO_BOOTSTRAP_DATA_ENV).unwrap()).unwrap();
+        assert_eq!(bootstrap["token"], "tok");
+        assert_eq!(bootstrap["secrets"]["API_KEY"], "secret");
     }
 }

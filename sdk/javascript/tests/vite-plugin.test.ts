@@ -230,7 +230,7 @@ describe("tako Vite entry plugin", () => {
   test("configureServer bootstraps fd secrets before server runtime setup", async () => {
     const source = await readFile(path.join(import.meta.dir, "../src/vite.ts"), "utf8");
 
-    const bootstrapCall = source.indexOf("initBootstrapFromFd(readViaInheritedFd);");
+    const bootstrapCall = source.indexOf("initBootstrapFromFd(readBootstrapData);");
     const runtimeCall = source.indexOf("initServerRuntime();");
 
     expect(bootstrapCall).toBeGreaterThanOrEqual(0);

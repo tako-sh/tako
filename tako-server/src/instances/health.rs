@@ -4,7 +4,7 @@
 //! `/status` on each instance.
 //! This replaces passive heartbeat-only detection with active probing.
 
-use super::{App, AppLaunch, INTERNAL_TOKEN_HEADER, Instance, InstanceState};
+use super::{App, INTERNAL_TOKEN_HEADER, Instance, InstanceState};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -181,12 +181,11 @@ impl HealthChecker {
         }
 
         // Build health check target using app's configured path and internal host header
-        let (health_host, health_path, require_internal_token) = {
+        let (health_host, health_path) = {
             let config = app.config.read();
             (
                 config.health_check_host.clone(),
                 config.health_check_path.clone(),
-                !matches!(config.launch, AppLaunch::Container { .. }),
             )
         };
 
@@ -195,7 +194,7 @@ impl HealthChecker {
             instance,
             &health_host,
             &health_path,
-            require_internal_token,
+            true,
             self.config.probe_timeout,
         )
         .await;

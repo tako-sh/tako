@@ -5,7 +5,7 @@ import {
   injectBootstrap,
   loadSecrets,
 } from "../src/tako/secrets";
-import { initBootstrapFromFd } from "../src/tako/secrets-fd";
+import { initBootstrapFromFd, readViaBootstrapEnv } from "../src/tako/secrets-fd";
 
 describe("initBootstrapFromFd", () => {
   beforeEach(() => {
@@ -52,5 +52,16 @@ describe("initBootstrapFromFd", () => {
     initBootstrapFromFd(() => envelope);
 
     expect(getInternalToken()).toBe("only-token");
+  });
+
+  test("reads container bootstrap data from env once", () => {
+    const envelope = JSON.stringify({ token: "tok-env", secrets: { API_KEY: "secret" } });
+    process.env.TAKO_BOOTSTRAP_DATA = envelope;
+
+    initBootstrapFromFd(readViaBootstrapEnv);
+
+    expect(getInternalToken()).toBe("tok-env");
+    expect(loadSecrets()["API_KEY"]).toBe("secret");
+    expect(process.env.TAKO_BOOTSTRAP_DATA).toBeUndefined();
   });
 });

@@ -4,9 +4,9 @@
     {
       "name": "tako",
       "type": "framework",
-      "description": "Tako CLI commands and project runtime workflow. Use when a repository contains tako.toml, imports tako.sh or tako.sh/vite, uses the Go SDK, or describes itself as a tako.sh app. Covers init, dev, deploy, secrets, storage, gen, scale, logs, rollback, servers, doctor, and output design patterns.",
+      "description": "Tako CLI commands and project runtime workflow. Use when a repository contains tako.toml, imports tako.sh or tako.sh/vite, uses the Go or Rust SDK, or describes itself as a tako.sh app. Covers init, dev, deploy, secrets, storage, gen, scale, logs, rollback, servers, doctor, and output design patterns.",
       "url": "https://tako.sh/.well-known/agent-skills/tako/SKILL.md",
-      "sha256": "f9beef3ddcf24cf2df654bea4aa84719421fcc30148bacd0f18f9910d7a427d6"
+      "sha256": "82b49b83d69d96e37eb2183d2a5b67a097a082816ee980221d0f844ed857d1e7"
     },
     {
       "name": "tako-sdk-go",
@@ -21,6 +21,13 @@
       "description": "tako.sh SDK: fetch handler interface, tako runtime object, generated tako.d.ts type augmentation, defineChannel/defineWorkflow, Vite and Next.js adapters.",
       "url": "https://tako.sh/.well-known/agent-skills/tako-sdk-js/SKILL.md",
       "sha256": "d306089371113fb0b39c7f2e95fb6f69b4ee5d70726b4076b4a17358d9827e49"
+    },
+    {
+      "name": "tako-sdk-rust",
+      "type": "framework",
+      "description": "tako.sh Rust SDK: bootstrap secrets, listener binding, and Axum serving with Tako internal status handling.",
+      "url": "https://tako.sh/.well-known/agent-skills/tako-sdk-rust/SKILL.md",
+      "sha256": "4f032beb89e2eac0c87c273954ae3707165baa9eb677938faff60c528a685cf2"
     }
   ]
 }

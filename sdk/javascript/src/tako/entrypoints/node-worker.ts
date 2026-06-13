@@ -7,7 +7,7 @@ import { installConsoleBridge } from "../console-bridge";
 import { installErrorHooks } from "../error-hooks";
 import { createLogger } from "../../logger";
 import { installStdioBridge } from "../stdio-bridge";
-import { initBootstrapFromFd, readViaInheritedFd } from "../secrets-fd";
+import { initBootstrapFromFd, readBootstrapData } from "../secrets-fd";
 import { bootstrapWorker } from "../../workflows/bootstrap";
 import { workflowsEngine } from "../../workflows/engine";
 
@@ -18,7 +18,7 @@ installConsoleBridge("worker");
 const log = createLogger("worker");
 
 async function main(): Promise<void> {
-  initBootstrapFromFd(readViaInheritedFd);
+  initBootstrapFromFd(readBootstrapData);
   const result = await bootstrapWorker();
   if (!result.started) {
     log.error("Worker not started", { reason: result.reason ?? "unknown" });

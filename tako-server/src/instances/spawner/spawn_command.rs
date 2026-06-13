@@ -291,7 +291,16 @@ pub(super) fn spawn_container_process_with_engine(
         config.deployment_id().replace('/', "-"),
         instance.id
     );
-    let args = build_container_run_args(&name, image, host_port, container_port, env, secrets);
+    let args = build_container_run_args(
+        &name,
+        image,
+        host_port,
+        container_port,
+        env,
+        instance.internal_token(),
+        secrets,
+        &config.storages,
+    );
     let mut child_cmd = Command::new(engine.binary());
     child_cmd
         .args(args)
@@ -305,7 +314,13 @@ pub(super) fn spawn_container_process_with_engine(
             child_cmd.env(key, value);
         }
     }
-    for (key, value) in build_container_run_env(env, secrets, container_port) {
+    for (key, value) in build_container_run_env(
+        env,
+        instance.internal_token(),
+        secrets,
+        &config.storages,
+        container_port,
+    ) {
         child_cmd.env(key, value);
     }
     child_cmd.spawn()

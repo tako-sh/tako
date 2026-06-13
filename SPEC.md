@@ -156,8 +156,8 @@ Variable values may be TOML strings, numbers, booleans, or datetimes. Tako conve
 - Top-level `runtime` is optional; when set to `bun`, `node`, or `go`, it overrides adapter detection for default preset selection in `tako deploy`/`tako dev`. Add `@<version>` (for example `bun@1.2.3`) to pin the deploy runtime version. Without a pin, deploy auto-detects with `<runtime> --version`. `tako init` pins the locally-installed version by default.
 - Top-level `container` is optional. When set, production deploys package source for a container release instead of the native runtime artifact flow. The path is relative to the config file's parent directory and must not be absolute or contain `..`.
 - Native release packaging fields are invalid with `container`: `main`, `assets`, `[build]`, and `[[build_stages]]`. The container file and `.dockerignore` own production build inputs and outputs for container releases. `tako dev` still uses the configured dev command, preset dev command, or native runtime default; it does not build or run the container file locally.
-- Container releases require Docker or Podman on the target server. During remote prepare, `tako-server` builds the image from the uploaded app directory, tags it as `tako/{app}-{env}:{version}`, and runs instances from that image. The container receives `HOST=0.0.0.0`, `PORT=3000`, `ENV`, `TAKO_BUILD`, user vars, and app secrets as environment variables. The app must listen on `$PORT` and return a 2xx response on `/status`.
-- Container releases are HTTP-only in v0. The fd 3 bootstrap, fd 4 readiness handshake, internal socket, storage bindings, workflow workers, and `TAKO_DATA_DIR` are native-runtime features and are not mounted into the container.
+- Container releases require Docker or Podman on the target server. During remote prepare, `tako-server` builds the image from the uploaded app directory, tags it as `tako/{app}-{env}:{version}`, and runs instances from that image. The container receives `HOST=0.0.0.0`, `PORT=3000`, `ENV`, `TAKO_BUILD`, user vars, and `TAKO_BOOTSTRAP_DATA`. The app must use the Tako SDK so secrets, storage bindings, internal status, and the health-probe token use the same contract as native releases.
+- Container releases are HTTP-only in v0. The fd 3 bootstrap, fd 4 readiness handshake, internal socket, workflow workers, and `TAKO_DATA_DIR` are native-runtime features and are not mounted into the container.
 - Top-level `package_manager` is optional; when set (e.g. `"npm"`, `"pnpm"`, `"yarn"`, `"bun"`), it overrides auto-detection from `package.json` `packageManager` field or lockfiles.
 - Top-level `preset` is optional. Presets are metadata-only (`name`, `main`, `assets`, `dev`) providing entrypoint, asset, and dev-command defaults. They do not contain build, install, or start commands.
 - Top-level `dev` is optional; when set (e.g. `["vite", "dev"]`), it overrides both preset and runtime default dev commands for `tako dev`.
@@ -214,7 +214,7 @@ Variable values may be TOML strings, numbers, booleans, or datetimes. Tako conve
 - Process exit detection: `tako dev` polls `try_wait()` every 500ms to detect when the app process exits. On exit, the route goes idle (proxy stops forwarding) and the next HTTP request triggers a restart. A route is activated only after fd-4 readiness succeeds.
 - `tako dev` resolves unpinned official preset aliases from cached or embedded preset data when available and only fetches from the `master` branch as a last resort.
 - `tako deploy` resolves unpinned official preset aliases from the `master` branch on each deploy; if the refresh fails, it falls back to cached content.
-- Deploy sends app vars + runtime vars to `tako-server` in the `deploy` command payload (non-secret env vars in `app.json`); secrets and storage bindings are sent separately and stored encrypted in SQLite. Native releases pass secrets and storage bindings to HTTP instances and workflow workers via fd 3 (file descriptor 3) at spawn time — the server writes JSON to a pipe and the child process reads fd 3 before any user code runs. Container releases pass app secrets as environment variables because the fd bootstrap pipe does not cross the container boundary in v0.
+- Deploy sends app vars + runtime vars to `tako-server` in the `deploy` command payload (non-secret env vars in `app.json`); secrets and storage bindings are sent separately and stored encrypted in SQLite. Native releases pass secrets and storage bindings to HTTP instances and workflow workers via fd 3 (file descriptor 3) at spawn time — the server writes JSON to a pipe and the child process reads fd 3 before any user code runs. Container releases pass the same bootstrap envelope through `TAKO_BOOTSTRAP_DATA` because the fd bootstrap pipe does not cross the container boundary in v0.
 - `[build]` section has `run` (build command), `install` (optional pre-build install command), `cwd` (optional working directory relative to project root; absolute paths and `..` are rejected), plus `include`/`exclude` for artifact filtering. `[build]` is a shortcut for a single-stage `[[build_stages]]` list.
 - `[build]` and `[[build_stages]]` are mutually exclusive: having both `build.run` and `[[build_stages]]` is an error. `[build].include`/`[build].exclude` cannot be used alongside `[[build_stages]]`; use per-stage `exclude` instead.
 - Build stage resolution precedence (first non-empty wins): `[[build_stages]]` → `[build]` (normalized to a single stage) → runtime default. The runtime default is the runtime plugin's build command: `bun/npm/pnpm/yarn run --if-present build` for JS runtimes, and `CGO_ENABLED=0 go build -o app .` for Go. If a Go project has `cmd/worker/main.go`, the Go default also builds `CGO_ENABLED=0 go build -o worker ./cmd/worker`. When nothing resolves, the build phase is a no-op.
@@ -382,7 +382,7 @@ region = "auto"
 public_base_url = "https://cdn.example.com/uploads"
 ```
 
-Storage binding and S3 resource names may contain lowercase letters, numbers, hyphens, and underscores. The resource name `local` is built in and must not be declared under `[storages]`; bind to it directly with `storages = { uploads = "local" }`. For S3 resources, `tako storages add` prompts for access credentials and optionally when they expire; `--expires-on` can provide the expiry directly. Deploy fails before build/deploy work starts if the selected environment's S3 credentials are expired and warns when they expire within 30 days. When credentials are current or expiry is unknown, deploy decrypts them locally, combines them with the selected `tako.toml` resource metadata, sends the runtime bindings over the signed management path, and `tako-server` stores the resulting bindings encrypted in server SQLite. Fresh native app and worker processes receive bindings through the fd 3 bootstrap envelope as `storages`. Container releases do not mount storage bindings in v0.
+Storage binding and S3 resource names may contain lowercase letters, numbers, hyphens, and underscores. The resource name `local` is built in and must not be declared under `[storages]`; bind to it directly with `storages = { uploads = "local" }`. For S3 resources, `tako storages add` prompts for access credentials and optionally when they expire; `--expires-on` can provide the expiry directly. Deploy fails before build/deploy work starts if the selected environment's S3 credentials are expired and warns when they expire within 30 days. When credentials are current or expiry is unknown, deploy decrypts them locally, combines them with the selected `tako.toml` resource metadata, sends the runtime bindings over the signed management path, and `tako-server` stores the resulting bindings encrypted in server SQLite. Fresh native app and worker processes receive bindings through the fd 3 bootstrap envelope as `storages`; fresh container app processes receive the same envelope through `TAKO_BOOTSTRAP_DATA`.
 
 `tako storages credentials <resource> --env <environment>` sets or rotates encrypted S3 credentials for a declared top-level storage resource without adding an app binding. This is the recommended setup path for backup-only storage resources. The same S3 bucket may be used for app storage and backups; backup objects are automatically written under Tako's reserved `_tako/backups/` prefix.
 
@@ -887,7 +887,7 @@ Service-manager reload/restart behavior:
 - On systemd hosts, installer configures `KillMode=mixed` and `TimeoutStopSec=30min`, allowing the main server process to receive the first stop signal while child processes still get time to handle graceful shutdown before forced termination.
 - On OpenRC hosts, installer configures `retry="TERM/1800/KILL/5"` in the init script so restart/stop waits up to 30 minutes before forced termination.
 
-`tako-server` persists app runtime registration (app config and routes) in SQLite under the data directory and restores it on startup so app routing/config survives reloads, restarts, and crashes. Env vars are stored in `app.json` in the release directory; secrets are stored encrypted (AES-256-GCM) in the same SQLite database using a per-device key. Fresh native app and worker processes receive secrets through the fd 3 bootstrap envelope at spawn time; container instances receive app secrets as environment variables in v0. Secret updates store the new encrypted values, then drain/restart workflow workers and roll HTTP instances so fresh processes receive the new values; secrets never touch disk as plaintext. Each deployed app also gets a persistent runtime data tree under `{data_dir}/apps/{app}/{env}/data/`:
+`tako-server` persists app runtime registration (app config and routes) in SQLite under the data directory and restores it on startup so app routing/config survives reloads, restarts, and crashes. Env vars are stored in `app.json` in the release directory; secrets are stored encrypted (AES-256-GCM) in the same SQLite database using a per-device key. Fresh native app and worker processes receive secrets through the fd 3 bootstrap envelope at spawn time; container instances receive the same envelope through `TAKO_BOOTSTRAP_DATA`. Secret updates store the new encrypted values, then drain/restart workflow workers and roll HTTP instances so fresh processes receive the new values; secrets never touch disk as plaintext. Each deployed app also gets a persistent runtime data tree under `{data_dir}/apps/{app}/{env}/data/`:
 
 - `app/` — app-owned data exposed to the process as `TAKO_DATA_DIR`
 - `tako/` — Tako-owned per-app internal state
@@ -1025,7 +1025,7 @@ Sync flow helpers:
 
 - If no servers are configured and the terminal is interactive, sync offers to run the add-server wizard.
 - Environments with no mapped servers are skipped with a warning.
-- Sync sends `update_secrets` to `tako-server`; it does not write remote `.env` files. Secrets updates reconcile the app's workflow runtime and rolling-restart HTTP instances so fresh native processes receive the new values via fd 3 and fresh container instances receive them as environment variables in v0.
+- Sync sends `update_secrets` to `tako-server`; it does not write remote `.env` files. Secrets updates reconcile the app's workflow runtime and rolling-restart HTTP instances so fresh native processes receive the new bootstrap envelope via fd 3 and fresh container instances receive it through `TAKO_BOOTSTRAP_DATA`.
 
 ### tako secrets key export [--env {environment}]
 
@@ -1634,26 +1634,26 @@ App log files contain app stdout/stderr plus app-scoped Tako server diagnostics.
   - Used by: tako-server to proxy HTTP requests and probe health
 - Container TCP over loopback
   - `tako-server` starts Docker or Podman with a server-assigned loopback host port published to container port `3000`
-  - The container receives `HOST=0.0.0.0` and `PORT=3000`
-  - Readiness is the first successful 2xx response on the configured health path
+  - The container receives `HOST=0.0.0.0`, `PORT=3000`, and `TAKO_BOOTSTRAP_DATA`
+  - Readiness is the first successful SDK-authenticated response on the configured health path
 
 ### Environment Variables for Apps
 
-Native HTTP instances and workflow workers receive the same app/runtime environment, except HTTP-only bind vars (`PORT`, `HOST`) and per-instance CLI args. Container HTTP instances receive the app/runtime environment plus app secrets as environment variables in v0. In production, spawned native app and worker processes start from a cleared service environment; Tako preserves only minimal process env (`PATH`, `HOME` when available) before applying the app/runtime variables below.
+Native HTTP instances and workflow workers receive the same app/runtime environment, except HTTP-only bind vars (`PORT`, `HOST`) and per-instance CLI args. Container HTTP instances receive the app/runtime environment plus `TAKO_BOOTSTRAP_DATA`. In production, spawned native app and worker processes start from a cleared service environment; Tako preserves only minimal process env (`PATH`, `HOME` when available) before applying the app/runtime variables below.
 
-| Name                   | Used by      | Meaning                                                                                 | Typical source                                                                                                                                                 |
-| ---------------------- | ------------ | --------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ENV`                  | app + worker | Active environment name                                                                 | Set by Tako in both dev and deploy (`development`, `production`, `staging`, etc.).                                                                             |
-| `PORT`                 | app          | Listen port for HTTP server                                                             | Native: `0` in both dev and deploy; the SDK binds to an OS-assigned port and reports it to Tako via fd 4. Container: `3000`.                                   |
-| `HOST`                 | app          | Listen host for HTTP server                                                             | Native: `127.0.0.1` in both dev and deploy. Container: `0.0.0.0`.                                                                                              |
-| `TAKO_APP_NAME`        | app + worker | App identity used by the SDK to tag internal-socket RPCs                                | Set by both spawners (tako-server and tako-dev-server). In deploy this is the deployment id (`{app}/{env}`); internal HTTP hosts use the base `{app}` segment. |
-| `TAKO_INTERNAL_SOCKET` | app + worker | Path to the shared internal unix socket for workflow enqueue/signal and channel publish | Set by both spawners. Together with `TAKO_APP_NAME` this must always be set as a pair; the SDK asserts this at boot.                                           |
-| `TAKO_DATA_DIR`        | app + worker | Persistent app-owned runtime data directory                                             | Set by Tako in dev and native deploys; points to the app's `data/app` directory. Not set for container releases in v0.                                         |
-| `TAKO_APP_ROOT`        | app + worker | JavaScript app root for `channels/` and `workflows/` discovery                          | Set for JS apps from `tako.toml` `app_root`; defaults to `src`.                                                                                                |
-| `NODE_ENV`             | app + worker | Node.js convention env                                                                  | Set by runtime adapter / server (`development` or `production`).                                                                                               |
-| `BUN_ENV`              | app + worker | Bun convention env                                                                      | Set by runtime adapter (`development` or `production`).                                                                                                        |
-| `TAKO_BUILD`           | app + worker | Deployed build/version identifier                                                       | Written into release `app.json` by `tako deploy`; `tako-server` reads it from the manifest and passes it as an env var at spawn.                               |
-| _user-defined_         | app + worker | User config vars                                                                        | From `app.json` in the release dir. Native secrets + internal token pass via fd 3 bootstrap envelope. Container app secrets pass as env vars in v0.            |
+| Name                   | Used by      | Meaning                                                                                 | Typical source                                                                                                                                                       |
+| ---------------------- | ------------ | --------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ENV`                  | app + worker | Active environment name                                                                 | Set by Tako in both dev and deploy (`development`, `production`, `staging`, etc.).                                                                                   |
+| `PORT`                 | app          | Listen port for HTTP server                                                             | Native: `0` in both dev and deploy; the SDK binds to an OS-assigned port and reports it to Tako via fd 4. Container: `3000`.                                         |
+| `HOST`                 | app          | Listen host for HTTP server                                                             | Native: `127.0.0.1` in both dev and deploy. Container: `0.0.0.0`.                                                                                                    |
+| `TAKO_APP_NAME`        | app + worker | App identity used by the SDK to tag internal-socket RPCs                                | Set by both spawners (tako-server and tako-dev-server). In deploy this is the deployment id (`{app}/{env}`); internal HTTP hosts use the base `{app}` segment.       |
+| `TAKO_INTERNAL_SOCKET` | app + worker | Path to the shared internal unix socket for workflow enqueue/signal and channel publish | Set by both spawners. Together with `TAKO_APP_NAME` this must always be set as a pair; the SDK asserts this at boot.                                                 |
+| `TAKO_DATA_DIR`        | app + worker | Persistent app-owned runtime data directory                                             | Set by Tako in dev and native deploys; points to the app's `data/app` directory. Not set for container releases in v0.                                               |
+| `TAKO_APP_ROOT`        | app + worker | JavaScript app root for `channels/` and `workflows/` discovery                          | Set for JS apps from `tako.toml` `app_root`; defaults to `src`.                                                                                                      |
+| `NODE_ENV`             | app + worker | Node.js convention env                                                                  | Set by runtime adapter / server (`development` or `production`).                                                                                                     |
+| `BUN_ENV`              | app + worker | Bun convention env                                                                      | Set by runtime adapter (`development` or `production`).                                                                                                              |
+| `TAKO_BUILD`           | app + worker | Deployed build/version identifier                                                       | Written into release `app.json` by `tako deploy`; `tako-server` reads it from the manifest and passes it as an env var at spawn.                                     |
+| _user-defined_         | app + worker | User config vars                                                                        | From `app.json` in the release dir. Native secrets + internal token pass via fd 3 bootstrap envelope. Container bootstrap data passes through `TAKO_BOOTSTRAP_DATA`. |
 
 **Instance identity (CLI args, not env vars):** `tako-server` passes per-instance identity to the SDK entrypoint as command-line arguments:
 
@@ -1682,7 +1682,7 @@ The SDK parses this from `process.argv` (JS) or `os.Args` (Go) at startup and ex
 }
 ```
 
-The SDK reads fd 3 once at startup and closes it. The envelope travels on a pipe (rather than env vars or argv) so the token, secrets, and storage credentials do not inherit into subprocesses the app spawns. The token authenticates `Host: <app>.tako` requests (health probes, channel auth callbacks). Secrets populate `tako.secrets`; storage bindings populate `tako.storages`. Backup storage is deliberately not included here unless the same resource is separately bound under `[envs.<env>].storages`. Generated `tako.d.ts` augments both project-specific surfaces. The pipe is always present for native dev/prod processes — in dev mode with no secrets or storages, the envelope is `{"token": "...", "secrets": {}, "storages": {}}`. Container releases do not receive the fd 3 bootstrap in v0.
+The SDK reads fd 3 once at startup and closes it for native processes. For container processes, the SDK reads the same envelope from `TAKO_BOOTSTRAP_DATA` and removes that variable from the process environment after startup. The token authenticates `Host: <app>.tako` requests (health probes, channel auth callbacks). Secrets populate `tako.secrets`; storage bindings populate `tako.storages`. Backup storage is deliberately not included here unless the same resource is separately bound under `[envs.<env>].storages`. Generated `tako.d.ts` augments both project-specific surfaces. The fd 3 pipe is always present for native dev/prod processes — in dev mode with no secrets or storages, the envelope is `{"token": "...", "secrets": {}, "storages": {}}`.
 
 ### Messages (JSON over Unix Socket)
 
@@ -1991,9 +1991,9 @@ Server-side validation on `deploy` and app-scoped commands:
 - App and workflow worker processes run as the per-app Unix user for their deployed app id and do not connect to the management socket. The shared `tako-app` group is retained only for internal socket permissions. If a root `tako-server` cannot resolve or create the per-app identity, spawning fails closed instead of running app code as root.
 - `tako-server` controls lifecycle directly (spawn/stop/rolling update). Startup readiness is signaled by the SDK via fd 4; ongoing health is verified via active HTTP probing.
 - Native app processes receive `PORT=0` and `HOST=127.0.0.1`, bind to an OS-assigned loopback port, and write the actual port to fd 4. The server then routes traffic and health probes to that endpoint.
-- Container app processes run through Docker or Podman with a server-assigned loopback host port published to container port `3000`. The container receives `HOST=0.0.0.0` and `PORT=3000`; readiness is the first successful 2xx health probe.
-- Secrets are passed to native instances via fd 3 (file descriptor 3) at spawn time. The server creates a pipe, writes JSON-serialized secrets to the write end, and the child process reads fd 3 at startup before any user code runs. EBADF on fd 3 means the process is not running under Tako (dev mode). Container instances receive app secrets as environment variables in v0.
-- Secret updates (`update_secrets` command) store new secrets in SQLite, drain/restart any workflow worker for the app, and trigger a rolling restart for HTTP instances; fresh native processes receive updated secrets via fd 3 and fresh container instances receive them as environment variables in v0.
+- Container app processes run through Docker or Podman with a server-assigned loopback host port published to container port `3000`. The container receives `HOST=0.0.0.0`, `PORT=3000`, and `TAKO_BOOTSTRAP_DATA`; readiness is the first successful SDK-authenticated health probe.
+- Secrets are passed to native instances via fd 3 (file descriptor 3) at spawn time. The server creates a pipe, writes the JSON bootstrap envelope to the write end, and the child process reads fd 3 at startup before any user code runs. EBADF on fd 3 means the process is not running under Tako (dev mode). Container instances receive the same envelope through `TAKO_BOOTSTRAP_DATA`.
+- Secret updates (`update_secrets` command) store new secrets in SQLite, drain/restart any workflow worker for the app, and trigger a rolling restart for HTTP instances; fresh native processes receive updated bootstrap data via fd 3 and fresh container instances receive it through `TAKO_BOOTSTRAP_DATA`.
 
 ### Health Checks
 
@@ -2032,7 +2032,7 @@ Expected response:
 The SDK wrappers implement this endpoint automatically. The edge proxy does not reserve or bypass `Host: <app>.tako` routes.
 The expected response includes the same `X-Tako-Internal-Token` header value. The SDK wrappers enforce and echo this token automatically.
 
-Container health checks use the same health path and host header but do not require the internal token echo; any 2xx response is healthy.
+Container health checks use the same health path, host header, and internal token echo as native releases.
 
 ### Prometheus Metrics
 
@@ -2173,7 +2173,7 @@ const dbUrl = tako.secrets.DATABASE_URL;
 
 `tako.secrets` redacts automatically on `JSON.stringify`, `console.log`, and `toString` (returns `"[REDACTED]"`); individual key access (`tako.secrets.MY_KEY`) returns the value. The generated `TakoSecrets` augmentation is regenerated from `.tako/secrets.json` on every `tako dev`, `tako deploy`, `tako generate`, and `tako secrets` change. Generation prefers secret names from the `development` environment when present, then falls back to the union of all secret environments.
 
-`tako.storages` exposes storage bindings delivered through fd 3 in dev and native deploys. Individual storage access (`tako.storages.uploads`) returns an object with `createDownloadUrl`, `createUploadUrl`, `createImageUrl`, and `createImageSrcSet`. The generated `TakoStorages` augmentation is regenerated from `tako.toml` on `tako dev`, `tako deploy`, and `tako generate`. Container releases do not mount storage bindings in v0.
+`tako.storages` exposes storage bindings delivered through the bootstrap envelope. Individual storage access (`tako.storages.uploads`) returns an object with `createDownloadUrl`, `createUploadUrl`, `createImageUrl`, and `createImageSrcSet`. The generated `TakoStorages` augmentation is regenerated from `tako.toml` on `tako dev`, `tako deploy`, and `tako generate`.
 
 Channels and workflows are not on the runtime context — they are regular ES modules you import from their files:
 
@@ -2239,6 +2239,31 @@ For frameworks that manage their own server (e.g. Fiber on fasthttp), use `tako.
 - In `tako dev`, a Go project with `cmd/worker/main.go` runs workflows through `go run ./cmd/worker` as a separate scale-to-zero worker subprocess.
 - Secrets: `tako.GetSecret("name")` provides access to Tako-managed secrets. Run `tako generate` to generate a typed `Secrets` struct in `tako_secrets.go`.
 
+### Rust SDK
+
+#### Installation
+
+```toml
+[dependencies]
+tako = "0.1"
+```
+
+#### Axum
+
+Rust apps use the `tako` crate to bind through Tako and install the internal status handler:
+
+```rust
+use axum::{routing::get, Router};
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    let app = Router::new().route("/", get(|| async { "Hello from Tako" }));
+    tako::axum::serve(app).await
+}
+```
+
+For frameworks that own their server loop, use `tako::std_listener()` or `tako::listener().await` with the `tokio` feature. Secrets are available through `tako::secret("NAME")` or `tako::bootstrap()?.secret("NAME")`. Container and native releases use the same SDK API; only the bootstrap transport changes.
+
 ### Vite Plugin
 
 ```typescript
@@ -2271,6 +2296,7 @@ import { withTako } from "tako.sh/nextjs";
 
 - Internal fetch handler adapters for Bun/Node runtimes (used by entrypoint binaries)
 - Go SDK with `tako.ListenAndServe()` for native http.Handler support
+- Rust SDK with bootstrap helpers, listener binding, and `tako::axum::serve(router)` for Axum apps
 - Deployed app serving over private TCP with `PORT`/`HOST`; `tako dev` also uses TCP (`PORT`)
 - Internal status endpoint (`Host: <app>.tako` + `/status`)
 - Internal channel auth endpoint (`Host: <app>.tako` + `POST /channels/authorize`)

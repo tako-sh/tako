@@ -7,7 +7,7 @@ import type { ChannelRegistry } from "./channels";
 import { createLogger } from "./logger";
 import { TAKO_INTERNAL_HOST_SUFFIX, handleTakoEndpoint } from "./tako/endpoints";
 import { initServerRuntime } from "./tako/init";
-import { initBootstrapFromFd, readViaInheritedFd } from "./tako/secrets-fd";
+import { initBootstrapFromFd, readBootstrapData } from "./tako/secrets-fd";
 import { installConsoleBridge } from "./tako/console-bridge";
 import { writeViaInheritedFd } from "./tako/readiness";
 import { installStdioBridge } from "./tako/stdio-bridge";
@@ -253,7 +253,7 @@ export function tako(): Plugin {
     configureServer(server) {
       // Read the same fd bootstrap used by server entrypoints so dev SSR can
       // sign image URLs and authenticate internal SDK requests.
-      initBootstrapFromFd(readViaInheritedFd);
+      initBootstrapFromFd(readBootstrapData);
 
       // Wire up the same server-runtime install used by the production
       // entrypoint so user server fns can `signal()`, `.enqueue()`, and

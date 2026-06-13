@@ -116,7 +116,7 @@ The server verifies declared size and SHA-256, extracts into `/opt/tako/apps/{ap
 
 Native releases run the runtime plugin's production install command as the app identity. Container releases require Docker or Podman on the target server; `tako-server` builds the uploaded app directory with the configured container file and tags the image as `tako/{app}-{env}:{version}`.
 
-Container releases are HTTP-only in v0. The fd-3 bootstrap, fd-4 readiness handshake, internal socket, storage bindings, workflow workers, and `TAKO_DATA_DIR` are native-runtime features and are not mounted into the container.
+Container releases are HTTP-only in v0. Containers receive `HOST=0.0.0.0`, `PORT=3000`, user vars, and `TAKO_BOOTSTRAP_DATA`. Use the Tako SDK inside the app so secrets, storage bindings, internal status, and health-probe authentication work the same way as native releases. The fd-3 bootstrap pipe, fd-4 readiness handshake, internal socket, workflow workers, and `TAKO_DATA_DIR` are native-runtime features and are not mounted into the container.
 
 Small management commands use `POST /rpc`. Logs use `POST /logs`. App/runtime management uses signed HTTP over Tailscale; SSH is for setup, recovery, reload, upgrade, and uninstall.
 
@@ -154,7 +154,7 @@ New app deploys start with desired instance count `1` per server. `tako scale` c
 
 Native instances bind a private loopback port through the SDK fd-4 readiness handshake. Container instances run with `HOST=0.0.0.0` and `PORT=3000`, published only on a server-assigned loopback host port.
 
-Health probes call `Host: <app>.tako` on `/status`. Native JS and Go apps use SDK status handling and echo an internal probe token. Container releases treat any 2xx response on `/status` as healthy.
+Health probes call `Host: <app>.tako` on `/status`. SDK status handling must echo the internal probe token for native and container releases.
 
 ## Scaling
 
@@ -233,7 +233,7 @@ Project secrets are encrypted in `.tako/secrets.json`:
 tako secrets set DATABASE_URL --env production
 ```
 
-Deploy compares the server's current secrets hash before sending secrets. Matching hashes skip secret transmission; stale or new servers receive the decrypted selected secrets over signed HTTP management. `tako-server` stores them encrypted in SQLite. Native releases inject secrets into fresh processes through fd 3; container releases inject app secrets as environment variables in v0.
+Deploy compares the server's current secrets hash before sending secrets. Matching hashes skip secret transmission; stale or new servers receive the decrypted selected secrets over signed HTTP management. `tako-server` stores them encrypted in SQLite. Native releases inject the bootstrap envelope into fresh processes through fd 3; container releases inject the same envelope through `TAKO_BOOTSTRAP_DATA`.
 
 Provider credentials use `tako credentials`, not `tako secrets`, and are not exposed to app code:
 

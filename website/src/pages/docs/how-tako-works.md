@@ -106,13 +106,13 @@ New deploys start with one desired instance per server. `tako scale` changes tha
 
 Rolling update happens one server at a time inside each server: start a new instance, wait for health, add it to the load balancer, drain an old instance, repeat, then update `current`.
 
-Health probes call `Host: <app>.tako` on `/status`. Native JS and Go apps use SDK status handling and echo an internal probe token. Container releases treat any 2xx response on `/status` as healthy. Production browser-facing 5xx responses stay generic while detailed diagnostics go to app logs.
+Health probes call `Host: <app>.tako` on `/status`. SDK status handling must echo the internal probe token for native and container releases. Production browser-facing 5xx responses stay generic while detailed diagnostics go to app logs.
 
 ## Secrets, Storage, And Backups
 
 Project secrets, storage credentials, provider credentials, and backup keys are encrypted in `.tako/secrets.json`. Expiry dates are plaintext metadata so deploy can fail on expired selected credentials and warn for credentials expiring within 30 days. `postgres_url` is a Tako-owned credential reserved for shared channel/workflow storage.
 
-Server-side secrets and storage bindings are stored encrypted in SQLite. Native HTTP instances and workflow workers receive them through fd 3 at spawn time rather than through inherited service environment variables. Container releases receive app secrets as environment variables in v0 and do not mount storage bindings, workflow workers, the internal socket, or `TAKO_DATA_DIR`.
+Server-side secrets and storage bindings are stored encrypted in SQLite. Native HTTP instances and workflow workers receive them through fd 3 at spawn time. Container HTTP instances receive the same bootstrap envelope through `TAKO_BOOTSTRAP_DATA`. Container releases do not mount workflow workers, the internal socket, or `TAKO_DATA_DIR`.
 
 App storage bindings are declared under `[envs.<env>].storages` and exposed as `tako.storages.<name>`. Backup storage is separate unless the same resource is also listed as an app storage binding.
 

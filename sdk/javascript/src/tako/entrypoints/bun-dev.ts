@@ -8,12 +8,12 @@ import { installErrorHooks } from "../error-hooks";
 import { installStdioBridge } from "../stdio-bridge";
 import { createEntrypoint } from "../create-entrypoint";
 import { drainInProcessWorker, startInProcessWorker } from "../dev-worker";
-import { initBootstrapFromFd, readViaInheritedFd } from "../secrets-fd";
+import { initBootstrapFromFd, readBootstrapData } from "../secrets-fd";
 
 installStdioBridge("app");
 installErrorHooks("app");
 installConsoleBridge("app");
-initBootstrapFromFd(readViaInheritedFd);
+initBootstrapFromFd(readBootstrapData);
 const { run, host, port, setDraining } = createEntrypoint();
 
 if (import.meta.main) {

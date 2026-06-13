@@ -245,7 +245,7 @@ test("bun-server entrypoint bootstraps from fd 3 before creating the entrypoint"
     "utf8",
   );
 
-  const bootstrapCall = source.indexOf("initBootstrapFromFd(readViaInheritedFd);");
+  const bootstrapCall = source.indexOf("initBootstrapFromFd(readBootstrapData);");
   const createCall = source.indexOf("createEntrypoint();");
 
   expect(bootstrapCall).toBeGreaterThanOrEqual(0);
