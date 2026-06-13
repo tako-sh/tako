@@ -73,7 +73,7 @@ if [[ ! -f "$E2E_BIN_DIR/glibc/tako" ]] || [[ ! -f "$E2E_BIN_STAMP_FILE" ]] || [
     MUSL_TARGET="x86_64-unknown-linux-musl"
   fi
 
-  "$CARGO_BIN" zigbuild -p tako-server -p tako \
+  "$CARGO_BIN" zigbuild -p tako-server -p tako-cli \
     --bin tako --bin tako-dev-server --bin tako-server \
     --release --target "$GLIBC_TARGET"
   cp target/"$GLIBC_TARGET"/release/tako \

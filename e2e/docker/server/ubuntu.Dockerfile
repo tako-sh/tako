@@ -12,6 +12,7 @@ RUN set -eu; \
         ca-certificates \
         curl \
         git \
+        libvips42 \
         netcat-openbsd \
         npm \
         sudo \
