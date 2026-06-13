@@ -1,9 +1,12 @@
 [package]
 name = "tako"
-version = "0.1.1"
+version = "0.2.1"
 edition.workspace = true
 license = "MIT"
-description = "Rust SDK for tako.sh apps"
+description = "Official Rust SDK for Tako applications"
+homepage = "https://tako.sh"
+repository = "https://github.com/tako-sh/tako"
+documentation = "https://docs.rs/tako"
 
 [features]
 default = []
