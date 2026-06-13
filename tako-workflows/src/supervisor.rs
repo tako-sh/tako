@@ -470,7 +470,7 @@ impl WorkerSupervisor {
         let mut child = match spawn_result {
             Ok(child) => {
                 drop(bootstrap_read_end);
-                join_secrets_writer(bootstrap_writer)?;
+                join_secrets_writer_after_spawn(bootstrap_writer)?;
                 child
             }
             Err(error) => {
@@ -533,11 +533,13 @@ fn unix_millis_now() -> i64 {
 }
 
 #[cfg(unix)]
-fn join_secrets_writer(
+fn join_secrets_writer_after_spawn(
     handle: std::thread::JoinHandle<std::io::Result<()>>,
 ) -> Result<(), SupervisorError> {
     match handle.join() {
-        Ok(result) => result.map_err(SupervisorError::Spawn),
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) if error.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        Ok(Err(error)) => Err(SupervisorError::Spawn(error)),
         Err(_) => Err(SupervisorError::Spawn(std::io::Error::other(
             "secrets writer thread panicked",
         ))),

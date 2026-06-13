@@ -220,6 +220,31 @@ async fn background_reaper_collects_clean_idle_exit_without_poll() {
 }
 
 #[cfg(unix)]
+#[tokio::test]
+async fn wake_accepts_clean_exit_when_worker_closes_bootstrap_pipe() {
+    let dir = tempdir().unwrap();
+    let spec = WorkerSpec {
+        app: "test".into(),
+        workers: 0,
+        concurrency: 1,
+        idle_timeout_ms: 0,
+        command: vec!["sh".into(), "-c".into(), "exec 3<&-; true".into()],
+        cwd: dir.path().into(),
+        env: HashMap::new(),
+        secrets: HashMap::from([("BIG_SECRET".to_string(), "x".repeat(1024 * 1024))]),
+        storages: HashMap::new(),
+        log_sink: None,
+        isolation: None,
+    };
+    let sup = WorkerSupervisor::new(spec);
+
+    sup.wake().unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    assert!(sup.check_startup_health().is_ok());
+}
+
+#[cfg(unix)]
 #[test]
 fn bootstrap_pipe_envelope_has_token_and_secrets() {
     use std::io::Read;
