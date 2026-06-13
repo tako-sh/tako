@@ -320,7 +320,7 @@ Cloudflare Origin CA is selected per environment:
 ssl = "cloudflare"
 ```
 
-Cloudflare SSL also requires `ssl.cloudflare` credentials. Provider credentials are encrypted in `.tako/secrets.json` under the selected environment and are not exposed to app code.
+Cloudflare SSL also requires `ssl.cloudflare` credentials. Use a Cloudflare user or account API token with Zone / SSL and Certificates / Edit for the matching zone. Provider credentials are encrypted in `.tako/secrets.json` under the selected environment and are not exposed to app code.
 
 ## Storage Resources
 

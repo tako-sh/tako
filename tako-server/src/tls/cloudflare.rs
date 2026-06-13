@@ -267,6 +267,10 @@ fn format_cloudflare_errors(errors: &[CloudflareResponseError]) -> String {
     errors
         .iter()
         .map(|error| match error.code {
+            Some(1016) => format!(
+                "{} (1016). Use a Cloudflare token with Zone / SSL and Certificates / Edit.",
+                error.message
+            ),
             Some(code) => format!("{} ({code})", error.message),
             None => error.message.clone(),
         })
@@ -313,6 +317,21 @@ mod tests {
             err.to_string().contains("Authentication error"),
             "error should include Cloudflare message: {err}",
         );
+    }
+
+    #[test]
+    fn origin_ca_permission_errors_name_required_scope() {
+        let body = br#"{
+            "success": false,
+            "errors": [{ "code": 1016, "message": "User is not authorized to perform this action" }],
+            "result": null
+        }"#;
+
+        let err = CloudflareOriginCaClient::parse_create_certificate_response(body).unwrap_err();
+        let message = err.to_string();
+
+        assert!(message.contains("SSL and Certificates"), "got: {message}");
+        assert!(message.contains("Edit"), "got: {message}");
     }
 
     #[test]

@@ -59,7 +59,7 @@ tako servers add my-server
 # Use a user or account API token with Zone Read and DNS Write for the matching Cloudflare zone.
 tako credentials set ssl.cloudflare --env production --expires-on "in 90 days"
 # Optional: Cloudflare Origin CA certificates for Cloudflare-proxied apps.
-# Set ssl = "cloudflare" in tako.toml, then store the provider token:
+# Set ssl = "cloudflare" in tako.toml, then store a token with Zone / SSL and Certificates / Edit:
 tako credentials set ssl.cloudflare --env production --expires-on "in 90 days"
 tako deploy
 ```

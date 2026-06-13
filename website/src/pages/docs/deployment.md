@@ -77,7 +77,7 @@ Before build work starts, deploy checks:
 - multi-server Go workflow deploys have `postgres_url` set
 - credentials expiring within 30 days are surfaced as warnings
 
-Required Cloudflare credentials are also checked from each target server during remote prepare. Let's Encrypt DNS-01 routes use Cloudflare user or account API tokens, verify zone read access from the server's egress IP, and require DNS Write for certificate issuance.
+Required Cloudflare credentials are also checked from each target server during remote prepare. Let's Encrypt DNS-01 routes use Cloudflare user or account API tokens, verify zone read access from the server's egress IP, and require DNS Write for certificate issuance. Cloudflare SSL uses Origin CA and requires Zone / SSL and Certificates / Edit.
 
 ## Build And Package
 
@@ -199,7 +199,7 @@ Cloudflare Origin CA is selected per environment:
 ssl = "cloudflare"
 ```
 
-Cloudflare SSL also requires `ssl.cloudflare`. Direct browser connections to origins using Cloudflare Origin CA certificates will not trust those certificates.
+Cloudflare SSL also requires `ssl.cloudflare`. Use a Cloudflare user or account API token with Zone / SSL and Certificates / Edit for the matching zone. Direct browser connections to origins using Cloudflare Origin CA certificates will not trust those certificates.
 
 Private/local route hostnames skip ACME and use self-signed certificates.
 
