@@ -2,8 +2,7 @@
 name: tako
 description: >-
   Tako CLI commands: init, dev, deploy, secrets, storage, gen, scale, logs,
-  rollback, servers, doctor. Includes output design patterns for interactive
-  and plain modes.
+  rollback, servers, doctor.
 type: framework
 library: tako.sh
 library_version: "0.0.1"
@@ -227,82 +226,3 @@ Uninstall Tako and remove all local data.
 | `--ci`             | Non-interactive, deterministic output (no colors) |
 | `--dry-run`        | Show what would happen without side effects       |
 | `--config` / `-c`  | Use explicit config file instead of `./tako.toml` |
-
-## Output Design
-
-### Two modes
-
-- **Interactive** (`is_pretty() && is_interactive()`): spinners, colors, diamond prompts, padding.
-- **Plain** (`--verbose` or `--ci`): tracing log lines, no colors, no spinners.
-
-### Interactive padding
-
-In interactive mode, plain text lines (`info`, `muted`, `hint`, `section`, `heading`) are indented 2 spaces so they align with symbol-prefixed lines (`✔`/`✘`/`⠋` already occupy 2 chars).
-
-### Elapsed times
-
-No parentheses: `3s`, `1m10s`, `3s, 72 MB` (comma-separated when combined with size).
-
-### Prompts — diamond style
-
-```
-◆ App name                   ← accent filled diamond + accent label (active)
-› myapp_                     ← accent chevron on the input line
-  Hint text here             ← optional muted hint under the input
-
-◇ App name                   ← completed: muted outlined diamond + muted label
-› myapp                      ← completed: muted chevron stays with the value
-```
-
-- Active: `◆` filled diamond, accent color label, accent `›` on the input line.
-- Completed (inactive): `◇` outlined diamond, muted label, no border, no hint.
-- `select()` and `confirm()` use the same diamond style for their summary lines.
-
-### Spinners
-
-```
-⠋ Building…  3s              ← PhaseSpinner (major operation)
-✔ Build complete  5s         ← success (double space before time)
-```
-
-### Grouped spinner
-
-```
-⠋ Building services  10s
-  ✔ server1  7s
-  ⠋ server2  3s
-  ·  server3               ← pending, muted
-```
-
-Use `GroupedSpinner::new(parent, &["server1", "server2", "server3"])`.
-
-### Step flow (linear phases)
-
-```
-⠋ Pushing images  3s
-·  Applying migrations       ← pre-rendered pending, muted (pretty only)
-·  Health checks
-```
-
-Use `StepFlow::new(&["Pushing images", "Applying migrations", "Health checks"])`.
-Call `advance()` to complete each step and `finish()` when done.
-
-### Progress bar
-
-Single line with elapsed time first, then block bar, percentage, and transferred amount:
-
-```
-⠋ Uploading…  42s  ████████████░░░░  72%  (84 KB/116 MB)
-✔ Uploaded  42s, 116 MB
-```
-
-### Error block
-
-Red left border + fixed-width dimmed-red background, capped at 72 chars:
-
-```
-│ Cannot find module './queue-handler' Did you mean './queue-manager'?
-```
-
-Use `output::error_block(message)` for inline/validation errors.
-Use `output::error(message)` for the standard `✘ message` format.

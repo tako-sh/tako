@@ -418,13 +418,21 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           fetch-depth: 100
 
-      - name: Check for Rust SDK changes
+      - name: Check Rust SDK version
         id: changes
         run: |
           if git fetch origin tag sdk-rust-latest --no-tags 2>/dev/null; then
-            if ! git diff --name-only sdk-rust-latest -- sdk/rust/ | grep -q .; then
+            current_version="$(sed -n 's/^version = "\(.*\)"/\1/p' sdk/rust/Cargo.toml | head -n1)"
+            previous_version="$(git show sdk-rust-latest:sdk/rust/Cargo.toml | sed -n 's/^version = "\(.*\)"/\1/p' | head -n1)"
+
+            if [ "$current_version" = "$previous_version" ]; then
+              echo "Rust SDK version unchanged ($current_version), skipping"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+            elif ! git diff --name-only sdk-rust-latest -- sdk/rust/ | grep -q .; then
               echo "No Rust SDK changes since sdk-rust-latest, skipping"
               echo "skip=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "Rust SDK version changed: $previous_version -> $current_version"
             fi
           fi
 

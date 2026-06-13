@@ -38,6 +38,8 @@ Tako's protocol is v0: do not keep any legacy code, backward compatibility shims
 
 13. **Use internal CLI output guidance** - Before writing or modifying `tako` CLI output, read `.agents/internal/cli-output.md`. This internal guide is not an installable public skill.
 
+14. **Keep installable skills user-facing** - Skills under `sdk/javascript/skills/`, `website/public/.well-known/agent-skills/`, `skills/`, and `.agents/skills/` are for users building apps with Tako. Do not put Tako maintainer workflow, release process, CI, tagging, or internal implementation policy there. Put maintainer-only guidance in `AGENTS.md`, repo docs such as `scripts/README.md`, or `.agents/internal/` when it is only for agents working on this repo.
+
 ## Project Structure
 
 **Rust Crates:**
