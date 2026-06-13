@@ -98,6 +98,7 @@ pub(super) async fn prepare_build_phase(
             secrets.get_env(&env),
             tako_config.images.clone(),
             app_dir,
+            resolve_configured_workflow_run(&tako_config)?,
         );
         let deploy_secrets = decrypt_deploy_secrets(&env, &secrets, Some(&project_dir))
             .map_err(|e| e.to_string())?;
@@ -162,52 +163,64 @@ pub(super) async fn prepare_build_phase(
         });
     }
 
-    let (mut build_preset, resolved_preset) = {
-        let _t = output::timed(&format!("Resolve preset ref {preset_ref}"));
-        if task_tree.is_none() {
-            output::with_spinner_async(
-                "Resolving build preset",
-                "Build preset resolved",
-                crate::build::load_build_preset(&eff_app_dir, &preset_ref),
-            )
-            .await
-            .map_err(|e| e.to_string())?
-        } else {
-            crate::build::load_build_preset(&eff_app_dir, &preset_ref)
+    let explicit_start = explicit_start_command(&tako_config);
+    let mut build_preset = if explicit_start.is_some() {
+        BuildPreset {
+            name: "native artifact".to_string(),
+            ..Default::default()
+        }
+    } else {
+        let (preset, resolved_preset) = {
+            let _t = output::timed(&format!("Resolve preset ref {preset_ref}"));
+            if task_tree.is_none() {
+                output::with_spinner_async(
+                    "Resolving build preset",
+                    "Build preset resolved",
+                    crate::build::load_build_preset(&eff_app_dir, &preset_ref),
+                )
                 .await
                 .map_err(|e| e.to_string())?
-        }
+            } else {
+                crate::build::load_build_preset(&eff_app_dir, &preset_ref)
+                    .await
+                    .map_err(|e| e.to_string())?
+            }
+        };
+        tracing::debug!(
+            "Resolved preset: {} (commit {})",
+            resolved_preset.preset_ref,
+            super::format::shorten_commit(&resolved_preset.commit)
+        );
+        preset
     };
-    tracing::debug!(
-        "Resolved preset: {} (commit {})",
-        resolved_preset.preset_ref,
-        super::format::shorten_commit(&resolved_preset.commit)
-    );
 
     let plugin_ctx = tako_runtime::PluginContext {
         project_dir: &eff_app_dir,
         package_manager: tako_config.package_manager.as_deref(),
     };
-    crate::build::apply_adapter_base_runtime_defaults(
-        &mut build_preset,
-        runtime_adapter,
-        Some(&plugin_ctx),
-    )
-    .map_err(|e| e.to_string())?;
-    tracing::debug!(
-        "Build preset: {} @ {}",
-        resolved_preset.preset_ref,
-        super::format::shorten_commit(&resolved_preset.commit)
-    );
+    if explicit_start.is_none() {
+        crate::build::apply_adapter_base_runtime_defaults(
+            &mut build_preset,
+            runtime_adapter,
+            Some(&plugin_ctx),
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    tracing::debug!("Build preset: {}", build_preset.name);
     tracing::debug!("{}", format_runtime_summary(&build_preset.name, None));
     let runtime_tool = runtime_adapter.id().to_string();
+    warn_when_using_runtime_start_fallback(&tako_config, &runtime_tool, task_tree.is_some());
 
-    let manifest_main = resolve_deploy_main(
-        &eff_app_dir,
-        runtime_adapter,
-        &tako_config,
-        build_preset.main.as_deref(),
-    )?;
+    let manifest_main = if explicit_start.is_some() {
+        String::new()
+    } else {
+        resolve_deploy_main(
+            &eff_app_dir,
+            runtime_adapter,
+            &tako_config,
+            build_preset.main.as_deref(),
+        )?
+    };
     let workflow_worker_main = resolve_workflow_worker_main(&eff_app_dir, runtime_adapter);
     tracing::debug!(
         "{}",
@@ -251,6 +264,7 @@ pub(super) async fn prepare_build_phase(
         &version,
         runtime_adapter.id(),
         &manifest_main,
+        explicit_start,
         workflow_worker_main,
         env_idle_timeout,
         deploy_pm,
@@ -298,9 +312,12 @@ pub(super) async fn prepare_build_phase(
 
     let app_json_bytes = serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?;
 
-    let runtime_default_build =
+    let runtime_default_build = if manifest.start.is_some() {
+        None
+    } else {
         tako_runtime::runtime_def_for(runtime_adapter.id(), Some(&plugin_ctx))
-            .and_then(|def| def.preset.build);
+            .and_then(|def| def.preset.build)
+    };
     let resolved_stages = resolve_build_stages(
         &tako_config.build,
         &tako_config.build_stages,
@@ -355,6 +372,32 @@ pub(super) async fn prepare_build_phase(
     })
 }
 
+fn explicit_start_command(config: &TakoToml) -> Option<Vec<String>> {
+    if config.start.is_empty() {
+        None
+    } else {
+        Some(config.start.clone())
+    }
+}
+
+fn warn_when_using_runtime_start_fallback(
+    config: &TakoToml,
+    runtime_tool: &str,
+    task_tree_active: bool,
+) {
+    if !config.start.is_empty() {
+        return;
+    }
+
+    let message = format!(
+        "No start command set; using {runtime_tool} runtime defaults. Set `start` to run a built artifact directly."
+    );
+    tracing::warn!("{message}");
+    if !task_tree_active {
+        output::warning(&message);
+    }
+}
+
 pub(super) fn resolve_workflow_worker_main(
     project_dir: &Path,
     runtime_adapter: BuildAdapter,
@@ -364,6 +407,28 @@ pub(super) fn resolve_workflow_worker_main(
             Some("worker".to_string())
         }
         _ => None,
+    }
+}
+
+pub(super) fn resolve_configured_workflow_run(
+    config: &TakoToml,
+) -> Result<Option<Vec<String>>, String> {
+    let mut runs = Vec::new();
+    if let Some(run) = &config.workflows.base.run {
+        runs.push(run.clone());
+    }
+    for group in config.workflows.groups.values() {
+        if let Some(run) = &group.run {
+            runs.push(run.clone());
+        }
+    }
+
+    match runs.len() {
+        0 => Ok(None),
+        1 => Ok(Some(runs.remove(0))),
+        _ => {
+            Err("Container workflow releases support one workflow run command for now".to_string())
+        }
     }
 }
 

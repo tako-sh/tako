@@ -12,30 +12,27 @@ pub(crate) const DEFAULT_CONTAINER_PORT: u16 = 3000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ContainerEngine {
-    Docker,
     Podman,
 }
 
 impl ContainerEngine {
     pub(crate) fn binary(self) -> &'static str {
         match self {
-            Self::Docker => "docker",
             Self::Podman => "podman",
         }
     }
 }
 
 pub(crate) fn detect_container_engine() -> Result<ContainerEngine, String> {
-    for engine in [ContainerEngine::Docker, ContainerEngine::Podman] {
-        if std::process::Command::new(engine.binary())
-            .arg("--version")
-            .output()
-            .is_ok_and(|output| output.status.success())
-        {
-            return Ok(engine);
-        }
+    let engine = ContainerEngine::Podman;
+    if std::process::Command::new(engine.binary())
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success())
+    {
+        return Ok(engine);
     }
-    Err("Container deploys require Docker or Podman on the server.".to_string())
+    Err("Container deploys require Podman on the server.".to_string())
 }
 
 pub(crate) async fn build_release_image(
@@ -125,7 +122,6 @@ pub(crate) fn build_container_run_args(
 ) -> Vec<String> {
     let mut args = vec![
         "run".to_string(),
-        "--rm".to_string(),
         "--name".to_string(),
         name.to_string(),
         "--publish".to_string(),
@@ -137,6 +133,39 @@ pub(crate) fn build_container_run_args(
     }
     args.push(image.to_string());
     args
+}
+
+pub(crate) fn build_container_workflow_run_args(
+    image: &str,
+    env: &HashMap<String, String>,
+    token: &str,
+    secrets: &HashMap<String, String>,
+    storages: &HashMap<String, StorageBinding>,
+    run: &[String],
+    internal_socket: &Path,
+) -> Result<Vec<String>, String> {
+    let Some((entrypoint, args_after_entrypoint)) = run.split_first() else {
+        return Err("workflow run command cannot be empty".to_string());
+    };
+    let mut args = vec![
+        "run".to_string(),
+        "--mount".to_string(),
+        format!(
+            "type=bind,src={},dst={}",
+            internal_socket.display(),
+            internal_socket.display()
+        ),
+        "--entrypoint".to_string(),
+        entrypoint.clone(),
+    ];
+    for key in build_container_run_env(env, token, secrets, storages, DEFAULT_CONTAINER_PORT).keys()
+    {
+        args.push("--env".to_string());
+        args.push(key.clone());
+    }
+    args.push(image.to_string());
+    args.extend(args_after_entrypoint.iter().cloned());
+    Ok(args)
 }
 
 pub(crate) fn build_container_run_env(
@@ -232,7 +261,9 @@ mod tests {
             version: "v1.2.3".to_string(),
             runtime: "container".to_string(),
             main: String::new(),
+            start: None,
             workflow_worker_main: None,
+            workflow_run: None,
             idle_timeout: 300,
             env_vars: HashMap::new(),
             images: tako_images::ImagesConfig::default(),
@@ -281,7 +312,6 @@ mod tests {
             &HashMap::new(),
         );
 
-        assert!(args.contains(&"--rm".to_string()));
         assert!(args.contains(&"127.0.0.1:49152:3000".to_string()));
         assert!(args.contains(&"ENV".to_string()));
         assert!(args.contains(&TAKO_BOOTSTRAP_DATA_ENV.to_string()));
@@ -293,6 +323,30 @@ mod tests {
         assert!(!args.iter().any(|arg| arg.contains("secret")));
         assert!(!args.contains(&"HOST=0.0.0.0".to_string()));
         assert!(!args.contains(&"PORT=3000".to_string()));
+    }
+
+    #[test]
+    fn build_container_workflow_run_args_replaces_entrypoint() {
+        let args = build_container_workflow_run_args(
+            "tako/my-app:v1",
+            &HashMap::from([("ENV".to_string(), "production".to_string())]),
+            "tok",
+            &HashMap::new(),
+            &HashMap::new(),
+            &["./worker".to_string(), "video".to_string()],
+            Path::new("/opt/tako/internal.sock"),
+        )
+        .unwrap();
+
+        assert_eq!(args[0], "run");
+        assert!(args.windows(2).any(|w| {
+            w[0] == "--mount"
+                && w[1] == "type=bind,src=/opt/tako/internal.sock,dst=/opt/tako/internal.sock"
+        }));
+        assert!(args.windows(2).any(|w| w == ["--entrypoint", "./worker"]));
+        assert_eq!(args.last().map(String::as_str), Some("video"));
+        assert!(args.contains(&"tako/my-app:v1".to_string()));
+        assert!(args.contains(&TAKO_BOOTSTRAP_DATA_ENV.to_string()));
     }
 
     #[test]

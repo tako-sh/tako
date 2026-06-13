@@ -33,4 +33,5 @@ For frameworks that own the server loop, use `tako::std_listener()` or
 
 Secrets are available through `tako::secret("NAME")` or
 `tako::bootstrap()?.secret("NAME")`. Native and container releases use the same
-SDK API; only the bootstrap transport changes.
+SDK API. The SDK checks fd 3 first for native processes, then falls back to
+`TAKO_BOOTSTRAP_DATA` for containers.

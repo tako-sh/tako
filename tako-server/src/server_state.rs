@@ -1,3 +1,7 @@
+use crate::container_runtime::{
+    build_container_run_env, build_container_workflow_run_args, detect_container_engine,
+    image_tag_for_manifest,
+};
 use crate::instances::{AppManager, clamp_instances_to_limit};
 use crate::lb::LoadBalancer;
 use crate::release::{apply_release_runtime_to_config, release_app_path};
@@ -441,10 +445,78 @@ impl ServerState {
                 return;
             }
         };
-        let mut worker_env = manifest.env_vars;
+        if let Err(e) = self.workflows.start_socket() {
+            tracing::warn!(error = %e, "Failed to start internal socket");
+            return;
+        }
+        let internal_socket = self.workflows.socket_path();
+
+        let secrets = self.state_store.get_secrets(app_name).unwrap_or_default();
+        let storages = self.state_store.get_storages(app_name).unwrap_or_default();
+        let mut worker_env = manifest.env_vars.clone();
         inject_app_data_dir_env(&mut worker_env, &data_paths);
 
         let worker_command = match manifest.runtime.as_str() {
+            "container" => {
+                let Some(run) = manifest.workflow_run.as_deref() else {
+                    self.workflows.retire(app_name).await;
+                    return;
+                };
+                let engine = match detect_container_engine() {
+                    Ok(engine) => engine,
+                    Err(error) => {
+                        tracing::warn!(app = app_name, error = %error, "Skipping workflow engine: container engine not available");
+                        self.workflows.retire(app_name).await;
+                        return;
+                    }
+                };
+                let image = match image_tag_for_manifest(&manifest) {
+                    Ok(image) => image,
+                    Err(error) => {
+                        tracing::warn!(app = app_name, error = %error, "Skipping workflow engine: invalid container image tag");
+                        self.workflows.retire(app_name).await;
+                        return;
+                    }
+                };
+                worker_env.insert(
+                    tako_core::instance_env::TAKO_APP_NAME_ENV.to_string(),
+                    app_name.to_string(),
+                );
+                worker_env.insert(
+                    tako_core::instance_env::TAKO_INTERNAL_SOCKET_ENV.to_string(),
+                    internal_socket.display().to_string(),
+                );
+                let token = nanoid::nanoid!(32);
+                let container_env = build_container_run_env(
+                    &worker_env,
+                    &token,
+                    &secrets,
+                    &storages,
+                    crate::container_runtime::DEFAULT_CONTAINER_PORT,
+                )
+                .into_iter()
+                .collect();
+                let args = match build_container_workflow_run_args(
+                    &image,
+                    &container_env,
+                    &token,
+                    &secrets,
+                    &storages,
+                    run,
+                    &internal_socket,
+                ) {
+                    Ok(args) => args,
+                    Err(error) => {
+                        tracing::warn!(app = app_name, error = %error, "Skipping workflow engine: invalid container workflow run");
+                        self.workflows.retire(app_name).await;
+                        return;
+                    }
+                };
+                worker_env = container_env;
+                std::iter::once(std::ffi::OsString::from(engine.binary()))
+                    .chain(args.into_iter().map(std::ffi::OsString::from))
+                    .collect()
+            }
             "go" => {
                 let Some(worker_main) = manifest.workflow_worker_main.as_deref() else {
                     self.workflows.retire(app_name).await;
@@ -503,23 +575,15 @@ impl ServerState {
                 vec![runtime_bin.into(), worker_entry.into()]
             }
         };
-
-        if let Err(e) = self.workflows.start_socket() {
-            tracing::warn!(error = %e, "Failed to start internal socket");
-            return;
-        }
-        let internal_socket = self.workflows.socket_path();
-
-        let secrets = self.state_store.get_secrets(app_name).unwrap_or_default();
-        let storages = self.state_store.get_storages(app_name).unwrap_or_default();
-        let isolation = match crate::isolation::app_process_isolation(
-            &self.runtime.data_dir,
-            app_name,
-        ) {
-            Ok(isolation) => isolation,
-            Err(error) => {
-                tracing::warn!(app = app_name, error = %error, "Skipping workflow engine: failed to prepare app isolation");
-                return;
+        let isolation = if manifest.runtime == "container" {
+            None
+        } else {
+            match crate::isolation::app_process_isolation(&self.runtime.data_dir, app_name) {
+                Ok(isolation) => Some(isolation),
+                Err(error) => {
+                    tracing::warn!(app = app_name, error = %error, "Skipping workflow engine: failed to prepare app isolation");
+                    return;
+                }
             }
         };
 
@@ -540,7 +604,7 @@ impl ServerState {
                     worker_env,
                     secrets,
                     storages,
-                    Some(isolation),
+                    isolation,
                 )
             })
             .await;

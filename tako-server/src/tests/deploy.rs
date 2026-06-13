@@ -141,14 +141,7 @@ async fn failed_deploy_does_not_persist_ssl_credentials() {
         .join("releases")
         .join("v1");
     std::fs::create_dir_all(&release_dir).unwrap();
-    write_release_manifest(
-        &release_dir,
-        "node",
-        "",
-        &["/bin/sh", "-lc", "sleep 600"],
-        Some("true"),
-        300,
-    );
+    write_release_manifest(&release_dir, "node", "", &[], Some("true"), 300);
 
     let response = state
         .handle_command(Command::Deploy {

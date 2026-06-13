@@ -9,6 +9,7 @@ set -eu
 # What it does:
 # - downloads and installs `tako-server`
 # - installs the libvips runtime used by the built-in image optimizer
+# - installs Podman for container releases
 # - creates OS user `tako`
 # - installs a service manager unit (systemd or OpenRC) for `tako-server`
 # - installs maintenance helpers and sudoers for the tako service user
@@ -773,6 +774,20 @@ install_sqlite_runtime() {
   fi
 }
 
+install_podman_runtime() {
+  if need_cmd podman; then
+    return
+  fi
+
+  echo "Installing Podman runtime"
+  install_pkgs podman
+
+  if ! need_cmd podman; then
+    echo "error: podman not found after installing package" >&2
+    exit 1
+  fi
+}
+
 apt_available_avif_packages() {
   for apt_avif_pkg in libheif-plugin-aomenc libheif-plugin-aomdec libheif-plugin-dav1d; do
     if apt-cache show "$apt_avif_pkg" >/dev/null 2>&1; then
@@ -1012,6 +1027,7 @@ if ! need_cmd which; then
 fi
 ensure_nc
 install_sqlite_runtime
+install_podman_runtime
 
 arch="$(uname -m)"
 case "$arch" in

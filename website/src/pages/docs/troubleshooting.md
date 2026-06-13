@@ -169,13 +169,17 @@ servers = ["prod-a"]
 
 ### Build output is missing
 
-Deploy verifies the resolved `main` exists in the built app directory. If the preset default does not match your project, set `main` explicitly:
+Runtime-backed deploys resolve `main` from config, manifests, or presets. If the preset default does not match your project, set `main` explicitly:
 
 ```toml
 main = "dist/server/entry.mjs"
 ```
 
-Use `[build]` or `[[build_stages]]` to produce the files Tako should package.
+For compiled native artifacts, set `start` instead and use `[build]` or `[[build_stages]]` to produce the executable:
+
+```toml
+start = ["./app"]
+```
 
 ### Build stages conflict
 
@@ -191,9 +195,9 @@ runtime = "bun@1.2.3"
 
 ### Container deploy cannot build or start
 
-Container releases require Docker or Podman on the target server. The container must listen on `$PORT` (`3000` today), bind `0.0.0.0`, and use the Tako SDK so `/status` echoes the internal health-probe token.
+Container releases require Podman on the target server. `tako servers add` installs it, and server upgrade installs it when missing. The container must listen on `$PORT` (`3000` today), bind `0.0.0.0`, and use the Tako SDK so `/status` echoes the internal health-probe token.
 
-Container releases are HTTP-only in v0. Use native releases when the app needs workflows, the internal socket, or `TAKO_DATA_DIR`.
+Container HTTP instances do not receive the internal socket or `TAKO_DATA_DIR` in v0. Configure one workflow `run` command when a container release needs a worker process from the same image.
 
 Without a pin, deploy runs the local runtime's `--version` and falls back to `latest`.
 

@@ -123,3 +123,51 @@ func TestBootstrapFromFdEmptySecrets(t *testing.T) {
 		t.Fatalf("envelope with empty secrets: got %#v", b)
 	}
 }
+
+func TestBootstrapFromEnvRemovesEnv(t *testing.T) {
+	t.Setenv(BootstrapDataEnv, `{"token":"env-token","secrets":{"KEY":"value"}}`)
+
+	b := bootstrapFromEnv()
+	if b == nil {
+		t.Fatal("bootstrapFromEnv() returned nil, want envelope")
+	}
+	if b.Token != "env-token" {
+		t.Errorf("Token = %q, want %q", b.Token, "env-token")
+	}
+	if got := b.Secrets["KEY"]; got != "value" {
+		t.Errorf("KEY = %q, want %q", got, "value")
+	}
+	if got := os.Getenv(BootstrapDataEnv); got != "" {
+		t.Errorf("%s still set after read: %q", BootstrapDataEnv, got)
+	}
+}
+
+func TestBootstrapFromRuntimePrefersFdOverEnv(t *testing.T) {
+	t.Setenv(BootstrapDataEnv, `{"token":"env-token","secrets":{"KEY":"env"}}`)
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = w.WriteString(`{"token":"fd-token","secrets":{"KEY":"fd"}}`)
+	if err != nil {
+		r.Close()
+		w.Close()
+		t.Fatal(err)
+	}
+	w.Close()
+
+	b := bootstrapFromRuntimeFd(int(r.Fd()))
+	if b == nil {
+		t.Fatal("bootstrapFromRuntimeFd() returned nil, want envelope")
+	}
+	if b.Token != "fd-token" {
+		t.Errorf("Token = %q, want %q", b.Token, "fd-token")
+	}
+	if got := b.Secrets["KEY"]; got != "fd" {
+		t.Errorf("KEY = %q, want %q", got, "fd")
+	}
+	if got := os.Getenv(BootstrapDataEnv); got != "" {
+		t.Errorf("%s still set after fd bootstrap won: %q", BootstrapDataEnv, got)
+	}
+}

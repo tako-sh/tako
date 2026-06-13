@@ -12,7 +12,7 @@ Presets are framework manifests. They give Tako default entrypoints, static asse
 
 Presets do not store secrets, routes, servers, storage credentials, or deployment policy. Those stay in `tako.toml` and `.tako/secrets.json`.
 
-Presets also do not control response compression. Deployed app responses are compressed automatically by `tako-server` when the proxy can safely transform them.
+Presets also do not define production `start` commands or control response compression. Deployed app responses are compressed automatically by `tako-server` when the proxy can safely transform them.
 
 ## How Presets Fit
 
@@ -22,7 +22,7 @@ Presets also do not control response compression. Deployed app responses are com
 | Preset         | Framework defaults: `main`, `assets`, and `dev`.                                                                                     |
 | `tako.toml`    | App choices and overrides: runtime, preset, build, routes, vars, storage, backups, SSL, source-IP, workflows, and target servers.    |
 
-The app config always wins over preset defaults. Set `main`, `assets`, `dev`, or `[build]` in `tako.toml` when a project needs a different shape.
+The app config always wins over preset defaults. Set `main`, `assets`, `dev`, `start`, or `[build]` in `tako.toml` when a project needs a different shape. Explicit `start` runs a prebuilt native artifact and bypasses runtime/preset launch defaults.
 
 ## Built-In Presets
 
@@ -88,7 +88,7 @@ Entrypoint resolution follows the same spirit:
 3. Preset `main`.
 4. Runtime entrypoint candidates such as `index.ts`, `index.js`, `src/index.ts`, or `main.go`.
 
-Deploy verifies the resolved `main` exists in the built app directory before packaging the release.
+Runtime-backed deploys use the resolved `main`. Native artifact deploys with explicit `start` skip `main` resolution and run the configured command from the app directory.
 
 ## Build Interaction
 
@@ -111,7 +111,7 @@ name = "server"
 run = "bun run build:server"
 ```
 
-Build precedence is `[[build_stages]]`, then `[build]`, then the runtime default build, then no-op. Preset assets are merged with top-level `assets` and copied into `public/` after build.
+Build precedence is `[[build_stages]]`, then `[build]`, then the runtime default build, then no-op. Explicit `start` releases skip the runtime default build, so configure `[build]` or `[[build_stages]]` to produce the artifact. Preset assets are merged with top-level `assets` and copied into `public/` after build.
 
 ## Init Behavior
 

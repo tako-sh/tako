@@ -10,15 +10,28 @@ import (
 	"syscall"
 )
 
+const BootstrapDataEnv = "TAKO_BOOTSTRAP_DATA"
+
 // Bootstrap is the envelope delivered on fd 3 by tako-server.
 //
 // The token is the per-instance internal auth token used for
 // Host:<app>.tako traffic. Secrets are the user-configured secrets
-// for this app. The envelope rides a pipe (not env/args) so neither
-// value inherits into subprocesses the app spawns.
+// for this app. Native processes receive the envelope on fd 3 so it
+// is not inherited through env/args. Container processes receive the
+// same envelope through TAKO_BOOTSTRAP_DATA because fd 3 does not
+// cross the container boundary in v0.
 type Bootstrap struct {
 	Token   string            `json:"token"`
 	Secrets map[string]string `json:"secrets"`
+}
+
+// BootstrapFromRuntime reads the bootstrap envelope from the current process.
+//
+// Native fd 3 takes precedence. TAKO_BOOTSTRAP_DATA is only the fallback
+// transport for containers and is removed from the process environment after
+// it is read.
+func BootstrapFromRuntime() *Bootstrap {
+	return bootstrapFromRuntimeFd(3)
 }
 
 // BootstrapFromFd3 reads the bootstrap envelope from file descriptor 3.
@@ -27,6 +40,30 @@ type Bootstrap struct {
 // Exits hard on invalid JSON (broken Tako launch path).
 func BootstrapFromFd3() *Bootstrap {
 	return bootstrapFromFd(3)
+}
+
+func bootstrapFromRuntimeFd(fd int) *Bootstrap {
+	if b := bootstrapFromFd(fd); b != nil {
+		clearBootstrapEnv()
+		return b
+	}
+	return bootstrapFromEnv()
+}
+
+func bootstrapFromEnv() *Bootstrap {
+	data := os.Getenv(BootstrapDataEnv)
+	if data == "" {
+		return nil
+	}
+	clearBootstrapEnv()
+	return parseBootstrap([]byte(data), BootstrapDataEnv)
+}
+
+func clearBootstrapEnv() {
+	if err := os.Unsetenv(BootstrapDataEnv); err != nil {
+		fmt.Fprintf(os.Stderr, "tako: failed to clear %s: %v\n", BootstrapDataEnv, err)
+		os.Exit(1)
+	}
 }
 
 // bootstrapFromFd reads the bootstrap envelope from the given file descriptor.
@@ -48,9 +85,13 @@ func bootstrapFromFd(fd int) *Bootstrap {
 		os.Exit(1)
 	}
 
+	return parseBootstrap(data, fmt.Sprintf("fd %d", fd))
+}
+
+func parseBootstrap(data []byte, source string) *Bootstrap {
 	var b Bootstrap
 	if err := json.Unmarshal(data, &b); err != nil {
-		fmt.Fprintf(os.Stderr, "tako: invalid bootstrap JSON on fd %d: %v\n", fd, err)
+		fmt.Fprintf(os.Stderr, "tako: invalid bootstrap JSON from %s: %v\n", source, err)
 		os.Exit(1)
 	}
 	if b.Secrets == nil {

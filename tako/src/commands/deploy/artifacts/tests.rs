@@ -152,6 +152,39 @@ fn resolve_go_workflow_worker_main_ignores_projects_without_worker() {
 }
 
 #[test]
+fn resolve_configured_workflow_run_uses_single_named_run() {
+    let config = TakoToml::parse(
+        r#"
+[workflows.video]
+run = ["./worker", "video"]
+"#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        resolve_configured_workflow_run(&config).unwrap(),
+        Some(vec!["./worker".to_string(), "video".to_string()])
+    );
+}
+
+#[test]
+fn resolve_configured_workflow_run_rejects_multiple_runs_for_now() {
+    let config = TakoToml::parse(
+        r#"
+[workflows.email]
+run = ["./worker", "email"]
+
+[workflows.video]
+run = ["./worker", "video"]
+"#,
+    )
+    .unwrap();
+
+    let err = resolve_configured_workflow_run(&config).unwrap_err();
+    assert!(err.contains("one workflow run command"));
+}
+
+#[test]
 fn resolve_build_stages_prefers_config_stages() {
     let build = crate::config::BuildConfig {
         run: Some("should-not-run".to_string()),
@@ -790,6 +823,62 @@ fn prepare_build_phase_packages_container_release_without_native_entrypoint() {
     let manifest: serde_json::Value = serde_json::from_str(&manifest_raw).unwrap();
     assert_eq!(manifest["release_kind"], "container");
     assert_eq!(manifest["container_file"], "Dockerfile");
+}
+
+#[test]
+fn prepare_build_phase_packages_native_artifact_with_start_without_runtime() {
+    let project = TempDir::new().unwrap();
+    let tako_config = TakoToml {
+        start: vec!["./app".to_string()],
+        build: crate::config::BuildConfig {
+            run: Some("printf '#!/bin/sh\\n' > app".to_string()),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let result = runtime.block_on(prepare_build_phase(
+        project.path().to_path_buf(),
+        project.path().to_path_buf(),
+        project.path().to_path_buf(),
+        "app".to_string(),
+        "production".to_string(),
+        tako_config,
+        crate::config::SecretsStore::default(),
+        "unknown".to_string(),
+        BuildAdapter::Unknown,
+        vec![(
+            "local".to_string(),
+            crate::config::ServerTarget {
+                arch: "x86_64".to_string(),
+                libc: "glibc".to_string(),
+            },
+        )],
+        vec![ArtifactBuildGroup {
+            build_target_label: "linux-x86_64-glibc".to_string(),
+            cache_target_label: "native".to_string(),
+            target_labels: vec!["linux-x86_64-glibc".to_string()],
+            display_target_label: None,
+        }],
+        None,
+    ));
+    let build_phase = result.unwrap();
+
+    assert_eq!(build_phase.manifest_main, "");
+    let archive = build_phase
+        .artifacts_by_target
+        .get("linux-x86_64-glibc")
+        .unwrap();
+    let unpacked = project.path().join("unpacked-native");
+    BuildExecutor::extract_archive(archive, &unpacked).unwrap();
+    let manifest_raw = std::fs::read_to_string(unpacked.join("app.json")).unwrap();
+    let manifest: serde_json::Value = serde_json::from_str(&manifest_raw).unwrap();
+    assert_eq!(manifest["runtime"], "unknown");
+    assert_eq!(manifest["main"], "");
+    assert_eq!(manifest["start"], serde_json::json!(["./app"]));
+    assert!(manifest.get("runtime_version").is_none());
+    assert!(unpacked.join("app").is_file());
 }
 
 #[test]

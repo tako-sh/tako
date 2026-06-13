@@ -23,6 +23,30 @@ dev = ["vite", "dev"]
 }
 
 #[test]
+fn test_parse_start_command() {
+    let toml = r#"
+start = ["./app", "--port-from-tako"]
+"#;
+    let config = Config::parse(toml).unwrap();
+    assert_eq!(
+        config.start,
+        vec!["./app".to_string(), "--port-from-tako".to_string()]
+    );
+}
+
+#[test]
+fn test_parse_start_command_rejects_empty_array() {
+    let toml = r#"
+start = []
+"#;
+    let err = Config::parse(toml).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("'start' must be a non-empty array")
+    );
+}
+
+#[test]
 fn test_parse_container_release_file() {
     let toml = r#"
 runtime = "go"

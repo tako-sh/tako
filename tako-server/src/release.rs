@@ -255,6 +255,9 @@ pub(crate) async fn prepare_release_runtime(
     }
 
     let runtime = &manifest.runtime;
+    if manifest.start.is_some() {
+        return Ok(None);
+    }
     if runtime.trim().is_empty() {
         return Err(format!(
             "deploy manifest {} has empty runtime field",
@@ -387,6 +390,9 @@ pub(crate) async fn resolve_release_runtime_bin(
     }
 
     let runtime = &manifest.runtime;
+    if manifest.start.is_some() {
+        return Ok(None);
+    }
     if runtime.trim().is_empty() {
         return Err(format!(
             "deploy manifest {} has empty runtime field",
@@ -678,6 +684,22 @@ mod tests {
             }
         );
         assert!(config.command.is_empty());
+    }
+
+    #[tokio::test]
+    async fn prepare_release_runtime_skips_runtime_install_for_explicit_start() {
+        let temp = TempDir::new().unwrap();
+        std::fs::write(
+            temp.path().join("app.json"),
+            r#"{"app_name":"my-app","environment":"production","version":"v1","runtime":"","main":"","start":["./app"],"idle_timeout":300}"#,
+        )
+        .unwrap();
+
+        let resolved = prepare_release_runtime(temp.path(), &HashMap::new(), temp.path(), None)
+            .await
+            .unwrap();
+
+        assert_eq!(resolved, None);
     }
 
     #[tokio::test]

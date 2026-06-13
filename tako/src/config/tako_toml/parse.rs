@@ -45,6 +45,7 @@ impl Config {
         let package_manager = parse_optional_string(&raw, "package_manager")?;
         let preset = parse_optional_string(&raw, "preset")?;
         let dev = parse_string_array(&raw, "dev")?.unwrap_or_default();
+        let start = parse_optional_non_empty_string_array(&raw, "start")?.unwrap_or_default();
         let app_root = parse_optional_string(&raw, "app_root")?;
         let assets = parse_string_array(&raw, "assets")?.unwrap_or_default();
         let release = parse_optional_string(&raw, "release")?;
@@ -62,6 +63,7 @@ impl Config {
             package_manager,
             preset,
             dev,
+            start,
             app_root,
             assets,
             release,
@@ -224,6 +226,9 @@ fn parse_workflow_worker_config(
             "workers" => config.workers = Some(parse_u32_field(value, &format!("{path}.workers"))?),
             "concurrency" => {
                 config.concurrency = Some(parse_u32_field(value, &format!("{path}.concurrency"))?)
+            }
+            "run" => {
+                config.run = Some(parse_non_empty_string_array(value, &format!("{path}.run"))?)
             }
             other => {
                 return Err(ConfigError::Validation(format!(
@@ -431,6 +436,42 @@ fn parse_build_stage_string_array(
         out.push(s.to_string());
     }
     Ok(Some(out))
+}
+
+fn parse_non_empty_string_array(value: &toml::Value, path: &str) -> Result<Vec<String>> {
+    let arr = value.as_array().ok_or_else(|| {
+        ConfigError::Validation(format!("'{path}' must be a non-empty array of strings"))
+    })?;
+    if arr.is_empty() {
+        return Err(ConfigError::Validation(format!(
+            "'{path}' must be a non-empty array of strings"
+        )));
+    }
+    let mut out = Vec::with_capacity(arr.len());
+    for item in arr {
+        let Some(s) = item.as_str() else {
+            return Err(ConfigError::Validation(format!(
+                "'{path}' must be a non-empty array of strings"
+            )));
+        };
+        if s.trim().is_empty() {
+            return Err(ConfigError::Validation(format!(
+                "'{path}' entries cannot be empty"
+            )));
+        }
+        out.push(s.to_string());
+    }
+    Ok(out)
+}
+
+fn parse_optional_non_empty_string_array(
+    raw: &toml::Value,
+    key: &str,
+) -> Result<Option<Vec<String>>> {
+    let Some(value) = raw.get(key) else {
+        return Ok(None);
+    };
+    parse_non_empty_string_array(value, key).map(Some)
 }
 
 fn parse_string_array(raw: &toml::Value, key: &str) -> Result<Option<Vec<String>>> {

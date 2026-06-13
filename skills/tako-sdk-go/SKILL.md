@@ -15,7 +15,7 @@ sources:
 
 Runtime SDK for Go apps deployed with Tako.
 
-> **CRITICAL**: The Go SDK is **required** — your app must call `tako.ListenAndServe()` or use `tako.Listener()` to speak the Tako protocol (health checks, graceful shutdown). Secrets are loaded from fd 3 at init time.
+> **CRITICAL**: The Go SDK is **required** — your app must call `tako.ListenAndServe()` or use `tako.Listener()` to speak the Tako protocol (health checks, graceful shutdown). Secrets are loaded from the Tako bootstrap envelope at init time: fd 3 first for native processes, then `TAKO_BOOTSTRAP_DATA` for containers.
 
 > **CRITICAL**: Any framework that implements `http.Handler` works directly with `ListenAndServe`. Only Fiber (fasthttp) needs the `Listener` path.
 
@@ -149,7 +149,7 @@ The SDK transparently handles these — you don't interact with them directly:
 - `GET /status` on `Host: <app>.tako` — health check (returns JSON with status, instance_id, version, pid, uptime_seconds)
 - `POST /channels/authorize` on `Host: <app>.tako` — channel auth callback for `tako-server`
 - Token authentication via `x-tako-internal-token` header (required in production, skipped in dev)
-- Secrets are read from fd 3 at process startup (Tako runtime ABI), not via HTTP
+- Secrets are read from the Tako bootstrap envelope at process startup, not via HTTP. Native processes use fd 3; containers use `TAKO_BOOTSTRAP_DATA`.
 
 ## Common Mistakes
 
@@ -159,7 +159,7 @@ The SDK transparently handles these — you don't interact with them directly:
 // WRONG — app won't respond to Tako protocol
 http.ListenAndServe(":3000", mux)
 
-// CORRECT — Tako handles health checks, graceful shutdown, fd 3 secrets
+// CORRECT — Tako handles health checks, graceful shutdown, bootstrap secrets
 tako.ListenAndServe(mux)
 ```
 

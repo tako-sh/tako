@@ -34,10 +34,15 @@ workers = 5
 concurrency = 10
 
 [workflows.email]
+run = ["./worker", "email"]
 workers = 2
 "#;
     let config = Config::parse(toml).unwrap();
     let email = config.workflows.groups.get("email").unwrap();
+    assert_eq!(
+        email.run,
+        Some(vec!["./worker".to_string(), "email".to_string()])
+    );
     assert_eq!(email.workers, Some(2));
     assert_eq!(email.concurrency, None);
 
@@ -210,6 +215,16 @@ bogus = true
 "#;
     let err = Config::parse(toml).unwrap_err();
     assert!(err.to_string().to_lowercase().contains("bogus"));
+}
+
+#[test]
+fn test_parse_workflows_rejects_empty_run() {
+    let toml = r#"
+[workflows.video]
+run = []
+"#;
+    let err = Config::parse(toml).unwrap_err();
+    assert!(err.to_string().contains("workflows.video.run"));
 }
 
 #[test]

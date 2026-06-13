@@ -47,9 +47,10 @@ import (
 )
 
 var (
-	// bootstrap is the fd 3 envelope, read once at init. Nil in dev mode
-	// (no Tako-managed fd 3).
-	bootstrap = internal.BootstrapFromFd3()
+	// bootstrap is the runtime envelope, read once at init. Native processes
+	// receive it on fd 3; containers receive the same data through
+	// TAKO_BOOTSTRAP_DATA.
+	bootstrap = internal.BootstrapFromRuntime()
 	// secrets is populated from the bootstrap envelope.
 	secrets = func() *internal.SecretStore {
 		s := internal.NewSecretStore()
@@ -233,7 +234,8 @@ func Uptime() time.Duration {
 // in tako_secrets.go — use the typed Secrets struct instead of calling this
 // directly.
 //
-// Secrets are loaded from fd 3 at process startup in both dev and production.
+// Secrets are loaded from the Tako bootstrap envelope at process startup.
+// Native releases use fd 3; container releases use TAKO_BOOTSTRAP_DATA.
 // If a secret is not defined, GetSecret returns an empty string.
 //
 // Run `tako generate` to generate the Secrets struct:

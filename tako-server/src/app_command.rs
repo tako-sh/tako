@@ -47,7 +47,11 @@ pub(crate) struct ReleaseManifest {
     #[serde(default)]
     pub main: String,
     #[serde(default)]
+    pub start: Option<Vec<String>>,
+    #[serde(default)]
     pub workflow_worker_main: Option<String>,
+    #[serde(default)]
+    pub workflow_run: Option<Vec<String>>,
     pub idle_timeout: u32,
     #[serde(default)]
     pub env_vars: HashMap<String, String>,
@@ -122,6 +126,10 @@ pub(crate) fn command_from_manifest(
             manifest_path.display()
         ));
     }
+    let app_dir = safe_subdir(release_dir, &manifest.app_dir)?;
+    if let Some(start) = &manifest.start {
+        return explicit_start_command(start, &manifest_path, &app_dir, &manifest.main);
+    }
     if manifest.main.trim().is_empty() {
         return Err(format!(
             "deploy manifest {} has empty main field",
@@ -129,7 +137,6 @@ pub(crate) fn command_from_manifest(
         ));
     }
 
-    let app_dir = safe_subdir(release_dir, &manifest.app_dir)?;
     let install_dir = safe_subdir(release_dir, &manifest.install_dir)?;
     let ctx = manifest
         .package_manager
@@ -166,6 +173,55 @@ pub(crate) fn command_from_manifest(
         .collect();
 
     Ok(cmd)
+}
+
+fn explicit_start_command(
+    start: &[String],
+    manifest_path: &Path,
+    app_dir: &Path,
+    main: &str,
+) -> Result<Vec<String>, String> {
+    let Some((program, _)) = start.split_first() else {
+        return Err(format!(
+            "deploy manifest {} has empty start command",
+            manifest_path.display()
+        ));
+    };
+    if program.trim().is_empty() {
+        return Err(format!(
+            "deploy manifest {} has empty start command",
+            manifest_path.display()
+        ));
+    }
+    if start.iter().any(|arg| arg.trim().is_empty()) {
+        return Err(format!(
+            "deploy manifest {} has empty start command argument",
+            manifest_path.display()
+        ));
+    }
+    let resolved_main = if start.iter().any(|arg| arg == "{main}") {
+        let trimmed_main = main.trim();
+        if trimmed_main.is_empty() {
+            return Err(format!(
+                "deploy manifest {} uses {{main}} in start but has empty main field",
+                manifest_path.display()
+            ));
+        }
+        Some(resolve_main_path(app_dir, trimmed_main))
+    } else {
+        None
+    };
+
+    Ok(start
+        .iter()
+        .map(|arg| {
+            if arg == "{main}" {
+                resolved_main.clone().unwrap_or_default()
+            } else {
+                arg.clone()
+            }
+        })
+        .collect())
 }
 
 /// Determine the command to launch an app from its release directory.
@@ -271,6 +327,54 @@ mod tests {
         assert_eq!(cmd[1], "run");
         assert!(cmd[2].contains("tako.sh/dist/entrypoints/bun-server.mjs"));
         assert_eq!(cmd.last().unwrap(), "server/entry.js");
+    }
+
+    #[test]
+    fn explicit_start_command_overrides_runtime_launch_args() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("app.json"),
+            r#"{"runtime":"bun","main":"server/entry.js","start":["./app","--serve"],"idle_timeout":300}"#,
+        )
+        .unwrap();
+
+        let cmd = command_for_release_dir(dir.path()).unwrap();
+        assert_eq!(cmd, vec!["./app".to_string(), "--serve".to_string()]);
+    }
+
+    #[test]
+    fn explicit_start_command_rejects_empty_command() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("app.json"),
+            r#"{"runtime":"bun","main":"server/entry.js","start":[],"idle_timeout":300}"#,
+        )
+        .unwrap();
+
+        let err = command_for_release_dir(dir.path()).unwrap_err();
+        assert!(err.contains("empty start command"));
+    }
+
+    #[test]
+    fn explicit_start_command_resolves_main_placeholder() {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/index.ts"), "export default {};\n").unwrap();
+        std::fs::write(
+            dir.path().join("app.json"),
+            r#"{"runtime":"bun","main":"src/index.ts","start":["bun","{main}"],"idle_timeout":300}"#,
+        )
+        .unwrap();
+
+        let cmd = command_for_release_dir(dir.path()).unwrap();
+        assert_eq!(cmd[0], "bun");
+        assert_eq!(
+            cmd[1],
+            dir.path()
+                .join("src/index.ts")
+                .to_string_lossy()
+                .to_string()
+        );
     }
 
     #[test]
@@ -397,6 +501,19 @@ mod tests {
         assert_eq!(manifest.version, "v1");
         assert_eq!(manifest.container_file.as_deref(), Some("Dockerfile"));
         assert_eq!(manifest.container_port, Some(3000));
+    }
+
+    #[test]
+    fn container_release_manifest_deserializes_workflow_run() {
+        let manifest: ReleaseManifest = serde_json::from_str(
+            r#"{"release_kind":"container","app_name":"my-app","environment":"production","version":"v1","runtime":"container","main":"","workflow_run":["./worker","video"],"idle_timeout":300,"container_file":"Dockerfile","container_port":3000}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            manifest.workflow_run,
+            Some(vec!["./worker".to_string(), "video".to_string()])
+        );
     }
 
     #[test]

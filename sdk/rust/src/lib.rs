@@ -108,10 +108,11 @@ pub fn status_body() -> serde_json::Value {
 }
 
 fn load_bootstrap() -> Result<Bootstrap, BootstrapError> {
-    if let Some(data) = read_bootstrap_env() {
+    if let Some(data) = read_bootstrap_fd()? {
+        clear_bootstrap_env();
         return parse_bootstrap_data(&data);
     }
-    if let Some(data) = read_bootstrap_fd()? {
+    if let Some(data) = read_bootstrap_env() {
         return parse_bootstrap_data(&data);
     }
     Ok(Bootstrap::default())
@@ -139,10 +140,14 @@ fn read_bootstrap_env() -> Option<String> {
     if data.is_empty() {
         return None;
     }
+    clear_bootstrap_env();
+    Some(data)
+}
+
+fn clear_bootstrap_env() {
     unsafe {
         std::env::remove_var(BOOTSTRAP_DATA_ENV);
     }
-    Some(data)
 }
 
 #[cfg(unix)]
@@ -289,7 +294,7 @@ mod tests {
 
     #[test]
     fn reads_bootstrap_env_once() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock().lock().unwrap_or_else(|err| err.into_inner());
         unsafe {
             std::env::set_var(BOOTSTRAP_DATA_ENV, "data");
         }
@@ -297,6 +302,53 @@ mod tests {
         assert_eq!(read_bootstrap_env().as_deref(), Some("data"));
         assert_eq!(std::env::var(BOOTSTRAP_DATA_ENV).ok(), None);
         assert_eq!(read_bootstrap_env(), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_bootstrap_prefers_fd_over_env() {
+        use std::os::fd::FromRawFd;
+
+        let _guard = env_lock().lock().unwrap_or_else(|err| err.into_inner());
+        unsafe {
+            std::env::set_var(
+                BOOTSTRAP_DATA_ENV,
+                r#"{"token":"env-token","secrets":{"KEY":"env"},"storages":{}}"#,
+            );
+        }
+
+        let original_fd3 = unsafe { libc::dup(3) };
+        let (read_fd, write_fd) = {
+            let mut fds = [0; 2];
+            assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+            (fds[0], fds[1])
+        };
+        let write_file = unsafe { std::fs::File::from_raw_fd(write_fd) };
+        write!(
+            &write_file,
+            r#"{{"token":"fd-token","secrets":{{"KEY":"fd"}},"storages":{{}}}}"#
+        )
+        .unwrap();
+        drop(write_file);
+        assert_eq!(unsafe { libc::dup2(read_fd, 3) }, 3);
+        if read_fd != 3 {
+            unsafe {
+                libc::close(read_fd);
+            }
+        }
+
+        let bootstrap = load_bootstrap().unwrap();
+
+        if original_fd3 >= 0 {
+            assert_eq!(unsafe { libc::dup2(original_fd3, 3) }, 3);
+            unsafe {
+                libc::close(original_fd3);
+            }
+        }
+
+        assert_eq!(bootstrap.token(), Some("fd-token"));
+        assert_eq!(bootstrap.secret("KEY"), Some("fd"));
+        assert_eq!(std::env::var(BOOTSTRAP_DATA_ENV).ok(), None);
     }
 
     #[test]
@@ -309,7 +361,7 @@ mod tests {
 
     #[test]
     fn binds_std_listener_from_host_and_port() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock().lock().unwrap_or_else(|err| err.into_inner());
         unsafe {
             std::env::set_var("HOST", "127.0.0.1");
             std::env::set_var("PORT", "0");

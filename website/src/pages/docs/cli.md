@@ -105,7 +105,9 @@ tako deploy --env production --yes
 
 Deploy validates config, secrets, storage credentials, provider credentials, runtime state storage, backup config, route setup, and server target metadata before build work starts. It builds locally, packages an artifact, uploads it over signed HTTP management, prepares each server release, optionally runs the `release` command once on the leader server, performs rolling updates, finalizes the release, and creates a post-deploy backup when enabled.
 
-For `container = "Dockerfile"`, deploy packages source and the server builds/runs the image with Docker or Podman. The container must listen on `$PORT` (`3000` today), bind `0.0.0.0`, and use the Tako SDK so `/status` echoes the internal health-probe token.
+For prebuilt native artifacts, set `start = ["./app"]` and produce that executable in `[build]` or `[[build_stages]]`. Without `start`, deploy uses the selected runtime/preset launch defaults and warns.
+
+For `container = "Dockerfile"`, deploy packages source and the server builds/runs the image with Podman. The container must listen on `$PORT` (`3000` today), bind `0.0.0.0`, and use the Tako SDK so `/status` echoes the internal health-probe token.
 
 `development` is reserved for `tako dev` and cannot be deployed. Interactive production deploys ask for confirmation only when the environment is implicit.
 

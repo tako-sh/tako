@@ -13,7 +13,7 @@
       "type": "framework",
       "description": "tako.sh Go SDK: ListenAndServe for http.Handler, Listener for custom servers, typed secrets via tako generate, metadata helpers.",
       "url": "https://tako.sh/.well-known/agent-skills/tako-sdk-go/SKILL.md",
-      "sha256": "6c784eabfac2cff01e73fa7ec4f9041fabe7dbbfcc50656e5fb3db96ea77e2f2"
+      "sha256": "a70ed318d40228f651f6aaed0b767108f4a443df7e9fa61a8bc5fc9d2f5fa25c"
     },
     {
       "name": "tako-sdk-js",

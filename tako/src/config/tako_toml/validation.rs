@@ -299,6 +299,7 @@ pub(super) fn validate_top_level_keys(raw: &toml::Value) -> Result<()> {
                 | "package_manager"
                 | "preset"
                 | "dev"
+                | "start"
                 | "app_root"
                 | "main"
                 | "assets"
@@ -387,6 +388,11 @@ fn validate_container_release_config(config: &Config) -> Result<()> {
         return Err(ConfigError::Validation(
             "container releases cannot set assets; use the Dockerfile and .dockerignore to control the image"
                 .to_string(),
+        ));
+    }
+    if !config.start.is_empty() {
+        return Err(ConfigError::Validation(
+            "container releases cannot set start; the image command starts the app".to_string(),
         ));
     }
     if config

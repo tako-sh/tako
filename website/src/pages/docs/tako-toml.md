@@ -34,6 +34,7 @@ runtime = "bun@1.2.3"
 package_manager = "bun"
 preset = "tanstack-start"
 app_root = "src"
+start = ["./app"]
 assets = ["public"]
 release = "bun run db:migrate"
 
@@ -101,6 +102,7 @@ workers = 2
 | `app_root`              | string | JS app root for `channels/`, `workflows/`, and preferred `tako.d.ts` placement. Defaults to `src`. Use `.` for root-level files. |
 | `main`                  | string | Runtime entrypoint override, relative to the app directory.                                                                      |
 | `dev`                   | array  | Custom dev command for `tako dev`.                                                                                               |
+| `start`                 | array  | Native deploy command for a prebuilt artifact, for example `["./app"]`.                                                          |
 | `assets`                | array  | Static asset roots copied into deployed `public/`, merged after build.                                                           |
 | `release`               | string | One-shot command run once on the leader server before rolling update.                                                            |
 | `[build]`               | table  | Single-stage deploy build settings.                                                                                              |
@@ -131,7 +133,21 @@ Runtime version pins are written as part of `runtime`:
 runtime = "node@22.3.0"
 ```
 
-Deploy uses the pin when present. Otherwise it runs the local runtime's `--version` and falls back to `latest`.
+Deploy uses the pin when present. Otherwise it runs the local runtime's `--version` and falls back to `latest`. If `start` is set, deploy can package a native artifact without selecting or installing a runtime.
+
+## Native Artifact Releases
+
+Use `start` when your build produces a binary or executable artifact:
+
+```toml
+dev = ["cargo", "run"]
+start = ["./app"]
+
+[build]
+run = "cargo build --release && cp target/release/my-app app"
+```
+
+The command runs from the deployed app directory. An exact `{main}` argument is replaced with the resolved `main` path for runtime-style commands. The process still needs the Tako SDK listener so fd-3 bootstrap, fd-4 readiness, secrets, storage bindings, and `/status` work. If `start` is omitted, deploy uses the selected runtime/preset launch defaults and warns.
 
 ## Container Releases
 
@@ -145,11 +161,11 @@ dev = ["go", "run", "."]
 
 The path is relative to the app directory. Container releases use the app root as the build context, and `.dockerignore` controls what enters the image. `tako dev` still uses the configured dev command, preset dev command, or native runtime default.
 
-Container releases do not use native release packaging fields: `main`, `assets`, `[build]`, or `[[build_stages]]`. Keep production build steps in the container file.
+Container releases do not use native release packaging fields: `main`, `start`, `assets`, `[build]`, or `[[build_stages]]`. Keep production build steps in the container file.
 
-The target server must have Docker or Podman installed. The container must listen on `$PORT` (`3000` today), bind `0.0.0.0`, and use the Tako SDK so `/status` echoes the internal health-probe token. Secrets and storage bindings arrive through `TAKO_BOOTSTRAP_DATA`, not as individual environment variables.
+Tako installs and uses Podman on the target server. The container must listen on `$PORT` (`3000` today), bind `0.0.0.0`, and use the Tako SDK so `/status` echoes the internal health-probe token. Secrets and storage bindings arrive through `TAKO_BOOTSTRAP_DATA`, not as individual environment variables. SDKs check fd 3 first and use `TAKO_BOOTSTRAP_DATA` as the container fallback.
 
-Container releases are HTTP-only in v0. The fd-3 bootstrap pipe, fd-4 readiness handshake, internal socket, workflow workers, and `TAKO_DATA_DIR` are native-runtime features and are not mounted into the container.
+HTTP containers run from the image's Dockerfile defaults. To run a container workflow worker from the same image, configure one workflow `run` command, for example `run = ["./worker", "video"]`; Tako replaces the image entrypoint for that workflow container and mounts the internal socket. Container HTTP instances still do not receive the fd-3 bootstrap pipe, fd-4 readiness handshake, internal socket, or `TAKO_DATA_DIR` in v0.
 
 ## Entrypoints And Assets
 

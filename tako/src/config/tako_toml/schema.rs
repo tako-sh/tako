@@ -33,6 +33,10 @@ pub struct Config {
     #[serde(default)]
     pub dev: Vec<String>,
 
+    /// Production command to start a prebuilt native artifact.
+    #[serde(default)]
+    pub start: Vec<String>,
+
     /// JavaScript app root, relative to the config file.
     /// `channels/` and `workflows/` live under this directory.
     pub app_root: Option<String>,
@@ -291,6 +295,12 @@ impl Default for EffectiveWorkflowsConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowWorkerConfig {
+    /// Command to run this workflow worker role. This is portable Tako
+    /// process vocabulary; container releases translate it to an entrypoint
+    /// override, while native releases can run it directly.
+    #[serde(default)]
+    pub run: Option<Vec<String>>,
+
     /// Number of always-on worker processes. `0` means scale-to-zero.
     pub workers: Option<u32>,
 

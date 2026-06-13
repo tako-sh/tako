@@ -14,7 +14,11 @@ pub(super) struct DeployArchiveManifest {
     pub(super) runtime: String,
     pub(super) main: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) start: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) workflow_worker_main: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) workflow_run: Option<Vec<String>>,
     pub(super) idle_timeout: u32,
     pub(super) env_vars: BTreeMap<String, String>,
     pub(super) secret_names: Vec<String>,
@@ -186,6 +190,7 @@ pub(super) fn build_deploy_archive_manifest(
     version: &str,
     runtime_name: &str,
     main: &str,
+    start: Option<Vec<String>>,
     workflow_worker_main: Option<String>,
     idle_timeout: u32,
     package_manager: Option<String>,
@@ -216,7 +221,9 @@ pub(super) fn build_deploy_archive_manifest(
         version: version.to_string(),
         runtime: runtime_name.to_string(),
         main: main.to_string(),
+        start,
         workflow_worker_main,
+        workflow_run: None,
         idle_timeout,
         env_vars,
         secret_names,
@@ -245,6 +252,7 @@ pub(super) fn build_container_deploy_archive_manifest(
     env_secrets: Option<&HashMap<String, EncryptedSecretValue>>,
     images: tako_images::ImagesConfig,
     app_dir: String,
+    workflow_run: Option<Vec<String>>,
 ) -> DeployArchiveManifest {
     let mut secret_names = env_secrets
         .map(|map| map.keys().cloned().collect::<Vec<_>>())
@@ -262,7 +270,9 @@ pub(super) fn build_container_deploy_archive_manifest(
         version: version.to_string(),
         runtime: "container".to_string(),
         main: String::new(),
+        start: None,
         workflow_worker_main: None,
+        workflow_run,
         idle_timeout,
         env_vars,
         secret_names,
@@ -354,6 +364,7 @@ mod tests {
             "bun",
             "server/index.ts",
             None,
+            None,
             300,
             Some("bun".to_string()),
             Some("feat: ship it".to_string()),
@@ -400,6 +411,7 @@ mod tests {
             Some(&secrets),
             tako_images::ImagesConfig::default(),
             "apps/web".to_string(),
+            Some(vec!["./worker".to_string(), "video".to_string()]),
         );
 
         assert_eq!(manifest.release_kind, DeployReleaseKind::Container);
@@ -408,6 +420,10 @@ mod tests {
         assert_eq!(manifest.container_file.as_deref(), Some("Dockerfile"));
         assert_eq!(manifest.container_port, Some(3000));
         assert_eq!(manifest.app_dir, "apps/web");
+        assert_eq!(
+            manifest.workflow_run,
+            Some(vec!["./worker".to_string(), "video".to_string()])
+        );
         assert_eq!(manifest.secret_names, vec!["API_KEY".to_string()]);
         assert_eq!(
             manifest.env_vars.get("TAKO_BUILD"),
@@ -463,6 +479,7 @@ mod tests {
             "bun",
             "server/index.mjs",
             None,
+            None,
             600,
             None,
             None,
@@ -480,6 +497,7 @@ mod tests {
         assert_eq!(manifest.version, "v1");
         assert_eq!(manifest.runtime, "bun");
         assert_eq!(manifest.main, "server/index.mjs");
+        assert_eq!(manifest.start, None);
         assert_eq!(manifest.workflow_worker_main, None);
         assert_eq!(manifest.idle_timeout, 600);
         assert_eq!(manifest.git_dirty, Some(true));
@@ -506,6 +524,34 @@ mod tests {
         assert_eq!(
             manifest.secret_names,
             vec!["API_KEY".to_string(), "DB_URL".to_string()]
+        );
+    }
+
+    #[test]
+    fn build_deploy_archive_manifest_includes_explicit_start_command() {
+        let manifest = build_deploy_archive_manifest(
+            "my-app",
+            "production",
+            "v1",
+            "bun",
+            "app",
+            Some(vec!["./app".to_string(), "--serve".to_string()]),
+            None,
+            300,
+            None,
+            None,
+            None,
+            HashMap::new(),
+            HashMap::new(),
+            None,
+            tako_images::ImagesConfig::default(),
+            String::new(),
+            String::new(),
+        );
+
+        assert_eq!(
+            manifest.start,
+            Some(vec!["./app".to_string(), "--serve".to_string()])
         );
     }
 

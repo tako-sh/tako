@@ -81,15 +81,26 @@ Required Cloudflare credentials are also checked from each target server during 
 
 ## Build And Package
 
-Deploy resolves runtime, package manager, preset, entrypoint, app root, assets, build stages, non-secret vars, release metadata, and runtime version.
+Deploy resolves runtime, package manager, preset, entrypoint or explicit `start` command, app root, assets, build stages, non-secret vars, release metadata, and runtime version when a runtime is selected.
 
 When `container = "Dockerfile"` is set, deploy packages source for a container release instead of native build stages, entrypoint validation, and asset merging. The app directory is the build context and `.dockerignore` controls image inputs. `tako dev` still uses the configured dev command, preset dev command, or native runtime default.
+
+For compiled native artifacts, set `start` and produce the executable in `[build]` or `[[build_stages]]`:
+
+```toml
+start = ["./app"]
+
+[build]
+run = "cargo build --release && cp target/release/my-app app"
+```
+
+Explicit `start` releases skip runtime defaults and runtime version probing. An exact `{main}` argument is replaced with the resolved `main` path for runtime-style commands. The binary must use a Tako SDK listener so fd-3 bootstrap, fd-4 readiness, secrets, storage bindings, and health checks work.
 
 Build stage precedence:
 
 1. `[[build_stages]]`
 2. `[build]`
-3. runtime default build
+3. runtime default build, unless `start` is set
 4. no-op
 
 Builds run in `.tako/build` after copying the source bundle root. Tako uses the git root when available, otherwise the selected config file's parent directory. It respects `.gitignore`, symlinks `node_modules/` from the original tree, and force-excludes `.git/`, `.tako/`, `.env*`, and `node_modules/` from deploy artifacts.
@@ -114,9 +125,9 @@ POST /release-artifact
 
 The server verifies declared size and SHA-256, extracts into `/opt/tako/apps/{app}/{env}/releases/{version}/`, links release logs to the app log directory, prepares the per-app Unix identity and filesystem permissions, and prepares runtime metadata.
 
-Native releases run the runtime plugin's production install command as the app identity. Container releases require Docker or Podman on the target server; `tako-server` builds the uploaded app directory with the configured container file and tags the image as `tako/{app}-{env}:{version}`.
+Native releases run the runtime plugin's production install command as the app identity unless the deploy manifest has explicit `start`. Container releases use Podman on the target server; `tako-server` builds the uploaded app directory with the configured container file and tags the image as `tako/{app}-{env}:{version}`.
 
-Container releases are HTTP-only in v0. Containers receive `HOST=0.0.0.0`, `PORT=3000`, user vars, and `TAKO_BOOTSTRAP_DATA`. Use the Tako SDK inside the app so secrets, storage bindings, internal status, and health-probe authentication work the same way as native releases. The fd-3 bootstrap pipe, fd-4 readiness handshake, internal socket, workflow workers, and `TAKO_DATA_DIR` are native-runtime features and are not mounted into the container.
+HTTP containers run from the image's Dockerfile defaults and receive `HOST=0.0.0.0`, `PORT=3000`, user vars, and `TAKO_BOOTSTRAP_DATA`. Use the Tako SDK inside the app so secrets, storage bindings, internal status, and health-probe authentication work the same way as native releases. The SDK checks fd 3 first and uses `TAKO_BOOTSTRAP_DATA` as the container fallback. A configured workflow `run` command starts a separate container process from the same image; Tako replaces the image entrypoint, passes the remaining args, mounts the internal socket, and sends bootstrap data through `TAKO_BOOTSTRAP_DATA`. Container HTTP instances still do not receive the fd-3 bootstrap pipe, fd-4 readiness handshake, internal socket, or `TAKO_DATA_DIR` in v0.
 
 Small management commands use `POST /rpc`. Logs use `POST /logs`. App/runtime management uses signed HTTP over Tailscale; SSH is for setup, recovery, reload, upgrade, and uninstall.
 

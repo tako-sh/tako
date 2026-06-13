@@ -268,6 +268,29 @@ fn remote_install_libvips_runtime_script() -> &'static str {
      fi"
 }
 
+fn remote_install_podman_runtime_script() -> &'static str {
+    "if command -v podman >/dev/null 2>&1; then \
+       :; \
+     elif command -v apt-get >/dev/null 2>&1; then \
+       apt-get update -y; apt-get install -y podman; \
+     elif command -v dnf >/dev/null 2>&1; then \
+       dnf install -y podman; \
+     elif command -v yum >/dev/null 2>&1; then \
+       yum install -y podman; \
+     elif command -v pacman >/dev/null 2>&1; then \
+       pacman -Sy --noconfirm podman; \
+     elif command -v apk >/dev/null 2>&1; then \
+       apk add --no-cache podman; \
+     elif command -v zypper >/dev/null 2>&1; then \
+       zypper --non-interactive install podman; \
+     else \
+       echo 'error: unsupported package manager; install podman manually before upgrading tako-server' >&2; exit 1; \
+     fi; \
+     if ! command -v podman >/dev/null 2>&1; then \
+       echo 'error: podman not found after install' >&2; exit 1; \
+     fi"
+}
+
 fn remote_verify_server_runtime_deps_script(binary_expr: &str) -> String {
     format!(
         "missing_runtime_libraries() {{ \
@@ -296,6 +319,7 @@ fn remote_binary_replace_command(url: &str, expected_sha256: &str) -> String {
     let sha_check = verify_downloaded_sha256_script("\"$archive\"", expected_sha256);
     let auth_header_script = crate::github::remote_curl_auth_header_script("download_url");
     let runtime_deps = remote_verify_server_runtime_deps_script("\"$bin\"");
+    let podman_runtime = remote_install_podman_runtime_script();
     let script = format!(
         "set -eu; \
          download_url={url_q}; \
@@ -315,6 +339,7 @@ fn remote_binary_replace_command(url: &str, expected_sha256: &str) -> String {
          {runtime_deps}; \
          if [ -f {SERVER_BINARY_PATH} ]; then install -m 0755 {SERVER_BINARY_PATH} {SERVER_PREVIOUS_BINARY_PATH}; fi; \
          install -m 0755 \"$bin\" {SERVER_BINARY_PATH}; \
+         {podman_runtime}; \
          if command -v setcap >/dev/null 2>&1; then setcap {SERVER_FILE_CAPABILITIES} {SERVER_BINARY_PATH} 2>/dev/null || true; fi"
     );
     SshClient::run_with_root_or_sudo(&script)

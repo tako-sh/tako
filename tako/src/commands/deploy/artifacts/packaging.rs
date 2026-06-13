@@ -110,7 +110,12 @@ pub(super) async fn build_target_artifacts(
 
         let runtime_probe_label = format_runtime_probe_message(display_target_label);
         let runtime_probe_success = format_runtime_probe_success(display_target_label);
-        let runtime_version = if let Some(pinned) = pinned_runtime_version {
+        let runtime_version = if runtime_adapter == BuildAdapter::Unknown {
+            if let Some(task_tree) = &task_tree {
+                task_tree.skip_build_step(&tree_target_label, "probe-runtime", "No runtime");
+            }
+            None
+        } else if let Some(pinned) = pinned_runtime_version {
             tracing::debug!("Using pinned runtime version {} from tako.toml", pinned);
             if let Some(task_tree) = &task_tree {
                 task_tree.skip_build_step(
@@ -119,7 +124,7 @@ pub(super) async fn build_target_artifacts(
                     format!("Pinned: {pinned}"),
                 );
             }
-            pinned.to_string()
+            Some(pinned.to_string())
         } else if task_tree.is_some() {
             if let Some(task_tree) = &task_tree {
                 task_tree.mark_build_step_running(&tree_target_label, "probe-runtime");
@@ -135,7 +140,7 @@ pub(super) async fn build_target_artifacts(
                             Some(version.clone()),
                         );
                     }
-                    version
+                    Some(version)
                 }
                 Err(error) => {
                     if let Some(task_tree) = &task_tree {
@@ -151,33 +156,39 @@ pub(super) async fn build_target_artifacts(
                 }
             }
         } else if use_local_build_spinners {
-            output::with_spinner(&runtime_probe_label, &runtime_probe_success, || {
-                let _t = output::timed(&format!(
-                    "Probe {} version in {}",
-                    runtime_version_tool,
-                    workspace.display()
-                ));
-                let version =
-                    resolve_runtime_version_from_workspace(&workspace, runtime_version_tool);
-                if let Ok(v) = &version {
-                    tracing::debug!("Detected {} {}", runtime_version_tool, v);
-                }
-                version
-            })?
+            Some(output::with_spinner(
+                &runtime_probe_label,
+                &runtime_probe_success,
+                || {
+                    let _t = output::timed(&format!(
+                        "Probe {} version in {}",
+                        runtime_version_tool,
+                        workspace.display()
+                    ));
+                    let version =
+                        resolve_runtime_version_from_workspace(&workspace, runtime_version_tool);
+                    if let Ok(v) = &version {
+                        tracing::debug!("Detected {} {}", runtime_version_tool, v);
+                    }
+                    version
+                },
+            )?)
         } else {
             tracing::debug!("{}", runtime_probe_label);
             let _t = output::timed(&format!("Probe {} version", runtime_version_tool));
             let version = resolve_runtime_version_from_workspace(&workspace, runtime_version_tool)?;
             drop(_t);
             tracing::debug!("Detected {} {}", runtime_version_tool, version);
-            version
+            Some(version)
         };
-        let package_manager_version = package_manager_tool.map(|tool| {
+        let package_manager_version = package_manager_tool.and_then(|tool| {
             if tool == runtime_tool {
                 return runtime_version.clone();
             }
-            resolve_runtime_version_from_workspace_quiet(&workspace, tool)
-                .unwrap_or_else(|_| "latest".to_string())
+            Some(
+                resolve_runtime_version_from_workspace_quiet(&workspace, tool)
+                    .unwrap_or_else(|_| "latest".to_string()),
+            )
         });
 
         let target_label_for_path = if has_multiple_targets {
@@ -297,7 +308,9 @@ pub(super) async fn build_target_artifacts(
                     &extra_envs,
                 )?;
             }
-            save_runtime_version_to_manifest(&workspace, &runtime_version)?;
+            if let Some(version) = runtime_version.as_deref() {
+                save_runtime_version_to_manifest(&workspace, version)?;
+            }
             if let Some(version) = package_manager_version.as_deref() {
                 save_package_manager_version_to_manifest(&workspace, version)?;
             }
