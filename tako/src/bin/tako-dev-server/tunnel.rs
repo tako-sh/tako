@@ -391,9 +391,12 @@ fn tunnel_connect_url(base_url: &str, host: &str, session: &str) -> Result<Strin
     } else {
         return Err("tunnel URL must start with http:// or https://".to_string());
     };
-    Ok(format!(
-        "{ws_base}/v1/tunnels/connect?host={host}&session={session}"
-    ))
+    let mut url = reqwest::Url::parse(&format!("{ws_base}/v1/tunnels/connect"))
+        .map_err(|error| format!("invalid tunnel URL: {error}"))?;
+    url.query_pairs_mut()
+        .append_pair("host", host)
+        .append_pair("session", session);
+    Ok(url.to_string())
 }
 
 fn local_proxy_url(local_host: &str, listen_addr: &str, path: &str) -> Result<String, String> {
@@ -490,6 +493,16 @@ mod tests {
         assert_eq!(
             url,
             "ws://127.0.0.1:3000/v1/tunnels/connect?host=host.test&session=s"
+        );
+    }
+
+    #[test]
+    fn websocket_url_escapes_query_values() {
+        let url =
+            tunnel_connect_url("https://tako.website/api", "app.test", "a&b=c space").unwrap();
+        assert_eq!(
+            url,
+            "wss://tako.website/api/v1/tunnels/connect?host=app.test&session=a%26b%3Dc+space"
         );
     }
 
