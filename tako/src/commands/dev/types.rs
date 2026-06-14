@@ -155,6 +155,12 @@ pub enum DevEvent {
     ExitWithMessage(String),
 }
 
+impl DevEvent {
+    pub(super) fn is_state_only(&self) -> bool {
+        matches!(self, DevEvent::TunnelModeChanged { .. })
+    }
+}
+
 #[cfg(test)]
 fn strip_ascii_case_prefix<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
     if s.len() < prefix.len() {
@@ -241,5 +247,42 @@ pub(super) fn trim_child_log_message(message: &str) -> Option<String> {
         None
     } else {
         Some(trimmed_end.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DevEvent;
+
+    #[test]
+    fn tunnel_mode_changes_are_state_only() {
+        assert!(
+            DevEvent::TunnelModeChanged {
+                enabled: true,
+                url: Some("https://demo-yh5spxz5.tako.website".to_string()),
+                expires_at: Some(1_797_132_000),
+            }
+            .is_state_only()
+        );
+        assert!(
+            DevEvent::TunnelModeChanged {
+                enabled: false,
+                url: None,
+                expires_at: None,
+            }
+            .is_state_only()
+        );
+    }
+
+    #[test]
+    fn lan_mode_changes_still_render_user_output() {
+        assert!(
+            !DevEvent::LanModeChanged {
+                enabled: true,
+                lan_ip: Some("192.168.1.42".to_string()),
+                ca_url: Some("http://192.168.1.42/ca.pem".to_string()),
+            }
+            .is_state_only()
+        );
     }
 }

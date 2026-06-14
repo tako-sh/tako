@@ -492,21 +492,7 @@ pub async fn run_dev_output(
                                 }
                             }
                     }
-                    DevEvent::TunnelModeChanged { enabled, url, .. } => {
-                        if enabled {
-                            if let Some(url) = url {
-                                footer.println(&format_log(&ScopedLog::info(
-                                    "tako",
-                                    format!("Tunnel: {url}"),
-                                )));
-                            }
-                        } else {
-                            footer.println(&format_log(&ScopedLog::info(
-                                "tako",
-                                "Tunnel turned off",
-                            )));
-                        }
-                    }
+                    DevEvent::TunnelModeChanged { .. } => {}
                     DevEvent::ExitWithMessage(msg) => {
                         break LoopExit::Message(msg);
                     }

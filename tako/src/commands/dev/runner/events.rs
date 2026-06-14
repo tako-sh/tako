@@ -189,6 +189,10 @@ pub(super) async fn run_non_interactive_output(
 }
 
 fn handle_non_interactive_event(event: DevEvent) -> bool {
+    if event.is_state_only() {
+        return false;
+    }
+
     match event {
         DevEvent::AppStarted => {}
         DevEvent::AppReady => {
@@ -226,15 +230,7 @@ fn handle_non_interactive_event(event: DevEvent) -> bool {
                 println!("LAN mode disabled");
             }
         }
-        DevEvent::TunnelModeChanged { enabled, url, .. } => {
-            if enabled {
-                if let Some(url) = url {
-                    println!("Tunnel: {url}");
-                }
-            } else {
-                println!("Tunnel turned off");
-            }
-        }
+        DevEvent::TunnelModeChanged { .. } => {}
         DevEvent::ExitWithMessage(msg) => {
             println!("{}", msg);
             return true;
