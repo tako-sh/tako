@@ -14,7 +14,7 @@ use crate::protocol::{self, Response};
 
 use crate::control::State;
 
-const DEFAULT_TUNNEL_BASE_URL: &str = "https://api.tako.website/api";
+const DEFAULT_TUNNEL_BASE_URL: &str = "https://tako.website/api";
 const TUNNEL_API_TIMEOUT: Duration = Duration::from_secs(15);
 const TUNNEL_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -482,16 +482,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn default_tunnel_base_url_uses_apex_api_path() {
+        assert_eq!(DEFAULT_TUNNEL_BASE_URL, "https://tako.website/api");
+    }
+
+    #[test]
     fn websocket_url_uses_ws_schemes_and_query() {
         let url = tunnel_connect_url(
-            "https://api.tako.website/api",
+            "https://tako.website/api",
             "app-a8f3k2zz.tako.website",
             "session-token",
         )
         .unwrap();
         assert_eq!(
             url,
-            "wss://api.tako.website/api/v1/tunnels/connect?host=app-a8f3k2zz.tako.website&session=session-token"
+            "wss://tako.website/api/v1/tunnels/connect?host=app-a8f3k2zz.tako.website&session=session-token"
         );
     }
 
