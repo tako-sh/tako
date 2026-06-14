@@ -229,6 +229,8 @@ pub async fn run(
                 adapter_name_for_output,
                 hosts,
                 public_port_for_output,
+                initial_lan_enabled,
+                None,
                 log_rx,
                 event_rx,
                 control_tx_for_output,
@@ -276,6 +278,7 @@ pub async fn run(
         initial_tunnel_enabled,
         control_rx,
         log_tx.clone(),
+        event_tx.clone(),
         should_exit_tx.clone(),
         terminate_requested.clone(),
     );

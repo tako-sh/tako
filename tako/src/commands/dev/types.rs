@@ -147,17 +147,28 @@ pub enum DevEvent {
         lan_ip: Option<String>,
         ca_url: Option<String>,
     },
+    LanStarting,
+    LanFailed,
     TunnelModeChanged {
         enabled: bool,
         url: Option<String>,
         expires_at: Option<u64>,
     },
+    TunnelStarting,
+    TunnelFailed,
     ExitWithMessage(String),
 }
 
 impl DevEvent {
     pub(super) fn is_state_only(&self) -> bool {
-        matches!(self, DevEvent::TunnelModeChanged { .. })
+        matches!(
+            self,
+            DevEvent::LanStarting
+                | DevEvent::LanFailed
+                | DevEvent::TunnelModeChanged { .. }
+                | DevEvent::TunnelStarting
+                | DevEvent::TunnelFailed
+        )
     }
 }
 

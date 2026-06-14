@@ -285,6 +285,7 @@ pub(super) async fn prepare(
             url,
             pid: existing.pid,
             tunnel_enabled: existing.tunnel_url.is_some(),
+            tunnel_url: existing.tunnel_url.clone(),
         };
         let display_hosts = compute_display_routes(&cfg, &domain, base_domain.as_deref());
         run_connected_dev_client(&app_name, interactive, tunnel, session, display_hosts).await?;

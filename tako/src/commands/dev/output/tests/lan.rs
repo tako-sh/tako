@@ -26,6 +26,28 @@ fn format_lan_block_lists_concrete_routes_and_preserves_paths() {
 }
 
 #[test]
+fn format_lan_block_keeps_primary_copy_unmuted() {
+    let lines = format_lan_block(&["demo.test".to_string()], "http://192.168.1.2/ca.pem");
+    let available = lines
+        .iter()
+        .find(|line| line.contains("Your app is now available on your local network"))
+        .expect("available copy missing");
+    let scan = lines
+        .iter()
+        .find(|line| line.contains("Scan to install the CA certificate"))
+        .expect("scan copy missing");
+
+    assert!(
+        !available.contains("\x1b[2m"),
+        "available copy should not be muted: {available:?}"
+    );
+    assert!(
+        !scan.contains("\x1b[2m"),
+        "QR scan copy should not be muted: {scan:?}"
+    );
+}
+
+#[test]
 fn format_lan_block_excludes_external_routes() {
     let lines = format_lan_block(
         &["app.test".to_string(), "tunnel.example.com".to_string()],

@@ -1,4 +1,5 @@
 use super::*;
+use crate::commands::dev::output_render::{ShareRowState, ShareRows};
 
 #[test]
 fn format_header_has_logo_and_version() {
@@ -18,9 +19,13 @@ fn format_header_has_all_logo_rows() {
 }
 
 #[test]
-fn format_keymap_includes_tunnel_toggle() {
+fn format_keymap_omits_url_toggle_hints() {
     let plain = strip_ansi(&format_keymap());
-    assert!(plain.contains("t tunnel"));
+    assert!(!plain.contains("t tunnel"));
+    assert!(!plain.contains("l lan"));
+    assert!(plain.contains("r restart"));
+    assert!(plain.contains("b background"));
+    assert!(plain.contains("stop"));
 }
 
 #[test]
@@ -35,6 +40,7 @@ fn format_panel_has_border_and_app_name_with_runtime() {
         None,
         &["myapp.test".to_string()],
         443,
+        ShareRows::default(),
         None,
         None,
     );
@@ -55,6 +61,7 @@ fn format_panel_shows_routes_label() {
         None,
         &["app.test".to_string()],
         443,
+        ShareRows::default(),
         None,
         None,
     );
@@ -64,10 +71,99 @@ fn format_panel_shows_routes_label() {
 }
 
 #[test]
+fn format_panel_always_shows_lan_and_tunnel_rows_with_enable_hints() {
+    let panel = format_panel_wide(
+        "app",
+        "running",
+        "bun",
+        "user/app",
+        "main",
+        "apps/app",
+        None,
+        &["app.test".to_string()],
+        443,
+        ShareRows::default(),
+        None,
+        None,
+        120,
+    );
+    let plain = strip_ansi(&panel);
+
+    assert!(plain.contains("routes  https://app.test"));
+    assert!(plain.contains("lan     l to enable"));
+    assert!(plain.contains("tunnel  t to enable"));
+}
+
+#[test]
+fn format_panel_shows_active_lan_and_tunnel_urls_with_disable_hints_underneath() {
+    let panel = format_panel_wide(
+        "app",
+        "running",
+        "bun",
+        "user/app",
+        "main",
+        "apps/app",
+        None,
+        &["app.test".to_string()],
+        443,
+        ShareRows {
+            lan: ShareRowState::Active("https://app.local".to_string()),
+            tunnel: ShareRowState::Active("https://app-a8f3k2zz.tako.website".to_string()),
+        },
+        None,
+        None,
+        120,
+    );
+    let plain = strip_ansi(&panel);
+
+    assert!(plain.contains("lan     https://app.local"));
+    assert!(plain.contains("        l to disable"));
+    assert!(plain.contains("tunnel  https://app-a8f3k2zz.tako.website"));
+    assert!(plain.contains("        t to disable"));
+}
+
+#[test]
+fn format_panel_shows_starting_and_failed_share_states() {
+    let panel = format_panel_wide(
+        "app",
+        "running",
+        "bun",
+        "user/app",
+        "main",
+        "apps/app",
+        None,
+        &["app.test".to_string()],
+        443,
+        ShareRows {
+            lan: ShareRowState::Starting,
+            tunnel: ShareRowState::Failed,
+        },
+        None,
+        None,
+        120,
+    );
+    let plain = strip_ansi(&panel);
+
+    assert!(plain.contains("lan     starting..."));
+    assert!(plain.contains("tunnel  failed, t to retry"));
+}
+
+#[test]
 fn format_panel_shows_all_urls() {
     let hosts = vec!["a.test".to_string(), "b.test".to_string()];
     let panel = format_panel(
-        "app", "running", "bun", "u/r", "main", "", None, &hosts, 443, None, None,
+        "app",
+        "running",
+        "bun",
+        "u/r",
+        "main",
+        "",
+        None,
+        &hosts,
+        443,
+        ShareRows::default(),
+        None,
+        None,
     );
     let plain = strip_ansi(&panel);
     assert!(plain.contains("https://a.test"));
@@ -91,6 +187,7 @@ fn format_panel_shows_wildcard_and_path_routes() {
         None,
         &hosts,
         443,
+        ShareRows::default(),
         None,
         None,
         120,
@@ -123,6 +220,7 @@ fn format_panel_omits_443_port() {
         None,
         &["app.test".to_string()],
         443,
+        ShareRows::default(),
         None,
         None,
     );
@@ -141,6 +239,7 @@ fn format_panel_includes_custom_port() {
         None,
         &["app.test".to_string()],
         47831,
+        ShareRows::default(),
         None,
         None,
         120,
@@ -160,6 +259,7 @@ fn format_panel_shows_metrics() {
         None,
         &["app.test".to_string()],
         443,
+        ShareRows::default(),
         Some(50.0),
         Some(100 * 1024 * 1024),
     );
@@ -180,6 +280,7 @@ fn format_panel_shows_dash_without_metrics() {
         None,
         &["app.test".to_string()],
         443,
+        ShareRows::default(),
         None,
         None,
     );
@@ -198,6 +299,7 @@ fn format_panel_shows_repo_info() {
         None,
         &["app.test".to_string()],
         443,
+        ShareRows::default(),
         None,
         None,
     );
@@ -218,6 +320,7 @@ fn format_panel_stacked_has_border_and_content() {
         None,
         &["app.test".to_string()],
         443,
+        ShareRows::default(),
         Some(25.0),
         Some(50 * 1024 * 1024),
         60,
@@ -244,6 +347,7 @@ fn format_panel_shows_worktree_indicator() {
         Some("wt1"),
         &["app.test".to_string()],
         443,
+        ShareRows::default(),
         None,
         None,
     );
@@ -263,6 +367,7 @@ fn format_panel_omits_worktree_when_none() {
         None,
         &["app.test".to_string()],
         443,
+        ShareRows::default(),
         None,
         None,
     );

@@ -20,6 +20,7 @@ pub(super) struct ConnectedDevClient {
     pub(super) url: String,
     pub(super) pid: Option<u32>,
     pub(super) tunnel_enabled: bool,
+    pub(super) tunnel_url: Option<String>,
 }
 
 pub(super) fn parse_log_line(line: &str) -> Option<ScopedLog> {
@@ -250,6 +251,7 @@ pub(super) async fn run_connected_dev_client(
 
     {
         let log_tx = log_tx.clone();
+        let event_tx = event_tx.clone();
         let stop_tx = stop_tx.clone();
         let config_key = session.config_key.clone();
         tokio::spawn(async move {
@@ -274,6 +276,9 @@ pub(super) async fn run_connected_dev_client(
                     }
                     output::ControlCmd::ToggleLan => {
                         let target = !lan_enabled;
+                        if target {
+                            let _ = event_tx.send(DevEvent::LanStarting).await;
+                        }
                         let result = crate::dev_server_client::toggle_lan(target)
                             .await
                             .map_err(|e| e.to_string());
@@ -282,6 +287,9 @@ pub(super) async fn run_connected_dev_client(
                                 lan_enabled = enabled;
                             }
                             Err(msg) => {
+                                if target {
+                                    let _ = event_tx.send(DevEvent::LanFailed).await;
+                                }
                                 let _ = log_tx
                                     .send(ScopedLog::error(
                                         "tako",
@@ -297,6 +305,9 @@ pub(super) async fn run_connected_dev_client(
                                 .await
                                 .unwrap_or(tunnel_enabled);
                         let target = !current;
+                        if target {
+                            let _ = event_tx.send(DevEvent::TunnelStarting).await;
+                        }
                         let result = crate::dev_server_client::toggle_tunnel(&config_key, target)
                             .await
                             .map_err(|e| e.to_string());
@@ -305,6 +316,9 @@ pub(super) async fn run_connected_dev_client(
                                 tunnel_enabled = enabled;
                             }
                             Err(msg) => {
+                                if target {
+                                    let _ = event_tx.send(DevEvent::TunnelFailed).await;
+                                }
                                 let _ = log_tx
                                     .send(ScopedLog::error(
                                         "tako",
@@ -342,6 +356,8 @@ pub(super) async fn run_connected_dev_client(
             adapter_name,
             display_hosts,
             public_port,
+            lan_enabled,
+            session.tunnel_url.clone(),
             log_rx,
             event_rx,
             control_tx,
@@ -385,7 +401,11 @@ pub(super) async fn run_connected_dev_client(
                                 | DevEvent::AppReady
                                 | DevEvent::AppPid(_)
                                 | DevEvent::AppProcessExited(_)
+                                | DevEvent::LanStarting
+                                | DevEvent::LanFailed
                                 | DevEvent::LanModeChanged { .. }
+                                | DevEvent::TunnelStarting
+                                | DevEvent::TunnelFailed
                                 | DevEvent::TunnelModeChanged { .. } => {}
                             }
                         }

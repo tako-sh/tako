@@ -648,7 +648,6 @@ Start (or connect to) a local development session for the current app, backed by
     - `tako dev --tunnel` enables tunnel mode during startup.
     - Pressing `t` in the interactive UI toggles tunnel mode for the current app.
     - Tunnel URLs expire after the tunnel service TTL (currently 30 minutes) and are also disabled when the app is unregistered or the local tunnel connection closes.
-    - The daemon logs `Tunnel turned off` whenever an active tunnel is disabled.
 - When running in an interactive terminal, `tako dev` prints a branded header (logo + version + app info) once at startup, then streams logs and status updates directly to stdout.
   - Native terminal features (scrollback, search, copy/paste, clickable links) are preserved — no alternate screen is used.
   - Log levels are `DEBUG`, `INFO`, `WARN`, `ERROR`, and `FATAL`; the level token is colorized using pastel colors (electric blue, green, yellow, red, and purple respectively).
@@ -657,6 +656,8 @@ Start (or connect to) a local development session for the current app, backed by
     - Common scopes: `tako` (local dev daemon) and `app` (the app process).
     - For app-process output, Tako infers the level from leading tokens like `DEBUG`, `INFO`, `WARN`/`WARNING`, `ERROR`, and `FATAL` (including bracketed forms such as `[DEBUG]`), and maps `TRACE` to `DEBUG`.
   - App lifecycle state changes (starting, stopped, errors) are printed inline as `── {status} ──` lines in the log stream.
+  - The status panel always shows `routes`, `lan`, and `tunnel` rows. `routes` lists local HTTPS routes. `lan` and `tunnel` show enable hints when off, starting/failed state while toggling, active URLs when on, and muted disable hints below active URLs.
+  - When LAN mode is enabled, Tako prints a QR block for installing the local CA certificate on another device. When tunnel mode is enabled, Tako prints a short public URL block for visibility.
   - Keyboard shortcuts (interactive terminal only):
     - `r` restart the app process
     - `l` toggle LAN mode (expose the same routes via `.local` aliases on the local network)

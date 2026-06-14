@@ -252,7 +252,6 @@ pub(super) fn unregister_app(state: &Arc<Mutex<State>>, config_path: String) -> 
         }
         if let Some(tunnel) = app.tunnel.take() {
             tunnel.abort_handle.abort();
-            push_scoped_log(&app.log_buffer, "Info", "tako", "Tunnel turned off");
             s.events.broadcast(Response::Event {
                 event: protocol::DevEvent::TunnelModeChanged {
                     config_path: config_path.clone(),

@@ -43,7 +43,7 @@ fn format_qr_code(url: &str) -> Vec<String> {
 }
 
 /// Convert a `.test` / `.tako.test` route to its `.local` LAN equivalent.
-fn to_local_route(route: &str) -> Option<String> {
+pub(in crate::commands::dev) fn to_local_route(route: &str) -> Option<String> {
     let (host, path) = split_route_pattern(route);
     let (wildcard, host) = if let Some(rest) = host.strip_prefix("*.") {
         ("*.", rest)
@@ -88,7 +88,7 @@ pub(in crate::commands::dev) fn format_lan_block(hosts: &[String], ca_url: &str)
     } else {
         out.push(format!(
             "  {}",
-            muted("Your app is now available on your local network at these routes")
+            "Your app is now available on your local network at these routes"
         ));
         out.push(String::new());
         for local in &concrete_hosts {
@@ -116,7 +116,7 @@ pub(in crate::commands::dev) fn format_lan_block(hosts: &[String], ca_url: &str)
     }
     out.push(format!(
         "  {}",
-        muted("Scan to install the CA certificate on your device")
+        "Scan to install the CA certificate on your device"
     ));
     out.push(format!(
         "  {}",

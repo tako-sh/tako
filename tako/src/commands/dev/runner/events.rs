@@ -230,7 +230,9 @@ fn handle_non_interactive_event(event: DevEvent) -> bool {
                 println!("LAN mode disabled");
             }
         }
+        DevEvent::LanStarting | DevEvent::LanFailed => {}
         DevEvent::TunnelModeChanged { .. } => {}
+        DevEvent::TunnelStarting | DevEvent::TunnelFailed => {}
         DevEvent::ExitWithMessage(msg) => {
             println!("{}", msg);
             return true;

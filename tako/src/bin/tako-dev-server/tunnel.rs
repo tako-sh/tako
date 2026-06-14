@@ -9,7 +9,6 @@ use tokio::sync::oneshot;
 use tokio::task::AbortHandle;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::process::push_scoped_log;
 use crate::protocol::{self, Response};
 
 use crate::control::State;
@@ -108,11 +107,9 @@ async fn enable_tunnel(
             app_name: app.name.clone(),
             local_host: host,
             listen_addr: s.listen_addr.clone(),
-            log_buffer: app.log_buffer.clone(),
         }
     };
 
-    push_scoped_log(&snapshot.log_buffer, "Info", "tako", "Starting tunnel...");
     let base_url = tunnel_base_url();
     let created = create_tunnel(&base_url, &snapshot.app_name).await?;
     let connect_url = tunnel_connect_url(&base_url, &created.host, &created.session)?;
@@ -130,12 +127,7 @@ async fn enable_tunnel(
         if let Err(error) = result {
             tracing::debug!("Tunnel connection closed: {error}");
         }
-        clear_tunnel_if_current(
-            &state_for_task,
-            &config_for_task,
-            &url_for_task,
-            DisableReason::Remote,
-        );
+        clear_tunnel_if_current(&state_for_task, &config_for_task, &url_for_task);
     });
     let abort_handle = task.abort_handle();
 
@@ -151,12 +143,6 @@ async fn enable_tunnel(
             expires_at: created.expires_at,
             abort_handle,
         });
-        push_scoped_log(
-            &app.log_buffer,
-            "Info",
-            "tako",
-            &format!("Tunnel on: {}", created.url),
-        );
         (app_name, created.url.clone(), created.expires_at)
     };
     let _ = start_tx.send(());
@@ -176,7 +162,6 @@ async fn enable_tunnel(
 
 enum DisableReason {
     User,
-    Remote,
 }
 
 fn disable_tunnel(
@@ -200,7 +185,6 @@ fn disable_tunnel(
     let url = tunnel.url;
     let expires_at = tunnel.expires_at;
     let app_name = app.name.clone();
-    push_scoped_log(&app.log_buffer, "Info", "tako", "Tunnel turned off");
     drop(s);
     let s = match state.lock() {
         Ok(s) => s,
@@ -218,12 +202,7 @@ fn disable_tunnel(
     (Some(url), Some(expires_at))
 }
 
-fn clear_tunnel_if_current(
-    state: &Arc<Mutex<State>>,
-    config_path: &str,
-    url: &str,
-    reason: DisableReason,
-) {
+fn clear_tunnel_if_current(state: &Arc<Mutex<State>>, config_path: &str, url: &str) {
     let mut s = match state.lock() {
         Ok(s) => s,
         Err(_) => return,
@@ -237,9 +216,6 @@ fn clear_tunnel_if_current(
     }
     app.tunnel = None;
     let app_name = app.name.clone();
-    if matches!(reason, DisableReason::Remote) {
-        push_scoped_log(&app.log_buffer, "Info", "tako", "Tunnel turned off");
-    }
     drop(s);
     let s = match state.lock() {
         Ok(s) => s,
@@ -262,7 +238,6 @@ struct TunnelSnapshot {
     app_name: String,
     local_host: String,
     listen_addr: String,
-    log_buffer: crate::state::LogBuffer,
 }
 
 async fn create_tunnel(base_url: &str, app_name: &str) -> Result<CreatedTunnel, String> {
@@ -300,12 +275,6 @@ async fn run_tunnel_connection(
     .await
     .map_err(|_| "timed out connecting tunnel websocket".to_string())?
     .map_err(|error| format!("failed to connect tunnel websocket: {error}"))?;
-    push_scoped_log(
-        &snapshot.log_buffer,
-        "Info",
-        "tako",
-        &format!("Tunnel connected for {}", snapshot.app_name),
-    );
     let (mut writer, mut reader) = socket.split();
     let client = local_proxy_client()?;
 

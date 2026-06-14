@@ -9,6 +9,29 @@ pub(in crate::commands::dev) fn format_header() -> String {
     crate::output::format_logo_header()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::commands::dev) enum ShareRowState {
+    Inactive,
+    Starting,
+    Active(String),
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::commands::dev) struct ShareRows {
+    pub(in crate::commands::dev) lan: ShareRowState,
+    pub(in crate::commands::dev) tunnel: ShareRowState,
+}
+
+impl Default for ShareRows {
+    fn default() -> Self {
+        Self {
+            lan: ShareRowState::Inactive,
+            tunnel: ShareRowState::Inactive,
+        }
+    }
+}
+
 /// Build the panel title. Returns (visible_text, rendered_text); the visible
 /// form is used for column-width math, the rendered form carries ANSI styling.
 /// Combines the repo slug and folder path into a single locator so monorepo
@@ -37,6 +60,7 @@ pub(in crate::commands::dev) fn format_panel(
     worktree_name: Option<&str>,
     hosts: &[String],
     port: u16,
+    share_rows: ShareRows,
     cpu: Option<f32>,
     mem_bytes: Option<u64>,
 ) -> String {
@@ -52,6 +76,7 @@ pub(in crate::commands::dev) fn format_panel(
             worktree_name,
             hosts,
             port,
+            share_rows,
             cpu,
             mem_bytes,
             cols,
@@ -67,6 +92,7 @@ pub(in crate::commands::dev) fn format_panel(
             worktree_name,
             hosts,
             port,
+            share_rows,
             cpu,
             mem_bytes,
             cols,
@@ -85,6 +111,7 @@ pub(in crate::commands::dev) fn format_panel_wide(
     worktree_name: Option<&str>,
     hosts: &[String],
     port: u16,
+    share_rows: ShareRows,
     cpu: Option<f32>,
     mem_bytes: Option<u64>,
     cols: usize,
@@ -129,18 +156,25 @@ pub(in crate::commands::dev) fn format_panel_wide(
     }
 
     let url_avail = col2_w.saturating_sub(ROUTES_LABEL_W);
-    let mid: Vec<String> = urls
+    let mut mid: Vec<String> = urls
         .iter()
         .enumerate()
         .map(|(i, url)| {
             let url_t = truncate_str(url, url_avail, "…");
             if i == 0 {
-                format!("{}  {url_color}{url_t}{RESET}", muted("routes"))
+                format!("{}{url_color}{url_t}{RESET}", label_cell("routes"))
             } else {
                 format!("{}{url_color}{url_t}{RESET}", " ".repeat(ROUTES_LABEL_W))
             }
         })
         .collect();
+    mid.extend(share_row_lines("lan", 'l', &share_rows.lan, url_avail));
+    mid.extend(share_row_lines(
+        "tunnel",
+        't',
+        &share_rows.tunnel,
+        url_avail,
+    ));
 
     let r0 = if let Some(c) = cpu {
         let bar = progress_bar(c / 100.0, BAR_W);
@@ -178,6 +212,7 @@ pub(in crate::commands::dev) fn format_panel_stacked(
     worktree_name: Option<&str>,
     hosts: &[String],
     port: u16,
+    share_rows: ShareRows,
     cpu: Option<f32>,
     mem_bytes: Option<u64>,
     cols: usize,
@@ -224,10 +259,16 @@ pub(in crate::commands::dev) fn format_panel_stacked(
         };
         let url_t = truncate_str(&url, url_avail, "…");
         let line = if i == 0 {
-            format!("{}  {url_color}{url_t}{RESET}", muted("routes"))
+            format!("{}{url_color}{url_t}{RESET}", label_cell("routes"))
         } else {
             format!("{}{url_color}{url_t}{RESET}", " ".repeat(ROUTES_LABEL_W))
         };
+        rows.push(stacked_row(&line, inner_w));
+    }
+    for line in share_row_lines("lan", 'l', &share_rows.lan, url_avail) {
+        rows.push(stacked_row(&line, inner_w));
+    }
+    for line in share_row_lines("tunnel", 't', &share_rows.tunnel, url_avail) {
         rows.push(stacked_row(&line, inner_w));
     }
 
@@ -268,31 +309,71 @@ fn panel_row(c1: &str, c2: &str, c3: &str, col1_w: usize, col2_w: usize) -> Stri
     )
 }
 
+fn label_cell(label: &str) -> String {
+    format!("{label:<width$}", width = ROUTES_LABEL_W)
+}
+
+fn share_row_lines(
+    label: &str,
+    key: char,
+    state: &ShareRowState,
+    value_width: usize,
+) -> Vec<String> {
+    let url_color = ansi_rgb(240, 175, 95);
+    let err_color = ansi_rgb(232, 163, 160);
+    match state {
+        ShareRowState::Inactive => {
+            vec![format!(
+                "{}{}",
+                label_cell(label),
+                muted(&format!("{key} to enable"))
+            )]
+        }
+        ShareRowState::Starting => {
+            vec![format!("{}{}", label_cell(label), muted("starting..."))]
+        }
+        ShareRowState::Active(url) => {
+            let url_t = truncate_str(url, value_width, "…");
+            vec![
+                format!("{}{url_color}{url_t}{RESET}", label_cell(label)),
+                format!(
+                    "{}{}",
+                    " ".repeat(ROUTES_LABEL_W),
+                    muted(&format!("{key} to disable"))
+                ),
+            ]
+        }
+        ShareRowState::Failed => {
+            vec![format!(
+                "{}{err_color}failed{RESET}{}",
+                label_cell(label),
+                muted(&format!(", {key} to retry"))
+            )]
+        }
+    }
+}
+
 pub(in crate::commands::dev) fn format_keymap() -> String {
     let cols = terminal_cols().max(20);
     let text = if cols < 60 {
         format!(
-            "t {}   l {}   r {}   b {}   ^c/q {}",
-            muted("tunnel"),
-            muted("lan"),
+            "r {}   b {}   ^c/q {}",
             muted("restart"),
             muted("background"),
             muted("stop")
         )
     } else {
         format!(
-            "t {}   l {}   r {}   b {}   ctrl+c/q {}",
-            muted("tunnel"),
-            muted("lan"),
+            "r {}   b {}   ctrl+c/q {}",
             muted("restart"),
             muted("background"),
             muted("stop")
         )
     };
     let plain = if cols < 60 {
-        "t tunnel   l lan   r restart   b background   ^c/q stop"
+        "r restart   b background   ^c/q stop"
     } else {
-        "t tunnel   l lan   r restart   b background   ctrl+c/q stop"
+        "r restart   b background   ctrl+c/q stop"
     };
     let pad = cols.saturating_sub(measure_text_width(plain) + 1);
     format!("{}{text} ", " ".repeat(pad))

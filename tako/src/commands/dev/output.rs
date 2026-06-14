@@ -16,7 +16,8 @@ use sysinfo::{Pid, ProcessesToUpdate, System};
 use tokio::sync::mpsc;
 
 use super::output_render::{
-    DIM, RESET, format_header, format_keymap, format_lan_block, format_log, format_panel, git_info,
+    DIM, RESET, ShareRowState, ShareRows, format_header, format_keymap, format_lan_block,
+    format_log, format_panel, format_tunnel_block, git_info, to_local_route,
 };
 use super::{DevEvent, LogLevel, ScopedLog};
 
@@ -249,6 +250,8 @@ struct FooterState {
     repo_path: String,
     worktree_name: Option<String>,
     status: String,
+    lan: ShareRowState,
+    tunnel: ShareRowState,
     cpu: Option<f32>,
     mem_bytes: Option<u64>,
 }
@@ -266,6 +269,8 @@ impl FooterState {
             repo_path,
             worktree_name,
             status: "starting".to_string(),
+            lan: ShareRowState::Inactive,
+            tunnel: ShareRowState::Inactive,
             cpu: None,
             mem_bytes: None,
         }
@@ -288,6 +293,10 @@ impl FooterState {
             self.worktree_name.as_deref(),
             hosts,
             port,
+            ShareRows {
+                lan: self.lan.clone(),
+                tunnel: self.tunnel.clone(),
+            },
             self.cpu,
             self.mem_bytes,
         )
@@ -312,6 +321,15 @@ impl FooterState {
     }
 }
 
+fn lan_active_state(hosts: &[String]) -> ShareRowState {
+    hosts
+        .iter()
+        .filter(|host| !host.starts_with("*."))
+        .find_map(|host| to_local_route(host))
+        .map(|route| ShareRowState::Active(format!("https://{route}")))
+        .unwrap_or(ShareRowState::Failed)
+}
+
 // ── Loop exit tag (avoids moving channels inside select!) ─────────────────────
 
 enum LoopExit {
@@ -328,6 +346,8 @@ pub async fn run_dev_output(
     adapter_name: String,
     hosts: Vec<String>,
     port: u16,
+    initial_lan_enabled: bool,
+    initial_tunnel_url: Option<String>,
     mut log_rx: mpsc::Receiver<ScopedLog>,
     mut event_rx: mpsc::Receiver<DevEvent>,
     control_tx: mpsc::Sender<ControlCmd>,
@@ -347,6 +367,12 @@ pub async fn run_dev_output(
 
     let mut footer = StickyFooter::new();
     let mut fs = FooterState::new(repo_slug, repo_branch, repo_path, worktree_name);
+    if initial_lan_enabled {
+        fs.lan = lan_active_state(&hosts);
+    }
+    if let Some(url) = initial_tunnel_url {
+        fs.tunnel = ShareRowState::Active(url);
+    }
     fs.refresh(&mut footer, &app_name, &adapter_name, &hosts, port);
 
     let (key_tx, mut key_rx) = mpsc::channel::<Event>(64);
@@ -485,6 +511,12 @@ pub async fn run_dev_output(
                         lan_ip: _,
                         ca_url,
                     } => {
+                        fs.lan = if enabled {
+                            lan_active_state(&hosts)
+                        } else {
+                            ShareRowState::Inactive
+                        };
+                        fs.refresh(&mut footer, &app_name, &adapter_name, &hosts, port);
                         if enabled
                             && let Some(ref url) = ca_url {
                                 for line in format_lan_block(&hosts, url) {
@@ -492,7 +524,38 @@ pub async fn run_dev_output(
                                 }
                             }
                     }
-                    DevEvent::TunnelModeChanged { .. } => {}
+                    DevEvent::LanStarting => {
+                        fs.lan = ShareRowState::Starting;
+                        fs.refresh(&mut footer, &app_name, &adapter_name, &hosts, port);
+                    }
+                    DevEvent::LanFailed => {
+                        fs.lan = ShareRowState::Failed;
+                        fs.refresh(&mut footer, &app_name, &adapter_name, &hosts, port);
+                    }
+                    DevEvent::TunnelModeChanged { enabled, url, .. } => {
+                        fs.tunnel = if enabled {
+                            url.clone()
+                                .map(ShareRowState::Active)
+                                .unwrap_or(ShareRowState::Failed)
+                        } else {
+                            ShareRowState::Inactive
+                        };
+                        fs.refresh(&mut footer, &app_name, &adapter_name, &hosts, port);
+                        if enabled
+                            && let Some(url) = url {
+                                for line in format_tunnel_block(&url) {
+                                    footer.println(&line);
+                                }
+                            }
+                    }
+                    DevEvent::TunnelStarting => {
+                        fs.tunnel = ShareRowState::Starting;
+                        fs.refresh(&mut footer, &app_name, &adapter_name, &hosts, port);
+                    }
+                    DevEvent::TunnelFailed => {
+                        fs.tunnel = ShareRowState::Failed;
+                        fs.refresh(&mut footer, &app_name, &adapter_name, &hosts, port);
+                    }
                     DevEvent::ExitWithMessage(msg) => {
                         break LoopExit::Message(msg);
                     }

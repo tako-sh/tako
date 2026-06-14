@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::sync::{mpsc, watch};
 
-use super::super::{ScopedLog, output};
+use super::super::{DevEvent, ScopedLog, output};
 
 pub(super) fn spawn_control_loop(
     config_key: String,
@@ -11,6 +11,7 @@ pub(super) fn spawn_control_loop(
     initial_tunnel_enabled: bool,
     mut control_rx: mpsc::Receiver<output::ControlCmd>,
     log_tx: mpsc::Sender<ScopedLog>,
+    event_tx: mpsc::Sender<DevEvent>,
     should_exit_tx: watch::Sender<bool>,
     terminate_requested: Arc<AtomicBool>,
 ) {
@@ -37,6 +38,9 @@ pub(super) fn spawn_control_loop(
                 }
                 output::ControlCmd::ToggleLan => {
                     let target = !lan_enabled;
+                    if target {
+                        let _ = event_tx.send(DevEvent::LanStarting).await;
+                    }
                     let result = crate::dev_server_client::toggle_lan(target)
                         .await
                         .map_err(|e| e.to_string());
@@ -45,6 +49,9 @@ pub(super) fn spawn_control_loop(
                             lan_enabled = enabled;
                         }
                         Err(msg) => {
+                            if target {
+                                let _ = event_tx.send(DevEvent::LanFailed).await;
+                            }
                             let _ = log_tx
                                 .send(ScopedLog::error(
                                     "tako",
@@ -59,6 +66,9 @@ pub(super) fn spawn_control_loop(
                         .await
                         .unwrap_or(tunnel_enabled);
                     let target = !current;
+                    if target {
+                        let _ = event_tx.send(DevEvent::TunnelStarting).await;
+                    }
                     let result = crate::dev_server_client::toggle_tunnel(&config_key, target)
                         .await
                         .map_err(|e| e.to_string());
@@ -67,6 +77,9 @@ pub(super) fn spawn_control_loop(
                             tunnel_enabled = enabled;
                         }
                         Err(msg) => {
+                            if target {
+                                let _ = event_tx.send(DevEvent::TunnelFailed).await;
+                            }
                             let _ = log_tx
                                 .send(ScopedLog::error(
                                     "tako",

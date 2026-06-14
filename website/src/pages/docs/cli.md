@@ -73,6 +73,8 @@ Interactive controls:
 | `b`      | Leave the app running in the background and exit the attached CLI. |
 | `Ctrl+c` | Stop the app and exit.                                             |
 
+The interactive status panel always shows local routes plus LAN and tunnel state. LAN and tunnel rows include their own enable/disable hints.
+
 Subcommands:
 
 ```bash
