@@ -75,6 +75,8 @@ Interactive controls:
 
 The interactive status panel always shows local routes plus LAN and tunnel state. LAN and tunnel rows include their own enable/disable hints; tunnel also shows a starting state while it connects.
 
+Inactive tunnel URLs show a Tako error page in browsers and machine-readable errors for API clients.
+
 Subcommands:
 
 ```bash

@@ -648,6 +648,7 @@ Start (or connect to) a local development session for the current app, backed by
     - `tako dev --tunnel` enables tunnel mode during startup.
     - Pressing `t` in the interactive UI toggles tunnel mode for the current app.
     - Tunnel URLs expire after the tunnel service TTL (currently 30 minutes) and are also disabled when the app is unregistered or the local tunnel connection closes.
+    - Inactive or disconnected tunnel URLs return a Tako-styled HTML error page for browser requests, JSON for clients that accept `application/json`, and plain text for other clients.
 - When running in an interactive terminal, `tako dev` prints a branded header (logo + version + app info) once at startup, then streams logs and status updates directly to stdout.
   - Native terminal features (scrollback, search, copy/paste, clickable links) are preserved — no alternate screen is used.
   - Log levels are `DEBUG`, `INFO`, `WARN`, `ERROR`, and `FATAL`; the level token is colorized using pastel colors (electric blue, green, yellow, red, and purple respectively).
