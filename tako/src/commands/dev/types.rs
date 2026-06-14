@@ -270,7 +270,7 @@ mod tests {
         assert!(
             DevEvent::TunnelModeChanged {
                 enabled: true,
-                url: Some("https://demo-yh5spxz5.tako.website".to_string()),
+                url: Some("https://yh5spxz5.tako.website".to_string()),
                 expires_at: Some(1_797_132_000),
             }
             .is_state_only()

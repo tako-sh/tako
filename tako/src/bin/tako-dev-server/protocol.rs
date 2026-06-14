@@ -531,7 +531,7 @@ mod tests {
         let resp = Response::TunnelToggled {
             config_path: "/proj/tako.toml".to_string(),
             enabled: true,
-            url: Some("https://app-a8f3k2zz.tako.website".to_string()),
+            url: Some("https://a8f3k2zz.tako.website".to_string()),
             expires_at: Some(1_778_220_000),
         };
         let json = serde_json::to_string(&resp).unwrap();
@@ -595,7 +595,7 @@ mod tests {
                 config_path: "/proj/tako.toml".to_string(),
                 app_name: "app".to_string(),
                 enabled: true,
-                url: Some("https://app-a8f3k2zz.tako.website".to_string()),
+                url: Some("https://a8f3k2zz.tako.website".to_string()),
                 expires_at: Some(1_778_220_000),
             },
         };

@@ -108,7 +108,7 @@ fn format_panel_shows_active_lan_and_tunnel_urls_with_disable_hints_underneath()
         443,
         ShareRows {
             lan: ShareRowState::Active("https://app.local".to_string()),
-            tunnel: ShareRowState::Active("https://app-a8f3k2zz.tako.website".to_string()),
+            tunnel: ShareRowState::Active("https://a8f3k2zz.tako.website".to_string()),
         },
         None,
         None,
@@ -118,7 +118,7 @@ fn format_panel_shows_active_lan_and_tunnel_urls_with_disable_hints_underneath()
 
     assert!(plain.contains("lan     https://app.local"));
     assert!(plain.contains("        l to disable"));
-    assert!(plain.contains("tunnel  https://app-a8f3k2zz.tako.website"));
+    assert!(plain.contains("tunnel  https://a8f3k2zz.tako.website"));
     assert!(plain.contains("        t to disable"));
 }
 

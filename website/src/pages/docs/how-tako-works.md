@@ -33,7 +33,7 @@ On macOS, Tako uses a launchd-managed loopback proxy so app URLs stay on normal 
 
 On Linux, Tako uses the same dedicated loopback alias with iptables redirects for `443 -> 47831`, `80 -> 47830`, and `53 -> 53535`. On NixOS, it prints a `configuration.nix` snippet instead of applying imperative setup.
 
-If no development routes are configured, the default route is `{app}.test`. Configured `.test` and `.tako.test` routes replace that default. External development hostnames are additive when no managed local route is configured. LAN mode adds `.local` aliases for managed local routes. Tunnel mode adds a temporary public URL like `{app}-{nonce}.tako.website` without requiring login or namespace setup.
+If no development routes are configured, the default route is `{app}.test`. Configured `.test` and `.tako.test` routes replace that default. External development hostnames are additive when no managed local route is configured. LAN mode adds `.local` aliases for managed local routes. Tunnel mode adds a temporary public URL like `{nonce}.tako.website` without requiring login or namespace setup.
 
 The dev runtime mirrors production closely: HTTPS, real hostnames, fd-3 secrets/storage bootstrap, workflow workers, durable channels, app data directories, and public image routes all exist locally.
 
