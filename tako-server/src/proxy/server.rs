@@ -11,6 +11,12 @@ use pingora_core::server::configuration::ServerConf;
 use pingora_core::services::listening::Service as ListeningService;
 use std::sync::Arc;
 
+#[derive(Clone)]
+pub(crate) struct PublicListenerEndpoint {
+    pub(crate) addr: String,
+    pub(crate) options: TcpSocketOptions,
+}
+
 /// Build and start the Pingora server with ACME and SNI support
 pub fn build_server_with_acme(
     lb: Arc<LoadBalancer>,
@@ -55,21 +61,24 @@ pub fn build_server_with_acme(
             config.trusted_proxy.clone(),
         );
 
-        let listener_options = listener_socket_options();
-        proxy_service.add_tcp_with_settings(
-            &format!("0.0.0.0:{}", config.http_port),
-            listener_options.clone(),
-        );
+        let http_endpoints = public_listener_endpoints(config.http_port);
+        for endpoint in &http_endpoints {
+            proxy_service.add_tcp_with_settings(&endpoint.addr, endpoint.options.clone());
+        }
 
         if config.enable_https {
             if let Some(tls_acceptor) =
                 create_proxy_protocol_tls_acceptor(&config, cert_manager.clone())?
             {
-                proxy_service.add_tls_with_settings(
-                    &format!("0.0.0.0:{}", config.https_port),
-                    Some(listener_options),
-                    Arc::new(tls_acceptor),
-                );
+                let tls_acceptor = Arc::new(tls_acceptor);
+                let https_endpoints = public_listener_endpoints(config.https_port);
+                for endpoint in &https_endpoints {
+                    proxy_service.add_tls_with_settings(
+                        &endpoint.addr,
+                        Some(endpoint.options.clone()),
+                        tls_acceptor.clone(),
+                    );
+                }
                 tracing::info!(
                     port = config.https_port,
                     "HTTPS listener enabled with PROXY protocol"
@@ -92,19 +101,25 @@ pub fn build_server_with_acme(
             app.server_options = Some(opts);
         }
 
-        let listener_options = listener_socket_options();
-        proxy_service.add_tcp_with_settings(
-            &format!("0.0.0.0:{}", config.http_port),
-            listener_options.clone(),
-        );
+        let http_endpoints = public_listener_endpoints(config.http_port);
+        for endpoint in &http_endpoints {
+            proxy_service.add_tcp_with_settings(&endpoint.addr, endpoint.options.clone());
+        }
 
         if config.enable_https {
-            if let Some(tls_settings) = create_tls_settings(&config, cert_manager)? {
-                proxy_service.add_tls_with_settings(
-                    &format!("0.0.0.0:{}", config.https_port),
-                    Some(listener_options),
-                    tls_settings,
-                );
+            let https_endpoints = public_listener_endpoints(config.https_port);
+            let mut added_https = false;
+            for endpoint in &https_endpoints {
+                if let Some(tls_settings) = create_tls_settings(&config, cert_manager.clone())? {
+                    proxy_service.add_tls_with_settings(
+                        &endpoint.addr,
+                        Some(endpoint.options.clone()),
+                        tls_settings,
+                    );
+                    added_https = true;
+                }
+            }
+            if added_https {
                 tracing::info!(port = config.https_port, "HTTPS listener enabled");
             } else {
                 tracing::warn!("HTTPS enabled but no certificates available");
@@ -151,8 +166,22 @@ fn upstream_keepalive_pool_size_for_threads(threads: usize) -> usize {
     256 * threads.max(1)
 }
 
-pub(crate) fn listener_socket_options() -> TcpSocketOptions {
+pub(crate) fn public_listener_endpoints(port: u16) -> [PublicListenerEndpoint; 2] {
+    [
+        PublicListenerEndpoint {
+            addr: format!("0.0.0.0:{port}"),
+            options: listener_socket_options(None),
+        },
+        PublicListenerEndpoint {
+            addr: format!("[::]:{port}"),
+            options: listener_socket_options(Some(true)),
+        },
+    ]
+}
+
+pub(crate) fn listener_socket_options(ipv6_only: Option<bool>) -> TcpSocketOptions {
     let mut options = TcpSocketOptions::default();
+    options.ipv6_only = ipv6_only;
     options.so_reuseport = Some(true);
     options
 }

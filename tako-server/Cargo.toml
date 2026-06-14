@@ -58,6 +58,7 @@ hex = "0.4"
 time = "0.3"
 ssh-key = { version = "0.6", features = ["ed25519", "getrandom"] }
 ipnet = "2.11"
+socket2 = "0.6"
 
 [dev-dependencies]
 image = { version = "0.25.10", default-features = false, features = ["jpeg"] }

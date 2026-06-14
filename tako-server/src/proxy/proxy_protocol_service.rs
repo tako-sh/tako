@@ -311,6 +311,11 @@ async fn bind_new_listener(address: &ServerAddress) -> Result<Listener> {
             .set_reuseport(true)
             .or_err(ErrorType::BindError, "failed to set SO_REUSEPORT")?;
     }
+    if let Some(ipv6_only) = options.as_ref().and_then(|options| options.ipv6_only) {
+        socket2::SockRef::from(&socket)
+            .set_only_v6(ipv6_only)
+            .or_err(ErrorType::BindError, "failed to set IPV6_V6ONLY")?;
+    }
     socket
         .bind(sock_addr)
         .or_err_with(ErrorType::BindError, || format!("bind() failed on {addr}"))?;
@@ -473,5 +478,17 @@ mod tests {
             .expect_err("idle downstream should time out waiting for PROXY header");
 
         assert_eq!(error.etype, ErrorType::ReadTimedout);
+    }
+
+    #[test]
+    fn public_tls_alpn_prefers_h2_with_http1_fallback() {
+        assert_eq!(
+            select_next_proto(H2_H1_ALPN_WIRE_PREFERENCE, b"\x02h2\x08http/1.1"),
+            Some(&b"h2"[..])
+        );
+        assert_eq!(
+            select_next_proto(H2_H1_ALPN_WIRE_PREFERENCE, b"\x08http/1.1"),
+            Some(&b"http/1.1"[..])
+        );
     }
 }

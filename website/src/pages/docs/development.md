@@ -51,7 +51,7 @@ The local dev proxy does not apply Tako's deployed-response Brotli/gzip compress
 | `b`      | Background the app and exit the attached CLI. |
 | `Ctrl+c` | Stop the app and exit.                        |
 
-The status panel always shows `routes`, `lan`, and `tunnel`. `lan` and `tunnel` show enable hints while off, the active URL while on, and the disable hint below the active URL.
+The status panel always shows `routes`, `lan`, and `tunnel`. `lan` shows an enable hint while off, the active URL while on, or a retry hint after failure. `tunnel` also shows its async starting state while connecting and the disable hint below the active URL.
 
 Manage running apps:
 

@@ -180,8 +180,21 @@ fn request_context_skips_metric_timers_when_metrics_are_disabled() {
 
 #[test]
 fn listener_socket_options_enable_reuseport() {
-    let options = listener_socket_options();
+    let options = listener_socket_options(None);
     assert_eq!(options.so_reuseport, Some(true));
+    assert_eq!(options.ipv6_only, None);
+}
+
+#[test]
+fn public_listener_endpoints_bind_ipv4_and_ipv6_only() {
+    let endpoints = public_listener_endpoints(443);
+
+    assert_eq!(endpoints[0].addr, "0.0.0.0:443");
+    assert_eq!(endpoints[0].options.so_reuseport, Some(true));
+    assert_eq!(endpoints[0].options.ipv6_only, None);
+    assert_eq!(endpoints[1].addr, "[::]:443");
+    assert_eq!(endpoints[1].options.so_reuseport, Some(true));
+    assert_eq!(endpoints[1].options.ipv6_only, Some(true));
 }
 
 #[test]

@@ -524,10 +524,7 @@ pub async fn run_dev_output(
                                 }
                             }
                     }
-                    DevEvent::LanStarting => {
-                        fs.lan = ShareRowState::Starting;
-                        fs.refresh(&mut footer, &app_name, &adapter_name, &hosts, port);
-                    }
+                    DevEvent::LanStarting => {}
                     DevEvent::LanFailed => {
                         fs.lan = ShareRowState::Failed;
                         fs.refresh(&mut footer, &app_name, &adapter_name, &hosts, port);

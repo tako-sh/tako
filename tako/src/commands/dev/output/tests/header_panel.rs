@@ -123,7 +123,7 @@ fn format_panel_shows_active_lan_and_tunnel_urls_with_disable_hints_underneath()
 }
 
 #[test]
-fn format_panel_shows_starting_and_failed_share_states() {
+fn format_panel_shows_tunnel_starting_and_share_failures() {
     let panel = format_panel_wide(
         "app",
         "running",
@@ -135,8 +135,8 @@ fn format_panel_shows_starting_and_failed_share_states() {
         &["app.test".to_string()],
         443,
         ShareRows {
-            lan: ShareRowState::Starting,
-            tunnel: ShareRowState::Failed,
+            lan: ShareRowState::Failed,
+            tunnel: ShareRowState::Starting,
         },
         None,
         None,
@@ -144,8 +144,8 @@ fn format_panel_shows_starting_and_failed_share_states() {
     );
     let plain = strip_ansi(&panel);
 
-    assert!(plain.contains("lan     starting..."));
-    assert!(plain.contains("tunnel  failed, t to retry"));
+    assert!(plain.contains("lan     failed, l to retry"));
+    assert!(plain.contains("tunnel  starting..."));
 }
 
 #[test]

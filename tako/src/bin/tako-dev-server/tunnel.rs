@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -276,7 +277,7 @@ async fn run_tunnel_connection(
     .map_err(|_| "timed out connecting tunnel websocket".to_string())?
     .map_err(|error| format!("failed to connect tunnel websocket: {error}"))?;
     let (mut writer, mut reader) = socket.split();
-    let client = local_proxy_client()?;
+    let client = local_proxy_client(&snapshot.local_host, &snapshot.listen_addr)?;
 
     while let Some(message) = reader.next().await {
         let message = message.map_err(|error| format!("tunnel websocket error: {error}"))?;
@@ -301,10 +302,12 @@ async fn run_tunnel_connection(
     Ok(())
 }
 
-fn local_proxy_client() -> Result<reqwest::Client, String> {
+fn local_proxy_client(local_host: &str, listen_addr: &str) -> Result<reqwest::Client, String> {
+    let listen_addr = local_proxy_listen_addr(listen_addr)?;
     reqwest::Client::builder()
         .danger_accept_invalid_certs(true)
         .redirect(reqwest::redirect::Policy::none())
+        .resolve_to_addrs(local_host, &[listen_addr])
         .build()
         .map_err(|error| format!("failed to build tunnel HTTP client: {error}"))
 }
@@ -340,7 +343,7 @@ async fn forward_to_local_proxy_inner(
     let body = STANDARD
         .decode(request.body_base64.as_bytes())
         .map_err(|error| format!("invalid request body: {error}"))?;
-    let url = local_proxy_url(&snapshot.listen_addr, &request.path);
+    let url = local_proxy_url(&snapshot.local_host, &snapshot.listen_addr, &request.path)?;
     let mut builder = client
         .request(method, url)
         .header(reqwest::header::HOST, snapshot.local_host.as_str());
@@ -393,13 +396,25 @@ fn tunnel_connect_url(base_url: &str, host: &str, session: &str) -> Result<Strin
     ))
 }
 
-fn local_proxy_url(listen_addr: &str, path: &str) -> String {
+fn local_proxy_url(local_host: &str, listen_addr: &str, path: &str) -> Result<String, String> {
+    let listen_addr = local_proxy_listen_addr(listen_addr)?;
     let path = if path.starts_with('/') {
         path.to_string()
     } else {
         format!("/{path}")
     };
-    format!("https://{listen_addr}{path}")
+    Ok(format!(
+        "https://{}:{}{}",
+        local_host,
+        listen_addr.port(),
+        path
+    ))
+}
+
+fn local_proxy_listen_addr(listen_addr: &str) -> Result<SocketAddr, String> {
+    listen_addr
+        .parse()
+        .map_err(|error| format!("invalid local proxy listen address: {error}"))
 }
 
 fn primary_local_host(hosts: &[String]) -> Option<String> {
@@ -476,6 +491,24 @@ mod tests {
             url,
             "ws://127.0.0.1:3000/v1/tunnels/connect?host=host.test&session=s"
         );
+    }
+
+    #[test]
+    fn local_proxy_url_uses_app_host_for_tls_sni() {
+        let url = local_proxy_url("app.test", "127.0.0.1:47831", "/api").unwrap();
+        assert_eq!(url, "https://app.test:47831/api");
+    }
+
+    #[test]
+    fn local_proxy_url_normalizes_paths() {
+        let url = local_proxy_url("app.test", "127.0.0.1:47831", "api").unwrap();
+        assert_eq!(url, "https://app.test:47831/api");
+    }
+
+    #[test]
+    fn local_proxy_url_rejects_invalid_listen_addr() {
+        let error = local_proxy_url("app.test", "localhost:47831", "/").unwrap_err();
+        assert!(error.contains("invalid local proxy listen address"));
     }
 
     #[test]
