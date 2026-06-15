@@ -8,7 +8,7 @@ use tokio::time::timeout;
 
 use super::runner::bootstrap_dev_events;
 use super::{
-    DevEvent, ScopedLog, infer_preset_name_from_ref, load_dev_tako_toml, output,
+    DevEvent, ScopedLog, TunnelCloseReason, infer_preset_name_from_ref, load_dev_tako_toml, output,
     resolve_dev_preset_ref,
 };
 
@@ -198,6 +198,7 @@ pub(super) async fn run_connected_dev_client(
                             enabled,
                             ref url,
                             expires_at,
+                            close_reason,
                             ..
                         } if config_path == &config_key => {
                             let _ = event_tx
@@ -205,6 +206,7 @@ pub(super) async fn run_connected_dev_client(
                                     enabled,
                                     url: url.clone(),
                                     expires_at,
+                                    close_reason: close_reason.map(TunnelCloseReason::from),
                                 })
                                 .await;
                         }
@@ -406,7 +408,19 @@ pub(super) async fn run_connected_dev_client(
                                 | DevEvent::LanModeChanged { .. }
                                 | DevEvent::TunnelStarting
                                 | DevEvent::TunnelFailed
-                                | DevEvent::TunnelModeChanged { .. } => {}
+                                | DevEvent::TunnelModeChanged {
+                                    enabled: true, ..
+                                } => {}
+                                | DevEvent::TunnelModeChanged {
+                                    enabled: false,
+                                    close_reason,
+                                    ..
+                                } => {
+                                    let message = close_reason
+                                        .map(TunnelCloseReason::log_message)
+                                        .unwrap_or("Tunnel off");
+                                    println!("{}", message);
+                                }
                             }
                         }
                         else => break,

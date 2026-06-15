@@ -259,6 +259,7 @@ pub(super) fn unregister_app(state: &Arc<Mutex<State>>, config_path: String) -> 
                     enabled: false,
                     url: None,
                     expires_at: None,
+                    close_reason: Some(protocol::TunnelCloseReason::Shutdown),
                 },
             });
         }

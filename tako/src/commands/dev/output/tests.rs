@@ -17,3 +17,4 @@ mod logs;
 mod process;
 mod repo;
 mod terminal;
+mod tunnel;

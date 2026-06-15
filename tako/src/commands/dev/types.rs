@@ -153,10 +153,54 @@ pub enum DevEvent {
         enabled: bool,
         url: Option<String>,
         expires_at: Option<u64>,
+        close_reason: Option<TunnelCloseReason>,
     },
     TunnelStarting,
     TunnelFailed,
     ExitWithMessage(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TunnelCloseReason {
+    User,
+    Timeout,
+    Shutdown,
+    ConnectionClosed,
+    ConnectionError,
+}
+
+impl TunnelCloseReason {
+    pub(super) fn log_message(self) -> &'static str {
+        match self {
+            TunnelCloseReason::User => "Tunnel off: turned off by user",
+            TunnelCloseReason::Timeout => "Tunnel off: session expired",
+            TunnelCloseReason::Shutdown => "Tunnel off: app stopped",
+            TunnelCloseReason::ConnectionClosed => "Tunnel off: connection closed",
+            TunnelCloseReason::ConnectionError => "Tunnel off: connection lost",
+        }
+    }
+
+    pub(super) fn log_level(self) -> LogLevel {
+        match self {
+            TunnelCloseReason::ConnectionError => LogLevel::Warn,
+            TunnelCloseReason::User
+            | TunnelCloseReason::Timeout
+            | TunnelCloseReason::Shutdown
+            | TunnelCloseReason::ConnectionClosed => LogLevel::Info,
+        }
+    }
+}
+
+impl From<crate::dev_server_client::TunnelCloseReason> for TunnelCloseReason {
+    fn from(reason: crate::dev_server_client::TunnelCloseReason) -> Self {
+        match reason {
+            crate::dev_server_client::TunnelCloseReason::User => Self::User,
+            crate::dev_server_client::TunnelCloseReason::Timeout => Self::Timeout,
+            crate::dev_server_client::TunnelCloseReason::Shutdown => Self::Shutdown,
+            crate::dev_server_client::TunnelCloseReason::ConnectionClosed => Self::ConnectionClosed,
+            crate::dev_server_client::TunnelCloseReason::ConnectionError => Self::ConnectionError,
+        }
+    }
 }
 
 impl DevEvent {
@@ -263,7 +307,7 @@ pub(super) fn trim_child_log_message(message: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::DevEvent;
+    use super::{DevEvent, LogLevel, TunnelCloseReason};
 
     #[test]
     fn tunnel_mode_changes_are_state_only() {
@@ -272,6 +316,7 @@ mod tests {
                 enabled: true,
                 url: Some("https://yh5spxz5.tako.website".to_string()),
                 expires_at: Some(1_797_132_000),
+                close_reason: None,
             }
             .is_state_only()
         );
@@ -280,9 +325,22 @@ mod tests {
                 enabled: false,
                 url: None,
                 expires_at: None,
+                close_reason: Some(TunnelCloseReason::User),
             }
             .is_state_only()
         );
+    }
+
+    #[test]
+    fn tunnel_close_reason_has_user_facing_log_copy() {
+        assert_eq!(
+            TunnelCloseReason::Timeout.log_message(),
+            "Tunnel off: session expired"
+        );
+        assert!(matches!(
+            TunnelCloseReason::Timeout.log_level(),
+            LogLevel::Info
+        ));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use tokio::sync::{mpsc, watch};
 
-use super::super::{DevEvent, ScopedLog, parse_log_line};
+use super::super::{DevEvent, ScopedLog, TunnelCloseReason, parse_log_line};
 
 pub(super) async fn spawn_dev_event_forwarder(
     config_key: String,
@@ -116,6 +116,7 @@ pub(super) async fn spawn_dev_event_forwarder(
                         enabled,
                         ref url,
                         expires_at,
+                        close_reason,
                         ..
                     } if config_path == &config_key => {
                         let _ = event_tx
@@ -123,6 +124,7 @@ pub(super) async fn spawn_dev_event_forwarder(
                                 enabled,
                                 url: url.clone(),
                                 expires_at,
+                                close_reason: close_reason.map(TunnelCloseReason::from),
                             })
                             .await;
                     }

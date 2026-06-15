@@ -41,7 +41,49 @@ tako gen
 tako g
 ```
 
-Refreshes generated project files. JS/TS projects get `tako.d.ts`; Go projects get `tako_secrets.go`. JS generation also scaffolds channel/workflow definition stubs in existing empty directories and augments environment, secret, storage, channel, and workflow types.
+Refreshes generated project files:
+
+- JS/TS: `tako.d.ts` with environment names, secret names, storage bindings, channel metadata, workflow metadata, and env var names.
+- Go: `tako_secrets.go` with typed secret accessors.
+  For JS/TS, generation keeps an existing `tako.d.ts` in `app/`, `src/`, or the project root. Legacy `tako.gen.ts` files are removed. Empty existing `channels/` or `workflows/` directories get demo definitions.
+
+## `tako dev`
+
+```bash
+tako dev
+tako dev --variant preview
+tako dev --var preview
+tako dev --tunnel
+```
+
+Starts or attaches to a local dev session behind trusted HTTPS and real hostnames. It starts the dev daemon, prepares DNS/proxy/CA setup, generates files, injects secrets and storage through fd 3, waits for fd-4 readiness, and registers routes.
+
+Interactive controls:
+
+| Key      | Action                                                             |
+| -------- | ------------------------------------------------------------------ |
+| `l`      | Toggle LAN mode for managed local routes.                          |
+| `t`      | Toggle a temporary public tunnel URL.                              |
+| `r`      | Restart the app.                                                   |
+| `b`      | Leave the app running in the background and exit the attached CLI. |
+| `Ctrl+c` | Stop the app and exit.                                             |
+
+The interactive status panel always shows local routes plus LAN and tunnel state. LAN and tunnel rows include their own enable/disable hints on the same rows; tunnel also shows a starting state while it connects. When a tunnel turns off, `tako dev` prints a log line with the close reason.
+
+Inactive tunnel URLs show a Tako error page in browsers and machine-readable errors for API clients.
+
+Subcommands:
+
+```bash
+tako dev stop [name]
+tako dev stop --all
+tako dev list
+tako dev ls
+```
+
+`stop` without a name stops the app for the selected config file. `--all` stops all registered dev apps. `list` shows currently registered dev apps and any active tunnel URLs.
+
+## `tako doctor`
 
 ```bash
 tako doctor

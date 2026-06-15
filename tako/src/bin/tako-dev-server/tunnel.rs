@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures_util::{SinkExt, StreamExt};
@@ -78,7 +78,7 @@ pub(super) async fn handle_toggle_tunnel(
             Err(message) => Response::Error { message },
         }
     } else {
-        let (url, expires_at) = disable_tunnel(state, &config_path, DisableReason::User);
+        let (url, expires_at) = disable_tunnel(state, &config_path, TunnelCloseReason::User);
         Response::TunnelToggled {
             config_path,
             enabled: false,
@@ -125,10 +125,12 @@ async fn enable_tunnel(
             return;
         }
         let result = run_tunnel_connection(connect_url, snapshot).await;
-        if let Err(error) = result {
+        let had_error = result.is_err();
+        if let Err(error) = &result {
             tracing::debug!("Tunnel connection closed: {error}");
         }
-        clear_tunnel_if_current(&state_for_task, &config_for_task, &url_for_task);
+        let reason = tunnel_close_reason(expires_for_task, had_error);
+        clear_tunnel_if_current(&state_for_task, &config_for_task, &url_for_task, reason);
     });
     let abort_handle = task.abort_handle();
 
@@ -155,20 +157,19 @@ async fn enable_tunnel(
             enabled: true,
             url: Some(url),
             expires_at: Some(expires_at),
+            close_reason: None,
         },
     });
 
     Ok((created.url, expires_for_task))
 }
 
-enum DisableReason {
-    User,
-}
+type TunnelCloseReason = protocol::TunnelCloseReason;
 
 fn disable_tunnel(
     state: &Arc<Mutex<State>>,
     config_path: &str,
-    reason: DisableReason,
+    reason: TunnelCloseReason,
 ) -> (Option<String>, Option<u64>) {
     let mut s = match state.lock() {
         Ok(s) => s,
@@ -180,7 +181,10 @@ fn disable_tunnel(
     let Some(tunnel) = app.tunnel.take() else {
         return (None, None);
     };
-    if matches!(reason, DisableReason::User) {
+    if matches!(
+        reason,
+        TunnelCloseReason::User | TunnelCloseReason::Shutdown
+    ) {
         tunnel.abort_handle.abort();
     }
     let url = tunnel.url;
@@ -198,12 +202,18 @@ fn disable_tunnel(
             enabled: false,
             url: None,
             expires_at: None,
+            close_reason: Some(reason),
         },
     });
     (Some(url), Some(expires_at))
 }
 
-fn clear_tunnel_if_current(state: &Arc<Mutex<State>>, config_path: &str, url: &str) {
+fn clear_tunnel_if_current(
+    state: &Arc<Mutex<State>>,
+    config_path: &str,
+    url: &str,
+    reason: TunnelCloseReason,
+) {
     let mut s = match state.lock() {
         Ok(s) => s,
         Err(_) => return,
@@ -229,8 +239,26 @@ fn clear_tunnel_if_current(state: &Arc<Mutex<State>>, config_path: &str, url: &s
             enabled: false,
             url: None,
             expires_at: None,
+            close_reason: Some(reason),
         },
     });
+}
+
+fn tunnel_close_reason(expires_at: u64, had_error: bool) -> TunnelCloseReason {
+    if unix_now_secs() >= expires_at {
+        TunnelCloseReason::Timeout
+    } else if had_error {
+        TunnelCloseReason::ConnectionError
+    } else {
+        TunnelCloseReason::ConnectionClosed
+    }
+}
+
+fn unix_now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
 }
 
 #[derive(Clone)]
@@ -493,6 +521,19 @@ mod tests {
         assert_eq!(
             url,
             "ws://127.0.0.1:3000/v1/tunnels/connect?host=host.test&session=s"
+        );
+    }
+
+    #[test]
+    fn tunnel_close_reason_reports_timeout_after_expiry() {
+        assert_eq!(tunnel_close_reason(0, false), TunnelCloseReason::Timeout);
+    }
+
+    #[test]
+    fn tunnel_close_reason_reports_connection_error_before_expiry() {
+        assert_eq!(
+            tunnel_close_reason(u64::MAX, true),
+            TunnelCloseReason::ConnectionError
         );
     }
 

@@ -43,6 +43,7 @@ pub enum DevServerEvent {
         enabled: bool,
         url: Option<String>,
         expires_at: Option<u64>,
+        close_reason: Option<TunnelCloseReason>,
     },
     AppLaunching {
         config_path: String,
@@ -71,6 +72,15 @@ pub enum DevServerEvent {
         app_name: String,
         message: String,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TunnelCloseReason {
+    User,
+    Timeout,
+    Shutdown,
+    ConnectionClosed,
+    ConnectionError,
 }
 
 #[derive(Debug, Clone)]
@@ -233,6 +243,10 @@ pub(super) fn parse_event_line(line: &str) -> Option<DevServerEvent> {
             enabled: event.get("enabled")?.as_bool()?,
             url: event.get("url").and_then(|v| v.as_str()).map(String::from),
             expires_at: event.get("expires_at").and_then(|v| v.as_u64()),
+            close_reason: event
+                .get("close_reason")
+                .and_then(|v| v.as_str())
+                .and_then(parse_tunnel_close_reason),
         }),
         "AppLaunching" => Some(DevServerEvent::AppLaunching {
             config_path: event.get("config_path")?.as_str()?.to_string(),
@@ -261,6 +275,17 @@ pub(super) fn parse_event_line(line: &str) -> Option<DevServerEvent> {
             app_name: event.get("app_name")?.as_str()?.to_string(),
             message: event.get("message")?.as_str()?.to_string(),
         }),
+        _ => None,
+    }
+}
+
+fn parse_tunnel_close_reason(value: &str) -> Option<TunnelCloseReason> {
+    match value {
+        "user" => Some(TunnelCloseReason::User),
+        "timeout" => Some(TunnelCloseReason::Timeout),
+        "shutdown" => Some(TunnelCloseReason::Shutdown),
+        "connection_closed" => Some(TunnelCloseReason::ConnectionClosed),
+        "connection_error" => Some(TunnelCloseReason::ConnectionError),
         _ => None,
     }
 }

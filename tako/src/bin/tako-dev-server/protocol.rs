@@ -190,6 +190,8 @@ pub enum DevEvent {
         url: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expires_at: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        close_reason: Option<TunnelCloseReason>,
     },
     AppLaunching {
         config_path: String,
@@ -218,6 +220,16 @@ pub enum DevEvent {
         app_name: String,
         message: String,
     },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TunnelCloseReason {
+    User,
+    Timeout,
+    Shutdown,
+    ConnectionClosed,
+    ConnectionError,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -597,6 +609,23 @@ mod tests {
                 enabled: true,
                 url: Some("https://a8f3k2zz.tako.website".to_string()),
                 expires_at: Some(1_778_220_000),
+                close_reason: None,
+            },
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert_eq!(serde_json::from_str::<Response>(&json).unwrap(), resp);
+    }
+
+    #[test]
+    fn serde_roundtrip_tunnel_mode_closed_reason() {
+        let resp = Response::Event {
+            event: DevEvent::TunnelModeChanged {
+                config_path: "/proj/tako.toml".to_string(),
+                app_name: "app".to_string(),
+                enabled: false,
+                url: None,
+                expires_at: None,
+                close_reason: Some(TunnelCloseReason::Timeout),
             },
         };
         let json = serde_json::to_string(&resp).unwrap();

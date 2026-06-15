@@ -57,7 +57,7 @@ use project::{
 };
 #[cfg(test)]
 use shared::{doctor_dev_server_lines, doctor_local_forwarding_preflight_lines};
-pub use types::{DevEvent, LogLevel, ScopedLog};
+pub use types::{DevEvent, LogLevel, ScopedLog, TunnelCloseReason};
 #[cfg(test)]
 use types::{
     app_log_scope, child_log_level_and_message, should_drop_child_log_line, trim_child_log_message,

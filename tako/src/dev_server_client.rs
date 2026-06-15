@@ -13,7 +13,9 @@ pub use commands::{info, stop_server, toggle_lan, toggle_tunnel};
 #[allow(unused_imports)]
 pub(crate) use connection::LineClient;
 pub use daemon::ensure_running;
-pub use events::{DevServerEvent, LogStreamEntry, subscribe_events, subscribe_logs};
+pub use events::{
+    DevServerEvent, LogStreamEntry, TunnelCloseReason, subscribe_events, subscribe_logs,
+};
 
 #[cfg(test)]
 mod tests;

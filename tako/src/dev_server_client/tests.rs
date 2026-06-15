@@ -10,7 +10,7 @@ use super::daemon::{
     read_dev_server_log_tail, repo_local_dev_server_build_args, repo_local_dev_server_build_needed,
     repo_local_dev_server_candidates,
 };
-use super::events::{DevServerEvent, parse_event_line};
+use super::events::{DevServerEvent, TunnelCloseReason, parse_event_line};
 
 #[test]
 fn repo_local_dev_server_candidates_prefers_debug_then_release() {
@@ -93,6 +93,23 @@ fn parse_event_line_parses_tunnel_mode_changed_event() {
             enabled: true,
             url: Some("https://a8f3k2zz.tako.website".to_string()),
             expires_at: Some(1_778_220_000),
+            close_reason: None,
+        })
+    );
+}
+
+#[test]
+fn parse_event_line_parses_tunnel_close_reason() {
+    let line = r#"{"type":"Event","event":{"type":"TunnelModeChanged","config_path":"/proj/tako.toml","app_name":"app","enabled":false,"close_reason":"timeout"}}"#;
+    assert_eq!(
+        parse_event_line(line),
+        Some(DevServerEvent::TunnelModeChanged {
+            config_path: "/proj/tako.toml".to_string(),
+            app_name: "app".to_string(),
+            enabled: false,
+            url: None,
+            expires_at: None,
+            close_reason: Some(TunnelCloseReason::Timeout),
         })
     );
 }

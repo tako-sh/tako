@@ -19,7 +19,7 @@ use super::output_render::{
     DIM, RESET, ShareRowState, ShareRows, format_header, format_keymap, format_lan_block,
     format_log, format_panel, format_tunnel_block, git_info, to_local_route,
 };
-use super::{DevEvent, LogLevel, ScopedLog};
+use super::{DevEvent, LogLevel, ScopedLog, TunnelCloseReason};
 
 const METRICS_REFRESH_SECS: u64 = 2;
 
@@ -84,6 +84,13 @@ fn process_tree_metrics(sys: &System, root: Pid) -> Option<(f32, u64)> {
         }
     }
     Some((cpu, mem))
+}
+
+fn tunnel_close_log(close_reason: Option<TunnelCloseReason>) -> ScopedLog {
+    let (level, message) = close_reason
+        .map(|reason| (reason.log_level(), reason.log_message()))
+        .unwrap_or((LogLevel::Info, "Tunnel off"));
+    ScopedLog::at(level, "tako", message)
 }
 
 // ── Sticky footer ─────────────────────────────────────────────────────────────
@@ -529,7 +536,12 @@ pub async fn run_dev_output(
                         fs.lan = ShareRowState::Failed;
                         fs.refresh(&mut footer, &app_name, &adapter_name, &hosts, port);
                     }
-                    DevEvent::TunnelModeChanged { enabled, url, .. } => {
+                    DevEvent::TunnelModeChanged {
+                        enabled,
+                        url,
+                        close_reason,
+                        ..
+                    } => {
                         fs.tunnel = if enabled {
                             url.clone()
                                 .map(ShareRowState::Active)
@@ -543,7 +555,9 @@ pub async fn run_dev_output(
                                 for line in format_tunnel_block(&url) {
                                     footer.println(&line);
                                 }
-                            }
+                        } else if !enabled {
+                            footer.println(&format_log(&tunnel_close_log(close_reason)));
+                        }
                     }
                     DevEvent::TunnelStarting => {
                         fs.tunnel = ShareRowState::Starting;
