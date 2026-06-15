@@ -114,6 +114,8 @@ The command runs with the same env as new HTTP instances, plus freshly decrypted
 
 For each server, Tako starts a new instance, waits for health, adds it to the load balancer, drains an old instance, and repeats until the stored desired instance count is replaced. The `current` symlink moves only after the rolling update succeeds.
 
+After finalize, each server keeps the active release and prunes non-active releases older than 30 days or beyond 50 total releases.
+
 If desired instances are `0`, deploy still starts one warm instance for the new build so traffic works immediately. It can later idle out.
 
 Failures keep old instances running, clean partial release directories when needed, and report per-server results.

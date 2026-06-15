@@ -41,7 +41,7 @@ Deploys build locally and roll out on every mapped server:
 5. Ask each server to extract and prepare the release.
 6. Run the configured `release` command once on the leader server, if present.
 7. Roll new instances into traffic and drain old instances.
-8. Finalize `current`, prune old releases, and create a post-deploy backup when backups are enabled.
+8. Finalize `current`, prune old or excess releases, and create a post-deploy backup when backups are enabled.
 
 Native releases run from the prepared artifact. Container releases upload source, then the server builds the configured container file with Podman and runs the image on a private loopback port.
 

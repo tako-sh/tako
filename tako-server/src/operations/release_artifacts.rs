@@ -5,6 +5,7 @@ use crate::release::{app_release_root, app_root, validate_app_name, validate_rel
 use crate::socket::Response;
 
 const OLD_RELEASE_RETENTION: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+const MAX_RELEASE_RETENTION_COUNT: usize = 50;
 
 struct ReleasePaths {
     app_root: PathBuf,
@@ -224,6 +225,7 @@ fn prune_old_releases(releases_root: &Path, active_release: &Path) {
         return;
     };
     let now = SystemTime::now();
+    let mut retained = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
         if path == active_release || !path.is_dir() {
@@ -240,7 +242,22 @@ fn prune_old_releases(releases_root: &Path, active_release: &Path) {
             .is_ok_and(|age| age > OLD_RELEASE_RETENTION)
         {
             let _ = std::fs::remove_dir_all(path);
+        } else {
+            retained.push((path, modified));
         }
+    }
+
+    retained.sort_by(|(a_path, a_modified), (b_path, b_modified)| {
+        b_modified.cmp(a_modified).then_with(|| b_path.cmp(a_path))
+    });
+
+    let non_active_limit = if active_release.is_dir() {
+        MAX_RELEASE_RETENTION_COUNT.saturating_sub(1)
+    } else {
+        MAX_RELEASE_RETENTION_COUNT
+    };
+    for (path, _) in retained.into_iter().skip(non_active_limit) {
+        let _ = std::fs::remove_dir_all(path);
     }
 }
 
@@ -263,4 +280,66 @@ fn available_bytes(path: &Path) -> Result<u64, String> {
 #[cfg(not(unix))]
 fn available_bytes(_path: &Path) -> Result<u64, String> {
     Err("disk space checks require Unix".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use filetime::FileTime;
+
+    fn create_release(root: &Path, name: &str, modified: SystemTime) -> PathBuf {
+        let path = root.join(name);
+        std::fs::create_dir_all(&path).expect("create release dir");
+        filetime::set_file_mtime(&path, FileTime::from_system_time(modified))
+            .expect("set release mtime");
+        path
+    }
+
+    fn release_dirs(root: &Path) -> usize {
+        std::fs::read_dir(root)
+            .expect("read releases root")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().is_dir())
+            .count()
+    }
+
+    #[test]
+    fn prune_old_releases_caps_total_release_count() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        let now = SystemTime::now();
+        let active = create_release(root, "r054", now - Duration::from_secs(54));
+
+        for index in 0..54 {
+            create_release(
+                root,
+                &format!("r{index:03}"),
+                now - Duration::from_secs(index),
+            );
+        }
+
+        prune_old_releases(root, &active);
+
+        assert_eq!(release_dirs(root), MAX_RELEASE_RETENTION_COUNT);
+        assert!(active.is_dir());
+        assert!(root.join("r048").is_dir());
+        assert!(!root.join("r049").exists());
+        assert!(!root.join("r053").exists());
+    }
+
+    #[test]
+    fn prune_old_releases_removes_non_active_releases_by_age() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        let now = SystemTime::now();
+        let active = create_release(root, "active", now - OLD_RELEASE_RETENTION * 2);
+        let expired = create_release(root, "expired", now - OLD_RELEASE_RETENTION * 2);
+        let fresh = create_release(root, "fresh", now - Duration::from_secs(60));
+
+        prune_old_releases(root, &active);
+
+        assert!(active.is_dir());
+        assert!(fresh.is_dir());
+        assert!(!expired.exists());
+    }
 }

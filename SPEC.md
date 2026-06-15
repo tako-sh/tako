@@ -1210,7 +1210,7 @@ Deploy flow helpers:
       updated; old instances keep serving.
 11. Rolling update and finalize on all servers:
     - `tako-server` performs first start or rolling update
-    - Update `current` symlink and clean up old releases (>30 days)
+    - Update `current` symlink and clean up old releases (>30 days or over 50 total releases)
     - If backups are enabled, create a post-deploy app data backup on each finalized server
 
 **Version naming:**
@@ -1260,7 +1260,7 @@ Deploy flow helpers:
 4. Gracefully stop old instance (drain connections, 30s timeout)
 5. Repeat until all instances replaced
 6. Update `current` symlink to the new release directory
-7. Clean up releases older than 30 days
+7. Clean up releases older than 30 days or over 50 total releases
 
 Rolling update target counts use the app's current desired instance count stored on that server (not old+new combined counts).
 When the stored desired instance count is `0`, rolling deploy still starts one warm instance for the new build so traffic is immediately served after deploy.
@@ -1802,7 +1802,7 @@ Response:
 }
 ```
 
-- `finalize_release` (points `current` at the deployed release and prunes old releases):
+- `finalize_release` (points `current` at the deployed release and prunes old or excess releases):
 
 ```json
 {
