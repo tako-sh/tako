@@ -8,126 +8,66 @@ description: "Learn how Tako presets provide framework-specific defaults for ent
 
 # Presets
 
-Presets are framework manifests. They give Tako default entrypoints, static asset roots, and development commands so `tako.toml` can stay small.
+Presets are framework manifests. They provide default runtime entrypoints, static asset roots, and development commands so most projects do not need to spell those out in `tako.toml`.
 
-Presets do not store secrets, routes, servers, storage credentials, or deployment policy. Those stay in `tako.toml` and `.tako/secrets.json`.
+Presets are metadata only. They do not store routes, servers, secrets, storage credentials, SSL policy, build commands, install commands, or production start commands. Runtime plugins own install commands, launch arguments, package-manager behavior, runtime downloads, and base defaults.
 
-Presets also do not define production `start` commands or control response compression. Deployed app responses are compressed automatically by `tako-server` when the proxy can safely transform them.
+## Resolution
 
-## How Presets Fit
-
-| Layer          | What it controls                                                                                                                     |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| Runtime plugin | Base runtime behavior: entrypoint candidates, default build/install/start/dev commands, package-manager behavior, runtime downloads. |
-| Preset         | Framework defaults: `main`, `assets`, and `dev`.                                                                                     |
-| `tako.toml`    | App choices and overrides: runtime, preset, build, routes, vars, storage, backups, SSL, source-IP, workflows, and target servers.    |
-
-The app config always wins over preset defaults. Set `main`, `assets`, `dev`, `start`, or `[build]` in `tako.toml` when a project needs a different shape. Explicit `start` runs a prebuilt native artifact and bypasses runtime/preset launch defaults.
-
-## Built-In Presets
-
-Built-in presets are grouped by runtime family.
-
-| Family     | Preset           | Defaults                                                                                                                                                 |
-| ---------- | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| JavaScript | `vite`           | Dev command `vite dev`.                                                                                                                                  |
-| JavaScript | `tanstack-start` | Main `dist/server/tako-entry.mjs`, assets `dist/client`, dev command `vite dev`.                                                                         |
-| JavaScript | `nextjs`         | Main `.next/tako-entry.mjs`, dev command `next dev`.                                                                                                     |
-| Go         | none today       | The Go runtime base preset builds `CGO_ENABLED=0 go build -o app .`, builds `worker` from `cmd/worker/main.go` when present, and runs `go run .` in dev. |
-
-Example:
+Use a runtime-local alias:
 
 ```toml
 runtime = "bun"
 preset = "tanstack-start"
 ```
 
-## Runtime-Local Aliases
+Supported built-in JavaScript aliases are:
 
-Preset names are selected within the runtime family. Do not namespace them:
+| Preset           | Defaults                                                                                   |
+| ---------------- | ------------------------------------------------------------------------------------------ |
+| `vite`           | `dev = ["vite", "dev"]`                                                                    |
+| `tanstack-start` | `main = "dist/server/tako-entry.mjs"`, `assets = ["dist/client"]`, `dev = ["vite", "dev"]` |
+| `nextjs`         | `main = ".next/tako-entry.mjs"`, `dev = ["next", "dev"]`                                   |
 
-```toml
-runtime = "bun"
-preset = "tanstack-start"
-```
+Go currently has a base runtime preset rather than framework-specific entries. Rust apps typically use an explicit native `start` command or container release flow.
 
-Not:
+Do not use namespaced aliases such as `js/tanstack-start` in `tako.toml`. Choose the runtime with the top-level `runtime` field and keep `preset` runtime-local. `github:` preset references are not supported in project config.
 
-```toml
-preset = "js/tanstack-start"
-```
+## Runtime Overrides
 
-The runtime chooses the family. A Bun app and a Node app can use the same JavaScript preset name while still getting runtime-specific command behavior from the selected runtime.
-
-## Runtime-Specific Dev Overrides
-
-Preset manifests can define runtime-local override sections. The current JavaScript presets use Bun-specific Vite commands so Vite runs under Bun's ESM loader and keeps Tako's fd-4 readiness handshake intact.
+Preset manifests can declare runtime-local dev-command overrides:
 
 ```toml
-[vite]
+[tanstack-start]
+main = "dist/server/tako-entry.mjs"
+assets = ["dist/client"]
 dev = ["vite", "dev"]
 
-[vite.bun]
+[tanstack-start.bun]
 dev = ["bun", "--bun", "./node_modules/.bin/vite", "dev"]
 ```
 
-Only the nested override's `dev` field replaces the base preset dev command. Other base preset fields, such as `main` and `assets`, still come from the main preset section.
+Only `dev` can be overridden in nested runtime sections. `name`, `main`, and `assets` always come from the base preset section. Tako uses Bun-specific Vite overrides because `bunx` drops file descriptors above 2, which would break Tako's fd-4 readiness handshake.
 
-## Resolution Order
+## Fetching And Cache
 
-During deploy, Tako resolves framework behavior in this order:
+Official preset manifests live in the `tako-sh/presets` GitHub repository and are also embedded in the CLI. Unpinned aliases resolve from the `master` branch on deploy, falling back to cached content when fetching fails. `tako dev` prefers cached or embedded preset data and fetches only when nothing local is available.
 
-1. Runtime plugin defaults.
-2. Selected preset defaults.
-3. Explicit `tako.toml` overrides.
+Pinned aliases such as `tanstack-start@<commit-hash>` resolve to that commit.
 
-Entrypoint resolution follows the same spirit:
+GitHub preset fetches use `GH_TOKEN` when set, falling back to `GITHUB_TOKEN`.
 
-1. `main` in `tako.toml`.
-2. Manifest main such as `package.json` `main`.
-3. Preset `main`.
-4. Runtime entrypoint candidates such as `index.ts`, `index.js`, `src/index.ts`, or `main.go`.
+## How Presets Affect Deploy
 
-Runtime-backed deploys use the resolved `main`. Native artifact deploys with explicit `start` skip `main` resolution and run the configured command from the app directory.
+Preset `main` is used only when `tako.toml main` and the runtime manifest main field are missing. For JavaScript presets whose `main` is an index-style path, Tako checks existing root and `src/` index files before falling back to the preset path.
 
-## Build Interaction
+Preset `assets` are merged with top-level `assets` and copied into deployed `public/` after build. Later asset roots overwrite earlier ones.
 
-Presets may provide defaults, but build stages are controlled by app config:
+Preset `dev` is used by `tako dev` unless top-level `dev` overrides it. Production build and install still come from `[build]`, `[[build_stages]]`, or the runtime plugin defaults.
 
-```toml
-[build]
-run = "bun run build"
-```
+## Creating Presets
 
-or:
-
-```toml
-[[build_stages]]
-name = "client"
-run = "bun run build:client"
-
-[[build_stages]]
-name = "server"
-run = "bun run build:server"
-```
-
-Build precedence is `[[build_stages]]`, then `[build]`, then the runtime default build, then no-op. Explicit `start` releases skip the runtime default build, so configure `[build]` or `[[build_stages]]` to produce the artifact. Preset assets are merged with top-level `assets` and copied into `public/` after build.
-
-## Init Behavior
-
-`tako init` detects a runtime, fetches official preset family manifests in interactive mode, and writes a compact config:
-
-- Base runtime adapters leave `preset` commented or unset.
-- Framework presets write `preset = "<name>"`.
-- `main` is written only when inference finds a project entrypoint that differs from the preset default, or when no preset/runtime default can supply one.
-- JavaScript projects install `tako.sh` with the selected package manager.
-- Go projects run `go get tako.sh`.
-
-If no family presets are available after fetch, init skips preset selection and uses the runtime base behavior.
-
-## Custom Preset Manifests
-
-Preset manifest files live at `presets/<language>.toml`. Each top-level table is one preset alias.
+A family manifest is a TOML file with one top-level section per alias:
 
 ```toml
 [my-framework]
@@ -139,27 +79,4 @@ dev = ["vite", "dev"]
 dev = ["bun", "--bun", "./node_modules/.bin/vite", "dev"]
 ```
 
-Supported preset fields:
-
-| Field    | Meaning                                                  |
-| -------- | -------------------------------------------------------- |
-| `name`   | Optional display name. Defaults to the table name.       |
-| `main`   | Default runtime entrypoint.                              |
-| `assets` | Static asset directories merged into deployed `public/`. |
-| `dev`    | Dev command for `tako dev`.                              |
-
-The example manifest in `presets/_example.toml` is the schema reference for current preset files.
-
-## When To Override Instead
-
-Use `tako.toml` overrides when the behavior is project-specific:
-
-```toml
-runtime = "bun"
-preset = "vite"
-main = "server/entry.ts"
-assets = ["dist/client", "public"]
-dev = ["bun", "run", "dev"]
-```
-
-Create or edit a preset only when several projects share the same framework shape.
+Fields are optional. Use `main` only when the framework emits a stable server entrypoint. Use `assets` for directories that should be merged into deployed `public/`. Use `dev` when the framework needs a specific development server command.

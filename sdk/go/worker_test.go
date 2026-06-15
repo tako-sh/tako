@@ -254,7 +254,7 @@ func resetRegistry() {
 
 func TestEnqueueSendsEnqueueTaskCommand(t *testing.T) {
 	s := startMockServer(t)
-	t.Setenv("TAKO_WORKFLOW_SOCKET", s.path)
+	t.Setenv("TAKO_INTERNAL_SOCKET", s.path)
 	t.Setenv("TAKO_APP_NAME", "test-app")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -271,7 +271,7 @@ func TestEnqueueSendsEnqueueTaskCommand(t *testing.T) {
 
 func TestEnqueueSerializesOpts(t *testing.T) {
 	s := startMockServer(t)
-	t.Setenv("TAKO_WORKFLOW_SOCKET", s.path)
+	t.Setenv("TAKO_INTERNAL_SOCKET", s.path)
 	t.Setenv("TAKO_APP_NAME", "test-app")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -298,7 +298,7 @@ func TestEnqueueSerializesOpts(t *testing.T) {
 func TestWorkerRunsHandlerAndCompletes(t *testing.T) {
 	resetRegistry()
 	s := startMockServer(t)
-	t.Setenv("TAKO_WORKFLOW_SOCKET", s.path)
+	t.Setenv("TAKO_INTERNAL_SOCKET", s.path)
 	t.Setenv("TAKO_APP_NAME", "test-app")
 
 	called := atomic.Bool{}
@@ -339,7 +339,7 @@ func TestWorkerRunsHandlerAndCompletes(t *testing.T) {
 func TestStepRunMemoizesAcrossRetries(t *testing.T) {
 	resetRegistry()
 	s := startMockServer(t)
-	t.Setenv("TAKO_WORKFLOW_SOCKET", s.path)
+	t.Setenv("TAKO_INTERNAL_SOCKET", s.path)
 	t.Setenv("TAKO_APP_NAME", "test-app")
 
 	var aRuns, bRuns atomic.Uint32

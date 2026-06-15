@@ -1,7 +1,7 @@
 // Package tako provides the runtime SDK for Tako-deployed Go applications.
 //
 // All durable-run state is owned by tako-server. The SDK is a thin RPC
-// client over a shared unix socket (path in TAKO_WORKFLOW_SOCKET); every
+// client over a shared unix socket (path in TAKO_INTERNAL_SOCKET); every
 // command carries the app name (TAKO_APP_NAME) so one socket handles
 // every deployed app. The SDK has no SQLite dependency.
 package tako
@@ -18,8 +18,8 @@ import (
 )
 
 const (
-	// WorkflowSocketEnv is the environment variable containing the workflow RPC socket path.
-	WorkflowSocketEnv = "TAKO_WORKFLOW_SOCKET"
+	// WorkflowSocketEnv is the environment variable containing the shared internal RPC socket path.
+	WorkflowSocketEnv = "TAKO_INTERNAL_SOCKET"
 	// AppNameEnv is the environment variable containing the current Tako app name.
 	AppNameEnv = "TAKO_APP_NAME"
 )
@@ -65,7 +65,7 @@ func NewClient(socketPath, app string) *Client {
 	return &Client{socketPath: socketPath, app: app}
 }
 
-// ClientFromEnv reads TAKO_WORKFLOW_SOCKET and TAKO_APP_NAME.
+// ClientFromEnv reads TAKO_INTERNAL_SOCKET and TAKO_APP_NAME.
 func ClientFromEnv() (*Client, error) {
 	sock := os.Getenv(WorkflowSocketEnv)
 	if sock == "" {

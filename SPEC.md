@@ -8,7 +8,7 @@ Tako is a deployment and development platform consisting of:
 
 - **`tako` CLI** - Local tool for development, deployment, server/secret management
 - **`tako-server`** - Remote server binary that manages app processes, routing, and rolling updates
-- **SDKs** - Runtime helpers for JavaScript/TypeScript (`tako.sh`) and Go (`tako.sh`)
+- **SDKs** - Runtime helpers for JavaScript/TypeScript (`tako.sh`), Go (`tako.sh`), and Rust (`tako`)
 
 Built in Rust (2024 edition). Uses Pingora (Cloudflare's proxy) for production-grade performance.
 
@@ -1293,8 +1293,6 @@ When the stored desired instance count is `0`, rolling deploy still starts one w
   - multiple servers in `config.toml` `[[servers]]` (interactive terminal) → prompt to select one and persist it into `[envs.production].servers`
 - If no servers exist in `config.toml` `[[servers]]` → fail with hint to run `tako servers add <host>`
 - Otherwise, require explicit `[envs.<env>].servers` mapping in tako.toml
-
-**Release command test coverage note:** End-to-end coverage for `release` (docker compose harness with success and failure fixtures) is deferred. Behavior is currently verified by Rust unit tests at the runner, dispatch, resolver, orchestration, and task-tree layers.
 
 ### tako releases list [--env {environment}]
 

@@ -8,7 +8,9 @@ description: "Complete tako.toml reference covering routes, runtime settings, bu
 
 # `tako.toml` Reference
 
-`tako.toml` describes one app: its identity, runtime, build, routes, environment variables, storage bindings, backups, SSL provider, source-IP policy, workflows, and target servers. Secrets and credentials do not live in this file; they are encrypted in `.tako/secrets.json`.
+`tako.toml` describes one app: identity, runtime, build, routes, variables, storage bindings, backups, SSL provider, source-IP policy, workflows, and target servers. App secrets, storage credentials, and provider credentials are encrypted in `.tako/secrets.json`, not stored in this file.
+
+App-scoped commands use `./tako.toml` by default. `-c path/to/config` selects another config file and treats that file's parent directory as the app directory.
 
 ## Minimal Config
 
@@ -22,403 +24,164 @@ route = "my-app.example.com"
 servers = ["prod-a"]
 ```
 
-Generated configs stay small. Defaults such as `source_ip = "auto"`, `idle_timeout = 300`, `ssl = "letsencrypt"`, and `app_root = "src"` are omitted unless you set them.
+`name` is optional but recommended. If omitted, Tako derives the app name from the selected config file's parent directory. Remote identity is `{name}/{env}`, so renaming the app or directory fallback creates a separate deployed app.
 
-Deployed response compression is automatic server behavior, not a `tako.toml` option. `tako-server` negotiates Brotli or gzip for safe proxied app responses and leaves local dev proxy responses uncompressed.
+## Top-Level Fields
 
-## Full Example
+| Field             | Type   | Purpose                                                                                               |
+| ----------------- | ------ | ----------------------------------------------------------------------------------------------------- |
+| `name`            | string | Stable app identity. Must be DNS-friendly lowercase letters, numbers, and hyphens.                    |
+| `runtime`         | string | Runtime adapter, optionally pinned with `@version`, such as `bun@1.2.3`, `node`, or `go`.             |
+| `package_manager` | string | JS package manager override: `bun`, `npm`, `pnpm`, or `yarn`.                                         |
+| `preset`          | string | Runtime-local preset alias such as `vite`, `tanstack-start`, or `nextjs`.                             |
+| `main`            | string | Runtime entrypoint override. May be a file path or module specifier.                                  |
+| `app_root`        | string | JS channels/workflows root, relative to `tako.toml`. Defaults to `src`; use `.` for root-level files. |
+| `dev`             | array  | Custom `tako dev` command. Overrides preset and runtime defaults.                                     |
+| `start`           | array  | Native deploy start command for prebuilt artifacts.                                                   |
+| `assets`          | array  | Additional asset directories merged into deployed `public/`.                                          |
+| `container`       | string | Container file path for container releases.                                                           |
+| `release`         | string | One-shot command run on the leader server before rolling update.                                      |
 
-```toml
-name = "dashboard"
-runtime = "bun@1.2.3"
-package_manager = "bun"
-preset = "tanstack-start"
-app_root = "src"
-start = ["./app"]
-assets = ["public"]
-release = "bun run db:migrate"
+When `container` is set, native release fields are invalid: `main`, `start`, `assets`, `[build]`, and `[[build_stages]]`. `tako dev` still uses the dev command or runtime/preset dev defaults and does not build the container file locally.
 
-[build]
-run = "bun run build"
-install = "bun install"
-cwd = "."
-include = ["dist/**", "package.json"]
-exclude = ["**/*.map"]
+`start` is for native artifacts such as compiled binaries. An exact `{main}` argument is replaced with the resolved entrypoint. The process must still use a Tako SDK listener so fd 3 bootstrap, fd 4 readiness, secrets, storage bindings, and health checks work.
 
-[vars]
-LOG_LEVEL = "info"
-
-[vars.production]
-LOG_LEVEL = "warn"
-
-[images]
-remote_patterns = ["https://cdn.example.com/uploads/**"]
-sizes = [320, 640, 960, 1200, 1920]
-qualities = [75]
-formats = ["webp", "avif"]
-
-[workflows]
-workers = 0
-concurrency = 10
-
-[workflows.email]
-workers = 1
-
-[envs.production]
-route = "dashboard.example.com"
-servers = ["prod-a"]
-source_ip = "cloudflare-proxy"
-ssl = "cloudflare"
-idle_timeout = 300
-storages = { uploads = "prod_uploads" }
-backup = { storage = "prod_backups" }
-
-[storages.prod_uploads]
-provider = "s3"
-bucket = "dashboard-uploads"
-endpoint = "https://<account>.r2.cloudflarestorage.com"
-region = "auto"
-public_base_url = "https://cdn.example.com/uploads"
-
-[storages.prod_backups]
-provider = "s3"
-bucket = "dashboard-backups"
-endpoint = "https://<account>.r2.cloudflarestorage.com"
-region = "auto"
-
-[servers.prod-a.workflows.email]
-workers = 2
-```
-
-## Top-Level Keys
-
-| Key                     | Type   | Meaning                                                                                                                          |
-| ----------------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------- |
-| `name`                  | string | Required app name. Used for deploy ids, data paths, default dev hostnames, and generated examples.                               |
-| `runtime`               | string | Runtime id, optionally pinned as `<id>@<version>`, for example `bun@1.2.3`, `node@22.0.0`, or `go`.                              |
-| `container`             | string | Container file for container releases, for example `Dockerfile`. Omit for native releases.                                       |
-| `package_manager`       | string | JS package-manager override: `bun`, `npm`, `pnpm`, or `yarn`, optionally with a version suffix.                                  |
-| `preset`                | string | Framework preset alias such as `vite`, `tanstack-start`, or `nextjs`.                                                            |
-| `app_root`              | string | JS app root for `channels/`, `workflows/`, and preferred `tako.d.ts` placement. Defaults to `src`. Use `.` for root-level files. |
-| `main`                  | string | Runtime entrypoint override, relative to the app directory.                                                                      |
-| `dev`                   | array  | Custom dev command for `tako dev`.                                                                                               |
-| `start`                 | array  | Native deploy command for a prebuilt artifact, for example `["./app"]`.                                                          |
-| `assets`                | array  | Static asset roots copied into deployed `public/`, merged after build.                                                           |
-| `release`               | string | One-shot command run once on the leader server before rolling update.                                                            |
-| `[build]`               | table  | Single-stage deploy build settings.                                                                                              |
-| `[[build_stages]]`      | array  | Multi-stage deploy build settings. Mutually exclusive with `[build].run`.                                                        |
-| `[vars]`                | table  | Non-secret vars shared by all environments.                                                                                      |
-| `[vars.<env>]`          | table  | Non-secret vars for one environment.                                                                                             |
-| `[envs.<env>]`          | table  | Routes, servers, storage, backup, SSL, source-IP, and scaling policy for one environment.                                        |
-| `[storages.<resource>]` | table  | Non-secret S3-compatible storage metadata.                                                                                       |
-| `[images]`              | table  | Public image optimizer allowlists and output settings.                                                                           |
-| `[workflows]`           | table  | Workflow worker defaults.                                                                                                        |
-| `[workflows.<group>]`   | table  | Named workflow worker group overrides.                                                                                           |
-| `[servers.<name>]`      | table  | Per-app per-server overrides. Currently supports workflow settings.                                                              |
-
-## Runtime And Preset
-
-Runtime selection controls the base adapter and default runtime plugin. Preset selection adds framework defaults.
-
-```toml
-runtime = "bun"
-preset = "vite"
-```
-
-JavaScript runtimes detect package managers from `package.json` `packageManager`, then lockfiles, unless `package_manager` is set. Go uses `go`, has no production dependency install, builds `app` as the HTTP binary, and builds `worker` from `cmd/worker/main.go` when that conventional worker entrypoint exists.
-
-Runtime version pins are written as part of `runtime`:
-
-```toml
-runtime = "node@22.3.0"
-```
-
-Deploy uses the pin when present. Otherwise it runs the local runtime's `--version` and falls back to `latest`. If `start` is set, deploy can package a native artifact without selecting or installing a runtime.
-
-## Native Artifact Releases
-
-Use `start` when your build produces a binary or executable artifact:
-
-```toml
-dev = ["cargo", "run"]
-start = ["./app"]
-
-[build]
-run = "cargo build --release && cp target/release/my-app app"
-```
-
-The command runs from the deployed app directory. An exact `{main}` argument is replaced with the resolved `main` path for runtime-style commands. The process still needs the Tako SDK listener so fd-3 bootstrap, fd-4 readiness, secrets, storage bindings, and `/status` work. If `start` is omitted, deploy uses the selected runtime/preset launch defaults and warns.
-
-## Container Releases
-
-Set `container` when production should be built and run from a container file:
-
-```toml
-runtime = "go"
-container = "Dockerfile"
-dev = ["go", "run", "."]
-```
-
-The path is relative to the app directory. Container releases use the app root as the build context, and `.dockerignore` controls what enters the image. `tako dev` still uses the configured dev command, preset dev command, or native runtime default.
-
-Container releases do not use native release packaging fields: `main`, `start`, `assets`, `[build]`, or `[[build_stages]]`. Keep production build steps in the container file.
-
-Tako installs and uses Podman on the target server. The container must listen on `$PORT` (`3000` today), bind `0.0.0.0`, and use the Tako SDK so `/status` echoes the internal health-probe token. Secrets and storage bindings arrive through `TAKO_BOOTSTRAP_DATA`, not as individual environment variables. SDKs check fd 3 first and use `TAKO_BOOTSTRAP_DATA` as the container fallback.
-
-HTTP containers run from the image's Dockerfile defaults. To run a container workflow worker from the same image, configure one workflow `run` command, for example `run = ["./worker", "video"]`; Tako replaces the image entrypoint for that workflow container and mounts the internal socket. Container HTTP instances still do not receive the fd-3 bootstrap pipe, fd-4 readiness handshake, internal socket, or `TAKO_DATA_DIR` in v0.
-
-## Entrypoints And Assets
-
-`main` overrides the runtime entrypoint. If omitted, Tako resolves from package manifests, presets, and runtime fallback candidates.
-
-```toml
-main = "dist/server/entry.mjs"
-assets = ["dist/client", "public"]
-```
-
-Asset roots are preset assets plus top-level `assets`, deduplicated, and merged into app `public/` after build. Later copies overwrite earlier files.
-
-## Builds
-
-Use `[build]` for a single stage:
-
-```toml
-[build]
-install = "bun install"
-run = "bun run build"
-cwd = "."
-include = ["dist/**", "package.json"]
-exclude = ["**/*.map"]
-```
-
-Use `[[build_stages]]` for multi-stage builds:
-
-```toml
-[[build_stages]]
-name = "web"
-cwd = "apps/web"
-install = "bun install"
-run = "bun run build"
-exclude = ["**/*.map"]
-
-[[build_stages]]
-name = "worker"
-cwd = "apps/worker"
-run = "bun run build"
-```
-
-Build stage precedence is:
-
-1. `[[build_stages]]`
-2. `[build]`
-3. runtime default build
-4. no-op
-
-`[build].run` and `[[build_stages]]` are mutually exclusive. `[build].include` and `[build].exclude` cannot be used with `[[build_stages]]`; use per-stage `exclude`.
-
-Builds run in `.tako/build` after copying the source bundle root. Tako respects `.gitignore`, force-excludes `.git/`, `.tako/`, `.env*`, and `node_modules/`, and preserves symlinks as links.
-
-## Variables
-
-Use `[vars]` and `[vars.<env>]` for non-secret strings:
-
-```toml
-[vars]
-PUBLIC_API_ORIGIN = "https://api.example.com"
-
-[vars.production]
-LOG_LEVEL = "warn"
-```
-
-Non-string TOML scalar values are stringified. Environment-specific vars override top-level vars. Secrets belong in `tako secrets`, not in `tako.toml`.
-
-## Environments
-
-Each deployable environment lives under `[envs.<name>]`.
+## Routes And Environments
 
 ```toml
 [envs.production]
 route = "app.example.com"
-servers = ["prod-a"]
-source_ip = "auto"
-ssl = "letsencrypt"
+servers = ["la", "nyc"]
 idle_timeout = 300
+ssl = "letsencrypt"
+source_ip = "auto"
 storages = { uploads = "prod_uploads" }
-backup = { storage = "prod_backups" }
+backup = { storage = "private_backups" }
+
+[envs.staging]
+routes = ["staging.example.com", "example.com/api/*"]
+servers = ["staging"]
 release = ""
 ```
 
-| Key            | Type         | Meaning                                                                               |
-| -------------- | ------------ | ------------------------------------------------------------------------------------- |
-| `route`        | string       | Single route pattern. Mutually exclusive with `routes`.                               |
-| `routes`       | array        | Multiple route patterns. Mutually exclusive with `route`.                             |
-| `servers`      | array        | Server names from global server inventory.                                            |
-| `storages`     | inline table | App storage bindings: app-facing name -> top-level resource name or built-in `local`. |
-| `backup`       | inline table | App data backup target, currently `{ storage = "resource" }`.                         |
-| `source_ip`    | string       | `auto`, `direct`, `cloudflare-proxy`, or `trusted-proxy`.                             |
-| `ssl`          | string       | `letsencrypt` or `cloudflare`. Defaults to `letsencrypt`.                             |
-| `idle_timeout` | integer      | Seconds before idle scale-to-zero instances stop. Defaults to `300`.                  |
-| `release`      | string       | Per-environment release command override. Empty string clears top-level `release`.    |
+Each environment can use either `route` or `routes`, not both. Non-development deploy environments must define at least one route. `development` is reserved for `tako dev`; deploy validation ignores `servers` there.
 
-`development` is reserved for `tako dev` and cannot be deployed.
+Routes support exact hosts, wildcard hosts, host-plus-path routes, and wildcard-plus-path routes. Path-only routes are invalid.
 
-## Routes
+`idle_timeout` defaults to 300 seconds. `ssl` defaults to `letsencrypt` and can be `cloudflare`. `source_ip` can be omitted or set to `auto`, `direct`, `cloudflare-proxy`, or `trusted-proxy`.
 
-Routes are hostnames with optional path patterns:
+Environment-level `release` overrides the top-level release command. An empty string clears an inherited top-level command for that environment.
+
+## Variables
 
 ```toml
-route = "app.example.com"
-routes = ["app.example.com", "*.example.com/api/*"]
+[vars]
+API_URL = "https://api.example.com"
+FEATURE_FLAG = true
+
+[vars.staging]
+API_URL = "https://staging-api.example.com"
 ```
 
-Private/local route hostnames such as `localhost`, `*.localhost`, single-label hosts, and reserved suffixes like `.local`, `.test`, `.invalid`, `.example`, and `.home.arpa` skip ACME and use self-signed certificates.
+Variables merge in this order: `[vars]`, then `[vars.<env>]`, then Tako runtime values. TOML strings, numbers, booleans, and datetimes are accepted and converted to process-env strings. Arrays and tables are invalid variable values.
 
-## Source IP Modes
+`ENV` is reserved and ignored with a warning if set by the user. Set framework log variables such as `LOG_LEVEL` yourself when needed.
 
-Generated configs omit `source_ip`, which behaves like `auto`.
+## Build
 
-| Mode               | Behavior                                                                                                                          |
-| ------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
-| omitted or `auto`  | Use `CF-Connecting-IP` for Cloudflare peers, then configured trusted proxy headers for trusted peers, then the direct peer IP.    |
-| `direct`           | Always use the direct TCP peer IP.                                                                                                |
-| `cloudflare-proxy` | Require a Cloudflare peer and valid `CF-Connecting-IP`; reject other requests with `403 Forbidden`.                               |
-| `trusted-proxy`    | Require loopback or a configured trusted proxy CIDR plus a valid forwarded client IP; reject other requests with `403 Forbidden`. |
+Simple build:
 
-For `trusted-proxy`, server-level `trusted_proxy.trusted_cidrs` and optional `trusted_proxy.client_ip_headers` live in `/opt/tako/config.json`, not `tako.toml`.
+```toml
+[build]
+install = "bun install"
+run = "bun run build"
+cwd = "packages/web"
+include = ["dist/**", "package.json"]
+exclude = ["**/*.map"]
+```
 
-Forwarded HTTPS metadata uses the same trusted-peer boundary. Direct clients cannot spoof `X-Forwarded-Proto` or `Forwarded: proto=https` to bypass HTTP-to-HTTPS redirects.
+Multi-stage build:
 
-## SSL Provider
+```toml
+[[build_stages]]
+name = "shared-ui"
+cwd = "packages/ui"
+install = "bun install"
+run = "bun run build"
+exclude = ["**/*.map"]
 
-Public route certificates use Let's Encrypt by default:
+[[build_stages]]
+name = "web"
+cwd = "apps/web"
+run = "bun run build"
+```
+
+`[build]` and `[[build_stages]]` are mutually exclusive. Build stage precedence is `[[build_stages]]`, then `[build]`, then the runtime default. JS defaults run the package manager's build script when present. Go defaults build `app`, and also `worker` when `cmd/worker/main.go` exists.
+
+Simple `[build].cwd` must stay inside the project. Multi-stage `cwd` can use `..` for monorepos but cannot escape the source workspace.
+
+## Images
+
+```toml
+[images]
+remote_patterns = ["https://cdn.example.com/uploads/**"]
+local_patterns = ["/images/**"]
+sizes = [320, 640, 960, 1200, 1920]
+qualities = [75]
+formats = ["webp", "avif"]
+```
+
+Local image paths default to `["/**"]`; setting `local_patterns` replaces that default. Remote images are denied unless they match `remote_patterns`. Patterns are glob-like URL strings: `*` matches one segment and `**` matches the rest of a path. Remote patterns without a protocol match both `http` and `https`.
+
+## Storage
 
 ```toml
 [envs.production]
-ssl = "letsencrypt"
-```
+storages = { uploads = "prod_uploads" }
 
-Wildcard Let's Encrypt routes use Cloudflare DNS-01 and require encrypted provider credentials. Exact Let's Encrypt routes use DNS-01 too when this credential exists:
-
-```bash
-tako credentials set ssl.cloudflare --env production
-```
-
-Use a Cloudflare user or account API token with Zone Read and DNS Write for the matching Cloudflare zone. If the token is IP-restricted, include each target server's egress IP.
-
-Shared channel/workflow storage uses the environment credential `postgres_url`, not `tako.toml`:
-
-```bash
-tako credentials set postgres_url --env production
-```
-
-If an environment has `<app_root>/channels/` and deploys to more than one server, deploy requires `postgres_url`. If an environment has `<app_root>/workflows/` and deploys to more than one server, deploy requires `postgres_url` unless every workflow definition opts into per-server local execution with `local: true`. Go apps with `cmd/worker/main.go` require `postgres_url` in multi-server environments because Go workflows do not have a source-level local-only annotation.
-
-Cloudflare Origin CA is selected per environment:
-
-```toml
-[envs.production]
-ssl = "cloudflare"
-```
-
-Cloudflare SSL also requires `ssl.cloudflare` credentials. Use a Cloudflare user or account API token with Zone / SSL and Certificates / Edit for the matching zone. Provider credentials are encrypted in `.tako/secrets.json` under the selected environment and are not exposed to app code.
-
-## Storage Resources
-
-Top-level storage resources contain non-secret S3-compatible metadata:
-
-```toml
-[storages.uploads]
+[storages.prod_uploads]
 provider = "s3"
 bucket = "app-uploads"
-endpoint = "https://<account>.r2.cloudflarestorage.com"
+endpoint = "https://example.r2.cloudflarestorage.com"
 region = "auto"
 force_path_style = false
 public_base_url = "https://cdn.example.com/uploads"
 ```
 
-| Key                | Default  | Meaning                                                                                |
-| ------------------ | -------- | -------------------------------------------------------------------------------------- |
-| `provider`         | `s3`     | Only `s3` is valid in top-level config. The built-in `local` resource is not declared. |
-| `bucket`           | required | S3-compatible bucket.                                                                  |
-| `endpoint`         | required | HTTPS S3-compatible endpoint.                                                          |
-| `region`           | required | Region. Use `auto` for R2.                                                             |
-| `force_path_style` | `false`  | Sign path-style URLs instead of virtual-hosted URLs.                                   |
-| `public_base_url`  | unset    | HTTPS public base URL for public object helpers.                                       |
+Top-level storage resources store non-secret metadata. S3 resources require `bucket`, `endpoint`, and `region`; endpoints and public base URLs must use HTTPS. Credentials are set by `tako storages add` or `tako storages credentials` and stored encrypted in `.tako/secrets.json`.
 
-App bindings connect environment names to resources:
-
-```toml
-[envs.production]
-storages = { uploads = "prod_uploads" }
-```
-
-The resource name `local` is built in:
-
-```toml
-[envs.development]
-storages = { uploads = "local" }
-```
-
-Do not declare `[storages.local]`. Local storage has no configurable path and no credentials. In development, undeclared storage resources also default to local storage. In deployed environments, every non-`local` binding must reference a declared S3 resource, and `local` can deploy only to single-server environments.
-
-S3 credentials are stored with `tako storages add` or `tako storages credentials`, encrypted in `.tako/secrets.json`, and checked before deploy.
+`local` is a built-in resource name. Bind to it with `storages = { uploads = "local" }`; do not declare `[storages.local]`. Local storage deploys only to single-server environments. In `development`, undeclared storage resources default to local storage.
 
 ## Backups
 
-Enable app data backups per environment:
-
 ```toml
 [envs.production]
-backup = { storage = "prod_backups" }
+backup = { storage = "private_backups" }
+
+[storages.private_backups]
+provider = "s3"
+bucket = "app-data"
+endpoint = "https://example.r2.cloudflarestorage.com"
+region = "auto"
 ```
 
-The backup resource must be a declared private S3-compatible storage resource. `local` and `public_base_url` are rejected for backup storage.
+Backup storage must be private S3-compatible storage. `public_base_url` and local storage are rejected for backups. Backup resources are not exposed to `tako.storages` unless they are also listed in `[envs.<env>].storages`.
 
-Backup storage is not exposed to app code unless it is also listed under `[envs.<env>].storages`. Tako creates encrypted backup keys when deploy or `tako backups now` first needs them. Archives include app data and durable workflow state, exclude transient channel replay storage, and are stored under `_tako/backups/{app}/{env}/{server}/`.
+## SSL Credentials
 
-## Release Commands
+Use `ssl = "letsencrypt"` for the default. Exact routes can use HTTP-01 without provider credentials. Wildcard Let's Encrypt routes require `ssl.cloudflare` because they use Cloudflare DNS-01. If `ssl.cloudflare` is present, exact Let's Encrypt routes also use DNS-01.
 
-A top-level `release` runs once on the leader server before rolling update:
+Use `ssl = "cloudflare"` for Cloudflare Origin CA certificates. This also requires `ssl.cloudflare`.
 
-```toml
-release = "bun run db:migrate"
+Set provider credentials with:
+
+```bash
+tako credentials set ssl.cloudflare --env production
 ```
 
-Per-environment `release` overrides it. An empty string disables the inherited command:
-
-```toml
-[envs.staging]
-release = ""
-```
-
-Release commands run as `sh -c "<command>"` inside the new release directory as the app's per-app Unix identity, with non-secret vars and decrypted secrets. If the command fails, deploy aborts on every server, removes partial release directories, leaves `current` untouched, and old instances keep serving.
-
-## Images
-
-`[images]` configures the public optimizer at `/_tako/image`.
-
-```toml
-[images]
-local_patterns = ["/images/**"]
-remote_patterns = ["https://cdn.example.com/uploads/**", "assets.example.com/**"]
-sizes = [320, 640, 960, 1200, 1920]
-qualities = [75]
-formats = ["webp", "avif"]
-```
-
-| Key               | Default                       | Meaning                                                                 |
-| ----------------- | ----------------------------- | ----------------------------------------------------------------------- |
-| `local_patterns`  | `["/**"]`                     | Local public path allowlist. Setting it replaces the default.           |
-| `remote_patterns` | `[]`                          | Remote URL allowlist. Protocol-less patterns allow both HTTP and HTTPS. |
-| `sizes`           | `[320, 640, 960, 1200, 1920]` | Allowed public output widths.                                           |
-| `qualities`       | `[75]`                        | Allowed public quality values, `1..100`.                                |
-| `formats`         | `["webp"]`                    | Allowed output formats: `webp`, `avif`.                                 |
-
-Remote sources reject unsupported schemes, userinfo, fragments, recursive optimizer URLs, private/local hosts and IPs, private/local DNS results, and redirects.
+Provider credentials are encrypted in `.tako/secrets.json`, not stored in `tako.toml`.
 
 ## Workflows
-
-Workflow worker config can be global, named, and server-specific:
 
 ```toml
 [workflows]
@@ -426,25 +189,57 @@ workers = 0
 concurrency = 10
 
 [workflows.email]
+run = ["./worker", "email"]
 workers = 1
 
-[servers.prod-a.workflows]
+[servers.la.workflows]
 workers = 2
 
-[servers.prod-a.workflows.email]
+[servers.la.workflows.email]
 workers = 4
 ```
 
-`workers` is the number of always-on worker processes. `0` means scale-to-zero: Tako starts a worker when runnable workflow work appears, then lets it exit after the idle window. `concurrency` is the maximum parallel runs per worker and defaults to `10`.
+`workers = 0` means scale-to-zero workers. `concurrency` defaults to 10. Named workflow groups inherit from `[workflows]`, then can be overridden per group and per server.
 
-Precedence for unnamed workflows is built-in defaults, `[workflows]`, then `[servers.<name>.workflows]`.
+In multi-server environments, JS workflows require `postgres_url` unless every workflow opts into local per-server execution. Go workflow deployments require `postgres_url` for multi-server environments. Channels also require `postgres_url` for multi-server deploys.
 
-Precedence for named workers is built-in defaults, `[workflows]`, `[workflows.<group>]`, `[servers.<name>.workflows]`, then `[servers.<name>.workflows.<group>]`.
+## Complete Example
 
-Channel replay and workflow storage use local SQLite unless `postgres_url` is set for the environment. With `postgres_url`, runtime state uses Postgres through the internal storage adapters: workflow tables live in schema `tako_workflows`; channel tables live in schema `tako_channels`. Multi-server channel deploys require `postgres_url`. Multi-server JS workflow deploys require `postgres_url` unless every workflow opts into per-server local execution with `local: true`; multi-server Go workflow deploys require `postgres_url`.
+```toml
+name = "my-app"
+runtime = "bun@1.2.3"
+package_manager = "bun"
+preset = "tanstack-start"
+app_root = "src"
+release = "bun run db:migrate"
 
-## Per-Server App Overrides
+[build]
+run = "bun run build"
 
-`[servers.<name>]` in `tako.toml` is not the global server inventory. It is per-app per-server config. The supported key today is `workflows`.
+[vars]
+API_URL = "https://api.example.com"
 
-Global server inventory is managed with `tako servers add/list/remove` and stored outside the project.
+[vars.staging]
+API_URL = "https://staging-api.example.com"
+
+[envs.production]
+route = "app.example.com"
+servers = ["la", "nyc"]
+storages = { uploads = "prod_uploads" }
+backup = { storage = "private_backups" }
+ssl = "letsencrypt"
+source_ip = "auto"
+
+[storages.prod_uploads]
+provider = "s3"
+bucket = "app-uploads"
+endpoint = "https://example.r2.cloudflarestorage.com"
+region = "auto"
+public_base_url = "https://cdn.example.com/uploads"
+
+[storages.private_backups]
+provider = "s3"
+bucket = "app-backups"
+endpoint = "https://example.r2.cloudflarestorage.com"
+region = "auto"
+```
