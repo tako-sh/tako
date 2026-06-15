@@ -657,7 +657,7 @@ Start (or connect to) a local development session for the current app, backed by
     - Common scopes: `tako` (local dev daemon) and `app` (the app process).
     - For app-process output, Tako infers the level from leading tokens like `DEBUG`, `INFO`, `WARN`/`WARNING`, `ERROR`, and `FATAL` (including bracketed forms such as `[DEBUG]`), and maps `TRACE` to `DEBUG`.
   - App lifecycle state changes (starting, stopped, errors) are printed inline as `── {status} ──` lines in the log stream.
-  - The status panel always shows `routes`, `lan`, and `tunnel` rows. `routes` lists local HTTPS routes. `lan` shows an enable hint when off, an active URL when on, or a retry hint after failure. `tunnel` shows an enable hint when off, a starting/failed state while toggling, an active URL when on, and a muted disable hint below the active URL.
+  - The status panel always shows `routes`, `lan`, and `tunnel` rows. `routes` lists local HTTPS routes. `lan` shows an enable hint when off, an active URL with a disable hint when on, or a retry hint after failure. `tunnel` shows an enable hint when off, a starting/failed state while toggling, and an active URL with a disable hint when on.
   - When LAN mode is enabled, Tako prints a QR block for installing the local CA certificate on another device. When tunnel mode is enabled, Tako prints a short public URL block for visibility.
   - Keyboard shortcuts (interactive terminal only):
     - `r` restart the app process

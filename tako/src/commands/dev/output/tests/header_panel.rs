@@ -95,7 +95,7 @@ fn format_panel_always_shows_lan_and_tunnel_rows_with_enable_hints() {
 }
 
 #[test]
-fn format_panel_shows_active_lan_and_tunnel_urls_with_disable_hints_underneath() {
+fn format_panel_shows_active_lan_and_tunnel_urls_with_disable_hints_on_same_row() {
     let panel = format_panel_wide(
         "app",
         "running",
@@ -116,10 +116,19 @@ fn format_panel_shows_active_lan_and_tunnel_urls_with_disable_hints_underneath()
     );
     let plain = strip_ansi(&panel);
 
-    assert!(plain.contains("lan     https://app.local"));
-    assert!(plain.contains("        l to disable"));
-    assert!(plain.contains("tunnel  https://a8f3k2zz.tako.website"));
-    assert!(plain.contains("        t to disable"));
+    let lan_row = plain
+        .lines()
+        .find(|line| line.contains("lan     "))
+        .expect("expected lan row");
+    assert!(lan_row.contains("https://app.local"));
+    assert!(lan_row.contains("l to disable"));
+
+    let tunnel_row = plain
+        .lines()
+        .find(|line| line.contains("tunnel  "))
+        .expect("expected tunnel row");
+    assert!(tunnel_row.contains("https://a8f3k2zz.tako.website"));
+    assert!(tunnel_row.contains("t to disable"));
 }
 
 #[test]
