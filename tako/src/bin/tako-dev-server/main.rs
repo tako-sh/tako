@@ -1,6 +1,7 @@
 mod bootstrap;
 mod control;
 mod dev_channels;
+mod identity;
 mod image;
 mod lan;
 mod local_dns;

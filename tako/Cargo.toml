@@ -69,7 +69,7 @@ tokio-tungstenite = { version = "0.29", default-features = false, features = [
 # SSH client
 russh = "0.61"
 russh-sftp = "2.1"
-ssh-key = "0.6"
+ssh-key = { version = "0.6", features = ["ed25519", "getrandom"] }
 async-trait = "0.1"
 
 # Certificate generation for local CA

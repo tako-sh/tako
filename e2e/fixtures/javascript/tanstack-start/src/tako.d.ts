@@ -47,7 +47,6 @@ declare module "tako.sh" {
    * this interface is regenerated with typed readonly bindings.
    */
   export interface TakoStorages {}
-
 }
 
 interface TakoUserEnv {}

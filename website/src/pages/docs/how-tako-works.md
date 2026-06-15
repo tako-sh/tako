@@ -28,7 +28,7 @@ On macOS, Tako uses split DNS plus a launchd-managed loopback proxy so routes us
 
 Development routes come from `[envs.development].route` or `[envs.development].routes` when present. If you configure managed `.test` or `.tako.test` routes, they replace the default `{app}.test` host. External development routes are additional aliases and must be pointed at the dev proxy by you.
 
-The app starts immediately when `tako dev` starts, goes idle after 30 minutes without an attached CLI client, and wakes on the next request. `Ctrl-C` unregisters the app and removes routes. Pressing `b` backgrounds the app in the daemon. Interactive sessions can toggle LAN `.local` aliases with `l` and temporary public tunnel URLs with `t`.
+The app starts immediately when `tako dev` starts, goes idle after 30 minutes without an attached CLI client, and wakes on the next request. `Ctrl-C` unregisters the app and removes routes. Pressing `b` backgrounds the app in the daemon. Interactive sessions can toggle LAN `.local` aliases with `l` and temporary public tunnel URLs with `t`; tunnel hostnames are stable for the same app and Tako Identity.
 
 ## Deploy Flow
 

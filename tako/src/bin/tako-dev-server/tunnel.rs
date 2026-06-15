@@ -13,6 +13,7 @@ use tokio_tungstenite::tungstenite::Message;
 use crate::protocol::{self, Response};
 
 use crate::control::State;
+use crate::identity::TakoIdentity;
 
 const DEFAULT_TUNNEL_BASE_URL: &str = "https://tako.website/api";
 const TUNNEL_API_TIMEOUT: Duration = Duration::from_secs(15);
@@ -31,6 +32,12 @@ struct CreatedTunnel {
     url: String,
     session: String,
     expires_at: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct TunnelChallenge {
+    host: String,
+    nonce: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -112,7 +119,23 @@ async fn enable_tunnel(
     };
 
     let base_url = tunnel_base_url();
-    let created = create_tunnel(&base_url, &snapshot.app_name).await?;
+    let identity = TakoIdentity::load_or_create()?;
+    let public_key = identity.public_key()?;
+    let challenge = create_tunnel_challenge(&base_url, &snapshot.app_name, &public_key).await?;
+    let signature = identity.sign_tunnel(
+        &challenge.nonce,
+        &snapshot.app_name,
+        &challenge.host,
+        &public_key,
+    )?;
+    let created = create_tunnel(
+        &base_url,
+        &snapshot.app_name,
+        &public_key,
+        &challenge.nonce,
+        &signature,
+    )
+    .await?;
     let connect_url = tunnel_connect_url(&base_url, &created.host, &created.session)?;
 
     let state_for_task = Arc::clone(state);
@@ -269,7 +292,44 @@ struct TunnelSnapshot {
     listen_addr: String,
 }
 
-async fn create_tunnel(base_url: &str, app_name: &str) -> Result<CreatedTunnel, String> {
+async fn create_tunnel_challenge(
+    base_url: &str,
+    app_name: &str,
+    public_key: &str,
+) -> Result<TunnelChallenge, String> {
+    let url = format!("{}/v1/tunnel-challenges", base_url.trim_end_matches('/'));
+    let client = reqwest::Client::builder()
+        .connect_timeout(TUNNEL_API_TIMEOUT)
+        .timeout(TUNNEL_API_TIMEOUT)
+        .build()
+        .map_err(|error| format!("failed to build tunnel HTTP client: {error}"))?;
+    let response = client
+        .post(url)
+        .json(&serde_json::json!({
+            "app": app_name,
+            "public_key": public_key,
+        }))
+        .send()
+        .await
+        .map_err(|error| format!("failed to prepare tunnel: {error}"))?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("failed to prepare tunnel ({status}): {body}"));
+    }
+    response
+        .json::<TunnelChallenge>()
+        .await
+        .map_err(|error| format!("invalid tunnel challenge: {error}"))
+}
+
+async fn create_tunnel(
+    base_url: &str,
+    app_name: &str,
+    public_key: &str,
+    nonce: &str,
+    signature: &str,
+) -> Result<CreatedTunnel, String> {
     let url = format!("{}/v1/tunnels", base_url.trim_end_matches('/'));
     let client = reqwest::Client::builder()
         .connect_timeout(TUNNEL_API_TIMEOUT)
@@ -278,7 +338,12 @@ async fn create_tunnel(base_url: &str, app_name: &str) -> Result<CreatedTunnel, 
         .map_err(|error| format!("failed to build tunnel HTTP client: {error}"))?;
     let response = client
         .post(url)
-        .json(&serde_json::json!({ "app": app_name }))
+        .json(&serde_json::json!({
+            "app": app_name,
+            "public_key": public_key,
+            "nonce": nonce,
+            "signature": signature,
+        }))
         .send()
         .await
         .map_err(|error| format!("failed to create tunnel: {error}"))?;
