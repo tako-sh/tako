@@ -203,7 +203,7 @@ async fn run_async(
             })
         },
     )
-    .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    .map_err(|_| -> Box<dyn std::error::Error> { output::silent_exit_error().into() })?;
 
     let ValidationResult {
         tako_config,

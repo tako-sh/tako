@@ -388,6 +388,80 @@ route = "prod.example.com"
 }
 
 #[test]
+fn test_deploy_prints_secret_validation_errors_once() {
+    let temp = TempDir::new().unwrap();
+    let project_dir = temp.path().to_path_buf();
+    let home = temp.path().join("home");
+    let tako_home = temp.path().join("tako-home");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&tako_home).unwrap();
+
+    fs::write(
+        project_dir.join("tako.toml"),
+        r#"
+name = "test-app"
+runtime = "bun"
+main = "index.ts"
+
+[envs.production]
+route = "prod.example.com"
+servers = ["test-server"]
+
+[envs.staging]
+route = "staging.example.com"
+servers = ["test-server"]
+"#,
+    )
+    .unwrap();
+    fs::write(project_dir.join("bun.lockb"), "").unwrap();
+    fs::write(project_dir.join("index.ts"), "export default {}").unwrap();
+    fs::write(
+        tako_home.join("config.toml"),
+        r#"
+[[servers]]
+name = "test-server"
+host = "127.0.0.1"
+port = 22222
+"#,
+    )
+    .unwrap();
+
+    for args in [
+        ["secrets", "set", "API_KEY", "--env", "production"],
+        ["secrets", "set", "API_KEY", "--env", "staging"],
+        ["secrets", "set", "GITHUB_CLIENT_SECRET", "--env", "staging"],
+    ] {
+        let output =
+            run_tako_with_stdin_and_env(&args, &project_dir, "secret123\n", &home, &tako_home);
+        assert!(
+            output.status.success(),
+            "secret set should succeed: {}{}",
+            stdout_str(&output),
+            stderr_str(&output)
+        );
+    }
+
+    let output = run_tako_with_env(
+        &["deploy", "--env", "production"],
+        &project_dir,
+        &home,
+        &tako_home,
+    );
+
+    assert!(
+        !output.status.success(),
+        "deploy should fail when a production secret is missing"
+    );
+    let combined = format!("{}{}", stdout_str(&output), stderr_str(&output));
+    let needle = "Secret errors:";
+    assert_eq!(
+        combined.matches(needle).count(),
+        1,
+        "secret validation block should be printed once: {combined}"
+    );
+}
+
+#[test]
 fn test_deploy_detects_missing_ssl_secret_before_server_setup() {
     let temp = TempDir::new().unwrap();
     let project_dir = temp.path().to_path_buf();
