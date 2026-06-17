@@ -851,12 +851,17 @@ fn forwarded_response_headers(headers: &reqwest::header::HeaderMap) -> Vec<(Stri
 fn forwarded_websocket_headers(headers: &[(String, String)]) -> Vec<(String, String)> {
     headers
         .iter()
-        .filter(|(name, _)| {
-            let name = name.to_ascii_lowercase();
-            !is_hop_by_hop_or_host(&name)
-                && (!name.starts_with("sec-websocket-") || name == "sec-websocket-protocol")
+        .filter_map(|(name, value)| {
+            let lower_name = name.to_ascii_lowercase();
+            if is_hop_by_hop_or_host(&lower_name)
+                || lower_name == "origin"
+                || (lower_name.starts_with("sec-websocket-")
+                    && lower_name != "sec-websocket-protocol")
+            {
+                return None;
+            }
+            Some((name.clone(), value.clone()))
         })
-        .cloned()
         .collect()
 }
 
@@ -1086,13 +1091,7 @@ mod tests {
         ];
         assert_eq!(
             forwarded_websocket_headers(&headers),
-            vec![
-                ("sec-websocket-protocol".to_string(), "vite-hmr".to_string()),
-                (
-                    "origin".to_string(),
-                    "https://public.tako.website".to_string()
-                )
-            ]
+            vec![("sec-websocket-protocol".to_string(), "vite-hmr".to_string())]
         );
     }
 
