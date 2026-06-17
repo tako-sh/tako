@@ -12,7 +12,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::AbortHandle;
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream,
-    tungstenite::{Message, client::IntoClientRequest},
+    tungstenite::{Error as WebSocketError, Message, client::IntoClientRequest, http::StatusCode},
 };
 
 use crate::protocol::{self, Response};
@@ -232,6 +232,15 @@ async fn enable_tunnel(
 
 type TunnelCloseReason = protocol::TunnelCloseReason;
 
+#[derive(Debug, PartialEq, Eq)]
+enum TunnelConnectError {
+    Retry(String),
+    Terminal {
+        reason: TunnelCloseReason,
+        message: String,
+    },
+}
+
 fn disable_tunnel(
     state: &Arc<Mutex<State>>,
     config_path: &str,
@@ -420,8 +429,13 @@ async fn run_tunnel_session(
                     tracing::debug!("Tunnel connection closed: {error}");
                 }
             }
-            Err(error) => {
+            Err(TunnelConnectError::Retry(error)) => {
                 tracing::debug!("Tunnel connection failed: {error}");
+            }
+            Err(TunnelConnectError::Terminal { reason, message }) => {
+                tracing::warn!("Tunnel disabled: {message}");
+                disable_tunnel(&state, &config_path, reason);
+                return;
             }
         }
 
@@ -440,15 +454,41 @@ async fn run_tunnel_session(
 
 async fn connect_tunnel_socket(
     connect_url: &str,
-) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>, String> {
+) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>, TunnelConnectError> {
     let (socket, _) = tokio::time::timeout(
         TUNNEL_CONNECT_TIMEOUT,
         tokio_tungstenite::connect_async(connect_url),
     )
     .await
-    .map_err(|_| "timed out connecting tunnel websocket".to_string())?
-    .map_err(|error| format!("failed to connect tunnel websocket: {error}"))?;
+    .map_err(|_| TunnelConnectError::Retry("timed out connecting tunnel websocket".to_string()))?
+    .map_err(classify_tunnel_connect_error)?;
     Ok(socket)
+}
+
+fn classify_tunnel_connect_error(error: WebSocketError) -> TunnelConnectError {
+    match error {
+        WebSocketError::Http(response) if response.status() == StatusCode::TOO_MANY_REQUESTS => {
+            TunnelConnectError::Terminal {
+                reason: TunnelCloseReason::LimitExceeded,
+                message: tunnel_http_error_message(response.status(), response.body().as_deref()),
+            }
+        }
+        error => TunnelConnectError::Retry(format!("failed to connect tunnel websocket: {error}")),
+    }
+}
+
+fn tunnel_http_error_message(status: StatusCode, body: Option<&[u8]>) -> String {
+    let message = body
+        .and_then(|body| serde_json::from_slice::<serde_json::Value>(body).ok())
+        .and_then(|json| {
+            json.get("error")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        });
+    match message {
+        Some(message) => format!("tunnel service refused connection ({status}): {message}"),
+        None => format!("tunnel service refused connection ({status})"),
+    }
 }
 
 async fn run_tunnel_connection(
@@ -829,6 +869,7 @@ fn is_hop_by_hop_or_host(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio_tungstenite::tungstenite::http::Response as HttpResponse;
 
     #[test]
     fn default_tunnel_base_url_uses_apex_api_path() {
@@ -865,6 +906,40 @@ mod tests {
         assert_eq!(
             url,
             "wss://tako.website/api/v1/tunnels/connect?host=app.test&session=a%26b%3Dc+space"
+        );
+    }
+
+    #[test]
+    fn tunnel_connect_error_treats_limit_as_terminal() {
+        let response = HttpResponse::builder()
+            .status(StatusCode::TOO_MANY_REQUESTS)
+            .body(Some(
+                br#"{"error":"too many active tunnels for this machine (limit 5)"}"#.to_vec(),
+            ))
+            .unwrap();
+
+        let error = classify_tunnel_connect_error(WebSocketError::Http(Box::new(response)));
+
+        assert_eq!(
+            error,
+            TunnelConnectError::Terminal {
+                reason: TunnelCloseReason::LimitExceeded,
+                message: "tunnel service refused connection (429 Too Many Requests): too many active tunnels for this machine (limit 5)".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn tunnel_connect_error_retries_other_http_failures() {
+        let response = HttpResponse::builder()
+            .status(StatusCode::BAD_GATEWAY)
+            .body(None)
+            .unwrap();
+
+        let error = classify_tunnel_connect_error(WebSocketError::Http(Box::new(response)));
+
+        assert!(
+            matches!(error, TunnelConnectError::Retry(message) if message.contains("502 Bad Gateway"))
         );
     }
 

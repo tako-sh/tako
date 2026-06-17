@@ -87,6 +87,7 @@ pub enum TunnelCloseReason {
     Shutdown,
     ConnectionClosed,
     ConnectionError,
+    LimitExceeded,
 }
 
 #[derive(Debug, Clone)]
@@ -298,6 +299,7 @@ fn parse_tunnel_close_reason(value: &str) -> Option<TunnelCloseReason> {
         "shutdown" => Some(TunnelCloseReason::Shutdown),
         "connection_closed" => Some(TunnelCloseReason::ConnectionClosed),
         "connection_error" => Some(TunnelCloseReason::ConnectionError),
+        "limit_exceeded" => Some(TunnelCloseReason::LimitExceeded),
         _ => None,
     }
 }

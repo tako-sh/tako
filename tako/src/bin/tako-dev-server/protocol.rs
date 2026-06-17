@@ -236,6 +236,7 @@ pub enum TunnelCloseReason {
     Shutdown,
     ConnectionClosed,
     ConnectionError,
+    LimitExceeded,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -645,7 +646,7 @@ mod tests {
                 enabled: false,
                 url: None,
                 expires_at: None,
-                close_reason: Some(TunnelCloseReason::Timeout),
+                close_reason: Some(TunnelCloseReason::LimitExceeded),
             },
         };
         let json = serde_json::to_string(&resp).unwrap();

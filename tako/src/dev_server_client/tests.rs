@@ -100,7 +100,7 @@ fn parse_event_line_parses_tunnel_mode_changed_event() {
 
 #[test]
 fn parse_event_line_parses_tunnel_close_reason() {
-    let line = r#"{"type":"Event","event":{"type":"TunnelModeChanged","config_path":"/proj/tako.toml","app_name":"app","enabled":false,"close_reason":"timeout"}}"#;
+    let line = r#"{"type":"Event","event":{"type":"TunnelModeChanged","config_path":"/proj/tako.toml","app_name":"app","enabled":false,"close_reason":"limit_exceeded"}}"#;
     assert_eq!(
         parse_event_line(line),
         Some(DevServerEvent::TunnelModeChanged {
@@ -109,7 +109,7 @@ fn parse_event_line_parses_tunnel_close_reason() {
             enabled: false,
             url: None,
             expires_at: None,
-            close_reason: Some(TunnelCloseReason::Timeout),
+            close_reason: Some(TunnelCloseReason::LimitExceeded),
         })
     );
 }

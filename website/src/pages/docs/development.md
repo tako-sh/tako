@@ -148,6 +148,8 @@ The id is derived from the app name and the local Tako Identity public key, so t
 
 Starting a tunnel for the same app and identity replaces any previous active tunnel for that URL. Tunnels do not have a fixed session TTL. If the local tunnel connection is lost, `tako dev` keeps tunnel mode on, shows the URL as reconnecting, retries with bounded exponential backoff, and prints when reconnecting starts and when the tunnel reconnects. Tunnels turn off when you disable tunnel mode or unregister the app.
 
+One Tako Identity can have up to five active tunnel URLs connected at the same time. Reconnecting or replacing the same app URL does not consume another slot. If the limit is reached, Tako turns tunnel mode off and prints a warning.
+
 When a tunnel URL is inactive or disconnected, browser requests get a Tako-styled error page. Clients that send `Accept: application/json` get JSON, and other clients get plain text.
 
 `tako dev list` shows the current tunnel URL for apps with tunnel mode enabled.

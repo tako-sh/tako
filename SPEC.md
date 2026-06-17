@@ -648,6 +648,7 @@ Start (or connect to) a local development session for the current app, backed by
     - `tako dev --tunnel` enables tunnel mode during startup.
     - Pressing `t` in the interactive UI toggles tunnel mode for the current app.
     - Starting a tunnel for the same app and identity replaces any previous active tunnel for that URL.
+    - One Tako Identity can have up to five active tunnel URLs connected at the same time. Reconnecting or replacing the same app URL does not consume another slot. If the limit is reached, Tako turns tunnel mode off and prints a warning.
     - Tunnel URLs do not have a fixed session TTL. Tunnel mode stays enabled until the user turns it off or the app is unregistered. If the local tunnel connection is lost, Tako keeps the URL reserved, marks the tunnel as reconnecting, retries with bounded exponential backoff, and prints a log line when reconnecting starts and when the tunnel reconnects. When a tunnel turns off, Tako prints a log line explaining whether it was turned off by the user, stopped with the app, or closed by the service.
     - Inactive or disconnected tunnel URLs return a Tako-styled HTML error page for browser requests, JSON for clients that accept `application/json`, and plain text for other clients.
 - When running in an interactive terminal, `tako dev` prints a branded header (logo + version + app info) once at startup, then streams logs and status updates directly to stdout.
