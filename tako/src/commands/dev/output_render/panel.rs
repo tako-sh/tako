@@ -352,22 +352,16 @@ fn share_row_lines(
         ShareRowState::Active(url) => {
             let hint = format!("{key} to disable");
             let hint_w = measure_text_width(&hint);
-            if value_width <= hint_w {
+            if value_width <= hint_w + 1 {
                 let hint_t = truncate_str(&hint, value_width, "…");
                 return vec![format!("{}{}", label_cell(label), muted(&hint_t))];
             }
 
-            let gap_w = 2;
-            let url_w = value_width.saturating_sub(hint_w + gap_w);
+            let url_w = value_width.saturating_sub(hint_w + 1);
             let url_t = truncate_str(url, url_w, "…");
-            let gap = value_width
-                .saturating_sub(measure_text_width(&url_t) + hint_w)
-                .max(gap_w)
-                .min(value_width - hint_w);
             vec![format!(
-                "{}{url_color}{url_t}{RESET}{}{}",
+                "{}{url_color}{url_t}{RESET} {}",
                 label_cell(label),
-                " ".repeat(gap),
                 muted(&hint)
             )]
         }

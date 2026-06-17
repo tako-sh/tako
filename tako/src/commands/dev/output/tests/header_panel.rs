@@ -129,6 +129,7 @@ fn format_panel_shows_active_lan_and_tunnel_urls_with_disable_hints_on_same_row(
         .expect("expected tunnel row");
     assert!(tunnel_row.contains("https://a8f3k2zz.tako.website"));
     assert!(tunnel_row.contains("t to disable"));
+    assert!(tunnel_row.contains("https://a8f3k2zz.tako.website t to disable"));
 }
 
 #[test]
