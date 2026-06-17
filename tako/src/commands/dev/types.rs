@@ -172,6 +172,7 @@ pub enum TunnelCloseReason {
     ConnectionClosed,
     ConnectionError,
     LimitExceeded,
+    Replaced,
 }
 
 impl TunnelCloseReason {
@@ -185,12 +186,15 @@ impl TunnelCloseReason {
             TunnelCloseReason::LimitExceeded => {
                 "Tunnel off: active tunnel limit reached (5 per machine)"
             }
+            TunnelCloseReason::Replaced => "Tunnel off: replaced by a newer tunnel session",
         }
     }
 
     pub(super) fn log_level(self) -> LogLevel {
         match self {
-            TunnelCloseReason::ConnectionError | TunnelCloseReason::LimitExceeded => LogLevel::Warn,
+            TunnelCloseReason::ConnectionError
+            | TunnelCloseReason::LimitExceeded
+            | TunnelCloseReason::Replaced => LogLevel::Warn,
             TunnelCloseReason::User
             | TunnelCloseReason::Timeout
             | TunnelCloseReason::Shutdown
@@ -208,6 +212,7 @@ impl From<crate::dev_server_client::TunnelCloseReason> for TunnelCloseReason {
             crate::dev_server_client::TunnelCloseReason::ConnectionClosed => Self::ConnectionClosed,
             crate::dev_server_client::TunnelCloseReason::ConnectionError => Self::ConnectionError,
             crate::dev_server_client::TunnelCloseReason::LimitExceeded => Self::LimitExceeded,
+            crate::dev_server_client::TunnelCloseReason::Replaced => Self::Replaced,
         }
     }
 }
@@ -359,6 +364,10 @@ mod tests {
             TunnelCloseReason::LimitExceeded.log_level(),
             LogLevel::Warn
         ));
+        assert_eq!(
+            TunnelCloseReason::Replaced.log_message(),
+            "Tunnel off: replaced by a newer tunnel session"
+        );
     }
 
     #[test]

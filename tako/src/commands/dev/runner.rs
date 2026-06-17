@@ -272,16 +272,16 @@ pub async fn run(
         println!();
     }
 
-    control::spawn_control_loop(
-        config_key.clone(),
+    control::spawn_control_loop(control::ControlLoop {
+        config_key: config_key.clone(),
         initial_lan_enabled,
         initial_tunnel_enabled,
         control_rx,
-        log_tx.clone(),
-        event_tx.clone(),
-        should_exit_tx.clone(),
-        terminate_requested.clone(),
-    );
+        log_tx: log_tx.clone(),
+        event_tx: event_tx.clone(),
+        should_exit_tx: should_exit_tx.clone(),
+        terminate_requested: terminate_requested.clone(),
+    });
 
     if tunnel {
         let _ = control_tx.send(output::ControlCmd::ToggleTunnel).await;

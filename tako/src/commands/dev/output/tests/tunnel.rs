@@ -30,6 +30,17 @@ fn tunnel_close_log_warns_for_limit_exceeded() {
 }
 
 #[test]
+fn tunnel_close_log_warns_for_replaced_tunnel() {
+    let log = tunnel_close_log(Some(TunnelCloseReason::Replaced));
+
+    assert!(matches!(log.level, LogLevel::Warn));
+    assert_eq!(
+        log.message,
+        "Tunnel off: replaced by a newer tunnel session"
+    );
+}
+
+#[test]
 fn tunnel_connection_log_reports_reconnect_status() {
     let reconnecting = tunnel_connection_log(false);
     assert!(matches!(reconnecting.level, LogLevel::Warn));

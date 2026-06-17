@@ -12,7 +12,10 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::AbortHandle;
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream,
-    tungstenite::{Error as WebSocketError, Message, client::IntoClientRequest, http::StatusCode},
+    tungstenite::{
+        Error as WebSocketError, Message, client::IntoClientRequest, http::StatusCode,
+        protocol::CloseFrame,
+    },
 };
 
 use crate::protocol::{self, Response};
@@ -26,6 +29,8 @@ const TUNNEL_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const TUNNEL_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(25);
 const TUNNEL_RECONNECT_INITIAL_DELAY: Duration = Duration::from_secs(1);
 const TUNNEL_RECONNECT_MAX_DELAY: Duration = Duration::from_secs(30);
+const TUNNEL_CLOSE_ACTIVE_LIMIT: u16 = 4409;
+const TUNNEL_CLOSE_REPLACED: u16 = 4410;
 
 #[derive(Debug, Clone)]
 pub(crate) struct TunnelRegistration {
@@ -241,6 +246,21 @@ enum TunnelConnectError {
     },
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum TunnelConnectionEnd {
+    Retry(String),
+    Terminal {
+        reason: TunnelCloseReason,
+        message: String,
+    },
+}
+
+impl From<String> for TunnelConnectionEnd {
+    fn from(message: String) -> Self {
+        Self::Retry(message)
+    }
+}
+
 fn disable_tunnel(
     state: &Arc<Mutex<State>>,
     config_path: &str,
@@ -425,8 +445,16 @@ async fn run_tunnel_session(
                     reported_reconnecting = false;
                 }
                 delay = TUNNEL_RECONNECT_INITIAL_DELAY;
-                if let Err(error) = run_tunnel_connection(socket, snapshot.clone()).await {
-                    tracing::debug!("Tunnel connection closed: {error}");
+                match run_tunnel_connection(socket, snapshot.clone()).await {
+                    Ok(()) => {}
+                    Err(TunnelConnectionEnd::Retry(error)) => {
+                        tracing::debug!("Tunnel connection closed: {error}");
+                    }
+                    Err(TunnelConnectionEnd::Terminal { reason, message }) => {
+                        tracing::info!("Tunnel disabled: {message}");
+                        disable_tunnel(&state, &config_path, reason);
+                        return;
+                    }
                 }
             }
             Err(TunnelConnectError::Retry(error)) => {
@@ -491,10 +519,25 @@ fn tunnel_http_error_message(status: StatusCode, body: Option<&[u8]>) -> String 
     }
 }
 
+fn terminal_close_reason(close: Option<&CloseFrame>) -> Option<(TunnelCloseReason, String)> {
+    let close = close?;
+    match close.code.into() {
+        TUNNEL_CLOSE_ACTIVE_LIMIT => Some((
+            TunnelCloseReason::LimitExceeded,
+            "active tunnel limit reached".to_string(),
+        )),
+        TUNNEL_CLOSE_REPLACED => Some((
+            TunnelCloseReason::Replaced,
+            "tunnel was replaced by a newer session".to_string(),
+        )),
+        _ => None,
+    }
+}
+
 async fn run_tunnel_connection(
     socket: WebSocketStream<MaybeTlsStream<TcpStream>>,
     snapshot: TunnelSnapshot,
-) -> Result<(), String> {
+) -> Result<(), TunnelConnectionEnd> {
     let (mut writer, mut reader) = socket.split();
     let client = local_proxy_client(&snapshot.local_host, &snapshot.listen_addr)?;
     let (outbound_tx, mut outbound_rx) = mpsc::channel::<String>(128);
@@ -521,8 +564,13 @@ async fn run_tunnel_connection(
                 };
                 let message = message.map_err(|error| format!("tunnel websocket error: {error}"))?;
                 let Message::Text(text) = message else {
-                    if matches!(message, Message::Close(_)) {
-                        break;
+                    if let Message::Close(close) = message {
+                        return match terminal_close_reason(close.as_ref()) {
+                            Some((reason, message)) => {
+                                Err(TunnelConnectionEnd::Terminal { reason, message })
+                            }
+                            None => Ok(()),
+                        };
                     }
                     continue;
                 };
@@ -941,6 +989,48 @@ mod tests {
         assert!(
             matches!(error, TunnelConnectError::Retry(message) if message.contains("502 Bad Gateway"))
         );
+    }
+
+    #[test]
+    fn terminal_close_reason_maps_active_limit_code() {
+        let close = CloseFrame {
+            code: TUNNEL_CLOSE_ACTIVE_LIMIT.into(),
+            reason: "active_tunnel_limit".into(),
+        };
+
+        assert_eq!(
+            terminal_close_reason(Some(&close)),
+            Some((
+                TunnelCloseReason::LimitExceeded,
+                "active tunnel limit reached".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn terminal_close_reason_maps_replaced_code() {
+        let close = CloseFrame {
+            code: TUNNEL_CLOSE_REPLACED.into(),
+            reason: "tunnel_replaced".into(),
+        };
+
+        assert_eq!(
+            terminal_close_reason(Some(&close)),
+            Some((
+                TunnelCloseReason::Replaced,
+                "tunnel was replaced by a newer session".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn terminal_close_reason_ignores_normal_close() {
+        let close = CloseFrame {
+            code: 1000.into(),
+            reason: "normal".into(),
+        };
+
+        assert_eq!(terminal_close_reason(Some(&close)), None);
     }
 
     #[test]

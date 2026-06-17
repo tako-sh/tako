@@ -237,6 +237,7 @@ pub enum TunnelCloseReason {
     ConnectionClosed,
     ConnectionError,
     LimitExceeded,
+    Replaced,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

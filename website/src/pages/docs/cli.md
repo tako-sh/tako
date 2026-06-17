@@ -68,7 +68,7 @@ Interactive controls:
 | `b`      | Leave the app running in the background and exit the attached CLI. |
 | `Ctrl+c` | Stop the app and exit.                                             |
 
-The interactive status panel always shows local routes plus LAN and tunnel state. LAN and tunnel rows include their own enable/disable hints on the same rows; tunnel also shows starting and reconnecting states while it connects. Tunnel hostnames use `{app}-{id}.tako.website`; the id is derived from the app name and Tako Identity, so the same app gets the same URL when the same identity is available. If the tunnel connection drops, Tako keeps the URL reserved and reconnects automatically. One Tako Identity can have up to five active tunnel URLs connected at the same time. When a tunnel turns off, `tako dev` prints a log line with the close reason.
+The interactive status panel always shows local routes plus LAN and tunnel state. LAN and tunnel rows include their own enable/disable hints on the same rows; tunnel also shows starting and reconnecting states while it connects. Tunnel hostnames use `{app}-{id}.tako.website`; the id is derived from the app name and Tako Identity, so the same app gets the same URL when the same identity is available. If the tunnel connection drops, Tako keeps the URL reserved and reconnects automatically. One Tako Identity can have up to five active tunnel URLs connected at the same time; starting a sixth closes the oldest active tunnel for that identity. When a tunnel turns off, `tako dev` prints a log line with the close reason.
 
 Inactive tunnel URLs show a Tako error page in browsers and machine-readable errors for API clients.
 
@@ -104,7 +104,7 @@ tako dev ls
 
 Interactive shortcuts: `r` restarts, `l` toggles LAN `.local` aliases, `t` toggles tunnel mode, `b` backgrounds the app, and `Ctrl-C` unregisters it.
 
-The interactive status panel always shows local routes plus LAN and tunnel state. LAN and tunnel rows include enable/disable hints, and tunnel shows starting or reconnecting state while it connects. Tunnel hostnames use `{app}-{id}.tako.website`; the id is derived from the app name and Tako Identity, so the same app gets the same URL when the same identity is available. One Tako Identity can have up to five active tunnel URLs connected at the same time. Inactive tunnel URLs show a Tako error page in browsers and machine-readable errors for API clients.
+The interactive status panel always shows local routes plus LAN and tunnel state. LAN and tunnel rows include enable/disable hints, and tunnel shows starting or reconnecting state while it connects. Tunnel hostnames use `{app}-{id}.tako.website`; the id is derived from the app name and Tako Identity, so the same app gets the same URL when the same identity is available. One Tako Identity can have up to five active tunnel URLs connected at the same time; starting a sixth closes the oldest active tunnel for that identity. Inactive tunnel URLs show a Tako error page in browsers and machine-readable errors for API clients.
 
 ## Deploy And Runtime Operations
 

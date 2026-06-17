@@ -5,16 +5,29 @@ use tokio::sync::{mpsc, watch};
 
 use super::super::{DevEvent, ScopedLog, output};
 
-pub(super) fn spawn_control_loop(
-    config_key: String,
-    initial_lan_enabled: bool,
-    initial_tunnel_enabled: bool,
-    mut control_rx: mpsc::Receiver<output::ControlCmd>,
-    log_tx: mpsc::Sender<ScopedLog>,
-    event_tx: mpsc::Sender<DevEvent>,
-    should_exit_tx: watch::Sender<bool>,
-    terminate_requested: Arc<AtomicBool>,
-) {
+pub(super) struct ControlLoop {
+    pub(super) config_key: String,
+    pub(super) initial_lan_enabled: bool,
+    pub(super) initial_tunnel_enabled: bool,
+    pub(super) control_rx: mpsc::Receiver<output::ControlCmd>,
+    pub(super) log_tx: mpsc::Sender<ScopedLog>,
+    pub(super) event_tx: mpsc::Sender<DevEvent>,
+    pub(super) should_exit_tx: watch::Sender<bool>,
+    pub(super) terminate_requested: Arc<AtomicBool>,
+}
+
+pub(super) fn spawn_control_loop(control: ControlLoop) {
+    let ControlLoop {
+        config_key,
+        initial_lan_enabled,
+        initial_tunnel_enabled,
+        mut control_rx,
+        log_tx,
+        event_tx,
+        should_exit_tx,
+        terminate_requested,
+    } = control;
+
     tokio::spawn(async move {
         let mut lan_enabled = initial_lan_enabled;
         let mut tunnel_enabled = initial_tunnel_enabled;

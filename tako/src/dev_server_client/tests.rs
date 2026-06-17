@@ -115,6 +115,22 @@ fn parse_event_line_parses_tunnel_close_reason() {
 }
 
 #[test]
+fn parse_event_line_parses_replaced_tunnel_close_reason() {
+    let line = r#"{"type":"Event","event":{"type":"TunnelModeChanged","config_path":"/proj/tako.toml","app_name":"app","enabled":false,"close_reason":"replaced"}}"#;
+    assert_eq!(
+        parse_event_line(line),
+        Some(DevServerEvent::TunnelModeChanged {
+            config_path: "/proj/tako.toml".to_string(),
+            app_name: "app".to_string(),
+            enabled: false,
+            url: None,
+            expires_at: None,
+            close_reason: Some(TunnelCloseReason::Replaced),
+        })
+    );
+}
+
+#[test]
 fn parse_event_line_parses_tunnel_connection_changed_event() {
     let line = r#"{"type":"Event","event":{"type":"TunnelConnectionChanged","config_path":"/proj/tako.toml","app_name":"app","connected":false,"url":"https://a8f3k2zz.tako.website"}}"#;
     assert_eq!(
