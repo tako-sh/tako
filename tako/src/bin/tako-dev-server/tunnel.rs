@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -6,9 +7,9 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures_util::{SinkExt, StreamExt};
 use reqwest::header::{HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::AbortHandle;
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};
 
 use crate::protocol::{self, Response};
 
@@ -18,6 +19,7 @@ use crate::identity::TakoIdentity;
 const DEFAULT_TUNNEL_BASE_URL: &str = "https://tako.website/api";
 const TUNNEL_API_TIMEOUT: Duration = Duration::from_secs(15);
 const TUNNEL_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const TUNNEL_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(25);
 
 #[derive(Debug, Clone)]
 pub(crate) struct TunnelRegistration {
@@ -44,12 +46,18 @@ struct TunnelChallenge {
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ServerMessage {
     Request(TunnelRequestMessage),
+    WebSocketOpen(TunnelWebSocketOpenMessage),
+    WebSocketFrame(TunnelWebSocketFrameMessage),
+    WebSocketClose(TunnelWebSocketCloseMessage),
 }
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ClientMessage {
     Response(TunnelResponseMessage),
+    WebSocketFrame(TunnelWebSocketFrameMessage),
+    WebSocketClose(TunnelWebSocketCloseMessage),
+    Ping,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -67,6 +75,34 @@ struct TunnelResponseMessage {
     status: u16,
     headers: Vec<(String, String)>,
     body_base64: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct TunnelWebSocketOpenMessage {
+    id: String,
+    path: String,
+    headers: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TunnelWebSocketFrameMessage {
+    id: String,
+    kind: TunnelWebSocketFrameKind,
+    data_base64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TunnelWebSocketCloseMessage {
+    id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum TunnelWebSocketFrameKind {
+    Text,
+    Binary,
+    Ping,
+    Pong,
 }
 
 pub(super) async fn handle_toggle_tunnel(
@@ -115,6 +151,7 @@ async fn enable_tunnel(
             app_name: app.name.clone(),
             local_host: host,
             listen_addr: s.listen_addr.clone(),
+            upstream_port: app.upstream_port,
         }
     };
 
@@ -290,6 +327,7 @@ struct TunnelSnapshot {
     app_name: String,
     local_host: String,
     listen_addr: String,
+    upstream_port: u16,
 }
 
 async fn create_tunnel_challenge(
@@ -371,28 +409,90 @@ async fn run_tunnel_connection(
     .map_err(|error| format!("failed to connect tunnel websocket: {error}"))?;
     let (mut writer, mut reader) = socket.split();
     let client = local_proxy_client(&snapshot.local_host, &snapshot.listen_addr)?;
+    let (outbound_tx, mut outbound_rx) = mpsc::channel::<String>(128);
+    let writer_task = tokio::spawn(async move {
+        while let Some(payload) = outbound_rx.recv().await {
+            writer
+                .send(Message::Text(payload.into()))
+                .await
+                .map_err(|error| format!("failed to send tunnel message: {error}"))?;
+        }
+        Ok::<(), String>(())
+    });
+    let mut web_sockets: BTreeMap<String, mpsc::Sender<Message>> = BTreeMap::new();
+    let mut keepalive = tokio::time::interval(TUNNEL_KEEPALIVE_INTERVAL);
 
-    while let Some(message) = reader.next().await {
-        let message = message.map_err(|error| format!("tunnel websocket error: {error}"))?;
-        let Message::Text(text) = message else {
-            if matches!(message, Message::Close(_)) {
-                break;
+    loop {
+        tokio::select! {
+            _ = keepalive.tick() => {
+                send_client_message(&outbound_tx, ClientMessage::Ping).await?;
             }
-            continue;
-        };
-        let server_message = serde_json::from_str::<ServerMessage>(&text)
-            .map_err(|error| format!("invalid tunnel message: {error}"))?;
-        let ServerMessage::Request(request) = server_message;
-        let response = forward_to_local_proxy(&client, &snapshot, request).await;
-        let payload = serde_json::to_string(&ClientMessage::Response(response))
-            .map_err(|error| format!("failed to encode tunnel response: {error}"))?;
-        writer
-            .send(Message::Text(payload.into()))
-            .await
-            .map_err(|error| format!("failed to send tunnel response: {error}"))?;
+            message = reader.next() => {
+                let Some(message) = message else {
+                    break;
+                };
+                let message = message.map_err(|error| format!("tunnel websocket error: {error}"))?;
+                let Message::Text(text) = message else {
+                    if matches!(message, Message::Close(_)) {
+                        break;
+                    }
+                    continue;
+                };
+                let server_message = serde_json::from_str::<ServerMessage>(&text)
+                    .map_err(|error| format!("invalid tunnel message: {error}"))?;
+                match server_message {
+                    ServerMessage::Request(request) => {
+                        let response = forward_to_local_proxy(&client, &snapshot, request).await;
+                        send_client_message(&outbound_tx, ClientMessage::Response(response)).await?;
+                    }
+                    ServerMessage::WebSocketOpen(open) => {
+                        let id = open.id.clone();
+                        match open_local_websocket(&snapshot, open, outbound_tx.clone()).await {
+                            Ok(sender) => {
+                                web_sockets.insert(id, sender);
+                            }
+                            Err(error) => {
+                                tracing::debug!(error = %error, "failed to open local websocket");
+                                send_client_message(
+                                    &outbound_tx,
+                                    ClientMessage::WebSocketClose(TunnelWebSocketCloseMessage { id }),
+                                )
+                                .await?;
+                            }
+                        }
+                    }
+                    ServerMessage::WebSocketFrame(frame) => {
+                        let id = frame.id.clone();
+                        if let Some(sender) = web_sockets.get(&id)
+                            && let Ok(message) = tunnel_frame_to_tungstenite_message(frame)
+                        {
+                            let _ = sender.send(message).await;
+                        }
+                    }
+                    ServerMessage::WebSocketClose(close) => {
+                        if let Some(sender) = web_sockets.remove(&close.id) {
+                            let _ = sender.send(Message::Close(None)).await;
+                        }
+                    }
+                }
+            }
+        }
     }
 
+    writer_task.abort();
     Ok(())
+}
+
+async fn send_client_message(
+    outbound: &mpsc::Sender<String>,
+    message: ClientMessage,
+) -> Result<(), String> {
+    let payload = serde_json::to_string(&message)
+        .map_err(|error| format!("failed to encode tunnel message: {error}"))?;
+    outbound
+        .send(payload)
+        .await
+        .map_err(|_| "tunnel websocket writer closed".to_string())
 }
 
 fn local_proxy_client(local_host: &str, listen_addr: &str) -> Result<reqwest::Client, String> {
@@ -468,6 +568,65 @@ async fn forward_to_local_proxy_inner(
     })
 }
 
+async fn open_local_websocket(
+    snapshot: &TunnelSnapshot,
+    open: TunnelWebSocketOpenMessage,
+    outbound: mpsc::Sender<String>,
+) -> Result<mpsc::Sender<Message>, String> {
+    let id = open.id.clone();
+    let mut request = local_websocket_url(snapshot.upstream_port, &open.path)?
+        .into_client_request()
+        .map_err(|error| format!("invalid local websocket request: {error}"))?;
+    for (name, value) in forwarded_websocket_headers(&open.headers) {
+        let Ok(name) = HeaderName::from_bytes(name.as_bytes()) else {
+            continue;
+        };
+        let Ok(value) = HeaderValue::from_str(&value) else {
+            continue;
+        };
+        request.headers_mut().insert(name, value);
+    }
+    let (socket, _) = tokio_tungstenite::connect_async(request)
+        .await
+        .map_err(|error| format!("local websocket request failed: {error}"))?;
+    let (mut local_writer, mut local_reader) = socket.split();
+    let (to_local, mut from_tunnel) = mpsc::channel::<Message>(128);
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                message = from_tunnel.recv() => {
+                    let Some(message) = message else {
+                        break;
+                    };
+                    if local_writer.send(message).await.is_err() {
+                        break;
+                    }
+                }
+                message = local_reader.next() => {
+                    let Some(Ok(message)) = message else {
+                        break;
+                    };
+                    if matches!(message, Message::Close(_)) {
+                        break;
+                    }
+                    let Some(frame) = tungstenite_message_to_tunnel_frame(&id, message) else {
+                        continue;
+                    };
+                    if send_client_message(&outbound, ClientMessage::WebSocketFrame(frame)).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+        let _ = send_client_message(
+            &outbound,
+            ClientMessage::WebSocketClose(TunnelWebSocketCloseMessage { id }),
+        )
+        .await;
+    });
+    Ok(to_local)
+}
+
 fn tunnel_base_url() -> String {
     std::env::var("TAKO_TUNNEL_URL")
         .ok()
@@ -507,6 +666,18 @@ fn local_proxy_url(local_host: &str, listen_addr: &str, path: &str) -> Result<St
     ))
 }
 
+fn local_websocket_url(upstream_port: u16, path: &str) -> Result<String, String> {
+    if upstream_port == 0 {
+        return Err("app has no active upstream port".to_string());
+    }
+    let path = if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{path}")
+    };
+    Ok(format!("ws://127.0.0.1:{upstream_port}{path}"))
+}
+
 fn local_proxy_listen_addr(listen_addr: &str) -> Result<SocketAddr, String> {
     listen_addr
         .parse()
@@ -539,6 +710,56 @@ fn forwarded_response_headers(headers: &reqwest::header::HeaderMap) -> Vec<(Stri
             Some((name.as_str().to_string(), value.to_str().ok()?.to_string()))
         })
         .collect()
+}
+
+fn forwarded_websocket_headers(headers: &[(String, String)]) -> Vec<(String, String)> {
+    headers
+        .iter()
+        .filter(|(name, _)| {
+            let name = name.to_ascii_lowercase();
+            !is_hop_by_hop_or_host(&name) && !name.starts_with("sec-websocket-")
+        })
+        .cloned()
+        .collect()
+}
+
+fn tungstenite_message_to_tunnel_frame(
+    id: &str,
+    message: Message,
+) -> Option<TunnelWebSocketFrameMessage> {
+    let (kind, data) = match message {
+        Message::Text(text) => (
+            TunnelWebSocketFrameKind::Text,
+            text.to_string().into_bytes(),
+        ),
+        Message::Binary(bytes) => (TunnelWebSocketFrameKind::Binary, bytes.to_vec()),
+        Message::Ping(bytes) => (TunnelWebSocketFrameKind::Ping, bytes.to_vec()),
+        Message::Pong(bytes) => (TunnelWebSocketFrameKind::Pong, bytes.to_vec()),
+        Message::Close(_) | Message::Frame(_) => return None,
+    };
+    Some(TunnelWebSocketFrameMessage {
+        id: id.to_string(),
+        kind,
+        data_base64: STANDARD.encode(data),
+    })
+}
+
+fn tunnel_frame_to_tungstenite_message(
+    frame: TunnelWebSocketFrameMessage,
+) -> Result<Message, String> {
+    let data = STANDARD
+        .decode(frame.data_base64.as_bytes())
+        .map_err(|error| format!("invalid websocket frame: {error}"))?;
+    match frame.kind {
+        TunnelWebSocketFrameKind::Text => {
+            let text = String::from_utf8(data)
+                .map_err(|error| format!("invalid websocket text frame: {error}"))?;
+            Ok(Message::Text(text.into()))
+        }
+        TunnelWebSocketFrameKind::Binary => Ok(Message::Binary(data.into())),
+        TunnelWebSocketFrameKind::Ping => Ok(Message::Ping(data.into())),
+        TunnelWebSocketFrameKind::Pong => Ok(Message::Pong(data.into())),
+    }
 }
 
 fn is_hop_by_hop_or_host(name: &str) -> bool {
@@ -625,6 +846,12 @@ mod tests {
     }
 
     #[test]
+    fn local_websocket_url_uses_upstream_port() {
+        let url = local_websocket_url(5173, "/@vite/client").unwrap();
+        assert_eq!(url, "ws://127.0.0.1:5173/@vite/client");
+    }
+
+    #[test]
     fn local_proxy_url_rejects_invalid_listen_addr() {
         let error = local_proxy_url("app.test", "localhost:47831", "/").unwrap_err();
         assert!(error.contains("invalid local proxy listen address"));
@@ -642,5 +869,36 @@ mod tests {
             forwarded_request_headers(&headers),
             vec![("x-test".to_string(), "ok".to_string())]
         );
+    }
+
+    #[test]
+    fn forwarded_websocket_headers_skip_handshake_headers() {
+        let headers = vec![
+            ("host".to_string(), "public.tako.website".to_string()),
+            ("sec-websocket-key".to_string(), "key".to_string()),
+            (
+                "origin".to_string(),
+                "https://public.tako.website".to_string(),
+            ),
+        ];
+        assert_eq!(
+            forwarded_websocket_headers(&headers),
+            vec![(
+                "origin".to_string(),
+                "https://public.tako.website".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn websocket_text_frames_roundtrip_through_tunnel_encoding() {
+        let frame = tungstenite_message_to_tunnel_frame("ws-1", Message::Text("hello".into()))
+            .expect("frame");
+
+        assert_eq!(frame.id, "ws-1");
+        assert_eq!(frame.kind, TunnelWebSocketFrameKind::Text);
+
+        let message = tunnel_frame_to_tungstenite_message(frame).expect("message");
+        assert_eq!(message, Message::Text("hello".into()));
     }
 }
