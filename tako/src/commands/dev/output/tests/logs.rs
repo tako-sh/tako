@@ -259,30 +259,3 @@ fn parse_log_line_preserves_kind_from_wire_format() {
     assert_eq!(log.kind.as_deref(), Some("restarted"));
     assert_eq!(log.message, "", "msg is optional when kind is set");
 }
-
-#[test]
-fn format_log_dims_lan_mode_ip_suffix() {
-    let enabled = strip_ansi(&format_log(&ScopedLog {
-        timestamp: "12:34:56".to_string(),
-        level: LogLevel::Info,
-        scope: "tako".to_string(),
-        message: "LAN mode enabled (192.168.1.2)".to_string(),
-        fields: None,
-        kind: None,
-    }));
-    assert!(enabled.contains("INFO"));
-    assert!(enabled.contains("tako"));
-    assert!(enabled.contains("LAN mode enabled (192.168.1.2)"));
-
-    let disabled = strip_ansi(&format_log(&ScopedLog {
-        timestamp: "12:34:56".to_string(),
-        level: LogLevel::Info,
-        scope: "tako".to_string(),
-        message: "LAN mode disabled".to_string(),
-        fields: None,
-        kind: None,
-    }));
-    assert!(disabled.contains("INFO"));
-    assert!(disabled.contains("tako"));
-    assert!(disabled.contains("LAN mode disabled"));
-}

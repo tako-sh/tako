@@ -101,6 +101,18 @@ fn tunnel_connection_log(connected: bool) -> ScopedLog {
     }
 }
 
+fn event_block(label: &str) -> String {
+    format!("{DIM}──── {label} ────{RESET}")
+}
+
+fn client_connected_block(is_self: bool, client_id: u32) -> String {
+    if is_self {
+        event_block("connected")
+    } else {
+        event_block(&format!("Client {client_id} connected"))
+    }
+}
+
 // ── Sticky footer ─────────────────────────────────────────────────────────────
 
 struct StickyFooter {
@@ -504,15 +516,7 @@ pub async fn run_dev_output(
                         footer.println(&format!("\x1b[38;2;232;163;160merror:{RESET} {e}"));
                     }
                     DevEvent::ClientConnected { is_self, client_id } => {
-                        if is_self {
-                            footer.println(&format!("{DIM}──── connected ────{RESET}"));
-                        } else {
-                            footer.println(&format_log(&ScopedLog::at(
-                                LogLevel::Debug,
-                                "tako",
-                                format!("Client {} connected", client_id),
-                            )));
-                        }
+                        footer.println(&client_connected_block(is_self, client_id));
                     }
                     DevEvent::ClientDisconnected { client_id } => {
                         footer.println(&format_log(&ScopedLog::at(

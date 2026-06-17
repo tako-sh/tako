@@ -8,28 +8,6 @@ use crate::state;
 
 use super::state::State;
 
-fn lan_mode_message(enabled: bool, lan_ip: Option<&str>) -> String {
-    if enabled {
-        match lan_ip {
-            Some(ip) => format!("LAN mode enabled ({ip})"),
-            None => "LAN mode enabled".to_string(),
-        }
-    } else {
-        "LAN mode disabled".to_string()
-    }
-}
-
-pub(super) fn write_lan_mode_log(
-    log_buffers: impl IntoIterator<Item = state::LogBuffer>,
-    enabled: bool,
-    lan_ip: Option<&str>,
-) {
-    let message = lan_mode_message(enabled, lan_ip);
-    for log_buffer in log_buffers {
-        push_scoped_log(&log_buffer, "Info", "tako", &message);
-    }
-}
-
 pub(super) async fn handle_toggle_lan(state: &Arc<Mutex<State>>, enabled: bool) -> Response {
     if enabled {
         let lan_ip = match crate::lan::detect_lan_ip() {
@@ -75,8 +53,6 @@ pub(super) async fn handle_toggle_lan(state: &Arc<Mutex<State>>, enabled: bool) 
         let ca_url = format!("http://{lan_ip}/ca.pem");
 
         let mut s = state.lock().unwrap();
-        let log_buffers: Vec<state::LogBuffer> =
-            s.apps.values().map(|app| app.log_buffer.clone()).collect();
 
         // Start mDNS publisher and publish all registered app hostnames
         let mut mdns = crate::lan::MdnsPublisher::new(lan_ip.clone());
@@ -88,7 +64,6 @@ pub(super) async fn handle_toggle_lan(state: &Arc<Mutex<State>>, enabled: bool) 
         s.mdns = Some(mdns);
         s.lan_enabled = true;
         s.lan_ip = Some(lan_ip.clone());
-        write_lan_mode_log(log_buffers, true, Some(&lan_ip));
         s.events.broadcast(Response::Event {
             event: protocol::DevEvent::LanModeChanged {
                 enabled: true,
@@ -105,15 +80,12 @@ pub(super) async fn handle_toggle_lan(state: &Arc<Mutex<State>>, enabled: bool) 
         let _ = send_dev_proxy_command(r#"{"command":"disable_lan"}"#).await;
 
         let mut s = state.lock().unwrap();
-        let log_buffers: Vec<state::LogBuffer> =
-            s.apps.values().map(|app| app.log_buffer.clone()).collect();
         if let Some(ref mut mdns) = s.mdns {
             mdns.cleanup_all();
         }
         s.mdns = None;
         s.lan_enabled = false;
         s.lan_ip = None;
-        write_lan_mode_log(log_buffers, false, None);
         s.events.broadcast(Response::Event {
             event: protocol::DevEvent::LanModeChanged {
                 enabled: false,
@@ -168,8 +140,7 @@ fn build_enable_lan_command(lan_ip: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_enable_lan_command, write_lan_mode_log};
-    use crate::state::LogBuffer;
+    use super::build_enable_lan_command;
 
     #[test]
     fn build_enable_lan_command_uses_detected_lan_ip() {
@@ -177,21 +148,6 @@ mod tests {
         assert_eq!(
             json,
             r#"{"bind_addr":"192.168.1.42","command":"enable_lan"}"#
-        );
-    }
-
-    #[test]
-    fn write_lan_mode_log_appends_banner_only() {
-        let buffer = LogBuffer::new();
-        write_lan_mode_log([buffer.clone()], true, Some("192.168.1.42"));
-
-        let (entries, _, truncated) = buffer.subscribe(None);
-        assert!(!truncated);
-        assert_eq!(entries.len(), 1);
-        assert!(
-            entries[0]
-                .line
-                .contains(r#""msg":"LAN mode enabled (192.168.1.42)""#)
         );
     }
 }

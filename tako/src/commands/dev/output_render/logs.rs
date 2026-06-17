@@ -22,21 +22,6 @@ pub(in crate::commands::dev) fn format_log_for_width(log: &ScopedLog, cols: usiz
         let label = kind.replace('_', " ");
         return muted(&format!("──── {label} ────"));
     }
-    if let Some(ip) = log
-        .scope
-        .eq("tako")
-        .then(|| log.message.strip_prefix("LAN mode enabled ("))
-        .flatten()
-        .and_then(|rest| rest.strip_suffix(')'))
-    {
-        let color = level_color(&log.level);
-        let scope = fit_scope(&log.scope);
-        let rendered_scope = render_scope(&log.scope, &scope);
-        return format!(
-            "{DIM}{}{RESET} {color}{:>5}{RESET} {rendered_scope} LAN mode enabled {DIM}({ip}){RESET}",
-            log.timestamp, log.level
-        );
-    }
     let fields_suffix = format_json_fields_suffix(log.fields.as_ref());
     if matches!(log.level, LogLevel::Debug) {
         let scope = fit_scope(&log.scope);

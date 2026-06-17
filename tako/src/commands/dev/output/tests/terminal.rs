@@ -26,6 +26,21 @@ fn vlen_strips_ansi() {
 }
 
 #[test]
+fn client_connected_block_renders_other_clients_as_special_block() {
+    let rendered = strip_ansi(&client_connected_block(false, 60950));
+    assert_eq!(rendered, "──── Client 60950 connected ────");
+    assert!(!rendered.contains("DEBUG"));
+    assert!(!rendered.contains("tako"));
+    assert!(!rendered.contains("23:02:44"));
+}
+
+#[test]
+fn client_connected_block_keeps_self_connection_label_short() {
+    let rendered = strip_ansi(&client_connected_block(true, 60950));
+    assert_eq!(rendered, "──── connected ────");
+}
+
+#[test]
 fn trunc_at_limit() {
     assert_eq!(truncate_str("hello", 10, "…").as_ref(), "hello");
     assert_eq!(measure_text_width(&truncate_str("hello world", 7, "…")), 7);

@@ -15,7 +15,6 @@ use crate::route_pattern::split_route_pattern;
 use crate::state::{self, RuntimeApp};
 use crate::{advertised_https_port, app_short_host, default_hosts};
 
-use super::super::lan::write_lan_mode_log;
 use super::super::state::State;
 
 pub(super) struct RegisterAppArgs {
@@ -108,7 +107,6 @@ pub(super) async fn register_app(
                 a.log_buffer.clone()
             })
             .unwrap_or_else(state::LogBuffer::new);
-        let lan_banner_buffer = log_buffer.clone();
 
         // Preserve the previously-reported port across re-registration so the
         // proxy keeps routing correctly until the next readiness signal.
@@ -156,10 +154,6 @@ pub(super) async fn register_app(
                 mdns.publish(split_route_pattern(host).0);
             }
         }
-        if s.lan_enabled {
-            write_lan_mode_log([lan_banner_buffer], true, s.lan_ip.as_deref());
-        }
-
         let host = hosts
             .first()
             .cloned()
