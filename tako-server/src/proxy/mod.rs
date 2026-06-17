@@ -18,7 +18,7 @@ mod static_files;
 
 pub(crate) use cloudflare_ips::CloudflareIpRanges;
 pub use config::{ProxyConfig, TrustedClientIpHeader, TrustedProxyConfig};
-pub use server::build_server_with_acme;
+pub(crate) use server::{ServerBuildConfig, build_server_with_acme};
 #[allow(unused_imports)]
 pub use static_files::*;
 
@@ -79,7 +79,7 @@ pub struct TakoProxy {
     channel_registry: ChannelRegistry,
 }
 
-type ChannelPostgresUrlResolver = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+pub(crate) type ChannelPostgresUrlResolver = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
 impl TakoProxy {
     fn metrics_enabled(&self) -> bool {

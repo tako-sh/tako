@@ -110,16 +110,29 @@ pub(crate) fn container_file_path(
     Ok(path)
 }
 
-pub(crate) fn build_container_run_args(
-    name: &str,
-    image: &str,
-    host_port: u16,
-    container_port: u16,
-    env: &HashMap<String, String>,
-    token: &str,
-    secrets: &HashMap<String, String>,
-    storages: &HashMap<String, StorageBinding>,
-) -> Vec<String> {
+pub(crate) struct ContainerRunConfig<'a> {
+    pub(crate) name: &'a str,
+    pub(crate) image: &'a str,
+    pub(crate) host_port: u16,
+    pub(crate) container_port: u16,
+    pub(crate) env: &'a HashMap<String, String>,
+    pub(crate) token: &'a str,
+    pub(crate) secrets: &'a HashMap<String, String>,
+    pub(crate) storages: &'a HashMap<String, StorageBinding>,
+}
+
+pub(crate) fn build_container_run_args(config: ContainerRunConfig<'_>) -> Vec<String> {
+    let ContainerRunConfig {
+        name,
+        image,
+        host_port,
+        container_port,
+        env,
+        token,
+        secrets,
+        storages,
+    } = config;
+
     let mut args = vec![
         "run".to_string(),
         "--name".to_string(),
@@ -301,16 +314,19 @@ mod tests {
 
     #[test]
     fn build_container_run_args_names_env_without_values() {
-        let args = build_container_run_args(
-            "tako-my-app-abc",
-            "tako/my-app:v1",
-            49152,
-            3000,
-            &HashMap::from([("ENV".to_string(), "production".to_string())]),
-            "tok",
-            &HashMap::from([("API_KEY".to_string(), "secret".to_string())]),
-            &HashMap::new(),
-        );
+        let env = HashMap::from([("ENV".to_string(), "production".to_string())]);
+        let secrets = HashMap::from([("API_KEY".to_string(), "secret".to_string())]);
+        let storages = HashMap::new();
+        let args = build_container_run_args(ContainerRunConfig {
+            name: "tako-my-app-abc",
+            image: "tako/my-app:v1",
+            host_port: 49152,
+            container_port: 3000,
+            env: &env,
+            token: "tok",
+            secrets: &secrets,
+            storages: &storages,
+        });
 
         assert!(args.contains(&"127.0.0.1:49152:3000".to_string()));
         assert!(args.contains(&"ENV".to_string()));

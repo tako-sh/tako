@@ -1,6 +1,7 @@
 use super::super::{AppConfig, Instance};
 use crate::container_runtime::{
-    ContainerEngine, build_container_run_args, build_container_run_env, detect_container_engine,
+    ContainerEngine, ContainerRunConfig, build_container_run_args, build_container_run_env,
+    detect_container_engine,
 };
 use std::collections::HashMap;
 #[cfg(unix)]
@@ -291,16 +292,16 @@ pub(super) fn spawn_container_process_with_engine(
         config.deployment_id().replace('/', "-"),
         instance.id
     );
-    let args = build_container_run_args(
-        &name,
+    let args = build_container_run_args(ContainerRunConfig {
+        name: &name,
         image,
         host_port,
         container_port,
         env,
-        instance.internal_token(),
+        token: instance.internal_token(),
         secrets,
-        &config.storages,
-    );
+        storages: &config.storages,
+    });
     let mut child_cmd = Command::new(engine.binary());
     child_cmd
         .args(args)

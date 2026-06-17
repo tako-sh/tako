@@ -1,6 +1,8 @@
 use crate::lb::LoadBalancer;
 use crate::proxy::proxy_protocol_service::{ProxyProtocolService, ProxyProtocolTlsAcceptor};
-use crate::proxy::{CloudflareIpRanges, ProxyConfig, RouteTable, TakoProxy};
+use crate::proxy::{
+    ChannelPostgresUrlResolver, CloudflareIpRanges, ProxyConfig, RouteTable, TakoProxy,
+};
 use crate::scaling::ColdStartManager;
 use crate::tls::{CertManager, ChallengeTokens, SelfSignedGenerator, create_sni_callbacks};
 use parking_lot::RwLock;
@@ -17,17 +19,30 @@ pub(crate) struct PublicListenerEndpoint {
     pub(crate) options: TcpSocketOptions,
 }
 
+pub(crate) struct ServerBuildConfig {
+    pub(crate) lb: Arc<LoadBalancer>,
+    pub(crate) routes: Arc<RwLock<RouteTable>>,
+    pub(crate) config: ProxyConfig,
+    pub(crate) acme_tokens: Option<ChallengeTokens>,
+    pub(crate) cert_manager: Option<Arc<CertManager>>,
+    pub(crate) cold_start: Arc<ColdStartManager>,
+    pub(crate) cloudflare_ips: CloudflareIpRanges,
+    pub(crate) channel_postgres_url: Option<ChannelPostgresUrlResolver>,
+}
+
 /// Build and start the Pingora server with ACME and SNI support
-pub fn build_server_with_acme(
-    lb: Arc<LoadBalancer>,
-    routes: Arc<RwLock<RouteTable>>,
-    config: ProxyConfig,
-    acme_tokens: Option<ChallengeTokens>,
-    cert_manager: Option<Arc<CertManager>>,
-    cold_start: Arc<ColdStartManager>,
-    cloudflare_ips: CloudflareIpRanges,
-    channel_postgres_url: Option<Arc<dyn Fn(&str) -> Option<String> + Send + Sync>>,
-) -> Result<Server> {
+pub(crate) fn build_server_with_acme(build: ServerBuildConfig) -> Result<Server> {
+    let ServerBuildConfig {
+        lb,
+        routes,
+        config,
+        acme_tokens,
+        cert_manager,
+        cold_start,
+        cloudflare_ips,
+        channel_postgres_url,
+    } = build;
+
     let mut server = Server::new_with_opt_and_conf(None, proxy_server_conf()?);
     server.bootstrap();
 

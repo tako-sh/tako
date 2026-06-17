@@ -256,19 +256,19 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    let server = proxy::build_server_with_acme(
-        state.load_balancer(),
-        state.routes(),
-        proxy_config,
-        Some(challenge_tokens_for_promote),
-        Some(cert_manager),
-        state.cold_start(),
+    let server = proxy::build_server_with_acme(proxy::ServerBuildConfig {
+        lb: state.load_balancer(),
+        routes: state.routes(),
+        config: proxy_config,
+        acme_tokens: Some(challenge_tokens_for_promote),
+        cert_manager: Some(cert_manager),
+        cold_start: state.cold_start(),
         cloudflare_ips,
-        Some({
+        channel_postgres_url: Some({
             let state = state.clone();
             Arc::new(move |app: &str| state.runtime_postgres_url(app))
         }),
-    )?;
+    })?;
 
     sd_notify_ready();
     server.run(RunArgs {
