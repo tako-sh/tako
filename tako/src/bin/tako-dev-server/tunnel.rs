@@ -853,7 +853,8 @@ fn forwarded_websocket_headers(headers: &[(String, String)]) -> Vec<(String, Str
         .iter()
         .filter(|(name, _)| {
             let name = name.to_ascii_lowercase();
-            !is_hop_by_hop_or_host(&name) && !name.starts_with("sec-websocket-")
+            !is_hop_by_hop_or_host(&name)
+                && (!name.starts_with("sec-websocket-") || name == "sec-websocket-protocol")
         })
         .cloned()
         .collect()
@@ -1076,6 +1077,8 @@ mod tests {
         let headers = vec![
             ("host".to_string(), "public.tako.website".to_string()),
             ("sec-websocket-key".to_string(), "key".to_string()),
+            ("sec-websocket-version".to_string(), "13".to_string()),
+            ("sec-websocket-protocol".to_string(), "vite-hmr".to_string()),
             (
                 "origin".to_string(),
                 "https://public.tako.website".to_string(),
@@ -1083,10 +1086,13 @@ mod tests {
         ];
         assert_eq!(
             forwarded_websocket_headers(&headers),
-            vec![(
-                "origin".to_string(),
-                "https://public.tako.website".to_string()
-            )]
+            vec![
+                ("sec-websocket-protocol".to_string(), "vite-hmr".to_string()),
+                (
+                    "origin".to_string(),
+                    "https://public.tako.website".to_string()
+                )
+            ]
         );
     }
 
