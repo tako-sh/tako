@@ -128,6 +128,19 @@ pub(super) async fn spawn_dev_event_forwarder(
                             })
                             .await;
                     }
+                    DevServerEvent::TunnelConnectionChanged {
+                        ref config_path,
+                        connected,
+                        ref url,
+                        ..
+                    } if config_path == &config_key => {
+                        let _ = event_tx
+                            .send(DevEvent::TunnelConnectionChanged {
+                                connected,
+                                url: url.clone(),
+                            })
+                            .await;
+                    }
                     _ => {}
                 }
             }
@@ -234,6 +247,13 @@ fn handle_non_interactive_event(event: DevEvent) -> bool {
         }
         DevEvent::LanStarting | DevEvent::LanFailed => {}
         DevEvent::TunnelModeChanged { .. } => {}
+        DevEvent::TunnelConnectionChanged { connected, .. } => {
+            if connected {
+                println!("Tunnel reconnected");
+            } else {
+                println!("Tunnel reconnecting: connection lost");
+            }
+        }
         DevEvent::TunnelStarting | DevEvent::TunnelFailed => {}
         DevEvent::ExitWithMessage(msg) => {
             println!("{}", msg);

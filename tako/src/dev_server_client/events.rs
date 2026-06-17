@@ -45,6 +45,12 @@ pub enum DevServerEvent {
         expires_at: Option<u64>,
         close_reason: Option<TunnelCloseReason>,
     },
+    TunnelConnectionChanged {
+        config_path: String,
+        app_name: String,
+        connected: bool,
+        url: String,
+    },
     AppLaunching {
         config_path: String,
         app_name: String,
@@ -247,6 +253,12 @@ pub(super) fn parse_event_line(line: &str) -> Option<DevServerEvent> {
                 .get("close_reason")
                 .and_then(|v| v.as_str())
                 .and_then(parse_tunnel_close_reason),
+        }),
+        "TunnelConnectionChanged" => Some(DevServerEvent::TunnelConnectionChanged {
+            config_path: event.get("config_path")?.as_str()?.to_string(),
+            app_name: event.get("app_name")?.as_str()?.to_string(),
+            connected: event.get("connected")?.as_bool()?,
+            url: event.get("url")?.as_str()?.to_string(),
         }),
         "AppLaunching" => Some(DevServerEvent::AppLaunching {
             config_path: event.get("config_path")?.as_str()?.to_string(),

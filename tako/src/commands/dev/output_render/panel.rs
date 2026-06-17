@@ -13,6 +13,7 @@ pub(in crate::commands::dev) fn format_header() -> String {
 pub(in crate::commands::dev) enum ShareRowState {
     Inactive,
     Starting,
+    Reconnecting(String),
     Active(String),
     Failed,
 }
@@ -331,6 +332,22 @@ fn share_row_lines(
         }
         ShareRowState::Starting => {
             vec![format!("{}{}", label_cell(label), muted("starting..."))]
+        }
+        ShareRowState::Reconnecting(url) => {
+            let status = "reconnecting";
+            let status_w = measure_text_width(status);
+            if value_width <= status_w + 1 {
+                let status_t = truncate_str(status, value_width, "…");
+                return vec![format!("{}{}", label_cell(label), muted(&status_t))];
+            }
+
+            let url_w = value_width.saturating_sub(status_w + 1);
+            let url_t = truncate_str(url, url_w, "…");
+            vec![format!(
+                "{}{url_color}{url_t}{RESET} {}",
+                label_cell(label),
+                muted(status)
+            )]
         }
         ShareRowState::Active(url) => {
             let hint = format!("{key} to disable");

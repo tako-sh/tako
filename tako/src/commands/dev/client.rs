@@ -210,6 +210,19 @@ pub(super) async fn run_connected_dev_client(
                                 })
                                 .await;
                         }
+                        DevServerEvent::TunnelConnectionChanged {
+                            ref config_path,
+                            connected,
+                            ref url,
+                            ..
+                        } if config_path == &config_key => {
+                            let _ = event_tx
+                                .send(DevEvent::TunnelConnectionChanged {
+                                    connected,
+                                    url: url.clone(),
+                                })
+                                .await;
+                        }
                         _ => {}
                     }
                 }
@@ -411,6 +424,16 @@ pub(super) async fn run_connected_dev_client(
                                 | DevEvent::TunnelModeChanged {
                                     enabled: true, ..
                                 } => {}
+                                | DevEvent::TunnelConnectionChanged {
+                                    connected: true, ..
+                                } => {
+                                    println!("Tunnel reconnected");
+                                }
+                                | DevEvent::TunnelConnectionChanged {
+                                    connected: false, ..
+                                } => {
+                                    println!("Tunnel reconnecting: connection lost");
+                                }
                                 | DevEvent::TunnelModeChanged {
                                     enabled: false,
                                     close_reason,

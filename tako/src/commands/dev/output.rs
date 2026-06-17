@@ -93,6 +93,14 @@ fn tunnel_close_log(close_reason: Option<TunnelCloseReason>) -> ScopedLog {
     ScopedLog::at(level, "tako", message)
 }
 
+fn tunnel_connection_log(connected: bool) -> ScopedLog {
+    if connected {
+        ScopedLog::info("tako", "Tunnel reconnected")
+    } else {
+        ScopedLog::warn("tako", "Tunnel reconnecting: connection lost")
+    }
+}
+
 // ── Sticky footer ─────────────────────────────────────────────────────────────
 
 struct StickyFooter {
@@ -558,6 +566,15 @@ pub async fn run_dev_output(
                         } else if !enabled {
                             footer.println(&format_log(&tunnel_close_log(close_reason)));
                         }
+                    }
+                    DevEvent::TunnelConnectionChanged { connected, url } => {
+                        fs.tunnel = if connected {
+                            ShareRowState::Active(url)
+                        } else {
+                            ShareRowState::Reconnecting(url)
+                        };
+                        fs.refresh(&mut footer, &app_name, &adapter_name, &hosts, port);
+                        footer.println(&format_log(&tunnel_connection_log(connected)));
                     }
                     DevEvent::TunnelStarting => {
                         fs.tunnel = ShareRowState::Starting;

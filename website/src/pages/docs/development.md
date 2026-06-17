@@ -103,7 +103,7 @@ Statuses:
 
 LAN mode rewrites managed `.test` and `.tako.test` routes to `.local` aliases and advertises concrete hostnames with mDNS. Wildcard routes cannot be advertised with mDNS, so phones and tablets need an explicit concrete subdomain route.
 
-Tunnel mode creates a temporary public HTTPS URL through the Tako tunnel service. URLs are stable for the same app and Tako Identity, expire after the service TTL, and are disabled when the app unregisters or the tunnel disconnects.
+Tunnel mode creates a temporary public HTTPS URL through the Tako tunnel service. URLs are stable for the same app and Tako Identity and stay enabled until you turn tunnel mode off or unregister the app. If the tunnel connection drops, Tako keeps the URL reserved and reconnects automatically.
 
 ## Variants
 
@@ -146,7 +146,7 @@ Press `t` during `tako dev` to create a temporary public HTTPS URL for the curre
 
 The id is derived from the app name and the local Tako Identity public key, so the same app gets the same URL when the same identity is available. On macOS, Tako tries iCloud Keychain for the identity and falls back to local storage when synced Keychain access is unavailable. Other platforms use local identity storage. The tunnel service issues a nonce and only creates the tunnel after the client signs it, so tunnel mode does not require login or namespace setup.
 
-Starting a tunnel for the same app and identity replaces any previous active tunnel for that URL. Tunnels expire after the service TTL, currently 30 minutes, and are also turned off when the app stops or the local tunnel connection closes. When a tunnel turns off, `tako dev` prints whether it was turned off by the user, expired, stopped with the app, closed by the service, or lost because of a connection error.
+Starting a tunnel for the same app and identity replaces any previous active tunnel for that URL. Tunnels do not have a fixed session TTL. If the local tunnel connection is lost, `tako dev` keeps tunnel mode on, shows the URL as reconnecting, retries with bounded exponential backoff, and prints when reconnecting starts and when the tunnel reconnects. Tunnels turn off when you disable tunnel mode or unregister the app.
 
 When a tunnel URL is inactive or disconnected, browser requests get a Tako-styled error page. Clients that send `Accept: application/json` get JSON, and other clients get plain text.
 

@@ -648,7 +648,7 @@ Start (or connect to) a local development session for the current app, backed by
     - `tako dev --tunnel` enables tunnel mode during startup.
     - Pressing `t` in the interactive UI toggles tunnel mode for the current app.
     - Starting a tunnel for the same app and identity replaces any previous active tunnel for that URL.
-    - Tunnel URLs expire after the tunnel service TTL (currently 30 minutes) and are also disabled when the app is unregistered or the local tunnel connection closes. When a tunnel turns off, Tako prints a log line explaining whether it was turned off by the user, expired, stopped with the app, closed by the service, or lost because of a connection error.
+    - Tunnel URLs do not have a fixed session TTL. Tunnel mode stays enabled until the user turns it off or the app is unregistered. If the local tunnel connection is lost, Tako keeps the URL reserved, marks the tunnel as reconnecting, retries with bounded exponential backoff, and prints a log line when reconnecting starts and when the tunnel reconnects. When a tunnel turns off, Tako prints a log line explaining whether it was turned off by the user, stopped with the app, or closed by the service.
     - Inactive or disconnected tunnel URLs return a Tako-styled HTML error page for browser requests, JSON for clients that accept `application/json`, and plain text for other clients.
 - When running in an interactive terminal, `tako dev` prints a branded header (logo + version + app info) once at startup, then streams logs and status updates directly to stdout.
   - Native terminal features (scrollback, search, copy/paste, clickable links) are preserved — no alternate screen is used.
@@ -658,8 +658,8 @@ Start (or connect to) a local development session for the current app, backed by
     - Common scopes: `tako` (local dev daemon) and `app` (the app process).
     - For app-process output, Tako infers the level from leading tokens like `DEBUG`, `INFO`, `WARN`/`WARNING`, `ERROR`, and `FATAL` (including bracketed forms such as `[DEBUG]`), and maps `TRACE` to `DEBUG`.
   - App lifecycle state changes (starting, stopped, errors) are printed inline as `── {status} ──` lines in the log stream.
-  - The status panel always shows `routes`, `lan`, and `tunnel` rows. `routes` lists local HTTPS routes. `lan` shows an enable hint when off, an active URL with a disable hint when on, or a retry hint after failure. `tunnel` shows an enable hint when off, a starting/failed state while toggling, and an active URL with a disable hint when on.
-  - When LAN mode is enabled, Tako prints a QR block for installing the local CA certificate on another device. When tunnel mode is enabled, Tako prints a short public URL block for visibility. When tunnel mode turns off, Tako prints a `tako` log line with the close reason.
+  - The status panel always shows `routes`, `lan`, and `tunnel` rows. `routes` lists local HTTPS routes. `lan` shows an enable hint when off, an active URL with a disable hint when on, or a retry hint after failure. `tunnel` shows an enable hint when off, a starting/failed state while toggling, an active URL with a disable hint when on, and a reconnecting state with the same URL during transient tunnel service disconnects.
+  - When LAN mode is enabled, Tako prints a QR block for installing the local CA certificate on another device. When tunnel mode is enabled, Tako prints a short public URL block for visibility. When tunnel mode reconnects or turns off, Tako prints a `tako` log line with the reconnect status or close reason.
   - Keyboard shortcuts (interactive terminal only):
     - `r` restart the app process
     - `l` toggle LAN mode (expose the same routes via `.local` aliases on the local network)

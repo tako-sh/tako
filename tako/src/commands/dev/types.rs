@@ -155,6 +155,10 @@ pub enum DevEvent {
         expires_at: Option<u64>,
         close_reason: Option<TunnelCloseReason>,
     },
+    TunnelConnectionChanged {
+        connected: bool,
+        url: String,
+    },
     TunnelStarting,
     TunnelFailed,
     ExitWithMessage(String),
@@ -210,6 +214,7 @@ impl DevEvent {
             DevEvent::LanStarting
                 | DevEvent::LanFailed
                 | DevEvent::TunnelModeChanged { .. }
+                | DevEvent::TunnelConnectionChanged { .. }
                 | DevEvent::TunnelStarting
                 | DevEvent::TunnelFailed
         )

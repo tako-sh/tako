@@ -1,15 +1,19 @@
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures_util::{SinkExt, StreamExt};
 use reqwest::header::{HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
+use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::AbortHandle;
-use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};
+use tokio_tungstenite::{
+    MaybeTlsStream, WebSocketStream,
+    tungstenite::{Message, client::IntoClientRequest},
+};
 
 use crate::protocol::{self, Response};
 
@@ -20,6 +24,8 @@ const DEFAULT_TUNNEL_BASE_URL: &str = "https://tako.website/api";
 const TUNNEL_API_TIMEOUT: Duration = Duration::from_secs(15);
 const TUNNEL_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const TUNNEL_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(25);
+const TUNNEL_RECONNECT_INITIAL_DELAY: Duration = Duration::from_secs(1);
+const TUNNEL_RECONNECT_MAX_DELAY: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 pub(crate) struct TunnelRegistration {
@@ -178,19 +184,19 @@ async fn enable_tunnel(
     let state_for_task = Arc::clone(state);
     let config_for_task = snapshot.config_path.clone();
     let url_for_task = created.url.clone();
-    let expires_for_task = created.expires_at;
     let (start_tx, start_rx) = oneshot::channel();
     let task = tokio::spawn(async move {
         if start_rx.await.is_err() {
             return;
         }
-        let result = run_tunnel_connection(connect_url, snapshot).await;
-        let had_error = result.is_err();
-        if let Err(error) = &result {
-            tracing::debug!("Tunnel connection closed: {error}");
-        }
-        let reason = tunnel_close_reason(expires_for_task, had_error);
-        clear_tunnel_if_current(&state_for_task, &config_for_task, &url_for_task, reason);
+        run_tunnel_session(
+            connect_url,
+            snapshot,
+            state_for_task,
+            config_for_task,
+            url_for_task,
+        )
+        .await;
     });
     let abort_handle = task.abort_handle();
 
@@ -221,7 +227,7 @@ async fn enable_tunnel(
         },
     });
 
-    Ok((created.url, expires_for_task))
+    Ok((created.url, expires_at))
 }
 
 type TunnelCloseReason = protocol::TunnelCloseReason;
@@ -268,57 +274,43 @@ fn disable_tunnel(
     (Some(url), Some(expires_at))
 }
 
-fn clear_tunnel_if_current(
+fn tunnel_is_current(state: &Arc<Mutex<State>>, config_path: &str, url: &str) -> bool {
+    let s = match state.lock() {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    s.apps
+        .get(config_path)
+        .and_then(|app| app.tunnel.as_ref())
+        .is_some_and(|tunnel| tunnel.url == url)
+}
+
+fn broadcast_tunnel_connection(
     state: &Arc<Mutex<State>>,
     config_path: &str,
+    app_name: &str,
     url: &str,
-    reason: TunnelCloseReason,
+    connected: bool,
 ) {
-    let mut s = match state.lock() {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-    let Some(app) = s.apps.get_mut(config_path) else {
-        return;
-    };
-    let should_clear = app.tunnel.as_ref().is_some_and(|t| t.url == url);
-    if !should_clear {
-        return;
-    }
-    app.tunnel = None;
-    let app_name = app.name.clone();
-    drop(s);
     let s = match state.lock() {
         Ok(s) => s,
         Err(_) => return,
     };
+    if s.apps
+        .get(config_path)
+        .and_then(|app| app.tunnel.as_ref())
+        .is_none_or(|tunnel| tunnel.url != url)
+    {
+        return;
+    }
     s.events.broadcast(Response::Event {
-        event: protocol::DevEvent::TunnelModeChanged {
+        event: protocol::DevEvent::TunnelConnectionChanged {
             config_path: config_path.to_string(),
-            app_name,
-            enabled: false,
-            url: None,
-            expires_at: None,
-            close_reason: Some(reason),
+            app_name: app_name.to_string(),
+            connected,
+            url: url.to_string(),
         },
     });
-}
-
-fn tunnel_close_reason(expires_at: u64, had_error: bool) -> TunnelCloseReason {
-    if unix_now_secs() >= expires_at {
-        TunnelCloseReason::Timeout
-    } else if had_error {
-        TunnelCloseReason::ConnectionError
-    } else {
-        TunnelCloseReason::ConnectionClosed
-    }
-}
-
-fn unix_now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0)
 }
 
 #[derive(Clone)]
@@ -396,17 +388,73 @@ async fn create_tunnel(
         .map_err(|error| format!("invalid tunnel response: {error}"))
 }
 
-async fn run_tunnel_connection(
+async fn run_tunnel_session(
     connect_url: String,
     snapshot: TunnelSnapshot,
-) -> Result<(), String> {
+    state: Arc<Mutex<State>>,
+    config_path: String,
+    url: String,
+) {
+    let mut delay = TUNNEL_RECONNECT_INITIAL_DELAY;
+    let mut reported_reconnecting = false;
+
+    loop {
+        if !tunnel_is_current(&state, &config_path, &url) {
+            return;
+        }
+
+        match connect_tunnel_socket(&connect_url).await {
+            Ok(socket) => {
+                if reported_reconnecting {
+                    broadcast_tunnel_connection(
+                        &state,
+                        &config_path,
+                        &snapshot.app_name,
+                        &url,
+                        true,
+                    );
+                    reported_reconnecting = false;
+                }
+                delay = TUNNEL_RECONNECT_INITIAL_DELAY;
+                if let Err(error) = run_tunnel_connection(socket, snapshot.clone()).await {
+                    tracing::debug!("Tunnel connection closed: {error}");
+                }
+            }
+            Err(error) => {
+                tracing::debug!("Tunnel connection failed: {error}");
+            }
+        }
+
+        if !tunnel_is_current(&state, &config_path, &url) {
+            return;
+        }
+        if !reported_reconnecting {
+            broadcast_tunnel_connection(&state, &config_path, &snapshot.app_name, &url, false);
+            reported_reconnecting = true;
+        }
+
+        tokio::time::sleep(delay).await;
+        delay = (delay * 2).min(TUNNEL_RECONNECT_MAX_DELAY);
+    }
+}
+
+async fn connect_tunnel_socket(
+    connect_url: &str,
+) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>, String> {
     let (socket, _) = tokio::time::timeout(
         TUNNEL_CONNECT_TIMEOUT,
-        tokio_tungstenite::connect_async(&connect_url),
+        tokio_tungstenite::connect_async(connect_url),
     )
     .await
     .map_err(|_| "timed out connecting tunnel websocket".to_string())?
     .map_err(|error| format!("failed to connect tunnel websocket: {error}"))?;
+    Ok(socket)
+}
+
+async fn run_tunnel_connection(
+    socket: WebSocketStream<MaybeTlsStream<TcpStream>>,
+    snapshot: TunnelSnapshot,
+) -> Result<(), String> {
     let (mut writer, mut reader) = socket.split();
     let client = local_proxy_client(&snapshot.local_host, &snapshot.listen_addr)?;
     let (outbound_tx, mut outbound_rx) = mpsc::channel::<String>(128);
@@ -807,19 +855,6 @@ mod tests {
         assert_eq!(
             url,
             "ws://127.0.0.1:3000/v1/tunnels/connect?host=host.test&session=s"
-        );
-    }
-
-    #[test]
-    fn tunnel_close_reason_reports_timeout_after_expiry() {
-        assert_eq!(tunnel_close_reason(0, false), TunnelCloseReason::Timeout);
-    }
-
-    #[test]
-    fn tunnel_close_reason_reports_connection_error_before_expiry() {
-        assert_eq!(
-            tunnel_close_reason(u64::MAX, true),
-            TunnelCloseReason::ConnectionError
         );
     }
 
