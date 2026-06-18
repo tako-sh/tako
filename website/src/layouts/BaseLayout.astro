@@ -8,6 +8,8 @@ import SiteHeader from "../components/layout/SiteHeader.astro";
 import { createCanonicalUrl } from "../utils/canonical";
 import { getPageOgImageForPath } from "../data/page-og";
 
+const DEFAULT_OG_IMAGE = "https://tako.sh/assets/og.png?v=20260613";
+
 export interface Props {
 	title?: string;
 	description?: string;
@@ -32,7 +34,7 @@ const canonicalURL = createCanonicalUrl(Astro.url.pathname, Astro.site);
 const image =
 	imageOverride ??
 	getPageOgImageForPath(Astro.url.pathname, Astro.site) ??
-	"https://tako.sh/assets/og.png";
+	DEFAULT_OG_IMAGE;
 const organizationSchema = {
 	"@context": "https://schema.org",
 	"@type": "Organization",
