@@ -162,7 +162,6 @@ async fn enable_tunnel(
             app_name: app.name.clone(),
             local_host: host,
             listen_addr: s.listen_addr.clone(),
-            upstream_port: app.upstream_port,
         }
     };
 
@@ -314,6 +313,25 @@ fn tunnel_is_current(state: &Arc<Mutex<State>>, config_path: &str, url: &str) ->
         .is_some_and(|tunnel| tunnel.url == url)
 }
 
+async fn current_upstream_port(
+    state: &Arc<Mutex<State>>,
+    config_path: &str,
+) -> Result<u16, String> {
+    let routes = {
+        let s = state.lock().map_err(|_| "dev server state poisoned")?;
+        if !s.apps.contains_key(config_path) {
+            return Err("app is not registered".to_string());
+        }
+        s.routes.clone()
+    };
+
+    routes
+        .wait_for_active_port(&format!("reg:{config_path}"), Duration::from_secs(30))
+        .await
+        .filter(|port| *port != 0)
+        .ok_or_else(|| "app has no active upstream port".to_string())
+}
+
 fn broadcast_tunnel_connection(
     state: &Arc<Mutex<State>>,
     config_path: &str,
@@ -348,7 +366,6 @@ struct TunnelSnapshot {
     app_name: String,
     local_host: String,
     listen_addr: String,
-    upstream_port: u16,
 }
 
 async fn create_tunnel_challenge(
@@ -445,7 +462,14 @@ async fn run_tunnel_session(
                     reported_reconnecting = false;
                 }
                 delay = TUNNEL_RECONNECT_INITIAL_DELAY;
-                match run_tunnel_connection(socket, snapshot.clone()).await {
+                match run_tunnel_connection(
+                    socket,
+                    snapshot.clone(),
+                    Arc::clone(&state),
+                    config_path.clone(),
+                )
+                .await
+                {
                     Ok(()) => {}
                     Err(TunnelConnectionEnd::Retry(error)) => {
                         tracing::debug!("Tunnel connection closed: {error}");
@@ -537,6 +561,8 @@ fn terminal_close_reason(close: Option<&CloseFrame>) -> Option<(TunnelCloseReaso
 async fn run_tunnel_connection(
     socket: WebSocketStream<MaybeTlsStream<TcpStream>>,
     snapshot: TunnelSnapshot,
+    state: Arc<Mutex<State>>,
+    config_path: String,
 ) -> Result<(), TunnelConnectionEnd> {
     let (mut writer, mut reader) = socket.split();
     let client = local_proxy_client(&snapshot.local_host, &snapshot.listen_addr)?;
@@ -583,7 +609,18 @@ async fn run_tunnel_connection(
                     }
                     ServerMessage::WebSocketOpen(open) => {
                         let id = open.id.clone();
-                        match open_local_websocket(&snapshot, open, outbound_tx.clone()).await {
+                        let result = match current_upstream_port(&state, &config_path).await {
+                            Ok(upstream_port) => {
+                                open_local_websocket(
+                                    upstream_port,
+                                    open,
+                                    outbound_tx.clone(),
+                                )
+                                .await
+                            }
+                            Err(error) => Err(error),
+                        };
+                        match result {
                             Ok(sender) => {
                                 web_sockets.insert(id, sender);
                             }
@@ -705,12 +742,12 @@ async fn forward_to_local_proxy_inner(
 }
 
 async fn open_local_websocket(
-    snapshot: &TunnelSnapshot,
+    upstream_port: u16,
     open: TunnelWebSocketOpenMessage,
     outbound: mpsc::Sender<String>,
 ) -> Result<mpsc::Sender<Message>, String> {
     let id = open.id.clone();
-    let mut request = local_websocket_url(snapshot.upstream_port, &open.path)?
+    let mut request = local_websocket_url(upstream_port, &open.path)?
         .into_client_request()
         .map_err(|error| format!("invalid local websocket request: {error}"))?;
     for (name, value) in forwarded_websocket_headers(&open.headers) {
@@ -923,7 +960,8 @@ fn is_hop_by_hop_or_host(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio_tungstenite::tungstenite::http::Response as HttpResponse;
+    use tokio_tungstenite::tungstenite::handshake::server::Response as ServerResponse;
+    use tokio_tungstenite::tungstenite::http::{Request, Response as HttpResponse};
 
     #[test]
     fn default_tunnel_base_url_uses_apex_api_path() {
@@ -1105,5 +1143,132 @@ mod tests {
 
         let message = tunnel_frame_to_tungstenite_message(frame).expect("message");
         assert_eq!(message, Message::Text("hello".into()));
+    }
+
+    #[tokio::test]
+    #[allow(clippy::result_large_err)]
+    async fn local_websocket_open_forwards_initial_text_frame() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind websocket fixture");
+        let upstream_port = listener.local_addr().expect("addr").port();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept websocket");
+            let mut socket = tokio_tungstenite::accept_hdr_async(
+                stream,
+                |request: &Request<()>, mut response: ServerResponse| {
+                    assert_eq!(
+                        request
+                            .headers()
+                            .get("sec-websocket-protocol")
+                            .and_then(|value| value.to_str().ok()),
+                        Some("vite-hmr")
+                    );
+                    response
+                        .headers_mut()
+                        .insert("sec-websocket-protocol", "vite-hmr".parse().unwrap());
+                    Ok(response)
+                },
+            )
+            .await
+            .expect("accept websocket handshake");
+            socket
+                .send(Message::Text(r#"{"type":"connected"}"#.into()))
+                .await
+                .expect("send initial frame");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        });
+        let (outbound, mut inbound) = mpsc::channel(4);
+        let open = TunnelWebSocketOpenMessage {
+            id: "ws-1".to_string(),
+            path: "/".to_string(),
+            headers: vec![("sec-websocket-protocol".to_string(), "vite-hmr".to_string())],
+        };
+
+        let _to_local = open_local_websocket(upstream_port, open, outbound)
+            .await
+            .expect("open local websocket");
+        let message = tokio::time::timeout(Duration::from_secs(1), inbound.recv())
+            .await
+            .expect("initial frame timed out")
+            .expect("initial frame");
+        let message: serde_json::Value = serde_json::from_str(&message).expect("client message");
+        assert_eq!(message["type"], "web_socket_frame");
+        assert_eq!(message["id"], "ws-1");
+        assert_eq!(message["kind"], "text");
+        let encoded = message["data_base64"].as_str().expect("frame data");
+        let decoded = STANDARD.decode(encoded).expect("frame data");
+        assert_eq!(decoded, br#"{"type":"connected"}"#);
+        server.await.expect("server task");
+    }
+
+    #[tokio::test]
+    async fn websocket_port_lookup_uses_current_app_route() {
+        let config_path = "/tmp/tako.toml";
+        let state = tunnel_state_with_app(config_path, 0, false);
+        {
+            let mut guard = state.lock().expect("state lock");
+            guard
+                .routes
+                .activate_with_port(&format!("reg:{config_path}"), 5173);
+            guard
+                .apps
+                .get_mut(config_path)
+                .expect("registered app")
+                .upstream_port = 5173;
+        }
+
+        let port = current_upstream_port(&state, config_path)
+            .await
+            .expect("current port");
+
+        assert_eq!(port, 5173);
+    }
+
+    fn tunnel_state_with_app(
+        config_path: &str,
+        upstream_port: u16,
+        active: bool,
+    ) -> Arc<Mutex<State>> {
+        let (shutdown_tx, _) = tokio::sync::watch::channel(false);
+        let routes = crate::proxy::Routes::default();
+        routes.set_routes(
+            format!("reg:{config_path}"),
+            vec!["app.test".to_string()],
+            upstream_port,
+            active,
+        );
+        let state = Arc::new(Mutex::new(State::new(
+            shutdown_tx,
+            routes,
+            crate::control::EventsHub::default(),
+            true,
+            53535,
+            47831,
+            "127.0.0.1:47831".to_string(),
+            "127.77.0.1".to_string(),
+        )));
+        state.lock().expect("state lock").apps.insert(
+            config_path.to_string(),
+            crate::state::RuntimeApp {
+                project_dir: "/tmp".to_string(),
+                name: "app".to_string(),
+                variant: None,
+                hosts: vec!["app.test".to_string()],
+                upstream_port,
+                is_idle: false,
+                command: vec!["bun".to_string(), "dev".to_string()],
+                env: Default::default(),
+                log_buffer: crate::state::LogBuffer::new(),
+                pid: None,
+                client_pid: None,
+                tunnel: None,
+                readiness_failure_hint: None,
+                bootstrap_token: "token".to_string(),
+                secrets: Default::default(),
+                storages: Default::default(),
+            },
+        );
+        state
     }
 }
