@@ -178,20 +178,24 @@ fn servers_ls_alias_parses() {
 }
 
 #[test]
-fn servers_status_without_name_parses() {
-    let cli = Cli::try_parse_from(["tako", "servers", "status"]).unwrap();
-    let Commands::Servers(server::ServerCommands::Status) = cli.command.expect("command") else {
-        panic!("expected Servers::Status");
-    };
-}
-
-#[test]
-fn servers_status_with_name_is_rejected() {
-    let res = Cli::try_parse_from(["tako", "servers", "status", "prod"]);
+fn servers_status_is_rejected() {
+    let res = Cli::try_parse_from(["tako", "servers", "status"]);
     match res {
         Ok(_) => panic!("expected parse failure"),
         Err(err) => assert!(
-            err.to_string().contains("unexpected argument 'prod'"),
+            err.to_string().contains("unrecognized subcommand 'status'"),
+            "unexpected error: {err}"
+        ),
+    }
+}
+
+#[test]
+fn servers_info_alias_is_rejected() {
+    let res = Cli::try_parse_from(["tako", "servers", "info"]);
+    match res {
+        Ok(_) => panic!("expected parse failure"),
+        Err(err) => assert!(
+            err.to_string().contains("unrecognized subcommand 'info'"),
             "unexpected error: {err}"
         ),
     }

@@ -23,7 +23,7 @@ route = "prod.example.com"
     )
     .unwrap();
 
-    let output = run_tako_with_env(&["servers", "status"], &project_dir, &home, &tako_home);
+    let output = run_tako_with_env(&["status"], &project_dir, &home, &tako_home);
 
     // Status should show discovered app info, a summary header, or an empty inventory message.
     let combined = format!("{}{}", stdout_str(&output), stderr_str(&output));
@@ -47,7 +47,7 @@ fn test_status_without_tako_toml() {
     fs::create_dir_all(&home).unwrap();
     fs::create_dir_all(&tako_home).unwrap();
 
-    let output = run_tako_with_env(&["servers", "status"], &project_dir, &home, &tako_home);
+    let output = run_tako_with_env(&["status"], &project_dir, &home, &tako_home);
 
     // Status should work without project config and use global server inventory.
     let combined = format!("{}{}", stdout_str(&output), stderr_str(&output));
@@ -70,7 +70,7 @@ fn test_status_with_server_name_is_rejected() {
     let temp = TempDir::new().unwrap();
     let project_dir = temp.path().to_path_buf();
 
-    let output = run_tako(&["servers", "status", "tako-server"], &project_dir);
+    let output = run_tako(&["status", "tako-server"], &project_dir);
 
     assert!(
         !output.status.success(),
@@ -80,7 +80,7 @@ fn test_status_with_server_name_is_rejected() {
     let combined = format!("{}{}", stdout_str(&output), stderr_str(&output));
     assert!(
         combined.contains("unexpected argument 'tako-server'")
-            || combined.contains("Usage: tako servers status"),
+            || combined.contains("Usage: tako status"),
         "should show parse usage error: {}",
         combined
     );

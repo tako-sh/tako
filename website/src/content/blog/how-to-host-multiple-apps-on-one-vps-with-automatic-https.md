@@ -203,7 +203,7 @@ Then deploy the wildcard route. If the app environment is missing Cloudflare cre
 
 ## The box stays understandable
 
-After the three deploys, `tako servers status` gives you the server view:
+After the three deploys, `tako status` gives you the server view:
 
 ```text
 ✓ prod up

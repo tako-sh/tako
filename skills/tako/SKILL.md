@@ -192,7 +192,7 @@ Add a deployment server.
 
 List configured servers.
 
-### `tako servers status`
+### `tako status`
 
 Show status of all servers and deployed apps.
 

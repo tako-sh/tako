@@ -155,8 +155,6 @@ Lists release/build history or rolls an environment back to a previous release. 
 tako servers add [host|admin@host] [--name <name>] [--description <text>] [--port <ssh-port>] [--http-port <port>] [--https-port <port>] [--install] [--admin-user <user>]
 tako servers list
 tako servers ls
-tako servers status
-tako servers info
 tako status
 tako servers reload <name> [--force]
 tako servers upgrade [name]

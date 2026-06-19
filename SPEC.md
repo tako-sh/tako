@@ -757,7 +757,7 @@ Print a local diagnostic report and exit.
   - TCP reachability on `{loopback-address}:443` and `{loopback-address}:80`
 - If the local dev daemon is not running (missing/stale socket), doctor reports `status: not running` with a hint to start `tako dev`, and exits successfully.
 
-### tako status / tako servers status
+### tako status
 
 Show global deployment status from configured servers, with one server block per configured host and one app block per running build nested under each server:
 
@@ -784,7 +784,7 @@ Each app block uses a tree connector (`┌` heading, `│` detail continuation, 
 Environment is inferred from the deployed app id (`app/env`); otherwise app status uses `unknown`.
 App state text is color-coded (`running` success, `idle` muted, `deploying`/`stopped` warning, `error` error).
 Each app block includes instance summary (`healthy/total`), build, and deployed timestamp (formatted in the user's current locale and local time, without timezone suffix).
-`tako status` and `tako servers status` print a single snapshot and exit.
+`tako status` prints a single snapshot and exits.
 With `--json`, status prints:
 
 ```json
@@ -823,13 +823,11 @@ With `--json`, status prints:
 
 Status flow helpers:
 
-- `tako status` and `tako servers status` do not require `tako.toml` and can run from any directory.
+- `tako status` does not require `tako.toml` and can run from any directory.
 - Uses global server inventory from `config.toml`.
 - Queries each server through signed Tailscale HTTP remote management.
 - If no servers are configured and the terminal is interactive, status offers to run the add-server wizard.
 - If no deployed apps are found, status reports that explicitly.
-
-Aliases: `tako servers status`, `tako servers info`.
 
 ### tako logs [--env {environment}] [--tail] [--days {N}]
 

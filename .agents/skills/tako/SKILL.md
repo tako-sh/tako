@@ -231,10 +231,6 @@ List configured servers.
 
 Show status across configured servers and deployed apps.
 
-### `tako servers status`
-
-Show status of all servers and deployed apps.
-
 ### `tako servers rm [<name>]`
 
 Remove a server.

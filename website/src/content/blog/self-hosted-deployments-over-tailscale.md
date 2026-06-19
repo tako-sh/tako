@@ -124,14 +124,14 @@ SSH is still there. The Tako server installer uses it. `tako servers add` verifi
 
 But once the server is enrolled, common operations should feel like talking to an API because they are API-shaped operations:
 
-| Operation             | Old shape                             | New shape                                                |
-| --------------------- | ------------------------------------- | -------------------------------------------------------- |
-| `tako servers status` | Connect through SSH-shaped management | Signed HTTP query over Tailscale                         |
-| Server add probe      | SSH check plus socket probing         | Tailscale host check, public probe, signed command probe |
-| App state reads       | Shell transport around typed data     | Direct typed response from `tako-server`                 |
-| Mutating commands     | Operator login path                   | Body-signed RPC with nonce and timestamp                 |
+| Operation         | Old shape                             | New shape                                                |
+| ----------------- | ------------------------------------- | -------------------------------------------------------- |
+| `tako status`     | Connect through SSH-shaped management | Signed HTTP query over Tailscale                         |
+| Server add probe  | SSH check plus socket probing         | Tailscale host check, public probe, signed command probe |
+| App state reads   | Shell transport around typed data     | Direct typed response from `tako-server`                 |
+| Mutating commands | Operator login path                   | Body-signed RPC with nonce and timestamp                 |
 
-For users, the difference should mostly be that status and server discovery get quieter. `tako servers status` does not need a project directory; it reads your global server inventory and queries each configured host through signed remote management. The output is still the thing you care about: server health, app state, routes, instance counts, builds, and deploy timestamps.
+For users, the difference should mostly be that status and server discovery get quieter. `tako status` does not need a project directory; it reads your global server inventory and queries each configured host through signed remote management. The output is still the thing you care about: server health, app state, routes, instance counts, builds, and deploy timestamps.
 
 For Tako, this opens a nicer future. Deploys, logs, server upgrades, secrets sync, and eventually richer platform primitives can share one management transport instead of growing more SSH glue. The docs already describe Tako as the platform layer between your code and the internet: [deployment](/docs/deployment/), routing, TLS, secrets, local dev, channels, and workflows. A platform layer needs a control plane that can grow without turning every feature into a remote shell script.
 

@@ -17,7 +17,7 @@ tako doctor
 For remote state:
 
 ```bash
-tako servers status
+tako status
 tako logs --env production
 tako logs --env production --tail
 ```
@@ -163,7 +163,7 @@ Normal app operations use signed HTTP management on the server's private Tailsca
 If a server is unreachable:
 
 ```bash
-tako servers status
+tako status
 tako servers reload <name>
 ```
 
