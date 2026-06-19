@@ -213,6 +213,8 @@ View remote logs.
 ```bash
 tako logs --tail
 tako logs --days 3
+tako logs --json          # history as one JSON object with a logs array
+tako logs --tail --json   # streaming JSONL records
 ```
 
 ## Servers
@@ -224,6 +226,10 @@ Add a deployment server.
 ### `tako servers list`
 
 List configured servers.
+
+### `tako status`
+
+Show status across configured servers and deployed apps.
 
 ### `tako servers status`
 
@@ -257,5 +263,6 @@ Uninstall Tako and remove all local data.
 | ------------------ | ------------------------------------------------- |
 | `--verbose` / `-v` | Verbose output (tracing log lines)                |
 | `--ci`             | Non-interactive, deterministic output (no colors) |
+| `--json`           | Structured stdout for agents and automation       |
 | `--dry-run`        | Show what would happen without side effects       |
 | `--config` / `-c`  | Use explicit config file instead of `./tako.toml` |

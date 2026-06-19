@@ -26,15 +26,9 @@ fn generate_parses_with_short_aliases() {
 }
 
 #[test]
-fn top_level_status_command_is_not_available() {
-    let res = Cli::try_parse_from(["tako", "status"]);
-    match res {
-        Ok(_) => panic!("expected parse failure"),
-        Err(err) => assert!(
-            err.to_string().contains("unrecognized subcommand 'status'"),
-            "unexpected error: {err}"
-        ),
-    }
+fn top_level_status_command_parses() {
+    let cli = Cli::try_parse_from(["tako", "status"]).unwrap();
+    assert!(matches!(cli.command, Some(Commands::Status)));
 }
 
 #[test]
@@ -89,6 +83,18 @@ fn ci_flag_parses_globally() {
 }
 
 #[test]
+fn json_flag_parses_globally_before_subcommand() {
+    let cli = Cli::try_parse_from(["tako", "--json", "deploy"]).unwrap();
+    assert!(cli.json);
+}
+
+#[test]
+fn json_flag_parses_globally_after_subcommand() {
+    let cli = Cli::try_parse_from(["tako", "deploy", "--json"]).unwrap();
+    assert!(cli.json);
+}
+
+#[test]
 fn config_flag_parses_globally_before_subcommand() {
     let cli = Cli::try_parse_from(["tako", "--config", "configs/preview", "deploy"]).unwrap();
     assert_eq!(
@@ -133,19 +139,19 @@ fn logs_rejects_removed_positional_dir_argument() {
 #[test]
 fn logs_json_flag_parses() {
     let cli = Cli::try_parse_from(["tako", "logs", "--json"]).unwrap();
-    let Some(Commands::Logs { json, .. }) = cli.command else {
+    let Some(Commands::Logs { .. }) = cli.command else {
         panic!("expected Logs");
     };
-    assert!(json);
+    assert!(cli.json);
 }
 
 #[test]
 fn logs_tail_json_flag_parses() {
     let cli = Cli::try_parse_from(["tako", "logs", "--tail", "--json"]).unwrap();
-    let Some(Commands::Logs { json, tail, .. }) = cli.command else {
+    let Some(Commands::Logs { tail, .. }) = cli.command else {
         panic!("expected Logs");
     };
-    assert!(json);
+    assert!(cli.json);
     assert!(tail);
 }
 

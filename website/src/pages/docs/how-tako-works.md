@@ -101,4 +101,4 @@ Artifact uploads and log reads use dedicated signed HTTP endpoints. App-scoped c
 
 ## Observability
 
-`tako logs` reads app stdout/stderr plus app-scoped server diagnostics. `--json` emits JSONL for agents and automation. `tako-server` also exposes Prometheus metrics on localhost by default at port `9898`, including request counts, latency, active connections, cold starts, TLS handshake failures, and instance health.
+`tako logs` reads app stdout/stderr plus app-scoped server diagnostics. Global `--json` emits structured stdout for agents and automation: history mode returns one object with a `logs` array, while `--tail --json` emits JSONL events. `tako-server` also exposes Prometheus metrics on localhost by default at port `9898`, including request counts, latency, active connections, cold starts, TLS handshake failures, and instance health.

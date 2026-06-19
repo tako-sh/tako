@@ -516,6 +516,9 @@ Rolling release model:
 - `--version`: Print version and exit (format: `<base>-<sha7>`).
 - `-v, --verbose`: Show verbose output as an append-only execution transcript with timestamps and log levels.
 - `--ci`: Deterministic non-interactive output (no colors, no spinners, no prompts). Can be combined with `--verbose`.
+- `--json`: Emit structured JSON on stdout. This is a global flag accepted before or after any
+  subcommand. JSON mode implies CI-style non-interactive rendering for progress, prompts, and
+  diagnostics.
 - `--dry-run`: Show what would happen without performing any side effects. Skips server connections, file uploads, config writes, and remote commands. Prints `⏭ ... (dry run)` for each skipped action. Production deploy confirmation is auto-skipped. Supported by: `deploy`, `servers add`, `servers remove`, `delete`, and side-effecting backup commands (`backups now`, `backups download`, `backups restore`).
 - `-c, --config {config}`: Use an explicit app config file instead of `./tako.toml`. If the provided path does not end with `.toml`, Tako appends it automatically. App-scoped commands treat the selected file's parent directory as the project directory. This allows multiple config files in one folder.
 - `--ssh-passphrase {passphrase}`: Use the provided passphrase for encrypted local SSH private keys during SSH authentication and signed remote-management requests.
@@ -525,10 +528,18 @@ CLI output modes:
 - **Normal mode** (default): Concise interactive UX with rich prompts and inline progress rendering. Commands that already know their plan may render a persistent task tree that shows waiting work up front (`○` with `...` labels), updates running tasks in place, keeps completed tasks visible, and may render reporter-specific error lines under failed task rows.
 - **Verbose mode** (`--verbose`): Append-only execution transcript. Each line: `HH:MM:SS LEVEL message`. It only prints work as it starts or finishes; upcoming tasks are not pre-rendered. Prompts render as transcript-style (still interactive). DEBUG-level messages are shown.
 - **CI mode** (`--ci`): No ANSI colors, no spinners, no interactive prompts. It stays transcript-style and emits only current work plus final results. If a required prompt value is missing, fails with an actionable error message suggesting CLI flags or config.
+- **JSON mode** (`--json`): Same non-interactive rendering as CI for progress and diagnostics,
+  with one machine-readable command result on stdout for finite commands. Progress, trace,
+  warning, and error text stays on stderr. Commands with command-specific data include that data
+  in the final result; commands without a specialized schema use `{ "ok": true, "command":
+"<command>" }`. Command failures print `{ "ok": false, "error": { "message": "<message>" } }`
+  on stdout and the human-readable error on stderr.
 - **CI + Verbose** (`--ci --verbose`): Detailed append-only transcript with no colors or timestamps.
 - On `Ctrl-C`, Tako clears any active prompt or spinner it controls, leaves one blank line, prints `Operation cancelled`, and exits with code 130.
 
 All status/progress/log output goes to stderr. Only actual command results (URLs, machine-readable data) go to stdout.
+`tako logs --tail --json` is a streaming exception: it emits one structured log event per stdout
+line until interrupted instead of a final result object.
 
 Config selection is global for app-scoped commands:
 
@@ -746,7 +757,7 @@ Print a local diagnostic report and exit.
   - TCP reachability on `{loopback-address}:443` and `{loopback-address}:80`
 - If the local dev daemon is not running (missing/stale socket), doctor reports `status: not running` with a hint to start `tako dev`, and exits successfully.
 
-### tako servers status
+### tako status / tako servers status
 
 Show global deployment status from configured servers, with one server block per configured host and one app block per running build nested under each server:
 
@@ -773,19 +784,54 @@ Each app block uses a tree connector (`┌` heading, `│` detail continuation, 
 Environment is inferred from the deployed app id (`app/env`); otherwise app status uses `unknown`.
 App state text is color-coded (`running` success, `idle` muted, `deploying`/`stopped` warning, `error` error).
 Each app block includes instance summary (`healthy/total`), build, and deployed timestamp (formatted in the user's current locale and local time, without timezone suffix).
-`tako servers status` prints a single snapshot and exits.
+`tako status` and `tako servers status` print a single snapshot and exit.
+With `--json`, status prints:
+
+```json
+{
+  "ok": true,
+  "command": "status",
+  "servers": [
+    {
+      "name": "la",
+      "host": "la.example.com",
+      "port": 22,
+      "description": "Primary",
+      "service_status": "active",
+      "server_version": "0.0.0-abc1234",
+      "server_uptime": "12 days",
+      "process_uptime": "3 hours",
+      "routes": [{ "app": "dashboard/production", "pattern": "dashboard.example.com" }],
+      "apps": [
+        {
+          "app_name": "dashboard",
+          "env_name": "production",
+          "status": {
+            "service_status": "active",
+            "server_version": "0.0.0-abc1234",
+            "app_status": {},
+            "deployed_at_unix_secs": 1770000000,
+            "error": null
+          }
+        }
+      ],
+      "error": null
+    }
+  ]
+}
+```
 
 Status flow helpers:
 
-- `tako servers status` does not require `tako.toml` and can run from any directory.
+- `tako status` and `tako servers status` do not require `tako.toml` and can run from any directory.
 - Uses global server inventory from `config.toml`.
 - Queries each server through signed Tailscale HTTP remote management.
 - If no servers are configured and the terminal is interactive, status offers to run the add-server wizard.
 - If no deployed apps are found, status reports that explicitly.
 
-Alias: `tako servers info`.
+Aliases: `tako servers status`, `tako servers info`.
 
-### tako logs [--env {environment}] [--tail] [--days {N}] [--json]
+### tako logs [--env {environment}] [--tail] [--days {N}]
 
 View or stream logs from all servers in an environment.
 
@@ -809,12 +855,13 @@ View or stream logs from all servers in an environment.
 - Remote logs are read over signed HTTP management. History uses one bounded raw-byte fetch from
   the app's `previous.log` and `current.log`; streaming mode polls the same endpoint with byte
   offsets and starts by showing up to the last 10 current-log lines.
-- `--json` emits JSONL for agents and automation: one log event per stdout line and no
-  human progress output on stdout. Structured app/worker JSON records are preserved and
-  annotated with `source` and `instance_id`; `source` is the app instance id, worker name
-  (`default` renders as `worker`), or `tako` for app-scoped server diagnostics. Raw app
-  process output and app-scoped Tako diagnostics are wrapped into JSON records with a
-  `level` field. When logs come from multiple servers, records also include `server`.
+- With global `--json`, history mode emits a single final result object containing `ok`,
+  `command`, `app`, `environment`, `days`, and `logs`. Each entry in `logs` is a structured
+  log record. Structured app/worker JSON records are preserved and annotated with `source`
+  and `instance_id`; `source` is the app instance id, worker name (`default` renders as
+  `worker`), or `tako` for app-scoped server diagnostics. Raw app process output and
+  app-scoped Tako diagnostics are wrapped into JSON records with a `level` field. When logs
+  come from multiple servers, records also include `server`.
 
 **History mode (default):**
 
@@ -830,6 +877,8 @@ View or stream logs from all servers in an environment.
 
 - Streams logs continuously until interrupted (`Ctrl+c`).
 - `--tail` conflicts with `--days`.
+- With global `--json`, streaming mode emits one structured log event per stdout line rather
+  than a final result object.
 - Consecutive identical messages are deduplicated with a `└─ repeated N times through <timestamp>`
   marker. Same-day repeats show `HH:MM:SS`; `N` includes the first displayed row.
 

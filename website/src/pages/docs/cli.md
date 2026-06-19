@@ -9,7 +9,7 @@ description: "Complete CLI reference for Tako commands including init, dev, depl
 # CLI Reference
 
 ```bash
-tako [--version] [-v|--verbose] [--ci] [--dry-run] [-c|--config <CONFIG>] [--ssh-passphrase <PASSPHRASE>] <command>
+tako [--version] [-v|--verbose] [--ci] [--json] [--dry-run] [-c|--config <CONFIG>] [--ssh-passphrase <PASSPHRASE>] <command>
 ```
 
 Progress, prompts, diagnostics, and logs go to stderr. Command results and machine-readable data go to stdout.
@@ -21,11 +21,14 @@ Progress, prompts, diagnostics, and logs go to stderr. Command results and machi
 | `--version`                     | Print the CLI version and exit.                                                                                                 |
 | `-v`, `--verbose`               | Append-only transcript with timestamps, log levels, and debug diagnostics.                                                      |
 | `--ci`                          | Deterministic non-interactive output: no colors, spinners, raw mode, or prompts.                                                |
+| `--json`                        | Emit structured JSON on stdout. Progress, diagnostics, and errors stay on stderr.                                               |
 | `--dry-run`                     | Show side effects without performing them. Supported by deploy, servers add/remove, delete, and side-effecting backup commands. |
 | `-c`, `--config <CONFIG>`       | Use an explicit config file. `.toml` is appended when omitted.                                                                  |
 | `--ssh-passphrase <PASSPHRASE>` | Use a passphrase for encrypted local SSH keys.                                                                                  |
 
 App-scoped commands that honor `-c`: `init`, `dev`, `logs`, `deploy`, `releases`, `backups`, `delete`, `secrets`, `storages`, `generate`, and project-context `scale`.
+
+For finite commands, `--json` prints one final object. Commands without a specialized schema use `{"ok":true,"command":"<command>"}`. Failures print `{"ok":false,"error":{"message":"..."}}` on stdout and the human-readable error on stderr. `tako logs --tail --json` is the streaming exception: it emits one structured log event per stdout line until interrupted.
 
 ## Project Setup
 
@@ -115,10 +118,10 @@ tako deploy [--env <env>] [-y|--yes]
 Builds locally, uploads artifacts over signed HTTP management, prepares every mapped server, runs the optional release command on the leader, rolls instances, finalizes the release, and runs post-deploy backups when enabled. `--env` defaults to `production`. `development` is reserved for `tako dev`.
 
 ```bash
-tako logs [--env <env>] [--tail] [--days N] [--json]
+tako logs [--env <env>] [--tail] [--days N]
 ```
 
-Shows app logs from all servers mapped to the environment. History defaults to three days. `--tail` streams. `--json` emits JSONL for agents and automation.
+Shows app logs from all servers mapped to the environment. History defaults to three days. `--tail` streams. Global `--json` emits a final object with a `logs` array in history mode; with `--tail`, it emits JSONL records.
 
 ```bash
 tako scale <instances> [--env <env>] [--server <server>] [--app <app>]
@@ -154,6 +157,7 @@ tako servers list
 tako servers ls
 tako servers status
 tako servers info
+tako status
 tako servers reload <name> [--force]
 tako servers upgrade [name]
 tako servers remove [name]

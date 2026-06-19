@@ -653,18 +653,18 @@ pub async fn run_dev_output(
     // Build the exit value (now that log_rx/event_rx are no longer borrowed).
     let exit = match loop_exit {
         LoopExit::Terminate => {
-            println!("\n{DIM}{app_name} stopped{RESET}");
+            crate::output::stream_line(&format!("\n{DIM}{app_name} stopped{RESET}"));
             DevOutputExit::Terminate
         }
         LoopExit::Disconnect => {
-            println!();
-            println!(
+            crate::output::stream_blank_line();
+            crate::output::stream_line(&format!(
                 "{DIM}{app_name} is running in the background — run `tako dev` to reconnect{RESET}"
-            );
+            ));
             DevOutputExit::Disconnect { log_rx, event_rx }
         }
         LoopExit::Message(msg) => {
-            println!("\n{DIM}{app_name} {msg}{RESET}");
+            crate::output::stream_line(&format!("\n{DIM}{app_name} {msg}{RESET}"));
             DevOutputExit::Terminate
         }
     };

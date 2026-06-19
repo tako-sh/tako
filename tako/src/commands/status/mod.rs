@@ -5,6 +5,7 @@ mod time;
 use crate::commands::server;
 use crate::config::ServersToml;
 use crate::output;
+use serde::Serialize;
 use std::collections::HashMap;
 use tako_core::AppStatus;
 use tracing::Instrument;
@@ -29,7 +30,7 @@ use time::{
 };
 
 /// Server status result from querying a remote server
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 struct ServerStatusResult {
     service_status: String,
     server_version: Option<String>,
@@ -39,7 +40,7 @@ struct ServerStatusResult {
 }
 
 /// Global app status discovered on a specific server.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 struct GlobalAppStatusResult {
     app_name: String,
     env_name: String,
@@ -47,7 +48,7 @@ struct GlobalAppStatusResult {
 }
 
 /// Global server status result with all apps discovered on a server.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 struct GlobalServerStatusResult {
     service_status: String,
     server_version: Option<String>,
@@ -61,10 +62,11 @@ struct GlobalServerStatusResult {
 #[cfg(test)]
 static LOCAL_OFFSET: std::sync::OnceLock<::time::UtcOffset> = std::sync::OnceLock::new();
 
-pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run(json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let mut servers = ServersToml::load()?;
 
-    if servers.is_empty()
+    if !json
+        && servers.is_empty()
         && server::prompt_to_add_server(
             "No servers configured yet. Add one now to see deployment status.",
         )
@@ -74,25 +76,78 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         servers = ServersToml::load()?;
     }
 
-    run_global_status(&servers).await
+    run_global_status(&servers, json).await
 }
 
-async fn run_global_status(servers: &ServersToml) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_global_status(
+    servers: &ServersToml,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     if servers.is_empty() {
-        output::warning("No servers configured.");
-        output::hint(&format!(
-            "Run {} to add one.",
-            output::strong("tako servers add")
-        ));
+        if json {
+            output::json_result(serde_json::json!({
+                "ok": true,
+                "command": "status",
+                "servers": [],
+            }))?;
+        } else {
+            output::warning("No servers configured.");
+            output::hint(&format!(
+                "Run {} to add one.",
+                output::strong("tako servers add")
+            ));
+        }
         return Ok(());
     }
 
     let server_names = sorted_server_names(servers);
 
     let mut results = collect_global_status_results(servers, &server_names).await?;
-    render_global_status(servers, &server_names, &mut results);
+    if json {
+        render_global_status_json(servers, &server_names, &results)?;
+    } else {
+        render_global_status(servers, &server_names, &mut results);
+    }
 
     Ok(())
+}
+
+fn render_global_status_json(
+    servers: &ServersToml,
+    server_names: &[String],
+    server_results: &HashMap<String, GlobalServerStatusResult>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let servers = server_names
+        .iter()
+        .filter_map(|name| {
+            let result = server_results.get(name)?;
+            let entry = servers.get(name.as_str());
+            Some(serde_json::json!({
+                "name": name,
+                "host": entry.map(|entry| entry.host.as_str()),
+                "port": entry.map(|entry| entry.port),
+                "description": entry.and_then(|entry| entry.description.as_deref()),
+                "service_status": &result.service_status,
+                "server_version": &result.server_version,
+                "server_uptime": &result.server_uptime,
+                "process_uptime": &result.process_uptime,
+                "routes": result.routes.iter().map(|(app, pattern)| {
+                    serde_json::json!({
+                        "app": app,
+                        "pattern": pattern,
+                    })
+                }).collect::<Vec<_>>(),
+                "apps": &result.apps,
+                "error": &result.error,
+            }))
+        })
+        .collect::<Vec<_>>();
+
+    output::json_result(serde_json::json!({
+        "ok": true,
+        "command": "status",
+        "servers": servers,
+    }))
 }
 
 fn sorted_server_names(servers: &ServersToml) -> Vec<String> {

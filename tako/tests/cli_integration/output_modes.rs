@@ -129,3 +129,59 @@ fn verbose_output_goes_to_stderr() {
     // Verbose log lines should be on stderr, not stdout
     assert!(!err.is_empty(), "Verbose output should appear on stderr");
 }
+
+#[test]
+fn json_version_outputs_structured_stdout() {
+    let temp = TempDir::new().unwrap();
+    let output = run_tako(&["--json", "version"], temp.path());
+
+    assert!(output.status.success());
+    assert!(
+        stderr_str(&output).is_empty(),
+        "version JSON should not write progress: {}",
+        stderr_str(&output)
+    );
+
+    let value: serde_json::Value = serde_json::from_str(stdout_str(&output).trim()).unwrap();
+    assert_eq!(value["ok"], true);
+    assert_eq!(value["command"], "version");
+    assert!(value["version"].as_str().is_some());
+}
+
+#[test]
+fn json_status_without_servers_outputs_empty_server_list() {
+    let temp = TempDir::new().unwrap();
+    let project_dir = temp.path();
+    let tako_home = project_dir.join(".tako-home");
+    fs::create_dir_all(&tako_home).unwrap();
+    fs::write(tako_home.join("config.toml"), "").unwrap();
+
+    let output = run_tako_with_env(&["--json", "status"], project_dir, project_dir, &tako_home);
+
+    assert!(output.status.success());
+    let value: serde_json::Value = serde_json::from_str(stdout_str(&output).trim()).unwrap();
+    assert_eq!(value["ok"], true);
+    assert_eq!(value["command"], "status");
+    assert_eq!(value["servers"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn json_failures_output_structured_error_stdout() {
+    let temp = TempDir::new().unwrap();
+    let output = run_tako(&["--json", "deploy"], temp.path());
+
+    assert!(!output.status.success());
+    let value: serde_json::Value = serde_json::from_str(stdout_str(&output).trim()).unwrap();
+    assert_eq!(value["ok"], false);
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("tako.toml")
+    );
+    assert!(
+        stderr_str(&output).contains("ERROR"),
+        "human-readable error should still go to stderr: {}",
+        stderr_str(&output)
+    );
+}

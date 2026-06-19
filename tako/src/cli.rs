@@ -43,6 +43,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub ci: bool,
 
+    /// Emit structured JSON on stdout
+    #[arg(long, global = true)]
+    pub json: bool,
+
     /// Show what would happen without performing any side effects
     #[arg(long, global = true)]
     pub dry_run: bool,
@@ -99,10 +103,6 @@ pub enum Commands {
         #[arg(long)]
         env: Option<String>,
 
-        /// Emit compact JSONL records for agents and automation
-        #[arg(long)]
-        json: bool,
-
         /// Stream logs continuously
         #[arg(long, conflicts_with = "days")]
         tail: bool,
@@ -124,6 +124,9 @@ pub enum Commands {
 
     /// Print a local diagnostic report
     Doctor,
+
+    /// Show deployment status across configured servers
+    Status,
 
     /// Server management commands
     #[command(subcommand)]
@@ -218,30 +221,42 @@ pub enum Commands {
 impl Cli {
     pub fn run(self) -> Result<(), Box<dyn std::error::Error>> {
         crate::ssh::set_key_passphrase(self.ssh_passphrase.clone());
+        let json = self.json;
 
         if self.version {
-            println!("{}", display_version());
-            return Ok(());
+            return print_version(json);
         }
 
         let Some(command) = self.command else {
-            Cli::command().print_help()?;
-            println!();
-            return Ok(());
+            if json {
+                return crate::output::json_result(serde_json::json!({
+                    "ok": true,
+                    "command": "help",
+                    "commands": Cli::command()
+                        .get_subcommands()
+                        .map(|command| command.get_name().to_string())
+                        .collect::<Vec<_>>(),
+                }));
+            } else {
+                Cli::command().print_help()?;
+                println!();
+                return Ok(());
+            }
         };
 
         match command {
-            Commands::Version => {
-                println!("{}", display_version());
-                Ok(())
+            Commands::Version => print_version(json),
+            Commands::Status => {
+                let rt = tokio::runtime::Runtime::new()?;
+                rt.block_on(commands::status::run(json))
             }
-            Commands::Init => commands::init::run(self.config.as_deref()),
-            Commands::Logs {
-                env,
-                json,
-                tail,
-                days,
-            } => commands::logs::run(env.as_deref(), tail, days, json, self.config.as_deref()),
+            Commands::Init => {
+                commands::init::run(self.config.as_deref())?;
+                json_success(json, "init")
+            }
+            Commands::Logs { env, tail, days } => {
+                commands::logs::run(env.as_deref(), tail, days, json, self.config.as_deref())
+            }
             Commands::Dev { command, args } => {
                 let rt = tokio::runtime::Runtime::new()?;
 
@@ -251,47 +266,104 @@ impl Cli {
                         args.variant,
                         args.tunnel,
                         self.config.as_deref(),
-                    )),
+                    ))?,
                     Some(DevSubcommands::Stop { name, all }) => {
-                        rt.block_on(commands::dev::stop(name, all, self.config.as_deref()))
+                        rt.block_on(commands::dev::stop(name, all, self.config.as_deref()))?
                     }
-                    Some(DevSubcommands::List) => rt.block_on(commands::dev::ls()),
+                    Some(DevSubcommands::List) => rt.block_on(commands::dev::ls())?,
                 }
+                json_success(json, "dev")
             }
             Commands::Doctor => {
                 let rt = tokio::runtime::Runtime::new()?;
-                rt.block_on(commands::doctor::run())
+                rt.block_on(commands::doctor::run())?;
+                json_success(json, "doctor")
             }
-            Commands::Servers(cmd) => server::run(cmd),
-            Commands::Secrets(cmd) => secret::run(cmd, self.config.as_deref()),
-            Commands::Storages(cmd) => storage::run(cmd, self.config.as_deref()),
-            Commands::Backups(cmd) => backups::run(cmd, self.config.as_deref()),
-            Commands::Credentials { command } => credentials::run(command, self.config.as_deref()),
-            Commands::Releases(cmd) => releases::run(cmd, self.config.as_deref()),
-            Commands::Upgrade => upgrade::run(),
-            Commands::Uninstall { yes } => commands::implode::run(yes),
-            Commands::Generate => commands::codegen::run(self.config.as_deref()),
+            Commands::Servers(cmd) => {
+                server::run(cmd)?;
+                json_success(json, "servers")
+            }
+            Commands::Secrets(cmd) => {
+                secret::run(cmd, self.config.as_deref())?;
+                json_success(json, "secrets")
+            }
+            Commands::Storages(cmd) => {
+                storage::run(cmd, self.config.as_deref())?;
+                json_success(json, "storages")
+            }
+            Commands::Backups(cmd) => {
+                backups::run(cmd, self.config.as_deref())?;
+                json_success(json, "backups")
+            }
+            Commands::Credentials { command } => {
+                credentials::run(command, self.config.as_deref())?;
+                json_success(json, "credentials")
+            }
+            Commands::Releases(cmd) => {
+                releases::run(cmd, self.config.as_deref())?;
+                json_success(json, "releases")
+            }
+            Commands::Upgrade => {
+                upgrade::run()?;
+                json_success(json, "upgrade")
+            }
+            Commands::Uninstall { yes } => {
+                commands::implode::run(yes)?;
+                json_success(json, "uninstall")
+            }
+            Commands::Generate => {
+                commands::codegen::run(self.config.as_deref())?;
+                json_success(json, "generate")
+            }
             Commands::Deploy { env, yes } => {
-                commands::deploy::run(env.as_deref(), yes, self.config.as_deref())
+                commands::deploy::run(env.as_deref(), yes, self.config.as_deref())?;
+                json_success(json, "deploy")
             }
-            Commands::Delete { env, server, yes } => delete::run(
-                env.as_deref(),
-                server.as_deref(),
-                yes,
-                self.config.as_deref(),
-            ),
+            Commands::Delete { env, server, yes } => {
+                delete::run(
+                    env.as_deref(),
+                    server.as_deref(),
+                    yes,
+                    self.config.as_deref(),
+                )?;
+                json_success(json, "delete")
+            }
             Commands::Scale {
                 instances,
                 env,
                 server,
                 app,
-            } => scale::run(
-                instances,
-                env.as_deref(),
-                server.as_deref(),
-                app.as_deref(),
-                self.config.as_deref(),
-            ),
+            } => {
+                scale::run(
+                    instances,
+                    env.as_deref(),
+                    server.as_deref(),
+                    app.as_deref(),
+                    self.config.as_deref(),
+                )?;
+                json_success(json, "scale")
+            }
         }
+    }
+}
+
+fn json_success(json: bool, command: &str) -> Result<(), Box<dyn std::error::Error>> {
+    if json {
+        crate::output::json_success(command)
+    } else {
+        Ok(())
+    }
+}
+
+fn print_version(json: bool) -> Result<(), Box<dyn std::error::Error>> {
+    if json {
+        crate::output::json_result(serde_json::json!({
+            "ok": true,
+            "command": "version",
+            "version": display_version(),
+        }))
+    } else {
+        println!("{}", display_version());
+        Ok(())
     }
 }

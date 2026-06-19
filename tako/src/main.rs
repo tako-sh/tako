@@ -30,7 +30,8 @@ fn main() {
     let cli = Cli::parse();
 
     crate::output::set_verbose(cli.verbose);
-    crate::output::set_ci(cli.ci);
+    crate::output::set_json(cli.json);
+    crate::output::set_ci(cli.ci || cli.json);
     crate::output::set_dry_run(cli.dry_run);
 
     // Hide cursor for the entire process lifetime when running in interactive
@@ -55,7 +56,7 @@ fn main() {
 
     // Tracing subscriber: only installed in verbose/CI mode.
     // In normal mode, tracing calls are no-ops (no subscriber).
-    if cli.verbose || cli.ci {
+    if cli.verbose || cli.ci || cli.json {
         let fmt_layer = tracing_subscriber::fmt::layer()
             .with_target(false)
             .with_writer(std::io::stderr)
@@ -85,7 +86,13 @@ fn main() {
         }
         let _ = crate::ui::finalize_active_session();
         if !crate::output::is_silent_exit_error(e.as_ref()) {
-            crate::output::error_stderr(&e.to_string());
+            let message = e.to_string();
+            crate::output::error_stderr(&message);
+            if crate::output::is_json()
+                && let Err(json_error) = crate::output::json_error(&message)
+            {
+                crate::output::error_stderr(&json_error.to_string());
+            }
         }
         std::process::exit(1);
     }

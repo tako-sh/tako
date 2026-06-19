@@ -379,8 +379,8 @@ pub(super) async fn run_connected_dev_client(
         )
         .await?;
     } else {
-        println!("{}", session.url);
-        println!("Connected to running dev app '{}'.", app_name);
+        crate::output::stream_line(&session.url);
+        crate::output::stream_line(&format!("Connected to running dev app '{}'.", app_name));
 
         let mut log_rx = log_rx;
         let mut event_rx = event_rx;
@@ -390,26 +390,26 @@ pub(super) async fn run_connected_dev_client(
                 loop {
                     tokio::select! {
                         Some(log) = log_rx.recv() => {
-                            println!(
+                            crate::output::stream_line(&format!(
                                 "{} {:<5} [{}] {}",
                                 log.timestamp, log.level, log.scope, log.message
-                            );
+                            ));
                         }
                         Some(event) = event_rx.recv() => {
                             match event {
-                                DevEvent::AppStopped => println!("○ App stopped (idle)"),
+                                DevEvent::AppStopped => crate::output::stream_line("○ App stopped (idle)"),
                                 DevEvent::AppError(e) => eprintln!("App error: {}", e),
                                 DevEvent::ExitWithMessage(msg) => {
-                                    println!("{}", msg);
+                                    crate::output::stream_line(&msg);
                                     break;
                                 }
                                 DevEvent::ClientConnected { is_self, client_id } => {
                                     if !is_self {
-                                        println!("Client {} connected", client_id);
+                                        crate::output::stream_line(&format!("Client {} connected", client_id));
                                     }
                                 }
                                 DevEvent::ClientDisconnected { client_id } => {
-                                    println!("Client {} disconnected", client_id);
+                                    crate::output::stream_line(&format!("Client {} disconnected", client_id));
                                 }
                                 DevEvent::AppLaunching
                                 | DevEvent::AppStarted
@@ -427,12 +427,12 @@ pub(super) async fn run_connected_dev_client(
                                 | DevEvent::TunnelConnectionChanged {
                                     connected: true, ..
                                 } => {
-                                    println!("Tunnel reconnected");
+                                    crate::output::stream_line("Tunnel reconnected");
                                 }
                                 | DevEvent::TunnelConnectionChanged {
                                     connected: false, ..
                                 } => {
-                                    println!("Tunnel reconnecting: connection lost");
+                                    crate::output::stream_line("Tunnel reconnecting: connection lost");
                                 }
                                 | DevEvent::TunnelModeChanged {
                                     enabled: false,
@@ -442,7 +442,7 @@ pub(super) async fn run_connected_dev_client(
                                     let message = close_reason
                                         .map(TunnelCloseReason::log_message)
                                         .unwrap_or("Tunnel off");
-                                    println!("{}", message);
+                                    crate::output::stream_line(message);
                                 }
                             }
                         }

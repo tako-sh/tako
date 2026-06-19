@@ -87,10 +87,10 @@ pub async fn ls() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    println!(
+    crate::output::stream_line(&format!(
         "{:<20} {:<10} {:<30} {:<30} CONFIG",
         "NAME", "STATUS", "URL", "TUNNEL"
-    );
+    ));
     for app in &apps {
         let url = if let Some(host) = app.hosts.first() {
             format!("https://{}/", host)
@@ -98,10 +98,10 @@ pub async fn ls() -> Result<(), Box<dyn std::error::Error>> {
             String::new()
         };
         let tunnel = app.tunnel_url.as_deref().unwrap_or("-");
-        println!(
+        crate::output::stream_line(&format!(
             "{:<20} {:<10} {:<30} {:<30} {}",
             app.app_name, app.status, url, tunnel, app.config_path
-        );
+        ));
     }
     Ok(())
 }
@@ -250,7 +250,7 @@ pub async fn run(
             &project_dir.join(&cmd[0]),
             &url,
         ) {
-            println!("{}", line);
+            crate::output::stream_line(&line);
         }
     }
 
@@ -264,12 +264,12 @@ pub async fn run(
     .start()?;
 
     if verbose && !interactive {
-        println!(
+        crate::output::stream_line(&format!(
             "Starting server at {}…",
             dev_url(&primary_host, public_url_port)
-        );
-        println!("Press Ctrl+c or q to stop");
-        println!();
+        ));
+        crate::output::stream_line("Press Ctrl+c or q to stop");
+        crate::output::stream_blank_line();
     }
 
     control::spawn_control_loop(control::ControlLoop {

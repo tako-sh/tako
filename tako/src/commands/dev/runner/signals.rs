@@ -13,7 +13,7 @@ pub(super) fn spawn_signal_handlers(
         if tokio::signal::ctrl_c().await.is_ok() {
             let _ = should_exit_tx_ctrlc.send(true);
             if verbose {
-                println!("\nShutting down…");
+                crate::output::stream_line("\nShutting down…");
             }
         }
     });
@@ -36,7 +36,7 @@ fn spawn_unix_signal_handlers(
             terminate_requested.store(true, Ordering::Relaxed);
             let _ = should_exit_tx_term.send(true);
             if verbose {
-                println!("\nTerminating…");
+                crate::output::stream_line("\nTerminating…");
             }
         }
     });
@@ -49,7 +49,7 @@ fn spawn_unix_signal_handlers(
             let _ = sighup.recv().await;
             let _ = should_exit_tx_hup.send(true);
             if verbose {
-                println!("\nDisconnected from terminal.");
+                crate::output::stream_line("\nDisconnected from terminal.");
             }
         }
     });

@@ -180,10 +180,10 @@ pub(super) async fn run_non_interactive_output(
             loop {
                 tokio::select! {
                     Some(log) = log_rx.recv() => {
-                        println!(
+                        crate::output::stream_line(&format!(
                             "{} {:<5} [{}] {}",
                             log.timestamp, log.level, log.scope, log.message
-                        );
+                        ));
                     }
                     Some(event) = event_rx.recv() => {
                         if handle_non_interactive_event(event) {
@@ -211,16 +211,16 @@ fn handle_non_interactive_event(event: DevEvent) -> bool {
     match event {
         DevEvent::AppStarted => {}
         DevEvent::AppReady => {
-            println!("App started");
+            crate::output::stream_line("App started");
         }
         DevEvent::AppLaunching => {
-            println!("Starting app…");
+            crate::output::stream_line("Starting app…");
         }
         DevEvent::AppStopped => {
-            println!("○ App stopped (idle)");
+            crate::output::stream_line("○ App stopped (idle)");
         }
         DevEvent::AppPid(pid) => {
-            println!("App pid {}", pid);
+            crate::output::stream_line(&format!("App pid {}", pid));
         }
         DevEvent::AppProcessExited(_) => {}
         DevEvent::AppError(e) => {
@@ -228,35 +228,35 @@ fn handle_non_interactive_event(event: DevEvent) -> bool {
         }
         DevEvent::ClientConnected { is_self, client_id } => {
             if !is_self {
-                println!("Client {} connected", client_id);
+                crate::output::stream_line(&format!("Client {} connected", client_id));
             }
         }
         DevEvent::ClientDisconnected { client_id } => {
-            println!("Client {} disconnected", client_id);
+            crate::output::stream_line(&format!("Client {} disconnected", client_id));
         }
         DevEvent::LanModeChanged {
             enabled, lan_ip, ..
         } => {
             if enabled {
                 if let Some(ip) = lan_ip {
-                    println!("LAN mode enabled — {}", ip);
+                    crate::output::stream_line(&format!("LAN mode enabled — {}", ip));
                 }
             } else {
-                println!("LAN mode disabled");
+                crate::output::stream_line("LAN mode disabled");
             }
         }
         DevEvent::LanStarting | DevEvent::LanFailed => {}
         DevEvent::TunnelModeChanged { .. } => {}
         DevEvent::TunnelConnectionChanged { connected, .. } => {
             if connected {
-                println!("Tunnel reconnected");
+                crate::output::stream_line("Tunnel reconnected");
             } else {
-                println!("Tunnel reconnecting: connection lost");
+                crate::output::stream_line("Tunnel reconnecting: connection lost");
             }
         }
         DevEvent::TunnelStarting | DevEvent::TunnelFailed => {}
         DevEvent::ExitWithMessage(msg) => {
-            println!("{}", msg);
+            crate::output::stream_line(&msg);
             return true;
         }
     }

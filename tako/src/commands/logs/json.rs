@@ -3,13 +3,21 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value, json};
 
-pub(super) fn format_json_lines(lines: &[(String, String)], include_server: bool) -> String {
+#[cfg(test)]
+fn format_json_lines(lines: &[(String, String)], include_server: bool) -> String {
     let mut out = String::new();
     for (server, raw) in lines {
         out.push_str(&format_json_line(server, raw, include_server));
         out.push('\n');
     }
     out
+}
+
+pub(super) fn json_records(lines: &[(String, String)], include_server: bool) -> Vec<Value> {
+    lines
+        .iter()
+        .map(|(server, raw)| json_record(server, raw, include_server))
+        .collect()
 }
 
 pub(super) struct JsonLogWriter {

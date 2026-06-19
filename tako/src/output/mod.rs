@@ -34,6 +34,7 @@ use indicatif::ProgressBar;
 static VERBOSE: AtomicBool = AtomicBool::new(false);
 static CI: AtomicBool = AtomicBool::new(false);
 static DRY_RUN: AtomicBool = AtomicBool::new(false);
+static JSON: AtomicBool = AtomicBool::new(false);
 
 /// Active PhaseSpinner's ProgressBar. When set, all output routes through
 /// `pb.println()` so the spinner stays on the last line.
@@ -249,6 +250,10 @@ pub fn set_ci(ci: bool) {
     CI.store(ci, Ordering::Relaxed);
 }
 
+pub fn set_json(json: bool) {
+    JSON.store(json, Ordering::Relaxed);
+}
+
 pub fn set_dry_run(dry_run: bool) {
     DRY_RUN.store(dry_run, Ordering::Relaxed);
 }
@@ -277,6 +282,10 @@ pub fn is_ci() -> bool {
     CI.load(Ordering::Relaxed)
 }
 
+pub fn is_json() -> bool {
+    JSON.load(Ordering::Relaxed)
+}
+
 /// True when running as root (euid 0), meaning sudo prompts are unnecessary.
 #[cfg(unix)]
 pub fn is_root() -> bool {
@@ -291,7 +300,46 @@ pub fn is_root() -> bool {
 /// True when pretty output should render (normal interactive mode).
 /// False in verbose or CI mode, where tracing handles all output.
 pub fn is_pretty() -> bool {
-    !is_verbose() && !is_ci()
+    !is_verbose() && !is_ci() && !is_json()
+}
+
+pub fn json_success(command: &str) -> Result<(), Box<dyn std::error::Error>> {
+    json_result(serde_json::json!({
+        "ok": true,
+        "command": command,
+    }))
+}
+
+pub fn json_result(value: serde_json::Value) -> Result<(), Box<dyn std::error::Error>> {
+    println!("{}", serde_json::to_string(&value)?);
+    Ok(())
+}
+
+pub fn json_error(message: &str) -> Result<(), Box<dyn std::error::Error>> {
+    json_result(serde_json::json!({
+        "ok": false,
+        "error": {
+            "message": message,
+        },
+    }))
+}
+
+/// Print live stream output. Normal dev/log streaming keeps stdout for terminal
+/// use; JSON mode reserves stdout for machine-readable command results.
+pub fn stream_line(message: &str) {
+    if is_json() {
+        eprintln!("{message}");
+    } else {
+        println!("{message}");
+    }
+}
+
+pub fn stream_blank_line() {
+    if is_json() {
+        eprintln!();
+    } else {
+        println!();
+    }
 }
 
 // ── Logo ───────────────────────────────────────────────────────────────────

@@ -12,7 +12,7 @@ use crate::commands::server;
 use crate::config::{ServersToml, TakoToml};
 use crate::output;
 use json::JsonLogWriter;
-use json::format_json_lines;
+use json::json_records;
 use remote::collect_remote_log_bytes;
 use remote::stream_remote_logs;
 use render::{LogWriter, extract_timestamp, format_and_dedup, format_prefix};
@@ -25,6 +25,7 @@ struct LogOutputOptions {
     page: bool,
     json: bool,
     app_name: String,
+    environment: String,
 }
 
 pub fn run(
@@ -88,6 +89,7 @@ async fn run_async(
         page: interactive_stdout,
         json,
         app_name: app_name.clone(),
+        environment: env.clone(),
     };
 
     if tail {
@@ -301,6 +303,15 @@ async fn fetch_logs(
                 days,
                 output::strong("--tail")
             ));
+        } else {
+            output::json_result(serde_json::json!({
+                "ok": true,
+                "command": "logs",
+                "app": output_options.app_name,
+                "environment": output_options.environment,
+                "days": days,
+                "logs": [],
+            }))?;
         }
         return Ok(());
     }
@@ -310,8 +321,14 @@ async fn fetch_logs(
     }
 
     if output_options.json {
-        print!("{}", format_json_lines(&lines, output_options.show_prefix));
-        return Ok(());
+        return output::json_result(serde_json::json!({
+            "ok": true,
+            "command": "logs",
+            "app": output_options.app_name,
+            "environment": output_options.environment,
+            "days": days,
+            "logs": json_records(&lines, output_options.show_prefix),
+        }));
     }
 
     // Format and dedup.

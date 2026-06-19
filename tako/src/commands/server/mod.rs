@@ -149,7 +149,7 @@ async fn run_async(cmd: ServerCommands) -> Result<(), Box<dyn std::error::Error>
         ServerCommands::Reload { name, force } => crud::restart_server(&name, force).await,
         ServerCommands::Upgrade { name } => upgrade::upgrade_servers(name.as_deref()).await,
         ServerCommands::Uninstall { name, yes } => uninstall_server_cmd(name.as_deref(), yes).await,
-        ServerCommands::Status => crate::commands::status::run().await,
+        ServerCommands::Status => crate::commands::status::run(output::is_json()).await,
     }
 }
 

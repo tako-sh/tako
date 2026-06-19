@@ -22,7 +22,7 @@ tako logs --env production
 tako logs --env production --tail
 ```
 
-Use `--verbose` for a timestamped transcript and `--ci` for deterministic non-interactive output.
+Use `--verbose` for a timestamped transcript, `--ci` for deterministic non-interactive output, and global `--json` when an agent needs structured stdout.
 
 ## `tako dev` Will Not Start
 
@@ -116,12 +116,14 @@ For `ssl = "cloudflare"`, use a Cloudflare token with Origin CA certificate edit
 tako logs --env production --days 7
 ```
 
-Use `--tail` for streaming and `--json` for JSONL:
+Use `--tail` for streaming and global `--json` for structured output:
 
 ```bash
 tako logs --env production --tail
 tako logs --env production --json
 ```
+
+History mode with `--json` returns one object with a `logs` array. `--tail --json` emits one JSONL event per stdout line until interrupted.
 
 Remote fetch failures are command failures, not empty log results.
 
