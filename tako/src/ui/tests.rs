@@ -9,6 +9,7 @@ fn render_plain_task_states() {
         id: "group".into(),
         label: "Checks".into(),
         state: TaskState::Pending,
+        icon: TaskIcon::State,
         detail: None,
         progress: None,
         children: vec![
@@ -18,6 +19,7 @@ fn render_plain_task_states() {
                 state: TaskState::Succeeded {
                     elapsed: Some(Duration::from_secs(2)),
                 },
+                icon: TaskIcon::State,
                 detail: None,
                 progress: None,
                 children: vec![],
@@ -28,6 +30,7 @@ fn render_plain_task_states() {
                 state: TaskState::Failed {
                     elapsed: Some(Duration::from_secs(1)),
                 },
+                icon: TaskIcon::State,
                 detail: Some("boom".into()),
                 progress: None,
                 children: vec![],
@@ -36,6 +39,7 @@ fn render_plain_task_states() {
                 id: "c".into(),
                 label: "prod-c".into(),
                 state: TaskState::Skipped { elapsed: None },
+                icon: TaskIcon::State,
                 detail: Some("skipped".into()),
                 progress: None,
                 children: vec![],
@@ -44,11 +48,11 @@ fn render_plain_task_states() {
     })];
 
     let lines = render_plain_lines(&tree);
-    assert_eq!(lines[0], "○ Checks…");
-    assert_eq!(lines[1], "  ✔ prod-a             2.0s");
-    assert_eq!(lines[2], "  ✘ prod-b             1.0s");
+    assert_eq!(lines[0], "Checks…");
+    assert_eq!(lines[1], "  ✔ prod-a  2.0s");
+    assert_eq!(lines[2], "  ✘ prod-b  1.0s");
     assert_eq!(lines[3], "    boom");
-    assert_eq!(lines[4], "  ⏭ prod-c… skipped");
+    assert_eq!(lines[4], "  ○ prod-c… skipped");
 }
 
 #[test]
@@ -60,6 +64,7 @@ fn render_plain_accent_task() {
             state: TaskState::Succeeded {
                 elapsed: Some(Duration::from_millis(3400)),
             },
+            icon: TaskIcon::State,
             detail: Some("1.04 MB".into()),
             progress: None,
             children: vec![],
@@ -68,18 +73,19 @@ fn render_plain_accent_task() {
     ];
 
     let lines = render_plain_lines(&tree);
-    assert_eq!(lines[0], "✔ Built 1.04 MB    3.4s");
+    assert_eq!(lines[0], "✔ Built 1.04 MB  3.4s");
     assert_eq!(lines[1], "");
 }
 
 #[test]
-fn succeeded_parent_hides_success_icon_on_succeeded_children() {
+fn succeeded_parent_keeps_success_icons_on_succeeded_children() {
     let tree = vec![TreeNode::Task(TaskItemState {
         id: "deploy".into(),
         label: "Deployed to prod-a".into(),
         state: TaskState::Succeeded {
             elapsed: Some(Duration::from_secs(23)),
         },
+        icon: TaskIcon::State,
         detail: None,
         progress: None,
         children: vec![
@@ -89,6 +95,7 @@ fn succeeded_parent_hides_success_icon_on_succeeded_children() {
                 state: TaskState::Succeeded {
                     elapsed: Some(Duration::from_millis(4800)),
                 },
+                icon: TaskIcon::State,
                 detail: None,
                 progress: None,
                 children: vec![],
@@ -99,6 +106,7 @@ fn succeeded_parent_hides_success_icon_on_succeeded_children() {
                 state: TaskState::Succeeded {
                     elapsed: Some(Duration::from_millis(4100)),
                 },
+                icon: TaskIcon::State,
                 detail: None,
                 progress: None,
                 children: vec![],
@@ -107,9 +115,36 @@ fn succeeded_parent_hides_success_icon_on_succeeded_children() {
     })];
 
     let lines = render_plain_lines(&tree);
-    assert_eq!(lines[0], "✔ Deployed to prod-a    23s");
-    assert_eq!(lines[1], "  · Preflight           4.8s");
-    assert_eq!(lines[2], "  · Uploaded            4.1s");
+    assert_eq!(lines[0], "Deployed to prod-a");
+    assert_eq!(lines[1], "  ✔ Preflight  4.8s");
+    assert_eq!(lines[2], "  ✔ Uploaded  4.1s");
+}
+
+#[test]
+fn group_rows_hide_icons_while_box_children_show_progress_state() {
+    let tree = vec![TreeNode::Task(
+        TaskItemState::pending("deploy", "Deploying to prod-a")
+            .with_icon(TaskIcon::None)
+            .with_children(vec![
+                TaskItemState::pending("preflight", "Preflight").with_icon(TaskIcon::Box),
+                TaskItemState {
+                    id: "uploading".into(),
+                    label: "Uploading".into(),
+                    state: TaskState::Running {
+                        started_at: Instant::now(),
+                    },
+                    icon: TaskIcon::Box,
+                    detail: None,
+                    progress: None,
+                    children: vec![],
+                },
+            ]),
+    )];
+
+    let lines = render_plain_lines(&tree);
+    assert_eq!(lines[0], "Deploying to prod-a…");
+    assert_eq!(lines[1], "  □ Preflight…");
+    assert!(lines[2].starts_with("  ◧ Uploading…"));
 }
 
 #[test]
@@ -139,6 +174,7 @@ fn append_interrupt_message_cancels_running_tasks() {
         state: TaskState::Running {
             started_at: Instant::now(),
         },
+        icon: TaskIcon::State,
         detail: None,
         progress: None,
         children: vec![
@@ -148,6 +184,7 @@ fn append_interrupt_message_cancels_running_tasks() {
                 state: TaskState::Succeeded {
                     elapsed: Some(Duration::from_secs(1)),
                 },
+                icon: TaskIcon::State,
                 detail: None,
                 progress: None,
                 children: vec![],
@@ -158,6 +195,7 @@ fn append_interrupt_message_cancels_running_tasks() {
                 state: TaskState::Running {
                     started_at: Instant::now(),
                 },
+                icon: TaskIcon::State,
                 detail: None,
                 progress: None,
                 children: vec![],
@@ -167,9 +205,9 @@ fn append_interrupt_message_cancels_running_tasks() {
     append_interrupt_message(&mut tree, "Operation cancelled");
 
     let lines = render_plain_lines(&tree);
-    assert!(lines[0].starts_with("⊘ Deploying…"));
+    assert!(lines[0].starts_with("Deploying…"));
     assert!(lines[1].starts_with("  ✔ Connected"));
-    assert!(lines[2].starts_with("  ⊘ Starting…"));
+    assert!(lines[2].starts_with("  ○ Starting…"));
     assert_eq!(lines[3], "");
     assert_eq!(lines[4], "Operation cancelled");
 }

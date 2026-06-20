@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use crate::config::ServerTarget;
 use crate::output;
-use crate::ui::{TaskItemState, TaskState, TaskTreeSession, TreeNode, TreeTextTone};
+use crate::ui::{TaskIcon, TaskItemState, TaskState, TaskTreeSession, TreeNode, TreeTextTone};
 
 use super::format::{
     SummaryLine, format_build_plan_target_label, format_deploy_summary_lines_with_https_port,
@@ -62,16 +62,17 @@ impl DeployTaskTreeController {
                 .map(|group| {
                     let label = format_build_plan_target_label(group);
                     TaskItemState::pending(build_target_task_id(&label), label.clone())
+                        .with_icon(TaskIcon::None)
                         .with_children(vec![
-                            TaskItemState::pending(
+                            boxed_task(
                                 build_task_step_id(&label, "probe-runtime"),
                                 "Probe runtime",
                             ),
-                            TaskItemState::pending(
+                            boxed_task(
                                 build_task_step_id(&label, "build-artifact"),
                                 "Build artifact",
                             ),
-                            TaskItemState::pending(
+                            boxed_task(
                                 build_task_step_id(&label, "package-artifact"),
                                 "Package artifact",
                             ),
@@ -82,23 +83,12 @@ impl DeployTaskTreeController {
                 .iter()
                 .map(|server_name| {
                     TaskItemState::pending(deploy_target_task_id(server_name), server_name.clone())
+                        .with_icon(TaskIcon::None)
                         .with_children(vec![
-                            TaskItemState::pending(
-                                deploy_task_step_id(server_name, "connecting"),
-                                "Preflight",
-                            ),
-                            TaskItemState::pending(
-                                deploy_task_step_id(server_name, "uploading"),
-                                "Uploading",
-                            ),
-                            TaskItemState::pending(
-                                deploy_task_step_id(server_name, "preparing"),
-                                "Preparing",
-                            ),
-                            TaskItemState::pending(
-                                deploy_task_step_id(server_name, "starting"),
-                                "Starting",
-                            ),
+                            boxed_task(deploy_task_step_id(server_name, "connecting"), "Preflight"),
+                            boxed_task(deploy_task_step_id(server_name, "uploading"), "Uploading"),
+                            boxed_task(deploy_task_step_id(server_name, "preparing"), "Preparing"),
+                            boxed_task(deploy_task_step_id(server_name, "starting"), "Starting"),
                         ])
                 })
                 .collect(),
@@ -172,7 +162,7 @@ impl DeployTaskTreeController {
         let parent = find_task_mut(&mut state.builds, &parent_id)
             .unwrap_or_else(|| panic!("missing build task {parent_id}"));
         if parent.find(&child_id).is_none() {
-            let mut child = TaskItemState::pending(child_id.clone(), "Use cached artifact");
+            let mut child = boxed_task(child_id.clone(), "Use cached artifact");
             if let Some(detail) = &detail {
                 child = child.with_detail(detail.clone());
             }
@@ -284,7 +274,7 @@ impl DeployTaskTreeController {
         let parent = find_task_mut(&mut state.deploys, &parent_id)
             .unwrap_or_else(|| panic!("missing preparing step for {server_name}"));
         if parent.find(&child_id).is_none() {
-            parent.append_child(TaskItemState::pending(child_id, label));
+            parent.append_child(boxed_task(child_id, label));
         }
         self.refresh_locked(&state);
     }
@@ -499,6 +489,7 @@ pub(super) fn build_deploy_tree(state: &DeployTaskTreeState) -> Vec<TreeNode> {
                 id: build.id.clone(),
                 label: label.to_string(),
                 state: build.state.clone(),
+                icon: TaskIcon::Box,
                 detail: build.detail.clone(),
                 progress: None,
                 children: vec![],
@@ -513,6 +504,7 @@ pub(super) fn build_deploy_tree(state: &DeployTaskTreeState) -> Vec<TreeNode> {
                 id: "build-group".into(),
                 label: "Building".into(),
                 state: group_state,
+                icon: TaskIcon::None,
                 detail: None,
                 progress: None,
                 children: builds
@@ -521,6 +513,7 @@ pub(super) fn build_deploy_tree(state: &DeployTaskTreeState) -> Vec<TreeNode> {
                         id: b.id.clone(),
                         label: b.label.clone(),
                         state: b.state.clone(),
+                        icon: TaskIcon::Box,
                         detail: b.detail.clone(),
                         progress: None,
                         children: vec![],
@@ -544,6 +537,7 @@ pub(super) fn build_deploy_tree(state: &DeployTaskTreeState) -> Vec<TreeNode> {
             id: deploy.id.clone(),
             label,
             state: deploy.state.clone(),
+            icon: deploy.icon,
             detail: deploy.detail.clone(),
             progress: None,
             children: deploy.children.clone(),
@@ -587,6 +581,10 @@ pub(super) fn build_deploy_tree(state: &DeployTaskTreeState) -> Vec<TreeNode> {
     }
 
     tree
+}
+
+fn boxed_task(id: impl Into<String>, label: impl Into<String>) -> TaskItemState {
+    TaskItemState::pending(id, label).with_icon(TaskIcon::Box)
 }
 
 fn aggregate_group_state(tasks: &[TaskItemState]) -> TaskState {

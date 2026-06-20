@@ -210,12 +210,13 @@ Use persistent task lists as the preferred pattern for complex interactive flows
   - **Task**: a status-bearing parent row that owns a workflow or a collection of sub tasks.
   - **Sub task**: a single actionable step that may run standalone or inside a task.
 - Pretty interactive mode may render the full known task tree up front.
-- Waiting rows use muted `○` and a trailing `...` label suffix.
-- Running rows use the current spinner glyph.
-- Running tasks (parents) should use the accent color for the whole row.
+- Waiting leaf rows use muted `○` and a trailing `...` label suffix.
+- Running state leaf rows use the current spinner glyph. Boxed task rows use `◧ ◨ ◩ ◪`; task-tree animation advances at a calm 160ms interval.
+- Task rows with sub tasks do not render an icon or elapsed time; running and succeeded parent tasks should keep the accent label.
+- Leaf task elapsed time uses a fixed two-space gap after the label/detail; do not right-align elapsed times into a shared column.
 - Running sub tasks should keep default text; inline detail segments use a single space separator and should be muted.
 - Completed rows stay visible for the life of the command.
-- **Succeeded sub tasks hide the `✔` only when their parent also succeeded.** In the happy path (everything worked), parent shows `✔` and children render with a blank icon slot — the row of checkmarks is visual noise when the outcome is implied by the parent. When the parent is failed, cancelled, or still running, succeeded sub tasks keep their `✔` so the one thing that did finish is still visible (avoids ghost rows and misaligned siblings). Failed (`✘`), cancelled (`⊘`), skipped (`⏭`), running (spinner), and pending (`○`) sub tasks always keep their icons.
+- Sub task icons and colors come from the sub task's own state only. Do not rewrite or mute child rows when the parent task finishes. Boxed task rows use `■` for both success and failure; success uses normal text, while failure uses error color and any error detail. Cancelled and skipped sub tasks reuse the muted pending icon (`○`, or `□` for boxed task rows) so they read as work that did not run.
 - **Cancelled and skipped rows mute the label too** (not just the icon). Accent color is reserved for rows that are live or finished successfully; cancelled / skipped rows did not complete, so they read as muted across the board, consistent with pending rows.
 - Later-discovered conditional work may be appended under the affected parent instead of replacing the original plan.
 - Sub task failures may render a related indented error line beneath the sub task. Do not attach that under a task (parent) row.

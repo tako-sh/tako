@@ -13,7 +13,7 @@ use crate::output;
 use super::render::{render_tree_to_lines, rendered_height, tree_node_has_running};
 use super::{TaskItemState, TaskState, TreeNode, TreeTextTone};
 
-const LIVE_RENDER_INTERVAL: Duration = Duration::from_millis(80);
+const LIVE_RENDER_INTERVAL: Duration = Duration::from_millis(160);
 
 /// Row below the active inline viewport, updated on each draw.
 static VIEWPORT_BOTTOM_ROW: AtomicU16 = AtomicU16::new(0);
@@ -93,8 +93,7 @@ impl TaskTreeSession {
                         if state.paused || !has_running {
                             false
                         } else {
-                            state.frame_index =
-                                (state.frame_index + 1) % output::SPINNER_TICKS.len();
+                            state.frame_index = state.frame_index.wrapping_add(1);
                             true
                         }
                     };

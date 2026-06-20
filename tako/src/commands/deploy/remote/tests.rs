@@ -127,8 +127,8 @@ async fn deploy_task_tree_step_failure_attaches_detail_to_child_row() {
     assert_eq!(err.to_string(), "Warm instance startup failed");
 
     let lines = ui::render_plain_lines(&build_deploy_tree(&controller.snapshot()));
-    assert!(lines.iter().any(|line| line == "✘ Deploy to prod-a failed"));
-    assert!(lines.iter().any(|line| line == "  ✘ Start failed"));
+    assert!(lines.iter().any(|line| line == "Deploy to prod-a failed"));
+    assert!(lines.iter().any(|line| line == "  ■ Start failed"));
     assert!(
         lines
             .iter()
@@ -171,7 +171,7 @@ async fn deploy_task_tree_defers_failed_start_state_until_cleanup_finishes() {
             .any(|line| line.ends_with("Deploying to prod-a…"))
     );
     assert!(lines.iter().any(|line| line.contains("Starting…")));
-    assert!(!lines.iter().any(|line| line == "  ✘ Start failed"));
+    assert!(!lines.iter().any(|line| line == "  ■ Start failed"));
     assert!(
         !lines
             .iter()
@@ -183,8 +183,8 @@ async fn deploy_task_tree_defers_failed_start_state_until_cleanup_finishes() {
     assert_eq!(err.to_string(), "Warm instance startup failed");
 
     let lines = ui::render_plain_lines(&build_deploy_tree(&controller.snapshot()));
-    assert!(lines.iter().any(|line| line == "✘ Deploy to prod-a failed"));
-    assert!(lines.iter().any(|line| line == "  ✘ Start failed"));
+    assert!(lines.iter().any(|line| line == "Deploy to prod-a failed"));
+    assert!(lines.iter().any(|line| line == "  ■ Start failed"));
     assert!(
         lines
             .iter()

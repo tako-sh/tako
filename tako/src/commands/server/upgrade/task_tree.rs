@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::output;
-use crate::ui::{TaskItemState, TaskState, TaskTreeSession, TreeNode, TreeTextTone};
+use crate::ui::{TaskIcon, TaskItemState, TaskState, TaskTreeSession, TreeNode, TreeTextTone};
 
 pub(super) fn should_use_upgrade_task_tree() -> bool {
     output::is_pretty() && output::is_interactive()
@@ -47,16 +47,15 @@ impl UpgradeTaskTreeController {
         let servers = server_names
             .iter()
             .map(|name| {
-                TaskItemState::pending(server_task_id(name), name.clone()).with_children(vec![
-                    TaskItemState::pending(
-                        step_task_id(name, Step::VersionCheck),
-                        Step::VersionCheck.label(),
-                    ),
-                    TaskItemState::pending(
-                        step_task_id(name, Step::Upgrade),
-                        Step::Upgrade.label(),
-                    ),
-                ])
+                TaskItemState::pending(server_task_id(name), name.clone())
+                    .with_icon(TaskIcon::None)
+                    .with_children(vec![
+                        boxed_task(
+                            step_task_id(name, Step::VersionCheck),
+                            Step::VersionCheck.label(),
+                        ),
+                        boxed_task(step_task_id(name, Step::Upgrade), Step::Upgrade.label()),
+                    ])
             })
             .collect();
         let state = UpgradeTaskTreeState {
@@ -216,6 +215,10 @@ fn cancel_pending_children(parent: &mut TaskItemState) {
     }
 }
 
+fn boxed_task(id: impl Into<String>, label: impl Into<String>) -> TaskItemState {
+    TaskItemState::pending(id, label).with_icon(TaskIcon::Box)
+}
+
 pub(super) fn build_tree(state: &UpgradeTaskTreeState) -> Vec<TreeNode> {
     let mut tree = Vec::new();
     for (index, server) in state.servers.iter().enumerate() {
@@ -274,6 +277,23 @@ mod tests {
         assert!(matches!(tree[0], TreeNode::Task(_)));
         assert!(matches!(tree[1], TreeNode::Spacer));
         assert!(matches!(tree[2], TreeNode::Task(_)));
+    }
+
+    #[test]
+    fn running_upgrade_uses_group_and_box_icons() {
+        let controller = controller_for(&["prod-a"]);
+        controller.mark_server_running("prod-a");
+        controller.mark_step_running("prod-a", Step::VersionCheck);
+
+        let lines = crate::ui::render_plain_lines(&build_tree(&controller.snapshot()));
+
+        assert!(lines.iter().any(|line| line.starts_with("prod-a…")));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.starts_with("  ◧ Getting current version…"))
+        );
+        assert!(lines.iter().any(|line| line == "  □ Upgrading…"));
     }
 
     #[test]

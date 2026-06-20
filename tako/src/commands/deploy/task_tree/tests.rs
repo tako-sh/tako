@@ -114,13 +114,13 @@ fn deploy_task_tree_initial_lines_include_known_future_work() {
     assert_eq!(
         lines,
         vec![
-            "○ Building…".to_string(),
+            "□ Building…".to_string(),
             String::new(),
-            "○ Deploying to tako-demo…".to_string(),
-            "  ○ Preflight…".to_string(),
-            "  ○ Uploading…".to_string(),
-            "  ○ Preparing…".to_string(),
-            "  ○ Starting…".to_string(),
+            "Deploying to tako-demo…".to_string(),
+            "  □ Preflight…".to_string(),
+            "  □ Uploading…".to_string(),
+            "  □ Preparing…".to_string(),
+            "  □ Starting…".to_string(),
         ]
     );
 }
@@ -134,36 +134,36 @@ fn deploy_task_tree_initial_lines_include_multi_target_builds_and_multi_server_c
     let snapshot = controller.snapshot();
     let lines = ui::render_plain_lines(&build_deploy_tree(&snapshot));
 
-    assert!(lines.iter().any(|line| line == "○ Building…"));
-    assert!(lines.iter().any(|line| line == "  ○ linux-aarch64-musl…"));
-    assert!(lines.iter().any(|line| line == "  ○ linux-x86_64-glibc…"));
-    assert!(lines.iter().any(|line| line == "○ Deploying to prod-a…"));
-    assert!(lines.iter().any(|line| line == "○ Deploying to prod-b…"));
+    assert!(lines.iter().any(|line| line == "Building…"));
+    assert!(lines.iter().any(|line| line == "  □ linux-aarch64-musl…"));
+    assert!(lines.iter().any(|line| line == "  □ linux-x86_64-glibc…"));
+    assert!(lines.iter().any(|line| line == "Deploying to prod-a…"));
+    assert!(lines.iter().any(|line| line == "Deploying to prod-b…"));
     assert_eq!(
         lines
             .iter()
-            .filter(|line| line.contains("○ Preflight…"))
+            .filter(|line| line.contains("□ Preflight…"))
             .count(),
         2
     );
     assert_eq!(
         lines
             .iter()
-            .filter(|line| line.contains("○ Uploading…"))
+            .filter(|line| line.contains("□ Uploading…"))
             .count(),
         2
     );
     assert_eq!(
         lines
             .iter()
-            .filter(|line| line.contains("○ Preparing…"))
+            .filter(|line| line.contains("□ Preparing…"))
             .count(),
         2
     );
     assert_eq!(
         lines
             .iter()
-            .filter(|line| line.contains("○ Starting…"))
+            .filter(|line| line.contains("□ Starting…"))
             .count(),
         2
     );
@@ -179,7 +179,7 @@ fn deploy_task_tree_marks_build_as_running_before_build_steps_start() {
     let snapshot = controller.snapshot();
     let lines = ui::render_plain_lines(&build_deploy_tree(&snapshot));
 
-    assert!(lines.iter().any(|line| line.starts_with("✶ Building")));
+    assert!(lines.iter().any(|line| line.starts_with("◧ Building")));
     let build = snapshot
         .builds
         .iter()
@@ -216,19 +216,19 @@ fn deploy_task_tree_cache_hit_appends_completed_cached_artifact_step() {
     assert!(
         lines
             .iter()
-            .any(|line| line.starts_with("✔ Built") && line.contains("72 MB (cached)")),
+            .any(|line| line.starts_with("■ Built") && line.contains("72 MB (cached)")),
         "built line should show detail: {lines:?}"
     );
     let built_index = lines
         .iter()
-        .position(|line| line.starts_with("✔ Built"))
+        .position(|line| line.starts_with("■ Built"))
         .unwrap();
     assert_eq!(lines.get(built_index + 1), Some(&String::new()));
     assert_eq!(
         lines.get(built_index + 2),
-        Some(&"○ Deploying to prod-a…".to_string())
+        Some(&"Deploying to prod-a…".to_string())
     );
-    assert_eq!(lines.last(), Some(&"  ○ Starting…".to_string()));
+    assert_eq!(lines.last(), Some(&"  □ Starting…".to_string()));
 }
 
 #[test]
@@ -246,14 +246,14 @@ fn deploy_task_tree_can_show_parallel_running_rows() {
     assert_eq!(
         lines
             .iter()
-            .filter(|line| line.starts_with("✶ Deploying to prod-"))
+            .filter(|line| line.starts_with("Deploying to prod-"))
             .count(),
         2
     );
     assert_eq!(
         lines
             .iter()
-            .filter(|line| line.starts_with("  ✶ Uploading"))
+            .filter(|line| line.starts_with("  ◧ Uploading"))
             .count(),
         2
     );
@@ -324,8 +324,8 @@ fn deploy_task_tree_shows_preflight_errors_under_deploy_group() {
     let snapshot = controller.snapshot();
     let lines = ui::render_plain_lines(&build_deploy_tree(&snapshot));
 
-    assert!(lines.iter().any(|line| line == "✘ Deploy to prod-a failed"));
-    assert!(lines.iter().any(|line| line == "  ✘ Preflight failed"));
+    assert!(lines.iter().any(|line| line == "Deploy to prod-a failed"));
+    assert!(lines.iter().any(|line| line == "  ■ Preflight failed"));
     assert!(lines.iter().any(|line| line == "    SSH protocol error"));
 }
 
@@ -339,21 +339,21 @@ fn deploy_task_tree_preflight_failure_aborts_remaining_deploy_children() {
     let snapshot = controller.snapshot();
     let lines = ui::render_plain_lines(&build_deploy_tree(&snapshot));
 
-    assert!(lines.iter().any(|line| line == "  ✘ Preflight failed"));
+    assert!(lines.iter().any(|line| line == "  ■ Preflight failed"));
     assert!(
         lines
             .iter()
-            .any(|line| line.contains("⊘ Uploading") && line.contains("cancelled"))
+            .any(|line| line.contains("□ Uploading") && line.contains("cancelled"))
     );
     assert!(
         lines
             .iter()
-            .any(|line| line.contains("⊘ Preparing") && line.contains("cancelled"))
+            .any(|line| line.contains("□ Preparing") && line.contains("cancelled"))
     );
     assert!(
         lines
             .iter()
-            .any(|line| line.contains("⊘ Starting") && line.contains("cancelled"))
+            .any(|line| line.contains("□ Starting") && line.contains("cancelled"))
     );
 }
 
@@ -370,8 +370,8 @@ async fn deploy_task_tree_step_failure_attaches_detail_to_child_row() {
     assert_eq!(err.to_string(), "Warm instance startup failed");
 
     let lines = ui::render_plain_lines(&build_deploy_tree(&controller.snapshot()));
-    assert!(lines.iter().any(|line| line == "✘ Deploy to prod-a failed"));
-    assert!(lines.iter().any(|line| line == "  ✘ Start failed"));
+    assert!(lines.iter().any(|line| line == "Deploy to prod-a failed"));
+    assert!(lines.iter().any(|line| line == "  ■ Start failed"));
     assert!(
         lines
             .iter()
@@ -414,7 +414,7 @@ async fn deploy_task_tree_defers_failed_start_state_until_cleanup_finishes() {
             .any(|line| line.ends_with("Deploying to prod-a…"))
     );
     assert!(lines.iter().any(|line| line.contains("Starting…")));
-    assert!(!lines.iter().any(|line| line == "  ✘ Start failed"));
+    assert!(!lines.iter().any(|line| line == "  ■ Start failed"));
     assert!(
         !lines
             .iter()
@@ -426,8 +426,8 @@ async fn deploy_task_tree_defers_failed_start_state_until_cleanup_finishes() {
     assert_eq!(err.to_string(), "Warm instance startup failed");
 
     let lines = ui::render_plain_lines(&build_deploy_tree(&controller.snapshot()));
-    assert!(lines.iter().any(|line| line == "✘ Deploy to prod-a failed"));
-    assert!(lines.iter().any(|line| line == "  ✘ Start failed"));
+    assert!(lines.iter().any(|line| line == "Deploy to prod-a failed"));
+    assert!(lines.iter().any(|line| line == "  ■ Start failed"));
     assert!(
         lines
             .iter()
@@ -491,12 +491,12 @@ fn deploy_task_tree_build_failure_aborts_deploy_work() {
     let snapshot = controller.snapshot();
     let lines = ui::render_plain_lines(&build_deploy_tree(&snapshot));
 
-    assert!(lines.iter().any(|line| line == "✘ Building"));
+    assert!(lines.iter().any(|line| line == "■ Building"));
     assert!(lines.iter().any(|line| line == "  Local build failed"));
-    assert!(lines.iter().any(|line| line == "  ⊘ Preflight…"));
-    assert!(lines.iter().any(|line| line == "  ⊘ Uploading…"));
-    assert!(lines.iter().any(|line| line == "  ⊘ Preparing…"));
-    assert!(lines.iter().any(|line| line == "  ⊘ Starting…"));
+    assert!(lines.iter().any(|line| line == "  □ Preflight…"));
+    assert!(lines.iter().any(|line| line == "  □ Uploading…"));
+    assert!(lines.iter().any(|line| line == "  □ Preparing…"));
+    assert!(lines.iter().any(|line| line == "  □ Starting…"));
 }
 
 #[test]
@@ -512,13 +512,13 @@ fn deploy_task_tree_records_early_build_phase_failure() {
     let snapshot = controller.snapshot();
     let lines = ui::render_plain_lines(&build_deploy_tree(&snapshot));
 
-    assert!(lines.iter().any(|line| line == "✘ Building"));
+    assert!(lines.iter().any(|line| line == "■ Building"));
     assert!(
         lines
             .iter()
             .any(|line| line == "  Failed to create build dir")
     );
-    assert!(lines.iter().any(|line| line == "⊘ Deploying to prod-a…"));
+    assert!(lines.iter().any(|line| line == "Deploying to prod-a…"));
     assert_eq!(lines.last(), Some(&"Deploy failed".to_string()));
 }
 

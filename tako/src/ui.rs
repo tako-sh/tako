@@ -13,10 +13,8 @@ pub use session::{
 };
 
 const TASK_INDENT: &str = "  ";
-/// Minimum spaces between a row's label/detail and its right-aligned elapsed.
-/// Bigger gap absorbs small label changes (e.g. a running step renaming to
-/// its result text) without the time column visibly jumping around.
-const TIME_COL_GAP: usize = 4;
+/// Spaces between a row's label/detail and elapsed time in task-tree output.
+const ELAPSED_GAP: usize = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskState {
@@ -33,10 +31,18 @@ pub struct TaskItemState {
     pub id: String,
     pub label: String,
     pub state: TaskState,
+    pub icon: TaskIcon,
     pub detail: Option<String>,
     /// Progress fraction (0.0-1.0) rendered as a native ratatui block bar.
     pub progress: Option<f64>,
     pub children: Vec<TaskItemState>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskIcon {
+    None,
+    State,
+    Box,
 }
 
 impl TaskItemState {
@@ -45,6 +51,7 @@ impl TaskItemState {
             id: id.into(),
             label: label.into(),
             state: TaskState::Pending,
+            icon: TaskIcon::State,
             detail: None,
             progress: None,
             children: Vec::new(),
@@ -58,6 +65,11 @@ impl TaskItemState {
 
     pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = Some(detail.into());
+        self
+    }
+
+    pub fn with_icon(mut self, icon: TaskIcon) -> Self {
+        self.icon = icon;
         self
     }
 
