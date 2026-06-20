@@ -10,7 +10,6 @@ use super::{ELAPSED_GAP, TASK_INDENT, TaskIcon, TaskItemState, TaskState, TreeNo
 const COLOR_ACCENT: Color = Color::Rgb(125, 196, 228);
 const COLOR_ERROR: Color = Color::Rgb(232, 163, 160);
 const PROGRESS_BAR_WIDTH: usize = 16;
-const BOX_SPINNER_TICKS: [&str; 4] = ["◧", "◨", "◩", "◪"];
 
 pub(super) fn rendered_height(lines: &[Line<'_>], width: u16) -> u16 {
     let width = width.max(1) as usize;
@@ -197,7 +196,9 @@ fn task_icon(icon: TaskIcon, state: &TaskState, frame_index: usize) -> &'static 
 fn box_task_icon(state: &TaskState, frame_index: usize) -> &'static str {
     match state {
         TaskState::Pending => "□",
-        TaskState::Running { .. } => BOX_SPINNER_TICKS[frame_index % BOX_SPINNER_TICKS.len()],
+        TaskState::Running { .. } => {
+            output::SPINNER_TICKS[frame_index % output::SPINNER_TICKS.len()]
+        }
         TaskState::Succeeded { .. } | TaskState::Failed { .. } => "■",
         TaskState::Skipped { .. } | TaskState::Cancelled { .. } => "□",
     }

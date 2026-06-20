@@ -50,7 +50,7 @@ CI output is also transcript-style only: emit current work and final results, no
 
 Normal:
 ```
-⠋ Uploading artifact…
+◧ Uploading artifact…
 ✔ Uploaded artifact  711ms
 ```
 
@@ -73,7 +73,7 @@ CI: identical to verbose but without ANSI colors.
 
 In interactive mode (`is_pretty() && is_interactive()`), plain text output functions
 (`info`, `muted`, `hint`, `section`, `heading`) are automatically indented 2 spaces so
-they align with symbol-prefixed lines (`✔`/`✘`/`⠋` already start at col 0 with
+they align with symbol-prefixed lines (`✔`/`✘`/`◧` already start at col 0 with
 their text at col 2).
 
 Do NOT add manual padding — the output functions handle it.
@@ -145,7 +145,7 @@ output::with_spinner("Validating", "Validated", || {
     validate()?;
     Ok(())
 })?;
-// Normal: ⠋ Validating... → ✔ Validated 1.2s
+// Normal: ◧ Validating... → ✔ Validated 1.2s
 // Verbose: TRACE Validate config (1.2s)  (single record, action was <2s)
 ```
 
@@ -164,7 +164,7 @@ let _t = output::timed("Build phase");
 let phase = output::PhaseSpinner::start("Building…");
 // ... build steps ...
 phase.finish("Build complete");
-// Normal: ⠋ Building… 5s → ✔ Build complete 5.2s
+// Normal: ◧ Building… 5s → ✔ Build complete 5.2s
 // Verbose: DEBUG Build phase…     (deferred start at 2s)
 //          TRACE Build phase (5.2s) (end record on drop)
 ```
@@ -184,9 +184,9 @@ g.start_child("worker");
 g.finish_child("worker");
 g.finish("Services built");
 // Normal:
-//   ⠋ Building services  10s
+//   ◧ Building services  10s
 //     ✔ api  7s
-//     ⠋ worker  3s
+//     ◧ worker  3s
 // Verbose: silent unless caller wraps each step in its own timed() span
 ```
 
@@ -211,7 +211,7 @@ Use persistent task lists as the preferred pattern for complex interactive flows
   - **Sub task**: a single actionable step that may run standalone or inside a task.
 - Pretty interactive mode may render the full known task tree up front.
 - Waiting leaf rows use a muted pending icon and a trailing `...` label suffix: `○` for state-style rows, `□` for boxed rows.
-- Running state leaf rows use the current spinner glyph. Boxed task rows use `◧ ◨ ◩ ◪`; task-tree animation advances at a calm 160ms interval.
+- Running leaf rows use `◧ ◨ ◩ ◪`; task-tree animation advances at a calm 160ms interval.
 - Task rows with sub tasks do not render an icon or elapsed time; running and succeeded parent tasks should keep the accent label. A row becomes a task group by having sub tasks, not by setting a separate no-icon mode.
 - Leaf task elapsed time uses a fixed two-space gap after the label/detail; do not right-align elapsed times into a shared column.
 - Running sub tasks should keep default text; inline detail segments use a single space separator and should be muted.
@@ -242,7 +242,7 @@ let progress = output::TransferProgress::new("Uploading", "Uploaded", total_byte
 progress.set_position(bytes_sent);
 // On done:
 progress.finish();
-// Normal: ⠋ Uploading…  42s  ████████████░░░░  72%  (84 KB/116 MB) → ✔ Uploaded  42s, 116 MB
+// Normal: ◧ Uploading…  42s  ████████████░░░░  72%  (84 KB/116 MB) → ✔ Uploaded  42s, 116 MB
 ```
 
 ## Prompts
@@ -401,15 +401,15 @@ output::bullet(&format!("Revision {} deployed", output::strong(rev)));
 
 Every spinner transitions from loading to result:
 ```
-⠋ Connecting…        → ✔ Connected
-⠋ Building… 5s       → ✔ Build complete 5.2s
+◧ Connecting…        → ✔ Connected
+◧ Building… 5s       → ✔ Build complete 5.2s
 ```
 
 ### 3. Phase flow for deploy-style commands
 
 Use `StepFlow` for known sequential phases:
 ```
-⠋ Pushing artifact  3s
+◧ Pushing artifact  3s
 ·  Applying migrations
 ·  Health checks
 ```

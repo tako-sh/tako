@@ -634,7 +634,7 @@ pub const DIAMOND_OUTLINED: &str = "◇";
 pub const OPERATION_CANCELLED: &str = "Operation cancelled";
 
 /// In interactive pretty mode, prepend INDENT so plain text aligns with
-/// symbol-prefixed lines (`✔`/`✘`/`⠋` already occupy 2 chars + space).
+/// symbol-prefixed lines (`✔`/`✘`/`◧` already occupy 2 chars + space).
 fn padded(line: &str) -> String {
     if is_pretty() && is_interactive() {
         format!("{INDENT}{line}")

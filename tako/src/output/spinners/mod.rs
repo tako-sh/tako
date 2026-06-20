@@ -24,7 +24,7 @@ use super::{
 // Spinner helpers
 // ---------------------------------------------------------------------------
 
-pub const SPINNER_TICKS: &[&str] = &["✶", "✸", "✹", "✺", "✹", "✷"];
+pub const SPINNER_TICKS: &[&str] = &["◧", "◨", "◩", "◪"];
 
 fn teal_spinner_token() -> String {
     if should_colorize() {
@@ -141,7 +141,7 @@ where
 /// Spinner that shows only if work takes >= 1s, then clears on completion.
 ///
 /// - Fast (<1s):  prints result directly, no spinner, no elapsed
-/// - Slow (≥1s):  `⠋ {loading}…` → `✔ {success} elapsed` or `✘ {loading} elapsed`
+/// - Slow (≥1s):  `◧ {loading}…` → `✔ {success} elapsed` or `✘ {loading} elapsed`
 ///
 /// In verbose/CI mode: silent on success — the caller's `output::timed()`
 /// owns action tracing. Errors still emit.

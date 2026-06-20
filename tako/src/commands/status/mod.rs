@@ -5,8 +5,10 @@ mod time;
 use crate::commands::server;
 use crate::config::ServersToml;
 use crate::output;
+use crate::ui::{TaskIcon, TaskItemState, TaskState, TaskTreeSession, TreeNode};
 use serde::Serialize;
 use std::collections::HashMap;
+use std::time::Instant;
 use tako_core::AppStatus;
 use tracing::Instrument;
 
@@ -102,7 +104,7 @@ async fn run_global_status(
 
     let server_names = sorted_server_names(servers);
 
-    let mut results = collect_global_status_results(servers, &server_names).await?;
+    let mut results = collect_global_status_results(servers, &server_names, !json).await?;
     if json {
         render_global_status_json(servers, &server_names, &results)?;
     } else {
@@ -159,6 +161,7 @@ fn sorted_server_names(servers: &ServersToml) -> Vec<String> {
 async fn collect_global_status_results(
     servers: &ServersToml,
     server_names: &[String],
+    show_task_tree: bool,
 ) -> Result<HashMap<String, GlobalServerStatusResult>, Box<dyn std::error::Error>> {
     let mut join_set = tokio::task::JoinSet::new();
 
@@ -182,12 +185,20 @@ async fn collect_global_status_results(
 
     let total = join_set.len();
     let mut done = 0usize;
-
-    let spinner = output::TrackedSpinner::start("Retrieving…");
-    spinner.set_message(&format!(
-        "Retrieving… {}",
-        output::muted_progress(done, total)
-    ));
+    let task_started_at = Instant::now();
+    let mut status_tasks = server_names
+        .iter()
+        .map(|name| {
+            status_task(
+                name,
+                TaskState::Running {
+                    started_at: task_started_at,
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    let task_tree = (show_task_tree && output::is_pretty() && output::is_interactive())
+        .then(|| TaskTreeSession::new(build_status_task_tree(&status_tasks)));
 
     let mut server_results: HashMap<String, GlobalServerStatusResult> = HashMap::new();
 
@@ -196,27 +207,102 @@ async fn collect_global_status_results(
             Ok(pair) => pair,
             Err(err) => {
                 done += 1;
-                spinner.set_message(&format!(
-                    "Retrieving… {}",
-                    output::muted_progress(done, total)
-                ));
+                refresh_status_task_tree(&task_tree, &mut status_tasks, None, true);
                 output::error(&format!("Status task panicked: {err}"));
                 continue;
             }
         };
 
         done += 1;
-        spinner.set_message(&format!(
-            "Retrieving… {}",
-            output::muted_progress(done, total)
-        ));
+        let failed = status.error.is_some();
+        refresh_status_task_tree(&task_tree, &mut status_tasks, Some(&server_name), failed);
 
         server_results.insert(server_name, status);
     }
 
-    spinner.finish();
+    if let Some(session) = task_tree {
+        let final_state = if done == total {
+            TaskState::Succeeded { elapsed: None }
+        } else {
+            TaskState::Failed { elapsed: None }
+        };
+        session.set_tree(build_status_task_tree_with_state(
+            &status_tasks,
+            final_state,
+        ));
+        session.finalize();
+    }
 
     Ok(server_results)
+}
+
+fn status_task(name: &str, state: TaskState) -> TaskItemState {
+    TaskItemState {
+        id: status_task_id(name),
+        label: name.to_string(),
+        state,
+        icon: TaskIcon::Box,
+        detail: None,
+        progress: None,
+        children: Vec::new(),
+    }
+}
+
+fn status_task_id(name: &str) -> String {
+    format!("status:{name}")
+}
+
+fn build_status_task_tree(tasks: &[TaskItemState]) -> Vec<TreeNode> {
+    build_status_task_tree_with_state(
+        tasks,
+        TaskState::Running {
+            started_at: Instant::now(),
+        },
+    )
+}
+
+fn build_status_task_tree_with_state(tasks: &[TaskItemState], state: TaskState) -> Vec<TreeNode> {
+    vec![TreeNode::Task(TaskItemState {
+        id: "status".into(),
+        label: "Retrieving status".into(),
+        state,
+        icon: TaskIcon::State,
+        detail: None,
+        progress: None,
+        children: tasks.to_vec(),
+    })]
+}
+
+fn refresh_status_task_tree(
+    task_tree: &Option<TaskTreeSession>,
+    status_tasks: &mut [TaskItemState],
+    server_name: Option<&str>,
+    failed: bool,
+) {
+    let task = if let Some(server_name) = server_name {
+        let task_id = status_task_id(server_name);
+        status_tasks.iter_mut().find(|task| task.id == task_id)
+    } else {
+        status_tasks
+            .iter_mut()
+            .find(|task| matches!(task.state, TaskState::Running { .. }))
+    };
+
+    if let Some(task) = task {
+        let elapsed = match task.state {
+            TaskState::Running { started_at } => Some(started_at.elapsed()),
+            _ => None,
+        };
+        task.state = if failed {
+            TaskState::Failed { elapsed }
+        } else {
+            TaskState::Succeeded { elapsed }
+        };
+    }
+
+    if let Some(session) = task_tree {
+        session.set_tree(build_status_task_tree(status_tasks));
+    }
 }
 
 #[cfg(test)]
@@ -391,6 +477,22 @@ mod tests {
     #[test]
     fn shell_single_quote_escapes_single_quotes() {
         assert_eq!(shell_single_quote("a'b"), "'a'\\''b'");
+    }
+
+    #[test]
+    fn status_task_tree_uses_group_with_boxed_server_rows() {
+        let started_at = Instant::now();
+        let mut tasks = vec![
+            status_task("prod-a", TaskState::Running { started_at }),
+            status_task("prod-b", TaskState::Running { started_at }),
+        ];
+
+        refresh_status_task_tree(&None, &mut tasks, Some("prod-a"), false);
+        let lines = crate::ui::render_plain_lines(&build_status_task_tree(&tasks));
+
+        assert_eq!(lines[0], "Retrieving status…");
+        assert!(lines[1].starts_with("  ■ prod-a"));
+        assert!(lines[2].starts_with("  ◧ prod-b…"));
     }
 
     #[test]
