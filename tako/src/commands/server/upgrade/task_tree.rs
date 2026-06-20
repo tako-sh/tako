@@ -47,15 +47,13 @@ impl UpgradeTaskTreeController {
         let servers = server_names
             .iter()
             .map(|name| {
-                TaskItemState::pending(server_task_id(name), name.clone())
-                    .with_icon(TaskIcon::None)
-                    .with_children(vec![
-                        boxed_task(
-                            step_task_id(name, Step::VersionCheck),
-                            Step::VersionCheck.label(),
-                        ),
-                        boxed_task(step_task_id(name, Step::Upgrade), Step::Upgrade.label()),
-                    ])
+                TaskItemState::pending(server_task_id(name), name.clone()).with_children(vec![
+                    boxed_task(
+                        step_task_id(name, Step::VersionCheck),
+                        Step::VersionCheck.label(),
+                    ),
+                    boxed_task(step_task_id(name, Step::Upgrade), Step::Upgrade.label()),
+                ])
             })
             .collect();
         let state = UpgradeTaskTreeState {

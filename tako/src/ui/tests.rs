@@ -123,22 +123,20 @@ fn succeeded_parent_keeps_success_icons_on_succeeded_children() {
 #[test]
 fn group_rows_hide_icons_while_box_children_show_progress_state() {
     let tree = vec![TreeNode::Task(
-        TaskItemState::pending("deploy", "Deploying to prod-a")
-            .with_icon(TaskIcon::None)
-            .with_children(vec![
-                TaskItemState::pending("preflight", "Preflight").with_icon(TaskIcon::Box),
-                TaskItemState {
-                    id: "uploading".into(),
-                    label: "Uploading".into(),
-                    state: TaskState::Running {
-                        started_at: Instant::now(),
-                    },
-                    icon: TaskIcon::Box,
-                    detail: None,
-                    progress: None,
-                    children: vec![],
+        TaskItemState::pending("deploy", "Deploying to prod-a").with_children(vec![
+            TaskItemState::pending("preflight", "Preflight").with_icon(TaskIcon::Box),
+            TaskItemState {
+                id: "uploading".into(),
+                label: "Uploading".into(),
+                state: TaskState::Running {
+                    started_at: Instant::now(),
                 },
-            ]),
+                icon: TaskIcon::Box,
+                detail: None,
+                progress: None,
+                children: vec![],
+            },
+        ]),
     )];
 
     let lines = render_plain_lines(&tree);

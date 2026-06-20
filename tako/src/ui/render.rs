@@ -124,8 +124,11 @@ fn render_task_item(
 ) {
     let is_group = !task.children.is_empty();
 
-    let effective_icon = if is_group { TaskIcon::None } else { task.icon };
-    let icon = task_icon(effective_icon, &task.state, options.frame_index);
+    let icon = if is_group {
+        ""
+    } else {
+        task_icon(task.icon, &task.state, options.frame_index)
+    };
     let label = pending_task_label(&task.label, &task.state);
     let detail = format_task_detail(task);
     let elapsed = if is_group {
@@ -186,7 +189,6 @@ fn render_task_item(
 
 fn task_icon(icon: TaskIcon, state: &TaskState, frame_index: usize) -> &'static str {
     match icon {
-        TaskIcon::None => "",
         TaskIcon::Box => box_task_icon(state, frame_index),
         TaskIcon::State => state_task_icon(state, frame_index),
     }
@@ -329,8 +331,11 @@ fn render_task_item_plain(
     now: Instant,
 ) {
     let is_group = !task.children.is_empty();
-    let effective_icon = if is_group { TaskIcon::None } else { task.icon };
-    let icon = task_icon(effective_icon, &task.state, 0);
+    let icon = if is_group {
+        ""
+    } else {
+        task_icon(task.icon, &task.state, 0)
+    };
     let label = pending_task_label(&task.label, &task.state);
     let detail = format_task_detail(task);
     let elapsed = if is_group {

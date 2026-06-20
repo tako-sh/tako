@@ -62,7 +62,6 @@ impl DeployTaskTreeController {
                 .map(|group| {
                     let label = format_build_plan_target_label(group);
                     TaskItemState::pending(build_target_task_id(&label), label.clone())
-                        .with_icon(TaskIcon::None)
                         .with_children(vec![
                             boxed_task(
                                 build_task_step_id(&label, "probe-runtime"),
@@ -83,7 +82,6 @@ impl DeployTaskTreeController {
                 .iter()
                 .map(|server_name| {
                     TaskItemState::pending(deploy_target_task_id(server_name), server_name.clone())
-                        .with_icon(TaskIcon::None)
                         .with_children(vec![
                             boxed_task(deploy_task_step_id(server_name, "connecting"), "Preflight"),
                             boxed_task(deploy_task_step_id(server_name, "uploading"), "Uploading"),
@@ -504,7 +502,7 @@ pub(super) fn build_deploy_tree(state: &DeployTaskTreeState) -> Vec<TreeNode> {
                 id: "build-group".into(),
                 label: "Building".into(),
                 state: group_state,
-                icon: TaskIcon::None,
+                icon: TaskIcon::State,
                 detail: None,
                 progress: None,
                 children: builds

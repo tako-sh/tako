@@ -40,7 +40,6 @@ pub struct TaskItemState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskIcon {
-    None,
     State,
     Box,
 }
