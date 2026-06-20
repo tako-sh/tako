@@ -199,6 +199,7 @@ async fn collect_global_status_results(
         .collect::<Vec<_>>();
     let task_tree = (show_task_tree && output::is_pretty() && output::is_interactive())
         .then(|| TaskTreeSession::new(build_status_task_tree(&status_tasks)));
+    let rendered_task_tree = task_tree.is_some();
 
     let mut server_results: HashMap<String, GlobalServerStatusResult> = HashMap::new();
 
@@ -231,6 +232,10 @@ async fn collect_global_status_results(
             final_state,
         ));
         session.finalize();
+    }
+
+    if rendered_task_tree {
+        eprintln!();
     }
 
     Ok(server_results)

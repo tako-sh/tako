@@ -759,31 +759,31 @@ Print a local diagnostic report and exit.
 
 ### tako status
 
-Show global deployment status from configured servers, with one server block per configured host and one app block per running build nested under each server:
+Show global deployment status from configured servers, with one compact server block per configured host:
 
 ```
-✓ la (v0.1.0) up
-  ┌ dashboard (production) running
-  │ instances: 2/2
-  │ build: abc1234
-  └ deployed: 2026-02-08 11:48:19
-────────────────────────────────────────
-! nyc (v0.1.0) up
-  ┌ worker (unknown) running
-  │ instances: 1/1
-  │ build: old5678
-  └ deployed: 2026-02-08 11:40:10
-  ┌ worker (unknown) deploying
-  │ instances: -/-
-  │ build: new9012
-  └ deployed: -
+Server la
+  active  v0.1.0  up 3h
+
+  Routes
+    dashboard (production)  dashboard.example.com
+                            *.dashboard.example.com
+
+  Apps
+    dashboard  healthy 2/2  production  abc1234  deployed Feb 8, 2026 11:48
+
+Server nyc
+  active  v0.1.0  up 2h
+
+  Apps
+    worker  healthy 1/1  production  old5678  deployed Feb 8, 2026 11:40
+    worker  deploying    production  new9012
 ```
 
-Shows server connectivity/service lines and per-build app blocks with heading lines in `app-name (environment) state` form.
-Each app block uses a tree connector (`┌` heading, `│` detail continuation, `└` final deployed line).
+Shows a server summary line, then `Routes` and `Apps` sections when data is available.
 Environment is inferred from the deployed app id (`app/env`); otherwise app status uses `unknown`.
-App state text is color-coded (`running` success, `idle` muted, `deploying`/`stopped` warning, `error` error).
-Each app block includes instance summary (`healthy/total`), build, and deployed timestamp (formatted in the user's current locale and local time, without timezone suffix).
+App state text is color-coded (`active` and `healthy N/N` success, `idle`/`deploying`/`stopped` warning, `error`/`offline` error).
+Each app row includes environment, build, and deployed timestamp when known. Timestamps are formatted in the user's current locale and local time, without timezone suffix.
 `tako status` prints a single snapshot and exits.
 With `--json`, status prints:
 

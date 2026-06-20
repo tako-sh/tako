@@ -165,6 +165,8 @@ tako servers uninstall [name] [-y|--yes]
 
 `servers add` writes global `config.toml`, verifies SSH recovery access, enrolls signed management access, records target metadata, and can install or repair `tako-server` first. Passing `admin@host` is shorthand for install/repair with that admin user.
 
+`status` prints a deployment snapshot grouped by server, with compact server summary, routes, and app rows.
+
 `servers reload` performs a zero-downtime service reload by default. `--force` performs a full restart. `servers upgrade` installs a new server binary and reloads with rollback to the previous binary if readiness fails. `servers uninstall` removes the remote service, binaries, data, sockets, and local server entry.
 
 ## Secrets
