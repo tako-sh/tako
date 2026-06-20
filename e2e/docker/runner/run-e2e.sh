@@ -462,16 +462,16 @@ run_cli_post_deploy_checks() {
 
   echo "Running CLI post-deploy checks for $app_name on $server_host"
 
-  if ! HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci servers status >"$status_log" 2>&1; then
-    echo "tako servers status failed on $server_host" >&2
+  if ! HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci status >"$status_log" 2>&1; then
+    echo "tako status failed on $server_host" >&2
     cat "$status_log" >&2 || true
     exit 1
   fi
-  require_file_contains "$status_log" "Server ssh" "tako servers status"
-  require_file_contains "$status_log" "$app_name" "tako servers status"
-  require_file_contains "$status_log" "production" "tako servers status"
-  require_file_contains "$status_log" "$route_host" "tako servers status"
-  require_file_contains "$status_log" "healthy" "tako servers status"
+  require_file_contains "$status_log" "Server ssh" "tako status"
+  require_file_contains "$status_log" "$app_name" "tako status"
+  require_file_contains "$status_log" "production" "tako status"
+  require_file_contains "$status_log" "$route_host" "tako status"
+  require_file_contains "$status_log" "healthy" "tako status"
 
   if ! HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --config "$PROJECT_DIR/tako.toml" releases list --env production >"$releases_log" 2>&1; then
     echo "tako releases list failed on $server_host" >&2
