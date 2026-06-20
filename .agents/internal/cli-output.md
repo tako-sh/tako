@@ -24,7 +24,7 @@ Pretty output renders — persistent task lists, spinners where still applicable
 - Colors via the brand palette
 - Persistent task lists for multi-step interactive flows
 - Show the whole known plan up front when the command already knows future work
-- Waiting tasks use muted `○`
+- Waiting state-style tasks use muted `○`; boxed task rows use muted `□`
 - Single-line state transitions: spinner → result (single space before elapsed)
 - `✔` success, `✘` failure, `!` warnings, `-` bullets
 - Section headings in bold+accent (2-space indent in interactive mode)
@@ -210,9 +210,9 @@ Use persistent task lists as the preferred pattern for complex interactive flows
   - **Task**: a status-bearing parent row that owns a workflow or a collection of sub tasks.
   - **Sub task**: a single actionable step that may run standalone or inside a task.
 - Pretty interactive mode may render the full known task tree up front.
-- Waiting leaf rows use muted `○` and a trailing `...` label suffix.
+- Waiting leaf rows use a muted pending icon and a trailing `...` label suffix: `○` for state-style rows, `□` for boxed rows.
 - Running state leaf rows use the current spinner glyph. Boxed task rows use `◧ ◨ ◩ ◪`; task-tree animation advances at a calm 160ms interval.
-- Task rows with sub tasks do not render an icon or elapsed time; running and succeeded parent tasks should keep the accent label.
+- Task rows with sub tasks do not render an icon or elapsed time; running and succeeded parent tasks should keep the accent label. A row becomes a task group by having sub tasks, not by setting a separate no-icon mode.
 - Leaf task elapsed time uses a fixed two-space gap after the label/detail; do not right-align elapsed times into a shared column.
 - Running sub tasks should keep default text; inline detail segments use a single space separator and should be muted.
 - Completed rows stay visible for the life of the command.
