@@ -163,6 +163,31 @@ fn secret_value_field(prompt: &str) -> output::TextField<'_> {
         .with_hint(secret_value_prompt_hint())
 }
 
+fn trim_secret_value_prompt() -> &'static str {
+    "Value starts or ends with whitespace. Trim it?"
+}
+
+fn secret_value_has_surrounding_whitespace(value: &str) -> bool {
+    value.trim() != value
+}
+
+fn trim_secret_value(value: &str) -> String {
+    value.trim().to_string()
+}
+
+fn maybe_trim_secret_value(value: String) -> Result<String, Box<dyn std::error::Error>> {
+    if !output::is_interactive() || !secret_value_has_surrounding_whitespace(&value) {
+        return Ok(value);
+    }
+
+    let trim = output::confirm(trim_secret_value_prompt(), true)?;
+    if trim {
+        Ok(trim_secret_value(&value))
+    } else {
+        Ok(value)
+    }
+}
+
 pub(crate) fn read_secret_expires_on(
     value: Option<String>,
     prompt: &str,
@@ -350,9 +375,10 @@ fn read_secret_value_in_wizard(
     secrets: &crate::config::SecretsStore,
     name: &str,
     env: &str,
+    default: Option<&str>,
 ) -> std::io::Result<String> {
     let prompt = secret_value_prompt(secrets, name, env);
-    wizard.text_field_named("Value", secret_value_field(&prompt))
+    wizard.text_field_named("Value", secret_value_field(&prompt).default_opt(default))
 }
 
 fn read_secret_expires_on_in_wizard(
@@ -379,8 +405,25 @@ fn read_secret_value_and_expires_on_in_wizard(
     env: &str,
     requested_expires_on: Option<Option<String>>,
 ) -> std::io::Result<(String, Option<String>)> {
+    let mut previous_value: Option<String> = None;
     loop {
-        let value = read_secret_value_in_wizard(wizard, secrets, name, env)?;
+        let mut value =
+            read_secret_value_in_wizard(wizard, secrets, name, env, previous_value.as_deref())?;
+        previous_value = Some(value.clone());
+        if secret_value_has_surrounding_whitespace(&value) {
+            wizard.set_visible("Trim", true);
+            match wizard.confirm_default("Trim", trim_secret_value_prompt(), true) {
+                Ok(true) => value = trim_secret_value(&value),
+                Ok(false) => {}
+                Err(e) if output::is_wizard_back(&e) => {
+                    wizard.set_visible("Trim", false);
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
+        } else {
+            wizard.set_visible("Trim", false);
+        }
         if let Some(expires_on) = &requested_expires_on {
             return Ok((value, expires_on.clone()));
         }
@@ -388,6 +431,7 @@ fn read_secret_value_and_expires_on_in_wizard(
             Ok(expires_on) => return Ok((value, expires_on)),
             Err(e) if output::is_wizard_back(&e) => {
                 wizard.undo_last();
+                previous_value = Some(value);
             }
             Err(e) => return Err(e),
         }
@@ -412,7 +456,7 @@ fn resolve_secret_set_input(
         }
         let prompt = secret_value_prompt(&secrets, name, env);
         if requested_expires_on.is_none() && output::is_interactive() {
-            let value = read_secret_value(&prompt)?;
+            let value = maybe_trim_secret_value(read_secret_value(&prompt)?)?;
             let expires_on = read_secret_expires_on(None, "Expires on")?;
             return Ok(Some(SecretSetInput {
                 env: env.to_string(),
@@ -426,7 +470,7 @@ fn resolve_secret_set_input(
         };
         return Ok(Some(SecretSetInput {
             env: env.to_string(),
-            value: read_secret_value(&prompt)?,
+            value: maybe_trim_secret_value(read_secret_value(&prompt)?)?,
             expires_on,
         }));
     }
@@ -444,6 +488,7 @@ fn resolve_secret_set_input(
         ("Name", true),
         ("Override", true),
         ("Value", false),
+        ("Trim", false),
         ("Expires", false),
     ]);
 
@@ -451,6 +496,7 @@ fn resolve_secret_set_input(
         wizard.set_visible("Name", false);
         wizard.set_visible("Override", false);
         wizard.set_visible("Value", false);
+        wizard.set_visible("Trim", false);
         wizard.set_visible("Expires", false);
         wizard.set_visible("Value", true);
         wizard.set_visible("Expires", prompt_for_expires_on);

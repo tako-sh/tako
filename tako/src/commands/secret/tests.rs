@@ -298,6 +298,44 @@ fn secret_value_prompt_hint_mentions_multiline_paste() {
 }
 
 #[test]
+fn trim_secret_value_prompt_is_short_and_specific() {
+    assert_eq!(
+        trim_secret_value_prompt(),
+        "Value starts or ends with whitespace. Trim it?"
+    );
+}
+
+#[test]
+fn secret_value_has_surrounding_whitespace_detects_outer_spaces_and_lines() {
+    assert!(!secret_value_has_surrounding_whitespace(
+        "postgres://localhost/db"
+    ));
+    assert!(!secret_value_has_surrounding_whitespace(
+        "line one\nline two with spaces"
+    ));
+    assert!(secret_value_has_surrounding_whitespace(
+        " postgres://localhost/db"
+    ));
+    assert!(secret_value_has_surrounding_whitespace(
+        "postgres://localhost/db "
+    ));
+    assert!(secret_value_has_surrounding_whitespace(
+        "\npostgres://localhost/db\n"
+    ));
+    assert!(secret_value_has_surrounding_whitespace(
+        "\tpostgres://localhost/db"
+    ));
+}
+
+#[test]
+fn trim_secret_value_removes_only_outer_whitespace() {
+    assert_eq!(
+        trim_secret_value("\n  line one\nline two with spaces  \n"),
+        "line one\nline two with spaces"
+    );
+}
+
+#[test]
 fn key_bundle_round_trips_key_id_and_key() {
     with_temp_tako_home(|| {
         let key = crate::crypto::EncryptionKey::generate().unwrap();

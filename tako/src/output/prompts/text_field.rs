@@ -113,7 +113,8 @@ impl<'a> TextField<'a> {
         if self.password && value.is_empty() && !self.required {
             String::new()
         } else if self.password {
-            theme_muted("••••••").to_string()
+            let chars = value.chars().collect::<Vec<_>>();
+            theme_muted(raw::password_display_value(&chars)).to_string()
         } else {
             value.to_string()
         }

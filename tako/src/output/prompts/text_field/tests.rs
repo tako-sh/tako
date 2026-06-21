@@ -121,6 +121,16 @@ fn password_input_masks_short_values_by_length() {
 }
 
 #[test]
+fn password_completion_masks_short_values_by_length() {
+    assert!(
+        TextField::new("Secret")
+            .password()
+            .completion_display_value("foo")
+            .contains("•••")
+    );
+}
+
+#[test]
 fn password_input_caps_long_mask_with_summary() {
     let input = "a".repeat(30);
 
@@ -137,6 +147,18 @@ fn password_input_summary_counts_multiline_values() {
     assert_eq!(
         super::raw::password_display_value(&input.chars().collect::<Vec<_>>()),
         "••••••••••••••••••••••••… (26 chars, 2 lines)"
+    );
+}
+
+#[test]
+fn password_completion_uses_length_summary_for_long_values() {
+    let input = "a".repeat(24) + "\nb";
+
+    assert!(
+        TextField::new("Secret")
+            .password()
+            .completion_display_value(&input)
+            .contains("••••••••••••••••••••••••… (26 chars, 2 lines)")
     );
 }
 
