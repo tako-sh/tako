@@ -228,4 +228,4 @@ tako uninstall [-y|--yes]
 tako version
 ```
 
-`upgrade` updates the local CLI install. `uninstall` removes local Tako binaries, local data, and platform-specific dev services/config after confirmation.
+`upgrade` updates the local CLI install. On macOS, official CLI upgrades support Apple Silicon only. `uninstall` removes local Tako binaries, local data, and platform-specific dev services/config after confirmation.

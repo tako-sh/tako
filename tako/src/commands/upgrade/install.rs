@@ -455,7 +455,17 @@ pub(super) fn detect_platform() -> Result<(&'static str, &'static str), String> 
         return Err("unsupported architecture".to_string());
     };
 
+    validate_supported_platform(os, arch)?;
+
     Ok((os, arch))
+}
+
+fn validate_supported_platform(os: &str, arch: &str) -> Result<(), String> {
+    if os == "darwin" && arch != "aarch64" {
+        return Err("macOS is supported on Apple Silicon only".to_string());
+    }
+
+    Ok(())
 }
 
 pub(super) fn resolve_install_dir() -> PathBuf {
@@ -531,6 +541,19 @@ mod tests {
         let (os, arch) = detect_platform().unwrap();
         assert!(os == "darwin" || os == "linux");
         assert!(arch == "x86_64" || arch == "aarch64");
+        if os == "darwin" {
+            assert_eq!(arch, "aarch64");
+        }
+    }
+
+    #[test]
+    fn validate_supported_platform_rejects_intel_macos() {
+        assert_eq!(
+            validate_supported_platform("darwin", "x86_64"),
+            Err("macOS is supported on Apple Silicon only".to_string())
+        );
+        assert_eq!(validate_supported_platform("linux", "x86_64"), Ok(()));
+        assert_eq!(validate_supported_platform("darwin", "aarch64"), Ok(()));
     }
 
     #[test]

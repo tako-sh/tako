@@ -460,27 +460,17 @@ jobs:
 
   # macOS builds — master only (for rolling release)
   build-darwin:
-    name: Build macOS CLI (${{ matrix.arch }})
+    name: Build macOS CLI (aarch64)
     needs: [detect-changes]
     if: needs.detect-changes.outputs.website_only != 'true' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: aarch64
-            runner: macos-15
-            target: aarch64-apple-darwin
-          - arch: x86_64
-            runner: macos-15-intel
-            target: x86_64-apple-darwin
+    runs-on: macos-15
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
       - name: Setup Rust
         run: |
-          rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
+          rustup toolchain install stable --profile minimal --target aarch64-apple-darwin
           rustup default stable
 
       - name: Install libvips
@@ -491,20 +481,20 @@ jobs:
           TAKO_BUILD_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          cargo build -p tako-cli --bin tako --bin tako-dev-server --bin tako-dev-proxy --release --target ${{ matrix.target }}
+          cargo build -p tako-cli --bin tako --bin tako-dev-server --bin tako-dev-proxy --release --target aarch64-apple-darwin
           sh scripts/package-tako-app.sh \
-            target/${{ matrix.target }}/release/tako \
-            target/${{ matrix.target }}/release/Tako.app
+            target/aarch64-apple-darwin/release/tako \
+            target/aarch64-apple-darwin/release/Tako.app
 
       - name: Upload binaries
         uses: actions/upload-artifact@v7
         with:
-          name: bin-tako-darwin-${{ matrix.arch }}
+          name: bin-tako-darwin-aarch64
           path: |
-            target/${{ matrix.target }}/release/tako
-            target/${{ matrix.target }}/release/tako-dev-server
-            target/${{ matrix.target }}/release/tako-dev-proxy
-            target/${{ matrix.target }}/release/Tako.app
+            target/aarch64-apple-darwin/release/tako
+            target/aarch64-apple-darwin/release/tako-dev-server
+            target/aarch64-apple-darwin/release/tako-dev-proxy
+            target/aarch64-apple-darwin/release/Tako.app
           if-no-files-found: error
 
   e2e:

@@ -9,6 +9,7 @@ set -eu
 # What it does:
 # - downloads and installs `tako`, `tako-dev-server`, and `tako-dev-proxy` for your OS/architecture
 # - verifies the release archive with its SHA-256 checksum before extraction
+# - supports Apple Silicon only on macOS
 # - on macOS, verifies `Tako.app`, installs it, and symlinks `tako` to the signed CLI inside it
 # - on macOS, installs libvips with Homebrew when Homebrew is available
 # - installs binaries to ~/.local/bin by default
@@ -188,6 +189,11 @@ case "$arch_raw" in
     exit 1
     ;;
 esac
+
+if [ "$os" = "darwin" ] && [ "$arch" != "aarch64" ]; then
+  echo "error: macOS is supported on Apple Silicon only (detected: $arch_raw)" >&2
+  exit 1
+fi
 
 download_url="${TAKO_URL:-}"
 if [ -z "$download_url" ]; then

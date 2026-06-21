@@ -173,7 +173,6 @@ jobs:
           }
 
           package_arch aarch64
-          package_arch x86_64
 
       - name: Upload signed aarch64
         if: steps.builds.outputs.skipped != 'true'
@@ -183,16 +182,6 @@ jobs:
           path: |
             signed-dist/tako-darwin-aarch64.tar.gz
             signed-dist/tako-darwin-aarch64.tar.gz.sha256
-          if-no-files-found: error
-
-      - name: Upload signed x86_64
-        if: steps.builds.outputs.skipped != 'true'
-        uses: actions/upload-artifact@v7
-        with:
-          name: signed-bin-tako-darwin-x86_64
-          path: |
-            signed-dist/tako-darwin-x86_64.tar.gz
-            signed-dist/tako-darwin-x86_64.tar.gz.sha256
           if-no-files-found: error
 
   publish-binaries:
@@ -301,7 +290,6 @@ jobs:
           package_cli_linux x86_64
           package_cli_linux aarch64
           copy_cli_darwin aarch64
-          copy_cli_darwin x86_64
 
           ls -la dist/
 
