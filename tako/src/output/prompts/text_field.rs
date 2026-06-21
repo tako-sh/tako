@@ -27,6 +27,7 @@ pub struct TextField<'a> {
     default: Option<&'a str>,
     suggestions: &'a [String],
     password: bool,
+    multiline_paste: bool,
     show_back: bool,
 }
 
@@ -43,6 +44,7 @@ impl<'a> TextField<'a> {
             default: None,
             suggestions: &[],
             password: false,
+            multiline_paste: false,
             show_back: false,
         }
     }
@@ -103,6 +105,7 @@ impl<'a> TextField<'a> {
     pub fn password(mut self) -> Self {
         self.password = true;
         self.trimmed = false;
+        self.multiline_paste = true;
         self
     }
 
@@ -218,6 +221,7 @@ impl<'a> TextField<'a> {
                     placeholder_override: self.placeholder,
                     required: self.required,
                     trimmed: self.trimmed,
+                    multiline_paste: self.multiline_paste,
                     use_separator: true,
                     error: active_error.is_some(),
                     show_back: self.show_back,
@@ -287,6 +291,7 @@ impl<'a> TextField<'a> {
                     placeholder_override: self.placeholder,
                     required: self.required,
                     trimmed: self.trimmed,
+                    multiline_paste: self.multiline_paste,
                     use_separator: false,
                     error: active_error.is_some(),
                     show_back: self.show_back,

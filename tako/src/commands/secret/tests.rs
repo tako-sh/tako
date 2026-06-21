@@ -293,6 +293,11 @@ fn replace_existing_value_prompt_omits_secret_name() {
 }
 
 #[test]
+fn secret_value_prompt_hint_mentions_multiline_paste() {
+    assert_eq!(secret_value_prompt_hint(), "Multiline paste supported.");
+}
+
+#[test]
 fn key_bundle_round_trips_key_id_and_key() {
     with_temp_tako_home(|| {
         let key = crate::crypto::EncryptionKey::generate().unwrap();

@@ -128,24 +128,39 @@ pub fn run(
 }
 
 fn read_secret_value(prompt: &str) -> Result<String, Box<dyn std::error::Error>> {
-    use std::io::IsTerminal;
+    use std::io::{IsTerminal, Read};
 
     if std::io::stdin().is_terminal() {
-        return Ok(crate::output::password_field(prompt)?);
+        return Ok(secret_value_field(prompt).prompt()?);
     }
 
     // Non-interactive fallback for CI/piped input.
     let mut value = String::new();
-    let bytes = std::io::stdin().read_line(&mut value)?;
+    let bytes = std::io::stdin().read_to_string(&mut value)?;
     if bytes == 0 {
         return Err("No secret value provided on stdin".into());
     }
-    let value = value.trim_end_matches(['\r', '\n']).to_string();
+    let value = value
+        .strip_suffix("\r\n")
+        .or_else(|| value.strip_suffix('\n'))
+        .or_else(|| value.strip_suffix('\r'))
+        .unwrap_or(&value)
+        .to_string();
     if value.is_empty() {
         return Err("Secret value cannot be empty".into());
     }
 
     Ok(value)
+}
+
+fn secret_value_prompt_hint() -> &'static str {
+    "Multiline paste supported."
+}
+
+fn secret_value_field(prompt: &str) -> output::TextField<'_> {
+    output::TextField::new(prompt)
+        .password()
+        .with_hint(secret_value_prompt_hint())
 }
 
 pub(crate) fn read_secret_expires_on(
@@ -337,7 +352,7 @@ fn read_secret_value_in_wizard(
     env: &str,
 ) -> std::io::Result<String> {
     let prompt = secret_value_prompt(secrets, name, env);
-    wizard.text_field_named("Value", output::TextField::new(&prompt).password())
+    wizard.text_field_named("Value", secret_value_field(&prompt))
 }
 
 fn read_secret_expires_on_in_wizard(

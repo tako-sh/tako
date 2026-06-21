@@ -181,7 +181,7 @@ tako secrets key export [--env <env>]
 tako secrets key import [--env <env>] [--passphrase]
 ```
 
-Secrets are app-facing values delivered to SDKs. Values are encrypted in `.tako/secrets.json`; keys are stored outside the project. `--sync` sends updates to deployed servers and rolls fresh processes so they receive the new bootstrap envelope.
+Secrets are app-facing values delivered to SDKs. Values are encrypted in `.tako/secrets.json`; keys are stored outside the project. Interactive prompts accept pasted multiline values; non-interactive commands read the full stdin stream. `--sync` sends updates to deployed servers and rolls fresh processes so they receive the new bootstrap envelope.
 
 Expiry accepts `YYYY-MM-DD`, `in N days`, or `never`. Deploy fails on expired selected-environment secrets and warns when they expire within 30 days.
 

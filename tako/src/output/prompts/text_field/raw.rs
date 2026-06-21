@@ -10,6 +10,7 @@ pub(super) struct RawTextInputOptions<'a> {
     pub(super) placeholder_override: Option<&'a str>,
     pub(super) required: bool,
     pub(super) trimmed: bool,
+    pub(super) multiline_paste: bool,
     pub(super) use_separator: bool,
     pub(super) error: bool,
     pub(super) show_back: bool,
@@ -18,7 +19,10 @@ pub(super) struct RawTextInputOptions<'a> {
 pub(super) fn raw_text_input(prompt: &str, options: RawTextInputOptions<'_>) -> io::Result<String> {
     use crossterm::{
         cursor,
-        event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
+        event::{
+            self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent,
+            KeyModifiers,
+        },
         terminal::{self, Clear, ClearType},
     };
     use std::io::Write;
@@ -31,6 +35,7 @@ pub(super) fn raw_text_input(prompt: &str, options: RawTextInputOptions<'_>) -> 
         placeholder_override,
         required,
         trimmed,
+        multiline_paste,
         use_separator,
         error,
         show_back,
@@ -98,12 +103,12 @@ pub(super) fn raw_text_input(prompt: &str, options: RawTextInputOptions<'_>) -> 
                 let _ = write!(out, "{prompt}");
             }
         } else {
-            let display: String = if password {
-                "•".repeat(buf.len())
+            let display = if password {
+                format_password_display(buf, error)
             } else {
-                buf.iter().collect()
+                let display: String = buf.iter().collect();
+                if error { theme_error(display) } else { display }
             };
-            let display = if error { theme_error(display) } else { display };
             if use_separator {
                 let _ = write!(out, "{prompt} {separator} {display}");
             } else {
@@ -120,7 +125,7 @@ pub(super) fn raw_text_input(prompt: &str, options: RawTextInputOptions<'_>) -> 
         }
         let prompt_width = console::measure_text_width(prompt);
         let cursor_offset = if password {
-            pos
+            console::measure_text_width(&password_display_value(buf))
         } else {
             buf[..pos].iter().collect::<String>().len()
         };
@@ -148,7 +153,7 @@ pub(super) fn raw_text_input(prompt: &str, options: RawTextInputOptions<'_>) -> 
     };
 
     terminal::enable_raw_mode()?;
-    let _ = crossterm::execute!(out, cursor::Show);
+    let _ = crossterm::execute!(out, cursor::Show, EnableBracketedPaste);
 
     let (cr, cg, cb) = ACCENT;
     let _ = write!(out, "\x1b]12;rgb:{cr:02x}/{cg:02x}/{cb:02x}\x1b\\");
@@ -158,149 +163,166 @@ pub(super) fn raw_text_input(prompt: &str, options: RawTextInputOptions<'_>) -> 
     draw(&buf, pos, &mut out, password, &placeholder, &suf);
 
     let result = loop {
-        if let Event::Key(KeyEvent {
-            code, modifiers, ..
-        }) = event::read()?
-        {
-            match code {
-                KeyCode::Enter => {
-                    let mut result: String = buf.iter().collect();
-                    if trimmed {
-                        result = result.trim().to_string();
+        match event::read()? {
+            Event::Paste(pasted) => {
+                let mut text = normalize_paste_for_text_input(&pasted, multiline_paste);
+                if trimmed && buf[..pos].iter().all(|ch| ch.is_whitespace()) {
+                    text = text.trim_start().to_string();
+                }
+                insert_text_at_cursor(&mut buf, &mut pos, &text);
+                suggestion_idx = None;
+                let suf = inline_suffix(&buf);
+                draw(&buf, pos, &mut out, password, &placeholder, &suf);
+            }
+            Event::Key(KeyEvent {
+                code, modifiers, ..
+            }) => {
+                match code {
+                    KeyCode::Enter => {
+                        let mut result: String = buf.iter().collect();
+                        if trimmed {
+                            result = result.trim().to_string();
+                        }
+                        if required && result.is_empty() {
+                            continue;
+                        }
+                        break Ok(result);
                     }
-                    if required && result.is_empty() {
+                    KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
+                        break Err(io::Error::new(
+                            io::ErrorKind::Interrupted,
+                            "Operation interrupted",
+                        ));
+                    }
+                    KeyCode::Esc => {
+                        if prompt_escape_action(show_back) == EscapeAction::Back {
+                            break Err(wizard_back_error());
+                        }
                         continue;
                     }
-                    break Ok(result);
-                }
-                KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    break Err(io::Error::new(
-                        io::ErrorKind::Interrupted,
-                        "Operation interrupted",
-                    ));
-                }
-                KeyCode::Esc => {
-                    if prompt_escape_action(show_back) == EscapeAction::Back {
-                        break Err(wizard_back_error());
-                    }
-                    continue;
-                }
-                KeyCode::Char(c)
-                    if !modifiers.contains(KeyModifiers::CONTROL)
-                        && !modifiers.contains(KeyModifiers::ALT) =>
-                {
-                    if trimmed
-                        && c.is_whitespace()
-                        && buf[..pos].iter().all(|ch| ch.is_whitespace())
+                    KeyCode::Char(c)
+                        if !modifiers.contains(KeyModifiers::CONTROL)
+                            && !modifiers.contains(KeyModifiers::ALT) =>
                     {
-                        continue;
-                    }
-                    buf.insert(pos, c);
-                    pos += 1;
-                    suggestion_idx = None;
-                }
-                KeyCode::Backspace
-                    if (modifiers.contains(KeyModifiers::SUPER)
-                        || modifiers.contains(KeyModifiers::ALT))
-                        && pos > 0 =>
-                {
-                    let old_pos = pos;
-                    while pos > 0 && buf[pos - 1].is_whitespace() {
-                        pos -= 1;
-                    }
-                    while pos > 0 && !buf[pos - 1].is_whitespace() {
-                        pos -= 1;
-                    }
-                    buf.drain(pos..old_pos);
-                    suggestion_idx = None;
-                }
-                KeyCode::Backspace if pos > 0 => {
-                    pos -= 1;
-                    buf.remove(pos);
-                    suggestion_idx = None;
-                }
-                KeyCode::Delete if pos < buf.len() => {
-                    buf.remove(pos);
-                }
-                KeyCode::Left
-                    if modifiers.contains(KeyModifiers::SUPER)
-                        || modifiers.contains(KeyModifiers::ALT) =>
-                {
-                    while pos > 0 && buf[pos - 1].is_whitespace() {
-                        pos -= 1;
-                    }
-                    while pos > 0 && !buf[pos - 1].is_whitespace() {
-                        pos -= 1;
-                    }
-                }
-                KeyCode::Left => {
-                    pos = pos.saturating_sub(1);
-                }
-                KeyCode::Right
-                    if modifiers.contains(KeyModifiers::SUPER)
-                        || modifiers.contains(KeyModifiers::ALT) =>
-                {
-                    while pos < buf.len() && !buf[pos].is_whitespace() {
+                        if trimmed
+                            && c.is_whitespace()
+                            && buf[..pos].iter().all(|ch| ch.is_whitespace())
+                        {
+                            continue;
+                        }
+                        buf.insert(pos, c);
                         pos += 1;
-                    }
-                    while pos < buf.len() && buf[pos].is_whitespace() {
-                        pos += 1;
-                    }
-                }
-                KeyCode::Right => {
-                    if pos < buf.len() {
-                        pos += 1;
-                    } else {
-                        accept_inline(&mut buf, &mut pos, suggestions);
                         suggestion_idx = None;
                     }
-                }
-                KeyCode::Home | KeyCode::Char('a') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    pos = 0;
-                }
-                KeyCode::End | KeyCode::Char('e') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    pos = buf.len();
-                }
-                KeyCode::Char('k') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    buf.truncate(pos);
-                }
-                KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    buf.drain(..pos);
-                    pos = 0;
-                }
-                KeyCode::Tab | KeyCode::BackTab if !suggestions.is_empty() && !password => {
-                    let current: String = buf.iter().collect();
-                    let needle = current.to_lowercase();
-                    let matches: Vec<&String> = suggestions
-                        .iter()
-                        .filter(|s| needle.is_empty() || s.to_lowercase().contains(&needle))
-                        .collect();
-                    if !matches.is_empty() {
-                        let idx = match suggestion_idx {
-                            Some(i) => {
-                                if code == KeyCode::BackTab {
-                                    if i == 0 { matches.len() - 1 } else { i - 1 }
-                                } else {
-                                    (i + 1) % matches.len()
-                                }
-                            }
-                            None => 0,
-                        };
-                        suggestion_idx = Some(idx);
-                        buf = matches[idx].chars().collect();
+                    KeyCode::Backspace
+                        if (modifiers.contains(KeyModifiers::SUPER)
+                            || modifiers.contains(KeyModifiers::ALT))
+                            && pos > 0 =>
+                    {
+                        let old_pos = pos;
+                        while pos > 0 && buf[pos - 1].is_whitespace() {
+                            pos -= 1;
+                        }
+                        while pos > 0 && !buf[pos - 1].is_whitespace() {
+                            pos -= 1;
+                        }
+                        buf.drain(pos..old_pos);
+                        suggestion_idx = None;
+                    }
+                    KeyCode::Backspace if pos > 0 => {
+                        pos -= 1;
+                        buf.remove(pos);
+                        suggestion_idx = None;
+                    }
+                    KeyCode::Delete if pos < buf.len() => {
+                        buf.remove(pos);
+                    }
+                    KeyCode::Left
+                        if modifiers.contains(KeyModifiers::SUPER)
+                            || modifiers.contains(KeyModifiers::ALT) =>
+                    {
+                        while pos > 0 && buf[pos - 1].is_whitespace() {
+                            pos -= 1;
+                        }
+                        while pos > 0 && !buf[pos - 1].is_whitespace() {
+                            pos -= 1;
+                        }
+                    }
+                    KeyCode::Left => {
+                        pos = pos.saturating_sub(1);
+                    }
+                    KeyCode::Right
+                        if modifiers.contains(KeyModifiers::SUPER)
+                            || modifiers.contains(KeyModifiers::ALT) =>
+                    {
+                        while pos < buf.len() && !buf[pos].is_whitespace() {
+                            pos += 1;
+                        }
+                        while pos < buf.len() && buf[pos].is_whitespace() {
+                            pos += 1;
+                        }
+                    }
+                    KeyCode::Right => {
+                        if pos < buf.len() {
+                            pos += 1;
+                        } else {
+                            accept_inline(&mut buf, &mut pos, suggestions);
+                            suggestion_idx = None;
+                        }
+                    }
+                    KeyCode::Home | KeyCode::Char('a')
+                        if modifiers.contains(KeyModifiers::CONTROL) =>
+                    {
+                        pos = 0;
+                    }
+                    KeyCode::End | KeyCode::Char('e')
+                        if modifiers.contains(KeyModifiers::CONTROL) =>
+                    {
                         pos = buf.len();
                     }
+                    KeyCode::Char('k') if modifiers.contains(KeyModifiers::CONTROL) => {
+                        buf.truncate(pos);
+                    }
+                    KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
+                        buf.drain(..pos);
+                        pos = 0;
+                    }
+                    KeyCode::Tab | KeyCode::BackTab if !suggestions.is_empty() && !password => {
+                        let current: String = buf.iter().collect();
+                        let needle = current.to_lowercase();
+                        let matches: Vec<&String> = suggestions
+                            .iter()
+                            .filter(|s| needle.is_empty() || s.to_lowercase().contains(&needle))
+                            .collect();
+                        if !matches.is_empty() {
+                            let idx = match suggestion_idx {
+                                Some(i) => {
+                                    if code == KeyCode::BackTab {
+                                        if i == 0 { matches.len() - 1 } else { i - 1 }
+                                    } else {
+                                        (i + 1) % matches.len()
+                                    }
+                                }
+                                None => 0,
+                            };
+                            suggestion_idx = Some(idx);
+                            buf = matches[idx].chars().collect();
+                            pos = buf.len();
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
+                let suf = inline_suffix(&buf);
+                draw(&buf, pos, &mut out, password, &placeholder, &suf);
             }
-            let suf = inline_suffix(&buf);
-            draw(&buf, pos, &mut out, password, &placeholder, &suf);
+            _ => {}
         }
     };
 
     if crate::output::cursor::is_cursor_globally_hidden() {
         let _ = crossterm::execute!(out, crossterm::cursor::Hide);
     }
+    let _ = crossterm::execute!(out, DisableBracketedPaste);
     terminal::disable_raw_mode()?;
 
     let _ = write!(out, "\x1b]112\x1b\\");
@@ -308,6 +330,64 @@ pub(super) fn raw_text_input(prompt: &str, options: RawTextInputOptions<'_>) -> 
     let _ = out.flush();
 
     result
+}
+
+pub(super) fn normalize_paste_for_text_input(input: &str, multiline: bool) -> String {
+    let normalized = input.replace("\r\n", "\n").replace('\r', "\n");
+    if multiline {
+        normalized
+    } else {
+        normalized.replace('\n', " ")
+    }
+}
+
+pub(super) fn insert_text_at_cursor(buf: &mut Vec<char>, pos: &mut usize, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+
+    let inserted: Vec<char> = text.chars().collect();
+    buf.splice(*pos..*pos, inserted.iter().copied());
+    *pos += inserted.len();
+}
+
+const PASSWORD_MASK_LIMIT: usize = 24;
+
+pub(super) fn password_display_value(buf: &[char]) -> String {
+    match buf.len() {
+        0 => String::new(),
+        len if len <= PASSWORD_MASK_LIMIT => "•".repeat(len),
+        len => {
+            let line_count = buf.iter().filter(|ch| **ch == '\n').count() + 1;
+            let summary = if line_count > 1 {
+                format!("{len} chars, {line_count} lines")
+            } else {
+                format!("{len} chars")
+            };
+            format!("{}… ({summary})", "•".repeat(PASSWORD_MASK_LIMIT))
+        }
+    }
+}
+
+fn format_password_display(buf: &[char], error: bool) -> String {
+    let display = password_display_value(buf);
+    if buf.len() <= PASSWORD_MASK_LIMIT {
+        return if error {
+            theme_error(display)
+        } else {
+            display.to_string()
+        };
+    }
+
+    let Some((mask, summary)) = display.split_once(' ') else {
+        return if error { theme_error(display) } else { display };
+    };
+    let mask = if error {
+        theme_error(mask)
+    } else {
+        mask.to_string()
+    };
+    format!("{mask} {}", theme_dim(summary))
 }
 
 #[cfg(test)]

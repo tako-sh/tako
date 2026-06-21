@@ -1,5 +1,23 @@
 use crate::support::*;
 
+fn decrypt_test_secret(encrypted: &str, key_b64: &str) -> String {
+    use aes_gcm::{
+        Aes256Gcm, Nonce,
+        aead::{Aead, KeyInit},
+    };
+    use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
+
+    let key = BASE64.decode(key_b64.trim()).expect("decode secret key");
+    let combined = BASE64.decode(encrypted).expect("decode encrypted secret");
+    let (nonce, ciphertext) = combined.split_at(12);
+    let cipher = Aes256Gcm::new_from_slice(&key).expect("create cipher");
+    let plaintext = cipher
+        .decrypt(Nonce::from_slice(nonce), ciphertext)
+        .expect("decrypt secret");
+
+    String::from_utf8(plaintext).expect("secret is UTF-8")
+}
+
 fn write_secret_test_tako_toml(path: &Path) {
     fs::write(
         path.join("tako.toml"),
@@ -94,6 +112,49 @@ fn test_secret_set_reads_from_stdin() {
     assert!(
         parsed["production"]["key_id"].as_str().is_some(),
         "key id should be present"
+    );
+}
+
+#[test]
+fn test_secret_set_reads_multiline_value_from_stdin() {
+    let temp = TempDir::new().unwrap();
+    let project_dir = temp.path().to_path_buf();
+    let home = temp.path().join("home");
+    let tako_home = temp.path().join("tako-home");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&tako_home).unwrap();
+    write_secret_test_tako_toml(&project_dir);
+
+    let secret_value = "-----BEGIN TOKEN-----\nline-one\nline-two\n-----END TOKEN-----\n";
+    let output = run_tako_with_stdin_and_env(
+        &["secrets", "set", "PRIVATE_TOKEN", "--env", "production"],
+        &project_dir,
+        secret_value,
+        &home,
+        &tako_home,
+    );
+
+    assert!(
+        output.status.success(),
+        "secret set should succeed: {}{}",
+        stdout_str(&output),
+        stderr_str(&output)
+    );
+
+    let raw = fs::read_to_string(project_dir.join(".tako").join("secrets.json"))
+        .expect("read secrets file");
+    let parsed: serde_json::Value = serde_json::from_str(&raw).expect("parse secrets json");
+    let key_id = parsed["production"]["key_id"]
+        .as_str()
+        .expect("production key id");
+    let encrypted = parsed["production"]["app"]["PRIVATE_TOKEN"]["value"]
+        .as_str()
+        .expect("stored PRIVATE_TOKEN value");
+    let key_b64 = fs::read_to_string(tako_home.join("keys").join(key_id)).expect("read key");
+
+    assert_eq!(
+        decrypt_test_secret(encrypted, &key_b64),
+        "-----BEGIN TOKEN-----\nline-one\nline-two\n-----END TOKEN-----"
     );
 }
 
