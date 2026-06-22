@@ -4,7 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardAction, CardContent, CardHeader } from "@/components/ui/card";
 import { Empty, EmptyContent, EmptyDescription } from "@/components/ui/empty";
 import { WorkflowPipeline } from "./workflow-pipeline";
-import { shortRequestId, totalRetries, type InFlightRequest } from "./types";
+import { PIPELINE_STEPS, shortRequestId, totalRetries, type InFlightRequest } from "./types";
 
 type Props = {
   requests: InFlightRequest[];
@@ -68,12 +68,19 @@ export function InFlightFeed({ requests }: Props) {
 function RequestCard({ request }: { request: InFlightRequest }) {
   const { isComplete } = request;
   const retries = totalRetries(request.retries);
+  const isQueued = !isComplete && PIPELINE_STEPS.every((step) => request.steps[step] === "pending");
 
   const idColor = isComplete ? "text-muted-foreground" : "text-primary";
 
   const badge = isComplete
     ? { label: "Delivered", className: "bg-primary/10 text-primary border-primary/20" }
-    : { label: "In flight", className: "bg-primary/15 text-primary border-primary/30" };
+    : isQueued
+      ? {
+          label: "Queued",
+          className:
+            "bg-[--color-tertiary]/15 text-[--color-tertiary] border-[--color-tertiary]/30",
+        }
+      : { label: "In flight", className: "bg-primary/15 text-primary border-primary/30" };
 
   return (
     <Card size="sm" className={isComplete ? "opacity-80" : ""}>

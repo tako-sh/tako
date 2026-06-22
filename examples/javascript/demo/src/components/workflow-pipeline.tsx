@@ -8,12 +8,16 @@ import {
   type PipelineStepState,
 } from "./types";
 
+const QUEUED_STAGE = "queued";
+const VISUAL_PIPELINE_STEPS = [QUEUED_STAGE, ...PIPELINE_STEPS] as const;
+
 type Props = {
   request: InFlightRequest;
 };
 
 export function WorkflowPipeline({ request }: Props) {
   const { isComplete, steps: stepStates, retries } = request;
+  const visualStates = buildVisualStates({ isComplete, stepStates });
 
   return (
     <div className="relative pt-2">
@@ -23,14 +27,14 @@ export function WorkflowPipeline({ request }: Props) {
           sm:inset-x-8
         "
       />
-      <TrackFill isComplete={isComplete} stepStates={stepStates} />
+      <TrackFill visualStates={visualStates} />
       <div className="relative z-10 flex justify-between">
-        {PIPELINE_STEPS.map((step) => (
+        {VISUAL_PIPELINE_STEPS.map((step) => (
           <StepPill
             key={step}
             step={step}
-            state={stepStates[step]}
-            retries={retries[step]}
+            state={visualStates[step]}
+            retries={step === QUEUED_STAGE ? 0 : retries[step]}
             isComplete={isComplete}
           />
         ))}
@@ -39,19 +43,35 @@ export function WorkflowPipeline({ request }: Props) {
   );
 }
 
-function TrackFill({
+type VisualPipelineStep = (typeof VISUAL_PIPELINE_STEPS)[number];
+
+function buildVisualStates({
   isComplete,
   stepStates,
 }: {
   isComplete: boolean;
   stepStates: Record<PipelineStep, PipelineStepState>;
+}): Record<VisualPipelineStep, PipelineStepState> {
+  const hasStarted = PIPELINE_STEPS.some((step) => stepStates[step] !== "pending");
+  return Object.fromEntries(
+    VISUAL_PIPELINE_STEPS.map((step) => [
+      step,
+      step === QUEUED_STAGE ? (hasStarted || isComplete ? "done" : "running") : stepStates[step],
+    ]),
+  ) as Record<VisualPipelineStep, PipelineStepState>;
+}
+
+function TrackFill({
+  visualStates,
+}: {
+  visualStates: Record<VisualPipelineStep, PipelineStepState>;
 }) {
-  const lastActiveIndex = PIPELINE_STEPS.reduce(
-    (acc, step, i) => (stepStates[step] !== "pending" ? i : acc),
-    -1,
+  const lastActiveIndex = VISUAL_PIPELINE_STEPS.reduce(
+    (acc, step, i) => (visualStates[step] !== "pending" ? i : acc),
+    0,
   );
-  const gaps = PIPELINE_STEPS.length - 1;
-  const width = isComplete ? 100 : Math.max(0, (lastActiveIndex / gaps) * 100);
+  const gaps = VISUAL_PIPELINE_STEPS.length - 1;
+  const width = Math.max(0, (lastActiveIndex / gaps) * 100);
 
   return (
     <div
@@ -76,12 +96,12 @@ function StepPill({
   retries,
   isComplete,
 }: {
-  step: PipelineStep;
+  step: VisualPipelineStep;
   state: PipelineStepState;
   retries: number;
   isComplete: boolean;
 }) {
-  const label = PIPELINE_STEP_LABELS[step];
+  const label = step === QUEUED_STAGE ? "Queued" : PIPELINE_STEP_LABELS[step];
   const dotClass = dotClassFor({ state, isComplete });
   const labelClass = labelClassFor({ state });
 
