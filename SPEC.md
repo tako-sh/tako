@@ -1207,7 +1207,7 @@ Deploy flow helpers:
   - pending rows cancelled because another step failed omit generic cancellation detail; they remain as muted `...` rows
   - after planning completes, deploy starts the pretty `Connecting` and `Building` sections together
   - deploy does not keep startup metadata summaries inside the live tree
-  - deploy renders one task per target server, with sub tasks for `Uploading`, `Preparing`, and `Starting`
+  - deploy renders one task per target server, with sub tasks for `Uploading`, `Preparing`, `Starting`, and `Finalizing`
   - deploy adds a blank line after each top-level pretty task section (`Connecting`, `Building`, each `Deploying to ...`)
   - sub task failures may render their related error detail on an indented line below the failed sub task
   - if a connection check or build step fails, deploy aborts the remaining incomplete pretty task-tree rows and marks them as `Aborted` instead of leaving them pending
@@ -1258,7 +1258,7 @@ Deploy flow helpers:
       release directory on each server. The `current` symlink is not
       updated; old instances keep serving.
 11. Rolling update and finalize on all servers:
-    - `tako-server` performs first start or rolling update
+    - `tako-server` performs first start or rolling update. During rolling update, replacement instances stay out of public request routing until every new batch remains healthy through the rollout stability window. If any new batch becomes unhealthy during that window, the server kills the new instances, restores the previous release metadata, keeps old instances serving, and returns a rollback error to the CLI.
     - Update `current` symlink and clean up old releases (>30 days or over 50 total releases)
     - If backups are enabled, create a post-deploy app data backup on each finalized server
 
@@ -1305,16 +1305,17 @@ Deploy flow helpers:
 
 1. Start new instance
 2. Wait for health check pass (30s timeout)
-3. Add to load balancer
-4. Gracefully stop old instance (drain connections, 30s timeout)
+3. Keep replacement instances out of public request routing until every new batch stays healthy for the rollout stability window (8s by default)
+4. Add the stable replacement set to request routing, then gracefully stop old instances (drain connections, 30s timeout)
 5. Repeat until all instances replaced
 6. Update `current` symlink to the new release directory
 7. Clean up releases older than 30 days or over 50 total releases
 
 Rolling update target counts use the app's current desired instance count stored on that server (not old+new combined counts).
+During rollout validation, the server may temporarily run both the old instance set and the new replacement set.
 When the stored desired instance count is `0`, rolling deploy still starts one warm instance for the new build so traffic is immediately served after deploy.
 
-**On failure:** Automatic rollback - kill new instances, keep old ones running, return error to CLI.
+**On failure:** Automatic rollback - kill new instances, keep old ones running, restore the previous release metadata, and return a rollback error to CLI.
 
 **App start command (current):**
 
@@ -2061,12 +2062,13 @@ Server-side validation on `deploy` and app-scoped commands:
 
 Active HTTP probing is the source of truth for instance health:
 
-- **Probe interval**: 1 second steady-state, dropped to 100 ms while any instance is still in startup (Starting/Ready, not yet Healthy). The fast startup tier collapses cold-start probe slack from up to 1 s to ~100 ms without paying high-frequency probes at steady state.
+- **Probe interval**: 1 second steady-state, dropped to 100 ms while any instance is still in startup (Starting/Ready, not yet Healthy) or withheld from routing during rollout stability. The fast tier collapses cold-start and rollout probe slack from up to 1 s to ~100 ms without paying high-frequency probes at steady state.
 - **Probe endpoint**: App's configured health check path (default: `/status`) with `Host: <app>.tako`, where `<app>` is the base app name (for example `dashboard.tako`)
 - **Transport**: Probes use the instance's private TCP endpoint.
 - **Process exit fast path**: Before each probe, `try_wait()` checks if the process has exited. If so, the instance is immediately marked dead without waiting for the probe timeout.
-- **Failure threshold**: 1 failed probe is tolerated, 2 consecutive failures mark the instance unhealthy, and 3 consecutive failures mark it dead and trigger replacement. A successful probe resets the failure count.
+- **Failure threshold**: 1 failed probe is tolerated, 2 consecutive failures mark the instance unhealthy, and 3 consecutive failures mark it dead and trigger replacement. During rollout stability, a withheld replacement instance becomes unhealthy on the first failed probe so deploy can roll back before routing public traffic to it. A successful probe resets the failure count.
 - **Recovery**: Single successful probe resets failure count and restores to healthy
+- **Rollout stability**: During rolling update, new instances are not routed public traffic and old instances are not drained until every replacement batch stays healthy for 8 seconds. If active health probing marks a new batch unhealthy during that window, the deploy fails and rolls back.
 
 #### Internal Probe Contract
 

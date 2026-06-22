@@ -10,6 +10,11 @@ use tokio::time::timeout;
 pub struct RollingUpdateConfig {
     /// How long to wait for a new instance to become healthy
     pub health_timeout: Duration,
+    /// How long a newly healthy batch must remain healthy before old instances
+    /// are drained.
+    pub health_stability_window: Duration,
+    /// Poll interval while checking rollout health stability.
+    pub health_stability_check_interval: Duration,
     /// How long to wait for an old instance to drain
     pub drain_timeout: Duration,
     /// How many instances to update at once
@@ -20,6 +25,8 @@ impl Default for RollingUpdateConfig {
     fn default() -> Self {
         Self {
             health_timeout: Duration::from_secs(30),
+            health_stability_window: Duration::from_secs(8),
+            health_stability_check_interval: Duration::from_millis(100),
             drain_timeout: Duration::from_secs(30),
             batch_size: 1,
         }
@@ -65,9 +72,10 @@ impl RollingUpdater {
     ///
     /// 1. Start new instances one at a time
     /// 2. Wait for each new instance to become healthy
-    /// 3. Add new instance to load balancer
-    /// 4. Drain and stop one old instance
-    /// 5. Repeat until all instances are replaced
+    /// 3. Keep new instances out of routing until every replacement batch
+    ///    survives the stability window
+    /// 4. Add stable new instances to the load balancer
+    /// 5. Drain and stop old instances
     ///
     /// If any new instance fails to become healthy, rollback by killing
     /// all new instances and keeping old ones running.
@@ -95,10 +103,12 @@ impl RollingUpdater {
         // Start new instances and stop old ones in batches
         for batch_start in (0..target_count).step_by(self.config.batch_size as usize) {
             let batch_end = (batch_start + self.config.batch_size).min(target_count);
+            let mut batch_instances: Vec<Arc<Instance>> = Vec::new();
 
             // Start batch of new instances
             for _ in batch_start..batch_end {
                 let instance = app.allocate_instance();
+                app.suppress_instance_routing(&instance.id);
 
                 match self.start_and_wait_healthy(app, instance.clone()).await {
                     Ok(()) => {
@@ -107,6 +117,7 @@ impl RollingUpdater {
                             instance = %instance.id,
                             "New instance is healthy"
                         );
+                        batch_instances.push(instance.clone());
                         new_instances.push(instance);
                     }
                     Err(e) => {
@@ -130,29 +141,57 @@ impl RollingUpdater {
                             success: false,
                             new_instances: 0,
                             old_instances: 0,
-                            error: Some(format!("Health check failed: {}", e)),
+                            error: Some(e.to_string()),
                         });
                     }
                 }
             }
 
-            // Stop corresponding old instances
-            let batch_size = (batch_end - batch_start) as usize;
-            let old_to_stop: Vec<_> = old_instances
-                .iter()
-                .skip(stopped_count as usize)
-                .take(batch_size)
-                .cloned()
-                .collect();
+            if let Err(error) = self.wait_for_stable_health(&batch_instances).await {
+                tracing::error!(
+                    app = %app.name(),
+                    error = %error,
+                    "New instance failed rollout stability check, rolling back"
+                );
 
-            for old_instance in old_to_stop {
-                self.drain_and_stop(app, &old_instance).await?;
-                stopped_count += 1;
+                Self::remove_new_instances(app, &new_instances).await;
+
+                return Ok(RollingUpdateResult {
+                    success: false,
+                    new_instances: 0,
+                    old_instances: 0,
+                    error: Some(error.to_string()),
+                });
             }
         }
 
-        // Stop any remaining old instances
-        for old_instance in old_instances.iter().skip(stopped_count as usize) {
+        for instance in &new_instances {
+            if instance.state() != InstanceState::Healthy {
+                tracing::error!(
+                    app = %app.name(),
+                    instance = %instance.id,
+                    state = %instance.state(),
+                    "New instance became unhealthy before rollout cutover, rolling back"
+                );
+                Self::remove_new_instances(app, &new_instances).await;
+
+                return Ok(RollingUpdateResult {
+                    success: false,
+                    new_instances: 0,
+                    old_instances: 0,
+                    error: Some(format!(
+                        "Health check failed: Instance became {} before rollout cutover",
+                        instance.state()
+                    )),
+                });
+            }
+        }
+
+        for instance in &new_instances {
+            app.enable_instance_routing(instance);
+        }
+
+        for old_instance in &old_instances {
             self.drain_and_stop(app, old_instance).await?;
             stopped_count += 1;
         }
@@ -170,6 +209,13 @@ impl RollingUpdater {
             old_instances: stopped_count,
             error: None,
         })
+    }
+
+    async fn remove_new_instances(app: &App, new_instances: &[Arc<Instance>]) {
+        for new_instance in new_instances {
+            let _ = new_instance.kill().await;
+            app.remove_instance(&new_instance.id);
+        }
     }
 
     /// Start an instance and wait for it to become healthy
@@ -208,6 +254,49 @@ impl RollingUpdater {
         }
     }
 
+    /// Wait for newly healthy instances to stay healthy before draining old
+    /// capacity. The background health monitor owns the HTTP probing; this
+    /// gate observes the resulting instance states.
+    async fn wait_for_stable_health(
+        &self,
+        instances: &[Arc<Instance>],
+    ) -> Result<(), InstanceError> {
+        if instances.is_empty() || self.config.health_stability_window.is_zero() {
+            return Ok(());
+        }
+
+        let deadline = tokio::time::Instant::now() + self.config.health_stability_window;
+        let check_interval = self
+            .config
+            .health_stability_check_interval
+            .max(Duration::from_millis(1));
+        loop {
+            for instance in instances {
+                match instance.state() {
+                    InstanceState::Healthy => {}
+                    InstanceState::Stopped | InstanceState::Unhealthy => {
+                        return Err(InstanceError::HealthCheckFailed(format!(
+                            "Instance became {} during rollout stability check",
+                            instance.state()
+                        )));
+                    }
+                    state => {
+                        return Err(InstanceError::HealthCheckFailed(format!(
+                            "Instance left healthy state during rollout stability check: {state}"
+                        )));
+                    }
+                }
+            }
+
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                return Ok(());
+            }
+
+            tokio::time::sleep((deadline - now).min(check_interval)).await;
+        }
+    }
+
     /// Drain and stop an old instance
     async fn drain_and_stop(
         &self,
@@ -238,8 +327,16 @@ impl RollingUpdater {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
 
-        // Kill the instance
-        instance.kill().await.map_err(InstanceError::StopError)?;
+        // At this point the stable replacement set is already in routing. A
+        // stop failure is cleanup debt, not a reason to roll app metadata back
+        // into a mixed-version process state.
+        if let Err(error) = instance.kill().await {
+            tracing::warn!(
+                app = %app.name(),
+                instance = %instance.id,
+                "Failed to stop drained old instance: {error}"
+            );
+        }
         app.remove_instance(&instance.id);
         crate::metrics::remove_instance_metrics(&app.name(), &instance.id);
 
@@ -274,6 +371,11 @@ mod tests {
     fn test_rolling_update_config_defaults() {
         let config = RollingUpdateConfig::default();
         assert_eq!(config.health_timeout, Duration::from_secs(30));
+        assert_eq!(config.health_stability_window, Duration::from_secs(8));
+        assert_eq!(
+            config.health_stability_check_interval,
+            Duration::from_millis(100)
+        );
         assert_eq!(config.drain_timeout, Duration::from_secs(30));
         assert_eq!(config.batch_size, 1);
     }
@@ -305,10 +407,17 @@ mod tests {
     fn test_rolling_update_custom_config() {
         let config = RollingUpdateConfig {
             health_timeout: Duration::from_secs(60),
+            health_stability_window: Duration::from_secs(4),
+            health_stability_check_interval: Duration::from_millis(200),
             drain_timeout: Duration::from_secs(10),
             batch_size: 2,
         };
         assert_eq!(config.health_timeout, Duration::from_secs(60));
+        assert_eq!(config.health_stability_window, Duration::from_secs(4));
+        assert_eq!(
+            config.health_stability_check_interval,
+            Duration::from_millis(200)
+        );
         assert_eq!(config.drain_timeout, Duration::from_secs(10));
         assert_eq!(config.batch_size, 2);
     }
@@ -395,6 +504,62 @@ mod tests {
 
         let result = updater.wait_for_healthy(&instance).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn stable_health_wait_succeeds_when_instance_stays_healthy() {
+        let app = create_test_app("stable-app");
+        let instance = app.allocate_instance();
+        instance.set_state(InstanceState::Healthy);
+
+        let spawner = Arc::new(Spawner::new());
+        let updater = RollingUpdater::new(
+            spawner,
+            RollingUpdateConfig {
+                health_stability_window: Duration::from_millis(50),
+                health_stability_check_interval: Duration::from_millis(10),
+                ..Default::default()
+            },
+        );
+
+        updater
+            .wait_for_stable_health(std::slice::from_ref(&instance))
+            .await
+            .expect("healthy instance should pass stability gate");
+    }
+
+    #[tokio::test]
+    async fn stable_health_wait_fails_when_instance_becomes_unhealthy() {
+        let app = create_test_app("flapping-app");
+        let instance = app.allocate_instance();
+        instance.set_state(InstanceState::Healthy);
+
+        let flapping_instance = instance.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            flapping_instance.set_state(InstanceState::Unhealthy);
+        });
+
+        let spawner = Arc::new(Spawner::new());
+        let updater = RollingUpdater::new(
+            spawner,
+            RollingUpdateConfig {
+                health_stability_window: Duration::from_millis(200),
+                health_stability_check_interval: Duration::from_millis(10),
+                ..Default::default()
+            },
+        );
+
+        let result = updater
+            .wait_for_stable_health(std::slice::from_ref(&instance))
+            .await;
+
+        match result {
+            Err(InstanceError::HealthCheckFailed(message)) => {
+                assert!(message.contains("rollout stability"));
+            }
+            other => panic!("expected rollout stability failure, got {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -503,6 +668,8 @@ mod tests {
         let spawner = Arc::new(Spawner::new());
         let config = RollingUpdateConfig {
             health_timeout: Duration::from_secs(45),
+            health_stability_window: Duration::from_secs(3),
+            health_stability_check_interval: Duration::from_millis(250),
             drain_timeout: Duration::from_secs(15),
             batch_size: 3,
         };

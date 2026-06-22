@@ -427,6 +427,45 @@ async fn test_single_probe_failure_keeps_instance_serving() {
 }
 
 #[tokio::test]
+async fn suppressed_rollout_instance_fails_on_first_probe_failure() {
+    let (tx, mut rx) = mpsc::channel(16);
+    let config = HealthConfig::default();
+    let checker = HealthChecker::new(config, tx);
+
+    let (app_tx, _app_rx) = mpsc::channel(16);
+    let app_config = AppConfig {
+        name: "test-app".to_string(),
+        ..Default::default()
+    };
+    let app = Arc::new(App::new(app_config, app_tx, noop_log_handle()));
+    let instance = app.allocate_instance();
+
+    instance.set_port(unused_loopback_port());
+    app.suppress_instance_routing(&instance.id);
+    instance.set_state(InstanceState::Healthy);
+
+    let child = tokio::process::Command::new("sleep")
+        .arg("60")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    instance.set_process(child);
+
+    checker.check_instance(&app, &instance).await;
+
+    assert!(matches!(
+        rx.try_recv()
+            .expect("first suppressed rollout failure should emit unhealthy"),
+        HealthEvent::Unhealthy { .. }
+    ));
+    assert_eq!(instance.state(), InstanceState::Unhealthy);
+    assert_eq!(checker.get_failure_count(&app.name(), &instance.id), 1);
+
+    let _ = instance.kill().await;
+}
+
+#[tokio::test]
 async fn test_three_probe_failures_trigger_dead() {
     let (tx, mut rx) = mpsc::channel(16);
     let config = HealthConfig::default();

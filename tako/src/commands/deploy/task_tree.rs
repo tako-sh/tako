@@ -87,6 +87,10 @@ impl DeployTaskTreeController {
                             boxed_task(deploy_task_step_id(server_name, "uploading"), "Uploading"),
                             boxed_task(deploy_task_step_id(server_name, "preparing"), "Preparing"),
                             boxed_task(deploy_task_step_id(server_name, "starting"), "Starting"),
+                            boxed_task(
+                                deploy_task_step_id(server_name, "finalizing"),
+                                "Finalizing",
+                            ),
                         ])
                 })
                 .collect(),

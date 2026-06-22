@@ -290,6 +290,38 @@ fn active_instance_list_tracks_state_changes_and_removal() {
 }
 
 #[test]
+fn routing_suppression_keeps_healthy_instance_out_of_request_pool() {
+    let (tx, _rx) = mpsc::channel(16);
+    let app = App::new(AppConfig::default(), tx, noop_log_handle());
+
+    let instance = app.allocate_instance();
+    app.suppress_instance_routing(&instance.id);
+    app.set_instance_state(&instance, InstanceState::Healthy);
+
+    assert!(app.is_instance_routing_suppressed(&instance.id));
+    assert_eq!(app.healthy_instance_count(), 0);
+    assert!(app.healthy_instance_at(0).is_none());
+}
+
+#[test]
+fn enabling_routing_adds_suppressed_healthy_instance_to_request_pool() {
+    let (tx, _rx) = mpsc::channel(16);
+    let app = App::new(AppConfig::default(), tx, noop_log_handle());
+
+    let instance = app.allocate_instance();
+    app.suppress_instance_routing(&instance.id);
+    app.set_instance_state(&instance, InstanceState::Healthy);
+
+    app.enable_instance_routing(&instance);
+
+    assert!(!app.is_instance_routing_suppressed(&instance.id));
+    let selected = app
+        .healthy_instance_at(0)
+        .expect("enabled healthy instance should be selectable");
+    assert_eq!(selected.id, instance.id);
+}
+
+#[test]
 fn healthy_instance_at_returns_only_healthy_instances() {
     let (tx, _rx) = mpsc::channel(16);
     let app = App::new(AppConfig::default(), tx, noop_log_handle());
@@ -321,6 +353,22 @@ fn has_starting_instance_detects_startup_states_without_snapshotting() {
 
     app.allocate_instance().set_state(InstanceState::Ready);
     assert!(app.has_starting_instance());
+}
+
+#[test]
+fn has_starting_instance_keeps_fast_probes_for_suppressed_rollout_instances() {
+    let (tx, _rx) = mpsc::channel(16);
+    let app = App::new(AppConfig::default(), tx, noop_log_handle());
+
+    let instance = app.allocate_instance();
+    app.suppress_instance_routing(&instance.id);
+    app.set_instance_state(&instance, InstanceState::Healthy);
+
+    assert!(app.has_starting_instance());
+
+    app.enable_instance_routing(&instance);
+
+    assert!(!app.has_starting_instance());
 }
 
 #[test]

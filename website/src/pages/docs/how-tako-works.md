@@ -77,6 +77,8 @@ Desired instance count is server-side runtime state, not `tako.toml` config. New
 
 Scaling to zero enables on-demand cold starts. Deploy still keeps one warm instance immediately after rollout so the app is reachable, then idle timeout can stop it later. A cold request waits for readiness, queues behind an in-progress cold start up to the server limit, and gets a generic 502/503/504 response if startup fails.
 
+During rolling deploys, new instances do not receive public traffic and old instances are not drained until every replacement batch stays healthy for a short stability window. If active health probing marks a new batch unhealthy during that window, deploy rolls back and keeps the previous release serving.
+
 Health checks call `/status` with `Host: <app>.tako` and `X-Tako-Internal-Token`. SDK adapters handle this endpoint and echo the token. Browser-facing production 5xx bodies stay generic; detailed startup, proxy, storage, channel, and image diagnostics go to app logs.
 
 ## Data And Backups

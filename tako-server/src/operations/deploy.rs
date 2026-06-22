@@ -405,15 +405,12 @@ impl crate::ServerState {
                         } else {
                             app.set_state(previous_state);
                         }
-                        Response::error(
-                            serde_json::json!({
-                                "status": "rollback",
-                                "app": app_name,
-                                "error": result.error,
-                                "rolled_back": true
-                            })
-                            .to_string(),
-                        )
+                        Response::error(format!(
+                            "Deploy failed; rolled back to previous release: {}",
+                            result
+                                .error
+                                .unwrap_or_else(|| "Rolling update failed".to_string())
+                        ))
                     }
                 }
                 Err(e) => {

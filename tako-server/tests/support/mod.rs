@@ -364,3 +364,92 @@ pub fn write_bun_app(app_dir: &Path, body: &str) {
     .unwrap();
     fs::write(app_dir.join("src/index.ts"), bun_app_source(body)).unwrap();
 }
+
+#[allow(dead_code)]
+pub fn write_second_instance_flapping_bun_app(app_dir: &Path, body: &str, marker_name: &str) {
+    fs::create_dir_all(app_dir.join("src")).unwrap();
+    fs::create_dir_all(app_dir.join("node_modules/tako.sh/dist/entrypoints")).unwrap();
+    fs::write(
+        app_dir.join("package.json"),
+        r#"{"name":"test-app","scripts":{"dev":"bun src/index.ts"}}"#,
+    )
+    .unwrap();
+    fs::write(
+        app_dir.join("node_modules/tako.sh/dist/entrypoints/bun-server.mjs"),
+        "await import(process.argv[2]);",
+    )
+    .unwrap();
+    fs::write(
+        app_dir.join("app.json"),
+        r#"{"runtime":"bun","main":"src/index.ts","idle_timeout":300,"install":"true","start":["bun","{main}"]}"#,
+    )
+    .unwrap();
+    fs::write(
+        app_dir.join("src/index.ts"),
+        format!(
+            r#"import {{ closeSync, existsSync, fstatSync, readFileSync, writeFileSync, writeSync }} from "node:fs";
+import {{ join }} from "node:path";
+
+const port = Number(process.env.PORT ?? "3000");
+const host = process.env.HOST ?? "127.0.0.1";
+const bootstrap = JSON.parse(readFileSync(3, "utf-8"));
+closeSync(3);
+const internalToken = bootstrap.token;
+const internalAppName = (process.env.TAKO_APP_NAME ?? "app").split("/")[0] || "app";
+const internalHost = `${{internalAppName}}.tako`;
+const markerPath = join(process.env.TAKO_DATA_DIR ?? ".", {marker_name:?});
+const shouldFlap = existsSync(markerPath);
+if (!shouldFlap) writeFileSync(markerPath, "started");
+const startedAt = Date.now();
+
+function signalReady(port) {{
+  try {{
+    const stat = fstatSync(4);
+    if (!stat.isFIFO()) return;
+    writeSync(4, `${{port}}\n`);
+    closeSync(4);
+  }} catch {{}}
+}}
+
+const server = Bun.serve({{
+  hostname: host,
+  port,
+  fetch(req) {{
+    const url = new URL(req.url);
+    const requestHost = (req.headers.get("host") ?? url.host).split(":")[0]?.toLowerCase();
+    if (requestHost === internalHost && url.pathname === "/status") {{
+      if (req.headers.get("x-tako-internal-token") !== internalToken) {{
+        return new Response(JSON.stringify({{ error: "forbidden" }}), {{
+          status: 403,
+          headers: {{ "content-type": "application/json" }},
+        }});
+      }}
+      if (shouldFlap && Date.now() - startedAt > 250) {{
+        return new Response(JSON.stringify({{ status: "unhealthy" }}), {{
+          status: 500,
+          headers: {{
+            "content-type": "application/json",
+            "X-Tako-Internal-Token": internalToken,
+          }},
+        }});
+      }}
+      return new Response(JSON.stringify({{ status: "healthy" }}), {{
+        headers: {{
+          "content-type": "application/json",
+          "X-Tako-Internal-Token": internalToken,
+        }},
+      }});
+    }}
+    if (url.pathname === "/") {{
+      return new Response({body:?}, {{ headers: {{ "content-type": "text/plain" }} }});
+    }}
+    return new Response("not found", {{ status: 404 }});
+  }},
+}});
+
+signalReady(server.port);
+"#,
+        ),
+    )
+    .unwrap();
+}

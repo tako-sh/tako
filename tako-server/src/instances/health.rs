@@ -16,8 +16,9 @@ pub struct HealthConfig {
     /// Steady-state interval between health checks (after first Healthy probe).
     pub check_interval: Duration,
     /// Faster interval used while any instance is still in startup
-    /// (Starting/Ready, not yet Healthy). Drops cold-start probe slack
-    /// from up to 1s down to ~100ms.
+    /// (Starting/Ready, not yet Healthy) or withheld from routing during rollout
+    /// stability. Drops cold-start and rollout probe slack from up to 1s down
+    /// to ~100ms.
     pub startup_check_interval: Duration,
     /// Number of consecutive failures before marking unhealthy
     pub unhealthy_threshold: u32,
@@ -108,11 +109,12 @@ impl HealthChecker {
     /// Start health check loop for an app.
     ///
     /// Uses `startup_check_interval` while any instance is still in startup
-    /// (Starting or Ready); falls back to `check_interval` once all instances
-    /// are Healthy. This collapses the worst-case probe slack on cold start
-    /// from `check_interval` (typically 1s) to `startup_check_interval`
-    /// (typically 100ms) without paying for high-frequency probes at steady
-    /// state.
+    /// (Starting or Ready) or withheld from routing during rollout stability;
+    /// falls back to `check_interval` once all instances are stable. This
+    /// collapses the worst-case probe slack on cold start and rollout
+    /// validation from `check_interval` (typically 1s) to
+    /// `startup_check_interval` (typically 100ms) without paying for
+    /// high-frequency probes at steady state.
     pub async fn monitor_app(&self, app: Arc<App>) {
         let concurrency = Self::effective_probe_concurrency(self.config.max_probe_concurrency);
         let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
@@ -238,7 +240,9 @@ impl HealthChecker {
             );
 
             // Determine new state based on failure count
-            let new_state = if failure_count >= self.config.dead_threshold {
+            let new_state = if app.is_instance_routing_suppressed(&instance.id) {
+                InstanceState::Unhealthy
+            } else if failure_count >= self.config.dead_threshold {
                 InstanceState::Stopped
             } else if failure_count >= self.config.unhealthy_threshold {
                 InstanceState::Unhealthy

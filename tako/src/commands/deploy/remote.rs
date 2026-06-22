@@ -130,6 +130,7 @@ where
                 "uploading" => "Uploaded",
                 "preparing" => "Prepared",
                 "starting" => "Started",
+                "finalizing" => "Finalized",
                 _ => step,
             };
             task_tree.rename_deploy_step(server_name, step, success_label);
@@ -145,6 +146,7 @@ where
                 "uploading" => "Upload failed",
                 "preparing" => "Prepare failed",
                 "starting" => "Start failed",
+                "finalizing" => "Finalize failed",
                 _ => step,
             };
             task_tree.rename_deploy_step(server_name, step, failed_label);
@@ -413,13 +415,6 @@ async fn send_deploy_command(
     Ok(())
 }
 
-async fn cleanup_release_on_host(host: &str, app: &str, version: &str) -> Result<(), String> {
-    let mut client = ManagementClient::new(host)
-        .await
-        .map_err(|error| error.to_string())?;
-    cleanup_release_with_client(&mut client, app, version).await
-}
-
 async fn cleanup_prepared_deploy_with_client(
     client: &mut ManagementClient,
     app: &str,
@@ -456,23 +451,44 @@ async fn finish_deploy_housekeeping(
     config: &DeployConfig,
     client: &mut ManagementClient,
     server_name: &str,
+    use_spinner: bool,
     task_tree: Option<&DeployTaskTreeController>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let response = client
-        .send(&Command::FinalizeRelease {
-            app: config.app_name.clone(),
-            version: config.version.clone(),
-        })
-        .await
-        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
-    release_response_result(response)
-        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
+    let finalize = async {
+        let response = client
+            .send(&Command::FinalizeRelease {
+                app: config.app_name.clone(),
+                version: config.version.clone(),
+            })
+            .await?;
+        release_response_result(response).map_err(management_http::ManagementError::Message)?;
+        Ok::<(), management_http::ManagementError>(())
+    };
+
+    if let Some(task_tree) = task_tree {
+        run_task_tree_deploy_step(task_tree, server_name, "finalizing", finalize).await?;
+    } else {
+        run_deploy_step("Finalizing…", "Finalized", use_spinner, finalize).await?;
+    }
 
     if let Some(task_tree) = task_tree {
         task_tree.succeed_deploy_target(server_name, None);
     }
 
     Ok(())
+}
+
+fn should_cleanup_release_after_deploy_error(
+    release_preexisted: bool,
+    release_start_attempted: bool,
+) -> bool {
+    // Once the start RPC is attempted, a transport error is ambiguous: the
+    // server may already have activated this version.
+    !release_preexisted && !release_start_attempted
+}
+
+fn should_cleanup_prepared_deploy_after_error(release_start_attempted: bool) -> bool {
+    !release_start_attempted
 }
 
 /// Deploy to a single server over signed HTTP management.
@@ -504,6 +520,7 @@ pub(super) async fn deploy_to_server(
         .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
     let release_preexisted = !upload_plan.upload_required;
     let release_dir = upload_plan.path.clone();
+    let mut release_start_attempted = false;
 
     let result = async {
         let uploaded_plan = upload_release_artifact(
@@ -555,11 +572,9 @@ pub(super) async fn deploy_to_server(
             Some(remote_hash) if remote_hash == config.secrets_hash => None,
             _ => Some(config.secrets.clone()),
         };
+        release_start_attempted = true;
 
         let start_result = if let Some(task_tree) = &task_tree {
-            let cleanup_host = server.host.clone();
-            let cleanup_app = config.app_name.clone();
-            let cleanup_version = config.version.clone();
             run_task_tree_deploy_step_with_detail_and_error_cleanup(
                 task_tree,
                 server_name,
@@ -568,15 +583,7 @@ pub(super) async fn deploy_to_server(
                 async {
                     send_deploy_command(config, &mut client, &release_dir, deploy_secrets).await
                 },
-                move || async move {
-                    if !release_preexisted
-                        && let Err(error) =
-                            cleanup_release_on_host(&cleanup_host, &cleanup_app, &cleanup_version)
-                                .await
-                    {
-                        tracing::warn!("Failed to cleanup partial release: {error}");
-                    }
-                },
+                || async {},
             )
             .await
         } else {
@@ -589,13 +596,21 @@ pub(super) async fn deploy_to_server(
             format_deploy_step_failure("Starting", &e.to_string()).into()
         })?;
 
-        finish_deploy_housekeeping(config, &mut client, server_name, task_tree.as_ref()).await?;
+        finish_deploy_housekeeping(
+            config,
+            &mut client,
+            server_name,
+            use_spinner,
+            task_tree.as_ref(),
+        )
+        .await?;
 
         Ok(())
     }
     .await;
 
     if result.is_err()
+        && should_cleanup_prepared_deploy_after_error(release_start_attempted)
         && let Err(error) =
             cleanup_prepared_deploy_with_client(&mut client, &config.app_name, &config.version)
                 .await
@@ -604,7 +619,7 @@ pub(super) async fn deploy_to_server(
     }
 
     if result.is_err()
-        && !release_preexisted
+        && should_cleanup_release_after_deploy_error(release_preexisted, release_start_attempted)
         && let Err(error) =
             cleanup_release_with_client(&mut client, &config.app_name, &config.version).await
     {

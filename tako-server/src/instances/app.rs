@@ -1,6 +1,7 @@
 use crate::socket::{AppState, InstanceState};
 use dashmap::DashMap;
 use parking_lot::RwLock;
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -17,6 +18,9 @@ pub struct App {
     /// Instances currently eligible for request routing, with immutable
     /// request-path data captured when each instance becomes healthy.
     healthy_instances: RwLock<Vec<HealthyInstance>>,
+    /// Healthy instances that should not receive public traffic yet, such as
+    /// a new rollout batch inside its stability window.
+    routing_suppressed_instances: RwLock<HashSet<String>>,
     /// Current app state
     state: RwLock<AppState>,
 
@@ -46,6 +50,7 @@ impl App {
             config: RwLock::new(config),
             instances: DashMap::new(),
             healthy_instances: RwLock::new(Vec::new()),
+            routing_suppressed_instances: RwLock::new(HashSet::new()),
             state: RwLock::new(AppState::Stopped),
             last_error: RwLock::new(None),
             instance_tx,
@@ -113,6 +118,30 @@ impl App {
         previous
     }
 
+    pub(crate) fn suppress_instance_routing(&self, instance_id: &str) {
+        self.routing_suppressed_instances
+            .write()
+            .insert(instance_id.to_string());
+        self.remove_healthy_instance(instance_id);
+    }
+
+    pub(crate) fn enable_instance_routing(&self, instance: &Arc<Instance>) -> bool {
+        self.routing_suppressed_instances
+            .write()
+            .remove(&instance.id);
+        if instance.state() == InstanceState::Healthy {
+            self.add_healthy_instance(instance);
+            return true;
+        }
+        false
+    }
+
+    pub(crate) fn is_instance_routing_suppressed(&self, instance_id: &str) -> bool {
+        self.routing_suppressed_instances
+            .read()
+            .contains(instance_id)
+    }
+
     #[cfg(test)]
     pub(crate) fn healthy_instance_for_request(
         &self,
@@ -135,6 +164,14 @@ impl App {
     }
 
     fn add_healthy_instance(&self, instance: &Arc<Instance>) {
+        if self
+            .routing_suppressed_instances
+            .read()
+            .contains(&instance.id)
+        {
+            return;
+        }
+
         let mut healthy_instances = self.healthy_instances.write();
         if healthy_instances
             .iter()
@@ -185,6 +222,10 @@ impl App {
     }
 
     pub(crate) fn has_starting_instance(&self) -> bool {
+        if !self.routing_suppressed_instances.read().is_empty() {
+            return true;
+        }
+
         self.instances.iter().any(|entry| {
             matches!(
                 entry.value().state(),
@@ -223,6 +264,7 @@ impl App {
     pub fn remove_instance(&self, id: &str) -> Option<Arc<Instance>> {
         let removed = self.instances.remove(id).map(|(_, v)| v);
         if removed.is_some() {
+            self.routing_suppressed_instances.write().remove(id);
             self.remove_healthy_instance(id);
         }
         removed

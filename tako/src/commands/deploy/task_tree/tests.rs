@@ -121,6 +121,7 @@ fn deploy_task_tree_initial_lines_include_known_future_work() {
             "  □ Uploading…".to_string(),
             "  □ Preparing…".to_string(),
             "  □ Starting…".to_string(),
+            "  □ Finalizing…".to_string(),
         ]
     );
 }
@@ -164,6 +165,13 @@ fn deploy_task_tree_initial_lines_include_multi_target_builds_and_multi_server_c
         lines
             .iter()
             .filter(|line| line.contains("□ Starting…"))
+            .count(),
+        2
+    );
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line| line.contains("□ Finalizing…"))
             .count(),
         2
     );
@@ -228,7 +236,7 @@ fn deploy_task_tree_cache_hit_appends_completed_cached_artifact_step() {
         lines.get(built_index + 2),
         Some(&"Deploying to prod-a…".to_string())
     );
-    assert_eq!(lines.last(), Some(&"  □ Starting…".to_string()));
+    assert_eq!(lines.last(), Some(&"  □ Finalizing…".to_string()));
 }
 
 #[test]
@@ -343,6 +351,7 @@ fn deploy_task_tree_preflight_failure_omits_generic_cancelled_detail() {
     assert!(lines.iter().any(|line| line == "  □ Uploading…"));
     assert!(lines.iter().any(|line| line == "  □ Preparing…"));
     assert!(lines.iter().any(|line| line == "  □ Starting…"));
+    assert!(lines.iter().any(|line| line == "  □ Finalizing…"));
 }
 
 #[tokio::test]
@@ -485,6 +494,7 @@ fn deploy_task_tree_build_failure_aborts_deploy_work() {
     assert!(lines.iter().any(|line| line == "  □ Uploading…"));
     assert!(lines.iter().any(|line| line == "  □ Preparing…"));
     assert!(lines.iter().any(|line| line == "  □ Starting…"));
+    assert!(lines.iter().any(|line| line == "  □ Finalizing…"));
 }
 
 #[test]

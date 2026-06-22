@@ -50,6 +50,29 @@ fn deploy_ssl_binding_for_start_command_omits_provider_token() {
     assert_eq!(prepared.cloudflare_api_token, None);
 }
 
+#[test]
+fn deploy_error_cleanup_runs_only_before_start_rpc_attempt() {
+    assert!(should_cleanup_prepared_deploy_after_error(false));
+    assert!(!should_cleanup_prepared_deploy_after_error(true));
+
+    assert!(should_cleanup_release_after_deploy_error(
+        false, /* release_preexisted */
+        false, /* release_start_attempted */
+    ));
+    assert!(!should_cleanup_release_after_deploy_error(
+        false, /* release_preexisted */
+        true,  /* release_start_attempted */
+    ));
+    assert!(!should_cleanup_release_after_deploy_error(
+        true,  /* release_preexisted */
+        false, /* release_start_attempted */
+    ));
+    assert!(!should_cleanup_release_after_deploy_error(
+        true, /* release_preexisted */
+        true, /* release_start_attempted */
+    ));
+}
+
 fn sample_shared_build_group() -> ArtifactBuildGroup {
     ArtifactBuildGroup {
         build_target_label: "linux-aarch64-musl".to_string(),
