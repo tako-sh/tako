@@ -217,20 +217,6 @@ impl From<crate::dev_server_client::TunnelCloseReason> for TunnelCloseReason {
     }
 }
 
-impl DevEvent {
-    pub(super) fn is_state_only(&self) -> bool {
-        matches!(
-            self,
-            DevEvent::LanStarting
-                | DevEvent::LanFailed
-                | DevEvent::TunnelModeChanged { .. }
-                | DevEvent::TunnelConnectionChanged { .. }
-                | DevEvent::TunnelStarting
-                | DevEvent::TunnelFailed
-        )
-    }
-}
-
 #[cfg(test)]
 fn strip_ascii_case_prefix<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
     if s.len() < prefix.len() {
@@ -322,29 +308,7 @@ pub(super) fn trim_child_log_message(message: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{DevEvent, LogLevel, TunnelCloseReason};
-
-    #[test]
-    fn tunnel_mode_changes_are_state_only() {
-        assert!(
-            DevEvent::TunnelModeChanged {
-                enabled: true,
-                url: Some("https://yh5spxz5.tako.website".to_string()),
-                expires_at: Some(1_797_132_000),
-                close_reason: None,
-            }
-            .is_state_only()
-        );
-        assert!(
-            DevEvent::TunnelModeChanged {
-                enabled: false,
-                url: None,
-                expires_at: None,
-                close_reason: Some(TunnelCloseReason::User),
-            }
-            .is_state_only()
-        );
-    }
+    use super::{LogLevel, TunnelCloseReason};
 
     #[test]
     fn tunnel_close_reason_has_user_facing_log_copy() {
@@ -367,18 +331,6 @@ mod tests {
         assert_eq!(
             TunnelCloseReason::Replaced.log_message(),
             "Tunnel off: replaced by a newer tunnel session"
-        );
-    }
-
-    #[test]
-    fn lan_mode_changes_still_render_user_output() {
-        assert!(
-            !DevEvent::LanModeChanged {
-                enabled: true,
-                lan_ip: Some("192.168.1.42".to_string()),
-                ca_url: Some("http://192.168.1.42/ca.pem".to_string()),
-            }
-            .is_state_only()
         );
     }
 }

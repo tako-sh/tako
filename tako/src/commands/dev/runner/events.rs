@@ -1,6 +1,8 @@
 use tokio::sync::{mpsc, watch};
 
-use super::super::{DevEvent, ScopedLog, TunnelCloseReason, parse_log_line};
+use super::super::{
+    DevEvent, ScopedLog, TunnelCloseReason, output_render::format_tunnel_block, parse_log_line,
+};
 
 pub(super) async fn spawn_dev_event_forwarder(
     config_key: String,
@@ -204,10 +206,6 @@ pub(super) async fn run_non_interactive_output(
 }
 
 fn handle_non_interactive_event(event: DevEvent) -> bool {
-    if event.is_state_only() {
-        return false;
-    }
-
     match event {
         DevEvent::AppStarted => {}
         DevEvent::AppReady => {
@@ -246,7 +244,16 @@ fn handle_non_interactive_event(event: DevEvent) -> bool {
             }
         }
         DevEvent::LanStarting | DevEvent::LanFailed => {}
-        DevEvent::TunnelModeChanged { .. } => {}
+        DevEvent::TunnelModeChanged {
+            enabled,
+            url,
+            close_reason,
+            ..
+        } => {
+            for line in non_interactive_tunnel_mode_lines(enabled, url.as_deref(), close_reason) {
+                crate::output::stream_line(&line);
+            }
+        }
         DevEvent::TunnelConnectionChanged { connected, .. } => {
             if connected {
                 crate::output::stream_line("Tunnel reconnected");
@@ -261,4 +268,50 @@ fn handle_non_interactive_event(event: DevEvent) -> bool {
         }
     }
     false
+}
+
+fn non_interactive_tunnel_mode_lines(
+    enabled: bool,
+    url: Option<&str>,
+    close_reason: Option<TunnelCloseReason>,
+) -> Vec<String> {
+    if enabled {
+        url.map(format_tunnel_block).unwrap_or_default()
+    } else {
+        vec![
+            close_reason
+                .map(TunnelCloseReason::log_message)
+                .unwrap_or("Tunnel off")
+                .to_string(),
+        ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn non_interactive_tunnel_enable_prints_public_url_block() {
+        let lines = non_interactive_tunnel_mode_lines(
+            true,
+            Some("https://bun-e2e-bhed5ab6yy.tako.website"),
+            None,
+        );
+
+        let rendered = lines.join("\n");
+        assert!(rendered.contains("Your app is now available on the public internet"));
+        assert!(rendered.contains("https://bun-e2e-bhed5ab6yy.tako.website"));
+    }
+
+    #[test]
+    fn non_interactive_tunnel_disable_prints_close_reason() {
+        let lines =
+            non_interactive_tunnel_mode_lines(false, None, Some(TunnelCloseReason::LimitExceeded));
+
+        assert_eq!(
+            lines,
+            vec!["Tunnel off: active tunnel limit reached (5 per machine)"]
+        );
+    }
 }

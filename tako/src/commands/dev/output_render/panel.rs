@@ -157,18 +157,15 @@ pub(in crate::commands::dev) fn format_panel_wide(
     }
 
     let url_avail = col2_w.saturating_sub(ROUTES_LABEL_W);
-    let mut mid: Vec<String> = urls
-        .iter()
-        .enumerate()
-        .map(|(i, url)| {
-            let url_t = truncate_str(url, url_avail, "…");
-            if i == 0 {
-                format!("{}{url_color}{url_t}{RESET}", label_cell("routes"))
-            } else {
-                format!("{}{url_color}{url_t}{RESET}", " ".repeat(ROUTES_LABEL_W))
-            }
-        })
-        .collect();
+    let mut mid: Vec<String> = Vec::new();
+    for url in &urls {
+        let label = if mid.is_empty() {
+            label_cell("routes")
+        } else {
+            " ".repeat(ROUTES_LABEL_W)
+        };
+        mid.push(url_panel_line(&label, url, url_avail, &url_color));
+    }
     mid.extend(share_row_lines("lan", 'l', &share_rows.lan, url_avail));
     mid.extend(share_row_lines(
         "tunnel",
@@ -252,19 +249,21 @@ pub(in crate::commands::dev) fn format_panel_stacked(
         ));
     }
     let url_avail = inner_w.saturating_sub(2 + ROUTES_LABEL_W);
-    for (i, host) in hosts.iter().enumerate() {
+    let mut visible_routes = 0;
+    for host in hosts {
         let url = if port == 443 {
             format!("https://{host}")
         } else {
             format!("https://{host}:{port}")
         };
-        let url_t = truncate_str(&url, url_avail, "…");
-        let line = if i == 0 {
-            format!("{}{url_color}{url_t}{RESET}", label_cell("routes"))
+        let label = if visible_routes == 0 {
+            label_cell("routes")
         } else {
-            format!("{}{url_color}{url_t}{RESET}", " ".repeat(ROUTES_LABEL_W))
+            " ".repeat(ROUTES_LABEL_W)
         };
+        let line = url_panel_line(&label, &url, url_avail, &url_color);
         rows.push(stacked_row(&line, inner_w));
+        visible_routes += 1;
     }
     for line in share_row_lines("lan", 'l', &share_rows.lan, url_avail) {
         rows.push(stacked_row(&line, inner_w));
@@ -314,6 +313,31 @@ fn label_cell(label: &str) -> String {
     format!("{label:<width$}", width = ROUTES_LABEL_W)
 }
 
+fn url_panel_line(label: &str, url: &str, value_width: usize, url_color: &str) -> String {
+    if measure_text_width(url) <= value_width {
+        format!("{label}{url_color}{url}{RESET}")
+    } else {
+        let url_t = shortened_non_link_url(url, value_width);
+        format!("{label}{url_color}{url_t}{RESET}")
+    }
+}
+
+fn shortened_non_link_url(url: &str, value_width: usize) -> String {
+    let label = truncate_str(url, value_width, "…").to_string();
+    defang_url_text(&label)
+}
+
+fn defang_url_text(text: &str) -> String {
+    const LINK_BREAK: &str = "\u{200b}";
+    if let Some(rest) = text.strip_prefix("https://") {
+        format!("https:{LINK_BREAK}//{rest}")
+    } else if let Some(rest) = text.strip_prefix("http://") {
+        format!("http:{LINK_BREAK}//{rest}")
+    } else {
+        text.to_string()
+    }
+}
+
 fn share_row_lines(
     label: &str,
     key: char,
@@ -336,34 +360,52 @@ fn share_row_lines(
         ShareRowState::Reconnecting(url) => {
             let status = "reconnecting";
             let status_w = measure_text_width(status);
-            if value_width <= status_w + 1 {
-                let status_t = truncate_str(status, value_width, "…");
-                return vec![format!("{}{}", label_cell(label), muted(&status_t))];
+            let url_w = measure_text_width(url);
+            if url_w + 1 + status_w <= value_width {
+                vec![format!(
+                    "{}{url_color}{url}{RESET} {}",
+                    label_cell(label),
+                    muted(status)
+                )]
+            } else if url_w <= value_width {
+                vec![
+                    format!("{}{url_color}{url}{RESET}", label_cell(label)),
+                    format!("{}{}", " ".repeat(ROUTES_LABEL_W), muted(status)),
+                ]
+            } else {
+                let url_width = value_width.saturating_sub(status_w + 1);
+                let url_t = shortened_non_link_url(url, url_width);
+                vec![format!(
+                    "{}{url_color}{url_t}{RESET} {}",
+                    label_cell(label),
+                    muted(status)
+                )]
             }
-
-            let url_w = value_width.saturating_sub(status_w + 1);
-            let url_t = truncate_str(url, url_w, "…");
-            vec![format!(
-                "{}{url_color}{url_t}{RESET} {}",
-                label_cell(label),
-                muted(status)
-            )]
         }
         ShareRowState::Active(url) => {
             let hint = format!("{key} to disable");
             let hint_w = measure_text_width(&hint);
-            if value_width <= hint_w + 1 {
-                let hint_t = truncate_str(&hint, value_width, "…");
-                return vec![format!("{}{}", label_cell(label), muted(&hint_t))];
+            let url_w = measure_text_width(url);
+            if url_w + 1 + hint_w <= value_width {
+                vec![format!(
+                    "{}{url_color}{url}{RESET} {}",
+                    label_cell(label),
+                    muted(&hint)
+                )]
+            } else if url_w <= value_width {
+                vec![
+                    format!("{}{url_color}{url}{RESET}", label_cell(label)),
+                    format!("{}{}", " ".repeat(ROUTES_LABEL_W), muted(&hint)),
+                ]
+            } else {
+                let url_width = value_width.saturating_sub(hint_w + 1);
+                let url_t = shortened_non_link_url(url, url_width);
+                vec![format!(
+                    "{}{url_color}{url_t}{RESET} {}",
+                    label_cell(label),
+                    muted(&hint)
+                )]
             }
-
-            let url_w = value_width.saturating_sub(hint_w + 1);
-            let url_t = truncate_str(url, url_w, "…");
-            vec![format!(
-                "{}{url_color}{url_t}{RESET} {}",
-                label_cell(label),
-                muted(&hint)
-            )]
         }
         ShareRowState::Failed => {
             vec![format!(

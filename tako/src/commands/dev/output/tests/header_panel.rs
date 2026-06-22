@@ -133,6 +133,78 @@ fn format_panel_shows_active_lan_and_tunnel_urls_with_disable_hints_on_same_row(
 }
 
 #[test]
+fn format_panel_wraps_active_tunnel_hint_instead_of_truncating_url() {
+    let tunnel_url = "https://repobouncer-hzjb2drx13.tako.website";
+    let panel = format_panel_wide(
+        "app",
+        "running",
+        "bun",
+        "user/app",
+        "main",
+        "apps/app",
+        None,
+        &["app.test".to_string()],
+        443,
+        ShareRows {
+            lan: ShareRowState::Inactive,
+            tunnel: ShareRowState::Active(tunnel_url.to_string()),
+        },
+        None,
+        None,
+        120,
+    );
+    let plain = strip_ansi(&panel);
+
+    let tunnel_row = plain
+        .lines()
+        .find(|line| line.contains("tunnel  "))
+        .expect("expected tunnel row");
+    assert!(tunnel_row.contains(tunnel_url));
+    assert!(!tunnel_row.contains('…'));
+
+    let hint_row = plain
+        .lines()
+        .find(|line| line.contains("        t to disable"))
+        .expect("expected wrapped tunnel hint row");
+    assert!(!hint_row.contains("https://"));
+}
+
+#[test]
+fn format_panel_shows_ellipsized_non_link_tunnel_url_when_it_cannot_fit() {
+    let panel = format_panel_wide(
+        "app",
+        "running",
+        "bun",
+        "user/app",
+        "main",
+        "apps/app",
+        None,
+        &["app.test".to_string()],
+        443,
+        ShareRows {
+            lan: ShareRowState::Inactive,
+            tunnel: ShareRowState::Active(
+                "https://really-really-long-subdomain-that-cannot-fit-hzjb2drx13.tako.website"
+                    .to_string(),
+            ),
+        },
+        None,
+        None,
+        90,
+    );
+    let plain = strip_ansi(&panel);
+
+    let tunnel_row = plain
+        .lines()
+        .find(|line| line.contains("tunnel  "))
+        .expect("expected tunnel row");
+    assert!(tunnel_row.contains("https:\u{200b}//"));
+    assert!(tunnel_row.contains('…'));
+    assert!(tunnel_row.contains("t to disable"));
+    assert!(!tunnel_row.contains("https://"));
+}
+
+#[test]
 fn format_panel_shows_tunnel_starting_and_share_failures() {
     let panel = format_panel_wide(
         "app",
@@ -156,6 +228,34 @@ fn format_panel_shows_tunnel_starting_and_share_failures() {
 
     assert!(plain.contains("lan     failed, l to retry"));
     assert!(plain.contains("tunnel  starting..."));
+}
+
+#[test]
+fn format_panel_shows_ellipsized_non_link_route_urls_when_they_cannot_fit() {
+    let panel = format_panel_wide(
+        "app",
+        "running",
+        "bun",
+        "u/r",
+        "main",
+        "",
+        None,
+        &["this-route-name-is-too-long-for-the-panel.example.test".to_string()],
+        443,
+        ShareRows::default(),
+        None,
+        None,
+        90,
+    );
+    let plain = strip_ansi(&panel);
+
+    let route_row = plain
+        .lines()
+        .find(|line| line.contains("routes  "))
+        .expect("expected routes row");
+    assert!(route_row.contains("https:\u{200b}//"));
+    assert!(route_row.contains('…'));
+    assert!(!route_row.contains("https://"));
 }
 
 #[test]

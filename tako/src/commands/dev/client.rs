@@ -9,7 +9,7 @@ use tokio::time::timeout;
 use super::runner::bootstrap_dev_events;
 use super::{
     DevEvent, ScopedLog, TunnelCloseReason, infer_preset_name_from_ref, load_dev_tako_toml, output,
-    resolve_dev_preset_ref,
+    output_render::format_tunnel_block, resolve_dev_preset_ref,
 };
 
 #[derive(Debug, Clone)]
@@ -420,10 +420,18 @@ pub(super) async fn run_connected_dev_client(
                                 | DevEvent::LanFailed
                                 | DevEvent::LanModeChanged { .. }
                                 | DevEvent::TunnelStarting
-                                | DevEvent::TunnelFailed
-                                | DevEvent::TunnelModeChanged {
-                                    enabled: true, ..
-                                } => {}
+                                | DevEvent::TunnelFailed => {}
+                                DevEvent::TunnelModeChanged {
+                                    enabled: true,
+                                    url,
+                                    ..
+                                } => {
+                                    if let Some(url) = url {
+                                        for line in format_tunnel_block(&url) {
+                                            crate::output::stream_line(&line);
+                                        }
+                                    }
+                                }
                                 | DevEvent::TunnelConnectionChanged {
                                     connected: true, ..
                                 } => {
