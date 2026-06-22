@@ -25,6 +25,7 @@ interface Registration {
   opts: WorkflowRuntimeOpts;
 }
 
+/** Options for `workflow.enqueue(payload, options)`. */
 export interface EnqueueOptions {
   /**
    * When to run.
@@ -43,6 +44,12 @@ export interface EnqueueOptions {
   uniqueKey?: string | null;
 }
 
+/**
+ * Runtime coordinator for workflow discovery, enqueue, signal, and worker execution.
+ *
+ * Application code normally uses `defineWorkflow(...).enqueue(...)` and
+ * `signal(...)`; this class is exported for Tako runtime internals.
+ */
 export class WorkflowEngine {
   private client: WorkflowsClient | null = null;
   private worker: Worker | null = null;
@@ -77,6 +84,14 @@ export class WorkflowEngine {
     this.client = client;
   }
 
+  /**
+   * Register one workflow handler.
+   *
+   * @param name - Workflow name.
+   * @param handler - Workflow function.
+   * @param opts - Runtime workflow options.
+   * @defaultValue opts = {}
+   */
   register(name: string, handler: WorkflowHandler, opts: WorkflowRuntimeOpts = {}): void {
     if (this.registrations.has(name)) {
       throw new Error(`workflow '${name}' is already registered`);
@@ -134,6 +149,7 @@ export class WorkflowEngine {
     return this.client;
   }
 
+  /** Start the worker with default runtime options. */
   start(): void {
     this.startWorker({});
   }
@@ -171,6 +187,7 @@ export class WorkflowEngine {
     return this.worker?.idled ?? false;
   }
 
+  /** Stop claiming new runs and wait for active runs to finish. */
   async drain(): Promise<void> {
     if (this.worker) {
       await this.worker.drain();
@@ -178,6 +195,7 @@ export class WorkflowEngine {
     }
   }
 
+  /** Number of workflow runs currently in flight. */
   running(): number {
     return this.worker?.runningCount ?? 0;
   }

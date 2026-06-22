@@ -12,11 +12,17 @@ import type { ChannelAuthorizeInput, TakoStatus } from "../types";
 import { dispatchWsMessage } from "../channels/handler";
 import { getInternalToken, getStorageBindings } from "./secrets";
 
+/** Host suffix used for SDK-internal app requests. */
 export const TAKO_INTERNAL_HOST_SUFFIX = ".tako";
+/** Built-in health endpoint path on the internal host. */
 export const TAKO_INTERNAL_STATUS_PATH = "/status";
+/** Channel authorization endpoint path on the internal host. */
 export const TAKO_INTERNAL_CHANNELS_AUTHORIZE_PATH = "/channels/authorize";
+/** WebSocket channel dispatch endpoint path on the internal host. */
 export const TAKO_INTERNAL_CHANNELS_DISPATCH_PATH = "/channels/dispatch";
+/** Channel registry endpoint path on the internal host. */
 export const TAKO_INTERNAL_CHANNELS_REGISTRY_PATH = "/channels/registry";
+/** Header used to authenticate SDK-internal requests. */
 export const TAKO_INTERNAL_TOKEN_HEADER = "x-tako-internal-token";
 const TAKO_LOCAL_STORAGE_PREFIX = "/_tako/storages/";
 const LOOPBACK_INTERNAL_HOSTS = new Set(["127.0.0.1", "localhost", "0.0.0.0"]);
@@ -38,6 +44,7 @@ function normalizeHost(value: string | null): string | null {
   return host;
 }
 
+/** Return the SDK-internal host for an app name. */
 export function internalAppHost(appName: string): string {
   return `${baseAppName(appName)}${TAKO_INTERNAL_HOST_SUFFIX}`;
 }

@@ -15,11 +15,20 @@ import { APP_NAME_ENV, INTERNAL_SOCKET_ENV, TakoError, callInternal } from "../t
 import type { EnqueueOptions } from "./engine";
 import type { Run, RunId, RunStatus, StepState } from "./types";
 
+/** Result returned after enqueueing a workflow run. */
 export interface EnqueueResult {
+  /** Workflow run id. */
   id: RunId;
+  /** True when `uniqueKey` matched an existing non-terminal run. */
   deduplicated: boolean;
 }
 
+/**
+ * RPC client for workflow operations against the Tako internal socket.
+ *
+ * Intended for Tako runtime internals; app code should use workflow handles
+ * returned by {@link import("./define").defineWorkflow}.
+ */
 export class WorkflowsClient {
   private readonly socketPath: string;
   private readonly app: string;
@@ -48,6 +57,14 @@ export class WorkflowsClient {
 
   // --- Enqueue / signal: usable from any process ---
 
+  /**
+   * Enqueue a workflow run.
+   *
+   * @param name - Workflow name.
+   * @param payload - JSON-serializable workflow payload.
+   * @param opts - Enqueue options.
+   * @defaultValue opts = {}
+   */
   async enqueue(name: string, payload: unknown, opts: EnqueueOptions = {}): Promise<EnqueueResult> {
     const wire: Record<string, unknown> = {};
     if (opts.runAt !== undefined) wire["run_at_ms"] = opts.runAt.getTime();
@@ -69,6 +86,7 @@ export class WorkflowsClient {
     return { id: d.id, deduplicated: Boolean(d.deduplicated) };
   }
 
+  /** Wake workflow runs parked on `ctx.waitFor(eventName)`. */
   async signal(eventName: string, payload: unknown): Promise<number> {
     const data = await this.call({
       command: "signal",
@@ -82,10 +100,12 @@ export class WorkflowsClient {
 
   // --- Worker-only: registration + run lifecycle ---
 
+  /** Register cron schedules for discovered workflows. */
   async registerSchedules(schedules: Array<{ name: string; cron: string }>): Promise<void> {
     await this.call({ command: "register_schedules", app: this.app, schedules });
   }
 
+  /** Claim one pending workflow run for a worker. */
   async claim(workerId: string, names: string[], leaseMs: number): Promise<Run | null> {
     const data = await this.call({
       command: "claim_run",
@@ -98,6 +118,7 @@ export class WorkflowsClient {
     return rawToRun(data as RawRun);
   }
 
+  /** Extend the lease for a running workflow run. */
   async heartbeat(id: RunId, workerId: string, leaseMs: number): Promise<void> {
     await this.call({
       command: "heartbeat_run",
@@ -108,6 +129,7 @@ export class WorkflowsClient {
     });
   }
 
+  /** Persist the memoized result for one durable step. */
   async saveStep(id: RunId, workerId: string, stepName: string, result: unknown): Promise<void> {
     await this.call({
       command: "save_step",
@@ -119,10 +141,12 @@ export class WorkflowsClient {
     });
   }
 
+  /** Mark a workflow run as succeeded. */
   async complete(id: RunId, workerId: string): Promise<void> {
     await this.call({ command: "complete_run", app: this.app, id, worker_id: workerId });
   }
 
+  /** Mark a workflow run as cancelled. */
   async cancel(id: RunId, workerId: string, reason?: string | null): Promise<void> {
     await this.call({
       command: "cancel_run",
@@ -133,6 +157,7 @@ export class WorkflowsClient {
     });
   }
 
+  /** Mark a workflow run attempt as failed or dead. */
   async fail(
     id: RunId,
     workerId: string,
@@ -151,6 +176,7 @@ export class WorkflowsClient {
     });
   }
 
+  /** Defer a workflow run until a time, or indefinitely when `wakeAt` is null. */
   async defer(id: RunId, workerId: string, wakeAt: Date | null): Promise<void> {
     await this.call({
       command: "defer_run",
@@ -161,6 +187,7 @@ export class WorkflowsClient {
     });
   }
 
+  /** Park a workflow run until an event or optional timeout. */
   async waitForEvent(
     id: RunId,
     workerId: string,

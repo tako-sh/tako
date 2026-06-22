@@ -16,25 +16,44 @@ import {
 } from "./storage-utils";
 import { getStorageBindings } from "./tako/secrets";
 
+/** Project-specific storage bindings. Augmented by generated `tako.d.ts`. */
 export interface TakoStorages {}
 
+/** Runtime storage binding metadata delivered by Tako at process startup. */
 export interface TakoStorageBinding {
+  /** Storage provider kind. */
   provider: "local" | "s3";
+  /** S3-compatible bucket name. */
   bucket?: string | undefined;
+  /** S3-compatible endpoint URL. */
   endpoint?: string | undefined;
+  /** S3-compatible region. */
   region?: string | undefined;
+  /** S3-compatible access key id. */
   access_key_id?: string | undefined;
+  /** S3-compatible secret access key. */
   secret_access_key?: string | undefined;
+  /** Use path-style S3 URLs instead of virtual-hosted URLs. */
   force_path_style?: boolean | undefined;
+  /** Public object base URL used when `public: true` is requested. */
   public_base_url?: string | undefined;
+  /** Local storage root path. */
   path?: string | undefined;
+  /** Local storage URL signing key. */
   signing_key?: string | undefined;
 }
 
+/** Options for {@link TakoStorage.createDownloadUrl}. */
 export interface CreateDownloadUrlOptions {
-  /** Link lifetime. Defaults to 3600 seconds. S3-compatible services cap this at seven days. */
+  /**
+   * Link lifetime. S3-compatible services cap this at seven days.
+   * @defaultValue 3600
+   */
   expiresInSeconds?: number;
-  /** Use `public_base_url` instead of signing when the storage has one configured. */
+  /**
+   * Use `public_base_url` instead of signing when the storage has one configured.
+   * @defaultValue false
+   */
   public?: boolean;
   /** Optional S3 response content type override. */
   responseContentType?: string;
@@ -42,32 +61,54 @@ export interface CreateDownloadUrlOptions {
   responseContentDisposition?: string;
 }
 
+/** Options for {@link TakoStorage.createUploadUrl}. */
 export interface CreateUploadUrlOptions {
-  /** Link lifetime. Defaults to 3600 seconds. S3-compatible services cap this at seven days. */
+  /**
+   * Link lifetime. S3-compatible services cap this at seven days.
+   * @defaultValue 3600
+   */
   expiresInSeconds?: number;
   /** Content-Type the uploader must send with the PUT request. */
   contentType?: string;
 }
 
+/** Options for {@link TakoStorage.createImageUrl}. */
 export type CreateImageUrlOptions = ImageUrlOptions & {
-  /** Link lifetime for private direct object URLs. Defaults to 3600 seconds. */
+  /**
+   * Link lifetime for private direct object URLs.
+   * @defaultValue 3600
+   */
   expiresInSeconds?: number;
-  /** Use `public_base_url` and the public image optimizer. */
+  /**
+   * Use `public_base_url` and the public image optimizer.
+   * @defaultValue false
+   */
   public?: boolean;
 };
 
+/** Options for {@link TakoStorage.createImageSrcSet}. */
 export type CreateImageSrcSetOptions = ImageSrcSetOptions & {
-  /** Use `public_base_url` and the public image optimizer. Required until private image transforms are supported. */
+  /**
+   * Use `public_base_url` and the public image optimizer. Required until
+   * private image transforms are supported.
+   * @defaultValue false
+   */
   public?: boolean;
 };
 
+/** Handle for one configured object storage binding. */
 export interface TakoStorage {
+  /** Create a signed or public URL for downloading an object. */
   createDownloadUrl(key: string, options?: CreateDownloadUrlOptions): Promise<string>;
+  /** Create a signed URL for uploading an object with PUT. */
   createUploadUrl(key: string, options?: CreateUploadUrlOptions): Promise<string>;
+  /** Create an image URL for a stored object. */
   createImageUrl(key: string, options?: CreateImageUrlOptions): Promise<string>;
+  /** Create responsive image attributes for a stored object. */
   createImageSrcSet(key: string, options: CreateImageSrcSetOptions): Promise<ImageSrcSet>;
 }
 
+/** Typed storage bag exposed as `tako.storages`. */
 export type TakoStorageBag<T = TakoStorages> = Readonly<{
   [K in keyof T]: TakoStorage;
 }> &
@@ -77,10 +118,16 @@ interface StorageBagOptions {
   now?: () => Date;
 }
 
+/** Load storage bindings delivered by the Tako runtime. */
 export function loadStorages<T = TakoStorages>(): TakoStorageBag<T> {
   return createStorageBag<T>(getStorageBindings());
 }
 
+/**
+ * Create a typed storage bag from raw binding metadata.
+ *
+ * @internal
+ */
 export function createStorageBag<T = TakoStorages>(
   bindings: Record<string, unknown>,
   options: StorageBagOptions = {},

@@ -14,6 +14,12 @@ import { isChannelDefinition, type ChannelDefinition } from "./channels/meta";
 import { getChannelsConfig } from "./channels/configure";
 import { SseReader } from "./channels/sse-reader";
 
+/**
+ * Server-side publisher hook used by the Tako runtime to fan out channel
+ * messages over the internal socket.
+ *
+ * Browser code should publish through WebSocket channels instead.
+ */
 export type ChannelSocketPublisher = <T>(
   channel: string,
   message: ChannelPublishInput<T>,
@@ -21,10 +27,16 @@ export type ChannelSocketPublisher = <T>(
 
 let socketPublisher: ChannelSocketPublisher | null = null;
 
+/**
+ * Install or clear the server-side channel publisher hook.
+ *
+ * @internal
+ */
 export function setChannelSocketPublisher(fn: ChannelSocketPublisher | null): void {
   socketPublisher = fn;
 }
 
+/** Base path for Tako channel subscribe/connect/publish routes. */
 export const TAKO_CHANNELS_BASE_PATH = "/_tako/channels";
 const DEFAULT_CHANNEL_REPLAY_WINDOW_MS = 10 * 60 * 1000;
 const DEFAULT_CHANNEL_INACTIVITY_TTL_MS = 0;
@@ -177,11 +189,28 @@ function sendAuthEnvelope(raw: unknown, lastMessageId?: string, tokenOverride?: 
   });
 }
 
+/**
+ * Client/server handle for a single Tako channel.
+ *
+ * Construct directly in browser code via `tako.sh/client`, or use generated
+ * channel exports from `<app_root>/channels/*.ts` for typed handles.
+ */
 export class Channel {
+  /** Exact channel name as registered by `defineChannel`. */
   readonly name: string;
+  /** Live transport enabled by the channel definition. Undefined means SSE. */
   readonly transport: ChannelDefinitionTransport | undefined;
+  /** Params serialized into subscribe/connect URLs. */
   readonly params: Record<string, unknown>;
 
+  /**
+   * Create an untyped channel handle.
+   *
+   * @param name - Exact channel name.
+   * @param transport - Pass `"ws"` for WebSocket channels; omit for SSE.
+   * @param params - Query params bound to this channel.
+   * @defaultValue params = {}
+   */
   constructor(
     name: string,
     transport?: ChannelDefinitionTransport,
@@ -192,6 +221,15 @@ export class Channel {
     this.params = params;
   }
 
+  /**
+   * Publish a typed message to current channel subscribers from server-side code.
+   *
+   * Browser clients should use `connect().send(...)` on WebSocket channels.
+   *
+   * @param message - Message type and payload.
+   * @param options - Optional publish settings.
+   * @defaultValue options = {}
+   */
   async publish<T = unknown>(
     message: ChannelPublishInput<T>,
     options: ChannelPublishOptions = {},
@@ -205,6 +243,12 @@ export class Channel {
     );
   }
 
+  /**
+   * Subscribe to this channel over SSE.
+   *
+   * @param options - Authorization, base URL, resume id, and optional custom EventSource factory.
+   * @defaultValue options = {}
+   */
   subscribe(options: ChannelSubscribeOptions = {}): ChannelSubscription {
     const url = channelBaseUrl(this.name, options.baseUrl, this.params);
     const factory = options.eventSourceFactory;
@@ -247,6 +291,14 @@ export class Channel {
     };
   }
 
+  /**
+   * Open a WebSocket connection to this channel.
+   *
+   * Only valid for channels defined with WebSocket handlers.
+   *
+   * @param options - Authorization, base URL, resume id, and optional custom WebSocket factory.
+   * @defaultValue options = {}
+   */
   connect(options: ChannelConnectOptions = {}): ChannelSocket {
     if (this.transport !== "ws") {
       throw new Error("Channel does not enable WebSocket transport.");
@@ -282,8 +334,11 @@ interface RegistryEntry {
  * (unparameterized) or by invoking a parameterized channel with its params.
  */
 export interface ChannelHandle {
+  /** Publish a message from server-side code through the Tako runtime. */
   publish: Channel["publish"];
+  /** Subscribe to this channel over SSE. */
   subscribe: Channel["subscribe"];
+  /** Open a WebSocket connection when the channel has handlers. */
   connect?: Channel["connect"];
 }
 
@@ -331,13 +386,25 @@ function propToChannelName(prop: string): string {
     .toLowerCase();
 }
 
+/**
+ * In-process registry of discovered channel definitions.
+ *
+ * The Tako runtime uses this for channel discovery, auth callbacks, and
+ * WebSocket message dispatch.
+ */
 export class ChannelRegistry {
   private entries: RegistryEntry[] = [];
 
+  /** All registered channel definitions in discovery order. */
   get all(): ReadonlyArray<RegistryEntry> {
     return this.entries;
   }
 
+  /**
+   * Register one channel definition by its declared channel name.
+   *
+   * @throws {Error} If the name is duplicated or mismatches the definition.
+   */
   register(
     name: string,
     input: ChannelDefinition | { readonly definition: ChannelDefinition },
@@ -357,6 +424,7 @@ export class ChannelRegistry {
     this.entries.push({ name, definition });
   }
 
+  /** Remove all registered channel definitions. */
   clear(): void {
     this.entries = [];
   }
@@ -366,6 +434,11 @@ export class ChannelRegistry {
     return this.entries.find((e) => e.name === name);
   }
 
+  /**
+   * Resolve a channel name to its definition and validated params.
+   *
+   * v0 channels are currently matched by exact declared name.
+   */
   resolve(
     channel: string,
   ): { definition: ChannelDefinition; params: Record<string, unknown> } | null {
@@ -374,6 +447,10 @@ export class ChannelRegistry {
     return { definition: entry.definition, params: {} };
   }
 
+  /**
+   * Run the channel auth callback and return the lifecycle config the server
+   * should apply to the live connection.
+   */
   async authorize(input: ChannelAuthorizeInput): Promise<ChannelAuthorizeResponse> {
     const matched = this.resolve(input.channel);
     if (!matched) return { ok: false };

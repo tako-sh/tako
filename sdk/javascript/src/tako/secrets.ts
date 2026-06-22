@@ -21,9 +21,13 @@
  * access via `secrets.KEY` still works through the `get` trap.
  */
 
+/** Bootstrap payload injected into app and worker processes by Tako. */
 export interface BootstrapEnvelope {
+  /** Internal request token; null outside a managed Tako process. */
   token: string | null;
+  /** Secret values keyed by configured secret name. */
   secrets: Record<string, string>;
+  /** Storage binding metadata keyed by binding name. */
   storages?: Record<string, unknown> | undefined;
 }
 

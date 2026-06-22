@@ -5,13 +5,22 @@ import { resolveAppRootDir } from "../tako/app-root";
 
 const CHANNELS_DIRNAME = "channels";
 
+/** Options for bootstrapping channel discovery. */
 export interface ChannelBootstrapOptions {
+  /** App directory that contains the configured app root. */
   appDir: string;
+  /**
+   * JavaScript app root relative to `appDir`.
+   * @defaultValue "src"
+   */
   appRoot?: string;
 }
 
+/** Result returned by {@link bootstrapChannels}. */
 export interface ChannelBootstrapResult {
+  /** Registry populated with discovered channel definitions. */
   registry: ChannelRegistry;
+  /** Number of channel modules discovered. */
   channelCount: number;
 }
 

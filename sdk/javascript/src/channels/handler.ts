@@ -1,22 +1,35 @@
 import type { ChannelRegistry } from "../channels";
 
+/** Wire frame received from a WebSocket channel client. */
 export interface WsFrame {
+  /** Application-defined message kind. */
   type: string;
+  /** Message payload. */
   data: unknown;
 }
 
+/** Input used to dispatch one client WebSocket message. */
 export interface DispatchInput {
+  /** Exact channel name. */
   channel: string;
+  /** Bound channel params. */
   params?: Record<string, unknown>;
+  /** Parsed client frame. */
   frame: WsFrame;
+  /** Authenticated subject, when available. */
   subject?: string;
 }
 
+/** Dispatch outcome consumed by the channel server. */
 export type DispatchResult =
   | { action: "fanout"; data: unknown }
   | { action: "drop"; error?: string }
   | { action: "reject"; reason: string };
 
+/**
+ * Run the matching WebSocket channel message handler and report whether the
+ * server should fan out, drop, or reject the frame.
+ */
 export async function dispatchWsMessage(
   registry: ChannelRegistry,
   input: DispatchInput,

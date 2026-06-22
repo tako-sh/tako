@@ -26,18 +26,31 @@ import type { RunId, StepState } from "./types";
 
 const INLINE_SLEEP_THRESHOLD_MS = 30_000;
 
+/** Options for `ctx.run(name, fn, options)`. */
 export interface StepRunOptions {
   /**
    * In-step retry attempts before propagating.
    * @defaultValue 0
    */
   retries?: number;
-  /** Backoff between in-step retries. `base` defaults to 1 000 ms; `max` to 30 000 ms. */
-  backoff?: { base?: number; max?: number };
+  /** Backoff between in-step retries. */
+  backoff?: {
+    /**
+     * Initial backoff delay in ms.
+     * @defaultValue 1_000
+     */
+    base?: number;
+    /**
+     * Maximum backoff delay in ms.
+     * @defaultValue 30_000
+     */
+    max?: number;
+  };
   /** When set to `false`, any throw inside fn fails the run immediately (skips in-step retries). */
   retry?: false;
 }
 
+/** Options for `ctx.waitFor(name, options)`. */
 export interface StepWaitOptions {
   /**
    * Timeout in ms. After this elapses without a matching signal, the step
@@ -57,11 +70,17 @@ interface StepAPI {
   waitFor<T = unknown>(name: string, opts?: StepWaitOptions): Promise<T | null>;
 }
 
+/** Context passed to one durable workflow step. */
 export interface WorkflowStepContext {
+  /** Unique id for the current workflow run. */
   readonly runId: RunId;
+  /** Name of the current workflow. */
   readonly workflowName: string;
+  /** Name of the current durable step. */
   readonly stepName: string;
+  /** Current run attempt, starting at 1. */
   readonly attempt: number;
+  /** Logger scoped to this step. */
   readonly logger: Logger;
 }
 
@@ -99,6 +118,11 @@ export function isControlSignal(err: unknown): boolean {
   );
 }
 
+/**
+ * Create the durable step API for one claimed workflow run.
+ *
+ * @internal
+ */
 export function createStepAPI(
   client: WorkflowsClient,
   runId: RunId,

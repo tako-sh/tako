@@ -16,6 +16,12 @@ import { setWorkflowRuntime } from "../workflows/define";
 import { workflowsEngine } from "../workflows/engine";
 import { assertInternalSocketEnvConsistency, installChannelSocketPublisherFromEnv } from "./socket";
 
+/**
+ * Install server-side runtime hooks for channels and workflows.
+ *
+ * @internal Called by framework adapters and entrypoints before user code
+ * invokes runtime helpers.
+ */
 export function initServerRuntime(): void {
   assertInternalSocketEnvConsistency();
   installChannelSocketPublisherFromEnv();

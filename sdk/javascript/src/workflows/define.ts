@@ -3,12 +3,18 @@ import type { EnqueueOptions } from "./engine";
 import type { RunId, WorkflowOpts, WorkflowRuntimeOpts } from "./types";
 import type { WorkflowHandler } from "./worker";
 
+/** Internal marker attached to workflow definitions. */
 export const WORKFLOW_SYMBOL = Symbol("workflow");
 
+/** Runtime metadata attached to a workflow export. */
 export interface WorkflowDefinition<P = unknown> {
+  /** Internal marker for workflow definitions. */
   readonly type: typeof WORKFLOW_SYMBOL;
+  /** Declared workflow name. */
   readonly name: string;
+  /** Function that executes one workflow run. */
   readonly handler: WorkflowHandler<P>;
+  /** Runtime workflow options without the handler. */
   readonly opts: WorkflowRuntimeOpts;
 }
 
@@ -17,6 +23,7 @@ export interface WorkflowDefinition<P = unknown> {
  * schedules a run; `.definition` holds the discovery metadata.
  */
 export interface WorkflowExport<P = unknown> {
+  /** Discovery metadata consumed by the Tako runtime. */
   readonly definition: WorkflowDefinition<P>;
   /** Schedule a run of this workflow with the declared payload type. */
   enqueue(payload: P, options?: EnqueueOptions): Promise<RunId>;
@@ -29,7 +36,9 @@ export interface WorkflowExport<P = unknown> {
  * from browser code (same failure shape as a missing Tako server).
  */
 export interface WorkflowRuntime {
+  /** Enqueue a workflow run. */
   enqueue(name: string, payload: unknown, options?: EnqueueOptions): Promise<RunId>;
+  /** Wake workflow runs parked on an event. */
   signal(event: string, payload?: unknown): Promise<number>;
 }
 
@@ -130,6 +139,7 @@ export function isWorkflowExport(value: unknown): value is WorkflowExport {
   );
 }
 
+/** Narrow `value` to a `WorkflowDefinition` produced by `defineWorkflow`. */
 export function isWorkflowDefinition(value: unknown): value is WorkflowDefinition {
   return (
     typeof value === "object" &&

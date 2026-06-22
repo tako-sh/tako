@@ -6,34 +6,66 @@ const ALLOWED_WIDTHS = new Set<number>(ALLOWED_WIDTH_VALUES);
 const ALLOWED_FORMATS = new Set(["webp", "avif"]);
 const ALLOWED_LAYOUTS = new Set(["constrained", "full-width", "fixed"]);
 
+/** Options for {@link imageUrl}. */
 export interface ImageUrlOptions {
-  /** Output width. Must match one of the app's configured optimizer widths. */
+  /**
+   * Output width. Must match one of the app's configured optimizer widths.
+   * @defaultValue 1200
+   */
   width?: number;
-  /** Output quality, 1-100. Omitted when it matches Tako's default quality. */
+  /**
+   * Output quality, 1-100. Omitted from the URL when it matches Tako's default.
+   * @defaultValue 75
+   */
   quality?: number;
-  /** Output format override. Omit to use the optimizer's configured default. */
+  /**
+   * Output format override. Omit to use the optimizer's configured default.
+   * @defaultValue optimizer default
+   */
   format?: "avif" | "webp";
 }
 
+/** Responsive image layout preset for {@link imageSrcSet}. */
 export type ImageSrcSetLayout = "constrained" | "full-width" | "fixed";
 
+/** Options for {@link imageSrcSet}. */
 export interface ImageSrcSetOptions extends Omit<ImageUrlOptions, "width"> {
   /** Rendered image width, and fallback `src` width. */
   width: number;
-  /** Responsive layout preset. Defaults to `constrained`, matching Astro's common responsive image mode. */
+  /**
+   * Responsive layout preset.
+   * @defaultValue "constrained"
+   */
   layout?: ImageSrcSetLayout;
-  /** Explicit generated widths. The fallback `width` is included automatically when omitted. */
+  /**
+   * Explicit generated widths. The fallback `width` is included automatically.
+   * @defaultValue all configured widths up to the layout maximum
+   */
   widths?: number[];
-  /** Raw HTML sizes value. Omit to let Tako derive it from `layout` and `width`. */
+  /**
+   * Raw HTML sizes value. Omit to let Tako derive it from `layout` and `width`.
+   * @defaultValue derived from layout and width
+   */
   sizes?: string;
 }
 
+/** Generated responsive image attributes. */
 export interface ImageSrcSet {
+  /** Fallback image URL. */
   src: string;
+  /** Comma-separated `srcset` value. */
   srcSet: string;
+  /** HTML `sizes` value paired with the generated `srcSet`. */
   sizes: string;
 }
 
+/**
+ * Create a public Tako image optimizer URL.
+ *
+ * @param source - Local public path or allowed remote HTTP(S) URL.
+ * @param options - Width, quality, and format options.
+ * @defaultValue options = {}
+ */
 export function imageUrl(source: string, options: ImageUrlOptions = {}): string {
   validatePublicSource(source);
 
@@ -54,6 +86,12 @@ export function imageUrl(source: string, options: ImageUrlOptions = {}): string 
   return `${PUBLIC_IMAGE_BASE_PATH}?${params.toString()}`;
 }
 
+/**
+ * Create responsive image attributes for a public image source.
+ *
+ * @param source - Local public path or allowed remote HTTP(S) URL.
+ * @param options - Responsive sizing and optimizer options.
+ */
 export function imageSrcSet(source: string, options: ImageSrcSetOptions): ImageSrcSet {
   const width = validateWidth(options.width);
   const layout = validateLayout(options.layout ?? "constrained");

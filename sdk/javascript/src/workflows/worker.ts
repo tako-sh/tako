@@ -86,29 +86,58 @@ export interface WorkflowContext {
 interface WorkflowRetryConfig {
   /** Run-level retry budget (default 3). */
   maxAttempts?: number;
-  /** Run-level backoff between failed attempts. `base` defaults to 1 000 ms; `max` to 3 600 000 ms. */
-  backoff?: { base?: number; max?: number };
+  /** Run-level backoff between failed attempts. */
+  backoff?: {
+    /**
+     * Initial backoff delay in ms.
+     * @defaultValue 1_000
+     */
+    base?: number;
+    /**
+     * Maximum backoff delay in ms.
+     * @defaultValue 3_600_000
+     */
+    max?: number;
+  };
 }
 
+/** Options for constructing a workflow worker. */
 export interface WorkerOptions {
+  /** RPC client used for queue operations. */
   client: WorkflowsClient;
+  /** Registered workflow handlers by workflow name. */
   registry: Map<string, RegisteredWorkflow>;
+  /** Stable worker id used for leases. */
   workerId: string;
+  /** @defaultValue 60_000 */
   leaseMs?: number;
+  /** @defaultValue leaseMs / 3 */
   heartbeatIntervalMs?: number;
+  /** @defaultValue 1_000 */
   pollIntervalMs?: number;
+  /** @defaultValue 1_000 */
   baseBackoffMs?: number;
+  /** @defaultValue 3_600_000 */
   maxBackoffMs?: number;
-  /** Scale-to-zero: exit poll loop after this many ms with no claim. */
+  /**
+   * Scale-to-zero: exit poll loop after this many ms with no claim.
+   * @defaultValue 0
+   */
   idleTimeoutMs?: number;
-  /** Max concurrent in-flight runs (default 500). */
+  /**
+   * Max concurrent in-flight runs.
+   * @defaultValue 500
+   */
   concurrency?: number;
   /** Base logger. Per-run children are tagged `worker:<workflowName>`. */
   logger?: Logger;
 }
 
+/** Workflow handler registered with the worker runtime. */
 export interface RegisteredWorkflow {
+  /** Function that executes one workflow run. */
   handler: WorkflowHandler;
+  /** Optional run-level retry configuration. */
   retry?: WorkflowRetryConfig;
 }
 
@@ -121,6 +150,12 @@ const DEFAULTS = {
   concurrency: 500,
 } as const;
 
+/**
+ * Workflow worker loop.
+ *
+ * Claims runs from the workflow RPC client, executes handlers with durable
+ * step APIs, heartbeats leases, and finalizes run state.
+ */
 export class Worker {
   private readonly client: WorkflowsClient;
   private readonly registry: Map<string, RegisteredWorkflow>;
@@ -155,10 +190,12 @@ export class Worker {
     this.lastClaimAt = Date.now();
   }
 
+  /** True when this worker exited because `idleTimeoutMs` elapsed. */
   get idled(): boolean {
     return this.idledOut;
   }
 
+  /** Claim and process one run if available. */
   async processOnce(): Promise<boolean> {
     if (this.draining) return false;
     const names = Array.from(this.registry.keys());
@@ -196,11 +233,13 @@ export class Worker {
     return true;
   }
 
+  /** Start the polling loop. */
   start(): void {
     if (this.loopPromise) return;
     this.loopPromise = this.runLoop();
   }
 
+  /** Stop claiming new runs and wait for active runs to finish. */
   async drain(): Promise<void> {
     this.draining = true;
     if (this.loopPromise) {
@@ -210,6 +249,7 @@ export class Worker {
     await Promise.allSettled(Array.from(this.inFlight));
   }
 
+  /** Number of currently running workflow handlers. */
   get runningCount(): number {
     return this.inFlight.size;
   }

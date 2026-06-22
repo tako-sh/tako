@@ -35,10 +35,23 @@ function getCurrent(): ChannelsConfig {
   return current;
 }
 
+/**
+ * Override browser/runtime dependencies used by channel clients.
+ *
+ * Use this outside a normal browser environment, or to provide an auth token
+ * resolver for header-auth channels.
+ *
+ * @param input - Partial channel client configuration.
+ * @defaultValue input.fetch = globalThis.fetch
+ * @defaultValue input.websocket = globalThis.WebSocket
+ */
 export function configureChannels(
   input: Partial<{
+    /** Token used for channel auth. Null/empty means no auth envelope. */
     token: TokenResolver;
+    /** Fetch implementation used by SSE subscriptions and HTTP calls. */
     fetch: typeof fetch;
+    /** WebSocket constructor used by WebSocket channel connections. */
     websocket: typeof WebSocket;
   }>,
 ): void {
@@ -48,14 +61,28 @@ export function configureChannels(
   };
 }
 
+/**
+ * Reset channel configuration to runtime globals.
+ *
+ * @internal Used by tests.
+ */
 export function resetChannelsConfig(): void {
   current = null;
 }
 
+/**
+ * Read the effective channel client configuration.
+ *
+ * @internal Used by channel internals.
+ */
 export function getChannelsConfig(): {
+  /** Fetch implementation for channel HTTP/SSE work. */
   fetch: typeof fetch;
+  /** WebSocket constructor for live WebSocket channels. */
   websocket: typeof WebSocket;
+  /** Resolve a required auth token or throw if none is configured. */
   resolveToken(): Promise<string>;
+  /** Resolve an optional auth token. */
   resolveOptionalToken(): Promise<string | null>;
 } {
   const config = getCurrent();

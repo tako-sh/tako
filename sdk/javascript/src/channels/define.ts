@@ -23,6 +23,7 @@ import type {
   ChannelSubscription,
 } from "../types";
 
+/** Options passed to {@link defineChannel}. */
 export interface ChannelConfig<
   ParamsSchema extends TSchema | undefined,
   Params,
@@ -38,6 +39,7 @@ export interface ChannelConfig<
    * Authorization policy for subscribe, publish, and connect operations.
    *
    * Omit or set to `false` for a public channel.
+   * @defaultValue false
    */
   auth?: false | ChannelAuthConfig<Params>;
   /**
@@ -97,7 +99,9 @@ export type ChannelHandle<
   Messages,
   Transport extends ChannelLiveTransport = ChannelLiveTransport,
 > = {
+  /** Type-only params marker used by generated declarations. */
   readonly __params?: Params;
+  /** Type-only message-map marker used by generated declarations. */
   readonly __messages?: Messages;
   /** Channel name plus encoded params, useful for logging and diagnostics. */
   readonly name: string;
@@ -116,7 +120,10 @@ export type ChannelHandle<
    * Open a WebSocket connection. Present only when the channel has handlers.
    */
 } & (Transport extends "ws"
-  ? { connect(options?: ChannelConnectOptions): ChannelSocket }
+  ? {
+      /** Open a WebSocket connection. */
+      connect(options?: ChannelConnectOptions): ChannelSocket;
+    }
   : { readonly connect?: never });
 
 /**
@@ -259,20 +266,24 @@ export function defineChannel<ParamsSchema extends TSchema>(
     handler: ConfigChannelHandlerMap<Static<ParamsSchema>>;
   },
 ): ChannelExport<Static<ParamsSchema>, Record<string, unknown>, "ws">;
+/** Define a parameterized SSE channel. */
 export function defineChannel<ParamsSchema extends TSchema>(
   name: string,
   config: ChannelConfigWithParams<ParamsSchema> & { handler?: undefined },
 ): ChannelExport<Static<ParamsSchema>, Record<string, unknown>, "sse">;
+/** Define an unparameterized WebSocket channel. */
 export function defineChannel(
   name: string,
   config: ChannelConfigWithoutParams & {
     handler: ConfigChannelHandlerMap<Record<string, never>>;
   },
 ): ChannelExport<Record<string, never>, Record<string, unknown>, "ws">;
+/** Define an unparameterized SSE channel. */
 export function defineChannel(
   name: string,
   config?: ChannelConfigWithoutParams & { handler?: undefined },
 ): ChannelExport<Record<string, never>, Record<string, unknown>, "sse">;
+/** Implementation signature for {@link defineChannel}. */
 export function defineChannel(name: string, maybeConfig?: unknown): unknown {
   const config = { ...(maybeConfig as object | undefined), name } as AnyChannelConfig;
   const schema = config.paramsSchema?.(Type) ?? Type.Object({});

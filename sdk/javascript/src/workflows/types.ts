@@ -32,7 +32,10 @@ export interface RunSpec {
    * @defaultValue now
    */
   runAt?: Date;
-  /** Number of retries after the first attempt. */
+  /**
+   * Number of retries after the first attempt.
+   * @defaultValue 2
+   */
   retries?: number;
   /**
    * Uniqueness key. If a run with this key already exists in a
@@ -89,8 +92,19 @@ export interface WorkflowOpts<P = unknown> {
    * @defaultValue 2
    */
   retries?: number;
-  /** Run-level backoff between failed attempts. `base` defaults to 1 000 ms; `max` to 3 600 000 ms. */
-  backoff?: { base?: number; max?: number };
+  /** Run-level backoff between failed attempts. */
+  backoff?: {
+    /**
+     * Initial backoff delay in ms.
+     * @defaultValue 1_000
+     */
+    base?: number;
+    /**
+     * Maximum backoff delay in ms.
+     * @defaultValue 3_600_000
+     */
+    max?: number;
+  };
   /**
    * Worker concurrency per instance.
    * @defaultValue 10
@@ -116,4 +130,5 @@ export interface WorkflowOpts<P = unknown> {
   local?: boolean;
 }
 
+/** Runtime-only workflow options stored after `handler` is removed. */
 export type WorkflowRuntimeOpts = Omit<WorkflowOpts, "handler">;

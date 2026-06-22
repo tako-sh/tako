@@ -17,8 +17,16 @@ export type TakoErrorCode =
  * original error is preserved on `.cause`.
  */
 export class TakoError extends Error {
+  /** Stable machine-readable error code. */
   readonly code: TakoErrorCode;
 
+  /**
+   * Create a Tako SDK error.
+   *
+   * @param code - Stable machine-readable error code.
+   * @param message - User-safe error message.
+   * @param options - Optional underlying cause.
+   */
   constructor(code: TakoErrorCode, message: string, options?: { cause?: unknown }) {
     super(message, options);
     this.name = "TakoError";

@@ -80,6 +80,7 @@ function appendCapped<T>(buffer: ChannelMessage<T>[], msg: ChannelMessage<T>): C
   return [...buffer.slice(buffer.length - MAX_MESSAGES + 1), msg];
 }
 
+/** Live React state for one channel subscription or WebSocket connection. */
 export interface ChannelConnection<T = unknown> {
   /** All messages received since mount or the last `clear()`, capped at 500. */
   readonly messages: ChannelMessage<T>[];
@@ -130,14 +131,17 @@ export type UseChannelOptions<T = unknown> =
  * @param options - Transport selection, an `onMessage` handler, and transport-specific options.
  * @returns A {@link ChannelConnection} reflecting current state.
  */
+/** Subscribe to a channel over SSE. */
 export function useChannel<T = unknown>(
   name: string,
   options?: BaseHookOptions<T> & { transport?: "sse" } & ChannelSubscribeOptions,
 ): ChannelConnection<T>;
+/** Connect to a channel over WebSocket. */
 export function useChannel<T = unknown>(
   name: string,
   options: BaseHookOptions<T> & { transport: "ws" } & ChannelConnectOptions,
 ): ChannelConnection<T> & { send(data: unknown): void };
+/** Implementation signature for {@link useChannel}. */
 export function useChannel<T = unknown>(
   name: string,
   options: UseChannelOptions<T> = {},

@@ -73,13 +73,36 @@ async function deleteCachedValue(key: string): Promise<void> {
   db.prepare("DELETE FROM cache_entries WHERE key = ?").run(key);
 }
 
+/**
+ * Server-side JSON cache backed by Tako-managed SQLite storage.
+ *
+ * Available only inside a Tako-managed runtime with `TAKO_DATA_DIR` set.
+ */
 export const cache = Object.freeze({
+  /**
+   * Read a cache entry.
+   *
+   * @param key - Cache key.
+   * @returns The stored value, or `undefined` when missing or expired.
+   */
   get<T>(key: string): Promise<T | undefined> {
     return getCachedValue<T>(key);
   },
+  /**
+   * Store a JSON-serializable cache entry.
+   *
+   * @param key - Cache key.
+   * @param value - JSON-serializable value.
+   * @param options - Cache options.
+   */
   put<T>(key: string, value: T, options: { ttl: number }): Promise<void> {
     return putCachedValue(key, value, options);
   },
+  /**
+   * Delete one cache entry.
+   *
+   * @param key - Cache key.
+   */
   delete(key: string): Promise<void> {
     return deleteCachedValue(key);
   },

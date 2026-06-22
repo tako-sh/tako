@@ -13,6 +13,16 @@ const DEFAULT_STARTUP_TIMEOUT_MS = 30_000;
 const managedServers = new Map<string, ManagedNextjsServer>();
 let cleanupHandlersRegistered = false;
 
+/**
+ * Create a fetch handler that starts and proxies to a Next.js standalone server.
+ *
+ * The returned handler implements Tako's fetch-handler shape and exposes a
+ * `ready()` hook so Tako can wait for Next before routing traffic.
+ *
+ * @param serverEntrypoint - Path or URL to the Next standalone `server.js`.
+ * @param options - Startup and proxy options.
+ * @defaultValue options = {}
+ */
 export function createNextjsFetchHandler(
   serverEntrypoint: string | URL,
   options: NextjsFetchHandlerOptions = {},
@@ -65,6 +75,11 @@ export function createNextjsFetchHandler(
   return handler;
 }
 
+/**
+ * Stop every Next.js child process managed by this module.
+ *
+ * @internal Used by tests and process shutdown hooks.
+ */
 export async function shutdownManagedNextjsServers(): Promise<void> {
   const shutdowns = [...managedServers.entries()].map(async ([serverPath, managed]) => {
     managed.ready = null;
