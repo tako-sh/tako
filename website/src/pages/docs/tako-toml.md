@@ -165,7 +165,7 @@ endpoint = "https://example.r2.cloudflarestorage.com"
 region = "auto"
 ```
 
-Backup storage must be private S3-compatible storage. `public_base_url` and local storage are rejected for backups. Backup resources are not exposed to `tako.storages` unless they are also listed in `[envs.<env>].storages`.
+Backup storage must be private S3-compatible storage. `public_base_url` and local storage are rejected for backups. Backup resources are not exposed to `tako.storages` unless they are also listed in `[envs.<env>].storages`. Backup archives preserve symlinks as symlinks.
 
 ## SSL Credentials
 

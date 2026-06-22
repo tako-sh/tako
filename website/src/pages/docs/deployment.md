@@ -161,7 +161,7 @@ Set backup-only credentials:
 tako storages credentials private_backups --env production
 ```
 
-Backups are enabled in `tako.toml` with `backup = { storage = "resource" }`. Deploy sends backup storage separately from app storage, and it is not exposed through SDK storage bindings unless also listed in `[envs.<env>].storages`.
+Backups are enabled in `tako.toml` with `backup = { storage = "resource" }`. Deploy sends backup storage separately from app storage, and it is not exposed through SDK storage bindings unless also listed in `[envs.<env>].storages`. Backup archives preserve symlinks as symlinks.
 
 ## TLS
 

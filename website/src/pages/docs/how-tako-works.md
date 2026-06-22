@@ -89,7 +89,7 @@ Each deployed app has durable data under the server data directory:
 └── tako/  # Tako-owned workflow/channel/cache state
 ```
 
-Backups are opt-in with `[envs.<env>].backup`. Backup storage must be a private S3-compatible storage resource. Archives are compressed, encrypted with environment-managed backup keys, uploaded under Tako's reserved backup prefix, and indexed remotely. Deploy creates a backup after successful finalize when backups are enabled; the server also runs due backups about every 24 hours.
+Backups are opt-in with `[envs.<env>].backup`. Backup storage must be a private S3-compatible storage resource. Archives preserve symlinks as symlinks, are compressed and encrypted with environment-managed backup keys, uploaded under Tako's reserved backup prefix, and indexed remotely. Deploy creates a backup after successful finalize when backups are enabled; the server also runs due backups about every 24 hours.
 
 Workflow state is backed up. Channel replay and SDK cache storage are not backed up because they are transient and recomputable.
 

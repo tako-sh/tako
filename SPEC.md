@@ -408,7 +408,7 @@ region = "auto"
 
 Backup storage reuses declared `[storages.<resource>]` metadata and `.tako/secrets.json` S3 credentials. It must be S3-compatible and private: `provider = "local"` and `public_base_url` are rejected. A backup-only resource can share a bucket with app storage because Tako writes backups under `_tako/backups/{app}/{env}/{server}/`. The `{server}` segment comes from the deployed server identity/name so multiple servers in one environment do not overwrite each other's archives.
 
-Backup archives are encrypted before upload with AES-256-GCM. When backups are enabled, `tako deploy` and `tako backups now` create `backup_keys` for the environment if none exist. The keys are encrypted in `.tako/secrets.json` with the existing environment key; users still export/import only the environment key. The last `backup_keys` entry is used for new backups. Each backup manifest records its `backup_key_id`, so older backups can still be restored while their key remains in `.tako/secrets.json` and is synced to the server.
+Backup archives preserve symlinks as symlinks, then encrypt the archive before upload with AES-256-GCM. When backups are enabled, `tako deploy` and `tako backups now` create `backup_keys` for the environment if none exist. The keys are encrypted in `.tako/secrets.json` with the existing environment key; users still export/import only the environment key. The last `backup_keys` entry is used for new backups. Each backup manifest records its `backup_key_id`, so older backups can still be restored while their key remains in `.tako/secrets.json` and is synced to the server.
 
 When enabled, Tako backs up durable per-app state under `{data_dir}/apps/{app}/{env}/data/`:
 

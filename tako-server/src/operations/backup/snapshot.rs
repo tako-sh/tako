@@ -139,6 +139,7 @@ pub(super) fn create_backup_archive(
     let encoder = zstd::stream::write::Encoder::new(file, 3)
         .map_err(|e| format!("initialize zstd encoder: {e}"))?;
     let mut archive = tar::Builder::new(encoder);
+    archive.follow_symlinks(false);
     for name in ["app", "tako"] {
         let path = snapshot_dir.join(name);
         if path.exists() {
@@ -300,6 +301,31 @@ mod tests {
         assert!(!dest.join("tako/cache.sqlite-wal").exists());
         assert!(!dest.join("tako/cache.sqlite-shm").exists());
         assert!(dest.join("tako/workflows.sqlite").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn backup_archive_preserves_symlinks_without_copying_targets() {
+        let temp = TempDir::new().unwrap();
+        let snapshot = temp.path().join("snapshot");
+        let app = snapshot.join("app");
+        let external = temp.path().join("service-only.txt");
+        let archive = temp.path().join("data.tar.zst");
+        let extracted = temp.path().join("extracted");
+
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::write(&external, b"service-only").unwrap();
+        std::os::unix::fs::symlink(&external, app.join("leak")).unwrap();
+
+        create_backup_archive(&snapshot, &archive).unwrap();
+        crate::extract_zstd_archive(&archive, &extracted).unwrap();
+
+        let metadata = std::fs::symlink_metadata(extracted.join("app/leak")).unwrap();
+        assert!(metadata.file_type().is_symlink());
+        assert_eq!(
+            std::fs::read_link(extracted.join("app/leak")).unwrap(),
+            external
+        );
     }
 
     #[test]
