@@ -58,6 +58,9 @@ pub(super) fn transform_cache_key(
 
 pub(super) async fn read(root: &Path, key: &str, format: OutputFormat) -> Option<CachedTransform> {
     let path = cache_path(root, key)?;
+    if !cache_file_is_regular(root, &path).await {
+        return None;
+    }
     let bytes = tokio::fs::read(path).await.ok()?;
     let content_type = cached_content_type(&bytes, format);
     Some(CachedTransform {
@@ -73,7 +76,13 @@ pub(super) async fn write(root: &Path, key: &str, bytes: &[u8]) {
     let Some(parent) = path.parent() else {
         return;
     };
+    if !cache_dir_is_real(root).await {
+        return;
+    }
     if tokio::fs::create_dir_all(parent).await.is_err() {
+        return;
+    }
+    if !cache_dir_is_real(root).await || !cache_dir_is_real(parent).await {
         return;
     }
     let tmp_id = TMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -207,17 +216,20 @@ fn nearest_existing_path(path: &Path) -> Option<&Path> {
 
 async fn collect_cache_files(root: &Path) -> Vec<CacheFile> {
     let mut files = Vec::new();
+    if !cache_dir_is_real(root).await {
+        return files;
+    }
     let Ok(mut entries) = tokio::fs::read_dir(root).await else {
         return files;
     };
 
     while let Ok(Some(entry)) = entries.next_entry().await {
         let path = entry.path();
-        let Ok(metadata) = entry.metadata().await else {
+        let Ok(file_type) = entry.file_type().await else {
             continue;
         };
 
-        if !metadata.is_dir() {
+        if !file_type.is_dir() || file_type.is_symlink() {
             continue;
         }
 
@@ -226,10 +238,19 @@ async fn collect_cache_files(root: &Path) -> Vec<CacheFile> {
         };
         while let Ok(Some(child)) = children.next_entry().await {
             let child_path = child.path();
-            let Ok(child_metadata) = child.metadata().await else {
+            let Ok(file_type) = child.file_type().await else {
                 continue;
             };
-            if child_metadata.is_file() && is_cache_file_path(root, &child_path) {
+            if !file_type.is_file()
+                || file_type.is_symlink()
+                || !is_cache_file_path(root, &child_path)
+            {
+                continue;
+            }
+            let Ok(child_metadata) = tokio::fs::symlink_metadata(&child_path).await else {
+                continue;
+            };
+            if child_metadata.is_file() {
                 files.push(cache_file(child_path, child_metadata));
             }
         }
@@ -277,18 +298,42 @@ fn is_cache_file_path(root: &Path, path: &Path) -> bool {
 }
 
 async fn remove_empty_cache_dirs(root: &Path) {
+    if !cache_dir_is_real(root).await {
+        return;
+    }
     let Ok(mut entries) = tokio::fs::read_dir(root).await else {
         return;
     };
 
     while let Ok(Some(entry)) = entries.next_entry().await {
         let path = entry.path();
-        let Ok(metadata) = entry.metadata().await else {
+        let Ok(file_type) = entry.file_type().await else {
             continue;
         };
-        if metadata.is_dir() {
+        if file_type.is_dir() && !file_type.is_symlink() {
             let _ = tokio::fs::remove_dir(path).await;
         }
+    }
+}
+
+async fn cache_file_is_regular(root: &Path, path: &Path) -> bool {
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    if !cache_dir_is_real(root).await || !cache_dir_is_real(parent).await {
+        return false;
+    }
+    let Ok(metadata) = tokio::fs::symlink_metadata(path).await else {
+        return false;
+    };
+    metadata.is_file() && !metadata.file_type().is_symlink()
+}
+
+async fn cache_dir_is_real(path: &Path) -> bool {
+    match tokio::fs::symlink_metadata(path).await {
+        Ok(metadata) => metadata.is_dir() && !metadata.file_type().is_symlink(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(_) => false,
     }
 }
 
@@ -769,5 +814,65 @@ mod tests {
 
         assert!(tmp_path.exists());
         assert_eq!(cache_total_bytes(temp.path()).await, 0);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cache_write_does_not_follow_symlinked_partition_dirs() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let external = tempfile::tempdir().expect("external tempdir");
+        let partition = temp.path().join("aa");
+        symlink(external.path(), &partition).expect("symlink cache partition");
+
+        write(temp.path(), "aa1234", b"cached-image").await;
+
+        assert!(!external.path().join("1234").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cache_read_ignores_symlinked_cache_files() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let target = temp.path().join("target");
+        tokio::fs::write(&target, b"external-image")
+            .await
+            .expect("write target");
+        let parent = temp.path().join("aa");
+        tokio::fs::create_dir(&parent)
+            .await
+            .expect("create cache partition");
+        symlink(&target, parent.join("1234")).expect("symlink cache file");
+
+        assert_eq!(read(temp.path(), "aa1234", OutputFormat::Webp).await, None);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn prune_does_not_follow_symlinked_partition_dirs() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let external = tempfile::tempdir().expect("external tempdir");
+        let external_cache_file = external.path().join("1234");
+        tokio::fs::write(&external_cache_file, b"external-cache")
+            .await
+            .expect("write external cache-shaped file");
+        symlink(external.path(), temp.path().join("aa")).expect("symlink cache partition");
+
+        prune_with_policy(
+            temp.path(),
+            TransformCachePolicy {
+                max_bytes: 0,
+                max_age: Duration::ZERO,
+            },
+        )
+        .await;
+
+        assert!(external_cache_file.exists());
+        assert!(collect_cache_files(temp.path()).await.is_empty());
     }
 }
