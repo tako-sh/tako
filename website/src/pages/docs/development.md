@@ -191,6 +191,8 @@ const url = tako.secrets.DATABASE_URL;
 
 Storage bindings from `[envs.development].storages` are delivered through `tako.storages`. In development, undeclared storage resource names default to local storage. Backup storage is not exposed to the SDK unless the same resource is also bound as app storage.
 
+Use `tako.cache` for server-side caching of JSON-serializable values. `get<T>(key)` returns `T | undefined`, `put(key, value, { ttl })` stores a value with a TTL in milliseconds, and `delete(key)` removes one key. Cache entries use Tako-managed local SQLite and are not included in app data backups.
+
 ## Channels And Workflows
 
 JS channels and workflows are discovered under `<app_root>/channels/` and `<app_root>/workflows/`. `tako dev` watches those directories and refreshes generated metadata when files change.

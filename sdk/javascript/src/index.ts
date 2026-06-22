@@ -18,6 +18,7 @@
 import { createLogger } from "./logger";
 import { loadStorages } from "./storage";
 import { loadSecrets } from "./tako/secrets";
+import { cache } from "./cache";
 
 /**
  * Project-specific secret keys. Augmented by the generated `tako.d.ts` file.
@@ -100,6 +101,7 @@ export const tako = Object.freeze({
   logger,
   secrets,
   storages,
+  cache,
 } as const);
 
 /** Type of the exported {@link tako} runtime object. */

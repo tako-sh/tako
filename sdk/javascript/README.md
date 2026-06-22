@@ -95,6 +95,24 @@ const uploadUrl = await tako.storages.uploads.createUploadUrl("avatars/u_123.png
 
 Storage URLs are private by default. S3-compatible storage uses SigV4; local storage returns signed app-local GET/PUT routes under `/_tako/storages/<binding>/<key>`. If the storage was attached with `--public-base-url`, `createImageUrl(..., { public: true, width })` returns a public optimizer URL for that object, and `createImageSrcSet(..., { public: true, layout, width })` returns public responsive image sources.
 
+## Cache
+
+Use the cache for JSON-serializable server-side values:
+
+```ts
+import { tako } from "tako.sh";
+
+const cached = await tako.cache.get<Profile>(`profile:${userId}`);
+if (!cached) {
+  const profile = await fetchProfile(userId);
+  await tako.cache.put(`profile:${userId}`, profile, { ttl: 60_000 });
+}
+
+await tako.cache.delete(`profile:${userId}`);
+```
+
+`get(key)` returns `undefined` for missing or expired keys. `put(key, value, { ttl })` stores a JSON-serializable value; `ttl` is milliseconds. `delete(key)` removes one key. Cache entries are stored in Tako-managed SQLite and are not included in app data backups.
+
 ## Channels
 
 Declare one channel per file in `<app_root>/channels/*.ts`. The default export is the channel handle:

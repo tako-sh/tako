@@ -83,7 +83,7 @@ export default function fetch(request: Request) {
 
 | Export          | Description                                                                 |
 | --------------- | --------------------------------------------------------------------------- |
-| `tako`          | Frozen runtime object with env, ports, paths, logger, secrets, and storages |
+| `tako`          | Frozen runtime object with env, ports, paths, logger, secrets, storages, and cache |
 | `tako.env`      | `ENV` value (`"development"`, `"production"`, ...)                          |
 | `tako.isDev`    | `true` when `tako.env === "development"`                                    |
 | `tako.isProd`   | `true` when `tako.env === "production"`                                     |
@@ -94,6 +94,7 @@ export default function fetch(request: Request) {
 | `tako.appDir`   | Directory the app is running from (equivalent to `process.cwd()`)           |
 | `tako.secrets`  | Typed secret bag (interface regenerated from `.tako/secrets.json`)          |
 | `tako.storages` | Typed storage bag (interface regenerated from `tako.toml`)                  |
+| `tako.cache`    | SQLite-backed server-side key/value cache                                   |
 | `tako.logger`   | Structured JSON logger (`tako.logger.info(...)`)                            |
 | `Env`           | TypeScript union of configured environment names                            |
 | `TakoSecrets`   | TypeScript interface of secret names                                        |
@@ -110,6 +111,24 @@ export default function fetch(request: Request) {
 - Is typed — the `TakoSecrets` interface augmentation in `tako.d.ts` lists every key present in `.tako/secrets.json`
 
 The generated declaration file is type-only and is not imported by app code. In the browser, use `tako.sh/client` for channels, or `tako.sh/react` for channel hooks.
+
+## Cache
+
+Server-side JavaScript can cache JSON-serializable values with explicit get/put/delete calls:
+
+```typescript
+import { tako } from "tako.sh";
+
+const profile = await tako.cache.get<Profile>(`profile:${userId}`);
+if (!profile) {
+  const fresh = await fetchProfile(userId);
+  await tako.cache.put(`profile:${userId}`, fresh, { ttl: 60_000 });
+}
+
+await tako.cache.delete(`profile:${userId}`);
+```
+
+`get(key)` returns `undefined` for missing or expired keys. `put(key, value, { ttl })` stores a JSON-serializable value; `ttl` is milliseconds. `delete(key)` removes one key. Native dev and deploy runtimes store cache entries in Tako-managed local SQLite outside app backups. Container releases do not expose `TAKO_DATA_DIR` in v0, so the cache helper is unavailable there.
 
 ## Images
 

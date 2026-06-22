@@ -7,6 +7,8 @@ use sha2::{Digest, Sha256};
 const TAKO_DATA_DIR: &str = "tako";
 const CHANNELS_DB_FILENAME: &str = "channels.sqlite";
 const CHANNELS_DB_COMPANION_FILENAMES: [&str; 2] = ["channels.sqlite-wal", "channels.sqlite-shm"];
+const CACHE_DB_FILENAME: &str = "cache.sqlite";
+const CACHE_DB_COMPANION_FILENAMES: [&str; 2] = ["cache.sqlite-wal", "cache.sqlite-shm"];
 
 pub(super) fn snapshot_data_tree(source: &Path, destination: &Path) -> Result<(), String> {
     if destination.exists() {
@@ -25,7 +27,7 @@ fn copy_snapshot_dir(root: &Path, source: &Path, destination: &Path) -> Result<(
         let entry = entry.map_err(|e| format!("read data entry: {e}"))?;
         let source_path = entry.path();
         let relative_path = source_path.strip_prefix(root).unwrap_or(&source_path);
-        if is_transient_channel_replay_file(relative_path) {
+        if is_transient_tako_sqlite_file(relative_path) {
             continue;
         }
         let dest_path = destination.join(entry.file_name());
@@ -59,14 +61,17 @@ fn copy_snapshot_dir(root: &Path, source: &Path, destination: &Path) -> Result<(
     Ok(())
 }
 
-fn is_transient_channel_replay_file(relative_path: &Path) -> bool {
+fn is_transient_tako_sqlite_file(relative_path: &Path) -> bool {
     if !matches!(relative_path.parent(), Some(parent) if parent == Path::new(TAKO_DATA_DIR)) {
         return false;
     }
     let Some(name) = relative_path.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
-    name == CHANNELS_DB_FILENAME || CHANNELS_DB_COMPANION_FILENAMES.contains(&name)
+    name == CHANNELS_DB_FILENAME
+        || CHANNELS_DB_COMPANION_FILENAMES.contains(&name)
+        || name == CACHE_DB_FILENAME
+        || CACHE_DB_COMPANION_FILENAMES.contains(&name)
 }
 
 #[cfg(unix)]
@@ -155,7 +160,7 @@ pub(super) fn restore_data_tree(extracted_dir: &Path, data_root: &Path) -> Resul
     if !extracted_dir.join("app").is_dir() || !extracted_dir.join("tako").is_dir() {
         return Err("Backup archive is missing app/ or tako/ data directories.".to_string());
     }
-    remove_transient_channel_replay_store(extracted_dir)?;
+    remove_transient_tako_sqlite_stores(extracted_dir)?;
     let parent = data_root
         .parent()
         .ok_or_else(|| format!("data root has no parent: {}", data_root.display()))?;
@@ -185,10 +190,11 @@ pub(super) fn restore_data_tree(extracted_dir: &Path, data_root: &Path) -> Resul
     }
 }
 
-fn remove_transient_channel_replay_store(data_root: &Path) -> Result<(), String> {
-    for name in [CHANNELS_DB_FILENAME]
+fn remove_transient_tako_sqlite_stores(data_root: &Path) -> Result<(), String> {
+    for name in [CHANNELS_DB_FILENAME, CACHE_DB_FILENAME]
         .into_iter()
         .chain(CHANNELS_DB_COMPANION_FILENAMES)
+        .chain(CACHE_DB_COMPANION_FILENAMES)
     {
         let path = data_root.join(TAKO_DATA_DIR).join(name);
         match std::fs::remove_file(&path) {
@@ -196,7 +202,7 @@ fn remove_transient_channel_replay_store(data_root: &Path) -> Result<(), String>
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => {
                 return Err(format!(
-                    "remove transient channel replay file {}: {error}",
+                    "remove transient Tako sqlite file {}: {error}",
                     path.display()
                 ));
             }
@@ -253,7 +259,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_excludes_transient_channel_replay_store() {
+    fn snapshot_excludes_transient_tako_sqlite_stores() {
         let temp = TempDir::new().unwrap();
         let source = temp.path().join("data");
         let tako = source.join("tako");
@@ -269,6 +275,15 @@ mod tests {
         std::fs::write(tako.join("channels.sqlite-wal"), b"wal").unwrap();
         std::fs::write(tako.join("channels.sqlite-shm"), b"shm").unwrap();
 
+        let cache_db = tako.join("cache.sqlite");
+        {
+            let conn = rusqlite::Connection::open(&cache_db).unwrap();
+            conn.execute("CREATE TABLE cache_entries (key TEXT PRIMARY KEY)", [])
+                .unwrap();
+        }
+        std::fs::write(tako.join("cache.sqlite-wal"), b"wal").unwrap();
+        std::fs::write(tako.join("cache.sqlite-shm"), b"shm").unwrap();
+
         let workflows_db = tako.join("workflows.sqlite");
         {
             let conn = rusqlite::Connection::open(&workflows_db).unwrap();
@@ -281,6 +296,9 @@ mod tests {
         assert!(!dest.join("tako/channels.sqlite").exists());
         assert!(!dest.join("tako/channels.sqlite-wal").exists());
         assert!(!dest.join("tako/channels.sqlite-shm").exists());
+        assert!(!dest.join("tako/cache.sqlite").exists());
+        assert!(!dest.join("tako/cache.sqlite-wal").exists());
+        assert!(!dest.join("tako/cache.sqlite-shm").exists());
         assert!(dest.join("tako/workflows.sqlite").exists());
     }
 
@@ -295,6 +313,9 @@ mod tests {
         std::fs::write(extracted.join("tako/channels.sqlite"), b"channels").unwrap();
         std::fs::write(extracted.join("tako/channels.sqlite-wal"), b"wal").unwrap();
         std::fs::write(extracted.join("tako/channels.sqlite-shm"), b"shm").unwrap();
+        std::fs::write(extracted.join("tako/cache.sqlite"), b"cache").unwrap();
+        std::fs::write(extracted.join("tako/cache.sqlite-wal"), b"wal").unwrap();
+        std::fs::write(extracted.join("tako/cache.sqlite-shm"), b"shm").unwrap();
         std::fs::write(extracted.join("tako/workflows.sqlite"), b"workflows").unwrap();
 
         restore_data_tree(&extracted, &data_root).unwrap();
@@ -303,6 +324,9 @@ mod tests {
         assert!(!data_root.join("tako/channels.sqlite").exists());
         assert!(!data_root.join("tako/channels.sqlite-wal").exists());
         assert!(!data_root.join("tako/channels.sqlite-shm").exists());
+        assert!(!data_root.join("tako/cache.sqlite").exists());
+        assert!(!data_root.join("tako/cache.sqlite-wal").exists());
+        assert!(!data_root.join("tako/cache.sqlite-shm").exists());
         assert!(data_root.join("tako/workflows.sqlite").exists());
     }
 
@@ -329,7 +353,7 @@ mod tests {
         let error = restore_data_tree(&extracted, &data_root).unwrap_err();
 
         assert!(
-            error.contains("remove transient channel replay file"),
+            error.contains("remove transient Tako sqlite file"),
             "{error}"
         );
         assert_eq!(

@@ -419,7 +419,7 @@ Workflow storage uses local SQLite at `{data_dir}/apps/{app}/{env}/data/tako/wor
 
 Channel replay uses local SQLite at `{data_dir}/apps/{app}/{env}/data/tako/channels.sqlite` unless the environment has credential `postgres_url`, in which case the server uses Postgres schema `tako_channels` keyed by deployed app id. Multi-server channel deploys require `postgres_url` because a publish on one server must be visible to subscribers and reconnecting clients on every server. Channel messages are inserted durably before fanout; production subscribers poll the selected replay store for new retained rows.
 
-Tako does not back up channel replay storage (`tako/channels.sqlite` and its SQLite companion files). Channel replay is a bounded reconnect buffer, not canonical app history, so restored apps start with empty channel replay storage. SQLite files are snapshotted with SQLite's online `VACUUM INTO` mechanism before archiving, and `-wal`/`-shm` companion files are not included separately. Archives are compressed as `tar.zst`, encrypted before upload, and stored with a SHA-256 manifest for the encrypted object plus a remote JSON index. Retention defaults to 30 days. The server creates a backup after a successful deploy and then runs due backups roughly every 24 hours while `tako-server` is running. Backup failures after deploy are reported in the finalize response/logs but do not roll back an otherwise successful deploy.
+Tako does not back up transient local SQLite stores under `tako/` such as channel replay (`channels.sqlite`) and SDK cache (`cache.sqlite`), including their SQLite companion files. Channel replay is a bounded reconnect buffer, not canonical app history, and cache entries are recomputable, so restored apps start with empty channel replay and cache storage. SQLite files that are included in backups are snapshotted with SQLite's online `VACUUM INTO` mechanism before archiving, and `-wal`/`-shm` companion files are not included separately. Archives are compressed as `tar.zst`, encrypted before upload, and stored with a SHA-256 manifest for the encrypted object plus a remote JSON index. Retention defaults to 30 days. The server creates a backup after a successful deploy and then runs due backups roughly every 24 hours while `tako-server` is running. Backup failures after deploy are reported in the finalize response/logs but do not roll back an otherwise successful deploy.
 
 ### SSL Provider Configuration And Credentials
 
@@ -2226,6 +2226,7 @@ const dbUrl = tako.secrets.DATABASE_URL;
 | `appDir`       | Directory the app is running from (equivalent to `process.cwd()`); also available as `tako.appDir`                     |
 | `secrets`      | Typed secret bag — redacts automatically on bulk serialize; also available as `tako.secrets`                           |
 | `storages`     | Typed storage binding bag; also available as `tako.storages`                                                           |
+| `tako.cache`   | SQLite-backed key/value cache helper                                                                                   |
 | `logger`       | Structured JSON logger (`logger.info(...)`) bound to `source: "app"`; also available as `tako.logger`                  |
 | `Env`          | TypeScript union of environment names declared in `tako.toml`, narrows `tako.env === "staging"` checks at compile time |
 | `TakoSecrets`  | TypeScript interface of secret keys declared in `.tako/secrets.json`                                                   |
@@ -2235,6 +2236,8 @@ const dbUrl = tako.secrets.DATABASE_URL;
 `tako.secrets` redacts automatically on `JSON.stringify`, `console.log`, and `toString` (returns `"[REDACTED]"`); individual key access (`tako.secrets.MY_KEY`) returns the value. The generated `TakoSecrets` augmentation is regenerated from `.tako/secrets.json` on every `tako dev`, `tako deploy`, `tako generate`, and `tako secrets` change. Generation prefers secret names from the `development` environment when present, then falls back to the union of all secret environments.
 
 `tako.storages` exposes storage bindings delivered through the bootstrap envelope. Individual storage access (`tako.storages.uploads`) returns an object with `createDownloadUrl`, `createUploadUrl`, `createImageUrl`, and `createImageSrcSet`. The generated `TakoStorages` augmentation is regenerated from `tako.toml` on `tako dev`, `tako deploy`, and `tako generate`.
+
+`tako.cache` provides a server-side key/value cache for JSON-serializable values. `tako.cache.get<T>(key)` returns `T | undefined`; missing and expired keys return `undefined`. `tako.cache.put(key, value, { ttl })` stores a value with a TTL in milliseconds. `tako.cache.delete(key)` removes one key. Native dev and deploy runtimes store cache entries in local SQLite at `{data_dir}/apps/{app}/{env}/data/tako/cache.sqlite`; cache storage is transient and is not included in app data backups. Container releases do not receive `TAKO_DATA_DIR` in v0, so the cache helper is unavailable there.
 
 Channels and workflows are not on the runtime context — they are regular ES modules you import from their files:
 

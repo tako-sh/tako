@@ -15,6 +15,9 @@ test("tako.sh exports the app runtime object", async () => {
   expect(typeof mod.tako.logger.info).toBe("function");
   expect(mod.tako.secrets.toString()).toBe("[REDACTED]");
   expect(typeof mod.tako.storages).toBe("object");
+  expect(typeof mod.tako.cache.get).toBe("function");
+  expect(typeof mod.tako.cache.put).toBe("function");
+  expect(typeof mod.tako.cache.delete).toBe("function");
 });
 
 test("tako.sh named runtime exports match the app runtime object", async () => {
