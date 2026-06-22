@@ -106,7 +106,7 @@ impl DeployTaskTreeController {
         self.fail_deploy_step(server_name, "connecting", msg.clone());
         self.rename_deploy_step(server_name, "connecting", "Preflight failed");
         self.fail_deploy_target_without_detail(server_name);
-        self.cancel_pending_deploy_children(server_name, "cancelled");
+        self.cancel_pending_deploy_children(server_name);
     }
 
     pub(super) fn mark_build_step_running(&self, target_label: &str, step: &str) {
@@ -209,8 +209,8 @@ impl DeployTaskTreeController {
         self.refresh_locked(&state);
     }
 
-    pub(super) fn cancel_pending_build_children(&self, target_label: &str, reason: &str) {
-        self.cancel_pending_children(&build_target_task_id(target_label), reason);
+    pub(super) fn cancel_pending_build_children(&self, target_label: &str) {
+        self.cancel_pending_children(&build_target_task_id(target_label));
     }
 
     pub(super) fn mark_deploy_step_running(&self, server_name: &str, step: &str) {
@@ -327,8 +327,8 @@ impl DeployTaskTreeController {
         );
     }
 
-    pub(super) fn cancel_pending_deploy_children(&self, server_name: &str, reason: &str) {
-        self.cancel_pending_children(&deploy_target_task_id(server_name), reason);
+    pub(super) fn cancel_pending_deploy_children(&self, server_name: &str) {
+        self.cancel_pending_children(&deploy_target_task_id(server_name));
     }
 
     pub(super) fn abort_incomplete(&self, _reason: &str) {
@@ -395,11 +395,11 @@ impl DeployTaskTreeController {
         });
     }
 
-    fn cancel_pending_children(&self, parent_id: &str, reason: &str) {
+    fn cancel_pending_children(&self, parent_id: &str) {
         let mut state = self.state.lock().unwrap();
         let parent = find_task_mut_in_state(&mut state, parent_id)
             .unwrap_or_else(|| panic!("missing parent task {parent_id}"));
-        cancel_pending_children(parent, reason);
+        cancel_pending_children(parent);
         self.refresh_locked(&state);
     }
 
@@ -622,13 +622,13 @@ fn find_task_mut_in_state<'a>(
     find_task_mut(&mut state.builds, id).or_else(|| find_task_mut(&mut state.deploys, id))
 }
 
-fn cancel_pending_children(parent: &mut TaskItemState, reason: &str) {
+fn cancel_pending_children(parent: &mut TaskItemState) {
     for child in &mut parent.children {
         if matches!(child.state, TaskState::Pending) {
             child.state = TaskState::Cancelled { elapsed: None };
-            child.detail = Some(reason.to_string());
+            child.detail = None;
         }
-        cancel_pending_children(child, reason);
+        cancel_pending_children(child);
     }
 }
 

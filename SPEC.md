@@ -535,7 +535,7 @@ CLI output modes:
 "<command>" }`. Command failures print `{ "ok": false, "error": { "message": "<message>" } }`
   on stdout and the human-readable error on stderr.
 - **CI + Verbose** (`--ci --verbose`): Detailed append-only transcript with no colors or timestamps.
-- On `Ctrl-C`, Tako clears any active prompt or spinner it controls, leaves one blank line, prints `Operation cancelled`, and exits with code 130.
+- On `Ctrl-C`, Tako clears any active prompt or spinner it controls, leaves one blank line, prints `Operation cancelled`, and exits with code 130. Active task-tree rows keep their current visual state; interruption does not rewrite in-progress rows as cancelled.
 
 All status/progress/log output goes to stderr. Only actual command results (URLs, machine-readable data) go to stdout.
 `tako logs --tail --json` is a streaming exception: it emits one structured log event per stdout
@@ -1204,6 +1204,7 @@ Deploy flow helpers:
   - pending pretty task rows render with a `...` suffix
   - succeeded sub tasks hide the `✔` icon (render with a blank icon slot) only when their parent task also succeeded; when the parent failed, was cancelled, or is still running, succeeded sub tasks keep their `✔` so the completed work stays visible. Failed (`✘`), cancelled (`⊘`), skipped (`⏭`), running (spinner), and pending (`○`) sub tasks always keep their icons
   - cancelled and skipped rows render fully muted (icon, label, and detail); accent color is reserved for live or successfully completed rows
+  - pending rows cancelled because another step failed omit generic cancellation detail; they remain as muted `...` rows
   - after planning completes, deploy starts the pretty `Connecting` and `Building` sections together
   - deploy does not keep startup metadata summaries inside the live tree
   - deploy renders one task per target server, with sub tasks for `Uploading`, `Preparing`, and `Starting`

@@ -11,7 +11,7 @@ use ratatui::{Terminal, TerminalOptions, Viewport};
 use crate::output;
 
 use super::render::{render_tree_to_lines, rendered_height, tree_node_has_running};
-use super::{TaskItemState, TaskState, TreeNode, TreeTextTone};
+use super::{TreeNode, TreeTextTone};
 
 const LIVE_RENDER_INTERVAL: Duration = Duration::from_millis(160);
 
@@ -275,15 +275,6 @@ pub(super) fn append_interrupt_message(tree: &mut Vec<TreeNode>, message: &str) 
         return;
     }
 
-    for node in tree.iter_mut() {
-        match node {
-            TreeNode::Task(task) | TreeNode::AccentTask(task) => {
-                cancel_running_task(task);
-            }
-            _ => {}
-        }
-    }
-
     if !tree.is_empty() && !matches!(tree.last(), Some(TreeNode::Spacer)) {
         tree.push(TreeNode::Spacer);
     }
@@ -291,15 +282,4 @@ pub(super) fn append_interrupt_message(tree: &mut Vec<TreeNode>, message: &str) 
         text: message.to_string(),
         tone: TreeTextTone::Error,
     });
-}
-
-fn cancel_running_task(task: &mut TaskItemState) {
-    for child in &mut task.children {
-        cancel_running_task(child);
-    }
-    if let TaskState::Running { started_at } = task.state {
-        task.state = TaskState::Cancelled {
-            elapsed: Some(started_at.elapsed()),
-        };
-    }
 }

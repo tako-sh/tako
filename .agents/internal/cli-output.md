@@ -230,7 +230,8 @@ Use persistent task lists as the preferred pattern for complex interactive flows
 - Avoid decorative static plan boxes when the task tree already conveys the upcoming work.
 - Verbose and CI modes must not show upcoming tasks; they stay transcript-style and only emit current work.
 - URLs shown inside summaries or task output must remain literal contiguous `https://...` strings. Do not truncate them, split them across styled segments, or replace them with labels.
-- On cancellation, leave exactly one blank line above `Operation cancelled`.
+- On user interruption (`Ctrl-C`), append exactly one blank line and `Operation cancelled`, but do not rewrite task rows. Running rows should remain visually running, pending rows should remain pending, and completed rows should stay completed; the final `Operation cancelled` line is enough context.
+- Explicit task cancellation is different from user interruption. Only use `TaskState::Cancelled` for work the command itself knows did not run or was cancelled as part of the workflow.
 
 ## Transfer Progress
 

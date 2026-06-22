@@ -150,7 +150,7 @@ pub(super) async fn build_target_artifacts(
                             error.clone(),
                         );
                         task_tree.fail_build_target(&tree_target_label, error.clone());
-                        task_tree.cancel_pending_build_children(&tree_target_label, "cancelled");
+                        task_tree.cancel_pending_build_children(&tree_target_label);
                     }
                     return Err(error);
                 }
@@ -282,7 +282,7 @@ pub(super) async fn build_target_artifacts(
                 ) {
                     task_tree.fail_build_step(&tree_target_label, "build-artifact", error.clone());
                     task_tree.fail_build_target(&tree_target_label, error.clone());
-                    task_tree.cancel_pending_build_children(&tree_target_label, "cancelled");
+                    task_tree.cancel_pending_build_children(&tree_target_label);
                     return Err(error);
                 }
                 task_tree.succeed_build_step(&tree_target_label, "build-artifact", None);

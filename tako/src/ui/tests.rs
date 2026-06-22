@@ -165,7 +165,7 @@ fn append_interrupt_message_adds_blank_line_and_error_text() {
 }
 
 #[test]
-fn append_interrupt_message_cancels_running_tasks() {
+fn append_interrupt_message_leaves_running_tasks_unchanged() {
     let mut tree = vec![TreeNode::Task(TaskItemState {
         id: "deploy".into(),
         label: "Deploying".into(),
@@ -205,7 +205,7 @@ fn append_interrupt_message_cancels_running_tasks() {
     let lines = render_plain_lines(&tree);
     assert!(lines[0].starts_with("Deploying…"));
     assert!(lines[1].starts_with("  ✔ Connected"));
-    assert!(lines[2].starts_with("  ○ Starting…"));
+    assert!(lines[2].starts_with("  ◧ Starting…"));
     assert_eq!(lines[3], "");
     assert_eq!(lines[4], "Operation cancelled");
 }

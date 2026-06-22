@@ -330,7 +330,7 @@ fn deploy_task_tree_shows_preflight_errors_under_deploy_group() {
 }
 
 #[test]
-fn deploy_task_tree_preflight_failure_aborts_remaining_deploy_children() {
+fn deploy_task_tree_preflight_failure_omits_generic_cancelled_detail() {
     let controller =
         DeployTaskTreeController::new(&["prod-a".to_string()], &[sample_shared_build_group()]);
 
@@ -340,21 +340,9 @@ fn deploy_task_tree_preflight_failure_aborts_remaining_deploy_children() {
     let lines = ui::render_plain_lines(&build_deploy_tree(&snapshot));
 
     assert!(lines.iter().any(|line| line == "  ■ Preflight failed"));
-    assert!(
-        lines
-            .iter()
-            .any(|line| line.contains("□ Uploading") && line.contains("cancelled"))
-    );
-    assert!(
-        lines
-            .iter()
-            .any(|line| line.contains("□ Preparing") && line.contains("cancelled"))
-    );
-    assert!(
-        lines
-            .iter()
-            .any(|line| line.contains("□ Starting") && line.contains("cancelled"))
-    );
+    assert!(lines.iter().any(|line| line == "  □ Uploading…"));
+    assert!(lines.iter().any(|line| line == "  □ Preparing…"));
+    assert!(lines.iter().any(|line| line == "  □ Starting…"));
 }
 
 #[tokio::test]
@@ -485,7 +473,7 @@ fn deploy_task_tree_build_failure_aborts_deploy_work() {
     controller.mark_deploy_step_running("prod-a", "connecting");
     controller.fail_build_step("shared target", "build-artifact", "Local build failed");
     controller.fail_build_target("shared target", "Local build failed");
-    controller.cancel_pending_build_children("shared target", "cancelled");
+    controller.cancel_pending_build_children("shared target");
     controller.abort_incomplete("Aborted");
 
     let snapshot = controller.snapshot();

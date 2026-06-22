@@ -149,7 +149,7 @@ where
             };
             task_tree.rename_deploy_step(server_name, step, failed_label);
             task_tree.fail_deploy_target_without_detail(server_name);
-            task_tree.cancel_pending_deploy_children(server_name, "cancelled");
+            task_tree.cancel_pending_deploy_children(server_name);
             Err(error.into())
         }
     }
