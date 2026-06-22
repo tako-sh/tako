@@ -1438,7 +1438,7 @@ Apps specify routes at environment level (not per-server). Routes support:
 - Routes must include hostname (path-only routes such as `"/api/*"` are invalid)
 - Exact path routes normalize trailing slash (`example.com/api` and `example.com/api/` are equivalent)
 - Each `[envs.{env}]` can have either `route` or `routes`, not both
-- `[envs.{env}]` accepts environment behavior keys (`route`/`routes`, `servers`, `idle_timeout`, and `release`); env vars belong in `[vars]` / `[vars.{env}]`
+- `[envs.{env}]` accepts environment behavior keys (`route`/`routes`, `servers`, `storages`, `backup`, `source_ip`, `ssl`, `idle_timeout`, and `release`); env vars belong in `[vars]` / `[vars.{env}]`
 - Each non-development environment must define `route` or `routes`
 - Empty route lists are invalid for non-development environments
 - Development routes may use any valid hostname. Tako manages DNS and `.local` LAN aliases only for `.test` and `.tako.test` routes; external dev routes must be pointed at the dev proxy by the user.

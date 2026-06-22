@@ -68,6 +68,8 @@ Each environment can use either `route` or `routes`, not both. Non-development d
 
 Routes support exact hosts, wildcard hosts, host-plus-path routes, and wildcard-plus-path routes. Path-only routes are invalid.
 
+Environment tables accept route declarations, `servers`, `storages`, `backup`, `source_ip`, `ssl`, `idle_timeout`, and `release`. Put environment variables in `[vars]` or `[vars.<env>]`, not in `[envs.<env>]`.
+
 `idle_timeout` defaults to 300 seconds. `ssl` defaults to `letsencrypt` and can be `cloudflare`. `source_ip` can be omitted or set to `auto`, `direct`, `cloudflare-proxy`, or `trusted-proxy`.
 
 Environment-level `release` overrides the top-level release command. An empty string clears an inherited top-level command for that environment.
