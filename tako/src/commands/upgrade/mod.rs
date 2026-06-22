@@ -1,4 +1,5 @@
 mod install;
+mod task_tree;
 pub(crate) mod version;
 
 use std::path::{Path, PathBuf};
@@ -7,6 +8,7 @@ use std::process::{Command, Stdio};
 use crate::output;
 
 use install::{detect_platform, download_and_install, resolve_install_dir};
+use task_tree::LocalUpgradeTask;
 use version::{UpdateCheck, check_for_updates, current_version, tarball_url};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,32 +25,47 @@ struct CliUpgradeDetectionContext {
 }
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let ver = current_version();
-    output::info(&format!("Current version: {}", output::strong(&ver)));
-    tracing::info!("Current version: {ver}");
-
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(run_upgrade())
+    let ver = current_version();
+    output::line(&format!("Current version: {}", output::strong(&ver)));
+    tracing::info!("Current version: {ver}");
+    let task = LocalUpgradeTask::start("Upgrading");
+
+    rt.block_on(run_upgrade(task))
 }
 
-async fn run_upgrade() -> Result<(), Box<dyn std::error::Error>> {
+async fn run_upgrade(task: LocalUpgradeTask) -> Result<(), Box<dyn std::error::Error>> {
     match detect_cli_upgrade_method_runtime() {
-        CliUpgradeMethod::Installer => run_installer_upgrade().await,
-        CliUpgradeMethod::Homebrew => run_brew_upgrade().await,
+        CliUpgradeMethod::Installer => run_installer_upgrade(task).await,
+        CliUpgradeMethod::Homebrew => run_brew_upgrade(task).await,
     }
 }
 
-async fn run_installer_upgrade() -> Result<(), Box<dyn std::error::Error>> {
-    let (os, arch) = detect_platform()?;
-    let install_dir = resolve_install_dir();
-    let url = tarball_url(os, arch);
-
-    match output::with_spinner_async_simple("Upgrading", check_and_install(&url, &install_dir))
-        .await?
-    {
-        UpdateCheck::AlreadyCurrent => output::info("Already on the latest version"),
-        UpdateCheck::Available { version } => {
-            output::info(&format!("Upgraded to {}", output::strong(&version)))
+async fn run_installer_upgrade(task: LocalUpgradeTask) -> Result<(), Box<dyn std::error::Error>> {
+    let result: Result<UpdateCheck, Box<dyn std::error::Error>> = async {
+        let (os, arch) = detect_platform()?;
+        let install_dir = resolve_install_dir();
+        let url = tarball_url(os, arch);
+        check_and_install(&url, &install_dir).await
+    }
+    .await;
+    match result {
+        Ok(UpdateCheck::AlreadyCurrent) => {
+            task.succeed("Already on the latest version");
+            if !task.is_rendered() {
+                output::info("Already on the latest version");
+            }
+        }
+        Ok(UpdateCheck::Available { version }) => {
+            let task_label = format!("Upgraded to {version}");
+            task.succeed(task_label);
+            if !task.is_rendered() {
+                output::info(&format!("Upgraded to {}", output::strong(&version)));
+            }
+        }
+        Err(error) => {
+            task.fail("Upgrade failed", error.to_string());
+            return Err(error);
         }
     }
     Ok(())
@@ -67,13 +84,19 @@ async fn check_and_install(
     }
 }
 
-async fn run_brew_upgrade() -> Result<(), Box<dyn std::error::Error>> {
-    output::with_spinner_async_simple("Upgrading via Homebrew", async {
-        run_local_upgrade_command("brew", &["upgrade", "tako"])
-    })
-    .await
-    .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
-    output::info("Upgraded via Homebrew");
+async fn run_brew_upgrade(task: LocalUpgradeTask) -> Result<(), Box<dyn std::error::Error>> {
+    match run_local_upgrade_command("brew", &["upgrade", "tako"]) {
+        Ok(()) => {
+            task.succeed("Upgraded via Homebrew");
+            if !task.is_rendered() {
+                output::info("Upgraded via Homebrew");
+            }
+        }
+        Err(error) => {
+            task.fail("Upgrade failed", error.clone());
+            return Err(error.into());
+        }
+    }
     Ok(())
 }
 

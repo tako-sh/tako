@@ -2,7 +2,7 @@ use std::io;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ratatui::backend::CrosstermBackend;
 use ratatui::widgets::{Paragraph, Widget, Wrap};
@@ -11,7 +11,7 @@ use ratatui::{Terminal, TerminalOptions, Viewport};
 use crate::output;
 
 use super::render::{render_tree_to_lines, rendered_height, tree_node_has_running};
-use super::{TreeNode, TreeTextTone};
+use super::{TaskItemState, TaskState, TreeNode, TreeTextTone};
 
 const LIVE_RENDER_INTERVAL: Duration = Duration::from_millis(160);
 
@@ -275,6 +275,8 @@ pub(super) fn append_interrupt_message(tree: &mut Vec<TreeNode>, message: &str) 
         return;
     }
 
+    cancel_running_tasks(tree, Instant::now());
+
     if !tree.is_empty() && !matches!(tree.last(), Some(TreeNode::Spacer)) {
         tree.push(TreeNode::Spacer);
     }
@@ -282,4 +284,27 @@ pub(super) fn append_interrupt_message(tree: &mut Vec<TreeNode>, message: &str) 
         text: message.to_string(),
         tone: TreeTextTone::Error,
     });
+}
+
+fn cancel_running_tasks(tree: &mut [TreeNode], now: Instant) {
+    for node in tree {
+        match node {
+            TreeNode::Task(task) | TreeNode::AccentTask(task) => {
+                cancel_running_task_item(task, now);
+            }
+            TreeNode::Text { .. } | TreeNode::LabeledText { .. } | TreeNode::Spacer => {}
+        }
+    }
+}
+
+fn cancel_running_task_item(task: &mut TaskItemState, now: Instant) {
+    if let TaskState::Running { started_at } = task.state {
+        task.state = TaskState::Cancelled {
+            elapsed: Some(now.saturating_duration_since(started_at)),
+        };
+    }
+
+    for child in &mut task.children {
+        cancel_running_task_item(child, now);
+    }
 }

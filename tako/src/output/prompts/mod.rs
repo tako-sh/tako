@@ -198,14 +198,6 @@ fn format_pretty_prompt_hint_line(message: &str) -> String {
     format!("{INDENT}{}", theme_muted(message))
 }
 
-fn strikethrough<D: std::fmt::Display>(value: D) -> String {
-    if super::should_colorize() {
-        format!("\x1b[9m{value}\x1b[29m")
-    } else {
-        value.to_string()
-    }
-}
-
 fn format_pretty_confirm_label(label: &str, default: bool, active: bool) -> String {
     let diamond = if active {
         theme_accent(DIAMOND_FILLED)
@@ -256,7 +248,7 @@ fn format_pretty_confirm_completion(label: &str, default: bool, value: &str) -> 
 /// and confirm defaults so cancelled prompts all resolve to the same muted line.
 fn format_pretty_cancelled_prompt(label: &str) -> Vec<String> {
     let done_diamond = theme_muted(DIAMOND_OUTLINED);
-    let done_label = theme_muted(strikethrough(label));
+    let done_label = theme_muted(label);
     vec![format!("{done_diamond} {done_label}"), String::new()]
 }
 
