@@ -61,8 +61,8 @@ jobs:
         with:
           run-id: ${{ steps.ci-run.outputs.run_id }}
           github-token: ${{ github.token }}
-          pattern: bin-tako-darwin-*
-          path: raw
+          name: bin-tako-darwin-aarch64
+          path: raw/bin-tako-darwin-aarch64
 
       - name: Import macOS signing certificate
         if: steps.builds.outputs.skipped != 'true'
@@ -237,8 +237,8 @@ jobs:
         if: steps.builds.outputs.skipped != 'true'
         uses: actions/download-artifact@v8
         with:
-          pattern: signed-bin-tako-darwin-*
-          path: signed-raw
+          name: signed-bin-tako-darwin-aarch64
+          path: signed-raw/signed-bin-tako-darwin-aarch64
 
       - name: Package, sign, and publish
         if: steps.builds.outputs.skipped != 'true'
