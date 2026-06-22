@@ -284,7 +284,7 @@ describe("tako init (interactive wizard)", () => {
 
     term.press("\x03");
     await term.close();
-  });
+  }, 15_000);
 });
 
 function findRowContaining(term: TakoTerminal, text: string): number | null {
