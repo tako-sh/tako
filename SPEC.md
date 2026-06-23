@@ -109,6 +109,7 @@ provider = "s3"
 bucket = "app-prod-uploads"
 endpoint = "https://s3.example.com"
 region = "us-east-1"
+force_path_style = false
 public_base_url = "https://cdn.example.com/uploads"
 
 [storages.staging_uploads]
@@ -203,7 +204,7 @@ Variable values may be TOML strings, numbers, booleans, or datetimes. Tako conve
 - SSL certificate issuance is selected per environment with optional `ssl = "letsencrypt"` or `ssl = "cloudflare"` under `[envs.<name>]`. Omitted means `letsencrypt`. Cloudflare SSL uses Cloudflare Origin CA certificates and requires encrypted credential `ssl.cloudflare` from `tako credentials set ssl.cloudflare --env <name>` with Cloudflare Zone / SSL and Certificates / Edit permission. Let’s Encrypt exact routes need no credentials by default; when an environment has `ssl.cloudflare`, exact routes use Cloudflare DNS-01 instead of HTTP-01. Let’s Encrypt wildcard routes require the same credential because they must use DNS-01 for certificate validation.
 - Tako-owned provider credentials are stored per environment in `.tako/secrets.json` by `tako credentials set <name> --env <name>`. Supported credentials are `ssl.cloudflare` for certificate operations and `postgres_url` for shared channel/workflow storage. Deploy sends provider credentials to servers as server-only runtime credentials; they are not exposed to app code. Deploy rejects expired app secrets, storage credentials, and required provider credentials before build/deploy work starts and warns when any of them expire within 30 days. Each target server verifies required Cloudflare credentials during remote prepare, before release commands, route changes, or app startup. Let’s Encrypt DNS-01 routes require a Cloudflare API token with Zone Read and DNS Write on the matching zone; both user-owned and account-owned tokens are accepted when they have the required permissions. Deploy verifies zone read access from the server's egress IP, while DNS record writes are not probed before deploy. Cloudflare SSL requires Zone / SSL and Certificates / Edit. It verifies user-owned tokens when Cloudflare's token verification endpoint supports the token format; account-owned tokens are validated by the Origin CA API when certificates are issued.
 - Client source-IP handling is per environment through optional `source_ip` under `[envs.<name>]`. Omitted means automatic Cloudflare detection, then explicitly configured trusted proxy headers, then direct peer fallback.
-- Top-level `[storages.<resource>]` config contains non-secret S3-compatible storage metadata. `provider` defaults to `s3`; `provider = "local"` is invalid in config. S3 resources require `bucket`, `endpoint`, and `region`; `endpoint` and optional `public_base_url` must use HTTPS.
+- Top-level `[storages.<resource>]` config contains non-secret S3-compatible storage metadata. `provider` defaults to `s3`; `provider = "local"` is invalid in config. S3 resources require `bucket`, `endpoint`, and `region`; `endpoint` and optional `public_base_url` must use HTTPS. `force_path_style = true` makes SDK-generated S3 URLs use path-style bucket addressing instead of virtual-hosted bucket addressing.
 - `local` is a built-in storage resource name, not a top-level `[storages.local]` table. Bind an app storage to it with `storages = { uploads = "local" }`. In `development`, a storage binding may also reference any undeclared resource name and it defaults to local storage. In deploy environments, every bound resource must be declared unless the resource name is `local`; local storage can deploy only to single-server environments.
 - The same server name may be assigned to multiple non-development environments in one project. Each environment deploys to its own server-side app identity and filesystem path under `/opt/tako/apps/{app}/{env}`.
 - `development` is for `tako dev`; `servers` declared there are ignored by deploy validation.
@@ -382,10 +383,11 @@ provider = "s3"
 bucket = "app-uploads"
 endpoint = "https://<account>.r2.cloudflarestorage.com"
 region = "auto"
+force_path_style = false
 public_base_url = "https://cdn.example.com/uploads"
 ```
 
-Storage binding and S3 resource names may contain lowercase letters, numbers, hyphens, and underscores. The resource name `local` is built in and must not be declared under `[storages]`; bind to it directly with `storages = { uploads = "local" }`. For S3 resources, `tako storages add` prompts for access credentials and optionally when they expire; `--expires-on` can provide the expiry directly. Deploy fails before build/deploy work starts if the selected environment's S3 credentials are expired and warns when they expire within 30 days. When credentials are current or expiry is unknown, deploy decrypts them locally, combines them with the selected `tako.toml` resource metadata, sends the runtime bindings over the signed management path, and `tako-server` stores the resulting bindings encrypted in server SQLite. Fresh native app and worker processes receive bindings through the fd 3 bootstrap envelope as `storages`; fresh container app processes receive the same envelope through `TAKO_BOOTSTRAP_DATA`.
+Storage binding and S3 resource names may contain lowercase letters, numbers, hyphens, and underscores. The resource name `local` is built in and must not be declared under `[storages]`; bind to it directly with `storages = { uploads = "local" }`. For S3 resources, `force_path_style = true` makes SDK-generated URLs use path-style bucket addressing. `tako storages add` prompts for access credentials and optionally when they expire; `--expires-on` can provide the expiry directly. Deploy fails before build/deploy work starts if the selected environment's S3 credentials are expired and warns when they expire within 30 days. When credentials are current or expiry is unknown, deploy decrypts them locally, combines them with the selected `tako.toml` resource metadata, sends the runtime bindings over the signed management path, and `tako-server` stores the resulting bindings encrypted in server SQLite. Fresh native app and worker processes receive bindings through the fd 3 bootstrap envelope as `storages`; fresh container app processes receive the same envelope through `TAKO_BOOTSTRAP_DATA`.
 
 `tako storages credentials <resource> --env <environment>` sets or rotates encrypted S3 credentials for a declared top-level storage resource without adding an app binding. This is the recommended setup path for backup-only storage resources. The same S3 bucket may be used for app storage and backups; backup objects are automatically written under Tako's reserved `_tako/backups/` prefix.
 
@@ -2561,6 +2563,7 @@ workers = 1
 concurrency = 10
 
 [workflows.email]             # named worker-group override
+run = ["./worker", "email"]
 workers = 2
 
 [servers.lax.workflows]       # base override on one server
@@ -2572,6 +2575,7 @@ workers = 4
 
 Fields:
 
+- **`run`** — command used to start this workflow worker group when the runtime needs an explicit worker process command. In v0, container releases support one configured workflow `run` command across `[workflows]` and named workflow groups; declaring more than one is rejected during deploy packaging.
 - **`workers`** — number of always-on worker processes. `0` = scale-to-zero: tako-server starts a worker when runnable workflow work appears from enqueue, signal, cron, delayed retry/sleep, or lease reclaim. The worker exits after it has been idle (no claimed runs) long enough for the supervisor's idle window. Default `0`.
 - **`concurrency`** — max parallel runs per worker. Default `10`.
 

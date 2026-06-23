@@ -150,7 +150,7 @@ force_path_style = false
 public_base_url = "https://cdn.example.com/uploads"
 ```
 
-Top-level storage resources store non-secret metadata. S3 resources require `bucket`, `endpoint`, and `region`; endpoints and public base URLs must use HTTPS. Credentials are set by `tako storages add` or `tako storages credentials` and stored encrypted in `.tako/secrets.json`.
+Top-level storage resources store non-secret metadata. S3 resources require `bucket`, `endpoint`, and `region`; endpoints and public base URLs must use HTTPS. Set `force_path_style = true` when your S3-compatible provider needs path-style bucket URLs instead of virtual-hosted bucket URLs. Credentials are set by `tako storages add` or `tako storages credentials` and stored encrypted in `.tako/secrets.json`.
 
 `local` is a built-in resource name. Bind to it with `storages = { uploads = "local" }`; do not declare `[storages.local]`. Local storage deploys only to single-server environments. In `development`, undeclared storage resources default to local storage.
 
@@ -201,7 +201,7 @@ workers = 2
 workers = 4
 ```
 
-`workers = 0` means scale-to-zero workers. `concurrency` defaults to 10. Named workflow groups inherit from `[workflows]`, then can be overridden per group and per server.
+`workers = 0` means scale-to-zero workers. `concurrency` defaults to 10. `run` provides an explicit worker command for runtimes that need one; in v0, container releases support one configured workflow `run` command across the base workflow config and named groups. Named workflow groups inherit from `[workflows]`, then can be overridden per group and per server.
 
 In multi-server environments, JS workflows require `postgres_url` unless every workflow opts into local per-server execution. Go workflow deployments require `postgres_url` for multi-server environments. Channels also require `postgres_url` for multi-server deploys.
 

@@ -95,7 +95,7 @@ Container releases upload source and let `tako-server` build the image with Podm
 
 Use a Tako SDK inside the container so secrets, storage bindings, internal status, and health-probe authentication follow the same contract as native releases. In v0, container HTTP instances do not receive fd 3, fd 4, the internal socket, or `TAKO_DATA_DIR`.
 
-A configured workflow `run` starts a separate container process from the same image with an entrypoint override, args from `run[1..]`, a mounted internal socket, and `TAKO_BOOTSTRAP_DATA`.
+A configured workflow `run` starts a separate container process from the same image with an entrypoint override, args from `run[1..]`, a mounted internal socket, and `TAKO_BOOTSTRAP_DATA`. In v0, container releases support one configured workflow `run` command across the base workflow config and named groups.
 
 ## Release Commands
 
