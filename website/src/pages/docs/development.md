@@ -28,9 +28,9 @@ The CLI is a client for a persistent `tako-dev-server` daemon. It starts the dae
 - Installs or repairs platform routing/proxy setup when needed.
 - Registers the app config with the daemon.
 - Generates project files such as `tako.d.ts` or Go secret accessors.
-- Starts the app process and waits for fd-4 readiness.
+- Starts the app runtime and waits for fd-4 readiness from the HTTP process.
 - Watches Tako config, secrets, channels, workflows, and generated-file locations.
-- Restarts when effective env, secrets, channels, or workflows change.
+- Restarts the app runtime when effective env, secrets, channels, or workflows change.
 - Updates routes without restart when development routes change.
 
 Tako does not watch arbitrary source files for restart. Framework dev servers and runtimes own hot reload.
@@ -89,13 +89,13 @@ Statuses:
 | `idle`    | Process is stopped, routes remain, next request wakes it. |
 | `stopped` | App is unregistered and routes are removed.               |
 
-`Ctrl-C` unregisters the app, removes routes, and kills the process. Press `b` to background the app and leave it registered in the daemon.
+`Ctrl-C` unregisters the app, removes routes, and stops the app runtime. Press `b` to background the app and leave it registered in the daemon.
 
 ## Interactive Controls
 
 | Key      | Action                                |
 | -------- | ------------------------------------- |
-| `r`      | Restart the app process.              |
+| `r`      | Restart the app runtime.              |
 | `l`      | Toggle LAN `.local` aliases.          |
 | `t`      | Toggle a temporary public tunnel URL. |
 | `b`      | Background the app and exit the CLI.  |

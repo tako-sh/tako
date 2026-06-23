@@ -140,6 +140,7 @@ pub struct RuntimeApp {
     pub upstream_port: u16,
     pub is_idle: bool,
     pub command: Vec<String>,
+    pub worker_command: Option<Vec<String>>,
     pub env: HashMap<String, String>,
     pub log_buffer: LogBuffer,
     pub pid: Option<u32>,

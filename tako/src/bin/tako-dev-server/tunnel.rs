@@ -1258,6 +1258,7 @@ mod tests {
                 upstream_port,
                 is_idle: false,
                 command: vec!["bun".to_string(), "dev".to_string()],
+                worker_command: None,
                 env: Default::default(),
                 log_buffer: crate::state::LogBuffer::new(),
                 pid: None,

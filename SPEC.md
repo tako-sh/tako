@@ -641,7 +641,7 @@ Start (or connect to) a local development session for the current app, backed by
 - The app starts immediately when `tako dev` starts (1 local instance) and transitions to idle after 30 minutes of no attached CLI clients.
   - After an idle transition, the next HTTP request triggers wake-on-request: the daemon spawns the app process and routes the request once the app is healthy.
   - Idle shutdown is suppressed while there are in-flight requests.
-  - When `Ctrl+c` is pressed, Tako unregisters the app (sets status to stopped, removes routes, kills the process).
+  - When `Ctrl+c` is pressed, Tako unregisters the app (sets status to stopped, removes routes, and stops the app runtime).
   - Pressing `b` (background) hands the running process off to the daemon and exits the CLI. The daemon monitors the process and keeps routes active.
   - Running `tako dev` again with the same selected config file attaches to the existing session if the app is running or idle.
   - Dev logs are written to a shared per-app/per-config stream at `{TAKO_HOME}/dev/logs/{app}-{hash}.jsonl`.
@@ -673,14 +673,14 @@ Start (or connect to) a local development session for the current app, backed by
   - The status panel always shows `routes`, `lan`, and `tunnel` rows. `routes` lists local HTTPS routes. `lan` shows an enable hint when off, an active URL with a disable hint when on, or a retry hint after failure. `tunnel` shows an enable hint when off, a starting/failed state while toggling, an active URL with a disable hint when on, and a reconnecting state with the same URL during transient tunnel service disconnects.
   - When LAN mode is enabled, Tako prints a QR block for installing the local CA certificate on another device. When tunnel mode is enabled, Tako prints a short public URL block for visibility. When tunnel mode reconnects or turns off, Tako prints a `tako` log line with the reconnect status or close reason.
   - Keyboard shortcuts (interactive terminal only):
-    - `r` restart the app process
+    - `r` restart the app runtime (HTTP app process plus workflow workers when configured)
     - `l` toggle LAN mode (expose the same routes via `.local` aliases on the local network)
     - `t` toggle tunnel mode (temporary public URL)
     - `b` background the app (hand off to daemon, CLI exits)
     - `Ctrl+c` stop the app and quit
   - When stdout is not a terminal (piped or redirected), `tako dev` falls back to plain `println`-style output with no color or raw mode.
   - `tako dev` watches `tako.toml`, `.tako/secrets.json`, `<app_root>/channels/`, `<app_root>/workflows/`, and parent directories that can contain `tako.d.ts` (`app/`, `src/`, and the project root) so the generated JS/TS declaration file is recreated if removed or edited.
-  - It restarts the app when effective dev environment variables, secrets, channel definitions, or workflow definitions change.
+  - It restarts the app runtime when effective dev environment variables, secrets, channel definitions, or workflow definitions change. Dev channel replay stays in the daemon's in-memory store across app-runtime restarts and resets only when `tako-dev-server` restarts.
   - It updates dev routing without restarting when `[envs.development].route(s)` changes.
 - Source hot-reload is runtime-driven (e.g. Bun watch/dev scripts); Tako does not watch arbitrary source files for auto-restart.
 - HTTPS is terminated by the local dev daemon using certificates issued by the local CA (SNI-based cert selection).
@@ -2710,7 +2710,7 @@ Both work via sentinel exceptions caught by the worker. Useful for "this work is
 
 ### Dev mode
 
-`tako dev` uses the same workflow architecture as production: tako-dev-server owns the runs DB, internal socket, dispatcher, and a `WorkerSupervisor` that spawns a worker subprocess on demand. The worker is **scale-to-zero** (`workers: 0`, `idle_timeout_ms: 3_000`) so it only runs while there's runnable work, and each post-idle dispatch starts a fresh worker — so code edits take effect on the next runnable enqueue/signal/cron tick without restarting `tako dev`. Worker stdout/stderr is tee'd into the same log stream as the app process, with `scope: "worker"` so the CLI can prefix it.
+`tako dev` uses the same workflow architecture as production: tako-dev-server owns the runs DB, internal socket, dispatcher, and a `WorkerSupervisor` that spawns a worker subprocess on demand. The worker is **scale-to-zero** (`workers: 0`, `idle_timeout_ms: 3_000`) so it only runs while there's runnable work, and each post-idle dispatch starts a fresh worker — so code edits take effect on the next runnable enqueue/signal/cron tick without restarting `tako dev`. Pressing `r` or changing workflow definitions also replaces the dev workflow runtime before the HTTP app process restarts. Worker stdout/stderr is tee'd into the same log stream as the app process, with `scope: "worker"` so the CLI can prefix it.
 
 On every `RegisterApp`, the dev-server registers the app with its embedded `WorkflowManager` — same `ensure()` call as production — so the first workflow enqueue or channel publish from user code doesn't race the registration.
 

@@ -125,6 +125,298 @@ async fn register_app_starts_workflow_engine_when_worker_command_provided() {
 }
 
 #[tokio::test]
+async fn restart_app_reconfigures_workflow_runtime_when_worker_command_registered() {
+    let proj = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir_all(proj.path().join("workflows")).unwrap();
+    std::fs::write(
+        proj.path().join("workflows").join("broadcast.ts"),
+        "export default () => {};",
+    )
+    .unwrap();
+
+    let (a, b) = tokio::net::UnixStream::pair().unwrap();
+    let (shutdown_tx, _shutdown_rx) = watch::channel(false);
+
+    let workflows_dir = tempfile::TempDir::new().unwrap();
+    let workflows = Arc::new(tako_workflows::WorkflowManager::new(workflows_dir.path()));
+    workflows.start_socket().unwrap();
+    let internal_socket = workflows.socket_path();
+
+    let st = State::new(
+        shutdown_tx,
+        proxy::Routes::default(),
+        EventsHub::default(),
+        true,
+        53535,
+        8443,
+        "127.0.0.1:8443".to_string(),
+        "127.0.0.1".to_string(),
+    );
+    let state = Arc::new(Mutex::new(st));
+    {
+        let mut s = state.lock().unwrap();
+        s.workflows = Some(workflows.clone());
+        s.internal_socket = Some(internal_socket);
+    }
+    let h = tokio::spawn({
+        let state = state.clone();
+        async move { handle_client(a, state).await }
+    });
+
+    let (r, mut w) = b.into_split();
+    let mut lines = BufReader::new(r).lines();
+
+    let config_path = proj.path().join("tako.toml").to_string_lossy().to_string();
+    let req = serde_json::json!({
+        "type": "RegisterApp",
+        "config_path": config_path,
+        "project_dir": proj.path().to_string_lossy(),
+        "app_name": "wf-app",
+        "hosts": ["wf-app.test"],
+        "command": ["true"],
+        "env": {},
+        "worker_command": ["true"],
+    });
+    w.write_all(req.to_string().as_bytes()).await.unwrap();
+    w.write_all(b"\n").await.unwrap();
+
+    let reg_line = lines.next_line().await.unwrap().unwrap();
+    let reg: Response = serde_json::from_str(&reg_line).unwrap();
+    assert!(matches!(reg, Response::AppRegistered { .. }));
+
+    let first = workflows.supervisor_for("wf-app").unwrap();
+
+    let req = serde_json::json!({
+        "type": "RestartApp",
+        "config_path": config_path,
+    });
+    w.write_all(req.to_string().as_bytes()).await.unwrap();
+    w.write_all(b"\n").await.unwrap();
+
+    let restart_line = lines.next_line().await.unwrap().unwrap();
+    let restart: Response = serde_json::from_str(&restart_line).unwrap();
+    assert!(matches!(restart, Response::AppRestarting { .. }));
+
+    let second = workflows.supervisor_for("wf-app").unwrap();
+    assert!(!Arc::ptr_eq(&first, &second));
+
+    drop(w);
+    h.await.unwrap().unwrap();
+    workflows.shutdown_all(Duration::from_secs(1)).await;
+}
+
+#[tokio::test]
+async fn register_app_without_worker_command_stops_existing_workflow_runtime() {
+    let proj = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir_all(proj.path().join("workflows")).unwrap();
+
+    let (a, b) = tokio::net::UnixStream::pair().unwrap();
+    let (shutdown_tx, _shutdown_rx) = watch::channel(false);
+
+    let workflows_dir = tempfile::TempDir::new().unwrap();
+    let workflows = Arc::new(tako_workflows::WorkflowManager::new(workflows_dir.path()));
+    workflows.start_socket().unwrap();
+    let internal_socket = workflows.socket_path();
+
+    let st = State::new(
+        shutdown_tx,
+        proxy::Routes::default(),
+        EventsHub::default(),
+        true,
+        53535,
+        8443,
+        "127.0.0.1:8443".to_string(),
+        "127.0.0.1".to_string(),
+    );
+    let state = Arc::new(Mutex::new(st));
+    {
+        let mut s = state.lock().unwrap();
+        s.workflows = Some(workflows.clone());
+        s.internal_socket = Some(internal_socket);
+    }
+    let h = tokio::spawn({
+        let state = state.clone();
+        async move { handle_client(a, state).await }
+    });
+
+    let (r, mut w) = b.into_split();
+    let mut lines = BufReader::new(r).lines();
+    let config_path = proj.path().join("tako.toml").to_string_lossy().to_string();
+
+    let req = serde_json::json!({
+        "type": "RegisterApp",
+        "config_path": config_path,
+        "project_dir": proj.path().to_string_lossy(),
+        "app_name": "wf-app",
+        "hosts": ["wf-app.test"],
+        "command": ["true"],
+        "env": {},
+        "worker_command": ["true"],
+    });
+    w.write_all(req.to_string().as_bytes()).await.unwrap();
+    w.write_all(b"\n").await.unwrap();
+    let reg_line = lines.next_line().await.unwrap().unwrap();
+    let reg: Response = serde_json::from_str(&reg_line).unwrap();
+    assert!(matches!(reg, Response::AppRegistered { .. }));
+    assert!(workflows.has("wf-app"));
+
+    let req = serde_json::json!({
+        "type": "RegisterApp",
+        "config_path": config_path,
+        "project_dir": proj.path().to_string_lossy(),
+        "app_name": "wf-app",
+        "hosts": ["wf-app.test"],
+        "command": ["true"],
+        "env": {},
+    });
+    w.write_all(req.to_string().as_bytes()).await.unwrap();
+    w.write_all(b"\n").await.unwrap();
+    let reg_line = lines.next_line().await.unwrap().unwrap();
+    let reg: Response = serde_json::from_str(&reg_line).unwrap();
+    assert!(matches!(reg, Response::AppRegistered { .. }));
+    assert!(!workflows.has("wf-app"));
+
+    drop(w);
+    h.await.unwrap().unwrap();
+    workflows.shutdown_all(Duration::from_secs(1)).await;
+}
+
+#[tokio::test]
+async fn register_app_with_new_name_stops_previous_workflow_runtime() {
+    let proj = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir_all(proj.path().join("workflows")).unwrap();
+
+    let (a, b) = tokio::net::UnixStream::pair().unwrap();
+    let (shutdown_tx, _shutdown_rx) = watch::channel(false);
+
+    let workflows_dir = tempfile::TempDir::new().unwrap();
+    let workflows = Arc::new(tako_workflows::WorkflowManager::new(workflows_dir.path()));
+    workflows.start_socket().unwrap();
+    let internal_socket = workflows.socket_path();
+
+    let st = State::new(
+        shutdown_tx,
+        proxy::Routes::default(),
+        EventsHub::default(),
+        true,
+        53535,
+        8443,
+        "127.0.0.1:8443".to_string(),
+        "127.0.0.1".to_string(),
+    );
+    let state = Arc::new(Mutex::new(st));
+    {
+        let mut s = state.lock().unwrap();
+        s.workflows = Some(workflows.clone());
+        s.internal_socket = Some(internal_socket);
+    }
+    let h = tokio::spawn({
+        let state = state.clone();
+        async move { handle_client(a, state).await }
+    });
+
+    let (r, mut w) = b.into_split();
+    let mut lines = BufReader::new(r).lines();
+    let config_path = proj.path().join("tako.toml").to_string_lossy().to_string();
+
+    for app_name in ["old-wf-app", "new-wf-app"] {
+        let req = serde_json::json!({
+            "type": "RegisterApp",
+            "config_path": config_path,
+            "project_dir": proj.path().to_string_lossy(),
+            "app_name": app_name,
+            "hosts": [format!("{app_name}.test")],
+            "command": ["true"],
+            "env": {},
+            "worker_command": ["true"],
+        });
+        w.write_all(req.to_string().as_bytes()).await.unwrap();
+        w.write_all(b"\n").await.unwrap();
+        let reg_line = lines.next_line().await.unwrap().unwrap();
+        let reg: Response = serde_json::from_str(&reg_line).unwrap();
+        assert!(matches!(reg, Response::AppRegistered { .. }));
+    }
+
+    assert!(!workflows.has("old-wf-app"));
+    assert!(workflows.has("new-wf-app"));
+
+    drop(w);
+    h.await.unwrap().unwrap();
+    workflows.shutdown_all(Duration::from_secs(1)).await;
+}
+
+#[tokio::test]
+async fn unregister_app_stops_workflow_runtime() {
+    let proj = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir_all(proj.path().join("workflows")).unwrap();
+
+    let (a, b) = tokio::net::UnixStream::pair().unwrap();
+    let (shutdown_tx, _shutdown_rx) = watch::channel(false);
+
+    let workflows_dir = tempfile::TempDir::new().unwrap();
+    let workflows = Arc::new(tako_workflows::WorkflowManager::new(workflows_dir.path()));
+    workflows.start_socket().unwrap();
+    let internal_socket = workflows.socket_path();
+
+    let st = State::new(
+        shutdown_tx,
+        proxy::Routes::default(),
+        EventsHub::default(),
+        true,
+        53535,
+        8443,
+        "127.0.0.1:8443".to_string(),
+        "127.0.0.1".to_string(),
+    );
+    let state = Arc::new(Mutex::new(st));
+    {
+        let mut s = state.lock().unwrap();
+        s.workflows = Some(workflows.clone());
+        s.internal_socket = Some(internal_socket);
+    }
+    let h = tokio::spawn({
+        let state = state.clone();
+        async move { handle_client(a, state).await }
+    });
+
+    let (r, mut w) = b.into_split();
+    let mut lines = BufReader::new(r).lines();
+    let config_path = proj.path().join("tako.toml").to_string_lossy().to_string();
+
+    let req = serde_json::json!({
+        "type": "RegisterApp",
+        "config_path": config_path,
+        "project_dir": proj.path().to_string_lossy(),
+        "app_name": "wf-app",
+        "hosts": ["wf-app.test"],
+        "command": ["true"],
+        "env": {},
+        "worker_command": ["true"],
+    });
+    w.write_all(req.to_string().as_bytes()).await.unwrap();
+    w.write_all(b"\n").await.unwrap();
+    let reg_line = lines.next_line().await.unwrap().unwrap();
+    let reg: Response = serde_json::from_str(&reg_line).unwrap();
+    assert!(matches!(reg, Response::AppRegistered { .. }));
+    assert!(workflows.has("wf-app"));
+
+    let req = serde_json::json!({
+        "type": "UnregisterApp",
+        "config_path": config_path,
+    });
+    w.write_all(req.to_string().as_bytes()).await.unwrap();
+    w.write_all(b"\n").await.unwrap();
+    let unregister_line = lines.next_line().await.unwrap().unwrap();
+    let unregister: Response = serde_json::from_str(&unregister_line).unwrap();
+    assert!(matches!(unregister, Response::AppUnregistered { .. }));
+    assert!(!workflows.has("wf-app"));
+
+    drop(w);
+    h.await.unwrap().unwrap();
+    workflows.shutdown_all(Duration::from_secs(1)).await;
+}
+
+#[tokio::test]
 async fn register_app_skips_workflow_engine_when_no_workflows_dir() {
     let proj = tempfile::TempDir::new().unwrap();
 
@@ -465,6 +757,7 @@ async fn unregister_app_kills_running_process() {
                 upstream_port: 19998,
                 is_idle: false,
                 command: vec!["sleep".to_string(), "60".to_string()],
+                worker_command: None,
                 env: std::collections::HashMap::new(),
                 log_buffer: state::LogBuffer::new(),
                 pid: Some(pid),
@@ -556,6 +849,7 @@ async fn wake_on_request_spawns_exactly_one_process() {
                 upstream_port: 0,
                 is_idle: true,
                 command: vec!["sh".to_string(), "-c".to_string(), cmd_str],
+                worker_command: None,
                 env: std::collections::HashMap::new(),
                 log_buffer: state::LogBuffer::new(),
                 pid: None,

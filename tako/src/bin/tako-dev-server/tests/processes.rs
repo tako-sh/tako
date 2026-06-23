@@ -24,6 +24,7 @@ fn kill_all_app_processes_sends_sigterm_to_tracked_pids() {
                 upstream_port: 3000,
                 is_idle: false,
                 command: vec!["sleep".to_string(), "60".to_string()],
+                worker_command: None,
                 env: std::collections::HashMap::new(),
                 log_buffer: state::LogBuffer::new(),
                 pid: Some(pid),

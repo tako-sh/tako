@@ -89,8 +89,10 @@ pub(crate) async fn handle_client(
                 )
                 .await?
             }
-            Request::UnregisterApp { config_path } => apps::unregister_app(&state, config_path),
-            Request::RestartApp { config_path } => apps::restart_app(&state, config_path),
+            Request::UnregisterApp { config_path } => {
+                apps::unregister_app(&state, config_path).await
+            }
+            Request::RestartApp { config_path } => apps::restart_app(&state, config_path).await,
             Request::SetAppStatus {
                 config_path,
                 status,

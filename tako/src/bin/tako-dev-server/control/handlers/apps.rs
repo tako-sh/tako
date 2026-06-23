@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 
@@ -80,9 +81,10 @@ pub(super) async fn register_app(
         }
     }
 
-    let (url, workflows, internal_socket, worker_log_buffer, worker_app_root) = {
+    let (url, workflows, internal_socket, worker_log_buffer, worker_app_root, old_app_name) = {
         let mut s = state.lock().unwrap();
         s.cancel_idle_exit();
+        let old_app_name = s.apps.get(&config_path).map(|app| app.name.clone());
         let old_hosts = s
             .apps
             .get(&config_path)
@@ -126,6 +128,7 @@ pub(super) async fn register_app(
                 upstream_port,
                 is_idle: false,
                 command,
+                worker_command: worker_command.clone(),
                 env,
                 log_buffer,
                 pid: None,
@@ -175,47 +178,26 @@ pub(super) async fn register_app(
             s.internal_socket.clone(),
             worker_log_buffer,
             worker_app_root,
+            old_app_name,
         )
     };
 
-    // Register workflow workers before spawning the app process, so the first
-    // SDK workflow enqueue/channel publish hits a known app on the internal socket.
-    if let (Some(workflows), Some(worker_cmd), Some(socket)) =
-        (workflows, worker_command, internal_socket)
-        && !worker_cmd.is_empty()
+    ensure_workflow_runtime(
+        workflows.clone(),
+        internal_socket,
+        &app_name,
+        &project_dir,
+        worker_command.as_deref(),
+        worker_app_root.as_deref(),
+        app_storages,
+        app_secrets,
+        worker_log_buffer,
+    )
+    .await;
+    if let (Some(workflows), Some(old_app_name)) = (workflows, old_app_name)
+        && old_app_name != app_name
     {
-        let app = app_name.clone();
-        let cwd = PathBuf::from(&project_dir);
-        let app_root = worker_app_root.clone();
-        let worker_storages = app_storages.clone();
-        let worker_secrets = app_secrets.clone();
-        let cmd_os: Vec<OsString> = worker_cmd.iter().map(OsString::from).collect();
-        let log_sink: Option<tako_workflows::WorkerLogSink> = worker_log_buffer.map(|buf| {
-            std::sync::Arc::new(move |line: &str, is_stderr: bool| {
-                let level = if is_stderr { "warn" } else { "info" };
-                forward_child_log_line(&buf, line.to_string(), level, "worker");
-            }) as tako_workflows::WorkerLogSink
-        });
-        let spec_fn = move |_db_path: PathBuf| tako_workflows::WorkerSpec {
-            env: build_worker_env(&app, &cwd, &socket, app_root.as_deref()),
-            app: app.clone(),
-            workers: 0,
-            concurrency: 500,
-            idle_timeout_ms: 3_000,
-            command: cmd_os,
-            cwd,
-            secrets: worker_secrets,
-            storages: worker_storages,
-            log_sink,
-            isolation: None,
-        };
-        if let Err(e) = workflows.ensure(&app_name, spec_fn).await {
-            tracing::warn!(
-                app = %app_name,
-                error = %e,
-                "failed to register app with workflow manager; workflows / channel publish will not work",
-            );
-        }
+        workflows.stop(&old_app_name, Duration::from_secs(1)).await;
     }
 
     spawn_registered_app_process(state, config_path.clone());
@@ -228,61 +210,150 @@ pub(super) async fn register_app(
     })
 }
 
-pub(super) fn unregister_app(state: &Arc<Mutex<State>>, config_path: String) -> Response {
-    let mut s = state.lock().unwrap();
-
-    if let Some(app) = s.apps.get(&config_path)
-        && let Some(pid) = app.pid
-    {
-        kill_app_process(pid);
-        state::remove_pid_file(&app.project_dir, &config_path);
+#[allow(clippy::too_many_arguments)]
+async fn ensure_workflow_runtime(
+    workflows: Option<Arc<tako_workflows::WorkflowManager>>,
+    internal_socket: Option<PathBuf>,
+    app_name: &str,
+    project_dir: &str,
+    worker_command: Option<&[String]>,
+    worker_app_root: Option<&str>,
+    storages: HashMap<String, tako_core::StorageBinding>,
+    secrets: HashMap<String, String>,
+    log_buffer: Option<state::LogBuffer>,
+) {
+    let Some(workflows) = workflows else {
+        return;
+    };
+    let Some(worker_cmd) = worker_command else {
+        workflows.stop(app_name, Duration::from_secs(1)).await;
+        return;
+    };
+    if worker_cmd.is_empty() {
+        workflows.stop(app_name, Duration::from_secs(1)).await;
+        return;
     }
 
-    let app_name = if let Some(mut app) = s.apps.remove(&config_path) {
-        if let Some(ref mut mdns) = s.mdns {
-            for host in &app.hosts {
-                mdns.unpublish(split_route_pattern(host).0);
-            }
+    // Register workflow workers before spawning the app process, so the first
+    // SDK workflow enqueue/channel publish hits a known app on the internal socket.
+    let Some(socket) = internal_socket else {
+        return;
+    };
+
+    let app = app_name.to_string();
+    let cwd = PathBuf::from(project_dir);
+    let app_root = worker_app_root.map(str::to_string);
+    let cmd_os: Vec<OsString> = worker_cmd.iter().map(OsString::from).collect();
+    let log_sink: Option<tako_workflows::WorkerLogSink> = log_buffer.map(|buf| {
+        std::sync::Arc::new(move |line: &str, is_stderr: bool| {
+            let level = if is_stderr { "warn" } else { "info" };
+            forward_child_log_line(&buf, line.to_string(), level, "worker");
+        }) as tako_workflows::WorkerLogSink
+    });
+    let spec_app = app.clone();
+    let spec_fn = move |_db_path: PathBuf| tako_workflows::WorkerSpec {
+        env: build_worker_env(&spec_app, &cwd, &socket, app_root.as_deref()),
+        app: spec_app.clone(),
+        workers: 0,
+        concurrency: 500,
+        idle_timeout_ms: 3_000,
+        command: cmd_os,
+        cwd,
+        secrets,
+        storages,
+        log_sink,
+        isolation: None,
+    };
+    if let Err(e) = workflows.ensure(&app, spec_fn).await {
+        tracing::warn!(
+            app = %app,
+            error = %e,
+            "failed to register app with workflow manager; workflows / channel publish will not work",
+        );
+    }
+}
+
+pub(super) async fn unregister_app(state: &Arc<Mutex<State>>, config_path: String) -> Response {
+    let (app_name, workflows) = {
+        let mut s = state.lock().unwrap();
+
+        if let Some(app) = s.apps.get(&config_path)
+            && let Some(pid) = app.pid
+        {
+            kill_app_process(pid);
+            state::remove_pid_file(&app.project_dir, &config_path);
         }
-        if let Some(tunnel) = app.tunnel.take() {
-            tunnel.abort_handle.abort();
+
+        let app_name = if let Some(mut app) = s.apps.remove(&config_path) {
+            if let Some(ref mut mdns) = s.mdns {
+                for host in &app.hosts {
+                    mdns.unpublish(split_route_pattern(host).0);
+                }
+            }
+            if let Some(tunnel) = app.tunnel.take() {
+                tunnel.abort_handle.abort();
+                s.events.broadcast(Response::Event {
+                    event: protocol::DevEvent::TunnelModeChanged {
+                        config_path: config_path.clone(),
+                        app_name: app.name.clone(),
+                        enabled: false,
+                        url: None,
+                        expires_at: None,
+                        close_reason: Some(protocol::TunnelCloseReason::Shutdown),
+                    },
+                });
+            }
+            app.name
+        } else {
+            String::new()
+        };
+
+        let route_id = format!("reg:{}", config_path);
+        s.routes.remove_app(&route_id);
+
+        if !app_name.is_empty() {
             s.events.broadcast(Response::Event {
-                event: protocol::DevEvent::TunnelModeChanged {
+                event: protocol::DevEvent::AppStatusChanged {
                     config_path: config_path.clone(),
-                    app_name: app.name.clone(),
-                    enabled: false,
-                    url: None,
-                    expires_at: None,
-                    close_reason: Some(protocol::TunnelCloseReason::Shutdown),
+                    app_name: app_name.clone(),
+                    status: "stopped".to_string(),
                 },
             });
         }
-        app.name
-    } else {
-        String::new()
+
+        if s.apps.is_empty() {
+            s.schedule_idle_exit();
+        }
+
+        (app_name, s.workflows.clone())
     };
-
-    let route_id = format!("reg:{}", config_path);
-    s.routes.remove_app(&route_id);
-
-    if !app_name.is_empty() {
-        s.events.broadcast(Response::Event {
-            event: protocol::DevEvent::AppStatusChanged {
-                config_path: config_path.clone(),
-                app_name: app_name.clone(),
-                status: "stopped".to_string(),
-            },
-        });
-    }
-
-    if s.apps.is_empty() {
-        s.schedule_idle_exit();
+    if let Some(workflows) = workflows
+        && !app_name.is_empty()
+    {
+        workflows.stop(&app_name, Duration::from_secs(1)).await;
     }
 
     Response::AppUnregistered { config_path }
 }
 
-pub(super) fn restart_app(state: &Arc<Mutex<State>>, config_path: String) -> Response {
+pub(super) async fn restart_app(state: &Arc<Mutex<State>>, config_path: String) -> Response {
+    let restart = {
+        let s = state.lock().unwrap();
+        s.apps.get(&config_path).map(|app| {
+            (
+                s.workflows.clone(),
+                s.internal_socket.clone(),
+                app.name.clone(),
+                app.project_dir.clone(),
+                app.worker_command.clone(),
+                app.env.get("TAKO_APP_ROOT").cloned(),
+                app.storages.clone(),
+                app.secrets.clone(),
+                app.log_buffer.clone(),
+            )
+        })
+    };
+
     {
         let mut s = state.lock().unwrap();
         if let Some(app) = s.apps.get_mut(&config_path) {
@@ -292,6 +363,32 @@ pub(super) fn restart_app(state: &Arc<Mutex<State>>, config_path: String) -> Res
             }
             app.is_idle = true;
         }
+    }
+
+    if let Some((
+        workflows,
+        internal_socket,
+        app_name,
+        project_dir,
+        worker_command,
+        app_root,
+        storages,
+        secrets,
+        log_buffer,
+    )) = restart
+    {
+        ensure_workflow_runtime(
+            workflows,
+            internal_socket,
+            &app_name,
+            &project_dir,
+            worker_command.as_deref(),
+            app_root.as_deref(),
+            storages,
+            secrets,
+            Some(log_buffer),
+        )
+        .await;
     }
 
     let log_buffer = {
