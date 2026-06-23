@@ -612,9 +612,17 @@ Show version information (same as `--version` flag).
 
 Refresh generated files for the current project: `tako.d.ts` for JS/TS apps (project-specific type augmentation for `tako.sh`) and `tako_secrets.go` for Go apps. `tako gen` and `tako g` are aliases. For JS/TS projects, `tako generate` keeps an existing `tako.d.ts` in `app/`, `src/`, or the project root. When creating the file for the first time, it uses an existing legacy `tako.gen.ts` location when present, otherwise `app/`, then `src/`, then the project root. The JS/TS declaration file includes user-defined variable names from `[vars]` and `[vars.<env>]` on `process.env` and `import.meta.env`, typed as strings. Legacy `tako.gen.ts` files are removed on regeneration. If a JS/TS project already has `<app_root>/channels/` or `<app_root>/workflows/` directories, `tako generate` also scaffolds `demo.ts` in empty dirs and adds missing default `defineChannel(...)` or `defineWorkflow(...)` exports to existing definition files that have no default export yet. Generated channel stubs use the file stem as the initial wire name, but `tako generate` does not rewrite existing explicit names.
 
-### tako run [--env {environment}] [--secrets-as-env] -- {command...}
+### tako run
+
+```bash
+tako run [--env {environment}] [--secrets-as-env] {script-file} [args...]
+tako run [--env {environment}] [--secrets-as-env] --eval {code} [-- args...]
+tako run [--env {environment}] [--secrets-as-env] -- {command...}
+```
 
 Run a one-off command locally with Tako project context. `--env` defaults to `development`.
+
+If the first positional argument is a script extension supported by the selected runtime, Tako expands it through that runtime's local-run rule and appends remaining args. Bun runs JS/TS scripts with `bun {script}`, Node runs JS scripts with `node {script}` and TS scripts with `node --experimental-strip-types {script}`, and Go runs `.go` files with `go run {script}`. `--eval` writes inline source to a temporary runtime-local script file and runs it through the runtime's inline rule; JS runtimes support inline TypeScript source. Runtimes without an inline rule reject `--eval`. Unknown extensions are treated as explicit commands, and `-- {command...}` is the exact-command escape hatch for tools such as `cargo run`, `sh`, or custom binaries.
 
 The child process runs with cwd set to the selected config file's parent directory. It receives merged `[vars]` + `[vars.<env>]`, derived `ENV=<env>`, `TAKO_BUILD=local`, `TAKO_DATA_DIR=<project>/.tako/data/app`, and runtime adapter defaults. JS runtimes also receive `TAKO_APP_ROOT`; non-development environments use production runtime defaults (`NODE_ENV=production`, `BUN_ENV=production` for Bun).
 

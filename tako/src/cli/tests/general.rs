@@ -43,6 +43,7 @@ fn run_parses_env_secrets_flag_and_trailing_command() {
     let Some(Commands::Run {
         env,
         secrets_as_env,
+        eval,
         command,
     }) = cli.command
     else {
@@ -50,7 +51,20 @@ fn run_parses_env_secrets_flag_and_trailing_command() {
     };
     assert_eq!(env.as_deref(), Some("staging"));
     assert!(secrets_as_env);
+    assert_eq!(eval, None);
     assert_eq!(command, ["bun", "scripts/foo.ts", "--force"]);
+}
+
+#[test]
+fn run_parses_eval_and_trailing_args() {
+    let cli =
+        Cli::try_parse_from(["tako", "run", "--eval", "console.log(1)", "--", "--force"]).unwrap();
+
+    let Some(Commands::Run { eval, command, .. }) = cli.command else {
+        panic!("expected Run");
+    };
+    assert_eq!(eval.as_deref(), Some("console.log(1)"));
+    assert_eq!(command, ["--force"]);
 }
 
 #[test]

@@ -2,8 +2,9 @@ use std::path::{Path, PathBuf};
 
 use crate::plugin::{PluginContext, RuntimePlugin};
 use crate::types::{
-    DownloadDef, EntrypointDef, EnvsDef, ExtractDef, ManifestMainDef, PackageManagerDef,
-    PackageManagerDevDef, PresetDef, RuntimeDef, ServerDef, SymlinkDef, VersionSourceDef,
+    DownloadDef, EntrypointDef, EnvsDef, ExtractDef, LocalEvalDef, LocalRunDef, LocalScriptDef,
+    ManifestMainDef, PackageManagerDef, PackageManagerDevDef, PresetDef, RuntimeDef, ServerDef,
+    SymlinkDef, VersionSourceDef,
 };
 
 // ── Shared JS constants ────────────────────────────────────────────
@@ -260,6 +261,63 @@ fn js_dev_command_node() -> Vec<String> {
     ]
 }
 
+fn js_extensions() -> Vec<String> {
+    ["js", "jsx", "mjs", "cjs"]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
+fn ts_extensions() -> Vec<String> {
+    ["ts", "tsx", "mts", "cts"]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
+fn bun_local_run() -> LocalRunDef {
+    let mut extensions = js_extensions();
+    extensions.extend(ts_extensions());
+
+    LocalRunDef {
+        scripts: vec![LocalScriptDef {
+            extensions,
+            command: vec!["bun".to_string(), "{script}".to_string()],
+        }],
+        eval: Some(LocalEvalDef {
+            temp_suffix: ".ts".to_string(),
+            command: vec!["bun".to_string(), "{script}".to_string()],
+        }),
+    }
+}
+
+fn node_local_run() -> LocalRunDef {
+    LocalRunDef {
+        scripts: vec![
+            LocalScriptDef {
+                extensions: js_extensions(),
+                command: vec!["node".to_string(), "{script}".to_string()],
+            },
+            LocalScriptDef {
+                extensions: ts_extensions(),
+                command: vec![
+                    "node".to_string(),
+                    "--experimental-strip-types".to_string(),
+                    "{script}".to_string(),
+                ],
+            },
+        ],
+        eval: Some(LocalEvalDef {
+            temp_suffix: ".ts".to_string(),
+            command: vec![
+                "node".to_string(),
+                "--experimental-strip-types".to_string(),
+                "{script}".to_string(),
+            ],
+        }),
+    }
+}
+
 fn build_package_manager_def(pm: &PackageManager) -> PackageManagerDef {
     PackageManagerDef {
         id: pm.id().to_string(),
@@ -371,6 +429,7 @@ impl BunPlugin {
             },
             envs,
             package_manager: build_package_manager_def(pm),
+            local_run: bun_local_run(),
             download: download_def_for("bun"),
         }
     }
@@ -436,6 +495,7 @@ impl NodePlugin {
             },
             envs: js_production_envs(),
             package_manager: build_package_manager_def(pm),
+            local_run: node_local_run(),
             download: download_def_for("node"),
         }
     }
@@ -527,6 +587,51 @@ mod tests {
         };
         let def = NodePlugin.runtime_def(&ctx);
         assert_eq!(def.package_manager.id, "yarn");
+    }
+
+    #[test]
+    fn bun_plugin_defines_local_script_and_eval_rules() {
+        let def = BunPlugin.default_runtime_def();
+        let script_rule = def.local_run.scripts.first().unwrap();
+
+        assert!(script_rule.extensions.contains(&"ts".to_string()));
+        assert!(script_rule.extensions.contains(&"js".to_string()));
+        assert_eq!(script_rule.command, vec!["bun", "{script}"]);
+        assert_eq!(
+            def.local_run.eval.as_ref().map(|eval| &eval.command),
+            Some(&vec!["bun".to_string(), "{script}".to_string()])
+        );
+    }
+
+    #[test]
+    fn node_plugin_defines_separate_js_and_ts_local_script_rules() {
+        let def = NodePlugin.default_runtime_def();
+        let js_rule = def
+            .local_run
+            .scripts
+            .iter()
+            .find(|rule| rule.extensions.contains(&"js".to_string()))
+            .unwrap();
+        let ts_rule = def
+            .local_run
+            .scripts
+            .iter()
+            .find(|rule| rule.extensions.contains(&"ts".to_string()))
+            .unwrap();
+
+        assert_eq!(js_rule.command, vec!["node", "{script}"]);
+        assert_eq!(
+            ts_rule.command,
+            vec!["node", "--experimental-strip-types", "{script}"]
+        );
+        assert_eq!(
+            def.local_run.eval.as_ref().map(|eval| &eval.command),
+            Some(&vec![
+                "node".to_string(),
+                "--experimental-strip-types".to_string(),
+                "{script}".to_string()
+            ])
+        );
     }
 
     #[test]

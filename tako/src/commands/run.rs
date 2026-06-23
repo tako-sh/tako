@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 
@@ -11,6 +12,7 @@ const LOCAL_RUN_BUILD: &str = "local";
 pub fn run(
     env: Option<&str>,
     secrets_as_env: bool,
+    eval: Option<&str>,
     command: Vec<String>,
     config_path: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -27,17 +29,30 @@ pub fn run(
         Some(&context.project_dir),
     )?;
 
-    let mut child_env =
-        build_child_env(&config, &context.project_dir, env, &secrets, secrets_as_env);
+    let runtime = resolve_run_build_adapter(&config, &context.project_dir);
+    let mut child_env = build_child_env(&config, env, &secrets, secrets_as_env, runtime);
     inject_run_data_dir(&context.project_dir, &mut child_env)?;
     child_env.insert(
         tako_core::bootstrap::TAKO_BOOTSTRAP_DATA_ENV.to_string(),
         tako_core::bootstrap::envelope_string("", &secrets, &storages),
     );
 
-    let Some((program, args)) = command.split_first() else {
-        return Err("Missing command to run.".into());
+    let plugin_context = tako_runtime::PluginContext {
+        project_dir: &context.project_dir,
+        package_manager: config.package_manager.as_deref(),
     };
+    let runtime_def = runtime.runtime_def_with_context(&plugin_context);
+    let resolved_command = resolve_run_command(
+        runtime,
+        runtime_def.as_ref(),
+        eval,
+        &command,
+        &context.project_dir,
+    )?;
+    let (program, args) = resolved_command
+        .command
+        .split_first()
+        .expect("resolve_run_command returns a non-empty command");
 
     let status = Command::new(program)
         .args(args)
@@ -75,21 +90,24 @@ fn decrypt_run_secrets(
 
 fn build_child_env(
     config: &TakoToml,
-    project_dir: &Path,
     env: &str,
     secrets: &HashMap<String, String>,
     secrets_as_env: bool,
+    runtime: BuildAdapter,
 ) -> HashMap<String, String> {
-    let mut child_env = build_command_env(config, project_dir, env);
+    let mut child_env = build_command_env(config, env, runtime);
     if secrets_as_env {
         child_env.extend(secrets.clone());
     }
     child_env
 }
 
-fn build_command_env(config: &TakoToml, project_dir: &Path, env: &str) -> HashMap<String, String> {
+fn build_command_env(
+    config: &TakoToml,
+    env: &str,
+    runtime: BuildAdapter,
+) -> HashMap<String, String> {
     let mut child_env = HashMap::new();
-    let runtime = resolve_run_build_adapter(config, project_dir);
     let runtime_env_name = runtime_env_name(env);
 
     if let Some(def) = tako_runtime::runtime_def_for(runtime.id(), None)
@@ -143,10 +161,171 @@ fn resolve_run_build_adapter(config: &TakoToml, project_dir: &Path) -> BuildAdap
         .unwrap_or_else(|| crate::build::detect_build_adapter(project_dir))
 }
 
+#[derive(Debug)]
+struct ResolvedRunCommand {
+    command: Vec<String>,
+    _eval_file: Option<tempfile::NamedTempFile>,
+}
+
+fn resolve_run_command(
+    runtime: BuildAdapter,
+    runtime_def: Option<&tako_runtime::RuntimeDef>,
+    eval: Option<&str>,
+    command: &[String],
+    project_dir: &Path,
+) -> Result<ResolvedRunCommand, Box<dyn std::error::Error>> {
+    if let Some(source) = eval {
+        let runtime_def = runtime_def.ok_or_else(|| {
+            format!(
+                "Cannot infer how to run inline code because the project runtime is '{}'. Set top-level `runtime` or use a script file with an explicit command after `--`.",
+                runtime.id()
+            )
+        })?;
+        return resolve_eval_command(runtime, runtime_def, source, command, project_dir);
+    }
+
+    let Some((first, rest)) = command.split_first() else {
+        return Err("Missing command to run.".into());
+    };
+
+    if let Some(runtime_def) = runtime_def
+        && let Some(command) = resolve_local_script_command(runtime_def, first, rest)?
+    {
+        return Ok(ResolvedRunCommand {
+            command,
+            _eval_file: None,
+        });
+    }
+
+    if has_known_local_script_extension(first) {
+        return Err(format!(
+            "Runtime '{}' does not define a local run rule for '{}'. Pass an explicit command after `--`.",
+            runtime.id(),
+            display_extension(first)
+        )
+        .into());
+    }
+
+    Ok(ResolvedRunCommand {
+        command: command.to_vec(),
+        _eval_file: None,
+    })
+}
+
+fn resolve_eval_command(
+    runtime: BuildAdapter,
+    runtime_def: &tako_runtime::RuntimeDef,
+    source: &str,
+    args: &[String],
+    project_dir: &Path,
+) -> Result<ResolvedRunCommand, Box<dyn std::error::Error>> {
+    if source.trim().is_empty() {
+        return Err("`--eval` cannot be empty.".into());
+    }
+
+    let Some(eval) = &runtime_def.local_run.eval else {
+        return Err(format!(
+            "Runtime '{}' does not support `tako run --eval`. Use a script file or pass an explicit command after `--`.",
+            runtime.id()
+        )
+        .into());
+    };
+
+    let temp_dir = project_dir.join(".tako").join("run");
+    std::fs::create_dir_all(&temp_dir)?;
+    let mut file = tempfile::Builder::new()
+        .prefix("eval-")
+        .suffix(&eval.temp_suffix)
+        .tempfile_in(temp_dir)?;
+    file.write_all(source.as_bytes())?;
+    file.flush()?;
+
+    let script = file.path().to_string_lossy().to_string();
+    let command = apply_local_run_template(&eval.command, &script, args)?;
+
+    Ok(ResolvedRunCommand {
+        command,
+        _eval_file: Some(file),
+    })
+}
+
+fn resolve_local_script_command(
+    runtime_def: &tako_runtime::RuntimeDef,
+    script: &str,
+    args: &[String],
+) -> Result<Option<Vec<String>>, Box<dyn std::error::Error>> {
+    let Some(extension) = script_extension(script) else {
+        return Ok(None);
+    };
+
+    let Some(rule) = runtime_def.local_run.scripts.iter().find(|rule| {
+        rule.extensions
+            .iter()
+            .any(|candidate| candidate == extension)
+    }) else {
+        return Ok(None);
+    };
+
+    Ok(Some(apply_local_run_template(&rule.command, script, args)?))
+}
+
+fn apply_local_run_template(
+    template: &[String],
+    script: &str,
+    args: &[String],
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    if !template.iter().any(|part| part == "{script}") {
+        return Err("Runtime local run command must include `{script}`.".into());
+    }
+
+    let mut command: Vec<String> = template
+        .iter()
+        .map(|part| {
+            if part == "{script}" {
+                script.to_string()
+            } else {
+                part.clone()
+            }
+        })
+        .collect();
+    command.extend(args.iter().cloned());
+    Ok(command)
+}
+
+fn has_known_local_script_extension(value: &str) -> bool {
+    let Some(extension) = script_extension(value) else {
+        return false;
+    };
+
+    tako_runtime::KNOWN_RUNTIME_IDS.iter().any(|runtime_id| {
+        tako_runtime::runtime_def_for(runtime_id, None).is_some_and(|def| {
+            def.local_run.scripts.iter().any(|rule| {
+                rule.extensions
+                    .iter()
+                    .any(|candidate| candidate == extension)
+            })
+        })
+    })
+}
+
+fn display_extension(value: &str) -> String {
+    script_extension(value)
+        .map(|extension| format!(".{extension}"))
+        .unwrap_or_else(|| value.to_string())
+}
+
+fn script_extension(value: &str) -> Option<&str> {
+    Path::new(value).extension().and_then(|ext| ext.to_str())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::TakoToml;
+
+    fn runtime_def(adapter: BuildAdapter) -> tako_runtime::RuntimeDef {
+        adapter.runtime_def().unwrap()
+    }
 
     #[test]
     fn command_env_merges_vars_runtime_defaults_and_derived_values() {
@@ -163,9 +342,7 @@ API_URL = "https://preview.example.com"
 "#,
         )
         .unwrap();
-        let temp = tempfile::TempDir::new().unwrap();
-
-        let env = build_command_env(&config, temp.path(), "preview");
+        let env = build_command_env(&config, "preview", BuildAdapter::Bun);
 
         assert_eq!(
             env.get("API_URL").map(String::as_str),
@@ -180,9 +357,8 @@ API_URL = "https://preview.example.com"
     #[test]
     fn command_env_uses_development_runtime_defaults_for_development() {
         let config = TakoToml::parse("runtime = \"node\"\n").unwrap();
-        let temp = tempfile::TempDir::new().unwrap();
 
-        let env = build_command_env(&config, temp.path(), "development");
+        let env = build_command_env(&config, "development", BuildAdapter::Node);
 
         assert_eq!(env.get("ENV").map(String::as_str), Some("development"));
         assert_eq!(env.get("NODE_ENV").map(String::as_str), Some("development"));
@@ -192,10 +368,9 @@ API_URL = "https://preview.example.com"
     #[test]
     fn command_env_can_expose_secrets_as_env_when_requested() {
         let config = TakoToml::parse("name = \"demo\"\n").unwrap();
-        let temp = tempfile::TempDir::new().unwrap();
         let secrets = HashMap::from([("DATABASE_URL".to_string(), "postgres://db".to_string())]);
 
-        let env = build_child_env(&config, temp.path(), "production", &secrets, true);
+        let env = build_child_env(&config, "production", &secrets, true, BuildAdapter::Unknown);
 
         assert_eq!(
             env.get("DATABASE_URL").map(String::as_str),
@@ -209,7 +384,8 @@ API_URL = "https://preview.example.com"
         std::fs::write(temp.path().join("bun.lockb"), "").unwrap();
         let config = TakoToml::parse("name = \"demo\"\n").unwrap();
 
-        let env = build_command_env(&config, temp.path(), "development");
+        let runtime = resolve_run_build_adapter(&config, temp.path());
+        let env = build_command_env(&config, "development", runtime);
 
         assert_eq!(env.get("NODE_ENV").map(String::as_str), Some("development"));
         assert_eq!(env.get("BUN_ENV").map(String::as_str), Some("development"));
@@ -228,5 +404,169 @@ API_URL = "https://preview.example.com"
             Some(data_dir.to_str().unwrap())
         );
         assert!(data_dir.is_dir());
+    }
+
+    #[test]
+    fn run_command_wraps_bare_bun_script_with_runtime() {
+        let command = vec!["scripts/foo.ts".to_string(), "--dry".to_string()];
+        let def = runtime_def(BuildAdapter::Bun);
+        let temp = tempfile::TempDir::new().unwrap();
+
+        let resolved =
+            resolve_run_command(BuildAdapter::Bun, Some(&def), None, &command, temp.path())
+                .unwrap();
+
+        assert_eq!(resolved.command, vec!["bun", "scripts/foo.ts", "--dry"]);
+    }
+
+    #[test]
+    fn run_command_wraps_bare_node_typescript_script_with_strip_types() {
+        let command = vec!["scripts/foo.ts".to_string()];
+        let def = runtime_def(BuildAdapter::Node);
+        let temp = tempfile::TempDir::new().unwrap();
+
+        let resolved =
+            resolve_run_command(BuildAdapter::Node, Some(&def), None, &command, temp.path())
+                .unwrap();
+
+        assert_eq!(
+            resolved.command,
+            vec!["node", "--experimental-strip-types", "scripts/foo.ts"]
+        );
+    }
+
+    #[test]
+    fn run_command_wraps_bare_node_javascript_script_without_strip_types() {
+        let command = vec!["scripts/foo.mjs".to_string()];
+        let def = runtime_def(BuildAdapter::Node);
+        let temp = tempfile::TempDir::new().unwrap();
+
+        let resolved =
+            resolve_run_command(BuildAdapter::Node, Some(&def), None, &command, temp.path())
+                .unwrap();
+
+        assert_eq!(resolved.command, vec!["node", "scripts/foo.mjs"]);
+    }
+
+    #[test]
+    fn run_command_keeps_explicit_commands_unchanged() {
+        let command = vec![
+            "node".to_string(),
+            "--experimental-strip-types".to_string(),
+            "scripts/foo.ts".to_string(),
+        ];
+        let def = runtime_def(BuildAdapter::Bun);
+        let temp = tempfile::TempDir::new().unwrap();
+
+        let resolved =
+            resolve_run_command(BuildAdapter::Bun, Some(&def), None, &command, temp.path())
+                .unwrap();
+
+        assert_eq!(resolved.command, command);
+    }
+
+    #[test]
+    fn run_command_errors_for_bare_known_script_with_unknown_runtime() {
+        let command = vec!["scripts/foo.ts".to_string()];
+        let temp = tempfile::TempDir::new().unwrap();
+
+        let error = resolve_run_command(BuildAdapter::Unknown, None, None, &command, temp.path())
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("does not define a local run rule")
+        );
+    }
+
+    #[test]
+    fn run_command_wraps_bare_go_script_with_go_run() {
+        let command = vec!["scripts/foo.go".to_string(), "--dry".to_string()];
+        let def = runtime_def(BuildAdapter::Go);
+        let temp = tempfile::TempDir::new().unwrap();
+
+        let resolved =
+            resolve_run_command(BuildAdapter::Go, Some(&def), None, &command, temp.path()).unwrap();
+
+        assert_eq!(
+            resolved.command,
+            vec!["go", "run", "scripts/foo.go", "--dry"]
+        );
+    }
+
+    #[test]
+    fn run_command_rejects_go_script_with_non_go_runtime() {
+        let command = vec!["scripts/foo.go".to_string()];
+        let def = runtime_def(BuildAdapter::Bun);
+        let temp = tempfile::TempDir::new().unwrap();
+
+        let error = resolve_run_command(BuildAdapter::Bun, Some(&def), None, &command, temp.path())
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("does not define a local run rule")
+        );
+    }
+
+    #[test]
+    fn run_command_keeps_unknown_extension_as_explicit_command() {
+        let command = vec!["scripts/foo.sh".to_string()];
+        let def = runtime_def(BuildAdapter::Bun);
+        let temp = tempfile::TempDir::new().unwrap();
+
+        let resolved =
+            resolve_run_command(BuildAdapter::Bun, Some(&def), None, &command, temp.path())
+                .unwrap();
+
+        assert_eq!(resolved.command, command);
+    }
+
+    #[test]
+    fn run_command_eval_uses_runtime_inline_rule() {
+        let args = vec!["--dry".to_string()];
+        let def = runtime_def(BuildAdapter::Node);
+        let temp = tempfile::TempDir::new().unwrap();
+
+        let resolved = resolve_run_command(
+            BuildAdapter::Node,
+            Some(&def),
+            Some("console.log(tako.env);"),
+            &args,
+            temp.path(),
+        )
+        .unwrap();
+
+        assert_eq!(resolved.command[0], "node");
+        assert_eq!(resolved.command[1], "--experimental-strip-types");
+        assert!(resolved.command[2].ends_with(".ts"));
+        assert_eq!(resolved.command[3], "--dry");
+        assert_eq!(
+            std::fs::read_to_string(&resolved.command[2]).unwrap(),
+            "console.log(tako.env);"
+        );
+    }
+
+    #[test]
+    fn run_command_eval_errors_when_runtime_does_not_support_inline_code() {
+        let def = runtime_def(BuildAdapter::Go);
+        let temp = tempfile::TempDir::new().unwrap();
+
+        let error = resolve_run_command(
+            BuildAdapter::Go,
+            Some(&def),
+            Some("package main"),
+            &[],
+            temp.path(),
+        )
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("does not support `tako run --eval`")
+        );
     }
 }

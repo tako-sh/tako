@@ -81,7 +81,8 @@ fn resolve_bin_returns_none_when_not_installed() {
 #[tokio::test(flavor = "current_thread")]
 async fn install_rejects_download_without_checksum_url() {
     use crate::types::{
-        DownloadDef, EntrypointDef, EnvsDef, PackageManagerDef, PresetDef, RuntimeDef, ServerDef,
+        DownloadDef, EntrypointDef, EnvsDef, LocalRunDef, PackageManagerDef, PresetDef, RuntimeDef,
+        ServerDef,
     };
 
     let dir = TempDir::new().unwrap();
@@ -108,6 +109,7 @@ async fn install_rejects_download_without_checksum_url() {
             install: None,
             development: None,
         },
+        local_run: LocalRunDef::default(),
         download: Some(DownloadDef {
             version_source: None,
             url: Some("https://example.com/fake-{version}.tar.gz".into()),

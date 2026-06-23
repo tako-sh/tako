@@ -72,11 +72,14 @@ tako doctor
 Run a one-off command locally with Tako project context.
 
 ```bash
-tako run --env development -- bun scripts/foo.ts
-tako run --env staging --secrets-as-env -- bun scripts/foo.ts
+tako run scripts/foo.ts
+tako run jobs/foo.go --dry
+tako run --eval 'console.log(tako.env)' -- --dry
+tako run --env staging --secrets-as-env scripts/foo.ts
+tako run -- cargo run --bin migrate
 ```
 
-`--env` defaults to `development`. The child runs from the app directory with merged vars, derived runtime env, `TAKO_BUILD=local`, `TAKO_DATA_DIR`, and JS `TAKO_APP_ROOT` when applicable. App secrets and storage bindings are passed through `TAKO_BOOTSTRAP_DATA` for SDK-aware scripts; `--secrets-as-env` also exposes app secrets as raw env vars for non-SDK tools. This is local-only and does not run on deployment servers.
+`--env` defaults to `development`. Script files use the selected runtime's local rule: Bun/Node for JS/TS, `go run` for `.go` files. `--eval` runs inline source when supported by the runtime; JS runtimes support inline TypeScript. Use `-- {command...}` for exact commands such as Cargo, shell scripts, or custom tools. The child runs from the app directory with merged vars, derived runtime env, `TAKO_BUILD=local`, `TAKO_DATA_DIR`, and JS `TAKO_APP_ROOT` when applicable. App secrets and storage bindings are passed through `TAKO_BOOTSTRAP_DATA` for SDK-aware scripts; `--secrets-as-env` also exposes app secrets as raw env vars for non-SDK tools. This is local-only and does not run on deployment servers.
 
 ## Development
 

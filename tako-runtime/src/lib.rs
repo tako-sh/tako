@@ -23,8 +23,9 @@ pub fn find_runtime_project_root(
     }
 }
 pub use types::{
-    DownloadDef, EntrypointDef, EnvsDef, ExtractDef, ManifestMainDef, PackageManagerDef, PresetDef,
-    RuntimeDef, ServerDef, SymlinkDef, VersionSourceDef,
+    DownloadDef, EntrypointDef, EnvsDef, ExtractDef, LocalEvalDef, LocalRunDef, LocalScriptDef,
+    ManifestMainDef, PackageManagerDef, PresetDef, RuntimeDef, ServerDef, SymlinkDef,
+    VersionSourceDef,
 };
 
 /// Known runtime IDs.

@@ -97,11 +97,16 @@ Prints local diagnostics for the dev daemon, local DNS, TLS files, and platform-
 ## `tako run`
 
 ```bash
-tako run --env development -- bun scripts/foo.ts
-tako run --env staging --secrets-as-env -- bun scripts/foo.ts
+tako run scripts/foo.ts
+tako run jobs/foo.go --dry
+tako run --eval 'console.log(tako.env)' -- --dry
+tako run --env staging --secrets-as-env scripts/foo.ts
+tako run -- cargo run --bin migrate
 ```
 
 Runs a one-off command locally from the app directory with Tako project context. `--env` defaults to `development`.
+
+Script files are expanded by the selected runtime. Bun runs JS/TS scripts with Bun, Node runs TS scripts with type stripping, and Go runs `.go` files with `go run`. `--eval` runs inline source when the runtime supports it; JS runtimes support inline TypeScript. Use `-- {command...}` for exact commands and runtimes without a bare script rule.
 
 The child process receives `[vars]` plus `[vars.<env>]`, `ENV`, `TAKO_BUILD=local`, `TAKO_DATA_DIR`, runtime defaults, and `TAKO_APP_ROOT` for JS apps. Tako decrypts local app secrets for the selected environment and passes the normal bootstrap envelope through `TAKO_BOOTSTRAP_DATA`, so SDK-aware scripts use `tako.secrets` and `tako.storages`.
 

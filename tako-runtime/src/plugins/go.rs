@@ -2,8 +2,8 @@ use std::path::Path;
 
 use crate::plugin::{PluginContext, RuntimePlugin};
 use crate::types::{
-    EntrypointDef, EnvsDef, PackageManagerDef, PackageManagerDevDef, PresetDef, RuntimeDef,
-    ServerDef,
+    EntrypointDef, EnvsDef, LocalRunDef, LocalScriptDef, PackageManagerDef, PackageManagerDevDef,
+    PresetDef, RuntimeDef, ServerDef,
 };
 
 // ── Go Plugin ──────────────────────────────────────────────────────
@@ -50,6 +50,13 @@ impl GoPlugin {
                 development: Some(PackageManagerDevDef {
                     install: Some("go mod download".to_string()),
                 }),
+            },
+            local_run: LocalRunDef {
+                scripts: vec![LocalScriptDef {
+                    extensions: vec!["go".to_string()],
+                    command: vec!["go".to_string(), "run".to_string(), "{script}".to_string()],
+                }],
+                eval: None,
             },
             download: None,
         }
@@ -153,6 +160,16 @@ mod tests {
     fn go_plugin_dev_command() {
         let def = GoPlugin.default_runtime_def();
         assert_eq!(def.preset.dev, vec!["go", "run", "."]);
+    }
+
+    #[test]
+    fn go_plugin_defines_file_backed_local_run_only() {
+        let def = GoPlugin.default_runtime_def();
+        let script_rule = def.local_run.scripts.first().unwrap();
+
+        assert_eq!(script_rule.extensions, vec!["go"]);
+        assert_eq!(script_rule.command, vec!["go", "run", "{script}"]);
+        assert!(def.local_run.eval.is_none());
     }
 
     #[test]

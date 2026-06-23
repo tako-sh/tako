@@ -83,6 +83,22 @@ pub(crate) fn run_tako_with_env(
     cmd.output().expect("Failed to run tako command")
 }
 
+pub(crate) fn run_tako_with_extra_env(
+    args: &[&str],
+    cwd: &Path,
+    envs: &[(&str, &str)],
+) -> std::process::Output {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_tako"));
+    cmd.args(args)
+        .current_dir(cwd)
+        .envs(envs.iter().copied())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    apply_coverage_env(&mut cmd);
+    cmd.output().expect("Failed to run tako command")
+}
+
 pub(crate) fn run_tako_with_stdin_and_env(
     args: &[&str],
     cwd: &Path,

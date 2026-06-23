@@ -24,6 +24,9 @@ pub struct RuntimeDef {
     pub package_manager: PackageManagerDef,
 
     #[serde(default)]
+    pub local_run: LocalRunDef,
+
+    #[serde(default)]
     pub download: Option<DownloadDef>,
 }
 
@@ -61,6 +64,42 @@ pub struct PackageManagerDevDef {
     /// Build-time dependency install script (shell). Includes dev dependencies.
     #[serde(default)]
     pub install: Option<String>,
+}
+
+/// Local script execution rules used by `tako run`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LocalRunDef {
+    /// File-backed script rules, matched by extension.
+    #[serde(default)]
+    pub scripts: Vec<LocalScriptDef>,
+
+    /// Optional inline script support.
+    #[serde(default)]
+    pub eval: Option<LocalEvalDef>,
+}
+
+/// A file-backed script rule.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LocalScriptDef {
+    /// File extensions without a leading dot.
+    #[serde(default)]
+    pub extensions: Vec<String>,
+
+    /// Command template. `{script}` is replaced with the script path.
+    #[serde(default)]
+    pub command: Vec<String>,
+}
+
+/// Inline script execution rule.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LocalEvalDef {
+    /// Temporary script suffix, including the leading dot.
+    #[serde(default)]
+    pub temp_suffix: String,
+
+    /// Command template. `{script}` is replaced with the temporary script path.
+    #[serde(default)]
+    pub command: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]

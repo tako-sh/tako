@@ -178,10 +178,14 @@ The fd-3 bootstrap envelope is present even with no secrets or storages. It carr
 Use `tako run` to run local scripts with the same project vars and SDK bootstrap shape:
 
 ```bash
-tako run --env development -- bun scripts/foo.ts
+tako run scripts/foo.ts
+tako run --eval 'console.log(tako.env)'
+tako run -- cargo run --bin migrate
 ```
 
-`--env` defaults to `development`. The command runs from the app directory, sets `ENV`, `TAKO_BUILD=local`, `TAKO_DATA_DIR`, runtime defaults, and JS `TAKO_APP_ROOT`, then passes app secrets and storage bindings through `TAKO_BOOTSTRAP_DATA`. SDK-aware scripts read secrets from `tako.secrets`.
+`--env` defaults to `development`. Script files use the selected runtime's local rule, such as Bun/Node for JS/TS and `go run` for `.go` files. `--eval` runs inline source when the runtime supports it; JS runtimes support inline TypeScript. Use `-- {command...}` for exact commands.
+
+The command runs from the app directory, sets `ENV`, `TAKO_BUILD=local`, `TAKO_DATA_DIR`, runtime defaults, and JS `TAKO_APP_ROOT`, then passes app secrets and storage bindings through `TAKO_BOOTSTRAP_DATA`. SDK-aware scripts read secrets from `tako.secrets`.
 
 Secrets are not raw process env vars unless you pass `--secrets-as-env` for a tool that cannot use the SDK.
 

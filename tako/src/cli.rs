@@ -206,8 +206,12 @@ pub enum Commands {
         #[arg(long)]
         secrets_as_env: bool,
 
-        /// Command to run
-        #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+        /// Evaluate inline code with the project runtime
+        #[arg(long)]
+        eval: Option<String>,
+
+        /// Script, command, or arguments for --eval
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
     },
 
@@ -333,10 +337,12 @@ impl Cli {
             Commands::Run {
                 env,
                 secrets_as_env,
+                eval,
                 command,
             } => commands::run::run(
                 env.as_deref(),
                 secrets_as_env,
+                eval.as_deref(),
                 command,
                 self.config.as_deref(),
             ),
