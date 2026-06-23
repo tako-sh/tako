@@ -15,6 +15,8 @@ mod help_and_version;
 mod init;
 #[path = "cli_integration/output_modes.rs"]
 mod output_modes;
+#[path = "cli_integration/run_command.rs"]
+mod run_command;
 #[path = "cli_integration/secret_commands.rs"]
 mod secret_commands;
 #[path = "cli_integration/server_commands.rs"]

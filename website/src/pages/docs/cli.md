@@ -3,7 +3,7 @@ layout: ../../layouts/DocsLayout.astro
 title: "Tako CLI Reference - Tako Docs"
 heading: CLI Reference
 current: cli
-description: "Complete CLI reference for Tako commands including init, dev, deploy, servers, secrets, storage, status, logs, and global flags."
+description: "Complete CLI reference for Tako commands including init, dev, run, deploy, servers, secrets, storage, status, logs, and global flags."
 ---
 
 # CLI Reference
@@ -26,9 +26,9 @@ Progress, prompts, diagnostics, and logs go to stderr. Command results and machi
 | `-c`, `--config <CONFIG>`       | Use an explicit config file. `.toml` is appended when omitted.                                                                  |
 | `--ssh-passphrase <PASSPHRASE>` | Use a passphrase for encrypted local SSH keys.                                                                                  |
 
-App-scoped commands that honor `-c`: `init`, `dev`, `logs`, `deploy`, `releases`, `backups`, `delete`, `secrets`, `storages`, `generate`, and project-context `scale`.
+App-scoped commands that honor `-c`: `init`, `dev`, `run`, `logs`, `deploy`, `releases`, `backups`, `delete`, `secrets`, `storages`, `generate`, and project-context `scale`.
 
-For finite commands, `--json` prints one final object. Commands without a specialized schema use `{"ok":true,"command":"<command>"}`. Failures print `{"ok":false,"error":{"message":"..."}}` on stdout and the human-readable error on stderr. `tako logs --tail --json` is the streaming exception: it emits one structured log event per stdout line until interrupted.
+For finite commands, `--json` prints one final object. Commands without a specialized schema use `{"ok":true,"command":"<command>"}`. Failures print `{"ok":false,"error":{"message":"..."}}` on stdout and the human-readable error on stderr. `tako logs --tail --json` is the streaming exception: it emits one structured log event per stdout line until interrupted. `tako run` is also an exception: child stdout stays untouched and no JSON result object is appended.
 
 ## Project Setup
 
@@ -93,6 +93,19 @@ tako doctor
 ```
 
 Prints local diagnostics for the dev daemon, local DNS, TLS files, and platform-specific proxy setup.
+
+## `tako run`
+
+```bash
+tako run --env development -- bun scripts/foo.ts
+tako run --env staging --secrets-as-env -- bun scripts/foo.ts
+```
+
+Runs a one-off command locally from the app directory with Tako project context. `--env` defaults to `development`.
+
+The child process receives `[vars]` plus `[vars.<env>]`, `ENV`, `TAKO_BUILD=local`, `TAKO_DATA_DIR`, runtime defaults, and `TAKO_APP_ROOT` for JS apps. Tako decrypts local app secrets for the selected environment and passes the normal bootstrap envelope through `TAKO_BOOTSTRAP_DATA`, so SDK-aware scripts use `tako.secrets` and `tako.storages`.
+
+Secrets are not process env vars by default. Use `--secrets-as-env` only for tools that cannot use the SDK. `tako run` is local-only in v0; it does not run commands on deployed servers.
 
 ## Development
 

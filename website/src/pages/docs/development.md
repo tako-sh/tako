@@ -173,6 +173,18 @@ User variables come from `[vars]` plus `[vars.development]`.
 
 The fd-3 bootstrap envelope is present even with no secrets or storages. It carries the internal auth token, `secrets`, and `storages`.
 
+## One-Off Local Commands
+
+Use `tako run` to run local scripts with the same project vars and SDK bootstrap shape:
+
+```bash
+tako run --env development -- bun scripts/foo.ts
+```
+
+`--env` defaults to `development`. The command runs from the app directory, sets `ENV`, `TAKO_BUILD=local`, `TAKO_DATA_DIR`, runtime defaults, and JS `TAKO_APP_ROOT`, then passes app secrets and storage bindings through `TAKO_BOOTSTRAP_DATA`. SDK-aware scripts read secrets from `tako.secrets`.
+
+Secrets are not raw process env vars unless you pass `--secrets-as-env` for a tool that cannot use the SDK.
+
 ## Secrets And Storage In Dev
 
 Set development secrets:

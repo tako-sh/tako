@@ -13,6 +13,7 @@ fn test_help_shows_commands() {
     assert!(out.contains("init"), "Should list init command");
     assert!(out.contains("deploy"), "Should list deploy command");
     assert!(out.contains("dev"), "Should list dev command");
+    assert!(out.contains("run"), "Should list run command");
     assert!(out.contains("doctor"), "Should list doctor command");
     assert!(out.contains("upgrade"), "Should list upgrade command");
     assert!(out.contains("delete"), "Should list delete command");

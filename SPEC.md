@@ -136,7 +136,7 @@ workers = 4
 
 1. `[vars]` - base
 2. `[vars.{environment}]` - environment-specific
-3. Auto-set by Tako at runtime: `ENV={environment}` in both dev and deploy, `TAKO_BUILD={version}` on deploys, `TAKO_DATA_DIR=<app data dir>` in dev and native deploys, `TAKO_APP_ROOT` for JS apps, plus runtime env vars (e.g. `NODE_ENV` for all JS runtimes, `BUN_ENV` for Bun)
+3. Auto-set by Tako at runtime: `ENV={environment}` in dev, local run, and deploy; `TAKO_BUILD=local` for `tako run`; `TAKO_BUILD={version}` on deploys; `TAKO_DATA_DIR=<app data dir>` in dev, local run, and native deploys; `TAKO_APP_ROOT` for JS apps; plus runtime env vars (e.g. `NODE_ENV` for all JS runtimes, `BUN_ENV` for Bun)
 
 Variable values may be TOML strings, numbers, booleans, or datetimes. Tako converts them to strings before injection because process environment values are strings. Arrays and tables are not valid variable values.
 
@@ -539,7 +539,8 @@ CLI output modes:
 
 All status/progress/log output goes to stderr. Only actual command results (URLs, machine-readable data) go to stdout.
 `tako logs --tail --json` is a streaming exception: it emits one structured log event per stdout
-line until interrupted instead of a final result object.
+line until interrupted instead of a final result object. `tako run` is also an exception: child
+stdout stays untouched and no JSON result object is appended.
 
 Config selection is global for app-scoped commands:
 
@@ -547,7 +548,7 @@ Config selection is global for app-scoped commands:
 - override: `-c path/to/config` (recommended shorthand; `.toml` suffix is optional)
 - project directory: parent directory of the selected config file
 
-App-scoped commands that honor `-c/--config`: `init`, `dev`, `logs`, `deploy`, `releases`,
+App-scoped commands that honor `-c/--config`: `init`, `dev`, `run`, `logs`, `deploy`, `releases`,
 `backups`, `delete`, `secrets`, `storages`, `generate`, and `scale` when it is using project context.
 
 ### tako init
@@ -608,6 +609,16 @@ Show version information (same as `--version` flag).
 ### tako generate
 
 Refresh generated files for the current project: `tako.d.ts` for JS/TS apps (project-specific type augmentation for `tako.sh`) and `tako_secrets.go` for Go apps. `tako gen` and `tako g` are aliases. For JS/TS projects, `tako generate` keeps an existing `tako.d.ts` in `app/`, `src/`, or the project root. When creating the file for the first time, it uses an existing legacy `tako.gen.ts` location when present, otherwise `app/`, then `src/`, then the project root. The JS/TS declaration file includes user-defined variable names from `[vars]` and `[vars.<env>]` on `process.env` and `import.meta.env`, typed as strings. Legacy `tako.gen.ts` files are removed on regeneration. If a JS/TS project already has `<app_root>/channels/` or `<app_root>/workflows/` directories, `tako generate` also scaffolds `demo.ts` in empty dirs and adds missing default `defineChannel(...)` or `defineWorkflow(...)` exports to existing definition files that have no default export yet. Generated channel stubs use the file stem as the initial wire name, but `tako generate` does not rewrite existing explicit names.
+
+### tako run [--env {environment}] [--secrets-as-env] -- {command...}
+
+Run a one-off command locally with Tako project context. `--env` defaults to `development`.
+
+The child process runs with cwd set to the selected config file's parent directory. It receives merged `[vars]` + `[vars.<env>]`, derived `ENV=<env>`, `TAKO_BUILD=local`, `TAKO_DATA_DIR=<project>/.tako/data/app`, and runtime adapter defaults. JS runtimes also receive `TAKO_APP_ROOT`; non-development environments use production runtime defaults (`NODE_ENV=production`, `BUN_ENV=production` for Bun).
+
+Tako decrypts local app secrets for the selected environment when the local key is available, builds the standard bootstrap envelope, and passes it through `TAKO_BOOTSTRAP_DATA`. SDK-aware scripts read secrets from `tako.secrets` and storage bindings from `tako.storages`, the same as container processes. Secrets are not exposed as process env vars by default. `--secrets-as-env` additionally adds app secrets to the child environment for tools that cannot use the SDK.
+
+The command is local-only in v0: it does not run on deployment servers and does not fan out to all servers in an environment. Child stdout/stderr are inherited, `tako run` does not print a success line or JSON result object, and a non-zero child exit exits with the child's status code.
 
 ### tako upgrade
 
@@ -1711,7 +1722,7 @@ Native HTTP instances and workflow workers receive the same app/runtime environm
 | `HOST`                 | app          | Listen host for HTTP server                                                             | Native: `127.0.0.1` in both dev and deploy. Container: `0.0.0.0`.                                                                                                    |
 | `TAKO_APP_NAME`        | app + worker | App identity used by the SDK to tag internal-socket RPCs                                | Set by both spawners (tako-server and tako-dev-server). In deploy this is the deployment id (`{app}/{env}`); internal HTTP hosts use the base `{app}` segment.       |
 | `TAKO_INTERNAL_SOCKET` | app + worker | Path to the shared internal unix socket for workflow enqueue/signal and channel publish | Set by both spawners. Together with `TAKO_APP_NAME` this must always be set as a pair; the SDK asserts this at boot.                                                 |
-| `TAKO_DATA_DIR`        | app + worker | Persistent app-owned runtime data directory                                             | Set by Tako in dev and native deploys; points to the app's `data/app` directory. Not set for container releases in v0.                                               |
+| `TAKO_DATA_DIR`        | app + worker | Persistent app-owned runtime data directory                                             | Set by Tako in dev, local `tako run`, and native deploys; points to the app's `data/app` directory. Not set for container releases in v0.                            |
 | `TAKO_APP_ROOT`        | app + worker | JavaScript app root for `channels/` and `workflows/` discovery                          | Set for JS apps from `tako.toml` `app_root`; defaults to `src`.                                                                                                      |
 | `NODE_ENV`             | app + worker | Node.js convention env                                                                  | Set by runtime adapter / server (`development` or `production`).                                                                                                     |
 | `BUN_ENV`              | app + worker | Bun convention env                                                                      | Set by runtime adapter (`development` or `production`).                                                                                                              |
@@ -1745,7 +1756,7 @@ The SDK parses this from `process.argv` (JS) or `os.Args` (Go) at startup and ex
 }
 ```
 
-The SDK checks fd 3 first at startup and closes it when present. For container processes, where fd 3 does not cross the container boundary in v0, the SDK falls back to the same envelope in `TAKO_BOOTSTRAP_DATA` and removes that variable from the process environment after startup. The token authenticates `Host: <app>.tako` requests (health probes, channel auth callbacks). Secrets populate `tako.secrets`; storage bindings populate `tako.storages`. Backup storage is deliberately not included here unless the same resource is separately bound under `[envs.<env>].storages`. Generated `tako.d.ts` augments both project-specific surfaces. The fd 3 pipe is always present for native dev/prod processes — in dev mode with no secrets or storages, the envelope is `{"token": "...", "secrets": {}, "storages": {}}`.
+The SDK checks fd 3 first at startup and closes it when present. For container processes, where fd 3 does not cross the container boundary in v0, and for local `tako run` scripts, the SDK falls back to the same envelope in `TAKO_BOOTSTRAP_DATA` and removes that variable from the process environment after startup. The token authenticates `Host: <app>.tako` requests (health probes, channel auth callbacks) when present. Secrets populate `tako.secrets`; storage bindings populate `tako.storages`. Backup storage is deliberately not included here unless the same resource is separately bound under `[envs.<env>].storages`. Generated `tako.d.ts` augments both project-specific surfaces. The fd 3 pipe is always present for native dev/prod processes — in dev mode with no secrets or storages, the envelope is `{"token": "...", "secrets": {}, "storages": {}}`.
 
 ### Messages (JSON over Unix Socket)
 

@@ -12,6 +12,7 @@ mod log_style;
 pub mod logs;
 pub mod project_context;
 pub mod releases;
+pub mod run;
 pub mod scale;
 pub mod secret;
 pub mod server;

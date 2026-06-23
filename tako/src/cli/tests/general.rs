@@ -26,6 +26,34 @@ fn generate_parses_with_short_aliases() {
 }
 
 #[test]
+fn run_parses_env_secrets_flag_and_trailing_command() {
+    let cli = Cli::try_parse_from([
+        "tako",
+        "run",
+        "--env",
+        "staging",
+        "--secrets-as-env",
+        "--",
+        "bun",
+        "scripts/foo.ts",
+        "--force",
+    ])
+    .unwrap();
+
+    let Some(Commands::Run {
+        env,
+        secrets_as_env,
+        command,
+    }) = cli.command
+    else {
+        panic!("expected Run");
+    };
+    assert_eq!(env.as_deref(), Some("staging"));
+    assert!(secrets_as_env);
+    assert_eq!(command, ["bun", "scripts/foo.ts", "--force"]);
+}
+
+#[test]
 fn top_level_status_command_parses() {
     let cli = Cli::try_parse_from(["tako", "status"]).unwrap();
     assert!(matches!(cli.command, Some(Commands::Status)));

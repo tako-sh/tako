@@ -196,6 +196,21 @@ pub enum Commands {
     #[command(visible_aliases = ["gen", "g"])]
     Generate,
 
+    /// Run a local command with Tako environment and secrets
+    Run {
+        /// Environment to load (defaults to development)
+        #[arg(long)]
+        env: Option<String>,
+
+        /// Also expose app secrets as process environment variables
+        #[arg(long)]
+        secrets_as_env: bool,
+
+        /// Command to run
+        #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
+    },
+
     /// Show version information
     Version,
 
@@ -315,6 +330,16 @@ impl Cli {
                 commands::codegen::run(self.config.as_deref())?;
                 json_success(json, "generate")
             }
+            Commands::Run {
+                env,
+                secrets_as_env,
+                command,
+            } => commands::run::run(
+                env.as_deref(),
+                secrets_as_env,
+                command,
+                self.config.as_deref(),
+            ),
             Commands::Deploy { env, yes } => {
                 commands::deploy::run(env.as_deref(), yes, self.config.as_deref())?;
                 json_success(json, "deploy")

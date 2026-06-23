@@ -67,6 +67,17 @@ Print a local diagnostic report.
 tako doctor
 ```
 
+### `tako run`
+
+Run a one-off command locally with Tako project context.
+
+```bash
+tako run --env development -- bun scripts/foo.ts
+tako run --env staging --secrets-as-env -- bun scripts/foo.ts
+```
+
+`--env` defaults to `development`. The child runs from the app directory with merged vars, derived runtime env, `TAKO_BUILD=local`, `TAKO_DATA_DIR`, and JS `TAKO_APP_ROOT` when applicable. App secrets and storage bindings are passed through `TAKO_BOOTSTRAP_DATA` for SDK-aware scripts; `--secrets-as-env` also exposes app secrets as raw env vars for non-SDK tools. This is local-only and does not run on deployment servers.
+
 ## Development
 
 ### `tako dev`
