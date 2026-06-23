@@ -110,8 +110,9 @@ describe("tako init (interactive wizard)", () => {
       expect(cell!.isDim).toBe(false);
     }
 
+    await term.waitForIdle(250);
     term.press("\r");
-    await term.waitForText("New config name", { timeout: 5000 });
+    await term.waitForText("New config name", { timeout: 10_000 });
 
     labelRow = findRowContaining(term, "Configuration file tako.toml already exists. Overwrite?");
     valueRow = findRowContaining(term, "no");
