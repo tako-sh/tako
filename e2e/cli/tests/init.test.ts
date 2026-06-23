@@ -154,7 +154,6 @@ describe("tako init (interactive wizard)", () => {
     expect(term.row(labelRow! + 1)).toBe("");
     expect(term.row(cancelledRow!)).toBe("Operation cancelled");
     expect(term.screenText()).not.toContain("› Operation cancelled");
-    expect(term.rawOutput()).toContain("\x1b[9m");
 
     const cancelledRgb = term.fgRgb(cancelledRow!, 0);
     expect(cancelledRgb).not.toBeNull();

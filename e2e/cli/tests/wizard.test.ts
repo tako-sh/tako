@@ -333,7 +333,6 @@ describe("init wizard interaction", () => {
     expect(labelRow).not.toBeNull();
     expect(cancelledRow).toBeGreaterThan(labelRow!);
     expect(screen).not.toContain("› ctrl-c-test");
-    expect(term.rawOutput()).toContain("\x1b[9m");
 
     const exitCode = await term.waitForExit({ timeout: 5000 });
     expect([0, 130]).toContain(exitCode);

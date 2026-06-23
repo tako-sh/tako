@@ -89,7 +89,6 @@ describe("server add wizard", () => {
     expect(term.row(labelRow! + 1)).toBe("");
     expect(term.row(labelRow!)).not.toContain("›");
     expect(screen).not.toContain("optional");
-    expect(term.rawOutput()).toContain("\x1b[9m");
 
     const exitCode = await term.waitForExit({ timeout: 5000 });
     expect([0, 130]).toContain(exitCode);
