@@ -63,6 +63,8 @@ Public `/_tako/*` paths are reserved after a request matches an app route:
 - `/_tako/image` serves the public image optimizer.
 - `/_tako/storages/<binding>/<key>` serves signed local storage upload/download routes.
 
+Channels are broadcast streams for app events. All authorized subscribers to the same channel can read the same messages, each subscriber keeps its own cursor, and receiving a message does not remove it for other subscribers.
+
 Unknown production routes return `404`. Unknown managed local development hosts return a helpful `421` that lists registered dev routes.
 
 ## TLS And Source IP

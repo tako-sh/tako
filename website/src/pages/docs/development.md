@@ -213,6 +213,8 @@ Use `tako.cache` for server-side caching of JSON-serializable values. `get<T>(ke
 
 JS channels and workflows are discovered under `<app_root>/channels/` and `<app_root>/workflows/`. `tako dev` watches those directories and refreshes generated metadata when files change.
 
+Channels are broadcast streams, not work queues. Multiple local clients subscribed to the same channel read the same app events, with independent cursors for reconnect replay. Dev channel replay stays in the dev daemon's in-memory store until the daemon restarts.
+
 Workflows in dev use the same architecture as production: the dev daemon owns the runs database, internal socket, dispatcher, and scale-to-zero worker supervisor. The worker exits after a short idle window and restarts for the next runnable enqueue, signal, cron tick, or retry, so code edits take effect on fresh work.
 
 Worker stdout/stderr is tee'd into the same log stream with `scope: "worker"`.

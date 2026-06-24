@@ -250,7 +250,7 @@ interface TakoStatus {
 
 ## Channels
 
-Durable pub-sub routes with SSE and WebSocket transport, plus a bounded replay window. Production stores replay by deployed app id (`{name}/{env}`); local dev keeps replay in memory for the current daemon process.
+Durable pub-sub routes with SSE and WebSocket transport, plus a bounded replay window. Channels are broadcast streams, not work queues: all authorized subscribers to the same channel read the same messages, and each subscriber keeps its own cursor. Production stores replay by deployed app id (`{name}/{env}`); local dev keeps replay in memory for the current daemon process.
 
 ### Defining channels (file-based)
 
@@ -295,7 +295,7 @@ export default defineChannel("chat", {
 - `.$messageTypes<M>()` is a type-level narrower that declares the message map — runtime no-op. Omit for channels with no typed messages.
 - `auth` is optional. Omit or set `false` for public channels.
 - `handler` presence decides transport: present → WebSocket, absent → SSE (broadcast-only). SSE channels reject client POST publishes.
-- Every publish is stored before delivery. `replayWindowMs` defaults to 10 minutes and can be overridden per channel.
+- Every publish is stored before delivery. Messages are not claimed or removed when one subscriber receives them. `replayWindowMs` defaults to 10 minutes and can be overridden per channel.
 - Browser clients reconnect until explicitly closed. Network loss, laptop sleep, server restarts, and clean connection rotation are transient; the SDK retries with bounded backoff, wakes early on the browser `online` event, and resumes from the last received message id while it remains inside the replay window.
 
 Auth return values: `false` deny · `true` allow anonymously · `{ subject }` allow with identity.

@@ -203,7 +203,7 @@ workers = 4
 
 `workers = 0` means scale-to-zero workers. `concurrency` defaults to 10. `run` provides an explicit worker command for runtimes that need one; in v0, container releases support one configured workflow `run` command across the base workflow config and named groups. Named workflow groups inherit from `[workflows]`, then can be overridden per group and per server.
 
-In multi-server environments, JS workflows require `postgres_url` unless every workflow opts into local per-server execution. Go workflow deployments require `postgres_url` for multi-server environments. Channels also require `postgres_url` for multi-server deploys.
+In multi-server environments, JS workflows require `postgres_url` unless every workflow opts into local per-server execution. Go workflow deployments require `postgres_url` for multi-server environments. Channels also require `postgres_url` for multi-server deploys so every server can read and publish to the same broadcast replay log.
 
 ## Complete Example
 
