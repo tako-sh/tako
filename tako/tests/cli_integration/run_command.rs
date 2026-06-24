@@ -229,7 +229,7 @@ fn run_command_propagates_child_failure_without_error_copy() {
 }
 
 #[test]
-fn run_command_loads_encrypted_secrets_into_bootstrap_and_optional_env() {
+fn run_command_loads_encrypted_secrets_into_bootstrap() {
     let temp = TempDir::new().unwrap();
     let project_dir = temp.path().join("project");
     let home = temp.path().join("home");
@@ -255,11 +255,10 @@ fn run_command_loads_encrypted_secrets_into_bootstrap_and_optional_env() {
     let output = run_tako_with_env(
         &[
             "run",
-            "--secrets-as-env",
             "--",
             "sh",
             "-c",
-            "printf 'secret_env=%s\\nbootstrap=%s\\ndata=%s\\n' \"$API_KEY\" \"$TAKO_BOOTSTRAP_DATA\" \"$TAKO_DATA_DIR\"",
+            "printf 'bootstrap=%s\\ndata=%s\\n' \"$TAKO_BOOTSTRAP_DATA\" \"$TAKO_DATA_DIR\"",
         ],
         &project_dir,
         &home,
@@ -272,10 +271,6 @@ fn run_command_loads_encrypted_secrets_into_bootstrap_and_optional_env() {
         stderr_str(&output)
     );
     let out = stdout_str(&output);
-    assert!(
-        out.contains("secret_env=secret-value"),
-        "missing secret env: {out}"
-    );
     assert!(
         out.contains("\"API_KEY\":\"secret-value\""),
         "missing bootstrap secret: {out}"

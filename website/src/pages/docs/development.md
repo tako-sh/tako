@@ -185,9 +185,9 @@ tako run -- cargo run --bin migrate
 
 `--env` defaults to `development`. Script files use the selected runtime's local rule, such as Bun/Node for JS/TS and `go run` for `.go` files. `--eval` runs inline source when the runtime supports it; JS runtimes support inline TypeScript. Use `-- {command...}` for exact commands.
 
-The command runs from the app directory, sets `ENV`, `TAKO_BUILD=local`, `TAKO_DATA_DIR`, runtime defaults, and JS `TAKO_APP_ROOT`, then passes app secrets and storage bindings through `TAKO_BOOTSTRAP_DATA`. SDK-aware scripts read secrets from `tako.secrets`.
+The command runs from the app directory, sets `ENV`, `TAKO_BUILD=local`, `TAKO_DATA_DIR`, runtime defaults, and JS `TAKO_APP_ROOT`, then passes app secrets and storage bindings through `TAKO_BOOTSTRAP_DATA`. SDK-aware scripts use the same app SDK surfaces; JS/TS scripts can import `tako` and read `tako.secrets`.
 
-Secrets are not raw process env vars unless you pass `--secrets-as-env` for a tool that cannot use the SDK.
+Secrets are not raw process env vars.
 
 ## Secrets And Storage In Dev
 

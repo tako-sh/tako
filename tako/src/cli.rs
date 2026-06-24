@@ -202,10 +202,6 @@ pub enum Commands {
         #[arg(long)]
         env: Option<String>,
 
-        /// Also expose app secrets as process environment variables
-        #[arg(long)]
-        secrets_as_env: bool,
-
         /// Evaluate inline code with the project runtime
         #[arg(long)]
         eval: Option<String>,
@@ -334,14 +330,8 @@ impl Cli {
                 commands::codegen::run(self.config.as_deref())?;
                 json_success(json, "generate")
             }
-            Commands::Run {
-                env,
-                secrets_as_env,
-                eval,
-                command,
-            } => commands::run::run(
+            Commands::Run { env, eval, command } => commands::run::run(
                 env.as_deref(),
-                secrets_as_env,
                 eval.as_deref(),
                 command,
                 self.config.as_deref(),

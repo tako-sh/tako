@@ -11,7 +11,6 @@ const LOCAL_RUN_BUILD: &str = "local";
 
 pub fn run(
     env: Option<&str>,
-    secrets_as_env: bool,
     eval: Option<&str>,
     command: Vec<String>,
     config_path: Option<&Path>,
@@ -30,7 +29,7 @@ pub fn run(
     )?;
 
     let runtime = resolve_run_build_adapter(&config, &context.project_dir);
-    let mut child_env = build_child_env(&config, env, &secrets, secrets_as_env, runtime);
+    let mut child_env = build_command_env(&config, env, runtime);
     inject_run_data_dir(&context.project_dir, &mut child_env)?;
     child_env.insert(
         tako_core::bootstrap::TAKO_BOOTSTRAP_DATA_ENV.to_string(),
@@ -86,20 +85,6 @@ fn decrypt_run_secrets(
         decrypted.insert(name.clone(), value);
     }
     Ok(decrypted)
-}
-
-fn build_child_env(
-    config: &TakoToml,
-    env: &str,
-    secrets: &HashMap<String, String>,
-    secrets_as_env: bool,
-    runtime: BuildAdapter,
-) -> HashMap<String, String> {
-    let mut child_env = build_command_env(config, env, runtime);
-    if secrets_as_env {
-        child_env.extend(secrets.clone());
-    }
-    child_env
 }
 
 fn build_command_env(
@@ -363,19 +348,6 @@ API_URL = "https://preview.example.com"
         assert_eq!(env.get("ENV").map(String::as_str), Some("development"));
         assert_eq!(env.get("NODE_ENV").map(String::as_str), Some("development"));
         assert_eq!(env.get("TAKO_BUILD").map(String::as_str), Some("local"));
-    }
-
-    #[test]
-    fn command_env_can_expose_secrets_as_env_when_requested() {
-        let config = TakoToml::parse("name = \"demo\"\n").unwrap();
-        let secrets = HashMap::from([("DATABASE_URL".to_string(), "postgres://db".to_string())]);
-
-        let env = build_child_env(&config, "production", &secrets, true, BuildAdapter::Unknown);
-
-        assert_eq!(
-            env.get("DATABASE_URL").map(String::as_str),
-            Some("postgres://db")
-        );
     }
 
     #[test]

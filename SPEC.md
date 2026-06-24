@@ -615,9 +615,9 @@ Refresh generated files for the current project: `tako.d.ts` for JS/TS apps (pro
 ### tako run
 
 ```bash
-tako run [--env {environment}] [--secrets-as-env] {script-file} [args...]
-tako run [--env {environment}] [--secrets-as-env] --eval {code} [-- args...]
-tako run [--env {environment}] [--secrets-as-env] -- {command...}
+tako run [--env {environment}] {script-file} [args...]
+tako run [--env {environment}] --eval {code} [-- args...]
+tako run [--env {environment}] -- {command...}
 ```
 
 Run a one-off command locally with Tako project context. `--env` defaults to `development`.
@@ -626,7 +626,7 @@ If the first positional argument is a script extension supported by the selected
 
 The child process runs with cwd set to the selected config file's parent directory. It receives merged `[vars]` + `[vars.<env>]`, derived `ENV=<env>`, `TAKO_BUILD=local`, `TAKO_DATA_DIR=<project>/.tako/data/app`, and runtime adapter defaults. JS runtimes also receive `TAKO_APP_ROOT`; non-development environments use production runtime defaults (`NODE_ENV=production`, `BUN_ENV=production` for Bun).
 
-Tako decrypts local app secrets for the selected environment when the local key is available, builds the standard bootstrap envelope, and passes it through `TAKO_BOOTSTRAP_DATA`. SDK-aware scripts read secrets from `tako.secrets` and storage bindings from `tako.storages`, the same as container processes. Secrets are not exposed as process env vars by default. `--secrets-as-env` additionally adds app secrets to the child environment for tools that cannot use the SDK.
+Tako decrypts local app secrets for the selected environment when the local key is available, builds the standard bootstrap envelope, and passes it through `TAKO_BOOTSTRAP_DATA`. SDK-aware scripts read secrets and storage bindings through the same app SDK surfaces; JS/TS scripts can import `tako` and use `tako.secrets` and `tako.storages`. Secrets are not exposed as process env vars.
 
 The command is local-only in v0: it does not run on deployment servers and does not fan out to all servers in an environment. Child stdout/stderr are inherited, `tako run` does not print a success line or JSON result object, and a non-zero child exit exits with the child's status code.
 
