@@ -1,0 +1,347 @@
+---
+import DeployRolloutDiagram from "./DeployRolloutDiagram.astro";
+---
+
+<section class="product-story" aria-label="Tako product areas">
+  <article class="product-chapter product-chapter-development">
+    <div class="hero-block-head product-block-head">
+      <h2 class="hero-block-label">Development</h2>
+      <span class="hero-block-rule" aria-hidden="true"></span>
+    </div>
+
+    <div class="product-chapter-body">
+      <div class="product-copy">
+        <h3>Develop against the whole platform.</h3>
+        <p>
+          <code>tako dev</code> brings the production platform with it: workflows,
+          channels, image optimization, secrets, and the same routing model your app uses
+          after deploy.
+        </p>
+        <a class="product-link" href="/docs/development/">Development docs &rarr;</a>
+      </div>
+
+      <figure class="dev-video product-artifact" aria-label="Tako development server recording">
+        <div class="dev-video-frame">
+          <script src="https://asciinema.org/a/RXUo8Wh5i1FQIo2x.js" id="asciicast-RXUo8Wh5i1FQIo2x" async is:inline></script>
+          <noscript>
+            <a href="https://asciinema.org/a/RXUo8Wh5i1FQIo2x">Watch the tako dev recording</a>
+          </noscript>
+        </div>
+      </figure>
+    </div>
+  </article>
+
+  <article class="product-chapter product-chapter-deploy">
+    <div class="hero-block-head product-block-head">
+      <h2 class="hero-block-label">Deploy</h2>
+      <span class="hero-block-rule" aria-hidden="true"></span>
+    </div>
+
+    <div class="product-chapter-body product-chapter-body-reverse">
+      <div class="product-copy">
+        <h3>Fast rolling deploys to your VPS.</h3>
+        <p>
+          PaaS-style release safety on servers you own.
+        </p>
+        <p>
+          <code>tako deploy</code> gives you health-gated traffic switches,
+          zero-downtime rollouts, and rollback without moving off your VPS.
+        </p>
+        <a class="product-link" href="/docs/deployment/">Deployment docs &rarr;</a>
+      </div>
+
+      <div class="deploy-rollout product-artifact">
+        <DeployRolloutDiagram />
+      </div>
+    </div>
+  </article>
+
+  <article class="product-chapter product-chapter-platform">
+    <div class="hero-block-head product-block-head">
+      <h2 class="hero-block-label">Platform</h2>
+      <span class="hero-block-rule" aria-hidden="true"></span>
+    </div>
+
+    <div class="product-chapter-body">
+      <div class="product-copy">
+        <h3>Your VPS becomes the platform.</h3>
+        <p>
+          Your VPS stays yours. <code>tako-server</code> adds the platform layer:
+          TLS, routing, processes, logs, secrets, rollbacks, and scale-to-zero
+          workers without hiding SSH or the machine.
+        </p>
+        <p>
+          The same server runs the app primitives agents usually have to
+          provision elsewhere: secrets, env vars, workflows, channels, image
+          optimization, storage, cache, and backups. They stay available from
+          code, so an agent can wire the feature in the repo instead of
+          assembling extra services.
+        </p>
+        <a class="product-link" href="/docs/how-tako-works/">How Tako works &rarr;</a>
+      </div>
+
+      <div class="primitive-workbench product-artifact" aria-label="Tako primitive code examples" data-primitive-workbench>
+        <div class="primitive-tabs" role="tablist" aria-label="Primitive code examples">
+          <button
+            class="primitive-tab is-active"
+            type="button"
+            role="tab"
+            id="primitive-tab-secrets"
+            aria-selected="true"
+            aria-controls="primitive-panel-secrets"
+            data-primitive-tab="secrets"
+          >
+            secrets
+          </button>
+          <button
+            class="primitive-tab"
+            type="button"
+            role="tab"
+            id="primitive-tab-env"
+            aria-selected="false"
+            aria-controls="primitive-panel-env"
+            data-primitive-tab="env"
+          >
+            env
+          </button>
+          <button
+            class="primitive-tab"
+            type="button"
+            role="tab"
+            id="primitive-tab-workflows"
+            aria-selected="false"
+            aria-controls="primitive-panel-workflows"
+            data-primitive-tab="workflows"
+          >
+            workflows
+          </button>
+          <button
+            class="primitive-tab"
+            type="button"
+            role="tab"
+            id="primitive-tab-channels"
+            aria-selected="false"
+            aria-controls="primitive-panel-channels"
+            data-primitive-tab="channels"
+          >
+            channels
+          </button>
+          <button
+            class="primitive-tab"
+            type="button"
+            role="tab"
+            id="primitive-tab-images"
+            aria-selected="false"
+            aria-controls="primitive-panel-images"
+            data-primitive-tab="images"
+          >
+            images
+          </button>
+        </div>
+
+        <div class="primitive-panels">
+          <section
+            class="primitive-panel"
+            id="primitive-panel-channels"
+            role="tabpanel"
+            aria-labelledby="primitive-tab-channels"
+            data-primitive-panel="channels"
+            hidden
+          >
+            <div class="primitive-editor">
+              <pre><code><span class="syntax-comment">// src/channels/deploys.ts</span>
+<span class="syntax-comment">// durable app events, no realtime vendor</span>
+<span class="syntax-keyword">import</span> &#123; defineChannel &#125; <span class="syntax-keyword">from</span> <span class="syntax-string">"tako.sh"</span>;
+
+<span class="syntax-comment">// typed messages are stored for replay, then fanned out</span>
+<span class="syntax-comment">// to every connected SSE/WebSocket client</span>
+<span class="syntax-keyword">type</span> DeployMessages = &#123;
+  status: &#123;
+    release: <span class="syntax-type">string</span>;
+    state: <span class="syntax-string">"building"</span> | <span class="syntax-string">"healthy"</span>;
+  &#125;;
+&#125;;
+
+<span class="syntax-keyword">export default</span> defineChannel(<span class="syntax-string">"deploys"</span>)
+  .$messageTypes&lt;DeployMessages&gt;();
+
+<span class="syntax-comment">// src/routes/deploy.ts</span>
+<span class="syntax-comment">// server-side publish</span>
+<span class="syntax-keyword">import</span> deploys <span class="syntax-keyword">from</span> <span class="syntax-string">"../channels/deploys"</span>;
+
+<span class="syntax-comment">// late clients can reconnect and catch up from replay</span>
+<span class="syntax-keyword">await</span> deploys.publish(&#123;
+  type: <span class="syntax-string">"status"</span>,
+  data: &#123;
+    release: id,
+    state: <span class="syntax-string">"healthy"</span>,
+  &#125;,
+&#125;);</code></pre>
+            </div>
+          </section>
+
+          <section
+            class="primitive-panel"
+            id="primitive-panel-workflows"
+            role="tabpanel"
+            aria-labelledby="primitive-tab-workflows"
+            data-primitive-panel="workflows"
+            hidden
+          >
+            <div class="primitive-editor">
+              <pre><code><span class="syntax-comment">// src/workflows/ship-order.ts</span>
+<span class="syntax-comment">// checkpoint steps, park for approval, then resume</span>
+<span class="syntax-keyword">import</span> &#123; defineWorkflow &#125; <span class="syntax-keyword">from</span> <span class="syntax-string">"tako.sh"</span>;
+
+<span class="syntax-keyword">export default</span> defineWorkflow&lt;&#123; orderId: <span class="syntax-type">string</span> &#125;&gt;(<span class="syntax-string">"ship-order"</span>, &#123;
+  handler: <span class="syntax-keyword">async</span> (&#123; orderId &#125;, ctx) =&gt; &#123;
+    <span class="syntax-keyword">const</span> event = <span class="syntax-string">"approval:"</span> + orderId;
+    <span class="syntax-keyword">await</span> ctx.run(<span class="syntax-string">"charge"</span>, () =&gt; billing.charge(orderId));
+
+    <span class="syntax-comment">// parks the run until a route or webhook sends signal()</span>
+    <span class="syntax-keyword">const</span> approval = <span class="syntax-keyword">await</span> ctx.waitFor&lt;&#123; approved: <span class="syntax-type">boolean</span> &#125;&gt;(
+      event,
+    );
+    <span class="syntax-keyword">if</span> (!approval?.approved) ctx.bail(<span class="syntax-string">"not approved"</span>);
+
+    <span class="syntax-keyword">await</span> ctx.run(<span class="syntax-string">"ship"</span>, () =&gt; fulfillment.ship(orderId));
+  &#125;,
+&#125;);
+
+<span class="syntax-comment">// src/routes/approve.ts</span>
+<span class="syntax-keyword">import</span> &#123; signal &#125; <span class="syntax-keyword">from</span> <span class="syntax-string">"tako.sh"</span>;
+
+<span class="syntax-comment">// wakes the waitFor() above</span>
+<span class="syntax-keyword">await</span> signal(<span class="syntax-string">"approval:"</span> + orderId, &#123;
+  approved: <span class="syntax-keyword">true</span>,
+&#125;);</code></pre>
+            </div>
+          </section>
+
+          <section
+            class="primitive-panel"
+            id="primitive-panel-images"
+            role="tabpanel"
+            aria-labelledby="primitive-tab-images"
+            data-primitive-panel="images"
+            hidden
+          >
+            <div class="primitive-editor">
+              <pre><code><span class="syntax-comment">// src/components/hero-image.tsx</span>
+<span class="syntax-comment">// optimized image URLs from app code</span>
+<span class="syntax-keyword">import</span> &#123; imageUrl &#125; <span class="syntax-keyword">from</span> <span class="syntax-string">"tako.sh"</span>;
+
+<span class="syntax-keyword">export function</span> HeroImage() &#123;
+  <span class="syntax-comment">// returns a normal URL backed by /_tako/image</span>
+  <span class="syntax-keyword">const</span> src = imageUrl(<span class="syntax-string">"/images/hero.png"</span>, &#123;
+    width: <span class="syntax-number">1200</span>,
+    format: <span class="syntax-string">"webp"</span>,
+  &#125;);
+
+  <span class="syntax-keyword">return</span> (
+    &lt;img
+      src=&#123;src&#125;
+      alt=<span class="syntax-string">"Product dashboard"</span>
+      width=&#123;<span class="syntax-number">1200</span>&#125;
+      height=&#123;<span class="syntax-number">720</span>&#125;
+    /&gt;
+  );
+&#125;</code></pre>
+            </div>
+          </section>
+
+          <section
+            class="primitive-panel"
+            id="primitive-panel-env"
+            role="tabpanel"
+            aria-labelledby="primitive-tab-env"
+            data-primitive-panel="env"
+            hidden
+          >
+            <div class="primitive-editor">
+              <pre><code><span class="syntax-comment">// src/config/runtime.ts</span>
+<span class="syntax-comment">// runtime metadata and typed public vars</span>
+<span class="syntax-keyword">import</span> &#123; tako &#125; <span class="syntax-keyword">from</span> <span class="syntax-string">"tako.sh"</span>;
+
+<span class="syntax-comment">// generated types know your environments and public vars</span>
+<span class="syntax-keyword">export const</span> runtime = &#123;
+  env: tako.env,
+  isProduction: tako.isProd,
+  build: tako.build,
+&#125;;
+
+<span class="syntax-keyword">export const</span> publicConfig = &#123;
+  origin: process.env.PUBLIC_ORIGIN,
+&#125;;</code></pre>
+            </div>
+          </section>
+
+          <section
+            class="primitive-panel is-active"
+            id="primitive-panel-secrets"
+            role="tabpanel"
+            aria-labelledby="primitive-tab-secrets"
+            data-primitive-panel="secrets"
+          >
+            <div class="primitive-editor">
+              <pre><code><span class="syntax-comment">// src/server/database.ts</span>
+<span class="syntax-comment">// typed secret reads, no env files</span>
+<span class="syntax-keyword">import</span> &#123; tako &#125; <span class="syntax-keyword">from</span> <span class="syntax-string">"tako.sh"</span>;
+
+<span class="syntax-keyword">export function</span> connectDatabase() &#123;
+  <span class="syntax-keyword">return</span> createClient(&#123;
+    <span class="syntax-comment">// read the one value you need; never log the bag</span>
+    url: tako.secrets.DATABASE_URL,
+    ssl: tako.isProd,
+  &#125;);
+&#125;</code></pre>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+  </article>
+</section>
+
+<script is:inline type="module">
+  const workbenches = document.querySelectorAll("[data-primitive-workbench]");
+
+  for (const workbench of workbenches) {
+    const tabs = [...workbench.querySelectorAll("[data-primitive-tab]")];
+    const panels = [...workbench.querySelectorAll("[data-primitive-panel]")];
+
+    const activate = (name) => {
+      for (const tab of tabs) {
+        const selected = tab.getAttribute("data-primitive-tab") === name;
+        tab.classList.toggle("is-active", selected);
+        tab.setAttribute("aria-selected", String(selected));
+        tab.tabIndex = selected ? 0 : -1;
+      }
+
+      for (const panel of panels) {
+        const selected = panel.getAttribute("data-primitive-panel") === name;
+        panel.classList.toggle("is-active", selected);
+        panel.hidden = !selected;
+      }
+    };
+
+    workbench.addEventListener("click", (event) => {
+      const tab = event.target.closest("[data-primitive-tab]");
+      if (!tab || !workbench.contains(tab)) return;
+      activate(tab.getAttribute("data-primitive-tab"));
+    });
+
+    workbench.addEventListener("keydown", (event) => {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+
+      const currentIndex = tabs.indexOf(document.activeElement);
+      if (currentIndex === -1) return;
+
+      event.preventDefault();
+      const offset = event.key === "ArrowRight" ? 1 : -1;
+      const next = tabs[(currentIndex + offset + tabs.length) % tabs.length];
+      next.focus();
+      activate(next.getAttribute("data-primitive-tab"));
+    });
+  }
+</script>

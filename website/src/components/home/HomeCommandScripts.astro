@@ -1,0 +1,69 @@
+<script is:inline type="module">
+  const installCommand = "curl -fsSL https://tako.sh/install.sh | sh";
+  const typedCmd = document.getElementById("typed-cmd");
+  const copyBtn = document.getElementById("copy");
+  const copyBtnLabel = copyBtn?.querySelector("[data-copy-label]");
+  const agentPromptText = document.getElementById("agent-prompt-text");
+  const agentCopyBtn = document.getElementById("agent-copy");
+  const agentCopyBtnLabel = agentCopyBtn?.querySelector("[data-copy-label]");
+
+  const setCopyButtonText = (button, label, visible, aria) => {
+    if (label instanceof HTMLElement) {
+      label.textContent = visible;
+    }
+    if (button instanceof HTMLElement) {
+      button.setAttribute("aria-label", aria);
+      button.setAttribute("title", aria);
+    }
+  };
+
+  const setCopyButtonCopied = (button, copied) => {
+    if (button instanceof HTMLElement) {
+      button.classList.toggle("is-copied", copied);
+    }
+  };
+
+  if (typedCmd instanceof HTMLElement) {
+    typedCmd.textContent = installCommand;
+  }
+
+  copyBtn?.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(installCommand);
+      setCopyButtonCopied(copyBtn, true);
+      setCopyButtonText(copyBtn, copyBtnLabel, "copied", "copied");
+      window.posthog?.capture("install_command_copied");
+      setTimeout(() => {
+        setCopyButtonCopied(copyBtn, false);
+        setCopyButtonText(copyBtn, copyBtnLabel, "copy", "copy install command");
+      }, 1400);
+    } catch {
+      setCopyButtonCopied(copyBtn, false);
+      setCopyButtonText(copyBtn, copyBtnLabel, "failed", "copy failed");
+      setTimeout(() => {
+        setCopyButtonText(copyBtn, copyBtnLabel, "copy", "copy install command");
+      }, 1400);
+    }
+  });
+
+  agentCopyBtn?.addEventListener("click", async () => {
+    const prompt = agentPromptText?.textContent?.trim() ?? "";
+
+    try {
+      await navigator.clipboard.writeText(prompt);
+      setCopyButtonCopied(agentCopyBtn, true);
+      setCopyButtonText(agentCopyBtn, agentCopyBtnLabel, "copied", "copied");
+      window.posthog?.capture("agent_prompt_copied");
+      setTimeout(() => {
+        setCopyButtonCopied(agentCopyBtn, false);
+        setCopyButtonText(agentCopyBtn, agentCopyBtnLabel, "copy", "copy agent prompt");
+      }, 1400);
+    } catch {
+      setCopyButtonCopied(agentCopyBtn, false);
+      setCopyButtonText(agentCopyBtn, agentCopyBtnLabel, "failed", "copy failed");
+      setTimeout(() => {
+        setCopyButtonText(agentCopyBtn, agentCopyBtnLabel, "copy", "copy agent prompt");
+      }, 1400);
+    }
+  });
+</script>

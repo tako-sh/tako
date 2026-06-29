@@ -1,0 +1,345 @@
+<style is:global>
+  .hero {
+    border-radius: var(--panel-radius);
+    border: 2px solid var(--line);
+    background: var(--panel);
+    box-shadow: 0 18px 45px rgba(47, 42, 68, 0.1);
+    padding: clamp(24px, 5vw, 54px);
+    overflow: visible;
+    position: relative;
+    isolation: isolate;
+  }
+
+  .hero::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background:
+      radial-gradient(ellipse at 85% 25%, rgba(155, 196, 182, 0.16) 0%, transparent 50%),
+      radial-gradient(ellipse at 70% 75%, rgba(232, 135, 131, 0.14) 0%, transparent 45%),
+      radial-gradient(ellipse at 95% 60%, rgba(214, 166, 62, 0.10) 0%, transparent 40%),
+      radial-gradient(ellipse at 30% 45%, rgba(232, 135, 131, 0.08) 0%, transparent 50%),
+      radial-gradient(ellipse at 55% 80%, rgba(155, 196, 182, 0.10) 0%, transparent 50%),
+      radial-gradient(ellipse at 20% 65%, rgba(214, 166, 62, 0.055) 0%, transparent 45%);
+    z-index: 0;
+    pointer-events: none;
+  }
+
+  .hero > *:not(.panel-hanger) {
+    position: relative;
+    z-index: 2;
+  }
+
+  .panel-hanger {
+    position: absolute;
+    top: 26px;
+    right: 10px;
+    width: 164px;
+    height: 152px;
+    z-index: 12;
+    --swing-angle: 0.17rad;
+    --thread-length: 48px;
+    --thread-scale: 48;
+    --card-tilt: -0.06rad;
+    --hanger-axis: 112px;
+  }
+
+  .panel-pin {
+    position: absolute;
+    top: 10px;
+    left: calc(var(--hanger-axis) - 5px);
+    width: 10px;
+    height: 10px;
+    border: 2px solid rgba(47, 42, 68, 0.28);
+    border-radius: 50%;
+    background: var(--secondary);
+    box-shadow: 0 2px 0 rgba(47, 42, 68, 0.15);
+  }
+
+  .panel-arm {
+    position: absolute;
+    top: 16px;
+    left: var(--hanger-axis);
+    width: 0;
+    transform-origin: top center;
+    transform: rotate(var(--swing-angle));
+    pointer-events: none;
+  }
+
+  .panel-thread {
+    display: block;
+    width: 2px;
+    height: 1px;
+    margin-left: -1px;
+    background: rgba(47, 42, 68, 0.45);
+    transform: scaleY(var(--thread-scale));
+    transform-origin: top center;
+    will-change: transform;
+  }
+
+  .panel-tag {
+    position: absolute;
+    left: 0;
+    top: 0;
+    transform: translate(-50%, var(--thread-length)) rotate(var(--card-tilt));
+    transform-origin: top center;
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    width: 86px;
+    border: 2px solid rgba(47, 42, 68, 0.26);
+    border-radius: 12px 12px 16px 16px;
+    background: linear-gradient(160deg, var(--panel-strong), var(--panel));
+    box-shadow: 0 8px 14px rgba(47, 42, 68, 0.16);
+    padding: 8px 10px 10px;
+    font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 12px;
+    color: rgba(47, 42, 68, 0.86);
+    text-align: center;
+    z-index: 1;
+    pointer-events: auto;
+    cursor: grab;
+    touch-action: none;
+    user-select: none;
+    will-change: transform;
+  }
+
+  .panel-tag-label {
+    display: block;
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    line-height: 1;
+    opacity: 0.82;
+    text-transform: uppercase;
+  }
+
+  .panel-tag-value {
+    display: block;
+    margin-top: 2px;
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    line-height: 1;
+    color: var(--primary-text);
+  }
+
+  .title {
+    font-family: var(--font-heading);
+    font-size: clamp(38px, 8vw, 72px);
+    line-height: 1;
+    letter-spacing: 0.01em;
+    margin-bottom: 14px;
+  }
+
+  .title .accent {
+    color: var(--accent);
+  }
+
+  .subtitle {
+    max-width: 680px;
+    font-size: clamp(18px, 2.8vw, 26px);
+    line-height: 1.25;
+    color: var(--muted);
+    margin-bottom: 24px;
+  }
+
+  .command-card {
+    border: 2px solid rgba(47, 42, 68, 0.2);
+    border-radius: 18px;
+    background: var(--paper);
+    overflow: hidden;
+    max-width: 640px;
+  }
+
+  .agent-prompt-card {
+    max-width: 640px;
+    margin-top: 12px;
+    border: 1.5px solid rgba(155, 196, 182, 0.48);
+    border-radius: 16px;
+    background: rgba(155, 196, 182, 0.12);
+  }
+
+  .agent-prompt-body {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    padding: 11px 12px;
+  }
+
+  .agent-prompt-copy {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .agent-prompt-copy span {
+    display: inline-block;
+    margin-bottom: 5px;
+    color: #347160;
+    font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    line-height: 1;
+  }
+
+  .agent-prompt-body p {
+    color: var(--ink);
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 1.35;
+    margin: 0;
+  }
+
+  .agent-prompt-body code {
+    font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 0.92em;
+    padding: 1px 4px;
+    border-radius: 5px;
+    background: rgba(47, 42, 68, 0.06);
+    color: var(--ink);
+  }
+
+  .command-head {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    position: relative;
+    background: var(--mint-soft);
+    border-bottom: 1.5px solid rgba(47, 42, 68, 0.1);
+    padding: 7px 14px;
+  }
+
+  .command-caption {
+    font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    color: rgba(47, 42, 68, 0.6);
+  }
+
+  .command-body {
+    font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: clamp(14px, 2.1vw, 18px);
+    padding: 14px 14px 14px 16px;
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 10px;
+    align-items: center;
+    justify-content: flex-start;
+    overflow-x: auto;
+  }
+
+  .prompt {
+    color: var(--primary-text);
+  }
+
+  .cmd {
+    color: var(--ink);
+    min-height: 1.2em;
+    white-space: nowrap;
+    flex: 0 0 auto;
+  }
+
+  .cursor {
+    width: 8px;
+    height: 18px;
+    background: var(--ink);
+    animation: blink 1s steps(1, end) infinite;
+    flex: 0 0 auto;
+  }
+
+  .hero-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px 12px;
+    flex-wrap: wrap;
+    margin-top: 18px;
+  }
+
+  .hero-actions-link {
+    font-size: 15px;
+  }
+
+  .hero-demo-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-height: 45px;
+    padding: 0 18px;
+    border: 1.5px solid rgba(47, 42, 68, 0.18);
+    border-radius: 999px;
+    background: var(--panel-glass);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--panel-strong) 72%, transparent);
+    font-weight: 700;
+    opacity: 1;
+    transition:
+      background 180ms cubic-bezier(0.23, 1, 0.32, 1),
+      border-color 180ms cubic-bezier(0.23, 1, 0.32, 1),
+      color 180ms cubic-bezier(0.23, 1, 0.32, 1),
+      transform 150ms cubic-bezier(0.23, 1, 0.32, 1),
+      box-shadow 180ms cubic-bezier(0.23, 1, 0.32, 1);
+  }
+
+  .hero-demo-icon {
+    width: 0.95em;
+    height: 0.95em;
+    stroke-width: 2.4;
+  }
+
+  .btn {
+    border: 1.5px solid rgba(232, 135, 131, 0.4);
+    border-radius: 999px;
+    background: rgba(232, 135, 131, 0.2);
+    color: var(--ink);
+    padding: 8px 18px;
+    font-family: "Nunito", sans-serif;
+    font-size: 16px;
+    font-weight: 700;
+    line-height: 1;
+    text-decoration: none;
+    cursor: pointer;
+    transition:
+      background 180ms cubic-bezier(0.23, 1, 0.32, 1),
+      border-color 180ms cubic-bezier(0.23, 1, 0.32, 1),
+      transform 150ms cubic-bezier(0.23, 1, 0.32, 1),
+      box-shadow 180ms cubic-bezier(0.23, 1, 0.32, 1);
+  }
+
+  .btn-primary {
+    border-color: var(--primary);
+    background: var(--primary);
+    color: var(--ink);
+    padding: 12px 26px;
+    font-size: 17px;
+    box-shadow: 0 6px 16px rgba(196, 96, 92, 0.22);
+  }
+
+  .btn:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .hero-demo-link:hover {
+      transform: translateY(-1px);
+      border-color: rgba(155, 196, 182, 0.72);
+      background: rgba(219, 235, 230, 0.62);
+      color: var(--ink);
+      box-shadow: 0 5px 14px rgba(80, 113, 102, 0.14);
+    }
+
+    .btn:hover {
+      transform: translateY(-1px);
+      background: rgba(232, 135, 131, 0.32);
+      border-color: rgba(232, 135, 131, 0.55);
+    }
+
+    .btn-primary:hover {
+      background: color-mix(in srgb, var(--primary) 92%, var(--ink));
+      border-color: color-mix(in srgb, var(--primary) 92%, var(--ink));
+      box-shadow: 0 8px 20px rgba(196, 96, 92, 0.28);
+    }
+  }
+</style>

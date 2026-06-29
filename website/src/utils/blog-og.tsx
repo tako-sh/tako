@@ -72,9 +72,10 @@ function sourceImageUri(source: string | undefined): string | undefined {
 }
 
 function imageBackedCard(title: string, logoUri: string, imageUri: string) {
-  return (
-    <div
-      style={{
+  return React.createElement(
+    "div",
+    {
+      style: {
         position: "relative",
         width: "100%",
         height: "100%",
@@ -83,98 +84,108 @@ function imageBackedCard(title: string, logoUri: string, imageUri: string) {
         color: "#FFF7ED",
         fontFamily: "Poppins",
         overflow: "hidden",
-      }}
-    >
-      <img
-        src={imageUri}
-        width={1200}
-        height={630}
-        style={{
-          position: "absolute",
-          top: 0,
-          left: 0,
-          width: "1200px",
-          height: "630px",
-          objectFit: "cover",
-        }}
-      />
-      <div
-        style={{
-          position: "absolute",
-          top: 0,
-          right: 0,
-          bottom: 0,
-          left: 0,
-          background:
-            "linear-gradient(90deg, rgba(18, 15, 23, 0.96) 0%, rgba(24, 21, 31, 0.88) 36%, rgba(24, 21, 31, 0.44) 63%, rgba(24, 21, 31, 0.12) 100%)",
-        }}
-      />
-      <div
-        style={{
-          position: "absolute",
-          top: 0,
-          right: 0,
-          bottom: 0,
-          left: 0,
-          background:
-            "linear-gradient(180deg, rgba(18, 15, 23, 0.36) 0%, rgba(18, 15, 23, 0.04) 48%, rgba(18, 15, 23, 0.50) 100%)",
-        }}
-      />
-      <div
-        style={{
+      },
+    },
+    React.createElement("img", {
+      src: imageUri,
+      width: 1200,
+      height: 630,
+      style: {
+        position: "absolute",
+        top: 0,
+        left: 0,
+        width: "1200px",
+        height: "630px",
+        objectFit: "cover",
+      },
+    }),
+    React.createElement("div", {
+      style: {
+        position: "absolute",
+        top: 0,
+        right: 0,
+        bottom: 0,
+        left: 0,
+        background:
+          "linear-gradient(90deg, rgba(18, 15, 23, 0.96) 0%, rgba(24, 21, 31, 0.88) 36%, rgba(24, 21, 31, 0.44) 63%, rgba(24, 21, 31, 0.12) 100%)",
+      },
+    }),
+    React.createElement("div", {
+      style: {
+        position: "absolute",
+        top: 0,
+        right: 0,
+        bottom: 0,
+        left: 0,
+        background:
+          "linear-gradient(180deg, rgba(18, 15, 23, 0.36) 0%, rgba(18, 15, 23, 0.04) 48%, rgba(18, 15, 23, 0.50) 100%)",
+      },
+    }),
+    React.createElement(
+      "div",
+      {
+        style: {
           position: "relative",
           width: "100%",
           height: "100%",
           display: "flex",
           flexDirection: "column",
           padding: "62px 76px 58px",
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: "15px", color: "#FFF0E6" }}>
-          <img src={logoUri} width={44} height={44} />
-          <div
-            style={{
+        },
+      },
+      React.createElement(
+        "div",
+        { style: { display: "flex", alignItems: "center", gap: "15px", color: "#FFF0E6" } },
+        React.createElement("img", { src: logoUri, width: 44, height: 44 }),
+        React.createElement(
+          "div",
+          {
+            style: {
               fontFamily: "IBM Plex Mono",
               fontSize: "21px",
               fontWeight: 400,
               color: "#FFF0E6",
               letterSpacing: 0,
-            }}
-          >
-            tako.sh/blog
-          </div>
-        </div>
-        <div
-          style={{
+            },
+          },
+          "tako.sh/blog",
+        ),
+      ),
+      React.createElement(
+        "div",
+        {
+          style: {
             display: "flex",
             flexGrow: 1,
             alignItems: "center",
             maxWidth: "700px",
             paddingBottom: "6px",
-          }}
-        >
-          <div
-            style={{
+          },
+        },
+        React.createElement(
+          "div",
+          {
+            style: {
               fontSize: `${titleFontSize(title)}px`,
               fontWeight: 700,
               color: "#FFF7ED",
               lineHeight: 1.06,
               letterSpacing: 0,
               maxWidth: "700px",
-            }}
-          >
-            {title}
-          </div>
-        </div>
-      </div>
-    </div>
+            },
+          },
+          title,
+        ),
+      ),
+    ),
   );
 }
 
 function plainCard(title: string, logoUri: string) {
-  return (
-    <div
-      style={{
+  return React.createElement(
+    "div",
+    {
+      style: {
         width: "100%",
         height: "100%",
         display: "flex",
@@ -182,44 +193,51 @@ function plainCard(title: string, logoUri: string) {
         padding: "60px 72px 52px",
         backgroundColor: "#FFF9F4",
         fontFamily: "Poppins",
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
-        <img src={logoUri} width={44} height={44} />
-        <div
-          style={{
+      },
+    },
+    React.createElement(
+      "div",
+      { style: { display: "flex", alignItems: "center", gap: "14px" } },
+      React.createElement("img", { src: logoUri, width: 44, height: 44 }),
+      React.createElement(
+        "div",
+        {
+          style: {
             fontFamily: "IBM Plex Mono",
             fontSize: "22px",
             fontWeight: 400,
             color: "#2F2A44",
             letterSpacing: 0,
-          }}
-        >
-          tako.sh/blog
-        </div>
-      </div>
-      <div
-        style={{
+          },
+        },
+        "tako.sh/blog",
+      ),
+    ),
+    React.createElement(
+      "div",
+      {
+        style: {
           display: "flex",
           flexDirection: "column",
           flexGrow: 1,
           justifyContent: "center",
-        }}
-      >
-        <div
-          style={{
+        },
+      },
+      React.createElement(
+        "div",
+        {
+          style: {
             fontSize: `${titleFontSize(title)}px`,
             fontWeight: 700,
             color: "#2F2A44",
             lineHeight: 1.12,
             letterSpacing: 0,
             maxWidth: "980px",
-          }}
-        >
-          {title}
-        </div>
-      </div>
-    </div>
+          },
+        },
+        title,
+      ),
+    ),
   );
 }
 

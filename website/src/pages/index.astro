@@ -3,7 +3,8 @@ import BaseLayout from "../layouts/BaseLayout.astro";
 import CopyButton from "../components/CopyButton.astro";
 import HomeScripts from "../components/home/HomeScripts.astro";
 import HomeStyles from "../components/home/HomeStyles.astro";
-import ChevronDownIcon from "lucide-astro/ChevronDown";
+import HomeProductSections from "../components/home/HomeProductSections.astro";
+import PerformanceResultsChart from "../components/home/PerformanceResultsChart.astro";
 import ExternalLinkIcon from "lucide-astro/ExternalLink";
 
 const homeStructuredData = {
@@ -23,6 +24,10 @@ const homeStructuredData = {
     "Production deploys with rolling updates",
     "Automatic TLS and request routing",
     "Logs, secrets, and server management",
+    "Durable WebSocket and SSE channels",
+    "Durable workflows with cron, waits, and retries",
+    "Signed uploads and file storage",
+    "App data backups",
     "Public image optimization",
   ],
 };
@@ -50,7 +55,7 @@ const homeStructuredData = {
     </div>
     <h1 class="title">Your app <span class="title-mid">belongs<br /> on</span> <span class="accent">your servers</span></h1>
     <p class="subtitle">
-      Everything you need to build, deploy, and run your app.
+      The platform layer that makes them feel like a PaaS.
     </p>
 
     <div class="command-card">
@@ -59,9 +64,21 @@ const homeStructuredData = {
       </div>
       <div class="command-body">
         <span class="prompt">$</span>
-        <span class="cmd" id="typed-cmd"></span>
+        <span class="cmd" id="typed-cmd">curl -fsSL https://tako.sh/install.sh | sh</span>
         <span class="cursor" aria-hidden="true"></span>
-        <CopyButton class="copy-inline" id="copy" ariaLabel="copy install command" title="copy install command" label="copy" />
+        <CopyButton variant="command" id="copy" ariaLabel="copy install command" title="copy install command" label="copy" />
+      </div>
+    </div>
+    <div
+      class="agent-prompt-card"
+      aria-label="Prompt to copy into an agent"
+    >
+      <div class="agent-prompt-body">
+        <div class="agent-prompt-copy">
+          <span>ask Codex, Claude, or another agent</span>
+          <p id="agent-prompt-text">Move this project to tako.sh.</p>
+        </div>
+        <CopyButton variant="agent" id="agent-copy" ariaLabel="copy agent prompt" title="copy agent prompt" label="copy" />
       </div>
     </div>
     <div class="hero-actions">
@@ -117,138 +134,22 @@ const homeStructuredData = {
     </ol>
   </section>
 
-  <section class="features-section">
-    <div class="hero-block-head">
-      <h2 class="hero-block-label">What's inside</h2>
-      <span class="hero-block-rule" aria-hidden="true"></span>
-    </div>
-    <p class="features-subcopy">Each usually needs its own tool. Tako keeps them in one deploy flow.</p>
-    <div class="included-tags" role="group" aria-label="Filter features by category">
-      <button class="included-tag" data-category="server" type="button">server</button>
-      <button class="included-tag" data-category="process" type="button">process management</button>
-      <button class="included-tag" data-category="deploy" type="button">build &amp; deploy</button>
-      <button class="included-tag" data-category="development" type="button">development</button>
-      <button class="included-tag" data-category="media" type="button">media</button>
-    </div>
-    <div class="feature-list">
-      <!-- server -->
-      <a href="/docs/how-tako-works/" class="feature-link" data-categories="server">
-        <span class="feature-link-title">Reverse proxy</span>
-        <span class="feature-link-desc">Pingora-based with sensible defaults, zero config needed</span>
-      </a>
-      <a href="/docs/how-tako-works/#tls" class="feature-link" data-categories="server">
-        <span class="feature-link-title">Automatic TLS</span>
-        <span class="feature-link-desc">Let's Encrypt with wildcard support, auto-renewed</span>
-      </a>
-      <a href="/docs/how-tako-works/#app-processes" class="feature-link" data-categories="server">
-        <span class="feature-link-title">Health-based routing</span>
-        <span class="feature-link-desc">Unhealthy instances get pulled from rotation automatically</span>
-      </a>
-      <a href="/docs/how-tako-works/#scale-to-zero" class="feature-link" data-categories="server,process">
-        <span class="feature-link-title">Scale to zero and back</span>
-        <span class="feature-link-desc">Idle apps sleep, the next request wakes them</span>
-      </a>
-      <a href="/docs/deployment/#images" class="feature-link" data-categories="server,media">
-        <span class="feature-link-title">Image optimization <span class="new-badge">new</span></span>
-        <span class="feature-link-desc">Resize and serve WebP, with AVIF available when enabled</span>
-      </a>
-      <span class="feature-link feature-link-soon" data-categories="server,deploy,media">
-        <span class="feature-link-title">Uploads and file storage <span class="soon-badge">soon</span></span>
-        <span class="feature-link-desc">Signed browser uploads, private downloads, and public URLs backed by S3/R2</span>
-      </span>
-      <a href="/docs/deployment/" class="feature-link" data-categories="server,deploy">
-        <span class="feature-link-title">Static files</span>
-        <span class="feature-link-desc">Drop files in public/ &mdash; Tako serves them directly</span>
-      </a>
-      <!-- build & deploy -->
-      <a href="/docs/deployment/" class="feature-link" data-categories="deploy">
-        <span class="feature-link-title">Build locally, deploy anywhere</span>
-        <span class="feature-link-desc">No CI required &mdash; build and deploy with a single command</span>
-      </a>
-      <a href="/docs/deployment/" class="feature-link" data-categories="server,deploy,process">
-        <span class="feature-link-title">Rolling deploys</span>
-        <span class="feature-link-desc">New instances first, traffic shifts after health checks</span>
-      </a>
-      <a href="/docs/deployment/#rolling-updates" class="feature-link" data-categories="deploy,process">
-        <span class="feature-link-title">Instant rollback</span>
-        <span class="feature-link-desc">Previous version stays ready, one command to revert</span>
-      </a>
-      <a href="/docs/deployment/" class="feature-link" data-categories="server,deploy">
-        <span class="feature-link-title">Environments &amp; servers</span>
-        <span class="feature-link-desc">Group servers by environment, deploy to the right one</span>
-      </a>
-      <a href="/docs/how-tako-works/" class="feature-link" data-categories="server">
-        <span class="feature-link-title">Bun, Node, Go &mdash; you name it</span>
-        <span class="feature-link-desc">Runtimes detected and managed automatically</span>
-      </a>
-      <a href="/docs/how-tako-works/" class="feature-link" data-categories="server,deploy">
-        <span class="feature-link-title">Runtime on autopilot</span>
-        <span class="feature-link-desc">Runtimes and package managers pinned and managed for you</span>
-      </a>
-      <a href="/docs/presets/" class="feature-link" data-categories="deploy,development">
-        <span class="feature-link-title">Presets</span>
-        <span class="feature-link-desc">Framework-aware defaults for Next.js, TanStack Start, and more</span>
-      </a>
-      <!-- development -->
-      <a href="/docs/development/" class="feature-link" data-categories="development">
-        <span class="feature-link-title">Local DNS</span>
-        <span class="feature-link-desc">Each app gets a real domain automatically &mdash; no ports to remember</span>
-      </a>
-      <a href="/docs/development/" class="feature-link" data-categories="development">
-        <span class="feature-link-title">.local domains</span>
-        <span class="feature-link-desc">Access any app from your phone, TV, or any device on your network</span>
-      </a>
-      <a href="/docs/development/" class="feature-link" data-categories="development">
-        <span class="feature-link-title">Wildcard routing</span>
-        <span class="feature-link-desc">Subdomains for every app and branch, resolved automatically</span>
-      </a>
-      <a href="/docs/development/" class="feature-link" data-categories="development">
-        <span class="feature-link-title">Always-on dev</span>
-        <span class="feature-link-desc">Never stop a server &mdash; idle apps cost nothing, wake when you need them</span>
-      </a>
-      <a href="/docs/development/" class="feature-link" data-categories="development">
-        <span class="feature-link-title">Agent-friendly</span>
-        <span class="feature-link-desc">Each worktree gets its own URL</span>
-      </a>
-      <!-- process management -->
-      <a href="/docs/cli/" class="feature-link" data-categories="process">
-        <span class="feature-link-title">Logs</span>
-        <span class="feature-link-desc">Stream live or pull recent history across all servers</span>
-      </a>
-      <a href="/docs/cli/" class="feature-link" data-categories="process,deploy">
-        <span class="feature-link-title">Secrets</span>
-        <span class="feature-link-desc">Encrypted locally and on servers; keys can sync via iCloud Keychain</span>
-      </a>
-      <a href="/docs/cli/" class="feature-link" data-categories="process,server">
-        <span class="feature-link-title">Inspect &amp; monitor</span>
-        <span class="feature-link-desc">Running instances, deploy history, all at a glance</span>
-      </a>
-      <a href="/docs/how-tako-works/#workflows-and-channels" class="feature-link" data-categories="server">
-        <span class="feature-link-title">Durable channels <span class="new-badge">new</span></span>
-        <span class="feature-link-desc">WebSocket and SSE routes with bounded replay</span>
-      </a>
-      <a href="/docs/how-tako-works/#workflows-and-channels" class="feature-link" data-categories="server">
-        <span class="feature-link-title">Durable workflows <span class="new-badge">new</span></span>
-        <span class="feature-link-desc">Long-running tasks that survive restarts</span>
-      </a>
-    </div>
-    <button type="button" class="feature-show-all" data-feature-show-all>
-      <span class="feature-show-all-label">show more</span>
-      <ChevronDownIcon class="feature-show-all-icon" aria-hidden="true" focusable="false" />
-    </button>
-  </section>
+  <HomeProductSections />
 
   <section class="performance-section">
     <div class="hero-block-head">
       <h2 class="hero-block-label">Ready for serious load</h2>
       <span class="hero-block-rule" aria-hidden="true"></span>
     </div>
-    <div class="performance-copy">
-      <p>
-        Tako can handle <span class="performance-mark performance-traffic">heavy traffic</span> even on modest hardware: one small VM served 12.5k HTTPS 200 RPS at 5k concurrency, with <span class="performance-mark performance-clean">zero client errors</span> up to 20k concurrency.
-        In the same public run, it outpaced <a href="https://www.envoyproxy.io/" class="performance-reference-link" target="_blank" rel="noopener noreferrer nofollow">Envoy</a> and <a href="https://caddyserver.com/" class="performance-reference-link" target="_blank" rel="noopener noreferrer nofollow">Caddy</a> under heavy HTTPS load.
-        <a href="/performance/" class="performance-link">Read report &rarr;</a>
-      </p>
+    <div class="performance-body">
+      <PerformanceResultsChart />
+      <a href="/performance/" class="performance-link performance-chart-link">full report &rarr;</a>
+      <div class="performance-copy">
+        <p>
+          Tako can handle <span class="performance-mark performance-traffic">heavy traffic</span> even on modest hardware: one small VM served 12.5k HTTPS 200 RPS at 5k concurrency, with <span class="performance-mark performance-clean">zero client errors</span> up to 20k concurrency.
+          In the same public run, it outpaced <a href="https://caddyserver.com/" class="performance-reference-link" target="_blank" rel="noopener noreferrer nofollow">Caddy</a> and <a href="https://www.envoyproxy.io/" class="performance-reference-link" target="_blank" rel="noopener noreferrer nofollow">Envoy</a> under heavy HTTPS load.
+        </p>
+      </div>
     </div>
   </section>
 
@@ -262,4 +163,3 @@ const homeStructuredData = {
   <HomeStyles />
   <HomeScripts />
 </BaseLayout>
-

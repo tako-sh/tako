@@ -71,7 +71,7 @@
     "@sinclair/typebox": "^0.34.49"
   },
   "devDependencies": {
-    "@happy-dom/global-registrator": "^20.9.0",
+    "@happy-dom/global-registrator": "^20.10.6",
     "@testing-library/react": "^16.1.0",
     "@tsconfig/strictest": "catalog:dev",
     "@types/bun": "catalog:dev",
@@ -80,7 +80,7 @@
     "@types/react-dom": "catalog:dev",
     "react": "catalog:",
     "react-dom": "catalog:",
-    "tsdown": "^0.22.0",
+    "tsdown": "^0.22.3",
     "typescript": "catalog:dev",
     "vite": "catalog:dev"
   },

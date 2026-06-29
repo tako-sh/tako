@@ -1,0 +1,21 @@
+<script is:inline type="module">
+  for (const btn of document.querySelectorAll(".cta-section .btn, .hero-actions .btn")) {
+    btn.addEventListener("click", () => {
+      window.posthog?.capture("cta_clicked", {
+        label: btn.textContent?.trim(),
+        href: btn.getAttribute("href"),
+      });
+    });
+  }
+
+  for (const link of document.querySelectorAll(".workflow-link")) {
+    link.addEventListener("click", () => {
+      const cmd = link.querySelector(".workflow-cmd")?.textContent?.trim();
+      window.posthog?.capture("workflow_step_clicked", {
+        command: cmd,
+        href: link.getAttribute("href"),
+      });
+    });
+  }
+
+</script>

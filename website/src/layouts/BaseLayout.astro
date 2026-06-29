@@ -2,6 +2,7 @@
 import PostHog from "../components/posthog.astro";
 import BaseScripts from "../components/layout/BaseScripts.astro";
 import BaseStyles from "../components/layout/BaseStyles.astro";
+import CopyButtonStyles from "../components/CopyButtonStyles.astro";
 import GoogleAnalytics from "../components/GoogleAnalytics.astro";
 import SiteFooter from "../components/layout/SiteFooter.astro";
 import SiteHeader from "../components/layout/SiteHeader.astro";
@@ -143,6 +144,7 @@ const pageStructuredData = structuredData
 			)
 		}
 		<BaseStyles />
+		<CopyButtonStyles />
 		<slot name="head" />
 		<GoogleAnalytics />
 		<PostHog />

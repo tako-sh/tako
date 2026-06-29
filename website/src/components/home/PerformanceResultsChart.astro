@@ -1,0 +1,115 @@
+<figure class="performance-results-chart" aria-label="Tako benchmark results chart">
+  <svg
+    viewBox="0 0 760 266"
+    role="img"
+    aria-label="Clean HTTPS 200 RPS comparison chart"
+    aria-describedby="performance-results-desc"
+    focusable="false"
+  >
+    <desc id="performance-results-desc">
+      Bar chart comparing clean HTTPS 200 responses per second: Tako at 12.5k,
+      Caddy at 5.2k, and Envoy at 4.7k.
+    </desc>
+
+    <text x="178" y="58" class="perf-chart-title">Clean HTTPS 200 RPS</text>
+    <text x="684" y="58" class="perf-chart-note" text-anchor="end">higher is better</text>
+
+    <g class="perf-chart-axis" aria-hidden="true">
+      <path d="M 178 112 H 684" />
+      <path d="M 178 164 H 684" />
+      <path d="M 178 216 H 684" />
+    </g>
+
+    <g class="perf-chart-row perf-chart-row-tako">
+      <text x="34" y="119" class="perf-chart-name">Tako</text>
+      <rect x="178" y="93" width="460" height="38" rx="7" />
+      <text x="656" y="119" class="perf-chart-value">12.5k</text>
+    </g>
+
+    <g class="perf-chart-row perf-chart-row-caddy">
+      <text x="34" y="171" class="perf-chart-name">Caddy</text>
+      <rect x="178" y="145" width="190" height="38" rx="7" />
+      <text x="386" y="171" class="perf-chart-value">5.2k</text>
+    </g>
+
+    <g class="perf-chart-row perf-chart-row-envoy">
+      <text x="34" y="223" class="perf-chart-name">Envoy</text>
+      <rect x="178" y="197" width="174" height="38" rx="7" />
+      <text x="370" y="223" class="perf-chart-value">4.7k</text>
+    </g>
+  </svg>
+</figure>
+
+<style>
+  .performance-results-chart {
+    width: min(100%, 760px);
+    margin: 0;
+    color: var(--ink);
+  }
+
+  .performance-results-chart svg {
+    display: block;
+    width: 100%;
+    height: auto;
+    overflow: visible;
+  }
+
+  .perf-chart-axis path {
+    fill: none;
+    stroke: rgba(47, 42, 68, 0.08);
+    stroke-linecap: round;
+    stroke-width: 1;
+  }
+
+  .perf-chart-name,
+  .perf-chart-value,
+  .perf-chart-note {
+    font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    letter-spacing: 0;
+  }
+
+  .perf-chart-title {
+    fill: var(--ink);
+    font-family: var(--font-heading);
+    font-size: 24px;
+    font-weight: 850;
+  }
+
+  .perf-chart-name {
+    fill: var(--ink);
+    font-size: 13px;
+    font-weight: 840;
+  }
+
+  .perf-chart-value {
+    fill: rgba(47, 42, 68, 0.74);
+    font-size: 13px;
+    font-weight: 820;
+  }
+
+  .perf-chart-note {
+    fill: rgba(47, 42, 68, 0.34);
+    font-size: 10px;
+    font-weight: 720;
+  }
+
+  .perf-chart-row rect {
+    stroke-width: 0;
+  }
+
+  .perf-chart-row-tako rect {
+    fill: var(--primary);
+    fill-opacity: 0.86;
+  }
+
+  .perf-chart-row-caddy rect {
+    fill: var(--secondary);
+    fill-opacity: 0.68;
+  }
+
+  .perf-chart-row-envoy rect {
+    fill: var(--gold);
+    fill-opacity: 0.68;
+  }
+
+</style>

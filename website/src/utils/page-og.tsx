@@ -51,9 +51,10 @@ function pageCard(page: PageOgImage, logoUri: string) {
   const bars = chartBars(page);
   const barColors = ["#E88783", "#57B894", "#F2B94B", "#8D7AE6", "#E88783", "#57B894", "#F2B94B"];
 
-  return (
-    <div
-      style={{
+  return React.createElement(
+    "div",
+    {
+      style: {
         position: "relative",
         width: "100%",
         height: "100%",
@@ -62,10 +63,12 @@ function pageCard(page: PageOgImage, logoUri: string) {
         color: "#2F2A44",
         fontFamily: "Poppins",
         overflow: "hidden",
-      }}
-    >
-      <div
-        style={{
+      },
+    },
+    React.createElement(
+      "div",
+      {
+        style: {
           position: "absolute",
           top: 142,
           right: 58,
@@ -79,80 +82,94 @@ function pageCard(page: PageOgImage, logoUri: string) {
           backgroundColor: "#FFFFFF",
           padding: "34px 32px 31px",
           boxShadow: "14px 14px 0 #2F2A44",
-        }}
-      >
-        <div
-          style={{
+        },
+      },
+      React.createElement(
+        "div",
+        {
+          style: {
             display: "flex",
             alignItems: "flex-end",
             gap: 15,
             height: 250,
             borderBottom: "3px solid #2F2A44",
             padding: "0 4px",
-          }}
-        >
-          {bars.map((height, index) => (
-            <div
-              style={{
-                width: 34,
-                height,
-                border: "3px solid #2F2A44",
-                borderBottom: "0",
-                borderRadius: "8px 8px 0 0",
-                backgroundColor: barColors[index],
-              }}
-            />
-          ))}
-        </div>
-      </div>
-
-      <div
-        style={{
+          },
+        },
+        bars.map((height, index) =>
+          React.createElement("div", {
+            key: index,
+            style: {
+              width: 34,
+              height,
+              border: "3px solid #2F2A44",
+              borderBottom: "0",
+              borderRadius: "8px 8px 0 0",
+              backgroundColor: barColors[index],
+            },
+          }),
+        ),
+      ),
+    ),
+    React.createElement(
+      "div",
+      {
+        style: {
           position: "relative",
           width: 735,
           height: "100%",
           display: "flex",
           flexDirection: "column",
           padding: "58px 72px 58px",
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 15 }}>
-          <img src={logoUri} width={46} height={46} />
-          <div
-            style={{
+        },
+      },
+      React.createElement(
+        "div",
+        { style: { display: "flex", alignItems: "center", gap: 15 } },
+        React.createElement("img", { src: logoUri, width: 46, height: 46 }),
+        React.createElement(
+          "div",
+          {
+            style: {
               fontFamily: "IBM Plex Mono",
               fontSize: 21,
               fontWeight: 400,
               color: "#6F6683",
               letterSpacing: 0,
-            }}
-          >
-            {page.label}
-          </div>
-        </div>
-        <div
-          style={{
+            },
+          },
+          page.label,
+        ),
+      ),
+      React.createElement(
+        "div",
+        {
+          style: {
             display: "flex",
             flexDirection: "column",
             justifyContent: "center",
             flexGrow: 1,
             paddingTop: 28,
-          }}
-        >
-          <div
-            style={{
+          },
+        },
+        React.createElement(
+          "div",
+          {
+            style: {
               fontSize: titleFontSize(page.title),
               fontWeight: 700,
               color: "#2F2A44",
               lineHeight: 1.05,
               letterSpacing: 0,
               maxWidth: 650,
-            }}
-          >
-            {page.title}
-          </div>
-          <div
-            style={{
+            },
+          },
+          page.title,
+        ),
+        React.createElement(
+          "div",
+          {
+            style: {
               marginTop: 28,
               maxWidth: 630,
               fontFamily: "Poppins",
@@ -161,13 +178,12 @@ function pageCard(page: PageOgImage, logoUri: string) {
               lineHeight: 1.26,
               color: "#4B435F",
               letterSpacing: 0,
-            }}
-          >
-            {page.description}
-          </div>
-        </div>
-      </div>
-    </div>
+            },
+          },
+          page.description,
+        ),
+      ),
+    ),
   );
 }
 

@@ -1,0 +1,127 @@
+<style is:global>
+  @media (max-width: 900px) {
+    .panel-hanger {
+      right: 8px;
+      top: 20px;
+      transform: scale(0.9);
+      transform-origin: top right;
+    }
+  }
+
+  @media (max-width: 640px) {
+    .title br {
+      display: none;
+    }
+
+    .title .title-mid {
+      display: block;
+    }
+
+    .title .accent {
+      display: block;
+    }
+
+    .panel-hanger {
+      right: -8px;
+      top: 10px;
+      transform: scale(0.78);
+      transform-origin: top right;
+    }
+
+    .subtitle {
+      color: var(--ink);
+    }
+
+    .hero::before {
+      background:
+        radial-gradient(ellipse at 80% 30%, rgba(155, 196, 182, 0.32) 0%, transparent 60%),
+        radial-gradient(ellipse at 60% 70%, rgba(232, 135, 131, 0.28) 0%, transparent 55%),
+        radial-gradient(ellipse at 90% 55%, rgba(214, 166, 62, 0.20) 0%, transparent 50%),
+        radial-gradient(ellipse at 30% 40%, rgba(232, 135, 131, 0.13) 0%, transparent 60%),
+        radial-gradient(ellipse at 50% 85%, rgba(155, 196, 182, 0.16) 0%, transparent 55%);
+    }
+
+    .command-card {
+      display: none;
+    }
+
+    .agent-prompt-body {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+
+    .copy-button--agent {
+      align-self: flex-start;
+      justify-content: center;
+      width: auto;
+      min-width: 78px;
+    }
+
+    .hero-actions {
+      margin-top: 4px;
+      gap: 8px 10px;
+    }
+
+    .hero-actions .btn-primary {
+      flex: 1 1 145px;
+      min-width: 145px;
+    }
+
+    .hero-demo-link {
+      flex: 1 1 145px;
+      min-width: 145px;
+    }
+
+    .hero-actions-link:not(.hero-demo-link) {
+      flex-basis: 100%;
+      margin-top: 0;
+      font-size: 14px;
+      opacity: 0.62;
+      text-align: center;
+    }
+
+    .workflow-link {
+      flex-direction: row;
+      align-items: center;
+      text-align: left;
+      gap: 12px;
+      padding: 16px;
+    }
+
+    .workflow-cmd {
+      min-width: 110px;
+      flex-shrink: 0;
+    }
+
+    .workflow-orb {
+      width: 36px;
+      height: 36px;
+      font-size: 16px;
+      margin-bottom: 0;
+      flex-shrink: 0;
+    }
+
+    .btn {
+      padding: 10px 20px;
+    }
+
+    .btn-primary {
+      padding: 13px 28px;
+      font-size: 17px;
+    }
+
+    .workflow-steps {
+      grid-template-columns: 1fr;
+    }
+
+    .workflow-section,
+    .philosophy-section,
+    .performance-section {
+      margin-top: 34px;
+    }
+
+    .hero-block-label {
+      font-size: 16px;
+    }
+  }
+</style>

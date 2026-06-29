@@ -1,0 +1,146 @@
+<style is:inline>
+	.copy-button {
+		position: relative;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		font-family: "Nunito", sans-serif;
+		font-weight: 700;
+		letter-spacing: 0.02em;
+		cursor: pointer;
+		flex: 0 0 auto;
+		transition:
+			transform 150ms cubic-bezier(0.23, 1, 0.32, 1),
+			background 180ms cubic-bezier(0.23, 1, 0.32, 1),
+			border-color 180ms cubic-bezier(0.23, 1, 0.32, 1);
+	}
+
+	.copy-button-icon {
+		position: absolute;
+		stroke: currentColor;
+		stroke-width: 2;
+		transition:
+			opacity 120ms cubic-bezier(0.23, 1, 0.32, 1),
+			transform 120ms cubic-bezier(0.23, 1, 0.32, 1);
+	}
+
+	.copy-button-icon-copy {
+		opacity: 1;
+	}
+
+	.copy-button-icon-check {
+		opacity: 0;
+	}
+
+	.copy-button.is-copied .copy-button-icon-copy {
+		opacity: 0;
+	}
+
+	.copy-button.is-copied .copy-button-icon-check {
+		opacity: 1;
+	}
+
+	.copy-button-label {
+		position: static;
+		width: auto;
+		height: auto;
+		margin: 0;
+		padding: 0;
+		overflow: visible;
+		clip: auto;
+		border: 0;
+		text-transform: lowercase;
+	}
+
+	.copy-button--command {
+		gap: 8px;
+		height: 40px;
+		margin-left: auto;
+		padding: 0 14px 0 38px;
+		border: 1.5px solid rgba(232, 135, 131, 0.45);
+		border-radius: 999px;
+		background: rgba(232, 135, 131, 0.14);
+		color: var(--primary-text);
+		font-size: 13px;
+	}
+
+	.copy-button--command .copy-button-icon {
+		left: 14px;
+		top: 50%;
+		width: 15px;
+		height: 15px;
+		transform: translateY(-50%);
+	}
+
+	.copy-button--command.is-copied .copy-button-icon-copy,
+	.copy-button--command .copy-button-icon-check {
+		transform: translateY(-50%) scale(0.85);
+	}
+
+	.copy-button--command.is-copied .copy-button-icon-check {
+		transform: translateY(-50%) scale(1);
+	}
+
+	.copy-button--agent {
+		gap: 7px;
+		height: 34px;
+		margin-left: 0;
+		padding: 0 12px 0 34px;
+		border: 1.5px solid rgba(47, 42, 68, 0.16);
+		border-radius: 999px;
+		background: rgba(255, 255, 255, 0.34);
+		color: rgba(47, 42, 68, 0.72);
+		font-size: 12px;
+	}
+
+	.copy-button--agent .copy-button-icon {
+		left: 12px;
+		top: 50%;
+		width: 14px;
+		height: 14px;
+		transform: translateY(-50%);
+	}
+
+	.copy-button--agent.is-copied .copy-button-icon-copy,
+	.copy-button--agent .copy-button-icon-check {
+		transform: translateY(-50%) scale(0.85);
+	}
+
+	.copy-button--agent.is-copied .copy-button-icon-check {
+		transform: translateY(-50%) scale(1);
+	}
+
+	.copy-button--command.is-copied,
+	.copy-button--agent.is-copied {
+		background: rgba(155, 196, 182, 0.28);
+		border-color: rgba(155, 196, 182, 0.6);
+		color: rgba(22, 110, 80, 0.95);
+	}
+
+	.copy-button:focus-visible {
+		outline: 2px solid var(--primary);
+		outline-offset: 2px;
+	}
+
+	@media (hover: hover) and (pointer: fine) {
+		.copy-button--command:hover {
+			transform: translateY(-1px);
+			background: rgba(232, 135, 131, 0.22);
+			border-color: rgba(232, 135, 131, 0.6);
+		}
+
+		.copy-button--agent:hover {
+			transform: translateY(-1px);
+			background: rgba(255, 255, 255, 0.56);
+			border-color: rgba(47, 42, 68, 0.24);
+			color: var(--ink);
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.copy-button,
+		.copy-button-icon {
+			transition: none;
+		}
+	}
+</style>
