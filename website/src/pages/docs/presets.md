@@ -63,7 +63,7 @@ Preset `main` is used only when `tako.toml main` and the runtime manifest main f
 
 Preset `assets` are merged with top-level `assets` and copied into deployed `public/` after build. Later asset roots overwrite earlier ones.
 
-Preset `dev` is used by `tako dev` unless top-level `dev` overrides it. Production build and install still come from `[build]`, `[[build_stages]]`, or the runtime plugin defaults.
+Preset `dev` is used by `tako dev` unless a command is passed on the CLI or top-level `dev` overrides it. Production build and install still come from `[build]`, `[[build_stages]]`, or the runtime plugin defaults.
 
 ## Creating Presets
 

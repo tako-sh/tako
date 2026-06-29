@@ -210,9 +210,10 @@ Variable values may be TOML strings, numbers, booleans, or datetimes. Tako conve
 - `development` is for `tako dev`; `servers` declared there are ignored by deploy validation.
 - Deployed app instances bind to `127.0.0.1` on an OS-assigned port. The SDK signals readiness to `tako-server` by writing the bound port to fd 4 (file descriptor 4) once listening. The server then routes traffic to that loopback endpoint.
 - `tako dev` resolves the dev command with this priority:
-  1. `dev` in `tako.toml` (user override, e.g. `dev = ["custom", "cmd"]`)
-  2. Preset `dev` command (e.g. vite preset uses `vite dev`)
-  3. Runtime default: JS runtimes run through the SDK HTTP entrypoint (`bun run node_modules/tako.sh/dist/entrypoints/bun-server.mjs {main}`, or `node --experimental-strip-types node_modules/tako.sh/dist/entrypoints/node-server.mjs {main}`), and Go uses `go run .`
+  1. CLI command override after `tako dev` (for example, `tako dev vite dev`, `tako dev npm run dev`, or `tako dev -- vite dev`)
+  2. `dev` in `tako.toml` (project override, e.g. `dev = ["custom", "cmd"]`)
+  3. Preset `dev` command (e.g. vite preset uses `vite dev`)
+  4. Runtime default: JS runtimes run through the SDK HTTP entrypoint (`bun run node_modules/tako.sh/dist/entrypoints/bun-server.mjs {main}`, or `node --experimental-strip-types node_modules/tako.sh/dist/entrypoints/node-server.mjs {main}`), and Go uses `go run .`
 - `tako dev` marks an app running only after the app writes its bound loopback port to fd 4. Direct Vite dev commands (for example `vite` or `vite dev`) must use the `tako.sh/vite` plugin for fd-4 readiness; if the command looks like Vite and no readiness signal arrives, the CLI reports a Vite-specific plugin hint. Tako does not parse Vite stdout URLs as readiness.
 - The dev entrypoints host the HTTP server. Workflow workers run as a **separate, scale-to-zero subprocess** managed by tako-dev-server's embedded `WorkflowManager` — same architecture as production, but `workers: 0` with a 3s idle timeout so the worker only exists while there's real work. The SDK wraps `export default function fetch()` or `export default { fetch }` into a proper HTTP server on `PORT`; worker stdout/stderr is tee'd into the CLI log stream with `scope: "worker"`.
 - Process exit detection: `tako dev` polls `try_wait()` every 500ms to detect when the app process exits. On exit, the route goes idle (proxy stops forwarding) and the next HTTP request triggers a restart. A route is activated only after fd-4 readiness succeeds.
@@ -639,12 +640,13 @@ CLI upgrade strategy:
 - Homebrew install detection: runs `brew upgrade tako`
 - Default/fallback: downloads the hosted CLI archive and installs it directly with the same layout as `scripts/install-tako.sh`
 
-### tako dev [--variant {variant}] [--tunnel]
+### tako dev [--variant {variant}] [--tunnel] [command...]
 
 Start (or connect to) a local development session for the current app, backed by a persistent dev daemon.
 
 - `--variant` (alias `--var`) runs a DNS variant of the app (e.g. `--variant foo` → `myapp-foo.test`).
 - `--tunnel` starts the session with a temporary public tunnel URL enabled.
+- `command...` overrides the configured dev command for this run. For example, `tako dev vite dev` wraps `vite dev` in the Tako dev lifecycle. Use `tako dev -- <command...>` when the child command conflicts with a Tako dev subcommand such as `stop` or `list`, or when the child command starts with a flag.
 - `tako dev` is a **client**: it ensures `tako-dev-server` is running, then registers the selected config file with the daemon.
   - On macOS, `tako dev` also ensures the socket-activated `tako-dev-proxy` helper is installed and loaded for loopback-only `:80/:443` ingress.
   - On Linux, `tako dev` ensures iptables redirect rules and a loopback alias (`127.77.0.1`) are configured for portless HTTPS. On NixOS, it prints a `configuration.nix` snippet instead of imperative setup.

@@ -403,6 +403,7 @@ pub(super) fn resolve_dev_run_command(
     runtime_adapter: BuildAdapter,
     _explicit_preset: bool,
     project_dir: &Path,
+    command_override: Option<&[String]>,
 ) -> Result<Vec<String>, String> {
     let abs_main = if Path::new(main).is_absolute() {
         main.to_string()
@@ -410,7 +411,9 @@ pub(super) fn resolve_dev_run_command(
         project_dir.join(main).to_string_lossy().to_string()
     };
 
-    let raw = if !cfg.dev.is_empty() {
+    let raw = if let Some(command_override) = command_override.filter(|cmd| !cmd.is_empty()) {
+        command_override.to_vec()
+    } else if !cfg.dev.is_empty() {
         cfg.dev.clone()
     } else if let Some(runtime_dev) = preset
         .runtime_overrides

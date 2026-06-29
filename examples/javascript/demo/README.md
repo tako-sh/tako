@@ -6,7 +6,7 @@ Each planet base has a mission page at `<base>.demo.tako.sh`. Submitting a suppl
 
 Live at [demo.tako.sh](https://demo.tako.sh).
 
-## Local Dev (Vite)
+## Local Dev
 
 ```bash
 cd examples/javascript/demo
@@ -14,18 +14,7 @@ bun install
 bun run dev
 ```
 
-This mode works without a Tako runtime for root route and UI checks. Wildcard mission routes, workflow enqueueing, live channels, and image optimization require `tako dev`.
-
-## Run With Tako Dev Flow
-
-From the demo app directory:
-
-```bash
-cd examples/javascript/demo
-tako dev
-```
-
-Use this mode for the real Tako path: workflows are enqueued through the internal socket, events flow through the actual `mission-log` channel, and base artwork is served through `/_tako/image`.
+The `dev` script runs `tako dev bunx --bun vite dev`, so it wraps Vite in the real Tako path: workflows are enqueued through the internal socket, events flow through the actual `mission-log` channel, and base artwork is served through `/_tako/image`.
 
 Import demo development secrets:
 
@@ -50,8 +39,7 @@ bun test
 ## Notes
 
 - `tako.toml` sets `preset = "tanstack-start"` with `runtime = "bun"`.
-- Plain `bun run dev` is UI-only for mission routes; use `tako dev` to exercise channels and workflows.
-- `tako dev` uses real Tako channels + workflows.
+- `bun run dev` wraps Vite with `tako dev`, so local development uses real Tako channels + workflows.
 - The cleanup cron workflow runs daily and removes supply requests older than three days plus empty stale bases.
 - Base context is read server-side from the wildcard host, so no env var is needed.
   - `valles-hub.demo.tako.sh` → base `valles-hub` (Mission Control view)

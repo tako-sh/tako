@@ -4,7 +4,7 @@
   "type": "module",
   "sideEffects": false,
   "scripts": {
-    "dev": "bunx --bun vite dev",
+    "dev": "tako dev bunx --bun vite dev",
     "build": "bunx --bun vite build --configLoader runner && tsc --noEmit",
     "test": "bun test tests"
   },

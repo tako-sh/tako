@@ -89,6 +89,7 @@ Start local development server with built-in HTTPS proxy and `.test` domain.
 
 ```bash
 tako dev
+tako dev vite dev            # wrap an explicit dev command for this run
 tako dev --variant staging    # myapp-staging.test
 tako dev --tunnel             # start with a temporary public URL
 tako dev stop [name]          # stop a running dev app
@@ -99,6 +100,7 @@ Features:
 
 - Local HTTPS via auto-generated certificates
 - `.test` domain resolution
+- Explicit command overrides such as `tako dev npm run dev`; use `tako dev -- <command...>` when the child command conflicts with `stop` or `list`, or starts with a flag
 - Temporary public tunnel URLs via `tako dev --tunnel` or `t` in the interactive UI
 - File watching and automatic restart
 - Hot reload passthrough for framework dev servers

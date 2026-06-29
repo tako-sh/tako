@@ -12,6 +12,7 @@ description: "Learn how tako dev provides trusted HTTPS, custom .test domains, h
 
 ```bash
 tako dev
+tako dev vite dev
 ```
 
 Default URL:
@@ -37,7 +38,17 @@ Tako does not watch arbitrary source files for restart. Framework dev servers an
 
 ## Routes
 
-If `container = "Dockerfile"` is set for deploys, `tako dev` still runs the configured dev command, preset dev command, or native runtime default. It does not build or run the container file locally. If deploy uses `start` for a built native artifact, set `dev` separately for the local development command.
+If `container = "Dockerfile"` is set for deploys, `tako dev` still runs the CLI command override, configured dev command, preset dev command, or native runtime default. It does not build or run the container file locally. If deploy uses `start` for a built native artifact, set `dev` separately for the local development command.
+
+Pass a command after `tako dev` to wrap it in the Tako dev lifecycle for one run:
+
+```bash
+tako dev vite dev
+tako dev npm run dev
+tako dev -- vite dev
+```
+
+The command-line override wins over `dev` in `tako.toml`. Use `--` when the child command conflicts with a Tako subcommand such as `stop` or `list`, or when the child command starts with a flag.
 
 The local dev proxy does not apply Tako's deployed-response Brotli/gzip compression, so browser debugging shows the app response body directly.
 

@@ -54,12 +54,23 @@ Refreshes generated project files:
 
 ```bash
 tako dev
+tako dev vite dev
 tako dev --variant preview
 tako dev --var preview
 tako dev --tunnel
 ```
 
 Starts or attaches to a local dev session behind trusted HTTPS and real hostnames. It starts the dev daemon, prepares DNS/proxy/CA setup, generates files, injects secrets and storage through fd 3, waits for fd-4 readiness, and registers routes.
+
+Pass a command after `tako dev` to override the configured dev command for that run:
+
+```bash
+tako dev vite dev
+tako dev npm run dev
+tako dev -- vite dev
+```
+
+Use `--` when the child command conflicts with a Tako subcommand such as `stop` or `list`, or when the child command starts with a flag.
 
 Interactive controls:
 
@@ -115,13 +126,13 @@ Secrets are not process env vars. `tako run` is local-only in v0; it does not ru
 ## Development
 
 ```bash
-tako dev [--variant <name>] [--tunnel]
+tako dev [--variant <name>] [--tunnel] [command...]
 tako dev stop [name] [--all]
 tako dev list
 tako dev ls
 ```
 
-`tako dev` starts or attaches to the local dev daemon and registers the selected app config. `--variant foo` runs a variant hostname such as `myapp-foo.test`. `--tunnel` starts with a temporary public tunnel URL.
+`tako dev` starts or attaches to the local dev daemon and registers the selected app config. `--variant foo` runs a variant hostname such as `myapp-foo.test`. `--tunnel` starts with a temporary public tunnel URL. `command...` overrides `dev` in `tako.toml`, preset dev commands, and runtime defaults for this run.
 
 Interactive shortcuts: `r` restarts, `l` toggles LAN `.local` aliases, `t` toggles tunnel mode, `b` backgrounds the app, and `Ctrl-C` unregisters it.
 

@@ -36,13 +36,13 @@ servers = ["prod-a"]
 | `preset`          | string | Runtime-local preset alias such as `vite`, `tanstack-start`, or `nextjs`.                             |
 | `main`            | string | Runtime entrypoint override. May be a file path or module specifier.                                  |
 | `app_root`        | string | JS channels/workflows root, relative to `tako.toml`. Defaults to `src`; use `.` for root-level files. |
-| `dev`             | array  | Custom `tako dev` command. Overrides preset and runtime defaults.                                     |
+| `dev`             | array  | Custom `tako dev` command. Overrides preset and runtime defaults unless a CLI command is passed.      |
 | `start`           | array  | Native deploy start command for prebuilt artifacts.                                                   |
 | `assets`          | array  | Additional asset directories merged into deployed `public/`.                                          |
 | `container`       | string | Container file path for container releases.                                                           |
 | `release`         | string | One-shot command run on the leader server before rolling update.                                      |
 
-When `container` is set, native release fields are invalid: `main`, `start`, `assets`, `[build]`, and `[[build_stages]]`. `tako dev` still uses the dev command or runtime/preset dev defaults and does not build the container file locally.
+When `container` is set, native release fields are invalid: `main`, `start`, `assets`, `[build]`, and `[[build_stages]]`. `tako dev` still uses a CLI command override, the dev command, or runtime/preset dev defaults and does not build the container file locally.
 
 `start` is for native artifacts such as compiled binaries. An exact `{main}` argument is replaced with the resolved entrypoint. The process must still use a Tako SDK listener so fd 3 bootstrap, fd 4 readiness, secrets, storage bindings, and health checks work.
 

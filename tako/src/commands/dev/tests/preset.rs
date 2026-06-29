@@ -78,6 +78,7 @@ main = "src/index.ts"
         BuildAdapter::Bun,
         false,
         pd,
+        None,
     )
     .expect("runtime default dev command");
 
@@ -104,6 +105,7 @@ main = "dist/server/tako-entry.mjs"
         BuildAdapter::Node,
         true,
         pd,
+        None,
     )
     .expect("runtime default dev command");
 
@@ -134,6 +136,7 @@ main = "src/index.ts"
         BuildAdapter::Bun,
         true,
         pd,
+        None,
     )
     .expect("preset dev command");
 
@@ -170,8 +173,16 @@ fn tanstack_start_bun_dev_resolves_to_bunx_bun_vite_dev_end_to_end() {
 
     let adapter = resolve_effective_dev_build_adapter(project.path(), &cfg, &preset_ref).unwrap();
 
-    let cmd = resolve_dev_run_command(&cfg, &preset, "src/index.ts", adapter, true, project.path())
-        .unwrap();
+    let cmd = resolve_dev_run_command(
+        &cfg,
+        &preset,
+        "src/index.ts",
+        adapter,
+        true,
+        project.path(),
+        None,
+    )
+    .unwrap();
 
     match previous {
         Some(value) => unsafe { std::env::set_var("TAKO_HOME", value) },
@@ -205,6 +216,7 @@ dev = ["bunx", "--bun", "vite", "dev"]
         BuildAdapter::Bun,
         true,
         pd,
+        None,
     )
     .expect("preset runtime override command");
 
@@ -233,6 +245,7 @@ dev = ["bunx", "--bun", "vite", "dev"]
         BuildAdapter::Node,
         true,
         pd,
+        None,
     )
     .expect("preset default dev command for node");
 
@@ -259,8 +272,16 @@ dev = ["bunx", "--bun", "vite", "dev"]
     };
 
     let pd = Path::new("/project");
-    let cmd = resolve_dev_run_command(&cfg, &preset, "src/index.ts", BuildAdapter::Bun, true, pd)
-        .expect("config dev command");
+    let cmd = resolve_dev_run_command(
+        &cfg,
+        &preset,
+        "src/index.ts",
+        BuildAdapter::Bun,
+        true,
+        pd,
+        None,
+    )
+    .expect("config dev command");
 
     assert_eq!(cmd, vec!["custom", "cmd"]);
 }
@@ -282,8 +303,58 @@ main = "src/index.ts"
     };
 
     let pd = Path::new("/project");
-    let cmd = resolve_dev_run_command(&cfg, &preset, "src/index.ts", BuildAdapter::Bun, true, pd)
-        .expect("config dev command");
+    let cmd = resolve_dev_run_command(
+        &cfg,
+        &preset,
+        "src/index.ts",
+        BuildAdapter::Bun,
+        true,
+        pd,
+        None,
+    )
+    .expect("config dev command");
 
     assert_eq!(cmd, vec!["custom", "cmd"]);
+}
+
+#[test]
+fn resolve_dev_run_command_cli_command_beats_config_and_preset() {
+    let preset = parse_and_validate_preset(
+        r#"
+main = "src/index.ts"
+dev = ["vite", "dev"]
+
+[bun]
+dev = ["bunx", "--bun", "vite", "dev"]
+"#,
+        "tanstack-start",
+    )
+    .unwrap();
+
+    let cfg = TakoToml {
+        dev: vec!["custom".to_string(), "cmd".to_string()],
+        ..Default::default()
+    };
+    let override_cmd = vec![
+        "npm".to_string(),
+        "run".to_string(),
+        "dev".to_string(),
+        "--".to_string(),
+        "--host".to_string(),
+        "127.0.0.1".to_string(),
+    ];
+
+    let pd = Path::new("/project");
+    let cmd = resolve_dev_run_command(
+        &cfg,
+        &preset,
+        "src/index.ts",
+        BuildAdapter::Bun,
+        true,
+        pd,
+        Some(&override_cmd),
+    )
+    .expect("cli dev command");
+
+    assert_eq!(cmd, vec!["npm", "run", "dev", "--", "--host", "127.0.0.1"]);
 }

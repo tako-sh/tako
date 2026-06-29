@@ -47,6 +47,7 @@ pub(super) async fn prepare(
     public_port: u16,
     variant: Option<String>,
     tunnel: bool,
+    command_override: Option<Vec<String>>,
     config_path: Option<&Path>,
 ) -> Result<PrepareOutcome, Box<dyn std::error::Error>> {
     let context = crate::commands::project_context::resolve_existing(config_path)?;
@@ -199,6 +200,7 @@ pub(super) async fn prepare(
         runtime_adapter,
         has_explicit_dev_preset(&cfg),
         &project_dir,
+        command_override.as_deref(),
     )
     .map_err(|e| format!("Invalid dev start command: {}", e))?;
     let readiness_failure_hint = readiness_failure_hint_for_dev_command(&cmd);

@@ -4,7 +4,7 @@
   "type": "module",
   "sideEffects": false,
   "scripts": {
-    "dev": "vite dev",
+    "dev": "tako dev vite dev",
     "build": "vite build && tsc --noEmit",
     "preview": "vite preview",
     "start": "vite preview"

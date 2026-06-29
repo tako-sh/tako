@@ -90,6 +90,9 @@ pub enum DevSubcommands {
     /// List registered dev apps
     #[command(visible_alias = "ls")]
     List,
+    /// Override the configured dev command
+    #[command(external_subcommand)]
+    Run(Vec<String>),
 }
 
 #[derive(Subcommand)]
@@ -280,6 +283,14 @@ impl Cli {
                         DEV_PUBLIC_PORT,
                         args.variant,
                         args.tunnel,
+                        None,
+                        self.config.as_deref(),
+                    ))?,
+                    Some(DevSubcommands::Run(cmd)) => rt.block_on(commands::dev::run(
+                        DEV_PUBLIC_PORT,
+                        args.variant,
+                        args.tunnel,
+                        Some(cmd),
                         self.config.as_deref(),
                     ))?,
                     Some(DevSubcommands::Stop { name, all }) => {
