@@ -64,7 +64,14 @@ pub(crate) async fn serve(
                 }
             });
 
-            if let Err(error) = http1::Builder::new().serve_connection(io, service).await {
+            // Bound how long a peer may dribble headers (or sit idle between
+            // keep-alive requests) — this port is reachable over the network.
+            let result = http1::Builder::new()
+                .timer(hyper_util::rt::TokioTimer::new())
+                .header_read_timeout(Duration::from_secs(30))
+                .serve_connection(io, service)
+                .await;
+            if let Err(error) = result {
                 tracing::debug!(%peer_addr, %error, "Management HTTP connection ended");
             }
         });

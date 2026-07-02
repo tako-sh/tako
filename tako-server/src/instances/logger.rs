@@ -79,6 +79,11 @@ impl AppLogHandle {
     }
 }
 
+/// Max bytes buffered for a single line. Newline-free output beyond this is
+/// forwarded as multiple entries so an app dumping binary data to stdout
+/// cannot balloon server memory.
+const MAX_LINE_BYTES: usize = 64 * 1024;
+
 /// Read lines from a pipe and forward them to the app log writer.
 pub async fn log_pipe<R: tokio::io::AsyncRead + Unpin>(
     pipe: R,
@@ -86,15 +91,20 @@ pub async fn log_pipe<R: tokio::io::AsyncRead + Unpin>(
     instance_id: String,
     stream: LogStream,
 ) {
-    use tokio::io::{AsyncBufReadExt, BufReader};
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
     let mut reader = BufReader::new(pipe);
-    let mut line = String::new();
+    let mut buf = Vec::new();
     loop {
-        line.clear();
-        match reader.read_line(&mut line).await {
+        buf.clear();
+        match (&mut reader)
+            .take(MAX_LINE_BYTES as u64)
+            .read_until(b'\n', &mut buf)
+            .await
+        {
             Ok(0) | Err(_) => break,
             Ok(_) => {
-                let trimmed = line.trim_end();
+                let text = String::from_utf8_lossy(&buf);
+                let trimmed = text.trim_end();
                 if !trimmed.is_empty() {
                     log_handle.try_send(LogEntry {
                         instance_id: instance_id.clone(),
@@ -674,5 +684,28 @@ mod tests {
         assert!(content.contains("first line"));
         assert!(content.contains("second line"));
         assert!(content.contains("third line"));
+    }
+
+    #[tokio::test]
+    async fn log_pipe_caps_newline_free_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let handle = spawn_app_logger("pipe-cap-app", dir.path().to_path_buf());
+
+        // A giant blob with no newline must not be buffered unboundedly; it
+        // is forwarded in MAX_LINE_BYTES segments.
+        let mut data = vec![b'x'; MAX_LINE_BYTES + 100];
+        data.extend_from_slice(b"\ntail line\n");
+        let cursor = std::io::Cursor::new(data);
+
+        log_pipe(cursor, handle.clone(), "p1".into(), LogStream::Stdout).await;
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        drop(handle);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let content = std::fs::read_to_string(dir.path().join("current.log")).unwrap();
+        assert!(content.contains("tail line"));
+        let longest = content.lines().map(str::len).max().unwrap_or(0);
+        assert!(longest <= MAX_LINE_BYTES + 128);
     }
 }

@@ -611,7 +611,6 @@ impl ProxyHttp for TakoProxy {
         _ctx: &mut Self::CTX,
     ) -> FailToProxy {
         let status = match e.etype() {
-            ErrorType::HTTPStatus(code) if *code < 500 => *code,
             ErrorType::HTTPStatus(code) => *code,
             _ => match e.esource() {
                 ErrorSource::Downstream => match e.etype() {
