@@ -67,6 +67,27 @@ impl TakoProxy {
             match static_server.resolve(&lookup_path) {
                 Ok(file) => {
                     ctx.observation.set_handler("static", "hit");
+
+                    let if_none_match = session
+                        .req_header()
+                        .headers
+                        .get("if-none-match")
+                        .and_then(|value| value.to_str().ok());
+                    if if_none_match.is_some_and(|value| {
+                        value
+                            .split(',')
+                            .any(|candidate| candidate.trim().trim_start_matches("W/") == file.etag)
+                    }) {
+                        let mut header = ResponseHeader::build(304, None)?;
+                        header.insert_header("Cache-Control", &file.cache_control)?;
+                        header.insert_header("ETag", &file.etag)?;
+                        session
+                            .write_response_header(Box::new(header), false)
+                            .await?;
+                        session.write_response_body(None, true).await?;
+                        return Ok(true);
+                    }
+
                     let mut file_handle = if is_head {
                         None
                     } else {

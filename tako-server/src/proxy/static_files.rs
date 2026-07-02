@@ -260,7 +260,7 @@ impl AppStaticServer {
             .unwrap_or_default()
             .as_secs();
 
-        format!("\"{}{}\"", size, modified_secs)
+        format!("\"{}-{}\"", size, modified_secs)
     }
 
     /// Get root directory
@@ -398,6 +398,9 @@ mod tests {
         let file = server.resolve("/index.html").unwrap();
         assert!(file.etag.starts_with('"'));
         assert!(file.etag.ends_with('"'));
+        // Size and mtime are separated so distinct (size, mtime) pairs
+        // cannot collide on concatenation.
+        assert!(file.etag.contains('-'));
     }
 
     #[test]
