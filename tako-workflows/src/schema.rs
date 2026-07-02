@@ -71,12 +71,6 @@ CREATE INDEX IF NOT EXISTS idx_event_waiters_name
 CREATE INDEX IF NOT EXISTS idx_event_waiters_expiry
   ON event_waiters(expires_at)
   WHERE expires_at IS NOT NULL;
-
-CREATE TABLE IF NOT EXISTS leader_leases (
-  name        TEXT PRIMARY KEY,
-  holder      TEXT NOT NULL,
-  expires_at  INTEGER NOT NULL
-);
 "#;
 
 pub(crate) fn init(conn: &Connection) -> rusqlite::Result<()> {
