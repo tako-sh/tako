@@ -18,4 +18,4 @@ routes = ["demo.test", "*.demo.test"]
 [envs.production]
 routes = ["demo.tako.sh", "*.demo.tako.sh"]
 source_ip = "direct"
-servers = ["tako-demo"]
+servers = ["hetzner-eu"]
