@@ -179,14 +179,13 @@ fn install_parent_death_signal(_signal: Option<i32>) -> std::io::Result<()> {
 }
 
 fn drop_to_user(user: &UserIds) -> std::io::Result<()> {
-    let groups: Vec<libc::gid_t> = user
-        .supplementary_gids
-        .iter()
-        .copied()
-        .map(|gid| gid as libc::gid_t)
-        .collect();
+    // Runs between fork and exec, where only async-signal-safe calls are
+    // allowed — no heap allocation. `gid_t` is `u32` on supported unixes,
+    // so pass the stored ids directly.
+    const _: () = assert!(size_of::<libc::gid_t>() == size_of::<u32>());
+    let groups = user.supplementary_gids.as_slice();
     // SAFETY: setgroups, setgid, and setuid are called with OS-provided ids.
-    if unsafe { libc::setgroups(groups.len() as _, groups.as_ptr()) } == -1 {
+    if unsafe { libc::setgroups(groups.len() as _, groups.as_ptr().cast()) } == -1 {
         return Err(std::io::Error::last_os_error());
     }
     if unsafe { libc::setgid(user.gid as libc::gid_t) } == -1 {
