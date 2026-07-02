@@ -191,19 +191,29 @@ pub(super) async fn sync_secrets(
             Some(encrypted_secrets) => {
                 let key = load_secret_key(env_name, &secrets, Some(&context.project_dir))?;
                 let mut decrypted = std::collections::HashMap::new();
+                let mut decrypt_error = None;
                 for (name, encrypted_value) in encrypted_secrets {
                     match decrypt(&encrypted_value.value, &key) {
                         Ok(value) => {
                             decrypted.insert(name.clone(), value);
                         }
                         Err(e) => {
-                            output::warning(&format!(
-                                "Failed to decrypt {}: {}",
-                                output::strong(name),
-                                e
-                            ));
+                            decrypt_error = Some((name.clone(), e));
+                            break;
                         }
                     }
+                }
+                // Syncing a partial set would delete the failed secret on the
+                // server and restart the app without it — fail this env instead.
+                if let Some((name, e)) = decrypt_error {
+                    output::error(&format!(
+                        "Failed to decrypt {} — {} not synced: {}",
+                        output::strong(&name),
+                        output::strong(env_name),
+                        e
+                    ));
+                    error_count += 1;
+                    continue;
                 }
                 decrypted
             }
