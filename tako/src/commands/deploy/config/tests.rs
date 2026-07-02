@@ -213,14 +213,93 @@ fn resolve_deploy_environment_rejects_missing_default_production_environment() {
 
 #[test]
 fn should_confirm_production_deploy_requires_interactive_unless_yes_is_set() {
-    assert!(should_confirm_production_deploy("production", false, true));
-    assert!(!should_confirm_production_deploy("production", true, true));
+    assert!(should_confirm_production_deploy(
+        "production",
+        false,
+        true,
+        true
+    ));
+    assert!(!should_confirm_production_deploy(
+        "production",
+        true,
+        true,
+        true
+    ));
     assert!(!should_confirm_production_deploy(
         "production",
         false,
+        false,
+        true
+    ));
+    assert!(!should_confirm_production_deploy(
+        "staging", false, true, true
+    ));
+}
+
+#[test]
+fn should_confirm_production_deploy_skips_when_only_one_deploy_target_exists() {
+    assert!(!should_confirm_production_deploy(
+        "production",
+        false,
+        true,
         false
     ));
-    assert!(!should_confirm_production_deploy("staging", false, true));
+}
+
+#[test]
+fn has_multiple_deploy_targets_is_false_for_single_production_env() {
+    let mut config = TakoToml::default();
+    config.envs.insert(
+        "production".to_string(),
+        EnvConfig {
+            route: Some("prod.example.com".to_string()),
+            ..Default::default()
+        },
+    );
+
+    assert!(!has_multiple_deploy_targets(&config));
+}
+
+#[test]
+fn has_multiple_deploy_targets_ignores_the_reserved_development_env() {
+    let mut config = TakoToml::default();
+    config.envs.insert(
+        "production".to_string(),
+        EnvConfig {
+            route: Some("prod.example.com".to_string()),
+            ..Default::default()
+        },
+    );
+    config.envs.insert(
+        "development".to_string(),
+        EnvConfig {
+            route: Some("localhost".to_string()),
+            ..Default::default()
+        },
+    );
+
+    assert!(!has_multiple_deploy_targets(&config));
+}
+
+#[test]
+fn has_multiple_deploy_targets_is_true_with_staging_and_production() {
+    let mut config = TakoToml::default();
+    config.envs.insert(
+        "production".to_string(),
+        EnvConfig {
+            route: Some("prod.example.com".to_string()),
+            ..Default::default()
+        },
+    );
+    config.envs.insert(
+        "staging".to_string(),
+        EnvConfig {
+            route: Some("staging.example.com".to_string()),
+            ..Default::default()
+        },
+    );
+
+    assert!(has_multiple_deploy_targets(&config));
 }
 
 #[test]

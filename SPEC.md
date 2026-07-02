@@ -1212,7 +1212,7 @@ Deploy target environment must be declared in `tako.toml` (`[envs.<name>]`) and 
 
 `development` is reserved for `tako dev` and cannot be used with `tako deploy`.
 
-In interactive terminals, deploying to `production` requires an explicit confirmation when the environment is implicit. Passing `--env production`, `--yes`, or `-y` skips that confirmation because the target is explicit.
+In interactive terminals, deploying to `production` requires an explicit confirmation when the environment is implicit and more than one deployable environment is declared in `tako.toml` (`development` doesn't count, since it can't be deployed). Passing `--env production`, `--yes`, or `-y` skips that confirmation because the target is explicit; so does having only one deployable environment configured, since there's no other environment the deploy could have implicitly missed.
 
 Deploy flow helpers:
 

@@ -57,8 +57,20 @@ pub(super) fn should_confirm_production_deploy(
     env: &str,
     assume_yes: bool,
     interactive: bool,
+    multiple_deploy_targets: bool,
 ) -> bool {
-    env == "production" && !assume_yes && interactive
+    env == "production" && !assume_yes && interactive && multiple_deploy_targets
+}
+
+/// Whether more than one deployable environment is configured. `development`
+/// is excluded since it's reserved for local dev and can't be a deploy target.
+pub(super) fn has_multiple_deploy_targets(tako_config: &TakoToml) -> bool {
+    tako_config
+        .envs
+        .keys()
+        .filter(|name| name.as_str() != "development")
+        .count()
+        > 1
 }
 
 pub(super) fn format_production_deploy_confirm_prompt() -> String {
@@ -69,8 +81,17 @@ pub(super) fn format_production_deploy_confirm_hint() -> String {
     output::theme_muted("Pass --yes/-y to skip this prompt.")
 }
 
-pub(super) fn confirm_production_deploy(env: &str, assume_yes: bool) -> std::io::Result<()> {
-    if !should_confirm_production_deploy(env, assume_yes, output::is_interactive()) {
+pub(super) fn confirm_production_deploy(
+    env: &str,
+    assume_yes: bool,
+    tako_config: &TakoToml,
+) -> std::io::Result<()> {
+    if !should_confirm_production_deploy(
+        env,
+        assume_yes,
+        output::is_interactive(),
+        has_multiple_deploy_targets(tako_config),
+    ) {
         return Ok(());
     }
 

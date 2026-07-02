@@ -250,8 +250,12 @@ async fn run_async(
     // Skip confirmation if the user explicitly passed --env production (they
     // already know which environment they're targeting).
     let env_was_explicit = requested_env.is_some();
-    confirm_production_deploy(&env, assume_yes || env_was_explicit || output::is_dry_run())
-        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    confirm_production_deploy(
+        &env,
+        assume_yes || env_was_explicit || output::is_dry_run(),
+        &tako_config,
+    )
+    .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
     for warning in &warnings {
         output::warning(&format!("Validation: {}", warning));

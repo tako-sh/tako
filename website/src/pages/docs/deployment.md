@@ -60,7 +60,7 @@ tako deploy --env staging
 tako deploy --env production --yes
 ```
 
-When `--env` is omitted, deploy targets `production`. In an interactive terminal, an implicit production deploy asks for confirmation. Passing `--env production`, `--yes`, or `-y` makes the target explicit.
+When `--env` is omitted, deploy targets `production`. In an interactive terminal, an implicit production deploy asks for confirmation — but only if `tako.toml` declares more than one deployable environment (`development` doesn't count). With a single environment, there's nothing the deploy could have implicitly missed, so it proceeds without asking. Passing `--env production`, `--yes`, or `-y` also skips the prompt by making the target explicit.
 
 Deploy validates secrets, storage credentials, provider credentials, routes, server target metadata, workflow/channel storage requirements, and local-storage limitations before build work starts.
 
