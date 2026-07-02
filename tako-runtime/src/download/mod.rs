@@ -62,10 +62,11 @@ impl DownloadManager {
         let url = apply_template(url, version, &os, &arch);
 
         // Integrity verification is mandatory: a runtime with a [download]
-        // section must also declare a checksum_url. Downloading a binary into
-        // the release install dir without verification gives a compromised
-        // mirror or hijacked redirect chain arbitrary code execution on the
-        // deployment host.
+        // section must also declare a checksum_url. This guards against
+        // corruption/truncation and tampering with the archive host when the
+        // checksum lives on a different origin (e.g. nodejs.org SHASUMS). It
+        // is NOT authenticity: whoever controls the checksum origin can serve
+        // a matching checksum for a malicious archive.
         let checksum_url = download.checksum_url.as_ref().ok_or_else(|| {
             format!("runtime '{id}' has no checksum_url; integrity verification is required")
         })?;
