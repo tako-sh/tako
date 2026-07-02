@@ -224,8 +224,12 @@ impl TakoProxy {
                 return Ok(true);
             }
 
-            let ping_deadline = next_ping;
-            let sleep_until = std::cmp::min(ping_deadline, started_at + max_connection_lifetime);
+            // Wake at the same 100ms cadence as the SSE transport so new
+            // messages are delivered promptly, not only on keepalive ticks.
+            let poll_deadline = tokio::time::Instant::now() + Duration::from_millis(100);
+            let sleep_until = poll_deadline
+                .min(next_ping)
+                .min(started_at + max_connection_lifetime);
             enum WebSocketAction {
                 Read(Option<Bytes>),
                 Tick,

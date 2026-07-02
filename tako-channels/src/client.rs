@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use crate::{
@@ -6,6 +7,22 @@ use crate::{
     ChannelOperation, ChannelPublishPayload, INTERNAL_CHANNEL_AUTH_PATH,
     INTERNAL_CHANNEL_DISPATCH_PATH,
 };
+
+/// Shared HTTP client for internal app requests. Auth runs on every channel
+/// connect/publish, so reuse one client (and its connection pool) instead of
+/// building a new one per request.
+fn shared_client() -> Result<&'static reqwest::Client, ChannelError> {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    if let Some(client) = CLIENT.get() {
+        return Ok(client);
+    }
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(2))
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|e| ChannelError::Storage(format!("build internal http client: {e}")))?;
+    Ok(CLIENT.get_or_init(|| client))
+}
 
 /// Authorize a channel operation by calling the app's internal endpoint.
 ///
@@ -24,13 +41,7 @@ pub async fn authorize_channel_request(
     header: Option<ChannelHeaderValue>,
     cookie: Option<String>,
 ) -> Result<ChannelAuthResponse, ChannelError> {
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(2))
-        .timeout(Duration::from_secs(5))
-        .build()
-        .map_err(|e| ChannelError::Storage(format!("build auth client: {e}")))?;
-
-    let response = client
+    let response = shared_client()?
         .post(format!("http://{endpoint}{INTERNAL_CHANNEL_AUTH_PATH}"))
         .header("Host", internal_host)
         .header(internal_token_header, internal_token)
@@ -90,13 +101,7 @@ pub async fn dispatch_channel_message(
     internal_token: &str,
     request: ChannelDispatchRequest,
 ) -> Result<ChannelDispatchResponse, ChannelError> {
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(2))
-        .timeout(Duration::from_secs(5))
-        .build()
-        .map_err(|e| ChannelError::Storage(format!("build dispatch client: {e}")))?;
-
-    let response = client
+    let response = shared_client()?
         .post(format!("http://{endpoint}{INTERNAL_CHANNEL_DISPATCH_PATH}"))
         .header("Host", internal_host)
         .header(internal_token_header, internal_token)
