@@ -105,6 +105,30 @@ func TestBootstrapFromFdReturnsNilOnBadFd(t *testing.T) {
 	}
 }
 
+func TestBootstrapFromFdIgnoresNonFifoFd(t *testing.T) {
+	// A foreign inherited fd (e.g. a regular file under a CI harness) must
+	// be left alone: not read, not closed, and never treated as bootstrap
+	// data even if it contains non-JSON content.
+	f, err := os.CreateTemp(t.TempDir(), "not-a-pipe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString("definitely not json"); err != nil {
+		t.Fatal(err)
+	}
+
+	b := bootstrapFromFd(int(f.Fd()))
+	if b != nil {
+		t.Errorf("bootstrapFromFd(regular file) = %v, want nil", b)
+	}
+
+	// The fd must still be usable — the guard must not have closed it.
+	if _, err := f.Seek(0, 0); err != nil {
+		t.Errorf("fd was closed by bootstrapFromFd: %v", err)
+	}
+}
+
 func TestBootstrapFromFdEmptySecrets(t *testing.T) {
 	r, w, err := os.Pipe()
 	if err != nil {

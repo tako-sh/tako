@@ -396,10 +396,18 @@ func (w *worker) run() error {
 	}
 }
 
+// finalize reports a run-finalization RPC failure. The run will re-execute
+// after lease expiry, so leave a forensic trail instead of failing silently.
+func (w *worker) finalize(op, runID string, err error) {
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "tako-worker: %s failed for run %s: %v\n", op, runID, err)
+	}
+}
+
 func (w *worker) execute(task *Run) {
 	reg, ok := w.handlers[task.Name]
 	if !ok {
-		_ = w.client.Fail(w.ctx, task.ID, w.workerID, fmt.Sprintf("no handler registered for %q", task.Name), nil, true)
+		w.finalize("fail", task.ID, w.client.Fail(w.ctx, task.ID, w.workerID, fmt.Sprintf("no handler registered for %q", task.Name), nil, true))
 		return
 	}
 
@@ -438,13 +446,13 @@ func (w *worker) execute(task *Run) {
 			if reason != "" {
 				rp = &reason
 			}
-			_ = w.client.Cancel(w.ctx, task.ID, w.workerID, rp)
+			w.finalize("cancel", task.ID, w.client.Cancel(w.ctx, task.ID, w.workerID, rp))
 		case errors.As(err, &fs):
-			_ = w.client.Fail(w.ctx, task.ID, w.workerID, fs.err.Error(), nil, true)
+			w.finalize("fail", task.ID, w.client.Fail(w.ctx, task.ID, w.workerID, fs.err.Error(), nil, true))
 		case errors.As(err, &ds):
-			_ = w.client.Defer(w.ctx, task.ID, w.workerID, ds.wakeAt)
+			w.finalize("defer", task.ID, w.client.Defer(w.ctx, task.ID, w.workerID, ds.wakeAt))
 		case errors.As(err, &ws):
-			_ = w.client.WaitForEvent(w.ctx, task.ID, w.workerID, ws.stepName, ws.eventName, ws.timeoutAt)
+			w.finalize("wait-for-event", task.ID, w.client.WaitForEvent(w.ctx, task.ID, w.workerID, ws.stepName, ws.eventName, ws.timeoutAt))
 		default:
 			maxAttempts := reg.config.maxAttempts
 			if maxAttempts == 0 {
@@ -464,11 +472,11 @@ func (w *worker) execute(task *Run) {
 				t := time.Now().Add(expBackoff(task.Attempts, base, max))
 				next = &t
 			}
-			_ = w.client.Fail(w.ctx, task.ID, w.workerID, err.Error(), next, finalize)
+			w.finalize("fail", task.ID, w.client.Fail(w.ctx, task.ID, w.workerID, err.Error(), next, finalize))
 		}
 		return
 	}
-	_ = w.client.Complete(w.ctx, task.ID, w.workerID)
+	w.finalize("complete", task.ID, w.client.Complete(w.ctx, task.ID, w.workerID))
 }
 
 func (w *worker) heartbeatLoop(id string, stop <-chan struct{}) {

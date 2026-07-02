@@ -248,7 +248,3 @@ func Uptime() time.Duration {
 func GetSecret(name string) string {
 	return secrets.Get(name)
 }
-
-func int64ToString(value int64) string {
-	return fmt.Sprintf("%d", value)
-}

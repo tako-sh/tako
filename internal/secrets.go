@@ -2,7 +2,6 @@ package internal
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -70,6 +69,18 @@ func clearBootstrapEnv() {
 // Extracted for testability (tests can use arbitrary fds without clobbering
 // fd 3 which the Go test harness uses).
 func bootstrapFromFd(fd int) *Bootstrap {
+	// Stat through the syscall layer before wrapping the fd, mirroring the
+	// fd-4 ready signal: tako-server always delivers the envelope on a pipe,
+	// and a foreign inherited fd (e.g. under a CI harness) must not be read,
+	// closed, or handed to Go's file-finalizer machinery.
+	var st syscall.Stat_t
+	if err := syscall.Fstat(fd, &st); err != nil {
+		return nil
+	}
+	if st.Mode&syscall.S_IFMT != syscall.S_IFIFO {
+		return nil
+	}
+
 	f := os.NewFile(uintptr(fd), "tako-bootstrap")
 	if f == nil {
 		return nil
@@ -78,9 +89,6 @@ func bootstrapFromFd(fd int) *Bootstrap {
 
 	data, err := io.ReadAll(f)
 	if err != nil {
-		if errors.Is(err, syscall.EBADF) {
-			return nil
-		}
 		fmt.Fprintf(os.Stderr, "tako: failed to read bootstrap from fd %d: %v\n", fd, err)
 		os.Exit(1)
 	}
