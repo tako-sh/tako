@@ -12,7 +12,7 @@
  *   TAKO_APP_NAME              — app name the worker belongs to
  *   TAKO_APP_ROOT              — JS app root for workflows discovery
  *   TAKO_WORKFLOW_WORKER       — optional worker group to load
- *   TAKO_WORKER_CONCURRENCY    — max parallel tasks per worker (default 10)
+ *   TAKO_WORKER_CONCURRENCY    — max parallel tasks per worker (default 500)
  *   TAKO_WORKER_IDLE_TIMEOUT_MS — scale-to-zero idle timeout; 0 = never
  *
  * The claim leaseholder id is always `worker-<pid>` — the PID is the

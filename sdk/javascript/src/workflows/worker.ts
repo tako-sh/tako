@@ -226,9 +226,19 @@ export class Worker {
     if (!run) return false;
     this.lastClaimAt = Date.now();
 
-    const work: Promise<void> = this.execute(run).finally(() => {
-      this.inFlight.delete(work);
-    });
+    const work: Promise<void> = this.execute(run)
+      .catch((err) => {
+        // Nothing awaits this promise; without a catch, a failed finalize
+        // RPC (complete/fail/cancel) becomes an unhandled rejection.
+        this.log.error("run finalization failed", {
+          runId: run.id,
+          workflow: run.name,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      })
+      .finally(() => {
+        this.inFlight.delete(work);
+      });
     this.inFlight.add(work);
     return true;
   }

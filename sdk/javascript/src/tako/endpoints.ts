@@ -106,17 +106,25 @@ export async function handleTakoEndpoint(
   status: TakoStatus,
   channels: ChannelRegistry = new ChannelRegistry(),
 ): Promise<Response | null> {
-  const url = new URL(request.url);
-  if (url.pathname.startsWith(TAKO_LOCAL_STORAGE_PREFIX)) {
-    return handleLocalStorageRequest(request, url);
+  // Fast path: gate on cheap string checks before constructing a URL, so
+  // normal app traffic pays no per-request allocation here.
+  const rawUrl = request.url;
+  const queryStart = rawUrl.indexOf("?");
+  const rawPath = queryStart === -1 ? rawUrl : rawUrl.slice(0, queryStart);
+  const hostHeader = normalizeHost(request.headers.get("host"));
+
+  if (rawPath.includes(TAKO_LOCAL_STORAGE_PREFIX)) {
+    const url = new URL(rawUrl);
+    if (url.pathname.startsWith(TAKO_LOCAL_STORAGE_PREFIX)) {
+      return handleLocalStorageRequest(request, url);
+    }
   }
 
-  // Fast path: check Host header before parsing the URL (avoids allocation for normal traffic)
-  const hostHeader = normalizeHost(request.headers.get("host"));
   if (hostHeader && !isInternalHost(hostHeader)) {
     return null;
   }
 
+  const url = new URL(rawUrl);
   const host = hostHeader || normalizeHost(url.host);
   if (!isInternalHost(host)) {
     return null;

@@ -7,7 +7,9 @@
  *
  * Compatible with Cloudflare Workers, Bun, Node's undici-based
  * `Request`/`Response`, and other runtimes exposing the Fetch API. Tako
- * passes its secrets bag as the second argument.
+ * passes a snapshot of the process environment as the second argument;
+ * secrets are delivered separately via the bootstrap envelope and read
+ * with `tako.secrets`.
  */
 export type FetchFunction = (
   request: Request,
@@ -163,8 +165,13 @@ export interface ChannelConnectOptions {
   webSocketFactory?: (url: string) => unknown;
 }
 
-/** Options for {@link import("./channels").Channel.publish}. */
-export interface ChannelPublishOptions extends ChannelRequestOptions {}
+/**
+ * Options for {@link import("./channels").Channel.publish}.
+ *
+ * Publishing runs over the Tako server runtime's socket; there are no
+ * per-call options today.
+ */
+export interface ChannelPublishOptions {}
 
 /** Handle returned by {@link import("./channels").Channel.subscribe}. */
 export interface ChannelSubscription {

@@ -6,6 +6,7 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 
 export function incomingMessageToRequest(req: IncomingMessage): Request {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
@@ -54,11 +55,14 @@ export async function writeResponse(webResponse: Response, res: ServerResponse):
   const nodeStream = Readable.fromWeb(
     webResponse.body as unknown as import("node:stream/web").ReadableStream,
   );
-  nodeStream.pipe(res);
-  await new Promise<void>((resolve, reject) => {
-    nodeStream.on("end", resolve);
-    nodeStream.on("error", reject);
-  });
+  // pipeline (unlike pipe) destroys the source when the client disconnects
+  // mid-body, cancelling the underlying web stream so user resources backing
+  // it are released instead of pending forever.
+  try {
+    await pipeline(nodeStream, res);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ERR_STREAM_PREMATURE_CLOSE") throw err;
+  }
 }
 
 /** Start a Node http.Server wired to the given fetch-style handler. */

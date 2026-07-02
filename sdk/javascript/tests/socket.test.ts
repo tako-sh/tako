@@ -4,7 +4,6 @@ import type { Server } from "node:net";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Channel, setChannelSocketPublisher } from "../src/channels";
-import { expectAsyncToThrow } from "./assertions";
 import {
   APP_NAME_ENV,
   assertInternalSocketEnvConsistency,
@@ -291,21 +290,5 @@ describe("installChannelSocketPublisherFromEnv", () => {
       type: "message",
       data: { text: "hi" },
     });
-  });
-
-  test("explicit baseUrl bypasses the installed socket publisher and rejects browser publish", async () => {
-    process.env[INTERNAL_SOCKET_ENV] = join(dir, "nonexistent.sock");
-    process.env[APP_NAME_ENV] = "demo";
-    expect(installChannelSocketPublisherFromEnv()).toBe(true);
-
-    const channel = new Channel("chat/room-1");
-    await expectAsyncToThrow(
-      () =>
-        channel.publish(
-          { type: "message", data: { text: "hi" } },
-          { baseUrl: "https://app.example.com" },
-        ),
-      /connect\(\)\.send/,
-    );
   });
 });

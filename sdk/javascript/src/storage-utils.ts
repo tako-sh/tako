@@ -5,7 +5,13 @@ export function encodeObjectKey(key: string): string {
   if (key.trim() === "" || key.startsWith("/")) {
     throw new TypeError("storage key must be a non-empty relative object key");
   }
-  return key.split("/").map(rfc3986Encode).join("/");
+  const segments = key.split("/");
+  // `.`/`..` segments survive percent-encoding and get normalized away by
+  // URL parsers, letting a key escape the configured base prefix.
+  if (segments.some((segment) => segment === "." || segment === "..")) {
+    throw new TypeError("storage key must not contain '.' or '..' path segments");
+  }
+  return segments.map(rfc3986Encode).join("/");
 }
 
 export function joinUrlPath(...parts: string[]): string {

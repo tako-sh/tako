@@ -20,6 +20,15 @@ function requireUploads(storages: ReturnType<typeof createStorageBag>) {
 }
 
 describe("storage URLs", () => {
+  test("rejects keys with dot segments that would escape the base prefix", async () => {
+    const storages = createStorageBag({ uploads: binding }, { now: fixedClock });
+    const uploads = requireUploads(storages);
+
+    for (const key of ["../other/file.png", "a/../../b.png", "a/./b.png", ".", ".."]) {
+      expect(uploads.createDownloadUrl(key)).rejects.toThrow(TypeError);
+    }
+  });
+
   test("creates deterministic signed download URLs", async () => {
     const storages = createStorageBag({ uploads: binding }, { now: fixedClock });
     const uploads = requireUploads(storages);

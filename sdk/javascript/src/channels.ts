@@ -232,9 +232,9 @@ export class Channel {
    */
   async publish<T = unknown>(
     message: ChannelPublishInput<T>,
-    options: ChannelPublishOptions = {},
+    _options: ChannelPublishOptions = {},
   ): Promise<ChannelMessage<T>> {
-    if (socketPublisher && !options.baseUrl) {
+    if (socketPublisher) {
       return socketPublisher(this.name, message);
     }
 
