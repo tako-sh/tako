@@ -55,7 +55,7 @@ Secrets and storage bindings are stored encrypted on the server. Native app and 
 
 ## Routing
 
-Routes are declared per environment and can be exact hosts, wildcard hosts, host-plus-path routes, or wildcard-plus-path routes. Tako chooses the most specific match, serves static files from the deployed `public/` directory when possible, and otherwise proxies to an app instance. Route conflicts are rejected during deploy.
+Routes are declared per environment and can be exact hosts, wildcard hosts, host-plus-path routes, or wildcard-plus-path routes. Tako chooses the most specific match, serves static files from the deployed `public/` directory when possible, and otherwise proxies to an app instance. Static responses carry an `ETag` and revalidate with `304 Not Modified`. Route conflicts are rejected during deploy.
 
 Public `/_tako/*` paths are reserved after a request matches an app route:
 

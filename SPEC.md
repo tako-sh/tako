@@ -1111,6 +1111,7 @@ Sync flow helpers:
 
 - If no servers are configured and the terminal is interactive, sync offers to run the add-server wizard.
 - Environments with no mapped servers are skipped with a warning.
+- If any secret in an environment fails to decrypt, that environment is not synced and is reported as an error — a partial push would replace the server's full secret set and restart the app without the failed secret.
 - Sync sends `update_secrets` to `tako-server`; it does not write remote `.env` files. Secrets updates reconcile the app's workflow runtime and rolling-restart HTTP instances so fresh native processes receive the new bootstrap envelope via fd 3 and fresh container instances receive it through `TAKO_BOOTSTRAP_DATA`.
 
 ### tako secrets key export [--env {environment}]
@@ -1474,7 +1475,7 @@ Apps specify routes at environment level (not per-server). Routes support:
 
 - Each app specifies its routes
 - Requests matched to most specific route (exact > wildcard, longer path > shorter)
-- For static asset requests (paths with a file extension), `tako-server` serves files directly from the deployed app `public/` directory when present.
+- For static asset requests (paths with a file extension), `tako-server` serves files directly from the deployed app `public/` directory when present. Static responses carry an `ETag`, and requests whose `If-None-Match` matches return `304 Not Modified` without a body.
 - For path-prefixed routes (for example `example.com/app/*`), static asset lookup also tries the prefix-stripped path (for example `/app/assets/main.js` -> `/assets/main.js`) so public assets work on subpaths.
 - Conflict detection during deploy prevents overlapping routes
 - Requests without a matching route return `404`
