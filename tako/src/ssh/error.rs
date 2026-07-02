@@ -24,12 +24,6 @@ pub enum SshError {
     #[error("Command returned non-zero exit code: {code}")]
     NonZeroExit { code: u32, stderr: String },
 
-    #[error("SFTP error: {0}")]
-    Sftp(String),
-
-    #[error("File not found: {0}")]
-    FileNotFound(PathBuf),
-
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 

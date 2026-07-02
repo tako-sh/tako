@@ -1,13 +1,11 @@
 //! SSH client for remote server operations
 //!
-//! Provides async SSH connectivity for:
-//! - Command execution
-//! - File upload/download via SFTP
-//! - Streaming command output
+//! Provides async SSH connectivity for command execution and streaming
+//! command output. Release artifacts travel over the signed management
+//! HTTP API, not SSH.
 
 mod client;
 mod error;
-mod sftp;
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -16,7 +14,6 @@ static KEY_PASSPHRASE: Mutex<Option<String>> = Mutex::new(None);
 
 pub use client::*;
 pub use error::*;
-pub use sftp::*;
 
 pub fn set_key_passphrase(passphrase: Option<String>) {
     *KEY_PASSPHRASE.lock().expect("SSH passphrase lock poisoned") = passphrase;

@@ -17,7 +17,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use tako_core::Response;
 
-/// Truncate a remote command for logging: show only the first line (up to 120 chars).
 const TAKO_SERVER_SERVICE_HELPER: &str = "/usr/local/bin/tako-server-service";
 
 /// SSH connection configuration

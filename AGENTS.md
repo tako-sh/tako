@@ -108,7 +108,7 @@ Example: "Parse app name in `tako/src/app/name.rs:42`"
 
 ### Data Flow
 
-1. Developer: `tako deploy` → build locally → SFTP to server
+1. Developer: `tako deploy` → build locally → signed HTTP upload to server
 2. Server: Unpack to `/opt/tako/{app}/releases/{version}/`
 3. tako-server: Rolling update via unix socket protocol
 4. Proxy: Pingora routes to healthy instances
