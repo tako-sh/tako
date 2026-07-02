@@ -26,8 +26,8 @@ use tracing::Instrument;
 
 use artifacts::prepare_build_phase;
 use config::{
-    confirm_production_deploy, required_env_routes, resolve_build_preset_ref,
-    resolve_deploy_environment, resolve_deploy_server_names,
+    confirm_production_deploy, has_multiple_deploy_targets, required_env_routes,
+    resolve_build_preset_ref, resolve_deploy_environment, resolve_deploy_server_names,
     resolve_deploy_server_names_with_setup, resolve_deploy_server_targets,
     resolve_effective_build_adapter, run_bun_lockfile_preflight, should_run_bun_lockfile_preflight,
     validate_runtime_state_storage_for_deploy,
@@ -247,15 +247,15 @@ async fn run_async(
         false
     };
 
-    // Skip confirmation if the user explicitly passed --env production (they
-    // already know which environment they're targeting).
-    let env_was_explicit = requested_env.is_some();
-    confirm_production_deploy(
-        &env,
-        assume_yes || env_was_explicit || output::is_dry_run(),
-        &tako_config,
-    )
-    .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    // Skip confirmation when the target is unambiguous: the user passed
+    // --env production or --yes, or there is no other environment the
+    // deploy could have implicitly missed.
+    let skip_confirm = assume_yes
+        || requested_env.is_some()
+        || output::is_dry_run()
+        || !has_multiple_deploy_targets(&tako_config);
+    confirm_production_deploy(&env, skip_confirm)
+        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
     for warning in &warnings {
         output::warning(&format!("Validation: {}", warning));

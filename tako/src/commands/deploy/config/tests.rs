@@ -212,38 +212,15 @@ fn resolve_deploy_environment_rejects_missing_default_production_environment() {
 }
 
 #[test]
-fn should_confirm_production_deploy_requires_interactive_unless_yes_is_set() {
-    assert!(should_confirm_production_deploy(
-        "production",
-        false,
-        true,
-        true
-    ));
-    assert!(!should_confirm_production_deploy(
-        "production",
-        true,
-        true,
-        true
-    ));
+fn should_confirm_production_deploy_requires_interactive_unless_skipped() {
+    assert!(should_confirm_production_deploy("production", false, true));
+    assert!(!should_confirm_production_deploy("production", true, true));
     assert!(!should_confirm_production_deploy(
         "production",
         false,
-        false,
-        true
-    ));
-    assert!(!should_confirm_production_deploy(
-        "staging", false, true, true
-    ));
-}
-
-#[test]
-fn should_confirm_production_deploy_skips_when_only_one_deploy_target_exists() {
-    assert!(!should_confirm_production_deploy(
-        "production",
-        false,
-        true,
         false
     ));
+    assert!(!should_confirm_production_deploy("staging", false, true));
 }
 
 #[test]

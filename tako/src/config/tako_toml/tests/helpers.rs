@@ -74,3 +74,21 @@ route = "staging.example.com"
     names.sort();
     assert_eq!(names, vec!["production", "staging"]);
 }
+
+#[test]
+fn test_deployable_env_names_excludes_development() {
+    let toml = r#"
+[envs.development]
+route = "localhost"
+
+[envs.production]
+route = "prod.example.com"
+
+[envs.staging]
+route = "staging.example.com"
+"#;
+    let config = Config::parse(toml).unwrap();
+    let mut names: Vec<&str> = config.deployable_env_names().collect();
+    names.sort_unstable();
+    assert_eq!(names, vec!["production", "staging"]);
+}

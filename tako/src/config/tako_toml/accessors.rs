@@ -171,4 +171,13 @@ impl Config {
     pub fn get_environment_names(&self) -> Vec<String> {
         self.envs.keys().cloned().collect()
     }
+
+    /// Names of environments that can be deployed. `development` is
+    /// reserved for local dev and excluded.
+    pub fn deployable_env_names(&self) -> impl Iterator<Item = &str> {
+        self.envs
+            .keys()
+            .map(String::as_str)
+            .filter(|name| *name != "development")
+    }
 }
