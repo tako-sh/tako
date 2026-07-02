@@ -231,6 +231,9 @@ fn ipv4_is_private_or_local(ip: Ipv4Addr) -> bool {
         || ip.is_multicast()
         || ip.is_broadcast()
         || ip.is_unspecified()
+        // 100.64.0.0/10 (RFC 6598 shared address space) — used by CGNAT and
+        // overlay networks like Tailscale; reachable hosts there are private.
+        || (ip.octets()[0] == 100 && (ip.octets()[1] & 0xc0) == 64)
 }
 
 fn ipv6_is_private_or_local(ip: Ipv6Addr) -> bool {
@@ -243,4 +246,35 @@ fn ipv6_is_private_or_local(ip: Ipv6Addr) -> bool {
         || ip.is_multicast()
         || ((ip.segments()[0] & 0xfe00) == 0xfc00)
         || ((ip.segments()[0] & 0xffc0) == 0xfe80)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_private_and_shared_ipv4_ranges() {
+        for ip in [
+            "10.0.0.1",
+            "172.16.0.1",
+            "192.168.1.1",
+            "127.0.0.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "100.100.100.100",
+            "100.127.255.255",
+            "0.0.0.0",
+        ] {
+            let ip: IpAddr = ip.parse().unwrap();
+            assert!(ip_is_private_or_local(ip), "{ip} should be private/local");
+        }
+    }
+
+    #[test]
+    fn allows_public_ipv4_addresses() {
+        for ip in ["1.1.1.1", "8.8.8.8", "100.63.255.255", "100.128.0.1"] {
+            let ip: IpAddr = ip.parse().unwrap();
+            assert!(!ip_is_private_or_local(ip), "{ip} should be public");
+        }
+    }
 }
