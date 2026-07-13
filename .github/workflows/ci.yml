@@ -173,7 +173,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version: 24
 
       - name: Setup Bun
         run: bash scripts/install-bun.sh "${{ env.BUN_VERSION }}"
@@ -223,7 +223,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version: 24
 
       - name: Setup Bun
         run: bash scripts/install-bun.sh "${{ env.BUN_VERSION }}"
@@ -285,7 +285,7 @@ jobs:
         if: steps.changes.outputs.website == 'true'
         uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version: 24
 
       - name: Setup Bun
         if: steps.changes.outputs.website == 'true'
