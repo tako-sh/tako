@@ -203,7 +203,7 @@ jobs:
     name: CLI Tests (macOS)
     needs: [build-darwin]
     if: github.event_name == 'push'
-    runs-on: macos-15
+    runs-on: macos-26
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -463,7 +463,7 @@ jobs:
     name: Build macOS CLI (aarch64)
     needs: [detect-changes]
     if: needs.detect-changes.outputs.website_only != 'true' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-    runs-on: macos-15
+    runs-on: macos-26
     steps:
       - name: Checkout
         uses: actions/checkout@v6
