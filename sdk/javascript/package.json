@@ -68,7 +68,7 @@
   },
   "dependencies": {
     "@microsoft/fetch-event-source": "^2.0.1",
-    "@sinclair/typebox": "^0.34.49"
+    "@sinclair/typebox": "^0.34.52"
   },
   "devDependencies": {
     "@happy-dom/global-registrator": "^20.10.6",
@@ -80,7 +80,7 @@
     "@types/react-dom": "catalog:dev",
     "react": "catalog:",
     "react-dom": "catalog:",
-    "tsdown": "^0.22.3",
+    "tsdown": "^0.22.4",
     "typescript": "catalog:dev",
     "vite": "catalog:dev"
   },

@@ -388,10 +388,14 @@ async fn encrypted_keyfile_authenticates_with_configured_passphrase() {
         fn channel_open_session(
             &mut self,
             channel: Channel<russh::server::Msg>,
+            reply: russh::server::ChannelOpenHandle,
             _session: &mut Session,
-        ) -> impl Future<Output = Result<bool, Self::Error>> + Send {
+        ) -> impl Future<Output = Result<(), Self::Error>> + Send {
             let _ = channel.id();
-            async { Ok(true) }
+            async {
+                reply.accept().await;
+                Ok(())
+            }
         }
     }
 
@@ -502,11 +506,15 @@ async fn ssh_agent_authenticates_when_no_key_files_exist() {
         fn channel_open_session(
             &mut self,
             channel: Channel<russh::server::Msg>,
+            reply: russh::server::ChannelOpenHandle,
             _session: &mut Session,
-        ) -> impl Future<Output = Result<bool, Self::Error>> + Send {
+        ) -> impl Future<Output = Result<(), Self::Error>> + Send {
             // We don't need to run any commands for this test; just allow opening.
             let _ = channel.id();
-            async { Ok(true) }
+            async {
+                reply.accept().await;
+                Ok(())
+            }
         }
     }
 

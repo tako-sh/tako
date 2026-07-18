@@ -1,24 +1,24 @@
 {
-  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
   extends: [
     // recommended defaults + action/docker digest pinning, config migration,
     // abandoned-package warnings, 3-day npm release age, weekly lockfile maintenance
-    'config:best-practices',
+    "config:best-practices",
     // one grouped PR for all minor/patch updates; majors stay separate
-    'group:allNonMajor',
+    "group:allNonMajor",
   ],
-  timezone: 'Asia/Tokyo',
+  timezone: "Asia/Tokyo",
   // weekly batch; vulnerability alerts bypass the schedule
-  schedule: ['before 6am on monday'],
-  labels: ['dependencies'],
-  postUpdateOptions: ['gomodTidy'],
-  ignorePaths: ['**/node_modules/**', 'e2e/fixtures/**'],
+  schedule: ["before 6am on monday"],
+  labels: ["dependencies"],
+  postUpdateOptions: ["gomodTidy"],
+  ignorePaths: ["**/node_modules/**", "e2e/fixtures/**"],
   packageRules: [
     // keep existing ^ ranges; bun.lock already gives reproducibility,
     // so skip best-practices' devDependency pinning churn
     {
-      matchDepTypes: ['devDependencies'],
-      rangeStrategy: 'auto',
+      matchDepTypes: ["devDependencies"],
+      rangeStrategy: "auto",
     },
   ],
 }

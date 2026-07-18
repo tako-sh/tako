@@ -30,9 +30,7 @@ import { NodeRuntime, createNodeDriver, createNodeRuntimeDriverFactory } from "s
 import { z } from "zod";
 
 const runtime = new NodeRuntime({
-  systemDriver: createNodeDriver({
-    /* grant specific permissions here */
-  }),
+  systemDriver: createNodeDriver({/* grant specific permissions here */}),
   runtimeDriverFactory: createNodeRuntimeDriverFactory(),
   memoryLimit: 64,
   cpuTimeLimitMs: 5000,

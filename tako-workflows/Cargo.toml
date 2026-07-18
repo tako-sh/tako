@@ -14,9 +14,9 @@ serde_json = "1.0"
 thiserror = "2.0"
 parking_lot = "0.12"
 postgres = "0.19"
-rusqlite = { version = "0.39", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 nanoid = "0.5"
-cron = "0.16"
+cron = "0.17"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 libc = "0.2"
 

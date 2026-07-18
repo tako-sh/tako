@@ -109,11 +109,11 @@ pub fn encrypt(plaintext: &str, key: &EncryptionKey) -> Result<String> {
     let mut nonce_bytes = [0u8; NONCE_SIZE];
     getrandom::fill(&mut nonce_bytes)
         .map_err(|e| ConfigError::Encryption(format!("Failed to generate nonce: {}", e)))?;
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce = Nonce::from(nonce_bytes);
 
     // Encrypt
     let ciphertext = cipher
-        .encrypt(nonce, plaintext.as_bytes())
+        .encrypt(&nonce, plaintext.as_bytes())
         .map_err(|e| ConfigError::Encryption(format!("Encryption failed: {}", e)))?;
 
     // Combine nonce + ciphertext
@@ -137,12 +137,13 @@ pub fn decrypt(encrypted: &str, key: &EncryptionKey) -> Result<String> {
     }
 
     let (nonce_bytes, ciphertext) = combined.split_at(NONCE_SIZE);
-    let nonce = Nonce::from_slice(nonce_bytes);
+    let nonce = Nonce::try_from(nonce_bytes)
+        .map_err(|_| ConfigError::Decryption("Invalid nonce".to_string()))?;
 
     let cipher = Aes256Gcm::new_from_slice(&key.key)
         .map_err(|e| ConfigError::Decryption(format!("Failed to create cipher: {}", e)))?;
 
-    let plaintext = cipher.decrypt(nonce, ciphertext).map_err(|_| {
+    let plaintext = cipher.decrypt(&nonce, ciphertext).map_err(|_| {
         ConfigError::Decryption("Decryption failed (wrong key or corrupted data)".to_string())
     })?;
 
