@@ -15,4 +15,4 @@ thiserror = "2.0"
 url = "2.5"
 
 [dev-dependencies]
-image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
+image = { version = "=0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }

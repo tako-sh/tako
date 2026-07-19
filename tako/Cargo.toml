@@ -105,4 +105,4 @@ security-framework = { version = "3.7", features = ["OSX_10_15"] }
 
 
 [dev-dependencies]
-rand = { version = "0.10", features = ["thread_rng"] }
+rand = { version = "=0.10.2", features = ["thread_rng"] }
