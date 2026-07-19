@@ -44,6 +44,6 @@
     "@types/bun": "catalog:dev",
     "oxfmt": "0.59.0",
     "oxlint": "^1.74.0",
-    "oxlint-tsgolint": "^0.23.0"
+    "oxlint-tsgolint": "^0.24.0"
   }
 }
