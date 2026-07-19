@@ -29,7 +29,12 @@ pingora-proxy = { version = "0.8", default-features = false, features = ["openss
 pingora-http = "0.8"
 pingora-cache = "0.8"
 openssl.workspace = true
+# rusqlite stays for backup snapshots of app-owned SQLite databases only:
+# those can be rollback-journal DBs turso can't open. Tako-owned turso DBs
+# are snapshotted with turso itself.
 rusqlite = { version = "0.40", features = ["bundled"] }
+tako-sqlite = { path = "../tako-sqlite" }
+turso.workspace = true
 thiserror = "2.0"
 dashmap = "6.2"
 parking_lot = "0.12"

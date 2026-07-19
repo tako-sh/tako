@@ -1,99 +1,105 @@
 use crate::instances::AppConfig;
 
-use super::{PersistedApp, SqliteStateStore, StateStoreError};
+use super::{PersistedApp, SqliteStateStore, StateStoreError, block_on};
 
 impl SqliteStateStore {
     pub fn upsert_app(&self, config: &AppConfig, routes: &[String]) -> Result<(), StateStoreError> {
-        let conn = self.open_connection()?;
-        let tx = conn
-            .unchecked_transaction()
-            .map_err(StateStoreError::from)?;
-        upsert_app_on(&tx, config, routes)?;
-
-        tx.commit().map_err(StateStoreError::from)?;
-        Ok(())
+        let conn = self.lock_conn()?;
+        block_on(async {
+            let tx = conn.unchecked_transaction().await?;
+            let result = upsert_app_on(&tx, config, routes).await;
+            tako_sqlite::commit_or_rollback(tx, result).await
+        })
     }
 
     pub fn delete_app(&self, name: &str, environment: &str) -> Result<(), StateStoreError> {
-        let conn = self.open_connection()?;
+        let conn = self.lock_conn()?;
         // Delete secrets for this app to prevent leaking to a future app with the same name.
         let secret_key = format!("{name}/{environment}");
-        conn.execute("DELETE FROM app_secrets WHERE app = ?1;", [&secret_key])
-            .map_err(StateStoreError::from)?;
-        conn.execute(
-            "DELETE FROM app_runtime_credentials WHERE app = ?1;",
-            [&secret_key],
-        )
-        .map_err(StateStoreError::from)?;
-        conn.execute("DELETE FROM app_storages WHERE app = ?1;", [&secret_key])
-            .map_err(StateStoreError::from)?;
-        conn.execute("DELETE FROM app_ssl WHERE app = ?1;", [&secret_key])
-            .map_err(StateStoreError::from)?;
-        conn.execute("DELETE FROM app_backups WHERE app = ?1;", [&secret_key])
-            .map_err(StateStoreError::from)?;
-        conn.execute(
-            "DELETE FROM apps WHERE name = ?1 AND environment = ?2;",
-            rusqlite::params![name, environment],
-        )
-        .map_err(StateStoreError::from)?;
-        Ok(())
+        block_on(async {
+            for table in [
+                "app_secrets",
+                "app_runtime_credentials",
+                "app_storages",
+                "app_ssl",
+                "app_backups",
+            ] {
+                conn.execute(
+                    &format!("DELETE FROM {table} WHERE app = ?1;"),
+                    (secret_key.as_str(),),
+                )
+                .await?;
+            }
+            conn.execute(
+                "DELETE FROM apps WHERE name = ?1 AND environment = ?2;",
+                (name, environment),
+            )
+            .await?;
+            Ok(())
+        })
     }
 
     pub fn load_apps(&self) -> Result<Vec<PersistedApp>, StateStoreError> {
-        let conn = self.open_connection()?;
-
-        let mut stmt = conn
-            .prepare(
-                "SELECT
-                    name, environment, version, min_instances, max_instances, source_ip
-                 FROM apps
-                 ORDER BY name, environment;",
-            )
-            .map_err(StateStoreError::from)?;
-
-        let mut apps = Vec::new();
-        let mut rows = stmt.query([]).map_err(StateStoreError::from)?;
-
-        while let Some(row) = rows.next().map_err(StateStoreError::from)? {
-            let name: String = row.get(0).map_err(StateStoreError::from)?;
-            let environment: String = row.get(1).map_err(StateStoreError::from)?;
-            let version: String = row.get(2).map_err(StateStoreError::from)?;
-            let min_instances: i64 = row.get(3).map_err(StateStoreError::from)?;
-            let max_instances: i64 = row.get(4).map_err(StateStoreError::from)?;
-            let source_ip: String = row.get(5).map_err(StateStoreError::from)?;
-
-            let mut routes_stmt = conn
-                .prepare(
-                    "SELECT route FROM app_routes
-                     WHERE name = ?1 AND environment = ?2
-                     ORDER BY route;",
+        let conn = self.lock_conn()?;
+        block_on(async {
+            let mut rows = conn
+                .query(
+                    "SELECT
+                        name, environment, version, min_instances, max_instances, source_ip
+                     FROM apps
+                     ORDER BY name, environment;",
+                    (),
                 )
-                .map_err(StateStoreError::from)?;
-            let routes: Vec<String> = routes_stmt
-                .query_map(rusqlite::params![&name, &environment], |r| r.get(0))
-                .map_err(StateStoreError::from)?
-                .collect::<Result<Vec<String>, _>>()
-                .map_err(StateStoreError::from)?;
+                .await?;
 
-            let config = AppConfig {
-                name,
-                environment,
-                version,
-                min_instances: to_u32(min_instances, "min_instances")?,
-                max_instances: to_u32(max_instances, "max_instances")?,
-                source_ip: source_ip_from_str(&source_ip)?,
-                ..Default::default()
-            };
+            let mut app_rows: Vec<(String, String, String, i64, i64, String)> = Vec::new();
+            while let Some(row) = rows.next().await? {
+                app_rows.push((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ));
+            }
+            drop(rows);
 
-            apps.push(PersistedApp { config, routes });
-        }
+            let mut apps = Vec::new();
+            for (name, environment, version, min_instances, max_instances, source_ip) in app_rows {
+                let mut route_rows = conn
+                    .query(
+                        "SELECT route FROM app_routes
+                         WHERE name = ?1 AND environment = ?2
+                         ORDER BY route;",
+                        (name.as_str(), environment.as_str()),
+                    )
+                    .await?;
+                let mut routes = Vec::new();
+                while let Some(row) = route_rows.next().await? {
+                    routes.push(row.get::<String>(0)?);
+                }
 
-        Ok(apps)
+                let config = AppConfig {
+                    name,
+                    environment,
+                    version,
+                    min_instances: to_u32(min_instances, "min_instances")?,
+                    max_instances: to_u32(max_instances, "max_instances")?,
+                    source_ip: source_ip_from_str(&source_ip)?,
+                    ..Default::default()
+                };
+
+                apps.push(PersistedApp { config, routes });
+            }
+
+            Ok(apps)
+        })
     }
 }
 
-fn upsert_app_on(
-    conn: &rusqlite::Connection,
+async fn upsert_app_on(
+    conn: &turso::Connection,
     config: &AppConfig,
     routes: &[String],
 ) -> Result<(), StateStoreError> {
@@ -106,29 +112,33 @@ fn upsert_app_on(
             min_instances = excluded.min_instances,
             max_instances = excluded.max_instances,
             source_ip = excluded.source_ip;",
-        rusqlite::params![
-            &config.name,
-            &config.environment,
-            &config.version,
+        (
+            config.name.as_str(),
+            config.environment.as_str(),
+            config.version.as_str(),
             config.min_instances as i64,
             config.max_instances as i64,
             source_ip_to_str(config.source_ip),
-        ],
+        ),
     )
-    .map_err(StateStoreError::from)?;
+    .await?;
 
     conn.execute(
         "DELETE FROM app_routes WHERE name = ?1 AND environment = ?2;",
-        rusqlite::params![&config.name, &config.environment],
+        (config.name.as_str(), config.environment.as_str()),
     )
-    .map_err(StateStoreError::from)?;
+    .await?;
 
     for route in routes {
         conn.execute(
             "INSERT INTO app_routes (name, environment, route) VALUES (?1, ?2, ?3);",
-            rusqlite::params![&config.name, &config.environment, route],
+            (
+                config.name.as_str(),
+                config.environment.as_str(),
+                route.as_str(),
+            ),
         )
-        .map_err(StateStoreError::from)?;
+        .await?;
     }
 
     Ok(())

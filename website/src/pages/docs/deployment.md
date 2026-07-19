@@ -180,7 +180,7 @@ tako servers upgrade la
 tako servers uninstall la --yes
 ```
 
-`reload` is zero-downtime by default. `--force` performs a restart. `upgrade` installs a new `tako-server` binary, enters upgrade mode, reloads, waits for readiness, and rolls back to the previous binary if readiness fails. `uninstall` removes the remote service and data, then removes the local server entry.
+`reload` is zero-downtime by default. `--force` performs a restart. `upgrade` installs a new `tako-server` binary, enters upgrade mode, reloads, waits for readiness, and rolls back to the previous binary if readiness fails. When the running server predates the current SQLite storage engine, `upgrade` restarts the service instead of reloading — a one-time brief downtime that prevents the two engines from sharing state databases. `uninstall` removes the remote service and data, then removes the local server entry.
 
 ## Logs And Releases
 

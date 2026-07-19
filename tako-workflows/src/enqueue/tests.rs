@@ -1,5 +1,5 @@
 use super::*;
-use rusqlite::params;
+use turso::Value;
 
 fn opts() -> EnqueueOpts {
     EnqueueOpts::default()
@@ -161,16 +161,11 @@ fn enqueue_honors_custom_max_attempts_and_run_at() {
         )
         .unwrap();
 
-    let conn = db.lock_conn();
-    let (run_at, max_attempts): (i64, i64) = conn
-        .query_row(
-            "SELECT run_at, max_attempts FROM runs WHERE id = ?1",
-            params![r.id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap();
-    assert_eq!(run_at, future);
-    assert_eq!(max_attempts, 7);
+    let row = db.raw_query_values(
+        "SELECT run_at, max_attempts FROM runs WHERE id = ?1",
+        (r.id.as_str(),),
+    );
+    assert_eq!(row, vec![Value::Integer(future), Value::Integer(7)]);
 }
 
 #[test]
@@ -207,14 +202,10 @@ fn has_runnable_work_detects_due_pending_runs_only() {
     db.claim("w1", &["w".into()], 30_000).unwrap();
     assert!(!db.has_runnable_work().unwrap());
 
-    {
-        let conn = db.lock_conn();
-        conn.execute(
-            "UPDATE runs SET run_at = ?1 WHERE id = ?2",
-            params![due, future_run.id],
-        )
-        .unwrap();
-    }
+    db.raw_execute(
+        "UPDATE runs SET run_at = ?1 WHERE id = ?2",
+        (due, future_run.id.as_str()),
+    );
     assert!(db.has_runnable_work().unwrap());
 }
 
@@ -245,14 +236,10 @@ fn deduplication_frees_slot_once_original_is_terminal() {
         )
         .unwrap();
 
-    {
-        let conn = db.lock_conn();
-        conn.execute(
-            "UPDATE runs SET status='succeeded' WHERE id = ?1",
-            params![r1.id],
-        )
-        .unwrap();
-    }
+    db.raw_execute(
+        "UPDATE runs SET status='succeeded' WHERE id = ?1",
+        (r1.id.as_str(),),
+    );
 
     let r2 = db
         .enqueue(
@@ -321,23 +308,13 @@ fn complete_marks_succeeded_and_keeps_steps() {
         .unwrap();
     db.complete(&r.id, "w1").unwrap();
 
-    let conn = db.lock_conn();
-    let status: String = conn
-        .query_row(
-            "SELECT status FROM runs WHERE id = ?1",
-            params![r.id],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(status, "succeeded");
-    let count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM steps WHERE run_id = ?1",
-            params![r.id],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(count, 1);
+    let status = db.raw_query_values("SELECT status FROM runs WHERE id = ?1", (r.id.as_str(),));
+    assert_eq!(status, vec![Value::Text("succeeded".into())]);
+    let count = db.raw_query_values(
+        "SELECT COUNT(*) FROM steps WHERE run_id = ?1",
+        (r.id.as_str(),),
+    );
+    assert_eq!(count, vec![Value::Integer(1)]);
 }
 
 #[test]
@@ -347,16 +324,17 @@ fn cancel_marks_cancelled_with_reason() {
     db.claim("w1", &["w".into()], 30_000).unwrap();
     db.cancel(&r.id, "w1", Some("user cancelled")).unwrap();
 
-    let conn = db.lock_conn();
-    let (status, last_error): (String, Option<String>) = conn
-        .query_row(
-            "SELECT status, last_error FROM runs WHERE id = ?1",
-            params![r.id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap();
-    assert_eq!(status, "cancelled");
-    assert_eq!(last_error, Some("user cancelled".into()));
+    let row = db.raw_query_values(
+        "SELECT status, last_error FROM runs WHERE id = ?1",
+        (r.id.as_str(),),
+    );
+    assert_eq!(
+        row,
+        vec![
+            Value::Text("cancelled".into()),
+            Value::Text("user cancelled".into())
+        ]
+    );
 }
 
 #[test]
@@ -369,18 +347,19 @@ fn defer_sets_run_at_and_decrements_attempts() {
     let wake = now_ms() + 60_000;
     db.defer(&r.id, "w1", Some(wake)).unwrap();
 
-    let conn = db.lock_conn();
-    let (status, run_at, attempts): (String, i64, i64) = conn
-        .query_row(
-            "SELECT status, run_at, attempts FROM runs WHERE id = ?1",
-            params![r.id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .unwrap();
-    assert_eq!(status, "pending");
-    assert_eq!(run_at, wake);
+    let row = db.raw_query_values(
+        "SELECT status, run_at, attempts FROM runs WHERE id = ?1",
+        (r.id.as_str(),),
+    );
     // defer rolls attempts back so it doesn't consume retry budget
-    assert_eq!(attempts, 0);
+    assert_eq!(
+        row,
+        vec![
+            Value::Text("pending".into()),
+            Value::Integer(wake),
+            Value::Integer(0)
+        ]
+    );
 }
 
 #[test]
@@ -390,15 +369,8 @@ fn defer_with_none_parks_indefinitely() {
     db.claim("w1", &["w".into()], 30_000).unwrap();
     db.defer(&r.id, "w1", None).unwrap();
 
-    let conn = db.lock_conn();
-    let run_at: i64 = conn
-        .query_row(
-            "SELECT run_at FROM runs WHERE id = ?1",
-            params![r.id],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(run_at, i64::MAX);
+    let row = db.raw_query_values("SELECT run_at FROM runs WHERE id = ?1", (r.id.as_str(),));
+    assert_eq!(row, vec![Value::Integer(i64::MAX)]);
 }
 
 #[test]
@@ -408,14 +380,10 @@ fn reclaim_expired_moves_past_due_leases_back_to_pending() {
     // Claim then rewrite lease_until into the past to simulate a worker
     // that died mid-run and never completed / heartbeated.
     db.claim("w1", &["w".into()], 30_000).unwrap();
-    {
-        let conn = db.lock_conn();
-        conn.execute(
-            "UPDATE runs SET lease_until = ?1 WHERE id = ?2",
-            params![now_ms() - 1_000, r.id],
-        )
-        .unwrap();
-    }
+    db.raw_execute(
+        "UPDATE runs SET lease_until = ?1 WHERE id = ?2",
+        (now_ms() - 1_000, r.id.as_str()),
+    );
 
     let reclaimed = db.reclaim_expired().unwrap();
     assert_eq!(reclaimed, 1);

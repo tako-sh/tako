@@ -11,14 +11,7 @@ fn open_creates_db_and_schema() {
     let (_tmp, store) = temp_store();
     assert!(store.list().unwrap().is_empty());
 
-    let conn = Connection::open(store.conn.path().unwrap()).unwrap();
-    let columns: Vec<String> = conn
-        .prepare("PRAGMA table_info(apps);")
-        .unwrap()
-        .query_map([], |row| row.get(1))
-        .unwrap()
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
+    let columns = block_on(table_columns(&store.conn, "apps")).unwrap();
     assert_eq!(
         columns,
         vec![

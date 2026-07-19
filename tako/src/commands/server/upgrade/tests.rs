@@ -6,6 +6,30 @@ const TEST_SERVER_CHECKSUM_MANIFEST: &str = "11111111111111111111111111111111111
 const TEST_SERVER_CHECKSUM_MANIFEST_SIG_BASE64: &str = "nZdPJ9zO2xgD3KYpdDWovNaMNko8XtBjcqSJVdNZs0aIwKKfc4pG8g0paADEUHIjwabW80jfj35n5qmEH1ko111qsUUsNwdB0ewUAckN5fvO+tprTmhWsFV9653I7q36LzFT3E3ORNI5JUHLQKqgn15DoOloPR7pi1sU/r4y2FFXJcfBIir0LR5jrR9eXuyPAqDDJSX2QJX19WtEnWNXZsAZUaTsHUtXrlHdqtQDb9fA+pr3w+dVUjg12mYRBi1CJbnxTbrZUyy7+LMDQwXWagTjivHXCaSiZVGz4JGuEMds838wNsy8nfwCqXhffrMXuIb3sOZ6sfPVLZgeUnr12ZpkDjYEiDAz0HEekNQUIIQqjvlcIkgxZYByZLRap0Vvi4NMfPkRI7K7FDtY1hhs7CurJ7Xcag784cx5V+pFEPIbCfMnEjK/beP+V36UbSbjnbOtbw4WUKQZH+knspw+MUBmy3ZdqGsgYDSyVQ6dE5u7lvl4V9/ai8f5pue5uWgL";
 
 #[test]
+fn reload_requires_the_running_server_to_report_turso_engine() {
+    let base = serde_json::json!({
+        "pid": 1,
+        "mode": "normal",
+        "socket": "/run/tako.sock",
+        "data_dir": "/opt/tako",
+        "http_port": 80,
+        "https_port": 443,
+        "no_acme": true,
+        "acme_staging": false,
+        "renewal_interval_hours": 12,
+    });
+
+    // A pre-turso server never sends storage_engine — must restart, not reload.
+    let old: ServerRuntimeInfo = serde_json::from_value(base.clone()).unwrap();
+    assert!(!reload_preserves_engine(&old));
+
+    let mut with_engine = base;
+    with_engine["storage_engine"] = serde_json::json!("turso");
+    let new: ServerRuntimeInfo = serde_json::from_value(with_engine).unwrap();
+    assert!(reload_preserves_engine(&new));
+}
+
+#[test]
 fn build_upgrade_owner_is_shell_safe() {
     let owner = build_upgrade_owner("prod-1");
     assert!(owner.contains("upgrade-prod-1-"));

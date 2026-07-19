@@ -73,6 +73,7 @@ impl ServerRuntimeConfig {
             metrics_port: self.metrics_port,
             server_name: self.server_name.clone(),
             server_identity: self.server_identity.clone(),
+            storage_engine: Some("turso".to_string()),
         }
     }
 }

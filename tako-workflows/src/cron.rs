@@ -31,12 +31,7 @@ use super::enqueue::{RunsDb, RunsDbError};
 pub fn register_schedules(db: &RunsDb, schedules: &[ScheduleSpec]) -> Result<(), RunsDbError> {
     for s in schedules {
         Schedule::from_str(&s.cron).map_err(|e| {
-            RunsDbError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    format!("invalid cron '{}' for '{}': {}", s.cron, s.name, e),
-                ),
-            )))
+            RunsDbError::Storage(format!("invalid cron '{}' for '{}': {}", s.cron, s.name, e))
         })?;
     }
 
@@ -357,14 +352,10 @@ mod tests {
         // Simulate a worker that claimed the run and then died — lease is
         // in the past, run is still `running`.
         db.claim("dead-worker", &["w".into()], 30_000).unwrap();
-        {
-            let conn = db.lock_conn();
-            conn.execute(
-                "UPDATE runs SET lease_until = ?1 WHERE id = ?2",
-                rusqlite::params![chrono::Utc::now().timestamp_millis() - 1_000, r.id],
-            )
-            .unwrap();
-        }
+        db.raw_execute(
+            "UPDATE runs SET lease_until = ?1 WHERE id = ?2",
+            (chrono::Utc::now().timestamp_millis() - 1_000, r.id.as_str()),
+        );
 
         let wakes = Arc::new(AtomicUsize::new(0));
         let w = wakes.clone();

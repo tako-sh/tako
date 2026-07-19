@@ -399,14 +399,17 @@ fn failed_rolling_update_keeps_previous_release_serving() {
         "failed deploy should restore previous secrets"
     );
 
-    let conn = rusqlite::Connection::open(server.data_dir().join("state.sqlite")).unwrap();
-    let ssl_rows: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM app_ssl WHERE app = ?1",
-            [app_id],
-            |row| row.get(0),
-        )
-        .unwrap();
+    let state_db = server.data_dir().join("state.sqlite");
+    let ssl_rows: i64 = tako_sqlite::block_on(async {
+        let conn = tako_sqlite::open_local(state_db.to_str().unwrap())
+            .await
+            .unwrap();
+        let mut rows = conn
+            .query("SELECT COUNT(*) FROM app_ssl WHERE app = ?1", (app_id,))
+            .await
+            .unwrap();
+        rows.next().await.unwrap().unwrap().get(0).unwrap()
+    });
     assert_eq!(ssl_rows, 1, "failed deploy should restore previous SSL");
 
     let new_host_status = server.https_status(new_host, "/").unwrap_or(0);

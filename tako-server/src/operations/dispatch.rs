@@ -262,7 +262,12 @@ impl crate::ServerState {
                 if let Err(msg) = validate_app_name(&app) {
                     return Response::error(msg);
                 }
-                let secrets = self.state_store.get_secrets(&app).unwrap_or_default();
+                let secrets = match self.state_store.get_secrets(&app) {
+                    Ok(secrets) => secrets,
+                    Err(error) => {
+                        return Response::error(format!("Failed to read secrets: {error}"));
+                    }
+                };
                 let hash = tako_core::compute_secrets_hash(&secrets);
                 Response::ok(serde_json::json!({ "hash": hash }))
             }

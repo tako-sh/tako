@@ -61,11 +61,13 @@ pub(crate) fn clamp_lease_ms(lease_ms: u64) -> i64 {
 #[derive(thiserror::Error, Debug)]
 pub enum RunsDbError {
     #[error("sqlite error: {0}")]
-    Sqlite(#[from] rusqlite::Error),
+    Sqlite(#[from] turso::Error),
     #[error("postgres error: {0}")]
     Postgres(#[from] postgres::Error),
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("{0}")]
+    Storage(String),
     #[error("{0}")]
     UnsupportedBackend(String),
     /// The run is no longer owned by the caller (lease expired and was
@@ -134,10 +136,25 @@ impl RunsDb {
         }
     }
 
+    /// Test-only raw SQL escape hatches against the sqlite backend.
     #[cfg(test)]
-    pub(crate) fn lock_conn(&self) -> parking_lot::MutexGuard<'_, rusqlite::Connection> {
+    pub(crate) fn raw_execute(&self, sql: &str, params: impl turso::IntoParams) {
         match &self.backend {
-            RunsDbBackend::Sqlite(db) => db.lock_conn(),
+            RunsDbBackend::Sqlite(db) => db.raw_execute(sql, params),
+            RunsDbBackend::Postgres(_) => {
+                panic!("sqlite connection requested for postgres workflow store")
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn raw_query_values(
+        &self,
+        sql: &str,
+        params: impl turso::IntoParams,
+    ) -> Vec<turso::Value> {
+        match &self.backend {
+            RunsDbBackend::Sqlite(db) => db.raw_query_values(sql, params),
             RunsDbBackend::Postgres(_) => {
                 panic!("sqlite connection requested for postgres workflow store")
             }

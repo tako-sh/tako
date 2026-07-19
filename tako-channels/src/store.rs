@@ -1,6 +1,9 @@
 mod postgres;
 mod sqlite;
 
+#[cfg(test)]
+pub(crate) use sqlite::block_on;
+
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -105,13 +108,61 @@ impl ChannelStore {
     }
 
     #[cfg(test)]
-    pub(crate) fn sqlite_conn(&self) -> parking_lot::MutexGuard<'_, rusqlite::Connection> {
+    pub(crate) fn sqlite_conn(&self) -> parking_lot::MutexGuard<'_, turso::Connection> {
         match &self.backend {
             ChannelStoreBackend::Sqlite(store) => store.conn.lock(),
             ChannelStoreBackend::Postgres(_) => {
                 panic!("sqlite connection requested for postgres channel store")
             }
         }
+    }
+
+    /// Test-only raw SQL escape hatches against the sqlite backend.
+    #[cfg(test)]
+    pub(crate) fn raw_execute(&self, sql: &str, params: impl turso::IntoParams) {
+        let conn = self.sqlite_conn();
+        sqlite::block_on(conn.execute(sql, params)).expect("raw execute");
+    }
+
+    #[cfg(test)]
+    pub(crate) fn raw_query_i64(&self, sql: &str, params: impl turso::IntoParams) -> i64 {
+        let conn = self.sqlite_conn();
+        sqlite::block_on(async {
+            let mut rows = conn.query(sql, params).await.expect("raw query");
+            let row = rows
+                .next()
+                .await
+                .expect("raw row")
+                .expect("no row returned");
+            row.get::<i64>(0).expect("i64 column")
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn raw_query_string(&self, sql: &str, params: impl turso::IntoParams) -> String {
+        let conn = self.sqlite_conn();
+        sqlite::block_on(async {
+            let mut rows = conn.query(sql, params).await.expect("raw query");
+            let row = rows
+                .next()
+                .await
+                .expect("raw row")
+                .expect("no row returned");
+            row.get::<String>(0).expect("string column")
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn raw_query_strings(&self, sql: &str) -> Vec<String> {
+        let conn = self.sqlite_conn();
+        sqlite::block_on(async {
+            let mut rows = conn.query(sql, ()).await.expect("raw query");
+            let mut out = Vec::new();
+            while let Some(row) = rows.next().await.expect("raw row") {
+                out.push(row.get::<String>(0).expect("string column"));
+            }
+            out
+        })
     }
 
     pub fn append(

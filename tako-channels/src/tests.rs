@@ -258,14 +258,10 @@ fn channel_store_append_updates_channel_activity() {
             },
         )
         .unwrap();
-    let before: i64 = store
-        .sqlite_conn()
-        .query_row(
-            "SELECT last_activity_unix_ms FROM channel_metadata WHERE channel = ?1",
-            ["chat:room-123"],
-            |row| row.get(0),
-        )
-        .unwrap();
+    let before = store.raw_query_i64(
+        "SELECT last_activity_unix_ms FROM channel_metadata WHERE channel = ?1",
+        ("chat:room-123",),
+    );
 
     std::thread::sleep(std::time::Duration::from_millis(2));
     let message = store
@@ -278,37 +274,17 @@ fn channel_store_append_updates_channel_activity() {
         )
         .unwrap();
 
-    let conn = store.sqlite_conn();
-    let after: i64 = conn
-        .query_row(
-            "SELECT last_activity_unix_ms FROM channel_metadata WHERE channel = ?1",
-            ["chat:room-123"],
-            |row| row.get(0),
-        )
-        .unwrap();
-    let persisted: String = conn
-        .query_row(
-            "SELECT data_json FROM channel_messages WHERE id = ?1",
-            [message.id.parse::<i64>().unwrap()],
-            |row| row.get(0),
-        )
-        .unwrap();
+    let after = store.raw_query_i64(
+        "SELECT last_activity_unix_ms FROM channel_metadata WHERE channel = ?1",
+        ("chat:room-123",),
+    );
+    let persisted = store.raw_query_string(
+        "SELECT data_json FROM channel_messages WHERE id = ?1",
+        (message.id.parse::<i64>().unwrap(),),
+    );
 
     assert!(after >= before);
     assert_eq!(persisted, r#"{"text":"hi"}"#);
-}
-
-#[test]
-fn channel_store_enables_incremental_auto_vacuum_for_new_dbs() {
-    let temp = tempfile::TempDir::new().unwrap();
-    let store = ChannelStore::open(&temp.path().join("channels.sqlite")).unwrap();
-
-    let mode: i64 = store
-        .sqlite_conn()
-        .query_row("PRAGMA auto_vacuum", [], |row| row.get(0))
-        .unwrap();
-
-    assert_eq!(mode, 2);
 }
 
 #[test]
@@ -362,10 +338,7 @@ fn channel_store_rejects_stale_cursors() {
             },
         )
         .unwrap();
-    store
-        .sqlite_conn()
-        .execute("DELETE FROM channel_messages WHERE id = 1", [])
-        .unwrap();
+    store.raw_execute("DELETE FROM channel_messages WHERE id = 1", ());
 
     assert!(matches!(
         store.replay_cursor("chat:room-123", Some(0)),
@@ -408,14 +381,8 @@ fn channel_store_persists_lifecycle_and_prunes_inactive_channels() {
         )
         .unwrap();
 
-    let conn = store.sqlite_conn();
-    let channels = conn
-        .prepare("SELECT channel FROM channel_metadata ORDER BY channel ASC")
-        .unwrap()
-        .query_map([], |row| row.get::<_, String>(0))
-        .unwrap()
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
+    let channels =
+        store.raw_query_strings("SELECT channel FROM channel_metadata ORDER BY channel ASC");
 
     assert_eq!(channels, vec!["chat:room-456".to_string()]);
 }
@@ -444,4 +411,119 @@ fn channel_store_reopen_preserves_existing_messages() {
     let messages = reopened.read_after("chat:room-123", None, 100).unwrap();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].data, serde_json::json!({ "text": "hi" }));
+}
+
+fn test_payload(text: &str) -> ChannelPublishPayload {
+    ChannelPublishPayload {
+        r#type: "message".to_string(),
+        data: serde_json::json!({ "text": text }),
+    }
+}
+
+fn test_auth() -> ChannelAuthResponse {
+    ChannelAuthResponse {
+        ok: true,
+        subject: None,
+        transport: None,
+        replay_window_ms: DEFAULT_REPLAY_WINDOW_MS,
+        inactivity_ttl_ms: 0,
+        keepalive_interval_ms: DEFAULT_KEEPALIVE_INTERVAL_MS,
+        max_connection_lifetime_ms: DEFAULT_MAX_CONNECTION_LIFETIME_MS,
+    }
+}
+
+/// Child half of `channel_store_supports_two_processes_writing_interleaved`.
+/// No-ops unless spawned by the parent test with the DB path in the env.
+#[test]
+fn multiprocess_child_writer() {
+    let Ok(path) = std::env::var("TAKO_TEST_MULTIPROCESS_DB") else {
+        return;
+    };
+    let store = ChannelStore::open(std::path::Path::new(&path)).unwrap();
+    // The parent's 10 rows must be visible to this process.
+    assert_eq!(store.read_after("mp", None, 100).unwrap().len(), 10);
+    for i in 0..10 {
+        store
+            .append("mp", &test_payload(&format!("child-{i}")))
+            .unwrap();
+    }
+}
+
+/// Gating test for the turso migration: during a zero-downtime server
+/// reload the old and new tako-server processes hold the same channel DB
+/// simultaneously and both write. Every write from both processes must be
+/// visible and persisted — this is the scenario that broke turso 0.6.1
+/// (process-exclusive file lock) and must keep working.
+#[test]
+fn channel_store_supports_two_processes_writing_interleaved() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let db_path = temp.path().join("channels.sqlite");
+    let store = ChannelStore::open(&db_path).unwrap();
+    store.sync_channel("mp", &test_auth()).unwrap();
+    for i in 0..10 {
+        store
+            .append("mp", &test_payload(&format!("parent-{i}")))
+            .unwrap();
+    }
+
+    // Spawn a second process against the same DB while we hold it open.
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["tests::multiprocess_child_writer", "--exact", "--nocapture"])
+        .env("TAKO_TEST_MULTIPROCESS_DB", db_path.to_str().unwrap())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success() && stdout.contains("1 passed"),
+        "child writer process failed: stdout={stdout}; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // The child's writes must be visible here, and this process must still
+    // be able to write after the child exits.
+    assert_eq!(store.read_after("mp", None, 100).unwrap().len(), 20);
+    store.append("mp", &test_payload("parent-after")).unwrap();
+    assert_eq!(store.read_after("mp", None, 100).unwrap().len(), 21);
+}
+
+/// Gating test for the turso migration: in turso 0.6.1 a write issued on a
+/// connection holding an unconsumed read cursor returned Ok but silently
+/// never persisted. Guard against that regressing in future turso upgrades:
+/// the write must either persist or fail loudly.
+#[test]
+fn write_with_live_read_cursor_persists() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let db_path = temp.path().join("channels.sqlite");
+    let store = ChannelStore::open(&db_path).unwrap();
+    for i in 0..5 {
+        store
+            .append("cursor", &test_payload(&format!("m-{i}")))
+            .unwrap();
+    }
+
+    let write_result = {
+        let conn = store.sqlite_conn();
+        crate::store::block_on(async {
+            // Open a cursor and consume only the first row, keeping it live.
+            let mut rows = conn
+                .query("SELECT id FROM channel_messages", ())
+                .await
+                .unwrap();
+            let _first = rows.next().await.unwrap();
+            conn.execute(
+                "INSERT INTO channel_messages (channel, type, data_json) VALUES ('cursor', 'message', '{}')",
+                (),
+            )
+            .await
+        })
+    };
+
+    let count = store.raw_query_i64(
+        "SELECT COUNT(*) FROM channel_messages WHERE channel = 'cursor'",
+        (),
+    );
+    match write_result {
+        Ok(_) => assert_eq!(count, 6, "write returned Ok but did not persist"),
+        Err(_) => assert_eq!(count, 5, "write failed loudly; nothing should persist"),
+    }
 }

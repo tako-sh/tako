@@ -669,6 +669,7 @@ fn test_server_runtime_info_pid_roundtrip() {
         metrics_port: Some(9898),
         server_name: Some("la".to_string()),
         server_identity: Some("SHA256:testidentity".to_string()),
+        storage_engine: Some("turso".to_string()),
     };
     let json = serde_json::to_string(&info).unwrap();
     let parsed: ServerRuntimeInfo = serde_json::from_str(&json).unwrap();
@@ -678,4 +679,5 @@ fn test_server_runtime_info_pid_roundtrip() {
         parsed.server_identity.as_deref(),
         Some("SHA256:testidentity")
     );
+    assert_eq!(parsed.storage_engine.as_deref(), Some("turso"));
 }

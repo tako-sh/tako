@@ -196,7 +196,7 @@ tako servers uninstall [name] [-y|--yes]
 
 `status` prints a deployment snapshot grouped by server, with compact server summary, routes, and app rows.
 
-`servers reload` performs a zero-downtime service reload by default. `--force` performs a full restart. `servers upgrade` installs a new server binary and reloads with rollback to the previous binary if readiness fails. `servers uninstall` removes the remote service, binaries, data, sockets, and local server entry.
+`servers reload` performs a zero-downtime service reload by default. `--force` performs a full restart. `servers upgrade` installs a new server binary and reloads with rollback to the previous binary if readiness fails. When the running server predates the current SQLite storage engine, upgrade restarts the service instead of reloading (brief downtime, one time) because the two engines cannot share the state databases during the overlap. `servers uninstall` removes the remote service, binaries, data, sockets, and local server entry.
 
 ## Secrets
 

@@ -1,14 +1,20 @@
 use parking_lot::Mutex;
 use std::path::Path;
 
+pub(crate) use tako_sqlite::block_on;
+use tako_sqlite::commit_or_rollback;
+
 use crate::{ChannelAuthResponse, ChannelError, ChannelMessage, ChannelPublishPayload};
 
 use super::{channel_message_from_row, now_unix_ms};
 
-const INCREMENTAL_VACUUM_PAGES: i64 = 128;
 const WAL_TRUNCATE_DELETED_ROWS_THRESHOLD: usize = 1024;
 
-/// Per app/environment SQLite-backed channel store.
+fn storage_err(e: impl std::fmt::Display) -> ChannelError {
+    ChannelError::Storage(e.to_string())
+}
+
+/// Per app/environment SQLite-backed channel store (turso engine).
 ///
 /// The connection is opened once and reused; every operation locks a
 /// mutex and uses the cached connection. Callers should hold a single
@@ -16,7 +22,7 @@ const WAL_TRUNCATE_DELETED_ROWS_THRESHOLD: usize = 1024;
 /// behind an `Arc`): constructing a new `ChannelStore` reruns pragmas
 /// and schema init on every call.
 pub(super) struct SqliteChannelStore {
-    pub(crate) conn: Mutex<rusqlite::Connection>,
+    pub(crate) conn: Mutex<turso::Connection>,
 }
 
 impl SqliteChannelStore {
@@ -25,18 +31,25 @@ impl SqliteChannelStore {
             std::fs::create_dir_all(parent)
                 .map_err(|e| ChannelError::Storage(format!("create channel dir: {e}")))?;
         }
-        let conn =
-            rusqlite::Connection::open(path).map_err(|e| ChannelError::Storage(e.to_string()))?;
-        init_connection(&conn)?;
+        let path = path
+            .to_str()
+            .ok_or_else(|| ChannelError::Storage("non-UTF-8 channel db path".into()))?;
+        let conn = block_on(async {
+            let conn = tako_sqlite::open_local(path).await?;
+            init_connection(&conn).await?;
+            Ok::<_, ChannelError>(conn)
+        })?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
     }
 
     pub(super) fn open_in_memory() -> Result<Self, ChannelError> {
-        let conn = rusqlite::Connection::open_in_memory()
-            .map_err(|e| ChannelError::Storage(e.to_string()))?;
-        init_connection(&conn)?;
+        let conn = block_on(async {
+            let conn = tako_sqlite::open_in_memory().await?;
+            init_connection(&conn).await?;
+            Ok::<_, ChannelError>(conn)
+        })?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -50,31 +63,24 @@ impl SqliteChannelStore {
         let data_json = serde_json::to_string(&payload.data)
             .map_err(|e| ChannelError::BadRequest(format!("serialize payload: {e}")))?;
         let mut conn = self.conn.lock();
-        let tx = conn
-            .transaction()
-            .map_err(|e| ChannelError::Storage(e.to_string()))?;
-        {
-            let mut stmt = tx
-                .prepare_cached(
+        let id = block_on(async {
+            let tx = conn.transaction().await.map_err(storage_err)?;
+            let result = async {
+                tx.execute(
                     "UPDATE channel_metadata SET last_activity_unix_ms = ?2 WHERE channel = ?1",
+                    (channel, now_unix_ms()),
                 )
-                .map_err(|e| ChannelError::Storage(e.to_string()))?;
-            stmt.execute(rusqlite::params![channel, now_unix_ms()])
-                .map_err(|e| ChannelError::Storage(e.to_string()))?;
-        }
-        {
-            let mut stmt = tx
-                .prepare_cached(
+                .await?;
+                tx.execute(
                     "INSERT INTO channel_messages (channel, type, data_json) VALUES (?1, ?2, ?3)",
+                    (channel, payload.r#type.as_str(), data_json.as_str()),
                 )
-                .map_err(|e| ChannelError::Storage(e.to_string()))?;
-            stmt.execute(rusqlite::params![channel, payload.r#type, data_json])
-                .map_err(|e| ChannelError::Storage(e.to_string()))?;
-        }
-
-        let id = tx.last_insert_rowid();
-        tx.commit()
-            .map_err(|e| ChannelError::Storage(e.to_string()))?;
+                .await?;
+                Ok::<_, ChannelError>(tx.last_insert_rowid())
+            }
+            .await;
+            commit_or_rollback(tx, result).await
+        })?;
 
         Ok(ChannelMessage {
             id: id.to_string(),
@@ -90,8 +96,8 @@ impl SqliteChannelStore {
         after: Option<i64>,
         limit: u32,
     ) -> Result<Vec<ChannelMessage>, ChannelError> {
-        let rows = {
-            let conn = self.conn.lock();
+        let conn = self.conn.lock();
+        let rows = block_on(async {
             let mut stmt = conn
                 .prepare_cached(
                     "SELECT id, channel, type, data_json
@@ -100,22 +106,23 @@ impl SqliteChannelStore {
                      ORDER BY id ASC
                      LIMIT ?3",
                 )
-                .map_err(|e| ChannelError::Storage(e.to_string()))?;
-
-            let rows = stmt
-                .query_map(rusqlite::params![channel, after, i64::from(limit)], |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                    ))
-                })
-                .map_err(|e| ChannelError::Storage(e.to_string()))?;
-
-            rows.collect::<Result<Vec<_>, _>>()
-                .map_err(|e| ChannelError::Storage(e.to_string()))?
-        };
+                .await
+                .map_err(storage_err)?;
+            let mut rows = stmt
+                .query((channel, after, i64::from(limit)))
+                .await
+                .map_err(storage_err)?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next().await.map_err(storage_err)? {
+                out.push((
+                    row.get::<i64>(0).map_err(storage_err)?,
+                    row.get::<String>(1).map_err(storage_err)?,
+                    row.get::<String>(2).map_err(storage_err)?,
+                    row.get::<String>(3).map_err(storage_err)?,
+                ));
+            }
+            Ok::<_, ChannelError>(out)
+        })?;
 
         rows.into_iter().map(channel_message_from_row).collect()
     }
@@ -149,91 +156,105 @@ impl SqliteChannelStore {
     ) -> Result<(), ChannelError> {
         let conn = self.conn.lock();
         let now = now_unix_ms();
-        conn.execute(
-            "INSERT INTO channel_metadata (
-                channel,
-                replay_window_ms,
-                inactivity_ttl_ms,
-                keepalive_interval_ms,
-                max_connection_lifetime_ms,
-                last_activity_unix_ms
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-            ON CONFLICT(channel) DO UPDATE SET
-                replay_window_ms = excluded.replay_window_ms,
-                inactivity_ttl_ms = excluded.inactivity_ttl_ms,
-                keepalive_interval_ms = excluded.keepalive_interval_ms,
-                max_connection_lifetime_ms = excluded.max_connection_lifetime_ms,
-                last_activity_unix_ms = excluded.last_activity_unix_ms",
-            rusqlite::params![
-                channel,
-                auth.replay_window_ms as i64,
-                auth.inactivity_ttl_ms as i64,
-                auth.keepalive_interval_ms as i64,
-                auth.max_connection_lifetime_ms as i64,
-                now,
-            ],
-        )
-        .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        block_on(async {
+            conn.execute(
+                "INSERT INTO channel_metadata (
+                    channel,
+                    replay_window_ms,
+                    inactivity_ttl_ms,
+                    keepalive_interval_ms,
+                    max_connection_lifetime_ms,
+                    last_activity_unix_ms
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                ON CONFLICT(channel) DO UPDATE SET
+                    replay_window_ms = excluded.replay_window_ms,
+                    inactivity_ttl_ms = excluded.inactivity_ttl_ms,
+                    keepalive_interval_ms = excluded.keepalive_interval_ms,
+                    max_connection_lifetime_ms = excluded.max_connection_lifetime_ms,
+                    last_activity_unix_ms = excluded.last_activity_unix_ms",
+                (
+                    channel,
+                    auth.replay_window_ms as i64,
+                    auth.inactivity_ttl_ms as i64,
+                    auth.keepalive_interval_ms as i64,
+                    auth.max_connection_lifetime_ms as i64,
+                    now,
+                ),
+            )
+            .await
+            .map_err(storage_err)?;
 
-        let mut deleted_rows = 0usize;
+            let mut deleted_rows = 0usize;
 
-        if auth.replay_window_ms > 0 {
-            let cutoff = now - auth.replay_window_ms as i64;
+            if auth.replay_window_ms > 0 {
+                let cutoff = now - auth.replay_window_ms as i64;
+                deleted_rows += conn
+                    .execute(
+                        "DELETE FROM channel_messages WHERE channel = ?1 AND created_at_unix_ms < ?2",
+                        (channel, cutoff),
+                    )
+                    .await
+                    .map_err(storage_err)? as usize;
+            }
+
             deleted_rows += conn
                 .execute(
-                    "DELETE FROM channel_messages WHERE channel = ?1 AND created_at_unix_ms < ?2",
-                    rusqlite::params![channel, cutoff],
+                    "DELETE FROM channel_messages
+                     WHERE channel IN (
+                        SELECT channel
+                        FROM channel_metadata
+                        WHERE inactivity_ttl_ms > 0
+                          AND last_activity_unix_ms < (?1 - inactivity_ttl_ms)
+                     )",
+                    (now,),
                 )
-                .map_err(|e| ChannelError::Storage(e.to_string()))?;
-        }
+                .await
+                .map_err(storage_err)? as usize;
+            deleted_rows += conn
+                .execute(
+                    "DELETE FROM channel_metadata
+                     WHERE inactivity_ttl_ms > 0
+                       AND last_activity_unix_ms < (?1 - inactivity_ttl_ms)",
+                    (now,),
+                )
+                .await
+                .map_err(storage_err)? as usize;
 
-        deleted_rows += conn
-            .execute(
-                "DELETE FROM channel_messages
-                 WHERE channel IN (
-                    SELECT channel
-                    FROM channel_metadata
-                    WHERE inactivity_ttl_ms > 0
-                      AND last_activity_unix_ms < (?1 - inactivity_ttl_ms)
-                 )",
-                rusqlite::params![now],
-            )
-            .map_err(|e| ChannelError::Storage(e.to_string()))?;
-        deleted_rows += conn
-            .execute(
-                "DELETE FROM channel_metadata
-                 WHERE inactivity_ttl_ms > 0
-                   AND last_activity_unix_ms < (?1 - inactivity_ttl_ms)",
-                rusqlite::params![now],
-            )
-            .map_err(|e| ChannelError::Storage(e.to_string()))?;
+            if deleted_rows >= WAL_TRUNCATE_DELETED_ROWS_THRESHOLD {
+                // Best-effort WAL reset. Turso has no incremental_vacuum, so
+                // freed pages stay on the freelist and the main DB file keeps
+                // its high-water size; only the WAL is truncated here. The
+                // pragma only runs through query(), not execute().
+                if let Ok(mut rows) = conn.query("PRAGMA wal_checkpoint(TRUNCATE)", ()).await {
+                    let _ = rows.next().await;
+                }
+            }
 
-        if deleted_rows > 0 {
-            run_cleanup_maintenance(&conn, deleted_rows);
-        }
-
-        Ok(())
+            Ok(())
+        })
     }
 }
 
 fn message_id(
-    conn: &rusqlite::Connection,
+    conn: &turso::Connection,
     channel: &str,
     aggregate: &str,
 ) -> Result<Option<i64>, ChannelError> {
     let sql = format!("SELECT {aggregate}(id) FROM channel_messages WHERE channel = ?1");
-    conn.query_row(&sql, rusqlite::params![channel], |row| row.get(0))
-        .map_err(|e| ChannelError::Storage(e.to_string()))
+    block_on(async {
+        let mut rows = conn.query(&sql, (channel,)).await.map_err(storage_err)?;
+        let row = rows
+            .next()
+            .await
+            .map_err(storage_err)?
+            .ok_or_else(|| storage_err("aggregate query returned no row"))?;
+        row.get::<Option<i64>>(0).map_err(storage_err)
+    })
 }
 
-fn init_connection(conn: &rusqlite::Connection) -> Result<(), ChannelError> {
+async fn init_connection(conn: &turso::Connection) -> Result<(), ChannelError> {
     conn.execute_batch(
-        "PRAGMA auto_vacuum = INCREMENTAL;
-         PRAGMA journal_mode = WAL;
-         PRAGMA synchronous = NORMAL;
-         PRAGMA busy_timeout = 5000;
-         PRAGMA foreign_keys = ON;
-         CREATE TABLE IF NOT EXISTS channel_messages (
+        "CREATE TABLE IF NOT EXISTS channel_messages (
              id INTEGER PRIMARY KEY AUTOINCREMENT,
              channel TEXT NOT NULL,
              type TEXT NOT NULL,
@@ -241,26 +262,35 @@ fn init_connection(conn: &rusqlite::Connection) -> Result<(), ChannelError> {
              created_at_unix_ms INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
          );",
     )
-    .map_err(|e| ChannelError::Storage(e.to_string()))?;
+    .await
+    .map_err(storage_err)?;
 
-    ensure_channel_metadata_schema(conn)?;
+    ensure_channel_metadata_schema(conn).await?;
 
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_channel_messages_channel_id
          ON channel_messages(channel, id);",
     )
-    .map_err(|e| ChannelError::Storage(e.to_string()))?;
+    .await
+    .map_err(storage_err)?;
     Ok(())
 }
 
-fn ensure_channel_metadata_schema(conn: &rusqlite::Connection) -> Result<(), ChannelError> {
-    let exists: i64 = conn
-        .query_row(
+async fn ensure_channel_metadata_schema(conn: &turso::Connection) -> Result<(), ChannelError> {
+    let mut rows = conn
+        .query(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'channel_metadata'",
-            [],
-            |row| row.get(0),
+            (),
         )
-        .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        .await
+        .map_err(storage_err)?;
+    let exists: i64 = rows
+        .next()
+        .await
+        .map_err(storage_err)?
+        .ok_or_else(|| storage_err("sqlite_master count returned no row"))?
+        .get(0)
+        .map_err(storage_err)?;
 
     if exists == 0 {
         conn.execute_batch(
@@ -273,18 +303,19 @@ fn ensure_channel_metadata_schema(conn: &rusqlite::Connection) -> Result<(), Cha
                 last_activity_unix_ms INTEGER NOT NULL
             );",
         )
-        .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        .await
+        .map_err(storage_err)?;
         return Ok(());
     }
 
-    let mut columns = conn
-        .prepare("PRAGMA table_info(channel_metadata)")
-        .map_err(|e| ChannelError::Storage(e.to_string()))?;
-    let columns = columns
-        .query_map([], |row| row.get::<_, String>(1))
-        .map_err(|e| ChannelError::Storage(e.to_string()))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| ChannelError::Storage(e.to_string()))?;
+    let mut columns = Vec::new();
+    let mut rows = conn
+        .query("PRAGMA table_info(channel_metadata)", ())
+        .await
+        .map_err(storage_err)?;
+    while let Some(row) = rows.next().await.map_err(storage_err)? {
+        columns.push(row.get::<String>(1).map_err(storage_err)?);
+    }
 
     if columns.iter().any(|column| column == "retention_ms")
         && !columns.iter().any(|column| column == "replay_window_ms")
@@ -292,17 +323,9 @@ fn ensure_channel_metadata_schema(conn: &rusqlite::Connection) -> Result<(), Cha
         conn.execute_batch(
             "ALTER TABLE channel_metadata RENAME COLUMN retention_ms TO replay_window_ms;",
         )
-        .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        .await
+        .map_err(storage_err)?;
     }
 
     Ok(())
-}
-
-fn run_cleanup_maintenance(conn: &rusqlite::Connection, deleted_rows: usize) {
-    let vacuum_sql = format!("PRAGMA incremental_vacuum({INCREMENTAL_VACUUM_PAGES});");
-    let _ = conn.execute_batch(&vacuum_sql);
-
-    if deleted_rows >= WAL_TRUNCATE_DELETED_ROWS_THRESHOLD {
-        let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
-    }
 }

@@ -111,19 +111,28 @@ impl crate::ServerState {
         let secrets = if let Some(new_secrets) = secrets {
             new_secrets
         } else {
-            self.state_store.get_secrets(app_name).unwrap_or_default()
+            match self.state_store.get_secrets(app_name) {
+                Ok(secrets) => secrets,
+                Err(error) => return Response::error(format!("Failed to read secrets: {error}")),
+            }
         };
         let runtime_credentials = if let Some(new_runtime_credentials) = runtime_credentials {
             new_runtime_credentials
         } else {
-            self.state_store
-                .get_runtime_credentials(app_name)
-                .unwrap_or_default()
+            match self.state_store.get_runtime_credentials(app_name) {
+                Ok(credentials) => credentials,
+                Err(error) => {
+                    return Response::error(format!("Failed to read runtime credentials: {error}"));
+                }
+            }
         };
         let storages = if let Some(new_storages) = storages {
             new_storages
         } else {
-            self.state_store.get_storages(app_name).unwrap_or_default()
+            match self.state_store.get_storages(app_name) {
+                Ok(storages) => storages,
+                Err(error) => return Response::error(format!("Failed to read storages: {error}")),
+            }
         };
         let mut release_env = env_vars.clone();
         inject_app_data_dir_env(&mut release_env, &data_paths);

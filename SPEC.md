@@ -1000,6 +1000,7 @@ Upgrade `tako-server` on one or all configured servers via service-manager reloa
    - `systemctl reload tako-server` on systemd hosts, or
    - `rc-service tako-server reload` on OpenRC hosts.
      Both paths send `SIGHUP` for graceful reload, start a replacement process before the old process exits, and run with root privileges (root login or sudo-capable user).
+   - Exception: when the running server does not report the current SQLite storage engine (it predates the engine change), CLI performs a full service restart instead of a reload. Overlapping the two engines on the same state databases is unsafe, so this one upgrade takes brief downtime; later upgrades reload as usual.
 5. CLI waits for the primary management socket to report ready.
 6. CLI releases upgrade mode (`exit_upgrading`).
 

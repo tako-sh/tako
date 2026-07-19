@@ -6,9 +6,19 @@ use sha2::{Digest, Sha256};
 
 const TAKO_DATA_DIR: &str = "tako";
 const CHANNELS_DB_FILENAME: &str = "channels.sqlite";
-const CHANNELS_DB_COMPANION_FILENAMES: [&str; 2] = ["channels.sqlite-wal", "channels.sqlite-shm"];
+const CHANNELS_DB_COMPANION_FILENAMES: [&str; 3] = [
+    "channels.sqlite-wal",
+    "channels.sqlite-shm",
+    "channels.sqlite-tshm",
+];
 const CACHE_DB_FILENAME: &str = "cache.sqlite";
-const CACHE_DB_COMPANION_FILENAMES: [&str; 2] = ["cache.sqlite-wal", "cache.sqlite-shm"];
+const CACHE_DB_COMPANION_FILENAMES: [&str; 3] =
+    ["cache.sqlite-wal", "cache.sqlite-shm", "cache.sqlite-tshm"];
+const WORKFLOWS_DB_COMPANION_FILENAMES: [&str; 3] = [
+    "workflows.sqlite-wal",
+    "workflows.sqlite-shm",
+    "workflows.sqlite-tshm",
+];
 
 pub(super) fn snapshot_data_tree(source: &Path, destination: &Path) -> Result<(), String> {
     if destination.exists() {
@@ -46,7 +56,15 @@ fn copy_snapshot_dir(root: &Path, source: &Path, destination: &Path) -> Result<(
                 continue;
             }
             if is_sqlite_database(&source_path) {
-                snapshot_sqlite_database(&source_path, &dest_path)?;
+                // Tako's own stores are written by turso, so their snapshot
+                // must go through turso too — a foreign-engine reader is not
+                // synchronized with turso's live writers. App-owned databases
+                // are written with regular SQLite and keep the rusqlite path.
+                if relative_path.starts_with(TAKO_DATA_DIR) {
+                    snapshot_turso_database(&source_path, &dest_path)?;
+                } else {
+                    snapshot_sqlite_database(&source_path, &dest_path)?;
+                }
             } else {
                 std::fs::copy(&source_path, &dest_path).map_err(|e| {
                     format!(
@@ -97,6 +115,7 @@ fn is_sqlite_companion_file(path: &Path) -> bool {
     let Some(base) = name
         .strip_suffix("-wal")
         .or_else(|| name.strip_suffix("-shm"))
+        .or_else(|| name.strip_suffix("-tshm"))
     else {
         return false;
     };
@@ -124,6 +143,27 @@ fn snapshot_sqlite_database(source: &Path, destination: &Path) -> Result<(), Str
     let escaped = destination.to_string_lossy().replace('\'', "''");
     conn.execute_batch(&format!("VACUUM main INTO '{escaped}';"))
         .map_err(|e| format!("snapshot sqlite database {}: {e}", source.display()))
+}
+
+/// Snapshot a turso-written database with turso itself so the read
+/// coordinates with live writers through turso's multiprocess WAL.
+fn snapshot_turso_database(source: &Path, destination: &Path) -> Result<(), String> {
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create sqlite backup dir {}: {e}", parent.display()))?;
+    }
+    let source_str = source
+        .to_str()
+        .ok_or_else(|| format!("non-UTF-8 sqlite path {}", source.display()))?;
+    let escaped = destination.to_string_lossy().replace('\'', "''");
+    tako_sqlite::block_on(async {
+        let conn = tako_sqlite::open_local(source_str)
+            .await
+            .map_err(|e| format!("open turso database {}: {e}", source.display()))?;
+        conn.execute_batch(&format!("VACUUM main INTO '{escaped}';"))
+            .await
+            .map_err(|e| format!("snapshot turso database {}: {e}", source.display()))
+    })
 }
 
 pub(super) fn create_backup_archive(
@@ -196,6 +236,7 @@ fn remove_transient_tako_sqlite_stores(data_root: &Path) -> Result<(), String> {
         .into_iter()
         .chain(CHANNELS_DB_COMPANION_FILENAMES)
         .chain(CACHE_DB_COMPANION_FILENAMES)
+        .chain(WORKFLOWS_DB_COMPANION_FILENAMES)
     {
         let path = data_root.join(TAKO_DATA_DIR).join(name);
         match std::fs::remove_file(&path) {
@@ -275,6 +316,7 @@ mod tests {
         }
         std::fs::write(tako.join("channels.sqlite-wal"), b"wal").unwrap();
         std::fs::write(tako.join("channels.sqlite-shm"), b"shm").unwrap();
+        std::fs::write(tako.join("channels.sqlite-tshm"), b"tshm").unwrap();
 
         let cache_db = tako.join("cache.sqlite");
         {
@@ -291,16 +333,52 @@ mod tests {
             conn.execute("CREATE TABLE runs (id INTEGER PRIMARY KEY)", [])
                 .unwrap();
         }
+        std::fs::write(tako.join("workflows.sqlite-tshm"), b"tshm").unwrap();
 
         snapshot_data_tree(&source, &dest).unwrap();
 
         assert!(!dest.join("tako/channels.sqlite").exists());
         assert!(!dest.join("tako/channels.sqlite-wal").exists());
         assert!(!dest.join("tako/channels.sqlite-shm").exists());
+        assert!(!dest.join("tako/channels.sqlite-tshm").exists());
         assert!(!dest.join("tako/cache.sqlite").exists());
         assert!(!dest.join("tako/cache.sqlite-wal").exists());
         assert!(!dest.join("tako/cache.sqlite-shm").exists());
         assert!(dest.join("tako/workflows.sqlite").exists());
+        assert!(!dest.join("tako/workflows.sqlite-tshm").exists());
+    }
+
+    #[test]
+    fn snapshot_uses_turso_for_tako_owned_databases() {
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("data");
+        let tako = source.join("tako");
+        let dest = temp.path().join("snapshot");
+        std::fs::create_dir_all(&tako).unwrap();
+        let db_path = tako.join("workflows.sqlite");
+        tako_sqlite::block_on(async {
+            let conn = tako_sqlite::open_local(db_path.to_str().unwrap())
+                .await
+                .unwrap();
+            conn.execute("CREATE TABLE runs (id INTEGER PRIMARY KEY, name TEXT)", ())
+                .await
+                .unwrap();
+            conn.execute("INSERT INTO runs (name) VALUES ('r1')", ())
+                .await
+                .unwrap();
+        });
+
+        snapshot_data_tree(&source, &dest).unwrap();
+
+        let restored = dest.join("tako/workflows.sqlite");
+        let count: i64 = tako_sqlite::block_on(async {
+            let conn = tako_sqlite::open_local(restored.to_str().unwrap())
+                .await
+                .unwrap();
+            let mut rows = conn.query("SELECT COUNT(*) FROM runs", ()).await.unwrap();
+            rows.next().await.unwrap().unwrap().get(0).unwrap()
+        });
+        assert_eq!(count, 1);
     }
 
     #[cfg(unix)]
@@ -343,6 +421,7 @@ mod tests {
         std::fs::write(extracted.join("tako/cache.sqlite-wal"), b"wal").unwrap();
         std::fs::write(extracted.join("tako/cache.sqlite-shm"), b"shm").unwrap();
         std::fs::write(extracted.join("tako/workflows.sqlite"), b"workflows").unwrap();
+        std::fs::write(extracted.join("tako/workflows.sqlite-tshm"), b"tshm").unwrap();
 
         restore_data_tree(&extracted, &data_root).unwrap();
 
@@ -354,6 +433,7 @@ mod tests {
         assert!(!data_root.join("tako/cache.sqlite-wal").exists());
         assert!(!data_root.join("tako/cache.sqlite-shm").exists());
         assert!(data_root.join("tako/workflows.sqlite").exists());
+        assert!(!data_root.join("tako/workflows.sqlite-tshm").exists());
     }
 
     #[test]

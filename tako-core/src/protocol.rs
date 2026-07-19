@@ -562,6 +562,11 @@ pub struct ServerRuntimeInfo {
     pub server_name: Option<String>,
     #[serde(default)]
     pub server_identity: Option<String>,
+    /// SQLite engine backing the server's state stores. Servers predating the
+    /// turso migration do not report this field; upgrade tooling uses it to
+    /// avoid overlapping two engines on the same database files.
+    #[serde(default)]
+    pub storage_engine: Option<String>,
 }
 
 /// Response from the server

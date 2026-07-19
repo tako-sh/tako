@@ -218,3 +218,9 @@ pub enum ChannelError {
     #[error("storage error: {0}")]
     Storage(String),
 }
+
+impl From<turso::Error> for ChannelError {
+    fn from(e: turso::Error) -> Self {
+        ChannelError::Storage(e.to_string())
+    }
+}

@@ -28,19 +28,10 @@ fn init_creates_schema() {
     let (_temp, store) = temp_store();
     store.init().unwrap();
 
-    let conn = store.open_connection().unwrap();
-    let user_version: i32 = conn
-        .query_row("PRAGMA user_version;", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(user_version, STATE_SCHEMA_VERSION);
+    let user_version = store.raw_query_i64("PRAGMA user_version;", ());
+    assert_eq!(user_version as i32, STATE_SCHEMA_VERSION);
 
-    let columns: Vec<String> = conn
-        .prepare("PRAGMA table_info(apps);")
-        .unwrap()
-        .query_map([], |row| row.get(1))
-        .unwrap()
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
+    let columns = store.raw_query_strings("PRAGMA table_info(apps);", 1);
     assert_eq!(
         columns,
         vec![
@@ -57,9 +48,7 @@ fn init_creates_schema() {
 #[test]
 fn init_rejects_newer_unknown_schema() {
     let (_temp, store) = temp_store();
-    let conn = store.open_connection().unwrap();
-    conn.execute_batch("PRAGMA user_version = 999;").unwrap();
-    drop(conn);
+    store.raw_execute_batch("PRAGMA user_version = 999;");
 
     let err = store.init().unwrap_err();
     match err {
@@ -208,18 +197,16 @@ fn upgrade_lock_force_acquires_stale_lock() {
     assert!(store.try_acquire_upgrade_lock("controller-a").unwrap());
 
     // Backdate the lock to make it stale.
-    let conn = store.open_connection().unwrap();
     let stale_time = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64
         - SqliteStateStore::UPGRADE_LOCK_STALE_SECS
         - 1;
-    conn.execute(
+    store.raw_execute(
         "UPDATE upgrade_lock SET acquired_at_unix_secs = ?1 WHERE id = 1;",
-        rusqlite::params![stale_time],
-    )
-    .unwrap();
+        (stale_time,),
+    );
 
     // A different owner can now force-acquire the stale lock.
     assert!(store.try_acquire_upgrade_lock("controller-b").unwrap());
@@ -379,14 +366,10 @@ fn secrets_are_encrypted_at_rest() {
     store.set_secrets("my-app", &secrets).unwrap();
 
     // Read raw blob from SQLite — should not contain plaintext
-    let conn = store.open_connection().unwrap();
-    let raw: Vec<u8> = conn
-        .query_row(
-            "SELECT encrypted_data FROM app_secrets WHERE app = ?1;",
-            ["my-app"],
-            |row| row.get(0),
-        )
-        .unwrap();
+    let raw = store.raw_query_blob(
+        "SELECT encrypted_data FROM app_secrets WHERE app = ?1;",
+        ("my-app",),
+    );
     let raw_str = String::from_utf8_lossy(&raw);
     assert!(!raw_str.contains("supersecret"));
     assert!(!raw_str.contains("API_KEY"));
@@ -415,8 +398,7 @@ fn migrate_v1_to_current_adds_secret_tables() {
     // Create a v1 database manually
     {
         let store = SqliteStateStore::new(db_path.clone(), TEST_KEY);
-        let conn = store.open_connection().unwrap();
-        conn.execute_batch(
+        store.raw_execute_batch(
                 "CREATE TABLE apps (
                     name TEXT NOT NULL,
                     environment TEXT NOT NULL,
@@ -443,8 +425,7 @@ fn migrate_v1_to_current_adds_secret_tables() {
                 );
                 INSERT INTO server_state (id, server_mode) VALUES (1, 'normal');
                 PRAGMA user_version = 1;",
-            )
-            .unwrap();
+            );
     }
 
     // Open with current code — should migrate to the latest schema.
@@ -458,11 +439,8 @@ fn migrate_v1_to_current_adds_secret_tables() {
     assert_eq!(loaded.get("KEY"), Some(&"value".to_string()));
 
     // Verify version bumped
-    let conn = store.open_connection().unwrap();
-    let version: i32 = conn
-        .query_row("PRAGMA user_version;", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(version, STATE_SCHEMA_VERSION);
+    let version = store.raw_query_i64("PRAGMA user_version;", ());
+    assert_eq!(version as i32, STATE_SCHEMA_VERSION);
 }
 
 #[test]
