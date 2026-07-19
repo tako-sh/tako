@@ -14,7 +14,7 @@
     "@astrojs/rss": "^4.0.19",
     "@astrojs/sitemap": "^3.7.3",
     "astro": "catalog:dev",
-    "astro-d2": "^0.11.0",
+    "astro-d2": "^0.13.0",
     "lucide-astro": "^0.556.0"
   },
   "devDependencies": {
