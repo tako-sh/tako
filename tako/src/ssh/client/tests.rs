@@ -229,7 +229,9 @@ fn install_server_script_installs_and_verifies_runtime_dependencies() {
     assert!(script.contains("libheif-plugin-aomdec"));
     assert!(script.contains("libheif-plugin-dav1d"));
     assert!(script.contains("apt-get install -y \"$apt_vips_pkg\" $apt_avif_pkgs"));
-    assert!(script.contains("dnf install -y vips || {"));
+    assert!(script.contains("if dnf install -y vips; then"));
+    assert!(script.contains("install_libvips_from_remi"));
+    assert!(script.contains("rpms.remirepo.net"));
     assert!(script.contains("apk add --no-cache vips vips-heif"));
     assert!(script.contains("install_libvips_codec_runtime"));
     assert!(script.contains("apk add --no-cache vips-heif"));
