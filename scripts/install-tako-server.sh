@@ -803,6 +803,43 @@ install_apt_avif_plugins() {
   fi
 }
 
+# dnf hosts fall into two groups: real Fedora, where "vips" installs
+# directly, and RHEL-family clones (AlmaLinux/Rocky/RHEL/CentOS Stream),
+# where no repo — including EPEL — ever carries it: Fedora's own package
+# page (https://packages.fedoraproject.org/pkgs/vips/vips/) only builds
+# Fedora branches, and that build requires glibc symbols RHEL9's glibc
+# 2.34 doesn't export. Retrying the plain install after enabling EPEL/CRB
+# can't succeed on the second group, so RHEL-family hosts go straight to
+# Remi's RPM repository (https://rpms.remirepo.net/), which builds vips
+# natively against each RHEL major version. This is also what libvips'
+# own current maintainer recommends for RHEL9:
+# https://github.com/libvips/pyvips/issues/356#issuecomment-1287872830
+install_libvips_from_remi() {
+  el_version="$(rpm -E %rhel 2>/dev/null || true)"
+  case "$el_version" in
+    '' | *[!0-9]*)
+      echo "error: could not detect the RHEL major version (rpm -E %rhel) for Remi's repository" >&2
+      return 1
+      ;;
+  esac
+
+  dnf install -y epel-release || true
+  if need_cmd dnf config-manager; then
+    dnf config-manager --set-enabled crb || true
+  fi
+  if ! dnf install -y "https://rpms.remirepo.net/enterprise/remi-release-${el_version}.rpm"; then
+    echo "error: failed to install Remi's repository configuration" >&2
+    return 1
+  fi
+  dnf config-manager --set-enabled remi || true
+
+  # install_weak_deps=False: vips' optional codec modules (heif, jxl,
+  # ImageMagick/GraphicsMagick, OpenSlide, Poppler) pull in a desktop-sized
+  # dependency chain (GTK, WebKit, PulseAudio, X11 fonts...) as recommends.
+  # tako-server only needs the base runtime library.
+  dnf install -y --setopt=install_weak_deps=False vips
+}
+
 install_libvips_runtime() {
   echo "Installing libvips runtime"
   if need_cmd apt-get; then
@@ -816,13 +853,10 @@ install_libvips_runtime() {
     done
     return 1
   elif need_cmd dnf; then
-    dnf install -y vips || {
-      dnf install -y epel-release
-      if need_cmd dnf config-manager; then
-        dnf config-manager --set-enabled crb || true
-      fi
-      dnf install -y vips
-    }
+    if dnf install -y vips; then
+      return
+    fi
+    install_libvips_from_remi
   elif need_cmd yum; then
     yum install -y libvips || yum install -y vips || {
       yum install -y epel-release

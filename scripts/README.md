@@ -27,6 +27,7 @@ Repository scripts used by installers, CI checks, and local development workflow
     - systemd unit with `Type=notify`, `ExecReload=/bin/kill -HUP $MAINPID`, high file-descriptor limits, and capability bounding for bind, app-user switching, and app-process stop capabilities.
     - OpenRC init script with high file-descriptor limits, `reload` support, and `retry="TERM/1800/KILL/5"` graceful-stop semantics.
   - Installs required runtime dependencies (including Unix-socket-capable `nc` with `-U` support, sqlite runtime libraries, libvips image codec packages, Linux namespace networking tools `ip`/`iptables`/`sysctl`, and `proto`) via the host package manager when available.
+  - On RHEL-family dnf hosts (AlmaLinux/Rocky/RHEL/CentOS Stream), no repo — including EPEL — ever carries a vips/libvips package, so the installer falls back to [Remi's RPM repository](https://rpms.remirepo.net/) instead of retrying a package that will never exist there.
   - Falls back to the official `proto` installer if not already present.
 - `check_critical_coverage.sh`: coverage gate for selected critical source files.
 
