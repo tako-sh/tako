@@ -194,6 +194,8 @@ describe("callInternal error wrapping", () => {
           if (nl === -1) return;
           const line = buffer.slice(0, nl);
           const req = JSON.parse(line) as { id: string; delay?: number };
+          // CodeQL[js/resource-exhaustion]: test-only mock server; req.delay comes from
+          // this same test's own callInternal() calls below, not untrusted input.
           setTimeout(() => {
             socket.write(`${JSON.stringify({ status: "ok", data: { id: req.id } })}\n`);
           }, req.delay ?? 0);

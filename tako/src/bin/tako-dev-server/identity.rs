@@ -223,6 +223,9 @@ mod tests {
         let identity = TakoIdentity::load_or_create().unwrap();
         let public_key = identity.public_key().unwrap();
 
+        // CodeQL[rust/hard-coded-cryptographic-value]: test fixture, not a real nonce —
+        // sign_tunnel's nonce is caller-supplied in production; this only checks that
+        // signing succeeds and produces output, not nonce randomness.
         let signature = identity
             .sign_tunnel("nonce", "app", "app-id.tako.website", &public_key)
             .unwrap();
