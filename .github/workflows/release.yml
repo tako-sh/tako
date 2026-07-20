@@ -57,7 +57,7 @@ jobs:
 
       - name: Download macOS artifacts from CI
         if: steps.builds.outputs.skipped != 'true'
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           run-id: ${{ steps.ci-run.outputs.run_id }}
           github-token: ${{ github.token }}
@@ -176,7 +176,7 @@ jobs:
 
       - name: Upload signed aarch64
         if: steps.builds.outputs.skipped != 'true'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: signed-bin-tako-darwin-aarch64
           path: |
@@ -226,7 +226,7 @@ jobs:
 
       - name: Download all artifacts from CI
         if: steps.builds.outputs.skipped != 'true'
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           run-id: ${{ steps.ci-run.outputs.run_id }}
           github-token: ${{ github.token }}
@@ -235,7 +235,7 @@ jobs:
 
       - name: Download signed macOS artifacts
         if: steps.builds.outputs.skipped != 'true'
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: signed-bin-tako-darwin-aarch64
           path: signed-raw/signed-bin-tako-darwin-aarch64
@@ -359,7 +359,7 @@ jobs:
 
       - name: Setup Node
         if: steps.changes.outputs.skip != 'true'
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: lts/*
           registry-url: https://registry.npmjs.org
