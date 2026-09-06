@@ -670,8 +670,13 @@ async fn send_client_message(
 
 fn local_proxy_client(local_host: &str, listen_addr: &str) -> Result<reqwest::Client, String> {
     let listen_addr = local_proxy_listen_addr(listen_addr)?;
+    if !listen_addr.ip().is_loopback() {
+        return Err("tunnel forwarding requires a loopback proxy address".to_string());
+    }
     reqwest::Client::builder()
+        // CodeQL[rust/disabled-certificate-check]: local dev TLS only; loopback enforced, proxies and redirects disabled.
         .danger_accept_invalid_certs(true)
+        .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .resolve_to_addrs(local_host, &[listen_addr])
         .build()
@@ -1075,6 +1080,17 @@ mod tests {
         };
 
         assert_eq!(terminal_close_reason(Some(&close)), None);
+    }
+
+    #[test]
+    fn local_proxy_client_requires_loopback_destination() {
+        for address in ["192.0.2.1:443", "[2001:db8::1]:443", "0.0.0.0:443"] {
+            let error = local_proxy_client("app.test", address).unwrap_err();
+            assert!(error.contains("loopback"));
+        }
+        for address in ["127.0.0.1:443", "127.77.0.1:443", "[::1]:443"] {
+            assert!(local_proxy_client("app.test", address).is_ok());
+        }
     }
 
     #[test]

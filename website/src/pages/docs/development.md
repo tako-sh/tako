@@ -80,7 +80,7 @@ On macOS, Tako writes split-DNS resolver files for `.test` and `.tako.test`, use
 
 On Linux, Tako uses the same loopback alias with iptables redirect rules for HTTPS, HTTP, and DNS. On NixOS, it prints a `configuration.nix` snippet instead of applying imperative setup.
 
-The HTTPS daemon itself listens on `127.0.0.1:47831`.
+The HTTPS daemon itself listens on `127.0.0.1:47831`. Readiness checks contact the local endpoint directly and treat redirects as a response without following them. Tunnel forwarding requires a loopback proxy address and bypasses system HTTP proxies.
 
 ## Local CA
 

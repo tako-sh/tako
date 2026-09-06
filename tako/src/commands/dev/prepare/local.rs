@@ -11,6 +11,9 @@ pub(crate) async fn localhost_https_host_reachable_via_ip(
     port: u16,
     timeout_ms: u64,
 ) -> Result<(), String> {
+    if !connect_ip.is_loopback() {
+        return Err("local HTTPS probe requires a loopback address".to_string());
+    }
     let mut base_url = format!("https://{host}");
     if port != 443 {
         base_url.push(':');
@@ -22,9 +25,11 @@ pub(crate) async fn localhost_https_host_reachable_via_ip(
     // Skip TLS verification — the probe checks connectivity (proxy + dev
     // server responding), not certificate validity. The browser does its own
     // chain verification against the system trust store.
-    // CodeQL[rust/disabled-certificate-check]: localhost-only probe, no remote traffic
+    // CodeQL[rust/disabled-certificate-check]: loopback connectivity probe; redirects and proxies are disabled.
     let client = match reqwest::Client::builder()
         .danger_accept_invalid_certs(true)
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_millis(timeout_ms))
         .timeout(Duration::from_millis(timeout_ms))
         .resolve(host, addr)

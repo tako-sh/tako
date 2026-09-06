@@ -196,3 +196,63 @@ fn sudo_setup_action_items_omits_absent_steps() {
     let items = sudo_setup_action_items(None, false, Some("Repair dev proxy"));
     assert_eq!(items, vec!["Repair dev proxy".to_string()]);
 }
+
+#[tokio::test]
+async fn local_https_probe_accepts_redirect_without_following_it() {
+    use openssl::pkey::PKey;
+    use openssl::ssl::{SslAcceptor, SslMethod};
+    use openssl::x509::X509;
+    use std::io::{Read, Write};
+
+    let ca = LocalCA::generate().unwrap();
+    let cert = ca.generate_leaf_cert("probe.test").unwrap();
+    let mut acceptor = SslAcceptor::mozilla_intermediate(SslMethod::tls()).unwrap();
+    acceptor
+        .set_certificate(&X509::from_pem(cert.cert_pem.as_bytes()).unwrap())
+        .unwrap();
+    acceptor
+        .set_private_key(&PKey::private_key_from_pem(cert.key_pem.as_bytes()).unwrap())
+        .unwrap();
+    let acceptor = acceptor.build();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::task::spawn_blocking(move || {
+        let (stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut stream = acceptor.accept(stream).unwrap();
+        let mut request = [0; 4096];
+        stream.read(&mut request).unwrap();
+        // Port zero makes following the redirect fail without contacting a remote host.
+        stream.write_all(b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:0/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+    });
+    let result = crate::commands::dev::prepare::local::localhost_https_host_reachable_via_ip(
+        "probe.test",
+        std::net::Ipv4Addr::LOCALHOST,
+        port,
+        2000,
+    )
+    .await;
+    server.await.unwrap();
+    assert!(
+        result.is_ok(),
+        "a redirect proves the local server is reachable: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn local_https_probe_requires_loopback_destination() {
+    let error = crate::commands::dev::prepare::local::localhost_https_host_reachable_via_ip(
+        "probe.test",
+        std::net::Ipv4Addr::new(192, 0, 2, 1),
+        443,
+        10,
+    )
+    .await
+    .unwrap_err();
+    assert!(error.contains("loopback"));
+}
