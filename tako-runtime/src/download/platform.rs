@@ -10,19 +10,6 @@ pub(super) fn resolve_arch() -> &'static str {
     }
 }
 
-fn is_musl() -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        let arch = std::env::consts::ARCH;
-        std::path::Path::new(&format!("/lib/ld-musl-{arch}.so.1")).exists()
-            || std::path::Path::new("/etc/alpine-release").exists()
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        false
-    }
-}
-
 pub(super) fn resolve_os_value(
     os_map: &std::collections::HashMap<String, String>,
 ) -> Result<String, String> {
@@ -35,15 +22,8 @@ pub(super) fn resolve_os_value(
 
 pub(super) fn resolve_arch_value(
     arch_map: &std::collections::HashMap<String, String>,
-    arch_variants: &std::collections::HashMap<String, String>,
 ) -> Result<String, String> {
     let generic = resolve_arch();
-    if is_musl() {
-        let musl_key = format!("{generic}-musl");
-        if let Some(value) = arch_variants.get(&musl_key) {
-            return Ok(value.clone());
-        }
-    }
     arch_map
         .get(generic)
         .cloned()

@@ -7,9 +7,9 @@ use std::time::Duration;
 
 fn sample_shared_build_group() -> ArtifactBuildGroup {
     ArtifactBuildGroup {
-        build_target_label: "linux-aarch64-musl".to_string(),
+        build_target_label: "linux-aarch64-glibc".to_string(),
         cache_target_label: UNIFIED_JS_CACHE_TARGET_LABEL.to_string(),
-        target_labels: vec!["linux-aarch64-musl".to_string()],
+        target_labels: vec!["linux-aarch64-glibc".to_string()],
         display_target_label: None,
     }
 }
@@ -17,10 +17,10 @@ fn sample_shared_build_group() -> ArtifactBuildGroup {
 fn sample_multi_build_groups() -> Vec<ArtifactBuildGroup> {
     vec![
         ArtifactBuildGroup {
-            build_target_label: "linux-aarch64-musl".to_string(),
-            cache_target_label: "linux-aarch64-musl".to_string(),
-            target_labels: vec!["linux-aarch64-musl".to_string()],
-            display_target_label: Some("linux-aarch64-musl".to_string()),
+            build_target_label: "linux-aarch64-glibc".to_string(),
+            cache_target_label: "linux-aarch64-glibc".to_string(),
+            target_labels: vec!["linux-aarch64-glibc".to_string()],
+            display_target_label: Some("linux-aarch64-glibc".to_string()),
         },
         ArtifactBuildGroup {
             build_target_label: "linux-x86_64-glibc".to_string(),
@@ -45,7 +45,7 @@ fn build_artifact_target_groups_unifies_targets_when_requested() {
             "b".to_string(),
             ServerTarget {
                 arch: "aarch64".to_string(),
-                libc: "musl".to_string(),
+                libc: "glibc".to_string(),
             },
         ),
     ];
@@ -54,10 +54,10 @@ fn build_artifact_target_groups_unifies_targets_when_requested() {
     assert_eq!(
         groups,
         vec![ArtifactBuildGroup {
-            build_target_label: "linux-aarch64-musl".to_string(),
+            build_target_label: "linux-aarch64-glibc".to_string(),
             cache_target_label: UNIFIED_JS_CACHE_TARGET_LABEL.to_string(),
             target_labels: vec![
-                "linux-aarch64-musl".to_string(),
+                "linux-aarch64-glibc".to_string(),
                 "linux-x86_64-glibc".to_string()
             ],
             display_target_label: None,
@@ -79,7 +79,7 @@ fn build_artifact_target_groups_keeps_per_target_groups_when_not_unified() {
             "b".to_string(),
             ServerTarget {
                 arch: "aarch64".to_string(),
-                libc: "musl".to_string(),
+                libc: "glibc".to_string(),
             },
         ),
     ];
@@ -89,10 +89,10 @@ fn build_artifact_target_groups_keeps_per_target_groups_when_not_unified() {
         groups,
         vec![
             ArtifactBuildGroup {
-                build_target_label: "linux-aarch64-musl".to_string(),
-                cache_target_label: "linux-aarch64-musl".to_string(),
-                target_labels: vec!["linux-aarch64-musl".to_string()],
-                display_target_label: Some("linux-aarch64-musl".to_string()),
+                build_target_label: "linux-aarch64-glibc".to_string(),
+                cache_target_label: "linux-aarch64-glibc".to_string(),
+                target_labels: vec!["linux-aarch64-glibc".to_string()],
+                display_target_label: Some("linux-aarch64-glibc".to_string()),
             },
             ArtifactBuildGroup {
                 build_target_label: "linux-x86_64-glibc".to_string(),
@@ -136,7 +136,7 @@ fn deploy_task_tree_initial_lines_include_multi_target_builds_and_multi_server_c
     let lines = ui::render_plain_lines(&build_deploy_tree(&snapshot));
 
     assert!(lines.iter().any(|line| line == "Building…"));
-    assert!(lines.iter().any(|line| line == "  □ linux-aarch64-musl…"));
+    assert!(lines.iter().any(|line| line == "  □ linux-aarch64-glibc…"));
     assert!(lines.iter().any(|line| line == "  □ linux-x86_64-glibc…"));
     assert!(lines.iter().any(|line| line == "Deploying to prod-a…"));
     assert!(lines.iter().any(|line| line == "Deploying to prod-b…"));

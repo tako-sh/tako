@@ -131,7 +131,6 @@ async fn install_rejects_download_without_checksum_url() {
                 ("x64".into(), "x64".into()),
                 ("arm64".into(), "arm64".into()),
             ]),
-            arch_variants: Default::default(),
             extract: None,
         }),
     };
@@ -215,7 +214,6 @@ fn zip_extraction_works() {
         checksum_format: None,
         os_map: Default::default(),
         arch_map: Default::default(),
-        arch_variants: Default::default(),
         extract: Some(crate::types::ExtractDef {
             binary: Some("bun-{os}-{arch}/bun".to_string()),
             strip_components: None,
@@ -265,7 +263,6 @@ fn tar_gz_extraction_works() {
         checksum_format: None,
         os_map: Default::default(),
         arch_map: Default::default(),
-        arch_variants: Default::default(),
         extract: Some(crate::types::ExtractDef {
             binary: Some("node-v{version}-{os}-{arch}/bin/node".to_string()),
             strip_components: None,
@@ -305,7 +302,6 @@ fn zip_extraction_rejects_paths_that_escape_destination() {
         checksum_format: None,
         os_map: Default::default(),
         arch_map: Default::default(),
-        arch_variants: Default::default(),
         extract: Some(crate::types::ExtractDef {
             binary: None,
             strip_components: None,
@@ -370,7 +366,6 @@ fn tar_gz_extraction_rejects_symlink_escape_targets() {
         checksum_format: None,
         os_map: Default::default(),
         arch_map: Default::default(),
-        arch_variants: Default::default(),
         extract: Some(crate::types::ExtractDef {
             binary: None,
             strip_components: None,
@@ -431,7 +426,6 @@ fn tar_gz_extraction_allows_internal_relative_symlinks() {
         checksum_format: None,
         os_map: Default::default(),
         arch_map: Default::default(),
-        arch_variants: Default::default(),
         extract: Some(crate::types::ExtractDef {
             binary: None,
             strip_components: None,

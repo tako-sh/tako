@@ -16,7 +16,7 @@ Run `mise bootstrap` to install the repository toolchain, native libvips depende
 
 Homebrew's `vips` formula includes the codec libraries Tako needs for JPEG, PNG, WebP, and AVIF transforms. Debian/Ubuntu split the AVIF encoder into `libheif-plugin-aomenc`, so install that alongside `libvips-dev`.
 
-Deploy E2E builds Linux binaries inside pinned glibc and musl builder images, so their libvips dependencies do not depend on the host operating system.
+Deploy E2E builds Linux binaries inside a pinned glibc builder image, so their libvips dependencies do not depend on the host operating system.
 
 ## Docker E2E Fixtures
 
@@ -30,7 +30,7 @@ just e2e examples/go/basic
 ```
 
 This runs the global e2e harness in `e2e/run.sh` against the fixture path.
-The harness generates an ephemeral SSH keypair per run inside a disposable Docker volume, starts real `tako-server` binaries on Ubuntu and Alpine test hosts, and starts AlmaLinux too when the current server binary's runtime libraries are available there. It never uses `~/.ssh`.
+The harness generates an ephemeral SSH keypair per run inside a disposable Docker volume, starts real `tako-server` binaries on an Ubuntu test host, and starts AlmaLinux too when the current server binary's runtime libraries are available there. It never uses `~/.ssh`.
 Server containers run privileged with private cgroup namespaces so the production cgroup limits can be exercised. Their entrypoints move init into a control subgroup and enable CPU, memory, and process controllers within that container only. No host cgroup filesystem is bind-mounted. The entrypoint installs the mounted build as root before SSH starts; the runner then uses the installed restricted sudo policy.
 
 On disposable GitHub Actions runners, `e2e/prepare-ci-host.sh` permits DAC reads in the host's `unix-chkpwd` AppArmor profile. That host profile also attaches to AlmaLinux's PAM helper inside privileged containers, where the mode-000 shadow file needs this permission. The fixture check verifies sudo before and after the correction; production PAM policy, shadow permissions, and server capabilities are unchanged.
@@ -57,7 +57,7 @@ docker run --rm --privileged --cgroupns=private \
 
 This checks install, reprovisioning, dependency replacement, service access, and rejection of hardlinked manifests and service-owned files.
 
-Cargo registry and Git caches use the Docker volumes `tako-e2e-cargo-registry` and `tako-e2e-cargo-git`. Build outputs use `target/e2e-linux-glibc` and `target/e2e-linux-musl`; runnable binaries are copied to `.e2e-bin` (override with `E2E_BIN_DIR`).
+Cargo registry and Git caches use the Docker volumes `tako-e2e-cargo-registry` and `tako-e2e-cargo-git`. Build outputs use `target/e2e-linux-glibc`; runnable binaries are copied to `.e2e-bin` (override with `E2E_BIN_DIR`).
 
 After deploy, it runs universal runtime checks:
 

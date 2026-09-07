@@ -284,9 +284,7 @@ jobs:
           }
 
           package_server x86_64 glibc
-          package_server x86_64 musl
           package_server aarch64 glibc
-          package_server aarch64 musl
           package_cli_linux x86_64
           package_cli_linux aarch64
           copy_cli_darwin aarch64

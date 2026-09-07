@@ -75,9 +75,9 @@ fn deploy_error_cleanup_runs_only_before_start_rpc_attempt() {
 
 fn sample_shared_build_group() -> ArtifactBuildGroup {
     ArtifactBuildGroup {
-        build_target_label: "linux-aarch64-musl".to_string(),
+        build_target_label: "linux-aarch64-glibc".to_string(),
         cache_target_label: UNIFIED_JS_CACHE_TARGET_LABEL.to_string(),
-        target_labels: vec!["linux-aarch64-musl".to_string()],
+        target_labels: vec!["linux-aarch64-glibc".to_string()],
         display_target_label: None,
     }
 }

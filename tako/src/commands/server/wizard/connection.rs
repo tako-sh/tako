@@ -199,7 +199,7 @@ pub(super) fn parse_detected_libc(stdout: &str) -> Result<String, String> {
 
     crate::config::ServerTarget::normalize_libc(raw_libc).ok_or_else(|| {
         format!(
-            "Unsupported server libc '{}'. Supported libc families: glibc, musl.",
+            "Unsupported server libc '{}'. Tako requires glibc.",
             raw_libc
         )
     })

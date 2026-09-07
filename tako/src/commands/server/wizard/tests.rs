@@ -17,13 +17,14 @@ fn parse_detected_arch_rejects_unknown_values() {
 fn parse_detected_libc_normalizes_supported_aliases() {
     assert_eq!(parse_detected_libc("glibc\n").unwrap(), "glibc");
     assert_eq!(parse_detected_libc("GNU libc\n").unwrap(), "glibc");
-    assert_eq!(parse_detected_libc("musl\n").unwrap(), "musl");
 }
 
 #[test]
 fn parse_detected_libc_rejects_unknown_values() {
-    let err = parse_detected_libc("uclibc\n").unwrap_err();
-    assert!(err.contains("Unsupported server libc"));
+    for libc in ["musl", "uclibc"] {
+        let err = parse_detected_libc(libc).unwrap_err();
+        assert!(err.contains("requires glibc"));
+    }
 }
 
 #[test]

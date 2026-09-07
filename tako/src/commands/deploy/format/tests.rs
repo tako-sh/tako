@@ -145,24 +145,24 @@ fn deploy_summary_lines_support_non_url_primary_field() {
 #[test]
 fn format_deploy_main_message_omits_target_for_unified_process() {
     assert_eq!(
-        format_deploy_main_message("dist/server/tako-entry.mjs", "linux-aarch64-musl", true),
+        format_deploy_main_message("dist/server/tako-entry.mjs", "linux-aarch64-glibc", true),
         "Deploy main: dist/server/tako-entry.mjs"
     );
     assert_eq!(
-        format_deploy_main_message("dist/server/tako-entry.mjs", "linux-aarch64-musl", false),
-        "Deploy main: dist/server/tako-entry.mjs (artifact target: linux-aarch64-musl)"
+        format_deploy_main_message("dist/server/tako-entry.mjs", "linux-aarch64-glibc", false),
+        "Deploy main: dist/server/tako-entry.mjs (artifact target: linux-aarch64-glibc)"
     );
 }
 
 #[test]
 fn artifact_progress_helpers_render_build_and_packaging_steps() {
     assert_eq!(
-        format_build_completed_message(Some("linux-aarch64-musl")),
-        "Built for linux-aarch64-musl"
+        format_build_completed_message(Some("linux-aarch64-glibc")),
+        "Built for linux-aarch64-glibc"
     );
     assert_eq!(
-        format_prepare_artifact_message(Some("linux-aarch64-musl")),
-        "Preparing artifact for linux-aarch64-musl"
+        format_prepare_artifact_message(Some("linux-aarch64-glibc")),
+        "Preparing artifact for linux-aarch64-glibc"
     );
 }
 
@@ -293,7 +293,7 @@ fn format_server_targets_summary_deduplicates_target_labels() {
                 "c".to_string(),
                 ServerTarget {
                     arch: "aarch64".to_string(),
-                    libc: "musl".to_string(),
+                    libc: "glibc".to_string(),
                 },
             ),
         ],
@@ -302,7 +302,7 @@ fn format_server_targets_summary_deduplicates_target_labels() {
 
     assert_eq!(
         summary,
-        Some("Server targets: linux-aarch64-musl, linux-x86_64-glibc".to_string())
+        Some("Server targets: linux-aarch64-glibc, linux-x86_64-glibc".to_string())
     );
 }
 
@@ -314,7 +314,7 @@ fn format_server_targets_summary_hides_line_for_unified_mode() {
             "a".to_string(),
             ServerTarget {
                 arch: "aarch64".to_string(),
-                libc: "musl".to_string(),
+                libc: "glibc".to_string(),
             },
         )],
         true,

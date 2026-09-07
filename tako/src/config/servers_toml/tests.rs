@@ -216,16 +216,13 @@ fn test_target_normalization_accepts_common_aliases() {
         ServerTarget::normalize_libc("GNU libc").as_deref(),
         Some("glibc")
     );
-    assert_eq!(
-        ServerTarget::normalize_libc("musl").as_deref(),
-        Some("musl")
-    );
 }
 
 #[test]
 fn test_target_normalization_rejects_unknown_values() {
     assert!(ServerTarget::normalize_arch("sparc").is_none());
     assert!(ServerTarget::normalize_libc("uclibc").is_none());
+    assert!(ServerTarget::normalized("x86_64", "musl").is_err());
 }
 
 #[test]

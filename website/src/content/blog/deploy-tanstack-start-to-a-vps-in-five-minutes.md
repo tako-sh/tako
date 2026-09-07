@@ -64,7 +64,7 @@ If you don't have a server registered yet, do that once:
 tako servers add prod.example.com --name prod
 ```
 
-This connects as the `tako` user, detects `arch` and `libc`, and writes the entry to your global `config.toml`. ([How to install `tako-server` on the box](/docs/deployment/) is in the deploy docs — `apt install tako-server` on Debian / Ubuntu, equivalent on Alpine.)
+This connects as the `tako` user, detects `arch` and `libc`, and writes the entry to your global `config.toml`. See the [deployment docs](/docs/deployment/) to install `tako-server` on a Linux host with glibc and systemd.
 
 Then:
 

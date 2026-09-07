@@ -31,7 +31,6 @@ chown -R tako:tako /home/tako/.ssh /var/run/tako /opt/tako || true
 # Install the mounted build while still root, then exercise only the production
 # sudo policy through SSH. The runner has no unrestricted root shell.
 libc_kind=glibc
-if [ -f /etc/alpine-release ]; then libc_kind=musl; fi
 if [ -x "/opt/e2e/bin/$libc_kind/tako-server" ]; then
   archive_dir="$(mktemp -d)"
   archive="$archive_dir/tako-server.tar.zst"

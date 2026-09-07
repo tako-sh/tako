@@ -92,10 +92,6 @@ fn check_configure_helper(management_argument: &str, detected_address: &str, suc
         .replace(
             "/etc/systemd/system/tako-server-standby.service",
             root.join("absent-standby").to_str().unwrap(),
-        )
-        .replace(
-            "/etc/init.d/tako-server",
-            root.join("absent-openrc").to_str().unwrap(),
         );
     let output = std::process::Command::new("sh")
         .args(["-c", &command, "service", "configure", "8080", "8443"])

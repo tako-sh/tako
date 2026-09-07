@@ -11,7 +11,7 @@ set -eu
 # - installs the libvips runtime used by the built-in image optimizer
 # - installs Podman for container releases
 # - creates OS user `tako`
-# - installs a service manager unit (systemd or OpenRC) for `tako-server`
+# - installs systemd units for `tako-server`
 # - installs maintenance helpers and sudoers for the tako service user
 #
 # Optional env vars:
@@ -339,12 +339,6 @@ systemd_main_pid() {
   systemctl show -p MainPID --value tako-server 2>/dev/null || true
 }
 
-openrc_main_pid() {
-  if [ -r /run/tako-server.pid ]; then
-    sed -n '1p' /run/tako-server.pid 2>/dev/null || true
-  fi
-}
-
 require_secure_download_override() {
   value="$1"
   case "$value" in
@@ -377,31 +371,9 @@ systemd_is_usable() {
   return 0
 }
 
-openrc_is_usable() {
-  if ! need_cmd rc-service; then
-    return 1
-  fi
-
-  if ! need_cmd rc-update; then
-    return 1
-  fi
-
-  # OpenRC creates this runtime directory when it is the active init system.
-  if [ ! -d /run/openrc ]; then
-    return 1
-  fi
-
-  return 0
-}
-
 detect_service_manager() {
   if systemd_is_usable; then
     echo "systemd"
-    return
-  fi
-
-  if openrc_is_usable; then
-    echo "openrc"
     return
   fi
 
@@ -412,9 +384,9 @@ SERVICE_MANAGER="$(detect_service_manager)"
 
 existing_service_arg_value() {
   _arg="$1"
-  for _file in /etc/systemd/system/tako-server.service /etc/init.d/tako-server; do
+  for _file in /etc/systemd/system/tako-server.service; do
     if [ -r "$_file" ]; then
-      _value="$(cmdline_arg_value "$(sed -n 's/.*ExecStart=//p; s/^command_args="\([^"]*\)".*/\1/p' "$_file" 2>/dev/null)" "$_arg")"
+      _value="$(cmdline_arg_value "$(sed -n 's/.*ExecStart=//p' "$_file" 2>/dev/null)" "$_arg")"
       if [ -n "$_value" ]; then
         printf '%s\n' "$_value"
         return 0
@@ -534,7 +506,7 @@ set -eu
 archive_name="$1"
 expected_sha="$2"
 case "$archive_name" in
-  tako-server-linux-x86_64-glibc.tar.zst|tako-server-linux-x86_64-musl.tar.zst|tako-server-linux-aarch64-glibc.tar.zst|tako-server-linux-aarch64-musl.tar.zst) ;;
+  tako-server-linux-x86_64-glibc.tar.zst|tako-server-linux-aarch64-glibc.tar.zst) ;;
   *) echo "error: unsupported release archive" >&2; exit 1 ;;
 esac
 case "$expected_sha" in
@@ -630,7 +602,7 @@ case "$action" in
     exit 0
     ;;
   configure)
-    for service_file in /etc/systemd/system/tako-server.service /etc/systemd/system/tako-server-standby.service /etc/init.d/tako-server; do
+    for service_file in /etc/systemd/system/tako-server.service /etc/systemd/system/tako-server-standby.service; do
       [ -f "$service_file" ] || continue
       # Bootstrap may run before Tailscale connects. Configure the primary's
       # private management listener when recovery starts that installation.
@@ -673,13 +645,9 @@ case "$action" in
     if command -v systemctl >/dev/null 2>&1; then
       systemctl stop tako-server tako-server-standby
       systemctl disable tako-server tako-server-standby 2>/dev/null || true
-    elif command -v rc-service >/dev/null 2>&1; then
-      rc-service tako-server stop
-      rc-update del tako-server 2>/dev/null || true
     fi
     rm -f /etc/systemd/system/tako-server.service /etc/systemd/system/tako-server-standby.service
     rm -rf /etc/systemd/system/tako-server.service.d
-    rm -f /etc/init.d/tako-server /etc/init.d/tako-server-standby
     if command -v systemctl >/dev/null 2>&1; then systemctl daemon-reload; fi
     rm -rf -- "$tako_home"
     rm -f -- "$tako_socket"
@@ -693,10 +661,8 @@ esac
 
 if command -v systemctl >/dev/null 2>&1; then
   systemctl "$action" tako-server
-elif command -v rc-service >/dev/null 2>&1; then
-  rc-service tako-server "$action"
 else
-  echo "error: no supported service manager found (systemctl or rc-service)" >&2
+  echo "error: systemd is required to manage tako-server" >&2
   exit 1
 fi
 EOF
@@ -749,7 +715,7 @@ ensure_privileged_bind_capability() {
 }
 
 if is_enabled "$TAKO_RESTART_SERVICE" && [ "$SERVICE_MANAGER" = "none" ]; then
-  echo "error: a usable service manager is required for tako-server (systemd or OpenRC)" >&2
+  echo "error: systemd must be running to start tako-server" >&2
   exit 1
 fi
 
@@ -880,8 +846,6 @@ install_pkgs() {
     yum install -y "$@"
   elif need_cmd pacman; then
     pacman -Sy --noconfirm "$@"
-  elif need_cmd apk; then
-    apk add --no-cache "$@"
   elif need_cmd zypper; then
     zypper --non-interactive install "$@"
   else
@@ -898,8 +862,6 @@ install_setcap_tool() {
   elif need_cmd yum; then
     install_pkgs libcap
   elif need_cmd pacman; then
-    install_pkgs libcap
-  elif need_cmd apk; then
     install_pkgs libcap
   elif need_cmd zypper; then
     zypper --non-interactive install libcap-progs || zypper --non-interactive install libcap2
@@ -924,8 +886,6 @@ install_sqlite_runtime() {
     yum install -y sqlite-libs
   elif need_cmd pacman; then
     pacman -Sy --noconfirm sqlite
-  elif need_cmd apk; then
-    apk add --no-cache sqlite-libs
   elif need_cmd zypper; then
     zypper --non-interactive install sqlite3
   else
@@ -1023,8 +983,6 @@ install_libvips_runtime() {
     }
   elif need_cmd pacman; then
     pacman -Sy --noconfirm vips
-  elif need_cmd apk; then
-    apk add --no-cache vips vips-heif
   elif need_cmd zypper; then
     zypper --non-interactive install libvips42 || zypper --non-interactive install vips
   else
@@ -1037,8 +995,6 @@ install_libvips_codec_runtime() {
   if need_cmd apt-get; then
     apt-get update -y
     install_apt_avif_plugins || true
-  elif need_cmd apk; then
-    apk add --no-cache vips-heif
   fi
 }
 
@@ -1176,8 +1132,6 @@ ensure_nc() {
     yum install -y nmap-ncat || yum install -y nc
   elif need_cmd pacman; then
     pacman -Sy --noconfirm openbsd-netcat || pacman -Sy --noconfirm gnu-netcat
-  elif need_cmd apk; then
-    apk add --no-cache netcat-openbsd
   elif need_cmd zypper; then
     zypper --non-interactive install netcat-openbsd || zypper --non-interactive install netcat
   else
@@ -1196,6 +1150,25 @@ ensure_nc() {
     exit 1
   fi
 }
+
+libc="$(detect_libc)"
+case "$libc" in
+  glibc) ;;
+  *)
+    echo "error: unsupported libc: $libc; tako-server requires glibc" >&2
+    exit 1
+    ;;
+esac
+
+arch="$(uname -m)"
+case "$arch" in
+  x86_64|amd64) arch="x86_64" ;;
+  aarch64|arm64) arch="aarch64" ;;
+  *)
+    echo "error: unsupported architecture: $arch (supported: x86_64, aarch64)" >&2
+    exit 1
+    ;;
+esac
 
 if ! need_cmd curl && ! need_cmd wget; then
   install_pkgs curl
@@ -1221,25 +1194,6 @@ fi
 ensure_nc
 install_sqlite_runtime
 install_podman_runtime
-
-arch="$(uname -m)"
-case "$arch" in
-  x86_64|amd64) arch="x86_64" ;;
-  aarch64|arm64) arch="aarch64" ;;
-  *)
-    echo "error: unsupported architecture: $arch (supported: x86_64, aarch64)" >&2
-    exit 1
-    ;;
-esac
-
-libc="$(detect_libc)"
-case "$libc" in
-  glibc|musl) ;;
-  *)
-    echo "error: unsupported libc: $libc (supported: glibc, musl)" >&2
-    exit 1
-    ;;
-esac
 
 download_url="${TAKO_SERVER_URL:-}"
 if [ -z "$download_url" ]; then
@@ -1544,41 +1498,6 @@ WantedBy=multi-user.target
 EOF
 }
 
-install_openrc_service_script() {
-  cat > /etc/init.d/tako-server <<EOF
-#!/sbin/openrc-run
-description="Tako Server"
-
-command="/usr/local/bin/tako-server"
-command_args="--socket $TAKO_SOCKET --data-dir $TAKO_HOME $TAKO_PUBLIC_PORT_ARGS $TAKO_MANAGEMENT_ARGS"
-command_user="$TAKO_USER:$TAKO_USER"
-pidfile="/run/\${RC_SVCNAME}.pid"
-command_background="yes"
-retry="TERM/1800/KILL/5"
-
-depend() {
-  need net
-}
-
-start_pre() {
-  ulimit -n 1048576 2>/dev/null || ulimit -n 65535 2>/dev/null || true
-}
-
-extra_started_commands="reload"
-
-reload() {
-  ebegin "Reloading \${RC_SVCNAME}"
-  if [ ! -f "\$pidfile" ]; then
-    eend 1
-    return 1
-  fi
-  start-stop-daemon --signal HUP --pidfile "\$pidfile"
-  eend \$?
-}
-EOF
-  chmod 0755 /etc/init.d/tako-server
-}
-
 install_systemd_standby_unit() {
   cat > /etc/systemd/system/tako-server-standby.service <<EOF
 [Unit]
@@ -1612,8 +1531,6 @@ EOF
 if [ "$SERVICE_MANAGER" = "systemd" ]; then
   install_systemd_service_unit
   install_systemd_standby_unit
-elif [ "$SERVICE_MANAGER" = "openrc" ]; then
-  install_openrc_service_script
 fi
 
 if [ "$SERVICE_MANAGER" = "systemd" ]; then
@@ -1632,26 +1549,6 @@ if [ "$SERVICE_MANAGER" = "systemd" ]; then
     systemctl --no-pager status tako-server || true
     if ! systemctl is-active --quiet tako-server; then
       echo "error: tako-server failed to start; see service status above" >&2
-      exit 1
-    fi
-  else
-    echo "OK installed tako-server service (not started)"
-    echo 'Run `tako servers add <host>` from your workstation to start and verify it.'
-  fi
-elif [ "$SERVICE_MANAGER" = "openrc" ]; then
-  if is_enabled "$TAKO_RESTART_SERVICE"; then
-    rc-update add tako-server default >/dev/null 2>&1 || true
-    if rc-service tako-server status >/dev/null 2>&1; then
-      echo "Restarting tako-server service"
-      rc-service tako-server restart
-      echo "OK tako-server restarted with updated service settings"
-    else
-      echo "Starting tako-server service"
-      rc-service tako-server start
-    fi
-    rc-service tako-server status || true
-    if ! rc-service tako-server status >/dev/null 2>&1; then
-      echo "error: tako-server failed to start via OpenRC." >&2
       exit 1
     fi
   else

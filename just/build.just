@@ -26,23 +26,19 @@ tako-linux: _require-zigbuild
 
 # Build a single tako-server artifact.
 # arch: x86_64 | aarch64
-# libc: musl | glibc
-tako-server arch libc: _require-zigbuild
+tako-server arch: _require-zigbuild
     #!/usr/bin/env sh
     set -eu
     mkdir -p {{ ARTIFACTS_DIR }}
     case "{{ arch }}" in x86_64|aarch64) ;; *) echo "Invalid arch '{{ arch }}' (expected: x86_64 or aarch64)" >&2; exit 1 ;; esac
-    case "{{ libc }}" in musl|glibc) ;; *) echo "Invalid libc '{{ libc }}' (expected: musl or glibc)" >&2; exit 1 ;; esac
-    if [ "{{ libc }}" = "musl" ]; then target="{{ arch }}-unknown-linux-musl"; else target="{{ arch }}-unknown-linux-gnu"; fi
+    target="{{ arch }}-unknown-linux-gnu"
     rustup target add "$target" 2>/dev/null || true
     cargo zigbuild -p tako-server --release --target "$target"
-    cp "target/$target/release/tako-server" "{{ ARTIFACTS_DIR }}/tako-server-linux-{{ arch }}-{{ libc }}"
+    cp "target/$target/release/tako-server" "{{ ARTIFACTS_DIR }}/tako-server-linux-{{ arch }}-glibc"
     echo "Built binaries:"
-    ls -la "{{ ARTIFACTS_DIR }}/tako-server-linux-{{ arch }}-{{ libc }}"
+    ls -la "{{ ARTIFACTS_DIR }}/tako-server-linux-{{ arch }}-glibc"
 
 tako-server-all: _require-zigbuild
-    for libc in musl glibc; do \
-        for arch in x86_64 aarch64; do \
-            just build::tako-server "$arch" "$libc" || exit 1; \
-        done; \
+    for arch in x86_64 aarch64; do \
+        just build::tako-server "$arch" || exit 1; \
     done

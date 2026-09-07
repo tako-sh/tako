@@ -4,7 +4,7 @@ Internal Docker tooling for debugging Tako.
 
 ## Files
 
-- `testbed.Dockerfile`: internal debug container (`oven/bun:alpine` + sshd) used for deploy/install debugging.
+- `testbed.Dockerfile`: internal debug container (Debian Bookworm + sshd) used for deploy/install debugging.
   - Bootstraps server-side dependencies through `scripts/install-tako-server.sh` so debug image deps stay aligned with installer behavior.
 - `install-authorized-key.sh`: helper script used by debug container boot flow.
 

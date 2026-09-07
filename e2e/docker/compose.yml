@@ -19,16 +19,6 @@ services:
       - e2e_ssh_keys:/opt/e2e/keys:ro
       - ${E2E_BIN_DIR:-.e2e-bin}:/opt/e2e/bin:ro
       - ../../scripts/install-tako-server.sh:/opt/e2e/install-server.sh:ro
-  server-alpine:
-    privileged: true
-    cgroup: private
-    build:
-      context: ../..
-      dockerfile: e2e/docker/server/alpine.Dockerfile
-    volumes:
-      - e2e_ssh_keys:/opt/e2e/keys:ro
-      - ${E2E_BIN_DIR:-.e2e-bin}:/opt/e2e/bin:ro
-      - ../../scripts/install-tako-server.sh:/opt/e2e/install-server.sh:ro
   runner:
     build:
       context: ../..
@@ -36,7 +26,6 @@ services:
     depends_on:
       - server-ubuntu
       - server-alma
-      - server-alpine
     volumes:
       - ../..:/workspace:ro
       - e2e_ssh_keys:/opt/e2e/keys

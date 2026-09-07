@@ -389,32 +389,6 @@ jobs:
             target/release/tako-dev-proxy
           if-no-files-found: error
 
-  # x86_64 musl — needed for E2E (Alpine)
-  build-x86_64-musl:
-    name: Build x86_64 (musl)
-    needs: [detect-changes]
-    if: needs.detect-changes.outputs.website_only != 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      - name: Build
-        run: |
-          docker run --rm \
-            -e TAKO_BUILD_SHA="${{ github.sha }}" \
-            -v "$PWD":/workspace \
-            -w /workspace \
-            rust:1.97-alpine@sha256:3c38f3f82c2f3d73da3b38e18d279393a04cb43ddded0e35088a8c3324d40900 \
-            sh -c 'apk add --no-cache build-base cmake perl pkgconfig vips-dev && PATH="/usr/local/cargo/bin:$PATH" RUSTFLAGS="-C target-feature=-crt-static" cargo build -p tako-server --release'
-
-      - name: Upload server binary
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: bin-tako-server-linux-x86_64-musl
-          path: target/release/tako-server
-          if-no-files-found: error
-
   # aarch64 glibc — master only (for rolling release)
   build-aarch64-glibc:
     name: Build aarch64 (glibc)
@@ -464,33 +438,6 @@ jobs:
             target/release/tako-dev-proxy
           if-no-files-found: error
 
-  # aarch64 musl — master only (for rolling release)
-  build-aarch64-musl:
-    name: Build aarch64 (musl)
-    needs: [detect-changes]
-    if: needs.detect-changes.outputs.website_only != 'true' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-    # 24.04-arm is the only GitHub-hosted ARM runner available
-    runs-on: ubuntu-24.04-arm
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      - name: Build
-        run: |
-          docker run --rm \
-            -e TAKO_BUILD_SHA="${{ github.sha }}" \
-            -v "$PWD":/workspace \
-            -w /workspace \
-            rust:1.95-alpine \
-            sh -c 'apk add --no-cache build-base cmake perl pkgconfig vips-dev && PATH="/usr/local/cargo/bin:$PATH" RUSTFLAGS="-C target-feature=-crt-static" cargo build -p tako-server --release'
-
-      - name: Upload server binary
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: bin-tako-server-linux-aarch64-musl
-          path: target/release/tako-server
-          if-no-files-found: error
-
   # macOS builds — master only (for rolling release)
   build-darwin:
     name: Build macOS CLI (aarch64)
@@ -533,7 +480,7 @@ jobs:
 
   e2e:
     name: E2E
-    needs: [build-x86_64-glibc, build-x86_64-musl]
+    needs: [build-x86_64-glibc]
     runs-on: ubuntu-latest
     env:
       DOCKER_BUILDKIT: "1"
@@ -554,14 +501,8 @@ jobs:
           name: bin-tako-server-linux-x86_64-glibc
           path: .e2e-bin/glibc
 
-      - name: Download server (musl)
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: bin-tako-server-linux-x86_64-musl
-          path: .e2e-bin/musl
-
       - name: Make binaries executable
-        run: chmod +x .e2e-bin/glibc/* .e2e-bin/musl/*
+        run: chmod +x .e2e-bin/glibc/*
 
       - name: Write E2E build stamp
         run: |

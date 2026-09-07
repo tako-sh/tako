@@ -70,7 +70,7 @@ impl SshClient {
     }
 
     pub(super) fn tako_service_status_command() -> &'static str {
-        "if command -v systemctl >/dev/null 2>&1; then systemctl is-active tako-server 2>/dev/null || echo unknown; elif command -v rc-service >/dev/null 2>&1; then if rc-service tako-server status >/dev/null 2>&1; then echo active; else echo inactive; fi; else echo unknown; fi"
+        "if command -v systemctl >/dev/null 2>&1; then systemctl is-active tako-server 2>/dev/null || echo unknown; else echo unknown; fi"
     }
 
     fn service_start_hint() -> &'static str {

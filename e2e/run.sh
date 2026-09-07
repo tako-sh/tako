@@ -8,7 +8,6 @@ PROJECT_NAME="tako-e2e"
 E2E_BIN_DIR="${E2E_BIN_DIR:-$REPO_ROOT/.e2e-bin}"
 E2E_BIN_STAMP_FILE="$E2E_BIN_DIR/.build-stamp"
 GLIBC_BUILDER_IMAGE="tako-e2e-builder-glibc"
-MUSL_BUILDER_IMAGE="tako-e2e-builder-musl"
 
 current_e2e_build_stamp() {
   local head arch dirty_suffix
@@ -37,7 +36,7 @@ current_e2e_build_stamp() {
 cleanup() {
   local exit_code=$?
   if [[ $exit_code -ne 0 ]]; then
-    docker compose -p "$PROJECT_NAME" -f "$COMPOSE_FILE" logs --no-color --tail=200 server-ubuntu server-alma server-alpine runner || true
+    docker compose -p "$PROJECT_NAME" -f "$COMPOSE_FILE" logs --no-color --tail=200 server-ubuntu server-alma runner || true
   fi
   docker compose -p "$PROJECT_NAME" -f "$COMPOSE_FILE" down --volumes --remove-orphans >/dev/null 2>&1 || true
 }
@@ -52,7 +51,7 @@ EXPECTED_E2E_BIN_STAMP=$(current_e2e_build_stamp)
 # Build Linux binaries when missing or stale for the current checkout.
 if [[ ! -f "$E2E_BIN_DIR/glibc/tako" ]] || [[ ! -f "$E2E_BIN_STAMP_FILE" ]] || [[ "$(cat "$E2E_BIN_STAMP_FILE" 2>/dev/null)" != "$EXPECTED_E2E_BIN_STAMP" ]]; then
   echo "Building fresh E2E binaries at $E2E_BIN_DIR..."
-  mkdir -p "$E2E_BIN_DIR/glibc" "$E2E_BIN_DIR/musl"
+  mkdir -p "$E2E_BIN_DIR/glibc"
 
   docker build \
     --file e2e/docker/builder/glibc.Dockerfile \
@@ -74,35 +73,13 @@ if [[ ! -f "$E2E_BIN_DIR/glibc/tako" ]] || [[ ! -f "$E2E_BIN_STAMP_FILE" ]] || [
      target/e2e-linux-glibc/release/tako-server \
      "$E2E_BIN_DIR/glibc/"
 
-  # musl build (used for Alpine)
-  docker build \
-    --file e2e/docker/builder/musl.Dockerfile \
-    --tag "$MUSL_BUILDER_IMAGE" \
-    .
-  if docker run --rm \
-    --env CARGO_TARGET_DIR=/workspace/target/e2e-linux-musl \
-    --env RUSTFLAGS="-C target-feature=-crt-static" \
-    --env TAKO_BUILD_SHA="$(git rev-parse HEAD 2>/dev/null || true)" \
-    --volume "$REPO_ROOT:/workspace" \
-    --volume tako-e2e-cargo-git:/usr/local/cargo/git \
-    --volume tako-e2e-cargo-registry:/usr/local/cargo/registry \
-    --workdir /workspace \
-    "$MUSL_BUILDER_IMAGE" \
-    cargo build -p tako-server --locked --release \
-    2>"$E2E_BIN_DIR/musl-build.log"; then
-    cp target/e2e-linux-musl/release/tako-server "$E2E_BIN_DIR/musl/"
-    rm -f "$E2E_BIN_DIR/musl-build.log"
-  else
-    echo "musl build skipped (see .e2e-bin/musl-build.log for details)"
-  fi
-
-  chmod +x "$E2E_BIN_DIR/glibc/"* "$E2E_BIN_DIR/musl/"* 2>/dev/null || true
+  chmod +x "$E2E_BIN_DIR/glibc/"* 2>/dev/null || true
   printf '%s\n' "$EXPECTED_E2E_BIN_STAMP" > "$E2E_BIN_STAMP_FILE"
 fi
 
 docker compose -p "$PROJECT_NAME" -f "$COMPOSE_FILE" down --volumes --remove-orphans >/dev/null 2>&1 || true
-docker compose -p "$PROJECT_NAME" -f "$COMPOSE_FILE" build server-ubuntu server-alma server-alpine runner
+docker compose -p "$PROJECT_NAME" -f "$COMPOSE_FILE" build server-ubuntu server-alma runner
 docker compose -p "$PROJECT_NAME" -f "$COMPOSE_FILE" run --rm --no-deps --entrypoint sh runner \
   -c "rm -f /opt/e2e/keys/id_ed25519 /opt/e2e/keys/id_ed25519.pub && ssh-keygen -t ed25519 -N '' -f /opt/e2e/keys/id_ed25519 -q"
-docker compose -p "$PROJECT_NAME" -f "$COMPOSE_FILE" up -d --force-recreate server-ubuntu server-alma server-alpine
+docker compose -p "$PROJECT_NAME" -f "$COMPOSE_FILE" up -d --force-recreate server-ubuntu server-alma
 docker compose -p "$PROJECT_NAME" -f "$COMPOSE_FILE" run --rm runner "$FIXTURE"

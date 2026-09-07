@@ -18,7 +18,7 @@ pub async fn implode_server(
     );
     output::muted("  Data:      /opt/tako/");
     output::muted("  Sockets:   /var/run/tako/");
-    output::muted("  Service files (systemd/OpenRC)");
+    output::muted("  Service files (systemd)");
     eprintln!();
 
     if !assume_yes {

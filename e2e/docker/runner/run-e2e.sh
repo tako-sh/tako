@@ -14,7 +14,6 @@ fi
 BIN_DIR="${E2E_BIN_DIR:-/opt/e2e/bin}"
 TAKO_BIN="$BIN_DIR/glibc/tako"
 TAKO_SERVER_GLIBC="$BIN_DIR/glibc/tako-server"
-TAKO_SERVER_MUSL="${BIN_DIR}/musl/tako-server"
 
 if [[ ! -x "$TAKO_BIN" ]]; then
   echo "tako CLI not found at $TAKO_BIN" >&2
@@ -40,7 +39,7 @@ mkdir -p "$HOME_DIR/.ssh" "$TAKO_HOME" "$JS_WORKSPACE_DIR"
 cp /opt/e2e/keys/id_ed25519 "$HOME_DIR/.ssh/id_ed25519"
 cp /opt/e2e/keys/id_ed25519.pub "$HOME_DIR/.ssh/id_ed25519.pub"
 cat > "$HOME_DIR/.ssh/config" <<'CFG'
-Host server-ubuntu server-alma server-alpine
+Host server-ubuntu server-alma
   User tako
   IdentityFile ~/.ssh/id_ed25519
   IdentitiesOnly yes
@@ -600,9 +599,8 @@ start_tako_server() {
 # Wait for SSH on all servers
 ssh_wait server-ubuntu
 ssh_wait server-alma
-ssh_wait server-alpine
 
-# Start tako-server on each (glibc for Ubuntu/Alma, musl for Alpine)
+# Start the glibc tako-server on Ubuntu and AlmaLinux
 ACTIVE_SERVERS=()
 start_tako_server server-ubuntu "$TAKO_SERVER_GLIBC"
 ACTIVE_SERVERS+=("server-ubuntu:gnu")
@@ -614,17 +612,6 @@ else
     exit "$rc"
   fi
   echo "=== server-alma skipped (tako-server runtime dependencies unavailable) ==="
-fi
-if [[ -x "$TAKO_SERVER_MUSL" ]]; then
-  if start_tako_server server-alpine "$TAKO_SERVER_MUSL"; then
-    ACTIVE_SERVERS+=("server-alpine:musl")
-  else
-    rc=$?
-    if [[ $rc -ne 2 ]]; then
-      exit "$rc"
-    fi
-    echo "=== server-alpine skipped (tako-server runtime dependencies unavailable) ==="
-  fi
 fi
 if (( ${#ACTIVE_SERVERS[@]} == 0 )); then
   echo "No E2E servers could start." >&2
@@ -701,7 +688,6 @@ fi
 # Populate known_hosts for the tako CLI (uses $HOME/.ssh/known_hosts)
 ssh-keyscan -H server-ubuntu >> "$HOME_DIR/.ssh/known_hosts" 2>/dev/null
 ssh-keyscan -H server-alma >> "$HOME_DIR/.ssh/known_hosts" 2>/dev/null
-ssh-keyscan -H server-alpine >> "$HOME_DIR/.ssh/known_hosts" 2>/dev/null
 
 # Deploy test targets
 SERVERS=("${ACTIVE_SERVERS[@]}")
@@ -737,10 +723,6 @@ CFG
   DEPLOY_LOG="$TMP_ROOT/deploy-${server}.log"
 
   if ! HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --config "$PROJECT_DIR/tako.toml" deploy --env production --yes --verbose >"$DEPLOY_LOG" 2>&1; then
-    if [[ "$libc" == "musl" ]]; then
-      echo "=== $server skipped (deploy failed on musl — runtime may not support musl) ==="
-      continue
-    fi
     cat "$DEPLOY_LOG" >&2 || true
     echo "--- tako-server log from $server ---" >&2
     ssh_exec "$server" "cat /tmp/tako-server.log 2>/dev/null | tail -50" >&2 || true

@@ -12,7 +12,9 @@ Tako deploys locally built apps to servers you control. The CLI validates projec
 
 ## Server Setup
 
-Install the server on a Linux host:
+Install the server on a Linux host with glibc and systemd, using x86_64 or ARM64. Alpine/musl and OpenRC hosts are not supported.
+
+Run the installer:
 
 ```bash
 sudo sh -c "$(curl -fsSL https://tako.sh/install-server.sh)"

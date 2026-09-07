@@ -47,11 +47,15 @@ Routing policy notes:
 
 ## Run and Test
 
-From repository root:
+Deployment hosts require Linux with glibc and systemd on x86_64 or ARM64.
 
-Install libvips first: macOS `brew install vips`; Debian/Ubuntu `sudo apt-get update && sudo apt-get install -y --no-install-recommends libvips-dev`; Alpine `apk add vips-dev vips-heif`.
+Install libvips first: macOS `brew install vips`; Debian/Ubuntu `sudo apt-get update && sudo apt-get install -y --no-install-recommends libvips-dev`.
 
-Homebrew's `vips` formula includes the codec libraries Tako needs for JPEG, PNG, WebP, and AVIF transforms. Debian/Ubuntu split AVIF encoder and decoder support into optional `libheif` plugin packages such as `libheif-plugin-aomenc`, `libheif-plugin-aomdec`, and `libheif-plugin-dav1d` when they are available. Alpine splits HEIF/AVIF support into `vips-heif`.
+Homebrew's `vips` formula includes the codec libraries Tako needs for JPEG, PNG, WebP, and AVIF transforms. Debian/Ubuntu split AVIF encoder and decoder support into optional `libheif` plugin packages such as `libheif-plugin-aomenc`, `libheif-plugin-aomdec`, and `libheif-plugin-dav1d` when they are available.
+
+From the repository root:
+
+Build a Linux release for one architecture with `just build::tako-server x86_64` or `just build::tako-server aarch64`. Use `just build::tako-server-all` for both. These builds target glibc and require cargo-zigbuild and Zig.
 
 ```bash
 cargo test -p tako-images

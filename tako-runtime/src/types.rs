@@ -184,9 +184,6 @@ pub struct DownloadDef {
     pub arch_map: std::collections::HashMap<String, String>,
 
     #[serde(default)]
-    pub arch_variants: std::collections::HashMap<String, String>,
-
-    #[serde(default)]
     pub extract: Option<ExtractDef>,
 }
 

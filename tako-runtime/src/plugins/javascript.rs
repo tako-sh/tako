@@ -347,7 +347,6 @@ fn download_def_for(id: &str) -> Option<DownloadDef> {
             checksum_format: Some("shasums".into()),
             os_map: HashMap::from([("macos".into(), "darwin".into()), ("linux".into(), "linux".into())]),
             arch_map: HashMap::from([("x64".into(), "x64".into()), ("arm64".into(), "aarch64".into())]),
-            arch_variants: HashMap::from([("x64-musl".into(), "x64-musl".into()), ("arm64-musl".into(), "aarch64-musl".into())]),
             extract: Some(ExtractDef {
                 binary: Some("bun-{os}-{arch}/bun".into()),
                 strip_components: Some(0),
@@ -367,7 +366,6 @@ fn download_def_for(id: &str) -> Option<DownloadDef> {
             checksum_format: Some("shasums".into()),
             os_map: HashMap::from([("macos".into(), "darwin".into()), ("linux".into(), "linux".into())]),
             arch_map: HashMap::from([("x64".into(), "x64".into()), ("arm64".into(), "arm64".into())]),
-            arch_variants: HashMap::new(),
             extract: Some(ExtractDef {
                 binary: Some("bin/node".into()),
                 // Extract the full node distribution (bin/node, bin/npm, lib/node_modules/...)

@@ -22,7 +22,7 @@ pub struct ServersToml {
 pub struct ServerTarget {
     /// CPU architecture (for example: x86_64, aarch64).
     pub arch: String,
-    /// C library family (for example: glibc, musl).
+    /// C library family (glibc).
     pub libc: String,
 }
 
@@ -53,7 +53,6 @@ impl ServerTarget {
             "glibc" | "gnu" | "gnu-libc" | "gnu_libc" | "gnu libc" | "gnu c library" => {
                 Some("glibc".to_string())
             }
-            "musl" => Some("musl".to_string()),
             _ => None,
         }
     }

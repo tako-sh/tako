@@ -345,12 +345,10 @@ fn run_as_root_when_already_root() {
 }
 
 #[test]
-fn tako_service_status_command_supports_openrc() {
+fn tako_service_status_command_uses_systemd() {
     let command = SshClient::tako_service_status_command();
     assert!(command.contains("systemctl is-active tako-server"));
-    assert!(command.contains("rc-service tako-server status"));
-    assert!(command.contains("echo active"));
-    assert!(command.contains("echo inactive"));
+    assert!(command.contains("echo unknown"));
 }
 
 #[test]
@@ -365,9 +363,7 @@ fn install_server_script_installs_and_verifies_runtime_dependencies() {
     assert!(script.contains("if dnf install -y vips; then"));
     assert!(script.contains("install_libvips_from_remi"));
     assert!(script.contains("rpms.remirepo.net"));
-    assert!(script.contains("apk add --no-cache vips vips-heif"));
     assert!(script.contains("install_libvips_codec_runtime"));
-    assert!(script.contains("apk add --no-cache vips-heif"));
     assert!(!script.contains("dnf install -y libvips"));
     assert!(script.contains("install_missing_tako_server_runtime_deps"));
     assert!(script.contains("install_missing_tako_server_runtime_deps /usr/local/bin/tako-server"));
@@ -398,7 +394,6 @@ fn install_server_script_starts_service_by_default() {
     assert!(script.contains("TAKO_RESTART_SERVICE=\"${TAKO_RESTART_SERVICE:-1}\""));
     assert!(script.contains("Starting tako-server service"));
     assert!(script.contains("systemctl enable tako-server"));
-    assert!(script.contains("rc-update add tako-server default"));
     assert!(script.contains("TAKO_RESTART_SERVICE    default: 1"));
 }
 

@@ -615,7 +615,7 @@ fn package_target_artifact_packages_workspace_root_contents() {
 
     let cache_dir = temp.path().join("cache");
     std::fs::create_dir_all(&cache_dir).unwrap();
-    let cache_paths = artifact_cache_paths(&cache_dir, "v1", Some("linux-aarch64-musl"));
+    let cache_paths = artifact_cache_paths(&cache_dir, "v1", Some("linux-aarch64-glibc"));
     let archive_size = package_target_artifact(
         &workspace,
         &workspace,
@@ -623,7 +623,7 @@ fn package_target_artifact_packages_workspace_root_contents() {
         &["**/*".to_string()],
         &[],
         &cache_paths,
-        "linux-aarch64-musl",
+        "linux-aarch64-glibc",
     )
     .unwrap();
     assert!(archive_size > 0);
@@ -645,7 +645,7 @@ fn package_target_artifact_for_bun_does_not_require_entrypoint_sources() {
 
     let cache_dir = temp.path().join("cache");
     std::fs::create_dir_all(&cache_dir).unwrap();
-    let cache_paths = artifact_cache_paths(&cache_dir, "v1", Some("linux-aarch64-musl"));
+    let cache_paths = artifact_cache_paths(&cache_dir, "v1", Some("linux-aarch64-glibc"));
     let archive_size = package_target_artifact(
         &workspace,
         &workspace,
@@ -653,7 +653,7 @@ fn package_target_artifact_for_bun_does_not_require_entrypoint_sources() {
         &["**/*".to_string()],
         &[],
         &cache_paths,
-        "linux-aarch64-musl",
+        "linux-aarch64-glibc",
     )
     .unwrap();
     assert!(archive_size > 0);
@@ -673,7 +673,7 @@ fn package_target_artifact_preserves_workspace_protocol_dependencies() {
 
     let cache_dir = temp.path().join("cache");
     std::fs::create_dir_all(&cache_dir).unwrap();
-    let cache_paths = artifact_cache_paths(&cache_dir, "v1", Some("linux-aarch64-musl"));
+    let cache_paths = artifact_cache_paths(&cache_dir, "v1", Some("linux-aarch64-glibc"));
     let archive_size = package_target_artifact(
         &workspace,
         &workspace,
@@ -681,7 +681,7 @@ fn package_target_artifact_preserves_workspace_protocol_dependencies() {
         &["**/*".to_string()],
         &["**/node_modules/**".to_string()],
         &cache_paths,
-        "linux-aarch64-musl",
+        "linux-aarch64-glibc",
     )
     .unwrap();
     assert!(archive_size > 0);
@@ -713,7 +713,7 @@ fn package_target_artifact_does_not_validate_workspace_protocol_dependencies() {
 
     let cache_dir = temp.path().join("cache");
     std::fs::create_dir_all(&cache_dir).unwrap();
-    let cache_paths = artifact_cache_paths(&cache_dir, "v1", Some("linux-aarch64-musl"));
+    let cache_paths = artifact_cache_paths(&cache_dir, "v1", Some("linux-aarch64-glibc"));
     let archive_size = package_target_artifact(
         &workspace,
         &workspace,
@@ -721,7 +721,7 @@ fn package_target_artifact_does_not_validate_workspace_protocol_dependencies() {
         &["**/*".to_string()],
         &[],
         &cache_paths,
-        "linux-aarch64-musl",
+        "linux-aarch64-glibc",
     )
     .unwrap();
     assert!(archive_size > 0);

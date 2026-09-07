@@ -53,7 +53,7 @@ impl DownloadManager {
             .ok_or_else(|| format!("runtime '{id}' has no [download] section"))?;
 
         let os = resolve_os_value(&download.os_map)?;
-        let arch = resolve_arch_value(&download.arch_map, &download.arch_variants)?;
+        let arch = resolve_arch_value(&download.arch_map)?;
 
         let url = download
             .url
