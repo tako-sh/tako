@@ -15,12 +15,12 @@ That is where [Tako](/docs/) fits: not a Vercel clone, and not a dashboard PaaS.
 
 ## The real tradeoff
 
-The search phrase is "open source Vercel alternative," but the better question is narrower: where should this Next.js app run?
+This comparison answers whether to move a Next.js app from managed hosting to your own server. If you have already decided, follow the [Next.js VPS deployment walkthrough](/blog/how-to-deploy-nextjs-to-a-vps-without-docker/).
 
 | Question              | Vercel                                                                              | Tako                                                                              |
 | --------------------- | ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
 | Who owns the runtime? | Vercel                                                                              | You, on your VPS                                                                  |
-| Deploy input          | Git push, CLI, hooks, or API                                                        | Local build artifact over SFTP                                                    |
+| Deploy input          | Git push, CLI, hooks, or API                                                        | Local build artifact over private Tailscale HTTP                                  |
 | Next.js integration   | First-party hosted platform from the creators of Next.js                            | `withTako()` adapter plus the `nextjs` preset                                     |
 | Runtime shape         | Vercel-managed infrastructure for static assets, functions, and framework features  | Native Node or Bun process behind Pingora                                         |
 | Local development     | Vercel CLI and standard framework dev tools                                         | [`tako dev`](/docs/development/) with local HTTPS, DNS, and proxy                 |
@@ -29,7 +29,7 @@ The search phrase is "open source Vercel alternative," but the better question i
 
 Vercel's own [Git deployment docs](https://vercel.com/docs/deployments/git) describe automatic deployments from Git, preview deployments for pull requests, production deployments from the production branch, and instant rollback when a custom-domain deployment is reverted. That flow is excellent. It is a product choice as much as a technical choice: source control is the deploy interface, and the platform owns the rest.
 
-Tako makes a different choice. Your laptop builds the app, packages the output, ships it to the server, and asks `tako-server` to roll it forward. The server owns TLS, routing, process supervision, secrets, release history, and scale. The deploy surface is still one command, but the machine is yours.
+Tako makes a different choice. Your laptop builds the app, packages the output, uploads it over signed private HTTP through Tailscale, and asks `tako-server` to roll it forward. The server owns TLS, routing, process supervision, secrets, release history, and scale. The deploy surface is still one command, but the machine is yours.
 
 ## Next.js is already portable
 
@@ -46,13 +46,14 @@ import { withTako } from "tako.sh/nextjs";
 export default withTako({});
 ```
 
-That helper does three things that line up with Next.js's own deployment hooks:
+The helper configures Next.js for Tako's development and production paths:
 
-| `withTako()` behavior                                                                             | Why it exists                                           |
-| ------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
-| Sets `output: "standalone"`                                                                       | Build the minimal Next.js server output Tako can launch |
-| Sets [`adapterPath`](https://nextjs.org/docs/app/api-reference/config/next-config-js/adapterPath) | Let the Tako adapter run during the Next build          |
-| Adds `*.test` and `*.tako.test` to `allowedDevOrigins`                                            | Let local HTTPS dev hostnames reach `next dev`          |
+| `withTako()` behavior                                                                             | Why it exists                                                                                                   |
+| ------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Sets `output: "standalone"`                                                                       | Build the minimal Next.js server output Tako can launch                                                         |
+| Sets [`adapterPath`](https://nextjs.org/docs/app/api-reference/config/next-config-js/adapterPath) | Let the Tako adapter run during the Next build                                                                  |
+| Adds `*.test` and `*.tako.test` to `allowedDevOrigins`                                            | Let local HTTPS dev hostnames reach `next dev`                                                                  |
+| Configures a custom `next/image` loader                                                           | Send image requests to Tako's optimizer; review [image setup](/blog/self-hosted-nextjs-image-optimization-vps/) |
 
 On build, the adapter writes `.next/tako-entry.mjs`. That entry file prefers `.next/standalone/server.js` when Next emits it. If standalone output is missing for the current pipeline, it falls back to `next start` against the built `.next/` directory and installed `next` package.
 
@@ -113,6 +114,14 @@ Fourth, local dev uses the same philosophy as production. [`tako dev`](/docs/dev
 
 None of this means "never use Vercel." It means the tradeoff is real now. The easy path is not only hosted anymore.
 
+## What you take responsibility for
+
+Tako requires a supported Linux server and Tailscale connectivity for remote management. The [quickstart](/docs/quickstart/#remote-setup) covers installation and registration. You own host updates, capacity planning, and recovery of app data.
+
+Before moving an existing app, inventory its provider-specific storage, scheduled jobs, preview URLs, authentication callbacks, and other integrations. Choose which services to retain or replace and test those flows on the new host.
+
+Next.js's [self-hosting guide](https://nextjs.org/docs/app/guides/self-hosting) also covers multi-instance cache coordination and Server Function encryption keys. Adding servers does not automatically give the application a shared Next.js cache. Check these requirements before scaling beyond your initial deployment.
+
 ## Where Vercel still wins
 
 Vercel remains the best default for many Next.js teams. If you want preview deployments for every pull request, dashboard-first collaboration, a global managed frontend network, and no SSH key anywhere near the team, Vercel is built for that. It is especially strong when the app is mostly frontend, the team values managed workflow over server ownership, and the bill is comfortably worth the saved operations time.
@@ -134,4 +143,4 @@ If your app is a Next.js server that should live on your own VPS, Tako gives it 
 
 Same framework. Different owner.
 
-[Read the Next.js framework guide →](/docs/framework-guides/#nextjs)
+[Deploy Next.js to your VPS →](/blog/how-to-deploy-nextjs-to-a-vps-without-docker/)

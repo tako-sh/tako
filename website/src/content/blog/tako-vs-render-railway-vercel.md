@@ -2,99 +2,63 @@
 title: "Tako vs Render, Railway, and Vercel: Bringing the Managed-PaaS Feel to Your Own Boxes"
 seoTitle: "Tako vs Render, Railway, and Vercel"
 date: "2026-04-14T09:00"
-description: "Render, Railway, and Vercel made deploying feel easy. Tako brings that same experience to the VPS you already own — same CLI flow, same scale-to-zero, without the platform bill."
+description: "Compare managed hosting with Tako on your own VPS: deployment workflow, server responsibilities, migration requirements, and operating costs."
 image: 7c38d2bc7ef3
 ---
 
-Most devs shipping today are paying Render, Railway, or Vercel. Those platforms earned it — the DX is genuinely good. Push a branch, get a URL. TLS handled. Deploys handled. Zero SSH.
+Render, Railway, and Vercel operate the hosting platform for you. [Tako](/docs/) puts the application platform on servers you operate. The decision starts with who should own the machine, its maintenance, and its recovery when something fails.
 
-Tako can't beat "zero servers to think about." That's not the pitch. The pitch is: everything those platforms make easy, Tako makes equally easy on hardware you already own.
+Choose managed hosting when you want the provider to run the infrastructure. Consider Tako when you want server ownership and a CLI that handles application deploys, routing, HTTPS, secrets, and rollbacks.
 
-## At a glance
+## Deployment models
 
-|                   | **Render**             | **Railway**           | **Vercel**               | **Tako**                                                |
-| ----------------- | ---------------------- | --------------------- | ------------------------ | ------------------------------------------------------- |
-| **Model**         | Hosted PaaS            | Hosted PaaS           | Hosted PaaS              | Self-hosted platform                                    |
-| **Deploy input**  | Git push / Dockerfile  | Git push / Dockerfile | Git push                 | Build artifact over SFTP                                |
-| **Runtime**       | Container              | Container (Nixpacks)  | V8 isolates / containers | Native OS process                                       |
-| **Scale-to-zero** | Yes (free tier sleeps) | Optional              | Yes                      | Yes, native process                                     |
-| **Cold start**    | ~50s (free tier)       | ~5–30s                | 100–3000ms (serverless)  | Tens of ms                                              |
-| **Local dev**     | Separate tooling       | Separate tooling      | `vercel dev`             | Built-in HTTPS + DNS ([`tako dev`](/docs/development/)) |
-| **Pricing**       | Per service/month      | Per resource/hour     | Per seat + invocations   | Your VPS flat rate                                      |
-| **Lock-in**       | Render platform        | Railway platform      | Vercel platform          | None                                                    |
+| Platform | How the app reaches production                                                        | What you operate                                                   |
+| -------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| Render   | Builds from linked source, or deploys a Docker image                                  | App configuration and data; Render operates the host               |
+| Railway  | Builds with Railpack or a Dockerfile                                                  | Services and their configuration; Railway operates the host        |
+| Vercel   | Git or CLI deployments with framework integration and managed functions               | App configuration and connected services; Vercel operates the host |
+| Tako     | Builds native releases locally and uploads over signed private HTTP through Tailscale | Linux servers, capacity, updates, backups, and the app             |
 
-## What managed PaaS gets right
+These deployment descriptions were checked against [Render's deploy documentation](https://render.com/docs/deploys), [Railway's build documentation](https://docs.railway.com/builds), and [Vercel's Git deployment documentation](https://vercel.com/docs/deployments/git) on September 8, 2026. They describe supported workflows, not a hands-on performance comparison.
 
-These platforms solved real problems. Render's build detection figures out the right install and start commands without a config file. Railway's UX became the benchmark that other deploy tools are measured against. Vercel's edge network and tight Next.js integration are genuinely hard to beat for frontend-heavy apps.
+Tako also supports [container releases](/blog/how-to-deploy-a-dockerfile-to-a-vps-with-tako-container-releases/): it uploads source and builds with Podman on the server. Native releases are the default path; a Dockerfile is an option when your app needs it.
 
-The shared idea — you shouldn't need to understand infrastructure to ship code — is a good idea. We took it seriously when designing Tako.
+## Runtime and cold starts
 
-## Cold starts without the container overhead
+Vercel Functions support a [Node.js runtime with Node.js APIs](https://vercel.com/docs/functions/runtimes/node-js). It is inaccurate to describe every Vercel app as a restricted V8 isolate or to assume that moving a Node application requires rewriting it for an Edge runtime.
 
-Every platform on that table supports scale-to-zero. But what happens during a cold start differs a lot depending on the runtime.
+Tako's native [scale-to-zero](/blog/scale-to-zero-without-containers/) starts an app process when traffic arrives and waits for readiness before routing the request. Startup time depends on your runtime, imports, application initialization, database connections, and server load.
 
-Render and Railway run Docker containers. Waking an idle container means loading image layers back into memory, initializing a network namespace, and waiting for the process inside to boot. Render's own docs put free-tier wake-up time around 50 seconds. Railway is faster — Nixpacks images tend to be leaner — but container overhead is container overhead.
+There is no comparable cold-start measurement across these four platforms in this article. For a useful comparison, run the same app, check the selected service's sleep policy, and measure the first request after idle separately from warm requests. Tako's [proxy benchmarks](/performance/) measure a different question and should not be treated as Next.js startup measurements.
 
-Vercel's serverless functions use V8 isolates, which boot much faster. But V8 isolates aren't Node.js: they have package size limits, execution time caps, and restricted APIs. You're not deploying your app to a different host; you're rewriting it for a constrained runtime.
+## What moving to Tako involves
 
-Tako's [scale-to-zero](/blog/scale-to-zero-without-containers/) is a native process spawn. No image to unpack, no namespace to create, no container runtime. The cold start is `fork()` plus your app's initialization time — often tens of milliseconds for a lightweight API. That's competitive with Vercel's cold starts, from a $6 VPS, running your unmodified app.
+A shared language or fetch-handler interface can reduce application changes, but moving a production app still requires a migration review.
 
-```d2
-direction: right
+- **Server access:** prepare a supported Linux host and connect it and your workstation to Tailscale. The [quickstart](/docs/quickstart/#remote-setup) covers registration and installation.
+- **Framework integration:** use the appropriate [framework adapter and preset](/docs/framework-guides/). An existing hosted deployment configuration does not configure Tako automatically.
+- **Data and secrets:** decide where the database and uploads will live, move credentials, and test recovery. Tako provides [persistent app data](/blog/stateful-apps-sqlite-uploads-tako-data-dir/) and [backups](/blog/back-up-tako-apps-to-s3-compatible-storage/), but you still need to configure and operate them.
+- **Provider features:** inventory preview environments, scheduled work, storage, authentication callbacks, and any provider-specific APIs your app uses. Keep or replace each dependency deliberately.
+- **Capacity:** allow enough memory for the app, background work, and overlapping instances during rolling updates.
 
-render: Render cold start {
-  direction: down
-  image: Image layers
-  ns: Network namespace
-  boot: Process boot
-  image -> ns -> boot
-  style.fill: "#FFF9F4"
-}
+For a Next.js decision, read the [Vercel versus Tako comparison](/blog/open-source-vercel-alternative-nextjs-vps/). If you have already chosen a VPS, follow the [Next.js deployment walkthrough](/blog/how-to-deploy-nextjs-to-a-vps-without-docker/).
 
-tako: Tako cold start {
-  direction: down
-  fork: fork()
-  init: App init
-  ready: TAKO:READY
-  fork -> init -> ready
-  style.fill: "#9BC4B6"
-}
-```
+## Compare the whole operating cost
 
-## A shared vocabulary
+A VPS invoice is only part of the self-hosting cost. Include storage, backups, bandwidth allowances, monitoring, additional servers, and the time needed to maintain and recover the system. Hosting prices and included resources vary by provider, region, and plan.
 
-Vercel popularized the fetch handler as the standard app interface:
+Tako can run several applications on one server and release resources when eligible workloads are idle. That can make a small server useful, but it does not establish how many of your applications will fit. Measure your workload and leave capacity for deploys and failures.
 
-```typescript
-export default function (request: Request): Response {
-  return new Response("hello");
-}
-```
+## App primitives on your own server
 
-That export runs on Vercel Functions, Cloudflare Workers, and Bun natively. The interface is web-standard — `Request` and `Response` exist in every modern runtime. Frameworks like Hono and Elysia build on it directly, so a Hono app is already a fetch handler.
+Tako ships [durable channels](/docs/channels/) and [workflows](/docs/workflows/) alongside deployment and routing. These provide realtime communication and durable background work on your infrastructure. They are current capabilities, not a promise about a future release.
 
-Tako uses [the same pattern](/blog/the-fetch-handler-pattern/). Same export shape, same `Request`/`Response` objects. If your app already runs on Vercel, moving to Tako isn't a migration — it's picking a different host for code that was already portable. The [Tako SDK](/docs/) handles the Node.js bridge automatically; on Bun it passes your handler straight through.
+That integration is a reason to evaluate Tako. It does not mean managed platforms lack background processing or realtime options; compare the specific services your app needs, including their configuration and operating model.
 
-## The cost case
+## Which path fits?
 
-[We've covered the numbers in detail](/blog/your-5-dollar-vps-is-more-powerful-than-you-think/), but the summary: a $6 Hetzner box has 4 GB of RAM and 20 TB of monthly bandwidth. Render's starter tier gives you 512 MB for $7. And managed PaaS billing compounds — each service adds to the line item, each seat adds to the bill.
+Use managed hosting if operating Linux servers would distract your team from the application. Evaluate each provider against the framework, service types, and collaboration workflow you actually need.
 
-The bigger shift is predictability. Render, Railway, and Vercel charge per service, per seat, or per invocation. Your VPS is a flat number. With Tako's [scale-to-zero](/blog/scale-to-zero-without-containers/), a box running five apps only actually uses memory for the ones getting traffic — which means one VPS can comfortably host what would be three or four separate Render services.
+Use Tako if you want to operate your own infrastructure and bring application deploys and backend primitives into one platform. You retain responsibility for the host and your data, with Tako handling the application lifecycle.
 
-## What Tako is becoming
-
-Render and Railway handle your app's runtime. Vercel handles the frontend layer and edge. All three leave you reaching for separate services the moment you need durable WebSocket/SSE channels, queues, or long-running workflows — separate products, separate bills, separate config to maintain.
-
-Tako's direction is to absorb those concerns into the same binary that's already routing your traffic. [Durable channels](/blog/durable-channels-built-in/) are the realtime side of that model, and [workflows](/blog/durable-workflows-are-here/) cover long-running work. The SDKs — [JavaScript/TypeScript and Go](/docs/) — are how your app talks to all of it without caring which server it lands on.
-
-The managed platforms have a head start on breadth. The advantage of doing it in one self-hosted binary is that every new primitive costs you nothing extra and runs on hardware you already paid for. [See how Tako works today](/docs/how-tako-works/) for what's already shipped.
-
-## When each makes sense
-
-Pick **Render, Railway, or Vercel** if you want zero infrastructure — managed databases in one click, a dashboard your whole team can read, and a bill that someone else approved. They're well-run platforms and they earn it.
-
-Pick **Tako** if you're already paying for a VPS, if PaaS billing is getting noisy across multiple services, or if container cold starts have burned you before. You get the same CLI-first deploy flow, the same fetch handler pattern, the same [scale-to-zero](/blog/scale-to-zero-without-containers/) — on hardware you control, at a cost that doesn't compound with every new service you add.
-
-The DX isn't a tradeoff. That's the point.
-
-[Get started with the docs →](/docs/)
+[Deploy your first app with the quickstart →](/docs/quickstart/)

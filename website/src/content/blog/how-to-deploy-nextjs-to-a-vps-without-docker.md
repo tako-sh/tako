@@ -1,45 +1,50 @@
 ---
 title: "How to Deploy Next.js to a VPS Without Docker"
 date: "2026-04-29T13:00"
-description: "A literal walkthrough — provision a $5 VPS, point a domain, and ship a Next.js app to it with tako init + tako deploy. HTTPS and zero-downtime rollouts, no Dockerfile in sight."
+description: "Deploy Next.js to your own VPS with Tako: Linux and Tailscale prerequisites, standalone adapter setup, HTTPS, and checks for your first deployment."
 image: e67599ab52d4
 ---
 
-The two paths most Next.js deploy tutorials show: push to Vercel, or write a Dockerfile and ship the image somewhere. The first is the easiest thing in the world — until you want to actually own the box. The second works, but you've signed up for Dockerfiles, multi-stage builds, image registries, and a `docker-compose.yml` to run a process that fundamentally just needs Node and a port.
-
-There's a third path. A $5 VPS, a domain, and [Tako](/docs/). No container in sight.
+This guide takes an existing Next.js app to a Linux VPS with [Tako](/docs/), using a native Node process and automatic HTTPS. If you are still choosing a host, start with [Vercel versus Tako for Next.js](/blog/open-source-vercel-alternative-nextjs-vps/).
 
 ## What you need
 
-Five things. None of them include Docker.
+- A Linux VPS with glibc, systemd, and cgroup v2 resource controllers. See the [server requirements](/docs/deployment/#server-setup); not every Linux distribution is supported.
+- Tailscale installed on your workstation and VPS, connected to the same tailnet, plus admin SSH access for server setup.
+- A domain with an A record pointing to the VPS public IP. For this direct HTTPS setup, allow inbound traffic on ports 80 and 443.
+- A working Next.js project with Node.js and its package manager installed locally. Builds run on your workstation.
 
-| Thing                         | Where it comes from                                                                                                     |
-| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| A VPS                         | [Hetzner CX22 (~$6/mo)](/blog/your-5-dollar-vps-is-more-powerful-than-you-think/), DigitalOcean, Vultr — anything Linux |
-| A domain                      | Wherever; point an A record at the VPS IP                                                                               |
-| `tako-server` on the box      | One curl command                                                                                                        |
-| The `tako` CLI on your laptop | One curl command                                                                                                        |
-| A Next.js app                 | `npx create-next-app@latest my-app`                                                                                     |
+You operate the VPS, including updates, capacity, and data recovery. Choose its size for your application's memory needs and leave room for old and new instances to overlap during a rolling deploy.
 
-## Step 1 — Install the CLI and `tako-server`
+## Step 1 — Install the CLI and register the server
 
-On your laptop:
+On your workstation:
 
 ```bash
 curl -fsSL https://tako.sh/install.sh | sh
+tako --version
 ```
 
-SSH into the VPS and run the server installer:
+With both machines connected to Tailscale, register the VPS using its MagicDNS name. This example assumes the host is named `prod` and its admin SSH user is `ubuntu`:
 
 ```bash
-sudo sh -c "$(curl -fsSL https://tako.sh/install-server.sh)"
+tako servers add ubuntu@prod
+tako status
 ```
 
-That's the entire server-side setup. The installer drops a single Rust binary, registers a systemd unit, creates a non-root `tako` user, and grants it the capability to bind ports 80 and 443. Pingora proxy, ACME, process supervision, and the encrypted secrets store all live inside that one binary. The [deployment docs](/docs/deployment/) cover the details, but defaults work — skip them on the first pass.
+Replace `ubuntu` and `prod` with your actual admin user and Tailscale host. The admin-user form can install or repair `tako-server`; the saved server name defaults to the host's first DNS label. Use that saved name in the configuration below.
+
+The installer sets up the service, runtime dependencies, app isolation, and private management. The [remote setup guide](/docs/quickstart/#remote-setup) also covers installing from the host itself.
 
 ## Step 2 — Wire up Next.js
 
-There is exactly one line of Next-specific config. In your `next.config.ts`:
+From your Next.js project directory, install the SDK using your project's package manager:
+
+```bash
+npm install tako.sh
+```
+
+Wrap your existing configuration in `next.config.ts`, preserving the options your app needs:
 
 ```ts
 import { withTako } from "tako.sh/nextjs";
@@ -47,7 +52,7 @@ import { withTako } from "tako.sh/nextjs";
 export default withTako({});
 ```
 
-`withTako()` switches Next.js to standalone output, installs the Tako adapter, and lets `next dev` accept Tako's local HTTPS hostnames (`*.test`). On build it emits `.next/tako-entry.mjs` — the small file Tako launches in production. The [framework guide](/docs/framework-guides/#nextjs) has the full breakdown.
+`withTako()` switches Next.js to standalone output, installs the Tako adapter, and lets `next dev` accept Tako's local HTTPS hostnames (`*.test`). It also configures `next/image` to use Tako's image optimizer; review [image handling and remote sources](/blog/self-hosted-nextjs-image-optimization-vps/) if your app uses images. On build it emits `.next/tako-entry.mjs` — the small file Tako launches in production. The [framework guide](/docs/framework-guides/#nextjs) has the full breakdown.
 
 ## Step 3 — `tako init`
 
@@ -57,12 +62,11 @@ In the project directory:
 tako init
 ```
 
-Init reads your `package.json`, sees `next`, and offers the `nextjs` preset. Accept the defaults and you'll get a `tako.toml` like this:
+Init reads your `package.json`, sees `next`, and offers the `nextjs` preset. Use your production domain and the saved server name. The relevant parts of `tako.toml` are:
 
 ```toml
 name = "my-app"
 runtime = "node"
-runtime_version = "22.x"
 preset = "nextjs"
 
 [envs.production]
@@ -70,13 +74,17 @@ route = "my-app.example.com"
 servers = ["prod"]
 ```
 
-Init also runs `npm add tako.sh` (or `bun add`, depending on your package manager) to drop the SDK in, and tunes `.gitignore` so `.tako/*` is ignored — except `.tako/secrets.json`, which stays tracked. The [`nextjs` preset](/docs/presets/) bakes in `main = ".next/tako-entry.mjs"` so you don't write that line yourself.
+Init handles SDK setup and tunes `.gitignore` so `.tako/*` is ignored — except `.tako/secrets.json`, which stays tracked. The [`nextjs` preset](/docs/presets/) bakes in `main = ".next/tako-entry.mjs"` so you don't write that line yourself.
 
-Change `route` to a domain you actually own, then register the server once:
+Keep any runtime pin generated by init; version pins use `runtime = "node@<version>"` in the same field. The unpinned example above selects the Node runtime.
+
+Change `route` to your domain and `servers` to the registered server name. Check the app locally before deploying:
 
 ```bash
-tako servers add prod.example.com --name prod
+tako dev
 ```
+
+Open the `.test` URL shown by Tako and check a page that renders on the server, a static asset, and an image if your app uses `next/image`.
 
 ## Step 4 — `tako deploy`
 
@@ -84,20 +92,9 @@ tako servers add prod.example.com --name prod
 tako deploy
 ```
 
-Confirm the production prompt and watch the task tree:
+Follow any deployment prompts, then open `https://my-app.example.com/` using your configured domain. Verify a server-rendered page, static assets, images, and any authenticated flow your app needs. If startup or routing fails, use the [troubleshooting guide](/docs/troubleshooting/).
 
-```
-Connecting     ✓
-Building       ✓
-Deploying to prod
-  Uploading    ✓
-  Preparing    ✓
-  Starting     ✓
-
-  https://my-app.example.com/
-```
-
-Open the URL. Your Next.js app is live, on a real Let's Encrypt cert, with [zero-downtime rolling updates](/blog/scale-to-zero-without-containers/) on every subsequent `tako deploy`.
+Subsequent deploys use [health-checked rolling updates](/blog/zero-downtime-deploys-without-a-container-in-sight/). A successful deploy checks application readiness; it does not prove every application route works.
 
 ## What just happened
 
@@ -124,10 +121,10 @@ server: VPS {
 }
 
 local.build -> artifact: "package"
-artifact -> server: "SFTP"
+artifact -> server: "signed HTTP\nover Tailscale"
 ```
 
-`tako deploy` ran `next build` locally, packaged the result (excluding `.git`, `.tako`, `.env*`, and `node_modules`) into a `.tar.zst` artifact, and SFTP'd it to the VPS. `tako-server` unpacked it under `/opt/tako/apps/my-app/production/`, ran a production install, and started the Next.js standalone server as a regular Node process. [Pingora](/blog/pingora-vs-caddy-vs-traefik/) terminates TLS on `:443` and routes to it.
+`tako deploy` ran `next build` locally, packaged the result (excluding `.git`, `.tako`, `.env*`, and `node_modules`) into a `.tar.zst` artifact, and uploaded it over signed private HTTP through Tailscale. `tako-server` unpacked it under `/opt/tako/apps/my-app/production/`, ran a production install, and started the Next.js standalone server as a regular Node process. [Pingora](/blog/pingora-vs-caddy-vs-traefik/) terminates TLS on `:443` and routes to it.
 
 ## What you didn't write
 
@@ -139,4 +136,4 @@ artifact -> server: "SFTP"
 
 That's the difference. Next.js doesn't need to be containerized to run; it's a Node program that listens on a port. Tako treats it like one. The proxy, the TLS, the secrets store, and the rolling-restart coordinator all live in a single Rust binary on the box. Your Next.js app is a process, not a container image.
 
-When you're ready for more — [secrets that don't sit in env files](/blog/secrets-without-env-files/), [multiple environments on the same box](/blog/one-config-many-servers/), or [durable workflows from inside your routes](/blog/tako-workflows-in-nextjs-via-instrumentation/) — it's all the same `tako deploy`. Start with the [CLI reference](/docs/cli/) or skim [how Tako works](/docs/how-tako-works/).
+When you're ready for more — [secrets that don't sit in env files](/blog/secrets-without-env-files/), [multiple environments on the same box](/blog/one-config-many-servers/), or [durable workflows from inside your routes](/blog/tako-workflows-in-nextjs-via-instrumentation/) — it's all the same `tako deploy`. Continue with the [deployment guide](/docs/deployment/) for production operations and the [backup guide](/blog/back-up-tako-apps-to-s3-compatible-storage/) before relying on persistent app data.

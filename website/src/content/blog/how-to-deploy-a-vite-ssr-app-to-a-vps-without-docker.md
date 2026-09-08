@@ -140,7 +140,6 @@ For a custom Vite SSR app, keep the generated config explicit. The plain `vite` 
 ```toml
 name = "vite-ssr-on-tako"
 runtime = "node"
-runtime_version = "22.x"
 package_manager = "npm"
 preset = "vite"
 main = "dist/server/tako-entry.mjs"
@@ -158,21 +157,17 @@ Two lines do most of the SSR work:
 | `main = "dist/server/tako-entry.mjs"` | Launch the generated wrapper, not the raw Vite output                          |
 | `assets = ["dist/client"]`            | Merge the client build into deployed `public/` so `/assets/*.js` resolves fast |
 
-During deploy, Tako runs the build locally, merges configured asset directories into the artifact's `public/` directory, verifies `main`, packages the result, and uploads it over SFTP. On the server, static requests with file extensions are served directly from `public/` when present; everything else goes to your SSR process. The [Tako config docs](/docs/tako-toml/) and [deployment guide](/docs/deployment/) have the full field reference.
+During deploy, Tako runs the build locally, merges configured asset directories into the artifact's `public/` directory, verifies `main`, packages the result, and uploads it over signed private HTTP through Tailscale. On the server, static requests with file extensions are served directly from `public/` when present; everything else goes to your SSR process. The [Tako config docs](/docs/tako-toml/) and [deployment guide](/docs/deployment/) have the full field reference.
 
 ## Step 4 - Deploy to the VPS
 
-Set up the server once. On the VPS:
+Complete the [quickstart](/docs/quickstart/) to install the CLI and connect your workstation and a supported Linux VPS to the same Tailscale tailnet. From your workstation, register the host using its MagicDNS name:
 
 ```bash
-sudo sh -c "$(curl -fsSL https://tako.sh/install-server.sh)"
+tako servers add ubuntu@prod
 ```
 
-On your laptop, register it:
-
-```bash
-tako servers add 203.0.113.10 --name prod
-```
+Replace `ubuntu` with your admin SSH user and `prod` with the Tailscale host name. This form can install or repair `tako-server`; use the saved server name in the production `servers` list. Allow public ports 80 and 443 for this direct HTTPS setup.
 
 Point `vite.example.com` at the VPS IP, then deploy:
 
@@ -180,20 +175,7 @@ Point `vite.example.com` at the VPS IP, then deploy:
 tako deploy
 ```
 
-Confirm the production prompt and watch the task tree:
-
-```text
-Connecting     ✓
-Building       ✓
-Deploying to prod
-  Uploading    ✓
-  Preparing    ✓
-  Starting     ✓
-
-  https://vite.example.com/
-```
-
-Your Vite SSR app is now running as a native Node process behind Pingora, with a real Let's Encrypt certificate. No container runtime is involved.
+Follow any deployment prompts, then open your configured domain. Verify a server-rendered page and its client assets. The app runs as a native Node process behind Pingora; the [troubleshooting guide](/docs/troubleshooting/) covers startup and routing failures.
 
 ```d2
 direction: right
@@ -232,7 +214,7 @@ vps: "VPS" {
 
 local.wrapper -> artifact: "package"
 local.client -> artifact: "assets"
-artifact -> vps: "SFTP"
+artifact -> vps: "signed HTTP\nover Tailscale"
 ```
 
 The request path is simple. `/assets/main-abc123.js` is a static file, so Tako serves it directly from the deployed `public/` directory. `/pricing`, `/dashboard`, or `/` goes to the Node process, which imports `dist/server/tako-entry.mjs`, calls your SSR fetch handler, and returns HTML.
