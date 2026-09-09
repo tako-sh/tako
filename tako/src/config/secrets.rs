@@ -81,7 +81,7 @@ impl EncryptedSecretValue {
 }
 
 pub fn secret_expires_on_prompt_hint() -> &'static str {
-    "Optional. Use YYYY-MM-DD, in 30 days, never, or leave blank."
+    "Optional. Use YYYY-MM-DD, in 30 days, or leave blank."
 }
 
 pub fn normalize_secret_expires_on(input: &str) -> Result<Option<String>> {
@@ -90,10 +90,7 @@ pub fn normalize_secret_expires_on(input: &str) -> Result<Option<String>> {
 
 fn normalize_secret_expires_on_at(input: &str, now: OffsetDateTime) -> Result<Option<String>> {
     let trimmed = input.trim();
-    if trimmed.is_empty()
-        || trimmed.eq_ignore_ascii_case("never")
-        || trimmed.eq_ignore_ascii_case("none")
-    {
+    if trimmed.is_empty() {
         return Ok(None);
     }
 

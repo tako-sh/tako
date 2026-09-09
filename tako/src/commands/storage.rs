@@ -43,7 +43,7 @@ pub enum StorageCommands {
         /// Secret access key. Prompted when omitted.
         #[arg(long)]
         secret_access_key: Option<String>,
-        /// Optional expiry date for S3 credentials. Use YYYY-MM-DD, "in 30 days", or never.
+        /// Optional expiry date for S3 credentials. Use YYYY-MM-DD or "in 30 days".
         #[arg(long)]
         expires_on: Option<String>,
         /// Use path-style bucket URLs instead of virtual-hosted bucket URLs
@@ -67,7 +67,7 @@ pub enum StorageCommands {
         /// Secret access key. Prompted when omitted.
         #[arg(long)]
         secret_access_key: Option<String>,
-        /// Optional expiry date for S3 credentials. Use YYYY-MM-DD, "in 30 days", or never.
+        /// Optional expiry date for S3 credentials. Use YYYY-MM-DD or "in 30 days".
         #[arg(long)]
         expires_on: Option<String>,
     },

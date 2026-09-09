@@ -279,14 +279,13 @@ fn test_validate_environment_name_invalid() {
 }
 
 #[test]
-fn normalize_secret_expires_on_accepts_date_and_never() {
+fn normalize_secret_expires_on_accepts_date_and_blank() {
     assert_eq!(
         normalize_secret_expires_on("2099-01-01")
             .unwrap()
             .as_deref(),
         Some("2099-01-01")
     );
-    assert_eq!(normalize_secret_expires_on("never").unwrap(), None);
     assert_eq!(normalize_secret_expires_on("").unwrap(), None);
 }
 
@@ -315,6 +314,8 @@ fn normalize_secret_expires_on_accepts_relative_days() {
 #[test]
 fn normalize_secret_expires_on_rejects_invalid_values() {
     assert!(normalize_secret_expires_on("tomorrow").is_err());
+    assert!(normalize_secret_expires_on("never").is_err());
+    assert!(normalize_secret_expires_on("none").is_err());
     assert!(normalize_secret_expires_on("2099-99-99").is_err());
     assert!(normalize_secret_expires_on("2099-1-01").is_err());
     assert!(normalize_secret_expires_on("2099-01-01T00:00:00Z").is_err());

@@ -57,7 +57,7 @@ pub enum SecretCommands {
         #[arg(long)]
         env: Option<String>,
 
-        /// Optional expiry date. Use YYYY-MM-DD, "in 30 days", or never.
+        /// Optional expiry date. Use YYYY-MM-DD or "in 30 days".
         #[arg(long)]
         expires_on: Option<String>,
 
