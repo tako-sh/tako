@@ -314,7 +314,7 @@ describe("init wizard interaction", () => {
     expect([0, 130]).toContain(exitCode);
   });
 
-  test("Ctrl+C collapses an active text prompt to a cancelled summary", async () => {
+  test("Ctrl+C preserves an active text prompt and its input", async () => {
     await writeFile(join(tempDir, "package.json"), JSON.stringify({ name: "ctrl-c-test" }));
 
     const term = spawnInit();
@@ -331,8 +331,58 @@ describe("init wizard interaction", () => {
     const screen = term.screenText();
 
     expect(labelRow).not.toBeNull();
+    expect(cancelledRow).not.toBeNull();
     expect(cancelledRow).toBeGreaterThan(labelRow!);
-    expect(screen).not.toContain("› ctrl-c-test");
+    expect(screen).toContain("Name cannot be changed after the first deployment.");
+    expect(screen).toContain("› ctrl-c-test");
+
+    const exitCode = await term.waitForExit({ timeout: 5000 });
+    expect([0, 130]).toContain(exitCode);
+  });
+
+  test("Ctrl+C preserves an active selection", async () => {
+    await writeFile(join(tempDir, "package.json"), JSON.stringify({ name: "select-test" }));
+
+    const term = spawnInit();
+    await term.waitForText("Application name", { timeout: 5000 });
+    term.press("\r");
+    await term.waitForText("Choose a runtime:", { timeout: 5000 });
+    await term.waitForText("→", { timeout: 5000 });
+
+    term.press("\x03");
+    await term.waitForText("Operation cancelled", { timeout: 5000 });
+
+    const runtimeRow = findRowContaining(term, "Choose a runtime:");
+    const selectionRow = findRowContaining(term, "→");
+    const cancelledRow = findRowContaining(term, "Operation cancelled");
+
+    expect(runtimeRow).not.toBeNull();
+    expect(selectionRow).not.toBeNull();
+    expect(cancelledRow).toBeGreaterThan(selectionRow!);
+
+    const exitCode = await term.waitForExit({ timeout: 5000 });
+    expect([0, 130]).toContain(exitCode);
+  });
+
+  test("Ctrl+C preserves transcript-mode input", async () => {
+    await writeFile(join(tempDir, "package.json"), JSON.stringify({ name: "verbose-test" }));
+
+    const term = TakoTerminal.spawn({
+      args: ["--verbose", "init"],
+      cwd: tempDir,
+      env: { HOME: tempDir, TAKO_HOME: takoHome, PATH: "" },
+    });
+    await term.waitForText("Application name", { timeout: 5000 });
+    await term.waitForText("verbose-test", { timeout: 5000 });
+
+    term.press("\x03");
+    await term.waitForText("Operation cancelled", { timeout: 5000 });
+
+    const inputRow = findRowContaining(term, "verbose-test");
+    const cancelledRow = findRowContaining(term, "Operation cancelled");
+
+    expect(inputRow).not.toBeNull();
+    expect(cancelledRow).toBe(inputRow! + 2);
 
     const exitCode = await term.waitForExit({ timeout: 5000 });
     expect([0, 130]).toContain(exitCode);

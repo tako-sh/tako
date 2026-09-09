@@ -37,7 +37,7 @@ Normal installs require Tailscale for remote management. The CLI expects a Tails
 ## Add A Server
 
 ```bash
-tako servers add my-server.tailnet.ts.net --install
+tako servers add my-server.tailnet.ts.net
 ```
 
 or:
@@ -46,7 +46,7 @@ or:
 tako servers add ubuntu@my-server.tailnet.ts.net
 ```
 
-`--install` and `admin@host` flows install or repair `tako-server` before writing local `config.toml`. The add flow stores host, SSH port, public HTTP/HTTPS ports, description, and detected target metadata (`arch`, `libc`).
+If `tako-server` is unavailable, interactive setup offers to install it, tries `root` first, and asks for another administrator only if root authentication is rejected. Use `--install` to skip the confirmation or `admin@host` to select the administrator explicitly. The add flow stores host, SSH port, public HTTP/HTTPS ports, description, and detected target metadata (`arch`, `libc`).
 
 ## Configure An Environment
 

@@ -209,7 +209,7 @@ impl<'a> TextField<'a> {
                 }
                 None => label,
             };
-            let value = raw_text_input(
+            let value = match raw_text_input(
                 &display_label,
                 RawTextInputOptions {
                     initial: if active_error.is_some() {
@@ -227,7 +227,15 @@ impl<'a> TextField<'a> {
                     error: active_error.is_some(),
                     show_back: self.show_back,
                 },
-            )?;
+            ) {
+                Ok(value) => value,
+                Err(e) => {
+                    if e.kind() == io::ErrorKind::Interrupted && !super::is_wizard_back(&e) {
+                        eprintln!();
+                    }
+                    return Err(e);
+                }
+            };
             match validate(&value, None) {
                 Ok(()) => return Ok(value),
                 Err(message) => error = Some(message),
@@ -313,11 +321,14 @@ impl<'a> TextField<'a> {
                         footer_spacing,
                         self.footer_lines.len(),
                     );
-                    let _ = term.clear_last_lines(num_rows);
-                    if e.kind() == io::ErrorKind::Interrupted && !super::is_wizard_back(&e) {
-                        for line in super::format_pretty_cancelled_prompt(self.label) {
+                    let is_cancelled =
+                        e.kind() == io::ErrorKind::Interrupted && !super::is_wizard_back(&e);
+                    if is_cancelled {
+                        for line in super::format_pretty_cancelled_prompt() {
                             let _ = term.write_line(&line);
                         }
+                    } else {
+                        let _ = term.clear_last_lines(num_rows);
                     }
                     return Err(e);
                 }

@@ -180,7 +180,7 @@ tako servers rm [name]
 tako servers uninstall [name] [-y|--yes]
 ```
 
-`servers add` writes global `config.toml`, verifies SSH recovery access, enrolls signed management access, records target metadata, and can install or repair `tako-server` first. Passing `admin@host` is shorthand for install/repair with that admin user. `--ssh-key` pins a specific private key for the server; connections then use only that key instead of trying `~/.ssh` defaults and `ssh-agent`. The interactive wizard prompts for the key, prefilled with your default `~/.ssh` key.
+`servers add` writes global `config.toml`, verifies SSH recovery access, enrolls signed management access, and records target metadata. If `tako@host` is unavailable, interactive setup offers to install or repair `tako-server`, checks `root@host`, and asks for another administrator only when root authentication is rejected. Use `--install` to skip the confirmation, or pass `admin@host` to select an administrator explicitly. `--ssh-key` pins a specific private key for the server; connections then use only that key instead of trying `~/.ssh` defaults and `ssh-agent`. The interactive wizard prompts for the key, prefilled with your default `~/.ssh` key.
 
 `status` prints a deployment snapshot grouped by server, with compact server summary, routes, and app rows.
 

@@ -70,6 +70,35 @@ fn server_not_installed_message_is_actionable() {
 }
 
 #[test]
+fn successful_root_probe_uses_root() {
+    assert!(matches!(
+        root_access_outcome(Ok(())).unwrap(),
+        RootAccessOutcome::UseRoot
+    ));
+}
+
+#[test]
+fn rejected_root_authentication_prompts_for_an_admin_user() {
+    assert!(matches!(
+        root_access_outcome(Err(crate::ssh::SshError::Authentication(
+            "key rejected".to_string()
+        )))
+        .unwrap(),
+        RootAccessOutcome::PromptForUser
+    ));
+}
+
+#[test]
+fn root_connection_failure_is_not_treated_as_a_username_problem() {
+    let error = root_access_outcome(Err(crate::ssh::SshError::Connection(
+        "connection refused".to_string(),
+    )))
+    .unwrap_err();
+
+    assert!(matches!(error, crate::ssh::SshError::Connection(_)));
+}
+
+#[test]
 fn default_server_name_from_host_uses_magicdns_short_name() {
     assert_eq!(
         default_server_name_from_host("my-server.tailnet.ts.net").as_deref(),

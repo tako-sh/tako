@@ -177,8 +177,15 @@ pub(in crate::output) fn raw_select(
     // Restore terminal
     terminal::disable_raw_mode()?;
 
-    // Clear the select display and write appropriate completion
-    if is_pretty() {
+    let is_cancelled = result
+        .as_ref()
+        .is_err_and(|e| e.kind() == io::ErrorKind::Interrupted && !is_wizard_back(e));
+    if is_cancelled {
+        for line in format_pretty_cancelled_prompt() {
+            let _ = term.write_line(&line);
+        }
+    } else if is_pretty() {
+        // Completed selections and wizard-back navigation collapse the active UI.
         let prompt_lines = prompt.chars().filter(|c| *c == '\n').count() + 1;
         let total =
             prompt_lines + select_draw_line_count(labels, hints, footer_spacing, footer_lines);
@@ -239,9 +246,6 @@ fn format_select_completion_lines(
 ) -> Vec<String> {
     match result {
         Ok(idx) => format_pretty_prompt_completion(title, labels[*idx]),
-        Err(e) if e.kind() == io::ErrorKind::Interrupted && !is_wizard_back(e) => {
-            format_pretty_cancelled_prompt(title)
-        }
         _ => Vec::new(),
     }
 }
@@ -261,7 +265,7 @@ mod tests {
     }
 
     #[test]
-    fn select_completion_keeps_cancelled_completion() {
+    fn select_completion_does_not_replace_cancelled_prompt() {
         let result = Err(io::Error::new(
             io::ErrorKind::Interrupted,
             "Operation interrupted",
@@ -270,7 +274,7 @@ mod tests {
         let lines =
             format_select_completion_lines("Select setting", &["Source IP handling"], &result);
 
-        assert_eq!(lines, vec!["◇ Select setting".to_string(), String::new()]);
+        assert!(lines.is_empty());
     }
 
     #[test]

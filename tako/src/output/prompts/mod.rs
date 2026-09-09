@@ -242,14 +242,9 @@ fn format_pretty_confirm_completion(label: &str, default: bool, value: &str) -> 
     ]
 }
 
-/// Collapsed prompt summary shown after Ctrl-C.
-///
-/// This intentionally strips prompt chrome like warnings, hints, input echoes,
-/// and confirm defaults so cancelled prompts all resolve to the same muted line.
-fn format_pretty_cancelled_prompt(label: &str) -> Vec<String> {
-    let done_diamond = theme_muted(DIAMOND_OUTLINED);
-    let done_label = theme_muted(label);
-    vec![format!("{done_diamond} {done_label}"), String::new()]
+/// Blank separation appended after preserving an active prompt on Ctrl-C.
+fn format_pretty_cancelled_prompt() -> Vec<String> {
+    vec![String::new()]
 }
 
 #[cfg(test)]
@@ -355,18 +350,15 @@ mod tests {
     }
 
     #[test]
-    fn pretty_cancelled_prompt_uses_cancelled_summary_line() {
-        let lines = format_pretty_cancelled_prompt("Runtime");
-        assert_eq!(lines, vec!["◇ Runtime".to_string(), String::new()]);
+    fn pretty_cancelled_prompt_adds_only_spacing() {
+        let lines = format_pretty_cancelled_prompt();
+        assert_eq!(lines, vec![String::new()]);
     }
 
     #[test]
-    fn pretty_cancelled_confirm_omits_default_choice_hint() {
-        let lines = format_pretty_cancelled_prompt("Overwrite configuration?");
-        assert_eq!(
-            lines,
-            vec!["◇ Overwrite configuration?".to_string(), String::new()]
-        );
+    fn pretty_cancelled_confirm_adds_only_spacing() {
+        let lines = format_pretty_cancelled_prompt();
+        assert_eq!(lines, vec![String::new()]);
     }
 
     #[test]

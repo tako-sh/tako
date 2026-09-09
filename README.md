@@ -41,13 +41,15 @@ Set up a deployment host:
 
 ```bash
 # Connect the host and your workstation to Tailscale first.
-# The host installer starts the service; servers add verifies access and saves it locally.
+# If needed, servers add offers to install the service over SSH.
 sudo sh -c "$(curl -fsSL https://tako.sh/install-server.sh)"
 tako servers add my-server
-# Or install/repair over SSH while adding:
-tako servers add root@my-server
+# Install/repair without the interactive confirmation:
+tako servers add my-server --install
+# Use a non-root administrator when root SSH access is disabled:
+tako servers add ubuntu@my-server
 # Custom public ports:
-tako servers add root@my-server --http-port 8080 --https-port 8443
+tako servers add my-server --http-port 8080 --https-port 8443
 ```
 
 Deploy your app:

@@ -89,6 +89,15 @@ fn confirm_inner(
             }
         };
         terminal::disable_raw_mode()?;
+        if result
+            .as_ref()
+            .is_err_and(|e| e.kind() == io::ErrorKind::Interrupted && !super::is_wizard_back(e))
+        {
+            // Finish the prompt line and leave one blank line before the
+            // process-level cancellation message.
+            eprintln!();
+            eprintln!();
+        }
         return result;
     }
 
@@ -161,20 +170,18 @@ fn confirm_inner(
         .is_err_and(|e| e.kind() == io::ErrorKind::Interrupted && !super::is_wizard_back(e));
 
     let total_rows = 3 + description.is_some() as usize;
-    let _ = term.clear_last_lines(total_rows);
-    match &result {
-        Ok(answer) => {
+    if is_cancelled {
+        for line in format_pretty_cancelled_prompt() {
+            let _ = term.write_line(&line);
+        }
+    } else {
+        let _ = term.clear_last_lines(total_rows);
+        if let Ok(answer) = &result {
             let answer_text = if *answer { "yes" } else { "no" };
             for line in format_pretty_confirm_completion(prompt, default, answer_text) {
                 let _ = term.write_line(&line);
             }
         }
-        Err(_) if is_cancelled => {
-            for line in format_pretty_cancelled_prompt(prompt) {
-                let _ = term.write_line(&line);
-            }
-        }
-        Err(_) => {}
     }
 
     result

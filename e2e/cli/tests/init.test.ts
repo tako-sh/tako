@@ -131,7 +131,7 @@ describe("tako init (interactive wizard)", () => {
     await term.close();
   });
 
-  test("overwrite confirmation ctrl c shows plain cancellation below the summary", async () => {
+  test("overwrite confirmation ctrl c preserves the active prompt", async () => {
     await writeFile(join(tempDir, "package.json"), JSON.stringify({ name: "wizard-app" }));
     await writeFile(join(tempDir, "tako.toml"), 'name = "existing"\n');
 
@@ -153,9 +153,10 @@ describe("tako init (interactive wizard)", () => {
     const cancelledRow = findRowContaining(term, "Operation cancelled");
 
     expect(labelRow).not.toBeNull();
-    expect(cancelledRow).toBe(labelRow! + 2);
-    expect(term.row(labelRow!)).not.toContain("[y/N]");
-    expect(term.row(labelRow! + 1)).toBe("");
+    expect(cancelledRow).not.toBeNull();
+    expect(cancelledRow).toBeGreaterThan(labelRow!);
+    expect(term.row(labelRow!)).toContain("[y/N]");
+    expect(term.row(labelRow! + 1)).toContain("›");
     expect(term.row(cancelledRow!)).toBe("Operation cancelled");
     expect(term.screenText()).not.toContain("› Operation cancelled");
 

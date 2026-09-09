@@ -62,7 +62,7 @@ describe("server add wizard", () => {
     expect(ls.screen).toContain("HTTP 8080, HTTPS 8443");
   });
 
-  test("Ctrl+C collapses an optional prompt without leaving its hint behind", async () => {
+  test("Ctrl+C preserves an optional prompt and its input", async () => {
     const term = spawnServerAdd();
 
     await term.waitForText("Server IP or hostname", { timeout: 5000 });
@@ -79,6 +79,8 @@ describe("server add wizard", () => {
 
     await term.waitForText("Description", { timeout: 5000 });
     await term.waitForText("optional", { timeout: 5000 });
+    term.write("staging server");
+    await term.waitForText("staging server", { timeout: 5000 });
 
     term.press("\x03");
     await term.waitForText("Operation cancelled", { timeout: 5000 });
@@ -88,10 +90,10 @@ describe("server add wizard", () => {
     const screen = term.screenText();
 
     expect(labelRow).not.toBeNull();
-    expect(cancelledRow).toBe(labelRow! + 2);
-    expect(term.row(labelRow! + 1)).toBe("");
-    expect(term.row(labelRow!)).not.toContain("›");
-    expect(screen).not.toContain("optional");
+    expect(cancelledRow).not.toBeNull();
+    expect(cancelledRow).toBeGreaterThan(labelRow!);
+    expect(screen).toContain("optional");
+    expect(screen).toContain("› staging server");
 
     const exitCode = await term.waitForExit({ timeout: 5000 });
     expect([0, 130]).toContain(exitCode);

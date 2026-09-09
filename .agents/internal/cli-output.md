@@ -165,19 +165,25 @@ Completed prompt:
   myapp
 ```
 
-Cancelled prompt summary:
+Cancelled prompt:
+
+Leave the active prompt exactly as rendered, then add one blank line and the cancellation message:
 
 ```text
-◇ App name
+◆ App name
+  › myapp_
+  enter submit
+
+Operation cancelled
 ```
 
 Rules:
 
 - Use the shared diamond prompt style.
-- Use `◆` for active labels and `◇` for completed/cancelled summaries.
+- Use `◆` for active labels and `◇` for completed summaries.
 - Put descriptions, hints, warnings, and validation errors inside the prompt body as indented plain text.
 - Do not add `!` or `✘` chrome inside prompt bodies.
-- Do not use strikethrough for cancelled prompts.
+- Preserve the active prompt, its styling, hints, current input, and selected option on Ctrl-C. Password input remains masked.
 - Confirm prompts keep `[Y/n]` or `[y/N]` on the label line.
 - Select prompts use `enter select` and indented options.
 

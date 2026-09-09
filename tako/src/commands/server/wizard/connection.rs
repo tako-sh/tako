@@ -8,6 +8,22 @@ pub(super) struct WizardConnectionResult {
     pub(super) public_ports: Option<super::ServerPublicPorts>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum RootAccessOutcome {
+    UseRoot,
+    PromptForUser,
+}
+
+pub(super) fn root_access_outcome(
+    result: crate::ssh::SshResult<()>,
+) -> crate::ssh::SshResult<RootAccessOutcome> {
+    match result {
+        Ok(()) => Ok(RootAccessOutcome::UseRoot),
+        Err(crate::ssh::SshError::Authentication(_)) => Ok(RootAccessOutcome::PromptForUser),
+        Err(error) => Err(error),
+    }
+}
+
 /// Connect, run `task`, and always disconnect, surfacing whichever error came first.
 async fn with_ssh<T>(
     ssh_config: SshConfig,
@@ -64,6 +80,18 @@ pub(super) async fn check_tako_connection(
         })
     })
     .await
+}
+
+pub(super) async fn check_ssh_access_as(
+    ssh_config: &SshConfig,
+    user: &str,
+) -> crate::ssh::SshResult<()> {
+    let mut ssh = SshClient::new(ssh_config.as_user(user));
+    ssh.connect().await?;
+    // Authentication is the probe's result; a best-effort disconnect must not
+    // turn accepted credentials into a false access failure.
+    let _ = ssh.disconnect().await;
+    Ok(())
 }
 
 pub(super) async fn install_tako_server_with_admin(
