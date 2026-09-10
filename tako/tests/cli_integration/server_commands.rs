@@ -288,7 +288,7 @@ fn servers_add_persists_description() {
 }
 
 #[test]
-fn servers_list_shows_description_column() {
+fn servers_list_renders_aligned_name_host_and_description_columns() {
     let temp = TempDir::new().unwrap();
     let project_dir = temp.path().join("project");
     fs::create_dir_all(&project_dir).unwrap();
@@ -315,6 +315,23 @@ fn servers_list_shows_description_column() {
     );
     assert!(add.status.success(), "add should succeed");
 
+    let add = run_tako_with_env(
+        &[
+            "servers",
+            "add",
+            "東京",
+            "--name",
+            "us-edge",
+            "--description",
+            "US Edge",
+            "--no-test",
+        ],
+        &project_dir,
+        &home,
+        &tako_home,
+    );
+    assert!(add.status.success(), "add should succeed");
+
     let ls = run_tako_with_env(&["servers", "list"], &project_dir, &home, &tako_home);
     assert!(
         ls.status.success(),
@@ -324,14 +341,21 @@ fn servers_list_shows_description_column() {
     );
 
     let out = stderr_str(&ls);
+    assert!(out.contains("NAME"), "expected name column: {}", out);
+    assert!(out.contains("HOST"), "expected host column: {}", out);
     assert!(
-        out.contains("Description"),
-        "expected description field: {}",
+        out.contains("DESCRIPTION"),
+        "expected description column: {}",
         out
     );
     assert!(
-        out.contains("EU Edge"),
-        "expected description value: {}",
+        out.contains("eu-edge  10.0.0.2  EU Edge"),
+        "expected aligned EU Edge row: {}",
+        out
+    );
+    assert!(
+        out.contains("us-edge  東京      US Edge"),
+        "expected aligned US Edge row: {}",
         out
     );
 }

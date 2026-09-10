@@ -1,5 +1,10 @@
 use crate::output;
 use std::time::Duration;
+use unicode_width::UnicodeWidthStr;
+
+fn pad_to_display_width(value: &str, width: usize) -> String {
+    format!("{value}{}", " ".repeat(width.saturating_sub(value.width())))
+}
 
 fn removal_option_label(name: &str, entry: &crate::config::ServerEntry) -> String {
     match entry.description.as_deref().map(str::trim) {
@@ -131,28 +136,52 @@ pub(super) async fn list_servers() -> Result<(), Box<dyn std::error::Error>> {
     let mut names = servers.names();
     names.sort_unstable();
 
-    for name in &names {
-        let entry = match servers.get(name) {
-            Some(e) => e,
-            None => continue,
-        };
+    let rows: Vec<_> = names
+        .iter()
+        .filter_map(|name| {
+            servers.get(name).map(|entry| {
+                let host = if entry.port != 22 {
+                    format!("{}:{}", entry.host, entry.port)
+                } else {
+                    entry.host.clone()
+                };
+                (name, entry, host)
+            })
+        })
+        .collect();
+    let name_width = rows
+        .iter()
+        .map(|(name, _, _)| name.width())
+        .chain(std::iter::once("NAME".width()))
+        .max()
+        .unwrap_or_default();
+    let host_width = rows
+        .iter()
+        .map(|(_, _, host)| host.width())
+        .chain(std::iter::once("HOST".width()))
+        .max()
+        .unwrap_or_default();
 
-        let header = if entry.port != 22 {
-            format!("{} ({}:{})", output::strong(name), entry.host, entry.port)
-        } else {
-            format!("{} ({})", output::strong(name), entry.host)
-        };
+    output::heading("Servers");
+    output::info(&format!(
+        "{}  {}  DESCRIPTION",
+        pad_to_display_width("NAME", name_width),
+        pad_to_display_width("HOST", host_width)
+    ));
+
+    for (name, entry, host) in rows {
         let _scope = output::scope(name).entered();
         tracing::info!("Server listed ({}:{})", entry.host, entry.port);
-        output::info(&header);
-
-        if let Some(desc) = entry
+        let description = entry
             .description
             .as_deref()
             .filter(|d| !d.trim().is_empty())
-        {
-            output::bullet(&format!("{} {desc}", output::theme_muted("Description")));
-        }
+            .unwrap_or("");
+        output::info(&format!(
+            "{}  {}  {description}",
+            output::strong(&pad_to_display_width(name, name_width)),
+            pad_to_display_width(&host, host_width)
+        ));
 
         if let Some(key_path) = &entry.key_path {
             output::bullet(&format!(

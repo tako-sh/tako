@@ -5797,6 +5797,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "unicode-width",
  "x509-parser",
  "zstd 0.14.0",
 ]
