@@ -38,13 +38,9 @@ pub enum ServerCommands {
         #[arg(long)]
         https_port: Option<u16>,
 
-        /// Install or repair tako-server over SSH before adding the server
+        /// Install or repair tako-server without confirmation when needed
         #[arg(long, conflicts_with = "no_test")]
         install: bool,
-
-        /// SSH user to use for --install
-        #[arg(long, requires = "install")]
-        admin_user: Option<String>,
 
         /// Skip SSH connection test
         #[arg(long, hide = true)]
@@ -109,14 +105,12 @@ async fn run_async(cmd: ServerCommands) -> Result<(), Box<dyn std::error::Error>
             http_port,
             https_port,
             install,
-            admin_user,
             no_test,
         } => {
             let public_ports = wizard::public_ports_from_cli(http_port, https_port)?;
             if let Some(host) = host {
                 let parsed_host = parse_add_host(&host);
                 let parsed_admin_user = parsed_host.admin_user.as_deref();
-                let admin_user = admin_user.as_deref().or(parsed_admin_user);
                 let install_if_missing = !no_test && (install || parsed_admin_user.is_some());
                 let _ = add_server(
                     &parsed_host.host,
@@ -131,7 +125,7 @@ async fn run_async(cmd: ServerCommands) -> Result<(), Box<dyn std::error::Error>
                         pre_detected_public_ports: None,
                         install_if_missing,
                         allow_install_prompt: !no_test && !install_if_missing,
-                        admin_user,
+                        admin_user: parsed_admin_user,
                     },
                 )
                 .await?;
@@ -143,7 +137,6 @@ async fn run_async(cmd: ServerCommands) -> Result<(), Box<dyn std::error::Error>
                     port,
                     public_ports,
                     test_ssh: !no_test,
-                    admin_user: admin_user.as_deref(),
                     key_path: ssh_key.as_deref(),
                 })
                 .await?;

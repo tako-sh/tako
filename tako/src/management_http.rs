@@ -11,6 +11,7 @@ mod auth;
 pub(crate) const MANAGEMENT_PORT: u16 = 9844;
 const MANAGEMENT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const MANAGEMENT_RPC_TIMEOUT: Duration = Duration::from_secs(5);
+const MANAGEMENT_PRESENCE_TIMEOUT: Duration = Duration::from_secs(2);
 const MANAGEMENT_DEPLOY_RPC_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const MANAGEMENT_UPLOAD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const HEADER_UPLOAD_APP: &str = "x-tako-app";
@@ -246,7 +247,15 @@ pub(crate) async fn send_command(
     host: &str,
     command: &Command,
 ) -> Result<Response, ManagementError> {
-    let client = http_client(MANAGEMENT_RPC_TIMEOUT)?;
+    send_command_with_timeout(host, command, MANAGEMENT_RPC_TIMEOUT).await
+}
+
+async fn send_command_with_timeout(
+    host: &str,
+    command: &Command,
+    timeout: Duration,
+) -> Result<Response, ManagementError> {
+    let client = http_client(timeout)?;
 
     let response = client
         .post(rpc_url(host))
@@ -256,6 +265,18 @@ pub(crate) async fn send_command(
         .map_err(|error| ManagementError::Message(error.to_string()))?;
 
     parse_response(response).await
+}
+
+pub(crate) async fn probe_presence(host: &str) -> Result<(), ManagementError> {
+    send_command_with_timeout(
+        host,
+        &Command::Hello {
+            protocol_version: tako_core::PROTOCOL_VERSION,
+        },
+        MANAGEMENT_PRESENCE_TIMEOUT,
+    )
+    .await
+    .map(|_| ())
 }
 
 pub(crate) async fn probe(host: &str) -> Result<ManagementProbe, ManagementError> {

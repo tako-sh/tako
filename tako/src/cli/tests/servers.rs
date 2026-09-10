@@ -50,8 +50,8 @@ fn servers_add_accepts_admin_user_host_shorthand() {
 }
 
 #[test]
-fn servers_add_parses_install_admin_user() {
-    let cli = Cli::try_parse_from([
+fn servers_add_rejects_admin_user_flag() {
+    let result = Cli::try_parse_from([
         "tako",
         "servers",
         "add",
@@ -61,18 +61,9 @@ fn servers_add_parses_install_admin_user() {
         "--install",
         "--admin-user",
         "ubuntu",
-    ])
-    .unwrap();
-    let Commands::Servers(server::ServerCommands::Add {
-        install,
-        admin_user,
-        ..
-    }) = cli.command.expect("command")
-    else {
-        panic!("expected Servers::Add");
-    };
-    assert!(install);
-    assert_eq!(admin_user.as_deref(), Some("ubuntu"));
+    ]);
+
+    assert!(result.is_err());
 }
 
 #[test]

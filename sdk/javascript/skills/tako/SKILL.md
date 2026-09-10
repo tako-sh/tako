@@ -250,7 +250,7 @@ tako logs --tail --json   # streaming JSONL records
 
 Add a deployment server.
 
-Interactive setup first checks `tako@host`. If that access is unavailable and the user accepts installation, Tako checks `root@host` and asks for another administrator only when root authentication is rejected. Use `--install` to skip the installation confirmation or pass `admin@host` to select the administrator explicitly.
+Interactive setup checks the management endpoint and `tako@host` SSH access. If the server is running but inaccessible, Tako offers to repair access; if its state is unknown, Tako offers to install or repair it. After confirmation, Tako asks for an administrator with `root` pre-filled. Pass `admin@host` to select the administrator without a prompt, or use `--install` to skip the install/repair confirmation.
 
 ### `tako servers list`
 

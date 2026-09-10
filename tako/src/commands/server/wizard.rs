@@ -10,8 +10,8 @@ mod ports;
 
 pub(super) use connection::detect_server_target;
 use connection::{
-    RootAccessOutcome, WizardConnectionResult, check_ssh_access_as, check_tako_connection,
-    root_access_outcome, trace_management_probe, verify_remote_management, verify_tailscale_host,
+    WizardConnectionResult, check_tako_connection, trace_management_probe,
+    verify_remote_management, verify_tailscale_host,
 };
 #[cfg(test)]
 use connection::{parse_detected_arch, parse_detected_libc, remote_management_unavailable_message};
@@ -49,7 +49,6 @@ pub(super) struct WizardDefaults<'a> {
     pub port: u16,
     pub public_ports: Option<ServerPublicPorts>,
     pub test_ssh: bool,
-    pub admin_user: Option<&'a str>,
     pub key_path: Option<&'a Path>,
 }
 
@@ -61,7 +60,6 @@ impl Default for WizardDefaults<'_> {
             port: 22,
             public_ports: None,
             test_ssh: true,
-            admin_user: None,
             key_path: None,
         }
     }
@@ -81,38 +79,56 @@ pub struct AddServerOptions<'a> {
     pub admin_user: Option<&'a str>,
 }
 
-async fn resolve_admin_user(
-    ssh_config: &SshConfig,
-    configured_user: Option<&str>,
-) -> Result<String, Box<dyn std::error::Error>> {
+fn resolve_admin_user(configured_user: Option<&str>) -> Result<String, Box<dyn std::error::Error>> {
     if let Some(user) = configured_user {
         return Ok(user.to_string());
     }
 
-    let root_access = output::with_spinner_async_simple(
-        "Checking root SSH access",
-        check_ssh_access_as(ssh_config, "root"),
-    )
-    .await;
-
-    match root_access_outcome(root_access)? {
-        RootAccessOutcome::UseRoot => Ok("root".to_string()),
-        RootAccessOutcome::PromptForUser => Ok(output::TextField::new("Admin SSH user").prompt()?),
-    }
+    Ok(output::TextField::new("Admin SSH user")
+        .with_default("root")
+        .prompt()?)
 }
 
-async fn check_tako_connection_with_recovery(
-    ssh_config: &SshConfig,
-) -> Result<WizardConnectionResult, String> {
-    let result = output::with_spinner_async_simple(
-        "Checking tako SSH access",
-        check_tako_connection(ssh_config),
-    )
-    .await;
-    if result.is_ok() {
+struct ServerConnectionCheck {
+    management_present: bool,
+    ssh: Result<WizardConnectionResult, String>,
+}
+
+async fn check_server_connection(ssh_config: &SshConfig) -> ServerConnectionCheck {
+    let check = async {
+        let (management, ssh) = tokio::join!(
+            crate::management_http::probe_presence(&ssh_config.host),
+            check_tako_connection(ssh_config),
+        );
+        let management_present = match management {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::debug!("Management presence probe failed: {error}");
+                false
+            }
+        };
+        ServerConnectionCheck {
+            management_present,
+            ssh,
+        }
+    };
+    let result = output::with_spinner_async_simple("Checking server", check).await;
+    if result.ssh.is_ok() {
         output::success("Connection successful");
     }
     result
+}
+
+fn recovery_prompt(management_present: bool, installed: Option<bool>) -> Option<&'static str> {
+    match (management_present, installed) {
+        (_, Some(true)) => None,
+        (true, Some(false)) => Some("tako-server needs repair. Repair it now?"),
+        (true, None) => {
+            Some("tako-server is running, but Tako cannot access it. Repair access now?")
+        }
+        (false, Some(false)) => Some("tako-server is not installed. Install it now?"),
+        (false, None) => Some("tako-server is unavailable. Install or repair it now?"),
+    }
 }
 
 pub(super) async fn run_add_server_wizard(
@@ -126,7 +142,6 @@ pub(super) async fn run_add_server_wizard(
         port: initial_port,
         public_ports: initial_public_ports,
         test_ssh,
-        admin_user: admin_user_default,
         key_path: initial_key_path,
     } = defaults;
 
@@ -300,25 +315,18 @@ pub(super) async fn run_add_server_wizard(
     if test_ssh {
         let host_span = output::scope(&host);
         let _t = output::timed(&format!("Test SSH connection to {host}:{port}"));
-        let mut result: Result<WizardConnectionResult, String> =
-            check_tako_connection_with_recovery(&ssh_config)
-                .instrument(host_span)
-                .await;
+        let check = check_server_connection(&ssh_config)
+            .instrument(host_span)
+            .await;
+        let mut result = check.ssh;
         drop(_t);
 
-        let needs_install = match &result {
-            Ok(info) => !info.installed,
-            Err(_) => true,
-        };
-        if needs_install {
-            let should_install = output::confirm_with_description(
-                "Install tako-server now?",
-                Some("Tako will try root first and ask for another admin user if needed."),
-                true,
-            )?;
+        let installed = result.as_ref().ok().map(|info| info.installed);
+        if let Some(prompt) = recovery_prompt(check.management_present, installed) {
+            let should_install = output::confirm(prompt, true)?;
             if should_install {
+                let admin_user = resolve_admin_user(None)?;
                 let public_ports = install_public_ports(initial_public_ports)?;
-                let admin_user = resolve_admin_user(&ssh_config, admin_user_default).await?;
                 result = Ok(install_start_and_verify(
                     &ssh_config,
                     &admin_user,
@@ -639,25 +647,26 @@ pub async fn add_server(
     if (!no_test || install_if_missing) && detected_target.is_none() {
         let ssh_config = SshConfig::from_server(host, port).with_key_path(key_path);
         let can_recover = install_if_missing || (allow_install_prompt && output::is_interactive());
-        let mut result = if can_recover && output::is_pretty() {
-            check_tako_connection_with_recovery(&ssh_config).await
+        let (management_present, mut result) = if can_recover {
+            let check = check_server_connection(&ssh_config).await;
+            (check.management_present, check.ssh)
         } else {
-            output::with_spinner_async_err(
+            let result = output::with_spinner_async_err(
                 "Connecting",
                 "Connection successful",
                 "Connection failed",
                 check_tako_connection(&ssh_config),
             )
-            .await
+            .await;
+            (false, result)
         };
 
-        let needs_install = match &result {
-            Ok(info) => !info.installed,
-            Err(_) => true,
-        };
+        let installed = result.as_ref().ok().map(|info| info.installed);
+        let recovery = recovery_prompt(management_present, installed);
+        let needs_install = recovery.is_some();
         if install_if_missing && needs_install {
             let admin_user = if output::is_interactive() {
-                resolve_admin_user(&ssh_config, admin_user).await?
+                resolve_admin_user(admin_user)?
             } else {
                 admin_user.unwrap_or("root").to_string()
             };
@@ -671,15 +680,14 @@ pub async fn add_server(
             )
             .await?);
             resolved_public_ports = Some(install_ports);
-        } else if allow_install_prompt && needs_install && output::is_interactive() {
-            let should_install = output::confirm_with_description(
-                "Install tako-server now?",
-                Some("Tako will try root first and ask for another admin user if needed."),
-                true,
-            )?;
+        } else if allow_install_prompt
+            && output::is_interactive()
+            && let Some(prompt) = recovery
+        {
+            let should_install = output::confirm(prompt, true)?;
             if should_install {
+                let admin_user = resolve_admin_user(admin_user)?;
                 let install_ports = install_public_ports(public_ports)?;
-                let admin_user = resolve_admin_user(&ssh_config, admin_user).await?;
                 result = Ok(install_start_and_verify(
                     &ssh_config,
                     &admin_user,

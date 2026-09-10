@@ -8,22 +8,6 @@ pub(super) struct WizardConnectionResult {
     pub(super) public_ports: Option<super::ServerPublicPorts>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub(super) enum RootAccessOutcome {
-    UseRoot,
-    PromptForUser,
-}
-
-pub(super) fn root_access_outcome(
-    result: crate::ssh::SshResult<()>,
-) -> crate::ssh::SshResult<RootAccessOutcome> {
-    match result {
-        Ok(()) => Ok(RootAccessOutcome::UseRoot),
-        Err(crate::ssh::SshError::Authentication(_)) => Ok(RootAccessOutcome::PromptForUser),
-        Err(error) => Err(error),
-    }
-}
-
 /// Connect, run `task`, and always disconnect, surfacing whichever error came first.
 async fn with_ssh<T>(
     ssh_config: SshConfig,
@@ -50,19 +34,21 @@ pub(super) async fn check_tako_connection(
             .map_err(|e| format!("Target detection failed: {e}"))?;
         tracing::debug!("Detected target: {}", target.label());
 
-        let (installed, version, server_name, public_ports) = match ssh.is_tako_installed().await {
-            Ok(true) => {
-                let ver = ssh.tako_version().await.ok().flatten();
-                let info = ssh.tako_server_info().await.ok();
-                let sn = info.as_ref().and_then(|info| info.server_name.clone());
-                let public_ports = info.map(|info| super::ServerPublicPorts {
-                    http_port: info.http_port,
-                    https_port: info.https_port,
-                });
-                (true, ver, sn, public_ports)
-            }
-            Ok(false) => (false, None, None, None),
-            Err(_) => (false, None, None, None),
+        let installed = ssh
+            .is_tako_installed()
+            .await
+            .map_err(|error| format!("Installation check failed: {error}"))?;
+        let (version, server_name, public_ports) = if installed {
+            let ver = ssh.tako_version().await.ok().flatten();
+            let info = ssh.tako_server_info().await.ok();
+            let sn = info.as_ref().and_then(|info| info.server_name.clone());
+            let public_ports = info.map(|info| super::ServerPublicPorts {
+                http_port: info.http_port,
+                https_port: info.https_port,
+            });
+            (ver, sn, public_ports)
+        } else {
+            (None, None, None)
         };
 
         if installed {
@@ -80,18 +66,6 @@ pub(super) async fn check_tako_connection(
         })
     })
     .await
-}
-
-pub(super) async fn check_ssh_access_as(
-    ssh_config: &SshConfig,
-    user: &str,
-) -> crate::ssh::SshResult<()> {
-    let mut ssh = SshClient::new(ssh_config.as_user(user));
-    ssh.connect().await?;
-    // Authentication is the probe's result; a best-effort disconnect must not
-    // turn accepted credentials into a false access failure.
-    let _ = ssh.disconnect().await;
-    Ok(())
 }
 
 pub(super) async fn install_tako_server_with_admin(

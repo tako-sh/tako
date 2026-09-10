@@ -70,32 +70,45 @@ fn server_not_installed_message_is_actionable() {
 }
 
 #[test]
-fn successful_root_probe_uses_root() {
-    assert!(matches!(
-        root_access_outcome(Ok(())).unwrap(),
-        RootAccessOutcome::UseRoot
-    ));
+fn recovery_prompt_reports_confirmed_missing_server() {
+    assert_eq!(
+        recovery_prompt(false, Some(false)),
+        Some("tako-server is not installed. Install it now?")
+    );
 }
 
 #[test]
-fn rejected_root_authentication_prompts_for_an_admin_user() {
-    assert!(matches!(
-        root_access_outcome(Err(crate::ssh::SshError::Authentication(
-            "key rejected".to_string()
-        )))
-        .unwrap(),
-        RootAccessOutcome::PromptForUser
-    ));
+fn recovery_prompt_repairs_access_when_management_is_running() {
+    assert_eq!(
+        recovery_prompt(true, None),
+        Some("tako-server is running, but Tako cannot access it. Repair access now?")
+    );
 }
 
 #[test]
-fn root_connection_failure_is_not_treated_as_a_username_problem() {
-    let error = root_access_outcome(Err(crate::ssh::SshError::Connection(
-        "connection refused".to_string(),
-    )))
-    .unwrap_err();
+fn recovery_prompt_repairs_inconsistent_running_install() {
+    assert_eq!(
+        recovery_prompt(true, Some(false)),
+        Some("tako-server needs repair. Repair it now?")
+    );
+}
 
-    assert!(matches!(error, crate::ssh::SshError::Connection(_)));
+#[test]
+fn recovery_prompt_handles_uncertain_server_state() {
+    assert_eq!(
+        recovery_prompt(false, None),
+        Some("tako-server is unavailable. Install or repair it now?")
+    );
+}
+
+#[test]
+fn recovery_prompt_skips_available_server() {
+    assert_eq!(recovery_prompt(true, Some(true)), None);
+}
+
+#[test]
+fn explicit_admin_user_is_used_without_prompting() {
+    assert_eq!(resolve_admin_user(Some("ubuntu")).unwrap(), "ubuntu");
 }
 
 #[test]

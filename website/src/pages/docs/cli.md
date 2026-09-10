@@ -169,7 +169,7 @@ Lists release/build history or rolls an environment back to a previous release. 
 ## Servers
 
 ```bash
-tako servers add [host|admin@host] [--name <name>] [--description <text>] [--port <ssh-port>] [--ssh-key <path>] [--http-port <port>] [--https-port <port>] [--install] [--admin-user <user>]
+tako servers add [host|admin@host] [--name <name>] [--description <text>] [--port <ssh-port>] [--ssh-key <path>] [--http-port <port>] [--https-port <port>] [--install]
 tako servers list
 tako servers ls
 tako status
@@ -180,7 +180,7 @@ tako servers rm [name]
 tako servers uninstall [name] [-y|--yes]
 ```
 
-`servers add` writes global `config.toml`, verifies SSH recovery access, enrolls signed management access, and records target metadata. If `tako@host` is unavailable, interactive setup offers to install or repair `tako-server`, checks `root@host`, and asks for another administrator only when root authentication is rejected. Use `--install` to skip the confirmation, or pass `admin@host` to select an administrator explicitly. `--ssh-key` pins a specific private key for the server; connections then use only that key instead of trying `~/.ssh` defaults and `ssh-agent`. The interactive wizard prompts for the key, prefilled with your default `~/.ssh` key.
+`servers add` writes global `config.toml`, checks the management endpoint and `tako@host` SSH access, enrolls signed management access, and records target metadata. If the server is running but inaccessible, interactive setup offers to repair access; if its state is unknown, it offers to install or repair it. After confirmation, Tako asks for an administrator with `root` pre-filled. Use `--install` to skip the confirmation, or pass `admin@host` to select the administrator without a prompt. `--ssh-key` pins a specific private key for the server; connections then use only that key instead of trying `~/.ssh` defaults and `ssh-agent`. The interactive wizard prompts for the key, prefilled with your default `~/.ssh` key.
 
 `status` prints a deployment snapshot grouped by server, with compact server summary, routes, and app rows.
 
