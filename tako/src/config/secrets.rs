@@ -81,7 +81,7 @@ impl EncryptedSecretValue {
 }
 
 pub fn secret_expires_on_prompt_hint() -> &'static str {
-    "Optional. Use YYYY-MM-DD, in 30 days, or leave blank."
+    "Use YYYY-MM-DD or in 30 days. No expiration if left blank."
 }
 
 pub fn normalize_secret_expires_on(input: &str) -> Result<Option<String>> {

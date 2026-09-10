@@ -20,8 +20,7 @@ pub(super) fn prompt_init_ssl_token(
         None,
         "Cloudflare API token for wildcard certificates",
     )?;
-    let expires_on = output::TextField::new("Expires on")
-        .with_hint(crate::config::secret_expires_on_prompt_hint())
+    let expires_on = crate::commands::secret::secret_expires_on_field("Expires on")
         .prompt_validated(|value| {
             crate::config::normalize_secret_expires_on(value)
                 .map(|_| ())

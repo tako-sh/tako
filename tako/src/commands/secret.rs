@@ -200,14 +200,18 @@ pub(crate) fn read_secret_expires_on(
         return Ok(None);
     }
 
-    let raw = output::TextField::new(prompt)
-        .with_hint(crate::config::secret_expires_on_prompt_hint())
-        .prompt_validated(|value| {
-            crate::config::normalize_secret_expires_on(value)
-                .map(|_| ())
-                .map_err(|e| e.to_string())
-        })?;
+    let raw = secret_expires_on_field(prompt).prompt_validated(|value| {
+        crate::config::normalize_secret_expires_on(value)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    })?;
     crate::config::normalize_secret_expires_on(&raw).map_err(Into::into)
+}
+
+pub(crate) fn secret_expires_on_field(prompt: &str) -> output::TextField<'_> {
+    output::TextField::new(prompt)
+        .optional()
+        .with_hint(crate::config::secret_expires_on_prompt_hint())
 }
 
 async fn run_async(
@@ -386,8 +390,7 @@ fn read_secret_expires_on_in_wizard(
 ) -> std::io::Result<Option<String>> {
     let raw = wizard.text_field_named_validated_with_spinner(
         "Expires",
-        output::TextField::new("Expires on")
-            .with_hint(crate::config::secret_expires_on_prompt_hint()),
+        secret_expires_on_field("Expires on"),
         |value| {
             crate::config::normalize_secret_expires_on(&value)
                 .map(|_| ())

@@ -290,6 +290,14 @@ fn normalize_secret_expires_on_accepts_date_and_blank() {
 }
 
 #[test]
+fn secret_expires_on_prompt_explains_blank_value() {
+    assert_eq!(
+        secret_expires_on_prompt_hint(),
+        "Use YYYY-MM-DD or in 30 days. No expiration if left blank."
+    );
+}
+
+#[test]
 fn normalize_secret_expires_on_accepts_relative_days() {
     let now = OffsetDateTime::parse(
         "2026-05-17T13:45:12Z",
