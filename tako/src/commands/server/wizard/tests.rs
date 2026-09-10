@@ -52,6 +52,21 @@ fn public_ports_from_cli_rejects_invalid_values() {
 }
 
 #[test]
+fn install_public_ports_uses_defaults_when_unspecified() {
+    assert_eq!(install_public_ports(None), ServerPublicPorts::default());
+}
+
+#[test]
+fn install_public_ports_preserves_cli_overrides() {
+    let requested = ServerPublicPorts {
+        http_port: 8080,
+        https_port: 8443,
+    };
+
+    assert_eq!(install_public_ports(Some(requested)), requested);
+}
+
+#[test]
 fn remote_management_message_mentions_tailscale_without_endpoint_details() {
     let message = remote_management_unavailable_message();
 

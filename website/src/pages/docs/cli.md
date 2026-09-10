@@ -180,7 +180,7 @@ tako servers rm [name]
 tako servers uninstall [name] [-y|--yes]
 ```
 
-`servers add` writes global `config.toml`, checks the management endpoint and `tako@host` SSH access, enrolls signed management access, and records target metadata. If the server is running but inaccessible, interactive setup offers to repair access; if its state is unknown, it offers to install or repair it. After confirmation, Tako asks for an administrator with `root` pre-filled. Use `--install` to skip the confirmation, or pass `admin@host` to select the administrator without a prompt. `--ssh-key` pins a specific private key for the server; connections then use only that key instead of trying `~/.ssh` defaults and `ssh-agent`. The interactive wizard prompts for the key, prefilled with your default `~/.ssh` key.
+`servers add` writes global `config.toml`, checks the management endpoint and `tako@host` SSH access, enrolls signed management access, and records target metadata. If the server is running but inaccessible, interactive setup offers to repair access; if its state is unknown, it offers to install or repair it. After confirmation, Tako asks for an administrator with `root` pre-filled. Use `--install` to skip the confirmation, or pass `admin@host` to select the administrator without a prompt. Public HTTP and HTTPS ports default to `80` and `443`; override them with `--http-port` and `--https-port`. `--ssh-key` pins a specific private key for the server; connections then use only that key instead of trying `~/.ssh` defaults and `ssh-agent`. The interactive wizard prompts for the key, prefilled with your default `~/.ssh` key.
 
 `status` prints a deployment snapshot grouped by server, with compact server summary, routes, and app rows.
 

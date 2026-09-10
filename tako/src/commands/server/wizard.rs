@@ -326,7 +326,7 @@ pub(super) async fn run_add_server_wizard(
             let should_install = output::confirm(prompt, true)?;
             if should_install {
                 let admin_user = resolve_admin_user(None)?;
-                let public_ports = install_public_ports(initial_public_ports)?;
+                let public_ports = install_public_ports(initial_public_ports);
                 result = Ok(install_start_and_verify(
                     &ssh_config,
                     &admin_user,
@@ -345,7 +345,7 @@ pub(super) async fn run_add_server_wizard(
         ) {
             let should_start = output::confirm("Start tako-server now?", true)?;
             if should_start {
-                let public_ports = install_public_ports(initial_public_ports)?;
+                let public_ports = install_public_ports(initial_public_ports);
                 result =
                     Ok(
                         start_and_verify(&ssh_config, public_ports, VerifyLabels::SERVER, true)
@@ -670,7 +670,7 @@ pub async fn add_server(
             } else {
                 admin_user.unwrap_or("root").to_string()
             };
-            let install_ports = install_public_ports(public_ports)?;
+            let install_ports = install_public_ports(public_ports);
             result = Ok(install_start_and_verify(
                 &ssh_config,
                 &admin_user,
@@ -687,7 +687,7 @@ pub async fn add_server(
             let should_install = output::confirm(prompt, true)?;
             if should_install {
                 let admin_user = resolve_admin_user(admin_user)?;
-                let install_ports = install_public_ports(public_ports)?;
+                let install_ports = install_public_ports(public_ports);
                 result = Ok(install_start_and_verify(
                     &ssh_config,
                     &admin_user,
@@ -713,7 +713,7 @@ pub async fn add_server(
                 output::confirm("Start tako-server now?", true)?
             };
             if should_configure {
-                let configure_ports = install_public_ports(public_ports)?;
+                let configure_ports = install_public_ports(public_ports);
                 result =
                     Ok(
                         start_and_verify(&ssh_config, configure_ports, VerifyLabels::SERVER, false)

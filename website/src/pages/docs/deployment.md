@@ -46,7 +46,7 @@ or:
 tako servers add ubuntu@my-server.tailnet.ts.net
 ```
 
-Interactive setup checks the management endpoint and `tako@host` SSH access. If the server is running but inaccessible, Tako offers to repair access; if its state is unknown, Tako offers to install or repair it. After confirmation, Tako asks for an administrator with `root` pre-filled. Use `--install` to skip the confirmation or `admin@host` to select the administrator without a prompt. The add flow stores host, SSH port, public HTTP/HTTPS ports, description, and detected target metadata (`arch`, `libc`).
+Interactive setup checks the management endpoint and `tako@host` SSH access. If the server is running but inaccessible, Tako offers to repair access; if its state is unknown, Tako offers to install or repair it. After confirmation, Tako asks for an administrator with `root` pre-filled. Use `--install` to skip the confirmation or `admin@host` to select the administrator without a prompt. Public HTTP and HTTPS ports default to `80` and `443`; override them with `--http-port` and `--https-port`. The add flow stores host, SSH port, public ports, description, and detected target metadata (`arch`, `libc`).
 
 ## Configure An Environment
 
