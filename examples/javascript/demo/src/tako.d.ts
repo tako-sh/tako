@@ -67,6 +67,7 @@ declare module "tako.sh" {
     /** Channel `"mission-log"` route params, message metadata, and transport. */
     "mission-log": import("tako.sh").InferChannel<typeof import("./channels/mission-log").default>;
   }
+
 }
 
 interface TakoUserEnv {}
