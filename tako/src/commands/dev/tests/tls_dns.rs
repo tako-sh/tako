@@ -198,7 +198,7 @@ fn sudo_setup_action_items_omits_absent_steps() {
 }
 
 #[tokio::test]
-async fn local_https_probe_accepts_redirect_without_following_it() {
+async fn local_https_probe_rejects_untrusted_certificate() {
     use openssl::pkey::PKey;
     use openssl::ssl::{SslAcceptor, SslMethod};
     use openssl::x509::X509;
@@ -224,7 +224,9 @@ async fn local_https_probe_accepts_redirect_without_following_it() {
         stream
             .set_write_timeout(Some(Duration::from_secs(5)))
             .unwrap();
-        let mut stream = acceptor.accept(stream).unwrap();
+        let Ok(mut stream) = acceptor.accept(stream) else {
+            return;
+        };
         let mut request = [0; 4096];
         stream.read(&mut request).unwrap();
         // Port zero makes following the redirect fail without contacting a remote host.
@@ -239,8 +241,56 @@ async fn local_https_probe_accepts_redirect_without_following_it() {
     .await;
     server.await.unwrap();
     assert!(
+        result.is_err(),
+        "the probe must not accept an untrusted local certificate: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn local_https_probe_accepts_certificate_from_explicitly_trusted_ca() {
+    use openssl::pkey::PKey;
+    use openssl::ssl::{SslAcceptor, SslMethod};
+    use openssl::x509::X509;
+    use std::io::{Read, Write};
+
+    let ca = LocalCA::generate().unwrap();
+    let cert = ca.generate_leaf_cert("probe.test").unwrap();
+    let mut acceptor = SslAcceptor::mozilla_intermediate(SslMethod::tls()).unwrap();
+    acceptor
+        .set_certificate(&X509::from_pem(cert.cert_pem.as_bytes()).unwrap())
+        .unwrap();
+    acceptor
+        .set_private_key(&PKey::private_key_from_pem(cert.key_pem.as_bytes()).unwrap())
+        .unwrap();
+    let acceptor = acceptor.build();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::task::spawn_blocking(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let Ok(mut stream) = acceptor.accept(stream) else {
+            return;
+        };
+        let mut request = [0; 4096];
+        stream.read(&mut request).unwrap();
+        stream
+            .write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .unwrap();
+    });
+
+    let result =
+        crate::commands::dev::prepare::local::localhost_https_host_reachable_via_ip_with_root(
+            "probe.test",
+            std::net::Ipv4Addr::LOCALHOST,
+            port,
+            2000,
+            ca.ca_cert_pem(),
+        )
+        .await;
+
+    server.await.unwrap();
+    assert!(
         result.is_ok(),
-        "a redirect proves the local server is reachable: {result:?}"
+        "an explicitly trusted CA should succeed: {result:?}"
     );
 }
 

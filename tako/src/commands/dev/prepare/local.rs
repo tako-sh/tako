@@ -11,6 +11,37 @@ pub(crate) async fn localhost_https_host_reachable_via_ip(
     port: u16,
     timeout_ms: u64,
 ) -> Result<(), String> {
+    localhost_https_host_reachable_via_ip_with_trusted_root(
+        host, connect_ip, port, timeout_ms, None,
+    )
+    .await
+}
+
+#[cfg(test)]
+pub(crate) async fn localhost_https_host_reachable_via_ip_with_root(
+    host: &str,
+    connect_ip: std::net::Ipv4Addr,
+    port: u16,
+    timeout_ms: u64,
+    trusted_root_pem: &str,
+) -> Result<(), String> {
+    localhost_https_host_reachable_via_ip_with_trusted_root(
+        host,
+        connect_ip,
+        port,
+        timeout_ms,
+        Some(trusted_root_pem),
+    )
+    .await
+}
+
+async fn localhost_https_host_reachable_via_ip_with_trusted_root(
+    host: &str,
+    connect_ip: std::net::Ipv4Addr,
+    port: u16,
+    timeout_ms: u64,
+    trusted_root_pem: Option<&str>,
+) -> Result<(), String> {
     if !connect_ip.is_loopback() {
         return Err("local HTTPS probe requires a loopback address".to_string());
     }
@@ -22,19 +53,20 @@ pub(crate) async fn localhost_https_host_reachable_via_ip(
     base_url.push('/');
 
     let addr = std::net::SocketAddr::from((connect_ip, port));
-    // Skip TLS verification — the probe checks connectivity (proxy + dev
-    // server responding), not certificate validity. The browser does its own
-    // chain verification against the system trust store.
-    // CodeQL[rust/disabled-certificate-check]: loopback connectivity probe; redirects and proxies are disabled.
-    let client = match reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)
+    // The dev CA is installed in the system trust store during setup, so this
+    // probe verifies both the local proxy connection and its certificate.
+    let mut client_builder = reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_millis(timeout_ms))
         .timeout(Duration::from_millis(timeout_ms))
-        .resolve(host, addr)
-        .build()
-    {
+        .resolve(host, addr);
+    if let Some(pem) = trusted_root_pem {
+        let certificate = reqwest::Certificate::from_pem(pem.as_bytes())
+            .map_err(|e| format!("invalid local HTTPS probe root certificate: {e}"))?;
+        client_builder = client_builder.add_root_certificate(certificate);
+    }
+    let client = match client_builder.build() {
         Ok(client) => client,
         Err(e) => return Err(format!("failed to build HTTPS probe client: {e}")),
     };

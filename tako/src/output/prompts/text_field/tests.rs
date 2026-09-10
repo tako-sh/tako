@@ -163,6 +163,27 @@ fn password_completion_uses_length_summary_for_long_values() {
 }
 
 #[test]
+fn optional_text_field_can_display_a_value_for_a_confirmed_blank_answer() {
+    assert_eq!(
+        TextField::new("Expires on")
+            .optional()
+            .with_empty_completion("never")
+            .completion_display_value(""),
+        "never"
+    );
+}
+
+#[test]
+fn optional_text_field_without_an_empty_completion_stays_blank() {
+    assert_eq!(
+        TextField::new("Expires on")
+            .optional()
+            .completion_display_value(""),
+        ""
+    );
+}
+
+#[test]
 fn prompt_validation_marker_offset_starts_from_label_line() {
     assert_eq!(prompt_validation_marker_offset(None), 2);
     assert_eq!(prompt_validation_marker_offset(Some("warning")), 3);

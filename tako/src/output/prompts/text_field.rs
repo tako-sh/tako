@@ -25,6 +25,7 @@ pub struct TextField<'a> {
     required: bool,
     trimmed: bool,
     default: Option<&'a str>,
+    empty_completion: Option<&'a str>,
     suggestions: &'a [String],
     password: bool,
     multiline_paste: bool,
@@ -42,6 +43,7 @@ impl<'a> TextField<'a> {
             required: true,
             trimmed: true,
             default: None,
+            empty_completion: None,
             suggestions: &[],
             password: false,
             multiline_paste: false,
@@ -96,6 +98,12 @@ impl<'a> TextField<'a> {
         self
     }
 
+    /// Display this value after an optional field is confirmed blank.
+    pub fn with_empty_completion(mut self, value: &'a str) -> Self {
+        self.empty_completion = Some(value);
+        self
+    }
+
     pub fn suggestions(mut self, suggestions: &'a [String]) -> Self {
         self.suggestions = suggestions;
         self
@@ -110,8 +118,8 @@ impl<'a> TextField<'a> {
     }
 
     pub(super) fn completion_display_value(&self, value: &str) -> String {
-        if self.password && value.is_empty() && !self.required {
-            String::new()
+        if value.is_empty() && !self.required {
+            self.empty_completion.unwrap_or_default().to_string()
         } else if self.password {
             let chars = value.chars().collect::<Vec<_>>();
             theme_muted(raw::password_display_value(&chars)).to_string()

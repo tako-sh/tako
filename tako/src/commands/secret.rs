@@ -211,6 +211,7 @@ pub(crate) fn read_secret_expires_on(
 pub(crate) fn secret_expires_on_field(prompt: &str) -> output::TextField<'_> {
     output::TextField::new(prompt)
         .optional()
+        .with_empty_completion("never")
         .with_hint(crate::config::secret_expires_on_prompt_hint())
 }
 

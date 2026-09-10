@@ -669,16 +669,37 @@ async fn send_client_message(
 }
 
 fn local_proxy_client(local_host: &str, listen_addr: &str) -> Result<reqwest::Client, String> {
+    local_proxy_client_with_trusted_root(local_host, listen_addr, None)
+}
+
+#[cfg(test)]
+fn local_proxy_client_with_root(
+    local_host: &str,
+    listen_addr: &str,
+    trusted_root_pem: &str,
+) -> Result<reqwest::Client, String> {
+    local_proxy_client_with_trusted_root(local_host, listen_addr, Some(trusted_root_pem))
+}
+
+fn local_proxy_client_with_trusted_root(
+    local_host: &str,
+    listen_addr: &str,
+    trusted_root_pem: Option<&str>,
+) -> Result<reqwest::Client, String> {
     let listen_addr = local_proxy_listen_addr(listen_addr)?;
     if !listen_addr.ip().is_loopback() {
         return Err("tunnel forwarding requires a loopback proxy address".to_string());
     }
-    reqwest::Client::builder()
-        // CodeQL[rust/disabled-certificate-check]: local dev TLS only; loopback enforced, proxies and redirects disabled.
-        .danger_accept_invalid_certs(true)
+    let mut client_builder = reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
-        .resolve_to_addrs(local_host, &[listen_addr])
+        .resolve_to_addrs(local_host, &[listen_addr]);
+    if let Some(pem) = trusted_root_pem {
+        let certificate = reqwest::Certificate::from_pem(pem.as_bytes())
+            .map_err(|error| format!("invalid tunnel local proxy root certificate: {error}"))?;
+        client_builder = client_builder.add_root_certificate(certificate);
+    }
+    client_builder
         .build()
         .map_err(|error| format!("failed to build tunnel HTTP client: {error}"))
 }
@@ -1091,6 +1112,100 @@ mod tests {
         for address in ["127.0.0.1:443", "127.77.0.1:443", "[::1]:443"] {
             assert!(local_proxy_client("app.test", address).is_ok());
         }
+    }
+
+    #[tokio::test]
+    async fn local_proxy_client_rejects_untrusted_certificate() {
+        use openssl::pkey::PKey;
+        use openssl::ssl::{SslAcceptor, SslMethod};
+        use openssl::x509::X509;
+
+        let ca = tako::dev::LocalCA::generate().expect("generate test CA");
+        let cert = ca
+            .generate_leaf_cert("app.test")
+            .expect("generate test certificate");
+        let mut acceptor =
+            SslAcceptor::mozilla_intermediate(SslMethod::tls()).expect("create TLS acceptor");
+        acceptor
+            .set_certificate(&X509::from_pem(cert.cert_pem.as_bytes()).expect("parse cert"))
+            .expect("set cert");
+        acceptor
+            .set_private_key(
+                &PKey::private_key_from_pem(cert.key_pem.as_bytes()).expect("parse key"),
+            )
+            .expect("set key");
+        let acceptor = acceptor.build();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind TLS fixture");
+        let port = listener.local_addr().expect("fixture address").port();
+        let server = tokio::task::spawn_blocking(move || {
+            let Ok((stream, _)) = listener.accept() else {
+                return;
+            };
+            let _ = acceptor.accept(stream);
+        });
+
+        let client = local_proxy_client("app.test", &format!("127.0.0.1:{port}"))
+            .expect("build local proxy client");
+        let result = client.get(format!("https://app.test:{port}/")).send().await;
+
+        server.await.expect("server task");
+        assert!(
+            result.is_err(),
+            "the local proxy client must reject an untrusted certificate"
+        );
+    }
+
+    #[tokio::test]
+    async fn local_proxy_client_accepts_certificate_from_explicitly_trusted_ca() {
+        use openssl::pkey::PKey;
+        use openssl::ssl::{SslAcceptor, SslMethod};
+        use openssl::x509::X509;
+        use std::io::{Read, Write};
+
+        let ca = tako::dev::LocalCA::generate().expect("generate test CA");
+        let cert = ca
+            .generate_leaf_cert("app.test")
+            .expect("generate test certificate");
+        let mut acceptor =
+            SslAcceptor::mozilla_intermediate(SslMethod::tls()).expect("create TLS acceptor");
+        acceptor
+            .set_certificate(&X509::from_pem(cert.cert_pem.as_bytes()).expect("parse cert"))
+            .expect("set cert");
+        acceptor
+            .set_private_key(
+                &PKey::private_key_from_pem(cert.key_pem.as_bytes()).expect("parse key"),
+            )
+            .expect("set key");
+        let acceptor = acceptor.build();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind TLS fixture");
+        let port = listener.local_addr().expect("fixture address").port();
+        let server = tokio::task::spawn_blocking(move || {
+            let Ok((stream, _)) = listener.accept() else {
+                return;
+            };
+            let Ok(mut stream) = acceptor.accept(stream) else {
+                return;
+            };
+            let mut request = [0; 4096];
+            let _ = stream.read(&mut request);
+            let _ = stream.write_all(
+                b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+        });
+
+        let client = local_proxy_client_with_root(
+            "app.test",
+            &format!("127.0.0.1:{port}"),
+            ca.ca_cert_pem(),
+        )
+        .expect("build local proxy client");
+        let result = client.get(format!("https://app.test:{port}/")).send().await;
+
+        server.await.expect("server task");
+        assert!(
+            result.is_ok(),
+            "an explicitly trusted CA should succeed: {result:?}"
+        );
     }
 
     #[test]
