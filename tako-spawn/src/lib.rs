@@ -333,7 +333,11 @@ mod tests {
         let mut isolation = ProcessIsolation {
             resource_limits: ResourceLimits {
                 open_files: Some(128),
-                processes: Some(64),
+                // A process-count limit is per real UID on Linux. The shared
+                // CI runner may already have more than 64 processes for
+                // `nobody`, which prevents the shell used by this test from
+                // forking `cat` before it can verify the other limits.
+                processes: None,
                 address_space_bytes: Some(512 * 1024 * 1024),
             },
             ..Default::default()
