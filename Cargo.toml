@@ -20,9 +20,9 @@ edition = "2024"
 [workspace.dependencies]
 async-trait = "0.1"
 openssl = { version = "0.10", features = ["vendored"] }
-pingora-core = "0.8"
-pingora-proxy = "0.8"
-pingora-http = "0.8"
+pingora-core = "0.9"
+pingora-proxy = "0.9"
+pingora-http = "0.9"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ctrlc = "3.5"

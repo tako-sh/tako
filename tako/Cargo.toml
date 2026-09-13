@@ -55,9 +55,9 @@ notify-debouncer-mini = "0.7"
 
 # HTTP proxy/server
 openssl.workspace = true
-pingora-core = { version = "0.8", default-features = false, features = ["openssl"] }
-pingora-proxy = { version = "0.8", default-features = false, features = ["openssl"] }
-pingora-http = "0.8"
+pingora-core = { version = "0.9", default-features = false, features = ["openssl"] }
+pingora-proxy = { version = "0.9", default-features = false, features = ["openssl"] }
+pingora-http = "0.9"
 hickory-proto = "0.26.1"
 
 # HTTP client for proxying
