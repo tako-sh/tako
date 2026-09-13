@@ -5,7 +5,7 @@ edition.workspace = true
 publish = false
 
 [dependencies]
-jsonschema = { version = "0.54.0", default-features = false }
+jsonschema = { version = "0.56.0", default-features = false }
 parking_lot = "0.12"
 percent-encoding = "2.3"
 postgres = "0.19"

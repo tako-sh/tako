@@ -42,7 +42,7 @@
   },
   "devDependencies": {
     "@types/bun": "^1.4.0",
-    "oxfmt": "0.66.0",
+    "oxfmt": "0.67.0",
     "oxlint": "^1.79.0",
     "oxlint-tsgolint": "^7.0.2001"
   }
