@@ -240,6 +240,7 @@ async fn local_https_probe_rejects_untrusted_certificate() {
     )
     .await;
     server.await.unwrap();
+    // CodeQL[rust/cleartext-logging]: assertion output contains only a local test probe error.
     assert!(
         result.is_err(),
         "the probe must not accept an untrusted local certificate: {result:?}"
@@ -288,6 +289,7 @@ async fn local_https_probe_accepts_certificate_from_explicitly_trusted_ca() {
         .await;
 
     server.await.unwrap();
+    // CodeQL[rust/cleartext-logging]: assertion output contains only a local test probe error.
     assert!(
         result.is_ok(),
         "an explicitly trusted CA should succeed: {result:?}"

@@ -6,6 +6,7 @@ use std::time::Duration;
 
 mod transform;
 
+// CodeQL[rust/hard-coded-cryptographic-value]: deterministic non-production key for signing tests.
 const SECRET: &str = env!("CARGO_PKG_NAME");
 const WEBP_64X32: &str =
     "UklGRjYAAABXRUJQVlA4ICoAAAAQAwCdASpAACAAPpFIn0ulpCKhpAgAsBIJaQAAH2A8tGAA/vjO9XgAAAA=";
