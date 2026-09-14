@@ -234,13 +234,6 @@ async fn list_backups(
     target: &target::BackupTarget,
     servers: &ServersToml,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    output::section("Backups");
-    output::info(&format!(
-        "{} ({})",
-        output::strong(&target.app_name),
-        output::strong(&target.env)
-    ));
-
     let results = send_typed_to_servers::<BackupListResponse>(
         &target.server_names,
         servers,
@@ -254,6 +247,45 @@ async fn list_backups(
         ),
     )
     .await?;
+
+    if output::is_json() {
+        let mut servers_json = Vec::new();
+        let mut any_success = false;
+        let mut errors = Vec::new();
+        for (server_name, result) in results {
+            match result {
+                Ok(response) => {
+                    any_success = true;
+                    servers_json.push(serde_json::json!({
+                        "name": server_name,
+                        "backups": response.backups,
+                    }));
+                }
+                Err(error) => errors.push(serde_json::json!({
+                    "name": server_name,
+                    "error": error.to_string(),
+                })),
+            }
+        }
+        if !any_success {
+            return Err("Failed to query backups from all target servers".into());
+        }
+        return output::json_result(serde_json::json!({
+            "ok": true,
+            "command": "backups",
+            "app": target.app_name,
+            "environment": target.env,
+            "servers": servers_json,
+            "errors": errors,
+        }));
+    }
+
+    output::section("Backups");
+    output::info(&format!(
+        "{} ({})",
+        output::strong(&target.app_name),
+        output::strong(&target.env)
+    ));
 
     let mut any_success = false;
     for (server_name, result) in results {
@@ -288,13 +320,6 @@ async fn backup_status(
     target: &target::BackupTarget,
     servers: &ServersToml,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    output::section("Backups");
-    output::info(&format!(
-        "{} ({})",
-        output::strong(&target.app_name),
-        output::strong(&target.env)
-    ));
-
     let results = send_typed_to_servers::<BackupStatusResponse>(
         &target.server_names,
         servers,
@@ -308,6 +333,45 @@ async fn backup_status(
         ),
     )
     .await?;
+
+    if output::is_json() {
+        let mut servers_json = Vec::new();
+        let mut any_success = false;
+        let mut errors = Vec::new();
+        for (server_name, result) in results {
+            match result {
+                Ok(status) => {
+                    any_success = true;
+                    servers_json.push(serde_json::json!({
+                        "name": server_name,
+                        "status": status,
+                    }));
+                }
+                Err(error) => errors.push(serde_json::json!({
+                    "name": server_name,
+                    "error": error.to_string(),
+                })),
+            }
+        }
+        if !any_success {
+            return Err("Failed to query backup status from all target servers".into());
+        }
+        return output::json_result(serde_json::json!({
+            "ok": true,
+            "command": "backups",
+            "app": target.app_name,
+            "environment": target.env,
+            "servers": servers_json,
+            "errors": errors,
+        }));
+    }
+
+    output::section("Backups");
+    output::info(&format!(
+        "{} ({})",
+        output::strong(&target.app_name),
+        output::strong(&target.env)
+    ));
 
     let mut any_success = false;
     for (server_name, result) in results {

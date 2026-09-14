@@ -188,11 +188,12 @@ pub(super) fn request_is_proxy_cacheable(request: &RequestHeader) -> bool {
 }
 
 pub(super) fn build_proxy_cache_key(host: &str, uri: &str) -> CacheKey {
-    CacheKey::new(
-        host.trim().to_ascii_lowercase(),
-        uri.as_bytes().to_vec(),
-        "",
-    )
+    let host = host.trim().to_ascii_lowercase();
+    let mut primary = Vec::with_capacity(size_of::<u64>() + host.len() + uri.len());
+    primary.extend_from_slice(&(host.len() as u64).to_be_bytes());
+    primary.extend_from_slice(host.as_bytes());
+    primary.extend_from_slice(uri.as_bytes());
+    CacheKey::new(primary, "")
 }
 
 fn response_cache_defaults() -> &'static CacheMetaDefaults {

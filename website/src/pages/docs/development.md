@@ -21,7 +21,7 @@ Default URL:
 https://<app>.test/
 ```
 
-The CLI is a client for a persistent `tako-dev-server` daemon. It starts the daemon when needed, registers the selected config file, streams logs, and attaches to existing sessions.
+The CLI is a client for a persistent `tako-dev-server` daemon. It starts the daemon when needed, registers the selected config file, streams logs, and attaches to existing sessions. `tako dev --json` skips the logo and TUI and writes JSONL to stdout: a ready object with the app URL, then log and event records.
 
 ## What `tako dev` Does
 

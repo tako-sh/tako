@@ -224,12 +224,11 @@ async fn bind_listener(
 ) -> Result<Listener> {
     let addr = address.as_ref();
     if let Some(fds_table) = fds {
-        let mut table = fds_table.lock().await;
-        if let Some(fd) = table.get(addr).copied() {
+        if let Some(fd) = fds_table.lock().get(addr).copied() {
             return listener_from_raw_fd(fd);
         }
         let listener = bind_new_listener(address).await?;
-        table.add(addr.to_string(), listener.as_raw_fd());
+        fds_table.lock().add(addr.to_string(), listener.as_raw_fd());
         return Ok(listener);
     }
 
@@ -344,7 +343,7 @@ impl ProxyProtocolTlsAcceptor {
 
     async fn tls_handshake(&self, stream: L4Stream) -> Result<Stream> {
         let stream = if let Some(callbacks) = self.callbacks.as_ref() {
-            handshake_with_callback(&self.acceptor, stream, callbacks).await?
+            handshake_with_callback(&self.acceptor, stream, callbacks.as_ref()).await?
         } else {
             handshake(&self.acceptor, stream).await?
         };

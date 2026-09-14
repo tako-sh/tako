@@ -28,7 +28,7 @@ Progress, prompts, diagnostics, and logs go to stderr. Command results and machi
 
 App-scoped commands that honor `-c`: `init`, `dev`, `run`, `logs`, `deploy`, `releases`, `backups`, `delete`, `secrets`, `credentials`, `storages`, `generate`, and project-context `scale`.
 
-For finite commands, `--json` prints one final object. Commands without a specialized schema use `{"ok":true,"command":"<command>"}`. Failures print `{"ok":false,"error":{"message":"..."}}` on stdout and the human-readable error on stderr. `tako logs --tail --json` is the streaming exception: it emits one structured log event per stdout line until interrupted. `tako run` is also an exception: child stdout stays untouched and no JSON result object is appended.
+For finite commands, `--json` prints one final object. Commands without a specialized schema use `{"ok":true,"command":"<command>"}`. Failures print `{"ok":false,"error":{"message":"..."}}` on stdout and the human-readable error on stderr. Specialized objects: `status` includes `servers`; `doctor` includes paths, CA, dev server, apps, and proxy checks; `servers list`, `secrets list`, `credentials list`, `dev list`, `backups list`/`status`, and `releases list` include their collections. Streaming exceptions keep stdout as JSONL until interrupted: `tako logs --tail --json` emits one log record per line, and `tako dev --json` emits a ready object, then log and event records, with no logo or TUI. `tako run` is also an exception: child stdout stays untouched and no JSON result object is appended.
 
 Installed CLIs send an anonymous event per command so we can count unique users and see which commands run. Set `TAKO_TELEMETRY=0` to opt out. See [Usage stats](#usage-stats).
 
@@ -100,13 +100,15 @@ tako dev ls
 
 `stop` without a name stops the app for the selected config file. `--all` stops all registered dev apps. `list` shows currently registered dev apps and any active tunnel URLs.
 
+Global `--json` skips the interactive UI. `tako dev --json` prints a ready object with `app`, `url`, and `hosts`, then JSONL `log` and `event` records. `tako dev list --json` prints one object with an `apps` array.
+
 ## `tako doctor`
 
 ```bash
 tako doctor
 ```
 
-Prints local diagnostics for the dev daemon, local DNS, TLS files, and platform-specific proxy setup.
+Prints local diagnostics for the dev daemon, local DNS, TLS files, and platform-specific proxy setup. Global `--json` emits one object with `paths`, `ca`, `dev_server`, `apps`, and platform `proxy` checks instead of the human report.
 
 ## `tako run`
 

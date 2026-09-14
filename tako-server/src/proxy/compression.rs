@@ -522,7 +522,9 @@ mod tests {
     fn skips_range_responses() {
         let request = request(Some("gzip"));
         let mut response = response("application/json", MIN_COMPRESS_BODY_BYTES);
-        response.status = pingora_http::StatusCode::PARTIAL_CONTENT;
+        response
+            .set_status(pingora_http::StatusCode::PARTIAL_CONTENT)
+            .expect("set partial-content status");
         response
             .insert_header("Content-Range", "bytes 0-99/1000")
             .expect("insert content range");

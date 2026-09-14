@@ -43,6 +43,10 @@ pub(super) enum PrepareOutcome {
     AlreadyConnected,
 }
 
+pub(super) fn attach_dev_ui(stdin_tty: bool, stdout_tty: bool) -> bool {
+    !crate::output::is_json() && stdin_tty && stdout_tty
+}
+
 pub(super) async fn prepare(
     public_port: u16,
     variant: Option<String>,
@@ -267,7 +271,10 @@ pub(super) async fn prepare(
 
     // If the app is already running under this config, connect as a client
     // unless --restart asked for a hard process restart.
-    let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    let interactive = attach_dev_ui(
+        std::io::stdin().is_terminal(),
+        std::io::stdout().is_terminal(),
+    );
     if !restart
         && let Ok(apps) = crate::dev_server_client::list_registered_apps().await
         && let Some(existing) = apps.iter().find(|a| a.config_path == config_key)

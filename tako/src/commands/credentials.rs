@@ -276,6 +276,30 @@ fn list_credentials(
     let tako_config = crate::config::TakoToml::load_from_file(&context.config_path)?;
     let (all_envs, rows) = credential_status_rows(&tako_config, &secrets);
 
+    if output::is_json() {
+        let listed = rows
+            .iter()
+            .map(|row| {
+                serde_json::json!({
+                    "name": row.name,
+                    "environments": row
+                        .envs
+                        .iter()
+                        .map(|(env, is_set)| serde_json::json!({
+                            "name": env,
+                            "set": is_set,
+                        }))
+                        .collect::<Vec<_>>(),
+                })
+            })
+            .collect::<Vec<_>>();
+        return output::json_result(serde_json::json!({
+            "ok": true,
+            "command": "credentials",
+            "credentials": listed,
+        }));
+    }
+
     output::section("Credentials");
     if output::is_pretty() {
         if all_envs.is_empty() {

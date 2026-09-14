@@ -1,4 +1,5 @@
 use super::client::host_and_port_from_url;
+use super::prepare::attach_dev_ui;
 use super::runner::bootstrap_dev_events;
 use super::*;
 use crate::build::{BuildAdapter, parse_and_validate_preset};

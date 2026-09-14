@@ -14,6 +14,8 @@ Tako has two output systems:
 - **Pretty output**: normal mode. Uses `output::info()`, task trees, spinners, prompts, colors, and symbols.
 - **Tracing**: `--verbose` and `--ci`. Uses `tracing::*` and `output::timed()`.
 
+`--json` is not a third renderer. It reserves stdout for structured JSON and turns pretty UI off. Human diagnostics stay on stderr. JSON-only (without `--verbose` or `--ci`) does not print TRACE progress. Streaming commands such as `tako dev --json` and `tako logs --tail --json` emit JSONL on stdout and must not print the logo or TUI. Inspect/list commands (`doctor`, `status`, `servers list`, `secrets list`, `credentials list`, `dev list`, `backups list`/`status`, `releases list`) emit a specialized object with their data instead of a generic `{"ok":true}` plus a human table.
+
 Only one system renders at a time. Pretty-only helpers are no-ops in verbose/CI unless noted in the helper table.
 
 ### Normal

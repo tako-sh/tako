@@ -6,7 +6,7 @@
       "type": "framework",
       "description": "Tako CLI commands and project runtime workflow. Use when a repository contains tako.toml, imports tako.sh or tako.sh/vite, uses the Go or Rust SDK, or describes itself as a tako.sh app. Covers init, dev, deploy, secrets, storage, gen, scale, logs, rollback, servers, and doctor.",
       "url": "https://tako.sh/.well-known/agent-skills/tako/SKILL.md",
-      "sha256": "e5ad190434f5a9bd846386011b3754f0480a85527e71406c3310a6afd14945ef"
+      "sha256": "8980d79c598d74cf2d6390df43cf6b0cea76e67782ae0a3253af606e5ab76519"
     },
     {
       "name": "tako-sdk-go",

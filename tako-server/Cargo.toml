@@ -28,6 +28,7 @@ pingora-core = { version = "0.9", default-features = false, features = ["openssl
 pingora-proxy = { version = "0.9", default-features = false, features = ["openssl"] }
 pingora-http = "0.9"
 pingora-cache = "0.9"
+pingora-prometheus = "0.9"
 openssl.workspace = true
 rusqlite.workspace = true
 tako-sqlite = { path = "../tako-sqlite" }

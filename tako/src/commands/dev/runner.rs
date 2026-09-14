@@ -11,8 +11,11 @@ mod events;
 mod reload;
 mod signals;
 
+use super::json;
 use super::prepare::{DevSession, PrepareOutcome, prepare};
 use super::*;
+
+pub(super) use events::{emit_output_event, emit_output_log};
 
 pub(super) fn bootstrap_dev_events(status: &str, pid: Option<u32>) -> Vec<DevEvent> {
     match (status, pid) {
@@ -77,10 +80,17 @@ pub async fn ls() -> Result<(), Box<dyn std::error::Error>> {
     let apps = match crate::dev_server_client::list_registered_apps().await {
         Ok(apps) => apps,
         Err(_) => {
+            if crate::output::is_json() {
+                return crate::output::json_result(super::json::list_record(&[]));
+            }
             crate::output::muted("No dev server running.");
             return Ok(());
         }
     };
+
+    if crate::output::is_json() {
+        return crate::output::json_result(super::json::list_record(&apps));
+    }
 
     if apps.is_empty() {
         crate::output::muted("No registered dev apps.");
@@ -253,7 +263,10 @@ pub async fn run(
 
     let verbose = crate::output::is_verbose();
     let url = preferred_public_url(&primary_host, &reg_url, public_port, public_url_port);
-    if !interactive {
+    if crate::output::is_json() {
+        let hosts = compute_display_routes(&cfg, &domain, base_domain.as_deref());
+        json::emit(json::ready_record(&app_name, &url, &hosts));
+    } else if !interactive {
         for line in dev_startup_lines(
             verbose,
             &app_name,

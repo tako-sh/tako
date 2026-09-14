@@ -124,6 +124,13 @@ pub(super) async fn list_servers() -> Result<(), Box<dyn std::error::Error>> {
     let servers = ServersToml::load()?;
 
     if servers.is_empty() {
+        if output::is_json() {
+            return output::json_result(serde_json::json!({
+                "ok": true,
+                "command": "servers",
+                "servers": [],
+            }));
+        }
         tracing::warn!("No servers configured");
         output::warning("No servers configured");
         output::hint(&format!(
@@ -161,6 +168,28 @@ pub(super) async fn list_servers() -> Result<(), Box<dyn std::error::Error>> {
         .chain(std::iter::once("HOST".width()))
         .max()
         .unwrap_or_default();
+
+    if output::is_json() {
+        let listed = rows
+            .iter()
+            .map(|(name, entry, _host)| {
+                serde_json::json!({
+                    "name": name,
+                    "host": entry.host,
+                    "port": entry.port,
+                    "http_port": entry.http_port,
+                    "https_port": entry.https_port,
+                    "description": entry.description,
+                    "key_path": entry.key_path.as_ref().map(|path| path.display().to_string()),
+                })
+            })
+            .collect::<Vec<_>>();
+        return output::json_result(serde_json::json!({
+            "ok": true,
+            "command": "servers",
+            "servers": listed,
+        }));
+    }
 
     output::heading("Servers");
     output::info(&format!(

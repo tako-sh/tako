@@ -11,6 +11,13 @@ pub(super) async fn list_secrets(
     let secrets = SecretsStore::load_from_dir(&context.project_dir)?;
 
     if secrets.is_empty() {
+        if output::is_json() {
+            return output::json_result(serde_json::json!({
+                "ok": true,
+                "command": "secrets",
+                "secrets": [],
+            }));
+        }
         output::warning("No secrets configured.");
         output::muted(&format!(
             "Run {} to add a secret.",
@@ -23,6 +30,28 @@ pub(super) async fn list_secrets(
     let all_envs = secrets.environment_names();
 
     let discrepancies = secrets.find_discrepancies();
+
+    if output::is_json() {
+        let listed = all_names
+            .iter()
+            .map(|name| {
+                let environments: Vec<&str> = all_envs
+                    .iter()
+                    .filter(|env| secrets.contains(env, name))
+                    .map(|env| env.as_str())
+                    .collect();
+                serde_json::json!({
+                    "name": name,
+                    "environments": environments,
+                })
+            })
+            .collect::<Vec<_>>();
+        return output::json_result(serde_json::json!({
+            "ok": true,
+            "command": "secrets",
+            "secrets": listed,
+        }));
+    }
 
     if output::is_pretty() {
         // Print header

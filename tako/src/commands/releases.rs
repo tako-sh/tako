@@ -185,6 +185,16 @@ async fn list_releases(
             .then_with(|| b.version.cmp(&a.version))
     });
 
+    if output::is_json() {
+        return output::json_result(serde_json::json!({
+            "ok": true,
+            "command": "releases",
+            "app": app_name,
+            "environment": env,
+            "releases": releases,
+        }));
+    }
+
     if releases.is_empty() {
         output::muted("No releases found.");
         return Ok(());

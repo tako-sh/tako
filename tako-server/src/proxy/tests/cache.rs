@@ -34,6 +34,14 @@ fn cache_key_includes_host_and_uri() {
 }
 
 #[test]
+fn cache_key_frames_host_and_uri_unambiguously() {
+    let a = build_proxy_cache_key("ab", "c");
+    let b = build_proxy_cache_key("a", "bc");
+
+    assert_ne!(a.to_compact().primary, b.to_compact().primary);
+}
+
+#[test]
 fn response_cacheability_requires_explicit_cache_directives() {
     let mut without_directive = ResponseHeader::build(200, Some(1)).expect("build response header");
     without_directive
