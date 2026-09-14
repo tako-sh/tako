@@ -49,3 +49,16 @@ fn dev_startup_lines_verbose_includes_banner() {
     assert!(lines.iter().any(|l| l == "Tako Dev Server"));
     assert!(lines.iter().any(|l| l.starts_with("URL:")));
 }
+
+#[test]
+fn attach_dev_ui_skips_tui_in_json_mode() {
+    crate::output::set_json(false);
+    assert!(attach_dev_ui(true, true));
+    assert!(!attach_dev_ui(true, false));
+    assert!(!attach_dev_ui(false, true));
+
+    crate::output::set_json(true);
+    let attached = attach_dev_ui(true, true);
+    crate::output::set_json(false);
+    assert!(!attached);
+}

@@ -8,6 +8,7 @@
 //! - Process lifecycle managed by the daemon
 
 mod client;
+mod json;
 mod output;
 mod output_render;
 pub(crate) mod prepare;

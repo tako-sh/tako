@@ -56,9 +56,15 @@ fn main() {
     })
     .expect("failed to install Ctrl-C handler");
 
-    // Tracing subscriber: only installed in verbose/CI mode.
+    // Tracing subscriber: only installed in verbose/CI/JSON mode.
     // In normal mode, tracing calls are no-ops (no subscriber).
+    // JSON-only keeps stderr for errors so stdout stays parseable.
     if cli.verbose || cli.ci || cli.json {
+        let default_filter = if cli.json && !cli.verbose && !cli.ci {
+            "tako=error,rustls=off,error"
+        } else {
+            "tako=trace,rustls=off,warn"
+        };
         let fmt_layer = tracing_subscriber::fmt::layer()
             .with_target(false)
             .with_writer(std::io::stderr)
@@ -67,7 +73,7 @@ fn main() {
         tracing_subscriber::registry()
             .with(
                 EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| EnvFilter::new("tako=trace,rustls=off,warn")),
+                    .unwrap_or_else(|_| EnvFilter::new(default_filter)),
             )
             .with(output::ScopeLayer)
             .with(fmt_layer)

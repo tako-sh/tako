@@ -23,7 +23,7 @@ pub use tracing_fmt::{ScopeFormat, ScopeLayer, scope, timed};
 pub use cursor::{clear_interrupt_output, restore_cursor, set_cursor_globally_hidden};
 
 use std::fmt::Display;
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -312,6 +312,7 @@ pub fn json_success(command: &str) -> Result<(), Box<dyn std::error::Error>> {
 
 pub fn json_result(value: serde_json::Value) -> Result<(), Box<dyn std::error::Error>> {
     println!("{}", serde_json::to_string(&value)?);
+    std::io::stdout().flush()?;
     Ok(())
 }
 

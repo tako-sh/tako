@@ -182,13 +182,10 @@ pub(super) async fn run_non_interactive_output(
             loop {
                 tokio::select! {
                     Some(log) = log_rx.recv() => {
-                        crate::output::stream_line(&format!(
-                            "{} {:<5} [{}] {}",
-                            log.timestamp, log.level, log.scope, log.message
-                        ));
+                        emit_output_log(&log);
                     }
                     Some(event) = event_rx.recv() => {
-                        if handle_non_interactive_event(event) {
+                        if emit_output_event(event) {
                             break;
                         }
                     }
@@ -203,6 +200,27 @@ pub(super) async fn run_non_interactive_output(
             }
         } => {}
     }
+}
+
+pub fn emit_output_log(log: &ScopedLog) {
+    if crate::output::is_json() {
+        super::super::json::emit(super::super::json::log_record(log));
+    } else {
+        crate::output::stream_line(&format!(
+            "{} {:<5} [{}] {}",
+            log.timestamp, log.level, log.scope, log.message
+        ));
+    }
+}
+
+pub fn emit_output_event(event: DevEvent) -> bool {
+    if crate::output::is_json() {
+        if let Some(record) = super::super::json::event_record(&event) {
+            super::super::json::emit(record);
+        }
+        return matches!(event, DevEvent::ExitWithMessage(_));
+    }
+    handle_non_interactive_event(event)
 }
 
 fn handle_non_interactive_event(event: DevEvent) -> bool {

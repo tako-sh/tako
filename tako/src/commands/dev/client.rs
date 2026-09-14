@@ -6,10 +6,10 @@ use tokio::sync::watch;
 #[cfg(test)]
 use tokio::time::timeout;
 
-use super::runner::bootstrap_dev_events;
+use super::runner::{bootstrap_dev_events, emit_output_event, emit_output_log};
 use super::{
-    DevEvent, ScopedLog, TunnelCloseReason, infer_preset_name_from_ref, load_dev_tako_toml, output,
-    output_render::format_tunnel_block, resolve_dev_preset_ref,
+    DevEvent, ScopedLog, TunnelCloseReason, infer_preset_name_from_ref, json, load_dev_tako_toml,
+    output, output_render::format_tunnel_block, resolve_dev_preset_ref,
 };
 
 #[derive(Debug, Clone)]
@@ -378,6 +378,36 @@ pub(super) async fn run_connected_dev_client(
             control_tx,
         )
         .await?;
+    } else if crate::output::is_json() {
+        json::emit(json::ready_record(app_name, &session.url, &display_hosts));
+        let mut log_rx = log_rx;
+        let mut event_rx = event_rx;
+        let mut stop_rx = stop_rx.clone();
+        tokio::select! {
+            _ = async {
+                loop {
+                    tokio::select! {
+                        Some(log) = log_rx.recv() => {
+                            emit_output_log(&log);
+                        }
+                        Some(event) = event_rx.recv() => {
+                            if emit_output_event(event) {
+                                break;
+                            }
+                        }
+                        else => break,
+                    }
+                }
+            } => {}
+            _ = async {
+                while stop_rx.changed().await.is_ok() {
+                    if *stop_rx.borrow() {
+                        break;
+                    }
+                }
+            } => {}
+            _ = tokio::signal::ctrl_c() => {}
+        }
     } else {
         crate::output::stream_line(&session.url);
         crate::output::stream_line(&format!("Connected to running dev app '{}'.", app_name));

@@ -10,6 +10,25 @@ pub(super) struct LinuxData {
 }
 
 #[cfg(target_os = "linux")]
+impl LinuxData {
+    pub(super) fn json_value(&self) -> serde_json::Value {
+        serde_json::json!({
+            "loopback_alias": self.status.loopback_alias,
+            "redirect_443": self.status.redirect_443,
+            "redirect_80": self.status.redirect_80,
+            "redirect_dns": self.status.redirect_dns,
+            "dns_configured": self.status.dns_configured,
+            "service_installed": self.status.service_installed,
+            "nixos": self.status.is_nixos,
+            "advertised_ip": self.advertised_ip,
+            "hosts": self.host_dns_results.iter().map(|(host, ip)| {
+                serde_json::json!({ "host": host, "ip": ip })
+            }).collect::<Vec<_>>(),
+        })
+    }
+}
+
+#[cfg(target_os = "linux")]
 pub(super) fn gather_linux_data(
     _dev_info: &Result<serde_json::Value, Box<dyn std::error::Error>>,
     apps: &[crate::dev_server_client::ListedApp],

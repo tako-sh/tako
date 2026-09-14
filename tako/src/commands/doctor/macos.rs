@@ -64,6 +64,27 @@ pub(super) fn gather_macos_data(
     }
 }
 
+impl MacosData {
+    pub(super) fn json_value(&self) -> serde_json::Value {
+        serde_json::json!({
+            "installed": self.dev_proxy.installed,
+            "boot_helper": self.dev_proxy.bootstrap_loaded,
+            "alias": self.dev_proxy.alias_ready,
+            "launchd": self.dev_proxy.launchd_loaded,
+            "https": self.https_tcp_ok,
+            "http": self.http_tcp_ok,
+            "advertised_ip": self.advertised_ip,
+            "local_dns_port": self.local_dns_port,
+            "resolver": self.resolver_values.as_ref().map(|(addr, port)| {
+                serde_json::json!({ "addr": addr, "port": port })
+            }),
+            "hosts": self.host_dns_results.iter().map(|(host, ip)| {
+                serde_json::json!({ "host": host, "ip": ip })
+            }).collect::<Vec<_>>(),
+        })
+    }
+}
+
 pub(super) fn format_macos_sections(
     buf: &mut Vec<String>,
     _dev_info: &Result<serde_json::Value, Box<dyn std::error::Error>>,

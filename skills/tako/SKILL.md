@@ -66,6 +66,7 @@ Print a local diagnostic report.
 
 ```bash
 tako doctor
+tako doctor --json
 ```
 
 ### `tako run`
@@ -94,8 +95,10 @@ tako dev vite dev            # wrap an explicit dev command for this run
 tako dev --variant staging    # myapp-staging.test
 tako dev --tunnel             # start with a temporary public URL
 tako dev --restart            # hard-restart the app process with current config
+tako dev --json               # JSONL: ready object, then log and event records
 tako dev stop [name]          # stop a running dev app
 tako dev list                   # list registered dev apps
+tako dev list --json          # one JSON object with an apps array
 ```
 
 Features:

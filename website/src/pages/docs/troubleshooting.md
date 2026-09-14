@@ -22,7 +22,7 @@ tako logs --env production
 tako logs --env production --tail
 ```
 
-Use `--verbose` for a timestamped transcript, `--ci` for deterministic non-interactive output, and global `--json` when an agent needs structured stdout.
+Use `--verbose` for a timestamped transcript, `--ci` for deterministic non-interactive output, and global `--json` when an agent needs structured stdout. `tako dev --json` prints JSONL (a ready object, then log and event records) with no logo or TUI.
 
 ## `tako dev` Will Not Start
 

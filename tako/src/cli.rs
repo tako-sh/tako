@@ -330,57 +330,96 @@ impl Cli {
                 let rt = tokio::runtime::Runtime::new()?;
 
                 match command {
-                    None => rt.block_on(commands::dev::run(
-                        DEV_PUBLIC_PORT,
-                        args.variant,
-                        args.tunnel,
-                        args.restart,
-                        None,
-                        self.config.as_deref(),
-                    ))?,
-                    Some(DevSubcommands::Run(cmd)) => rt.block_on(commands::dev::run(
-                        DEV_PUBLIC_PORT,
-                        args.variant,
-                        args.tunnel,
-                        args.restart,
-                        Some(cmd),
-                        self.config.as_deref(),
-                    ))?,
-                    Some(DevSubcommands::Stop { name, all }) => {
-                        rt.block_on(commands::dev::stop(name, all, self.config.as_deref()))?
+                    None => {
+                        rt.block_on(commands::dev::run(
+                            DEV_PUBLIC_PORT,
+                            args.variant,
+                            args.tunnel,
+                            args.restart,
+                            None,
+                            self.config.as_deref(),
+                        ))?;
+                        Ok(())
                     }
-                    Some(DevSubcommands::List) => rt.block_on(commands::dev::ls())?,
+                    Some(DevSubcommands::Run(cmd)) => {
+                        rt.block_on(commands::dev::run(
+                            DEV_PUBLIC_PORT,
+                            args.variant,
+                            args.tunnel,
+                            args.restart,
+                            Some(cmd),
+                            self.config.as_deref(),
+                        ))?;
+                        Ok(())
+                    }
+                    Some(DevSubcommands::Stop { name, all }) => {
+                        rt.block_on(commands::dev::stop(name, all, self.config.as_deref()))?;
+                        json_success(json, "dev")
+                    }
+                    Some(DevSubcommands::List) => {
+                        rt.block_on(commands::dev::ls())?;
+                        Ok(())
+                    }
                 }
-                json_success(json, "dev")
             }
             Commands::Doctor => {
                 let rt = tokio::runtime::Runtime::new()?;
-                rt.block_on(commands::doctor::run())?;
-                json_success(json, "doctor")
+                rt.block_on(commands::doctor::run())
             }
             Commands::Servers(cmd) => {
+                let emit_generic = json && !matches!(cmd, server::ServerCommands::List);
                 server::run(cmd)?;
-                json_success(json, "servers")
+                if emit_generic {
+                    json_success(true, "servers")
+                } else {
+                    Ok(())
+                }
             }
             Commands::Secrets(cmd) => {
+                let emit_generic = json && !matches!(cmd, secret::SecretCommands::List);
                 secret::run(cmd, self.config.as_deref())?;
-                json_success(json, "secrets")
+                if emit_generic {
+                    json_success(true, "secrets")
+                } else {
+                    Ok(())
+                }
             }
             Commands::Storages(cmd) => {
                 storage::run(cmd, self.config.as_deref())?;
                 json_success(json, "storages")
             }
             Commands::Backups(cmd) => {
+                let emit_generic = json
+                    && !matches!(
+                        cmd,
+                        backups::BackupCommands::List { .. }
+                            | backups::BackupCommands::Status { .. }
+                    );
                 backups::run(cmd, self.config.as_deref())?;
-                json_success(json, "backups")
+                if emit_generic {
+                    json_success(true, "backups")
+                } else {
+                    Ok(())
+                }
             }
             Commands::Credentials { command } => {
+                let emit_generic =
+                    json && !matches!(command, None | Some(credentials::CredentialCommands::List));
                 credentials::run(command, self.config.as_deref())?;
-                json_success(json, "credentials")
+                if emit_generic {
+                    json_success(true, "credentials")
+                } else {
+                    Ok(())
+                }
             }
             Commands::Releases(cmd) => {
+                let emit_generic = json && !matches!(cmd, releases::ReleaseCommands::List { .. });
                 releases::run(cmd, self.config.as_deref())?;
-                json_success(json, "releases")
+                if emit_generic {
+                    json_success(true, "releases")
+                } else {
+                    Ok(())
+                }
             }
             Commands::Upgrade => {
                 upgrade::run()?;
