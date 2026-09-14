@@ -3849,6 +3849,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "pingora-prometheus"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "56fc7764cf4a5ff68aae5e373a4e8e2cbff077dd9dea975cc04ca9aa863abb2c"
+dependencies = [
+ "async-trait",
+ "http",
+ "pingora-core",
+ "prometheus",
+]
+
+[[package]]
 name = "pingora-proxy"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5763,6 +5775,7 @@ dependencies = [
  "pingora-cache",
  "pingora-core",
  "pingora-http",
+ "pingora-prometheus",
  "pingora-proxy",
  "prometheus",
  "rcgen",

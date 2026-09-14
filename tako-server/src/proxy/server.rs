@@ -10,7 +10,6 @@ use pingora_core::listeners::TcpSocketOptions;
 use pingora_core::listeners::tls::TlsSettings;
 use pingora_core::prelude::*;
 use pingora_core::server::configuration::ServerConf;
-use pingora_core::services::listening::Service as ListeningService;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -145,7 +144,7 @@ pub(crate) fn build_server_with_acme(build: ServerBuildConfig) -> Result<Server>
     }
 
     if let Some(metrics_port) = config.metrics_port {
-        let mut metrics_service = ListeningService::prometheus_http_service();
+        let mut metrics_service = pingora_prometheus::prometheus_http_service();
         metrics_service.add_tcp(&format!("127.0.0.1:{}", metrics_port));
         server.add_service(metrics_service);
         tracing::info!(port = metrics_port, "Prometheus metrics listener enabled");
