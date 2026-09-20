@@ -3,7 +3,7 @@ rust = "1.98"
 bun = "1.4.2"
 go = "1.27.1"
 just = "1"
-hk = "1.58.1"
+hk = "2.0.1"
 zig = "0.16.0"
 "cargo:cargo-zigbuild" = "0.23.4"
 
