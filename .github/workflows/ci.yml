@@ -395,7 +395,7 @@ jobs:
     needs: [detect-changes]
     if: needs.detect-changes.outputs.website_only != 'true' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     # 24.04-arm is the only GitHub-hosted ARM runner available
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-26.04-arm
     # Build inside Debian 11 container for glibc 2.31 compat (same as x86_64)
     container: rust:1.98-bullseye@sha256:4730e387a220a08a365c77da3096544dde214f9d796c16284d4be45438cad4a9
     defaults:
