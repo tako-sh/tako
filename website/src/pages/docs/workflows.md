@@ -187,6 +187,15 @@ If a worker exits with an error before it can claim any work, Tako stops the imm
 
 On one server, Tako stores durable workflow state locally. Runs belong to the deployed app and environment, not to one worker process or release, so a worker restart or rolling deploy does not discard progress.
 
+Tako keeps finished runs for at least seven days by default, then removes them and their saved steps in small batches. The age is measured from completion, so long sleeps and waits do not shorten a run's history. Cleanup is best effort while the workflow runtime is active; stopped or retired stores can keep older rows until the runtime starts again. To change the age or keep history indefinitely, set `retention` in `tako.toml`:
+
+```toml
+[workflows]
+retention = "1d" # or "forever"
+```
+
+The setting applies to `succeeded`, `cancelled`, and `dead` runs. It does not delete `pending` or `running` runs. SQLite and Postgres can reuse freed database space even when the database file does not immediately shrink.
+
 An environment deployed to multiple servers needs one of two explicit storage models:
 
 | Project shape                                    | Required setup                                                               |

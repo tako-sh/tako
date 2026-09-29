@@ -293,6 +293,7 @@ mod tests {
             start: None,
             workflow_worker_main: None,
             workflow_run: None,
+            workflow_retention_ms: Some(tako_workflows::DEFAULT_RETENTION_MS),
             idle_timeout: 300,
             env_vars: HashMap::new(),
             images: tako_images::ImagesConfig::default(),

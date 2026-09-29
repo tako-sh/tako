@@ -32,6 +32,7 @@ pub(super) struct RegisterAppArgs {
     pub(super) client_pid: Option<u32>,
     pub(super) readiness_failure_hint: Option<String>,
     pub(super) worker_command: Option<Vec<String>>,
+    pub(super) workflow_retention_ms: Option<i64>,
 }
 
 pub(super) async fn register_app(
@@ -52,6 +53,7 @@ pub(super) async fn register_app(
         client_pid,
         readiness_failure_hint,
         worker_command,
+        workflow_retention_ms,
     } = args;
 
     let app_name = sanitize_app_name(&app_name);
@@ -129,6 +131,7 @@ pub(super) async fn register_app(
                 is_idle: false,
                 command,
                 worker_command: worker_command.clone(),
+                workflow_retention_ms,
                 env,
                 log_buffer,
                 pid: None,
@@ -188,6 +191,7 @@ pub(super) async fn register_app(
         &app_name,
         &project_dir,
         worker_command.as_deref(),
+        workflow_retention_ms,
         worker_app_root.as_deref(),
         app_storages,
         app_secrets,
@@ -217,6 +221,7 @@ async fn ensure_workflow_runtime(
     app_name: &str,
     project_dir: &str,
     worker_command: Option<&[String]>,
+    workflow_retention_ms: Option<i64>,
     worker_app_root: Option<&str>,
     storages: HashMap<String, tako_core::StorageBinding>,
     secrets: HashMap<String, String>,
@@ -265,7 +270,7 @@ async fn ensure_workflow_runtime(
         log_sink,
         isolation: None,
     };
-    if let Err(e) = workflows.ensure(&app, spec_fn).await {
+    if let Err(e) = workflows.ensure(&app, workflow_retention_ms, spec_fn).await {
         tracing::warn!(
             app = %app,
             error = %e,
@@ -347,6 +352,7 @@ pub(super) async fn restart_app(state: &Arc<Mutex<State>>, config_path: String) 
                 app.name.clone(),
                 app.project_dir.clone(),
                 app.worker_command.clone(),
+                app.workflow_retention_ms,
                 app.env.get("TAKO_APP_ROOT").cloned(),
                 app.storages.clone(),
                 app.secrets.clone(),
@@ -372,6 +378,7 @@ pub(super) async fn restart_app(state: &Arc<Mutex<State>>, config_path: String) 
         app_name,
         project_dir,
         worker_command,
+        workflow_retention_ms,
         app_root,
         storages,
         secrets,
@@ -384,6 +391,7 @@ pub(super) async fn restart_app(state: &Arc<Mutex<State>>, config_path: String) 
             &app_name,
             &project_dir,
             worker_command.as_deref(),
+            workflow_retention_ms,
             app_root.as_deref(),
             storages,
             secrets,

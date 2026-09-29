@@ -241,8 +241,8 @@ impl PostgresRunsDb {
 
     pub(super) fn complete(&self, id: &str, worker_id: &str) -> Result<(), RunsDbError> {
         self.update_running(
-            "status='succeeded', worker_id=NULL, lease_until=NULL",
-            &[&self.app_id, &id, &worker_id],
+            "status='succeeded', worker_id=NULL, lease_until=NULL, finished_at=$4",
+            &[&self.app_id, &id, &worker_id, &now_ms()],
         )
     }
 
@@ -253,8 +253,8 @@ impl PostgresRunsDb {
         reason: Option<&str>,
     ) -> Result<(), RunsDbError> {
         self.update_running(
-            "status='cancelled', last_error=$4, worker_id=NULL, lease_until=NULL",
-            &[&self.app_id, &id, &worker_id, &reason],
+            "status='cancelled', last_error=$4, worker_id=NULL, lease_until=NULL, finished_at=$5",
+            &[&self.app_id, &id, &worker_id, &reason, &now_ms()],
         )
     }
 
@@ -268,8 +268,8 @@ impl PostgresRunsDb {
     ) -> Result<(), RunsDbError> {
         if finalize {
             return self.update_running(
-                "status='dead', last_error=$4, worker_id=NULL, lease_until=NULL",
-                &[&self.app_id, &id, &worker_id, &error],
+                "status='dead', last_error=$4, worker_id=NULL, lease_until=NULL, finished_at=$5",
+                &[&self.app_id, &id, &worker_id, &error, &now_ms()],
             );
         }
         let next = next_run_at_ms.ok_or_else(|| {
@@ -279,6 +279,44 @@ impl PostgresRunsDb {
             "status='pending', last_error=$4, worker_id=NULL, lease_until=NULL, run_at=$5",
             &[&self.app_id, &id, &worker_id, &error, &next],
         )
+    }
+
+    pub(super) fn prune_finished_before(
+        &self,
+        cutoff_ms: i64,
+        limit: u32,
+    ) -> Result<u64, RunsDbError> {
+        let mut client = self.client.lock();
+        let mut tx = client.transaction()?;
+        let rows = tx.query(
+            &format!(
+                "SELECT id FROM {}.runs
+                 WHERE app_id=$1 AND status IN ('succeeded', 'cancelled', 'dead')
+                   AND finished_at <= $2
+                 ORDER BY finished_at
+                 LIMIT $3 FOR UPDATE SKIP LOCKED",
+                self.schema
+            ),
+            &[&self.app_id, &cutoff_ms, &(limit as i64)],
+        )?;
+        let ids: Vec<String> = rows.into_iter().map(|row| row.get(0)).collect();
+        if ids.is_empty() {
+            tx.commit()?;
+            return Ok(0);
+        }
+        for table in ["steps", "event_waiters", "runs"] {
+            tx.execute(
+                &format!(
+                    "DELETE FROM {}.{} WHERE app_id=$1 AND {} = ANY($2)",
+                    self.schema,
+                    table,
+                    if table == "runs" { "id" } else { "run_id" }
+                ),
+                &[&self.app_id, &ids],
+            )?;
+        }
+        tx.commit()?;
+        Ok(ids.len() as u64)
     }
 
     pub(super) fn defer(
@@ -620,8 +658,15 @@ fn init_schema(client: &mut Client, schema: &str) -> Result<(), RunsDbError> {
              worker_id TEXT,
              last_error TEXT,
              created_at BIGINT NOT NULL,
+             finished_at BIGINT,
              unique_key TEXT
          );
+         ALTER TABLE {schema}.runs ADD COLUMN IF NOT EXISTS finished_at BIGINT;
+         UPDATE {schema}.runs SET finished_at = (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT
+           WHERE finished_at IS NULL AND status IN ('succeeded', 'cancelled', 'dead');
+         CREATE INDEX IF NOT EXISTS idx_runs_app_finished
+           ON {schema}.runs(app_id, finished_at)
+           WHERE status IN ('succeeded', 'cancelled', 'dead');
          CREATE INDEX IF NOT EXISTS idx_runs_app_status_run_at
            ON {schema}.runs(app_id, status, run_at);
          CREATE INDEX IF NOT EXISTS idx_runs_app_lease

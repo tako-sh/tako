@@ -27,6 +27,35 @@ concurrency = 20
 }
 
 #[test]
+fn parses_workflow_retention_and_forever() {
+    let hourly = TakoToml::parse("[workflows]\nretention = \"1h\"").unwrap();
+    assert_eq!(hourly.workflows.retention_ms, Some(60 * 60 * 1000));
+
+    let forever = TakoToml::parse("[workflows]\nretention = \"forever\"").unwrap();
+    assert_eq!(forever.workflows.retention_ms, None);
+
+    let default = TakoToml::parse("").unwrap();
+    assert_eq!(
+        default.workflows.retention_ms,
+        Some(7 * 24 * 60 * 60 * 1000)
+    );
+}
+
+#[test]
+fn rejects_invalid_workflow_retention() {
+    for value in ["0d", "12", "tomorrow", "999999999999999999999d"] {
+        let err = TakoToml::parse(&format!("[workflows]\nretention = \"{value}\"")).unwrap_err();
+        assert!(err.to_string().contains("workflows.retention"), "{err}");
+    }
+}
+
+#[test]
+fn workflow_retention_is_per_app_not_per_server() {
+    let err = TakoToml::parse("[servers.lax.workflows]\nretention = \"1d\"").unwrap_err();
+    assert!(err.to_string().contains("retention"), "{err}");
+}
+
+#[test]
 fn test_parse_top_level_named_workflow_group() {
     let toml = r#"
 [workflows]

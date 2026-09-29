@@ -25,6 +25,7 @@ fn kill_all_app_processes_sends_sigterm_to_tracked_pids() {
                 is_idle: false,
                 command: vec!["sleep".to_string(), "60".to_string()],
                 worker_command: None,
+                workflow_retention_ms: Some(tako_workflows::DEFAULT_RETENTION_MS),
                 env: std::collections::HashMap::new(),
                 log_buffer: state::LogBuffer::new(),
                 pid: Some(pid),

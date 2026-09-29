@@ -194,6 +194,7 @@ impl WorkflowManager {
     pub async fn ensure(
         &self,
         app: &str,
+        retention_ms: Option<i64>,
         spec_fn: impl FnOnce(PathBuf) -> WorkerSpec,
     ) -> Result<(), WorkflowManagerError> {
         // Serialize concurrent ensures of the same app (rare, but a deploy
@@ -242,7 +243,12 @@ impl WorkflowManager {
         let on_enqueue: OnEnqueue = Arc::new(move || {
             dispatch_signal.signal();
         });
-        let cron_handle = cron::spawn_with_limiter(db.clone(), limiter.clone(), on_enqueue.clone());
+        let cron_handle = cron::spawn_with_limiter(
+            db.clone(),
+            limiter.clone(),
+            on_enqueue.clone(),
+            retention_ms,
+        );
 
         let sup_for_health = supervisor.clone();
         let sup_for_claim = supervisor.clone();
@@ -483,9 +489,11 @@ mod tests {
         let m = WorkflowManager::new(tmp.path());
         let cwd = tmp.path().to_path_buf();
 
-        m.ensure("a", |db| dummy_spec(cwd.clone(), db))
-            .await
-            .unwrap();
+        m.ensure("a", Some(crate::DEFAULT_RETENTION_MS), |db| {
+            dummy_spec(cwd.clone(), db)
+        })
+        .await
+        .unwrap();
         assert!(m.has("a"));
         assert_eq!(
             m.workflows_db_path("a"),
@@ -542,13 +550,17 @@ mod tests {
         let m = WorkflowManager::new(tmp.path());
         let cwd = tmp.path().to_path_buf();
 
-        m.ensure("a", |db| dummy_spec(cwd.clone(), db))
-            .await
-            .unwrap();
+        m.ensure("a", Some(crate::DEFAULT_RETENTION_MS), |db| {
+            dummy_spec(cwd.clone(), db)
+        })
+        .await
+        .unwrap();
         let first = m.supervisor_for("a").unwrap();
-        m.ensure("a", |db| dummy_spec(cwd.clone(), db))
-            .await
-            .unwrap();
+        m.ensure("a", Some(crate::DEFAULT_RETENTION_MS), |db| {
+            dummy_spec(cwd.clone(), db)
+        })
+        .await
+        .unwrap();
         let second = m.supervisor_for("a").unwrap();
         assert!(m.has("a"));
         assert!(!Arc::ptr_eq(&first, &second));
@@ -562,12 +574,16 @@ mod tests {
         let m = WorkflowManager::new(tmp.path());
         let cwd = tmp.path().to_path_buf();
 
-        m.ensure("a", |db| dummy_spec(cwd.clone(), db))
-            .await
-            .unwrap();
+        m.ensure("a", Some(crate::DEFAULT_RETENTION_MS), |db| {
+            dummy_spec(cwd.clone(), db)
+        })
+        .await
+        .unwrap();
         let first = m.supervisor_for("a").unwrap();
         let err = m
-            .ensure("a", |db| invalid_start_spec(cwd.clone(), db))
+            .ensure("a", Some(crate::DEFAULT_RETENTION_MS), |db| {
+                invalid_start_spec(cwd.clone(), db)
+            })
             .await
             .unwrap_err();
 
@@ -584,16 +600,20 @@ mod tests {
         let m = WorkflowManager::new(tmp.path());
         let cwd = tmp.path().to_path_buf();
 
-        m.ensure("a", |db| dummy_spec(cwd.clone(), db))
-            .await
-            .unwrap();
+        m.ensure("a", Some(crate::DEFAULT_RETENTION_MS), |db| {
+            dummy_spec(cwd.clone(), db)
+        })
+        .await
+        .unwrap();
         m.stop("a", Duration::from_secs(1)).await;
         assert!(!m.has("a"));
         assert!(m.workflows_db_path("a").exists());
 
-        m.ensure("a", |db| dummy_spec(cwd.clone(), db))
-            .await
-            .unwrap();
+        m.ensure("a", Some(crate::DEFAULT_RETENTION_MS), |db| {
+            dummy_spec(cwd.clone(), db)
+        })
+        .await
+        .unwrap();
         m.delete("a", Duration::from_secs(1)).await;
         assert!(!m.workflows_db_path("a").exists());
     }
@@ -606,9 +626,11 @@ mod tests {
         let cwd = tmp.path().to_path_buf();
 
         for name in ["a", "b", "c"] {
-            m.ensure(name, |db| dummy_spec(cwd.clone(), db))
-                .await
-                .unwrap();
+            m.ensure(name, Some(crate::DEFAULT_RETENTION_MS), |db| {
+                dummy_spec(cwd.clone(), db)
+            })
+            .await
+            .unwrap();
         }
         m.shutdown_all(Duration::from_secs(1)).await;
         for name in ["a", "b", "c"] {

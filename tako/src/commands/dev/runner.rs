@@ -204,6 +204,7 @@ pub async fn run(
             storages: &storages,
             readiness_failure_hint: readiness_failure_hint.as_deref(),
             worker_command: worker_command.as_deref(),
+            workflow_retention_ms: cfg.workflows.retention_ms,
         })
         .await?;
     let initial_lan_enabled = crate::dev_server_client::info()

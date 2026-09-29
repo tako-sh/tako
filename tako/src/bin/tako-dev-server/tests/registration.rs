@@ -109,6 +109,7 @@ async fn register_app_starts_workflow_engine_when_worker_command_provided() {
         "command": ["node", "index.js"],
         "env": {},
         "worker_command": ["true"],
+        "workflow_retention_ms": null,
     });
     w.write_all(req.to_string().as_bytes()).await.unwrap();
     w.write_all(b"\n").await.unwrap();
@@ -118,6 +119,16 @@ async fn register_app_starts_workflow_engine_when_worker_command_provided() {
     assert!(matches!(reg, Response::AppRegistered { .. }));
 
     assert!(workflows.has("wf-app"));
+    assert_eq!(
+        state
+            .lock()
+            .unwrap()
+            .apps
+            .get(&config_path)
+            .unwrap()
+            .workflow_retention_ms,
+        None
+    );
 
     drop(w);
     h.await.unwrap().unwrap();
@@ -758,6 +769,7 @@ async fn unregister_app_kills_running_process() {
                 is_idle: false,
                 command: vec!["sleep".to_string(), "60".to_string()],
                 worker_command: None,
+                workflow_retention_ms: Some(tako_workflows::DEFAULT_RETENTION_MS),
                 env: std::collections::HashMap::new(),
                 log_buffer: state::LogBuffer::new(),
                 pid: Some(pid),
@@ -852,6 +864,7 @@ async fn wake_on_request_spawns_exactly_one_process() {
                 is_idle: true,
                 command: vec!["sh".to_string(), "-c".to_string(), cmd_str],
                 worker_command: None,
+                workflow_retention_ms: Some(tako_workflows::DEFAULT_RETENTION_MS),
                 env: std::collections::HashMap::new(),
                 log_buffer: state::LogBuffer::new(),
                 pid: None,

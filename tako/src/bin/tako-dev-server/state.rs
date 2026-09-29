@@ -139,6 +139,7 @@ pub struct RuntimeApp {
     pub is_idle: bool,
     pub command: Vec<String>,
     pub worker_command: Option<Vec<String>>,
+    pub workflow_retention_ms: Option<i64>,
     pub env: HashMap<String, String>,
     pub log_buffer: LogBuffer,
     pub pid: Option<u32>,

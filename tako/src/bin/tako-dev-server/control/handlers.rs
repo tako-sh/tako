@@ -68,6 +68,7 @@ pub(crate) async fn handle_client(
                     client_pid,
                     readiness_failure_hint,
                     worker_command,
+                    workflow_retention_ms,
                 } = *request;
                 apps::register_app(
                     Arc::clone(&state),
@@ -85,6 +86,7 @@ pub(crate) async fn handle_client(
                         client_pid,
                         readiness_failure_hint,
                         worker_command,
+                        workflow_retention_ms,
                     },
                 )
                 .await?

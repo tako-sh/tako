@@ -53,6 +53,8 @@ pub(crate) struct ReleaseManifest {
     pub workflow_worker_main: Option<String>,
     #[serde(default)]
     pub workflow_run: Option<Vec<String>>,
+    #[serde(default = "default_workflow_retention_ms")]
+    pub workflow_retention_ms: Option<i64>,
     pub idle_timeout: u32,
     #[serde(default)]
     pub env_vars: HashMap<String, String>,
@@ -74,6 +76,10 @@ pub(crate) struct ReleaseManifest {
     pub container_file: Option<String>,
     #[serde(default)]
     pub container_port: Option<u16>,
+}
+
+fn default_workflow_retention_ms() -> Option<i64> {
+    Some(tako_workflows::DEFAULT_RETENTION_MS)
 }
 
 #[derive(Debug, Clone, Copy, serde::Deserialize, PartialEq, Eq, Default)]
@@ -543,6 +549,19 @@ mod tests {
             manifest.workflow_run,
             Some(vec!["./worker".to_string(), "video".to_string()])
         );
+        assert_eq!(
+            manifest.workflow_retention_ms,
+            Some(tako_workflows::DEFAULT_RETENTION_MS)
+        );
+    }
+
+    #[test]
+    fn release_manifest_accepts_forever_workflow_retention() {
+        let manifest: ReleaseManifest = serde_json::from_str(
+            r#"{"protocol_version":0,"app_name":"app","idle_timeout":300,"workflow_retention_ms":null}"#,
+        )
+        .unwrap();
+        assert_eq!(manifest.workflow_retention_ms, None);
     }
 
     #[test]

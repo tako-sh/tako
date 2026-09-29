@@ -260,9 +260,9 @@ impl SqliteRunsDb {
     pub(super) fn complete(&self, id: &str, worker_id: &str) -> Result<(), RunsDbError> {
         let conn = self.conn.lock();
         let rows = conn.execute(
-            "UPDATE runs SET status='succeeded', worker_id=NULL, lease_until=NULL
-             WHERE id = ?1 AND worker_id = ?2 AND status='running'",
-            (id, worker_id),
+            "UPDATE runs SET status='succeeded', worker_id=NULL, lease_until=NULL, finished_at=?1
+             WHERE id = ?2 AND worker_id = ?3 AND status='running'",
+            (now_ms(), id, worker_id),
         )?;
         if rows == 0 {
             return Err(RunsDbError::StaleWorker);
@@ -278,9 +278,10 @@ impl SqliteRunsDb {
     ) -> Result<(), RunsDbError> {
         let conn = self.conn.lock();
         let rows = conn.execute(
-            "UPDATE runs SET status='cancelled', last_error=?1, worker_id=NULL, lease_until=NULL
-             WHERE id = ?2 AND worker_id = ?3 AND status='running'",
-            (reason, id, worker_id),
+            "UPDATE runs SET status='cancelled', last_error=?1, worker_id=NULL, lease_until=NULL,
+                             finished_at=?2
+             WHERE id = ?3 AND worker_id = ?4 AND status='running'",
+            (reason, now_ms(), id, worker_id),
         )?;
         if rows == 0 {
             return Err(RunsDbError::StaleWorker);
@@ -299,9 +300,10 @@ impl SqliteRunsDb {
         let conn = self.conn.lock();
         let rows = if finalize {
             conn.execute(
-                "UPDATE runs SET status='dead', last_error=?1, worker_id=NULL, lease_until=NULL
-                 WHERE id = ?2 AND worker_id = ?3 AND status='running'",
-                (error, id, worker_id),
+                "UPDATE runs SET status='dead', last_error=?1, worker_id=NULL, lease_until=NULL,
+                                 finished_at=?2
+                 WHERE id = ?3 AND worker_id = ?4 AND status='running'",
+                (error, now_ms(), id, worker_id),
             )?
         } else {
             let next = next_run_at_ms.ok_or_else(|| {
@@ -317,6 +319,25 @@ impl SqliteRunsDb {
             return Err(RunsDbError::StaleWorker);
         }
         Ok(())
+    }
+
+    pub(super) fn prune_finished_before(
+        &self,
+        cutoff_ms: i64,
+        limit: u32,
+    ) -> Result<u64, RunsDbError> {
+        let conn = self.conn.lock();
+        let deleted = conn.execute(
+            "DELETE FROM runs WHERE id IN (
+                SELECT id FROM runs
+                WHERE status IN ('succeeded', 'cancelled', 'dead')
+                  AND finished_at <= ?1
+                ORDER BY finished_at
+                LIMIT ?2
+             )",
+            (cutoff_ms, limit),
+        )?;
+        Ok(deleted as u64)
     }
 
     pub(super) fn defer(

@@ -197,14 +197,19 @@ Provider credentials are encrypted in `.tako/secrets.json`, not stored in `tako.
 
 ```toml
 [workflows]
+retention = "7d"
+
+[workflows.email]
 run = ["./worker", "email"]
 ```
 
 `run` provides an explicit worker command for runtimes that need one. In v0, container releases support one configured workflow command.
 
+`retention` controls when finished workflow runs and their saved steps become eligible for cleanup. It defaults to `"7d"`; set `"forever"` to keep them. Use a positive whole number followed by `s`, `m`, `h`, or `d`, such as `"1h"` or `"30d"`. Cleanup is best effort and runs in bounded batches while the workflow runtime is active. Pending and running workflows are never pruned. Set retention only in the app's `[workflows]` section, not in a per-server worker group.
+
 Production supervises one scale-to-zero lane per JavaScript worker group, selected by `worker: "name"` in workflow definitions, with an additional default lane. Each lane currently receives concurrency 500 and a 300-second idle timeout. Go and container workers use a single lane.
 
-The parser accepts `run`, `workers`, and `concurrency` in `[workflows]`, `[workflows.<group>]`, `[servers.<server>.workflows]`, and `[servers.<server>.workflows.<group>]`. Parsed count/concurrency precedence is defaults (`workers = 0`, `concurrency = 10`), app base, app group, server base, then server group. These parsed counts and overrides do not yet control production supervision; do not rely on them to tune running workers. `run` must be a non-empty array of non-empty strings. Group and server names follow the app-name rules.
+The parser accepts `run` in named worker groups. It accepts `workers` and `concurrency` in `[workflows]`, `[workflows.<group>]`, `[servers.<server>.workflows]`, and `[servers.<server>.workflows.<group>]`. Parsed count/concurrency precedence is defaults (`workers = 0`, `concurrency = 10`), app base, app group, server base, then server group. These parsed counts and overrides do not yet control production supervision; do not rely on them to tune running workers. `run` must be a non-empty array of non-empty strings. Group and server names follow the app-name rules.
 
 In multi-server environments, JS workflows require `postgres_url` unless every workflow opts into local per-server execution. Go workflow deployments require `postgres_url` for multi-server environments. Channels also require `postgres_url` for multi-server deploys so every server can read and publish to the same broadcast replay log.
 

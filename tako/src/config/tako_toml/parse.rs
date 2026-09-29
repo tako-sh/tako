@@ -51,7 +51,7 @@ impl TakoToml {
         let release = parse_optional_string(&raw, "release")?;
         let build = parse_build_config(&raw)?;
         let build_stages = parse_build_stages(&raw)?;
-        let workflows = parse_workflows_config(&raw, "workflows")?.unwrap_or_default();
+        let workflows = parse_workflows_config(&raw, "workflows", true)?.unwrap_or_default();
         let images = parse_images_config(&raw)?;
         let storages = parse_storage_resources(&raw)?;
         let mut config = TakoToml {
@@ -173,11 +173,15 @@ fn parse_server_config(value: &toml::Value) -> Result<ServerConfig> {
             )));
         }
     }
-    let workflows = parse_workflows_config(value, "workflows")?;
+    let workflows = parse_workflows_config(value, "workflows", false)?;
     Ok(ServerConfig { workflows })
 }
 
-fn parse_workflows_config(raw: &toml::Value, key: &str) -> Result<Option<WorkflowsConfig>> {
+fn parse_workflows_config(
+    raw: &toml::Value,
+    key: &str,
+    allow_retention: bool,
+) -> Result<Option<WorkflowsConfig>> {
     let Some(value) = raw.get(key) else {
         return Ok(None);
     };
@@ -188,6 +192,14 @@ fn parse_workflows_config(raw: &toml::Value, key: &str) -> Result<Option<Workflo
     let mut config = WorkflowsConfig::default();
     for (field, field_value) in table {
         match field.as_str() {
+            "retention" if allow_retention => {
+                config.retention_ms = parse_workflow_retention(field_value)?;
+            }
+            "retention" => {
+                return Err(ConfigError::Validation(
+                    "'retention' belongs in the app's [workflows] section".into(),
+                ));
+            }
             "workers" => {
                 config.base.workers = Some(parse_u32_field(field_value, &format!("{key}.workers"))?)
             }
@@ -208,6 +220,40 @@ fn parse_workflows_config(raw: &toml::Value, key: &str) -> Result<Option<Workflo
     }
 
     Ok(Some(config))
+}
+
+fn parse_workflow_retention(value: &toml::Value) -> Result<Option<i64>> {
+    let raw = value.as_str().ok_or_else(|| {
+        ConfigError::Validation("'workflows.retention' must be a duration or 'forever'".into())
+    })?;
+    if raw == "forever" {
+        return Ok(None);
+    }
+    let (number, unit) = raw
+        .chars()
+        .last()
+        .and_then(|unit| raw.strip_suffix(unit).map(|number| (number, unit)))
+        .unwrap_or(("", '\0'));
+    let multiplier: i64 = match unit {
+        's' => 1_000,
+        'm' => 60_000,
+        'h' => 3_600_000,
+        'd' => 86_400_000,
+        _ => 0,
+    };
+    let millis = number
+        .parse::<i64>()
+        .ok()
+        .filter(|n| *n > 0)
+        .and_then(|n| n.checked_mul(multiplier))
+        .filter(|n| *n > 0)
+        .ok_or_else(|| {
+            ConfigError::Validation(
+                "'workflows.retention' must be a positive duration (s, m, h, d) or 'forever'"
+                    .into(),
+            )
+        })?;
+    Ok(Some(millis))
 }
 
 fn parse_workflow_worker_config(

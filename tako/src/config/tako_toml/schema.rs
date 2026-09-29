@@ -318,10 +318,29 @@ impl WorkflowWorkerConfig {
 
 /// Workflow worker configuration with a base config and named worker-group
 /// overrides.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkflowsConfig {
     pub base: WorkflowWorkerConfig,
 
     #[serde(default)]
     pub groups: HashMap<String, WorkflowWorkerConfig>,
+
+    /// Minimum age of terminal runs before best-effort cleanup. None keeps
+    /// workflow history indefinitely.
+    #[serde(default = "default_workflow_retention_ms")]
+    pub retention_ms: Option<i64>,
+}
+
+fn default_workflow_retention_ms() -> Option<i64> {
+    Some(tako_workflows::DEFAULT_RETENTION_MS)
+}
+
+impl Default for WorkflowsConfig {
+    fn default() -> Self {
+        Self {
+            base: WorkflowWorkerConfig::default(),
+            groups: HashMap::new(),
+            retention_ms: default_workflow_retention_ms(),
+        }
+    }
 }

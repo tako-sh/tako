@@ -24,6 +24,10 @@ use tokio::sync::oneshot;
 
 use super::enqueue::{RunsDb, RunsDbError};
 
+const PRUNE_BATCH_SIZE: u32 = 1_000;
+const PRUNE_IDLE_INTERVAL_MS: i64 = 24 * 60 * 60 * 1_000;
+const PRUNE_BACKLOG_INTERVAL_MS: i64 = 60 * 1_000;
+
 /// Replace the schedules table for this app with the given list.
 ///
 /// Unknown schedules are dropped. Existing schedules keep their `last_run_at`
@@ -174,12 +178,35 @@ pub fn tick_and_reclaim(
     }
 }
 
+fn prune_if_due(db: &RunsDb, now_ms: i64, retention_ms: Option<i64>, next_at_ms: &mut i64) {
+    let Some(retention_ms) = retention_ms else {
+        return;
+    };
+    if now_ms < *next_at_ms {
+        return;
+    }
+    match db.prune_finished_before(now_ms.saturating_sub(retention_ms), PRUNE_BATCH_SIZE) {
+        Ok(count) => {
+            let delay = if count == PRUNE_BATCH_SIZE as u64 {
+                PRUNE_BACKLOG_INTERVAL_MS
+            } else {
+                PRUNE_IDLE_INTERVAL_MS
+            };
+            *next_at_ms = now_ms.saturating_add(delay);
+        }
+        Err(error) => {
+            tracing::warn!(%error, "workflow history cleanup failed");
+            *next_at_ms = now_ms.saturating_add(PRUNE_BACKLOG_INTERVAL_MS);
+        }
+    }
+}
+
 /// Start a cron ticker for an app. `on_enqueue` fires whenever a tick
 /// enqueued a scheduled task or reclaimed an expired lease. The manager wires
 /// this to the dispatcher so scale-to-zero workers spin up only when work is
 /// runnable.
 pub fn spawn(db: Arc<RunsDb>, on_enqueue: Arc<dyn Fn() + Send + Sync>) -> CronTickerHandle {
-    spawn_inner(db, None, on_enqueue)
+    spawn_inner(db, None, on_enqueue, Some(crate::DEFAULT_RETENTION_MS))
 }
 
 /// Like [`spawn`] but also drains the in-flight limiter for workers
@@ -188,17 +215,20 @@ pub fn spawn_with_limiter(
     db: Arc<RunsDb>,
     limiter: Arc<crate::in_flight::InFlightLimiter>,
     on_enqueue: Arc<dyn Fn() + Send + Sync>,
+    retention_ms: Option<i64>,
 ) -> CronTickerHandle {
-    spawn_inner(db, Some(limiter), on_enqueue)
+    spawn_inner(db, Some(limiter), on_enqueue, retention_ms)
 }
 
 fn spawn_inner(
     db: Arc<RunsDb>,
     limiter: Option<Arc<crate::in_flight::InFlightLimiter>>,
     on_enqueue: Arc<dyn Fn() + Send + Sync>,
+    retention_ms: Option<i64>,
 ) -> CronTickerHandle {
     let (tx, mut rx) = oneshot::channel::<()>();
     let join = tokio::spawn(async move {
+        let mut next_cleanup_at_ms = 0;
         loop {
             tokio::select! {
                 _ = &mut rx => break,
@@ -206,11 +236,15 @@ fn spawn_inner(
                     let db = db.clone();
                     let on_enqueue = on_enqueue.clone();
                     let limiter = limiter.clone();
-                    if let Err(error) = crate::blocking::run(move || {
+                    let mut next = next_cleanup_at_ms;
+                    match crate::blocking::run(move || {
                         let now_ms = chrono::Utc::now().timestamp_millis();
                         tick_and_reclaim(&db, now_ms, &*on_enqueue, limiter.as_deref());
+                        prune_if_due(&db, now_ms, retention_ms, &mut next);
+                        next
                     }).await {
-                        tracing::error!(%error, "Workflow cron tick failed");
+                        Ok(next) => next_cleanup_at_ms = next,
+                        Err(error) => tracing::error!(%error, "Workflow cron tick failed"),
                     }
                 }
             }
@@ -228,6 +262,41 @@ mod tests {
 
     fn db() -> Arc<RunsDb> {
         Arc::new(RunsDb::open_in_memory().unwrap())
+    }
+
+    #[test]
+    fn cleanup_respects_retention_and_forever() {
+        let db = db();
+        let run = db
+            .enqueue("work", &serde_json::json!({}), &EnqueueOpts::default())
+            .unwrap();
+        db.claim("worker", &["work".into()], 30_000).unwrap();
+        db.complete(&run.id, "worker").unwrap();
+        db.raw_execute(
+            "UPDATE runs SET finished_at = 1 WHERE id = ?1",
+            [run.id.as_str()],
+        );
+        let now = chrono::Utc::now().timestamp_millis();
+        let mut next_cleanup_at = 0;
+
+        prune_if_due(&db, now, None, &mut next_cleanup_at);
+        assert_eq!(next_cleanup_at, 0);
+        assert_eq!(
+            db.raw_query_values("SELECT COUNT(*) FROM runs", ()),
+            vec![rusqlite::types::Value::Integer(1)]
+        );
+
+        prune_if_due(
+            &db,
+            now,
+            Some(crate::DEFAULT_RETENTION_MS),
+            &mut next_cleanup_at,
+        );
+        assert!(next_cleanup_at > now);
+        assert_eq!(
+            db.raw_query_values("SELECT COUNT(*) FROM runs", ()),
+            vec![rusqlite::types::Value::Integer(0)]
+        );
     }
 
     #[test]

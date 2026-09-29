@@ -20,6 +20,8 @@ pub(super) struct DeployArchiveManifest {
     pub(super) workflow_worker_main: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) workflow_run: Option<Vec<String>>,
+    #[serde(default = "default_workflow_retention_ms")]
+    pub(super) workflow_retention_ms: Option<i64>,
     pub(super) idle_timeout: u32,
     pub(super) env_vars: BTreeMap<String, String>,
     pub(super) secret_names: Vec<String>,
@@ -46,6 +48,10 @@ pub(super) struct DeployArchiveManifest {
     pub(super) container_file: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) container_port: Option<u16>,
+}
+
+fn default_workflow_retention_ms() -> Option<i64> {
+    Some(tako_workflows::DEFAULT_RETENTION_MS)
 }
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -197,6 +203,7 @@ pub(super) fn build_deploy_archive_manifest(
     main: &str,
     start: Option<Vec<String>>,
     workflow_worker_main: Option<String>,
+    workflow_retention_ms: Option<i64>,
     idle_timeout: u32,
     package_manager: Option<String>,
     commit_message: Option<String>,
@@ -230,6 +237,7 @@ pub(super) fn build_deploy_archive_manifest(
         start,
         workflow_worker_main,
         workflow_run: None,
+        workflow_retention_ms,
         idle_timeout,
         env_vars,
         secret_names,
@@ -259,6 +267,7 @@ pub(super) fn build_container_deploy_archive_manifest(
     images: tako_images::ImagesConfig,
     app_dir: String,
     workflow_run: Option<Vec<String>>,
+    workflow_retention_ms: Option<i64>,
 ) -> DeployArchiveManifest {
     let mut secret_names = env_secrets
         .map(|map| map.keys().cloned().collect::<Vec<_>>())
@@ -280,6 +289,7 @@ pub(super) fn build_container_deploy_archive_manifest(
         start: None,
         workflow_worker_main: None,
         workflow_run,
+        workflow_retention_ms,
         idle_timeout,
         env_vars,
         secret_names,
@@ -372,6 +382,7 @@ mod tests {
             "server/index.ts",
             None,
             None,
+            Some(tako_workflows::DEFAULT_RETENTION_MS),
             300,
             Some("bun".to_string()),
             Some("feat: ship it".to_string()),
@@ -398,6 +409,10 @@ mod tests {
         assert_eq!(manifest.git_dirty, Some(false));
         assert_eq!(manifest.release_kind, DeployReleaseKind::Native);
         assert_eq!(manifest.container_file, None);
+        assert_eq!(
+            manifest.workflow_retention_ms,
+            Some(tako_workflows::DEFAULT_RETENTION_MS)
+        );
     }
 
     #[test]
@@ -420,6 +435,7 @@ mod tests {
             tako_images::ImagesConfig::default(),
             "apps/web".to_string(),
             Some(vec!["./worker".to_string(), "video".to_string()]),
+            Some(tako_workflows::DEFAULT_RETENTION_MS),
         );
 
         assert_eq!(manifest.release_kind, DeployReleaseKind::Container);
@@ -428,6 +444,10 @@ mod tests {
         assert_eq!(manifest.container_file.as_deref(), Some("Dockerfile"));
         assert_eq!(manifest.container_port, Some(3000));
         assert_eq!(manifest.app_dir, "apps/web");
+        assert_eq!(
+            manifest.workflow_retention_ms,
+            Some(tako_workflows::DEFAULT_RETENTION_MS)
+        );
         assert_eq!(
             manifest.workflow_run,
             Some(vec!["./worker".to_string(), "video".to_string()])
@@ -487,6 +507,7 @@ mod tests {
             "server/index.mjs",
             None,
             None,
+            None,
             600,
             None,
             None,
@@ -506,6 +527,7 @@ mod tests {
         assert_eq!(manifest.main, "server/index.mjs");
         assert_eq!(manifest.start, None);
         assert_eq!(manifest.workflow_worker_main, None);
+        assert!(serde_json::to_value(&manifest).unwrap()["workflow_retention_ms"].is_null());
         assert_eq!(manifest.idle_timeout, 600);
         assert_eq!(manifest.git_dirty, Some(true));
         assert_eq!(
@@ -544,6 +566,7 @@ mod tests {
             "app",
             Some(vec!["./app".to_string(), "--serve".to_string()]),
             None,
+            Some(tako_workflows::DEFAULT_RETENTION_MS),
             300,
             None,
             None,

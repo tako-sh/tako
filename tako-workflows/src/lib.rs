@@ -24,7 +24,7 @@ pub mod supervisor;
 #[allow(unused_imports)]
 pub use dispatcher::{DispatchSignal, WorkDispatcher};
 #[allow(unused_imports)]
-pub use enqueue::{POSTGRES_WORKFLOWS_SCHEMA, RunsDb, WorkflowStoreConfig};
+pub use enqueue::{DEFAULT_RETENTION_MS, POSTGRES_WORKFLOWS_SCHEMA, RunsDb, WorkflowStoreConfig};
 #[allow(unused_imports)]
 pub use enqueue_socket::{
     AppHandlers, AppLookup, ChannelPublishFn, EnqueueSocketHandle, HealthCheck, OnClaimed,

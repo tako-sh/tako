@@ -192,6 +192,7 @@ async fn register_updated_app(
             storages: &storages,
             readiness_failure_hint: ctx.readiness_failure_hint.as_deref(),
             worker_command: ctx.worker_command.as_deref(),
+            workflow_retention_ms: cfg.workflows.retention_ms,
         })
         .await
         .map_err(|e| e.to_string());

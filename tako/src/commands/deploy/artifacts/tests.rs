@@ -746,10 +746,11 @@ fn build_stage_summary_output_is_shown_when_non_empty() {
 fn prepare_build_phase_packages_container_release_without_native_entrypoint() {
     let project = TempDir::new().unwrap();
     std::fs::write(project.path().join("Dockerfile"), "FROM scratch\n").unwrap();
-    let tako_config = TakoToml {
+    let mut tako_config = TakoToml {
         container: Some("Dockerfile".to_string()),
         ..Default::default()
     };
+    tako_config.workflows.retention_ms = None;
 
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let result = runtime.block_on(prepare_build_phase(
@@ -791,12 +792,13 @@ fn prepare_build_phase_packages_container_release_without_native_entrypoint() {
     let manifest: serde_json::Value = serde_json::from_str(&manifest_raw).unwrap();
     assert_eq!(manifest["release_kind"], "container");
     assert_eq!(manifest["container_file"], "Dockerfile");
+    assert!(manifest["workflow_retention_ms"].is_null());
 }
 
 #[test]
 fn prepare_build_phase_packages_native_artifact_with_start_without_runtime() {
     let project = TempDir::new().unwrap();
-    let tako_config = TakoToml {
+    let mut tako_config = TakoToml {
         start: vec!["./app".to_string()],
         build: crate::config::BuildConfig {
             run: Some("printf '#!/bin/sh\\n' > app".to_string()),
@@ -804,6 +806,7 @@ fn prepare_build_phase_packages_native_artifact_with_start_without_runtime() {
         },
         ..Default::default()
     };
+    tako_config.workflows.retention_ms = Some(3_600_000);
 
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let result = runtime.block_on(prepare_build_phase(
@@ -845,6 +848,7 @@ fn prepare_build_phase_packages_native_artifact_with_start_without_runtime() {
     assert_eq!(manifest["runtime"], "unknown");
     assert_eq!(manifest["main"], "");
     assert_eq!(manifest["start"], serde_json::json!(["./app"]));
+    assert_eq!(manifest["workflow_retention_ms"], 3_600_000);
     assert!(manifest.get("runtime_version").is_none());
     assert!(unpacked.join("app").is_file());
 }

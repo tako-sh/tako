@@ -691,7 +691,7 @@ impl ServerState {
         let worker_cwd = app_path;
         let manager = self.workflows.clone();
         let result = manager
-            .ensure(&app, move |_db_path| {
+            .ensure(&app, manifest.workflow_retention_ms, move |_db_path| {
                 let mut spec = crate::workflows::worker_spec_for_command(
                     &app_for_spec,
                     0,       // workers (scale-to-zero)

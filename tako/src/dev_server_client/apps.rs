@@ -41,6 +41,7 @@ pub struct RegisterAppRequest<'a> {
     pub storages: &'a std::collections::HashMap<String, tako_core::StorageBinding>,
     pub readiness_failure_hint: Option<&'a str>,
     pub worker_command: Option<&'a [String]>,
+    pub workflow_retention_ms: Option<i64>,
 }
 
 pub async fn list_apps() -> Result<Vec<ListedApp>, Box<dyn std::error::Error>> {
@@ -163,6 +164,7 @@ pub async fn register_app(
     if let Some(wc) = args.worker_command {
         req["worker_command"] = serde_json::json!(wc);
     }
+    req["workflow_retention_ms"] = serde_json::json!(args.workflow_retention_ms);
     c.send_line(&req.to_string()).await?;
     let line = c.read_line().await?;
     let v: serde_json::Value = serde_json::from_str(&line)?;

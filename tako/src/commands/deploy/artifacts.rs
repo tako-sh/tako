@@ -95,6 +95,7 @@ pub(super) async fn prepare_build_phase(
             tako_config.images.clone(),
             app_dir,
             resolve_configured_workflow_run(&tako_config)?,
+            tako_config.workflows.retention_ms,
         );
         let deploy_secrets = decrypt_deploy_secrets(&env, &secrets, Some(&project_dir))
             .map_err(|e| e.to_string())?;
@@ -262,6 +263,7 @@ pub(super) async fn prepare_build_phase(
         &manifest_main,
         explicit_start,
         workflow_worker_main,
+        tako_config.workflows.retention_ms,
         env_idle_timeout,
         deploy_pm,
         git_commit_message.clone(),

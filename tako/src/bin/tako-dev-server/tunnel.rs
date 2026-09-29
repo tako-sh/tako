@@ -1390,6 +1390,7 @@ mod tests {
                 is_idle: false,
                 command: vec!["bun".to_string(), "dev".to_string()],
                 worker_command: None,
+                workflow_retention_ms: Some(tako_workflows::DEFAULT_RETENTION_MS),
                 env: Default::default(),
                 log_buffer: crate::state::LogBuffer::new(),
                 pid: None,

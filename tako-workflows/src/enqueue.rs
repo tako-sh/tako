@@ -18,6 +18,7 @@ use super::postgres_store::PostgresRunsDb;
 use sqlite::SqliteRunsDb;
 
 pub const POSTGRES_WORKFLOWS_SCHEMA: &str = "tako_workflows";
+pub const DEFAULT_RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkflowStoreConfig {
@@ -210,6 +211,16 @@ impl RunsDb {
         match &self.backend {
             RunsDbBackend::Sqlite(db) => db.complete(id, worker_id),
             RunsDbBackend::Postgres(db) => db.complete(id, worker_id),
+        }
+    }
+
+    /// Delete at most `limit` terminal runs completed before `cutoff_ms`.
+    /// Returns the number of runs deleted, so housekeeping can retry soon
+    /// when a backlog remains.
+    pub fn prune_finished_before(&self, cutoff_ms: i64, limit: u32) -> Result<u64, RunsDbError> {
+        match &self.backend {
+            RunsDbBackend::Sqlite(db) => db.prune_finished_before(cutoff_ms, limit),
+            RunsDbBackend::Postgres(db) => db.prune_finished_before(cutoff_ms, limit),
         }
     }
 

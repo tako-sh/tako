@@ -80,6 +80,12 @@ pub struct RegisterAppRequest {
     /// Omitted when there are no workflows to run.
     #[serde(default)]
     pub worker_command: Option<Vec<String>>,
+    #[serde(default = "default_workflow_retention_ms")]
+    pub workflow_retention_ms: Option<i64>,
+}
+
+fn default_workflow_retention_ms() -> Option<i64> {
+    Some(tako_workflows::DEFAULT_RETENTION_MS)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -397,9 +403,11 @@ mod tests {
                 "run".to_string(),
                 "node_modules/tako.sh/dist/entrypoints/bun-worker.mjs".to_string(),
             ]),
+            workflow_retention_ms: None,
         }));
         let json = serde_json::to_string(&req).unwrap();
         assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), req);
+        assert!(json.contains("\"workflow_retention_ms\":null"));
 
         let resp = Response::AppRegistered {
             app_name: "my-app".to_string(),

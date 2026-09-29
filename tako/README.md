@@ -96,6 +96,7 @@ cargo run -p tako-cli --bin tako -- deploy --help
 - Non-development environments must define `route` or `routes`; development defaults to `{app}.test`.
 - `[envs.<name>].ssl` is optional and defaults to `letsencrypt`; Cloudflare SSL and Let’s Encrypt wildcard routes require encrypted credentials from `tako credentials set ssl.cloudflare`. Deploy checks required Cloudflare credentials from each target server during remote prepare.
 - Environments with `<app_root>/channels/` or `<app_root>/workflows/` can deploy to one server with local SQLite runtime state. Multi-server channels require the `postgres_url` credential. Multi-server workflows require `postgres_url` unless every JavaScript workflow sets `local: true`; Go workflow deployments always require `postgres_url`. Local workflows use per-server queues and cron.
+- `[workflows].retention` defaults to `"7d"` for completed workflow runs and their steps. Set a positive duration or `"forever"`; the value is carried through local dev registration and deploy manifests.
 
 ## Related Docs
 

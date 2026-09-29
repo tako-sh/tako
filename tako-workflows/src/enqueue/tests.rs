@@ -17,6 +17,122 @@ fn enqueue_inserts_a_pending_row() {
 }
 
 #[test]
+fn pruning_removes_only_expired_finished_runs_and_their_steps() {
+    let db = RunsDb::open_in_memory().unwrap();
+    let old = db.enqueue("work", &serde_json::json!({}), &opts()).unwrap();
+    assert_eq!(
+        db.claim("worker", &["work".into()], 30_000)
+            .unwrap()
+            .unwrap()
+            .id,
+        old.id
+    );
+    db.save_step(
+        &old.id,
+        "worker",
+        "step",
+        &serde_json::json!({"large": true}),
+    )
+    .unwrap();
+    db.complete(&old.id, "worker").unwrap();
+    let recent = db.enqueue("work", &serde_json::json!({}), &opts()).unwrap();
+    assert_eq!(
+        db.claim("worker", &["work".into()], 30_000)
+            .unwrap()
+            .unwrap()
+            .id,
+        recent.id
+    );
+    db.save_step(
+        &recent.id,
+        "worker",
+        "step",
+        &serde_json::json!({"large": true}),
+    )
+    .unwrap();
+    db.complete(&recent.id, "worker").unwrap();
+    let pending = db.enqueue("work", &serde_json::json!({}), &opts()).unwrap();
+    let now = now_ms();
+    db.raw_execute(
+        "UPDATE runs SET finished_at = ?1 WHERE id = ?2",
+        (now - 8 * 24 * 60 * 60 * 1000, old.id.as_str()),
+    );
+
+    assert_eq!(
+        db.prune_finished_before(now - 7 * 24 * 60 * 60 * 1000, 1)
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.prune_finished_before(now - 7 * 24 * 60 * 60 * 1000, 1)
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        db.raw_query_values(
+            "SELECT COUNT(*) FROM runs WHERE id = ?1",
+            (old.id.as_str(),)
+        ),
+        vec![Value::Integer(0)]
+    );
+    assert_eq!(
+        db.raw_query_values(
+            "SELECT COUNT(*) FROM steps WHERE run_id = ?1",
+            (old.id.as_str(),)
+        ),
+        vec![Value::Integer(0)]
+    );
+    for id in [&recent.id, &pending.id] {
+        assert_eq!(
+            db.raw_query_values("SELECT COUNT(*) FROM runs WHERE id = ?1", (id.as_str(),)),
+            vec![Value::Integer(1)]
+        );
+    }
+}
+
+#[test]
+fn pruning_never_removes_old_pending_or_running_runs() {
+    let db = RunsDb::open_in_memory().unwrap();
+    let running = db.enqueue("work", &serde_json::json!({}), &opts()).unwrap();
+    let pending = db.enqueue("work", &serde_json::json!({}), &opts()).unwrap();
+    db.claim("worker", &["work".into()], 30_000).unwrap();
+    db.raw_execute("UPDATE runs SET created_at = 1, finished_at = 1", ());
+
+    assert_eq!(db.prune_finished_before(now_ms(), 100).unwrap(), 0);
+    assert_eq!(db.pending_count().unwrap(), 1);
+    assert_eq!(
+        db.raw_query_values(
+            "SELECT COUNT(*) FROM runs WHERE id = ?1",
+            (running.id.as_str(),)
+        ),
+        vec![Value::Integer(1)]
+    );
+    assert_eq!(
+        db.raw_query_values(
+            "SELECT COUNT(*) FROM runs WHERE id = ?1",
+            (pending.id.as_str(),)
+        ),
+        vec![Value::Integer(1)]
+    );
+}
+
+#[test]
+fn cancelled_and_dead_runs_get_a_completion_time() {
+    let db = RunsDb::open_in_memory().unwrap();
+    let cancelled = db.enqueue("work", &serde_json::json!({}), &opts()).unwrap();
+    db.claim("worker", &["work".into()], 30_000).unwrap();
+    db.cancel(&cancelled.id, "worker", Some("no longer needed"))
+        .unwrap();
+
+    let dead = db.enqueue("work", &serde_json::json!({}), &opts()).unwrap();
+    db.claim("worker", &["work".into()], 30_000).unwrap();
+    db.fail(&dead.id, "worker", "permanent error", None, true)
+        .unwrap();
+
+    assert_eq!(db.prune_finished_before(now_ms() + 1_000, 100).unwrap(), 2);
+}
+
+#[test]
 fn workflow_store_config_names_postgres_schema() {
     assert_eq!(POSTGRES_WORKFLOWS_SCHEMA, "tako_workflows");
     assert_eq!(
@@ -80,6 +196,68 @@ fn postgres_workflow_store_round_trips_when_url_is_set() {
     .unwrap();
     db.complete(&run.id, "worker-1").unwrap();
     assert_eq!(db.pending_count().unwrap(), 0);
+    let other_app_id = format!("{app_id}-other");
+    let other = RunsDb::open_postgres(&url, &other_app_id).unwrap();
+    let other_run = other
+        .enqueue("send-email", &serde_json::json!({}), &opts())
+        .unwrap();
+    other
+        .claim("worker-2", &["send-email".into()], 30_000)
+        .unwrap();
+    other.complete(&other_run.id, "worker-2").unwrap();
+
+    assert_eq!(db.prune_finished_before(now_ms() + 1_000, 100).unwrap(), 1);
+    let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let remaining: i64 = client
+        .query_one(
+            "SELECT COUNT(*) FROM tako_workflows.steps WHERE app_id=$1 AND run_id=$2",
+            &[&app_id, &result.id],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(remaining, 0);
+    let other_remaining: i64 = client
+        .query_one(
+            "SELECT COUNT(*) FROM tako_workflows.runs WHERE app_id=$1 AND id=$2",
+            &[&other_app_id, &other_run.id],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(other_remaining, 1);
+    assert_eq!(
+        other.prune_finished_before(now_ms() + 1_000, 100).unwrap(),
+        1
+    );
+}
+
+#[test]
+fn opening_old_sqlite_store_gives_finished_runs_a_grace_period() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("workflows.sqlite");
+    {
+        let conn = tako_sqlite::open_local(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE runs (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL, payload TEXT NOT NULL,
+                status TEXT NOT NULL, attempts INTEGER NOT NULL, max_attempts INTEGER NOT NULL,
+                run_at INTEGER NOT NULL, lease_until INTEGER, worker_id TEXT, last_error TEXT,
+                created_at INTEGER NOT NULL, unique_key TEXT
+             );
+             INSERT INTO runs (id, name, payload, status, attempts, max_attempts, run_at, created_at)
+             VALUES ('old', 'work', '{}', 'succeeded', 1, 3, 1, 1);",
+        )
+        .unwrap();
+    }
+    let db = RunsDb::open(&path).unwrap();
+    assert_eq!(
+        db.prune_finished_before(now_ms() - DEFAULT_RETENTION_MS, 100)
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        db.raw_query_values("SELECT COUNT(*) FROM runs WHERE id='old'", ()),
+        vec![Value::Integer(1)]
+    );
 }
 
 #[test]
