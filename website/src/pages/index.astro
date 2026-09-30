@@ -1,11 +1,12 @@
 ---
+import HugeIcon from "../components/HugeIcon.astro";
 import BaseLayout from "../layouts/BaseLayout.astro";
 import CopyButton from "../components/CopyButton.astro";
 import HomeScripts from "../components/home/HomeScripts.astro";
 import HomeStyles from "../components/home/HomeStyles.astro";
 import HomeProductSections from "../components/home/HomeProductSections.astro";
 import PerformanceResultsChart from "../components/home/PerformanceResultsChart.astro";
-import ExternalLinkIcon from "lucide-astro/ExternalLink";
+import ExternalLinkIcon from "@hugeicons/core-free-icons/LinkSquare01Icon";
 
 const homeStructuredData = {
   "@context": "https://schema.org",
@@ -85,7 +86,7 @@ const homeStructuredData = {
       <a class="btn btn-primary" href="/docs/quickstart/">get started</a>
       <a class="cta-link hero-actions-link hero-demo-link" href="https://demo.tako.sh" target="_blank" rel="noopener noreferrer">
         <span>live demo</span>
-        <ExternalLinkIcon class="hero-demo-icon" aria-hidden="true" focusable="false" />
+        <HugeIcon icon={ExternalLinkIcon} class="hero-demo-icon" aria-hidden="true" focusable="false" />
       </a>
       <a class="cta-link hero-actions-link" href="/docs/">or read the docs &rarr;</a>
     </div>

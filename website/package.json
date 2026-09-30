@@ -13,9 +13,9 @@
     "@astrojs/markdown-remark": "7.3.1",
     "@astrojs/rss": "^4.0.19",
     "@astrojs/sitemap": "^3.7.3",
+    "@hugeicons/core-free-icons": "^4.3.5",
     "astro": "catalog:dev",
-    "astro-d2": "^0.14.0",
-    "lucide-astro": "^0.556.0"
+    "astro-d2": "^0.14.0"
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.10",

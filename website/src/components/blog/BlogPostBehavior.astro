@@ -1,3 +1,13 @@
+---
+import HugeIcon from "../HugeIcon.astro";
+import PlusIcon from "@hugeicons/core-free-icons/Add01Icon";
+import MinusIcon from "@hugeicons/core-free-icons/Remove01Icon";
+import XMarkIcon from "@hugeicons/core-free-icons/Cancel01Icon";
+---
+<template id="diagram-zoom-in-icon"><HugeIcon icon={PlusIcon} aria-hidden="true" focusable="false" /></template>
+<template id="diagram-zoom-out-icon"><HugeIcon icon={MinusIcon} aria-hidden="true" focusable="false" /></template>
+<template id="diagram-close-icon"><HugeIcon icon={XMarkIcon} aria-hidden="true" focusable="false" /></template>
+
 <script is:inline>
   (function() {
     var article = document.querySelector(".blog-article");
@@ -74,9 +84,9 @@
       var toolbar = document.createElement("div");
       toolbar.className = "diagram-lightbox-toolbar";
 
-      var zoomOut = makeLightboxButton(iconMinus(), "Zoom out");
-      var zoomIn = makeLightboxButton(iconPlus(), "Zoom in");
-      var close = makeLightboxButton(iconClose(), "Close viewer");
+      var zoomOut = makeLightboxButton("diagram-zoom-out-icon", "Zoom out");
+      var zoomIn = makeLightboxButton("diagram-zoom-in-icon", "Zoom in");
+      var close = makeLightboxButton("diagram-close-icon", "Close viewer");
       close.classList.add("diagram-lightbox-close");
 
       toolbar.appendChild(zoomOut);
@@ -112,26 +122,14 @@
       var dragScrollLeft = 0;
       var dragScrollTop = 0;
 
-      function makeLightboxButton(icon, title) {
+      function makeLightboxButton(iconId, title) {
         var button = document.createElement("button");
         button.type = "button";
         button.className = "diagram-button";
-        button.innerHTML = icon;
+        button.appendChild(document.getElementById(iconId).content.cloneNode(true));
         button.setAttribute("aria-label", title);
         button.title = title;
         return button;
-      }
-
-      function iconPlus() {
-        return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14"></path><path d="M5 12h14"></path></svg>';
-      }
-
-      function iconMinus() {
-        return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"></path></svg>';
-      }
-
-      function iconClose() {
-        return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg>';
       }
 
       function clamp(value, min, max) {

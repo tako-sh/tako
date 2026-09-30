@@ -1,6 +1,7 @@
 ---
-import StarIcon from "lucide-astro/Star";
-import ExternalLinkIcon from "lucide-astro/ExternalLink";
+import HugeIcon from "./HugeIcon.astro";
+import StarIcon from "@hugeicons/core-free-icons/StarIcon";
+import ExternalLinkIcon from "@hugeicons/core-free-icons/LinkSquare01Icon";
 ---
 
 <a href="/docs/">docs</a>
@@ -8,7 +9,7 @@ import ExternalLinkIcon from "lucide-astro/ExternalLink";
 <a href="/blog/">blog</a>
 <a href="https://demo.tako.sh" target="_blank" rel="noopener noreferrer" class="demo-link">
   <span>demo</span>
-  <ExternalLinkIcon class="demo-icon" aria-hidden="true" focusable="false" />
+  <HugeIcon icon={ExternalLinkIcon} class="demo-icon" aria-hidden="true" focusable="false" />
 </a>
 <a href="https://discord.gg/2bvHr6gdbB" target="_blank" rel="noopener noreferrer" class="discord-link" aria-label="Join the Discord community">
   <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
@@ -17,6 +18,6 @@ import ExternalLinkIcon from "lucide-astro/ExternalLink";
 </a>
 <a href="https://twitter.com/intent/follow?screen_name=lilienblum" target="_blank" rel="noopener noreferrer" class="x-link" aria-label="Follow on X">𝕏</a>
 <a href="https://github.com/tako-sh/tako" target="_blank" rel="noopener noreferrer" class="github-star">
-  <StarIcon class="star-icon" aria-hidden="true" focusable="false" />
+  <HugeIcon icon={StarIcon} class="star-icon" aria-hidden="true" focusable="false" />
   <span>github</span>
 </a>

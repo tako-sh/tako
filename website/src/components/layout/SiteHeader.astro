@@ -1,8 +1,11 @@
 ---
+import HugeIcon from "../HugeIcon.astro";
 import { Image } from "astro:assets";
 import NavLinks from "../NavLinks.astro";
-import StarIcon from "lucide-astro/Star";
-import ExternalLinkIcon from "lucide-astro/ExternalLink";
+import ChartLineIcon from "@hugeicons/core-free-icons/ChartLineData01Icon";
+import EditIcon from "@hugeicons/core-free-icons/Edit02Icon";
+import StarIcon from "@hugeicons/core-free-icons/StarIcon";
+import ExternalLinkIcon from "@hugeicons/core-free-icons/LinkSquare01Icon";
 ---
 <header class="header">
 				<div class="container">
@@ -28,7 +31,8 @@ import ExternalLinkIcon from "lucide-astro/ExternalLink";
 								rel="noopener noreferrer"
 								class="github-star"
 							>
-								<StarIcon
+								<HugeIcon
+									icon={StarIcon}
 									class="star-icon"
 									aria-hidden="true"
 									focusable="false"
@@ -48,52 +52,31 @@ import ExternalLinkIcon from "lucide-astro/ExternalLink";
 					</div>
 					<nav class="mobile-menu" id="mobile-menu" inert>
 						<a href="/performance/"
-							><svg
-								xmlns="http://www.w3.org/2000/svg"
-								width="16"
-								height="16"
-								viewBox="0 0 24 24"
-								fill="none"
-								stroke="currentColor"
-								stroke-width="2"
-								stroke-linecap="round"
-								stroke-linejoin="round"
+							><HugeIcon
+								icon={ChartLineIcon}
+								class="mobile-menu-icon"
 								aria-hidden="true"
 								focusable="false"
-								style="vertical-align: -2px; margin-right: 6px;"
-								><path d="M3 3v18h18"></path><path
-									d="m19 9-5 5-4-4-3 3"
-								></path></svg
-							>performance</a
+							/>performance</a
 						>
 						<a
 							href="https://demo.tako.sh"
 							target="_blank"
 							rel="noopener noreferrer"
-							><ExternalLinkIcon
+							><HugeIcon
+								icon={ExternalLinkIcon}
 								class="mobile-menu-icon"
 								aria-hidden="true"
 								focusable="false"
 							/>demo</a
 						>
 						<a href="/blog/"
-							><svg
-								xmlns="http://www.w3.org/2000/svg"
-								width="16"
-								height="16"
-								viewBox="0 0 24 24"
-								fill="none"
-								stroke="currentColor"
-								stroke-width="2"
-								stroke-linecap="round"
-								stroke-linejoin="round"
+							><HugeIcon
+								icon={EditIcon}
+								class="mobile-menu-icon"
 								aria-hidden="true"
 								focusable="false"
-								style="vertical-align: -2px; margin-right: 6px;"
-								><path d="M12 20h9"></path><path
-									d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"
-								></path></svg
-							>blog</a
+							/>blog</a
 						>
 						<a
 							href="https://twitter.com/intent/follow?screen_name=lilienblum"

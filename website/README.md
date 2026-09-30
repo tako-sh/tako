@@ -59,3 +59,7 @@ bun run --cwd website deploy
 ## Blog Images
 
 Blog hero sources live in `src/assets/blog/` as PNG files referenced by the `image` frontmatter ID. `bun run build` optimizes those images with Astro and emits compressed OG PNG endpoint files in `dist/assets/blog/og/`.
+
+## Icons
+
+UI icons use the official `@hugeicons/core-free-icons` package. Import icons from their individual package paths and render them with `src/components/HugeIcon.astro`, with `aria-hidden="true"` and `focusable="false"` for decorative icons.

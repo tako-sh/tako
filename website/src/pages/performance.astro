@@ -1,7 +1,8 @@
 ---
+import HugeIcon from "../components/HugeIcon.astro";
 import BaseLayout from "../layouts/BaseLayout.astro";
 import PerformanceChart from "../components/PerformanceChart.astro";
-import ExternalLinkIcon from "lucide-astro/ExternalLink";
+import ExternalLinkIcon from "@hugeicons/core-free-icons/LinkSquare01Icon";
 import {
   featureCharts,
   heavyRows,
@@ -29,7 +30,7 @@ const metricClasses = (metric: SummaryMetric) => ["metric-cell", !metric.clean &
       <div class="perf-actions" aria-label="Performance report links">
         <a class="perf-button" href="https://github.com/tako-sh/performance/blob/main/RESULTS.md" target="_blank" rel="noopener noreferrer">
           raw report
-          <ExternalLinkIcon class="perf-link-icon" aria-hidden="true" focusable="false" />
+          <HugeIcon icon={ExternalLinkIcon} class="perf-link-icon" aria-hidden="true" focusable="false" />
         </a>
         <a class="perf-link" href="#method">methodology</a>
       </div>
@@ -255,15 +256,15 @@ const metricClasses = (metric: SummaryMetric) => ["metric-cell", !metric.clean &
     <div class="raw-links">
       <a href="https://github.com/tako-sh/performance/tree/main/results/20260602T052009Z/http-vm-local" target="_blank" rel="noopener noreferrer">
         HTTP raw rows
-        <ExternalLinkIcon class="perf-link-icon" aria-hidden="true" focusable="false" />
+        <HugeIcon icon={ExternalLinkIcon} class="perf-link-icon" aria-hidden="true" focusable="false" />
       </a>
       <a href="https://github.com/tako-sh/performance/tree/main/results/20260604T055839Z/tako-features-vm-local" target="_blank" rel="noopener noreferrer">
         feature raw rows
-        <ExternalLinkIcon class="perf-link-icon" aria-hidden="true" focusable="false" />
+        <HugeIcon icon={ExternalLinkIcon} class="perf-link-icon" aria-hidden="true" focusable="false" />
       </a>
       <a href="https://github.com/tako-sh/performance" target="_blank" rel="noopener noreferrer">
         benchmark harness
-        <ExternalLinkIcon class="perf-link-icon" aria-hidden="true" focusable="false" />
+        <HugeIcon icon={ExternalLinkIcon} class="perf-link-icon" aria-hidden="true" focusable="false" />
       </a>
     </div>
   </section>

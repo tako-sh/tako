@@ -1,6 +1,7 @@
 ---
-import CheckIcon from "lucide-astro/Check";
-import CopyIcon from "lucide-astro/Copy";
+import HugeIcon from "./HugeIcon.astro";
+import CheckIcon from "@hugeicons/core-free-icons/Tick02Icon";
+import CopyIcon from "@hugeicons/core-free-icons/Copy01Icon";
 
 export interface Props {
   class?: string;
@@ -15,8 +16,8 @@ const {
 } = Astro.props;
 ---
 <button class:list={["snippet-copy-button", className]} type="button" aria-label={ariaLabel} title={title}>
-  <CopyIcon class="snippet-copy-icon snippet-copy-icon-copy" aria-hidden="true" focusable="false" />
-  <CheckIcon class="snippet-copy-icon snippet-copy-icon-check" aria-hidden="true" focusable="false" />
+  <HugeIcon icon={CopyIcon} class="snippet-copy-icon snippet-copy-icon-copy" aria-hidden="true" focusable="false" />
+  <HugeIcon icon={CheckIcon} class="snippet-copy-icon snippet-copy-icon-check" aria-hidden="true" focusable="false" />
 </button>
 
 <style is:global>

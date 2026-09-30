@@ -1,0 +1,19 @@
+---
+import type { HTMLAttributes } from "astro/types";
+import type StarIcon from "@hugeicons/core-free-icons/StarIcon";
+
+interface Props extends HTMLAttributes<"svg"> {
+  icon: typeof StarIcon;
+}
+
+const { icon, width = 24, height = 24, ...attributes } = Astro.props;
+---
+<svg xmlns="http://www.w3.org/2000/svg" width={width} height={height} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" {...attributes}>
+  {icon.map(([Element, elementAttributes]) => (
+    <Element {...Object.fromEntries(
+      Object.entries(elementAttributes)
+        .filter(([name]) => name !== "key" && name !== "strokeWidth")
+        .map(([name, value]) => [name.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`), value]),
+    )} />
+  ))}
+</svg>

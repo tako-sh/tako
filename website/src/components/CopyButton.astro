@@ -1,6 +1,7 @@
 ---
-import CheckIcon from "lucide-astro/Check";
-import CopyIcon from "lucide-astro/Copy";
+import HugeIcon from "./HugeIcon.astro";
+import CheckIcon from "@hugeicons/core-free-icons/Tick02Icon";
+import CopyIcon from "@hugeicons/core-free-icons/Copy01Icon";
 
 export interface Props {
   id?: string;
@@ -23,8 +24,8 @@ const {
 const variantClass = `copy-button--${variant}`;
 ---
 <button id={id} class:list={["copy-button", variantClass, className]} type="button" aria-label={ariaLabel} title={title}>
-  <CopyIcon class="copy-button-icon copy-button-icon-copy" aria-hidden="true" focusable="false" />
-  <CheckIcon class="copy-button-icon copy-button-icon-check" aria-hidden="true" focusable="false" />
+  <HugeIcon icon={CopyIcon} class="copy-button-icon copy-button-icon-copy" aria-hidden="true" focusable="false" />
+  <HugeIcon icon={CheckIcon} class="copy-button-icon copy-button-icon-check" aria-hidden="true" focusable="false" />
   {label && (
     <span class="copy-button-label" data-copy-label>
       {label}
