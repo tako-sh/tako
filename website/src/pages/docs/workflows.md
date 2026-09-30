@@ -85,18 +85,22 @@ await fulfillOrder.enqueue(
   {
     runAt: new Date(Date.now() + 60_000),
     retries: 6,
-    uniqueKey: "fulfill:ord_123",
+    id: "fulfill:ord_123",
   },
 );
 ```
 
-| Option      | Meaning                                                                                                    |
-| ----------- | ---------------------------------------------------------------------------------------------------------- |
-| `runAt`     | Do not make the run eligible before this time. The default is now.                                         |
-| `retries`   | Override the workflow's retry count for this run.                                                          |
-| `uniqueKey` | Reuse the existing run ID when a non-terminal run with the same key already exists. Terminal runs free it. |
+| Option    | Meaning                                                                                                 |
+| --------- | ------------------------------------------------------------------------------------------------------- |
+| `runAt`   | Do not make the run eligible before this time. The default is now.                                      |
+| `retries` | Override the workflow's retry count for this run.                                                       |
+| `id`      | Use this as the run ID. A retained run with the same ID, workflow, and payload is reused in any status. |
 
-`.enqueue()` returns the run ID. Without a `uniqueKey`, each call creates a new run.
+`.enqueue()` returns the run ID, including the exact `id` you supply. Omit `id` to generate one and create a new run each time. IDs must contain 1–255 bytes and no NUL characters.
+
+IDs are unique within the app and environment, across workflow names. Repeating an ID with a different workflow or payload produces a conflict. Concurrent enqueues with the same ID create one run. Existing runs keep their original schedule, retry budget, status, and completed steps; enqueue does not restart a succeeded, cancelled, or dead run.
+
+Deleting a finished run's history also frees its ID. A later enqueue with that ID creates a new run with no saved steps. Deduplication does not prevent a step's external side effect from repeating after a crash; pass a stable idempotency key to the external service as well.
 
 ## Durable Steps With `ctx.run`
 
@@ -187,7 +191,7 @@ If a worker exits with an error before it can claim any work, Tako stops the imm
 
 On one server, Tako stores durable workflow state locally. Runs belong to the deployed app and environment, not to one worker process or release, so a worker restart or rolling deploy does not discard progress.
 
-Tako keeps finished runs for at least seven days by default, then removes them and their saved steps in small batches. The age is measured from completion, so long sleeps and waits do not shorten a run's history. Cleanup is best effort while the workflow runtime is active; stopped or retired stores can keep older rows until the runtime starts again. To change the age or keep history indefinitely, set `retention` in `tako.toml`:
+Tako keeps finished runs for at least 184 days by default, covering six calendar months, then removes them and their saved steps in small batches. The age is measured from completion, so long sleeps and waits do not shorten a run's history. Cleanup is best effort while the workflow runtime is active; stopped or retired stores can keep older rows until the runtime starts again. To change the age or keep history indefinitely, set `retention` in `tako.toml`:
 
 ```toml
 [workflows]
@@ -213,7 +217,7 @@ tako credentials set postgres_url --env production
 
 `postgres_url` is a provider credential. Tako encrypts it and does not expose it to app code. The SDK API remains the same whether Tako selects local storage or Postgres.
 
-With `local: true`, each server owns its own queue and cron schedule. A scheduled workflow runs once per server, and uniqueness keys do not deduplicate across servers. Use this only for work that is intentionally server-local, such as cleaning local files or warming a regional cache.
+With `local: true`, each server owns its own queue and cron schedule. A scheduled workflow runs once per server, and run IDs do not deduplicate across servers. Use this only for work that is intentionally server-local, such as cleaning local files or warming a regional cache.
 
 Tako validates the multi-server storage choice before build and deploy work begins. See [Deployment](/docs/deployment/) for environment setup and the [CLI reference](/docs/cli/) for provider credential commands.
 
@@ -232,7 +236,7 @@ Use `tako logs --tail` to follow app and worker output in production. For local 
 - Keep workflow payloads and step results JSON serializable.
 - Give every step a stable name. Changing a name creates a different checkpoint for existing runs.
 - Make side-effecting step bodies idempotent. `ctx.run` is durable but still at least once at the save boundary.
-- Use `uniqueKey` to suppress duplicate non-terminal enqueues for the same business operation.
+- Supply `id` to deduplicate enqueues for the same business operation while its run history is retained.
 - Use `ctx.bail` for expected cancellation and `ctx.fail` for permanent failure.
 - Keep `signal` and `.enqueue()` in server-side code.
 - Use Postgres for global workflows across multiple servers. Use `local: true` only when once per server is intentional.

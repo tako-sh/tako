@@ -16,13 +16,8 @@ CREATE TABLE IF NOT EXISTS runs (
   worker_id     TEXT,
   last_error    TEXT,
   created_at    INTEGER NOT NULL,
-  finished_at   INTEGER,
-  unique_key    TEXT
+  finished_at   INTEGER
 );
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_unique_live
-  ON runs(unique_key)
-  WHERE unique_key IS NOT NULL AND status IN ('pending','running');
 
 CREATE INDEX IF NOT EXISTS idx_runs_claim
   ON runs(run_at)

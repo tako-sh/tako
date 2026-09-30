@@ -37,7 +37,7 @@ fn parses_workflow_retention_and_forever() {
     let default = TakoToml::parse("").unwrap();
     assert_eq!(
         default.workflows.retention_ms,
-        Some(7 * 24 * 60 * 60 * 1000)
+        Some(184 * 24 * 60 * 60 * 1000)
     );
 }
 

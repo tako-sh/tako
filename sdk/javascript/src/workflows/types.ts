@@ -38,11 +38,11 @@ export interface RunSpec {
    */
   retries?: number;
   /**
-   * Uniqueness key. If a run with this key already exists in a
-   * non-terminal state, enqueue is a no-op and the existing run id is
-   * returned. Used by cron to avoid duplicate ticks across replicas.
+   * Caller-supplied run ID, unique within the app and environment.
+   * Reuses a retained run with the same workflow and payload in any status.
+   * A different workflow or payload conflicts. Omit to generate a new ID.
    */
-  uniqueKey?: string | null;
+  id?: string;
 }
 
 /** Server-owned record for one workflow execution. */
@@ -71,8 +71,6 @@ export interface Run {
   stepState: StepState;
   /** Unix ms. */
   createdAt: number;
-  /** Enqueue deduplication key, when provided. */
-  uniqueKey: string | null;
 }
 
 /** Workflow definition options passed to `defineWorkflow`. */

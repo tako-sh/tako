@@ -85,9 +85,9 @@ pub fn tick_once(db: &RunsDb, now_ms: i64) -> Result<u64, RunsDbError> {
         };
 
         let bucket_ms = next.timestamp_millis();
-        let unique_key = format!("cron:{}:{}", row.name, bucket_ms);
+        let id = format!("cron:{}:{}", row.name, bucket_ms);
         let opts = EnqueueOpts {
-            unique_key: Some(unique_key),
+            id: Some(id),
             run_at_ms: Some(bucket_ms),
             max_attempts: None,
         };
@@ -412,7 +412,7 @@ mod tests {
         let second = tick_once(&db, now_ms).unwrap();
         assert!(first >= 1);
         // Second tick shouldn't enqueue again for the same bucket — the
-        // unique_key dedup catches it and last_run_at was advanced.
+        // id dedup catches it and last_run_at was advanced.
         assert_eq!(second, 0);
     }
 

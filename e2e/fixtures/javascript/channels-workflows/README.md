@@ -16,3 +16,5 @@ Flow:
 
 Used by both the CLI dev e2e suite (`e2e/cli/tests/dev.test.ts`) and the
 deploy/docker harness.
+
+The `/enqueue` JSON body accepts an optional `id`. Repeated requests with the same ID and message return that run ID while its history is retained.

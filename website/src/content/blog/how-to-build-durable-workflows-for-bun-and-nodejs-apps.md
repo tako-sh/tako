@@ -99,17 +99,14 @@ export default {
 
     const order = await req.json();
 
-    const runId = await fulfillOrder.enqueue(
-      { orderId: order.id },
-      { uniqueKey: `fulfill:${order.id}` },
-    );
+    const runId = await fulfillOrder.enqueue({ orderId: order.id }, { id: `fulfill:${order.id}` });
 
     return Response.json({ ok: true, runId });
   },
 };
 ```
 
-`uniqueKey` is the small line that saves you from duplicate POSTs, webhook retries, and impatient double-clicks. If a non-terminal run already has that key, enqueue returns the existing run id instead of inserting another run.
+`id` is the small line that saves you from duplicate POSTs, webhook retries, and impatient double-clicks. The supplied ID is the run ID. Repeating it with the same workflow and payload returns the retained run in any status. Changing the workflow or payload produces a conflict. Cleanup frees the ID for reuse.
 
 The fraud review signal can come from another handler:
 
@@ -182,7 +179,7 @@ Use a workflow when the work has state you care about after the request ends.
 | ---------------------- | --------------------------- | ----------------------------------- |
 | Retry a flaky API      | Catch and loop in memory    | Run-level and step-level retries    |
 | Survive deploys        | Hope the process finishes   | Completed steps are checkpointed    |
-| Avoid duplicate starts | Hand-roll a DB lock         | `uniqueKey` on enqueue              |
+| Avoid duplicate starts | Hand-roll a DB lock         | `id` on enqueue                     |
 | Wait for days          | Poll or split the job       | `ctx.sleep` or `ctx.waitFor`        |
 | Separate heavy work    | Add another process manager | One separate workflow process today |
 | Run scheduled jobs     | Cron plus queue glue        | `schedule` on `defineWorkflow`      |
@@ -191,4 +188,4 @@ For simple fire-and-forget work, a direct `await` is fine. For a one-line nightl
 
 The nice part is that the Bun or Node code still looks like code. A checkout workflow is a TypeScript file, not a YAML state machine. It deploys with the app, reads the same [secrets](/blog/secrets-without-env-files/), logs through the same server, and runs on the same VPS you already picked for HTTP traffic.
 
-Start with one workflow. Put every side effect behind `ctx.run`. Add `uniqueKey` anywhere an enqueue might repeat. Use `ctx.waitFor` when the outside world needs to answer. Then let Tako remember where the work left off.
+Start with one workflow. Put every side effect behind `ctx.run`. Add `id` anywhere an enqueue might repeat. Use `ctx.waitFor` when the outside world needs to answer. Then let Tako remember where the work left off.

@@ -433,7 +433,9 @@ run_channels_workflows_checks() {
   fi
 
   post_route_json "$server_host" "$route_host" "/publish" "{\"message\":\"$direct_message\"}" "Direct channel publish"
-  post_route_json "$server_host" "$route_host" "/enqueue" "{\"message\":\"$workflow_message\"}" "Workflow enqueue"
+  local workflow_payload="{\"message\":\"$workflow_message\",\"id\":\"$workflow_message\"}"
+  post_route_json "$server_host" "$route_host" "/enqueue" "$workflow_payload" "Workflow enqueue"
+  jq -e --arg id "$workflow_message" '.runId == $id' "$TMP_ROOT/post_body.tmp" >/dev/null
 
   if ! wait_for_file_text "$events_file" "$direct_message" "direct channel publish SSE event"; then
     cleanup_sse
@@ -443,6 +445,9 @@ run_channels_workflows_checks() {
     cleanup_sse
     exit 1
   fi
+
+  post_route_json "$server_host" "$route_host" "/enqueue" "$workflow_payload" "Duplicate workflow enqueue"
+  jq -e --arg id "$workflow_message" '.runId == $id' "$TMP_ROOT/post_body.tmp" >/dev/null
 
   cleanup_sse
 }

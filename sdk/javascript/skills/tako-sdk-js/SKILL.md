@@ -462,9 +462,11 @@ await sendEmail.enqueue({ userId: "u1", to: "a@b.c" });
 await sendEmail.enqueue(payload, {
   runAt: new Date(Date.now() + 60_000), // delay
   retries: 9, // override workflow default
-  uniqueKey: "digest:2026-04-14", // idempotency: no-op if non-terminal run exists
+  id: "digest:2026-04-14", // the actual run ID
 });
 ```
+
+Omit `id` to generate a new run ID. A supplied ID reuses the retained run in any status when the workflow and payload match. A different workflow or payload conflicts. IDs are unique within the app and environment, must contain 1–255 bytes with no NUL characters, and remain reserved until history is deleted. Finished history is retained for 184 days by default; `[workflows].retention` can override it or use `"forever"`.
 
 No generated file is needed for workflow enqueue typing — the types flow from the workflow module itself.
 

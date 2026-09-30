@@ -11,8 +11,8 @@ export default async function fetch(request: Request): Promise<Response> {
   }
 
   if (url.pathname === "/enqueue" && request.method === "POST") {
-    const { message } = (await request.json()) as { message: string };
-    const runId = await broadcast.enqueue({ message });
+    const { message, id } = (await request.json()) as { message: string; id?: string };
+    const runId = await broadcast.enqueue({ message }, id === undefined ? {} : { id });
     return Response.json({ ok: true, runId });
   }
 

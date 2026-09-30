@@ -262,11 +262,19 @@ describe.skipIf(SKIP)("tako dev fixtures", () => {
       const workflow = await postJsonWhenReady(
         devUrl,
         "/enqueue",
-        { message: workflowMessage },
+        { message: workflowMessage, id: workflowMessage },
         lf,
       );
       expect(workflow.status).toBe(200);
-      expect(await workflow.json()).toMatchObject({ ok: true });
+      expect(await workflow.json()).toMatchObject({ ok: true, runId: workflowMessage });
+      const duplicate = await postJsonWhenReady(
+        devUrl,
+        "/enqueue",
+        { message: workflowMessage, id: workflowMessage },
+        lf,
+      );
+      expect(duplicate.status).toBe(200);
+      expect(await duplicate.json()).toMatchObject({ ok: true, runId: workflowMessage });
 
       const received = await Promise.race([
         sse,

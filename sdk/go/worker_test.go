@@ -279,7 +279,7 @@ func TestEnqueueSerializesOpts(t *testing.T) {
 	when := time.UnixMilli(1_700_000_000_000)
 	max := uint32(5)
 	key := "cron:5m:0"
-	_, _ = Enqueue(ctx, "w", nil, EnqueueOpts{RunAt: &when, MaxAttempts: &max, UniqueKey: &key})
+	_, _ = Enqueue(ctx, "w", nil, EnqueueOpts{RunAt: &when, MaxAttempts: &max, ID: &key})
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -290,8 +290,8 @@ func TestEnqueueSerializesOpts(t *testing.T) {
 	if opts["max_attempts"].(float64) != 5 {
 		t.Fatalf("max_attempts: %v", opts)
 	}
-	if opts["unique_key"].(string) != "cron:5m:0" {
-		t.Fatalf("unique_key: %v", opts)
+	if opts["id"] != "cron:5m:0" {
+		t.Fatalf("id: %v", opts)
 	}
 }
 

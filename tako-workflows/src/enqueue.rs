@@ -18,7 +18,8 @@ use super::postgres_store::PostgresRunsDb;
 use sqlite::SqliteRunsDb;
 
 pub const POSTGRES_WORKFLOWS_SCHEMA: &str = "tako_workflows";
-pub const DEFAULT_RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+/// Finished history and run IDs remain reserved for at least six calendar months.
+pub const DEFAULT_RETENTION_MS: i64 = 184 * 24 * 60 * 60 * 1000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkflowStoreConfig {
@@ -71,6 +72,10 @@ pub enum RunsDbError {
     Storage(String),
     #[error("{0}")]
     UnsupportedBackend(String),
+    #[error("workflow run ID '{id}' already belongs to a different workflow or payload")]
+    IdConflict { id: String },
+    #[error("workflow run ID must contain 1–255 bytes and no NUL characters")]
+    InvalidId,
     /// The run is no longer owned by the caller (lease expired and was
     /// reclaimed by another worker, or the run already terminated).
     #[error("stale worker: run is no longer owned by this worker")]
@@ -123,14 +128,19 @@ impl RunsDb {
         })
     }
 
-    /// Insert a new run, or return the id of an existing non-terminal run
-    /// with the same `unique_key` if one exists.
+    /// Insert a run, or reuse a retained run with the same supplied ID and inputs.
+    /// Conflicting workflow names or payloads return `IdConflict`.
     pub fn enqueue(
         &self,
         name: &str,
         payload: &serde_json::Value,
         opts: &EnqueueOpts,
     ) -> Result<EnqueueRunResponse, RunsDbError> {
+        if let Some(id) = &opts.id
+            && (id.is_empty() || id.len() > 255 || id.contains('\0'))
+        {
+            return Err(RunsDbError::InvalidId);
+        }
         match &self.backend {
             RunsDbBackend::Sqlite(db) => db.enqueue(name, payload, opts),
             RunsDbBackend::Postgres(db) => db.enqueue(name, payload, opts),
@@ -381,6 +391,21 @@ pub(crate) fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64
+}
+
+pub(super) fn check_existing_run(
+    id: &str,
+    name: &str,
+    payload: &serde_json::Value,
+    existing_name: &str,
+    existing_payload: &str,
+) -> Result<(), RunsDbError> {
+    if existing_name != name
+        || serde_json::from_str::<serde_json::Value>(existing_payload)? != *payload
+    {
+        return Err(RunsDbError::IdConflict { id: id.into() });
+    }
+    Ok(())
 }
 
 #[cfg(test)]

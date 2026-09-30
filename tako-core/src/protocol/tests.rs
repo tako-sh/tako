@@ -518,12 +518,12 @@ fn test_enqueue_run_command_roundtrip() {
         opts: EnqueueOpts {
             run_at_ms: Some(1_700_000_000_000),
             max_attempts: Some(5),
-            unique_key: Some("cron:send-email:0".to_string()),
+            id: Some("cron:send-email:0".to_string()),
         },
     };
     let json = serde_json::to_string(&cmd).unwrap();
     assert!(json.contains(r#""command":"enqueue_run""#));
-    assert!(json.contains(r#""unique_key":"cron:send-email:0""#));
+    assert!(json.contains(r#""id":"cron:send-email:0""#));
     let parsed: Command = serde_json::from_str(&json).unwrap();
     match parsed {
         Command::EnqueueRun {
@@ -532,6 +532,7 @@ fn test_enqueue_run_command_roundtrip() {
             assert_eq!(app, "my-app");
             assert_eq!(name, "send-email");
             assert_eq!(opts.max_attempts, Some(5));
+            assert_eq!(opts.id.as_deref(), Some("cron:send-email:0"));
         }
         _ => panic!("expected EnqueueRun"),
     }
@@ -550,7 +551,7 @@ fn test_enqueue_run_command_defaults_opts_when_missing() {
         Command::EnqueueRun { opts, .. } => {
             assert!(opts.run_at_ms.is_none());
             assert!(opts.max_attempts.is_none());
-            assert!(opts.unique_key.is_none());
+            assert!(opts.id.is_none());
         }
         _ => panic!("expected EnqueueRun"),
     }

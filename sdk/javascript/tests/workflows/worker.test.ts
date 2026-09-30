@@ -40,7 +40,6 @@ class MockServer {
       lastError: null,
       stepState: task.stepState ?? {},
       createdAt: Date.now(),
-      uniqueKey: null,
     });
     return id;
   }

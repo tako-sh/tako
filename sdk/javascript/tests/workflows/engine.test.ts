@@ -84,6 +84,34 @@ describe("WorkflowEngine enqueue (RPC)", () => {
     expect(await engine.enqueue("w", { hi: 1 })).toBe("srv-1");
   });
 
+  test("passes the supplied run ID to the server and returns it", async () => {
+    const messages: unknown[] = [];
+    server = await new Promise<Server>((resolve, reject) => {
+      const s = createServer((socket) => {
+        socket.on("data", (chunk: Buffer) => {
+          messages.push(JSON.parse(chunk.toString().trim()));
+          socket.write(
+            `${JSON.stringify({ status: "ok", data: { id: "invoice:123", deduplicated: false } })}\n`,
+          );
+        });
+      });
+      s.once("error", reject);
+      s.listen(sock, () => resolve(s));
+    });
+    const engine = new WorkflowEngine();
+    engine.setClient(new WorkflowsClient(sock, "test-app"));
+    expect(await engine.enqueue("pay", { amount: 100 }, { id: "invoice:123" })).toBe("invoice:123");
+    expect(messages).toEqual([
+      {
+        command: "enqueue_run",
+        app: "test-app",
+        name: "pay",
+        payload: { amount: 100 },
+        opts: { id: "invoice:123" },
+      },
+    ]);
+  });
+
   test("applies per-workflow retries default when caller omits it", async () => {
     let received: Record<string, unknown> | null = null;
     server = await new Promise<Server>((resolve, reject) => {

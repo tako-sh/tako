@@ -200,6 +200,14 @@ import sendEmail from "./workflows/send-email";
 await sendEmail.enqueue({ userId: "u1" });
 ```
 
+Supply an `id` to use it as the run ID and deduplicate repeated requests:
+
+```ts
+const runId = await sendEmail.enqueue({ userId: "u1" }, { id: "welcome:u1" });
+```
+
+A retained ID returns the existing run in any status when the workflow and payload match. A different workflow or payload conflicts. IDs are scoped to the app and environment and must contain 1–255 bytes with no NUL characters. Finished runs and their steps are retained for 184 days by default. Deleting history frees the ID; configure `[workflows].retention` to change the duration or use `"forever"`.
+
 To wake a parked `ctx.waitFor`, import `signal` from `tako.sh` and call it with the matching event name:
 
 ```ts

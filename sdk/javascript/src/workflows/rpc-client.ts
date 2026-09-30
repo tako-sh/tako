@@ -19,7 +19,7 @@ import type { Run, RunId, RunStatus, StepState } from "./types";
 export interface EnqueueResult {
   /** Workflow run id. */
   id: RunId;
-  /** True when `uniqueKey` matched an existing non-terminal run. */
+  /** True when the supplied ID matched a retained run. */
   deduplicated: boolean;
 }
 
@@ -69,9 +69,7 @@ export class WorkflowsClient {
     const wire: Record<string, unknown> = {};
     if (opts.runAt !== undefined) wire["run_at_ms"] = opts.runAt.getTime();
     if (opts.retries !== undefined) wire["max_attempts"] = opts.retries + 1;
-    if (opts.uniqueKey !== undefined && opts.uniqueKey !== null) {
-      wire["unique_key"] = opts.uniqueKey;
-    }
+    if (opts.id !== undefined) wire["id"] = opts.id;
     const data = await this.call({
       command: "enqueue_run",
       app: this.app,
@@ -238,6 +236,5 @@ function rawToRun(raw: RawRun): Run {
     lastError: null,
     stepState: raw.step_state ?? {},
     createdAt: 0,
-    uniqueKey: null,
   };
 }

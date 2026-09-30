@@ -21,7 +21,7 @@ A production cron job is not just a clock. The clock is the trigger; the durable
 | ---------------- | ----------------------------------------------- | ------------------------------------------------ |
 | Schedule         | External scheduler or delayed-set polling       | `schedule` on `defineWorkflow`                   |
 | Durable state    | Redis persistence or another database           | App-local SQLite at `data/tako/workflows.sqlite` |
-| Dedupe           | Job id / uniqueness key in queue library        | `uniqueKey`, plus internal cron keys             |
+| Dedupe           | Job id / uniqueness key in queue library        | `id`, plus internal cron keys                    |
 | Retries          | Worker library retry policy                     | Run-level and step-level retries                 |
 | Worker lifecycle | Separate worker process to deploy and supervise | Tako-supervised worker, scale-to-zero by default |
 
@@ -39,7 +39,7 @@ worker: "TypeScript workflow" {style.fill: "#E88783"; style.font-size: 16}
 
 clock -> ticker: "every second"
 worker -> schedules: "register schedule on boot"
-ticker -> runs: "enqueue due run + uniqueKey"
+ticker -> runs: "enqueue due run + id"
 runs -> supervisor: "wake"
 supervisor -> worker: "spawn when work is runnable"
 worker -> runs: "claim / save steps / complete"
@@ -93,13 +93,10 @@ The cron run payload is `{}`, so a pure scheduled job usually ignores `_payload`
 ```ts
 import dailyDigest from "../workflows/daily-digest";
 
-await dailyDigest.enqueue(
-  {},
-  { uniqueKey: `manual-digest:${new Date().toISOString().slice(0, 10)}` },
-);
+await dailyDigest.enqueue({}, { id: `manual-digest:${new Date().toISOString().slice(0, 10)}` });
 ```
 
-That `uniqueKey` is optional for manual runs, but useful when a button, webhook, or admin command might be retried. If another pending or running run already has the same key, enqueue returns the existing run id instead of inserting another row.
+That `id` is optional for manual runs, but useful when a button, webhook, or admin command might be retried. The supplied ID is the run ID. Repeating it with the same workflow and payload returns the retained run in any status. Changing the workflow or payload produces a conflict. Cleanup frees the ID for reuse.
 
 Cron runs get the same treatment internally. When the schedule fires, Tako enqueues with a key shaped like `cron:<name>:<bucket_ms>`. If a worker registers schedules twice, or the ticker loops across the same boundary twice, the key collapses the duplicate. If the server falls behind, the ticker fast-forwards and enqueues only the latest boundary that already passed, instead of flooding every missed minute.
 

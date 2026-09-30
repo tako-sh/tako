@@ -34,30 +34,18 @@ impl PostgresRunsDb {
         let now = now_ms();
         let run_at = opts.run_at_ms.unwrap_or(now);
         let max_attempts = opts.max_attempts.unwrap_or(DEFAULT_MAX_ATTEMPTS) as i64;
-        let unique_key = opts.unique_key.as_deref();
         let payload_json = serde_json::to_string(payload)?;
-        let id = nanoid::nanoid!();
+        let id = opts.id.clone().unwrap_or_else(|| nanoid::nanoid!());
 
         let mut client = self.client.lock();
         let mut tx = client.transaction()?;
-
-        if let Some(key) = unique_key
-            && let Some(existing) = self.select_existing_unique(&mut tx, key)?
-        {
-            tx.commit()?;
-            return Ok(EnqueueRunResponse {
-                id: existing,
-                deduplicated: true,
-            });
-        }
-
         let inserted = tx.execute(
             &format!(
                 "INSERT INTO {}.runs
                  (app_id, id, name, payload, status, attempts, max_attempts, run_at, lease_until,
-                  worker_id, last_error, created_at, unique_key)
-                 VALUES ($1, $2, $3, $4, 'pending', 0, $5, $6, NULL, NULL, NULL, $7, $8)
-                 ON CONFLICT DO NOTHING",
+                  worker_id, last_error, created_at)
+                 VALUES ($1, $2, $3, $4, 'pending', 0, $5, $6, NULL, NULL, NULL, $7)
+                 ON CONFLICT(app_id, id) DO NOTHING",
                 self.schema
             ),
             &[
@@ -68,32 +56,28 @@ impl PostgresRunsDb {
                 &max_attempts,
                 &run_at,
                 &now,
-                &unique_key,
             ],
-        );
-        let inserted = inserted?;
+        )?;
         if inserted == 0 {
-            if let Some(unique_key) = unique_key {
-                let existing = self
-                    .select_existing_unique(&mut tx, unique_key)?
-                    .ok_or_else(|| {
-                        RunsDbError::UnsupportedBackend("workflow id collision".into())
-                    })?;
-                tx.commit()?;
-                return Ok(EnqueueRunResponse {
-                    id: existing,
-                    deduplicated: true,
-                });
-            }
-            return Err(RunsDbError::UnsupportedBackend(
-                "workflow id collision".into(),
-            ));
+            let existing = tx.query_one(
+                &format!(
+                    "SELECT name, payload FROM {}.runs WHERE app_id=$1 AND id=$2",
+                    self.schema
+                ),
+                &[&self.app_id, &id],
+            )?;
+            super::enqueue::check_existing_run(
+                &id,
+                name,
+                payload,
+                existing.get(0),
+                existing.get(1),
+            )?;
         }
-
         tx.commit()?;
         Ok(EnqueueRunResponse {
             id,
-            deduplicated: false,
+            deduplicated: inserted == 0,
         })
     }
 
@@ -622,32 +606,17 @@ impl PostgresRunsDb {
             .and_then(|row| row.get(0));
         Ok(owner.as_deref() == Some(worker_id))
     }
-
-    fn select_existing_unique(
-        &self,
-        tx: &mut postgres::Transaction<'_>,
-        unique_key: &str,
-    ) -> Result<Option<String>, RunsDbError> {
-        Ok(tx
-            .query_opt(
-                &format!(
-                    "SELECT id FROM {}.runs
-                     WHERE app_id=$1 AND unique_key=$2 AND status IN ('pending','running')
-                     LIMIT 1",
-                    self.schema
-                ),
-                &[&self.app_id, &unique_key],
-            )?
-            .map(|row| row.get(0)))
-    }
 }
 
 fn init_schema(client: &mut Client, schema: &str) -> Result<(), RunsDbError> {
-    client.batch_execute(&format!(
+    let mut tx = client.transaction()?;
+    // PostgreSQL's IF NOT EXISTS does not serialize concurrent schema creation.
+    tx.query_one("SELECT pg_advisory_xact_lock(hashtext($1))", &[&schema])?;
+    tx.batch_execute(&format!(
         "CREATE SCHEMA IF NOT EXISTS {schema};
          CREATE TABLE IF NOT EXISTS {schema}.runs (
              app_id TEXT NOT NULL,
-             id TEXT PRIMARY KEY,
+             id TEXT NOT NULL,
              name TEXT NOT NULL,
              payload TEXT NOT NULL,
              status TEXT NOT NULL,
@@ -659,9 +628,17 @@ fn init_schema(client: &mut Client, schema: &str) -> Result<(), RunsDbError> {
              last_error TEXT,
              created_at BIGINT NOT NULL,
              finished_at BIGINT,
-             unique_key TEXT
+             PRIMARY KEY(app_id, id)
          );
          ALTER TABLE {schema}.runs ADD COLUMN IF NOT EXISTS finished_at BIGINT;
+         DO $$ BEGIN
+             IF EXISTS (
+                 SELECT 1 FROM pg_constraint
+                 WHERE conrelid = '{schema}.runs'::regclass AND contype = 'p' AND cardinality(conkey) = 1
+             ) THEN
+                 ALTER TABLE {schema}.runs DROP CONSTRAINT runs_pkey, ADD PRIMARY KEY(app_id, id);
+             END IF;
+         END $$;
          UPDATE {schema}.runs SET finished_at = (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT
            WHERE finished_at IS NULL AND status IN ('succeeded', 'cancelled', 'dead');
          CREATE INDEX IF NOT EXISTS idx_runs_app_finished
@@ -671,9 +648,6 @@ fn init_schema(client: &mut Client, schema: &str) -> Result<(), RunsDbError> {
            ON {schema}.runs(app_id, status, run_at);
          CREATE INDEX IF NOT EXISTS idx_runs_app_lease
            ON {schema}.runs(app_id, lease_until);
-         CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_app_unique_active
-           ON {schema}.runs(app_id, unique_key)
-           WHERE unique_key IS NOT NULL AND status IN ('pending','running');
 
          CREATE TABLE IF NOT EXISTS {schema}.steps (
              app_id TEXT NOT NULL,
@@ -706,6 +680,7 @@ fn init_schema(client: &mut Client, schema: &str) -> Result<(), RunsDbError> {
            ON {schema}.event_waiters(app_id, expires_at)
            WHERE expires_at IS NOT NULL;"
     ))?;
+    tx.commit()?;
     Ok(())
 }
 

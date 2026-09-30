@@ -68,5 +68,6 @@ After deploy, it runs universal runtime checks:
 - Fixtures with production secrets import the example passphrase and verify a
   secret-backed response.
 - The `channels-workflows` fixture additionally opens a real SSE stream,
-  verifies direct channel publish delivery, enqueues a workflow, and verifies
-  the workflow-published event arrives on the same stream.
+  verifies direct channel publish delivery, enqueues a workflow with a supplied
+  run ID, verifies the workflow-published event arrives on the same stream, and
+  checks that a repeated enqueue returns the same run ID.

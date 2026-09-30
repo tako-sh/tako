@@ -257,9 +257,9 @@ pub enum Command {
     /// Enqueue a run of the named workflow.
     ///
     /// The server inserts a row into the app's workflow store and the worker
-    /// process claims it when runnable. If `unique_key` collides with
-    /// an existing non-terminal run, this is a no-op and the existing run id
-    /// is returned.
+    /// process claims it when runnable. A supplied `id` identifies the run.
+    /// Repeating it with the same workflow and payload returns the retained run;
+    /// a different workflow or payload is a conflict.
     EnqueueRun {
         app: String,
         name: String,
@@ -403,10 +403,11 @@ pub struct EnqueueOpts {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_attempts: Option<u32>,
 
-    /// Deduplication key. If another non-terminal task with this key exists,
-    /// enqueue is a no-op and the existing task id is returned.
+    /// Caller-supplied run ID, unique within the app and environment.
+    /// A retained run with the same ID, workflow, and payload is reused in any status.
+    /// Omit to generate an ID. IDs must contain 1–255 bytes and no NUL characters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub unique_key: Option<String>,
+    pub id: Option<String>,
 }
 
 /// Response payload for `Command::EnqueueRun`.
@@ -414,7 +415,7 @@ pub struct EnqueueOpts {
 pub struct EnqueueRunResponse {
     /// The run id (newly-created or existing if the request was a dedup hit).
     pub id: String,
-    /// True when the request collapsed onto a pre-existing run via unique_key.
+    /// True when the supplied ID matched a retained run.
     pub deduplicated: bool,
 }
 

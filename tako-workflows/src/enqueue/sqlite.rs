@@ -61,35 +61,17 @@ impl SqliteRunsDb {
         let now_ms = now_ms();
         let run_at = opts.run_at_ms.unwrap_or(now_ms);
         let max_attempts = opts.max_attempts.unwrap_or(DEFAULT_MAX_ATTEMPTS) as i64;
-        let unique_key = opts.unique_key.as_deref();
         let payload_json = serde_json::to_string(payload)?;
-        let id = nanoid::nanoid!();
+        let id = opts.id.clone().unwrap_or_else(|| nanoid::nanoid!());
 
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
-        if let Some(key) = unique_key {
-            match tx.query_row(
-                "SELECT id FROM runs WHERE unique_key = ?1 AND status IN ('pending','running') LIMIT 1",
-                [key],
-                |row| row.get(0),
-            ) {
-                Ok(id) => {
-                    tx.commit()?;
-                    return Ok(EnqueueRunResponse {
-                        id,
-                        deduplicated: true,
-                    });
-                }
-                Err(rusqlite::Error::QueryReturnedNoRows) => {}
-                Err(e) => return Err(e.into()),
-            }
-        }
-
-        tx.execute(
+        let inserted = tx.execute(
             "INSERT INTO runs
              (id, name, payload, status, attempts, max_attempts, run_at, lease_until, worker_id,
-              last_error, created_at, unique_key)
-             VALUES (?1, ?2, ?3, 'pending', 0, ?4, ?5, NULL, NULL, NULL, ?6, ?7)",
+              last_error, created_at)
+             VALUES (?1, ?2, ?3, 'pending', 0, ?4, ?5, NULL, NULL, NULL, ?6)
+             ON CONFLICT(id) DO NOTHING",
             (
                 id.as_str(),
                 name,
@@ -97,14 +79,20 @@ impl SqliteRunsDb {
                 max_attempts,
                 run_at,
                 now_ms,
-                unique_key,
             ),
         )?;
-
+        if inserted == 0 {
+            let (existing_name, existing_payload): (String, String) = tx.query_row(
+                "SELECT name, payload FROM runs WHERE id = ?1",
+                [id.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            super::check_existing_run(&id, name, payload, &existing_name, &existing_payload)?;
+        }
         tx.commit()?;
         Ok(EnqueueRunResponse {
             id,
-            deduplicated: false,
+            deduplicated: inserted == 0,
         })
     }
 

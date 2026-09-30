@@ -228,7 +228,7 @@ async fn local_https_probe_rejects_untrusted_certificate() {
             return;
         };
         let mut request = [0; 4096];
-        stream.read(&mut request).unwrap();
+        assert!(stream.read(&mut request).unwrap() > 0);
         // Port zero makes following the redirect fail without contacting a remote host.
         stream.write_all(b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:0/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
     });
@@ -272,7 +272,7 @@ async fn local_https_probe_accepts_certificate_from_explicitly_trusted_ca() {
             return;
         };
         let mut request = [0; 4096];
-        stream.read(&mut request).unwrap();
+        assert!(stream.read(&mut request).unwrap() > 0);
         stream
             .write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
             .unwrap();

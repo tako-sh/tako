@@ -38,10 +38,11 @@ export interface EnqueueOptions {
    */
   retries?: number;
   /**
-   * Uniqueness key. If a non-terminal run with this key already exists,
-   * enqueue is a no-op and the existing run id is returned.
+   * Caller-supplied run ID, unique within the app and environment.
+   * Reuses a retained run with the same workflow and payload in any status.
+   * A different workflow or payload conflicts. Omit to generate a new ID.
    */
-  uniqueKey?: string | null;
+  id?: string;
 }
 
 /**

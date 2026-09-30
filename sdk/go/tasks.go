@@ -31,8 +31,9 @@ type EnqueueOpts struct {
 	RunAt *time.Time
 	// MaxAttempts is the total run-level attempt budget. Nil means the server default.
 	MaxAttempts *uint32
-	// UniqueKey deduplicates against an existing non-terminal run with the same key.
-	UniqueKey *string
+	// ID identifies the run within the app and environment. Retained runs are reused
+	// in any status when the workflow and payload match; different inputs conflict.
+	ID *string
 }
 
 // EnqueueResult is the server's response.
@@ -323,8 +324,8 @@ func optsToWire(o EnqueueOpts) map[string]any {
 	if o.MaxAttempts != nil {
 		w["max_attempts"] = *o.MaxAttempts
 	}
-	if o.UniqueKey != nil {
-		w["unique_key"] = *o.UniqueKey
+	if o.ID != nil {
+		w["id"] = *o.ID
 	}
 	return w
 }

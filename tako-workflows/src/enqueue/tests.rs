@@ -164,7 +164,7 @@ fn postgres_workflow_store_round_trips_when_url_is_set() {
             "send-email",
             &serde_json::json!({"to":"a@b.c"}),
             &EnqueueOpts {
-                unique_key: Some("email-1".to_string()),
+                id: Some("email-1".to_string()),
                 ..Default::default()
             },
         )
@@ -174,7 +174,7 @@ fn postgres_workflow_store_round_trips_when_url_is_set() {
             "send-email",
             &serde_json::json!({"to":"a@b.c"}),
             &EnqueueOpts {
-                unique_key: Some("email-1".to_string()),
+                id: Some("email-1".to_string()),
                 ..Default::default()
             },
         )
@@ -241,7 +241,7 @@ fn opening_old_sqlite_store_gives_finished_runs_a_grace_period() {
                 id TEXT PRIMARY KEY, name TEXT NOT NULL, payload TEXT NOT NULL,
                 status TEXT NOT NULL, attempts INTEGER NOT NULL, max_attempts INTEGER NOT NULL,
                 run_at INTEGER NOT NULL, lease_until INTEGER, worker_id TEXT, last_error TEXT,
-                created_at INTEGER NOT NULL, unique_key TEXT
+                created_at INTEGER NOT NULL
              );
              INSERT INTO runs (id, name, payload, status, attempts, max_attempts, run_at, created_at)
              VALUES ('old', 'work', '{}', 'succeeded', 1, 3, 1, 1);",
@@ -261,7 +261,7 @@ fn opening_old_sqlite_store_gives_finished_runs_a_grace_period() {
 }
 
 #[test]
-fn enqueue_deduplicates_on_unique_key() {
+fn enqueue_deduplicates_on_id() {
     let db = RunsDb::open_in_memory().unwrap();
     let key = Some("cron:5m:0".into());
     let first = db
@@ -269,7 +269,7 @@ fn enqueue_deduplicates_on_unique_key() {
             "w",
             &serde_json::json!({}),
             &EnqueueOpts {
-                unique_key: key.clone(),
+                id: key.clone(),
                 ..opts()
             },
         )
@@ -278,10 +278,7 @@ fn enqueue_deduplicates_on_unique_key() {
         .enqueue(
             "w",
             &serde_json::json!({}),
-            &EnqueueOpts {
-                unique_key: key,
-                ..opts()
-            },
+            &EnqueueOpts { id: key, ..opts() },
         )
         .unwrap();
 
@@ -292,13 +289,13 @@ fn enqueue_deduplicates_on_unique_key() {
 }
 
 #[test]
-fn enqueue_different_unique_keys_do_not_collide() {
+fn enqueue_different_ids_do_not_collide() {
     let db = RunsDb::open_in_memory().unwrap();
     db.enqueue(
         "w",
         &serde_json::json!({}),
         &EnqueueOpts {
-            unique_key: Some("k1".into()),
+            id: Some("k1".into()),
             ..opts()
         },
     )
@@ -307,7 +304,7 @@ fn enqueue_different_unique_keys_do_not_collide() {
         "w",
         &serde_json::json!({}),
         &EnqueueOpts {
-            unique_key: Some("k2".into()),
+            id: Some("k2".into()),
             ..opts()
         },
     )
@@ -316,7 +313,7 @@ fn enqueue_different_unique_keys_do_not_collide() {
 }
 
 #[test]
-fn enqueue_without_unique_key_always_inserts() {
+fn enqueue_without_id_always_inserts() {
     let db = RunsDb::open_in_memory().unwrap();
     db.enqueue("w", &serde_json::json!({}), &opts()).unwrap();
     db.enqueue("w", &serde_json::json!({}), &opts()).unwrap();
@@ -334,7 +331,7 @@ fn enqueue_honors_custom_max_attempts_and_run_at() {
             &EnqueueOpts {
                 run_at_ms: Some(future),
                 max_attempts: Some(7),
-                unique_key: None,
+                id: None,
             },
         )
         .unwrap();
@@ -401,14 +398,14 @@ fn open_creates_parent_directory() {
 }
 
 #[test]
-fn deduplication_frees_slot_once_original_is_terminal() {
+fn deduplication_reuses_a_completed_run() {
     let db = RunsDb::open_in_memory().unwrap();
     let r1 = db
         .enqueue(
             "w",
             &serde_json::json!({}),
             &EnqueueOpts {
-                unique_key: Some("k".into()),
+                id: Some("k".into()),
                 ..opts()
             },
         )
@@ -424,13 +421,13 @@ fn deduplication_frees_slot_once_original_is_terminal() {
             "w",
             &serde_json::json!({}),
             &EnqueueOpts {
-                unique_key: Some("k".into()),
+                id: Some("k".into()),
                 ..opts()
             },
         )
         .unwrap();
-    assert_ne!(r1.id, r2.id);
-    assert!(!r2.deduplicated);
+    assert_eq!(r1.id, r2.id);
+    assert!(r2.deduplicated);
 }
 
 #[test]
@@ -633,3 +630,5 @@ fn reclaim_expired_ignores_terminal_runs() {
 
     assert_eq!(db.reclaim_expired().unwrap(), 0);
 }
+
+mod identity;
