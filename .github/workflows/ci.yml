@@ -373,14 +373,14 @@ jobs:
           cargo build -p tako-cli --bin tako --bin tako-dev-server --bin tako-dev-proxy --release
 
       - name: Upload server binary
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: bin-tako-server-linux-x86_64-glibc
           path: target/release/tako-server
           if-no-files-found: error
 
       - name: Upload CLI binaries
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: bin-tako-linux-x86_64
           path: |
@@ -422,14 +422,14 @@ jobs:
           cargo build -p tako-cli --bin tako --bin tako-dev-server --bin tako-dev-proxy --release
 
       - name: Upload server binary
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: bin-tako-server-linux-aarch64-glibc
           path: target/release/tako-server
           if-no-files-found: error
 
       - name: Upload CLI binaries
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: bin-tako-linux-aarch64
           path: |
@@ -468,7 +468,7 @@ jobs:
             target/aarch64-apple-darwin/release/Tako.app
 
       - name: Upload binaries
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: bin-tako-darwin-aarch64
           path: |
