@@ -9,8 +9,8 @@
     ],
     "catalog": {
       "@resvg/resvg-js": "^2.6.2",
-      "@tanstack/react-router": "1.170.31",
-      "@tanstack/react-start": "1.168.48",
+      "@tanstack/react-router": "1.170.41",
+      "@tanstack/react-start": "1.168.60",
       "react": "^19.2.8",
       "react-dom": "^19.2.8",
       "satori": "^0.33.2",
