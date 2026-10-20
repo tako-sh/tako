@@ -105,6 +105,9 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      - name: Test release scripts
+        run: python3 -m unittest discover -s scripts/tests -v
+
       - name: Run workspace tests
         run: cargo test --workspace --locked --lib --bins
 

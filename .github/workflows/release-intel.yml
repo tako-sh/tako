@@ -1,0 +1,119 @@
+name: Release Intel macOS
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: Full commit SHA published in the latest release
+        required: true
+        type: string
+
+concurrency:
+  group: release-intel
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  RELEASE_SHA: ${{ inputs.commit }}
+
+jobs:
+  build:
+    name: Build and sign Intel macOS
+    runs-on: macos-26-intel
+    environment: release
+    outputs:
+      current: ${{ steps.release.outputs.current }}
+    steps:
+      - name: Check release commit
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          latest=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/latest" --jq .object.sha)
+          if [ "$latest" = "$RELEASE_SHA" ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Skipping Intel build: latest has moved to $latest"
+          fi
+
+      - name: Checkout
+        if: steps.release.outputs.current == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.commit }}
+
+      - name: Setup Rust
+        if: steps.release.outputs.current == 'true'
+        run: |
+          rustup toolchain install stable --profile minimal --target x86_64-apple-darwin
+          rustup default stable
+
+      - name: Install libvips
+        if: steps.release.outputs.current == 'true'
+        run: sh scripts/install-libvips-runtime.sh
+
+      - name: Build and test
+        if: steps.release.outputs.current == 'true'
+        env:
+          TAKO_BUILD_SHA: ${{ inputs.commit }}
+          TAKO_POSTHOG_PROJECT_TOKEN: ${{ secrets.TAKO_POSTHOG_PROJECT_TOKEN }}
+        run: |
+          cargo build -p tako-cli --locked --release --target x86_64-apple-darwin \
+            --bin tako --bin tako-dev-server --bin tako-dev-proxy
+          cargo test -p tako-cli --locked --release --target x86_64-apple-darwin \
+            --bin tako commands::upgrade
+          target/x86_64-apple-darwin/release/tako --version
+          target/x86_64-apple-darwin/release/tako --help
+          mkdir -p raw/bin-tako-darwin-x86_64
+          cp target/x86_64-apple-darwin/release/{tako,tako-dev-server,tako-dev-proxy} \
+            raw/bin-tako-darwin-x86_64/
+
+      - name: Sign and package
+        if: steps.release.outputs.current == 'true'
+        env:
+          TAKO_CODESIGN_CERTIFICATE_BASE64: ${{ secrets.TAKO_CODESIGN_CERTIFICATE_BASE64 }}
+          TAKO_CODESIGN_CERTIFICATE_PASSWORD: ${{ secrets.TAKO_CODESIGN_CERTIFICATE_PASSWORD }}
+          TAKO_CODESIGN_IDENTITY: ${{ secrets.TAKO_CODESIGN_IDENTITY }}
+          TAKO_APPLE_TEAM_ID: ${{ secrets.TAKO_APPLE_TEAM_ID }}
+          TAKO_KEYCHAIN_ACCESS_GROUP: ${{ secrets.TAKO_KEYCHAIN_ACCESS_GROUP }}
+          TAKO_PROVISION_PROFILE_BASE64: ${{ secrets.TAKO_PROVISION_PROFILE_BASE64 }}
+        run: bash scripts/sign-macos-release.sh x86_64
+
+      - name: Upload signed binaries
+        if: steps.release.outputs.current == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: signed-bin-tako-darwin-x86_64
+          path: signed-dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish Intel macOS
+    needs: [build]
+    if: needs.build.outputs.current == 'true'
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    concurrency:
+      group: release-assets
+      queue: max
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.commit }}
+
+      - name: Download signed binaries
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: signed-bin-tako-darwin-x86_64
+          path: signed-dist
+
+      - name: Publish if release is still current
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: bash scripts/publish-intel-release.sh "$RELEASE_SHA"

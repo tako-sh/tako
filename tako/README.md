@@ -42,7 +42,7 @@ Use `cargo run -p tako-cli --bin tako -- --help` for current flags and subcomman
 
 Operational behavior highlights:
 
-- `tako upgrade` upgrades only the local CLI. On macOS it preserves the signed `Tako.app` + `tako` symlink layout used by the hosted installer. Every build is a rolling `latest` build while Tako's protocol is v0.
+- `tako upgrade` upgrades only the local CLI. On macOS it supports Apple Silicon and Intel and preserves the signed `Tako.app` + `tako` symlink layout used by the hosted installer. Every build is a rolling `latest` build while Tako's protocol is v0. Intel builds publish independently after the main release; Intel installs and upgrades are temporarily unavailable until the matching build finishes.
 - `tako status` prints one global snapshot and exits.
 - `tako servers upgrade <name>` verifies the signed `tako-server-sha256s.txt` release manifest and passes the archive name and SHA-256 to a root-owned helper. The helper downloads only official releases and verifies the archive before installing it. Upgrade mode, service reload, readiness checks, and rollback keep the previous binary available until the replacement is ready. Service-user upgrades reject `TAKO_DOWNLOAD_BASE_URL`; install custom builds as administrator. GitHub-backed CLI update checks use `GH_TOKEN` when set, falling back to `GITHUB_TOKEN`.
 - Installer-managed hosts configure scoped passwordless sudo helpers for the `tako` SSH user, so upgrade/reload maintenance flows run non-interactively by default.

@@ -252,7 +252,7 @@ tako uninstall [-y|--yes]
 tako version
 ```
 
-`completions` installs bash, zsh, and fish completion scripts for shells that are on `PATH`. zsh is installed only when a writable directory is already on `fpath`; otherwise Tako prints how to add one. `upgrade` updates the local CLI install. On macOS, official CLI upgrades support Apple Silicon only. `uninstall` removes local Tako binaries, local data, completion scripts, and platform-specific dev services/config after confirmation.
+`completions` installs bash, zsh, and fish completion scripts for shells that are on `PATH`. zsh is installed only when a writable directory is already on `fpath`; otherwise Tako prints how to add one. `upgrade` updates the local CLI install. On macOS, official CLI upgrades support Apple Silicon and Intel. Intel builds publish separately after each release. If an Intel download is temporarily unavailable, retry once that build finishes. `uninstall` removes local Tako binaries, local data, completion scripts, and platform-specific dev services/config after confirmation.
 
 ## Usage stats
 

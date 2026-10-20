@@ -439,33 +439,22 @@ fn has_macho_magic(bytes: &[u8]) -> bool {
 }
 
 pub(super) fn detect_platform() -> Result<(&'static str, &'static str), String> {
-    let os = if cfg!(target_os = "macos") {
-        "darwin"
-    } else if cfg!(target_os = "linux") {
-        "linux"
-    } else {
-        return Err("unsupported OS".to_string());
-    };
-
-    let arch = if cfg!(target_arch = "x86_64") {
-        "x86_64"
-    } else if cfg!(target_arch = "aarch64") {
-        "aarch64"
-    } else {
-        return Err("unsupported architecture".to_string());
-    };
-
-    validate_supported_platform(os, arch)?;
-
-    Ok((os, arch))
+    release_platform(std::env::consts::OS, std::env::consts::ARCH)
 }
 
-fn validate_supported_platform(os: &str, arch: &str) -> Result<(), String> {
-    if os == "darwin" && arch != "aarch64" {
-        return Err("macOS is supported on Apple Silicon only".to_string());
-    }
+fn release_platform(os: &str, arch: &str) -> Result<(&'static str, &'static str), String> {
+    let os = match os {
+        "macos" => "darwin",
+        "linux" => "linux",
+        _ => return Err("unsupported OS".to_string()),
+    };
+    let arch = match arch {
+        "x86_64" => "x86_64",
+        "aarch64" => "aarch64",
+        _ => return Err("unsupported architecture".to_string()),
+    };
 
-    Ok(())
+    Ok((os, arch))
 }
 
 pub(super) fn resolve_install_dir() -> PathBuf {
@@ -541,19 +530,15 @@ mod tests {
         let (os, arch) = detect_platform().unwrap();
         assert!(os == "darwin" || os == "linux");
         assert!(arch == "x86_64" || arch == "aarch64");
-        if os == "darwin" {
-            assert_eq!(arch, "aarch64");
-        }
     }
 
     #[test]
-    fn validate_supported_platform_rejects_intel_macos() {
-        assert_eq!(
-            validate_supported_platform("darwin", "x86_64"),
-            Err("macOS is supported on Apple Silicon only".to_string())
-        );
-        assert_eq!(validate_supported_platform("linux", "x86_64"), Ok(()));
-        assert_eq!(validate_supported_platform("darwin", "aarch64"), Ok(()));
+    fn release_platform_supports_both_architectures_on_macos_and_linux() {
+        for (os, release_os) in [("macos", "darwin"), ("linux", "linux")] {
+            for arch in ["x86_64", "aarch64"] {
+                assert_eq!(release_platform(os, arch), Ok((release_os, arch)));
+            }
+        }
     }
 
     #[test]

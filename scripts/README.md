@@ -4,9 +4,11 @@ Repository scripts used by installers, CI checks, and local development workflow
 
 ## Scripts
 
-- `install-tako.sh`: POSIX installer for local `tako`, `tako-dev-server`, and `tako-dev-proxy`. It verifies the release archive SHA-256 checksum before extraction. Official macOS CLI builds support Apple Silicon only. On macOS it verifies `Tako.app` and helper signatures, installs `Tako.app`, symlinks `tako` to the signed CLI inside the app bundle, and installs libvips with Homebrew when available.
+- `install-tako.sh`: POSIX installer for local `tako`, `tako-dev-server`, and `tako-dev-proxy`. It verifies the release archive SHA-256 checksum before extraction. Official macOS CLI builds support Apple Silicon and Intel. On macOS it verifies `Tako.app` and helper signatures, installs `Tako.app`, symlinks `tako` to the signed CLI inside the app bundle, and installs libvips with Homebrew when available.
 - `install-libvips-runtime.sh`: CI helper that installs the libvips runtime used by downloaded Tako binaries on macOS and apt-based Linux runners.
 - `package-tako-app.sh`: Packages the Rust `tako` binary as `Tako.app` for macOS signing and iCloud Keychain entitlements.
+- `sign-macos-release.sh <arch>`: Signs and packages the macOS CLI and helpers from `raw/bin-tako-darwin-<arch>` into `signed-dist/`. Both Mac architectures use the same release signing secrets.
+- `publish-intel-release.sh <sha>`: Uploads the signed Intel archive and checksum only when `latest` still points to the build's commit. The caller must hold the `release-assets` GitHub Actions concurrency group through the check and upload.
 - `bump-rust-sdk-version.ts`: Bumps the published Rust SDK crate version in `sdk/rust/Cargo.toml` and `Cargo.lock`. Prefer `just sdk-rust patch|minor|major`. The release workflow publishes the Rust SDK only when this Cargo package version changes; `sdk-rust-latest` is moved by CI only after a successful crates.io publish.
 - `install-tako-server.sh`: POSIX installer for `tako-server` on Linux hosts.
   - Both installers download assets from the rolling `latest` release (override with `TAKO_RELEASE_TAG`).
@@ -46,3 +48,23 @@ The install scripts are exposed via website redirect endpoints:
 - `/install.sh`
 - `/install-server.sh`
 - `/server-install.sh`
+
+## Release workflow
+
+The main release publishes Linux and Apple Silicon binaries, then dispatches
+`release-intel.yml` with the exact published commit. Intel builds, tests, and signs
+on `macos-26-intel`; its success is independent of the main release. Both
+publishers queue in the `release-assets` concurrency group while updating assets,
+so a newer release cannot race an Intel upload. The main release removes the
+previous Intel archive before moving `latest`. Intel downloads are temporarily
+unavailable until the matching build finishes; failed or superseded Intel builds
+do not restore stale assets.
+
+Retry an Intel build by running **Release Intel macOS** with the full commit SHA
+currently referenced by `latest`.
+
+Run installer and release publication tests with:
+
+```bash
+python3 -m unittest discover -s scripts/tests -v
+```

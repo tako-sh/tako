@@ -15,6 +15,9 @@ permissions:
   contents: write
   actions: read
 
+env:
+  RELEASE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+
 jobs:
   sign-darwin:
     name: Sign macOS app
@@ -25,6 +28,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ env.RELEASE_SHA }}
           fetch-depth: 1
 
       - name: Find CI run
@@ -35,9 +39,9 @@ jobs:
           if [ -n "${{ github.event.workflow_run.id }}" ]; then
             echo "run_id=${{ github.event.workflow_run.id }}" >> "$GITHUB_OUTPUT"
           else
-            run_id=$(gh run list --workflow=ci.yml --commit="$GITHUB_SHA" --status=success --json databaseId -q '.[0].databaseId')
+            run_id=$(gh run list --workflow=ci.yml --commit="$RELEASE_SHA" --status=success --json databaseId -q '.[0].databaseId')
             if [ -z "$run_id" ]; then
-              echo "::error::No successful CI run found for commit $GITHUB_SHA"
+              echo "::error::No successful CI run found for commit $RELEASE_SHA"
               exit 1
             fi
             echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
@@ -64,115 +68,16 @@ jobs:
           name: bin-tako-darwin-aarch64
           path: raw/bin-tako-darwin-aarch64
 
-      - name: Import macOS signing certificate
+      - name: Sign and package macOS artifacts
         if: steps.builds.outputs.skipped != 'true'
         env:
           TAKO_CODESIGN_CERTIFICATE_BASE64: ${{ secrets.TAKO_CODESIGN_CERTIFICATE_BASE64 }}
           TAKO_CODESIGN_CERTIFICATE_PASSWORD: ${{ secrets.TAKO_CODESIGN_CERTIFICATE_PASSWORD }}
-        run: |
-          set -euo pipefail
-          if [ -z "${TAKO_CODESIGN_CERTIFICATE_BASE64}" ]; then
-            echo "::error::Missing secret TAKO_CODESIGN_CERTIFICATE_BASE64"
-            exit 1
-          fi
-          keychain_password="$(openssl rand -hex 24)"
-          keychain="$RUNNER_TEMP/tako-signing.keychain-db"
-          cert="$RUNNER_TEMP/tako-signing.p12"
-          if printf '%s' "$TAKO_CODESIGN_CERTIFICATE_BASE64" | base64 --decode > "$cert" 2>/dev/null; then
-            :
-          else
-            printf '%s' "$TAKO_CODESIGN_CERTIFICATE_BASE64" | base64 -D > "$cert"
-          fi
-          security create-keychain -p "$keychain_password" "$keychain"
-          security set-keychain-settings -lut 21600 "$keychain"
-          security unlock-keychain -p "$keychain_password" "$keychain"
-          if ! security import "$cert" -k "$keychain" -P "$TAKO_CODESIGN_CERTIFICATE_PASSWORD" -T /usr/bin/codesign; then
-            if [ -n "$TAKO_CODESIGN_CERTIFICATE_PASSWORD" ]; then
-              echo "Certificate import failed with TAKO_CODESIGN_CERTIFICATE_PASSWORD; retrying with an empty password"
-              security import "$cert" -k "$keychain" -P "" -T /usr/bin/codesign
-            else
-              exit 1
-            fi
-          fi
-          security list-keychains -d user -s "$keychain" login.keychain-db
-          security default-keychain -s "$keychain"
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain"
-          echo "TAKO_CODESIGN_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
-          security find-identity -v -p codesigning "$keychain"
-
-      - name: Sign and package macOS artifacts
-        if: steps.builds.outputs.skipped != 'true'
-        env:
           TAKO_CODESIGN_IDENTITY: ${{ secrets.TAKO_CODESIGN_IDENTITY }}
           TAKO_APPLE_TEAM_ID: ${{ secrets.TAKO_APPLE_TEAM_ID }}
           TAKO_KEYCHAIN_ACCESS_GROUP: ${{ secrets.TAKO_KEYCHAIN_ACCESS_GROUP }}
           TAKO_PROVISION_PROFILE_BASE64: ${{ secrets.TAKO_PROVISION_PROFILE_BASE64 }}
-        run: |
-          set -euo pipefail
-          for var in TAKO_CODESIGN_IDENTITY TAKO_APPLE_TEAM_ID TAKO_KEYCHAIN_ACCESS_GROUP TAKO_PROVISION_PROFILE_BASE64; do
-            if [ -z "${!var}" ]; then
-              echo "::error::Missing secret $var"
-              exit 1
-            fi
-          done
-
-          codesign_binary() {
-            if [ -n "${TAKO_CODESIGN_KEYCHAIN:-}" ]; then
-              if [ -n "${TAKO_CODESIGN_PAGESIZE:-}" ]; then
-                codesign --force --pagesize "$TAKO_CODESIGN_PAGESIZE" --sign "$TAKO_CODESIGN_IDENTITY" --keychain "$TAKO_CODESIGN_KEYCHAIN" "$@"
-              else
-                codesign --force --sign "$TAKO_CODESIGN_IDENTITY" --keychain "$TAKO_CODESIGN_KEYCHAIN" "$@"
-              fi
-            else
-              if [ -n "${TAKO_CODESIGN_PAGESIZE:-}" ]; then
-                codesign --force --pagesize "$TAKO_CODESIGN_PAGESIZE" --sign "$TAKO_CODESIGN_IDENTITY" "$@"
-              else
-                codesign --force --sign "$TAKO_CODESIGN_IDENTITY" "$@"
-              fi
-            fi
-          }
-
-          verify_archive() {
-            local archive=$1
-            local tmp
-            tmp="$(mktemp -d)"
-            tar -xzf "$archive" -C "$tmp"
-            codesign --verify --strict --deep --verbose=4 "$tmp/Tako.app"
-            codesign --verify --strict --verbose=4 "$tmp/Tako.app/Contents/MacOS/tako"
-            codesign --verify --strict --verbose=4 "$tmp/tako-dev-server"
-            codesign --verify --strict --verbose=4 "$tmp/tako-dev-proxy"
-            rm -rf "$tmp"
-          }
-
-          package_arch() {
-            local arch=$1
-            local src="raw/bin-tako-darwin-${arch}"
-            local name="tako-darwin-${arch}.tar.gz"
-            local out="signed-dist/${name}"
-            local pagesize=""
-            local tmp
-            if [ "$arch" = "aarch64" ]; then
-              pagesize=16384
-            fi
-            TAKO_CODESIGN_PAGESIZE="$pagesize" sh scripts/package-tako-app.sh "$src/tako" "$src/Tako.app"
-            TAKO_CODESIGN_PAGESIZE="$pagesize" codesign_binary "$src/tako-dev-server"
-            TAKO_CODESIGN_PAGESIZE="$pagesize" codesign_binary "$src/tako-dev-proxy"
-            codesign --verify --strict --deep --verbose=4 "$src/Tako.app"
-            codesign --verify --strict --verbose=4 "$src/Tako.app/Contents/MacOS/tako"
-            codesign --verify --strict --verbose=4 "$src/tako-dev-server"
-            codesign --verify --strict --verbose=4 "$src/tako-dev-proxy"
-
-            mkdir -p signed-dist
-            tmp="$(mktemp -d)"
-            cp "$src/tako-dev-server" "$src/tako-dev-proxy" "$tmp/"
-            ditto "$src/Tako.app" "$tmp/Tako.app"
-            tar -czf "$out" -C "$tmp" tako-dev-server tako-dev-proxy Tako.app
-            (cd signed-dist && shasum -a 256 "$name") > "${out}.sha256"
-            verify_archive "$out"
-            rm -rf "$tmp"
-          }
-
-          package_arch aarch64
+        run: bash scripts/sign-macos-release.sh aarch64
 
       - name: Upload signed aarch64
         if: steps.builds.outputs.skipped != 'true'
@@ -186,6 +91,12 @@ jobs:
 
   publish-binaries:
     name: Publish binaries
+    permissions:
+      contents: write
+      actions: write
+    concurrency:
+      group: release-assets
+      queue: max
     needs: [sign-darwin]
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
@@ -194,6 +105,7 @@ jobs:
       - name: Checkout (for tag update)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ env.RELEASE_SHA }}
           fetch-depth: 1
 
       - name: Find CI run
@@ -204,9 +116,9 @@ jobs:
           if [ -n "${{ github.event.workflow_run.id }}" ]; then
             echo "run_id=${{ github.event.workflow_run.id }}" >> "$GITHUB_OUTPUT"
           else
-            run_id=$(gh run list --workflow=ci.yml --commit="$GITHUB_SHA" --status=success --json databaseId -q '.[0].databaseId')
+            run_id=$(gh run list --workflow=ci.yml --commit="$RELEASE_SHA" --status=success --json databaseId -q '.[0].databaseId')
             if [ -z "$run_id" ]; then
-              echo "::error::No successful CI run found for commit $GITHUB_SHA"
+              echo "::error::No successful CI run found for commit $RELEASE_SHA"
               exit 1
             fi
             echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
@@ -302,25 +214,30 @@ jobs:
           printf '%s\n' "${TAKO_SERVER_RELEASE_SIGNING_KEY_PEM}" > "$key_file"
           openssl dgst -sha256 -sign "$key_file" -out dist/tako-server-sha256s.txt.sig dist/tako-server-sha256s.txt
 
-          # Tag and publish
-          git tag -f latest "$GITHUB_SHA"
-          git push -f origin latest
-
           assets=(dist/*)
           for f in "${assets[@]}"; do test -f "$f"; done
 
           timestamp="$(date -u +'%Y-%m-%d %H:%M UTC')"
-          short_sha="$(printf '%s' "$GITHUB_SHA" | cut -c1-7)"
+          short_sha="$(printf '%s' "$RELEASE_SHA" | cut -c1-7)"
           title="Latest"
           notes="Latest build from master (${short_sha}) on ${timestamp}."
 
           if ! gh release view latest >/dev/null 2>&1; then
             gh release create latest \
-              --target master \
+              --target "$RELEASE_SHA" \
               --title "$title" \
               --notes "$notes"
           fi
 
+          # Remove the previous Intel build before moving the rolling release.
+          intel_assets=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/latest" \
+            --jq '.assets[] | select(.name == "tako-darwin-x86_64.tar.gz" or .name == "tako-darwin-x86_64.tar.gz.sha256") | .id')
+          for asset_id in $intel_assets; do
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" >/dev/null
+          done
+
+          git tag -f latest "$RELEASE_SHA"
+          git push -f origin latest
           gh release edit latest --title "$title" --notes "$notes" --prerelease=false --draft=false
           gh release upload latest --clobber "${assets[@]}"
           # Bump published_at so the GitHub sidebar shows the rolling release as recent.
@@ -329,6 +246,14 @@ jobs:
           gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" -F draft=true >/dev/null
           gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" \
             -F draft=false -f published_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" >/dev/null
+
+      - name: Start Intel macOS release
+        if: steps.builds.outputs.skipped != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run release-intel.yml --repo "$GITHUB_REPOSITORY" --ref master \
+            -f "commit=$RELEASE_SHA"
 
   publish-sdk:
     name: Publish SDK
