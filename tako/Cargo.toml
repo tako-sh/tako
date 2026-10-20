@@ -69,7 +69,7 @@ tokio-tungstenite = { version = "0.30", default-features = false, features = [
 ] }
 
 # SSH client
-russh = "0.63"
+russh = "0.64"
 ssh-key = { version = "0.6", features = ["ed25519", "getrandom"] }
 async-trait = "0.1"
 
