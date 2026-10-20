@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "@tanstack/react-router": "^1",
-    "@tanstack/react-start": "1.168.60",
+    "@tanstack/react-start": "^1.168.60",
     "react": "^19",
     "react-dom": "^19",
     "tako.sh": "*"

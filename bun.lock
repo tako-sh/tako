@@ -5,7 +5,7 @@
     "": {
       "devDependencies": {
         "@types/bun": "^1.4.0",
-        "oxfmt": "0.70.0",
+        "oxfmt": "^0.70.0",
         "oxlint": "^1.79.0",
         "oxlint-tsgolint": "^7.0.2001",
       },
@@ -124,7 +124,7 @@
     "website": {
       "name": "website",
       "dependencies": {
-        "@astrojs/markdown-remark": "7.3.1",
+        "@astrojs/markdown-remark": "^7.3.1",
         "@astrojs/rss": "^4.0.19",
         "@astrojs/sitemap": "^3.7.3",
         "@hugeicons/core-free-icons": "^4.3.5",
@@ -147,8 +147,8 @@
   },
   "catalog": {
     "@resvg/resvg-js": "^2.6.2",
-    "@tanstack/react-router": "1.170.41",
-    "@tanstack/react-start": "1.168.60",
+    "@tanstack/react-router": "^1.170.41",
+    "@tanstack/react-start": "^1.168.60",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "satori": "^0.33.2",
