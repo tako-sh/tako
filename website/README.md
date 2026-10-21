@@ -1,6 +1,6 @@
 # Tako Website
 
-Astro static site deployed with Cloudflare Workers static assets.
+Astro static site deployed with Cloudflare Workers static assets. The Worker proxies `/docs` and `/docs/*` to Docs7.
 
 ## Routes
 
@@ -66,7 +66,7 @@ Preview Docs7 from the repository root:
 npx @upstash/docs7 dev website/src/pages/docs
 ```
 
-In the Docs7 dashboard for `tako-sh/tako`, use `master` as the production branch and `website/src/pages/docs` as the docs path. Publishing requires `docs.json` to be on that branch. Connect `tako.sh/docs` through the [Docs7 path proxy setup](https://context7.com/docs/docs7/custom-domains) when switching the public docs.
+In the Docs7 dashboard for `tako-sh/tako`, use `master` as the production branch and `website/src/pages/docs` as the docs path. Publishing requires `docs.json` to be on that branch. The custom URL is `tako.sh/docs`, with `https://tako-sh-tako.docs7.io/docs` as the proxy origin. `src/worker.js` forwards the docs path, query, method, body, and response headers and preserves redirects. The `run_worker_first` rules in `wrangler.jsonc` send docs requests to the proxy before looking up Astro assets. Other paths use the website's static assets. Deploy with the website's normal build and deploy commands.
 
 The Context7 library includes `website/src/pages/docs`, `sdk/javascript`, `sdk/go`, and `sdk/rust`. Exclude `examples` and `sdk/javascript/skills`. Root Markdown files are always included, so exclude maintainer instructions, plans, and internal contracts by filename in the library settings.
 

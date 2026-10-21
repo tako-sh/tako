@@ -1,6 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "tako-website",
+  "main": "./src/worker.js",
   "compatibility_date": "2026-01-29",
   "workers_dev": false,
   "preview_urls": true,
@@ -12,6 +13,8 @@
   ],
   "assets": {
     "directory": "./dist",
+    "binding": "ASSETS",
+    "run_worker_first": ["/docs", "/docs/*"],
     "html_handling": "auto-trailing-slash",
     "not_found_handling": "404-page",
   },
