@@ -16,7 +16,7 @@ The user may pass a theme, angle, or constraint as `$ARGUMENTS` (e.g. "focus on 
 
 ### Step 1 — Gather context
 
-1. Read `README.md` and the relevant pages in `website/src/pages/docs/` to understand current Tako capabilities.
+1. Read `README.md` and the relevant pages in `website/docs/` to understand current Tako capabilities.
 2. List existing posts in `website/src/content/blog/` and read titles + first paragraphs to avoid duplication and detect coverage gaps.
 3. Skim recent commits (`git log --oneline -n 30`) for shipped-but-unannounced features.
 4. Check memory for the platform vision (`project_platform_vision.md`) and competitor landscape if present.

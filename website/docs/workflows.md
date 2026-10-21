@@ -1,9 +1,5 @@
 ---
-layout: ../../layouts/DocsLayout.astro
 title: Workflows
-seoTitle: "Durable Workflows - Tako Docs"
-heading: Workflows
-current: workflows
 description: "Build durable background workflows with typed payloads, checkpointed steps, retries, sleeps, signals, and scale-to-zero execution."
 ---
 

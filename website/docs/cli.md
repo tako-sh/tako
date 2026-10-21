@@ -1,9 +1,5 @@
 ---
-layout: ../../layouts/DocsLayout.astro
 title: CLI Reference
-seoTitle: "Tako CLI Reference - Tako Docs"
-heading: CLI Reference
-current: cli
 description: "Complete CLI reference for Tako commands including init, dev, run, deploy, servers, secrets, storage, status, logs, and global flags."
 ---
 

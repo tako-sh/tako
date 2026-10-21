@@ -84,7 +84,7 @@ cargo run -p tako-server -- \
 
 ## Related Docs
 
-- `website/src/pages/docs/quickstart.md` (remote server install + first deploy setup)
-- `website/src/pages/docs/deployment.md` (deploy flow and runtime expectations)
-- `website/src/pages/docs/how-tako-works.md` (runtime component/data-flow context)
+- `website/docs/quickstart.md` (remote server install + first deploy setup)
+- `website/docs/deployment.md` (deploy flow and runtime expectations)
+- `website/docs/how-tako-works.md` (runtime component/data-flow context)
 - [`../PROTOCOL.md`](../PROTOCOL.md) (cross-component runtime contracts)

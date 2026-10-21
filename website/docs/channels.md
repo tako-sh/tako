@@ -1,9 +1,5 @@
 ---
-layout: ../../layouts/DocsLayout.astro
 title: Channels
-seoTitle: "Channels - Tako Docs"
-heading: Channels
-current: channels
 description: "Define typed SSE and WebSocket channels with authorization, replay, browser clients, server-side publishing, and multi-server Postgres storage."
 ---
 

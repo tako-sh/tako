@@ -20,7 +20,7 @@ The user provides a topic or idea. Examples:
 
 ### Step 1 — Research
 
-1. Read the relevant pages in `website/src/pages/docs/`, plus `PROTOCOL.md` when the topic crosses runtime boundaries.
+1. Read the relevant pages in `website/docs/`, plus `PROTOCOL.md` when the topic crosses runtime boundaries.
 2. Read existing blog posts in `website/src/content/blog/` to match tone and style.
 3. Check memory for competitor landscape data (reference_competitor_landscape.md) for context on similar tools.
 4. If the topic involves a specific feature, read the relevant source code and tests to get details right.

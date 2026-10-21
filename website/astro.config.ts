@@ -7,7 +7,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { SNIPPET_THEME } from "./src/config/snippet-theme.ts";
 import { remarkD2Theme } from "./src/remark/remark-d2-theme.ts";
-import { remarkDocsLinks } from "./src/remark/remark-docs-links.ts";
 import sitemap from "@astrojs/sitemap";
 import { context7SearchLink } from "./src/config/context7-ask.ts";
 import { normalizeCanonicalPath } from "./src/utils/canonical";
@@ -93,7 +92,7 @@ export default defineConfig({
 
   markdown: {
     processor: unified({
-      remarkPlugins: [remarkD2Theme, remarkDocsLinks],
+      remarkPlugins: [remarkD2Theme],
     }),
     shikiConfig: {
       theme: SNIPPET_THEME,

@@ -1,9 +1,5 @@
 ---
-layout: ../../layouts/DocsLayout.astro
 title: Quickstart
-seoTitle: Tako Quickstart - Tako Docs
-heading: Quickstart
-current: quickstart
 description: "Get started with Tako in minutes: install the CLI, run local HTTPS development, and deploy your first app to your own server."
 ---
 

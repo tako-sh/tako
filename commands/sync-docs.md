@@ -21,7 +21,7 @@ Code and tests win when prose disagrees. If the code appears wrong, report it se
 
 ## Audit
 
-For a scoped change, read the affected website docs, READMEs, examples, and installable skills. For a repository-wide audit, read every page in `website/src/pages/docs/` and every other affected documentation surface. Compare each claim, default, command, path, environment variable, and example with its executable source.
+For a scoped change, read the affected website docs, READMEs, examples, and installable skills. For a repository-wide audit, read every page in `website/docs/` and every other affected documentation surface. Compare each claim, default, command, path, environment variable, and example with its executable source.
 
 For a repository-wide audit, record discrepancies before editing:
 

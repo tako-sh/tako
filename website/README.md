@@ -5,17 +5,7 @@ Astro static site deployed with Cloudflare Workers static assets. The Worker pro
 ## Routes
 
 - `/`: static landing page
-- `/docs/`: docs Intro page ("The Why" section first) with docs navigation sidebar (mobile hamburger menu)
-- `/docs/quickstart/`: user quickstart (local setup + remote setup)
-- `/docs/framework-guides/`: framework adapter examples
-- `/docs/cli/`: CLI command reference
-- `/docs/tako-toml/`: `tako.toml` configuration reference
-- `/docs/development/`: local development guide
-- `/docs/deployment/`: deployment guide
-- `/docs/troubleshooting/`: troubleshooting runbook
-- `/docs/how-tako-works/`: how Tako works overview
-- `/docs/channels/`: durable SSE and WebSocket channels
-- `/docs/workflows/`: durable workflow authoring and execution guarantees
+- `/docs/` and `/docs/*`: documentation served by Docs7 from `docs/`
 - `/install.sh`: `301` redirect to GitHub-hosted POSIX `sh` installer script for `tako`
 - `/install-server.sh`: `301` redirect to GitHub-hosted POSIX `sh` installer script for `tako-server`
 - `/server-install.sh`: alias for `/install-server.sh` (same redirect target)
@@ -44,6 +34,8 @@ bun install
 bun run --cwd website dev
 ```
 
+This previews the landing page and blog. Preview documentation with the Docs7 command below; `/docs` is proxied by the deployed Worker.
+
 ## Test Installer Endpoints Locally
 
 ```bash
@@ -70,17 +62,17 @@ Website source, Astro configuration, and browser scripts use TypeScript. `check`
 
 ## Docs7
 
-The guides in `src/pages/docs/` also form a Docs7 project. `docs.json` defines its navigation. Keep pages in Markdown so both Astro and Docs7 can render them. Use paths relative to the docs root for internal links, such as `/quickstart/`. Astro's `remarkDocsLinks` plugin prefixes those paths with `/docs` for the website. Page titles belong in frontmatter; the renderer supplies the heading. `seoTitle` preserves the website's longer HTML title.
+The Markdown guides and `docs.json` in `docs/` are the Docs7 source. Astro builds the landing page and blog; Docs7 renders the documentation. Use paths relative to the docs root for internal links, such as `/quickstart/`. Page titles and descriptions belong in frontmatter; Docs7 supplies the heading.
 
 Preview Docs7 from the repository root:
 
 ```bash
-npx @upstash/docs7 dev website/src/pages/docs
+npx @upstash/docs7 dev website/docs
 ```
 
-In the Docs7 dashboard for `tako-sh/tako`, use `master` as the production branch and `website/src/pages/docs` as the docs path. Publishing requires `docs.json` to be on that branch. The custom URL is `tako.sh/docs`, with `https://tako-sh.docs7.io/docs` as the proxy origin. `src/worker.ts` forwards the docs path, query, method, body, and response headers and preserves redirects. The `run_worker_first` rules in `wrangler.jsonc` send docs requests to the proxy before looking up Astro assets. Other paths use the website's static assets. Deploy with the website's normal build and deploy commands.
+In the Docs7 dashboard for `tako-sh/tako`, use `master` as the production branch and `website/docs` as the docs path. Publishing requires `docs.json` to be on that branch. The custom URL is `tako.sh/docs`, with `https://tako-sh.docs7.io/docs` as the proxy origin. `src/worker.ts` forwards the docs path, query, method, body, and response headers and preserves redirects. The `run_worker_first` rules in `wrangler.jsonc` send docs requests to the proxy before looking up Astro assets. Other paths use the website's static assets. Deploy with the website's normal build and deploy commands.
 
-The Context7 library includes `website/src/pages/docs`, `sdk/javascript`, `sdk/go`, and `sdk/rust`. Exclude `examples` and `sdk/javascript/skills`. Root Markdown files are always included, so exclude maintainer instructions, plans, and internal contracts by filename in the library settings.
+The Context7 library includes `website/docs`, `sdk/javascript`, `sdk/go`, and `sdk/rust`. Exclude `examples` and `sdk/javascript/skills`. Root Markdown files are always included, so exclude maintainer instructions, plans, and internal contracts by filename in the library settings.
 
 ## Blog Images
 

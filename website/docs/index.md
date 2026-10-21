@@ -1,9 +1,5 @@
 ---
-layout: ../../layouts/DocsLayout.astro
 title: Intro
-seoTitle: Self-hosted app deployment docs - Tako Docs
-heading: Intro
-current: intro
 description: "Docs for running apps on your own servers with Tako: local HTTPS development, production deploys, routing, TLS, logs, secrets, and more."
 ---
 

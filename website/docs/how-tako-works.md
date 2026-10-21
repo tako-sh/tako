@@ -1,9 +1,5 @@
 ---
-layout: ../../layouts/DocsLayout.astro
 title: "How Tako Works"
-seoTitle: "How Tako Works - Tako Docs"
-heading: "How Tako Works"
-current: how-tako-works
 description: "Learn how Tako handles local development, rolling deploys, TLS, health checks, request routing, scaling, and runtime management."
 ---
 
