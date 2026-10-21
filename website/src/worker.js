@@ -1,4 +1,4 @@
-const DOCS_ORIGIN = "https://tako-sh-tako.docs7.io";
+const DOCS_ORIGIN = "https://tako-sh.docs7.io";
 
 export default {
   fetch(request, env) {
