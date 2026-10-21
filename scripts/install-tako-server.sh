@@ -933,6 +933,20 @@ install_apt_avif_plugins() {
 # natively against each RHEL major version. This is also what libvips'
 # own current maintainer recommends for RHEL9:
 # https://github.com/libvips/pyvips/issues/356#issuecomment-1287872830
+dnf_install_with_retry() {
+  for dnf_attempt in 1 2 3; do
+    if dnf install -y --refresh --disablerepo='remi-modular*' "$@"; then
+      return 0
+    fi
+    if [ "$dnf_attempt" -eq 3 ]; then
+      return 1
+    fi
+    # Mirror metadata can change between resolving a mirror and downloading it.
+    dnf clean metadata
+    sleep 5
+  done
+}
+
 install_libvips_from_remi() {
   el_version="$(rpm -E %rhel 2>/dev/null || true)"
   case "$el_version" in
@@ -942,11 +956,12 @@ install_libvips_from_remi() {
       ;;
   esac
 
-  dnf install -y epel-release || true
+  dnf_install_with_retry epel-release || return 1
   if need_cmd dnf config-manager; then
     dnf config-manager --set-enabled crb || true
   fi
-  if ! dnf install -y "https://rpms.remirepo.net/enterprise/remi-release-${el_version}.rpm"; then
+  # EPEL is already installed; its metadata is not needed to install this RPM.
+  if ! dnf_install_with_retry --disablerepo='epel*' "https://rpms.remirepo.net/enterprise/remi-release-${el_version}.rpm"; then
     echo "error: failed to install Remi's repository configuration" >&2
     return 1
   fi
@@ -956,7 +971,8 @@ install_libvips_from_remi() {
   # ImageMagick/GraphicsMagick, OpenSlide, Poppler) pull in a desktop-sized
   # dependency chain (GTK, WebKit, PulseAudio, X11 fonts...) as recommends.
   # tako-server only needs the base runtime library.
-  dnf install -y --setopt=install_weak_deps=False vips
+  # libvips comes from the non-modular repository, not the PHP module streams.
+  dnf_install_with_retry --setopt=install_weak_deps=False vips
 }
 
 install_libvips_runtime() {
