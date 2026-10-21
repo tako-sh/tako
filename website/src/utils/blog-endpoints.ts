@@ -1,5 +1,5 @@
 import type { CollectionEntry } from "astro:content";
-import { context7MarkdownNote } from "../config/context7-ask.js";
+import { context7MarkdownNote } from "../config/context7-ask.ts";
 
 export type BlogPost = CollectionEntry<"blog">;
 

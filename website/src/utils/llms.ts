@@ -1,4 +1,4 @@
-import { context7SearchSection } from "../config/context7-ask.js";
+import { context7SearchSection } from "../config/context7-ask.ts";
 
 export type LlmsLink = {
   title: string;

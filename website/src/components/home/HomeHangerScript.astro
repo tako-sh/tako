@@ -1,4 +1,4 @@
-<script is:inline type="module">
+<script>
   const hanger = document.getElementById("mit-hanger");
   const pin = document.getElementById("mit-pin");
   const tag = document.getElementById("mit-tag");
@@ -42,9 +42,9 @@
     let dragAngleSample = angle;
     let dragLengthSample = length;
 
-    const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
-    const quantize = (value, step) => Math.round(value / step) * step;
-    const formatRad = (value) => value.toFixed(3);
+    const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+    const quantize = (value: number, step: number) => Math.round(value / step) * step;
+    const formatRad = (value: number) => value.toFixed(3);
     const isNearRest = () => {
       return (
         Math.abs(angle - restAngle) < settleThreshold.angle &&
@@ -74,7 +74,7 @@
       }
     };
 
-    const setFromPointer = (x, y) => {
+    const setFromPointer = (x: number, y: number) => {
       const rect = pin.getBoundingClientRect();
       const anchorX = rect.left + rect.width / 2;
       const anchorY = rect.top + rect.height / 2;
@@ -84,7 +84,7 @@
       length = clamp(Math.hypot(dx, dy), minLength, maxLength);
     };
 
-    const endDrag = (pointerId) => {
+    const endDrag = (pointerId: number) => {
       if (!dragging) {
         return;
       }
@@ -153,7 +153,7 @@
       document.body.style.userSelect = "";
     });
 
-    const tick = (now) => {
+    const tick = (now: number) => {
       const dt = Math.min((now - lastFrame) / 1000, 0.033);
       lastFrame = now;
 

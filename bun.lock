@@ -130,6 +130,7 @@
         "@hugeicons/core-free-icons": "^4.3.5",
         "astro": "catalog:dev",
         "astro-d2": "^0.14.0",
+        "unist-util-visit": "^5.1.0",
       },
       "devDependencies": {
         "@astrojs/check": "^0.9.10",

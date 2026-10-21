@@ -1,3 +1,7 @@
 {
-  "extends": ["@tsconfig/strictest/tsconfig.json", "astro/tsconfigs/strict"]
+  "extends": ["@tsconfig/strictest/tsconfig.json", "astro/tsconfigs/strict"],
+  "compilerOptions": {
+    "allowJs": false
+  },
+  "exclude": ["dist", "src/worker.ts", ".astro/worker-configuration.d.ts"]
 }

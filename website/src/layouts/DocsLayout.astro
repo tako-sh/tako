@@ -105,16 +105,16 @@ const breadcrumbJsonLd = JSON.stringify({
     </template>
   </section>
 
-  <script is:inline>
+  <script>
     const docsSheet = document.querySelector("[data-docs-sheet]");
     const toggle = docsSheet?.querySelector("[data-docs-menu-toggle]");
     const sidebar = docsSheet?.querySelector("[data-docs-sidebar]");
     const contentRoot = docsSheet?.querySelector(".content");
     const copyButtonTemplate = docsSheet?.querySelector("[data-docs-copy-template]");
-    const headingTargets = [];
+    const headingTargets: { id: string; label: string; level: number }[] = [];
 
     if (toggle instanceof HTMLButtonElement && sidebar instanceof HTMLElement) {
-      const setOpen = (open) => {
+      const setOpen = (open: boolean) => {
         toggle.setAttribute("aria-expanded", open ? "true" : "false");
         toggle.textContent = open ? "hide sections" : "show sections";
         sidebar.classList.toggle("is-open", open);
@@ -267,7 +267,7 @@ const breadcrumbJsonLd = JSON.stringify({
         pre.classList.add("docs-copyable-pre");
         pre.setAttribute("data-copy-ready", "true");
 
-        let copyButton = null;
+        let copyButton: HTMLButtonElement | null = null;
         if (copyButtonTemplate instanceof HTMLTemplateElement) {
           const node = copyButtonTemplate.content.firstElementChild?.cloneNode(true);
           if (node instanceof HTMLButtonElement) {

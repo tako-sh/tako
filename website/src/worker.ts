@@ -4,7 +4,7 @@ import {
   context7SearchLink,
   context7SearchSection,
   context7VerificationTag,
-} from "./config/context7-ask.js";
+} from "./config/context7-ask.ts";
 
 const DOCS_ORIGIN = "https://tako-sh.docs7.io";
 
@@ -66,4 +66,4 @@ export default {
 
     return response;
   },
-};
+} satisfies ExportedHandler<Env>;
