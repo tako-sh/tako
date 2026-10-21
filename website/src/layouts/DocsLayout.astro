@@ -11,6 +11,7 @@ export interface Props {
   headingAnchors?: boolean;
   frontmatter?: {
     title?: string;
+    seoTitle?: string;
     heading?: string;
     current?: string;
     description?: string;
@@ -19,7 +20,7 @@ export interface Props {
 }
 
 const frontmatter = Astro.props.frontmatter ?? {};
-const title = Astro.props.title ?? frontmatter.title ?? "Tako Docs";
+const title = Astro.props.title ?? frontmatter.seoTitle ?? frontmatter.title ?? "Tako Docs";
 const heading = Astro.props.heading ?? frontmatter.heading ?? "Docs";
 const current = Astro.props.current ?? frontmatter.current ?? "intro";
 const description = Astro.props.description ?? frontmatter.description ?? "Tako documentation — everything you need to run apps on your own hardware.";
@@ -94,6 +95,7 @@ const breadcrumbJsonLd = JSON.stringify({
 
       <article class="docs-main">
         <div class="content">
+          <h1 id={current}>{frontmatter.title ?? heading}</h1>
           <slot />
         </div>
       </article>

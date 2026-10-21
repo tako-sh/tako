@@ -1,12 +1,11 @@
 ---
 layout: ../../layouts/DocsLayout.astro
-title: Framework Guides - Tako Docs
+title: Framework Guides
+seoTitle: Framework Guides - Tako Docs
 heading: Framework Guides
 current: framework-guides
 description: "Framework-specific Tako guides for Next.js, Astro, SvelteKit, Nuxt, TanStack Start, and other apps using fetch handlers or Vite."
 ---
-
-# Framework Guides
 
 ## Pick a preset first
 
@@ -18,7 +17,7 @@ If your framework matches a Tako preset, set `preset` in `tako.toml` and Tako fi
 | Next.js        | `bun` / `node` | `nextjs`         |
 | Other Vite app | `bun` / `node` | `vite`           |
 
-See [Presets](/docs/presets/) for what each preset sets.
+See [Presets](/presets/) for what each preset sets.
 
 ## TanStack Start (and other Vite SSR frameworks)
 

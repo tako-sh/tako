@@ -309,5 +309,5 @@ bun test
 
 ## Related Docs
 
-- [Quickstart](../../website/src/pages/docs/quickstart.astro)
+- [Quickstart](../../website/src/pages/docs/quickstart.md)
 - `../../examples/javascript/demo/README.md`

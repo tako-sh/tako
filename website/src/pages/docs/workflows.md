@@ -1,12 +1,11 @@
 ---
 layout: ../../layouts/DocsLayout.astro
-title: "Durable Workflows - Tako Docs"
+title: Workflows
+seoTitle: "Durable Workflows - Tako Docs"
 heading: Workflows
 current: workflows
 description: "Build durable background workflows with typed payloads, checkpointed steps, retries, sleeps, signals, and scale-to-zero execution."
 ---
-
-# Workflows
 
 Tako workflows run background work next to your app without a separate queue service. A workflow can retry after failures, remember completed steps, sleep without holding a worker open, wait for an external signal, run on a cron schedule, and let its worker process scale to zero when idle.
 
@@ -219,7 +218,7 @@ tako credentials set postgres_url --env production
 
 With `local: true`, each server owns its own queue and cron schedule. A scheduled workflow runs once per server, and run IDs do not deduplicate across servers. Use this only for work that is intentionally server-local, such as cleaning local files or warming a regional cache.
 
-Tako validates the multi-server storage choice before build and deploy work begins. See [Deployment](/docs/deployment/) for environment setup and the [CLI reference](/docs/cli/) for provider credential commands.
+Tako validates the multi-server storage choice before build and deploy work begins. See [Deployment](/deployment/) for environment setup and the [CLI reference](/cli/) for provider credential commands.
 
 ## Development And Deployment
 
@@ -229,7 +228,7 @@ Cron schedules are synchronized from the current workflow definitions when a wor
 
 `tako deploy` validates the storage model, packages workflow definitions with the app, and installs the workflow runtime for the release. A new release replaces the previous worker runtime after in-flight work drains. Removing the workflows directory in a later release retires the old workflow runtime. Durable runs remain scoped to the app and environment across releases.
 
-Use `tako logs --tail` to follow app and worker output in production. For local runtime details, see [Development](/docs/development/). For release behavior, see [Deployment](/docs/deployment/).
+Use `tako logs --tail` to follow app and worker output in production. For local runtime details, see [Development](/development/). For release behavior, see [Deployment](/deployment/).
 
 ## Practical Rules
 

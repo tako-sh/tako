@@ -1,12 +1,11 @@
 ---
 layout: ../../layouts/DocsLayout.astro
-title: Self-hosted app deployment docs - Tako Docs
+title: Intro
+seoTitle: Self-hosted app deployment docs - Tako Docs
 heading: Intro
 current: intro
 description: "Docs for running apps on your own servers with Tako: local HTTPS development, production deploys, routing, TLS, logs, secrets, and more."
 ---
-
-# Intro
 
 Tako is an opinionated development and deployment tool for self-hosted apps. It focuses on fast defaults for local HTTPS development and remote deploys, with routes, secrets, and logs, without a giant matrix of knobs.
 
@@ -57,5 +56,5 @@ Tako is built to make local development smooth and production deploys boring (th
 
 Easy. Start here:
 
-- [Local setup](/docs/quickstart/#local-setup)
-- [Remote setup](/docs/quickstart/#remote-setup)
+- [Local setup](/quickstart/#local-setup)
+- [Remote setup](/quickstart/#remote-setup)

@@ -56,6 +56,20 @@ bun run --cwd website build
 bun run --cwd website deploy
 ```
 
+## Docs7
+
+The guides in `src/pages/docs/` also form a Docs7 project. `docs.json` defines its navigation. Keep pages in Markdown so both Astro and Docs7 can render them. Use paths relative to the docs root for internal links, such as `/quickstart/`. Astro's `remarkDocsLinks` plugin prefixes those paths with `/docs` for the website. Page titles belong in frontmatter; the renderer supplies the heading. `seoTitle` preserves the website's longer HTML title.
+
+Preview Docs7 from the repository root:
+
+```bash
+npx @upstash/docs7 dev website/src/pages/docs
+```
+
+In the Docs7 dashboard for `tako-sh/tako`, use `master` as the production branch and `website/src/pages/docs` as the docs path. Publishing requires `docs.json` to be on that branch. Connect `tako.sh/docs` through the [Docs7 path proxy setup](https://context7.com/docs/docs7/custom-domains) when switching the public docs.
+
+The Context7 library includes `website/src/pages/docs`, `sdk/javascript`, `sdk/go`, and `sdk/rust`. Exclude `examples` and `sdk/javascript/skills`. Root Markdown files are always included, so exclude maintainer instructions, plans, and internal contracts by filename in the library settings.
+
 ## Blog Images
 
 Blog hero sources live in `src/assets/blog/` as PNG files referenced by the `image` frontmatter ID. `bun run build` optimizes those images with Astro and emits compressed OG PNG endpoint files in `dist/assets/blog/og/`.

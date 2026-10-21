@@ -1,12 +1,11 @@
 ---
 layout: ../../layouts/DocsLayout.astro
-title: "tako.toml Reference - Tako Docs"
+title: "tako.toml Reference"
+seoTitle: "tako.toml Reference - Tako Docs"
 heading: "tako.toml Reference"
 current: tako-toml
 description: "Complete tako.toml reference covering routes, runtime settings, builds, secrets, scaling, environments, and deployment configuration."
 ---
-
-# `tako.toml` Reference
 
 `tako.toml` describes one app: identity, runtime, build, routes, variables, storage bindings, backups, SSL provider, source-IP policy, workflows, and target servers. App secrets, storage credentials, and provider credentials are encrypted in `.tako/secrets.json`, not stored in this file.
 

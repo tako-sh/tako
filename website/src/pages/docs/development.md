@@ -1,12 +1,11 @@
 ---
 layout: ../../layouts/DocsLayout.astro
-title: "Local Development With Tako - Tako Docs"
+title: Development
+seoTitle: "Local Development With Tako - Tako Docs"
 heading: Development
 current: development
 description: "Learn how tako dev provides trusted HTTPS, custom .test domains, hot reload, variants, and a persistent local background daemon."
 ---
-
-# Local Development With Tako
 
 `tako dev` runs your app behind trusted local HTTPS and real hostnames:
 

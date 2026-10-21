@@ -1,12 +1,11 @@
 ---
 layout: ../../layouts/DocsLayout.astro
-title: "How Tako Works - Tako Docs"
+title: "How Tako Works"
+seoTitle: "How Tako Works - Tako Docs"
 heading: "How Tako Works"
 current: how-tako-works
 description: "Learn how Tako handles local development, rolling deploys, TLS, health checks, request routing, scaling, and runtime management."
 ---
-
-# How Tako Works
 
 Tako is a local CLI plus a server runtime. The CLI owns project config, local development, builds, deploy orchestration, generated files, secrets, credentials, server inventory, and operational commands. `tako-server` runs on your hosts and owns routing, TLS, app processes, rolling updates, scale-to-zero, logs, backups, durable channels, workflow workers, image optimization, and signed remote management.
 

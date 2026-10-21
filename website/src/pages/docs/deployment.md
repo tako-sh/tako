@@ -1,12 +1,11 @@
 ---
 layout: ../../layouts/DocsLayout.astro
-title: "Self-Hosted Deployment - Tako Docs"
+title: Deployment
+seoTitle: "Self-Hosted Deployment - Tako Docs"
 heading: Deployment
 current: deployment
 description: "Guide to deploying apps with Tako on your own servers, including server setup, rolling deploys, scaling, secrets, and production operations."
 ---
-
-# Deployment
 
 Tako deploys locally built apps to servers you control. The CLI validates project state, builds and packages the release, uploads artifacts over signed private HTTP management, and asks `tako-server` to prepare and roll the release into traffic.
 

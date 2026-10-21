@@ -1,12 +1,11 @@
 ---
 layout: ../../layouts/DocsLayout.astro
-title: "Framework Presets - Tako Docs"
+title: Presets
+seoTitle: "Framework Presets - Tako Docs"
 heading: Presets
 current: presets
 description: "Learn how Tako presets provide framework-specific defaults for entrypoints, static assets, and dev commands across supported frameworks."
 ---
-
-# Presets
 
 Presets are framework manifests. They provide default runtime entrypoints, static asset roots, and development commands so most projects do not need to spell those out in `tako.toml`.
 

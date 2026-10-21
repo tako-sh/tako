@@ -1,12 +1,11 @@
 ---
 layout: ../../layouts/DocsLayout.astro
-title: "Channels - Tako Docs"
+title: Channels
+seoTitle: "Channels - Tako Docs"
 heading: Channels
 current: channels
 description: "Define typed SSE and WebSocket channels with authorization, replay, browser clients, server-side publishing, and multi-server Postgres storage."
 ---
-
-# Channels
 
 Tako Channels are durable broadcast streams for live app events. The Tako proxy serves each channel over SSE or WebSocket, stores every published message before fanout, and retains a bounded replay window for reconnecting clients.
 

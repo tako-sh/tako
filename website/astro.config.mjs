@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { SNIPPET_THEME } from "./src/config/snippet-theme.js";
 import { remarkD2Theme } from "./src/remark/remark-d2-theme.js";
+import { remarkDocsLinks } from "./src/remark/remark-docs-links.js";
 import sitemap from "@astrojs/sitemap";
 
 const workspaceRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -114,7 +115,7 @@ export default defineConfig({
 
   markdown: {
     processor: unified({
-      remarkPlugins: [remarkD2Theme],
+      remarkPlugins: [remarkD2Theme, remarkDocsLinks],
     }),
     shikiConfig: {
       theme: SNIPPET_THEME,
