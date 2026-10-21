@@ -28,6 +28,8 @@ Installer redirects are configured in `public/_redirects` (Cloudflare static ass
 
 ## Agent Discovery
 
+- Context7 Ask uses `src/config/context7-ask.js` for the endpoint and discovery copy. `BaseLayout.astro` renders its verification tag and hidden note in static HTML. The Worker adds them to Docs7 HTML responses and prepends the Search section to Docs7 Markdown responses.
+- `/llms.txt`, `/skills.md`, blog Markdown endpoints, and the Docs7 `llms.txt` and `llms-full.txt` responses include the Search section. The Astro build adds the search `Link` header to `dist/_headers`; the Worker adds it to proxied docs responses. After deploying, use **Check again** in the Context7 Ask dashboard to verify the site.
 - `_headers` — RFC 8288 `Link` headers pointing agents at docs, `llms.txt`, `skills.md`, and the sitemap
 - `public/.well-known/http-message-signatures-directory` — Web Bot Auth JWKS (Ed25519 public key)
 - `public/.well-known/agent-skills/` — Agent Skills Discovery v0.2.0 index + `SKILL.md` copies; regenerated from `sdk/javascript/skills/` by `scripts/sync-agent-skills.ts` on each build

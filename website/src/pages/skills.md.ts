@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import type { APIContext } from "astro";
+import { context7MarkdownNote } from "../config/context7-ask.js";
 
 const cwd = process.cwd();
 const REPO_ROOT = path.basename(cwd) === "website" ? path.resolve(cwd, "..") : cwd;
@@ -69,6 +70,7 @@ async function readSkillSummaries(site: URL): Promise<SkillSummary[]> {
 
 function renderSkillsMd(site: URL, skills: SkillSummary[]): string {
   const lines = [
+    context7MarkdownNote,
     "# Tako Agent Skills",
     "",
     "> Machine-readable skills for agents working with Tako.",

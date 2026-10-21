@@ -2,12 +2,14 @@ import { defineConfig } from "astro/config";
 import { unified } from "@astrojs/markdown-remark";
 import astroD2 from "astro-d2";
 import { readdirSync, statSync } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { SNIPPET_THEME } from "./src/config/snippet-theme.js";
 import { remarkD2Theme } from "./src/remark/remark-d2-theme.js";
 import { remarkDocsLinks } from "./src/remark/remark-docs-links.js";
 import sitemap from "@astrojs/sitemap";
+import { context7SearchLink } from "./src/config/context7-ask.js";
 
 const workspaceRoot = fileURLToPath(new URL("..", import.meta.url));
 const websiteRoot = fileURLToPath(new URL(".", import.meta.url));
@@ -137,6 +139,19 @@ export default defineConfig({
   },
 
   integrations: [
+    {
+      name: "context7-ask",
+      hooks: {
+        "astro:build:done": async ({ dir }) => {
+          const headersFile = new URL("_headers", dir);
+          const headers = await readFile(headersFile, "utf8");
+          await writeFile(
+            headersFile,
+            headers.replace("/*\n", `/*\n  Link: ${context7SearchLink}\n`),
+          );
+        },
+      },
+    },
     astroD2(d2Config),
     sitemap({
       serialize(item) {
