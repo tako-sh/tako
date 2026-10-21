@@ -1,67 +1,33 @@
-<script is:inline type="module">
-  const installCommand = "curl -fsSL https://tako.sh/install.sh | sh";
-  const typedCmd = document.getElementById("typed-cmd");
-  const copyBtn = document.getElementById("copy");
-  const copyBtnLabel = copyBtn?.querySelector("[data-copy-label]");
-  const agentPromptText = document.getElementById("agent-prompt-text");
-  const agentCopyBtn = document.getElementById("agent-copy");
-  const agentCopyBtnLabel = agentCopyBtn?.querySelector("[data-copy-label]");
+<script>
+  for (const action of [
+    { button: "copy", content: "typed-cmd", label: "copy install command" },
+    { button: "agent-copy", content: "agent-prompt-text", label: "copy agent prompt" },
+  ]) {
+    const button = document.getElementById(action.button);
+    const content = document.getElementById(action.content);
+    if (!button || !content) continue;
+    const label = button.querySelector("[data-copy-label]");
 
-  const setCopyButtonText = (button, label, visible, aria) => {
-    if (label instanceof HTMLElement) {
-      label.textContent = visible;
-    }
-    if (button instanceof HTMLElement) {
-      button.setAttribute("aria-label", aria);
-      button.setAttribute("title", aria);
-    }
-  };
+    button.addEventListener("click", async () => {
+      let copied = true;
+      try {
+        await navigator.clipboard.writeText(content.textContent?.trim() ?? "");
+      } catch {
+        copied = false;
+      }
 
-  const setCopyButtonCopied = (button, copied) => {
-    if (button instanceof HTMLElement) {
+      const message = copied ? "copied" : "failed";
       button.classList.toggle("is-copied", copied);
-    }
-  };
+      if (label) label.textContent = message;
+      button.setAttribute("aria-label", copied ? "copied" : "copy failed");
+      button.setAttribute("title", copied ? "copied" : "copy failed");
 
-  if (typedCmd instanceof HTMLElement) {
-    typedCmd.textContent = installCommand;
+      setTimeout(() => {
+        button.classList.remove("is-copied");
+        if (label) label.textContent = "copy";
+        button.setAttribute("aria-label", action.label);
+        button.setAttribute("title", action.label);
+      }, 1400);
+    });
   }
-
-  copyBtn?.addEventListener("click", async () => {
-    try {
-      await navigator.clipboard.writeText(installCommand);
-      setCopyButtonCopied(copyBtn, true);
-      setCopyButtonText(copyBtn, copyBtnLabel, "copied", "copied");
-      setTimeout(() => {
-        setCopyButtonCopied(copyBtn, false);
-        setCopyButtonText(copyBtn, copyBtnLabel, "copy", "copy install command");
-      }, 1400);
-    } catch {
-      setCopyButtonCopied(copyBtn, false);
-      setCopyButtonText(copyBtn, copyBtnLabel, "failed", "copy failed");
-      setTimeout(() => {
-        setCopyButtonText(copyBtn, copyBtnLabel, "copy", "copy install command");
-      }, 1400);
-    }
-  });
-
-  agentCopyBtn?.addEventListener("click", async () => {
-    const prompt = agentPromptText?.textContent?.trim() ?? "";
-
-    try {
-      await navigator.clipboard.writeText(prompt);
-      setCopyButtonCopied(agentCopyBtn, true);
-      setCopyButtonText(agentCopyBtn, agentCopyBtnLabel, "copied", "copied");
-      setTimeout(() => {
-        setCopyButtonCopied(agentCopyBtn, false);
-        setCopyButtonText(agentCopyBtn, agentCopyBtnLabel, "copy", "copy agent prompt");
-      }, 1400);
-    } catch {
-      setCopyButtonCopied(agentCopyBtn, false);
-      setCopyButtonText(agentCopyBtn, agentCopyBtnLabel, "failed", "copy failed");
-      setTimeout(() => {
-        setCopyButtonText(agentCopyBtn, agentCopyBtnLabel, "copy", "copy agent prompt");
-      }, 1400);
-    }
-  });
 </script>

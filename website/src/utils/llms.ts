@@ -1,3 +1,5 @@
+import { context7SearchSection } from "../config/context7-ask.ts";
+
 export type LlmsLink = {
   title: string;
   url: string;
@@ -120,7 +122,15 @@ export const llmsCoreSections: LlmsSection[] = [
 ];
 
 export function renderLlmsTxt(projectName: string, sections: LlmsSection[]): string {
-  const parts = [`# ${projectName}`, "", `> ${llmsSummary}`, "", ...llmsNotes, ""];
+  const parts = [
+    `# ${projectName}`,
+    "",
+    `> ${llmsSummary}`,
+    "",
+    context7SearchSection,
+    ...llmsNotes,
+    "",
+  ];
 
   for (const section of sections) {
     parts.push(`## ${section.title}`, "");

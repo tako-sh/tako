@@ -28,12 +28,14 @@ Installer redirects are configured in `public/_redirects` (Cloudflare static ass
 
 ## Agent Discovery
 
+- Context7 Ask uses `src/config/context7-ask.ts` for the endpoint and discovery copy. `BaseLayout.astro` renders its verification tag and hidden note in static HTML. The Worker adds them to Docs7 HTML responses and prepends the Search section to Docs7 Markdown responses.
+- `/llms.txt`, `/skills.md`, blog Markdown endpoints, and the Docs7 `llms.txt` and `llms-full.txt` responses include the Search section. The Astro build adds the search `Link` header to `dist/_headers`; the Worker adds it to proxied docs responses. After deploying, use **Check again** in the Context7 Ask dashboard to verify the site.
 - `_headers` — RFC 8288 `Link` headers pointing agents at docs, `llms.txt`, `skills.md`, and the sitemap
 - `public/.well-known/http-message-signatures-directory` — Web Bot Auth JWKS (Ed25519 public key)
 - `public/.well-known/agent-skills/` — Agent Skills Discovery v0.2.0 index + `SKILL.md` copies; regenerated from `sdk/javascript/skills/` by `scripts/sync-agent-skills.ts` on each build
 - `/skills.md` — Markdown index that points agents at the structured Agent Skills index, skills.sh install command, and each published `SKILL.md`
 - Blog posts expose explicit `.md` and `.json` endpoints from `src/pages/blog/`.
-- WebMCP tools (`navigator.modelContext.provideContext`) registered in `src/layouts/BaseLayout.astro` — `navigateToDocs`, `searchDocs`, `getStartedCommand`, `getInstallCommand`. Feature-detected, silently no-ops in browsers without the API.
+- WebMCP tools (`navigator.modelContext.provideContext`) registered in `src/components/layout/BaseScripts.astro` — `navigateToDocs`, `searchDocs`, `getStartedCommand`, `getInstallCommand`. Feature-detected, silently no-ops in browsers without the API.
 
 ## Run Locally
 
@@ -56,6 +58,16 @@ bun run --cwd website build
 bun run --cwd website deploy
 ```
 
+## Checks
+
+```bash
+bun run --cwd website check
+bun run --cwd website build
+bun run --cwd website verify
+```
+
+Website source, Astro configuration, and browser scripts use TypeScript. `check` generates Cloudflare runtime types under the ignored `.astro/` directory and checks the Worker separately from Astro's browser types. `verify` checks the generated HTML, Markdown, and Context7 discovery headers.
+
 ## Docs7
 
 The guides in `src/pages/docs/` also form a Docs7 project. `docs.json` defines its navigation. Keep pages in Markdown so both Astro and Docs7 can render them. Use paths relative to the docs root for internal links, such as `/quickstart/`. Astro's `remarkDocsLinks` plugin prefixes those paths with `/docs` for the website. Page titles belong in frontmatter; the renderer supplies the heading. `seoTitle` preserves the website's longer HTML title.
@@ -66,7 +78,7 @@ Preview Docs7 from the repository root:
 npx @upstash/docs7 dev website/src/pages/docs
 ```
 
-In the Docs7 dashboard for `tako-sh/tako`, use `master` as the production branch and `website/src/pages/docs` as the docs path. Publishing requires `docs.json` to be on that branch. The custom URL is `tako.sh/docs`, with `https://tako-sh.docs7.io/docs` as the proxy origin. `src/worker.js` forwards the docs path, query, method, body, and response headers and preserves redirects. The `run_worker_first` rules in `wrangler.jsonc` send docs requests to the proxy before looking up Astro assets. Other paths use the website's static assets. Deploy with the website's normal build and deploy commands.
+In the Docs7 dashboard for `tako-sh/tako`, use `master` as the production branch and `website/src/pages/docs` as the docs path. Publishing requires `docs.json` to be on that branch. The custom URL is `tako.sh/docs`, with `https://tako-sh.docs7.io/docs` as the proxy origin. `src/worker.ts` forwards the docs path, query, method, body, and response headers and preserves redirects. The `run_worker_first` rules in `wrangler.jsonc` send docs requests to the proxy before looking up Astro assets. Other paths use the website's static assets. Deploy with the website's normal build and deploy commands.
 
 The Context7 library includes `website/src/pages/docs`, `sdk/javascript`, `sdk/go`, and `sdk/rust`. Exclude `examples` and `sdk/javascript/skills`. Root Markdown files are always included, so exclude maintainer instructions, plans, and internal contracts by filename in the library settings.
 

@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "astro dev",
     "build": "bun ./scripts/sync-agent-skills.ts && astro build",
-    "check": "astro check",
+    "check": "astro check && wrangler types .astro/worker-configuration.d.ts && tsc -p tsconfig.worker.json",
+    "verify": "bun ./scripts/verify.ts",
     "preview": "astro preview",
     "deploy": "wrangler deploy"
   },
@@ -15,7 +16,8 @@
     "@astrojs/sitemap": "^3.7.3",
     "@hugeicons/core-free-icons": "^4.3.5",
     "astro": "catalog:dev",
-    "astro-d2": "^0.14.0"
+    "astro-d2": "^0.14.0",
+    "unist-util-visit": "^5.1.0"
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.10",

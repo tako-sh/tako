@@ -7,6 +7,7 @@ import SiteFooter from "../components/layout/SiteFooter.astro";
 import SiteHeader from "../components/layout/SiteHeader.astro";
 import { createCanonicalUrl } from "../utils/canonical";
 import { getPageOgImageForPath } from "../data/page-og";
+import { context7AskNote, context7VerificationTag } from "../config/context7-ask.ts";
 
 const DEFAULT_OG_IMAGE = "https://tako.sh/assets/og.png?v=20260613";
 
@@ -72,6 +73,7 @@ const pageStructuredData = structuredData
 <html lang="en">
 	<head>
 		<meta charset="utf-8" />
+		<Fragment set:html={context7VerificationTag} />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		<title>{title}</title>
 		<meta name="description" content={description} />
@@ -148,6 +150,7 @@ const pageStructuredData = structuredData
 		<GoogleAnalytics />
 	</head>
 	<body>
+		<Fragment set:html={context7AskNote} />
 		<div class="site">
 			<div class="header-sentinel" aria-hidden="true"></div>
 			<SiteHeader />

@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
+import { parseFrontmatter } from "@astrojs/markdown-remark";
 import type { APIContext } from "astro";
+import { context7MarkdownNote } from "../config/context7-ask.ts";
 
 const cwd = process.cwd();
 const REPO_ROOT = path.basename(cwd) === "website" ? path.resolve(cwd, "..") : cwd;
@@ -14,37 +16,6 @@ interface SkillSummary {
   sha256: string;
 }
 
-function parseFrontmatter(md: string): Record<string, string> {
-  const match = md.match(/^---\n([\s\S]*?)\n---/);
-  const frontmatter = match?.[1];
-  if (!frontmatter) return {};
-
-  const out: Record<string, string> = {};
-  let key: string | null = null;
-  let buf: string[] = [];
-
-  for (const line of frontmatter.split("\n")) {
-    const field = line.match(/^([a-zA-Z0-9_-]+):\s*(.*)$/);
-
-    if (field) {
-      if (key) out[key] = buf.join(" ").trim();
-      key = field[1] ?? null;
-      buf = field[2] ? [field[2]] : [];
-    } else if (key && line.trim()) {
-      buf.push(line.trim());
-    }
-  }
-
-  if (key) out[key] = buf.join(" ").trim();
-
-  for (const outKey of Object.keys(out)) {
-    const value = out[outKey];
-    if (value) out[outKey] = value.replace(/^>-\s*/, "").replace(/^["']|["']$/g, "");
-  }
-
-  return out;
-}
-
 async function readSkillSummaries(site: URL): Promise<SkillSummary[]> {
   const entries = await readdir(SRC_SKILLS, { withFileTypes: true });
   const skills: SkillSummary[] = [];
@@ -54,11 +25,12 @@ async function readSkillSummaries(site: URL): Promise<SkillSummary[]> {
 
     const name = entry.name;
     const content = await readFile(path.join(SRC_SKILLS, name, "SKILL.md"), "utf8");
-    const frontmatter = parseFrontmatter(content);
+    const { frontmatter } = parseFrontmatter(content);
+    const description: unknown = frontmatter["description"];
 
     skills.push({
       name,
-      description: frontmatter["description"] ?? "",
+      description: typeof description === "string" ? description : "",
       url: new URL(`/.well-known/agent-skills/${name}/SKILL.md`, site).toString(),
       sha256: createHash("sha256").update(content).digest("hex"),
     });
@@ -69,6 +41,7 @@ async function readSkillSummaries(site: URL): Promise<SkillSummary[]> {
 
 function renderSkillsMd(site: URL, skills: SkillSummary[]): string {
   const lines = [
+    context7MarkdownNote,
     "# Tako Agent Skills",
     "",
     "> Machine-readable skills for agents working with Tako.",

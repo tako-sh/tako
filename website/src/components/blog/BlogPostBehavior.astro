@@ -8,52 +8,46 @@ import XMarkIcon from "@hugeicons/core-free-icons/Cancel01Icon";
 <template id="diagram-zoom-out-icon"><HugeIcon icon={MinusIcon} aria-hidden="true" focusable="false" /></template>
 <template id="diagram-close-icon"><HugeIcon icon={XMarkIcon} aria-hidden="true" focusable="false" /></template>
 
-<script is:inline>
+<script>
   (function() {
-    var article = document.querySelector(".blog-article");
+    const article = document.querySelector(".blog-article");
     if (!article) return;
-    var headings = article.querySelectorAll("h2[id], h3[id], h4[id], h5[id], h6[id]");
-    for (var i = 0; i < headings.length; i++) {
-      var h = headings[i];
-      var id = h.getAttribute("id");
-      if (!id || h.querySelector(".heading-anchor")) continue;
-      var a = document.createElement("a");
-      a.className = "heading-anchor";
-      a.href = "#" + id;
-      a.textContent = "#";
-      a.setAttribute("aria-hidden", "true");
-      h.append(a);
-      h.style.cursor = "pointer";
-      h.addEventListener("click", (function(id) {
-        return function(e) {
-          if (e.target.closest("a") || window.getSelection().toString()) return;
-          window.location.hash = id;
-        };
-      })(id));
+    for (const heading of article.querySelectorAll<HTMLElement>("h2[id], h3[id], h4[id], h5[id], h6[id]")) {
+      const id = heading.id;
+      if (!id || heading.querySelector(".heading-anchor")) continue;
+      const anchor = document.createElement("a");
+      anchor.className = "heading-anchor";
+      anchor.href = "#" + id;
+      anchor.textContent = "#";
+      anchor.setAttribute("aria-hidden", "true");
+      heading.append(anchor);
+      heading.style.cursor = "pointer";
+      heading.addEventListener("click", (event) => {
+        if (!(event.target instanceof Element) || event.target.closest("a") || window.getSelection()?.toString()) return;
+        window.location.hash = id;
+      });
     }
-    var tables = article.querySelectorAll("table");
-    for (var j = 0; j < tables.length; j++) {
-      var wrap = document.createElement("div");
+    for (const table of article.querySelectorAll("table")) {
+      const wrap = document.createElement("div");
       wrap.className = "table-scroll";
-      tables[j].parentNode.insertBefore(wrap, tables[j]);
-      wrap.appendChild(tables[j]);
+      table.before(wrap);
+      wrap.append(table);
     }
 
-    var diagrams = article.querySelectorAll('img[src^="/d2/"]');
-    for (var k = 0; k < diagrams.length; k++) {
-      enhanceDiagram(diagrams[k]);
+    for (const diagram of article.querySelectorAll<HTMLImageElement>('img[src^="/d2/"]')) {
+      enhanceDiagram(diagram);
     }
 
-    function enhanceDiagram(img) {
+    function enhanceDiagram(img: HTMLImageElement) {
       if (!img.parentNode || img.closest(".diagram-shell")) return;
 
-      var shell = document.createElement("figure");
+      const shell = document.createElement("figure");
       shell.className = "diagram-shell";
 
-      var viewport = document.createElement("div");
+      const viewport = document.createElement("div");
       viewport.className = "diagram-viewport";
 
-      var canvas = document.createElement("div");
+      const canvas = document.createElement("div");
       canvas.className = "diagram-canvas";
 
       img.parentNode.insertBefore(shell, img);
@@ -69,37 +63,39 @@ import XMarkIcon from "@hugeicons/core-free-icons/Cancel01Icon";
       });
     }
 
-    function openLightbox(sourceImg) {
-      var existing = document.querySelector(".diagram-lightbox");
+    function openLightbox(sourceImg: HTMLImageElement) {
+      const existing = document.querySelector<HTMLDialogElement>(".diagram-lightbox");
       if (existing) existing.close();
 
-      var shell = document.createElement("dialog");
+      const shell = document.createElement("dialog");
       shell.className = "diagram-lightbox";
       shell.setAttribute("aria-label", sourceImg.alt || "Diagram viewer");
       shell.tabIndex = -1;
 
-      var panel = document.createElement("div");
+      const panel = document.createElement("div");
       panel.className = "diagram-lightbox-panel";
 
-      var toolbar = document.createElement("div");
+      const toolbar = document.createElement("div");
       toolbar.className = "diagram-lightbox-toolbar";
 
-      var zoomOut = makeLightboxButton("diagram-zoom-out-icon", "Zoom out");
-      var zoomIn = makeLightboxButton("diagram-zoom-in-icon", "Zoom in");
-      var close = makeLightboxButton("diagram-close-icon", "Close viewer");
+      const zoomOut = makeLightboxButton("diagram-zoom-out-icon", "Zoom out");
+      const zoomIn = makeLightboxButton("diagram-zoom-in-icon", "Zoom in");
+      const close = makeLightboxButton("diagram-close-icon", "Close viewer");
       close.classList.add("diagram-lightbox-close");
 
       toolbar.appendChild(zoomOut);
       toolbar.appendChild(zoomIn);
       toolbar.appendChild(close);
 
-      var viewport = document.createElement("div");
+      const viewport = document.createElement("div");
       viewport.className = "diagram-lightbox-viewport";
 
-      var canvas = document.createElement("div");
+      const canvas = document.createElement("div");
       canvas.className = "diagram-lightbox-canvas";
 
-      var clone = sourceImg.cloneNode();
+      const clone = new Image();
+      clone.src = sourceImg.currentSrc || sourceImg.src;
+      clone.alt = sourceImg.alt;
       clone.className = "diagram-lightbox-image";
       clone.draggable = false;
 
@@ -110,35 +106,36 @@ import XMarkIcon from "@hugeicons/core-free-icons/Cancel01Icon";
       canvas.appendChild(clone);
       document.body.appendChild(shell);
 
-      var naturalWidth = Number(sourceImg.getAttribute("width")) || sourceImg.naturalWidth || 0;
-      var naturalHeight = Number(sourceImg.getAttribute("height")) || sourceImg.naturalHeight || 0;
-      var zoom = 1;
-      var minZoom = 1;
-      var maxZoom = 5;
-      var isClosing = false;
-      var isDragging = false;
-      var dragStartX = 0;
-      var dragStartY = 0;
-      var dragScrollLeft = 0;
-      var dragScrollTop = 0;
+      let naturalWidth = Number(sourceImg.getAttribute("width")) || sourceImg.naturalWidth || 0;
+      let naturalHeight = Number(sourceImg.getAttribute("height")) || sourceImg.naturalHeight || 0;
+      let zoom = 1;
+      let minZoom = 1;
+      const maxZoom = 5;
+      let isClosing = false;
+      let isDragging = false;
+      let dragStartX = 0;
+      let dragStartY = 0;
+      let dragScrollLeft = 0;
+      let dragScrollTop = 0;
 
-      function makeLightboxButton(iconId, title) {
-        var button = document.createElement("button");
+      function makeLightboxButton(iconId: string, title: string) {
+        const button = document.createElement("button");
         button.type = "button";
         button.className = "diagram-button";
-        button.appendChild(document.getElementById(iconId).content.cloneNode(true));
+        const template = document.getElementById(iconId);
+        if (template instanceof HTMLTemplateElement) button.append(template.content.cloneNode(true));
         button.setAttribute("aria-label", title);
         button.title = title;
         return button;
       }
 
-      function clamp(value, min, max) {
+      function clamp(value: number, min: number, max: number) {
         return Math.min(max, Math.max(min, value));
       }
 
       function updateBaseZoom() {
-        var width = Math.max(1, viewport.clientWidth - 24);
-        var height = Math.max(1, viewport.clientHeight - 24);
+        const width = Math.max(1, viewport.clientWidth - 24);
+        const height = Math.max(1, viewport.clientHeight - 24);
         if (!naturalWidth) naturalWidth = clone.naturalWidth || width;
         if (!naturalHeight) naturalHeight = clone.naturalHeight || height;
         minZoom = Math.min(1, width / naturalWidth, height / naturalHeight);
@@ -149,20 +146,20 @@ import XMarkIcon from "@hugeicons/core-free-icons/Cancel01Icon";
         zoomIn.disabled = zoom >= maxZoom;
       }
 
-      function applyZoom(nextZoom, keepCenter) {
+      function applyZoom(nextZoom: number, keepCenter: boolean) {
         updateBaseZoom();
-        var oldWidth = clone.getBoundingClientRect().width || naturalWidth;
-        var oldHeight = clone.getBoundingClientRect().height || naturalHeight;
-        var centerX = viewport.scrollLeft + viewport.clientWidth / 2;
-        var centerY = viewport.scrollTop + viewport.clientHeight / 2;
+        const oldWidth = clone.getBoundingClientRect().width || naturalWidth;
+        const oldHeight = clone.getBoundingClientRect().height || naturalHeight;
+        const centerX = viewport.scrollLeft + viewport.clientWidth / 2;
+        const centerY = viewport.scrollTop + viewport.clientHeight / 2;
 
         zoom = clamp(nextZoom, minZoom, maxZoom);
         clone.style.width = Math.round(naturalWidth * zoom) + "px";
 
         if (keepCenter && oldWidth > 0 && oldHeight > 0) {
           requestAnimationFrame(function() {
-            var newWidth = clone.getBoundingClientRect().width || oldWidth;
-            var newHeight = clone.getBoundingClientRect().height || oldHeight;
+            const newWidth = clone.getBoundingClientRect().width || oldWidth;
+            const newHeight = clone.getBoundingClientRect().height || oldHeight;
             viewport.scrollLeft = Math.max(0, centerX * (newWidth / oldWidth) - viewport.clientWidth / 2);
             viewport.scrollTop = Math.max(0, centerY * (newHeight / oldHeight) - viewport.clientHeight / 2);
             updateButtons();
@@ -180,14 +177,15 @@ import XMarkIcon from "@hugeicons/core-free-icons/Cancel01Icon";
         isDragging = false;
         shell.classList.remove("is-dragging");
         document.removeEventListener("keydown", onKeydown);
+        window.removeEventListener("resize", onResize);
         shell.removeEventListener("cancel", onCancel);
         shell.removeEventListener("click", onDialogClick);
 
-        var prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
         shell.classList.remove("is-open");
         shell.classList.add("is-closing");
 
-        var animations = [];
+        const animations: Animation[] = [];
         if (!prefersReducedMotion && typeof panel.animate === "function") {
           animations.push(panel.animate(
             [
@@ -228,20 +226,20 @@ import XMarkIcon from "@hugeicons/core-free-icons/Cancel01Icon";
         shell.remove();
       }
 
-      function onKeydown(event) {
+      function onKeydown(event: KeyboardEvent) {
         if (event.key === "Escape") closeLightbox();
       }
 
-      function onCancel(event) {
+      function onCancel(event: Event) {
         event.preventDefault();
         closeLightbox();
       }
 
-      function onDialogClick(event) {
+      function onDialogClick(event: MouseEvent) {
         if (event.target === shell) closeLightbox();
       }
 
-      function onPointerDown(event) {
+      function onPointerDown(event: PointerEvent) {
         if (event.button !== 0) return;
         isDragging = true;
         dragStartX = event.clientX;
@@ -252,13 +250,13 @@ import XMarkIcon from "@hugeicons/core-free-icons/Cancel01Icon";
         viewport.setPointerCapture(event.pointerId);
       }
 
-      function onPointerMove(event) {
+      function onPointerMove(event: PointerEvent) {
         if (!isDragging) return;
         viewport.scrollLeft = dragScrollLeft - (event.clientX - dragStartX);
         viewport.scrollTop = dragScrollTop - (event.clientY - dragStartY);
       }
 
-      function onPointerUp(event) {
+      function onPointerUp(event: PointerEvent) {
         if (!isDragging) return;
         isDragging = false;
         shell.classList.remove("is-dragging");
@@ -279,9 +277,10 @@ import XMarkIcon from "@hugeicons/core-free-icons/Cancel01Icon";
       viewport.addEventListener("pointermove", onPointerMove);
       viewport.addEventListener("pointerup", onPointerUp);
       viewport.addEventListener("pointercancel", onPointerUp);
-      window.addEventListener("resize", function() {
+      function onResize() {
         applyZoom(zoom, false);
-      }, { once: true });
+      }
+      window.addEventListener("resize", onResize, { once: true });
       document.addEventListener("keydown", onKeydown);
       shell.addEventListener("cancel", onCancel);
       shell.addEventListener("click", onDialogClick);

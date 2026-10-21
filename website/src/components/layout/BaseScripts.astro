@@ -1,11 +1,11 @@
-<script is:inline>
+<script>
 			(function () {
-				var hamburger = document.querySelector(".hamburger");
-				var mobileMenu = document.getElementById("mobile-menu");
+				const hamburger = document.querySelector(".hamburger");
+				const mobileMenu = document.getElementById("mobile-menu");
 				if (!hamburger || !mobileMenu) return;
 				hamburger.addEventListener("click", function (e) {
 					e.stopPropagation();
-					var isOpen = mobileMenu.classList.toggle("is-open");
+					const isOpen = mobileMenu.classList.toggle("is-open");
 					hamburger.classList.toggle("is-open");
 					hamburger.setAttribute("aria-expanded", String(isOpen));
 					if (isOpen) {
@@ -16,6 +16,7 @@
 				});
 				document.addEventListener("click", function (e) {
 					if (
+						e.target instanceof Node &&
 						!mobileMenu.contains(e.target) &&
 						!hamburger.contains(e.target)
 					) {
@@ -26,12 +27,11 @@
 					}
 				});
 			})();
-		</script>
-		<script is:inline>
+
 			(function () {
-				var footer = document.querySelector(".site-footer");
+				const footer = document.querySelector(".site-footer");
 				if (!footer) return;
-				var prefersReducedMotion = window.matchMedia(
+				const prefersReducedMotion = window.matchMedia(
 					"(prefers-reduced-motion: reduce)",
 				).matches;
 				if (prefersReducedMotion) {
@@ -39,16 +39,16 @@
 					return;
 				}
 				footer.classList.add("is-footer-story-ready");
-				var target = footer.querySelector(".footer-story") || footer;
+				const target = footer.querySelector(".footer-story") || footer;
 				if (typeof IntersectionObserver === "undefined") {
 					window.requestAnimationFrame(function () {
 						footer.classList.add("is-footer-story-visible");
 					});
 					return;
 				}
-				var io = new IntersectionObserver(
+				const io = new IntersectionObserver(
 					function (entries) {
-						if (!entries[0].isIntersecting) return;
+						if (!entries.some((entry) => entry.isIntersecting)) return;
 						footer.classList.add("is-footer-story-visible");
 						io.disconnect();
 					},
@@ -59,37 +59,35 @@
 				);
 				io.observe(target);
 			})();
-		</script>
-		<script is:inline>
+
 			(function () {
-				var sentinel = document.querySelector(".header-sentinel");
-				var header = document.querySelector(".header");
+				const sentinel = document.querySelector(".header-sentinel");
+				const header = document.querySelector(".header");
 				if (
 					!sentinel ||
 					!header ||
 					typeof IntersectionObserver === "undefined"
 				)
 					return;
-				var io = new IntersectionObserver(function (entries) {
+				const io = new IntersectionObserver(function (entries) {
 					header.classList.toggle(
 						"is-scrolled",
-						!entries[0].isIntersecting,
+						!entries.some((entry) => entry.isIntersecting),
 					);
 				});
 				io.observe(sentinel);
 			})();
-		</script>
-		<script is:inline>
+
 			(function () {
-				var el = document.getElementById("logo-text");
+				const el = document.getElementById("logo-text");
 				if (!el) return;
 				if (window.location.pathname !== "/") {
 					el.textContent = "tako";
 					el.style.fontFamily = '"Nunito", sans-serif';
 					return;
 				}
-				var mono = '"IBM Plex Mono", monospace';
-				var sans = '"Nunito", sans-serif';
+				const mono = '"IBM Plex Mono", monospace';
+				const sans = '"Nunito", sans-serif';
 				function rbit() {
 					return Math.random() > 0.5 ? "1" : "0";
 				}
@@ -99,22 +97,22 @@
 				setTimeout(function () {
 					// Phase 2: clean swap to binary
 					el.style.fontFamily = mono;
-					var b = "";
-					for (var j = 0; j < 4; j++) b += rbit();
+					let b = "";
+					for (let j = 0; j < 4; j++) b += rbit();
 					el.textContent = b;
 					// Brief scramble
-					var s = 0;
-					var scramble = setInterval(function () {
-						var b = "";
-						for (var j = 0; j < 4; j++) b += rbit();
+					let s = 0;
+					const scramble = setInterval(function () {
+						let b = "";
+						for (let j = 0; j < 4; j++) b += rbit();
 						el.textContent = b;
 						s++;
 						if (s >= 6) {
 							clearInterval(scramble);
 							// Phase 3: binary → tako, letter by letter
-							var cur = el.textContent;
-							var k = 0;
-							var toTako = setInterval(function () {
+							let cur = el.textContent ?? "";
+							let k = 0;
+							const toTako = setInterval(function () {
 								cur = "tako".slice(0, k + 1) + cur.slice(k + 1);
 								el.textContent = cur;
 								if (k === 0) {
@@ -129,16 +127,17 @@
 					}, 70);
 				}, 700);
 			})();
-		</script>
-		<script is:inline>
+
 			(function () {
 				if (
-					!("navigator" in window) ||
-					!navigator.modelContext ||
+					!("modelContext" in navigator) ||
+					typeof navigator.modelContext !== "object" ||
+					navigator.modelContext === null ||
+					!("provideContext" in navigator.modelContext) ||
 					typeof navigator.modelContext.provideContext !== "function"
 				)
 					return;
-				var DOC_PAGES = [
+				const DOC_PAGES = [
 					"quickstart",
 					"cli",
 					"deployment",
@@ -151,11 +150,11 @@
 					"framework-guides",
 					"presets",
 				];
-				var GETTING_STARTED =
+				const GETTING_STARTED =
 					"1. Install the CLI:  curl -fsSL https://tako.sh/install.sh | sh\n" +
 					"2. Scaffold a project:  tako init\n" +
 					"3. Run the dev loop:  tako dev";
-				var INSTALL = {
+				const INSTALL = {
 					cli: "curl -fsSL https://tako.sh/install.sh | sh",
 					server: "curl -fsSL https://tako.sh/install-server.sh | sudo sh",
 				};
@@ -178,7 +177,7 @@
 									},
 									required: ["page"],
 								},
-								execute: function (input) {
+								execute: function (input: { page: string }) {
 									window.location.assign(
 										"/docs/" + input.page + "/",
 									);
@@ -201,8 +200,8 @@
 									},
 									required: ["query"],
 								},
-								execute: function (input) {
-									var q = encodeURIComponent(
+								execute: function (input: { query: string }) {
+									const q = encodeURIComponent(
 										String(input.query).slice(0, 256),
 									);
 									window.location.assign("/docs/?q=" + q);
@@ -236,7 +235,7 @@
 									},
 									required: ["kind"],
 								},
-								execute: function (input) {
+								execute: function (input: { kind: keyof typeof INSTALL }) {
 									return INSTALL[input.kind];
 								},
 							},

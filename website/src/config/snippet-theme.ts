@@ -1,3 +1,5 @@
+import type { ShikiConfig } from "@astrojs/markdown-remark";
+
 export const SNIPPET_THEME = {
   name: "catppuccin-latte-readable",
   type: "light",
@@ -73,4 +75,4 @@ export const SNIPPET_THEME = {
       },
     },
   ],
-};
+} satisfies ShikiConfig["theme"];

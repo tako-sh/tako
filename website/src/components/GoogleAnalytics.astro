@@ -10,10 +10,19 @@ const isEnabled = import.meta.env.PROD;
 				async
 				src="https://www.googletagmanager.com/gtag/js?id=G-8WPCBNYKTC"
 			/>
-			<script is:inline>
-				window.dataLayer = window.dataLayer || [];
-				window.gtag = function gtag() {
-					window.dataLayer.push(arguments);
+			<script>
+				export {};
+
+				declare global {
+					interface Window {
+						dataLayer?: IArguments[];
+						gtag?: (...args: unknown[]) => void;
+					}
+				}
+
+				const dataLayer = (window.dataLayer ??= []);
+				window.gtag = function gtag(..._args: unknown[]) {
+					dataLayer.push(arguments);
 				};
 				window.gtag("js", new Date());
 				window.gtag("config", "G-8WPCBNYKTC");

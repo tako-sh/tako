@@ -7,6 +7,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { parseFrontmatter } from "@astrojs/markdown-remark";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
@@ -14,29 +15,6 @@ const REPO_ROOT = path.resolve(ROOT, "..");
 const SRC_SKILLS = path.join(REPO_ROOT, "sdk/javascript/skills");
 const DEST_DIR = path.join(ROOT, "public/.well-known/agent-skills");
 const SITE = "https://tako.sh";
-
-function parseFrontmatter(md: string): Record<string, string> {
-  const match = md.match(/^---\n([\s\S]*?)\n---/);
-  if (!match) return {};
-  const out: Record<string, string> = {};
-  let key: string | null = null;
-  let buf: string[] = [];
-  for (const line of match[1]!.split("\n")) {
-    const m = line.match(/^([a-zA-Z0-9_-]+):\s*(.*)$/);
-    if (m) {
-      if (key) out[key] = buf.join(" ").trim();
-      key = m[1]!;
-      buf = m[2] ? [m[2]!] : [];
-    } else if (key && line.trim()) {
-      buf.push(line.trim());
-    }
-  }
-  if (key) out[key] = buf.join(" ").trim();
-  for (const k of Object.keys(out)) {
-    out[k] = out[k]!.replace(/^>-\s*/, "").replace(/^["']|["']$/g, "");
-  }
-  return out;
-}
 
 async function main() {
   const entries = await readdir(SRC_SKILLS, { withFileTypes: true });
@@ -55,15 +33,17 @@ async function main() {
     const slug = entry.name;
     const srcPath = path.join(SRC_SKILLS, slug, "SKILL.md");
     const content = await readFile(srcPath, "utf8");
-    const frontmatter = parseFrontmatter(content);
+    const { frontmatter } = parseFrontmatter(content);
+    const description: unknown = frontmatter["description"];
+    const type: unknown = frontmatter["type"];
     const destDir = path.join(DEST_DIR, slug);
     await mkdir(destDir, { recursive: true });
     await writeFile(path.join(destDir, "SKILL.md"), content);
     const sha256 = createHash("sha256").update(content).digest("hex");
     skills.push({
       name: slug,
-      type: frontmatter["type"] ?? "framework",
-      description: frontmatter["description"] ?? "",
+      type: typeof type === "string" ? type : "framework",
+      description: typeof description === "string" ? description : "",
       url: `${SITE}/.well-known/agent-skills/${slug}/SKILL.md`,
       sha256,
     });

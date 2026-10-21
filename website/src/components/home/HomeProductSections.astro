@@ -303,14 +303,14 @@ import DeployRolloutDiagram from "./DeployRolloutDiagram.astro";
   </article>
 </section>
 
-<script is:inline type="module">
-  const workbenches = document.querySelectorAll("[data-primitive-workbench]");
+<script>
+  const workbenches = document.querySelectorAll<HTMLElement>("[data-primitive-workbench]");
 
   for (const workbench of workbenches) {
-    const tabs = [...workbench.querySelectorAll("[data-primitive-tab]")];
-    const panels = [...workbench.querySelectorAll("[data-primitive-panel]")];
+    const tabs = [...workbench.querySelectorAll<HTMLButtonElement>("[data-primitive-tab]")];
+    const panels = [...workbench.querySelectorAll<HTMLElement>("[data-primitive-panel]")];
 
-    const activate = (name) => {
+    const activate = (name: string | null) => {
       for (const tab of tabs) {
         const selected = tab.getAttribute("data-primitive-tab") === name;
         tab.classList.toggle("is-active", selected);
@@ -326,6 +326,7 @@ import DeployRolloutDiagram from "./DeployRolloutDiagram.astro";
     };
 
     workbench.addEventListener("click", (event) => {
+      if (!(event.target instanceof Element)) return;
       const tab = event.target.closest("[data-primitive-tab]");
       if (!tab || !workbench.contains(tab)) return;
       activate(tab.getAttribute("data-primitive-tab"));
@@ -334,12 +335,13 @@ import DeployRolloutDiagram from "./DeployRolloutDiagram.astro";
     workbench.addEventListener("keydown", (event) => {
       if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
 
-      const currentIndex = tabs.indexOf(document.activeElement);
+      const currentIndex = tabs.findIndex((tab) => tab === document.activeElement);
       if (currentIndex === -1) return;
 
       event.preventDefault();
       const offset = event.key === "ArrowRight" ? 1 : -1;
       const next = tabs[(currentIndex + offset + tabs.length) % tabs.length];
+      if (!next) return;
       next.focus();
       activate(next.getAttribute("data-primitive-tab"));
     });

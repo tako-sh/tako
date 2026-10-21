@@ -1,13 +1,16 @@
 import { defineConfig } from "astro/config";
 import { unified } from "@astrojs/markdown-remark";
-import astroD2 from "astro-d2";
+import astroD2, { type AstroD2UserConfig } from "astro-d2";
 import { readdirSync, statSync } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { SNIPPET_THEME } from "./src/config/snippet-theme.js";
-import { remarkD2Theme } from "./src/remark/remark-d2-theme.js";
-import { remarkDocsLinks } from "./src/remark/remark-docs-links.js";
+import { SNIPPET_THEME } from "./src/config/snippet-theme.ts";
+import { remarkD2Theme } from "./src/remark/remark-d2-theme.ts";
+import { remarkDocsLinks } from "./src/remark/remark-docs-links.ts";
 import sitemap from "@astrojs/sitemap";
+import { context7SearchLink } from "./src/config/context7-ask.ts";
+import { normalizeCanonicalPath } from "./src/utils/canonical";
 
 const workspaceRoot = fileURLToPath(new URL("..", import.meta.url));
 const websiteRoot = fileURLToPath(new URL(".", import.meta.url));
@@ -29,31 +32,9 @@ const d2Config = {
     default: "102",
     dark: false,
   },
-};
+} satisfies AstroD2UserConfig;
 
-function normalizeCanonicalPath(pathname) {
-  if (pathname === "/" || pathname === "/index.html") {
-    return "/";
-  }
-
-  if (pathname.endsWith("/index.html")) {
-    const directoryPath = pathname.slice(0, -"/index.html".length);
-    return directoryPath.endsWith("/") ? directoryPath : `${directoryPath}/`;
-  }
-
-  if (pathname.endsWith(".html")) {
-    return pathname.slice(0, -".html".length) || "/";
-  }
-
-  const segment = pathname.split("/").pop() ?? "";
-  if (pathname.length > 1 && !pathname.endsWith("/") && !segment.includes(".")) {
-    return `${pathname}/`;
-  }
-
-  return pathname;
-}
-
-function walkFiles(dir) {
+function walkFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const fullPath = path.join(dir, entry.name);
 
@@ -65,7 +46,7 @@ function walkFiles(dir) {
   });
 }
 
-function toRoutePath(filePath) {
+function toRoutePath(filePath: string): string | null {
   const relativePath = path.relative(pagesRoot, filePath).replaceAll(path.sep, "/");
   const withoutPageExtension = relativePath.replace(/\.(astro|md|mdx|html|js|ts)$/u, "");
   const routePath =
@@ -86,14 +67,11 @@ function toRoutePath(filePath) {
   return normalizeCanonicalPath(routePath);
 }
 
-const pageLastModified = new Map(
-  walkFiles(pagesRoot)
-    .map((filePath) => {
-      const routePath = toRoutePath(filePath);
-      return routePath ? [routePath, statSync(filePath).mtime] : null;
-    })
-    .filter(Boolean),
-);
+const pageLastModified = new Map<string, Date>();
+for (const filePath of walkFiles(pagesRoot)) {
+  const routePath = toRoutePath(filePath);
+  if (routePath) pageLastModified.set(routePath, statSync(filePath).mtime);
+}
 
 // Content collections (blog posts in src/content/blog/) map to /blog/{slug}
 for (const filePath of walkFiles(contentRoot)) {
@@ -137,6 +115,19 @@ export default defineConfig({
   },
 
   integrations: [
+    {
+      name: "context7-ask",
+      hooks: {
+        "astro:build:done": async ({ dir }) => {
+          const headersFile = new URL("_headers", dir);
+          const headers = await readFile(headersFile, "utf8");
+          await writeFile(
+            headersFile,
+            headers.replace("/*\n", `/*\n  Link: ${context7SearchLink}\n`),
+          );
+        },
+      },
+    },
     astroD2(d2Config),
     sitemap({
       serialize(item) {
@@ -146,7 +137,7 @@ export default defineConfig({
         return {
           ...item,
           url: itemUrl.toString(),
-          lastmod: pageLastModified.get(pathname) ?? defaultLastModified,
+          lastmod: (pageLastModified.get(pathname) ?? defaultLastModified).toISOString(),
         };
       },
     }),

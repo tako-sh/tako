@@ -1,4 +1,5 @@
 import type { CollectionEntry } from "astro:content";
+import { context7MarkdownNote } from "../config/context7-ask.ts";
 
 export type BlogPost = CollectionEntry<"blog">;
 
@@ -45,6 +46,6 @@ export function blogPostMarkdown(post: BlogPost): string {
   if (post.data.imageAlt) lines.push(`imageAlt: ${yamlString(post.data.imageAlt)}`);
 
   lines.push(`canonical: ${yamlString(blogPostCanonical(post))}`);
-  lines.push("---", "", blogPostBody(post), "");
+  lines.push("---", "", context7MarkdownNote, blogPostBody(post), "");
   return lines.join("\n");
 }
