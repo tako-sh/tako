@@ -15,6 +15,7 @@
     "@astrojs/rss": "^4.0.19",
     "@astrojs/sitemap": "^3.7.3",
     "@hugeicons/core-free-icons": "^4.3.5",
+    "asciinema-player": "^3.15.1",
     "astro": "catalog:dev",
     "astro-d2": "^0.14.0",
     "unist-util-visit": "^5.1.0"

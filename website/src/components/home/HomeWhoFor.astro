@@ -1,0 +1,23 @@
+---
+import HomeSpot from "./HomeSpot.astro";
+import chill from "../../assets/brand/chill.png";
+---
+
+<section class="band band-raised" data-accent="gold" aria-labelledby="who-title">
+  <div class="band-inner who">
+    <div class="who-anchor">
+      <h2 class="section-title" id="who-title">Who it&rsquo;s for</h2>
+      <p class="who-lead">
+        Done with surprise invoices and random &ldquo;how is this $46,485.99?&rdquo; moments.
+        Predictable pricing, predictable performance.
+      </p>
+      <HomeSpot class="spot-chill" src={chill} sizes="92px" />
+    </div>
+    <ul class="who-list">
+      <li>Teams who want shipping boring and reliable, not risky and ceremonial.</li>
+      <li>People who want a runtime they control, without arbitrary platform limits.</li>
+      <li>Folks with lots of idle apps. They scale to <code>0</code>, so a ton fit on a tiny VPS.</li>
+      <li>Anyone whose config files feel like a second full-time job.</li>
+    </ul>
+  </div>
+</section>

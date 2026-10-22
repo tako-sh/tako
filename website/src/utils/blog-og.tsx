@@ -33,13 +33,13 @@ async function fetchFont(family: string, weight: number): Promise<ArrayBuffer> {
   return data;
 }
 
+// JetBrains Mono is wide, so long titles step down faster than a proportional face would.
 function titleFontSize(title: string): number {
-  if (title.length < 24) return 74;
-  if (title.length < 40) return 68;
-  if (title.length < 58) return 66;
-  if (title.length < 76) return 56;
-  if (title.length < 94) return 48;
-  return 42;
+  if (title.length < 28) return 56;
+  if (title.length < 48) return 48;
+  if (title.length < 68) return 42;
+  if (title.length < 88) return 36;
+  return 32;
 }
 
 function dataUri(path: string, mimeType: string): string {
@@ -71,117 +71,38 @@ function sourceImageUri(source: string | undefined): string | undefined {
   throw new Error(`Unsupported image source format: ${source}`);
 }
 
-function imageBackedCard(title: string, logoUri: string, imageUri: string) {
+const INK = "#1F1B2B";
+const TEXT = "#EFEBE6";
+const MUTED = "#B8B2C2";
+const HAIRLINE = "rgba(239, 235, 230, 0.14)";
+
+const CARD_WIDTH = 1200;
+const ART_HEIGHT = 462;
+const CAPTION_PADDING_X = 56;
+const MARK_WIDTH = 200;
+
+// Fit the title on two lines of JetBrains Mono (about 0.6em per character) beside the mark.
+function captionTitleSize(title: string): number {
+  const lineWidth = CARD_WIDTH - CAPTION_PADDING_X * 2 - MARK_WIDTH;
+  const twoLineSize = Math.floor((lineWidth * 2 * 0.88) / (0.6 * title.length));
+  return Math.max(28, Math.min(44, twoLineSize));
+}
+
+function mark(label: string, logoUri: string, logoSize: number) {
   return React.createElement(
     "div",
-    {
-      style: {
-        position: "relative",
-        width: "100%",
-        height: "100%",
-        display: "flex",
-        backgroundColor: "#18151F",
-        color: "#FFF7ED",
-        fontFamily: "Poppins",
-        overflow: "hidden",
-      },
-    },
-    React.createElement("img", {
-      src: imageUri,
-      width: 1200,
-      height: 630,
-      style: {
-        position: "absolute",
-        top: 0,
-        left: 0,
-        width: "1200px",
-        height: "630px",
-        objectFit: "cover",
-      },
-    }),
-    React.createElement("div", {
-      style: {
-        position: "absolute",
-        top: 0,
-        right: 0,
-        bottom: 0,
-        left: 0,
-        background:
-          "linear-gradient(90deg, rgba(18, 15, 23, 0.96) 0%, rgba(24, 21, 31, 0.88) 36%, rgba(24, 21, 31, 0.44) 63%, rgba(24, 21, 31, 0.12) 100%)",
-      },
-    }),
-    React.createElement("div", {
-      style: {
-        position: "absolute",
-        top: 0,
-        right: 0,
-        bottom: 0,
-        left: 0,
-        background:
-          "linear-gradient(180deg, rgba(18, 15, 23, 0.36) 0%, rgba(18, 15, 23, 0.04) 48%, rgba(18, 15, 23, 0.50) 100%)",
-      },
-    }),
+    { style: { display: "flex", alignItems: "center", gap: "12px", flexShrink: 0 } },
+    React.createElement("img", { src: logoUri, width: logoSize, height: logoSize }),
     React.createElement(
       "div",
-      {
-        style: {
-          position: "relative",
-          width: "100%",
-          height: "100%",
-          display: "flex",
-          flexDirection: "column",
-          padding: "62px 76px 58px",
-        },
-      },
-      React.createElement(
-        "div",
-        { style: { display: "flex", alignItems: "center", gap: "15px", color: "#FFF0E6" } },
-        React.createElement("img", { src: logoUri, width: 44, height: 44 }),
-        React.createElement(
-          "div",
-          {
-            style: {
-              fontFamily: "IBM Plex Mono",
-              fontSize: "21px",
-              fontWeight: 400,
-              color: "#FFF0E6",
-              letterSpacing: 0,
-            },
-          },
-          "tako.sh/blog",
-        ),
-      ),
-      React.createElement(
-        "div",
-        {
-          style: {
-            display: "flex",
-            flexGrow: 1,
-            alignItems: "center",
-            maxWidth: "700px",
-            paddingBottom: "6px",
-          },
-        },
-        React.createElement(
-          "div",
-          {
-            style: {
-              fontSize: `${titleFontSize(title)}px`,
-              fontWeight: 700,
-              color: "#FFF7ED",
-              lineHeight: 1.06,
-              letterSpacing: 0,
-              maxWidth: "700px",
-            },
-          },
-          title,
-        ),
-      ),
+      { style: { fontSize: "18px", fontWeight: 400, color: MUTED } },
+      label,
     ),
   );
 }
 
-function plainCard(title: string, logoUri: string) {
+// The post's painting across the top, its title on an ink caption strip below.
+function imageBackedCard(title: string, label: string, logoUri: string, imageUri: string) {
   return React.createElement(
     "div",
     {
@@ -190,49 +111,77 @@ function plainCard(title: string, logoUri: string) {
         height: "100%",
         display: "flex",
         flexDirection: "column",
-        padding: "60px 72px 52px",
-        backgroundColor: "#FFF9F4",
-        fontFamily: "Poppins",
+        backgroundColor: INK,
+        fontFamily: "JetBrains Mono",
       },
     },
-    React.createElement(
-      "div",
-      { style: { display: "flex", alignItems: "center", gap: "14px" } },
-      React.createElement("img", { src: logoUri, width: 44, height: 44 }),
-      React.createElement(
-        "div",
-        {
-          style: {
-            fontFamily: "IBM Plex Mono",
-            fontSize: "22px",
-            fontWeight: 400,
-            color: "#2F2A44",
-            letterSpacing: 0,
-          },
-        },
-        "tako.sh/blog",
-      ),
-    ),
+    React.createElement("img", {
+      src: imageUri,
+      width: CARD_WIDTH,
+      height: ART_HEIGHT,
+      style: { width: `${CARD_WIDTH}px`, height: `${ART_HEIGHT}px`, objectFit: "cover" },
+    }),
     React.createElement(
       "div",
       {
         style: {
-          display: "flex",
-          flexDirection: "column",
           flexGrow: 1,
-          justifyContent: "center",
+          display: "flex",
+          alignItems: "center",
+          gap: "32px",
+          padding: `0 ${CAPTION_PADDING_X}px`,
+          borderTop: `1px solid ${HAIRLINE}`,
         },
       },
+      React.createElement(
+        "div",
+        {
+          style: {
+            flexGrow: 1,
+            flexShrink: 1,
+            minWidth: 0,
+            fontSize: `${captionTitleSize(title)}px`,
+            fontWeight: 700,
+            lineHeight: 1.18,
+            letterSpacing: "-0.01em",
+            color: TEXT,
+          },
+        },
+        title,
+      ),
+      mark(label, logoUri, 32),
+    ),
+  );
+}
+
+// Fallback for a post without a painting.
+function plainCard(title: string, label: string, logoUri: string) {
+  return React.createElement(
+    "div",
+    {
+      style: {
+        width: "100%",
+        height: "100%",
+        display: "flex",
+        flexDirection: "column",
+        padding: "60px 64px 56px",
+        backgroundColor: INK,
+        fontFamily: "JetBrains Mono",
+      },
+    },
+    mark(label, logoUri, 40),
+    React.createElement(
+      "div",
+      { style: { display: "flex", flexGrow: 1, alignItems: "center" } },
       React.createElement(
         "div",
         {
           style: {
             fontSize: `${titleFontSize(title)}px`,
             fontWeight: 700,
-            color: "#2F2A44",
-            lineHeight: 1.12,
-            letterSpacing: 0,
-            maxWidth: "980px",
+            color: TEXT,
+            lineHeight: 1.18,
+            letterSpacing: "-0.01em",
           },
         },
         title,
@@ -250,9 +199,10 @@ async function compressPng(png: Uint8Array): Promise<Uint8Array> {
 }
 
 export async function renderOgImage(title: string, imageSource?: string): Promise<Uint8Array> {
-  const [poppinsBold, plexMono] = await Promise.all([
-    fetchFont("Poppins", 700),
-    fetchFont("IBM Plex Mono", 400),
+  const label = "tako.sh/blog";
+  const [monoBold, monoRegular] = await Promise.all([
+    fetchFont("JetBrains Mono", 700),
+    fetchFont("JetBrains Mono", 400),
   ]);
 
   const logoSvg = readFileSync(join(ROOT, "public/assets/logo.svg"), "utf-8");
@@ -260,18 +210,13 @@ export async function renderOgImage(title: string, imageSource?: string): Promis
   const imageUri = sourceImageUri(imageSource);
 
   const svg = await satori(
-    imageUri ? imageBackedCard(title, logoUri, imageUri) : plainCard(title, logoUri),
+    imageUri ? imageBackedCard(title, label, logoUri, imageUri) : plainCard(title, label, logoUri),
     {
       width: 1200,
       height: 630,
       fonts: [
-        { name: "Poppins", data: poppinsBold, weight: 700, style: "normal" },
-        {
-          name: "IBM Plex Mono",
-          data: plexMono,
-          weight: 400,
-          style: "normal",
-        },
+        { name: "JetBrains Mono", data: monoBold, weight: 700, style: "normal" },
+        { name: "JetBrains Mono", data: monoRegular, weight: 400, style: "normal" },
       ],
     },
   );

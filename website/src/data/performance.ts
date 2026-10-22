@@ -15,6 +15,8 @@ export type Series = {
   id: string;
   label: string;
   color: string;
+  // Dashed line for a series that needs a second cue besides colour.
+  dash?: boolean;
   points: BenchPoint[];
 };
 
@@ -22,7 +24,6 @@ export type ChartUnit = "rps" | "ms" | "pct" | "mib";
 
 export type ChartConfig = {
   title: string;
-  eyebrow: string;
   description: string;
   key: keyof BenchPoint;
   max: number;
@@ -64,7 +65,8 @@ const proxySeries: Series[] = [
   {
     id: "nginx",
     label: "nginx",
-    color: "oklch(33% 0.03 285)",
+    color: "#8E879C",
+    dash: true,
     points: withFailure([
       {
         conc: 1000,
@@ -148,7 +150,7 @@ const proxySeries: Series[] = [
   {
     id: "haproxy",
     label: "HAProxy",
-    color: "oklch(60% 0.09 168)",
+    color: "#E88783",
     points: withFailure([
       {
         conc: 1000,
@@ -232,7 +234,7 @@ const proxySeries: Series[] = [
   {
     id: "tako",
     label: "Tako",
-    color: "oklch(64% 0.14 22)",
+    color: "#9BC4B6",
     points: withFailure([
       {
         conc: 1000,
@@ -316,7 +318,7 @@ const proxySeries: Series[] = [
   {
     id: "envoy",
     label: "Envoy",
-    color: "oklch(64% 0.13 78)",
+    color: "#D6A63E",
     points: withFailure([
       {
         conc: 1000,
@@ -400,7 +402,7 @@ const proxySeries: Series[] = [
   {
     id: "caddy",
     label: "Caddy",
-    color: "oklch(49% 0.08 296)",
+    color: "#B8B2C2",
     points: withFailure([
       {
         conc: 1000,
@@ -487,7 +489,7 @@ const featureSeries: Series[] = [
   {
     id: "channel",
     label: "Channel publish",
-    color: "oklch(64% 0.14 22)",
+    color: "#E88783",
     points: withFailure([
       {
         conc: 500,
@@ -549,7 +551,7 @@ const featureSeries: Series[] = [
   {
     id: "workflow",
     label: "Workflow enqueue",
-    color: "oklch(60% 0.09 168)",
+    color: "#9BC4B6",
     points: withFailure([
       {
         conc: 500,
@@ -633,7 +635,8 @@ const memorySeries: Series[] = [
   {
     id: "nginx-memory",
     label: "nginx",
-    color: "oklch(33% 0.03 285)",
+    color: "#8E879C",
+    dash: true,
     points: [
       memoryPoint(5000, 159, 17975, 100, 0),
       memoryPoint(10000, 159, 17141, 100, 0),
@@ -643,7 +646,7 @@ const memorySeries: Series[] = [
   {
     id: "haproxy-memory",
     label: "HAProxy",
-    color: "oklch(60% 0.09 168)",
+    color: "#E88783",
     points: [
       memoryPoint(5000, 248, 17901, 100, 0),
       memoryPoint(10000, 406, 15738, 100, 0),
@@ -653,7 +656,7 @@ const memorySeries: Series[] = [
   {
     id: "tako-memory",
     label: "Tako",
-    color: "oklch(64% 0.14 22)",
+    color: "#9BC4B6",
     points: [
       memoryPoint(5000, 511, 12895, 100, 0),
       memoryPoint(10000, 911, 10979, 100, 0),
@@ -663,7 +666,7 @@ const memorySeries: Series[] = [
   {
     id: "envoy-memory",
     label: "Envoy",
-    color: "oklch(62% 0.12 78)",
+    color: "#D6A63E",
     points: [
       memoryPoint(5000, 323, 4761, 99.76, 0.24),
       memoryPoint(10000, 554, 8566, 91.25, 0),
@@ -673,7 +676,7 @@ const memorySeries: Series[] = [
   {
     id: "caddy-memory",
     label: "Caddy",
-    color: "oklch(49% 0.08 296)",
+    color: "#B8B2C2",
     points: [
       memoryPoint(5000, 621, 5258, 99.96, 0),
       memoryPoint(10000, 1213, 1822, 100, 0),
@@ -685,7 +688,6 @@ const memorySeries: Series[] = [
 export const httpCharts: ChartConfig[] = [
   {
     title: "HTTP 200 RPS by concurrency",
-    eyebrow: "throughput",
     description:
       "Tako stays clean at high concurrency and beats Caddy and Envoy across the heavy rows. nginx and HAProxy show the static-proxy ceiling for this VM.",
     key: "rps200",
@@ -696,7 +698,6 @@ export const httpCharts: ChartConfig[] = [
   },
   {
     title: "p99 latency by concurrency",
-    eyebrow: "tail latency",
     description:
       "Tako completes every high-load row cleanly, with tail latency published beside RPS so the tradeoff stays visible. nginx is the tightest p99 reference in this run.",
     key: "p99",
@@ -707,7 +708,6 @@ export const httpCharts: ChartConfig[] = [
   },
   {
     title: "Clean-run behavior by concurrency",
-    eyebrow: "errors",
     description:
       "The line combines non-200 responses and client-side errors, so lower is better. Tako remains at 0% through c20000 on this run.",
     key: "failure",
@@ -718,7 +718,6 @@ export const httpCharts: ChartConfig[] = [
   },
   {
     title: "Memory by concurrency",
-    eyebrow: "memory",
     description:
       "Memory is measured with process PSS, which avoids counting shared pages twice. At c20000, Caddy shows lower Memory than Tako, but Caddy also times out part of the load; compare the Memory line with the 200 labels below.",
     key: "proxyRss",
@@ -732,7 +731,6 @@ export const httpCharts: ChartConfig[] = [
 export const featureCharts: ChartConfig[] = [
   {
     title: "Channels and workflows 200 RPS",
-    eyebrow: "built-in features",
     description:
       "Both feature paths stay clean through c8000 on the same 2 vCPU VM, while still using the SDK, SQLite-backed persistence, and the proxy path.",
     key: "rps200",
@@ -743,7 +741,6 @@ export const featureCharts: ChartConfig[] = [
   },
   {
     title: "Channels and workflows p99 latency",
-    eyebrow: "feature tail latency",
     description:
       "Workflow enqueue persists steps, so it naturally carries more work than channel publish. Both paths stay clean through c8000 in this single-instance run.",
     key: "p99",

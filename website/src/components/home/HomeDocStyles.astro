@@ -1,0 +1,508 @@
+<style is:global>
+  /*
+   * Home page: full-bleed bands on the dark ink ground, set entirely in JetBrains Mono.
+   * Bands alternate between the ground and the raised brand ink, and each heading takes its
+   * band's accent, so each block reads as its own stretch of the scroll; the closing call to
+   * action is the one coral field.
+   */
+  /* One shared split for every two-column band, so right columns line up down the page */
+  .home {
+    --band-pad-y: clamp(72px, 9vw, 128px);
+    --split: minmax(0, 1fr) minmax(0, 1fr);
+    --split-gap: clamp(40px, 5vw, 96px);
+  }
+
+  /* A shorter band for blocks that carry little text */
+  .band-compact {
+    --band-pad-y: clamp(48px, 6vw, 80px);
+  }
+
+  .home p,
+  .home li {
+    text-wrap: pretty;
+  }
+
+  .home code {
+    font-family: var(--font-mono);
+    font-size: 0.95em;
+  }
+
+  /* Each band is its own stacking context, so the panel shades sit on the band, under the panels. */
+  .band {
+    isolation: isolate;
+    padding: var(--band-pad-y) var(--gutter);
+  }
+
+  /*
+   * Raised bands carry a faint paper grain, the same grain the painted illustrations sit on, so the
+   * two-tone rhythm reads as paper and ink. It is static and a few percent strong.
+   */
+  .band-raised {
+    background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.94 0 0 0 0 0.92 0 0 0 0 0.9 0 0 0 0.09 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E") var(--paper);
+  }
+
+  .band[data-accent="coral"] {
+    --band-accent: var(--primary);
+  }
+
+  .band[data-accent="mint"] {
+    --band-accent: var(--secondary);
+  }
+
+  .band[data-accent="gold"] {
+    --band-accent: var(--gold);
+  }
+
+  .band[data-accent="ink"] {
+    --band-accent: var(--on-primary);
+  }
+
+  /* Each heading takes its band's accent; the closing band keeps ink on coral. */
+  .band:not(.cta) :is(.hero-title, .why-title, .section-title) {
+    color: var(--band-accent);
+  }
+
+  /*
+   * The main panels cast a text-mode shadow: a layer offset down and to the right behind the
+   * panel, tiled with a light-shade (░) pattern in muted grey. The panel's own fill hides the
+   * overlap, so only the right and bottom edges show.
+   */
+  .panel-shade {
+    position: relative;
+  }
+
+  .panel-shade::after {
+    content: "";
+    position: absolute;
+    inset: 10px -10px -10px 10px;
+    z-index: -1;
+    background: url("/assets/shade.svg");
+    pointer-events: none;
+  }
+
+  /* A firmer edge where a panel meets its shadow */
+  .panel-shade > :is(.dev-video-tabs, .dev-video-frame, .routes-head, .routes-list, .primitive-workbench),
+  .home .deploy-run.panel-shade {
+    border-color: var(--line-strong);
+  }
+
+  .band-inner {
+    position: relative;
+    max-width: 1520px;
+    margin: 0 auto;
+  }
+
+  /* Headings run as wide as their column; balance keeps two-line breaks even */
+  .section-title {
+    color: var(--ink);
+    font-size: clamp(28px, 3.2vw, 44px);
+    font-weight: 700;
+    line-height: 1.15;
+    letter-spacing: -0.02em;
+    text-wrap: balance;
+  }
+
+  /* The larger heading step, for the sections that lead with a diagram or a chart */
+  .section-title.section-title-lg {
+    font-size: clamp(36px, 4.6vw, 64px);
+    line-height: 1.08;
+  }
+
+  .doc-text {
+    max-width: 62ch;
+  }
+
+  .doc-text p {
+    margin-top: 14px;
+    color: var(--muted);
+    font-size: 16px;
+  }
+
+  .doc-text .section-title + p {
+    margin-top: 20px;
+  }
+
+  .doc-text p strong {
+    color: var(--ink);
+  }
+
+  /* A section's docs link: a marked action, its padding giving the space above it */
+  .doc-link {
+    margin-top: 4px;
+  }
+
+  .split {
+    display: grid;
+    grid-template-columns: var(--split);
+    gap: var(--split-gap);
+    align-items: start;
+  }
+
+  /* Reversed: the figure leads on the left, the text follows on the right */
+
+  .split-reverse > .doc-text {
+    order: 2;
+  }
+
+  .figure-note {
+    margin-top: 12px;
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  /* Captions clear the panel shadow's one-row drop */
+  .panel-shade + .figure-note {
+    margin-top: 28px;
+  }
+
+  /*
+   * Hero: the headline on the left, the pitch and commands on the right, then the tako dev
+   * recording at full width with the painted octopus perched on its top edge.
+   */
+  .hero {
+    --hero-pad-top: clamp(40px, 5vw, 72px);
+    padding-top: var(--hero-pad-top);
+    padding-bottom: clamp(56px, 7vw, 104px);
+  }
+
+  .hero-top {
+    display: grid;
+    grid-template-columns: var(--split);
+    gap: 28px var(--split-gap);
+    align-items: start;
+  }
+
+  .hero-side {
+    min-width: 0;
+  }
+
+  .hero-title {
+    max-width: 12ch;
+    color: var(--ink);
+    font-size: clamp(44px, 5.6vw, 96px);
+    font-weight: 700;
+    line-height: 1.02;
+    letter-spacing: -0.03em;
+    text-wrap: balance;
+  }
+
+  .hero-sub {
+    max-width: 52ch;
+    color: var(--muted);
+    font-size: 17px;
+  }
+
+  .hero-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 28px;
+  }
+
+  /* On the coral field the solid action turns ink, and marks turn ink too */
+  .button-ink {
+    background: var(--on-primary);
+    color: var(--ink);
+  }
+
+  .button-ink:hover {
+    background: color-mix(in srgb, var(--on-primary) 80%, var(--ink));
+  }
+
+  .cta :focus-visible {
+    outline-color: var(--on-primary);
+  }
+
+  .cta .action {
+    --mark-color: color-mix(in srgb, var(--on-primary) 18%, transparent);
+    color: var(--on-primary);
+  }
+
+  .hero-commands {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+    max-width: 620px;
+    margin-top: 32px;
+  }
+
+  .command-label {
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  .command-label + .command-row + .command-label {
+    margin-top: 10px;
+  }
+
+  /* The install command and the agent prompt are the primary pair, so they read at body size and up. */
+  .command-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-height: 52px;
+    padding: 7px 8px 7px 16px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--paper);
+  }
+
+  .home .command-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-x: auto;
+    color: var(--ink);
+    font-size: clamp(14px, 1.15vw, 16px);
+    white-space: nowrap;
+    scrollbar-width: none;
+  }
+
+  .command-row .copy-button {
+    font-size: 14px;
+  }
+
+  .command-text::-webkit-scrollbar {
+    display: none;
+  }
+
+  .command-text .prompt {
+    color: var(--primary);
+  }
+
+  .hero-license {
+    margin-top: 20px;
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  /* The tako dev recording, framed like one more file tab, across the full content width */
+  .dev-video {
+    min-width: 0;
+    margin: 0;
+  }
+
+  .hero .dev-video {
+    margin-top: clamp(72px, 8vw, 120px);
+  }
+
+  /*
+   * The painted octopus peeks over the recording window's top edge at the end of the headline's
+   * column, under "your servers", where the terminal's first lines stay empty. The painting is cut
+   * flat along the edge at 67.8% of its height, and its tentacles curl over the frame below it.
+   */
+  .hero-stage {
+    position: relative;
+  }
+
+  .hero-peek {
+    --spot-w: clamp(150px, 16vw, 240px);
+    left: calc(50% - var(--split-gap) / 2 - var(--spot-w) - 24px);
+    bottom: calc(100% - var(--spot-w) * 0.6765 * 0.322);
+    z-index: 2;
+  }
+
+  .dev-scroll-hint {
+    display: none;
+  }
+
+  .dev-video-tabs {
+    display: flex;
+    padding: 0 8px;
+    border: 1px solid var(--line);
+    border-bottom: 0;
+    background: var(--paper);
+  }
+
+  /* The open tab carries the band's mark, like the editor's file tabs */
+  .dev-video-tab {
+    padding: 11px 10px 9px;
+    color: var(--ink);
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 1;
+  }
+
+  .dev-video-frame {
+    overflow: hidden;
+    border: 1px solid var(--line);
+    background: var(--bg);
+  }
+
+  .dev-poster {
+    margin: 0;
+    padding: 16px;
+    overflow-x: auto;
+    color: var(--ink);
+    font-size: 12px;
+    line-height: 1.5;
+    white-space: pre;
+  }
+
+  .dev-poster-link {
+    margin: 0 16px 4px;
+  }
+
+  /*
+   * Player theme on the page ground. The player resolves these itself, so they are literal
+   * values (#1F1B2B ground, #EFEBE6 text, #B8B2C2 muted, then coral, mint and gold).
+   */
+  .ap-player.asciinema-player-theme-tako {
+    --term-color-foreground: #EFEBE6;
+    --term-color-background: #1F1B2B;
+    --term-color-0: #B8B2C2;
+    --term-color-1: #E88783;
+    --term-color-2: #9BC4B6;
+    --term-color-3: #D6A63E;
+    --term-color-4: #B8B2C2;
+    --term-color-5: #E88783;
+    --term-color-6: #9BC4B6;
+    --term-color-7: #EFEBE6;
+    --term-color-8: #B8B2C2;
+    --term-color-9: #E88783;
+    --term-color-10: #9BC4B6;
+    --term-color-11: #D6A63E;
+    --term-color-12: #B8B2C2;
+    --term-color-13: #E88783;
+    --term-color-14: #9BC4B6;
+    --term-color-15: #EFEBE6;
+  }
+
+  .dev-video-frame .ap-player {
+    border-radius: 0;
+  }
+
+  /* The CLI's own 24-bit gradient colours run dark; lift them to AA on the page ground. */
+  .dev-video-frame .ap-player .ap-term pre {
+    filter: brightness(1.15);
+  }
+
+  /* A large coral Play button in the middle of the poster frame, drawn in the site's button style. */
+  .dev-video-frame .ap-player .ap-overlay-start {
+    align-items: center;
+    justify-content: center;
+    background: rgba(31, 27, 43, 0.35);
+  }
+
+  .dev-video-frame .ap-player .ap-overlay-start .ap-play-button {
+    position: static;
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+    height: clamp(52px, 4.4vw, 64px);
+    margin: 0;
+    padding: 0 26px 0 22px;
+    border-radius: var(--radius);
+    background: var(--primary);
+    color: var(--on-primary);
+    font: 700 clamp(15px, 1.25vw, 18px)/1 var(--font-mono);
+  }
+
+  .dev-video-frame .ap-player .ap-overlay-start .ap-play-button > * {
+    display: none;
+  }
+
+  .dev-video-frame .ap-player .ap-overlay-start .ap-play-button::before {
+    content: "";
+    width: 13px;
+    height: 15px;
+    background: currentColor;
+    clip-path: polygon(0 0, 100% 50%, 0 100%);
+  }
+
+  .dev-video-frame .ap-player .ap-overlay-start .ap-play-button::after {
+    content: "Play";
+  }
+
+  .dev-video-frame .ap-player .ap-overlay-start:hover .ap-play-button {
+    background: color-mix(in srgb, var(--primary) 82%, var(--ink));
+  }
+
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  @media (max-width: 1100px) {
+    .hero-top {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 32px;
+    }
+
+    /* One column: the octopus moves to the window's right end, clear of the license line. */
+    .hero-peek {
+      right: clamp(12px, 6%, 64px);
+      left: auto;
+    }
+  }
+
+  @media (max-width: 900px) {
+    .split {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 32px;
+    }
+
+    .split-reverse > .doc-text {
+      order: 0;
+    }
+
+    .hero-title {
+      font-size: clamp(40px, 10vw, 64px);
+    }
+  }
+
+  @media (max-width: 640px) {
+    .home {
+      --band-pad-y: 56px;
+    }
+
+    .hero {
+      --hero-pad-top: 28px;
+    }
+
+    .hero .dev-video {
+      margin-top: 56px;
+    }
+
+    .hero-peek {
+      --spot-w: 104px;
+    }
+
+    .command-row {
+      flex-wrap: wrap;
+    }
+
+    /* The Copy button drops to its own line only when the text does not fit beside it. */
+    .home .command-text {
+      font-size: 13px;
+    }
+
+    /* Phones scroll the recording sideways at a readable size instead of shrinking it. */
+    .dev-video-frame {
+      overflow-x: auto;
+    }
+
+    .dev-player-mount {
+      min-width: 900px;
+    }
+
+    /* The frame scrolls sideways here, so the play control centres on the visible part, not the 900px terminal. */
+    .dev-video-frame .ap-player .ap-overlay-start {
+      justify-content: flex-start;
+      padding-left: calc(50vw - var(--gutter) - 52px);
+    }
+
+    .dev-scroll-hint {
+      display: inline;
+    }
+  }
+
+  @media (max-width: 400px) {
+    .home .command-text {
+      font-size: 12px;
+    }
+  }
+</style>

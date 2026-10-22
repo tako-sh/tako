@@ -1,0 +1,781 @@
+---
+// One tako deploy, played back sped up. The order follows tako-server/src/instances/rolling.rs and
+// docs/deployment.md: build once, servers in parallel, the release command on the leader only,
+// new instances held out of routing through the 8s stability window, then the old ones drain.
+type Kind = "build" | "upload" | "prepare" | "release" | "wait" | "start" | "finalize";
+type Segment = { kind: Kind; from: number; to: number };
+type Lane = { host: string; detail?: string; done: string; segments: Segment[] };
+
+// Seconds of playback; the axis leaves a little room after the last server finishes.
+const AXIS = 10.2;
+const END = 9.9;
+
+const STATUS: Record<Kind, string> = {
+  build: "building",
+  upload: "uploading",
+  prepare: "preparing",
+  release: "running release",
+  wait: "waiting on leader",
+  start: "starting",
+  finalize: "finalizing",
+};
+
+const BAR: Record<Kind, string> = {
+  build: "build",
+  upload: "upload",
+  prepare: "prepare",
+  release: "release",
+  wait: "wait",
+  start: "start",
+  finalize: "finalize",
+};
+
+const lanes: Lane[] = [
+  { host: "your machine", done: "built", segments: [{ kind: "build", from: 0, to: 1.2 }] },
+  {
+    host: "Tokyo",
+    detail: "AWS · leader",
+    done: "deployed",
+    segments: [
+      { kind: "upload", from: 1.2, to: 2.3 },
+      { kind: "prepare", from: 2.3, to: 3.6 },
+      { kind: "release", from: 3.6, to: 5.2 },
+      { kind: "start", from: 5.2, to: 8.8 },
+      { kind: "finalize", from: 8.8, to: 9.7 },
+    ],
+  },
+  {
+    host: "Amsterdam",
+    detail: "Vultr",
+    done: "deployed",
+    segments: [
+      { kind: "upload", from: 1.2, to: 2.1 },
+      { kind: "prepare", from: 2.1, to: 3.3 },
+      { kind: "wait", from: 3.3, to: 5.2 },
+      { kind: "start", from: 5.2, to: 8.6 },
+      { kind: "finalize", from: 8.6, to: 9.5 },
+    ],
+  },
+  {
+    host: "Ashburn",
+    detail: "Hetzner",
+    done: "deployed",
+    segments: [
+      { kind: "upload", from: 1.2, to: 2.6 },
+      { kind: "prepare", from: 2.6, to: 3.9 },
+      { kind: "wait", from: 3.9, to: 5.2 },
+      { kind: "start", from: 5.2, to: 9.0 },
+      { kind: "finalize", from: 9.0, to: 9.9 },
+    ],
+  },
+];
+
+// The close-up follows Tokyo's start bar.
+const SWITCH = { starting: 5.2, healthy: 5.8, stable: 6.1, route: 7.8, stopped: 8.7, current: 9.3 };
+const OLD_RELEASE = "3f2c9a1";
+const NEW_RELEASE = "a71e04c";
+
+// Label and note for each instance state; the script swaps them as the playback runs.
+const COPY: Record<string, [string, string]> = {
+  idle: ["not started", "next release"],
+  starting: ["starting", "no traffic"],
+  healthy: ["healthy", "GET /status ok"],
+  stable: ["stability window", "8s, still no traffic"],
+  serving: ["serving", "takes new requests"],
+  draining: ["draining", "finishing requests, up to 30s"],
+  stopped: ["stopped", "previous release"],
+};
+
+const fraction = (seconds: number) => (seconds / AXIS).toFixed(4);
+---
+
+<figure class="deploy-run panel-shade" data-deploy-run data-axis={AXIS} data-end={END}>
+  <div class="run-head">
+    <code class="run-cmd"><span class="prompt" aria-hidden="true">$ </span>tako deploy</code>
+    <span class="run-summary">3 servers in parallel</span>
+  </div>
+
+  <div class="run-gantt" aria-hidden="true" data-run-gantt>
+    {
+      lanes.map((lane) => (
+        <>
+          <div class="run-host">
+            <span class="run-host-name">
+              {lane.host}
+              {lane.detail && <span class="run-host-detail">{lane.detail}</span>}
+            </span>
+            <span class="run-host-status" data-lane-status>{lane.done}</span>
+          </div>
+          <div class="run-track" data-lane-track data-done={lane.done}>
+            {lane.segments.map((segment) => (
+              <span
+                class={`run-seg is-${segment.kind}`}
+                style={`--from: ${fraction(segment.from)}; --to: ${fraction(segment.to)};`}
+                data-seg
+                data-from={segment.from}
+                data-to={segment.to}
+                data-status={STATUS[segment.kind]}
+              >
+                <span class="run-seg-label">{BAR[segment.kind]}</span>
+              </span>
+            ))}
+          </div>
+        </>
+      ))
+    }
+    <span class="run-playhead"></span>
+  </div>
+
+  <div class="run-detail">
+    <div class="run-story">
+      <ol class="run-steps">
+        <li class="run-step" data-step data-from="0" data-to="1.2"><span>Build once, on your machine.</span></li>
+        <li class="run-step" data-step data-from="1.2" data-to="3.9"><span>Upload and prepare the release on every server, in parallel.</span></li>
+        <li class="run-step" data-step data-from="3.6" data-to="5.2"><span>Run the release command, if you set one, on the leader only. The other servers wait for it.</span></li>
+        <li class="run-step" data-step data-from="5.2" data-to="7.8"><span>Start the new instances. They get no traffic until they stay healthy for 8 seconds.</span></li>
+        <li class="run-step" data-step data-from="7.8" data-to="9.0"><span>Route traffic to the new instances, then let the old ones drain for up to 30 seconds.</span></li>
+        <li class="run-step" data-step data-from="8.6" data-to="9.9"><span>Point <code>current</code> at the new release.</span></li>
+      </ol>
+      <p class="run-note">If a new instance fails, Tako removes it and the old instances keep serving.</p>
+    </div>
+
+    <div
+      class="run-switch"
+      aria-hidden="true"
+      data-switch
+      data-starting={SWITCH.starting}
+      data-healthy={SWITCH.healthy}
+      data-stable={SWITCH.stable}
+      data-route={SWITCH.route}
+      data-stopped={SWITCH.stopped}
+      data-current={SWITCH.current}
+      data-old={OLD_RELEASE}
+      data-new={NEW_RELEASE}
+      data-copy={JSON.stringify(COPY)}
+    >
+      <p class="switch-title">Inside <code>start</code>, on Tokyo</p>
+      <div class="switch-diagram">
+        <div class="switch-proxy">tako-server</div>
+        <div class="switch-row" data-switch-row="old" data-state="stopped">
+          <span class="switch-wire"><span class="switch-probe"></span></span>
+          <span class="switch-box">{OLD_RELEASE}</span>
+          <span class="switch-state">
+            <span class="switch-state-text">{COPY["stopped"]?.[0]}</span>
+            <span class="switch-state-note">{COPY["stopped"]?.[1]}</span>
+            <span class="switch-meter"></span>
+          </span>
+        </div>
+        <div class="switch-row" data-switch-row="new" data-state="serving">
+          <span class="switch-wire"><span class="switch-probe"></span></span>
+          <span class="switch-box">{NEW_RELEASE}</span>
+          <span class="switch-state">
+            <span class="switch-state-text">{COPY["serving"]?.[0]}</span>
+            <span class="switch-state-note">{COPY["serving"]?.[1]}</span>
+            <span class="switch-meter"></span>
+          </span>
+        </div>
+      </div>
+      <p class="switch-current"><code>current → releases/<span data-switch-current>{NEW_RELEASE}</span></code></p>
+    </div>
+  </div>
+
+  <figcaption class="figure-note run-caption">
+    One <code>tako deploy</code> to three servers, sped up.
+  </figcaption>
+</figure>
+
+<script>
+  // The finished deploy is the static state. With motion allowed, the timeline loops while it is on
+  // screen and stops when it scrolls away; reduced motion keeps the finished deploy.
+  const root = document.querySelector<HTMLElement>("[data-deploy-run]");
+  if (root) setUpDeployRun(root);
+
+  function setUpDeployRun(root: HTMLElement) {
+    const axis = Number(root.dataset["axis"]);
+    const end = Number(root.dataset["end"]);
+    const clamp01 = (value: number) => Math.min(1, Math.max(0, value));
+    const setText = (element: Element | null | undefined, text: string) => {
+      if (element && element.textContent !== text) element.textContent = text;
+    };
+
+    const statuses = [...root.querySelectorAll<HTMLElement>("[data-lane-status]")];
+    const lanes = [...root.querySelectorAll<HTMLElement>("[data-lane-track]")].map((track, index) => ({
+      status: statuses[index],
+      done: track.dataset["done"] ?? "",
+      segments: [...track.querySelectorAll<HTMLElement>("[data-seg]")].map((element) => ({
+        element,
+        from: Number(element.dataset["from"]),
+        to: Number(element.dataset["to"]),
+        status: element.dataset["status"] ?? "",
+      })),
+    }));
+    const steps = [...root.querySelectorAll<HTMLElement>("[data-step]")].map((element) => ({
+      element,
+      from: Number(element.dataset["from"]),
+      to: Number(element.dataset["to"]),
+    }));
+
+    const switchPanel = root.querySelector<HTMLElement>("[data-switch]");
+    const oldRow = root.querySelector<HTMLElement>('[data-switch-row="old"]');
+    const newRow = root.querySelector<HTMLElement>('[data-switch-row="new"]');
+    const current = root.querySelector<HTMLElement>("[data-switch-current]");
+    const copy = JSON.parse(switchPanel?.dataset["copy"] ?? "{}") as Record<string, [string, string]>;
+
+    function setRow(row: HTMLElement | null, state: string, meter: number) {
+      if (!row) return;
+      row.dataset["state"] = state;
+      row.style.setProperty("--m", clamp01(meter).toFixed(3));
+      const [label, note] = copy[state] ?? ["", ""];
+      setText(row.querySelector(".switch-state-text"), label);
+      setText(row.querySelector(".switch-state-note"), note);
+    }
+
+    function renderSwitch(t: number) {
+      if (!switchPanel) return;
+      const at = (key: string) => Number(switchPanel.dataset[key]);
+      const next =
+        t < at("starting") ? "idle" : t < at("healthy") ? "starting" : t < at("stable") ? "healthy" : t < at("route") ? "stable" : "serving";
+      const previous = t < at("route") ? "serving" : t < at("stopped") ? "draining" : "stopped";
+      setRow(oldRow, previous, previous === "draining" ? (t - at("route")) / (at("stopped") - at("route")) : 0);
+      setRow(newRow, next, next === "stable" ? (t - at("stable")) / (at("route") - at("stable")) : 0);
+      setText(current, t < at("current") ? switchPanel.dataset["old"] ?? "" : switchPanel.dataset["new"] ?? "");
+    }
+
+    function render(t: number) {
+      root.style.setProperty("--t", clamp01(t / axis).toFixed(4));
+      for (const lane of lanes) {
+        let status = "queued";
+        for (const segment of lane.segments) {
+          const progress = clamp01((t - segment.from) / (segment.to - segment.from));
+          segment.element.style.setProperty("--p", progress.toFixed(3));
+          segment.element.dataset["phase"] = progress >= 1 ? "done" : progress > 0 ? "active" : "pending";
+          if (t >= segment.from && t < segment.to) status = segment.status;
+        }
+        const last = lane.segments.at(-1);
+        if (last && t >= last.to) status = lane.done;
+        setText(lane.status, status);
+      }
+      for (const step of steps) {
+        step.element.dataset["phase"] = t < step.from ? "next" : t < step.to ? "now" : "done";
+      }
+      renderSwitch(t);
+    }
+
+    // Loop while on screen: play through, hold the finished deploy, then start again.
+    const HOLD = 3;
+    let frame = 0;
+    let started = 0;
+    function tick(now: number) {
+      const t = (now - started) / 1000;
+      render(Math.min(t, end));
+      root.classList.toggle("is-playing", t < end);
+      if (t >= end + HOLD) started = now;
+      frame = requestAnimationFrame(tick);
+    }
+
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+
+    render(0);
+    const gantt = root.querySelector("[data-run-gantt]") ?? root;
+    new IntersectionObserver(
+      (entries) => {
+        cancelAnimationFrame(frame);
+        if (!entries.some((entry) => entry.isIntersecting)) return;
+        started = performance.now();
+        frame = requestAnimationFrame(tick);
+      },
+      { threshold: 0.4 },
+    ).observe(gantt);
+  }
+</script>
+
+<style>
+  .deploy-run {
+    --run-ground: var(--paper);
+    --pad: 20px;
+    --host-w: 13rem;
+    --col-gap: 20px;
+    min-width: 0;
+    margin: clamp(48px, 6vw, 88px) 0 0;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--run-ground);
+  }
+
+  /* On the raised ink the panel drops to the deep ground so it still reads as a panel */
+  :global(.band-raised) .deploy-run {
+    --run-ground: var(--bg);
+  }
+
+  .run-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px 20px;
+    padding: 12px var(--pad);
+    border-bottom: 1px solid var(--line);
+  }
+
+  .run-cmd {
+    color: var(--ink);
+    font-size: 15px;
+    font-weight: 600;
+  }
+
+  .run-cmd .prompt {
+    color: var(--primary);
+  }
+
+  .run-summary {
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  /* The timeline: one row per machine, bars placed on a shared clock */
+  .run-gantt {
+    position: relative;
+    display: grid;
+    grid-template-columns: var(--host-w) minmax(0, 1fr);
+    grid-auto-rows: minmax(52px, auto);
+    gap: 6px var(--col-gap);
+    padding: 22px var(--pad);
+  }
+
+  .run-host {
+    display: grid;
+    align-content: center;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .run-host-name {
+    color: var(--ink);
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  .run-host-detail {
+    margin-left: 8px;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 400;
+  }
+
+  .run-host-status {
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .run-track {
+    position: relative;
+  }
+
+  .run-track::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    right: 0;
+    left: 0;
+    height: 1px;
+    background: var(--line);
+  }
+
+  .run-seg {
+    --c: var(--muted);
+    --fill: color-mix(in srgb, var(--c) 30%, transparent);
+    position: absolute;
+    top: 50%;
+    left: calc(var(--from) * 100%);
+    display: flex;
+    align-items: center;
+    width: calc((var(--to) - var(--from)) * 100% - 4px);
+    height: 30px;
+    padding: 0 6px;
+    overflow: hidden;
+    border: 1px solid color-mix(in srgb, var(--c) 70%, transparent);
+    border-radius: 2px;
+    background:
+      linear-gradient(var(--fill), var(--fill)) left / calc(var(--p, 1) * 100%) 100% no-repeat,
+      var(--run-ground);
+    color: var(--ink);
+    font-size: 12px;
+    white-space: nowrap;
+    translate: 0 -50%;
+  }
+
+  .run-seg[data-phase="pending"] {
+    border-style: dashed;
+    border-color: var(--line-strong);
+    color: var(--muted);
+  }
+
+  .run-seg.is-build {
+    --c: var(--ink);
+  }
+
+  .run-seg.is-release {
+    --c: var(--gold);
+  }
+
+  .run-seg.is-start {
+    --c: var(--primary);
+  }
+
+  .run-seg.is-finalize {
+    --c: var(--secondary);
+  }
+
+  /* Followers wait on the leader's release command: hatched, not filled */
+  .run-seg.is-wait {
+    border-style: dashed;
+    border-color: var(--line-strong);
+    background:
+      repeating-linear-gradient(135deg, var(--line-strong) 0 1px, transparent 1px 7px) left / calc(var(--p, 1) * 100%) 100% no-repeat,
+      var(--run-ground);
+    color: var(--muted);
+  }
+
+  .run-playhead {
+    position: absolute;
+    top: 14px;
+    bottom: 14px;
+    left: calc(var(--pad) + var(--host-w) + var(--col-gap) + var(--t, 1) * (100% - 2 * var(--pad) - var(--host-w) - var(--col-gap)));
+    width: 1px;
+    background: var(--primary);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.3s;
+  }
+
+  .deploy-run.is-playing .run-playhead {
+    opacity: 1;
+  }
+
+  /* Below the timeline: the steps in words, and a close-up of the traffic switch */
+  .run-detail {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
+    border-top: 1px solid var(--line);
+  }
+
+  .run-story {
+    padding: 24px var(--pad);
+  }
+
+  .run-steps {
+    display: grid;
+    gap: 10px;
+    list-style: none;
+    counter-reset: run-step;
+  }
+
+  .run-step {
+    display: grid;
+    grid-template-columns: 3ch minmax(0, 1fr);
+    gap: 8px;
+    color: var(--ink);
+    font-size: 14px;
+    line-height: 1.5;
+    counter-increment: run-step;
+    transition: color 0.3s;
+  }
+
+  .run-step::before {
+    content: counter(run-step, decimal-leading-zero);
+    color: var(--muted);
+    transition: color 0.3s;
+  }
+
+  .run-step[data-phase="next"] {
+    color: var(--muted);
+  }
+
+  .run-step[data-phase="now"]::before {
+    color: var(--primary);
+  }
+
+  .run-note {
+    margin-top: 16px;
+    padding-left: calc(3ch + 8px);
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  .run-switch {
+    padding: 24px var(--pad);
+    border-left: 1px solid var(--line);
+  }
+
+  .switch-title {
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  .switch-title code {
+    color: var(--ink);
+  }
+
+  .switch-diagram {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 18px 0;
+    margin-top: 20px;
+  }
+
+  /* tako-server as a bus bar: its label, then one upright rule the wires branch from */
+  .switch-proxy {
+    position: relative;
+    grid-row: 1 / 3;
+    display: grid;
+    align-content: center;
+    padding-right: 14px;
+    color: var(--ink);
+    font-size: 13px;
+  }
+
+  .switch-proxy::after {
+    content: "";
+    position: absolute;
+    top: 4px;
+    right: 0;
+    bottom: 4px;
+    width: 2px;
+    background: var(--line-strong);
+  }
+
+  .switch-row {
+    --wire: var(--line-strong);
+    display: grid;
+    grid-template-columns: minmax(28px, 1fr) auto minmax(11rem, 1.6fr);
+    align-items: center;
+  }
+
+  .switch-wire {
+    position: relative;
+    height: 2px;
+    background: repeating-linear-gradient(90deg, var(--wire) 0 4px, transparent 4px 8px);
+  }
+
+  .switch-probe {
+    position: absolute;
+    top: -2px;
+    left: 0;
+    display: none;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--secondary);
+  }
+
+  .switch-box {
+    padding: 8px 12px;
+    border: 1px dashed var(--line-strong);
+    border-radius: var(--radius);
+    color: var(--muted);
+    font-size: 13px;
+    transition:
+      border-color 0.3s,
+      color 0.3s;
+  }
+
+  .switch-state {
+    display: grid;
+    gap: 2px;
+    padding-left: 14px;
+  }
+
+  .switch-state-text {
+    color: var(--ink);
+    font-size: 13px;
+  }
+
+  .switch-state-note {
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .switch-meter {
+    height: 2px;
+    margin-top: 4px;
+    background: var(--line);
+    visibility: hidden;
+  }
+
+  .switch-meter::before {
+    content: "";
+    display: block;
+    width: calc(var(--m, 0) * 100%);
+    height: 100%;
+    background: var(--meter, var(--ink));
+  }
+
+  .switch-row[data-state="idle"],
+  .switch-row[data-state="stopped"] {
+    --wire: var(--line);
+  }
+
+  .switch-row[data-state="stopped"] .switch-box {
+    border-color: var(--line);
+  }
+
+  .switch-row[data-state="starting"] .switch-box {
+    border-style: solid;
+    color: var(--ink);
+  }
+
+  .switch-row[data-state="healthy"],
+  .switch-row[data-state="stable"] {
+    --meter: var(--secondary);
+  }
+
+  .switch-row[data-state="healthy"] .switch-box,
+  .switch-row[data-state="stable"] .switch-box {
+    border-style: solid;
+    border-color: var(--secondary);
+    color: var(--ink);
+  }
+
+  .switch-row[data-state="healthy"] .switch-state-text,
+  .switch-row[data-state="stable"] .switch-state-text {
+    color: var(--secondary);
+  }
+
+  .switch-row[data-state="stable"] .switch-meter,
+  .switch-row[data-state="draining"] .switch-meter {
+    visibility: visible;
+  }
+
+  .switch-row[data-state="serving"] .switch-wire {
+    background: repeating-linear-gradient(90deg, var(--primary) 0 8px, transparent 8px 12px);
+  }
+
+  .switch-row[data-state="serving"] .switch-box {
+    border-style: solid;
+    border-color: var(--primary);
+    color: var(--ink);
+  }
+
+  .switch-row[data-state="serving"] .switch-state-text {
+    color: var(--primary);
+  }
+
+  .switch-row[data-state="draining"] {
+    --wire: color-mix(in srgb, var(--primary) 55%, transparent);
+    --meter: var(--primary);
+  }
+
+  .switch-row[data-state="draining"] .switch-box {
+    border-style: solid;
+    border-color: color-mix(in srgb, var(--primary) 55%, transparent);
+    color: var(--ink);
+  }
+
+  /* Motion only while the playback runs: requests flow down the live wire, probes down the new one */
+  .deploy-run.is-playing .switch-row[data-state="serving"] .switch-wire {
+    animation: switch-flow 0.6s linear infinite;
+  }
+
+  .deploy-run.is-playing .switch-row[data-state="healthy"] .switch-probe,
+  .deploy-run.is-playing .switch-row[data-state="stable"] .switch-probe {
+    display: block;
+    animation: switch-probe 0.9s ease-in infinite;
+  }
+
+  @keyframes switch-flow {
+    to {
+      background-position: 12px 0;
+    }
+  }
+
+  @keyframes switch-probe {
+    from {
+      left: 0;
+      opacity: 1;
+    }
+
+    to {
+      left: calc(100% - 6px);
+      opacity: 0.4;
+    }
+  }
+
+  .switch-current {
+    margin-top: 20px;
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  .switch-current code {
+    color: var(--ink);
+  }
+
+  .run-caption {
+    margin: 0;
+    padding: 12px var(--pad);
+    border-top: 1px solid var(--line);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .deploy-run.is-playing .switch-row .switch-wire {
+      animation: none;
+    }
+
+    .deploy-run.is-playing .switch-row .switch-probe {
+      display: none;
+    }
+  }
+
+  @media (max-width: 1180px) {
+    .run-seg-label {
+      display: none;
+    }
+  }
+
+  @media (max-width: 900px) {
+    .run-detail {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    /* The close-up sits right under the timeline, so both moving parts stay on screen together. */
+    .run-switch {
+      order: -1;
+      border-bottom: 1px solid var(--line);
+      border-left: 0;
+    }
+  }
+
+  @media (max-width: 640px) {
+    .deploy-run {
+      --pad: 14px;
+      --host-w: 7.5rem;
+      --col-gap: 12px;
+    }
+
+    .run-host-detail {
+      display: block;
+      margin-left: 0;
+    }
+
+    .run-seg {
+      height: 22px;
+    }
+
+    .switch-row {
+      grid-template-columns: minmax(16px, 1fr) auto minmax(0, 1.8fr);
+    }
+
+    .switch-proxy {
+      padding-right: 10px;
+      font-size: 12px;
+    }
+
+    .switch-box {
+      padding: 6px 8px;
+      font-size: 12px;
+    }
+
+    .switch-state {
+      padding-left: 10px;
+    }
+  }
+</style>

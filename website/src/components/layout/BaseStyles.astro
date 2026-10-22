@@ -3,53 +3,177 @@
 				scroll-behavior: smooth;
 			}
 			:root {
-				--bg: oklch(94.2% 0.018 72);
-				--paper: oklch(96.4% 0.014 72);
-				--panel: color-mix(in oklch, var(--paper) 78%, var(--bg));
-				--panel-strong: color-mix(
-					in oklch,
-					var(--paper) 90%,
-					var(--bg)
-				);
-				--panel-glass: color-mix(
-					in srgb,
-					var(--paper) 78%,
-					transparent
-				);
-				--ink: #2f2a44;
+				/* Dark ground in the brand ink; --ink is the text colour. */
+				--bg: #1f1b2b;
+				--paper: #2f2a44;
+				--panel: #2f2a44;
+				--panel-strong: #2f2a44;
+				--zebra: rgba(239, 235, 230, 0.035);
+				--ink: #efebe6;
+				--on-primary: #1f1b2b;
 				--primary: #e88783;
-				--primary-text: #c4605c;
+				--primary-text: #e88783;
 				--secondary: #9bc4b6;
 				--gold: #d6a63e;
-				--line: rgba(47, 42, 68, 0.16);
-				--muted: rgba(47, 42, 68, 0.74);
+				--line: rgba(239, 235, 230, 0.14);
+				--line-strong: rgba(239, 235, 230, 0.32);
+				--muted: #b8b2c2;
 				--accent: var(--primary-text);
-				--accent-soft: rgba(232, 135, 131, 0.2);
-				--primary-soft: rgba(232, 135, 131, 0.2);
-				--primary-soft-border: rgba(232, 135, 131, 0.4);
-				--primary-soft-hover: rgba(232, 135, 131, 0.32);
-				--primary-soft-hover-border: rgba(232, 135, 131, 0.55);
-				--primary-shadow: rgba(196, 96, 92, 0.22);
-				--primary-shadow-lg: rgba(196, 96, 92, 0.28);
-				--mint-soft: rgba(155, 196, 182, 0.3);
-				--code-bg: #eff1f5;
-				--code-text: #4c4f69;
-				--code-line: #dce0e8;
-				--site-width: min(1080px, 92vw);
-				--panel-radius: 30px;
-				--font-sans: "Nunito", "Segoe UI", sans-serif;
-				--font-heading: "Poppins", "Nunito", sans-serif;
+				--code-bg: #2f2a44;
+				--code-text: #efebe6;
+				--code-line: rgba(239, 235, 230, 0.12);
+				--site-width: min(1100px, calc(100vw - 32px));
+				/* Side gutter for full-width bands: the header, the footer and full-bleed pages. */
+				--gutter: clamp(20px, 5vw, 80px);
+				--panel-radius: 3px;
+				--radius: 3px;
+				--font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+				--font-sans: var(--font-mono);
+				--font-heading: var(--font-mono);
+				color-scheme: dark;
+				accent-color: var(--primary);
+				scrollbar-color: rgba(239, 235, 230, 0.28) transparent;
 			}
 
-			@media (prefers-reduced-motion: no-preference) {
-				@view-transition {
-					navigation: auto;
-				}
-			}
 
 			::selection {
-				background: rgba(232, 135, 131, 0.3);
+				background: var(--primary);
+				color: var(--on-primary);
+			}
+
+			body {
+				caret-color: var(--primary);
+				font-size: 15px;
+				line-height: 1.65;
+			}
+
+			a {
+				color: inherit;
+				text-decoration: none;
+			}
+
+			/*
+			 * Marks: the site marks things up like an annotated document. A link sits on a low,
+			 * translucent stroke in its band's accent (coral outside the home bands) that rises to a
+			 * full highlight on hover. The primary button is the fully marked state, and text
+			 * selection uses the same coral. Copy buttons mark in neutral ink.
+			 */
+			a:not([class]),
+			.nav-links a,
+			.mobile-menu a,
+			.footer-col a,
+			.mark,
+			.action,
+			.copy-button {
+				--mark-color: color-mix(in srgb, var(--band-accent, var(--primary)) 45%, transparent);
+				background-image: linear-gradient(var(--mark-color), var(--mark-color));
+				background-position: left bottom;
+				background-repeat: no-repeat;
+				background-size: 100% var(--mark-rest, 0.3em);
+				box-decoration-break: clone;
+				-webkit-box-decoration-break: clone;
+				transition: background-size 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+			}
+
+			a:not([class]):hover,
+			.nav-links a:hover,
+			.mobile-menu a:hover,
+			.footer-col a:hover,
+			.mark:hover,
+			.action:hover,
+			.copy-button:hover {
+				background-size: 100% 100%;
+			}
+
+			/* Links stand out from muted text, and stay legible on their full hover highlight. */
+			a:not([class]) {
 				color: var(--ink);
+			}
+
+			/* Padded controls keep the mark on their text, not on the whole hit area. */
+			.nav-links a,
+			.mobile-menu a,
+			.action,
+			.copy-button {
+				background-origin: content-box;
+				background-clip: content-box;
+			}
+
+			:focus-visible {
+				outline: 2px solid var(--primary);
+				outline-offset: 3px;
+			}
+
+			/* The one solid action: coral, ink label, a small press */
+			.button {
+				display: inline-flex;
+				align-items: center;
+				justify-content: center;
+				gap: 8px;
+				height: 44px;
+				padding: 0 20px;
+				border: 0;
+				border-radius: var(--radius);
+				background: var(--primary);
+				color: var(--on-primary);
+				cursor: pointer;
+				font: 700 14px/1 var(--font-mono);
+				transition:
+					background-color 0.15s,
+					translate 0.1s;
+			}
+
+			.button:hover {
+				background: color-mix(in srgb, var(--primary) 82%, var(--ink));
+			}
+
+			.button:active {
+				translate: 0 1px;
+			}
+
+			.button-icon {
+				width: 0.9em;
+				height: 0.9em;
+				stroke-width: 2;
+			}
+
+			/* Secondary actions are marked text with a 44px hit area */
+			.action {
+				display: inline-flex;
+				align-items: center;
+				gap: 6px;
+				padding: 15px 2px;
+				color: var(--ink);
+				font: 600 14px/1 var(--font-mono);
+			}
+
+			/* Quiet controls: small labels on a neutral mark */
+			.copy-button {
+				--mark-color: color-mix(in srgb, var(--ink) 22%, transparent);
+				display: inline-flex;
+				flex: 0 0 auto;
+				align-items: center;
+				justify-content: center;
+				padding: 11px 8px;
+				border: 0;
+				background-color: transparent;
+				color: var(--ink);
+				cursor: pointer;
+				font: 500 13px/1 var(--font-mono);
+			}
+
+			.copy-button.is-copied {
+				color: var(--secondary);
+			}
+
+			@media (prefers-reduced-motion: reduce) {
+				a,
+				.mark,
+				.action,
+					.copy-button,
+				.button {
+					transition: none;
+				}
 			}
 
 			* {
@@ -103,37 +227,37 @@
 				margin: 0 auto;
 			}
 
+			.frame {
+				width: calc(100% - 2 * var(--gutter));
+				margin: 0 auto;
+			}
+
+			.full-bleed {
+				width: 100%;
+			}
+
 			.header {
 				position: sticky;
 				top: 0;
 				z-index: 100;
-				padding: 14px 0;
+				background: var(--bg);
+				box-shadow: 0 1px 0 transparent;
 			}
 
-			.header > .container {
+			.header.is-scrolled {
+				box-shadow: 0 1px 0 var(--line);
+			}
+
+			.header > .frame {
 				position: relative;
 			}
 
 			.header-inner {
-				padding: 11px 14px;
-				border: 2px solid transparent;
-				border-radius: var(--panel-radius);
-				background: transparent;
+				padding: 16px 0;
 				display: flex;
 				align-items: center;
 				justify-content: space-between;
 				gap: 16px;
-				transition:
-					background 180ms ease,
-					border-color 180ms ease,
-					backdrop-filter 180ms ease;
-			}
-
-			.header.is-scrolled .header-inner {
-				background: var(--panel-glass);
-				border-color: var(--line);
-				backdrop-filter: blur(8px);
-				-webkit-backdrop-filter: blur(8px);
 			}
 
 			.header-sentinel {
@@ -151,21 +275,19 @@
 				gap: 10px;
 				color: var(--ink);
 				text-decoration: none;
-				font-family: "Nunito", sans-serif;
-				font-size: 22px;
-				font-weight: 600;
+				font-family: var(--font-sans);
+				font-size: 16px;
+				font-weight: 700;
 				line-height: 1;
 			}
 
 			#logo-text {
 				display: inline-block;
-				width: 52px;
-				font-size: 19px;
 			}
 
 			.logo img {
-				width: 30px;
-				height: 30px;
+				width: 26px;
+				height: 26px;
 			}
 
 			.nav-links {
@@ -180,39 +302,19 @@
 				text-decoration: none;
 				color: var(--ink);
 				padding: 7px 8px;
-				font-family: "Nunito", sans-serif;
-				font-size: 16px;
-				font-weight: 600;
+				font-family: var(--font-sans);
+				font-size: 14px;
+				font-weight: 500;
 				line-height: 1;
-				transition: color 0.15s;
 			}
 
-			.nav-links a:hover {
-				color: var(--accent);
+			/* Nav and footer links carry no mark until hover */
+			.nav-links a,
+			.mobile-menu a,
+			.footer-col a {
+				--mark-rest: 0;
 			}
 
-			.nav-links a:not(.github-star) {
-				text-decoration: underline;
-				text-decoration-color: transparent;
-				transition:
-					color 0.15s,
-					text-decoration-color 180ms ease;
-			}
-
-			.nav-links a:not(.github-star):hover {
-				text-decoration-color: currentColor;
-			}
-
-			.header.is-scrolled .nav-links a:not(.github-star):hover {
-				text-decoration-color: transparent;
-			}
-
-			.nav-links a:focus-visible,
-			.mobile-menu a:focus-visible,
-			.hamburger:focus-visible {
-				outline: 2px solid var(--primary);
-				outline-offset: 2px;
-			}
 
 			.x-link {
 				display: inline-flex;
@@ -236,38 +338,20 @@
 			.github-star {
 				display: inline-flex;
 				align-items: center;
-				gap: 7px;
-				padding: 7px 14px;
-				border: 1px solid rgba(214, 166, 62, 0.88);
-				border-radius: 999px;
-				background: rgba(255, 224, 149, 0.24);
-				color: #6f4d16;
-				box-shadow: inset 0 0 0 1px rgba(255, 245, 210, 0.45);
+				gap: 6px;
 			}
 
 			.github-star .star-icon {
-				width: 0.9em;
-				height: 0.9em;
+				width: 0.95em;
+				height: 0.95em;
 			}
 
 			.github-star .star-icon path {
-				fill: rgba(255, 214, 120, 0.22);
-				stroke: currentColor;
-				stroke-width: 2;
+				fill: var(--gold);
+				stroke: var(--gold);
+				stroke-width: 1.5;
 				stroke-linecap: round;
 				stroke-linejoin: round;
-			}
-
-			.nav-links a.github-star:hover {
-				transform: translateY(-1px);
-				border-color: rgba(214, 166, 62, 1);
-				background: rgba(255, 214, 120, 0.36);
-				color: #5d3f0c;
-				box-shadow: 0 2px 12px rgba(232, 185, 74, 0.34);
-			}
-
-			.nav-links a.github-star:hover .star-icon path {
-				fill: rgba(255, 214, 120, 0.48);
 			}
 
 			.demo-link {
@@ -299,7 +383,7 @@
 				padding-top: 32px;
 			}
 
-			.site-footer > .container {
+			.site-footer > .frame {
 				position: relative;
 			}
 
@@ -310,7 +394,7 @@
 				grid-template-columns: repeat(4, auto);
 				justify-content: space-between;
 				gap: 28px 24px;
-				padding: 28px 14px 20px;
+				padding: 28px 0 20px;
 			}
 
 			.footer-col {
@@ -320,36 +404,22 @@
 			}
 
 			.footer-col-title {
-				font-family: "Nunito", sans-serif;
-				font-size: 12px;
+				font-family: var(--font-sans);
+				font-size: 14px;
 				font-weight: 700;
-				text-transform: uppercase;
-				letter-spacing: 0.08em;
 				color: var(--ink);
-				opacity: 0.7;
-				margin-bottom: 6px;
+				margin-bottom: 4px;
 			}
 
 			.footer-col a {
-				text-decoration: underline;
-				text-decoration-color: transparent;
 				color: var(--muted);
-				font-family: "Nunito", sans-serif;
+				font-family: var(--font-sans);
 				font-size: 14px;
-				font-weight: 500;
-				transition:
-					color 0.15s,
-					text-decoration-color 180ms ease;
+				font-weight: 400;
 			}
 
 			.footer-col a:hover {
 				color: var(--ink);
-				text-decoration-color: currentColor;
-			}
-
-			.footer-col a:focus-visible {
-				outline: 2px solid var(--primary);
-				outline-offset: 2px;
 			}
 
 			.footer-note {
@@ -366,7 +436,7 @@
 				color: var(--muted);
 				padding: 18px 0 0;
 				border-top: 1px solid var(--line);
-				margin: 0 14px;
+				margin: 0;
 				text-align: center;
 				font-family: var(--font-sans);
 				line-height: 1.35;
@@ -398,7 +468,7 @@
 				bottom: 0;
 				z-index: 1;
 				width: clamp(420px, 42vw, 560px);
-				aspect-ratio: 520 / 285;
+				aspect-ratio: 1200 / 659;
 				display: block;
 				pointer-events: none;
 				opacity: var(--footer-story-opacity, 1);
@@ -442,18 +512,6 @@
 
 			.site-footer.is-footer-story-visible .footer-story-layer {
 				--footer-layer-y: 0px;
-				animation: footer-story-tide 3.8s cubic-bezier(0.45, 0, 0.55, 1)
-					1200ms infinite alternate;
-			}
-
-			@keyframes footer-story-tide {
-				from {
-					transform: translateY(0);
-				}
-
-				to {
-					transform: translateY(12px);
-				}
 			}
 
 			@media (prefers-reduced-motion: reduce) {
@@ -518,22 +576,14 @@
 				height: 44px;
 				padding: 8px;
 				border: 1px solid transparent;
-				border-radius: 999px;
+				border-radius: var(--radius);
 				background: transparent;
 				cursor: pointer;
 				-webkit-tap-highlight-color: transparent;
-				transition:
-					background 180ms ease,
-					border-color 180ms ease;
 			}
 
-			.header.is-scrolled .hamburger {
-				background: var(--panel-glass);
+			.hamburger:hover {
 				border-color: var(--line);
-			}
-
-			.header.is-scrolled .hamburger:hover {
-				background: rgba(232, 135, 131, 0.18);
 			}
 
 			.hamburger-line {
@@ -542,9 +592,6 @@
 				height: 2px;
 				background: var(--ink);
 				border-radius: 1px;
-				transition:
-					transform 0.3s cubic-bezier(0.4, 0, 0.2, 1),
-					opacity 0.2s ease;
 				transform-origin: center;
 			}
 
@@ -570,56 +617,30 @@
 				flex-direction: column;
 				gap: 2px;
 				padding: 8px;
-				border: 2px solid var(--line);
-				border-radius: 20px;
-				background: color-mix(
-					in srgb,
-					var(--panel-strong) 94%,
-					transparent
-				);
-				backdrop-filter: blur(8px);
+				border: 1px solid var(--line);
+				border-radius: var(--radius);
+				background: var(--bg);
 				overflow: hidden;
-				opacity: 0;
-				pointer-events: none;
-				transform: translateY(-6px) scaleY(0.96);
-				transform-origin: top center;
-				transition:
-					opacity 180ms cubic-bezier(0.23, 1, 0.32, 1),
-					transform 200ms cubic-bezier(0.23, 1, 0.32, 1),
-					border-color 180ms cubic-bezier(0.23, 1, 0.32, 1);
+				visibility: hidden;
 			}
 
 			.mobile-menu.is-open {
-				opacity: 1;
-				pointer-events: auto;
-				transform: translateY(0) scaleY(1);
-			}
-
-			@media (prefers-reduced-motion: reduce) {
-				.mobile-menu {
-					transition: none;
-					transform: none;
-				}
+				visibility: visible;
 			}
 
 			.mobile-menu a {
 				text-decoration: none;
 				color: var(--ink);
-				font-family: "Nunito", sans-serif;
-				font-size: 16px;
-				font-weight: 600;
+				font-family: var(--font-sans);
+				font-size: 15px;
+				font-weight: 500;
 				padding: 10px 14px;
-				border-radius: 14px;
 			}
 
-			.mobile-menu a:hover,
-			.mobile-menu a:active {
-				background: rgba(232, 135, 131, 0.12);
-			}
 
 			@media (max-width: 640px) {
 				.header-inner {
-					padding: 10px;
+					padding: 10px 0;
 				}
 
 				.desktop-nav {

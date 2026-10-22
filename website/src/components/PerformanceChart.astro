@@ -51,7 +51,6 @@ const formatValue = (value: number, unit: ChartUnit): string => {
 
 <figure class="chart-panel">
   <div class="chart-copy">
-    <p class="chart-eyebrow">{chart.eyebrow}</p>
     <h3>{chart.title}</h3>
     <p>{chart.description}</p>
   </div>
@@ -61,7 +60,7 @@ const formatValue = (value: number, unit: ChartUnit): string => {
       role="img"
       aria-label={`${chart.title}. ${chart.description}`}
     >
-      <rect class="chart-bg" x="0" y="0" width={chartBox.width} height={chartBox.height} rx="8"></rect>
+      <rect class="chart-bg" x="0" y="0" width={chartBox.width} height={chartBox.height} rx="3"></rect>
       {
         chart.ticks.map((tick) => (
           <g>
@@ -93,6 +92,7 @@ const formatValue = (value: number, unit: ChartUnit): string => {
               class:list={["chart-line", series.id === "tako" && "chart-line-tako"]}
               points={linePoints(series.points, chart.key, chart.max)}
               stroke={series.color}
+              stroke-dasharray={series.dash ? "6 5" : undefined}
             />
             {
               series.points.map((point) => (
@@ -116,7 +116,7 @@ const formatValue = (value: number, unit: ChartUnit): string => {
     {
       chart.series.map((series) => (
         <li>
-          <span style={`--legend-color:${series.color}`}></span>
+          <span class:list={["legend-swatch", series.dash && "legend-swatch-dash"]} style={`--legend-color:${series.color}`}></span>
           {series.label}
         </li>
       ))
@@ -128,9 +128,9 @@ const formatValue = (value: number, unit: ChartUnit): string => {
   .chart-panel {
     min-width: 0;
     margin: 0;
-    border: 1.5px solid rgba(47, 42, 68, 0.15);
-    border-radius: 8px;
-    background: var(--panel-strong);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--paper);
     overflow: hidden;
   }
 
@@ -138,26 +138,21 @@ const formatValue = (value: number, unit: ChartUnit): string => {
     padding: 20px 20px 12px;
   }
 
-  .chart-eyebrow {
-    font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--primary-text);
-  }
-
   .chart-copy h3 {
-    margin-top: 6px;
-    font-size: 22px;
-    line-height: 1.14;
+    font-size: 18px;
+    font-weight: 700;
+    line-height: 1.25;
     letter-spacing: 0;
+    text-wrap: balance;
   }
 
-  .chart-copy p:not(.chart-eyebrow) {
+  .chart-copy p {
+    max-width: 72ch;
     margin-top: 8px;
     color: var(--muted);
-    line-height: 1.42;
+    font-size: 14px;
+    line-height: 1.5;
+    text-wrap: pretty;
   }
 
   .chart-scroll {
@@ -175,46 +170,41 @@ const formatValue = (value: number, unit: ChartUnit): string => {
   }
 
   .chart-bg {
-    fill: color-mix(in oklch, var(--paper) 78%, var(--bg));
+    fill: var(--bg);
   }
 
   .chart-grid-line {
-    stroke: rgba(47, 42, 68, 0.11);
+    stroke: var(--line);
     stroke-width: 1;
   }
 
   .chart-axis {
-    stroke: rgba(47, 42, 68, 0.28);
-    stroke-width: 1.5;
+    stroke: var(--line-strong);
+    stroke-width: 1;
   }
 
   .chart-tick,
   .chart-x {
-    fill: rgba(47, 42, 68, 0.62);
-    font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    fill: var(--muted);
+    font-family: var(--font-mono);
     font-size: 12px;
+    font-variant-numeric: tabular-nums;
   }
 
   .chart-line {
     fill: none;
-    stroke-width: 2.3;
-    stroke-linecap: round;
+    stroke-width: 2;
     stroke-linejoin: round;
-    opacity: 0.82;
   }
 
+  /* Tako's line runs a step heavier so it reads first in every chart. */
   .chart-line-tako {
-    stroke-width: 3.6;
-    opacity: 1;
+    stroke-width: 3;
   }
 
   .chart-point {
-    stroke: var(--paper);
-    stroke-width: 1.6;
-  }
-
-  .chart-point-tako {
-    stroke-width: 2.2;
+    stroke: var(--bg);
+    stroke-width: 1.5;
   }
 
   .legend {
@@ -228,16 +218,17 @@ const formatValue = (value: number, unit: ChartUnit): string => {
   .legend li {
     display: inline-flex;
     align-items: center;
-    gap: 7px;
+    gap: 8px;
     color: var(--muted);
     font-size: 13px;
-    font-weight: 700;
   }
 
-  .legend span {
-    width: 12px;
-    height: 12px;
-    border-radius: 999px;
-    background: var(--legend-color);
+  .legend-swatch {
+    width: 18px;
+    border-top: 2px solid var(--legend-color);
+  }
+
+  .legend-swatch-dash {
+    border-top-style: dashed;
   }
 </style>

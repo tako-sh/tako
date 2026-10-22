@@ -1,8 +1,9 @@
 ---
 import { Image } from "astro:assets";
+import footerNight from "../../assets/brand/footer-night.png";
 ---
 <footer class="site-footer">
-					<div class="container">
+					<div class="frame">
 						<div class="footer-columns">
 							<div class="footer-col">
 								<h3 class="footer-col-title">Docs</h3>
@@ -60,10 +61,10 @@ import { Image } from "astro:assets";
 							<span class="footer-note-mark">built in Japan</span>
 							<div class="footer-story" aria-hidden="true">
 								<Image
-									src="/assets/footer.png"
-									alt="Kanagawa tako.sh"
-									width={520}
-									height={285}
+									src={footerNight}
+									alt=""
+									widths={[560, 840, 1120]}
+									sizes="(max-width: 640px) 420px, 560px"
 									class="footer-story-layer"
 									loading="lazy"
 									decoding="async"

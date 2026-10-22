@@ -22,17 +22,16 @@ const metricClasses = (metric: SummaryMetric) => ["metric-cell", !metric.clean &
 >
   <section class="perf-hero" aria-labelledby="performance-title">
     <div class="perf-hero-copy">
-      <p class="perf-kicker">Latest public benchmark</p>
       <h1 id="performance-title">Serious load, measured in public.</h1>
       <p class="perf-lede">
         A single small VM pushed through heavy HTTPS concurrency with CPU, memory, latency, clean-response behavior, and raw rows published for inspection.
       </p>
       <div class="perf-actions" aria-label="Performance report links">
-        <a class="perf-button" href="https://github.com/tako-sh/performance/blob/main/RESULTS.md" target="_blank" rel="noopener noreferrer">
+        <a class="button" href="https://github.com/tako-sh/performance/blob/main/RESULTS.md" target="_blank" rel="noopener noreferrer">
           raw report
-          <HugeIcon icon={ExternalLinkIcon} class="perf-link-icon" aria-hidden="true" focusable="false" />
+          <HugeIcon icon={ExternalLinkIcon} class="button-icon" aria-hidden="true" focusable="false" />
         </a>
-        <a class="perf-link" href="#method">methodology</a>
+        <a class="action" href="#method">methodology</a>
       </div>
     </div>
   </section>
@@ -103,7 +102,6 @@ const metricClasses = (metric: SummaryMetric) => ["metric-cell", !metric.clean &
 
   <section class="chart-section" aria-labelledby="proxy-results">
     <div class="section-head">
-      <p class="section-kicker">Proxy comparison</p>
       <div class="section-title-row">
         <h2 id="proxy-results">Raw HTTPS proxy path<a class="heading-anchor" href="#proxy-results" aria-label="Link to section: Raw HTTPS proxy path" title="Link to this section">#</a></h2>
       </div>
@@ -122,10 +120,10 @@ const metricClasses = (metric: SummaryMetric) => ["metric-cell", !metric.clean &
         <thead>
           <tr>
             <th scope="col">proxy</th>
-            <th scope="col">c5000</th>
-            <th scope="col">c10000</th>
-            <th scope="col">c20000</th>
-            <th scope="col">c20000 p99</th>
+            <th scope="col" class="num">c5000</th>
+            <th scope="col" class="num">c10000</th>
+            <th scope="col" class="num">c20000</th>
+            <th scope="col" class="num">c20000 p99</th>
             <th scope="col">notes</th>
           </tr>
         </thead>
@@ -133,25 +131,25 @@ const metricClasses = (metric: SummaryMetric) => ["metric-cell", !metric.clean &
           {heavyRows.map((row) => (
             <tr>
               <th scope="row">{row.proxy}</th>
-              <td>
+              <td class="num">
                 <span class:list={metricClasses(row.c5000)}>
                   <span class="metric-value">{row.c5000.value}</span>
                   {row.c5000.detail && <span class="metric-detail">{row.c5000.detail}</span>}
                 </span>
               </td>
-              <td>
+              <td class="num">
                 <span class:list={metricClasses(row.c10000)}>
                   <span class="metric-value">{row.c10000.value}</span>
                   {row.c10000.detail && <span class="metric-detail">{row.c10000.detail}</span>}
                 </span>
               </td>
-              <td>
+              <td class="num">
                 <span class:list={metricClasses(row.c20000)}>
                   <span class="metric-value">{row.c20000.value}</span>
                   {row.c20000.detail && <span class="metric-detail">{row.c20000.detail}</span>}
                 </span>
               </td>
-              <td>
+              <td class="num">
                 <span class:list={metricClasses(row.p99)}>
                   <span class="metric-value">{row.p99.value}</span>
                   {row.p99.detail && <span class="metric-detail">{row.p99.detail}</span>}
@@ -173,20 +171,20 @@ const metricClasses = (metric: SummaryMetric) => ["metric-cell", !metric.clean &
         <thead>
           <tr>
             <th scope="col">proxy</th>
-            <th scope="col">c5000 Memory</th>
-            <th scope="col">c10000 Memory</th>
-            <th scope="col">c20000 Memory</th>
-            <th scope="col">c20000 200</th>
+            <th scope="col" class="num">c5000 Memory</th>
+            <th scope="col" class="num">c10000 Memory</th>
+            <th scope="col" class="num">c20000 Memory</th>
+            <th scope="col" class="num">c20000 200</th>
           </tr>
         </thead>
         <tbody>
           {memoryRows.map((row) => (
             <tr>
               <th scope="row">{row.proxy}</th>
-              <td>{row.c5000}</td>
-              <td>{row.c10000}</td>
-              <td>{row.c20000}</td>
-              <td>{row.c20000Detail}</td>
+              <td class="num">{row.c5000}</td>
+              <td class="num">{row.c10000}</td>
+              <td class="num">{row.c20000}</td>
+              <td class="num">{row.c20000Detail}</td>
             </tr>
           ))}
         </tbody>
@@ -196,7 +194,6 @@ const metricClasses = (metric: SummaryMetric) => ["metric-cell", !metric.clean &
 
   <section class="chart-section feature-section" aria-labelledby="feature-results">
     <div class="section-head">
-      <p class="section-kicker">Channels and workflows</p>
       <div class="section-title-row">
         <h2 id="feature-results">Built-in feature paths, measured separately<a class="heading-anchor" href="#feature-results" aria-label="Link to section: Built-in feature paths" title="Link to this section">#</a></h2>
       </div>
@@ -205,14 +202,13 @@ const metricClasses = (metric: SummaryMetric) => ["metric-cell", !metric.clean &
       </p>
     </div>
 
-    <div class="chart-grid chart-grid-feature">
+    <div class="chart-grid">
       {featureCharts.map((chartConfig) => <PerformanceChart chart={chartConfig} />)}
     </div>
   </section>
 
   <section class="explain-grid" aria-labelledby="what-it-means">
     <div>
-      <p class="section-kicker">What it means</p>
       <div class="section-title-row">
         <h2 id="what-it-means">App-aware routing under load.<a class="heading-anchor" href="#what-it-means" aria-label="Link to section: App-aware routing under load" title="Link to this section">#</a></h2>
       </div>
@@ -229,7 +225,6 @@ const metricClasses = (metric: SummaryMetric) => ["metric-cell", !metric.clean &
 
   <section class="method-section" aria-labelledby="method">
     <div class="section-head">
-      <p class="section-kicker">Method</p>
       <div class="section-title-row">
         <h2 id="method">Same conditions, public raw data.<a class="heading-anchor" href="#method" aria-label="Link to section: benchmark method" title="Link to this section">#</a></h2>
       </div>
@@ -256,15 +251,15 @@ const metricClasses = (metric: SummaryMetric) => ["metric-cell", !metric.clean &
     <div class="raw-links">
       <a href="https://github.com/tako-sh/performance/tree/main/results/20260602T052009Z/http-vm-local" target="_blank" rel="noopener noreferrer">
         HTTP raw rows
-        <HugeIcon icon={ExternalLinkIcon} class="perf-link-icon" aria-hidden="true" focusable="false" />
+        <HugeIcon icon={ExternalLinkIcon} class="button-icon" aria-hidden="true" focusable="false" />
       </a>
       <a href="https://github.com/tako-sh/performance/tree/main/results/20260604T055839Z/tako-features-vm-local" target="_blank" rel="noopener noreferrer">
         feature raw rows
-        <HugeIcon icon={ExternalLinkIcon} class="perf-link-icon" aria-hidden="true" focusable="false" />
+        <HugeIcon icon={ExternalLinkIcon} class="button-icon" aria-hidden="true" focusable="false" />
       </a>
       <a href="https://github.com/tako-sh/performance" target="_blank" rel="noopener noreferrer">
         benchmark harness
-        <HugeIcon icon={ExternalLinkIcon} class="perf-link-icon" aria-hidden="true" focusable="false" />
+        <HugeIcon icon={ExternalLinkIcon} class="button-icon" aria-hidden="true" focusable="false" />
       </a>
     </div>
   </section>
@@ -297,280 +292,166 @@ const metricClasses = (metric: SummaryMetric) => ["metric-cell", !metric.clean &
 </script>
 
 <style>
+  /*
+   * The benchmark as one long document: left-aligned headings, hairline-ruled bands and
+   * tables, and the site's single radius. Colour lives in the charts' data lines.
+   */
   .perf-hero {
-    display: flex;
-    justify-content: center;
-    padding: clamp(38px, 8vw, 82px) 0 28px;
-  }
-
-  .perf-hero-copy {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    width: min(100%, 820px);
-    max-width: 820px;
-    text-align: center;
-  }
-
-  .perf-kicker,
-  .section-kicker,
-  .chart-eyebrow,
-  .fact-label {
-    font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--primary-text);
+    padding: clamp(40px, 6vw, 80px) 0 32px;
   }
 
   .perf-hero h1 {
-    margin-top: 12px;
-    max-width: 760px;
-    font-size: clamp(42px, 7vw, 64px);
-    line-height: 1.02;
-    letter-spacing: 0;
+    max-width: 20ch;
+    font-size: clamp(40px, 5.4vw, 64px);
+    font-weight: 700;
+    line-height: 1.04;
+    letter-spacing: -0.03em;
+    text-wrap: balance;
   }
 
   .perf-lede {
-    max-width: 680px;
+    max-width: 62ch;
     margin-top: 20px;
     color: var(--muted);
-    font-size: 21px;
-    line-height: 1.36;
+    font-size: 17px;
+    line-height: 1.6;
+    text-wrap: pretty;
   }
 
-  .perf-actions,
+  .perf-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 28px;
+  }
+
   .raw-links {
     display: flex;
     flex-wrap: wrap;
-    justify-content: center;
-    gap: 10px;
-    margin-top: 26px;
-  }
-
-  .perf-button,
-  .perf-link {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 7px;
-    min-height: 44px;
-    padding: 0 18px;
-    border-radius: 999px;
-    text-decoration: none;
-    font-weight: 800;
-    transition: transform 150ms ease, border-color 150ms ease, background 150ms ease;
-  }
-
-  .perf-button {
-    border: 1.5px solid var(--primary);
-    background: var(--primary);
-    color: var(--ink);
-  }
-
-  .perf-link {
-    border: 1.5px solid rgba(47, 42, 68, 0.16);
-    background: color-mix(in oklch, var(--panel-strong) 78%, transparent);
-    color: var(--ink);
-  }
-
-  .perf-button:hover,
-  .perf-link:hover {
-    transform: translateY(-1px);
-  }
-
-  .raw-links {
-    gap: 14px 22px;
-    justify-content: flex-start;
-    margin-top: 22px;
+    gap: 12px 24px;
+    margin-top: 24px;
   }
 
   .raw-links a {
     display: inline-flex;
     align-items: center;
-    gap: 7px;
-    color: var(--ink);
-    font-weight: 800;
-    text-decoration: underline;
-    text-decoration-color: rgba(232, 135, 131, 0.58);
-    text-decoration-thickness: 2px;
-    text-underline-offset: 4px;
-    transition: color 150ms ease, text-decoration-color 150ms ease;
+    gap: 6px;
+    font-weight: 600;
   }
 
-  .raw-links a:hover {
-    color: var(--accent);
-    text-decoration-color: currentColor;
-  }
-
-  .perf-link-icon {
-    width: 0.92em;
-    height: 0.92em;
-    stroke-width: 2.5;
-  }
-
+  /* TLDR: the claim on the left, its three numbers in ruled cells on the right */
   .verdict-band {
-    --verdict-corner: 34px;
-    --verdict-corner-thickness: 3px;
-    --verdict-corner-color: color-mix(in oklch, var(--primary) 70%, var(--ink));
-    position: relative;
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: clamp(18px, 4vw, 56px);
-    margin: clamp(20px, 3vw, 34px) 0 clamp(26px, 4vw, 44px);
-    padding: clamp(16px, 2.2vw, 22px) clamp(22px, 4vw, 34px);
-  }
-
-  .verdict-band::before {
-    content: "";
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-    background:
-      linear-gradient(var(--verdict-corner-color), var(--verdict-corner-color)) top left / var(--verdict-corner) var(--verdict-corner-thickness) no-repeat,
-      linear-gradient(var(--verdict-corner-color), var(--verdict-corner-color)) top left / var(--verdict-corner-thickness) var(--verdict-corner) no-repeat,
-      linear-gradient(var(--verdict-corner-color), var(--verdict-corner-color)) top right / var(--verdict-corner) var(--verdict-corner-thickness) no-repeat,
-      linear-gradient(var(--verdict-corner-color), var(--verdict-corner-color)) top right / var(--verdict-corner-thickness) var(--verdict-corner) no-repeat,
-      linear-gradient(var(--verdict-corner-color), var(--verdict-corner-color)) bottom left / var(--verdict-corner) var(--verdict-corner-thickness) no-repeat,
-      linear-gradient(var(--verdict-corner-color), var(--verdict-corner-color)) bottom left / var(--verdict-corner-thickness) var(--verdict-corner) no-repeat,
-      linear-gradient(var(--verdict-corner-color), var(--verdict-corner-color)) bottom right / var(--verdict-corner) var(--verdict-corner-thickness) no-repeat,
-      linear-gradient(var(--verdict-corner-color), var(--verdict-corner-color)) bottom right / var(--verdict-corner-thickness) var(--verdict-corner) no-repeat;
-    opacity: 0.72;
+    margin: 8px 0 40px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
   }
 
   .verdict-band p {
-    max-width: 780px;
+    max-width: 68ch;
+    padding: 20px 24px;
     color: var(--ink);
-    font-size: clamp(18px, 2vw, 21px);
-    line-height: 1.42;
+    font-size: 16px;
+    line-height: 1.6;
     text-wrap: pretty;
-  }
-
-  .verdict-band a {
-    color: inherit;
-    font-weight: 800;
-    text-decoration: underline;
-    text-decoration-color: rgba(232, 135, 131, 0.62);
-    text-decoration-thickness: 2px;
-    text-underline-offset: 4px;
-  }
-
-  .verdict-band a:hover {
-    color: var(--accent);
-    text-decoration-color: currentColor;
   }
 
   .verdict-proof {
     display: grid;
-    justify-self: end;
-    width: min(100%, 430px);
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 18px;
+    grid-template-columns: repeat(3, auto);
     margin: 0;
   }
 
   .verdict-proof div {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
     min-width: 0;
-    text-align: center;
+    padding: 16px 24px;
+    border-left: 1px solid var(--line);
   }
 
-  .verdict-proof dt {
-    font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--primary-text);
+  .verdict-proof dt,
+  .fact-label {
+    color: var(--muted);
+    font-size: 13px;
   }
 
   .verdict-proof dd {
     margin-top: 4px;
     color: var(--ink);
-    font-family: var(--font-heading);
-    font-size: 21px;
+    font-size: 22px;
     font-weight: 700;
     line-height: 1;
+    font-variant-numeric: tabular-nums;
   }
 
   .hardware-band,
   .facts {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 0;
-    margin-top: 0;
-    border-bottom: 2px solid rgba(47, 42, 68, 0.12);
+    border-bottom: 1px solid var(--line);
+    scroll-margin-top: 110px;
   }
 
   .hardware-band {
-    background: color-mix(in oklch, var(--primary) 8%, transparent);
+    border-top: 1px solid var(--line);
   }
 
-  .hardware-band div {
-    padding: 16px 20px 17px;
-  }
-
+  .hardware-band div,
   .facts div {
-    padding: 22px 20px 24px;
+    min-width: 0;
+    padding: 20px 20px 22px;
   }
 
-  .hardware-band div + div {
-    padding-left: 20px;
-    border-left: 1px solid rgba(47, 42, 68, 0.12);
+  .hardware-band div:first-child,
+  .facts div:first-child {
+    padding-left: 0;
   }
 
-  .facts div + div {
-    padding-left: 20px;
-    border-left: 1px solid rgba(47, 42, 68, 0.12);
+  /* Same weight as the :nth-child overrides in the media queries, so those win. */
+  .hardware-band div:not(:first-child),
+  .facts div:not(:first-child) {
+    border-left: 1px solid var(--line);
   }
 
   .hardware-band strong,
   .facts strong {
     display: block;
-    margin-top: 8px;
-    font-family: var(--font-heading);
-    font-size: 22px;
-    line-height: 1.1;
+    margin-top: 6px;
+    font-size: 20px;
+    font-weight: 700;
+    line-height: 1.2;
+    font-variant-numeric: tabular-nums;
   }
 
   .hardware-band p,
   .facts p {
-    margin-top: 9px;
+    margin-top: 6px;
     color: var(--muted);
     font-size: 14px;
-    line-height: 1.38;
-  }
-
-  .hardware-band p {
-    margin-top: 7px;
+    line-height: 1.5;
   }
 
   .chart-section,
   .explain-grid,
-  .method-section,
-  .hardware-band,
-  .facts {
-    margin-top: 56px;
+  .method-section {
+    margin-top: clamp(56px, 7vw, 96px);
     scroll-margin-top: 110px;
   }
 
-  .hardware-band,
-  .facts {
-    margin-top: 0;
-  }
-
   .section-head {
-    max-width: 820px;
+    max-width: 760px;
   }
 
   .section-head h2,
   .explain-grid h2 {
-    margin-top: 8px;
-    font-size: 38px;
-    line-height: 1.08;
-    letter-spacing: 0;
+    font-size: clamp(26px, 3vw, 36px);
+    font-weight: 700;
+    line-height: 1.15;
+    letter-spacing: -0.02em;
+    text-wrap: balance;
   }
 
   .section-title-row h2[id] {
@@ -582,16 +463,12 @@ const metricClasses = (metric: SummaryMetric) => ["metric-cell", !metric.clean &
   }
 
   .section-title-row .clickable-heading:hover {
-    text-decoration: underline;
-    text-decoration-color: rgba(232, 135, 131, 0.65);
-    text-decoration-thickness: 2px;
-    text-underline-offset: 0.16em;
+    background: linear-gradient(color-mix(in srgb, var(--primary) 45%, transparent), color-mix(in srgb, var(--primary) 45%, transparent)) left bottom / 100% 0.3em no-repeat;
   }
 
   .heading-anchor {
     display: inline-block;
     margin-left: 8px;
-    font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
     font-size: 0.75em;
     line-height: 1;
     color: var(--primary);
@@ -607,81 +484,100 @@ const metricClasses = (metric: SummaryMetric) => ["metric-cell", !metric.clean &
   }
 
   .heading-anchor:focus-visible {
-    outline: 2px solid var(--primary);
     outline-offset: 3px;
   }
 
-  .section-head p:not(.section-kicker),
+  .section-head p,
   .explain-copy p {
-    margin-top: 12px;
     color: var(--muted);
-    font-size: 18px;
-    line-height: 1.52;
+    font-size: 16px;
+    line-height: 1.6;
+    text-wrap: pretty;
+  }
+
+  .section-head p {
+    margin-top: 14px;
+  }
+
+  .explain-copy p + p {
+    margin-top: 14px;
   }
 
   .chart-grid {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
-    gap: 18px;
-    margin-top: 24px;
-  }
-
-  .chart-grid-feature {
-    grid-template-columns: minmax(0, 1fr);
+    gap: 20px;
+    margin-top: 28px;
   }
 
   .table-wrap {
-    margin-top: 20px;
+    margin-top: 24px;
     overflow-x: auto;
-    border: 1.5px solid rgba(47, 42, 68, 0.14);
-    border-radius: 8px;
-    background: var(--panel-strong);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
   }
 
   .table-note {
-    margin: 0;
-    padding: 18px 18px 0;
+    max-width: 90ch;
+    padding: 16px 18px 0;
     color: var(--ink);
-    font-size: 15px;
-    line-height: 1.45;
-    max-width: 900px;
+    font-size: 14px;
+    line-height: 1.6;
   }
 
   table {
     width: 100%;
     min-width: 820px;
     border-collapse: collapse;
+    font-size: 14px;
+    font-variant-numeric: tabular-nums;
   }
 
   caption {
-    padding: 15px 18px 4px;
+    padding: 14px 18px;
     text-align: left;
     color: var(--muted);
-    font-weight: 800;
+    font-size: 13px;
   }
 
   th,
   td {
-    padding: 12px 18px;
-    border-bottom: 1px solid rgba(47, 42, 68, 0.1);
+    padding: 11px 18px;
+    border-top: 1px solid var(--line);
     text-align: left;
+    vertical-align: top;
     white-space: nowrap;
   }
 
-  th {
+  thead th {
+    background: var(--paper);
     color: var(--ink);
-    font-weight: 800;
+    font-weight: 600;
+  }
+
+  tbody th {
+    color: var(--ink);
+    font-weight: 600;
+  }
+
+  tbody tr:nth-child(even) {
+    background: var(--zebra);
   }
 
   td {
     color: var(--muted);
+  }
+
+  th.num,
+  td.num {
+    text-align: right;
   }
 
   .metric-cell {
     display: inline-flex;
     flex-direction: column;
+    align-items: flex-end;
     gap: 2px;
-    vertical-align: top;
   }
 
   .metric-value {
@@ -693,136 +589,122 @@ const metricClasses = (metric: SummaryMetric) => ["metric-cell", !metric.clean &
   }
 
   .metric-detail {
-    color: color-mix(in oklch, var(--muted) 74%, var(--paper));
-    font-size: 13px;
-    line-height: 1.2;
-  }
-
-  tbody tr:last-child th,
-  tbody tr:last-child td {
-    border-bottom: 0;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.3;
   }
 
   .explain-grid {
     display: grid;
-    grid-template-columns: minmax(240px, 0.65fr) minmax(0, 1.35fr);
-    gap: 28px;
+    grid-template-columns: minmax(240px, 0.7fr) minmax(0, 1.3fr);
+    gap: 32px;
     align-items: start;
-    padding: 30px;
-    border-radius: 8px;
-    background: color-mix(in oklch, var(--primary) 13%, var(--panel-strong));
-    border: 1.5px solid rgba(47, 42, 68, 0.13);
+    padding: 32px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--paper);
   }
 
-  .explain-copy p:first-child {
-    margin-top: 0;
-  }
-
+  /* The three method notes share one ruled box instead of three cards. */
   .method-list {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 14px;
-    margin-top: 22px;
+    margin-top: 28px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
   }
 
   .method-list div {
+    min-width: 0;
     padding: 20px;
-    border-radius: 8px;
-    background: var(--panel);
-    border: 1.5px solid rgba(47, 42, 68, 0.13);
+  }
+
+  .method-list div + div {
+    border-left: 1px solid var(--line);
   }
 
   .method-list strong {
     display: block;
-    font-family: var(--font-heading);
-    font-size: 18px;
+    font-size: 15px;
+    font-weight: 700;
   }
 
   .method-list p {
     margin-top: 8px;
     color: var(--muted);
-    line-height: 1.45;
+    font-size: 14px;
+    line-height: 1.6;
   }
 
   .method-list code {
-    padding: 1px 5px 2px;
-    border-radius: 5px;
-    background: color-mix(in oklch, var(--primary) 12%, var(--panel-strong));
+    padding: 1px 4px;
+    border-radius: var(--radius);
+    background: var(--paper);
     color: var(--ink);
-    font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-    font-size: 0.92em;
-    font-weight: 700;
+    font-size: 0.95em;
+    white-space: nowrap;
   }
 
   @media (max-width: 980px) {
+    .verdict-band,
     .explain-grid {
-      grid-template-columns: 1fr;
+      grid-template-columns: minmax(0, 1fr);
     }
 
-    .hardware-band,
-    .facts,
-    .method-list {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-  }
-
-  @media (max-width: 640px) {
     .explain-grid {
-      padding: 22px;
-    }
-
-    .perf-hero {
-      padding: 34px 0 22px;
-    }
-
-    .perf-hero h1 {
-      font-size: 42px;
-    }
-
-    .perf-lede,
-    .section-head p:not(.section-kicker),
-    .explain-copy p {
-      font-size: 16px;
-    }
-
-    .section-head h2,
-    .explain-grid h2 {
-      font-size: 30px;
-    }
-
-    .facts,
-    .method-list {
-      grid-template-columns: 1fr;
-    }
-
-    .hardware-band {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-
-    .verdict-band {
-      --verdict-corner: 24px;
-      --verdict-corner-thickness: 2px;
-      grid-template-columns: 1fr;
-      gap: 14px;
-      margin: 18px 0 24px;
-      padding: 14px 16px;
-    }
-
-    .verdict-band p {
-      font-size: 16px;
+      gap: 16px;
     }
 
     .verdict-proof {
       grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 10px;
+      border-top: 1px solid var(--line);
+    }
+
+    .verdict-proof div:first-child {
+      border-left: 0;
+    }
+
+    .hardware-band,
+    .facts {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .hardware-band div:nth-child(3),
+    .facts div:nth-child(3) {
+      padding-left: 0;
+      border-left: 0;
+    }
+
+    .hardware-band div:nth-child(n + 3),
+    .facts div:nth-child(n + 3) {
+      border-top: 1px solid var(--line);
+    }
+
+    .method-list {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .method-list div + div {
+      border-left: 0;
+      border-top: 1px solid var(--line);
+    }
+  }
+
+  @media (max-width: 640px) {
+    .perf-hero {
+      padding: 28px 0 24px;
+    }
+
+    .perf-lede {
+      font-size: 16px;
+    }
+
+    .verdict-band p {
+      padding: 16px;
     }
 
     .verdict-proof div {
-      min-width: 0;
-    }
-
-    .verdict-proof dt {
-      font-size: 10px;
+      padding: 12px 16px;
     }
 
     .verdict-proof dd {
@@ -830,26 +712,33 @@ const metricClasses = (metric: SummaryMetric) => ["metric-cell", !metric.clean &
     }
 
     .hardware-band div {
-      padding: 14px 10px;
-      border-left: 0;
-      border-top: 1px solid rgba(47, 42, 68, 0.1);
+      padding: 14px 12px 16px 0;
     }
 
-    .hardware-band div + div {
-      padding-left: 10px;
-      border-left: 1px solid rgba(47, 42, 68, 0.1);
+    .hardware-band div:nth-child(even) {
+      padding-left: 12px;
     }
 
-    .hardware-band div:nth-child(3) {
-      padding-left: 10px;
-      border-left: 0;
+    .hardware-band strong,
+    .facts strong {
+      font-size: 17px;
     }
 
-    .facts div,
-    .facts div + div {
-      padding: 18px 10px;
+    .facts {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .facts div {
+      padding: 16px 0;
+    }
+
+    .facts div:not(:first-child) {
       border-left: 0;
-      border-top: 1px solid rgba(47, 42, 68, 0.1);
+      border-top: 1px solid var(--line);
+    }
+
+    .explain-grid {
+      padding: 20px;
     }
   }
 </style>

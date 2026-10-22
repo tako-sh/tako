@@ -1,0 +1,569 @@
+<style is:global>
+  /* Each home block gets its own treatment, all built from the same hairlines, outlined boxes and type scale. */
+
+  /*
+   * Why: a question and its answer. The question sits on the left as a statement; the answer reads
+   * top to bottom on the right, its two sentences first and the three points after them.
+   */
+  .why {
+    display: grid;
+    grid-template-columns: var(--split);
+    gap: 28px var(--split-gap);
+    align-items: start;
+  }
+
+  .why-title {
+    color: var(--ink);
+    font-size: clamp(36px, 4.6vw, 64px);
+    font-weight: 700;
+    line-height: 1.08;
+    letter-spacing: -0.02em;
+    text-wrap: balance;
+  }
+
+  .why-answer {
+    padding-top: 0.4em;
+  }
+
+  .why-lead {
+    max-width: 46ch;
+    color: var(--ink);
+    font-size: clamp(18px, 1.4vw, 20px);
+    line-height: 1.55;
+  }
+
+  .why-points {
+    display: grid;
+    gap: 10px;
+    margin-top: 24px;
+    padding-top: 20px;
+    border-top: 1px solid var(--line);
+    list-style: none;
+    color: var(--muted);
+    font-size: 16px;
+  }
+
+  .why-points li {
+    display: grid;
+    grid-template-columns: 2ch minmax(0, 1fr);
+  }
+
+  .why-points li::before {
+    content: "-";
+    color: var(--muted);
+  }
+
+  /* Three commands: the commands as display type in three columns; their numbers give the order */
+  .steps {
+    --step-size: clamp(22px, 2.4vw, 34px);
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 24px var(--split-gap);
+    margin-top: clamp(24px, 3vw, 40px);
+    list-style: none;
+  }
+
+  .step-link {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 12px;
+    color: var(--ink);
+    text-decoration: none;
+  }
+
+  /* Display-size commands carry a thinner mark at rest */
+  .step-cmd.mark {
+    --mark-rest: 0.14em;
+  }
+
+  .step-link:hover .mark {
+    background-size: 100% 100%;
+  }
+
+  .step-num {
+    color: var(--muted);
+    font-size: 15px;
+  }
+
+  .home .step-cmd {
+    font-size: var(--step-size);
+    font-weight: 700;
+    line-height: 1.15;
+    letter-spacing: -0.02em;
+    white-space: nowrap;
+  }
+
+  .step-desc {
+    margin-top: 14px;
+    color: var(--muted);
+  }
+
+  /* Development: the routes tako dev prints, in the dashboard's own two-column style */
+  .routes-panel {
+    margin: 0;
+    min-width: 0;
+  }
+
+  .routes-head,
+  .routes-list {
+    border: 1px solid var(--line);
+    background: var(--bg);
+  }
+
+  .routes-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 18px;
+    border-bottom: 0;
+  }
+
+  .routes-app {
+    color: var(--ink);
+    font-weight: 600;
+  }
+
+  .routes-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--secondary);
+    font-size: 13px;
+  }
+
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--secondary);
+  }
+
+  .routes-list {
+    padding: 4px 0;
+  }
+
+  .route {
+    display: grid;
+    grid-template-columns: 76px minmax(0, 1fr);
+    gap: 16px;
+    padding: 14px 18px;
+  }
+
+  .route + .route {
+    border-top: 1px solid var(--line);
+  }
+
+  .route dt {
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.9;
+  }
+
+  .route dd {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 16px;
+    min-width: 0;
+  }
+
+  .home .route code {
+    color: var(--ink);
+    font-size: 15px;
+    overflow-wrap: anywhere;
+  }
+
+  .route dd span {
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  /* Deploy: the heading on one line, the copy under it, then the rollout playback across the full width */
+  .deploy-head .doc-text {
+    margin-top: 20px;
+  }
+
+  /* Platform: the request trace beside the copy, then the code as an editor */
+  .primitive-frame {
+    margin-top: clamp(40px, 5vw, 64px);
+  }
+
+  .primitive-workbench {
+    display: grid;
+    grid-template-rows: auto auto;
+    align-content: start;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    background: var(--bg);
+  }
+
+  .primitive-tabs {
+    display: flex;
+    gap: 2px;
+    overflow-x: auto;
+    padding: 0 8px;
+    border-bottom: 1px solid var(--line);
+    background: var(--paper);
+    scrollbar-width: none;
+  }
+
+  .primitive-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .primitive-tab {
+    flex: 0 0 auto;
+    padding: 11px 10px 10px;
+    border: 0;
+    background: none;
+    color: var(--muted);
+    cursor: pointer;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 1;
+  }
+
+  .primitive-tab:hover {
+    color: var(--ink);
+  }
+
+  /* The open file carries the band's mark */
+  .primitive-tab.is-active,
+  .dev-video-tab {
+    --mark-color: color-mix(in srgb, var(--band-accent, var(--primary)) 45%, transparent);
+    background: linear-gradient(var(--mark-color), var(--mark-color)) left bottom / 100% 0.3em no-repeat;
+    background-origin: content-box;
+    background-clip: content-box;
+    color: var(--ink);
+  }
+
+  .primitive-tab:focus-visible {
+    outline-offset: -2px;
+  }
+
+  /* Copy sits in the code's top-right corner, on the editor ground so code never shows through */
+  .primitive-panels {
+    position: relative;
+  }
+
+  .primitive-copy {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    z-index: 1;
+    background-color: var(--bg);
+  }
+
+  .primitive-panels,
+  .primitive-panel {
+    min-width: 0;
+  }
+
+  .primitive-panel[hidden] {
+    display: none;
+  }
+
+  .primitive-editor {
+    overflow: hidden;
+  }
+
+  .primitive-editor pre {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 20px;
+    margin: 0;
+    overflow: auto;
+    padding: 18px 20px;
+  }
+
+  .line-gutter {
+    color: #a39db0;
+    font-size: 13px;
+    line-height: 1.65;
+    text-align: right;
+    white-space: pre;
+    user-select: none;
+  }
+
+  .primitive-editor code {
+    display: block;
+    min-width: max-content;
+    color: var(--ink);
+    font-size: 13px;
+    line-height: 1.65;
+    white-space: pre;
+  }
+
+  .syntax-keyword {
+    color: var(--primary);
+  }
+
+  .syntax-comment {
+    color: #a39db0;
+    font-style: italic;
+  }
+
+  .syntax-string {
+    color: var(--secondary);
+  }
+
+  .syntax-type,
+  .syntax-number {
+    color: var(--gold);
+  }
+
+  /* Out of the box: a spec list with mint check marks */
+  .spec-list {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    column-gap: clamp(32px, 4vw, 64px);
+    margin-top: clamp(32px, 4vw, 56px);
+    list-style: none;
+  }
+
+  .spec {
+    display: grid;
+    grid-template-columns: 18px minmax(0, 1fr);
+    gap: 14px;
+    padding: 22px 0 24px;
+    border-top: 1px solid var(--line);
+  }
+
+  .spec-check {
+    width: 18px;
+    height: 18px;
+    margin-top: 2px;
+    fill: none;
+    stroke: var(--secondary);
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .spec-name {
+    color: var(--ink);
+    font-size: 16px;
+    font-weight: 600;
+    line-height: 1.4;
+  }
+
+  .spec-detail {
+    margin-top: 6px;
+    color: var(--muted);
+    font-size: 14px;
+  }
+
+  /* Performance: the chart leads, values sit at the ends of their bars */
+  .bench {
+    margin: clamp(32px, 4vw, 56px) 0 0;
+  }
+
+  .bench-chart {
+    display: grid;
+    gap: clamp(16px, 2vw, 24px);
+  }
+
+  .bench-row {
+    display: grid;
+    grid-template-columns: clamp(72px, 9vw, 120px) minmax(0, 1fr);
+    gap: 16px;
+    align-items: center;
+  }
+
+  .bench-name {
+    color: var(--ink);
+    font-size: 15px;
+    font-weight: 600;
+  }
+
+  .bench-track {
+    display: flex;
+    align-items: center;
+    gap: clamp(12px, 1.5vw, 20px);
+    min-width: 0;
+  }
+
+  .bench-fill {
+    flex: none;
+    width: calc((100% - clamp(96px, 12vw, 180px)) * var(--f));
+    height: clamp(18px, 2.2vw, 30px);
+    border-radius: 1px;
+    background: var(--muted);
+  }
+
+  .bench-value {
+    color: var(--ink);
+    font-size: clamp(22px, 3vw, 44px);
+    font-weight: 700;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Tako leads in mint: green reads as more, where coral would read as a warning */
+  .bench-row-tako .bench-fill {
+    background: var(--secondary);
+  }
+
+  .bench-row-tako .bench-value {
+    color: var(--secondary);
+  }
+
+  .bench-copy {
+    display: grid;
+    grid-template-columns: var(--split);
+    gap: 16px var(--split-gap);
+    margin-top: clamp(40px, 5vw, 64px);
+  }
+
+  .bench-copy p {
+    max-width: 62ch;
+    color: var(--muted);
+    font-size: 16px;
+  }
+
+  .bench-copy p strong {
+    color: var(--ink);
+  }
+
+  .bench-copy .doc-link {
+    grid-column: 1 / -1;
+    justify-self: start;
+    margin-top: 0;
+  }
+
+  /* Who it's for: the pitch on the left, the list of people on the right */
+  .who {
+    display: grid;
+    grid-template-columns: var(--split);
+    gap: var(--split-gap);
+    align-items: start;
+  }
+
+  /* A small, still chill octopus with its coffee, unbothered by invoices, under the lead */
+  .home .who-anchor .spot-chill {
+    --spot-w: clamp(64px, 6vw, 92px);
+    position: relative;
+    margin-top: 32px;
+  }
+
+  .who-lead {
+    max-width: 46ch;
+    margin-top: 24px;
+    color: var(--muted);
+    font-size: 17px;
+  }
+
+  .who-list {
+    border-top: 1px solid var(--line);
+    list-style: none;
+  }
+
+  .who-list li {
+    padding: 18px 0;
+    border-bottom: 1px solid var(--line);
+    color: var(--ink);
+    font-size: 16px;
+  }
+
+  /* Closing call to action: the page's one coral field */
+  .cta {
+    background: var(--primary);
+    color: var(--on-primary);
+  }
+
+  .cta-title {
+    max-width: 18ch;
+    color: var(--on-primary);
+    font-size: clamp(40px, 6.4vw, 104px);
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: -0.035em;
+    text-wrap: balance;
+  }
+
+  .cta-commands {
+    display: grid;
+    gap: 6px;
+    max-width: 640px;
+    margin-top: 36px;
+  }
+
+  .cta .command-label {
+    color: var(--on-primary);
+  }
+
+  .cta .command-row {
+    border-color: var(--on-primary);
+    background: transparent;
+  }
+
+  .cta .command-text,
+  .cta .command-text .prompt {
+    color: var(--on-primary);
+  }
+
+  /* On the coral field, links and quiet controls go dark with a light ink mark */
+  .cta .copy-button,
+  .cta a:not([class]) {
+    --mark-color: color-mix(in srgb, var(--on-primary) 18%, transparent);
+    color: var(--on-primary);
+  }
+
+  .cta .hero-actions {
+    margin-top: 28px;
+  }
+
+  .cta-star {
+    margin-top: 22px;
+    font-size: 14px;
+  }
+
+  .cta :focus-visible {
+    outline-color: var(--on-primary);
+  }
+
+  .cta ::selection {
+    background: var(--on-primary);
+    color: var(--primary);
+  }
+
+  @media (max-width: 1100px) {
+    .spec-list {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  @media (max-width: 900px) {
+    .why,
+    .who,
+    .bench-copy {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .steps {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+
+  @media (max-width: 640px) {
+    .spec-list {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .route {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 2px;
+    }
+
+    .primitive-editor pre {
+      padding: 14px;
+      gap: 14px;
+    }
+
+    .line-gutter,
+    .primitive-editor code {
+      font-size: 12px;
+    }
+  }
+</style>

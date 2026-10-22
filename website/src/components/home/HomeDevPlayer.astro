@@ -1,0 +1,55 @@
+<figure class="dev-video">
+  <div class="panel-shade">
+    <div class="dev-video-tabs" aria-hidden="true">
+      <span class="dev-video-tab">tako dev</span>
+    </div>
+    <div class="dev-video-frame" data-tako-dev-player>
+      <pre class="dev-poster" aria-label="A frame from the tako dev recording">  ▀█▀ ▄▀█ █ █ █▀█   █▀ █ █  v0.0.0-8db8852
+   █  █▀█ █▀▄ █ █   ▀█ █▀█
+   ▀  ▀ ▀ ▀ ▀ ▀▀▀ ▀ ▀▀ ▀ ▀
+
+11:27:49  INFO vite Port 5173 is in use, trying another one...
+11:27:49  INFO tako App started
+11:27:49  INFO vite   VITE v8.0.16  ready in 699 ms
+11:27:49  INFO vite   ➜  Local:   http://127.0.0.1:5174/
+
+  Your app is now available on the public internet at this URL
+
+  https://demo-lubtgfctpq.tako.website
+
+
+┌─ demo (tako-sh/tako/examples/javascript/demo) ──────────────────────────────────────────────────────────────────────────┐
+│ ● running                        routes  https://demo.test                                       cpu  ⣿⣿⣿⣿⣿⣿⣿⣿ 1%       │
+│   master                                 https://*.demo.test                                     ram  219 MB            │
+│                                  lan     l to enable                                                                    │
+│                                  tunnel  https://demo-lubtgfctpq.tako.website t to disable                              │
+└─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+                                                                                  r restart   b background   ctrl+c/q stop</pre>
+      <a class="action doc-link dev-poster-link" href="https://asciinema.org/a/RXUo8Wh5i1FQIo2x">Watch the tako dev recording</a>
+    </div>
+  </div>
+  <figcaption class="figure-note"><code>tako dev</code> serving the demo app on <code>https://demo.test</code> with its routes and a public tunnel.<span class="dev-scroll-hint"> Scroll sideways to see the whole terminal.</span></figcaption>
+</figure>
+
+<script>
+  // The poster frame stays in place unless the player and the recording both load.
+  import { create } from "asciinema-player";
+  import "asciinema-player/dist/bundle/asciinema-player.css";
+
+  const playerSlot = document.querySelector<HTMLElement>("[data-tako-dev-player]");
+  if (playerSlot) {
+    fetch("/assets/tako-dev.cast")
+      .then((response) => (response.ok ? response.text() : Promise.reject(new Error(String(response.status)))))
+      .then((data) => {
+        const mount = document.createElement("div");
+        mount.className = "dev-player-mount";
+        // The player reads the theme's palette from computed styles, so the mount must be in the page first.
+        playerSlot.replaceChildren(mount);
+        // 22 rows holds the wordmark and the whole dashboard; the 8s poster shows the logs and routes.
+        create({ data }, mount, { theme: "tako", fit: "width", rows: 22, poster: "npt:0:8", idleTimeLimit: 2 });
+      })
+      .catch(() => {
+        // Keep the poster frame and its link.
+      });
+  }
+</script>

@@ -1,0 +1,169 @@
+---
+// A small painted octopus spot, decorative and hidden from assistive tech. Spots are still by
+// default. The one `animated` spot stretches up from its base line on hover and, on click, squashes
+// and blows three hearts from its kissing mouth. The base line (`origin`) is where it meets the
+// page, so a spot cut flat along a window edge never shows its cut.
+import type { ImageMetadata } from "astro";
+import { Image } from "astro:assets";
+
+interface Props {
+  src: ImageMetadata;
+  /** Positions and sizes the spot in its band, through --spot-w and the band's own rules. */
+  class: string;
+  sizes: string;
+  origin?: string;
+  /** Where the mouth sits in the painting, as "x% y%"; the hearts start there. */
+  mouth?: string;
+  animated?: boolean;
+  eager?: boolean;
+}
+
+const { src, class: className, sizes, origin = "50% 100%", mouth = "50% 45%", animated = false, eager = false } = Astro.props;
+const [heartX, heartY] = mouth.split(" ");
+---
+
+<span
+  class:list={["spot", className, { "is-animated": animated }]}
+  style={`--spot-origin: ${origin}; --heart-x: ${heartX}; --heart-y: ${heartY}`}
+  aria-hidden="true"
+  data-spot={animated ? "" : undefined}
+>
+  <Image src={src} alt="" widths={[120, 160, 240, 360, 480]} sizes={sizes} loading={eager ? "eager" : "lazy"} />
+  {
+    animated &&
+    [0, 1, 2].map(() => (
+      <svg class="spot-heart" viewBox="0 0 16 14">
+        <path d="M8 13.4 1.7 7.3A3.9 3.9 0 0 1 8 2.5a3.9 3.9 0 0 1 6.3 4.8Z" />
+      </svg>
+    ))
+  }
+</span>
+
+<script>
+  for (const spot of document.querySelectorAll<HTMLElement>("[data-spot]")) {
+    let timer = 0;
+    spot.addEventListener("click", () => {
+      // Restart the boop even when it is clicked again mid-animation.
+      spot.classList.remove("is-booped");
+      void spot.offsetWidth;
+      spot.classList.add("is-booped");
+      clearTimeout(timer);
+      timer = window.setTimeout(() => spot.classList.remove("is-booped"), 1100);
+    });
+  }
+</script>
+
+<style>
+  .spot {
+    position: absolute;
+    display: block;
+    width: var(--spot-w, 80px);
+    pointer-events: none;
+  }
+
+  .spot.is-animated {
+    cursor: pointer;
+    pointer-events: auto;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .spot img {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+
+  .spot.is-animated img {
+    transform-origin: var(--spot-origin);
+    transition: transform 0.4s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .spot.is-animated:hover img {
+    transform: scale(1.03, 1.06);
+  }
+
+  .spot.is-booped img {
+    animation: spot-boop 0.6s ease-out;
+  }
+
+  /* Hearts start at the mouth, pop in, then drift up and apart */
+  .spot-heart {
+    position: absolute;
+    top: var(--heart-y);
+    left: var(--heart-x);
+    width: 14px;
+    height: 12px;
+    margin: -6px 0 0 -7px;
+    fill: var(--primary);
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .spot.is-booped .spot-heart {
+    animation: spot-heart 1.1s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  }
+
+  .spot.is-booped .spot-heart:nth-of-type(2) {
+    --drift: -18px;
+    width: 10px;
+    height: 9px;
+    animation-delay: 0.14s;
+  }
+
+  .spot.is-booped .spot-heart:nth-of-type(3) {
+    --drift: 22px;
+    width: 12px;
+    height: 10px;
+    animation-delay: 0.26s;
+  }
+
+  @keyframes spot-boop {
+    25% {
+      transform: scale(1.1, 0.86);
+    }
+
+    55% {
+      transform: scale(0.95, 1.1);
+    }
+
+    100% {
+      transform: scale(1, 1);
+    }
+  }
+
+  @keyframes spot-heart {
+    0% {
+      opacity: 0;
+      scale: 0.2;
+      translate: 0 0;
+      rotate: 0deg;
+    }
+
+    18% {
+      opacity: 1;
+      scale: 1.15;
+    }
+
+    100% {
+      opacity: 0;
+      scale: 1;
+      translate: var(--drift, 4px) -78px;
+      rotate: 12deg;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .spot.is-animated img {
+      transition: none;
+    }
+
+    .spot.is-animated:hover img {
+      transform: none;
+    }
+
+    .spot.is-booped img,
+    .spot.is-booped .spot-heart {
+      animation: none;
+    }
+  }
+</style>

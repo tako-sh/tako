@@ -49,17 +49,16 @@ const sorted = posts.sort((a, b) => new Date(b.data.date).getTime() - new Date(a
 
 <style is:global>
   .blog-list-sheet {
-    border: 2px solid var(--line);
+    border: 1px solid var(--line);
     border-radius: var(--panel-radius);
     background: var(--panel);
-    box-shadow: 0 18px 45px rgba(47, 42, 68, 0.1);
     padding: clamp(18px, 4vw, 36px);
     margin: 0 auto;
   }
 
   .blog-list-header {
     margin-bottom: 24px;
-    border-bottom: 2px solid var(--line);
+    border-bottom: 1px solid var(--line);
     padding-bottom: 12px;
   }
 
@@ -71,10 +70,9 @@ const sorted = posts.sort((a, b) => new Date(b.data.date).getTime() - new Date(a
   }
 
   .blog-list-subtitle {
-    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-family: var(--font-mono);
     font-size: 13px;
     color: var(--muted);
-    opacity: 0.7;
   }
 
   .blog-empty {
@@ -93,14 +91,23 @@ const sorted = posts.sort((a, b) => new Date(b.data.date).getTime() - new Date(a
     text-decoration: none;
     padding: 14px 16px;
     border: 1px solid var(--line);
-    border-radius: 16px;
-    background: color-mix(in oklch, var(--panel-strong) 70%, transparent);
-    transition: border-color 0.15s, background 0.15s;
+    border-radius: var(--radius);
+    background: var(--bg);
+    transition:
+      background-color 0.15s,
+      border-color 0.15s;
   }
 
+  /* The whole card takes a light coral mark on hover, light enough to keep its grey text legible */
   .blog-post-card:hover {
-    border-color: rgba(232, 135, 131, 0.45);
-    background: rgba(232, 135, 131, 0.08);
+    border-color: color-mix(in srgb, var(--primary) 60%, transparent);
+    background: color-mix(in srgb, var(--primary) 14%, var(--bg));
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .blog-post-card {
+      transition: none;
+    }
   }
 
   .blog-post-card:focus-visible {
@@ -115,14 +122,14 @@ const sorted = posts.sort((a, b) => new Date(b.data.date).getTime() - new Date(a
   }
 
   .blog-post-title {
-    font-family: "Nunito", sans-serif;
+    font-family: var(--font-sans);
     font-size: 17px;
     font-weight: 600;
     color: var(--ink);
   }
 
   .blog-post-desc {
-    font-family: "Nunito", sans-serif;
+    font-family: var(--font-sans);
     font-size: 14px;
     color: var(--muted);
     line-height: 1.45;
@@ -142,7 +149,7 @@ const sorted = posts.sort((a, b) => new Date(b.data.date).getTime() - new Date(a
   }
 
   .blog-post-date {
-    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-family: var(--font-mono);
     font-size: 13px;
     color: var(--muted);
     white-space: nowrap;
@@ -155,7 +162,7 @@ const sorted = posts.sort((a, b) => new Date(b.data.date).getTime() - new Date(a
   }
 
   .blog-post-author {
-    font-family: "Nunito", sans-serif;
+    font-family: var(--font-sans);
     font-size: 13px;
     color: var(--muted);
     white-space: nowrap;

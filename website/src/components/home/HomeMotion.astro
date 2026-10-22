@@ -1,0 +1,82 @@
+<script>
+  // Diagrams marked [data-reveal] play their entrance once as they scroll into view. The script sets
+  // the start state, so without it, or with reduced motion, every diagram renders finished.
+  if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          (entry.target as HTMLElement).dataset["reveal"] = "in";
+          observer.unobserve(entry.target);
+        }
+      },
+      { threshold: 0.35 },
+    );
+    for (const target of document.querySelectorAll<HTMLElement>("[data-reveal]")) {
+      target.dataset["reveal"] = "pending";
+      observer.observe(target);
+    }
+  }
+</script>
+
+<style is:global>
+  .home {
+    --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  /* Dev routes: the dashboard prints its rows one after another */
+  [data-reveal="pending"] .routes-head,
+  [data-reveal="pending"] .route {
+    opacity: 0;
+  }
+
+  [data-reveal="in"] .routes-head,
+  [data-reveal="in"] .route {
+    transition: opacity 0.35s ease var(--delay, 0s);
+  }
+
+  .routes-panel .route:nth-child(1) {
+    --delay: 0.2s;
+  }
+
+  .routes-panel .route:nth-child(2) {
+    --delay: 0.35s;
+  }
+
+  .routes-panel .route:nth-child(3) {
+    --delay: 0.5s;
+  }
+
+  .routes-panel .route:nth-child(4) {
+    --delay: 0.65s;
+  }
+
+  /* Benchmark: the bars grow from zero, then the numbers land */
+  .bench-fill {
+    transform-origin: left center;
+  }
+
+  [data-reveal="pending"] .bench-fill {
+    scale: 0 1;
+  }
+
+  [data-reveal="pending"] .bench-value {
+    opacity: 0;
+  }
+
+  [data-reveal="in"] .bench-fill {
+    transition: scale 0.9s var(--ease-out) var(--delay, 0s);
+  }
+
+  [data-reveal="in"] .bench-value {
+    transition: opacity 0.4s ease calc(var(--delay, 0s) + 0.6s);
+  }
+
+  .bench-row:nth-child(2) {
+    --delay: 0.12s;
+  }
+
+  .bench-row:nth-child(3) {
+    --delay: 0.24s;
+  }
+</style>

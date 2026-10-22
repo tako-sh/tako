@@ -1,0 +1,356 @@
+---
+// Takosophy as a star chart: one sky with a planisphere grid and a dashed ecliptic, and on it a
+// constellation per principle (Clavis the key, Sagitta the one-way arrow, Fulmen the thunderbolt)
+// in gold stars and hairlines, with the principle's name and line under each like a chart entry.
+type Star = readonly [x: number, y: number, r: number];
+type Principle = {
+  name: string;
+  text: string;
+  /** The constellation's chart name, set small beside the figure. */
+  latin: string;
+  /** The star drawn with a ring, the chart symbol for a variable star. */
+  variable: number;
+  label: readonly [x: number, y: number];
+  stars: Star[];
+  /** Lines between stars, by index into `stars`. */
+  lines: (readonly [number, number])[];
+  /** Faint background stars that are not part of the figure. */
+  dust: Star[];
+};
+
+const principles: Principle[] = [
+  {
+    name: "Full control.",
+    text: "A real server, a real runtime. What runs locally runs in production.",
+    latin: "CLAVIS",
+    variable: 4,
+    label: [26, 150],
+    // A key: a ring of six stars, a shaft, two teeth.
+    stars: [
+      [94, 70, 3.2], [77, 99, 2], [43, 99, 2.4], [26, 70, 1.8], [43, 41, 2.6], [77, 41, 2],
+      [131, 70, 2.2], [166, 70, 2.6], [200, 70, 3.4], [166, 96, 1.8], [200, 104, 2],
+    ],
+    lines: [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 0], [0, 6], [6, 7], [7, 8], [7, 9], [8, 10]],
+    dust: [[18, 120, 1], [120, 30, 0.9], [150, 160, 1.1], [222, 128, 0.8], [96, 186, 0.9]],
+  },
+  {
+    name: "Unapologetically opinionated.",
+    text: "No config rabbit holes. Tako picks the defaults so you can ship.",
+    latin: "SAGITTA",
+    variable: 2,
+    label: [118, 182],
+    // An arrow that only points one way.
+    stars: [
+      [40, 172, 2.2], [87, 132, 2], [133, 92, 2.4], [182, 50, 3.4], [140, 52, 2], [178, 92, 2],
+      [26, 152, 1.6], [62, 184, 1.6],
+    ],
+    lines: [[0, 1], [1, 2], [2, 3], [3, 4], [3, 5], [0, 6], [0, 7]],
+    dust: [[24, 40, 1], [96, 24, 0.8], [214, 150, 1.1], [60, 92, 0.8], [226, 30, 0.9]],
+  },
+  {
+    name: "Built for the impatient.",
+    text: "Every step is optimized to get your code live fast.",
+    latin: "FULMEN",
+    variable: 4,
+    label: [140, 160],
+    // A lightning bolt.
+    stars: [
+      [134, 18, 2.4], [108, 60, 2], [86, 98, 3.4], [124, 98, 2.2], [102, 140, 2], [78, 184, 2.8],
+    ],
+    lines: [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5]],
+    dust: [[30, 40, 0.9], [200, 60, 1.1], [180, 186, 0.8], [40, 140, 1], [218, 110, 0.8]],
+  },
+];
+
+// A star is a pinched four-point sparkle; bright ones get a fainter second sparkle turned 45°.
+const sparkle = (x: number, y: number, radius: number, turn = 0) => {
+  const point = (angle: number, length: number) => {
+    const a = ((angle + turn) * Math.PI) / 180;
+    return `${(x + length * Math.cos(a)).toFixed(2)} ${(y + length * Math.sin(a)).toFixed(2)}`;
+  };
+  const pinch = radius * 0.24;
+  const [top, right, bottom, left] = [-90, 0, 90, 180].map((angle) => point(angle, radius));
+  const [ne, se, sw, nw] = [-45, 45, 135, -135].map((angle) => point(angle, pinch));
+  return `M ${top} Q ${ne} ${right} Q ${se} ${bottom} Q ${sw} ${left} Q ${nw} ${top} Z`;
+};
+// Like a real chart, the symbol follows brightness: faint stars are small pale dots, medium stars
+// gold four-point sparkles, each turned a little differently, and the brightest eight-pointed.
+const magnitude = (r: number) => (r >= 3.2 ? "bright" : r >= 2.2 ? "medium" : "faint");
+const tilt = (x: number, y: number) => ((x * 7 + y * 13) % 24) - 12;
+
+const segment = ([a, b]: readonly [number, number], stars: Star[]) => {
+  const [x1, y1] = stars[a]!;
+  const [x2, y2] = stars[b]!;
+  return `M ${x1} ${y1} L ${x2} ${y2}`;
+};
+
+// The sky: declination arcs and meridians around a pole far below the band, an ecliptic on its own
+// tilted circle, and scattered dust. Positions are fixed so the build is deterministic.
+const POLE = { x: 800, y: 1700 };
+const parallels = [1200, 1300, 1400, 1500, 1600, 1700, 1800];
+const meridians = Array.from({ length: 11 }, (_, index) => {
+  const angle = ((-125 + index * 7) * Math.PI) / 180;
+  return { x: POLE.x + 2100 * Math.cos(angle), y: POLE.y + 2100 * Math.sin(angle) };
+});
+const skyDust: Star[] = Array.from({ length: 46 }, (_, index) => {
+  const x = (index * 337 + 91) % 1600;
+  const y = (index * 151 + 47) % 600;
+  return [x, y, 0.6 + ((index * 7) % 9) / 10];
+});
+---
+
+<section class="band takosophy" data-accent="gold" aria-labelledby="takosophy-title">
+  <div class="band-inner">
+    <h2 class="section-title" id="takosophy-title">Takosophy</h2>
+    <p class="takosophy-lead">The three principles Tako is built on.</p>
+    <div class="chart">
+      <svg class="sky" viewBox="0 0 1600 600" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+        {parallels.map((r) => <circle class="sky-grid" cx={POLE.x} cy={POLE.y} r={r} />)}
+        {meridians.map((end) => <path class="sky-grid" d={`M ${POLE.x} ${POLE.y} L ${end.x} ${end.y}`} />)}
+        <circle class="sky-ecliptic" cx="520" cy="1950" r="1700" />
+        {skyDust.map(([x, y, r]) => <circle class="sky-dust" cx={x} cy={y} r={r} />)}
+      </svg>
+      <ul class="constellations" data-reveal>
+        {
+          principles.map((principle, index) => (
+            <li class="constellation" style={`--c: ${index}`}>
+              <svg class="constellation-figure" viewBox="0 0 240 200" aria-hidden="true">
+                {principle.dust.map(([x, y, r]) => (
+                  <circle class="const-dust" cx={x} cy={y} r={r} />
+                ))}
+                {principle.lines.map((line, order) => (
+                  <path class="const-line" d={segment(line, principle.stars)} pathLength="1" style={`--l: ${order}`} />
+                ))}
+                {principle.stars.map(([x, y, r], star) =>
+                  star === principle.variable ? (
+                    <circle class="const-ring" cx={x} cy={y} r={r * 3.4} style={`--i: ${star}`} />
+                  ) : null,
+                )}
+                {principle.stars.map(([x, y, r], star) => {
+                  const kind = magnitude(r);
+                  if (kind === "faint") return <circle class="const-star is-faint" cx={x} cy={y} r={r * 0.95} style={`--i: ${star}`} />;
+                  if (kind === "medium") return <path class="const-star" d={sparkle(x, y, r * 2.5, tilt(x, y))} style={`--i: ${star}`} />;
+                  return (
+                    <>
+                      <path class="const-glint" d={sparkle(x, y, r * 1.9, 45)} style={`--i: ${star}`} />
+                      <path class="const-star" d={sparkle(x, y, r * 3)} style={`--i: ${star}`} />
+                    </>
+                  );
+                })}
+                <text class="const-label" x={principle.label[0]} y={principle.label[1]}>
+                  {principle.latin}
+                </text>
+              </svg>
+              <p class="principle-name">{principle.name}</p>
+              <p class="principle-text">{principle.text}</p>
+            </li>
+          ))
+        }
+      </ul>
+    </div>
+  </div>
+</section>
+
+<style>
+  /* The sky bleeds to the window edges; the band clips it so the page never scrolls sideways. */
+  .takosophy {
+    overflow-x: clip;
+  }
+
+  .takosophy-lead {
+    margin-top: 12px;
+    color: var(--muted);
+    font-size: 17px;
+  }
+
+  .chart {
+    --bleed: calc((100vw - min(100vw - 2 * var(--gutter), 1520px)) / 2);
+    position: relative;
+    margin-top: clamp(32px, 4vw, 56px);
+  }
+
+  .sky {
+    position: absolute;
+    top: -64px;
+    bottom: -40px;
+    left: calc(-1 * var(--bleed));
+    width: calc(100% + 2 * var(--bleed));
+    height: calc(100% + 104px);
+    mask-image:
+      linear-gradient(to bottom, transparent 0%, #000 22%, #000 78%, transparent 100%),
+      linear-gradient(to right, transparent 0%, #000 12%, #000 88%, transparent 100%);
+    mask-composite: intersect;
+    pointer-events: none;
+  }
+
+  .sky-grid {
+    fill: none;
+    stroke: rgba(239, 235, 230, 0.07);
+    stroke-width: 1;
+    vector-effect: non-scaling-stroke;
+  }
+
+  .sky-ecliptic {
+    fill: none;
+    stroke: rgba(214, 166, 62, 0.32);
+    stroke-width: 1;
+    stroke-dasharray: 2 7;
+    vector-effect: non-scaling-stroke;
+  }
+
+  .sky-dust {
+    fill: rgba(239, 235, 230, 0.32);
+  }
+
+  .constellations {
+    position: relative;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 40px var(--split-gap);
+    list-style: none;
+  }
+
+  .constellation-figure {
+    display: block;
+    width: min(100%, 320px);
+    height: auto;
+    overflow: visible;
+  }
+
+  /* No non-scaling stroke here: it measures dashes in screen pixels, so the pathLength-1 dash fell
+     short and left gaps before the next star. The figure scales evenly, so the stroke stays fine. */
+  .const-line {
+    fill: none;
+    stroke: rgba(239, 235, 230, 0.5);
+    stroke-width: 0.8;
+    stroke-dasharray: 1;
+    transition: stroke 0.25s ease;
+  }
+
+  .const-star,
+  .const-glint {
+    fill: var(--gold);
+    transform-box: fill-box;
+    transform-origin: center;
+  }
+
+  /* The brightest stars glint: a fainter second sparkle turned 45° makes them eight-pointed. */
+  .const-glint {
+    opacity: 0.5;
+  }
+
+  .const-star.is-faint {
+    fill: rgba(239, 235, 230, 0.85);
+  }
+
+  .const-ring {
+    fill: none;
+    stroke: rgba(214, 166, 62, 0.55);
+    stroke-width: 0.8;
+    transform-box: fill-box;
+    transform-origin: center;
+  }
+
+  .const-dust {
+    fill: rgba(239, 235, 230, 0.4);
+  }
+
+  .const-label {
+    fill: rgba(184, 178, 194, 0.85);
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 0.24em;
+  }
+
+  .principle-name {
+    margin-top: 20px;
+    color: var(--ink);
+    font-size: clamp(20px, 1.7vw, 26px);
+    font-weight: 700;
+    line-height: 1.2;
+    letter-spacing: -0.02em;
+  }
+
+  .principle-text {
+    max-width: 34ch;
+    margin-top: 8px;
+    color: var(--muted);
+    font-size: 16px;
+  }
+
+  /*
+   * The stars stand alone until a principle is pointed at; then its lines draw in once, star to star
+   * in figure order, and stay while it is hovered. Leaving retracts them quickly.
+   */
+  .const-line {
+    stroke-dashoffset: 1;
+    transition: stroke-dashoffset 0.3s ease-in;
+  }
+
+  .constellation:hover .const-line {
+    stroke-dashoffset: 0;
+    stroke: rgba(239, 235, 230, 0.9);
+    transition: stroke-dashoffset 0.4s ease-out calc(var(--l) * 0.12s);
+  }
+
+  /* Without hover (touch screens) the figures show connected, or they could never be seen. */
+  @media (hover: none) {
+    .const-line {
+      stroke-dashoffset: 0;
+    }
+  }
+
+  /* Entrance: the stars appear one by one, each figure a beat later; the names fade in last */
+  .constellations[data-reveal="pending"] :is(.const-star, .const-glint, .const-ring, .const-label) {
+    opacity: 0;
+  }
+
+  .constellations[data-reveal="pending"] :is(.const-star, .const-glint, .const-ring) {
+    scale: 0.25;
+  }
+
+  .constellations[data-reveal="in"] :is(.const-star, .const-glint, .const-ring) {
+    transition:
+      opacity 0.3s ease calc(var(--c) * 0.35s + var(--i) * 0.06s),
+      scale 0.5s cubic-bezier(0.22, 1, 0.36, 1) calc(var(--c) * 0.35s + var(--i) * 0.06s);
+  }
+
+  .constellations[data-reveal="in"] .const-label {
+    transition: opacity 0.6s ease calc(var(--c) * 0.35s + 1s);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .const-line,
+    .constellation:hover .const-line {
+      transition: none;
+    }
+  }
+
+  @media (max-width: 900px) {
+    .constellations {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    /* One column: each figure sits beside its entry */
+    .constellation {
+      display: grid;
+      grid-template-columns: 120px minmax(0, 1fr);
+      grid-template-rows: auto 1fr;
+      column-gap: 20px;
+      align-items: start;
+    }
+
+    .constellation-figure {
+      grid-row: 1 / span 2;
+    }
+
+    .principle-name {
+      margin-top: 4px;
+    }
+
+    /* At 120px the chart names would be a few pixels tall, so they drop out. */
+    .const-label {
+      display: none;
+    }
+  }
+</style>

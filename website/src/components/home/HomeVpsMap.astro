@@ -1,0 +1,403 @@
+---
+// What one VPS serves once tako-server runs on it, as a trace of real request types.
+// Paths and behavior follow website/docs/how-tako-works.md (Routing, Scaling And Health, Data And Backups).
+const routes = [
+  { id: "static", path: "public/", what: "static files" },
+  { id: "app", path: "your app", what: "your code, started on demand" },
+  { id: "image", path: "/_tako/image", what: "resized images" },
+  { id: "channels", path: "/_tako/channels", what: "realtime over SSE or WebSocket" },
+  { id: "storage", path: "/_tako/storages", what: "signed file uploads" },
+];
+
+const background = [
+  { name: "secrets", what: "encrypted on the server" },
+  { name: "workflows", what: "cron jobs, waits and retries" },
+  { name: "backups", what: "daily, to your S3 bucket" },
+  { name: "logs + metrics", what: "tako logs and Prometheus" },
+];
+---
+
+<figure class="vps-map" data-vps-map>
+  <div class="vps-head">
+    <p class="vps-incoming" aria-hidden="true">
+      <span class="vps-method" data-vps-method>GET</span>
+      <span class="vps-url" data-vps-url>app.example.com/</span>
+      <span class="vps-reply" data-vps-reply>200</span>
+    </p>
+  </div>
+
+  <div class="vps-box">
+    <p class="vps-name">your VPS</p>
+    <div class="vps-server" data-vps-stage="landed">
+      <div class="vps-server-head">
+        <span class="vps-server-name">tako-server</span>
+        <span class="vps-stages" aria-hidden="true">
+          <span class="vps-stage" data-stage="tls">:443 TLS</span>
+          <span class="vps-stage-arrow">→</span>
+          <span class="vps-stage" data-stage="route">route</span>
+        </span>
+      </div>
+      <ul class="vps-routes">
+        {
+          routes.map((route, index) => (
+            <li class="vps-route" data-route={route.id} data-active={route.id === "app" ? "" : undefined}>
+              <span class="vps-branch" aria-hidden="true">{index === routes.length - 1 ? "└─" : "├─"}</span>
+              <span class="vps-path">{route.path}</span>
+              <span class="vps-what">
+                {route.what}
+                {route.id === "app" && (
+                  <span class="vps-instances" data-vps-instances>
+                    1 running
+                  </span>
+                )}
+              </span>
+              <span class="vps-status" aria-hidden="true" data-vps-status>
+                {route.id === "app" ? "200" : ""}
+              </span>
+            </li>
+          ))
+        }
+      </ul>
+      <dl class="vps-background">
+        {
+          background.map((item) => (
+            <div>
+              <dt>{item.name}</dt>
+              <dd>{item.what}</dd>
+            </div>
+          ))
+        }
+      </dl>
+    </div>
+  </div>
+
+  <figcaption class="figure-note">Example requests to one app on one server.</figcaption>
+</figure>
+
+<script>
+  // Loops a short tour of requests while the figure is on screen and stops when it scrolls away.
+  // With reduced motion it stays on the first request.
+  type Step =
+    | { method: string; url: string; route: string; status: string; reply: string; cold?: boolean }
+    | { idle: true };
+
+  const STEPS: Step[] = [
+    { method: "GET", url: "app.example.com/", route: "app", status: "200", reply: "200" },
+    { method: "GET", url: "app.example.com/logo.svg", route: "static", status: "304", reply: "304 Not Modified" },
+    { method: "GET", url: "app.example.com/_tako/image?src=/hero.jpg&w=800", route: "image", status: "200", reply: "200" },
+    { method: "GET", url: "app.example.com/_tako/channels/chat", route: "channels", status: "101", reply: "101 Switching Protocols" },
+    { method: "PUT", url: "app.example.com/_tako/storages/uploads/avatars/u_123.png", route: "storage", status: "200", reply: "200" },
+    { idle: true },
+    { method: "GET", url: "app.example.com/dashboard", route: "app", status: "200", reply: "200 after a cold start", cold: true },
+  ];
+
+  const figure = document.querySelector<HTMLElement>("[data-vps-map]");
+  if (figure) setUpVpsMap(figure);
+
+  function setUpVpsMap(figure: HTMLElement) {
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const server = figure.querySelector<HTMLElement>(".vps-server");
+    const method = figure.querySelector<HTMLElement>("[data-vps-method]");
+    const url = figure.querySelector<HTMLElement>("[data-vps-url]");
+    const reply = figure.querySelector<HTMLElement>("[data-vps-reply]");
+    const instances = figure.querySelector<HTMLElement>("[data-vps-instances]");
+    const rows = [...figure.querySelectorAll<HTMLElement>("[data-route]")];
+    if (!server || !method || !url || !reply || !instances) return;
+
+    let run = 0;
+    const wait = (ms: number, current: number) =>
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(current === run), ms));
+
+    function clearRows() {
+      for (const row of rows) {
+        delete row.dataset["active"];
+        const status = row.querySelector("[data-vps-status]");
+        if (status) status.textContent = "";
+      }
+    }
+
+    async function type(text: string, current: number) {
+      for (let length = 0; length <= text.length; length += 2) {
+        url!.textContent = text.slice(0, length);
+        if (!(await wait(16, current))) return false;
+      }
+      url!.textContent = text;
+      return true;
+    }
+
+    async function play() {
+      const current = ++run;
+      instances!.textContent = "1 running";
+      for (let index = 0; ; index = (index + 1) % STEPS.length) {
+        const step = STEPS[index]!;
+        clearRows();
+        reply!.textContent = "";
+        server!.dataset["vpsStage"] = "";
+        if ("idle" in step) {
+          method!.textContent = "";
+          url!.textContent = "no requests for 5 minutes";
+          if (!(await wait(900, current))) return;
+          instances!.textContent = "idle, scaled to 0";
+          if (!(await wait(1400, current))) return;
+          continue;
+        }
+        method!.textContent = step.method;
+        if (!(await type(step.url, current))) return;
+        server!.dataset["vpsStage"] = "tls";
+        if (!(await wait(320, current))) return;
+        server!.dataset["vpsStage"] = "route";
+        if (!(await wait(320, current))) return;
+        server!.dataset["vpsStage"] = "landed";
+        const row = rows.find((candidate) => candidate.dataset["route"] === step.route);
+        if (row) row.dataset["active"] = "";
+        if (step.cold) {
+          instances!.textContent = "starting";
+          if (!(await wait(900, current))) return;
+          instances!.textContent = "1 running";
+        }
+        const status = row?.querySelector("[data-vps-status]");
+        if (status) status.textContent = step.status;
+        reply!.textContent = step.reply;
+        if (!(await wait(1500, current))) return;
+      }
+    }
+
+    if (reduceMotion) return;
+
+    // Starting a new run, or bumping the counter, ends the one in flight at its next wait.
+    new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) void play();
+        else run += 1;
+      },
+      { threshold: 0.35 },
+    ).observe(figure);
+  }
+</script>
+
+<style>
+  .vps-map {
+    min-width: 0;
+    margin: 0;
+  }
+
+  /* The incoming request, set like a log line */
+  .vps-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+
+  .vps-incoming {
+    display: flex;
+    flex: 1 1 auto;
+    align-items: baseline;
+    gap: 10px;
+    min-width: 0;
+    min-height: 44px;
+    padding: 11px 14px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--bg);
+    font-size: 14px;
+  }
+
+  .vps-method {
+    flex: none;
+    color: var(--band-accent);
+    font-weight: 700;
+  }
+
+  .vps-url {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--ink);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .vps-reply {
+    flex: none;
+    margin-left: auto;
+    color: var(--band-accent);
+  }
+
+  .vps-box {
+    padding: 14px;
+    border: 1px dashed var(--line-strong);
+    border-radius: var(--radius);
+  }
+
+  .vps-name {
+    margin-bottom: 12px;
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  .vps-server {
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius);
+    background: var(--bg);
+  }
+
+  .vps-server-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px 16px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .vps-server-name {
+    color: var(--ink);
+    font-weight: 700;
+  }
+
+  .vps-stages {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  .vps-stage {
+    padding: 3px 8px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    transition:
+      border-color 0.2s,
+      color 0.2s;
+  }
+
+  .vps-server[data-vps-stage="tls"] [data-stage="tls"],
+  .vps-server[data-vps-stage="route"] [data-stage="route"] {
+    border-color: var(--band-accent);
+    color: var(--band-accent);
+  }
+
+  /* The routes as a tree; the matched row lights in the band accent with its status code */
+  .vps-routes {
+    padding: 8px 0;
+    list-style: none;
+  }
+
+  .vps-route {
+    display: grid;
+    grid-template-columns: 3ch 16ch minmax(0, 1fr) 4ch;
+    gap: 10px;
+    align-items: baseline;
+    padding: 7px 16px;
+    font-size: 14px;
+    transition: background-color 0.25s;
+  }
+
+  .vps-branch {
+    color: var(--muted);
+  }
+
+  .vps-path {
+    color: var(--ink);
+  }
+
+  .vps-what {
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  .vps-instances {
+    margin-left: 8px;
+    color: var(--secondary);
+    white-space: nowrap;
+  }
+
+  .vps-instances::before {
+    content: "● ";
+  }
+
+  .vps-status {
+    color: var(--band-accent);
+    font-weight: 700;
+    text-align: right;
+  }
+
+  .vps-route[data-active] {
+    background: color-mix(in srgb, var(--band-accent) 12%, transparent);
+  }
+
+  .vps-route[data-active] :is(.vps-branch, .vps-path) {
+    color: var(--band-accent);
+  }
+
+  /* What else runs on the same box, out of the request path */
+  .vps-background {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 16px;
+    padding: 12px 16px 14px;
+    border-top: 1px solid var(--line);
+  }
+
+  .vps-background dt {
+    color: var(--ink);
+    font-size: 13px;
+  }
+
+  .vps-background dd {
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .vps-route,
+    .vps-stage {
+      transition: none;
+    }
+  }
+
+  @media (max-width: 640px) {
+    /* Phones wrap the full URL and drop the reply to its own line instead of truncating. */
+    .vps-incoming {
+      flex-wrap: wrap;
+      gap: 4px 8px;
+      font-size: 12px;
+    }
+
+    .vps-url {
+      white-space: normal;
+      word-break: break-all;
+    }
+
+    .vps-reply {
+      flex-basis: 100%;
+      margin-left: 0;
+    }
+
+    .vps-head {
+      align-items: flex-start;
+    }
+
+    .vps-box {
+      padding: 10px;
+    }
+
+    .vps-route {
+      grid-template-columns: 3ch minmax(0, 1fr) 4ch;
+      gap: 2px 8px;
+      padding: 7px 12px;
+      font-size: 13px;
+    }
+
+    .vps-what {
+      grid-column: 2;
+      grid-row: 2;
+    }
+
+    .vps-background {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+</style>

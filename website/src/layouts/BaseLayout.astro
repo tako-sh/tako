@@ -9,7 +9,7 @@ import { createCanonicalUrl } from "../utils/canonical";
 import { getPageOgImageForPath } from "../data/page-og";
 import { context7AskNote, context7VerificationTag } from "../config/context7-ask.ts";
 
-const DEFAULT_OG_IMAGE = "https://tako.sh/assets/og.png?v=20260613";
+const DEFAULT_OG_IMAGE = "https://tako.sh/assets/og.png?v=20261021";
 
 export interface Props {
 	title?: string;
@@ -19,6 +19,8 @@ export interface Props {
 	type?: string;
 	structuredData?: Record<string, unknown> | Array<Record<string, unknown>>;
 	noCanonical?: boolean;
+	/** Let the page's own sections run edge to edge instead of the centered container. */
+	fullBleed?: boolean;
 }
 
 const {
@@ -29,6 +31,7 @@ const {
 	type = "website",
 	structuredData,
 	noCanonical = false,
+	fullBleed = false,
 } = Astro.props;
 
 const canonicalURL = createCanonicalUrl(Astro.url.pathname, Astro.site);
@@ -103,7 +106,7 @@ const pageStructuredData = structuredData
 			name="go-source"
 			content="tako.sh https://github.com/tako-sh/tako https://github.com/tako-sh/tako/tree/master{/dir} https://github.com/tako-sh/tako/blob/master{/dir}/{file}#L{line}"
 		/>
-		<meta name="theme-color" content="#E88783" />
+		<meta name="theme-color" content="#1F1B2B" />
 		<link rel="icon" type="image/svg+xml" href="/assets/logo.svg" />
 		<link
 			rel="apple-touch-icon"
@@ -119,14 +122,14 @@ const pageStructuredData = structuredData
 		<link rel="preconnect" href="https://fonts.googleapis.com" />
 		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 		<link
-			href="https://fonts.googleapis.com/css2?family=Caveat:wght@500&family=IBM+Plex+Mono:wght@400;700&family=Nunito:wght@400;600;700&family=Poppins:wght@600;700&display=swap"
+			href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap"
 			rel="stylesheet"
 			media="print"
 			onload="this.media='all'"
 		/>
 		<noscript>
 			<link
-				href="https://fonts.googleapis.com/css2?family=Caveat:wght@500&family=IBM+Plex+Mono:wght@400;700&family=Nunito:wght@400;600;700&family=Poppins:wght@600;700&display=swap"
+				href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap"
 				rel="stylesheet"
 			/>
 		</noscript>
@@ -156,7 +159,7 @@ const pageStructuredData = structuredData
 			<SiteHeader />
 
 			<div class="content-stack">
-				<main class="container"><slot /></main>
+				<main class={fullBleed ? "full-bleed" : "container"}><slot /></main>
 
 				<SiteFooter />
 			</div>

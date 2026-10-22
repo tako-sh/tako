@@ -1,70 +1,74 @@
 ---
-import DeployRolloutDiagram from "./DeployRolloutDiagram.astro";
+import HomeDeployRun from "./HomeDeployRun.astro";
+import HomeVpsMap from "./HomeVpsMap.astro";
+import CopyButton from "../CopyButton.astro";
 ---
 
-<section class="product-story" aria-label="Tako product areas">
-  <article class="product-chapter product-chapter-development">
-    <div class="hero-block-head product-block-head">
-      <h2 class="hero-block-label">Development</h2>
-      <span class="hero-block-rule" aria-hidden="true"></span>
+<section class="band" data-accent="mint" aria-labelledby="dev-title">
+  <div class="band-inner split split-reverse">
+    <div class="doc-text">
+      <h2 class="section-title" id="dev-title">Develop against the whole platform</h2>
+      <p>
+        <code>tako dev</code> brings the production platform with it: workflows,
+        channels, image optimization, secrets, and the same routing model your app uses
+        after deploy.
+      </p>
+      <a class="action doc-link" href="/docs/development/">Development docs</a>
     </div>
 
-    <div class="product-chapter-body">
-      <div class="product-copy">
-        <h3>Develop against the whole platform.</h3>
-        <p>
-          <code>tako dev</code> brings the production platform with it: workflows,
-          channels, image optimization, secrets, and the same routing model your app uses
-          after deploy.
-        </p>
-        <a class="product-link" href="/docs/development/">Development docs &rarr;</a>
+    <figure class="routes-panel" data-reveal>
+      <div class="panel-shade">
+      <div class="routes-head">
+        <span class="routes-app">demo</span>
+        <span class="routes-status"><span class="status-dot" aria-hidden="true"></span>running</span>
       </div>
-
-      <figure class="dev-video product-artifact" aria-label="Tako development server recording">
-        <div class="dev-video-frame">
-          <script src="https://asciinema.org/a/RXUo8Wh5i1FQIo2x.js" id="asciicast-RXUo8Wh5i1FQIo2x" async is:inline></script>
-          <noscript>
-            <a href="https://asciinema.org/a/RXUo8Wh5i1FQIo2x">Watch the tako dev recording</a>
-          </noscript>
+      <dl class="routes-list">
+        <div class="route">
+          <dt>routes</dt>
+          <dd><code>https://demo.test</code><span>your app, on real HTTPS</span></dd>
         </div>
-      </figure>
-    </div>
-  </article>
+        <div class="route">
+          <dt><span class="visually-hidden">routes</span></dt>
+          <dd><code>https://*.demo.test</code><span>wildcard subdomains</span></dd>
+        </div>
+        <div class="route">
+          <dt>lan</dt>
+          <dd><code>https://demo.local</code><span>phones and other devices on your network</span></dd>
+        </div>
+        <div class="route">
+          <dt>tunnel</dt>
+          <dd><code>public URL</code><span>share your local app beyond the network</span></dd>
+        </div>
+      </dl>
+      </div>
+      <figcaption class="figure-note">The routes <code>tako dev</code> prints for the demo app.</figcaption>
+    </figure>
+  </div>
+</section>
 
-  <article class="product-chapter product-chapter-deploy">
-    <div class="hero-block-head product-block-head">
-      <h2 class="hero-block-label">Deploy</h2>
-      <span class="hero-block-rule" aria-hidden="true"></span>
-    </div>
-
-    <div class="product-chapter-body product-chapter-body-reverse">
-      <div class="product-copy">
-        <h3>Fast rolling deploys to your VPS.</h3>
-        <p>
-          PaaS-style release safety on servers you own.
-        </p>
+<section class="band band-raised" data-accent="coral" aria-labelledby="deploy-title">
+  <div class="band-inner">
+    <div class="deploy-head">
+      <h2 class="section-title section-title-lg" id="deploy-title">Fast rolling deploys to your VPS</h2>
+      <div class="doc-text">
+        <p>PaaS-style release safety on servers you own.</p>
         <p>
           <code>tako deploy</code> gives you health-gated traffic switches,
           zero-downtime rollouts, and rollback without moving off your VPS.
         </p>
-        <a class="product-link" href="/docs/deployment/">Deployment docs &rarr;</a>
-      </div>
-
-      <div class="deploy-rollout product-artifact">
-        <DeployRolloutDiagram />
+        <a class="action doc-link" href="/docs/deployment/">Deployment docs</a>
       </div>
     </div>
-  </article>
 
-  <article class="product-chapter product-chapter-platform">
-    <div class="hero-block-head product-block-head">
-      <h2 class="hero-block-label">Platform</h2>
-      <span class="hero-block-rule" aria-hidden="true"></span>
-    </div>
+    <HomeDeployRun />
+  </div>
+</section>
 
-    <div class="product-chapter-body">
-      <div class="product-copy">
-        <h3>Your VPS becomes the platform.</h3>
+<section class="band" data-accent="gold" aria-labelledby="platform-title">
+  <div class="band-inner">
+    <div class="split">
+      <div class="doc-text">
+        <h2 class="section-title" id="platform-title">Your VPS becomes the platform</h2>
         <p>
           Your VPS stays yours. <code>tako-server</code> adds the platform layer:
           TLS, routing, processes, logs, secrets, rollbacks, and scale-to-zero
@@ -77,79 +81,88 @@ import DeployRolloutDiagram from "./DeployRolloutDiagram.astro";
           code, so an agent can wire the feature in the repo instead of
           assembling extra services.
         </p>
-        <a class="product-link" href="/docs/how-tako-works/">How Tako works &rarr;</a>
+        <a class="action doc-link" href="/docs/how-tako-works/">How Tako works</a>
       </div>
 
-      <div class="primitive-workbench product-artifact" aria-label="Tako primitive code examples" data-primitive-workbench>
-        <div class="primitive-tabs" role="tablist" aria-label="Primitive code examples">
-          <button
-            class="primitive-tab is-active"
-            type="button"
-            role="tab"
-            id="primitive-tab-secrets"
-            aria-selected="true"
-            aria-controls="primitive-panel-secrets"
-            data-primitive-tab="secrets"
-          >
-            secrets
-          </button>
-          <button
-            class="primitive-tab"
-            type="button"
-            role="tab"
-            id="primitive-tab-env"
-            aria-selected="false"
-            aria-controls="primitive-panel-env"
-            data-primitive-tab="env"
-          >
-            env
-          </button>
-          <button
-            class="primitive-tab"
-            type="button"
-            role="tab"
-            id="primitive-tab-workflows"
-            aria-selected="false"
-            aria-controls="primitive-panel-workflows"
-            data-primitive-tab="workflows"
-          >
-            workflows
-          </button>
-          <button
-            class="primitive-tab"
-            type="button"
-            role="tab"
-            id="primitive-tab-channels"
-            aria-selected="false"
-            aria-controls="primitive-panel-channels"
-            data-primitive-tab="channels"
-          >
-            channels
-          </button>
-          <button
-            class="primitive-tab"
-            type="button"
-            role="tab"
-            id="primitive-tab-images"
-            aria-selected="false"
-            aria-controls="primitive-panel-images"
-            data-primitive-tab="images"
-          >
-            images
-          </button>
-        </div>
+      <HomeVpsMap />
+    </div>
 
-        <div class="primitive-panels">
-          <section
-            class="primitive-panel"
-            id="primitive-panel-channels"
-            role="tabpanel"
-            aria-labelledby="primitive-tab-channels"
-            data-primitive-panel="channels"
-            hidden
-          >
-            <div class="primitive-editor">
-              <pre><code><span class="syntax-comment">// src/channels/deploys.ts</span>
+    <div class="panel-shade primitive-frame">
+    <div class="panel primitive-workbench" aria-label="Tako primitive code examples" data-primitive-workbench>
+      <div class="primitive-tabs" role="tablist" aria-label="Primitive code examples">
+        <button
+          class="primitive-tab is-active"
+          type="button"
+          role="tab"
+          id="primitive-tab-secrets"
+          aria-selected="true"
+          aria-controls="primitive-panel-secrets"
+          data-primitive-tab="secrets"
+        >
+          database.ts
+        </button>
+        <button
+          class="primitive-tab"
+          type="button"
+          role="tab"
+          id="primitive-tab-env"
+          aria-selected="false"
+          aria-controls="primitive-panel-env"
+          data-primitive-tab="env"
+          tabindex="-1"
+        >
+          runtime.ts
+        </button>
+        <button
+          class="primitive-tab"
+          type="button"
+          role="tab"
+          id="primitive-tab-workflows"
+          aria-selected="false"
+          aria-controls="primitive-panel-workflows"
+          data-primitive-tab="workflows"
+          tabindex="-1"
+        >
+          ship-order.ts
+        </button>
+        <button
+          class="primitive-tab"
+          type="button"
+          role="tab"
+          id="primitive-tab-channels"
+          aria-selected="false"
+          aria-controls="primitive-panel-channels"
+          data-primitive-tab="channels"
+          tabindex="-1"
+        >
+          deploys.ts
+        </button>
+        <button
+          class="primitive-tab"
+          type="button"
+          role="tab"
+          id="primitive-tab-images"
+          aria-selected="false"
+          aria-controls="primitive-panel-images"
+          data-primitive-tab="images"
+          tabindex="-1"
+        >
+          hero-image.tsx
+        </button>
+      </div>
+
+      <div class="primitive-panels">
+        <CopyButton class="primitive-copy" ariaLabel="Copy code" title="Copy code" />
+        <section
+          class="primitive-panel"
+          id="primitive-panel-channels"
+          role="tabpanel"
+          aria-labelledby="primitive-tab-channels"
+          data-primitive-panel="channels"
+          hidden
+        >
+          <div class="primitive-editor">
+            <pre><code><span class="syntax-comment">// src/channels/deploys.ts</span>
 <span class="syntax-comment">// durable app events, no realtime vendor</span>
 <span class="syntax-keyword">import</span> &#123; defineChannel &#125; <span class="syntax-keyword">from</span> <span class="syntax-string">"tako.sh"</span>;
 
@@ -177,19 +190,19 @@ import DeployRolloutDiagram from "./DeployRolloutDiagram.astro";
     state: <span class="syntax-string">"healthy"</span>,
   &#125;,
 &#125;);</code></pre>
-            </div>
-          </section>
+          </div>
+        </section>
 
-          <section
-            class="primitive-panel"
-            id="primitive-panel-workflows"
-            role="tabpanel"
-            aria-labelledby="primitive-tab-workflows"
-            data-primitive-panel="workflows"
-            hidden
-          >
-            <div class="primitive-editor">
-              <pre><code><span class="syntax-comment">// src/workflows/ship-order.ts</span>
+        <section
+          class="primitive-panel"
+          id="primitive-panel-workflows"
+          role="tabpanel"
+          aria-labelledby="primitive-tab-workflows"
+          data-primitive-panel="workflows"
+          hidden
+        >
+          <div class="primitive-editor">
+            <pre><code><span class="syntax-comment">// src/workflows/ship-order.ts</span>
 <span class="syntax-comment">// checkpoint steps, park for approval, then resume</span>
 <span class="syntax-keyword">import</span> &#123; defineWorkflow &#125; <span class="syntax-keyword">from</span> <span class="syntax-string">"tako.sh"</span>;
 
@@ -215,19 +228,19 @@ import DeployRolloutDiagram from "./DeployRolloutDiagram.astro";
 <span class="syntax-keyword">await</span> signal(<span class="syntax-string">"approval:"</span> + orderId, &#123;
   approved: <span class="syntax-keyword">true</span>,
 &#125;);</code></pre>
-            </div>
-          </section>
+          </div>
+        </section>
 
-          <section
-            class="primitive-panel"
-            id="primitive-panel-images"
-            role="tabpanel"
-            aria-labelledby="primitive-tab-images"
-            data-primitive-panel="images"
-            hidden
-          >
-            <div class="primitive-editor">
-              <pre><code><span class="syntax-comment">// src/components/hero-image.tsx</span>
+        <section
+          class="primitive-panel"
+          id="primitive-panel-images"
+          role="tabpanel"
+          aria-labelledby="primitive-tab-images"
+          data-primitive-panel="images"
+          hidden
+        >
+          <div class="primitive-editor">
+            <pre><code><span class="syntax-comment">// src/components/hero-image.tsx</span>
 <span class="syntax-comment">// optimized image URLs from app code</span>
 <span class="syntax-keyword">import</span> &#123; imageUrl &#125; <span class="syntax-keyword">from</span> <span class="syntax-string">"tako.sh"</span>;
 
@@ -247,19 +260,19 @@ import DeployRolloutDiagram from "./DeployRolloutDiagram.astro";
     /&gt;
   );
 &#125;</code></pre>
-            </div>
-          </section>
+          </div>
+        </section>
 
-          <section
-            class="primitive-panel"
-            id="primitive-panel-env"
-            role="tabpanel"
-            aria-labelledby="primitive-tab-env"
-            data-primitive-panel="env"
-            hidden
-          >
-            <div class="primitive-editor">
-              <pre><code><span class="syntax-comment">// src/config/runtime.ts</span>
+        <section
+          class="primitive-panel"
+          id="primitive-panel-env"
+          role="tabpanel"
+          aria-labelledby="primitive-tab-env"
+          data-primitive-panel="env"
+          hidden
+        >
+          <div class="primitive-editor">
+            <pre><code><span class="syntax-comment">// src/config/runtime.ts</span>
 <span class="syntax-comment">// runtime metadata and typed public vars</span>
 <span class="syntax-keyword">import</span> &#123; tako &#125; <span class="syntax-keyword">from</span> <span class="syntax-string">"tako.sh"</span>;
 
@@ -273,18 +286,18 @@ import DeployRolloutDiagram from "./DeployRolloutDiagram.astro";
 <span class="syntax-keyword">export const</span> publicConfig = &#123;
   origin: process.env.PUBLIC_ORIGIN,
 &#125;;</code></pre>
-            </div>
-          </section>
+          </div>
+        </section>
 
-          <section
-            class="primitive-panel is-active"
-            id="primitive-panel-secrets"
-            role="tabpanel"
-            aria-labelledby="primitive-tab-secrets"
-            data-primitive-panel="secrets"
-          >
-            <div class="primitive-editor">
-              <pre><code><span class="syntax-comment">// src/server/database.ts</span>
+        <section
+          class="primitive-panel is-active"
+          id="primitive-panel-secrets"
+          role="tabpanel"
+          aria-labelledby="primitive-tab-secrets"
+          data-primitive-panel="secrets"
+        >
+          <div class="primitive-editor">
+            <pre><code><span class="syntax-comment">// src/server/database.ts</span>
 <span class="syntax-comment">// typed secret reads, no env files</span>
 <span class="syntax-keyword">import</span> &#123; tako &#125; <span class="syntax-keyword">from</span> <span class="syntax-string">"tako.sh"</span>;
 
@@ -295,18 +308,28 @@ import DeployRolloutDiagram from "./DeployRolloutDiagram.astro";
     ssl: tako.isProd,
   &#125;);
 &#125;</code></pre>
-            </div>
-          </section>
-        </div>
+          </div>
+        </section>
       </div>
     </div>
-  </article>
+    </div>
+  </div>
 </section>
 
 <script>
   const workbenches = document.querySelectorAll<HTMLElement>("[data-primitive-workbench]");
 
   for (const workbench of workbenches) {
+    // Line numbers in a muted gutter, so each sample reads like a file in an editor.
+    for (const pre of workbench.querySelectorAll<HTMLElement>(".primitive-editor pre")) {
+      const lines = (pre.textContent ?? "").split("\n").length;
+      const gutter = document.createElement("span");
+      gutter.className = "line-gutter";
+      gutter.setAttribute("aria-hidden", "true");
+      gutter.textContent = Array.from({ length: lines }, (_, index) => String(index + 1)).join("\n");
+      pre.prepend(gutter);
+    }
+
     const tabs = [...workbench.querySelectorAll<HTMLButtonElement>("[data-primitive-tab]")];
     const panels = [...workbench.querySelectorAll<HTMLElement>("[data-primitive-panel]")];
 
@@ -324,6 +347,25 @@ import DeployRolloutDiagram from "./DeployRolloutDiagram.astro";
         panel.hidden = !selected;
       }
     };
+
+    // Copy copies the open file's code, without the line numbers.
+    const copy = workbench.querySelector<HTMLButtonElement>(".primitive-copy");
+    const copyLabel = copy?.querySelector("[data-copy-label]");
+    copy?.addEventListener("click", async () => {
+      const code = panels.find((panel) => !panel.hidden)?.querySelector("code");
+      let copied = true;
+      try {
+        await navigator.clipboard.writeText(code?.textContent?.trim() ?? "");
+      } catch {
+        copied = false;
+      }
+      copy.classList.toggle("is-copied", copied);
+      if (copyLabel) copyLabel.textContent = copied ? "Copied" : "Failed";
+      setTimeout(() => {
+        copy.classList.remove("is-copied");
+        if (copyLabel) copyLabel.textContent = "Copy";
+      }, 1400);
+    });
 
     workbench.addEventListener("click", (event) => {
       if (!(event.target instanceof Element)) return;

@@ -3,10 +3,19 @@ import HugeIcon from "../components/HugeIcon.astro";
 import BaseLayout from "../layouts/BaseLayout.astro";
 import CopyButton from "../components/CopyButton.astro";
 import HomeScripts from "../components/home/HomeScripts.astro";
-import HomeStyles from "../components/home/HomeStyles.astro";
+import HomeDocStyles from "../components/home/HomeDocStyles.astro";
+import HomeDevPlayer from "../components/home/HomeDevPlayer.astro";
+import HomePipeline from "../components/home/HomePipeline.astro";
+import HomeBlockStyles from "../components/home/HomeBlockStyles.astro";
 import HomeProductSections from "../components/home/HomeProductSections.astro";
-import PerformanceResultsChart from "../components/home/PerformanceResultsChart.astro";
+import HomeOutOfTheBox from "../components/home/HomeOutOfTheBox.astro";
+import HomeBenchmark from "../components/home/HomeBenchmark.astro";
+import HomeWhoFor from "../components/home/HomeWhoFor.astro";
+import HomeMotion from "../components/home/HomeMotion.astro";
+import HomeTakosophy from "../components/home/HomeTakosophy.astro";
 import ExternalLinkIcon from "@hugeicons/core-free-icons/LinkSquare01Icon";
+import HomeSpot from "../components/home/HomeSpot.astro";
+import peek from "../assets/brand/peek.png";
 
 const homeStructuredData = {
   "@context": "https://schema.org",
@@ -33,134 +42,122 @@ const homeStructuredData = {
   ],
 };
 ---
+
 <BaseLayout
   title="Run apps on your own servers - Tako"
   description="Deploy apps to your own servers with rolling deploys, TLS, health checks, logs, and secrets for Node.js, Bun, Go, and more."
   structuredData={homeStructuredData}
+  fullBleed
 >
-  <section class="hero">
-    <div
-      class="panel-hanger"
-      id="mit-hanger"
-      aria-label="License: MIT (includes Apache-2.0 dependencies)"
-      title="Project code is MIT; some dependencies (for example Pingora) are Apache-2.0. See THIRD_PARTY_NOTICES.md."
-    >
-      <span class="panel-pin" id="mit-pin" aria-hidden="true"></span>
-      <div class="panel-arm">
-        <span class="panel-thread"></span>
-        <div class="panel-tag" id="mit-tag">
-          <span class="panel-tag-label">license</span>
-          <span class="panel-tag-value">MIT</span>
+  <div class="home">
+    <section class="band hero" data-accent="coral" aria-labelledby="hero-title">
+      <div class="band-inner">
+        <div class="hero-top">
+          <h1 class="hero-title" id="hero-title">your app belongs on your servers</h1>
+          <div class="hero-side">
+          <p class="hero-sub">
+            The platform layer that makes them feel like a PaaS. Tako is an opinionated
+            development and deployment tool for self-hosted apps. Runs Node.js, Bun and Go
+            apps, or anything with a Dockerfile.
+          </p>
+
+          <div class="hero-actions">
+            <a class="button" href="/docs/quickstart/">Get started</a>
+            <a class="action" href="https://demo.tako.sh" target="_blank" rel="noopener noreferrer">
+              Live demo<HugeIcon icon={ExternalLinkIcon} class="button-icon" aria-hidden="true" focusable="false" />
+            </a>
+            <a class="action" href="/docs/">Read the docs</a>
+          </div>
+
+          <div class="hero-commands">
+            <p class="command-label">Install with one command</p>
+            <div class="command-row">
+              <code class="command-text"><span class="prompt" aria-hidden="true">$ </span><span id="typed-cmd">curl -fsSL https://tako.sh/install.sh | sh</span></code>
+              <CopyButton variant="command" id="copy" ariaLabel="Copy install command" title="Copy install command" />
+            </div>
+            <p class="command-label">Or ask Codex, Claude, or another agent</p>
+            <div class="command-row">
+              <span class="command-text" id="agent-prompt-text">Move this project to tako.sh.</span>
+              <CopyButton variant="agent" id="agent-copy" ariaLabel="Copy agent prompt" title="Copy agent prompt" />
+            </div>
+          </div>
+
+          <p class="hero-license">
+            Open source under the <a href="https://github.com/tako-sh/tako/blob/master/LICENSE" target="_blank" rel="noopener noreferrer" title="Project code is MIT. Some dependencies, such as Pingora, are Apache-2.0.">MIT license</a>.
+          </p>
+          </div>
+        </div>
+
+        <div class="hero-stage">
+          <HomeSpot class="hero-peek" src={peek} sizes="(max-width: 640px) 104px, 240px" origin="50% 67.8%" mouth="60% 54%" animated eager />
+          <HomeDevPlayer />
         </div>
       </div>
-    </div>
-    <h1 class="title">Your app <span class="title-mid">belongs<br /> on</span> <span class="accent">your servers</span></h1>
-    <p class="subtitle">
-      The platform layer that makes them feel like a PaaS.
-    </p>
+    </section>
 
-    <div class="command-card">
-      <div class="command-head">
-        <span class="command-caption">install with one command</span>
-      </div>
-      <div class="command-body">
-        <span class="prompt">$</span>
-        <span class="cmd" id="typed-cmd">curl -fsSL https://tako.sh/install.sh | sh</span>
-        <span class="cursor" aria-hidden="true"></span>
-        <CopyButton variant="command" id="copy" ariaLabel="copy install command" title="copy install command" label="copy" />
-      </div>
-    </div>
-    <div
-      class="agent-prompt-card"
-      aria-label="Prompt to copy into an agent"
-    >
-      <div class="agent-prompt-body">
-        <div class="agent-prompt-copy">
-          <span>ask Codex, Claude, or another agent</span>
-          <p id="agent-prompt-text">Move this project to tako.sh.</p>
+    <section class="band band-raised" data-accent="mint" aria-labelledby="why-title">
+      <div class="band-inner">
+        <div class="why">
+          <h2 class="why-title" id="why-title">Deploying doesn&rsquo;t have to be dramatic.</h2>
+          <div class="why-answer">
+            <p class="why-lead">
+              Tako brings back the old upload-and-go energy, with modern safety rails.
+              Smooth local development, boring production deploys. The good kind of boring.
+            </p>
+            <ul class="why-points">
+              <li>Ship changes quickly.</li>
+              <li>See results fast.</li>
+              <li>Keep your flow instead of fighting platform glue.</li>
+            </ul>
+          </div>
         </div>
-        <CopyButton variant="agent" id="agent-copy" ariaLabel="copy agent prompt" title="copy agent prompt" label="copy" />
       </div>
-    </div>
-    <div class="hero-actions">
-      <a class="btn btn-primary" href="/docs/quickstart/">get started</a>
-      <a class="cta-link hero-actions-link hero-demo-link" href="https://demo.tako.sh" target="_blank" rel="noopener noreferrer">
-        <span>live demo</span>
-        <HugeIcon icon={ExternalLinkIcon} class="hero-demo-icon" aria-hidden="true" focusable="false" />
-      </a>
-      <a class="cta-link hero-actions-link" href="/docs/">or read the docs &rarr;</a>
-    </div>
-  </section>
+    </section>
 
-  <section class="philosophy-section">
-    <h2 class="philosophy-label">Takosophy</h2>
-    <p class="philosophy-text">
-      Full <strong class="accent-coral">control.</strong> A real server, a real runtime &mdash; what runs locally runs in production.
-    </p>
-    <p class="philosophy-text">
-      Unapologetically <strong class="accent-mint">opinionated.</strong> No config rabbit holes &mdash; Tako picks the defaults so you can ship.
-    </p>
-    <p class="philosophy-text">
-      Built for the <strong class="accent-gold">impatient.</strong> Every step is optimized to get your code live fast.
-    </p>
-  </section>
+    <HomeTakosophy />
 
-  <section class="workflow-section">
-    <div class="hero-block-head">
-      <h2 class="hero-block-label">Three commands and you're live</h2>
-      <span class="hero-block-rule" aria-hidden="true"></span>
-    </div>
-    <ol class="workflow-steps">
-      <li class="workflow-step">
-        <a href="/docs/quickstart/" class="workflow-link">
-          <span class="workflow-orb workflow-orb-1" aria-hidden="true">1</span>
-          <code class="workflow-cmd">tako init</code>
-          <p class="workflow-desc">Detect runtime, create config</p>
-        </a>
-      </li>
-      <li class="workflow-step">
-        <a href="/docs/development/" class="workflow-link">
-          <span class="workflow-orb workflow-orb-2" aria-hidden="true">2</span>
-          <code class="workflow-cmd">tako dev</code>
-          <p class="workflow-desc">Develop locally with HTTPS</p>
-        </a>
-      </li>
-      <li class="workflow-step">
-        <a href="/docs/deployment/" class="workflow-link">
-          <span class="workflow-orb workflow-orb-3" aria-hidden="true">3</span>
-          <code class="workflow-cmd">tako deploy</code>
-          <p class="workflow-desc">Build, upload, rolling update</p>
-        </a>
-      </li>
-    </ol>
-  </section>
+    <section class="band band-raised band-compact" data-accent="coral" aria-labelledby="steps-title">
+      <div class="band-inner">
+        <h2 class="section-title" id="steps-title">Three commands and you&rsquo;re live</h2>
+        <HomePipeline />
+      </div>
+    </section>
 
-  <HomeProductSections />
+    <HomeProductSections />
 
-  <section class="performance-section">
-    <div class="hero-block-head">
-      <h2 class="hero-block-label">Ready for serious load</h2>
-      <span class="hero-block-rule" aria-hidden="true"></span>
-    </div>
-    <div class="performance-body">
-      <PerformanceResultsChart />
-      <a href="/performance/" class="performance-link performance-chart-link">full report &rarr;</a>
-      <div class="performance-copy">
-        <p>
-          Tako can handle <span class="performance-mark performance-traffic">heavy traffic</span> even on modest hardware: one small VM served 12.5k HTTPS 200 RPS at 5k concurrency, with <span class="performance-mark performance-clean">zero client errors</span> up to 20k concurrency.
-          In the same public run, it outpaced <a href="https://caddyserver.com/" class="performance-reference-link" target="_blank" rel="noopener noreferrer nofollow">Caddy</a> and <a href="https://www.envoyproxy.io/" class="performance-reference-link" target="_blank" rel="noopener noreferrer nofollow">Envoy</a> under heavy HTTPS load.
+    <HomeOutOfTheBox />
+
+    <HomeBenchmark />
+
+    <HomeWhoFor />
+
+    <section class="band cta" data-accent="ink" aria-labelledby="cta-title">
+      <div class="band-inner">
+        <h2 class="cta-title" id="cta-title">Put it on your server.</h2>
+        <div class="cta-commands">
+          <p class="command-label">Install with one command</p>
+          <div class="command-row">
+            <code class="command-text"><span class="prompt" aria-hidden="true">$ </span><span id="cta-install-cmd">curl -fsSL https://tako.sh/install.sh | sh</span></code>
+            <CopyButton variant="command" id="cta-copy" ariaLabel="Copy install command" title="Copy install command" />
+          </div>
+          <p class="command-label">Or ask Codex, Claude, or another agent</p>
+          <div class="command-row">
+            <span class="command-text" id="cta-agent-prompt">Move this project to tako.sh.</span>
+            <CopyButton variant="agent" id="cta-agent-copy" ariaLabel="Copy agent prompt" title="Copy agent prompt" />
+          </div>
+        </div>
+        <div class="hero-actions">
+          <a class="button button-ink" href="/docs/quickstart/">Get started</a>
+          <a class="action" href="/docs/how-tako-works/">Read how Tako works</a>
+        </div>
+        <p class="cta-star">
+          Already enjoying Tako? Show it some love with a <a href="https://github.com/tako-sh/tako" target="_blank" rel="noopener noreferrer">star on GitHub</a>.
         </p>
       </div>
-    </div>
-  </section>
-
-  <section class="cta-section">
-    <p class="cta-text">Stop configuring.<br class="mobile-break"> Start shipping.</p>
-    <div class="cta-actions">
-      <a href="/docs/quickstart/" class="btn cta-btn">get started</a>
-      <a href="/docs/how-tako-works/" class="cta-link">or read how Tako works &rarr;</a>
-    </div>
-  </section>
-  <HomeStyles />
+    </section>
+  </div>
+  <HomeDocStyles />
+  <HomeBlockStyles />
   <HomeScripts />
+  <HomeMotion />
 </BaseLayout>

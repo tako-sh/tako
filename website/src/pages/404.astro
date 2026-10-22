@@ -10,14 +10,14 @@ import BaseLayout from "../layouts/BaseLayout.astro";
 
   <section class="notfound">
     <p class="code">404</p>
-    <h1 class="title">This tentacle leads <span class="accent">nowhere</span></h1>
+    <h1 class="title">This tentacle leads nowhere</h1>
     <p class="subtitle">
       We couldn't find the page you're looking for. It may have been redeployed out of existence.
     </p>
 
     <div class="actions">
-      <a class="btn btn-primary" href="/">back home</a>
-      <a class="cta-link" href="/docs/">or read the docs &rarr;</a>
+      <a class="button" href="/">back home</a>
+      <a class="action" href="/docs/">or read the docs</a>
     </div>
   </section>
 
@@ -34,16 +34,15 @@ import BaseLayout from "../layouts/BaseLayout.astro";
   }
 
   .code {
-    font-family: "IBM Plex Mono", monospace;
+    font-family: var(--font-mono);
     font-size: clamp(64px, 14vw, 148px);
     font-weight: 700;
     line-height: 1;
     color: var(--primary-text);
-    letter-spacing: -0.04em;
   }
 
   .title {
-    font-family: "Poppins", "Nunito", sans-serif;
+    font-family: var(--font-heading);
     font-size: clamp(26px, 4.5vw, 40px);
     font-weight: 700;
     line-height: 1.2;
@@ -52,9 +51,6 @@ import BaseLayout from "../layouts/BaseLayout.astro";
     text-wrap: balance;
   }
 
-  .title .accent {
-    color: var(--primary-text);
-  }
 
   .subtitle {
     font-size: 17px;
@@ -72,65 +68,6 @@ import BaseLayout from "../layouts/BaseLayout.astro";
     margin-top: 8px;
   }
 
-  .btn {
-    border: 1.5px solid var(--primary-soft-border);
-    border-radius: 999px;
-    background: var(--primary-soft);
-    color: var(--ink);
-    padding: 10px 20px;
-    font-family: "Nunito", sans-serif;
-    font-size: 16px;
-    font-weight: 700;
-    line-height: 1;
-    text-decoration: none;
-    cursor: pointer;
-    transition: background 0.15s ease, border-color 0.15s ease,
-      transform 0.15s ease, box-shadow 0.15s ease;
-  }
-
-  .btn:hover {
-    transform: translateY(-1px);
-    background: var(--primary-soft-hover);
-    border-color: var(--primary-soft-hover-border);
-  }
-
-  .btn-primary {
-    border-color: var(--primary);
-    background: var(--primary);
-    color: var(--ink);
-    padding: 12px 26px;
-    font-size: 17px;
-    box-shadow: 0 6px 16px var(--primary-shadow);
-  }
-
-  .btn-primary:hover {
-    background: color-mix(in srgb, var(--primary) 92%, var(--ink));
-    border-color: color-mix(in srgb, var(--primary) 92%, var(--ink));
-    box-shadow: 0 8px 20px var(--primary-shadow-lg);
-  }
-
-  .btn:focus-visible,
-  .cta-link:focus-visible {
-    outline: 2px solid var(--primary-text);
-    outline-offset: 2px;
-  }
-
-  .cta-link {
-    color: var(--primary-text);
-    font-family: "Nunito", sans-serif;
-    font-size: 15px;
-    font-weight: 700;
-    text-decoration: none;
-    border-bottom: 1.5px dashed rgba(196, 96, 92, 0.45);
-    padding-bottom: 2px;
-    transition: color 0.15s ease, border-color 0.15s ease;
-  }
-
-  .cta-link:hover {
-    color: #a04b47;
-    border-bottom-color: rgba(196, 96, 92, 0.85);
-  }
-
   @media (max-width: 520px) {
     .notfound {
       padding-top: 28px;
@@ -141,10 +78,4 @@ import BaseLayout from "../layouts/BaseLayout.astro";
     }
   }
 
-  @media (prefers-reduced-motion: reduce) {
-    .btn,
-    .cta-link {
-      transition: none;
-    }
-  }
 </style>

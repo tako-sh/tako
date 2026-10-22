@@ -79,56 +79,6 @@
 			})();
 
 			(function () {
-				const el = document.getElementById("logo-text");
-				if (!el) return;
-				if (window.location.pathname !== "/") {
-					el.textContent = "tako";
-					el.style.fontFamily = '"Nunito", sans-serif';
-					return;
-				}
-				const mono = '"IBM Plex Mono", monospace';
-				const sans = '"Nunito", sans-serif';
-				function rbit() {
-					return Math.random() > 0.5 ? "1" : "0";
-				}
-
-				// Phase 1: show たこ for 700ms
-				el.textContent = "たこ";
-				setTimeout(function () {
-					// Phase 2: clean swap to binary
-					el.style.fontFamily = mono;
-					let b = "";
-					for (let j = 0; j < 4; j++) b += rbit();
-					el.textContent = b;
-					// Brief scramble
-					let s = 0;
-					const scramble = setInterval(function () {
-						let b = "";
-						for (let j = 0; j < 4; j++) b += rbit();
-						el.textContent = b;
-						s++;
-						if (s >= 6) {
-							clearInterval(scramble);
-							// Phase 3: binary → tako, letter by letter
-							let cur = el.textContent ?? "";
-							let k = 0;
-							const toTako = setInterval(function () {
-								cur = "tako".slice(0, k + 1) + cur.slice(k + 1);
-								el.textContent = cur;
-								if (k === 0) {
-									el.style.fontFamily = sans;
-								}
-								k++;
-								if (k >= 4) {
-									clearInterval(toTako);
-								}
-							}, 150);
-						}
-					}, 70);
-				}, 700);
-			})();
-
-			(function () {
 				if (
 					!("modelContext" in navigator) ||
 					typeof navigator.modelContext !== "object" ||

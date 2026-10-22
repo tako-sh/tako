@@ -1,7 +1,9 @@
 <script>
   for (const action of [
-    { button: "copy", content: "typed-cmd", label: "copy install command" },
-    { button: "agent-copy", content: "agent-prompt-text", label: "copy agent prompt" },
+    { button: "copy", content: "typed-cmd", label: "Copy install command" },
+    { button: "agent-copy", content: "agent-prompt-text", label: "Copy agent prompt" },
+    { button: "cta-copy", content: "cta-install-cmd", label: "Copy install command" },
+    { button: "cta-agent-copy", content: "cta-agent-prompt", label: "Copy agent prompt" },
   ]) {
     const button = document.getElementById(action.button);
     const content = document.getElementById(action.content);
@@ -16,15 +18,15 @@
         copied = false;
       }
 
-      const message = copied ? "copied" : "failed";
+      const message = copied ? "Copied" : "Failed";
       button.classList.toggle("is-copied", copied);
       if (label) label.textContent = message;
-      button.setAttribute("aria-label", copied ? "copied" : "copy failed");
-      button.setAttribute("title", copied ? "copied" : "copy failed");
+      button.setAttribute("aria-label", copied ? "Copied" : "Copy failed");
+      button.setAttribute("title", copied ? "Copied" : "Copy failed");
 
       setTimeout(() => {
         button.classList.remove("is-copied");
-        if (label) label.textContent = "copy";
+        if (label) label.textContent = "Copy";
         button.setAttribute("aria-label", action.label);
         button.setAttribute("title", action.label);
       }, 1400);
