@@ -3,5 +3,5 @@
   "options": {
     "typeAware": true
   },
-  "ignorePatterns": ["e2e/fixtures"]
+  "ignorePatterns": ["e2e/fixtures", ".claude/"]
 }

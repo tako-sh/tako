@@ -1,0 +1,14 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "design-system-font",
+        "value": "${encodeuricomponent(family",
+        "createdAt": "2026-10-21T15:07:52.533Z",
+        "reason": "Agent: not a font; it is the Google Fonts URL template in the OG font loader (src/utils/blog-og.tsx, page-og.tsx). JetBrains Mono, the real face, is documented in DESIGN.md."
+      }
+    ]
+  }
+}

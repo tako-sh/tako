@@ -1,7 +1,8 @@
-.claude/
+.claude/settings.local.json
+.claude/skills/impeccable/scripts/bin/
+**/.impeccable/review/
+**/.impeccable/critique/
 .next/
-!.claude/skills/
-!.claude/commands/
 node_modules/
 target/
 local-dev/
