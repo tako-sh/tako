@@ -257,5 +257,5 @@ without keeping a terminal attached. The dev daemon owns the app process.
 the selected configuration. Re-run `tako dev --restart --background --json` after
 changing configuration, or use an attached `tako dev` session for config watching.
 
-The [Tako MCP server](/docs/agents/) uses this finite startup mode automatically.
+The [Tako MCP server](/agents/) uses this finite startup mode automatically.
 Its `tako_dev_logs` tool reads recent local app logs without a continuous stream.
