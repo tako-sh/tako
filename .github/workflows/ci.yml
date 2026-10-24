@@ -284,7 +284,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Check website changes
+      - name: Check website and agent skill changes
         id: changes
         shell: bash
         run: |
@@ -300,7 +300,7 @@ jobs:
             base="${{ github.event.before }}"
           fi
 
-          if [ -n "$base" ] && ! [[ "$base" =~ ^0+$ ]] && git cat-file -e "$base^{commit}" 2>/dev/null && git diff --name-only "$base" "${{ github.sha }}" | grep -E '^website/' >/dev/null; then
+          if [ -n "$base" ] && ! [[ "$base" =~ ^0+$ ]] && git cat-file -e "$base^{commit}" 2>/dev/null && git diff --name-only "$base" "${{ github.sha }}" | grep -E '^(website/|sdk/javascript/skills/)' >/dev/null; then
             echo "website=true" >> "$GITHUB_OUTPUT"
           else
             echo "website=false" >> "$GITHUB_OUTPUT"
@@ -337,6 +337,12 @@ jobs:
       - name: Build website
         if: steps.changes.outputs.website == 'true'
         run: bun run --filter website build --silent
+
+      - name: Verify agent discovery files
+        if: steps.changes.outputs.website == 'true'
+        run: |
+          bun run --filter website verify
+          git diff --exit-code -- skills .agents/skills website/public/.well-known/agent-skills
 
       - name: Check links
         if: steps.changes.outputs.website == 'true'

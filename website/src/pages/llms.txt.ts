@@ -1,12 +1,41 @@
 import { getCollection } from "astro:content";
 import type { APIContext } from "astro";
-import { llmsCoreSections, renderLlmsTxt, type LlmsSection } from "../utils/llms";
+import { parseFrontmatter } from "@astrojs/markdown-remark";
+import docsConfig from "../../docs/docs.json";
+import { llmsProjectSection, renderLlmsTxt, type LlmsSection } from "../utils/llms";
+
+const docsSources = import.meta.glob<string>("/docs/**/*.md", {
+  query: "?raw",
+  import: "default",
+  eager: true,
+});
 
 export async function GET(context: APIContext) {
   const posts = await getCollection("blog");
   const site = context.site ?? new URL("https://tako.sh");
 
-  const coreSections = llmsCoreSections.map((section) => ({
+  const docsSections: LlmsSection[] = docsConfig.navigation.groups.map((group) => ({
+    title: group.group,
+    links: group.pages.map((page) => {
+      const source = docsSources[`/docs/${page}.md`];
+      if (source === undefined) {
+        throw new Error(`Docs7 navigation references missing page: ${page}`);
+      }
+      const { frontmatter } = parseFrontmatter(source);
+      const title: unknown = frontmatter["title"];
+      const description: unknown = frontmatter["description"];
+      if (typeof title !== "string" || !title.trim()) {
+        throw new Error(`Docs7 page ${page} needs a title for llms.txt`);
+      }
+      return {
+        title,
+        url: page === "index" ? "/docs/" : `/docs/${page}/`,
+        ...(typeof description === "string" ? { description } : {}),
+      };
+    }),
+  }));
+
+  const coreSections = [...docsSections, llmsProjectSection].map((section) => ({
     ...section,
     links: section.links.map((link) => ({
       ...link,
@@ -19,7 +48,7 @@ export async function GET(context: APIContext) {
     .sort((a, b) => new Date(b.data.date).getTime() - new Date(a.data.date).getTime())
     .map((post) => ({
       title: post.data.title,
-      url: new URL(`/blog/${post.id}/`, site).toString(),
+      url: new URL(`/blog/${post.id}.md`, site).toString(),
       description: post.data.description,
     }));
 
@@ -28,7 +57,7 @@ export async function GET(context: APIContext) {
       ? [...coreSections, { title: "Optional", links: optionalLinks }]
       : coreSections;
 
-  return new Response(renderLlmsTxt("Tako", sections), {
+  return new Response(renderLlmsTxt(docsConfig.name, sections), {
     headers: {
       "Content-Type": "text/plain; charset=utf-8",
     },
