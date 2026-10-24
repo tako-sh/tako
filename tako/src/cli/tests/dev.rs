@@ -237,3 +237,13 @@ fn dev_non_reserved_positional_is_child_command() {
         other => panic!("expected Run, got {other:?}"),
     }
 }
+
+#[test]
+fn dev_background_parses_with_json_for_finite_agent_startup() {
+    let cli = Cli::try_parse_from(["tako", "dev", "--background", "--json"]).unwrap();
+    let Some(Commands::Dev { args, .. }) = cli.command else {
+        panic!("expected dev")
+    };
+    assert!(args.background);
+    assert!(cli.json);
+}

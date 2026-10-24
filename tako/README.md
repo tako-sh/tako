@@ -5,6 +5,7 @@ Rust crate for the `tako` CLI, `tako-dev-server`, and `tako-dev-proxy` local bin
 ## Responsibilities
 
 - Project initialization (`tako init`).
+- Project-local coding agent setup (`tako agents`) and the stdio MCP server (`tako mcp`).
 - Local development flow (`tako dev`, `tako doctor`).
 - Local development daemon runtime (`tako-dev-server`).
 - macOS dev proxy for loopback-only local ingress (`tako-dev-proxy`).
@@ -18,6 +19,8 @@ Rust crate for the `tako` CLI, `tako-dev-server`, and `tako-dev-proxy` local bin
 Primary subcommands:
 
 - `init`
+- `agents`
+- `mcp`
 - `logs`
 - `dev`
 - `doctor`
@@ -103,3 +106,19 @@ cargo run -p tako-cli --bin tako -- deploy --help
 - `../website/docs/quickstart.md` (first-run local + remote setup)
 - `website/docs/development.md` (local dev workflow)
 - `website/docs/deployment.md` (remote deploy workflow)
+
+## Coding agents
+
+Run `tako agents` to install bundled workflow and SDK skills and register the
+bundled MCP server with detected coding agents. Use `--agent codex,claude-code,cursor,github-copilot`
+to select clients, `--yes` for unattended setup, and `--dry-run --json` to preview
+project-local files. Interactive `tako init` offers agent setup by default.
+
+`tako mcp` serves CLI tools and version-matched docs over stdio. Tool schemas are
+built from Clap command definitions. Subprocesses use the existing CLI auth,
+finite timeouts, bounded output, and cancellation cleanup. CLI self-management
+and interactive initialization stay in the terminal. Documentation and skills
+are embedded by `build.rs` from `website/docs/` and `sdk/javascript/skills/`.
+
+See [Coding agents](../website/docs/agents.md) for client config paths, manual
+setup, tool behavior, and permissions.

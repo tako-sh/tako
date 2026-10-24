@@ -54,6 +54,7 @@ pub(super) async fn prepare(
     restart: bool,
     command_override: Option<Vec<String>>,
     config_path: Option<&Path>,
+    background: bool,
 ) -> Result<PrepareOutcome, Box<dyn std::error::Error>> {
     let context = crate::commands::project_context::resolve_existing(config_path)?;
     let config_key = context.config_key();
@@ -271,10 +272,11 @@ pub(super) async fn prepare(
 
     // If the app is already running under this config, connect as a client
     // unless --restart asked for a hard process restart.
-    let interactive = attach_dev_ui(
-        std::io::stdin().is_terminal(),
-        std::io::stdout().is_terminal(),
-    );
+    let interactive = !background
+        && attach_dev_ui(
+            std::io::stdin().is_terminal(),
+            std::io::stdout().is_terminal(),
+        );
     if !restart
         && let Ok(apps) = crate::dev_server_client::list_registered_apps().await
         && let Some(existing) = apps.iter().find(|a| a.config_path == config_key)
@@ -290,6 +292,14 @@ pub(super) async fn prepare(
         } else {
             dev_url(&primary_host, public_url_port)
         };
+        if background {
+            if tunnel && existing.tunnel_url.is_none() {
+                crate::dev_server_client::toggle_tunnel(&config_key, true).await?;
+            }
+            let hosts = compute_display_routes(&cfg, &domain, base_domain.as_deref());
+            super::runner::emit_background_ready(&app_name, &url, &hosts);
+            return Ok(PrepareOutcome::AlreadyConnected);
+        }
         let session = ConnectedDevClient {
             config_key: config_key.clone(),
             config_path: config_path.clone(),

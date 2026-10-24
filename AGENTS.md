@@ -24,7 +24,7 @@ Tako's protocol is v0. Do not preserve legacy behavior, deprecated paths, or bac
 - Update affected documentation directly when behavior changes. For a broad documentation audit, follow `commands/sync-docs.md`.
 - Update a component's README when its setup, usage, commands, or test workflow changes.
 - When preset definitions change, update the relevant file in `presets/`.
-- When SDK exports, adapters, or usage patterns change, update the corresponding user-facing SDK skills.
+- When SDK exports, adapters, or usage patterns change, update the corresponding user-facing SDK skills. Edit canonical skills in `sdk/javascript/skills/`, then run `bun website/scripts/sync-agent-skills.ts` to refresh repo and website discovery copies. The CLI embeds those skills and `website/docs/` at build time.
 - Track planned work in the issue tracker or release notes, not in-repo TODO documents.
 
 ## User-facing copy

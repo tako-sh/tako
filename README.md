@@ -96,3 +96,13 @@ Install a specific skill with `--skill tako`, `--skill tako-sdk-js`, `--skill ta
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Coding agents
+
+Run `tako agents` to configure your coding agents with Tako workflow skills and
+MCP tools for development, logs, diagnostics, and deployment. Interactive
+`tako init` offers the same setup. Skills and documentation ship with the CLI;
+skills are also installable with `npx skills add tako-sh/tako`.
+
+See the [coding agent guide](https://tako.sh/docs/agents/) for supported clients,
+manual MCP setup, and automation options.

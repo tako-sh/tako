@@ -165,6 +165,8 @@ describe("init wizard interaction", () => {
 
     // Should complete and show success
     await term.waitForText("Created tako.toml", { timeout: 5000 });
+    await term.waitForText("Set up coding agents?", { timeout: 5000 });
+    term.write("n\r");
 
     const exitCode = await term.waitForExit({ timeout: 5000 });
     expect(exitCode).toBe(0);
@@ -280,6 +282,8 @@ describe("init wizard interaction", () => {
     term.press("\r");
 
     await term.waitForText("Created tako.toml", { timeout: 5000 });
+    await term.waitForText("Set up coding agents?", { timeout: 5000 });
+    term.write("n\r");
     await term.waitForExit({ timeout: 5000 });
 
     // Find the ✓ and verify it's green

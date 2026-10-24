@@ -31,6 +31,9 @@ tako-spawn = { path = "../tako-spawn" }
 tako-workflows = { path = "../tako-workflows" }
 clap = { version = "4.6", features = ["derive", "env"] }
 clap_complete = "4.6"
+rmcp = { version = "3.7", default-features = false, features = ["server", "transport-io"] }
+toml_edit = "0.25"
+jsonc-parser = { version = "0.29", features = ["serde", "cst"] }
 tokio = { version = "1.53", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }

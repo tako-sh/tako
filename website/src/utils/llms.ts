@@ -35,6 +35,11 @@ export const llmsCoreSections: LlmsSection[] = [
         description: "Fastest path from install to local HTTPS development and first deploy.",
       },
       {
+        title: "Coding Agents",
+        url: "/docs/agents/",
+        description: "Install workflow skills and MCP tools with tako agents.",
+      },
+      {
         title: "Docs Intro",
         url: "/docs/",
         description: "High-level introduction to what Tako does well and who it is for.",

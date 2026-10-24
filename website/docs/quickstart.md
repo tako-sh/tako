@@ -79,7 +79,7 @@ Initialize Tako config:
 tako init
 ```
 
-`tako init` prompts for app name and production route, writes them to `tako.toml`, offers encrypted SSL setup for wildcard routes, and updates `.gitignore` so `.tako/secrets.json` stays trackable.
+`tako init` prompts for app name and production route, writes them to `tako.toml`, offers encrypted SSL setup for wildcard routes, and updates `.gitignore` so `.tako/secrets.json` stays trackable. It also offers to install skills and configure MCP for your coding agents. Run `tako agents` anytime to set up or refresh agent support; see [Coding agents](/docs/agents/).
 
 `tako dev` uses `{app}.test` by default. Add `[envs.development]` only when you want custom local routes.
 
