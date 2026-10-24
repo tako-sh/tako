@@ -84,7 +84,7 @@ const server = Bun.serve({
       const authz = payload.header?.scheme
         ? `${payload.header.scheme} ${payload.header.value}`
         : payload.header?.value;
-      if (payload.channel !== "chat" || payload.params?.roomId !== "room-123") {
+      if (!["chat", "tako.presence:lobby"].includes(payload.channel) || payload.params?.roomId !== "room-123") {
         return new Response(JSON.stringify({ ok: false, error: "not_defined" }), {
           status: 404,
           headers: { "Content-Type": "application/json" },
@@ -101,7 +101,7 @@ const server = Bun.serve({
         subject: "user-123",
         replayWindowMs: 86400000,
         keepaliveIntervalMs: 25,
-        maxConnectionLifetimeMs: 200,
+        maxConnectionLifetimeMs: payload.channel.startsWith("tako.presence:") ? 60000 : 200,
         transport: "ws"
       }), { headers: { "Content-Type": "application/json" } });
     }
@@ -113,8 +113,8 @@ const server = Bun.serve({
           headers: { "Content-Type": "application/json" },
         });
       }
-      return new Response(JSON.stringify([{
-        channel: "chat",
+      return new Response(JSON.stringify(["chat", "tako.presence:lobby"].map(channel => ({
+        channel,
         paramsSchema: {
           type: "object",
           properties: {
@@ -124,7 +124,7 @@ const server = Bun.serve({
         },
         auth: { headerName: "authorization" },
         transport: "ws",
-      }]), { headers: { "Content-Type": "application/json" } });
+      }))), { headers: { "Content-Type": "application/json" } });
     }
 
     return new Response("chat-app");
@@ -388,4 +388,47 @@ fn test_websocket_stream_replays_messages_and_accepts_publish_frames() {
         second.contains(r#""text":"sent over ws""#),
         "expected websocket published frame: {second}"
     );
+}
+
+#[test]
+fn test_presence_tracks_verified_connections_and_leaves() {
+    if !require_localhost_bind() || !e2e_enabled() || !bun_available() {
+        return;
+    }
+    let server = TestServer::start();
+    deploy_chat_app(&server);
+    let path = "/_tako/channels/tako.presence%3Alobby?roomId=room-123";
+    let (mut first, handshake) = websocket_connect(&server, path);
+    assert!(handshake.starts_with("HTTP/1.1 101"), "{handshake}");
+    let ready: serde_json::Value = serde_json::from_slice(&read_server_frame(&mut first)).unwrap();
+    assert_eq!(ready["type"], "tako.presence.ready");
+    write_masked_text_frame(
+        &mut first,
+        r#"{"type":"tako.presence","subject":"forged","data":{"typing":false}}"#,
+    );
+    let snapshot: serde_json::Value =
+        serde_json::from_slice(&read_server_frame(&mut first)).unwrap();
+    assert_eq!(snapshot["members"].as_array().unwrap().len(), 1);
+    assert_eq!(snapshot["members"][0]["subject"], "user-123");
+    let first_id = snapshot["connectionId"].clone();
+
+    let (mut second, handshake) = websocket_connect(&server, path);
+    assert!(handshake.starts_with("HTTP/1.1 101"), "{handshake}");
+    read_server_frame(&mut second); // Authorized, ready to join.
+    write_masked_text_frame(
+        &mut second,
+        r#"{"type":"tako.presence","data":{"typing":true}}"#,
+    );
+    let snapshot: serde_json::Value =
+        serde_json::from_slice(&read_server_frame(&mut second)).unwrap();
+    assert_eq!(snapshot["members"].as_array().unwrap().len(), 2);
+    assert_ne!(snapshot["connectionId"], first_id);
+    let snapshot: serde_json::Value =
+        serde_json::from_slice(&read_server_frame(&mut first)).unwrap();
+    assert_eq!(snapshot["members"].as_array().unwrap().len(), 2);
+    drop(second);
+    let snapshot: serde_json::Value =
+        serde_json::from_slice(&read_server_frame(&mut first)).unwrap();
+    assert_eq!(snapshot["members"].as_array().unwrap().len(), 1);
+    assert_eq!(snapshot["members"][0]["connectionId"], first_id);
 }

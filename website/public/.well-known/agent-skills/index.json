@@ -11,23 +11,23 @@
     {
       "name": "tako-sdk-go",
       "type": "framework",
-      "description": "tako.sh Go SDK: ListenAndServe for http.Handler, Listener for custom servers, typed secrets via tako generate, metadata helpers.",
+      "description": "tako.sh Go SDK: ListenAndServe for http.Handler, Listener for custom servers, typed secrets via tako generate, authenticated presence registration, metadata helpers.",
       "url": "https://tako.sh/.well-known/agent-skills/tako-sdk-go/SKILL.md",
-      "sha256": "fd9deeffcef45f1dc69aeaa5a843067c49ed870b800dbba27e0f95b013464d57"
+      "sha256": "2c13a11f97b9c660bf259aafb1d646923fcd38df5e6fd85fd895d545df73edf6"
     },
     {
       "name": "tako-sdk-js",
       "type": "framework",
       "description": "tako.sh SDK: fetch handler interface, tako runtime object, generated tako.d.ts type augmentation, defineChannel/defineWorkflow, Vite and Next.js adapters.",
       "url": "https://tako.sh/.well-known/agent-skills/tako-sdk-js/SKILL.md",
-      "sha256": "e289657ed2f5b2b841ecf8b050b7de753bd5c277148801ba4f835230a913b450"
+      "sha256": "477cbbdfc41fac950f3b737db5f1bc434abe664fd29e6c98e003c984cf0c00c9"
     },
     {
       "name": "tako-sdk-rust",
       "type": "framework",
-      "description": "tako.sh Rust SDK: bootstrap secrets, listener binding, and Axum serving with Tako internal status handling.",
+      "description": "tako.sh Rust SDK: bootstrap secrets, listener binding, and Axum serving with Tako internal status handling and authenticated presence registries.",
       "url": "https://tako.sh/.well-known/agent-skills/tako-sdk-rust/SKILL.md",
-      "sha256": "466635001b3fd04bbaffcd846985202dad1d87af2ccf1b4bd5c6111af819adda"
+      "sha256": "5966a9f6b072c33b84770bf0e6ff01452dae88a3b12bac1428bbdcc743a8a7a2"
     }
   ]
 }

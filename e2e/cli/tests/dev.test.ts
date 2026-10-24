@@ -292,4 +292,56 @@ describe.skipIf(SKIP)("tako dev fixtures", () => {
       rmSync(tempDir, { recursive: true, force: true });
     }
   }, 120_000);
+
+  test("presence: joins and removes disconnected tabs", async () => {
+    const { tempDir, pd, lf } = prepareFixture("channels-workflows");
+    const proc = startDev(pd, lf);
+    const sockets: WebSocket[] = [];
+    try {
+      const devUrl = await waitForApp(lf);
+      await waitForHttpOk(devUrl, lf);
+      const url = new URL(appUrl(devUrl, "/_tako/channels/tako.presence%3Alobby"));
+      url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+      let firstMembers: unknown[] = [];
+      for (let index = 0; index < 2; index++) {
+        const socket = new WebSocket(url);
+        sockets.push(socket);
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(
+            () => reject(new Error(`Presence join timed out.\n${safeRead(lf)}`)),
+            10_000,
+          );
+          socket.addEventListener("message", (event) => {
+            const message = JSON.parse(String(event.data));
+            if (message.type === "tako.presence.ready") {
+              socket.send(JSON.stringify({ type: "tako.presence", data: { typing: false } }));
+            } else if (message.type === "tako.presence") {
+              if (index === 0) firstMembers = message.members;
+              if (message.members.length === index + 1) {
+                clearTimeout(timer);
+                resolve();
+              }
+            }
+          });
+          socket.addEventListener("error", () => {
+            clearTimeout(timer);
+            reject(new Error("Presence connection failed"));
+          });
+        });
+      }
+      for (let attempt = 0; firstMembers.length !== 2 && attempt < 40; attempt++)
+        await Bun.sleep(100);
+      expect(firstMembers).toHaveLength(2);
+      sockets[1]!.close();
+      for (let attempt = 0; firstMembers.length !== 1 && attempt < 40; attempt++)
+        await Bun.sleep(100);
+      expect(firstMembers).toHaveLength(1);
+    } finally {
+      for (const socket of sockets) socket.close();
+      try {
+        process.kill(proc.pid, "SIGKILL");
+      } catch {}
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  }, 90_000);
 });

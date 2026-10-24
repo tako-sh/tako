@@ -108,6 +108,8 @@ export const tako = Object.freeze({
 export type TakoRuntime = typeof tako;
 
 export { defineChannel } from "./channels/define";
+export { definePresence, type PresenceDefinition } from "./presence/define";
+export type { PresenceMember } from "./presence";
 export { defineWorkflow, signal } from "./workflows/define";
 export type {
   EnqueueOptions,

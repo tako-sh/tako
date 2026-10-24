@@ -71,6 +71,7 @@ tako deploy
 - [Quickstart](https://tako.sh/docs/quickstart) — install to live in minutes
 - [How Tako Works](https://tako.sh/docs/how-tako-works) — architecture and mental model
 - [Channels](https://tako.sh/docs/channels) — durable SSE and WebSocket streams
+- [Presence](https://tako.sh/docs/presence) — authenticated live membership and React hooks
 - [Workflows](https://tako.sh/docs/workflows) — durable jobs, retries, schedules, and signals
 - [tako.toml Reference](https://tako.sh/docs/tako-toml) — every config option
 - [CLI Reference](https://tako.sh/docs/cli) — all commands and flags

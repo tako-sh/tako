@@ -103,7 +103,8 @@ type VerifyInput struct {
 }
 
 // ChannelGrant describes the authorized subject and optional lifecycle
-// overrides for an accepted channel request.
+// overrides for an accepted channel request. Zero lifecycle fields inherit
+// the corresponding definition setting.
 type ChannelGrant struct {
 	// Subject is the application-defined authorized identity.
 	Subject string `json:"subject,omitempty"`
@@ -120,7 +121,6 @@ type ChannelAuthDecision struct {
 
 // AllowChannel accepts a channel authorization request.
 func AllowChannel(grant ChannelGrant) ChannelAuthDecision {
-	grant.ChannelLifecycleConfig = grant.ChannelLifecycleConfig.withDefaults()
 	return ChannelAuthDecision{
 		OK:           true,
 		ChannelGrant: grant,
@@ -280,10 +280,20 @@ func (r *ChannelRegistry) Authorize(input ChannelAuthorizeInput) (ChannelAuthori
 	}
 
 	grant := decision.ChannelGrant
-	if grant.ChannelLifecycleConfig == (ChannelLifecycleConfig{}) {
-		grant.ChannelLifecycleConfig = definition.ChannelLifecycleConfig
+	lifecycle := definition.ChannelLifecycleConfig
+	if grant.ReplayWindowMs != 0 {
+		lifecycle.ReplayWindowMs = grant.ReplayWindowMs
 	}
-	grant.ChannelLifecycleConfig = grant.ChannelLifecycleConfig.withDefaults()
+	if grant.InactivityTtlMs != 0 {
+		lifecycle.InactivityTtlMs = grant.InactivityTtlMs
+	}
+	if grant.KeepaliveIntervalMs != 0 {
+		lifecycle.KeepaliveIntervalMs = grant.KeepaliveIntervalMs
+	}
+	if grant.MaxConnectionLifetimeMs != 0 {
+		lifecycle.MaxConnectionLifetimeMs = grant.MaxConnectionLifetimeMs
+	}
+	grant.ChannelLifecycleConfig = lifecycle.withDefaults()
 
 	return ChannelAuthorizeResponse{
 		OK:           true,

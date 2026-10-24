@@ -11,6 +11,8 @@ Channels are pub-sub, not work queues. Every authorized subscriber to a channel 
 
 Use a channel for live dashboards, chat delivery, presence updates, notifications, and collaborative updates. Use a workflow when work should be claimed and executed with retries instead of broadcast to every subscriber.
 
+For automatic online membership, typing status, and cursor metadata, use [Presence](/docs/presence/) with `definePresence` and `usePresence` from `tako.sh/react`.
+
 Every delivered message has this wire shape:
 
 ```ts

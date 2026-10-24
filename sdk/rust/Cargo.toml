@@ -19,3 +19,6 @@ libc = "0.2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio.workspace = true

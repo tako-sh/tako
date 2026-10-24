@@ -121,6 +121,38 @@ async fn serve_sse(
             pingora_core::Error::explain(pingora_core::ErrorType::InternalError, error.to_string())
         })?;
     let auth = dev_auth_response();
+    if session.as_downstream().is_upgrade_req() {
+        let params = match tako_channels::params::validate_query(
+            &serde_json::json!({"type":"object"}),
+            session.req_header().uri.query().unwrap_or_default(),
+        ) {
+            Ok(params) => params,
+            Err(_) => {
+                return write_json(session, 400, r#"{"error":"Invalid presence params"}"#).await;
+            }
+        };
+        let header =
+            tako_channels::websocket::build_websocket_upgrade_response(session.req_header())
+                .map_err(|e| {
+                    pingora_core::Error::explain(
+                        pingora_core::ErrorType::InvalidHTTPHeader,
+                        e.to_string(),
+                    )
+                })?;
+        session
+            .write_response_header(Box::new(header), false)
+            .await?;
+        return tako_channels::websocket::serve(
+            session,
+            &store,
+            channel,
+            None,
+            auth,
+            params,
+            Default::default(),
+        )
+        .await;
+    }
 
     // Resolve the initial cursor — start from the latest message so new
     // subscribers only see future events (matching production behavior).

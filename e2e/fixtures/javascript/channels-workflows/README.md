@@ -17,4 +17,8 @@ Flow:
 Used by both the CLI dev e2e suite (`e2e/cli/tests/dev.test.ts`) and the
 deploy/docker harness.
 
+`src/presence/lobby.ts` also defines authenticated presence. The CLI dev suite
+checks WebSocket joins and disconnect cleanup. Production verifies the `e2e`
+token and supplies the `e2e-user` subject; local dev permits anonymous joins.
+
 The `/enqueue` JSON body accepts an optional `id`. Repeated requests with the same ID and message return that run ID while its history is retained.

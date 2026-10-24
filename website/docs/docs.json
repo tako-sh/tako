@@ -24,7 +24,14 @@
       },
       {
         "group": "Guides",
-        "pages": ["development", "deployment", "channels", "workflows", "troubleshooting"]
+        "pages": [
+          "development",
+          "deployment",
+          "channels",
+          "presence",
+          "workflows",
+          "troubleshooting"
+        ]
       },
       {
         "group": "Reference",

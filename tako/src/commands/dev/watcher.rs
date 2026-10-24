@@ -61,12 +61,16 @@ impl ConfigWatcher {
         watch_path(&debouncer, &self.project_dir, RecursiveMode::NonRecursive)?;
         let watched_app_root = self.app_root.clone();
         let watched_channels = watched_app_root.join("channels");
+        let watched_presence = watched_app_root.join("presence");
         let watched_workflows = watched_app_root.join("workflows");
         if watched_app_root != self.project_dir && watched_app_root.is_dir() {
             let _ = watch_path(&debouncer, &watched_app_root, RecursiveMode::NonRecursive);
         }
         if watched_channels.is_dir() {
             let _ = watch_path(&debouncer, &watched_channels, RecursiveMode::NonRecursive);
+        }
+        if watched_presence.is_dir() {
+            let _ = watch_path(&debouncer, &watched_presence, RecursiveMode::NonRecursive);
         }
         if watched_workflows.is_dir() {
             let _ = watch_path(&debouncer, &watched_workflows, RecursiveMode::NonRecursive);
@@ -95,6 +99,13 @@ impl ConfigWatcher {
                                     RecursiveMode::NonRecursive,
                                 );
                             }
+                            if event.path == watched_presence && watched_presence.is_dir() {
+                                let _ = watch_path(
+                                    &debouncer_for_thread,
+                                    &watched_presence,
+                                    RecursiveMode::NonRecursive,
+                                );
+                            }
                             if event.path == watched_workflows && watched_workflows.is_dir() {
                                 let _ = watch_path(
                                     &debouncer_for_thread,
@@ -112,6 +123,13 @@ impl ConfigWatcher {
                                     let _ = watch_path(
                                         &debouncer_for_thread,
                                         &watched_channels,
+                                        RecursiveMode::NonRecursive,
+                                    );
+                                }
+                                if watched_presence.is_dir() {
+                                    let _ = watch_path(
+                                        &debouncer_for_thread,
+                                        &watched_presence,
                                         RecursiveMode::NonRecursive,
                                     );
                                 }
@@ -185,18 +203,20 @@ fn classify_path(
         return Some(WatchChange::GeneratedDeclarations);
     }
 
-    let channels_dir = app_root.join("channels");
-    if path == channels_dir {
-        return (!path.exists()).then_some(WatchChange::Channels);
-    }
-    if path.starts_with(&channels_dir) {
-        if is_preexisting_runtime_definition_event(
-            path,
-            ignore_existing_runtime_defs_modified_before,
-        ) {
-            return None;
+    for dirname in ["channels", "presence"] {
+        let dir = app_root.join(dirname);
+        if path == dir {
+            return (!path.exists()).then_some(WatchChange::Channels);
         }
-        return Some(WatchChange::Channels);
+        if path.starts_with(&dir) {
+            if is_preexisting_runtime_definition_event(
+                path,
+                ignore_existing_runtime_defs_modified_before,
+            ) {
+                return None;
+            }
+            return Some(WatchChange::Channels);
+        }
     }
 
     let workflows_dir = app_root.join("workflows");
@@ -242,6 +262,17 @@ mod tests {
         let project_dir = temp.path().join("demo");
         let app_root = project_dir.join("src");
         let config_path = project_dir.join("tako.toml");
+
+        assert_eq!(
+            classify_path(
+                &project_dir,
+                &app_root,
+                &config_path,
+                &app_root.join("presence/lobby.ts"),
+                None
+            ),
+            Some(WatchChange::Channels)
+        );
 
         assert_eq!(
             classify_path(&project_dir, &app_root, &config_path, &config_path, None),

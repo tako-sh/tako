@@ -52,6 +52,18 @@ The server probes `GET /status` with `Host: <app>.tako` and an `X-Tako-Internal-
 
 The token is infrastructure-only. SDKs must not expose it to application code or public responses.
 
+## Presence
+
+JavaScript, Go, and Rust presence definitions use the channel registry and authorization endpoint, with wire names prefixed by `tako.presence:`. Channel and presence names therefore have separate namespaces. The connect authorization result supplies the trusted `subject`; it must succeed before the server creates a presence session or returns membership.
+
+Presence uses the channel WebSocket route. After authorization, the server sends `{ "type": "tako.presence.ready" }`. The client then sends `{ "type": "tako.presence", "data": ... }` to join or replace its metadata. Client updates cannot choose a subject or connection ID. Metadata is JSON and is limited to 16 KiB.
+
+Server snapshots are `{ "type": "tako.presence", "connectionId": "...", "members": [{ "connectionId": "...", "subject": "...", "data": ... }] }`; anonymous entries omit `subject`. These control frames have no replay ID and are never stored as channel messages. The React hook waits for `ready` before joining so its update cannot precede a browser's first-frame auth envelope.
+
+Membership is scoped by deployed app/environment, wire name, and canonical validated params. Every authorized connection within one scope sees the same members. Params are serialized with recursively sorted object keys, then the wire name and params tuple is hashed with SHA-256 to produce a fixed-size storage key; query ordering does not create separate spaces. Each connection gets a server-generated ID, including separate tabs for one subject.
+
+The client renews a 45-second lease with an update every 15 seconds. Disconnect cleanup removes its record; expiry covers network loss and process crashes. Snapshots poll shared state at approximately one-second intervals. SQLite and Postgres store leases separately from replay, with Postgres keyed by app ID for cross-server visibility. Local dev uses the same WebSocket session loop and an in-memory store; local auth remains permissive as with channels.
+
 ## Changing the protocol
 
 Update the typed owner, every producer and consumer, and the serialization or integration tests in one change. Update this document only when a cross-component boundary or invariant changes. User-facing behavior belongs in the website docs and SDK READMEs.

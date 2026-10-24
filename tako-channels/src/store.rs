@@ -1,4 +1,5 @@
 mod postgres;
+mod presence;
 mod sqlite;
 
 use std::path::{Path, PathBuf};

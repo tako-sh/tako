@@ -223,9 +223,11 @@ Storage bindings from `[envs.development].storages` are delivered through `tako.
 
 Use `tako.cache` for server-side caching of JSON-serializable values. `get<T>(key)` returns `T | undefined`, `put(key, value, { ttl })` stores a value with a TTL in milliseconds, and `delete(key)` removes one key. Cache entries use Tako-managed local SQLite and are not included in app data backups.
 
-## Channels And Workflows
+## Channels, Presence, And Workflows
 
-JS channels and workflows are discovered under `<app_root>/channels/` and `<app_root>/workflows/`. `tako dev` watches those directories and refreshes generated metadata when files change.
+JS channels, presence spaces, and workflows are discovered under `<app_root>/channels/`, `<app_root>/presence/`, and `<app_root>/workflows/`. `tako dev` watches those directories and refreshes generated metadata when files change.
+
+Presence uses the dev daemon’s in-memory store with separate membership for each validated params scope. See [Presence](/docs/presence/) for the React hook and production auth policy.
 
 Channels are broadcast streams, not work queues. Multiple local clients subscribed to the same channel read the same app events, with independent cursors for reconnect replay. Dev channel replay stays in the dev daemon's in-memory store until the daemon restarts.
 

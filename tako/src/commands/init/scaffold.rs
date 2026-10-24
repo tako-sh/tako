@@ -61,6 +61,7 @@ pub(super) fn detect_js_app_root(project_dir: &Path) -> String {
         };
         if dir.join("tako.d.ts").is_file()
             || dir.join("channels").is_dir()
+            || dir.join("presence").is_dir()
             || dir.join("workflows").is_dir()
         {
             return candidate.to_string();

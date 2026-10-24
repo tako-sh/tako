@@ -5708,9 +5708,17 @@ dependencies = [
 name = "tako-channels"
 version = "0.0.0"
 dependencies = [
+ "base64 0.23.1",
+ "bytes",
+ "futures-util",
+ "getrandom 0.4.3",
  "jsonschema",
+ "openssl",
  "parking_lot",
  "percent-encoding",
+ "pingora-core",
+ "pingora-http",
+ "pingora-proxy",
  "postgres",
  "reqwest",
  "rusqlite",
@@ -5720,6 +5728,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "tokio-tungstenite",
  "tracing",
 ]
 

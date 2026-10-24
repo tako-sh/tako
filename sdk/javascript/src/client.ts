@@ -19,6 +19,7 @@
 
 export { Channel } from "./channels";
 export { configureChannels } from "./channels/configure";
+export type { PresenceMember, PresenceSnapshot } from "./presence";
 
 export type {
   ChannelConnectOptions,

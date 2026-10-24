@@ -20,3 +20,14 @@ test("tako.sh/client bundles cleanly for the browser (no node:* specifiers)", as
   }
   expect(result.success).toBe(true);
 });
+
+test("tako.sh/react exports usePresence and bundles for the browser", async () => {
+  const mod = await import("../src/react");
+  expect(typeof mod.usePresence).toBe("function");
+  const result = await Bun.build({
+    entrypoints: [resolve(import.meta.dir, "../src/react.ts")],
+    target: "browser",
+    external: ["react"],
+  });
+  expect(result.success).toBe(true);
+});

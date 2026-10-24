@@ -6,9 +6,9 @@ use crate::{ChannelAuthResponse, ChannelError, ChannelMessage, ChannelPublishPay
 use super::{channel_message_from_row, now_unix_ms, resolve_replay_cursor};
 
 pub(super) struct PostgresChannelStore {
-    client: Mutex<Client>,
-    schema: String,
-    app_id: String,
+    pub(super) client: Mutex<Client>,
+    pub(super) schema: String,
+    pub(super) app_id: String,
 }
 
 impl PostgresChannelStore {
@@ -138,6 +138,15 @@ impl PostgresChannelStore {
         client
             .execute(
                 &format!(
+                    "DELETE FROM {}.presence WHERE app_id = $1 AND expires_at <= $2",
+                    self.schema
+                ),
+                &[&self.app_id, &now],
+            )
+            .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        client
+            .execute(
+                &format!(
                     "INSERT INTO {}.channel_metadata (
                         app_id,
                         channel,
@@ -188,6 +197,15 @@ impl PostgresChannelStore {
         let mut client = self.client.lock();
         let now = now_unix_ms();
         client
+            .execute(
+                &format!(
+                    "DELETE FROM {}.presence WHERE app_id = $1 AND expires_at <= $2",
+                    self.schema
+                ),
+                &[&self.app_id, &now],
+            )
+            .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        client
                 .execute(
                     &format!(
                         "DELETE FROM {}.channel_messages AS messages USING {}.channel_metadata AS metadata
@@ -233,6 +251,11 @@ fn init_postgres(client: &mut Client, schema: &str) -> Result<(), ChannelError> 
     tx
         .batch_execute(&format!(
             "CREATE SCHEMA IF NOT EXISTS {schema};
+             CREATE TABLE IF NOT EXISTS {schema}.presence (
+                 app_id TEXT NOT NULL, channel TEXT NOT NULL, connection_id TEXT NOT NULL,
+                 member_json TEXT NOT NULL, expires_at BIGINT NOT NULL,
+                 PRIMARY KEY(app_id, channel, connection_id)
+             );
              CREATE TABLE IF NOT EXISTS {schema}.channel_messages (
                  id BIGSERIAL PRIMARY KEY,
                  app_id TEXT NOT NULL,

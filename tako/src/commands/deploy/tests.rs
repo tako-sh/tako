@@ -363,6 +363,26 @@ fn runtime_state_storage_validation_rejects_multi_server_channels_without_postgr
     );
 }
 
+#[test]
+fn runtime_state_storage_validation_requires_postgres_for_multi_server_presence() {
+    let temp = TempDir::new().unwrap();
+    fs::create_dir_all(temp.path().join("src/presence")).unwrap();
+    fs::write(
+        temp.path().join("src/presence/lobby.ts"),
+        r#"export default definePresence("lobby");"#,
+    )
+    .unwrap();
+    let result = config::validate_runtime_state_storage_for_deploy(
+        temp.path(),
+        &multi_server_js_config(),
+        &SecretsStore::default(),
+        "production",
+        2,
+    );
+    assert!(result.has_errors());
+    assert!(result.errors[0].contains("postgres_url"));
+}
+
 #[cfg(unix)]
 #[test]
 fn runtime_state_storage_validation_rejects_unreadable_channels_dir() {

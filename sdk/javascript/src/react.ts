@@ -45,35 +45,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Channel } from "./channels";
 import type { ChannelConnectOptions, ChannelMessage, ChannelSubscribeOptions } from "./types";
 
-const MAX_MESSAGES = 500;
-const RECONNECT_BASE_MS = 1_000;
-const RECONNECT_MAX_MS = 30_000;
+import { reconnectDelay, scheduleReconnect } from "./react/reconnect";
+export { usePresence, type UsePresenceOptions, type PresenceConnection } from "./react/presence";
+export type { PresenceMember } from "./presence";
 
+const MAX_MESSAGES = 500;
 type Status = "connecting" | "open";
 type MessageHandler<T> = (msg: ChannelMessage<T>) => void;
-
-function reconnectDelay(attempt: number): number {
-  const base = Math.min(RECONNECT_BASE_MS * 2 ** attempt, RECONNECT_MAX_MS);
-  return base + Math.random() * base * 0.3;
-}
-
-function scheduleReconnect(connect: () => void, delayMs: number): () => void {
-  let cancelled = false;
-  const run = () => {
-    if (cancelled) return;
-    cancelled = true;
-    clearTimeout(timer);
-    globalThis.removeEventListener?.("online", run);
-    connect();
-  };
-  const timer = setTimeout(run, delayMs);
-  globalThis.addEventListener?.("online", run, { once: true });
-  return () => {
-    cancelled = true;
-    clearTimeout(timer);
-    globalThis.removeEventListener?.("online", run);
-  };
-}
 
 function appendCapped<T>(buffer: ChannelMessage<T>[], msg: ChannelMessage<T>): ChannelMessage<T>[] {
   if (buffer.length < MAX_MESSAGES) return [...buffer, msg];

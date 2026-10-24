@@ -153,23 +153,18 @@ fn project_workflow_storage(project_dir: &Path, tako_config: &TakoToml) -> Workf
 }
 
 fn project_has_channels(project_dir: &Path, tako_config: &TakoToml) -> bool {
-    let channels_dir =
-        crate::build::js::js_app_root_dir(project_dir, tako_config.js_app_root()).join("channels");
-    let entries = match std::fs::read_dir(channels_dir) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return false,
-        Err(_) => return true,
-    };
-
-    for entry in entries {
-        let Ok(entry) = entry else {
-            return true;
+    let app_root = crate::build::js::js_app_root_dir(project_dir, tako_config.js_app_root());
+    ["channels", "presence"].iter().any(|kind| {
+        let entries = match std::fs::read_dir(app_root.join(kind)) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return false,
+            Err(_) => return true,
         };
-        if is_js_runtime_source_file(&entry.path()) {
-            return true;
-        }
-    }
-    false
+        entries.into_iter().any(|entry| match entry {
+            Ok(entry) => is_js_runtime_source_file(&entry.path()),
+            Err(_) => true,
+        })
+    })
 }
 
 fn is_js_runtime_source_file(path: &Path) -> bool {
