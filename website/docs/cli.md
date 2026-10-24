@@ -60,7 +60,7 @@ Codex, Claude Code, Cursor, and VS Code Copilot. Detects clients by default;
 `--agent` selects them explicitly (repeatable or comma-separated). `--yes` skips
 the setup confirmation. `--dry-run` previews files without writing. All settings
 are project-local; existing unrelated configuration is preserved. Re-run to
-refresh after upgrading Tako. See [Coding agents](/docs/agents/).
+refresh after upgrading Tako. See [Coding agents](/agents/).
 
 ## `tako mcp`
 
@@ -72,7 +72,7 @@ tako mcp -c /path/to/project/tako.toml
 Serves Tako tools, bundled docs, and SDK skills over MCP stdio. Designed to be
 started by a coding agent; stdout is reserved for MCP protocol messages,
 including with `--json`. Tools use existing CLI credentials and permissions.
-See [Coding agents](/docs/agents/) for manual client configuration and tool behavior.
+See [Coding agents](/agents/) for manual client configuration and tool behavior.
 
 ## `tako dev`
 
