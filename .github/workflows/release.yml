@@ -16,6 +16,7 @@ permissions:
   actions: read
 
 env:
+  TAKO_TELEMETRY: "0"
   RELEASE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
 
 jobs:

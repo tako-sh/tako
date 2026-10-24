@@ -16,6 +16,7 @@ permissions:
   contents: read
 
 env:
+  TAKO_TELEMETRY: "0"
   RELEASE_SHA: ${{ inputs.commit }}
 
 jobs:
