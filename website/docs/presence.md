@@ -24,7 +24,7 @@ export default definePresence("lobby", {
 });
 ```
 
-Omit `auth` or set it to `false` for public presence. Auth supports the same `headerName`, `cookieName`, and verification inputs as [channels](/docs/channels/#authorize-and-choose-a-transport). A verification result of `true` allows an anonymous connection; `{ subject: "user-id" }` attaches a trusted identity. A client cannot set its subject or connection ID.
+Omit `auth` or set it to `false` for public presence. Auth supports the same `headerName`, `cookieName`, and verification inputs as [channels](/channels/#authorize-and-choose-a-transport). A verification result of `true` allows an anonymous connection; `{ subject: "user-id" }` attaches a trusted identity. A client cannot set its subject or connection ID.
 
 `paramsSchema` validates params before authorization. Presence membership is scoped by the space name and all validated params. For example, `params: { chatId: "one" }` and `params: { chatId: "two" }` have separate member lists. Auth must check that the user may access the requested chat. Authorized connections with the same params see each other. Channel and presence names have separate namespaces, so both can be named `lobby`.
 

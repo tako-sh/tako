@@ -227,7 +227,7 @@ Use `tako.cache` for server-side caching of JSON-serializable values. `get<T>(ke
 
 JS channels, presence spaces, and workflows are discovered under `<app_root>/channels/`, `<app_root>/presence/`, and `<app_root>/workflows/`. `tako dev` watches those directories and refreshes generated metadata when files change.
 
-Presence uses the dev daemon’s in-memory store with separate membership for each validated params scope. See [Presence](/docs/presence/) for the React hook and production auth policy.
+Presence uses the dev daemon’s in-memory store with separate membership for each validated params scope. See [Presence](/presence/) for the React hook and production auth policy.
 
 Channels are broadcast streams, not work queues. Multiple local clients subscribed to the same channel read the same app events, with independent cursors for reconnect replay. Dev channel replay stays in the dev daemon's in-memory store until the daemon restarts.
 
