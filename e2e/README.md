@@ -30,6 +30,7 @@ just e2e examples/go/basic
 ```
 
 This runs the global e2e harness in `e2e/run.sh` against the fixture path.
+The runner disables CLI telemetry so local and CI test runs do not send usage stats.
 The harness generates an ephemeral SSH keypair per run inside a disposable Docker volume, starts real `tako-server` binaries on an Ubuntu test host, and starts AlmaLinux too when the current server binary's runtime libraries are available there. It never uses `~/.ssh`.
 Server containers run privileged with private cgroup namespaces so the production cgroup limits can be exercised. Their entrypoints move init into a control subgroup and enable CPU, memory, and process controllers within that container only. No host cgroup filesystem is bind-mounted. The entrypoint installs the mounted build as root before SSH starts; the runner then uses the installed restricted sudo policy.
 

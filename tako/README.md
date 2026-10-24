@@ -71,7 +71,7 @@ Operational behavior highlights:
 - `tako deploy` requires valid target metadata for each selected server and does not probe targets during deploy.
 - Production environments use Let’s Encrypt certificates by default. Run `tako credentials set ssl.cloudflare --env <env>` for wildcard routes that need Cloudflare DNS-01, or set `ssl = "cloudflare"` and store the same credential to use Cloudflare Origin CA certificates. Wildcard DNS-01 needs a Cloudflare user or account API token with Zone Read and DNS Write for the matching zone, and any token IP restriction must include each target server's egress IP.
 - New apps start with one desired instance. Scaling to zero enables on-demand cold starts after the warm instance becomes idle.
-- Official CLI installs send an anonymous event per command (version, OS, arch, command name) so we can count unique users and see which commands run. Set `TAKO_TELEMETRY=0` to opt out. CI, `--ci`, and local Cargo builds are off unless `TAKO_TELEMETRY=1`. `tako-server` does not send usage stats.
+- Official CLI installs send an anonymous event per command (version, OS, arch, command name) so we can count unique users and see which commands run. Set `TAKO_TELEMETRY=0` to opt out. CI and `--ci` always disable usage stats, even with `TAKO_TELEMETRY=1`. Local Cargo builds are off unless `TAKO_TELEMETRY=1`. `tako-server` does not send usage stats.
 
 ## Run and Test
 

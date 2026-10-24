@@ -289,4 +289,4 @@ Opt out:
 export TAKO_TELEMETRY=0
 ```
 
-Usage stats are off in CI (`CI=true` or `--ci`) and in local Cargo builds. Set `TAKO_TELEMETRY=1` to send from those environments.
+Usage stats are always off in CI (`CI=true` or `--ci`), even with `TAKO_TELEMETRY=1`. Local Cargo builds are off by default; set `TAKO_TELEMETRY=1` to send from local builds outside CI.

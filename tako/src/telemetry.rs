@@ -3,8 +3,8 @@
 //! Official installs send one event per command so we can count unique users
 //! and see which commands run. The request starts immediately and is waited
 //! out on process exit so short commands still deliver. Opt out with
-//! `TAKO_TELEMETRY=0`. CI and local Cargo builds are off unless the env var is
-//! an explicit opt-in. Failures never affect the command.
+//! `TAKO_TELEMETRY=0`. CI is always off; local Cargo builds require an explicit
+//! opt-in. Failures never affect the command.
 
 use std::fs;
 use std::io::Write;
@@ -96,13 +96,13 @@ pub(crate) fn telemetry_enabled(
     ci_flag: bool,
     local_build: bool,
 ) -> bool {
-    if !has_token {
+    if !has_token || ci_flag || is_truthy_env(ci_env) {
         return false;
     }
     match parse_bool_env(telemetry_env) {
         Some(false) => false,
         Some(true) => true,
-        None => !ci_flag && !is_truthy_env(ci_env) && !local_build,
+        None => !local_build,
     }
 }
 

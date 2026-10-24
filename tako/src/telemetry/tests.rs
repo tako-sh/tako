@@ -29,17 +29,41 @@ fn telemetry_opt_out_values() {
 }
 
 #[test]
-fn telemetry_explicit_opt_in_overrides_ci_and_local_builds() {
-    assert!(telemetry_enabled(true, Some("1"), Some("true"), true, true));
-    assert!(telemetry_enabled(true, Some("true"), None, false, true));
-    assert!(telemetry_enabled(true, Some("on"), Some("1"), false, false));
+fn telemetry_explicit_opt_in_enables_local_builds() {
+    for value in ["1", "true", "on", "yes", "TRUE", " 1 "] {
+        assert!(telemetry_enabled(true, Some(value), None, false, true));
+    }
 }
 
 #[test]
-fn telemetry_disabled_in_ci_without_explicit_opt_in() {
-    assert!(!telemetry_enabled(true, None, Some("true"), false, false));
-    assert!(!telemetry_enabled(true, None, Some("1"), false, false));
-    assert!(!telemetry_enabled(true, None, None, true, false));
+fn telemetry_disabled_in_ci_even_with_explicit_opt_in() {
+    for telemetry_env in [None, Some("1"), Some("true"), Some("on"), Some("yes")] {
+        for local_build in [false, true] {
+            for ci_env in ["true", "1", "on", "yes", "TRUE", " 1 "] {
+                assert!(!telemetry_enabled(
+                    true,
+                    telemetry_env,
+                    Some(ci_env),
+                    false,
+                    local_build,
+                ));
+            }
+            assert!(!telemetry_enabled(
+                true,
+                telemetry_env,
+                None,
+                true,
+                local_build,
+            ));
+        }
+    }
+}
+
+#[test]
+fn false_ci_env_allows_telemetry() {
+    for value in ["0", "false", "off", "no", "FALSE", " 0 ", ""] {
+        assert!(telemetry_enabled(true, None, Some(value), false, false));
+    }
 }
 
 #[test]
