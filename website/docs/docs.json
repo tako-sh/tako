@@ -20,7 +20,14 @@
     "groups": [
       {
         "group": "Get started",
-        "pages": ["index", "quickstart", "agents", "framework-guides", "how-tako-works"]
+        "pages": [
+          "index",
+          "quickstart",
+          "agents",
+          "framework-guides",
+          "how-tako-works",
+          "feature-requests"
+        ]
       },
       {
         "group": "Guides",
