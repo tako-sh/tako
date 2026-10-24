@@ -14,7 +14,7 @@
     "groups": [
       {
         "group": "Get started",
-        "pages": ["index", "quickstart", "framework-guides", "how-tako-works"]
+        "pages": ["index", "quickstart", "framework-guides", "how-tako-works", "feature-requests"]
       },
       {
         "group": "Guides",
