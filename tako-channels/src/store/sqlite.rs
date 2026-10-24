@@ -189,6 +189,8 @@ impl SqliteChannelStore {
         let conn = self.conn.lock();
         let now = now_unix_ms();
 
+        conn.execute("DELETE FROM presence WHERE expires_at <= ?1", [now])
+            .map_err(storage_err)?;
         let mut deleted_rows = 0usize;
 
         deleted_rows += conn
@@ -225,6 +227,10 @@ impl SqliteChannelStore {
 fn init_connection(conn: &rusqlite::Connection) -> Result<(), ChannelError> {
     conn.execute_batch(
         "PRAGMA auto_vacuum = INCREMENTAL;
+         CREATE TABLE IF NOT EXISTS presence (
+             channel TEXT NOT NULL, connection_id TEXT NOT NULL, member_json TEXT NOT NULL,
+             expires_at INTEGER NOT NULL, PRIMARY KEY(channel, connection_id)
+         );
          CREATE TABLE IF NOT EXISTS channel_messages (
              id INTEGER PRIMARY KEY AUTOINCREMENT,
              channel TEXT NOT NULL,

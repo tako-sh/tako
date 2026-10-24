@@ -5,6 +5,7 @@ Rust crate for the `tako` CLI, `tako-dev-server`, and `tako-dev-proxy` local bin
 ## Responsibilities
 
 - Project initialization (`tako init`).
+- Project-local coding agent setup (`tako agents`) and the stdio MCP server (`tako mcp`).
 - Local development flow (`tako dev`, `tako doctor`).
 - Local development daemon runtime (`tako-dev-server`).
 - macOS dev proxy for loopback-only local ingress (`tako-dev-proxy`).
@@ -18,6 +19,8 @@ Rust crate for the `tako` CLI, `tako-dev-server`, and `tako-dev-proxy` local bin
 Primary subcommands:
 
 - `init`
+- `agents`
+- `mcp`
 - `logs`
 - `dev`
 - `doctor`
@@ -68,7 +71,7 @@ Operational behavior highlights:
 - `tako deploy` requires valid target metadata for each selected server and does not probe targets during deploy.
 - Production environments use Let’s Encrypt certificates by default. Run `tako credentials set ssl.cloudflare --env <env>` for wildcard routes that need Cloudflare DNS-01, or set `ssl = "cloudflare"` and store the same credential to use Cloudflare Origin CA certificates. Wildcard DNS-01 needs a Cloudflare user or account API token with Zone Read and DNS Write for the matching zone, and any token IP restriction must include each target server's egress IP.
 - New apps start with one desired instance. Scaling to zero enables on-demand cold starts after the warm instance becomes idle.
-- Official CLI installs send an anonymous event per command (version, OS, arch, command name) so we can count unique users and see which commands run. Set `TAKO_TELEMETRY=0` to opt out. CI, `--ci`, and local Cargo builds are off unless `TAKO_TELEMETRY=1`. `tako-server` does not send usage stats.
+- Official CLI installs send an anonymous event per command (version, OS, arch, command name) so we can count unique users and see which commands run. Set `TAKO_TELEMETRY=0` to opt out. CI and `--ci` always disable usage stats, even with `TAKO_TELEMETRY=1`. Local Cargo builds are off unless `TAKO_TELEMETRY=1`. `tako-server` does not send usage stats.
 
 ## Run and Test
 
@@ -103,3 +106,19 @@ cargo run -p tako-cli --bin tako -- deploy --help
 - `../website/docs/quickstart.md` (first-run local + remote setup)
 - `website/docs/development.md` (local dev workflow)
 - `website/docs/deployment.md` (remote deploy workflow)
+
+## Coding agents
+
+Run `tako agents` to install bundled workflow and SDK skills and register the
+bundled MCP server with detected coding agents. Use `--agent codex,claude-code,cursor,github-copilot`
+to select clients, `--yes` for unattended setup, and `--dry-run --json` to preview
+project-local files. Interactive `tako init` offers agent setup by default.
+
+`tako mcp` serves CLI tools and version-matched docs over stdio. Tool schemas are
+built from Clap command definitions. Subprocesses use the existing CLI auth,
+finite timeouts, bounded output, and cancellation cleanup. CLI self-management
+and interactive initialization stay in the terminal. Documentation and skills
+are embedded by `build.rs` from `website/docs/` and `sdk/javascript/skills/`.
+
+See [Coding agents](../website/docs/agents.md) for client config paths, manual
+setup, tool behavior, and permissions.

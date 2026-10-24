@@ -71,6 +71,7 @@ tako deploy
 - [Quickstart](https://tako.sh/docs/quickstart) — install to live in minutes
 - [How Tako Works](https://tako.sh/docs/how-tako-works) — architecture and mental model
 - [Channels](https://tako.sh/docs/channels) — durable SSE and WebSocket streams
+- [Presence](https://tako.sh/docs/presence) — authenticated live membership and React hooks
 - [Workflows](https://tako.sh/docs/workflows) — durable jobs, retries, schedules, and signals
 - [tako.toml Reference](https://tako.sh/docs/tako-toml) — every config option
 - [CLI Reference](https://tako.sh/docs/cli) — all commands and flags
@@ -96,3 +97,13 @@ Install a specific skill with `--skill tako`, `--skill tako-sdk-js`, `--skill ta
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Coding agents
+
+Run `tako agents` to configure your coding agents with Tako workflow skills and
+MCP tools for development, logs, diagnostics, and deployment. Interactive
+`tako init` offers the same setup. Skills and documentation ship with the CLI;
+skills are also installable with `npx skills add tako-sh/tako`.
+
+See the [coding agent guide](https://tako.sh/docs/agents/) for supported clients,
+manual MCP setup, and automation options.

@@ -20,6 +20,8 @@ services:
       - ${E2E_BIN_DIR:-.e2e-bin}:/opt/e2e/bin:ro
       - ../../scripts/install-tako-server.sh:/opt/e2e/install-server.sh:ro
   runner:
+    environment:
+      TAKO_TELEMETRY: "0"
     build:
       context: ../..
       dockerfile: e2e/docker/runner/Dockerfile

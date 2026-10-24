@@ -223,9 +223,11 @@ Storage bindings from `[envs.development].storages` are delivered through `tako.
 
 Use `tako.cache` for server-side caching of JSON-serializable values. `get<T>(key)` returns `T | undefined`, `put(key, value, { ttl })` stores a value with a TTL in milliseconds, and `delete(key)` removes one key. Cache entries use Tako-managed local SQLite and are not included in app data backups.
 
-## Channels And Workflows
+## Channels, Presence, And Workflows
 
-JS channels and workflows are discovered under `<app_root>/channels/` and `<app_root>/workflows/`. `tako dev` watches those directories and refreshes generated metadata when files change.
+JS channels, presence spaces, and workflows are discovered under `<app_root>/channels/`, `<app_root>/presence/`, and `<app_root>/workflows/`. `tako dev` watches those directories and refreshes generated metadata when files change.
+
+Presence uses the dev daemon’s in-memory store with separate membership for each validated params scope. See [Presence](/presence/) for the React hook and production auth policy.
 
 Channels are broadcast streams, not work queues. Multiple local clients subscribed to the same channel read the same app events, with independent cursors for reconnect replay. Dev channel replay stays in the dev daemon's in-memory store until the daemon restarts.
 
@@ -246,3 +248,14 @@ tako doctor
 ```
 
 Doctor checks daemon status, local DNS, TLS files, macOS proxy state, Linux routing setup, and startup hints. If the daemon is not running, doctor reports that state and exits successfully.
+
+## Background development for agents
+
+Use `tako dev --background --json` to start the app and return a ready object
+without keeping a terminal attached. The dev daemon owns the app process.
+`tako dev list --json` inspects running apps and `tako dev stop` stops the app for
+the selected configuration. Re-run `tako dev --restart --background --json` after
+changing configuration, or use an attached `tako dev` session for config watching.
+
+The [Tako MCP server](/agents/) uses this finite startup mode automatically.
+Its `tako_dev_logs` tool reads recent local app logs without a continuous stream.

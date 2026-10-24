@@ -2,12 +2,13 @@
 name: tako-sdk-go
 description: >-
   tako.sh Go SDK: ListenAndServe for http.Handler, Listener for custom servers,
-  typed secrets via tako generate, metadata helpers.
+  typed secrets via tako generate, authenticated presence registration, metadata helpers.
 type: framework
 library: tako.sh
 library_version: "0.0.1"
 sources:
   - tako-sh/tako:tako.go
+  - tako-sh/tako:presence.go
   - tako-sh/tako:internal
 ---
 
@@ -142,12 +143,55 @@ var Secrets = struct {
 
 Run `tako generate` after adding or removing secrets. `tako gen` and `tako g` are aliases.
 
+## Presence
+
+Register presence spaces with `tako.RegisterPresence` before calling `tako.ListenAndServe`. Presence shares the channel authorization model and internal discovery endpoints. It uses a separate namespace and WebSocket transport automatically; there is no `Transport` option.
+
+```go
+import (
+    "encoding/json"
+    "tako.sh"
+)
+
+func registerChatPresence() {
+    tako.RegisterPresence("chat", tako.PresenceDefinition{
+        ParamsSchema: json.RawMessage(`{
+            "type": "object",
+            "properties": {"chatId": {"type": "string", "minLength": 1}},
+            "required": ["chatId"]
+        }`),
+        Auth: &tako.ChannelAuthScheme{HeaderName: "authorization"},
+        MaxConnectionLifetimeMs: 60_000,
+        Verify: func(input tako.VerifyInput) tako.ChannelAuthDecision {
+            var params struct { ChatID string `json:"chatId"` }
+            if input.Header == nil || json.Unmarshal(input.Params, &params) != nil {
+                return tako.RejectChannel()
+            }
+            user, err := verifyToken(input.Header.Value)
+            if err != nil || !canAccessChat(user.ID, params.ChatID) {
+                return tako.RejectChannel()
+            }
+            return tako.AllowChannel(tako.ChannelGrant{Subject: user.ID})
+        },
+    })
+}
+```
+
+`verifyToken` and `canAccessChat` are application auth functions. `input.Channel` is the public space name (`"chat"`), and `input.Params` contains params validated by the proxy. Different validated params create separate member lists, so different `chatId` values stay isolated. Auth guards both joining and seeing members. Omit `Auth` for a public space. For cookie-only auth, set `Auth: &tako.ChannelAuthScheme{CookieName: "session"}` and inspect `input.Cookie`.
+
+`KeepaliveIntervalMs` configures WebSocket keepalives, and `MaxConnectionLifetimeMs` bounds the interval before reconnecting clients must authorize again. A subject-only `AllowChannel` grant inherits these definition settings; nonzero lifecycle fields in a grant override the corresponding settings.
+
+A React frontend uses `usePresence` from `tako.sh/react` with the same public name, params, and authorization token. The Go SDK registers backend policies; it does not create a browser or native WebSocket client. `tako.PresenceSnapshot` and `tako.PresenceMember` expose the wire shapes for consumers that manage their own connections. Member metadata is `json.RawMessage` and must be validated before use.
+
+Every browser tab has its own server-assigned connection ID. The verified `Subject` identifies the user across tabs. Presence metadata and membership are ephemeral, have no durable replay, and are scoped to the deployed app/environment. Shared Postgres carries membership across production servers. Local development uses in-memory state and the same permissive auth behavior as local channels.
+
 ## Internal Protocol
 
 The SDK transparently handles these — you don't interact with them directly:
 
 - `GET /status` on `Host: <app>.tako` — health check (returns JSON with status, instance_id, version, pid, uptime_seconds)
-- `POST /channels/authorize` on `Host: <app>.tako` — channel auth callback for `tako-server`
+- `POST /channels/authorize` on `Host: <app>.tako` — channel and presence auth callbacks for `tako-server`
+- `GET /channels/registry` on `Host: <app>.tako` — channel and presence discovery metadata
 - Token authentication via `x-tako-internal-token` whenever bootstrap supplies a token, including managed development
 - Secrets are read from the Tako bootstrap envelope at process startup, not via HTTP. Native processes use fd 3; containers use `TAKO_BOOTSTRAP_DATA`.
 

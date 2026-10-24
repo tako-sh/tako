@@ -1,29 +1,35 @@
-use crate::channels::{ChannelError, ChannelHeaderValue, ChannelPublishPayload};
+mod serve;
+pub use serve::serve;
+#[cfg(test)]
+#[path = "websocket/tests.rs"]
+mod integration_tests;
+
+use crate::{ChannelError, ChannelHeaderValue, ChannelPublishPayload};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use openssl::sha::sha1;
 use pingora_http::{RequestHeader, ResponseHeader};
 
 const WEBSOCKET_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-const MAX_WEBSOCKET_FRAME_PAYLOAD_BYTES: u64 = crate::proxy::MAX_REQUEST_BODY_BYTES;
+const MAX_WEBSOCKET_FRAME_PAYLOAD_BYTES: u64 = 128 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct WebSocketFrame {
+pub struct WebSocketFrame {
     pub opcode: u8,
     pub payload: Vec<u8>,
 }
 
 #[derive(Default)]
-pub(crate) struct WebSocketFrameReader {
+pub struct WebSocketFrameReader {
     buffer: Vec<u8>,
 }
 
 impl WebSocketFrameReader {
-    pub(crate) fn extend(&mut self, chunk: &[u8]) {
+    pub fn extend(&mut self, chunk: &[u8]) {
         self.buffer.extend_from_slice(chunk);
     }
 
-    pub(crate) fn next_frame(&mut self) -> Result<Option<WebSocketFrame>, ChannelError> {
+    pub fn next_frame(&mut self) -> Result<Option<WebSocketFrame>, ChannelError> {
         if self.buffer.len() < 2 {
             return Ok(None);
         }
@@ -116,7 +122,7 @@ impl WebSocketFrameReader {
     }
 }
 
-pub(crate) fn build_websocket_upgrade_response(
+pub fn build_websocket_upgrade_response(
     request: &RequestHeader,
 ) -> Result<ResponseHeader, ChannelError> {
     let key = request
@@ -156,41 +162,41 @@ pub(crate) fn build_websocket_upgrade_response(
     Ok(response)
 }
 
-pub(crate) fn websocket_text_frame(text: &str) -> Vec<u8> {
+pub fn websocket_text_frame(text: &str) -> Vec<u8> {
     websocket_frame(0x1, text.as_bytes())
 }
 
-pub(crate) fn websocket_ping_frame(payload: &[u8]) -> Vec<u8> {
+pub fn websocket_ping_frame(payload: &[u8]) -> Vec<u8> {
     websocket_frame(0x9, payload)
 }
 
-pub(crate) fn websocket_pong_frame(payload: &[u8]) -> Vec<u8> {
+pub fn websocket_pong_frame(payload: &[u8]) -> Vec<u8> {
     websocket_frame(0xA, payload)
 }
 
-pub(crate) fn websocket_close_frame(code: u16, reason: &str) -> Vec<u8> {
+pub fn websocket_close_frame(code: u16, reason: &str) -> Vec<u8> {
     let mut payload = Vec::with_capacity(2 + reason.len());
     payload.extend_from_slice(&code.to_be_bytes());
     payload.extend_from_slice(reason.as_bytes());
     websocket_frame(0x8, &payload)
 }
 
-pub(crate) fn parse_publish_payload(payload: &[u8]) -> Result<ChannelPublishPayload, ChannelError> {
+pub fn parse_publish_payload(payload: &[u8]) -> Result<ChannelPublishPayload, ChannelError> {
     serde_json::from_slice(payload)
         .map_err(|_| ChannelError::BadRequest("invalid websocket publish payload".to_string()))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct FirstFrameAuth {
+pub struct FirstFrameAuth {
     pub header_value: Option<ChannelHeaderValue>,
     pub last_message_id: Option<i64>,
 }
 
 #[derive(Debug, thiserror::Error)]
 #[error("malformed tako.auth envelope")]
-pub(crate) struct FirstFrameError;
+pub struct FirstFrameError;
 
-pub(crate) fn parse_first_frame(json: &str) -> Result<FirstFrameAuth, FirstFrameError> {
+pub fn parse_first_frame(json: &str) -> Result<FirstFrameAuth, FirstFrameError> {
     let value: serde_json::Value = serde_json::from_str(json).map_err(|_| FirstFrameError)?;
     if value.get("type").and_then(|value| value.as_str()) != Some("tako.auth") {
         return Err(FirstFrameError);
@@ -210,6 +216,12 @@ pub(crate) fn parse_first_frame(json: &str) -> Result<FirstFrameAuth, FirstFrame
         header_value,
         last_message_id,
     })
+}
+
+pub fn is_websocket_auth_payload(payload: &[u8]) -> bool {
+    std::str::from_utf8(payload)
+        .ok()
+        .is_some_and(|text| parse_first_frame(text).is_ok())
 }
 
 fn websocket_accept(key: &str) -> String {

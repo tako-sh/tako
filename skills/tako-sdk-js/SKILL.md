@@ -58,7 +58,7 @@ export default {
 | `tako.sh`          | Isomorphic runtime + authoring helpers          | `tako`, `imageUrl`, channels, workflows, storage URL option types, runtime types |
 | `tako.sh/server`   | Server-only runtime re-export                   | `tako`, `TakoRuntime`                                                            |
 | `tako.sh/client`   | Browser-safe channel client                     | `Channel`, `configureChannels`                                                   |
-| `tako.sh/react`    | React hook for channels                         | `useChannel`                                                                     |
+| `tako.sh/react`    | React hooks for channels and presence           | `useChannel`, `usePresence`                                                      |
 | `tako.sh/vite`     | Vite plugin for SSR builds                      | `tako()` plugin function                                                         |
 | `tako.sh/nextjs`   | Next.js standalone adapter + wrapper            | `withTako()`, `createNextjsAdapter()`, `createNextjsFetchHandler()`              |
 | `tako.sh/runtime`  | Browser-safe runtime internals                  | `loadSecrets`, `createLogger`, `Logger`                                          |
@@ -342,9 +342,43 @@ socket.send({ type: "typing", data: { userId: "me" } });
 
 For React apps, prefer `useChannel` from `tako.sh/react` — it wraps `Channel` with buffered state, reconnects, and an `onMessage` callback.
 
+### Presence
+
+Define presence spaces in `<app_root>/presence/*.ts` with `definePresence` from `tako.sh`. Auth has the same `headerName`, `cookieName`, `paramsSchema`, and `verify` pattern as channels. Return `false` to deny, `true` for anonymous access, or `{ subject: user.id }` for a verified identity. Omit `auth` for public access.
+
+```ts
+// src/presence/lobby.ts
+import { definePresence } from "tako.sh";
+import { verifyToken } from "../lib/auth";
+
+export default definePresence("lobby", {
+  auth: {
+    async verify({ header }) {
+      const user = await verifyToken(header?.value);
+      return user ? { subject: user.id } : false;
+    },
+  },
+});
+```
+
+```tsx
+import { usePresence } from "tako.sh/react";
+
+const { members, connectionId, status, error, update } = usePresence("lobby", {
+  authorization: token,
+  data: { typing: false },
+});
+// In an event handler:
+update({ typing: true });
+```
+
+`members` contains `{ connectionId, subject?, data }`, including the current connection. Every hook call creates one connection; multiple tabs belonging to the same subject remain separate. Only the server controls identity; member data is untrusted client-provided JSON (up to 16 KiB). `data` supplies initial metadata; `update()` replaces it. The hook waits for authorization, sends heartbeats every 15 seconds, reconnects with current metadata, clears stale state on disconnect, and leaves on unmount. Authorization failures stop retries until connection options change. Membership converges within approximately one second. Connections without updates expire after 45 seconds, so a reconnect can briefly overlap its old connection. Presence has no durable replay. Validated params scope membership: different `chatId` values have separate member lists. Auth must verify access to the requested chat. Channel and presence names have separate namespaces.
+
+Single-server production uses SQLite; multi-server deployments require the shared `postgres_url` credential. Local dev uses an in-memory store and permits connections without running auth callbacks, as with channels. Use channels for durable events and presence for current membership.
+
 ### React
 
-`tako.sh/react` exposes a single `useChannel` hook. SSE is the default; pass `transport: "ws"` for WebSocket.
+`tako.sh/react` exposes `useChannel` and `usePresence`. For channels, SSE is the default; pass `transport: "ws"` for WebSocket.
 
 ```tsx
 import { useChannel } from "tako.sh/react";

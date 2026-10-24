@@ -1,6 +1,8 @@
+pub mod agents;
 pub mod backups;
 pub mod codegen;
 pub mod completions;
+pub mod mcp;
 
 pub mod credentials;
 pub mod delete;

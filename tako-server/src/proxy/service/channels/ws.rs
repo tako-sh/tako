@@ -1,9 +1,4 @@
 use crate::channels::{ChannelAuthResponse, ChannelError, ChannelOperation, ChannelStore};
-use crate::channels_ws::{
-    WebSocketFrameReader, build_websocket_upgrade_response, parse_first_frame,
-    parse_publish_payload, websocket_close_frame, websocket_ping_frame, websocket_pong_frame,
-    websocket_text_frame,
-};
 use crate::proxy::TakoProxy;
 use bytes::Bytes;
 use pingora_core::prelude::*;
@@ -11,6 +6,10 @@ use pingora_proxy::Session;
 use std::sync::Arc;
 use std::time::Duration;
 use tako_channels::close_codes::ChannelCloseCode;
+use tako_channels::websocket::{
+    WebSocketFrameReader, build_websocket_upgrade_response, parse_first_frame,
+    websocket_close_frame, websocket_pong_frame,
+};
 
 pub(super) enum ChannelWebSocketAuth {
     Authorized(ChannelAuthResponse),
@@ -48,6 +47,7 @@ impl TakoProxy {
         store: &Arc<ChannelStore>,
         channel: &str,
         query_after: Option<i64>,
+        presence_params: serde_json::Value,
         auth_mode: ChannelWebSocketAuth,
     ) -> Result<bool> {
         if !session.as_downstream().is_upgrade_req() {
@@ -153,188 +153,16 @@ impl TakoProxy {
             }
         };
 
-        if let Err(error) = store.sync_channel_async(channel, &auth).await {
-            tracing::error!("failed to sync websocket channel metadata: {error}");
-            return self
-                .write_websocket_close(session, ChannelCloseCode::VerifyRejected, true)
-                .await;
-        }
-
-        let mut after = match store.replay_cursor_async(channel, requested_after).await {
-            Ok(after) => after,
-            Err(ChannelError::StaleCursor) => {
-                return self
-                    .write_websocket_close(session, ChannelCloseCode::ReplayTooOld, true)
-                    .await;
-            }
-            Err(error) => {
-                tracing::error!("failed to resolve websocket replay cursor: {error}");
-                return self
-                    .write_websocket_close(session, ChannelCloseCode::VerifyRejected, true)
-                    .await;
-            }
-        };
-
-        let keepalive_interval = Duration::from_millis(auth.keepalive_interval_ms.max(1));
-        let max_connection_lifetime = Duration::from_millis(auth.max_connection_lifetime_ms.max(1));
-        let started_at = tokio::time::Instant::now();
-        let mut next_ping = started_at + keepalive_interval;
-        let mut changes = store.changes();
-        let mut read_replay = true;
-
-        loop {
-            let messages = if read_replay {
-                changes.borrow_and_update();
-                store
-                    .read_after_async(channel, after, 100)
-                    .await
-                    .map_err(|error| {
-                        Error::explain(
-                            ErrorType::InternalError,
-                            format!("Failed to read channel replay: {error}"),
-                        )
-                    })?
-            } else {
-                Vec::new()
-            };
-            read_replay = messages.len() == 100;
-
-            if !messages.is_empty() {
-                for message in messages {
-                    let encoded = serde_json::to_string(&message).map_err(|error| {
-                        Error::explain(
-                            ErrorType::InternalError,
-                            format!("Failed to encode websocket payload: {error}"),
-                        )
-                    })?;
-                    session
-                        .write_response_body(
-                            Some(Bytes::from(websocket_text_frame(&encoded))),
-                            false,
-                        )
-                        .await?;
-                    after = Some(
-                        message
-                            .id
-                            .parse::<i64>()
-                            .expect("channel ids are always numeric"),
-                    );
-                }
-                next_ping = tokio::time::Instant::now() + keepalive_interval;
-            }
-
-            if started_at.elapsed() >= max_connection_lifetime {
-                session
-                    .write_response_body(
-                        Some(Bytes::from(websocket_close_frame(
-                            1000,
-                            "connection expired",
-                        ))),
-                        true,
-                    )
-                    .await?;
-                return Ok(true);
-            }
-
-            if read_replay {
-                continue;
-            }
-            let sleep_until = next_ping.min(started_at + max_connection_lifetime);
-            enum WebSocketAction {
-                Read(Option<Bytes>),
-                Tick,
-                Changed,
-            }
-
-            let action = {
-                let mut sleep = std::pin::pin!(tokio::time::sleep_until(sleep_until));
-                let mut read = std::pin::pin!(session.as_downstream_mut().read_body_or_idle(false));
-                tokio::select! {
-                    body = &mut read => WebSocketAction::Read(body?),
-                    _ = &mut sleep => WebSocketAction::Tick,
-                    _ = changes.changed() => WebSocketAction::Changed,
-                }
-            };
-
-            match action {
-                WebSocketAction::Read(Some(chunk)) => {
-                    reader.extend(&chunk);
-                    while let Some(frame) = reader.next_frame().map_err(|error| {
-                        Error::explain(
-                            ErrorType::InvalidHTTPHeader,
-                            format!("Invalid websocket frame: {error}"),
-                        )
-                    })? {
-                        match frame.opcode {
-                            0x1 => {
-                                if is_websocket_auth_payload(&frame.payload) {
-                                    continue;
-                                }
-                                let payload =
-                                    parse_publish_payload(&frame.payload).map_err(|error| {
-                                        Error::explain(
-                                            ErrorType::InvalidHTTPHeader,
-                                            format!("Invalid websocket publish payload: {error}"),
-                                        )
-                                    })?;
-                                store.append_async(channel, &payload).await.map_err(|error| {
-                                    Error::explain(
-                                        ErrorType::InternalError,
-                                        format!(
-                                            "Failed to append websocket channel payload: {error}"
-                                        ),
-                                    )
-                                })?;
-                            }
-                            0x8 => {
-                                session
-                                    .write_response_body(
-                                        Some(Bytes::from(websocket_close_frame(1000, "closing"))),
-                                        true,
-                                    )
-                                    .await?;
-                                return Ok(true);
-                            }
-                            0x9 => {
-                                session
-                                    .write_response_body(
-                                        Some(Bytes::from(websocket_pong_frame(&frame.payload))),
-                                        false,
-                                    )
-                                    .await?;
-                            }
-                            0xA => {}
-                            _ => {
-                                session
-                                    .write_response_body(
-                                        Some(Bytes::from(websocket_close_frame(
-                                            1003,
-                                            "unsupported frame",
-                                        ))),
-                                        true,
-                                    )
-                                    .await?;
-                                return Ok(true);
-                            }
-                        }
-                    }
-                    next_ping = tokio::time::Instant::now() + keepalive_interval;
-                }
-                WebSocketAction::Read(None) => return Ok(true),
-                WebSocketAction::Changed => read_replay = true,
-                WebSocketAction::Tick => {
-                    if tokio::time::Instant::now() >= next_ping {
-                        session
-                            .write_response_body(
-                                Some(Bytes::from(websocket_ping_frame(b""))),
-                                false,
-                            )
-                            .await?;
-                        next_ping = tokio::time::Instant::now() + keepalive_interval;
-                    }
-                }
-            }
-        }
+        tako_channels::websocket::serve(
+            session,
+            store,
+            channel,
+            requested_after,
+            auth,
+            presence_params,
+            reader,
+        )
+        .await
     }
 }
 
@@ -388,10 +216,4 @@ async fn read_first_websocket_text_frame(
             }
         }
     }
-}
-
-pub(super) fn is_websocket_auth_payload(payload: &[u8]) -> bool {
-    std::str::from_utf8(payload)
-        .ok()
-        .is_some_and(|text| parse_first_frame(text).is_ok())
 }

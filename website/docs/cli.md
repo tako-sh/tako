@@ -21,7 +21,7 @@ Progress, prompts, diagnostics, and logs go to stderr. Command results and machi
 | `-c`, `--config <CONFIG>`       | Use an explicit config file. `.toml` is appended when omitted.                                                                  |
 | `--ssh-passphrase <PASSPHRASE>` | Use a passphrase for encrypted local SSH keys.                                                                                  |
 
-App-scoped commands that honor `-c`: `init`, `dev`, `run`, `logs`, `deploy`, `releases`, `backups`, `delete`, `secrets`, `credentials`, `storages`, `generate`, and project-context `scale`.
+App-scoped commands that honor `-c`: `agents`, `mcp`, `init`, `dev`, `run`, `logs`, `deploy`, `releases`, `backups`, `delete`, `secrets`, `credentials`, `storages`, `generate`, and project-context `scale`.
 
 For finite commands, `--json` prints one final object. Commands without a specialized schema use `{"ok":true,"command":"<command>"}`. Failures print `{"ok":false,"error":{"message":"..."}}` on stdout and the human-readable error on stderr. Specialized objects: `status` includes `servers`; `doctor` includes paths, CA, dev server, apps, and proxy checks; `servers list`, `secrets list`, `credentials list`, `dev list`, `backups list`/`status`, and `releases list` include their collections. Streaming exceptions keep stdout as JSONL until interrupted: `tako logs --tail --json` emits one log record per line, and `tako dev --json` emits a ready object, then log and event records, with no logo or TUI. `tako run` is also an exception: child stdout stays untouched and no JSON result object is appended.
 
@@ -33,7 +33,7 @@ Installed CLIs send an anonymous event per command so we can count unique users 
 tako init
 ```
 
-Creates `tako.toml`, updates `.gitignore`, detects runtime and preset, asks for app name and production route, and installs the SDK package for JS and Go projects. If the production route is a wildcard route, init can collect and encrypt the Cloudflare credential required for Let's Encrypt DNS-01.
+Creates `tako.toml`, updates `.gitignore`, detects runtime and preset, asks for app name and production route, and installs the SDK package for JS and Go projects. If the production route is a wildcard route, init can collect and encrypt the Cloudflare credential required for Let's Encrypt DNS-01. Interactive init then offers coding agent setup with a default of yes; non-interactive init leaves agent settings alone.
 
 ```bash
 tako generate
@@ -47,6 +47,33 @@ Refreshes generated project files:
 - Go: `tako_secrets.go` with typed secret accessors.
   For JS/TS, generation keeps an existing `tako.d.ts` in `app/`, `src/`, or the project root. Empty existing `channels/` or `workflows/` directories get demo definitions.
 
+## `tako agents`
+
+```bash
+tako agents
+tako agents --agent codex,claude-code --yes
+tako agents --agent cursor --dry-run --json
+```
+
+Installs bundled workflow and SDK skills and configures the local MCP server for
+Codex, Claude Code, Cursor, and VS Code Copilot. Detects clients by default;
+`--agent` selects them explicitly (repeatable or comma-separated). `--yes` skips
+the setup confirmation. `--dry-run` previews files without writing. All settings
+are project-local; existing unrelated configuration is preserved. Re-run to
+refresh after upgrading Tako. See [Coding agents](/agents/).
+
+## `tako mcp`
+
+```bash
+tako mcp
+tako mcp -c /path/to/project/tako.toml
+```
+
+Serves Tako tools, bundled docs, and SDK skills over MCP stdio. Designed to be
+started by a coding agent; stdout is reserved for MCP protocol messages,
+including with `--json`. Tools use existing CLI credentials and permissions.
+See [Coding agents](/agents/) for manual client configuration and tool behavior.
+
 ## `tako dev`
 
 ```bash
@@ -56,6 +83,7 @@ tako dev --variant preview
 tako dev --var preview
 tako dev --tunnel
 tako dev --restart
+tako dev --background --json
 ```
 
 Starts or attaches to a local dev session behind trusted HTTPS and real hostnames. `--variant foo` uses a variant hostname such as `myapp-foo.test`; `--restart` restarts the process with the current config instead of attaching. It starts the dev daemon, prepares DNS/proxy/CA setup, generates files, injects secrets and storage through fd 3, waits for fd-4 readiness, and registers routes.
@@ -95,7 +123,9 @@ tako dev ls
 
 `stop` without a name stops the app for the selected config file. `--all` stops all registered dev apps. `list` shows currently registered dev apps and any active tunnel URLs.
 
-Global `--json` skips the interactive UI. `tako dev --json` prints a ready object with `app`, `url`, and `hosts`, then JSONL `log` and `event` records. `tako dev list --json` prints one object with an `apps` array.
+`--background` exits after registration and readiness while the dev daemon keeps
+the app running. Combine it with `--json` for one ready object, then inspect
+with `tako dev list` and stop with `tako dev stop`. Global `--json` skips the interactive UI. `tako dev --json` prints a ready object with `app`, `url`, and `hosts`, then JSONL `log` and `event` records. `tako dev list --json` prints one object with an `apps` array.
 
 ## `tako doctor`
 
@@ -259,4 +289,4 @@ Opt out:
 export TAKO_TELEMETRY=0
 ```
 
-Usage stats are off in CI (`CI=true` or `--ci`) and in local Cargo builds. Set `TAKO_TELEMETRY=1` to send from those environments.
+Usage stats are always off in CI (`CI=true` or `--ci`), even with `TAKO_TELEMETRY=1`. Local Cargo builds are off by default; set `TAKO_TELEMETRY=1` to send from local builds outside CI.

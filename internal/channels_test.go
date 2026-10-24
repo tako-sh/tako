@@ -101,6 +101,45 @@ func TestRegistryMetadataSerializesPublicAuthAsFalse(t *testing.T) {
 	}
 }
 
+func TestAuthorizeInheritsDefinitionLifecycleForSubjectOnlyGrant(t *testing.T) {
+	t.Parallel()
+	r := NewChannelRegistry()
+	r.Register("chat", ChannelDefinition{
+		ChannelLifecycleConfig: ChannelLifecycleConfig{
+			KeepaliveIntervalMs: 3000, MaxConnectionLifetimeMs: 60_000,
+		},
+		Auth: &ChannelAuthScheme{HeaderName: "authorization"},
+		Verify: func(VerifyInput) ChannelAuthDecision {
+			return AllowChannel(ChannelGrant{Subject: "user"})
+		},
+	})
+	response, _, allowed := r.Authorize(ChannelAuthorizeInput{Channel: "chat", Operation: ChannelOperationConnect})
+	if !allowed || response.MaxConnectionLifetimeMs != 60_000 || response.KeepaliveIntervalMs != 3000 {
+		t.Fatalf("definition lifecycle should apply: %#v", response)
+	}
+}
+
+func TestAuthorizeMergesExplicitLifecycleOverrides(t *testing.T) {
+	t.Parallel()
+	r := NewChannelRegistry()
+	r.Register("chat", ChannelDefinition{
+		ChannelLifecycleConfig: ChannelLifecycleConfig{
+			ReplayWindowMs: 90_000, InactivityTtlMs: 30_000,
+			KeepaliveIntervalMs: 3000, MaxConnectionLifetimeMs: 60_000,
+		},
+		Auth: &ChannelAuthScheme{HeaderName: "authorization"},
+		Verify: func(VerifyInput) ChannelAuthDecision {
+			return AllowChannel(ChannelGrant{Subject: "user", ChannelLifecycleConfig: ChannelLifecycleConfig{
+				KeepaliveIntervalMs: 1000,
+			}})
+		},
+	})
+	response, _, allowed := r.Authorize(ChannelAuthorizeInput{Channel: "chat", Operation: ChannelOperationConnect})
+	if !allowed || response.MaxConnectionLifetimeMs != 60_000 || response.KeepaliveIntervalMs != 1000 || response.ReplayWindowMs != 90_000 || response.InactivityTtlMs != 30_000 {
+		t.Fatalf("only explicitly supplied lifecycle fields should override: %#v", response)
+	}
+}
+
 func contains(haystack, needle string) bool {
 	if len(needle) == 0 {
 		return true

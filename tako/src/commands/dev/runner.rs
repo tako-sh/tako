@@ -123,6 +123,7 @@ pub async fn run(
     restart: bool,
     command_override: Option<Vec<String>>,
     config_path: Option<&Path>,
+    background: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let session = match prepare(
         public_port,
@@ -131,6 +132,7 @@ pub async fn run(
         restart,
         command_override,
         config_path,
+        background,
     )
     .await?
     {
@@ -207,6 +209,15 @@ pub async fn run(
             workflow_retention_ms: cfg.workflows.retention_ms,
         })
         .await?;
+    if background {
+        if tunnel {
+            crate::dev_server_client::toggle_tunnel(&config_key, true).await?;
+        }
+        let url = preferred_public_url(&primary_host, &reg_url, public_port, public_url_port);
+        let hosts = compute_display_routes(&cfg, &domain, base_domain.as_deref());
+        emit_background_ready(&app_name, &url, &hosts);
+        return Ok(());
+    }
     let initial_lan_enabled = crate::dev_server_client::info()
         .await
         .ok()
@@ -392,4 +403,14 @@ fn load_dev_storages(
         &secrets,
         Some(project_dir),
     )
+}
+
+/// The daemon owns the app process; a background client can exit at readiness.
+pub(super) fn emit_background_ready(app: &str, url: &str, hosts: &[String]) {
+    if crate::output::is_json() {
+        json::emit(json::ready_record(app, url, hosts));
+    } else {
+        crate::output::success(&format!("{app} is running in the background"));
+        crate::output::hint(url);
+    }
 }

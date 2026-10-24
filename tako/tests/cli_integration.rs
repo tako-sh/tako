@@ -25,3 +25,6 @@ mod server_commands;
 mod status_command;
 #[path = "cli_integration/uninstall_commands.rs"]
 mod uninstall_commands;
+
+#[path = "cli_integration/agents.rs"]
+mod agents;

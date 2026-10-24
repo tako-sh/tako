@@ -1,4 +1,6 @@
 mod client;
+mod presence;
+pub use presence::{PRESENCE_CHANNEL_PREFIX, PresenceMember, PresenceSession, presence_scope};
 pub mod close_codes;
 pub mod error_codes;
 pub mod params;
@@ -6,6 +8,7 @@ pub mod registry;
 mod routing;
 mod store;
 mod types;
+pub mod websocket;
 
 pub use client::authorize_channel_request;
 pub use close_codes::ChannelCloseCode;
@@ -29,3 +32,6 @@ pub const INTERNAL_CHANNEL_REGISTRY_PATH: &str = "/channels/registry";
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod presence_tests;

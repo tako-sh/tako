@@ -216,7 +216,7 @@ async fn log_restart_reason(ctx: &ConfigReloadLoop, change: watcher::WatchChange
     let restart_reason = match change {
         watcher::WatchChange::Config => "tako.toml changed, restarting…",
         watcher::WatchChange::Secrets => "Secrets changed, restarting…",
-        watcher::WatchChange::Channels => "channels/ changed, restarting…",
+        watcher::WatchChange::Channels => "Channels or presence changed, restarting…",
         watcher::WatchChange::Workflows => "workflows/ changed, restarting…",
         watcher::WatchChange::GeneratedDeclarations => unreachable!(),
     };

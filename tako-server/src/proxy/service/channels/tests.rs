@@ -1,5 +1,5 @@
-use super::ws::is_websocket_auth_payload;
 use super::*;
+use tako_channels::websocket::is_websocket_auth_payload;
 
 #[test]
 fn extract_credentials_picks_declared_header_and_cookie() {

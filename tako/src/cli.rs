@@ -76,6 +76,10 @@ pub struct DevArgs {
     #[arg(long)]
     pub tunnel: bool,
 
+    /// Leave the app running under the dev daemon and exit after readiness
+    #[arg(long)]
+    pub background: bool,
+
     /// Hard-restart the app process with the current config
     #[arg(long)]
     pub restart: bool,
@@ -103,6 +107,20 @@ pub enum DevSubcommands {
 pub enum Commands {
     /// Initialize a new tako project
     Init,
+
+    /// Configure coding agents with Tako skills and MCP
+    Agents {
+        /// Coding agents to configure (detected by default)
+        #[arg(long, value_enum, value_delimiter = ',')]
+        agent: Vec<commands::agents::Agent>,
+
+        /// Skip confirmation prompts
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
+
+    /// Serve Tako tools and documentation over MCP stdio
+    Mcp,
 
     /// View remote logs
     Logs {
@@ -254,6 +272,8 @@ pub enum Commands {
 fn telemetry_command(command: &Commands) -> &'static str {
     match command {
         Commands::Init => "init",
+        Commands::Agents { .. } => "agents",
+        Commands::Mcp => "mcp",
         Commands::Logs { .. } => "logs",
         Commands::Dev {
             command: Some(DevSubcommands::Stop { .. }),
@@ -323,6 +343,10 @@ impl Cli {
                 commands::init::run(self.config.as_deref())?;
                 json_success(json, "init")
             }
+            Commands::Agents { agent, yes } => {
+                commands::agents::run(agent, yes, self.config.as_deref())
+            }
+            Commands::Mcp => commands::mcp::run(self.config.as_deref()),
             Commands::Logs { env, tail, days } => {
                 commands::logs::run(env.as_deref(), tail, days, json, self.config.as_deref())
             }
@@ -338,6 +362,7 @@ impl Cli {
                             args.restart,
                             None,
                             self.config.as_deref(),
+                            args.background,
                         ))?;
                         Ok(())
                     }
@@ -349,6 +374,7 @@ impl Cli {
                             args.restart,
                             Some(cmd),
                             self.config.as_deref(),
+                            args.background,
                         ))?;
                         Ok(())
                     }

@@ -32,7 +32,8 @@ fn main() {
 
     crate::output::set_verbose(cli.verbose);
     crate::output::set_json(cli.json);
-    crate::output::set_ci(cli.ci || cli.json);
+    let mcp = matches!(cli.command, Some(cli::Commands::Mcp));
+    crate::output::set_ci(cli.ci || cli.json || mcp);
     crate::output::set_dry_run(cli.dry_run);
 
     // Hide cursor for the entire process lifetime when running in interactive
@@ -98,7 +99,8 @@ fn main() {
         if !crate::output::is_silent_exit_error(e.as_ref()) {
             let message = e.to_string();
             crate::output::error_stderr(&message);
-            if crate::output::is_json()
+            if !mcp
+                && crate::output::is_json()
                 && let Err(json_error) = crate::output::json_error(&message)
             {
                 crate::output::error_stderr(&json_error.to_string());

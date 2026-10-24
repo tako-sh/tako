@@ -150,6 +150,18 @@ pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>>
 
     install_tako_sdk(&project_dir, adapter);
 
+    if output::confirm_with_description(
+        "Set up coding agents?",
+        Some(
+            "Install project-local Tako skills and MCP configuration. Run tako agents anytime to refresh them.",
+        ),
+        true,
+    )? && let Err(error) = crate::commands::agents::run(Vec::new(), true, Some(&tako_toml_path))
+    {
+        output::warning(&format!("Could not configure coding agents: {error}"));
+        output::hint("Your project is initialized. Run tako agents to try agent setup again.");
+    }
+
     output::heading("Next steps");
     output::info(&format!(
         "1. Edit {} to set environment variables and more",

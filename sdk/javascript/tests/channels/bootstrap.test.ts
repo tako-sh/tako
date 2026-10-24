@@ -20,6 +20,17 @@ function sdkImportPath(): string {
 }
 
 describe("bootstrapChannels", () => {
+  test("discovers presence spaces from the configured app root", async () => {
+    await mkdir(join(appDir, "src", "presence"), { recursive: true });
+    const source = join(import.meta.dir, "../../src/presence/define.ts");
+    await writeFile(
+      join(appDir, "src/presence/lobby.ts"),
+      `import { definePresence } from ${JSON.stringify(source)}; export default definePresence("lobby");`,
+    );
+    const { registry } = await bootstrapChannels({ appDir });
+    const space = registry.resolve("tako.presence:lobby");
+    expect(space?.definition.transport).toBe("ws");
+  });
   test("no-op when channels/ does not exist", async () => {
     const { registry, channelCount } = await bootstrapChannels({ appDir, appRoot: "." });
     expect(channelCount).toBe(0);

@@ -6,6 +6,14 @@ use std::sync::OnceLock;
 
 use serde::Deserialize;
 
+pub mod presence;
+#[cfg(feature = "axum")]
+mod presence_http;
+pub use presence::{
+    PresenceAuth, PresenceDefinition, PresenceGrant, PresenceMember, PresenceRegistry,
+    PresenceSnapshot, PresenceVerifyInput,
+};
+
 pub const BOOTSTRAP_DATA_ENV: &str = "TAKO_BOOTSTRAP_DATA";
 pub const INTERNAL_TOKEN_HEADER: &str = "X-Tako-Internal-Token";
 
@@ -206,6 +214,7 @@ fn host_without_port(host: &str) -> &str {
 #[cfg(feature = "axum")]
 pub mod axum {
     use std::io;
+    use std::sync::Arc;
 
     use ::axum::Router;
     use ::axum::body::Body;
@@ -224,6 +233,30 @@ pub mod axum {
     pub async fn serve(router: Router) -> io::Result<()> {
         let listener = crate::listener().await?;
         ::axum::serve(listener, self::router(router))
+            .await
+            .map_err(io::Error::other)
+    }
+
+    /// Install authenticated presence discovery and authorization alongside status probes.
+    pub fn router_with_presence<S>(
+        router: Router<S>,
+        registry: Arc<crate::PresenceRegistry>,
+    ) -> Router<S>
+    where
+        S: Clone + Send + Sync + 'static,
+    {
+        self::router(router.layer(middleware::from_fn_with_state(
+            registry,
+            crate::presence_http::presence_middleware,
+        )))
+    }
+
+    pub async fn serve_with_presence(
+        router: Router,
+        registry: Arc<crate::PresenceRegistry>,
+    ) -> io::Result<()> {
+        let listener = crate::listener().await?;
+        ::axum::serve(listener, router_with_presence(router, registry))
             .await
             .map_err(io::Error::other)
     }

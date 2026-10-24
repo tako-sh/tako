@@ -1,39 +1,7 @@
-# Instructions for AI agents working on Tako
+# Tako maintainer notes
 
-Tako's protocol is v0. Do not preserve legacy behavior, deprecated paths, or backward-compatibility shims; breaking changes are allowed until protocol v1.
-
-## Architecture and scope
-
-- Keep `tako-core` limited to shared protocol types.
-- Runtime install commands, launch arguments, and entrypoint paths belong in `tako-runtime/src/plugins/`; preset definitions belong in `presets/{language}.toml`.
-- Keep source files focused and below roughly 800 lines. Split by responsibility, and put tests for large modules in a sibling `tests.rs`.
-- Validate user input and external APIs, not trusted internal data.
-- Do not add abstractions, configurability, or edge-case handling without a concrete need.
-- Installable skills in `sdk/javascript/skills/`, `website/public/.well-known/agent-skills/`, `skills/`, and `.agents/skills/` are user-facing. Put maintainer guidance in `AGENTS.md`, repo documentation, or `.agents/internal/`.
-
-## Testing
-
-- Use TDD for Rust crates and SDK code: write the failing test before the implementation. Website changes do not require automated tests.
-- Test current behavior, not the absence of removed symbols, flags, messages, fields, or APIs. Negative assertions are appropriate only when they describe a current behavioral distinction.
-- Run the affected test suites before finishing. After a config-schema, build/deploy-flow, or protocol refactor, also run `just test cli` and `just test e2e`, updating `e2e/fixtures/` and `e2e/cli/` when necessary.
-- Never commit with known test or hook failures unless the user explicitly approves it.
-
-## Documentation
-
-- Code and tests are the source of truth for exact behavior. Website docs own user-facing behavior; focused contract docs own cross-component invariants and architecture.
-- Update affected documentation directly when behavior changes. For a broad documentation audit, follow `commands/sync-docs.md`.
-- Update a component's README when its setup, usage, commands, or test workflow changes.
-- When preset definitions change, update the relevant file in `presets/`.
-- When SDK exports, adapters, or usage patterns change, update the corresponding user-facing SDK skills.
-- Track planned work in the issue tracker or release notes, not in-repo TODO documents.
-
-## User-facing copy
-
-- Treat CLI output, errors, prompts, documentation examples, and website text as product copy: concise, natural, specific, and action-oriented.
-- Before adding or changing `tako` CLI output, read `.agents/internal/cli-output.md`.
-
-## Workflow
-
-- Before changing behavior, inspect the current implementation, tests, and affected documentation.
-- Reusable task playbooks live in `commands/`; read the matching playbook before running one.
-- Use Conventional Commits: `type(scope): short summary`. Use `chore(repo)` for broad mixed changes.
+- Protocol v0 allows breaking changes; update producers and consumers together without compatibility shims. See [PROTOCOL.md](PROTOCOL.md).
+- Skills in `sdk/javascript/skills/` are user-facing. Edit them there and run `bun website/scripts/sync-agent-skills.ts` to regenerate `skills/`, `.agents/skills/`, and `website/public/.well-known/agent-skills/`. Keep maintainer guidance out of these skills.
+- Docs7 generates website documentation. For skills, MCP, and agent discovery changes, follow [commands/sync-agents.md](commands/sync-agents.md). The CLI embeds skills and `website/docs/` at build time.
+- Before changing CLI output, read [.agents/internal/cli-output.md](.agents/internal/cli-output.md).
+- Config-schema, build/deploy-flow, and protocol refactors require `just test cli` and `just test e2e` in addition to affected tests. Fixtures live in `e2e/cli/` and `e2e/fixtures/`.

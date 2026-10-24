@@ -340,6 +340,7 @@ impl TakoProxy {
         }
 
         if is_websocket {
+            let presence_params = params.clone();
             if session.req_header().method.as_str() != "GET" {
                 ctx.observation.set_handler_result("error");
                 return self
@@ -399,6 +400,7 @@ impl TakoProxy {
                         &store,
                         &route.channel,
                         query_cursor,
+                        presence_params,
                         auth_mode,
                     )
                     .await;
@@ -436,6 +438,7 @@ impl TakoProxy {
                     &store,
                     &route.channel,
                     query_cursor,
+                    presence_params,
                     ChannelWebSocketAuth::Authorized(auth_result),
                 )
                 .await;

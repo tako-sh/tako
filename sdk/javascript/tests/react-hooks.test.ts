@@ -5,7 +5,8 @@ GlobalRegistrator.register();
 
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { useChannel } from "../src/react";
+import { useChannel, usePresence } from "../src/react";
+import { useLayoutEffect } from "react";
 import type { ChannelMessage } from "../src/types";
 
 class MockEventSource extends EventTarget {
@@ -392,6 +393,244 @@ describe("useChannel (ws)", () => {
     });
 
     expect(received).toEqual([1, 2]);
+  });
+});
+
+describe("usePresence", () => {
+  test("a new chat's layout update never sends to the previous chat", () => {
+    const sockets: MockWebSocket[] = [];
+    const factory = (url: string) => {
+      const socket = new MockWebSocket(url);
+      sockets.push(socket);
+      return socket;
+    };
+    const { rerender, unmount } = renderHook(
+      ({ chatId }) => {
+        const value = usePresence("chat", {
+          params: { chatId },
+          baseUrl: "http://test",
+          webSocketFactory: factory,
+          data: { typing: false },
+        });
+        useLayoutEffect(() => {
+          if (chatId === "two") value.update({ typing: true });
+        }, [chatId, value.update]);
+        return value;
+      },
+      { initialProps: { chatId: "one" } },
+    );
+    act(() => {
+      sockets[0]!.emitOpen();
+      sockets[0]!.emitMessage({ type: "tako.presence.ready" });
+    });
+    expect(sockets[0]!.sent).toHaveLength(1);
+    rerender({ chatId: "two" });
+    expect(sockets[0]!.sent).toHaveLength(1);
+    act(() => {
+      sockets[1]!.emitOpen();
+      sockets[1]!.emitMessage({ type: "tako.presence.ready" });
+    });
+    expect(JSON.parse(sockets[1]!.sent.at(-1) as string).data).toEqual({ typing: true });
+    unmount();
+  });
+  test("rejects invalid metadata without poisoning the next reconnect", async () => {
+    const sockets: MockWebSocket[] = [];
+    const { result, unmount } = renderHook(() =>
+      usePresence<unknown>("lobby", {
+        baseUrl: "http://test",
+        data: { value: "valid" },
+        webSocketFactory: (url) => {
+          const socket = new MockWebSocket(url);
+          sockets.push(socket);
+          return socket;
+        },
+      }),
+    );
+    act(() => {
+      sockets[0]!.emitOpen();
+      sockets[0]!.emitMessage({ type: "tako.presence.ready" });
+    });
+    act(() => result.current.update(1n));
+    expect(result.current.error).not.toBeNull();
+    act(() => sockets[0]!.emitClose());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    });
+    act(() => {
+      sockets[1]!.emitOpen();
+      sockets[1]!.emitMessage({ type: "tako.presence.ready" });
+    });
+    expect(JSON.parse(sockets[1]!.sent.at(-1) as string).data).toEqual({ value: "valid" });
+    unmount();
+  });
+  test("never renders a previous chat's roster during a scope switch", () => {
+    const sockets: MockWebSocket[] = [];
+    const observed: Array<{
+      chatId: string;
+      members: unknown[];
+      status: string;
+      connectionId: string | null;
+    }> = [];
+    const factory = (url: string) => {
+      const socket = new MockWebSocket(url);
+      sockets.push(socket);
+      return socket;
+    };
+    const { rerender, unmount } = renderHook(
+      ({ chatId }) => {
+        const value = usePresence("chat", {
+          params: { chatId },
+          baseUrl: "http://test",
+          webSocketFactory: factory,
+          data: {},
+        });
+        observed.push({
+          chatId,
+          members: value.members,
+          status: value.status,
+          connectionId: value.connectionId,
+        });
+        return value;
+      },
+      { initialProps: { chatId: "one" } },
+    );
+    act(() => {
+      sockets[0]!.emitOpen();
+      sockets[0]!.emitMessage({ type: "tako.presence.ready" });
+      sockets[0]!.emitMessage({
+        type: "tako.presence",
+        connectionId: "old",
+        members: [{ connectionId: "old", data: {} }],
+      });
+    });
+    observed.length = 0;
+    rerender({ chatId: "two" });
+    expect(observed.length).toBeGreaterThan(0);
+    for (const value of observed) {
+      expect(value.members).toEqual([]);
+      expect(value.connectionId).toBeNull();
+      expect(value.status).toBe("connecting");
+    }
+    unmount();
+  });
+  test("rejoins a different chat with its own initial metadata", () => {
+    const sockets: MockWebSocket[] = [];
+    const factory = (url: string) => {
+      const socket = new MockWebSocket(url);
+      sockets.push(socket);
+      return socket;
+    };
+    const { result, rerender, unmount } = renderHook(
+      ({ chatId }) =>
+        usePresence("chat", {
+          params: { chatId },
+          baseUrl: "http://test",
+          webSocketFactory: factory,
+          data: { typing: false },
+        }),
+      { initialProps: { chatId: "one" } },
+    );
+    act(() => result.current.update({ typing: true }));
+    rerender({ chatId: "two" });
+    expect(sockets[0]!.closedWith).not.toBeNull();
+    act(() => {
+      sockets[1]!.emitOpen();
+      sockets[1]!.emitMessage({ type: "tako.presence.ready" });
+    });
+    expect(new URL(sockets[1]!.url).searchParams.get("chatId")).toBe("two");
+    expect(JSON.parse(sockets[1]!.sent.at(-1) as string).data).toEqual({ typing: false });
+    unmount();
+  });
+
+  test("stops retrying after authorization is rejected", async () => {
+    const socket = new MockWebSocket("");
+    let connections = 0;
+    const { result, unmount } = renderHook(() =>
+      usePresence("private", {
+        baseUrl: "http://test",
+        data: {},
+        webSocketFactory: () => {
+          connections++;
+          return socket;
+        },
+      }),
+    );
+    act(() => socket.emitClose(4403));
+    expect(result.current.error?.message).toContain("4403");
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    });
+    expect(connections).toBe(1);
+    unmount();
+  });
+  test("joins, receives snapshots, replaces metadata, and leaves on unmount", () => {
+    const socket = new MockWebSocket("");
+    const { result, unmount } = renderHook(() =>
+      usePresence("lobby", {
+        baseUrl: "http://test",
+        webSocketFactory: () => socket,
+        data: { typing: false },
+      }),
+    );
+    expect(result.current.status).toBe("connecting");
+    act(() => {
+      socket.emitOpen();
+      socket.emitMessage({ type: "tako.presence.ready" });
+    });
+    expect(JSON.parse(socket.sent[0] as string)).toEqual({
+      type: "tako.presence",
+      data: { typing: false },
+    });
+    const members = [{ connectionId: "tab-1", subject: "user-1", data: { typing: false } }];
+    act(() => socket.emitMessage({ type: "tako.presence", connectionId: "tab-1", members }));
+    expect(result.current.members).toEqual(members);
+    expect(result.current.connectionId).toBe("tab-1");
+    expect(result.current.status).toBe("open");
+    act(() => result.current.update({ typing: true }));
+    expect(JSON.parse(socket.sent.at(-1) as string)).toEqual({
+      type: "tako.presence",
+      data: { typing: true },
+    });
+    unmount();
+    expect(socket.closedWith).not.toBeNull();
+  });
+
+  test("clears stale members on disconnect and rejoins with latest data", async () => {
+    const sockets: MockWebSocket[] = [];
+    const { result, unmount } = renderHook(() =>
+      usePresence("lobby", {
+        baseUrl: "http://test",
+        data: { typing: false },
+        webSocketFactory: (url) => {
+          const socket = new MockWebSocket(url);
+          sockets.push(socket);
+          return socket;
+        },
+      }),
+    );
+    act(() => {
+      sockets[0]!.emitOpen();
+      sockets[0]!.emitMessage({ type: "tako.presence.ready" });
+      sockets[0]!.emitMessage({
+        type: "tako.presence",
+        connectionId: "old",
+        members: [{ connectionId: "old", data: { typing: false } }],
+      });
+      result.current.update({ typing: true });
+      sockets[0]!.emitClose();
+    });
+    expect(result.current.members).toEqual([]);
+    expect(result.current.connectionId).toBeNull();
+    expect(result.current.status).toBe("connecting");
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    });
+    act(() => {
+      sockets[1]!.emitOpen();
+      sockets[1]!.emitMessage({ type: "tako.presence.ready" });
+    });
+    expect(JSON.parse(sockets[1]!.sent.at(-1) as string).data).toEqual({ typing: true });
+    unmount();
   });
 });
 

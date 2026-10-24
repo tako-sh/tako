@@ -34,7 +34,10 @@ export async function bootstrapChannels(
   opts: ChannelBootstrapOptions,
 ): Promise<ChannelBootstrapResult> {
   const dir = join(resolveAppRootDir(opts.appDir, opts.appRoot), CHANNELS_DIRNAME);
-  const found = await discoverChannels(dir);
+  const found = [
+    ...(await discoverChannels(dir)),
+    ...(await discoverChannels(join(resolveAppRootDir(opts.appDir, opts.appRoot), "presence"))),
+  ];
   const registry = new ChannelRegistry();
   for (const { name, definition } of found) {
     registry.register(name, definition);

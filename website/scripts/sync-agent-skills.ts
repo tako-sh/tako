@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// Syncs agent skills from sdk/javascript/skills/ into public/.well-known/agent-skills/
+// Syncs canonical SDK skills into repo discovery locations and the website,
 // and writes an index.json per the Agent Skills Discovery RFC v0.2.0.
 //
 // Runs before astro build so the generated files are picked up as static assets.
@@ -36,9 +36,15 @@ async function main() {
     const { frontmatter } = parseFrontmatter(content);
     const description: unknown = frontmatter["description"];
     const type: unknown = frontmatter["type"];
-    const destDir = path.join(DEST_DIR, slug);
-    await mkdir(destDir, { recursive: true });
-    await writeFile(path.join(destDir, "SKILL.md"), content);
+    for (const directory of [
+      DEST_DIR,
+      path.join(REPO_ROOT, "skills"),
+      path.join(REPO_ROOT, ".agents/skills"),
+    ]) {
+      const destDir = path.join(directory, slug);
+      await mkdir(destDir, { recursive: true });
+      await writeFile(path.join(destDir, "SKILL.md"), content);
+    }
     const sha256 = createHash("sha256").update(content).digest("hex");
     skills.push({
       name: slug,

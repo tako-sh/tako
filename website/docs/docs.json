@@ -6,19 +6,39 @@
   },
   "navbar": {
     "links": [
-      { "label": "Website", "href": "https://tako.sh" },
-      { "type": "github", "href": "https://github.com/tako-sh/tako" }
+      {
+        "label": "Website",
+        "href": "https://tako.sh"
+      },
+      {
+        "type": "github",
+        "href": "https://github.com/tako-sh/tako"
+      }
     ]
   },
   "navigation": {
     "groups": [
       {
         "group": "Get started",
-        "pages": ["index", "quickstart", "framework-guides", "how-tako-works", "feature-requests"]
+        "pages": [
+          "index",
+          "quickstart",
+          "agents",
+          "framework-guides",
+          "how-tako-works",
+          "feature-requests"
+        ]
       },
       {
         "group": "Guides",
-        "pages": ["development", "deployment", "channels", "workflows", "troubleshooting"]
+        "pages": [
+          "development",
+          "deployment",
+          "channels",
+          "presence",
+          "workflows",
+          "troubleshooting"
+        ]
       },
       {
         "group": "Reference",
