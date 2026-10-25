@@ -5,6 +5,8 @@ description: "Track live connections with authenticated identities, connection m
 
 Presence tracks who is connected to a named space. Tako manages membership, metadata updates, reconnects, and expiry. Each browser tab has its own entry, so closing one tab does not remove another tab belonging to the same user.
 
+Use [Stores](/docs/stores/) to keep backend data and UI synchronized with optional cached offline reads. Presence describes current connections; Stores loads data from your existing database.
+
 ## Define A Space
 
 Put one default export in each `<app_root>/presence/*.ts` file. As with channels, the first argument is the space name and `auth.verify` decides access.

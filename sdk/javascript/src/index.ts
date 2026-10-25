@@ -36,6 +36,11 @@ export interface TakoTypeRegistry {}
  */
 export interface TakoChannels {}
 
+/** Store params and data inferred by the generated `tako.d.ts` file. */
+export interface TakoStores {}
+
+export type { Jsonify, StoreJsonValue } from "./stores/json";
+
 /**
  * Project-specific storage bindings. Augmented by the generated `tako.d.ts` file.
  */
@@ -109,6 +114,14 @@ export type TakoRuntime = typeof tako;
 
 export { defineChannel } from "./channels/define";
 export { definePresence, type PresenceDefinition } from "./presence/define";
+export {
+  defineStore,
+  type StoreDefinition,
+  type StoreConfig,
+  type StoreLoadInput,
+  type StoreVerifyInput,
+  type StoreOfflineConfig,
+} from "./stores/define";
 export type { PresenceMember } from "./presence";
 export { defineWorkflow, signal } from "./workflows/define";
 export type {
@@ -180,4 +193,10 @@ export type InferChannel<T> = {
   params: InferChannelParams<T>;
   messages: InferChannelMessages<T>;
   transport: InferChannelTransport<T>;
+};
+
+/** Infer a store's validated params and JSON data for client declarations. */
+export type InferStore<T> = {
+  params: T extends { readonly __params?: infer P } ? P : Record<string, never>;
+  data: T extends { readonly __data?: infer D } ? D : unknown;
 };

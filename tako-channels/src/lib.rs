@@ -1,4 +1,5 @@
 mod client;
+pub mod live_store;
 mod presence;
 pub use presence::{PRESENCE_CHANNEL_PREFIX, PresenceMember, PresenceSession, presence_scope};
 pub mod close_codes;

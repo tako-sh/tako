@@ -2,8 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
 import type { Plugin, ResolvedConfig, UserConfig } from "vite";
-import { bootstrapChannels } from "./channels/bootstrap";
-import type { ChannelRegistry } from "./channels";
+import { bootstrapChannels, type ChannelBootstrapResult } from "./channels/bootstrap";
 import { createLogger } from "./logger";
 import { TAKO_INTERNAL_HOST_SUFFIX, handleTakoEndpoint } from "./tako/endpoints";
 import { initServerRuntime } from "./tako/init";
@@ -58,7 +57,7 @@ if (!fetchHandler) {
   );
 }
 
-const channels = bootstrapChannels({ appDir: process.cwd() }).then((result) => result.registry);
+const channels = bootstrapChannels({ appDir: process.cwd() });
 
 export default async function(request, env) {
   const [appName = ""] = (process.env.TAKO_APP_NAME ?? "app").split("/");
@@ -70,7 +69,7 @@ export default async function(request, env) {
     instance_id: process.env.TAKO_INSTANCE_ID ?? "unknown",
     pid: process.pid,
     uptime_seconds: 0,
-  }, discoveredChannels);
+  }, discoveredChannels.registry, discoveredChannels.stores);
   if (takoResponse) return takoResponse;
   return normalizeFetchResponse(await fetchHandler(request, env));
 };
@@ -262,12 +261,10 @@ export function tako(): Plugin {
 
       // Discover channel definitions once at startup. The registry feeds the
       // internal channel auth/registry endpoints.
-      let channelsPromise: Promise<ChannelRegistry> | null = null;
-      const getChannels = (): Promise<ChannelRegistry> => {
+      let channelsPromise: Promise<ChannelBootstrapResult> | null = null;
+      const getChannels = (): Promise<ChannelBootstrapResult> => {
         if (!channelsPromise) {
-          channelsPromise = bootstrapChannels({ appDir: process.cwd() }).then(
-            (result) => result.registry,
-          );
+          channelsPromise = bootstrapChannels({ appDir: process.cwd() });
         }
         return channelsPromise;
       };
@@ -290,7 +287,8 @@ export function tako(): Plugin {
                 pid: process.pid,
                 uptime_seconds: 0,
               },
-              channels,
+              channels.registry,
+              channels.stores,
             ),
           )
           .then((response) => {

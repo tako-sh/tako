@@ -73,9 +73,9 @@ fn runtime_state_subject(
         workflow_storage != WorkflowStorageIntent::NoWorkflows,
         has_channels,
     ) {
-        (true, true) => "Channels and workflows",
+        (true, true) => "Channels, presence, stores, and workflows",
         (true, false) => "Workflows",
-        (false, true) => "Channels",
+        (false, true) => "Channels, presence, and stores",
         (false, false) => "Runtime state",
     }
 }
@@ -87,7 +87,7 @@ fn missing_postgres_storage_action(
 ) -> String {
     match (workflow_storage, has_channels) {
         (_, true) => format!(
-            "Run `tako credentials set {POSTGRES_CREDENTIAL_NAME} --env {env}` for shared channel/workflow storage."
+            "Run `tako credentials set {POSTGRES_CREDENTIAL_NAME} --env {env}` for shared channel, presence, store, and workflow storage."
         ),
         (WorkflowStorageIntent::RequiresRemote, false) => format!(
             "Mark every workflow with `local: true` for per-server local storage, or run `tako credentials set {POSTGRES_CREDENTIAL_NAME} --env {env}` for remote workflow storage."
@@ -154,7 +154,7 @@ fn project_workflow_storage(project_dir: &Path, tako_config: &TakoToml) -> Workf
 
 fn project_has_channels(project_dir: &Path, tako_config: &TakoToml) -> bool {
     let app_root = crate::build::js::js_app_root_dir(project_dir, tako_config.js_app_root());
-    ["channels", "presence"].iter().any(|kind| {
+    ["channels", "presence", "stores"].iter().any(|kind| {
         let entries = match std::fs::read_dir(app_root.join(kind)) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return false,

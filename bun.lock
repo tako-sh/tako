@@ -94,6 +94,7 @@
       "version": "0.0.0",
       "bin": {
         "tako-sh-gen-channel-types": "./dist/gen-channel-types.mjs",
+        "tako-sh-gen-store-types": "./dist/gen-store-types.mjs",
         "tako-worker": "./dist/entrypoints/bun-worker.mjs",
       },
       "dependencies": {
@@ -108,6 +109,7 @@
         "@types/node": "catalog:dev",
         "@types/react": "catalog:dev",
         "@types/react-dom": "catalog:dev",
+        "fake-indexeddb": "^6.2.6",
         "react": "catalog:",
         "react-dom": "catalog:",
         "tsdown": "^0.23.0",
@@ -1223,6 +1225,8 @@
     "exsolve": ["exsolve@1.1.1", "", {}, "sha512-9U/jZUgjnSGyntRr6y5Muu1MJcwFl6kPu7k8qLF0IMNfLqvw0NZ4nnVDq0RVoZ0RvCyumib4Ez3KYrVfilrw+g=="],
 
     "extend": ["extend@3.0.2", "", {}, "sha512-fjquC59cD7CyW6urNXK0FBufkZcoiGG80wTuPujX590cB5Ttln20E2UB4S/WARVqhXffZl2LNgS+gQdPIIim/g=="],
+
+    "fake-indexeddb": ["fake-indexeddb@6.2.6", "", {}, "sha512-ihhmr0KoET51jT8R4YhbUYuLLvr1qqO6INISygtN16i8loR8kAxtAUr4+EKHTSMjL+lggaAn4OC7DRqzrNgnuQ=="],
 
     "fast-deep-equal": ["fast-deep-equal@3.1.3", "", {}, "sha512-f3qQ9oQy9j2AhBe/H9VC91wLmKBCCU/gDOnKNAYG5hswO7BLKj09Hc5HYNz9cGI++xlpDCIgDaitVs03ATR84Q=="],
 

@@ -14,6 +14,10 @@ use pingora_proxy::Session;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
+use tako_channels::live_store::{
+    STORE_CHANNEL_PREFIX, load_store, parse_store_route, serve_store_events, store_scope,
+    valid_store_name, validate_store_lifecycle, validate_store_query,
+};
 use tako_channels::params::{ParamsError, validate_query};
 use ws::ChannelWebSocketAuth;
 
@@ -101,6 +105,7 @@ impl TakoProxy {
         })?;
         let mut header = ResponseHeader::build(status, None)?;
         insert_body_headers(&mut header, "application/json", &body)?;
+        header.insert_header("Cache-Control", "no-store")?;
         session
             .write_response_header(Box::new(header), false)
             .await?;
@@ -235,7 +240,17 @@ impl TakoProxy {
         path: &str,
         _host: &str,
     ) -> Result<bool> {
-        let route = match parse_channel_route(path) {
+        let store_name = match parse_store_route(path) {
+            Ok(name) => name,
+            Err(error) => return self.write_channel_error(session, error).await,
+        };
+        let route = match store_name.as_ref() {
+            Some(name) => Ok(Some(tako_channels::ChannelRoute {
+                channel: format!("{STORE_CHANNEL_PREFIX}{name}"),
+            })),
+            None => parse_channel_route(path),
+        };
+        let route = match route {
             Ok(Some(route)) => route,
             Ok(None) => {
                 return Ok(false);
@@ -245,7 +260,26 @@ impl TakoProxy {
                 return self.write_channel_error(session, error).await;
             }
         };
-        ctx.observation.set_handler("channel", "pending");
+        let is_store = route.channel.starts_with(STORE_CHANNEL_PREFIX);
+        if is_store && !valid_store_name(&route.channel[STORE_CHANNEL_PREFIX.len()..]) {
+            return self
+                .write_channel_error(session, ChannelError::InvalidPath)
+                .await;
+        }
+        ctx.observation
+            .set_handler(if is_store { "store" } else { "channel" }, "pending");
+        if is_store
+            && (session.req_header().method.as_str() != "GET"
+                || session.as_downstream().is_upgrade_req())
+        {
+            return self
+                .write_json_response(
+                    session,
+                    405,
+                    &serde_json::json!({"error":"Method not allowed"}),
+                )
+                .await;
+        }
 
         let backend = match self.resolve_backend(app_name).await {
             BackendResolution::Ready {
@@ -302,25 +336,22 @@ impl TakoProxy {
             }
         };
 
-        let params_query = channel_params_query(session.req_header().uri.query());
-        let params = match validate_query(&meta.params_schema, &params_query) {
+        let params_query = request_params_query(session.req_header().uri.query(), is_store);
+        let parsed_params = if is_store {
+            validate_store_query(&meta.params_schema, &params_query)
+        } else {
+            validate_query(&meta.params_schema, &params_query).map_err(|error| match error {
+                ParamsError::Invalid(message) => {
+                    ChannelError::BadRequest(format!("invalid channel params: {message}"))
+                }
+                ParamsError::InvalidSchema(message) => {
+                    ChannelError::Storage(format!("invalid channel schema: {message}"))
+                }
+            })
+        };
+        let params = match parsed_params {
             Ok(params) => params,
-            Err(ParamsError::Invalid(message)) => {
-                return self
-                    .write_channel_error(
-                        session,
-                        ChannelError::BadRequest(format!("invalid channel params: {message}")),
-                    )
-                    .await;
-            }
-            Err(ParamsError::InvalidSchema(message)) => {
-                return self
-                    .write_channel_error(
-                        session,
-                        ChannelError::Storage(format!("invalid channel schema: {message}")),
-                    )
-                    .await;
-            }
+            Err(error) => return self.write_channel_error(session, error).await,
         };
 
         let is_websocket = session.as_downstream().is_upgrade_req();
@@ -444,6 +475,7 @@ impl TakoProxy {
                 .await;
         }
 
+        let store_params = params.clone();
         let auth_result = authorize_channel_request(
             app_name,
             instance,
@@ -462,6 +494,31 @@ impl TakoProxy {
                 return self.write_channel_error(session, error).await;
             }
         };
+        if is_store && let Err(error) = validate_store_lifecycle(&auth_result) {
+            return self.write_channel_error(session, error).await;
+        }
+        if let Some(name) = store_name {
+            let Some(endpoint) = instance.endpoint() else {
+                return self
+                    .write_channel_error(session, ChannelError::AuthUnavailable)
+                    .await;
+            };
+            let result = load_store(
+                &endpoint.to_string(),
+                &crate::instances::internal_app_host_for_app_id(app_name),
+                instance.internal_token(),
+                &name,
+                store_params,
+                auth_result.subject.as_deref(),
+            )
+            .await;
+            ctx.observation
+                .set_handler_result(if result.is_ok() { "load" } else { "error" });
+            return match result {
+                Ok(data) => self.write_json_response(session, 200, &data).await,
+                Err(error) => self.write_channel_error(session, error).await,
+            };
+        }
         drop(backend);
 
         let store = match self.channel_store_for_app(app_name).await {
@@ -477,6 +534,11 @@ impl TakoProxy {
                     .await;
             }
         };
+        if is_store {
+            let stream = store_scope(&route.channel, &store_params);
+            ctx.observation.set_handler_result("sse");
+            return serve_store_events(session, &store, &stream, &auth_result).await;
+        }
         if let Err(error) = store.sync_channel_async(&route.channel, &auth_result).await {
             ctx.observation.set_handler_result("error");
             return self.write_channel_error(session, error).await;
@@ -513,6 +575,14 @@ impl TakoProxy {
         ctx.observation.set_handler_result("sse");
         self.write_channel_events(session, &store, &route.channel, cursor, &auth_result)
             .await
+    }
+}
+
+fn request_params_query(query: Option<&str>, is_store: bool) -> String {
+    if is_store {
+        query.unwrap_or_default().to_owned()
+    } else {
+        channel_params_query(query)
     }
 }
 

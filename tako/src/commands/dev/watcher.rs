@@ -60,20 +60,21 @@ impl ConfigWatcher {
         }
         watch_path(&debouncer, &self.project_dir, RecursiveMode::NonRecursive)?;
         let watched_app_root = self.app_root.clone();
-        let watched_channels = watched_app_root.join("channels");
-        let watched_presence = watched_app_root.join("presence");
-        let watched_workflows = watched_app_root.join("workflows");
+        let watched_runtime_dirs = [
+            (watched_app_root.join("channels"), WatchChange::Channels),
+            (watched_app_root.join("presence"), WatchChange::Channels),
+            (watched_app_root.join("stores"), WatchChange::Channels),
+            (watched_app_root.join("workflows"), WatchChange::Workflows),
+        ];
+        let mut known_runtime_dirs = std::collections::HashSet::new();
         if watched_app_root != self.project_dir && watched_app_root.is_dir() {
             let _ = watch_path(&debouncer, &watched_app_root, RecursiveMode::NonRecursive);
         }
-        if watched_channels.is_dir() {
-            let _ = watch_path(&debouncer, &watched_channels, RecursiveMode::NonRecursive);
-        }
-        if watched_presence.is_dir() {
-            let _ = watch_path(&debouncer, &watched_presence, RecursiveMode::NonRecursive);
-        }
-        if watched_workflows.is_dir() {
-            let _ = watch_path(&debouncer, &watched_workflows, RecursiveMode::NonRecursive);
+        for (dir, _) in &watched_runtime_dirs {
+            if dir.is_dir() {
+                let _ = watch_path(&debouncer, dir, RecursiveMode::NonRecursive);
+                known_runtime_dirs.insert(dir.clone());
+            }
         }
         for dir in crate::build::js::generated_declaration_parent_dirs(&self.project_dir) {
             if dir != self.project_dir && dir.is_dir() {
@@ -92,53 +93,30 @@ impl ConfigWatcher {
                 match result {
                     Ok(events) => {
                         for event in events {
-                            if event.path == watched_channels && watched_channels.is_dir() {
-                                let _ = watch_path(
-                                    &debouncer_for_thread,
-                                    &watched_channels,
-                                    RecursiveMode::NonRecursive,
-                                );
-                            }
-                            if event.path == watched_presence && watched_presence.is_dir() {
-                                let _ = watch_path(
-                                    &debouncer_for_thread,
-                                    &watched_presence,
-                                    RecursiveMode::NonRecursive,
-                                );
-                            }
-                            if event.path == watched_workflows && watched_workflows.is_dir() {
-                                let _ = watch_path(
-                                    &debouncer_for_thread,
-                                    &watched_workflows,
-                                    RecursiveMode::NonRecursive,
-                                );
-                            }
                             if event.path == watched_app_root && watched_app_root.is_dir() {
                                 let _ = watch_path(
                                     &debouncer_for_thread,
                                     &watched_app_root,
                                     RecursiveMode::NonRecursive,
                                 );
-                                if watched_channels.is_dir() {
-                                    let _ = watch_path(
-                                        &debouncer_for_thread,
-                                        &watched_channels,
-                                        RecursiveMode::NonRecursive,
-                                    );
+                            }
+                            for (dir, change) in &watched_runtime_dirs {
+                                if event.path != *dir && event.path != watched_app_root {
+                                    continue;
                                 }
-                                if watched_presence.is_dir() {
+                                if dir.is_dir() {
                                     let _ = watch_path(
                                         &debouncer_for_thread,
-                                        &watched_presence,
+                                        dir,
                                         RecursiveMode::NonRecursive,
                                     );
-                                }
-                                if watched_workflows.is_dir() {
-                                    let _ = watch_path(
-                                        &debouncer_for_thread,
-                                        &watched_workflows,
-                                        RecursiveMode::NonRecursive,
-                                    );
+                                    // Moving a populated directory into the app root can produce
+                                    // only a directory event; attach its watch and restart once.
+                                    if known_runtime_dirs.insert(dir.clone()) {
+                                        let _ = changed_tx.blocking_send(*change);
+                                    }
+                                } else {
+                                    known_runtime_dirs.remove(dir);
                                 }
                             }
                             for dir in
@@ -203,7 +181,7 @@ fn classify_path(
         return Some(WatchChange::GeneratedDeclarations);
     }
 
-    for dirname in ["channels", "presence"] {
+    for dirname in ["channels", "presence", "stores"] {
         let dir = app_root.join(dirname);
         if path == dir {
             return (!path.exists()).then_some(WatchChange::Channels);
@@ -395,6 +373,50 @@ mod tests {
                 &config_path,
                 &project_dir.join("src").join("index.ts"),
                 None
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn store_definition_changes_and_directory_removal_restart_runtime() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project_dir = temp.path();
+        let app_root = project_dir.join("app");
+        let config_path = project_dir.join("tako.toml");
+        let stores_dir = app_root.join("stores");
+        std::fs::create_dir_all(&stores_dir).unwrap();
+        let store = stores_dir.join("messages.ts");
+        std::fs::write(&store, "export default null;\n").unwrap();
+        let cutoff = SystemTime::now();
+        assert_eq!(
+            classify_path(project_dir, &app_root, &config_path, &store, Some(cutoff)),
+            None
+        );
+        std::thread::sleep(Duration::from_millis(2));
+        std::fs::write(&store, "export default 1;\n").unwrap();
+        assert_eq!(
+            classify_path(project_dir, &app_root, &config_path, &store, Some(cutoff)),
+            Some(WatchChange::Channels)
+        );
+        std::fs::remove_dir_all(&stores_dir).unwrap();
+        assert_eq!(
+            classify_path(
+                project_dir,
+                &app_root,
+                &config_path,
+                &stores_dir,
+                Some(cutoff)
+            ),
+            Some(WatchChange::Channels)
+        );
+        assert_eq!(
+            classify_path(
+                project_dir,
+                &app_root,
+                &config_path,
+                &project_dir.join("stores/messages.ts"),
+                None,
             ),
             None
         );

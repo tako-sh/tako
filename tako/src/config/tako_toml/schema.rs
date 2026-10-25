@@ -38,7 +38,7 @@ pub struct TakoToml {
     pub start: Vec<String>,
 
     /// JavaScript app root, relative to the config file.
-    /// `channels/` and `workflows/` live under this directory.
+    /// `channels/`, `presence/`, `stores/`, and `workflows/` live under this directory.
     pub app_root: Option<String>,
 
     /// Runtime entrypoint override relative to project root

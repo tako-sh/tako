@@ -383,6 +383,29 @@ fn runtime_state_storage_validation_requires_postgres_for_multi_server_presence(
     assert!(result.errors[0].contains("postgres_url"));
 }
 
+#[test]
+fn runtime_state_storage_validation_requires_postgres_for_multi_server_stores() {
+    let temp = TempDir::new().unwrap();
+    fs::create_dir_all(temp.path().join("app/stores")).unwrap();
+    fs::write(
+        temp.path().join("app/stores/messages.ts"),
+        r#"export default defineStore("messages", { load: async () => [] });"#,
+    )
+    .unwrap();
+    let mut tako_config = multi_server_js_config();
+    tako_config.app_root = Some("app".to_string());
+    let result = config::validate_runtime_state_storage_for_deploy(
+        temp.path(),
+        &tako_config,
+        &SecretsStore::default(),
+        "production",
+        2,
+    );
+    assert!(result.has_errors());
+    assert!(result.errors[0].contains("stores"));
+    assert!(result.errors[0].contains("postgres_url"));
+}
+
 #[cfg(unix)]
 #[test]
 fn runtime_state_storage_validation_rejects_unreadable_channels_dir() {

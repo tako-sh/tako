@@ -176,6 +176,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let channels = channels.clone();
         workflows.set_channel_publisher(std::sync::Arc::new(
             move |app: &str, channel: &str, payload: serde_json::Value| {
+                let channel = tako_channels::live_store::publication_channel(channel, &payload)
+                    .map_err(|error| error.to_string())?;
                 let lifecycle = payload
                     .get("lifecycle")
                     .cloned()
@@ -185,7 +187,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let typed: tako_channels::ChannelPublishPayload =
                     serde_json::from_value(payload).map_err(|e| format!("invalid payload: {e}"))?;
                 channels
-                    .publish(app, channel, &typed, lifecycle)
+                    .publish(app, &channel, &typed, lifecycle)
                     .map(|msg| serde_json::to_value(msg).unwrap_or(serde_json::Value::Null))
                     .map_err(|e| e.to_string())
             },

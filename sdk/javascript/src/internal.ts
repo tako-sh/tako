@@ -51,6 +51,7 @@ export type {
 } from "./channels/define";
 export { defineChannel, isChannelDefinition, isChannelExport } from "./channels/define";
 export { bootstrapChannels } from "./channels/bootstrap";
+export { StoreRegistry } from "./stores/registry";
 
 export { loadSecrets } from "./tako/secrets";
 export { createLogger } from "./logger";

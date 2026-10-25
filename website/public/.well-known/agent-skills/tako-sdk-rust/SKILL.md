@@ -2,7 +2,7 @@
 name: tako-sdk-rust
 description: >-
   tako.sh Rust SDK: bootstrap secrets, listener binding, and Axum serving with
-  Tako internal status handling and authenticated presence registries.
+  Tako internal status handling, authenticated presence, and live Stores with cached offline reads.
 type: framework
 library: tako.sh
 library_version: "0.2.1"
@@ -87,5 +87,67 @@ manage leases, disconnect cleanup, and reconnects. Every authorized member of a
 scope sees its roster; permissions are checked again when the configured maximum
 connection lifetime expires. Configure the shared `postgres_url` credential for
 multiple servers; native registration is not detected by the JS deploy preflight.
+
+## Stores
+
+Use `StoreRegistry` and `StoreDefinition` to expose live reads from an existing
+database. A `StoreHandle` invalidates exact params after a committed write:
+
+```rust
+use std::sync::Arc;
+use serde_json::json;
+use tako::{StoreAuth, StoreDefinition, StoreError, StoreGrant, StoreRegistry};
+
+let stores = Arc::new(StoreRegistry::new());
+let messages = stores.register("messages", StoreDefinition::new(|input| async move {
+    load_messages(input).await.map_err(StoreError::loader)
+})
+    .params_schema(json!({
+        "type": "object",
+        "properties": {"chatId": {"type": "string"}},
+        "required": ["chatId"]
+    }))
+    .auth(StoreAuth::default(), |input| async move {
+        authorize_messages(&input).await.map(StoreGrant::new)
+    })
+    .offline(3_600_000))?;
+
+// Commit the database write first:
+messages.invalidate(json!({"chatId": chat_id})).await?;
+tako::axum::serve_with_stores(app, stores).await?;
+```
+
+`load_messages` is an app-owned async helper returning `Result<serde_json::Value,
+YourError>` from `StoreLoadInput { store, params, subject }`.
+`authorize_messages` verifies credentials and scope access and returns
+`Option<String>` with the verified subject. Omit `.auth(...)` for public reads.
+Loader snapshots are private to each reader; only invalidation signals fan out.
+Reads and subscriptions each enforce schema validation and authorization in dev
+and production. Store names follow `^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$`.
+
+For a custom Axum loop, use `router_with_stores(app, stores)`. To combine presence
+and Stores, use `serve_with_realtime(app, presence, stores)` or
+`router_with_realtime`; these merge both registries. Other frameworks must protect
+`metadata()`, `authorize(...).await`, and `load(...).await` with the internal host
+and bootstrap token. `StoreHandle::invalidate` is async with the `tokio` feature;
+use `invalidate_blocking` only in synchronous code or on a blocking pool.
+
+React frontends use `useStore<Data>("messages", options)` from `tako.sh/react`.
+`.offline(max_age_ms)` permits opt-in persisted reads; the client must also supply
+a stable, non-secret `cacheScope` for the user/tenant. Cache version defaults to
+`"1"`; call `.offline_version(...)` after `.offline(...)`, and match frontend
+`cacheVersion` after incompatible schema changes. The default browser cache is
+bounded IndexedDB with TTL capped at seven days. It stores no auth credentials.
+Clear the scope with `clearStoreCache` on logout and disable/unmount readers.
+Offline reads cannot detect remote revocation, install a PWA, or queue writes.
+
+Invalidate only after commit, using the exact params; `{}` is not a wildcard.
+External writers must invalidate explicitly; Tako does not inspect database
+dependencies. Publication errors do not roll back or retry the database write;
+use an app outbox for durable commit-and-notify. Params are capped at 16 KiB and
+read responses at 1 MiB. Multi-server native apps must explicitly configure shared
+`postgres_url`; JS directory detection does not find Rust registrations. See
+https://tako.sh/docs/stores/ for the frontend lifecycle and verify scope isolation,
+reconnection, and offline expiry.
 
 Run `cargo test -p tako` and `cargo test -p tako --all-features` after changes.

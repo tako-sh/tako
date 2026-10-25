@@ -415,6 +415,15 @@ fn detect_js_app_root_recognizes_presence_only_projects() {
 }
 
 #[test]
+fn detect_js_app_root_recognizes_store_only_projects() {
+    for root in ["src", "app", "."] {
+        let temp = TempDir::new().unwrap();
+        std::fs::create_dir_all(temp.path().join(root).join("stores")).unwrap();
+        assert_eq!(detect_js_app_root(temp.path()), root);
+    }
+}
+
+#[test]
 fn sdk_install_command_uses_runtime_package_manager() {
     let tmp = tempfile::TempDir::new().unwrap();
     assert_eq!(

@@ -442,6 +442,7 @@ pub(super) fn path_uses_tako_handler(path: &str) -> bool {
     path_looks_like_static_asset(path)
         || path == tako_images::PUBLIC_IMAGE_BASE_PATH
         || path.starts_with(tako_channels::CHANNELS_BASE_PATH)
+        || path.starts_with(tako_channels::live_store::STORES_BASE_PATH)
 }
 
 pub(super) fn static_lookup_paths(

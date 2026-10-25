@@ -9,6 +9,10 @@ use pingora_proxy::Session;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tako_channels::live_store::{
+    STORE_CHANNEL_PREFIX, authorize_store, load_store, parse_store_route, serve_store_events,
+    store_scope, valid_store_name,
+};
 use tako_channels::{
     ChannelAuthResponse, ChannelPublishPayload, ChannelStore, parse_channel_route,
 };
@@ -105,6 +109,105 @@ pub async fn try_handle(
         return write_json(session, 405, r#"{"error":"Method not allowed"}"#).await;
     }
     serve_sse(session, dev_store, app_id, &route.channel).await
+}
+
+/// Stores use app authorization even in local dev, including schema coercion
+/// and verified subjects for loaders. No app token is exposed to the browser.
+pub async fn try_handle_store(
+    session: &mut Session,
+    dev_store: &DevChannelStore,
+    target: &crate::proxy::RouteTarget,
+    path: &str,
+) -> Result<bool> {
+    if session.req_header().method.as_str() != "GET" || session.as_downstream().is_upgrade_req() {
+        return write_json(session, 405, r#"{"error":"Method not allowed"}"#).await;
+    }
+    let load_name = match parse_store_route(path) {
+        Ok(name) => name,
+        Err(_) => return write_json(session, 404, r#"{"error":"Not found"}"#).await,
+    };
+    let channel = match &load_name {
+        Some(name) => format!("{STORE_CHANNEL_PREFIX}{name}"),
+        None => match parse_channel_route(path) {
+            Ok(Some(route)) if route.channel.starts_with(STORE_CHANNEL_PREFIX) => route.channel,
+            _ => return write_json(session, 404, r#"{"error":"Not found"}"#).await,
+        },
+    };
+    if !valid_store_name(&channel[STORE_CHANNEL_PREFIX.len()..]) {
+        return write_json(session, 404, r#"{"error":"Not found"}"#).await;
+    }
+    let Some(context) = &target.store_auth else {
+        return write_json(session, 503, r#"{"error":"Service Unavailable"}"#).await;
+    };
+    let headers = session
+        .req_header()
+        .headers
+        .iter()
+        .filter_map(|(name, value)| {
+            value
+                .to_str()
+                .ok()
+                .map(|value| (name.as_str().to_ascii_lowercase(), value.to_owned()))
+        })
+        .collect();
+    let endpoint = format!("127.0.0.1:{}", target.upstream_port);
+    let query = session.req_header().uri.query().unwrap_or_default();
+    let (params, auth) = match authorize_store(
+        &endpoint,
+        &context.internal_host,
+        &context.token,
+        &channel,
+        query,
+        &headers,
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => return write_store_error(session, error).await,
+    };
+    if let Some(name) = load_name {
+        return match load_store(
+            &endpoint,
+            &context.internal_host,
+            &context.token,
+            &name,
+            params,
+            auth.subject.as_deref(),
+        )
+        .await
+        {
+            Ok(data) => write_json(session, 200, &data.to_string()).await,
+            Err(error) => write_store_error(session, error).await,
+        };
+    }
+    let app_id = target.channel_store_key.clone();
+    let dev_store = dev_store.clone();
+    let store = tokio::task::spawn_blocking(move || dev_store.store_for_app(&app_id))
+        .await
+        .map_err(|error| {
+            pingora_core::Error::explain(pingora_core::ErrorType::InternalError, error.to_string())
+        })?;
+    serve_store_events(session, &store, &store_scope(&channel, &params), &auth).await
+}
+
+async fn write_store_error(
+    session: &mut Session,
+    error: tako_channels::ChannelError,
+) -> Result<bool> {
+    use tako_channels::ChannelError;
+    let (status, message) = match error {
+        ChannelError::Unauthorized => (401, "Unauthorized"),
+        ChannelError::Forbidden => (403, "Forbidden"),
+        ChannelError::NotDefined | ChannelError::InvalidPath => (404, "Store not defined"),
+        ChannelError::BadRequest(_) => (400, "Invalid Store request"),
+        _ => (503, "Service Unavailable"),
+    };
+    write_json(
+        session,
+        status,
+        &serde_json::json!({"error":message}).to_string(),
+    )
+    .await
 }
 
 async fn serve_sse(
@@ -250,6 +353,7 @@ async fn serve_sse(
 async fn write_json(session: &mut Session, status: u16, body: &str) -> Result<bool> {
     let mut header = ResponseHeader::build(status, None)?;
     header.insert_header("Content-Type", "application/json")?;
+    header.insert_header("Cache-Control", "no-store")?;
     header.insert_header("Access-Control-Allow-Origin", "*")?;
     session
         .write_response_header(Box::new(header), false)
@@ -259,6 +363,9 @@ async fn write_json(session: &mut Session, status: u16, body: &str) -> Result<bo
         .await?;
     Ok(true)
 }
+
+#[cfg(test)]
+mod store_tests;
 
 #[cfg(test)]
 mod tests {

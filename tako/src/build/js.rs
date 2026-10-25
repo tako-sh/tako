@@ -411,7 +411,15 @@ fn write_tako_declarations_for_adapter_with_bun(
     let storage_names = read_storage_names(project_dir);
     let env_names = read_env_names(project_dir);
     let var_names = read_var_names(project_dir);
-    let channel_types = generate_channel_types_with_bun(project_dir, app_root, bun)?;
+    let path = resolve_declaration_path(project_dir);
+    let mut channel_types = generate_channel_types_with_bun(project_dir, app_root, bun)?;
+    let store_types = generate_store_types_with_bun(
+        project_dir,
+        app_root,
+        path.parent().unwrap_or(project_dir),
+        bun,
+    )?;
+    channel_types.push_str(&store_types);
     let content = build_declarations(
         &secret_names,
         &storage_names,
@@ -419,7 +427,6 @@ fn write_tako_declarations_for_adapter_with_bun(
         &var_names,
         &channel_types,
     );
-    let path = resolve_declaration_path(project_dir);
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
@@ -478,6 +485,44 @@ fn channel_codegen_command(project_dir: &Path, channels_dir: &Path, bun: &OsStr)
         .arg(channels_dir);
     command.current_dir(project_dir);
     command
+}
+
+fn generate_store_types_with_bun(
+    project_dir: &Path,
+    app_root: &str,
+    declaration_dir: &Path,
+    bun: &OsStr,
+) -> std::io::Result<String> {
+    let stores_dir = js_app_root_dir(project_dir, app_root).join("stores");
+    if !stores_dir.is_dir() {
+        return Ok(String::new());
+    }
+    let repo_script = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("tako crate lives under repo root")
+        .join("sdk/javascript/bin/gen-store-types.ts");
+    let mut command = Command::new(bun);
+    if repo_script.is_file() {
+        command.arg(repo_script);
+    } else {
+        command.arg("run").arg("tako-sh-gen-store-types");
+    }
+    command
+        .arg(&stores_dir)
+        .arg(declaration_dir)
+        .current_dir(project_dir);
+    let output = match command.output() {
+        Ok(output) => output,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+        Err(err) => return Err(err),
+    };
+    if !output.status.success() {
+        return Err(std::io::Error::other(format!(
+            "store generation failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 pub fn write_generated_files(project_dir: &Path) -> std::io::Result<JsGeneratedFilesResult> {

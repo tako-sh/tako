@@ -452,6 +452,97 @@ run_channels_workflows_checks() {
   cleanup_sse
 }
 
+run_store_checks() {
+  local server_host=$1
+  local route_host=$2
+  local store_headers="$TMP_ROOT/store-headers-${server_host}.txt"
+  local store_body="$TMP_ROOT/store-body-${server_host}.json"
+  local events_a="$TMP_ROOT/store-events-a-${server_host}.txt"
+  local events_b="$TMP_ROOT/store-events-b-${server_host}.txt"
+  local store_message="store-${server_host}-$(date +%s%N)"
+  local query_a='params=%7B%22chat%22%3A%7B%22id%22%3A%22chat-a%22%7D%7D'
+  local query_b='params=%7B%22chat%22%3A%7B%22id%22%3A%22chat-b%22%7D%7D'
+  local store_url="http://${server_host}:8080/_tako/stores/messages"
+  local stream_url="http://${server_host}:8080/_tako/channels/tako.store%3Amessages"
+  local status sse_a sse_b
+  local -a route_args=(
+    --http1.1 --connect-timeout 3 --max-time 10
+    -H "Host: ${route_host}"
+    -H "X-Forwarded-Proto: https"
+    -H "Forwarded: proto=https"
+  )
+
+  echo "Running authenticated Store read and invalidation checks on $server_host"
+  status=$(curl -sS "${route_args[@]}" -o "$store_body" -w '%{http_code}' "$store_url?$query_a")
+  if [[ "$status" != 401 && "$status" != 403 ]]; then
+    echo "Private Store read unexpectedly returned $status" >&2
+    exit 1
+  fi
+  status=$(curl -sS "${route_args[@]}" -H 'Authorization: Bearer e2e' \
+    -o "$store_body" -w '%{http_code}' "$store_url")
+  if [[ "$status" != 400 ]]; then
+    echo "Store read without required params unexpectedly returned $status" >&2
+    exit 1
+  fi
+  status=$(curl -sS "${route_args[@]}" -H 'Authorization: Bearer e2e' \
+    -D "$store_headers" -o "$store_body" -w '%{http_code}' "$store_url?$query_a")
+  if [[ "$status" != 200 ]]; then
+    echo "Authenticated Store read returned $status" >&2
+    cat "$store_body" >&2
+    exit 1
+  fi
+  jq -e '.data.chatId == "chat-a" and .data.subject == "e2e-user" and .offline.maxAgeMs == 60000' "$store_body" >/dev/null
+  grep -qi 'cache-control: no-store' "$store_headers"
+  if grep -qi '^x-tako-internal-token:' "$store_headers"; then
+    echo "Store response exposed an internal token header" >&2
+    exit 1
+  fi
+
+  curl -sS -N "${route_args[@]}" --max-time 30 -H 'Authorization: Bearer e2e' \
+    -H 'Accept: text/event-stream' "$stream_url?$query_a" >"$events_a" 2>"$events_a.err" &
+  sse_a=$!
+  curl -sS -N "${route_args[@]}" --max-time 30 -H 'Authorization: Bearer e2e' \
+    -H 'Accept: text/event-stream' "$stream_url?$query_b" >"$events_b" 2>"$events_b.err" &
+  sse_b=$!
+  cleanup_store_sse() {
+    kill "$sse_a" "$sse_b" >/dev/null 2>&1 || true
+    wait "$sse_a" "$sse_b" >/dev/null 2>&1 || true
+  }
+  if ! wait_for_file_text "$events_a" 'tako.store.ready' 'Store A subscription readiness' || \
+     ! wait_for_file_text "$events_b" 'tako.store.ready' 'Store B subscription readiness'; then
+    cleanup_store_sse
+    exit 1
+  fi
+  status=$(curl -sS "${route_args[@]}" -H 'Authorization: Bearer e2e' \
+    -H 'Content-Type: application/json' -d "{\"chatId\":\"chat-a\",\"message\":\"$store_message\"}" \
+    -o "$store_body" -w '%{http_code}' "http://${server_host}:8080/store/messages")
+  if [[ "$status" != 200 ]] || ! jq -e '.ok == true' "$store_body" >/dev/null; then
+    echo "Committed Store write and invalidation failed ($status)" >&2
+    cat "$store_body" >&2
+    cleanup_store_sse
+    exit 1
+  fi
+  if ! wait_for_file_text "$events_a" 'tako.store.invalidate' 'Store A invalidation'; then
+    cleanup_store_sse
+    exit 1
+  fi
+  sleep 1
+  if grep -Fq 'tako.store.invalidate' "$events_b"; then
+    echo "Store A write invalidated the unrelated Store B parameter scope" >&2
+    cleanup_store_sse
+    exit 1
+  fi
+  status=$(curl -sS "${route_args[@]}" -H 'Authorization: Bearer e2e' \
+    -o "$store_body" -w '%{http_code}' "$store_url?$query_a")
+  if [[ "$status" != 200 ]] || ! jq -e --arg message "$store_message" \
+    '.data.messages | any(.message == $message)' "$store_body" >/dev/null; then
+    echo "Store read did not reflect its committed write ($status)" >&2
+    cleanup_store_sse
+    exit 1
+  fi
+  cleanup_store_sse
+}
+
 run_cli_post_deploy_checks() {
   local server_host=$1
   local app_name=$2
@@ -760,6 +851,7 @@ CFG
   run_secret_checks "$server" "$ROUTE_HOST"
   if [[ "$FIXTURE_REL" == "e2e/fixtures/javascript/channels-workflows" ]]; then
     run_channels_workflows_checks "$server" "$ROUTE_HOST"
+    run_store_checks "$server" "$ROUTE_HOST"
   fi
   run_cli_post_deploy_checks "$server" "$APP_NAME" "$ROUTE_HOST" "$CURRENT_VERSION"
 

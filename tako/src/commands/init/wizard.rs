@@ -180,7 +180,7 @@ pub(super) fn prompt_interactive_config(
                 match wizard.input(
                     "App root",
                     Some(&default_app_root),
-                    Some("JS root for channels/ and workflows/ (use . for project root)."),
+                    Some("JS root for runtime definitions (use . for project root)."),
                 ) {
                     Ok(v) => {
                         let trimmed = v.trim();

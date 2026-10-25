@@ -7,6 +7,8 @@ test("tako.sh/client exports Channel", async () => {
   expect(typeof mod.Channel).toBe("function");
   expect(mod.configureChannels).toBeDefined();
   expect(typeof mod.configureChannels).toBe("function");
+  expect(typeof mod.Store).toBe("function");
+  expect(typeof mod.clearStoreCache).toBe("function");
 });
 
 test("tako.sh/client bundles cleanly for the browser (no node:* specifiers)", async () => {
@@ -24,6 +26,7 @@ test("tako.sh/client bundles cleanly for the browser (no node:* specifiers)", as
 test("tako.sh/react exports usePresence and bundles for the browser", async () => {
   const mod = await import("../src/react");
   expect(typeof mod.usePresence).toBe("function");
+  expect(typeof mod.useStore).toBe("function");
   const result = await Bun.build({
     entrypoints: [resolve(import.meta.dir, "../src/react.ts")],
     target: "browser",

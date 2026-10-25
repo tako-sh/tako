@@ -64,6 +64,57 @@ Membership is scoped by deployed app/environment, wire name, and canonical valid
 
 The client renews a 45-second lease with an update every 15 seconds. Disconnect cleanup removes its record; expiry covers network loss and process crashes. Snapshots poll shared state at approximately one-second intervals. SQLite and Postgres store leases separately from replay, with Postgres keyed by app ID for cross-server visibility. Local dev uses the same WebSocket session loop and an in-memory store; local auth remains permissive as with channels.
 
+## Stores
+
+JavaScript, Go, and Rust store definitions reuse the channel registry and
+authorization endpoint with `tako.store:` wire names. Public reads use
+`GET /_tako/stores/<name>?params=<JSON-object>`; live subscriptions use the SSE
+channel route with that prefixed name and the same `params` JSON query envelope.
+The client URL-encodes the complete object, preserving arrays, objects, nulls,
+and numeric/string distinctions. Store channels reject WebSocket/client publishing.
+Both routes validate the decoded params object against the registered schema and independently
+authorize the subscribe operation. Names use
+`^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$`; validated params are JSON objects capped at
+16 KiB.
+
+After authorization, the proxy calls `POST /stores/load` on the app's internal
+host using the bootstrap token. The request is `{ "store": "<public-name>",
+"params": {...}, "subject"?: "<verified-subject>" }`; the subject comes only
+from authorization. The SDK responds with `{ "data": ..., "offline"?: {
+"maxAgeMs": <positive-safe-integer>, "version": "<1–128-byte-string>" } }`.
+Bodies and responses are capped at 1 MiB. Public responses are `no-store`; the
+proxy never forwards the bootstrap token or private loader error details.
+Loader data is sent only to its requesting reader.
+
+The trusted internal `channel_publish` command publishes an invalidation to the
+base `tako.store:<name>` with payload `{ "type": "tako.store.invalidate",
+"data": {}, "scopeParams": {...} }`. The native transport derives an opaque
+storage key from the wire name and canonical params using SHA-256; it normalizes
+equivalent integral numeric values before hashing. Params are consumed as routing
+metadata and never sent to subscribers. App/environment identity remains part of
+the underlying channel store namespace. Publication affects exactly one params
+scope; there is no wildcard invalidation.
+
+Every SSE connection starts from the current notification cursor and sends
+`{ "type": "tako.store.ready", "data": {} }` after its change watcher and
+cursor are established. Subsequent notifications are
+`{ "type": "tako.store.invalidate", "data": {} }`. Store frames carry no
+client replay cursor. Clients reload after ready and invalidation, coalesce
+notifications during loads, and reload again after reconnect; no snapshot or
+intermediate database-state replay is promised.
+
+Development uses the same Store validation and authorization as production,
+with in-memory notification storage. Production uses existing channel storage;
+cross-server notifications require shared Postgres. Store invalidation is
+separate from the application database transaction. Durable commit-and-notify
+requires an application-owned outbox.
+
+Offline caching is a client concern gated by the response's opt-in policy and
+an explicit client cache scope/version. The browser stores no credentials,
+bounds persisted data, honors expiry, and purges the active result and cache
+entry on authorization denial. Offline writes and conflict resolution are not
+part of this protocol.
+
 ## Changing the protocol
 
 Update the typed owner, every producer and consumer, and the serialization or integration tests in one change. Update this document only when a cross-component boundary or invariant changes. User-facing behavior belongs in the website docs and SDK READMEs.

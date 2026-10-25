@@ -16,6 +16,7 @@ fn plain_proxy_paths_skip_tako_handler_probes() {
     assert!(path_uses_tako_handler("/assets/main.js"));
     assert!(path_uses_tako_handler(tako_images::PUBLIC_IMAGE_BASE_PATH));
     assert!(path_uses_tako_handler(tako_channels::CHANNELS_BASE_PATH));
+    assert!(path_uses_tako_handler("/_tako/stores/messages"));
 }
 
 #[test]

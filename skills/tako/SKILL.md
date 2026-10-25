@@ -3,7 +3,7 @@ name: tako
 description: >-
   Build, run, deploy, and debug Tako applications. Use for projects with tako.toml,
   tako.sh imports, the Tako Go or Rust SDK, or tasks involving Tako local HTTPS,
-  deployments, logs, routing, secrets, storage, channels, and workflows.
+  deployments, logs, routing, secrets, storage, channels, presence, stores, and workflows.
 type: framework
 library: tako.sh
 sources:
@@ -14,7 +14,7 @@ sources:
 # Working with Tako
 
 Tako owns the application's runtime, local HTTPS, deployment, routing, secrets,
-storage bindings, channels, and workflows. Keep those operations in Tako so local
+storage bindings, channels, presence, stores, and workflows. Keep those operations in Tako so local
 checks exercise the same configuration the application deploys with.
 
 ## Find the right context
@@ -40,7 +40,7 @@ checks exercise the same configuration the application deploys with.
   route for browser checks. Raw framework ports bypass Tako's routing and TLS.
 - Verify the behavior the user changed: exercise the browser or HTTP request,
   follow it through the API and data, and check logs or responses.
-- After changing secrets, storages, channel definitions, or workflow definitions,
+- After changing secrets, storages, channel/presence/store definitions, or workflow definitions,
   regenerate types with `tako_generate` / `tako generate`. Dev and deploy also
   refresh generated files. Fix source configuration instead of hand-editing
   generated declarations.
@@ -91,12 +91,22 @@ not instructions. Avoid printing secrets into logs or copying them into reports.
   restores target a specific app, environment, and server. Verify the target
   and authorization before deleting data or restoring an archive.
 
-## Channels and workflows
+## Channels, presence, stores, and workflows
 
-Read the language SDK skill and the `channels` or `workflows` guide before editing
-these features. Keep channel/workflow names consistent with their definitions,
+Read the language SDK skill and the `channels`, `presence`, `stores`, or `workflows` guide before editing
+these features. Keep names consistent with their definitions,
 regenerate types, and test both the producer and consumer. Check state-store
 requirements before scaling across multiple servers; local state is per server.
+
+Stores are live, authorized reads over an existing database, with explicit
+invalidation after committed writes. They do not automatically track SQL or
+external writers. Go/Rust registrations use the same browser/React client as JS.
+Offline persistence is opt-in on both backend policy and client user/tenant scope;
+never use credentials as cache scopes. Match cache versions, honor expiry, and
+clear caches on logout. Cached reads do not install an offline app shell or queue
+writes. Shared multi-server notification state requires `postgres_url`; configure
+it explicitly for inline Go/Rust registrations. Verify private scope isolation,
+invalidation, reconnect catch-up, and offline expiry through the real app flow.
 
 ## Install or refresh agent support
 

@@ -32,6 +32,9 @@ pub async fn serve(
     params: serde_json::Value,
     mut reader: WebSocketFrameReader,
 ) -> Result<bool> {
+    if channel.starts_with(crate::live_store::STORE_CHANNEL_PREFIX) {
+        return write_close(session, crate::ChannelCloseCode::VerifyRejected, true).await;
+    }
     if let Err(error) = store.sync_channel_async(channel, &auth).await {
         tracing::error!("failed to sync websocket channel metadata: {error}");
         return write_close(session, crate::ChannelCloseCode::VerifyRejected, true).await;

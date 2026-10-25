@@ -71,6 +71,64 @@ separate WebSocket client.
 For multiple production servers, configure the shared `postgres_url` credential.
 Native registrations are not detected by the JavaScript-directory deploy preflight.
 
+## Stores
+
+Stores serve live reads from your existing database. Register async loaders and
+authorization in a `StoreRegistry`, then use the Stores-aware Axum adapter:
+
+```rust
+use std::sync::Arc;
+use serde_json::json;
+use tako::{StoreAuth, StoreDefinition, StoreError, StoreGrant, StoreRegistry};
+
+let stores = Arc::new(StoreRegistry::new());
+let messages = stores.register("messages", StoreDefinition::new(|input| async move {
+    load_messages(input).await.map_err(StoreError::loader)
+})
+    .params_schema(json!({
+        "type": "object",
+        "properties": {"chatId": {"type": "string"}},
+        "required": ["chatId"]
+    }))
+    .auth(StoreAuth::default(), |input| async move {
+        authorize_messages(&input).await.map(StoreGrant::new)
+    })
+    .offline(3_600_000))?;
+
+// After a database write commits:
+messages.invalidate(json!({"chatId": chat_id})).await?;
+
+tako::axum::serve_with_stores(app, stores).await?;
+```
+
+`load_messages` is your database helper returning `Result<serde_json::Value,
+YourError>` from `StoreLoadInput { store, params, subject }`.
+`authorize_messages` checks credentials and access and returns `Option<String>`
+with the verified user ID. Omit `.auth(...)` for public reads. Reads and
+subscriptions authorize independently, and loader snapshots are never broadcast.
+
+Use `router_with_stores` for custom Axum loops. When also using presence, use
+`serve_with_realtime(app, presence, stores)` or `router_with_realtime` to merge
+registries. `StoreHandle::invalidate` is async with the `tokio` feature;
+`invalidate_blocking` is available to synchronous callers. Invalidate exact params
+after commit; an empty object is an unparameterized scope, not a wildcard.
+Publication failure does not roll back the write. Use an application outbox for
+durable commit-and-notify, and explicitly invalidate changes from external writers.
+
+React uses `useStore` from `tako.sh/react`; non-React clients use `Store` from
+`tako.sh/client`. Cached offline reads require `.offline(max_age_ms)` plus a
+client `cacheScope` identifying the user/tenant. The default cache version is
+`"1"`; set `.offline_version(...)` after `.offline(...)` and match the client
+`cacheVersion` after incompatible schema changes. The browser enforces bounded
+IndexedDB storage and expiry, with a maximum age of seven days. Clear the scope
+with `clearStoreCache` on logout. Offline reads cannot learn of remote revocation
+while disconnected. This is cached-read support; no service worker or offline
+write queue is installed.
+
+Configure shared `postgres_url` explicitly for multiple production servers; native
+registrations are not discovered by the JS directory preflight. See the
+[Stores guide](https://tako.sh/docs/stores/) for frontend examples and limits.
+
 ## Custom Servers
 
 For frameworks that own the server loop, use `tako::std_listener()` or

@@ -403,6 +403,10 @@ export class ChannelRegistry {
     const matched = this.resolve(input.channel);
     if (!matched) return { ok: false };
 
+    if (input.channel.startsWith("tako.store:") && input.operation === "connect") {
+      return { ok: false };
+    }
+
     if (input.operation === "publish" && matched.definition.transport !== "ws") {
       return { ok: false, reason: "sse_publish_not_allowed" };
     }

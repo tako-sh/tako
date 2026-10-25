@@ -68,6 +68,8 @@ func (h *EndpointHandler) handleInternal(w http.ResponseWriter, r *http.Request)
 	}
 
 	switch {
+	case r.URL.Path == internalStoreLoadPath:
+		h.handleStoreLoad(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/status":
 		h.handleStatus(w)
 	case r.Method == http.MethodPost && r.URL.Path == internalChannelAuthorizePath:
@@ -102,6 +104,10 @@ func (h *EndpointHandler) handleChannelAuthorize(w http.ResponseWriter, r *http.
 	}
 	if input.Channel == "" || input.Operation == "" {
 		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	if strings.HasPrefix(input.Channel, storeChannelPrefix) && input.Operation != ChannelOperationSubscribe {
+		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
 

@@ -2,13 +2,14 @@
 name: tako-sdk-go
 description: >-
   tako.sh Go SDK: ListenAndServe for http.Handler, Listener for custom servers,
-  typed secrets via tako generate, authenticated presence registration, metadata helpers.
+  typed secrets via tako generate, authenticated presence and live Stores with cached offline reads.
 type: framework
 library: tako.sh
 library_version: "0.0.1"
 sources:
   - tako-sh/tako:tako.go
   - tako-sh/tako:presence.go
+  - tako-sh/tako:store.go
   - tako-sh/tako:internal
 ---
 
@@ -185,13 +186,71 @@ A React frontend uses `usePresence` from `tako.sh/react` with the same public na
 
 Every browser tab has its own server-assigned connection ID. The verified `Subject` identifies the user across tabs. Presence metadata and membership are ephemeral, have no durable replay, and are scoped to the deployed app/environment. Shared Postgres carries membership across production servers. Local development uses in-memory state and the same permissive auth behavior as local channels.
 
+## Stores
+
+Register live reads over your existing database with `tako.RegisterStore` before
+`ListenAndServe`. It returns `*tako.Store`; invalidate exact params after a write
+commits:
+
+```go
+messages := tako.RegisterStore("messages", tako.StoreDefinition{
+    ParamsSchema: json.RawMessage(`{
+        "type":"object",
+        "properties":{"chatId":{"type":"string"}},
+        "required":["chatId"]
+    }`),
+    Auth: &tako.ChannelAuthScheme{HeaderName: "authorization"},
+    Verify: func(input tako.VerifyInput) tako.ChannelAuthDecision {
+        userID, ok := authorizeMessages(input)
+        if !ok { return tako.RejectChannel() }
+        return tako.AllowChannel(tako.ChannelGrant{Subject: userID})
+    },
+    Load: func(ctx context.Context, input tako.StoreLoadInput) (any, error) {
+        return loadMessages(ctx, input.Params, input.Subject)
+    },
+    Offline: &tako.StoreOfflineConfig{MaxAgeMs: 3_600_000, Version: "1"},
+})
+
+// Commit the database write first, then handle any publication error:
+err := messages.Invalidate(ctx, map[string]any{"chatId": chatID})
+```
+
+Import `context`, `encoding/json`, and `tako.sh`. The app-owned helpers verify
+credentials/chat access and read your database. Return JSON-serializable data;
+loader errors are hidden from browser responses. The verifier receives the
+public name in `input.Channel`; loader params are schema-validated and `Subject`
+comes only from authorization. Reads and subscriptions authorize independently,
+including local development. Omit `Auth` for public reads; cookie-only auth uses
+`ChannelAuthScheme{CookieName: "session"}`. `KeepaliveIntervalMs` and
+`MaxConnectionLifetimeMs` configure subscription lifetime.
+
+React frontends use `useStore<Data>("messages", { params, authorization,
+cacheScope: userId, cacheVersion: "1" })` from `tako.sh/react`. Go registers
+backend behavior; the browser SDK manages reconnect catch-up and optional
+IndexedDB caching. Persistence requires both `Offline` and a stable non-secret
+scope per reader/tenant; no token is persisted. Offline version defaults to
+`"1"`; match frontend `cacheVersion` and bump both after incompatible changes.
+The browser bounds cache size/expiry and caps TTL at seven days. Clear the scope
+with `clearStoreCache` on logout and disable/unmount readers. Offline reads cannot
+learn about remote revocation, install an app shell, or queue writes.
+
+Invalidation carries no snapshot data and affects only exact params (nil means
+`{}`, not a wildcard). Every reader reloads its own authorized snapshot. External
+writers must explicitly invalidate; no SQL dependency tracking is performed.
+Invalidation failure does not undo or retry the committed database write. Use
+an application outbox for durable commit-and-notify. Params are limited to 16 KiB
+and read responses to 1 MiB. Multi-server Go apps must explicitly configure shared
+`postgres_url`; JS directory detection does not find inline Go registrations.
+See https://tako.sh/docs/stores/ and verify isolation, reconnects, and cache expiry.
+
 ## Internal Protocol
 
 The SDK transparently handles these — you don't interact with them directly:
 
 - `GET /status` on `Host: <app>.tako` — health check (returns JSON with status, instance_id, version, pid, uptime_seconds)
-- `POST /channels/authorize` on `Host: <app>.tako` — channel and presence auth callbacks for `tako-server`
-- `GET /channels/registry` on `Host: <app>.tako` — channel and presence discovery metadata
+- `POST /channels/authorize` on `Host: <app>.tako` — channel, presence, and Store auth callbacks for `tako-server`
+- `GET /channels/registry` on `Host: <app>.tako` — channel, presence, and Store discovery metadata
+- `POST /stores/load` on `Host: <app>.tako` — trusted, already authorized Store reads; a nonempty internal token is required
 - Token authentication via `x-tako-internal-token` whenever bootstrap supplies a token, including managed development
 - Secrets are read from the Tako bootstrap envelope at process startup, not via HTTP. Native processes use fd 3; containers use `TAKO_BOOTSTRAP_DATA`.
 

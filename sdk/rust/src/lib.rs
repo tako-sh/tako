@@ -9,9 +9,16 @@ use serde::Deserialize;
 pub mod presence;
 #[cfg(feature = "axum")]
 mod presence_http;
+pub mod stores;
+#[cfg(feature = "axum")]
+mod stores_http;
 pub use presence::{
     PresenceAuth, PresenceDefinition, PresenceGrant, PresenceMember, PresenceRegistry,
     PresenceSnapshot, PresenceVerifyInput,
+};
+pub use stores::{
+    StoreAuth, StoreAuthorization, StoreDefinition, StoreError, StoreGrant, StoreHandle,
+    StoreLoadInput, StoreOfflineConfig, StoreRegistry, StoreSnapshot, StoreVerifyInput,
 };
 
 pub const BOOTSTRAP_DATA_ENV: &str = "TAKO_BOOTSTRAP_DATA";
@@ -257,6 +264,69 @@ pub mod axum {
     ) -> io::Result<()> {
         let listener = crate::listener().await?;
         ::axum::serve(listener, router_with_presence(router, registry))
+            .await
+            .map_err(io::Error::other)
+    }
+
+    /// Install authenticated Store discovery, authorization, and loader endpoints.
+    pub fn router_with_stores<S>(router: Router<S>, stores: Arc<crate::StoreRegistry>) -> Router<S>
+    where
+        S: Clone + Send + Sync + 'static,
+    {
+        realtime_router(
+            router,
+            crate::stores_http::RealtimeState {
+                presence: None,
+                stores: Some(stores),
+            },
+        )
+    }
+
+    /// Install presence and Stores together so their channel registries are merged.
+    pub fn router_with_realtime<S>(
+        router: Router<S>,
+        presence: Arc<crate::PresenceRegistry>,
+        stores: Arc<crate::StoreRegistry>,
+    ) -> Router<S>
+    where
+        S: Clone + Send + Sync + 'static,
+    {
+        realtime_router(
+            router,
+            crate::stores_http::RealtimeState {
+                presence: Some(presence),
+                stores: Some(stores),
+            },
+        )
+    }
+
+    fn realtime_router<S>(router: Router<S>, state: crate::stores_http::RealtimeState) -> Router<S>
+    where
+        S: Clone + Send + Sync + 'static,
+    {
+        self::router(router.layer(middleware::from_fn_with_state(
+            state,
+            crate::stores_http::realtime_middleware,
+        )))
+    }
+
+    pub async fn serve_with_stores(
+        router: Router,
+        stores: Arc<crate::StoreRegistry>,
+    ) -> io::Result<()> {
+        let listener = crate::listener().await?;
+        ::axum::serve(listener, router_with_stores(router, stores))
+            .await
+            .map_err(io::Error::other)
+    }
+
+    pub async fn serve_with_realtime(
+        router: Router,
+        presence: Arc<crate::PresenceRegistry>,
+        stores: Arc<crate::StoreRegistry>,
+    ) -> io::Result<()> {
+        let listener = crate::listener().await?;
+        ::axum::serve(listener, router_with_realtime(router, presence, stores))
             .await
             .map_err(io::Error::other)
     }

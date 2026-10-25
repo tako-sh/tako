@@ -83,6 +83,13 @@ struct AppRoute {
     notify: Arc<Notify>,
     images: tako_images::ImagesConfig,
     channel_store_key: String,
+    store_auth: Option<StoreAuth>,
+}
+
+#[derive(Clone)]
+pub(crate) struct StoreAuth {
+    pub(crate) internal_host: String,
+    pub(crate) token: String,
 }
 
 #[derive(Clone)]
@@ -92,6 +99,7 @@ pub(crate) struct RouteTarget {
     pub(crate) upstream_port: u16,
     pub(crate) active: bool,
     pub(crate) images: tako_images::ImagesConfig,
+    pub(crate) store_auth: Option<StoreAuth>,
 }
 
 #[derive(Clone, Default)]
@@ -164,6 +172,7 @@ impl Routes {
             notify: Arc::new(Notify::new()),
             images: images.clone(),
             channel_store_key: channel_store_key.clone(),
+            store_auth: None,
         });
         entry.upstream_port = upstream_port;
         entry.active = active;
@@ -171,6 +180,15 @@ impl Routes {
         entry.channel_store_key = channel_store_key;
         if active {
             entry.notify.notify_waiters();
+        }
+    }
+
+    pub(crate) fn set_store_auth(&self, app_id: &str, internal_host: String, token: String) {
+        if let Some(route) = self.apps.lock().unwrap().get_mut(app_id) {
+            route.store_auth = Some(StoreAuth {
+                internal_host,
+                token,
+            });
         }
     }
 
@@ -230,6 +248,7 @@ impl Routes {
             upstream_port: r.upstream_port,
             active: r.active,
             images: r.images,
+            store_auth: r.store_auth,
         })
     }
 
@@ -384,7 +403,16 @@ impl ProxyHttp for DevProxy {
 
         // Channel requests are scoped by the matched app. Each app gets a
         // separate local dev replay store even when channel names overlap.
-        if path.starts_with(tako_channels::CHANNELS_BASE_PATH) {
+        let is_store = path.starts_with(tako_channels::live_store::STORES_BASE_PATH)
+            || tako_channels::parse_channel_route(&path)
+                .ok()
+                .flatten()
+                .is_some_and(|route| {
+                    route
+                        .channel
+                        .starts_with(tako_channels::live_store::STORE_CHANNEL_PREFIX)
+                });
+        if path.starts_with(tako_channels::CHANNELS_BASE_PATH) && !is_store {
             let method = session.req_header().method.as_str().to_string();
             return crate::dev_channels::try_handle(
                 session,
@@ -414,6 +442,11 @@ impl ProxyHttp for DevProxy {
             };
             target.upstream_port = active_port;
             target.active = true;
+        }
+
+        if is_store {
+            return crate::dev_channels::try_handle_store(session, &self.channels, &target, &path)
+                .await;
         }
 
         if crate::image::is_image_request_path(&path) {

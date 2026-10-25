@@ -1,0 +1,222 @@
+---
+title: Stores
+description: "Keep backend data and React UI synchronized, with authenticated live reads and opt-in offline caching."
+---
+
+Tako Stores keep a view of your backend data up to date in the UI. You define how to load data from your existing database; Tako handles authorized subscriptions, invalidation, reconnects, and optional cached offline reads. Stores use channels underneath and have their own definitions and client API.
+
+## Define A Store
+
+Put one default export in each `<app_root>/stores/*.ts` file. The explicit name passed to `defineStore` identifies the store; it does not have to match the filename.
+
+```ts
+// src/stores/messages.ts
+import { defineStore } from "tako.sh";
+import { db } from "../lib/db";
+import { verifyToken, canAccessChat } from "../lib/auth";
+
+export default defineStore("messages", {
+  paramsSchema: (t) => t.Object({ chatId: t.String({ minLength: 1 }) }),
+  auth: {
+    async verify({ header, params }) {
+      const user = await verifyToken(header?.value);
+      if (!user || !(await canAccessChat(user.id, params.chatId))) return false;
+      return { subject: user.id };
+    },
+  },
+  async load({ params }) {
+    const rows = await db.message.findMany({
+      where: { chatId: params.chatId },
+      orderBy: { createdAt: "asc" },
+    });
+    return rows.map((row) => ({ id: row.id, text: row.text }));
+  },
+  offline: { maxAgeMs: 60 * 60 * 1000, version: "1" },
+});
+```
+
+`db`, `verifyToken`, and `canAccessChat` are app-owned helpers. `load` runs on the backend and can use any database or service. Results use JSON serialization, with `null` for an empty result. Dates become strings, custom `toJSON` results are respected, unsupported object members are omitted, and unsupported array entries become `null`. Generated client types describe that serialized shape through `Jsonify`. BigInts, cycles, and non-finite numbers fail the read. For custom classes, use enumerable data properties or provide `toJSON`; explicit response objects make the wire shape easiest to control.
+
+`load` receives validated `params`, the verifier's trusted `subject` when supplied, and an `AbortSignal` as `signal`. Use `subject` to apply per-reader filtering. Snapshots are loaded separately for each authorized reader; the snapshot data is never broadcast over the subscription.
+
+Omit `auth` or set it to `false` for public reads. Private stores support `headerName` (default `authorization`) and `cookieName`; use `headerName: false` for cookie-only authentication. The verifier receives `{ store, params, header?, cookie? }` and returns `false`, `true` for anonymous access, or `{ subject: user.id }`. Tako checks schema and authorization independently for reads and subscriptions, including during local development. Subscription permissions are checked again on reconnect; `maxConnectionLifetimeMs` bounds the time until a connected subscriber must reauthorize.
+
+Names contain 1–256 ASCII letters, digits, dots, underscores, or hyphens and start with a letter or digit. Store names have a separate namespace from channels and presence. Params are limited to 16 KiB; a complete read response is limited to 1 MiB.
+
+## Read From React
+
+```tsx
+"use client";
+
+import { useStore } from "tako.sh/react";
+
+export function Messages({
+  chatId,
+  token,
+  userId,
+}: {
+  chatId: string;
+  token: string;
+  userId: string;
+}) {
+  const { data, status, isStale, error, refresh } = useStore("messages", {
+    params: { chatId },
+    authorization: token,
+    cacheScope: userId,
+    cacheVersion: "1",
+  });
+
+  if (!data && status === "loading") return <p>Loading messages…</p>;
+  if (!data && error) return <p>Messages are unavailable.</p>;
+
+  return (
+    <>
+      {isStale && <p>Showing saved messages; waiting for an update.</p>}
+      <ul>
+        {data?.map((message) => (
+          <li key={message.id}>{message.text}</li>
+        ))}
+      </ul>
+      <button onClick={() => void refresh()}>Refresh</button>
+    </>
+  );
+}
+```
+
+Run `tako generate` after creating or changing a definition. The generated `TakoStores` interface uses `InferStore` to infer params and data for `useStore`. Browser code imports the hook from `tako.sh/react`; it does not import the backend definition. For a Go or Rust backend without generated TypeScript definitions, provide the data type explicitly, for example `useStore<Message[]>("messages", options)`.
+
+| Field       | Meaning                                                                        |
+| ----------- | ------------------------------------------------------------------------------ |
+| `data`      | Most recent loaded or permitted cached result, initially `undefined`           |
+| `status`    | `"loading"`, `"ready"`, `"offline"`, or `"error"`                              |
+| `isStale`   | The result has not yet been refreshed or its live subscription is disconnected |
+| `error`     | Latest read or connection error, or `null`                                     |
+| `refresh()` | Request another backend read                                                   |
+
+Use `enabled: false` to pause the store, `baseUrl` for a different backend origin, and `headers` for custom authentication headers. Cookie authentication uses the browser's same-origin cookies. Each hook owns its subscription; place it in a provider when several components should share one reader. Non-React clients can use `Store` from `tako.sh/client`, with `subscribe`, `getSnapshot`, and `refresh`.
+
+Custom HTTP clients read `GET /_tako/stores/<name>` with the complete params object encoded in a single JSON `params` query field. Unlike ordinary channel query coercion, this preserves nullable, nested, and union-typed values exactly:
+
+```bash
+curl --get 'https://app.example/_tako/stores/messages' \
+  --data-urlencode 'params={"chatId":"123"}' \
+  --header 'Authorization: Bearer <token>'
+```
+
+## Invalidate After Writes
+
+Import the backend definition and invalidate the exact params after the database transaction commits:
+
+```ts
+import messages from "../stores/messages";
+
+await db.message.create({ data: { chatId, text } });
+await messages.invalidate({ chatId });
+```
+
+All authorized readers of that store and params reload. An invalidation contains no records, credentials, or raw params. Different params have separate notification streams, and each read runs its own authorization and loader again. Invalidating `{ chatId: "one" }` does not refresh `{ chatId: "two" }`. There is no wildcard invalidation; for an unparameterized store, call `invalidate()`.
+
+The client catches changes made while a load is in flight and refreshes after the stream is established or reconnected. Multiple notifications may be coalesced into fewer reads. Stores deliver current data, rather than replaying every intermediate database state.
+
+Invalidation is explicit. Tako does not inspect SQL dependencies or watch arbitrary writes to your database. Existing routes, workflows, scripts, and external writers must invalidate the affected stores. Publishing an invalidation and committing a database transaction are separate operations. Publication failures are returned to your app; they do not roll back or retry a committed database write. Use a transactional application outbox when the database commit and eventual notification must be durable together. `refresh()` and reconnect catch-up also reload current data.
+
+## Opt Into Cached Offline Reads
+
+Offline persistence requires both a backend `offline` policy and a client `cacheScope`. Omit either to disable persistence. Use a stable, non-secret scope identifying the reader and tenant, such as `tenantId + ":" + userId`; never use an access token. Change it when switching accounts or tenants, including apps that authenticate with cookies.
+
+The default browser cache uses IndexedDB. Cache keys partition origin, store, params, scope, and cache version; authorization credentials are not persisted. Results expire according to the backend policy, capped at seven days by the client. Each persisted entry is limited to 1 MiB, and the default cache retains at most 64 entries and 16 MiB in total. Storage unavailability or quota errors do not prevent online reads.
+
+Set the backend `offline.version` and frontend `cacheVersion` to the same value; both default to `"1"`. Change both after an incompatible data-shape change. Expired, malformed, or mismatched cache entries are ignored. An authorization denial clears the active result and its persisted entry rather than serving cached private data.
+
+Clear the user's cache during logout and disable or unmount their readers:
+
+```ts
+import { clearStoreCache } from "tako.sh/client";
+
+await clearStoreCache(userId); // Same value used as cacheScope.
+// Clear the app session, then render signed-out UI with readers disabled/unmounted.
+```
+
+Omitting the scope clears all Store caches for this origin. Clearing also stops active matching readers from repopulating the cache and notifies other open tabs when `BroadcastChannel` is available. For a later signed-in session, create readers with the current credentials and scope.
+
+Offline reads expose previously authorized data on that device until its cache policy expires or it is cleared. They cannot learn about remote permission revocation while disconnected. Opt in only for data suitable for device persistence. The app shell must already be available to display cached reads: Stores does not install a service worker or turn the app into a PWA. This release supports cached reads; queued writes, optimistic mutations, and conflict resolution are not included.
+
+## Go Backends
+
+The root `tako.sh` Go module registers stores before `tako.ListenAndServe`:
+
+```go
+import (
+    "context"
+    "encoding/json"
+    "tako.sh"
+)
+
+messages := tako.RegisterStore("messages", tako.StoreDefinition{
+    ParamsSchema: json.RawMessage(`{
+        "type":"object",
+        "properties":{"chatId":{"type":"string"}},
+        "required":["chatId"]
+    }`),
+    Auth: &tako.ChannelAuthScheme{HeaderName: "authorization"},
+    Verify: func(input tako.VerifyInput) tako.ChannelAuthDecision {
+        userID, ok := authorizeMessages(input)
+        if !ok { return tako.RejectChannel() }
+        return tako.AllowChannel(tako.ChannelGrant{Subject: userID})
+    },
+    Load: func(ctx context.Context, input tako.StoreLoadInput) (any, error) {
+        var params struct { ChatID string `json:"chatId"` }
+        if err := json.Unmarshal(input.Params, &params); err != nil { return nil, err }
+        return listMessages(ctx, params.ChatID, input.Subject)
+    },
+    Offline: &tako.StoreOfflineConfig{MaxAgeMs: 3_600_000, Version: "1"},
+})
+
+// After the database transaction commits:
+err := messages.Invalidate(ctx, map[string]any{"chatId": chatID})
+```
+
+`authorizeMessages` verifies the credential and requested chat; `listMessages` reads your database. The verifier receives the public name in `input.Channel`. The loader receives a request context, validated JSON params, and the trusted subject. Omit `Auth` for public reads. Omit `Offline` to disable persisted cached reads. `Invalidate` honors context cancellation and returns publication errors. For an unparameterized store, pass `nil` or an empty object; this affects only that exact scope.
+
+## Rust Backends
+
+Enable the `axum` feature on the `tako` crate and register a loader:
+
+```rust
+use std::sync::Arc;
+use serde_json::json;
+use tako::{StoreAuth, StoreDefinition, StoreError, StoreGrant, StoreRegistry};
+
+let stores = Arc::new(StoreRegistry::new());
+let messages = stores.register("messages", StoreDefinition::new(|input| async move {
+    load_messages(input).await.map_err(StoreError::loader)
+})
+    .params_schema(json!({
+        "type": "object",
+        "properties": {"chatId": {"type": "string"}},
+        "required": ["chatId"]
+    }))
+    .auth(StoreAuth::default(), |input| async move {
+        authorize_messages(&input).await.map(StoreGrant::new)
+    })
+    .offline(3_600_000))?;
+
+// After the database transaction commits:
+messages.invalidate(json!({"chatId": chat_id})).await?;
+
+tako::axum::serve_with_stores(app, stores).await?;
+```
+
+`load_messages` is an app-owned async helper returning `Result<serde_json::Value, YourError>`; it receives `StoreLoadInput { store, params, subject }`. `authorize_messages` returns `Option<String>` with the verified user ID after checking credentials and access. Omit `.auth(...)` for public reads. `.offline(...)` opts into cached reads with version `"1"`; call `.offline_version("2")` after `.offline(...)` to change it.
+
+Use `router_with_stores` for a custom Axum loop. When also using presence, use `serve_with_realtime(app, presence, stores)` or `router_with_realtime` to merge both registries. Framework-independent code can use `registry.metadata()`, `authorize(...).await`, and `load(...).await` behind authenticated internal endpoints. `StoreHandle::invalidate` is async with the `tokio` feature; `invalidate_blocking` supports synchronous callers and must not run on an async executor thread.
+
+The same React and browser APIs work with JavaScript, Go, and Rust backends.
+
+## Development And Production Storage
+
+`tako dev` discovers and watches JavaScript store definitions under `<app_root>/stores/`, restarts the app when they change, and refreshes generated metadata. Store reads and subscriptions enforce the same params validation and authorization as production. This is stricter than the existing permissive local channel and presence subscriptions.
+
+The dev daemon keeps notification state in memory. Single-server production uses Tako-managed SQLite by default. Multi-server deployments require the shared `postgres_url` credential so a write on one server can notify readers on another. JS store directories are detected by deployment preflight; configure `postgres_url` explicitly for multi-server Go and Rust apps using inline registrations. Your database remains the source of truth; this notification storage does not replace it.
+
+Use [Channels](/docs/channels/) for application events, [Presence](/docs/presence/) for current membership, and Stores for live data reads with optional offline caching.

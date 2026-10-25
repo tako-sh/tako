@@ -226,6 +226,9 @@ impl ServerState {
                 parking_lot::RwLock::new(HashMap::new());
             workflows.set_channel_publisher(std::sync::Arc::new(
                 move |app: &str, channel: &str, payload: serde_json::Value| {
+                    let channel = tako_channels::live_store::publication_channel(channel, &payload)
+                        .map_err(|error| error.to_string())?;
+                    let channel = channel.as_str();
                     let lifecycle = payload
                         .get("lifecycle")
                         .cloned()

@@ -25,8 +25,8 @@ The CLI is a client for a persistent `tako-dev-server` daemon. It starts the dae
 - Registers the app config with the daemon.
 - Generates project files such as `tako.d.ts` or Go secret accessors.
 - Starts the app runtime and waits for fd-4 readiness from the HTTP process.
-- Watches Tako config, secrets, channels, workflows, and generated-file locations.
-- Restarts the app runtime when effective env, secrets, channels, or workflows change.
+- Watches Tako config, secrets, channels, presence, stores, workflows, and generated-file locations.
+- Restarts the app runtime when effective env, secrets, channels, presence, stores, or workflows change.
 - Updates routes without restart when development routes change.
 
 Tako does not watch arbitrary source files for restart. Framework dev servers and runtimes own hot reload.
@@ -223,11 +223,13 @@ Storage bindings from `[envs.development].storages` are delivered through `tako.
 
 Use `tako.cache` for server-side caching of JSON-serializable values. `get<T>(key)` returns `T | undefined`, `put(key, value, { ttl })` stores a value with a TTL in milliseconds, and `delete(key)` removes one key. Cache entries use Tako-managed local SQLite and are not included in app data backups.
 
-## Channels, Presence, And Workflows
+## Channels, Presence, Stores, And Workflows
 
-JS channels, presence spaces, and workflows are discovered under `<app_root>/channels/`, `<app_root>/presence/`, and `<app_root>/workflows/`. `tako dev` watches those directories and refreshes generated metadata when files change.
+JS channels, presence spaces, stores, and workflows are discovered under `<app_root>/channels/`, `<app_root>/presence/`, `<app_root>/stores/`, and `<app_root>/workflows/`. `tako dev` watches those directories and refreshes generated metadata when files change.
 
 Presence uses the dev daemon’s in-memory store with separate membership for each validated params scope. See [Presence](/presence/) for the React hook and production auth policy.
+
+[Stores](/docs/stores/) loads backend data with live invalidation and optional cached offline reads. Unlike existing local channel and presence subscriptions, Store reads and subscriptions enforce authorization in development. Invalidate a store after committed writes; each validated params scope has its own notification stream.
 
 Channels are broadcast streams, not work queues. Multiple local clients subscribed to the same channel read the same app events, with independent cursors for reconnect replay. Dev channel replay stays in the dev daemon's in-memory store until the daemon restarts.
 

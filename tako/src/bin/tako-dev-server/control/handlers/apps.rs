@@ -138,20 +138,22 @@ pub(super) async fn register_app(
                 client_pid,
                 tunnel: None,
                 readiness_failure_hint,
-                bootstrap_token,
+                bootstrap_token: bootstrap_token.clone(),
                 secrets,
                 storages,
             },
         );
 
         s.routes.set_routes_with_images_and_channel_store_key(
-            route_id,
+            route_id.clone(),
             hosts.clone(),
             upstream_port,
             false,
             (*images).clone(),
             app_name.clone(),
         );
+        s.routes
+            .set_store_auth(&route_id, format!("{}.tako", app_name), bootstrap_token);
         if let Some(ref mut mdns) = s.mdns {
             for host in &old_hosts {
                 mdns.unpublish(split_route_pattern(host).0);

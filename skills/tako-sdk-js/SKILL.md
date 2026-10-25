@@ -2,7 +2,7 @@
 name: tako-sdk-js
 description: >-
   tako.sh SDK: fetch handler interface, tako runtime object, generated tako.d.ts type augmentation,
-  defineChannel/defineWorkflow, Vite and Next.js adapters.
+  defineChannel/definePresence/defineStore/defineWorkflow, live data and offline reads, Vite and Next.js adapters.
 type: framework
 library: tako.sh
 library_version: "0.0.1"
@@ -57,8 +57,8 @@ export default {
 | ------------------ | ----------------------------------------------- | -------------------------------------------------------------------------------- |
 | `tako.sh`          | Isomorphic runtime + authoring helpers          | `tako`, `imageUrl`, channels, workflows, storage URL option types, runtime types |
 | `tako.sh/server`   | Server-only runtime re-export                   | `tako`, `TakoRuntime`                                                            |
-| `tako.sh/client`   | Browser-safe channel client                     | `Channel`, `configureChannels`                                                   |
-| `tako.sh/react`    | React hooks for channels and presence           | `useChannel`, `usePresence`                                                      |
+| `tako.sh/client`   | Browser-safe realtime clients                   | `Channel`, `configureChannels`, `Store`, `clearStoreCache`                       |
+| `tako.sh/react`    | React hooks for realtime data                   | `useChannel`, `usePresence`, `useStore`                                          |
 | `tako.sh/vite`     | Vite plugin for SSR builds                      | `tako()` plugin function                                                         |
 | `tako.sh/nextjs`   | Next.js standalone adapter + wrapper            | `withTako()`, `createNextjsAdapter()`, `createNextjsFetchHandler()`              |
 | `tako.sh/runtime`  | Browser-safe runtime internals                  | `loadSecrets`, `createLogger`, `Logger`                                          |
@@ -66,7 +66,7 @@ export default {
 
 ## Runtime state: `tako.sh` + `tako.d.ts`
 
-`tako generate` emits a project-local `tako.d.ts` that augments `tako.sh` with typed environment names, typed `tako.secrets` keys, typed `tako.storages` names, channel metadata, workflow metadata, and user-defined env vars on `process.env` / `import.meta.env`. Tako-owned runtime values are typed through `tako.sh` exports such as `tako.env`, `tako.build`, and `tako.dataDir`, not through generated env-var globals. It keeps an existing declaration in `app/`, `src/`, or the project root; otherwise it writes to the first existing `app/` or `src/` directory, falling back to the project root. `tako gen` and `tako g` are aliases. When `<app_root>/channels/` or `<app_root>/workflows/` already exists, it also scaffolds empty definition dirs/files so they default-export `defineChannel("<file-stem>")` or `defineWorkflow(...)` stubs. Generated channel stubs use the file stem as the initial name, but `tako generate` does not rewrite existing explicit names. Generated `TakoChannels` entries use the declared name as the key and `import("tako.sh").InferChannel<typeof import("./channels/<file>").default>` for params, messages, and transport metadata. App code imports `tako` from `tako.sh` for project runtime state:
+`tako generate` emits a project-local `tako.d.ts` that augments `tako.sh` with typed environment names, typed `tako.secrets` keys, typed `tako.storages` names, channel metadata, store metadata, workflow metadata, and user-defined env vars on `process.env` / `import.meta.env`. Tako-owned runtime values are typed through `tako.sh` exports such as `tako.env`, `tako.build`, and `tako.dataDir`, not through generated env-var globals. It keeps an existing declaration in `app/`, `src/`, or the project root; otherwise it writes to the first existing `app/` or `src/` directory, falling back to the project root. `tako gen` and `tako g` are aliases. When `<app_root>/channels/` or `<app_root>/workflows/` already exists, it also scaffolds empty definition dirs/files so they default-export `defineChannel("<file-stem>")` or `defineWorkflow(...)` stubs. Generated channel stubs use the file stem as the initial name, but `tako generate` does not rewrite existing explicit names. Generated `TakoChannels` entries use the declared name as the key and `import("tako.sh").InferChannel<typeof import("./channels/<file>").default>` for params, messages, and transport metadata. App code imports `tako` from `tako.sh` for project runtime state:
 
 ```typescript
 import { tako } from "tako.sh";
@@ -110,7 +110,7 @@ export default function fetch(request: Request) {
 - Resists bulk serialization: `toString()`, `toJSON()` return `"[REDACTED]"`
 - Is typed — the `TakoSecrets` interface augmentation in `tako.d.ts` lists every key present in `.tako/secrets.json`
 
-The generated declaration file is type-only and is not imported by app code. In the browser, use `tako.sh/client` for channels, or `tako.sh/react` for channel hooks.
+The generated declaration file is type-only and is not imported by app code. In the browser, use `tako.sh/client` for realtime clients, or `tako.sh/react` for hooks.
 
 ## Cache
 
@@ -376,9 +376,91 @@ update({ typing: true });
 
 Single-server production uses SQLite; multi-server deployments require the shared `postgres_url` credential. Local dev uses an in-memory store and permits connections without running auth callbacks, as with channels. Use channels for durable events and presence for current membership.
 
+### Stores
+
+Use Stores for live reads from an existing database, rather than managing
+record snapshots as channel events. Put one default-exported `defineStore`
+definition per `<app_root>/stores/*.ts` file:
+
+```ts
+// src/stores/messages.ts
+import { defineStore } from "tako.sh";
+import { listMessages } from "../lib/db";
+import { authorizeChat } from "../lib/auth";
+
+export default defineStore("messages", {
+  paramsSchema: (t) => t.Object({ chatId: t.String() }),
+  auth: {
+    async verify({ header, params }) {
+      const user = await authorizeChat(header?.value, params.chatId);
+      return user ? { subject: user.id } : false;
+    },
+  },
+  load: ({ params, subject, signal }) => listMessages(params.chatId, { subject, signal }),
+  offline: { maxAgeMs: 3_600_000, version: "1" },
+});
+```
+
+The helpers above belong to the app. Loader results use JSON serialization;
+`Jsonify` infers the serialized client shape, including dates as strings and
+custom `toJSON` results. BigInts, cycles, and non-finite numbers fail the read.
+Use enumerable data properties or `toJSON` for custom classes.
+`auth.verify` receives `{ store, params, header?,
+cookie? }` and returns `false`, `true`, or `{ subject }`; omit `auth` for public
+reads. Loader `subject` is verified, never supplied by client params. Schema and
+auth apply independently to every read and subscription, including local dev.
+Use `headerName: false` plus `cookieName` for cookie-only auth.
+
+```tsx
+import { useStore } from "tako.sh/react";
+
+const { data, status, isStale, error, refresh } = useStore("messages", {
+  params: { chatId },
+  authorization: token,
+  cacheScope: userId,
+  cacheVersion: "1",
+});
+```
+
+Run `tako generate` to infer params and data through `TakoStores` and
+`InferStore`; do not import the server definition into a client component.
+`status` is `loading`, `ready`, `offline`, or `error`; `data` is initially
+undefined, and `isStale` exposes cached or disconnected results. `enabled: false`
+pauses reads. Each hook owns a reader; share through a provider if needed.
+Vanilla clients use `Store` from `tako.sh/client` with `subscribe`, `getSnapshot`,
+and `refresh`.
+
+After a committed write, import the definition server-side and call
+`await messages.invalidate({ chatId })`. This affects only the exact validated
+params scope; an empty scope is not a wildcard. Snapshots load separately per
+reader and never broadcast. Reconnects reload current data; invalidations during
+loads trigger another read. External writers must also invalidate; Tako does
+not perform SQL dependency tracking or CDC. Publication failures reject without
+rolling back committed writes. Use a transactional app outbox for durable
+commit-and-notify.
+
+Offline persistence needs both backend `offline` and a stable, non-secret client
+`cacheScope` for the user/tenant. Never use a bearer token as a scope. Default
+IndexedDB storage is bounded (64 entries, 16 MiB total, 1 MiB per entry), and TTL
+is capped at seven days. Both cache versions default to `"1"`; bump backend
+`offline.version` and client `cacheVersion` together after incompatible shape
+changes. Credentials are never persisted. On logout, call
+`await clearStoreCache(scope)` from `tako.sh/client`, then disable or unmount
+readers; scope clearing also stops active matching readers and notifies other
+tabs when available. An authorization denial clears active and persisted data.
+Offline clients cannot learn about remote revocation; only persist appropriate
+data. The app shell must already be available: no PWA/service worker, offline
+write queue, or conflict-resolution engine is installed.
+
+Store names follow `^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$`; params are capped at
+16 KiB and complete read responses at 1 MiB. Multi-server subscriptions require
+shared `postgres_url`. See https://tako.sh/docs/stores/ for native backends and
+the complete lifecycle. Verify scoped invalidation, reconnection, user switching,
+and offline expiry, not just the initial render.
+
 ### React
 
-`tako.sh/react` exposes `useChannel` and `usePresence`. For channels, SSE is the default; pass `transport: "ws"` for WebSocket.
+`tako.sh/react` exposes `useChannel`, `usePresence`, and `useStore`. For channels, SSE is the default; pass `transport: "ws"` for WebSocket.
 
 ```tsx
 import { useChannel } from "tako.sh/react";

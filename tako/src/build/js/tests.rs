@@ -271,6 +271,75 @@ printf '%s\n' 'export interface TakoChannels {' '  "chat": import("tako.sh").Inf
 }
 
 #[test]
+#[cfg(unix)]
+fn write_tako_declarations_include_stores_without_channels_and_use_declaration_directory() {
+    let dir = TempDir::new().unwrap();
+    let stores_dir = dir.path().join("app/stores");
+    fs::create_dir_all(&stores_dir).unwrap();
+    fs::write(stores_dir.join("messages.ts"), "export default {};\n").unwrap();
+    // Preserve the project's existing declaration location, even outside app_root.
+    fs::write(dir.path().join("tako.d.ts"), "old declarations").unwrap();
+    let fake_bun = dir.path().join("bun");
+    fs::write(
+        &fake_bun,
+        r#"#!/bin/sh
+case "$1" in
+  */gen-store-types.ts) ;;
+  *) exit 10 ;;
+esac
+test "$2" = "$PWD/app/stores" || exit 11
+test "$3" = "$PWD" || exit 12
+printf '%s\n' 'export interface TakoStores {' '  "messages": import("tako.sh").InferStore<typeof import("./app/stores/messages").default>;' '}'
+"#,
+    )
+    .unwrap();
+    make_executable(&fake_bun);
+
+    write_tako_declarations_for_adapter_with_bun(
+        dir.path(),
+        BuildAdapter::Unknown,
+        "app",
+        fake_bun.as_os_str(),
+    )
+    .unwrap();
+    let content = fs::read_to_string(dir.path().join("tako.d.ts")).unwrap();
+    assert!(content.contains("export interface TakoStores"));
+    assert!(content.contains(
+        r#""messages": import("tako.sh").InferStore<typeof import("./app/stores/messages").default>;"#
+    ));
+    assert!(!content.contains("export interface TakoChannels"));
+    assert!(!dir.path().join("app/tako.d.ts").exists());
+}
+
+#[test]
+#[cfg(unix)]
+fn store_type_generation_errors_are_reported_before_overwriting_declarations() {
+    let dir = TempDir::new().unwrap();
+    fs::create_dir_all(dir.path().join("src/stores")).unwrap();
+    fs::write(dir.path().join("src/tako.d.ts"), "existing declarations").unwrap();
+    let fake_bun = dir.path().join("bun");
+    fs::write(
+        &fake_bun,
+        "#!/bin/sh\nprintf '%s\\n' 'duplicate store messages' >&2\nexit 1\n",
+    )
+    .unwrap();
+    make_executable(&fake_bun);
+    let error = write_tako_declarations_for_adapter_with_bun(
+        dir.path(),
+        BuildAdapter::Unknown,
+        "src",
+        fake_bun.as_os_str(),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("store generation failed"));
+    assert!(error.to_string().contains("duplicate store messages"));
+    assert_eq!(
+        fs::read_to_string(dir.path().join("src/tako.d.ts")).unwrap(),
+        "existing declarations"
+    );
+}
+
+#[test]
 fn generated_files_creates_demo_channel_and_workflow_in_empty_dirs() {
     let dir = TempDir::new().unwrap();
     link_sdk_package(dir.path());

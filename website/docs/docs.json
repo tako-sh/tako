@@ -36,6 +36,7 @@
           "deployment",
           "channels",
           "presence",
+          "stores",
           "workflows",
           "troubleshooting"
         ]

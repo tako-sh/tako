@@ -2,6 +2,8 @@ import { join } from "node:path";
 import { discoverChannels } from "./discovery";
 import { ChannelRegistry } from "../channels";
 import { resolveAppRootDir } from "../tako/app-root";
+import { discoverStores } from "../stores/discovery";
+import { StoreRegistry } from "../stores/registry";
 
 const CHANNELS_DIRNAME = "channels";
 
@@ -22,6 +24,8 @@ export interface ChannelBootstrapResult {
   registry: ChannelRegistry;
   /** Number of channel modules discovered. */
   channelCount: number;
+  /** Store loaders are separate from the internal notification channels. */
+  stores: StoreRegistry;
 }
 
 /**
@@ -42,5 +46,13 @@ export async function bootstrapChannels(
   for (const { name, definition } of found) {
     registry.register(name, definition);
   }
-  return { registry, channelCount: found.length };
+  const stores = new StoreRegistry();
+  const discoveredStores = await discoverStores(
+    join(resolveAppRootDir(opts.appDir, opts.appRoot), "stores"),
+  );
+  for (const { store } of discoveredStores) {
+    stores.register(store);
+    registry.register(store.definition.channel, store.definition);
+  }
+  return { registry, channelCount: found.length + discoveredStores.length, stores };
 }

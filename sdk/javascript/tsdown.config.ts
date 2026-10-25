@@ -7,7 +7,7 @@ const shared = {
   target: "esnext",
   deps: {
     onlyBundle: false as const,
-    neverBundle: ["vite", "react", "react-dom"],
+    neverBundle: ["vite", "react", "react-dom", "tako.sh"],
   },
 };
 
@@ -26,6 +26,7 @@ export default defineConfig([
       nextjs: "src/nextjs/index.ts",
       "nextjs/image-loader": "src/nextjs/image-loader.ts",
       "gen-channel-types": "bin/gen-channel-types.ts",
+      "gen-store-types": "bin/gen-store-types.ts",
       "entrypoints/bun-server": "src/tako/entrypoints/bun-server.ts",
       "entrypoints/node-server": "src/tako/entrypoints/node-server.ts",
       "entrypoints/bun-worker": "src/tako/entrypoints/bun-worker.ts",

@@ -20,6 +20,9 @@
 export { Channel } from "./channels";
 export { configureChannels } from "./channels/configure";
 export type { PresenceMember, PresenceSnapshot } from "./presence";
+export { Store, StoreRequestError, clearStoreCache } from "./stores/client";
+export type { StoreOptions, StoreSnapshot } from "./stores/client";
+export type { StoreCache, StoreCacheEntry } from "./stores/cache";
 
 export type {
   ChannelConnectOptions,

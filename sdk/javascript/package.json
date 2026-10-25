@@ -18,6 +18,7 @@
   },
   "bin": {
     "tako-sh-gen-channel-types": "./dist/gen-channel-types.mjs",
+    "tako-sh-gen-store-types": "./dist/gen-store-types.mjs",
     "tako-worker": "./dist/entrypoints/bun-worker.mjs"
   },
   "files": [
@@ -78,6 +79,7 @@
     "@types/node": "catalog:dev",
     "@types/react": "catalog:dev",
     "@types/react-dom": "catalog:dev",
+    "fake-indexeddb": "^6.2.6",
     "react": "catalog:",
     "react-dom": "catalog:",
     "tsdown": "^0.23.0",

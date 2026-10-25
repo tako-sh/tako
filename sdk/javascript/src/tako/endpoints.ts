@@ -10,6 +10,8 @@
 import { ChannelRegistry, definitionLifecycleConfig } from "../channels";
 import type { ChannelAuthorizeInput, TakoStatus } from "../types";
 import { getInternalToken, getStorageBindings } from "./secrets";
+import { StoreRegistry } from "../stores/registry";
+import { handleStoreLoad } from "../stores/endpoint";
 
 /** Host suffix used for SDK-internal app requests. */
 export const TAKO_INTERNAL_HOST_SUFFIX = ".tako";
@@ -97,6 +99,7 @@ export async function handleTakoEndpoint(
   request: Request,
   status: TakoStatus,
   channels: ChannelRegistry = new ChannelRegistry(),
+  stores: StoreRegistry = new StoreRegistry(),
 ): Promise<Response | null> {
   // Fast path: gate on cheap string checks before constructing a URL, so
   // normal app traffic pays no per-request allocation here.
@@ -139,6 +142,11 @@ export async function handleTakoEndpoint(
       return await handleChannelAuthorize(request, token, channels);
     case TAKO_INTERNAL_CHANNELS_REGISTRY_PATH:
       return handleChannelRegistry(request, token, channels);
+    case "/stores/load": {
+      const response = await handleStoreLoad(request, stores);
+      response.headers.set(TAKO_INTERNAL_TOKEN_HEADER, token);
+      return response;
+    }
 
     default:
       return internalResponse({ error: "Not found" }, 404, token);

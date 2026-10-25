@@ -15,6 +15,7 @@ import { normalizeFetchResponse } from "./fetch-response";
 import { writeViaInheritedFd } from "./readiness";
 import { bootstrapChannels } from "../channels/bootstrap";
 import type { ChannelRegistry } from "../channels";
+import type { StoreRegistry } from "../stores/registry";
 import { initServerRuntime } from "./init";
 import type { FetchFunction, ReadyableFetchHandler, TakoStatus } from "../types";
 
@@ -90,11 +91,13 @@ export function createEntrypoint() {
     initServerRuntime();
 
     let channels: ChannelRegistry;
+    let stores: StoreRegistry;
     try {
       const result = await bootstrapChannels({ appDir: process.cwd() });
       channels = result.registry;
+      stores = result.stores;
     } catch (err) {
-      console.error("Failed to load channels directory:", err);
+      console.error("Failed to load channels, presence, or stores:", err);
       process.exit(1);
     }
 
@@ -151,7 +154,7 @@ export function createEntrypoint() {
     }
 
     const handleRequest = async (request: Request): Promise<Response> => {
-      const takoResponse = await handleTakoEndpoint(request, getStatus(), channels);
+      const takoResponse = await handleTakoEndpoint(request, getStatus(), channels, stores);
       if (takoResponse) {
         return takoResponse;
       }

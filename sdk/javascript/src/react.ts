@@ -261,3 +261,5 @@ export function useChannel<T = unknown>(
   }
   return result;
 }
+export { useStore } from "./react/store";
+export type { UseStoreOptions, StoreConnection } from "./react/store";

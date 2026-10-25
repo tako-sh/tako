@@ -65,6 +65,23 @@ fn channel_params_query_excludes_ws_cursor() {
 }
 
 #[test]
+fn store_params_preserve_last_message_id_as_application_data() {
+    let query = "params=%7B%22room%22%3A%22one%22%2C%22last_message_id%22%3A42%7D";
+    assert_eq!(request_params_query(Some(query), true), query);
+    assert_eq!(request_params_query(Some("last_message_id=42"), false), "");
+    let schema = serde_json::json!({"type":"object","properties":{"room":{"type":"string"},"last_message_id":{"type":"integer"}},"required":["last_message_id"]});
+    let params = validate_store_query(&schema, &request_params_query(Some(query), true)).unwrap();
+    assert_eq!(params["last_message_id"], 42);
+    let publication =
+        serde_json::json!({"type":"tako.store.invalidate","data":{},"scopeParams":params});
+    assert_eq!(
+        tako_channels::live_store::publication_channel("tako.store:messages", &publication)
+            .unwrap(),
+        store_scope("tako.store:messages", &params)
+    );
+}
+
+#[test]
 fn auth_scheme_requires_declared_credentials_only_for_declared_fields() {
     assert!(auth_scheme_requires_declared_credentials(
         &ChannelAuthScheme::Required {
