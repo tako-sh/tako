@@ -377,6 +377,21 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(()))
     }
 
+    #[cfg(unix)]
+    fn in_subprocess(test: &str) -> bool {
+        const CHILD_ENV: &str = "TAKO_TEST_FD_CHILD";
+        if std::env::var(CHILD_ENV).as_deref() == Ok(test) {
+            return true;
+        }
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test, "--nocapture"])
+            .env(CHILD_ENV, test)
+            .status()
+            .unwrap();
+        assert!(status.success(), "{test} subprocess failed: {status}");
+        false
+    }
+
     #[test]
     fn parses_bootstrap_envelope() {
         let bootstrap = parse_bootstrap_data(
@@ -411,6 +426,11 @@ mod tests {
     #[test]
     fn load_bootstrap_prefers_fd_over_env() {
         use std::os::fd::FromRawFd;
+
+        // FD 3 is process-wide: replacing it can close a parallel test's socket.
+        if !in_subprocess("tests::load_bootstrap_prefers_fd_over_env") {
+            return;
+        }
 
         let _guard = env_lock().lock().unwrap_or_else(|err| err.into_inner());
         unsafe {
@@ -464,6 +484,13 @@ mod tests {
 
     #[test]
     fn binds_std_listener_from_host_and_port() {
+        // The readiness probe consumes FD 4 when it is a pipe. In the parallel
+        // harness that pipe could belong to another test or subprocess spawn.
+        #[cfg(unix)]
+        if !in_subprocess("tests::binds_std_listener_from_host_and_port") {
+            return;
+        }
+
         let _guard = env_lock().lock().unwrap_or_else(|err| err.into_inner());
         unsafe {
             std::env::set_var("HOST", "127.0.0.1");
