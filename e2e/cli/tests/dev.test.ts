@@ -304,7 +304,10 @@ describe.skipIf(SKIP)("tako dev fixtures", () => {
       url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
       let firstMembers: unknown[] = [];
       for (let index = 0; index < 2; index++) {
-        const socket = new WebSocket(url);
+        const socket = new WebSocket(url, {
+          // @ts-ignore - Bun extension: skip TLS verification for the self-signed dev CA.
+          tls: { rejectUnauthorized: false },
+        });
         sockets.push(socket);
         await new Promise<void>((resolve, reject) => {
           const timer = setTimeout(
@@ -323,9 +326,10 @@ describe.skipIf(SKIP)("tako dev fixtures", () => {
               }
             }
           });
-          socket.addEventListener("error", () => {
+          socket.addEventListener("error", (event) => {
             clearTimeout(timer);
-            reject(new Error("Presence connection failed"));
+            const detail = event instanceof ErrorEvent ? event.message : event.type;
+            reject(new Error(`Presence connection failed: ${detail}\nLog:\n${safeRead(lf)}`));
           });
         });
       }
