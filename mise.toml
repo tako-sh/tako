@@ -1,11 +1,11 @@
 [tools]
-rust = "1.98"
-bun = "1.4.2"
-go = "1.27.1"
+rust = "1.99"
+bun = "1.4.4"
+go = "1.27.3"
 just = "1"
-hk = "2.3.1"
+hk = "2.8.1"
 zig = "0.16.0"
-"cargo:cargo-zigbuild" = "0.23.4"
+"cargo:cargo-zigbuild" = "0.24.0"
 
 [bootstrap.packages]
 "brew:lychee" = "latest"
