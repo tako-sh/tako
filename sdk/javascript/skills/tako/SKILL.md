@@ -59,6 +59,9 @@ checks exercise the same configuration the application deploys with.
    readiness, routing/TLS, and application errors before changing code.
 4. Read `troubleshooting` and the relevant configuration or SDK docs. Fix the
    cause, then repeat the original request and check the resulting logs.
+   Check output truncation before treating a log window as complete. If an MCP
+   command times out or is cancelled, inspect status before retrying a mutation:
+   local execution stops, but remote work already submitted may continue.
 5. If rollback is the appropriate recovery, identify a known good release and
    confirm the target environment with the user before a consequential operation.
 
@@ -97,6 +100,16 @@ Read the language SDK skill and the `channels`, `presence`, `stores`, or `workfl
 these features. Keep names consistent with their definitions,
 regenerate types, and test both the producer and consumer. Check state-store
 requirements before scaling across multiple servers; local state is per server.
+
+Channel params do not isolate message streams. Presence membership and Store
+invalidations are scoped by their names and validated params; authorization must
+still check access to the requested room or tenant. Presence tracks connections,
+so deduplicate trusted subjects when counting people across tabs. Its metadata
+is client-provided and must not establish identity or permissions.
+
+Local channel and Presence connections bypass auth callbacks. Verify their
+private access rules in a deployed test environment. Store reads and
+subscriptions enforce validation and authorization in both dev and production.
 
 Stores are live, authorized reads over an existing database, with explicit
 invalidation after committed writes. They do not automatically track SQL or

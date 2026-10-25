@@ -5,7 +5,6 @@ description: >-
   defineChannel/definePresence/defineStore/defineWorkflow, live data and offline reads, Vite and Next.js adapters.
 type: framework
 library: tako.sh
-library_version: "0.0.1"
 sources:
   - tako-sh/tako:sdk/javascript/src
 ---
@@ -53,16 +52,16 @@ export default {
 
 ## Package Exports
 
-| Import path        | Purpose                                         | Key exports                                                                      |
-| ------------------ | ----------------------------------------------- | -------------------------------------------------------------------------------- |
-| `tako.sh`          | Isomorphic runtime + authoring helpers          | `tako`, `imageUrl`, channels, workflows, storage URL option types, runtime types |
-| `tako.sh/server`   | Server-only runtime re-export                   | `tako`, `TakoRuntime`                                                            |
-| `tako.sh/client`   | Browser-safe realtime clients                   | `Channel`, `configureChannels`, `Store`, `clearStoreCache`                       |
-| `tako.sh/react`    | React hooks for realtime data                   | `useChannel`, `usePresence`, `useStore`                                          |
-| `tako.sh/vite`     | Vite plugin for SSR builds                      | `tako()` plugin function                                                         |
-| `tako.sh/nextjs`   | Next.js standalone adapter + wrapper            | `withTako()`, `createNextjsAdapter()`, `createNextjsFetchHandler()`              |
-| `tako.sh/runtime`  | Browser-safe runtime internals                  | `loadSecrets`, `createLogger`, `Logger`                                          |
-| `tako.sh/internal` | Server-only plumbing for framework-adapter boot | `handleTakoEndpoint`, `initServerRuntime`, channel/workflow helpers              |
+| Import path        | Purpose                                         | Key exports                                                                                                          |
+| ------------------ | ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `tako.sh`          | Isomorphic runtime + authoring helpers          | `tako`, `imageUrl`, `imageSrcSet`, `defineChannel`, `definePresence`, `defineStore`, `defineWorkflow`, runtime types |
+| `tako.sh/server`   | Server-only runtime re-export                   | `tako`, `TakoRuntime`                                                                                                |
+| `tako.sh/client`   | Browser-safe realtime clients                   | `Channel`, `configureChannels`, `Store`, `clearStoreCache`                                                           |
+| `tako.sh/react`    | React hooks for realtime data                   | `useChannel`, `usePresence`, `useStore`                                                                              |
+| `tako.sh/vite`     | Vite plugin for SSR builds                      | `tako()` plugin function                                                                                             |
+| `tako.sh/nextjs`   | Next.js standalone adapter + wrapper            | `withTako()`, `createNextjsAdapter()`, `createNextjsFetchHandler()`                                                  |
+| `tako.sh/runtime`  | Browser-safe runtime internals                  | `loadSecrets`, `createLogger`, `Logger`                                                                              |
+| `tako.sh/internal` | Server-only plumbing for framework-adapter boot | `handleTakoEndpoint`, `initServerRuntime`, channel/workflow helpers                                                  |
 
 ## Runtime state: `tako.sh` + `tako.d.ts`
 
@@ -147,6 +146,26 @@ const avifUrl = imageUrl("https://cdn.example.com/uploads/avatars/u_123.png", {
 
 The helper returns `/_tako/image?src=...&w=...` and is synchronous. Explicit URL quality values must also match `[images].qualities` (default `[75]`); SDK validation alone does not make a variant server-allowed. Width must be one of `320, 640, 960, 1200, 1920`; quality is `1..100`; format is `webp` or `avif`. Omit `format` for the optimizer default; Tako defaults to WebP, and `format: "avif"` is only valid when the app's `[images].formats` allows AVIF. Local public paths are available by default. Remote URLs must match `[images].remote_patterns` in `tako.toml`. Sources may be JPEG, PNG, GIF, WebP, or AVIF; animated GIF and WebP sources keep animation for optimized resize and crop URLs when emitted as WebP. AVIF output is available for still images; animated sources that request AVIF fall back to WebP. The server verifies the app's configured image guardrails before fetching or transforming.
 
+Use `imageSrcSet` for responsive public images. It returns `{ src, srcSet, sizes }`
+for an `<img>` element:
+
+```tsx
+import { imageSrcSet } from "tako.sh";
+
+const hero = imageSrcSet("/images/hero.jpg", {
+  width: 1200,
+  layout: "constrained",
+});
+
+export function Hero() {
+  return <img {...hero} alt="Application overview" />;
+}
+```
+
+Layouts are `constrained` (the default), `full-width`, and `fixed`. Override
+`widths` and `sizes` for custom responsive markup; each width must be supported
+by the helper and allowed by the app's image configuration.
+
 ## Storage
 
 Attach S3-compatible storage with the CLI, then use `tako.storages.<name>` from server-side app code:
@@ -171,7 +190,13 @@ const uploadUrl = await tako.storages.uploads.createUploadUrl("avatars/u_123.png
 });
 ```
 
-Storage URLs are private by default and signed with SigV4. `createImageUrl(key, { public: true, width })` uses the storage `public_base_url` and the public image optimizer. Private storage image transforms are not implemented yet; use `createDownloadUrl` for private direct object URLs.
+Storage URLs are private by default. S3-compatible bindings use SigV4; local
+bindings use signed app-local GET/PUT routes under `/_tako/storages/<binding>/<key>`.
+`createImageUrl(key, { public: true, width })` uses the storage `public_base_url`
+and the public image optimizer. `createImageSrcSet(key, { public: true, width,
+layout })` returns responsive public image attributes. Private storage image
+transforms are not implemented yet; use `createDownloadUrl` for private direct
+object URLs.
 
 ## Vite Plugin
 
@@ -202,7 +227,10 @@ import { withTako } from "tako.sh/nextjs";
 export default withTako({});
 ```
 
-`withTako()` sets `output = "standalone"` and points `adapterPath` at the Tako adapter shipped in the SDK.
+`withTako()` sets `output = "standalone"`, points `adapterPath` at the Tako adapter,
+and adds `*.test` / `*.tako.test` to `allowedDevOrigins`. It configures `next/image`
+to use Tako's public image optimizer globally, aligning generated widths with
+Tako's defaults. Remote image sources must be permitted by `[images].remote_patterns`.
 
 On `next build`, the adapter:
 
@@ -214,9 +242,12 @@ The generated wrapper prefers `.next/standalone/server.js` when it exists. Other
 
 Point your Tako deploy `main` at `.next/tako-entry.mjs`, or use the `nextjs` preset so that default is provided for you.
 
-### Enabling `.enqueue()` / `signal()` / channel publish inside Next.js routes
+### Enabling runtime operations inside Next.js routes
 
-The Tako Next.js adapter spawns `next start` as a child process and proxies to it, so the Tako SDK boot hook that runs in the parent process never fires inside your Next.js routes. Add a Next.js `instrumentation.ts` at your project root to install the runtime once per server process:
+The Tako Next.js adapter runs the standalone server (or the `next start` fallback)
+in a child process and proxies to it. Runtime hooks installed in the parent aren't
+installed in that child. Add a Next.js `instrumentation.ts` at your project root
+to install the runtime once per server process:
 
 ```typescript
 // instrumentation.ts
@@ -228,7 +259,12 @@ export async function register() {
 }
 ```
 
-After this, server-side routes and server actions can call `defineWorkflow(...).enqueue(payload)`, `signal(event, payload)`, and channel `.publish(...)` normally. Without it, those calls throw `TakoError("TAKO_UNAVAILABLE", "Workflow runtime not installed. ...")`.
+After this, server-side routes and server actions can call workflow `.enqueue(...)`,
+`signal(...)`, channel `.publish(...)`, and Store `.invalidate(...)`. Store
+invalidation uses the channel publisher, so it needs the same initialization.
+Without these hooks, workflow calls report an unavailable runtime and channel or
+Store publication can fail. Verify the write and its resulting reader update
+through the Tako-provided URL.
 
 ## Types
 

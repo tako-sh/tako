@@ -12,12 +12,14 @@ export type LlmsSection = {
 };
 
 export const llmsSummary =
-  "Tako is a self-hosted app deployment and development platform for local HTTPS development, production deploys, routing, TLS, logs, secrets, and framework-aware defaults.";
+  "Tako is a self-hosted application platform for local HTTPS development, VPS deployment, routing, TLS, logs, secrets, storage, images, durable channels and workflows, Presence, and live Stores. Coding agents use bundled documentation, workflow skills, and a local MCP server.";
 
 export const llmsNotes = [
   "Prefer the Quickstart when the goal is to get an app running quickly.",
   "Use the CLI reference and tako.toml reference for exact command and configuration details.",
   "Use Framework Guides and Presets for framework-specific setup.",
+  "Use Coding Agents to configure project-local skills and MCP. Bundled docs match the installed CLI; refresh agent setup after upgrading Tako.",
+  "Use Channels for durable events, Presence for current connections, and Stores for authorized live data reads with explicit invalidation and optional offline caching.",
 ];
 
 export const llmsProjectSection: LlmsSection = {

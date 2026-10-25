@@ -68,9 +68,11 @@ presence.register("chat", PresenceDefinition::new()
 tako::axum::serve_with_presence(app, presence).await?;
 ```
 
-The app-owned `authorize_chat_presence` helper returns a verified user ID after
-checking the credential and access to `input.params["chatId"]`. Return `None` to
-deny, or `Some(PresenceGrant::default())` to allow an anonymous connection. Omit
+The app-owned `authorize_chat_presence` helper returns `Option<String>` with a
+verified user ID after checking credentials and access to `input.params["chatId"]`.
+The example maps that ID to `PresenceGrant`. The `.auth(...)` callback itself
+returns `Option<PresenceGrant>`: `None` denies, while
+`Some(PresenceGrant::default())` allows an anonymous connection. Omit
 `.auth(...)` for a public space. Cookie-only auth uses `PresenceAuth { header_name:
 None, cookie_name: Some("session".into()) }`. Async verifiers receive the public
 space name, operation, schema-validated params, header, and cookie.
@@ -87,6 +89,11 @@ manage leases, disconnect cleanup, and reconnects. Every authorized member of a
 scope sees its roster; permissions are checked again when the configured maximum
 connection lifetime expires. Configure the shared `postgres_url` credential for
 multiple servers; native registration is not detected by the JS deploy preflight.
+
+Local Presence connections bypass auth callbacks and use in-memory state.
+Verify private-room rejection and trusted identities in a deployed test
+environment. Deduplicate subjects when counting users across tabs; connection
+IDs identify sessions, not people.
 
 ## Stores
 
@@ -150,4 +157,6 @@ read responses at 1 MiB. Multi-server native apps must explicitly configure shar
 https://tako.sh/docs/stores/ for the frontend lifecycle and verify scope isolation,
 reconnection, and offline expiry.
 
-Run `cargo test -p tako` and `cargo test -p tako --all-features` after changes.
+Run the application's tests and exercise its routes through the Tako-provided
+URL. For authenticated Stores, verify both read and subscription rejection;
+unlike Presence, Store auth is enforced during local development too.

@@ -5,7 +5,6 @@ description: >-
   typed secrets via tako generate, authenticated presence and live Stores with cached offline reads.
 type: framework
 library: tako.sh
-library_version: "0.0.1"
 sources:
   - tako-sh/tako:tako.go
   - tako-sh/tako:presence.go
@@ -19,7 +18,7 @@ Runtime SDK for Go apps deployed with Tako.
 
 > **CRITICAL**: The Go SDK is **required** — your app must call `tako.ListenAndServe()` or use `tako.Listener()` to speak the Tako protocol (health checks, graceful shutdown). Secrets are loaded from the Tako bootstrap envelope at init time: fd 3 first for native processes, then `TAKO_BOOTSTRAP_DATA` for containers.
 
-> **CRITICAL**: Any framework that implements `http.Handler` works directly with `ListenAndServe`. Only Fiber (fasthttp) needs the `Listener` path.
+> **CRITICAL**: Any framework that implements `http.Handler` works directly with `ListenAndServe`. Use `Listener` for frameworks that own their server loop, such as Fiber (fasthttp), and retain authenticated Tako protocol handling.
 
 ## Core Concept: http.Handler
 
@@ -184,7 +183,7 @@ func registerChatPresence() {
 
 A React frontend uses `usePresence` from `tako.sh/react` with the same public name, params, and authorization token. The Go SDK registers backend policies; it does not create a browser or native WebSocket client. `tako.PresenceSnapshot` and `tako.PresenceMember` expose the wire shapes for consumers that manage their own connections. Member metadata is `json.RawMessage` and must be validated before use.
 
-Every browser tab has its own server-assigned connection ID. The verified `Subject` identifies the user across tabs. Presence metadata and membership are ephemeral, have no durable replay, and are scoped to the deployed app/environment. Shared Postgres carries membership across production servers. Local development uses in-memory state and the same permissive auth behavior as local channels.
+Every browser tab has its own server-assigned connection ID. The verified `Subject` identifies the user across tabs; deduplicate subjects when counting people. Presence metadata and membership are ephemeral, have no durable replay, and are scoped to the deployed app/environment. Shared Postgres carries membership across production servers. Local development uses in-memory state and bypasses auth callbacks, as with local channels. Verify private-room rejection and trusted identities in a deployed test environment.
 
 ## Stores
 
