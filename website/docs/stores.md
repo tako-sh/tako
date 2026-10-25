@@ -219,4 +219,4 @@ The same React and browser APIs work with JavaScript, Go, and Rust backends.
 
 The dev daemon keeps notification state in memory. Single-server production uses Tako-managed SQLite by default. Multi-server deployments require the shared `postgres_url` credential so a write on one server can notify readers on another. JS store directories are detected by deployment preflight; configure `postgres_url` explicitly for multi-server Go and Rust apps using inline registrations. Your database remains the source of truth; this notification storage does not replace it.
 
-Use [Channels](/docs/channels/) for application events, [Presence](/docs/presence/) for current membership, and Stores for live data reads with optional offline caching.
+Use [Channels](/channels/) for application events, [Presence](/presence/) for current membership, and Stores for live data reads with optional offline caching.

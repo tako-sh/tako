@@ -229,7 +229,7 @@ JS channels, presence spaces, stores, and workflows are discovered under `<app_r
 
 Presence uses the dev daemon’s in-memory store with separate membership for each validated params scope. See [Presence](/presence/) for the React hook and production auth policy.
 
-[Stores](/docs/stores/) loads backend data with live invalidation and optional cached offline reads. Unlike existing local channel and presence subscriptions, Store reads and subscriptions enforce authorization in development. Invalidate a store after committed writes; each validated params scope has its own notification stream.
+[Stores](/stores/) loads backend data with live invalidation and optional cached offline reads. Unlike existing local channel and presence subscriptions, Store reads and subscriptions enforce authorization in development. Invalidate a store after committed writes; each validated params scope has its own notification stream.
 
 Channels are broadcast streams, not work queues. Multiple local clients subscribed to the same channel read the same app events, with independent cursors for reconnect replay. Dev channel replay stays in the dev daemon's in-memory store until the daemon restarts.
 

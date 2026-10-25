@@ -13,7 +13,7 @@ Use a channel for live dashboards, chat delivery, presence updates, notification
 
 For automatic online membership, typing status, and cursor metadata, use [Presence](/presence/) with `definePresence` and `usePresence` from `tako.sh/react`.
 
-For backend data that stays synchronized with the UI, use [Stores](/docs/stores/) with `defineStore` and `useStore`. Stores add authorized reads, scoped invalidation, reconnect catch-up, and optional offline caching on top of channels.
+For backend data that stays synchronized with the UI, use [Stores](/stores/) with `defineStore` and `useStore`. Stores add authorized reads, scoped invalidation, reconnect catch-up, and optional offline caching on top of channels.
 
 Every delivered message has this wire shape:
 
