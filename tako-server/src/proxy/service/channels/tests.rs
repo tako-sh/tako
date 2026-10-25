@@ -2,6 +2,37 @@ use super::*;
 use tako_channels::websocket::is_websocket_auth_payload;
 
 #[test]
+fn cookie_websocket_origin_requires_same_scheme_host_and_port() {
+    let mut request = RequestHeader::build("GET", b"/_tako/channels/chat", None).unwrap();
+    request.insert_header("Host", "app.example:8443").unwrap();
+    assert!(!websocket_origin_matches(&request, true));
+    for origin in [
+        "null",
+        "https://evil.example",
+        "https://app.example",
+        "http://app.example:8443",
+        "https://app.example:8443/path",
+        "https://user@app.example:8443",
+    ] {
+        request.insert_header("Origin", origin).unwrap();
+        assert!(!websocket_origin_matches(&request, true), "{origin}");
+    }
+    request
+        .insert_header("Origin", "https://APP.example:8443")
+        .unwrap();
+    assert!(websocket_origin_matches(&request, true));
+    request.insert_header("Host", "app.example:443").unwrap();
+    request
+        .insert_header("Origin", "https://app.example")
+        .unwrap();
+    assert!(websocket_origin_matches(&request, true));
+    request
+        .append_header("Origin", "https://evil.example")
+        .unwrap();
+    assert!(!websocket_origin_matches(&request, true));
+}
+
+#[test]
 fn extract_credentials_picks_declared_header_and_cookie() {
     let mut headers = HashMap::new();
     headers.insert("authorization".into(), "Bearer abc".into());

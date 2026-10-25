@@ -281,7 +281,7 @@ async fn serve_sse(
 
     let started = tokio::time::Instant::now();
     let mut next_keepalive = started + keepalive_interval;
-    let mut changes = store.changes();
+    let mut changes = store.changes(channel);
     let mut read_replay = true;
 
     loop {

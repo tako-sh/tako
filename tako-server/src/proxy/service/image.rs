@@ -72,6 +72,12 @@ impl TakoProxy {
                 }
             };
 
+        // Reserve capacity before any source is downloaded or read. Hold it
+        // through transformation and response writing, including cache hits.
+        let _source_permit = match acquire_image_request_slot() {
+            Ok(permit) => permit,
+            Err(_) => return write_image_error(session, 503, "Service Unavailable").await,
+        };
         let limits = TransformLimits::default();
         let source = match self
             .load_image_source(
@@ -235,7 +241,7 @@ impl TakoProxy {
         for lookup_path in static_lookup_paths(path, matched_route_path) {
             match static_server.resolve(&lookup_path) {
                 Ok(file) => {
-                    let bytes = read_file_limited(&file.path, limits.max_source_bytes).await?;
+                    let bytes = read_file_limited(file.handle, limits.max_source_bytes).await?;
                     return Ok(Some(ImageSourceBytes::new(bytes, Some(file.content_type))));
                 }
                 Err(StaticFileError::NotFound(_)) | Err(StaticFileError::Io(_)) => {}
@@ -608,10 +614,20 @@ fn image_http_client_builder() -> ClientBuilder {
         .timeout(Duration::from_secs(10))
 }
 
-async fn read_file_limited(path: &Path, max_bytes: usize) -> Result<Vec<u8>, ImageError> {
-    let mut file = tokio::fs::File::open(path)
-        .await
-        .map_err(|_| ImageError::InvalidSource)?;
+// Bound concurrent source loads (each capped at 8 MiB), independently of
+// source-cache eviction and the transform worker's separate queue.
+const MAX_IMAGE_REQUESTS: usize = 16;
+
+fn acquire_image_request_slot()
+-> Result<tokio::sync::SemaphorePermit<'static>, tokio::sync::TryAcquireError> {
+    static SLOTS: OnceLock<tokio::sync::Semaphore> = OnceLock::new();
+    SLOTS
+        .get_or_init(|| tokio::sync::Semaphore::new(MAX_IMAGE_REQUESTS))
+        .try_acquire()
+}
+
+async fn read_file_limited(file: std::fs::File, max_bytes: usize) -> Result<Vec<u8>, ImageError> {
+    let mut file = tokio::fs::File::from_std(file);
     let mut bytes = Vec::new();
     let mut buffer = [0_u8; 16 * 1024];
     loop {

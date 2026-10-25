@@ -6,6 +6,13 @@ use std::io::Write;
 use std::time::Duration;
 
 const MIN_COMPRESS_BODY_BYTES: usize = 1024;
+const MAX_COMPRESS_BODY_BYTES: usize = 256 * 1024;
+const MAX_CONCURRENT_COMPRESSIONS: usize = 32;
+
+fn compression_slots() -> &'static tokio::sync::Semaphore {
+    static SLOTS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+    SLOTS.get_or_init(|| tokio::sync::Semaphore::new(MAX_CONCURRENT_COMPRESSIONS))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum CompressionAlgorithm {
@@ -36,6 +43,8 @@ pub(super) enum CompressionSkipReason {
     ServerSentEvents,
     StreamingOrUnknownLength,
     TooSmall,
+    TooLarge,
+    Busy,
     UnsupportedEncoding,
     Upgrade,
     UnsupportedContentType,
@@ -52,6 +61,8 @@ impl CompressionSkipReason {
             Self::ServerSentEvents => "server_sent_events",
             Self::StreamingOrUnknownLength => "streaming_or_unknown_length",
             Self::TooSmall => "too_small",
+            Self::TooLarge => "too_large",
+            Self::Busy => "busy",
             Self::UnsupportedEncoding => "unsupported_encoding",
             Self::Upgrade => "upgrade",
             Self::UnsupportedContentType => "unsupported_content_type",
@@ -72,6 +83,7 @@ pub(super) enum CompressionDecision {
 enum CompressionState {
     Undecided,
     Active {
+        _permit: tokio::sync::SemaphorePermit<'static>,
         algorithm: CompressionAlgorithm,
         body: Vec<u8>,
         uncompressed_bytes: u64,
@@ -101,14 +113,32 @@ impl ResponseCompression {
         request: &RequestHeader,
         response: &mut ResponseHeader,
     ) -> Result<()> {
+        self.prepare_with_slots(request, response, compression_slots())
+    }
+
+    fn prepare_with_slots(
+        &mut self,
+        request: &RequestHeader,
+        response: &mut ResponseHeader,
+        slots: &'static tokio::sync::Semaphore,
+    ) -> Result<()> {
         match compression_decision(request, response) {
             CompressionDecision::Compress(algorithm) => {
                 ensure_vary_accept_encoding(response)?;
+                let Ok(permit) = slots.try_acquire() else {
+                    self.state = CompressionState::Skipped {
+                        reason: CompressionSkipReason::Busy,
+                        vary_required: true,
+                        bytes: 0,
+                    };
+                    return Ok(());
+                };
                 response.insert_header("Content-Encoding", algorithm.as_header())?;
                 let _ = response.remove_header("Content-Length");
                 let _ = response.remove_header("ETag");
                 let _ = response.remove_header("Content-MD5");
                 self.state = CompressionState::Active {
+                    _permit: permit,
                     algorithm,
                     body: Vec::new(),
                     uncompressed_bytes: 0,
@@ -151,8 +181,15 @@ impl ResponseCompression {
                 body: buffered,
                 uncompressed_bytes,
                 compressed_bytes,
+                ..
             } => {
                 if let Some(chunk) = body.take() {
+                    if buffered.len().saturating_add(chunk.len()) > MAX_COMPRESS_BODY_BYTES {
+                        return Err(Error::explain(
+                            ErrorType::InternalError,
+                            "upstream exceeded bounded compression body",
+                        ));
+                    }
                     *uncompressed_bytes += chunk.len() as u64;
                     buffered.extend_from_slice(&chunk);
                 }
@@ -163,6 +200,7 @@ impl ResponseCompression {
                 }
 
                 let compressed = compress_body(*algorithm, buffered)?;
+                *buffered = Vec::new();
                 *compressed_bytes = Some(compressed.len() as u64);
                 *body = Some(Bytes::from(compressed));
                 Ok(None)
@@ -262,6 +300,10 @@ pub(super) fn compression_decision(
 
     if content_length < MIN_COMPRESS_BODY_BYTES {
         return skip(CompressionSkipReason::TooSmall, false);
+    }
+
+    if content_length > MAX_COMPRESS_BODY_BYTES {
+        return skip(CompressionSkipReason::TooLarge, false);
     }
 
     let Some(accept_encoding) = request
@@ -617,6 +659,51 @@ mod tests {
                 vary_required: false
             }
         );
+    }
+
+    #[test]
+    fn oversized_response_is_forwarded_without_buffering() {
+        let request = request(Some("br, gzip"));
+        let mut response = response("application/json", MAX_COMPRESS_BODY_BYTES + 1);
+        let mut compression = ResponseCompression::new();
+        compression.prepare(&request, &mut response).unwrap();
+        assert_eq!(compression.skip_reason_log_value(), "too_large");
+        assert!(!response.headers.contains_key("Content-Encoding"));
+        assert!(response.headers.contains_key("Content-Length"));
+        let original = Bytes::from_static(b"first chunk");
+        let mut body = Some(original.clone());
+        compression.filter_body(&mut body, false).unwrap();
+        assert_eq!(body, Some(original));
+    }
+
+    #[test]
+    fn compression_saturation_preserves_identity_response_headers_and_body() {
+        static BUSY: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(0);
+        let request = request(Some("gzip"));
+        let mut response = response("text/plain", MIN_COMPRESS_BODY_BYTES);
+        response.insert_header("ETag", "\"original\"").unwrap();
+        let mut compression = ResponseCompression::new();
+        compression
+            .prepare_with_slots(&request, &mut response, &BUSY)
+            .unwrap();
+        assert_eq!(compression.skip_reason_log_value(), "busy");
+        assert!(!response.headers.contains_key("Content-Encoding"));
+        assert!(response.headers.contains_key("Content-Length"));
+        assert!(response.headers.contains_key("ETag"));
+        assert_eq!(response.headers.get("Vary").unwrap(), "Accept-Encoding");
+        let mut body = Some(Bytes::from_static(b"unchanged"));
+        compression.filter_body(&mut body, false).unwrap();
+        assert_eq!(body.unwrap(), Bytes::from_static(b"unchanged"));
+    }
+
+    #[test]
+    fn compression_rejects_body_exceeding_limit_despite_small_content_length() {
+        let request = request(Some("gzip"));
+        let mut response = response("text/plain", MIN_COMPRESS_BODY_BYTES);
+        let mut compression = ResponseCompression::new();
+        compression.prepare(&request, &mut response).unwrap();
+        let mut body = Some(Bytes::from(vec![b'x'; MAX_COMPRESS_BODY_BYTES + 1]));
+        assert!(compression.filter_body(&mut body, false).is_err());
     }
 
     #[test]

@@ -6,6 +6,16 @@ use tracing_subscriber::prelude::*;
 static NEXT_IMAGE_LOG_TEST_ID: AtomicU64 = AtomicU64::new(0);
 
 #[test]
+fn image_admission_is_bounded_and_recovers_on_drop() {
+    let mut permits: Vec<_> = (0..MAX_IMAGE_REQUESTS)
+        .map(|_| acquire_image_request_slot().unwrap())
+        .collect();
+    assert!(acquire_image_request_slot().is_err());
+    permits.pop();
+    assert!(acquire_image_request_slot().is_ok());
+}
+
+#[test]
 fn identifies_image_request_paths() {
     assert!(is_image_request_path("/_tako/image"));
     assert!(!is_image_request_path("/_tako/channels/chat"));

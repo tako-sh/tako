@@ -296,7 +296,7 @@ fn postgres_concurrent_publishers_share_changes_order_and_retention() {
     let writers: Vec<_> = (0..2)
         .map(|_| ChannelStore::open_postgres(&url, &app).unwrap())
         .collect();
-    let mut changes = reader.changes();
+    let mut changes = reader.changes("events");
     let initial = reader.replay_cursor("events", None).unwrap();
     let handles: Vec<_> = writers
         .into_iter()
@@ -552,7 +552,7 @@ fn subscribers_observe_external_writers_and_recover_batched_replay() {
     let path = temp.path().join("channels.sqlite");
     let reader = ChannelStore::open(&path).unwrap();
     let writer = ChannelStore::open(&path).unwrap();
-    let mut subscribers: Vec<_> = (0..32).map(|_| reader.changes()).collect();
+    let mut subscribers: Vec<_> = (0..32).map(|_| reader.changes("chat")).collect();
     for index in 0..150 {
         writer
             .append(
@@ -586,6 +586,65 @@ fn subscribers_observe_external_writers_and_recover_batched_replay() {
     assert_eq!(second.len(), 50);
     assert_eq!(first[0].data, serde_json::json!(0));
     assert_eq!(second[49].data, serde_json::json!(149));
+}
+
+#[test]
+fn external_publications_only_wake_subscribers_to_the_changed_stream() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let path = temp.path().join("channels.sqlite");
+    let reader = ChannelStore::open(&path).unwrap();
+    let writer = ChannelStore::open(&path).unwrap();
+    assert_scoped_notifications(reader, writer);
+}
+
+#[test]
+fn postgres_publications_only_wake_subscribers_to_the_changed_stream() {
+    let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
+        return;
+    };
+    let app = format!("scoped-notification-test/{}", std::process::id());
+    let schema = format!("scoped_notifications_{}", std::process::id());
+    assert_scoped_notifications(
+        ChannelStore::open_postgres_with_schema(&url, &schema, &app).unwrap(),
+        ChannelStore::open_postgres_with_schema(&url, &schema, &app).unwrap(),
+    );
+}
+
+fn assert_scoped_notifications(reader: ChannelStore, writer: ChannelStore) {
+    let mut active = reader.changes("active");
+    let mut quiet = reader.changes("quiet");
+    let payload = ChannelPublishPayload {
+        r#type: "event".into(),
+        data: serde_json::json!({}),
+    };
+    writer.append("active", &payload).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while !active.has_changed().unwrap() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "active stream was not notified"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(
+        !quiet.has_changed().unwrap(),
+        "unrelated stream was notified"
+    );
+    active.borrow_and_update();
+    writer.append("quiet", &payload).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while !quiet.has_changed().unwrap() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "quiet stream's publication was missed"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    quiet.borrow_and_update();
+    assert!(
+        !active.has_changed().unwrap(),
+        "unchanged stream was notified again"
+    );
 }
 
 #[test]

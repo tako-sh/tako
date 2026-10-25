@@ -94,7 +94,7 @@ impl PostgresChannelStore {
                 &format!(
                     "SELECT id, channel, type, data_json
                      FROM {}.channel_messages
-                     WHERE app_id = $1 AND channel = $2 AND ($3::BIGINT IS NULL OR id > $3)
+                     WHERE app_id = $1 AND channel = $2 AND id > COALESCE($3::BIGINT, 0)
                      ORDER BY id ASC
                      LIMIT $4",
                     self.schema
@@ -179,17 +179,14 @@ impl PostgresChannelStore {
         Ok(())
     }
 
-    pub(super) fn latest_id(&self) -> Result<Option<i64>, ChannelError> {
-        self.client
-            .lock()
-            .query_one(
-                &format!(
-                    "SELECT MAX(id) FROM {}.channel_messages WHERE app_id = $1",
-                    self.schema
-                ),
-                &[&self.app_id],
-            )
-            .map(|row| row.get(0))
+    pub(super) fn latest_ids(
+        &self,
+        channels: &[String],
+    ) -> Result<Vec<(String, i64)>, ChannelError> {
+        self.client.lock().query(
+            &format!("SELECT channel, latest_message_id FROM {}.channel_metadata WHERE app_id = $1 AND channel = ANY($2) AND latest_message_id > 0", self.schema),
+            &[&self.app_id, &channels],
+        ).map(|rows| rows.into_iter().map(|row| (row.get(0), row.get(1))).collect())
             .map_err(|e| ChannelError::Storage(e.to_string()))
     }
 

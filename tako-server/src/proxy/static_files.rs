@@ -4,6 +4,9 @@
 //! Files are served from the app's `public/` directory.
 
 use std::collections::HashMap;
+use std::fs::File;
+use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -50,8 +53,10 @@ impl Default for StaticConfig {
 }
 
 /// A static file ready to be served
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct StaticFile {
+    /// Opened during resolution; callers must never reopen the pathname.
+    pub handle: File,
     /// Full path to the file
     pub path: PathBuf,
     /// MIME type
@@ -68,8 +73,6 @@ pub struct StaticFile {
 pub struct AppStaticServer {
     /// Root directory for static files
     root: PathBuf,
-    /// Canonicalized root path for traversal checks
-    root_canonical: Option<PathBuf>,
     /// Configuration
     config: StaticConfig,
     /// MIME type map
@@ -79,11 +82,9 @@ pub struct AppStaticServer {
 impl AppStaticServer {
     pub fn new(app_root: PathBuf, config: StaticConfig) -> Self {
         let root = app_root.join(&config.public_dir);
-        let root_canonical = root.canonicalize().ok();
 
         Self {
             root,
-            root_canonical,
             config,
             mime_types: Self::default_mime_types(),
         }
@@ -167,40 +168,22 @@ impl AppStaticServer {
         // Normalize the path
         let clean_path = self.normalize_path(request_path)?;
 
-        // Build full path
-        let full_path = self.root.join(&clean_path);
-
-        // Security: ensure the resolved path is still within root
-        let canonical = full_path
-            .canonicalize()
-            .map_err(|_| StaticFileError::NotFound(request_path.to_string()))?;
-
-        let root_canonical = self
-            .root_canonical
-            .clone()
-            .or_else(|| self.root.canonicalize().ok())
-            .ok_or_else(|| StaticFileError::NotFound(request_path.to_string()))?;
-
-        if !canonical.starts_with(&root_canonical) {
-            return Err(StaticFileError::PathTraversal(request_path.to_string()));
+        // Walk directory descriptors without following symlinks. Keeping the
+        // opened file also closes the check/open race with app-writable releases.
+        let root = open_without_symlinks(&self.root)
+            .map_err(|error| map_open_error(error, request_path))?;
+        let mut handle = open_relative(&root, Path::new(&clean_path))
+            .map_err(|error| map_open_error(error, request_path))?;
+        let mut target_path = self.root.join(&clean_path);
+        if handle.metadata()?.is_dir() && self.config.serve_index {
+            handle = open_relative(&handle, Path::new("index.html"))
+                .map_err(|error| map_open_error(error, request_path))?;
+            target_path.push("index.html");
         }
-
-        // Check if it's a directory and we should serve index.html
-        let target_path = if canonical.is_dir() && self.config.serve_index {
-            let index_path = canonical.join("index.html");
-            if index_path.exists() {
-                index_path
-            } else {
-                return Err(StaticFileError::NotFound(request_path.to_string()));
-            }
-        } else if canonical.is_file() {
-            canonical
-        } else {
+        let metadata = handle.metadata()?;
+        if !metadata.is_file() {
             return Err(StaticFileError::NotFound(request_path.to_string()));
-        };
-
-        // Get file metadata
-        let metadata = std::fs::metadata(&target_path)?;
+        }
         let size = metadata.len();
         let last_modified = metadata.modified().unwrap_or(SystemTime::now());
 
@@ -220,6 +203,7 @@ impl AppStaticServer {
         let cache_control = format!("public, max-age={}", self.config.cache_max_age);
 
         Ok(StaticFile {
+            handle,
             path: target_path,
             content_type,
             size,
@@ -267,6 +251,48 @@ impl AppStaticServer {
     pub fn root(&self) -> &Path {
         &self.root
     }
+}
+
+fn map_open_error(error: std::io::Error, path: &str) -> StaticFileError {
+    match error.raw_os_error() {
+        Some(libc::ELOOP) => StaticFileError::PathTraversal(path.into()),
+        Some(libc::ENOENT | libc::ENOTDIR) => StaticFileError::NotFound(path.into()),
+        _ => StaticFileError::Io(error),
+    }
+}
+
+fn open_without_symlinks(path: &Path) -> std::io::Result<File> {
+    let absolute = std::path::absolute(path)?;
+    open_relative(&File::open("/")?, absolute.strip_prefix("/").unwrap())
+}
+
+fn open_relative(root: &File, path: &Path) -> std::io::Result<File> {
+    let mut file = root.try_clone()?;
+    for component in path.components() {
+        let std::path::Component::Normal(name) = component else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "invalid static path",
+            ));
+        };
+        let name = std::ffi::CString::new(name.as_bytes())?;
+        // O_NONBLOCK prevents a planted FIFO from blocking the proxy. The final
+        // descriptor is checked for regular-file type before it is served.
+        // SAFETY: file owns a live directory fd and name is a NUL-terminated component.
+        let fd = unsafe {
+            libc::openat(
+                file.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK,
+            )
+        };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: openat returned a new descriptor whose ownership moves into File.
+        file = unsafe { File::from_raw_fd(fd) };
+    }
+    Ok(file)
 }
 
 #[cfg(test)]
@@ -385,6 +411,53 @@ mod tests {
 
         let result = server.resolve("/../../../etc/passwd");
         assert!(matches!(result, Err(StaticFileError::PathTraversal(_))));
+    }
+
+    #[test]
+    fn rejects_index_and_directory_symlinks_outside_public() {
+        let temp = TempDir::new().unwrap();
+        create_test_files(temp.path());
+        let private = temp.path().join("private");
+        fs::create_dir(&private).unwrap();
+        fs::write(private.join("secret.txt"), "private fixture").unwrap();
+        let public = temp.path().join("public");
+        fs::create_dir(public.join("leak.css")).unwrap();
+        std::os::unix::fs::symlink(
+            private.join("secret.txt"),
+            public.join("leak.css/index.html"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&private, public.join("linked")).unwrap();
+        let server = AppStaticServer::new(temp.path().into(), StaticConfig::default());
+        assert!(server.resolve("/leak.css").is_err());
+        assert!(server.resolve("/linked/secret.txt").is_err());
+    }
+
+    #[test]
+    fn rejects_symlinked_public_root() {
+        let temp = TempDir::new().unwrap();
+        let private = temp.path().join("private");
+        fs::create_dir(&private).unwrap();
+        fs::write(private.join("secret.txt"), "private fixture").unwrap();
+        std::os::unix::fs::symlink(private, temp.path().join("public")).unwrap();
+        let server = AppStaticServer::new(temp.path().into(), StaticConfig::default());
+        assert!(server.resolve("/secret.txt").is_err());
+    }
+
+    #[test]
+    fn opened_static_file_survives_path_replacement() {
+        use std::io::Read;
+        let temp = TempDir::new().unwrap();
+        create_test_files(temp.path());
+        let server = AppStaticServer::new(temp.path().into(), StaticConfig::default());
+        let mut file = server.resolve("/style.css").unwrap();
+        fs::remove_file(&file.path).unwrap();
+        let private = temp.path().join("private.txt");
+        fs::write(&private, "private fixture").unwrap();
+        std::os::unix::fs::symlink(private, &file.path).unwrap();
+        let mut body = String::new();
+        file.handle.read_to_string(&mut body).unwrap();
+        assert_eq!(body, "body { }");
     }
 
     #[test]

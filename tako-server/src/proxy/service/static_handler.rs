@@ -1,6 +1,4 @@
-use super::super::request::{
-    create_production_error_response, insert_body_headers, static_lookup_paths, stream_static_file,
-};
+use super::super::request::{insert_body_headers, static_lookup_paths, stream_static_file};
 use super::super::{AppStaticServer, StaticConfig, StaticFileError, TakoProxy};
 use super::RequestCtx;
 use pingora_core::prelude::*;
@@ -91,18 +89,7 @@ impl TakoProxy {
                     let mut file_handle = if is_head {
                         None
                     } else {
-                        match tokio::fs::File::open(&file.path).await {
-                            Ok(opened) => Some(opened),
-                            Err(error) => {
-                                ctx.observation.set_handler("static", "error");
-                                tracing::error!(
-                                    app = %app_name,
-                                    path = %file.path.display(),
-                                    "Static asset read failed: {error}"
-                                );
-                                return create_production_error_response(session, 500).await;
-                            }
-                        }
+                        Some(tokio::fs::File::from_std(file.handle))
                     };
 
                     let mut header = ResponseHeader::build(200, None)?;

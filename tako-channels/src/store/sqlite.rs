@@ -5,6 +5,10 @@ use crate::{ChannelAuthResponse, ChannelError, ChannelMessage, ChannelPublishPay
 
 use super::{channel_message_from_row, now_unix_ms, resolve_replay_cursor};
 
+// Autoincrement message IDs start at one, so zero is the initial cursor.
+const READ_AFTER_SQL: &str = "SELECT id, channel, type, data_json
+    FROM channel_messages WHERE channel = ?1 AND id > ?2 ORDER BY id ASC LIMIT ?3";
+
 const INCREMENTAL_VACUUM_PAGES: i64 = 128;
 const WAL_TRUNCATE_DELETED_ROWS_THRESHOLD: usize = 1024;
 
@@ -101,25 +105,20 @@ impl SqliteChannelStore {
     ) -> Result<Vec<ChannelMessage>, ChannelError> {
         let rows = {
             let conn = self.conn.lock();
-            let mut stmt = conn
-                .prepare_cached(
-                    "SELECT id, channel, type, data_json
-                     FROM channel_messages
-                     WHERE channel = ?1 AND (?2 IS NULL OR id > ?2)
-                     ORDER BY id ASC
-                     LIMIT ?3",
-                )
-                .map_err(storage_err)?;
+            let mut stmt = conn.prepare_cached(READ_AFTER_SQL).map_err(storage_err)?;
 
             let rows = stmt
-                .query_map(rusqlite::params![channel, after, i64::from(limit)], |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                    ))
-                })
+                .query_map(
+                    rusqlite::params![channel, after.unwrap_or(0), i64::from(limit)],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                        ))
+                    },
+                )
                 .map_err(storage_err)?;
 
             rows.collect::<Result<Vec<_>, _>>().map_err(storage_err)?
@@ -178,10 +177,22 @@ impl SqliteChannelStore {
         Ok(())
     }
 
-    pub(super) fn latest_id(&self) -> Result<Option<i64>, ChannelError> {
-        self.conn
-            .lock()
-            .query_row("SELECT MAX(id) FROM channel_messages", [], |row| row.get(0))
+    pub(super) fn latest_ids(
+        &self,
+        channels: &[String],
+    ) -> Result<Vec<(String, i64)>, ChannelError> {
+        let channels = serde_json::to_string(channels).map_err(storage_err)?;
+        let conn = self.conn.lock();
+        let mut statement = conn
+            .prepare_cached(
+                "SELECT channel, latest_message_id FROM channel_metadata
+             WHERE channel IN (SELECT value FROM json_each(?1)) AND latest_message_id > 0",
+            )
+            .map_err(storage_err)?;
+        statement
+            .query_map([channels], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(storage_err)?
+            .collect::<Result<Vec<_>, _>>()
             .map_err(storage_err)
     }
 
@@ -310,5 +321,24 @@ fn run_cleanup_maintenance(conn: &rusqlite::Connection, deleted_rows: usize) {
 
     if deleted_rows >= WAL_TRUNCATE_DELETED_ROWS_THRESHOLD {
         let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replay_query_seeks_to_cursor_instead_of_scanning_channel_history() {
+        let store = SqliteChannelStore::open_in_memory().unwrap();
+        let conn = store.conn.lock();
+        let detail: String = conn
+            .query_row(
+                &format!("EXPLAIN QUERY PLAN {READ_AFTER_SQL}"),
+                rusqlite::params!["feed", 100_000, 100],
+                |row| row.get(3),
+            )
+            .unwrap();
+        assert!(detail.contains("channel=? AND id>?"), "{detail}");
     }
 }

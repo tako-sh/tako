@@ -2,6 +2,8 @@ mod postgres;
 mod presence;
 mod sqlite;
 
+use parking_lot::Mutex;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -12,6 +14,7 @@ use sqlite::SqliteChannelStore;
 
 const CHANNELS_DB_FILENAME: &str = "channels.sqlite";
 pub const POSTGRES_CHANNELS_SCHEMA: &str = "tako_channels";
+type StreamChanges = HashMap<String, tokio::sync::watch::Sender<Option<i64>>>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChannelStoreConfig {
@@ -49,7 +52,7 @@ pub fn channels_db_path(data_dir: &std::path::Path) -> PathBuf {
 
 pub struct ChannelStore {
     backend: Arc<ChannelStoreBackend>,
-    changes: tokio::sync::watch::Sender<Option<i64>>,
+    changes: Arc<Mutex<StreamChanges>>,
     _lifetime: Arc<()>,
 }
 
@@ -66,10 +69,10 @@ impl ChannelStoreBackend {
         }
     }
 
-    fn latest_id(&self) -> Result<Option<i64>, ChannelError> {
+    fn latest_ids(&self, channels: &[String]) -> Result<Vec<(String, i64)>, ChannelError> {
         match self {
-            Self::Sqlite(store) => store.latest_id(),
-            Self::Postgres(store) => store.latest_id(),
+            Self::Sqlite(store) => store.latest_ids(channels),
+            Self::Postgres(store) => store.latest_ids(channels),
         }
     }
 }
@@ -77,7 +80,7 @@ impl ChannelStoreBackend {
 impl ChannelStore {
     fn from_backend(backend: ChannelStoreBackend) -> Result<Self, ChannelError> {
         let backend = Arc::new(backend);
-        let (changes, _) = tokio::sync::watch::channel(None);
+        let changes = Arc::new(Mutex::new(StreamChanges::new()));
         let lifetime = Arc::new(());
         let weak = Arc::downgrade(&lifetime);
         let worker_backend = backend.clone();
@@ -97,19 +100,29 @@ impl ChannelStore {
                         }
                         next_prune = std::time::Instant::now() + std::time::Duration::from_secs(1);
                     }
-                    // All subscribers share this app-wide query, including changes
-                    // published by other processes or servers using the same DB.
-                    if sender.receiver_count() > 0 {
-                        match backend.latest_id() {
-                            Ok(latest) => {
-                                sender.send_if_modified(|seen| {
-                                    if *seen == latest {
-                                        false
-                                    } else {
-                                        *seen = latest;
-                                        true
+                    // Poll once per app, but wake only subscribers whose stream
+                    // changed. Metadata heads survive message pruning.
+                    let subscribed_channels = {
+                        let mut streams = sender.lock();
+                        streams.retain(|_, changes| changes.receiver_count() > 0);
+                        streams.keys().cloned().collect::<Vec<_>>()
+                    };
+                    if !subscribed_channels.is_empty() {
+                        match backend.latest_ids(&subscribed_channels) {
+                            Ok(heads) => {
+                                let streams = sender.lock();
+                                for (channel, latest) in heads {
+                                    if let Some(changes) = streams.get(&channel) {
+                                        changes.send_if_modified(|seen| {
+                                            if *seen == Some(latest) {
+                                                false
+                                            } else {
+                                                *seen = Some(latest);
+                                                true
+                                            }
+                                        });
                                     }
-                                });
+                                }
                             }
                             Err(error) => tracing::warn!(%error, "channel change poll failed"),
                         }
@@ -128,8 +141,12 @@ impl ChannelStore {
     }
 
     /// Subscribe before reading replay so changes racing with the read remain visible.
-    pub fn changes(&self) -> tokio::sync::watch::Receiver<Option<i64>> {
-        self.changes.subscribe()
+    pub fn changes(&self, channel: &str) -> tokio::sync::watch::Receiver<Option<i64>> {
+        self.changes
+            .lock()
+            .entry(channel.to_owned())
+            .or_insert_with(|| tokio::sync::watch::channel(None).0)
+            .subscribe()
     }
 
     /// Execute synchronous database work on Tokio's blocking pool.

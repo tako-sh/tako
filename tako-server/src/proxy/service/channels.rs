@@ -67,28 +67,26 @@ impl TakoProxy {
         instance: &crate::instances::Instance,
         channel: &str,
     ) -> std::result::Result<ChannelDefinitionMeta, ChannelError> {
-        if let Some(meta) = self.channel_registry.get(app_name, channel) {
-            return Ok(meta);
-        }
-
-        let defs = fetch_channel_registry(app_name, instance).await?;
-        let store = self
-            .channel_store_for_app(app_name)
-            .await
-            .map_err(|error| ChannelError::Storage(error.to_string()))?;
-        let lifecycle_defs = defs.clone();
-        store
-            .run(move |store| {
-                for definition in lifecycle_defs {
-                    store.sync_channel(&definition.channel, &definition.lifecycle_auth())?;
-                }
-                Ok(())
-            })
-            .await?;
-        self.channel_registry.install(app_name, defs);
         self.channel_registry
-            .get(app_name, channel)
-            .ok_or(ChannelError::NotDefined)
+            .get_or_load(app_name, instance.build_version(), channel, || async {
+                let defs = fetch_channel_registry(app_name, instance).await?;
+                let store = self
+                    .channel_store_for_app(app_name)
+                    .await
+                    .map_err(|error| ChannelError::Storage(error.to_string()))?;
+                let lifecycle_defs = defs.clone();
+                store
+                    .run(move |store| {
+                        for definition in lifecycle_defs {
+                            store
+                                .sync_channel(&definition.channel, &definition.lifecycle_auth())?;
+                        }
+                        Ok(())
+                    })
+                    .await?;
+                Ok(defs)
+            })
+            .await
     }
 
     async fn write_json_response(
@@ -167,7 +165,7 @@ impl TakoProxy {
         let max_connection_lifetime = Duration::from_millis(auth.max_connection_lifetime_ms.max(1));
         let started_at = tokio::time::Instant::now();
         let mut next_keepalive = started_at + keepalive_interval;
-        let mut changes = store.changes();
+        let mut changes = store.changes(channel);
         let mut read_replay = true;
 
         loop {
@@ -357,6 +355,14 @@ impl TakoProxy {
         let is_websocket = session.as_downstream().is_upgrade_req();
         let request_headers = request_headers_to_map(session.req_header());
         let (header, cookie) = extract_credentials(&request_headers, &meta.auth);
+        if is_websocket
+            && cookie.is_some()
+            && !websocket_origin_matches(session.req_header(), ctx.is_https)
+        {
+            return self
+                .write_channel_error(session, ChannelError::Forbidden)
+                .await;
+        }
         let use_first_frame_auth =
             is_websocket && auth_scheme_requires_header(&meta.auth) && header.is_none();
         if !use_first_frame_auth
@@ -584,6 +590,36 @@ fn request_params_query(query: Option<&str>, is_store: bool) -> String {
     } else {
         channel_params_query(query)
     }
+}
+
+/// Cookie credentials are ambient browser authority. Require an explicit,
+/// same-origin handshake before forwarding them to the app's auth callback.
+fn websocket_origin_matches(request: &RequestHeader, is_https: bool) -> bool {
+    let mut origins = request.headers.get_all("origin").iter();
+    let Some(origin) = origins.next().and_then(|value| value.to_str().ok()) else {
+        return false;
+    };
+    if origins.next().is_some() {
+        return false;
+    }
+    let Ok(origin) = reqwest::Url::parse(origin) else {
+        return false;
+    };
+    if !matches!(origin.scheme(), "http" | "https")
+        || !origin.username().is_empty()
+        || origin.password().is_some()
+        || origin.path() != "/"
+        || origin.query().is_some()
+        || origin.fragment().is_some()
+    {
+        return false;
+    }
+    let scheme = if is_https { "https" } else { "http" };
+    let host = crate::proxy::request::request_host(request);
+    let Ok(expected) = reqwest::Url::parse(&format!("{scheme}://{host}")) else {
+        return false;
+    };
+    origin.origin() == expected.origin()
 }
 
 fn channel_params_query(query: Option<&str>) -> String {

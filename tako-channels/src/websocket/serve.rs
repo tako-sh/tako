@@ -71,7 +71,7 @@ pub async fn serve(
     let max_connection_lifetime = Duration::from_millis(auth.max_connection_lifetime_ms.max(1));
     let started_at = tokio::time::Instant::now();
     let mut next_ping = started_at + keepalive_interval;
-    let mut changes = store.changes();
+    let mut changes = store.changes(channel);
     let mut read_replay = presence.is_none();
     let mut buffered = true;
 

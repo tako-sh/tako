@@ -94,7 +94,7 @@ Omit `auth` or set it to `false` for a public channel. Otherwise, `auth.verify` 
 - `true` to allow access without an identity.
 - `{ subject: "user-id" }` to allow access with a stable identity.
 
-`headerName` defaults to `authorization`. Set `headerName: false` with `cookieName` for cookie-only auth. Browser clients can pass `authorization: token`; Tako sends `Authorization: Bearer <token>` for SSE and the equivalent auth envelope for WebSocket.
+`headerName` defaults to `authorization`. Set `headerName: false` with `cookieName` for cookie-only auth. Cookie-authenticated WebSockets require an `Origin` matching the application’s public scheme, host, and port; cross-origin or missing-origin handshakes are rejected. Nonbrowser clients using cookies must also send this header. Browser clients can pass `authorization: token`; Tako sends `Authorization: Bearer <token>` for SSE and the equivalent auth envelope for WebSocket.
 
 The `transport` option chooses the live transport:
 

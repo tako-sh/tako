@@ -20,5 +20,6 @@ mod cache;
 mod core;
 mod redirects;
 mod responses;
+mod security;
 mod source_ip;
 mod static_assets;

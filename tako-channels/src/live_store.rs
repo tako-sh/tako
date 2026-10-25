@@ -371,7 +371,7 @@ pub async fn serve_store_events(
         .sync_channel_async(stream, auth)
         .await
         .map_err(store_error)?;
-    let mut changes = store.changes();
+    let mut changes = store.changes(stream);
     let mut after = store
         .replay_cursor_async(stream, None)
         .await

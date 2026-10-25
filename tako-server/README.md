@@ -8,6 +8,9 @@ Rust crate for the remote Tako runtime and proxy.
 - Maintain route table and app load balancers.
 - Terminate HTTP/HTTPS traffic and proxy upstream.
 - Redirect HTTP traffic to HTTPS (except ACME challenge checks).
+- Serve static files from opened descriptors, rejecting symlinks in the public file path, including directory indexes.
+- Bound response compression to 256 KiB per response and 32 concurrent responses; larger responses pass through without proxy compression.
+- Admit at most 16 concurrent image requests before loading their sources.
 - Cache proxied `GET`/`HEAD` upstream responses in-memory when response cache directives explicitly allow caching.
 - Perform health probing using `Host: <app>.tako` + `/status` against each app instance.
 - Perform active health probing.
