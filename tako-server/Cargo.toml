@@ -34,7 +34,7 @@ rusqlite.workspace = true
 tako-sqlite = { path = "../tako-sqlite" }
 thiserror = "2.0"
 dashmap = "6.2"
-parking_lot = "0.12"
+parking_lot = "0.13"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream", "json"] }
 rcgen = "0.14"
 instant-acme = "0.8"
