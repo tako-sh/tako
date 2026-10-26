@@ -228,6 +228,9 @@ For every case, inspect:
 - Established connections on the TLS port, sampled about every five seconds.
   Active worker count is not a simultaneous connection count. Held cases must
   verify all 20,000 connections during the holding phase, before teardown.
+  Deduplicate `/proc/net/tcp*` rows by socket identity: concurrent churn can
+  repeat rows during the kernel's non-atomic scan. Preserve failed historical
+  counts; do not retroactively mark them successful without the socket evidence.
 - Idle retention and memory after close separately from active peaks. Lower
   post-burst memory does not establish lower memory while connections stay live.
 
@@ -278,6 +281,10 @@ once merged instead of copying experimental numbers into this playbook.
 - Pingora 0.9 does not automatically resize or release these L4 buffers while
   idle. Dynamic retention is an experiment requiring buffer-layer changes and
   correctness checks; do not describe it as an available configuration switch.
+- The buffer-lifetime prototype preserves 64 KiB reads and releases completed
+  HTTP/1 body buffers separately. Its broader transfer coverage found existing
+  Caddy advantages in some workloads. Follow the dated experiment report and
+  do not generalize earlier small-response wins to every upload/download case.
 - The earlier 64-to-4 KiB HTTP **body** buffer experiment was a different layer
   and did not establish a useful win. Do not confuse it with socket-buffer data.
 - Smaller buffers can increase reads, syscalls, and CPU for large transfers.
