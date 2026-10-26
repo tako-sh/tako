@@ -1,5 +1,6 @@
 [workspace]
 resolver = "3"
+exclude = ["vendor/pingora-core"]
 members = [
   "tako-core",
   "tako-socket",
@@ -40,3 +41,7 @@ rusqlite = { version = "0.41", features = ["bundled"] }
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# Pingora 0.9 buffer-lifetime fixes; provenance and removal criteria in vendor/README.md.
+[patch.crates-io]
+pingora-core = { path = "vendor/pingora-core" }

@@ -112,6 +112,13 @@ jobs:
       - name: Run workspace tests
         run: cargo test --workspace --locked --lib --bins
 
+      - name: Test patched Pingora buffering and protocols
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+        run: |
+          cargo test --manifest-path vendor/pingora-core/Cargo.toml --locked --no-default-features --features openssl --lib protocols::
+          cargo test --manifest-path vendor/pingora-core/Cargo.toml --locked --no-default-features --features openssl --lib listeners::
+
       - name: Check Rust SDK package
         run: cargo publish -p tako --dry-run --locked
 

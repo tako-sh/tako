@@ -31,6 +31,12 @@ Rust crate for the remote Tako runtime and proxy.
 
 Routing policy notes:
 
+Connection memory: the pinned Pingora core releases empty L4 read buffers on an
+idle read while retaining 64 KiB transfer reads. It also releases completed
+HTTP/1 upload buffers before long streaming responses finish, preserving retry
+data and pipelined bytes. See [the dependency patch](../vendor/README.md) for
+scope, pool bounds and tests. This does not enable TLS handshake offloading.
+
 - Deploy commands must include at least one non-empty route.
 - No implicit catch-all/no-routes mode is supported.
 
