@@ -838,5 +838,5 @@ export const performanceStructuredData = {
   name: "Tako Performance Benchmarks for Self-Hosted Apps",
   url: "https://tako.sh/performance/",
   description:
-    "Single-VM Tako performance results with proxy, CPU, memory, clean-run, channel, and workflow benchmark graphs.",
+    "Tako buffer-lifetime memory and throughput measurements, with raw results and earlier five-proxy VM, channel, and workflow benchmarks.",
 };

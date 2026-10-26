@@ -11,8 +11,12 @@ import {
   performanceStructuredData,
 } from "../data/performance";
 import type { SummaryMetric } from "../data/performance";
+import bufferPerformance from "../data/buffer-performance.json";
 
 const metricClasses = (metric: SummaryMetric) => ["metric-cell", !metric.clean && "metric-cell-overload"];
+const formatNumber = (value: number) => value.toLocaleString("en-US", { maximumFractionDigits: 1 });
+const [heldMemory, streamingMemory] = bufferPerformance.memory;
+if (!heldMemory || !streamingMemory) throw new Error("Both memory benchmark workloads are required.");
 ---
 
 <BaseLayout
@@ -24,7 +28,7 @@ const metricClasses = (metric: SummaryMetric) => ["metric-cell", !metric.clean &
     <div class="perf-hero-copy">
       <h1 id="performance-title">Serious load, measured in public.</h1>
       <p class="perf-lede">
-        A single small VM pushed through heavy HTTPS concurrency with CPU, memory, latency, clean-response behavior, and raw rows published for inspection.
+        Memory, throughput, tail latency, and CPU measured with raw results published for inspection. The latest buffer tests and earlier five-proxy VM measurements are shown with their own workloads and hardware.
       </p>
       <div class="perf-actions" aria-label="Performance report links">
         <a class="button" href="https://github.com/tako-sh/performance/blob/main/RESULTS.md" target="_blank" rel="noopener noreferrer">
@@ -32,12 +36,120 @@ const metricClasses = (metric: SummaryMetric) => ["metric-cell", !metric.clean &
           <HugeIcon icon={ExternalLinkIcon} class="button-icon" aria-hidden="true" focusable="false" />
         </a>
         <a class="action" href="#method">methodology</a>
+        <a class="action" href="#buffer-memory">latest memory results</a>
       </div>
     </div>
   </section>
 
+  <section class="chart-section" id="buffer-memory" aria-labelledby="buffer-memory-title">
+    <div class="section-head">
+      <span class="fact-label">{bufferPerformance.date} · {bufferPerformance.stage}</span>
+      <div class="section-title-row">
+        <h2 id="buffer-memory-title">Less memory while connections stay open<a class="heading-anchor" href="#buffer-memory" aria-label="Link to section: Less memory while connections stay open" title="Link to this section">#</a></h2>
+      </div>
+      <p>
+        Empty socket buffers are released during idle reads, and completed upload buffers are released before a streaming response finishes. Transfers retain 64 KiB reads.
+      </p>
+      <p>
+        Tako uses {formatNumber(heldMemory.savingPercent)}% less memory with 20,000 held TLS connections and {formatNumber(streamingMemory.savingPercent)}% less during uploads followed by streaming responses, compared with the unchanged build.
+      </p>
+    </div>
+
+    <p class="table-scroll-hint">Scroll tables sideways to compare all columns.</p>
+    <div class="table-wrap">
+      <table>
+        <caption>Retained proxy memory, MiB PSS. Lower is better.</caption>
+        <thead>
+          <tr>
+            <th scope="col">workload</th>
+            <th scope="col" class="num">Tako before</th>
+            <th scope="col" class="num">{bufferPerformance.candidateLabel}</th>
+            <th scope="col" class="num">Caddy</th>
+            <th scope="col" class="num">Tako saving</th>
+          </tr>
+        </thead>
+        <tbody>
+          {bufferPerformance.memory.map((row) => (
+            <tr>
+              <th scope="row">{row.label}</th>
+              <td class="num">{formatNumber(row.baseline)}</td>
+              <td class="num"><strong>{formatNumber(row.candidate)}</strong></td>
+              <td class="num">{formatNumber(row.caddy)}</td>
+              <td class="num">{formatNumber(row.savingPercent)}%</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+    <p class="table-note" id="buffer-method">
+      Mean of three runs&rsquo; median holding-phase PSS. Each held connection completes 21 checked requests; each streaming request uploads 128 KiB before its response stays open for ten seconds. These measure live retained memory, not maximum throughput. Client, app, and kernel socket memory are excluded.
+    </p>
+
+    <div class="section-head">
+      <h3>Throughput alongside memory</h3>
+      <p>{bufferPerformance.performanceNote}</p>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <caption>Longer checks: eight paired 60-second measurements per workload. Successful requests per second.</caption>
+        <thead>
+          <tr>
+            <th scope="col">workload</th>
+            <th scope="col" class="num">Tako before</th>
+            <th scope="col" class="num">{bufferPerformance.candidateLabel}</th>
+            <th scope="col" class="num">change</th>
+          </tr>
+        </thead>
+        <tbody>
+          {bufferPerformance.longerTraffic.map((row) => (
+            <tr>
+              <th scope="row">{row.label}</th>
+              <td class="num">{formatNumber(row.baseline)}</td>
+              <td class="num">{formatNumber(row.candidate)}</td>
+              <td class="num">{row.changePercent > 0 ? "+" : ""}{row.changePercent.toFixed(2)}%</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <caption>Three-proxy comparison: means of three 15-second measurements. Successful requests per second; higher is better.</caption>
+        <thead>
+          <tr>
+            <th scope="col">workload</th>
+            <th scope="col" class="num">Tako before</th>
+            <th scope="col" class="num">{bufferPerformance.candidateLabel}</th>
+            <th scope="col" class="num">Caddy</th>
+          </tr>
+        </thead>
+        <tbody>
+          {bufferPerformance.traffic.map((row) => (
+            <tr>
+              <th scope="row">{row.label}</th>
+              <td class="num">{formatNumber(row.baseline)}</td>
+              <td class="num">{formatNumber(row.candidate)}</td>
+              <td class="num">{formatNumber(row.caddy)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+    <p class="table-note">
+      Free GitHub runners, with the proxy, load generator, and real deployed app sharing a 2 CPU quota, 8 GiB RAM, and no swap. Each row compares variants on the same runner; HTTP/1 and HTTP/2 groups use separate runners. Small-response results do not imply an advantage for every bulk-transfer workload. Full latency, CPU, correctness, repetitions, and build identities are in the report.
+    </p>
+    <div class="raw-links">
+      <a href={bufferPerformance.reportUrl} target="_blank" rel="noopener noreferrer">Read the measured report and raw data <HugeIcon icon={ExternalLinkIcon} class="button-icon" aria-hidden="true" focusable="false" /></a>
+    </div>
+  </section>
+
+  <div class="section-head">
+    <h2>Earlier five-proxy VM measurements</h2>
+    <p>The following charts retain the previously published VM results. Their active-load workloads and builds differ from the buffer-lifetime tests above.</p>
+  </div>
+
   <section class="verdict-band" id="summary" aria-label="Benchmark summary">
-    <p><strong>TLDR:</strong> Tako stayed clean through c20000 on a small <a href="https://exe.dev" target="_blank" rel="noopener noreferrer nofollow">exe.dev</a> VM while doing app-aware routing, limiter accounting, forwarding headers, and instance selection.</p>
+    <p><strong>VM result:</strong> Tako stayed clean through c20000 on a small <a href="https://exe.dev" target="_blank" rel="noopener noreferrer nofollow">exe.dev</a> VM while doing app-aware routing, limiter accounting, forwarding headers, and instance selection.</p>
     <dl class="verdict-proof" aria-label="TLDR evidence">
       <div>
         <dt>largest run</dt>
@@ -517,6 +629,12 @@ const metricClasses = (metric: SummaryMetric) => ["metric-cell", !metric.clean &
     border-radius: var(--radius);
   }
 
+  .table-scroll-hint {
+    display: none;
+    color: var(--muted);
+    font-size: 14px;
+  }
+
   .table-note {
     max-width: 90ch;
     padding: 16px 18px 0;
@@ -646,6 +764,10 @@ const metricClasses = (metric: SummaryMetric) => ["metric-cell", !metric.clean &
   }
 
   @media (max-width: 980px) {
+    .table-scroll-hint {
+      display: block;
+    }
+
     .verdict-band,
     .explain-grid {
       grid-template-columns: minmax(0, 1fr);
