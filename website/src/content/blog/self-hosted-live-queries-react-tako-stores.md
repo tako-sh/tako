@@ -67,7 +67,9 @@ export function Messages({ chatId, token }: { chatId: string; token: string }) {
     <>
       {isStale && <p>Messages may be out of date; waiting for an update.</p>}
       <ul>
-        {data.map((message) => <li key={message.id}>{message.text}</li>)}
+        {data.map((message) => (
+          <li key={message.id}>{message.text}</li>
+        ))}
       </ul>
       <button disabled={status === "loading"} onClick={() => void refresh()}>
         Refresh
@@ -141,12 +143,12 @@ const { data, status, isStale } = useStore("messages", {
 
 Both choices are required. Without a backend policy or a client scope, results aren't persisted. The default browser cache uses IndexedDB and separates entries by origin, Store, params, scope, and version. Authorization credentials aren't stored. Change the scope when switching accounts or tenants, and bump both versions after an incompatible response-shape change.
 
-| Situation | What the reader can expect |
-| --- | --- |
+| Situation                                      | What the reader can expect                              |
+| ---------------------------------------------- | ------------------------------------------------------- |
 | Connection lost, valid cached result available | Previously loaded data can remain visible, marked stale |
-| Cached result expired or version mismatched | That cached result is ignored |
-| Read or subscription denied authorization | The active result and its persisted entry are cleared |
-| Browser storage unavailable | Online reads still work |
+| Cached result expired or version mismatched    | That cached result is ignored                           |
+| Read or subscription denied authorization      | The active result and its persisted entry are cleared   |
+| Browser storage unavailable                    | Online reads still work                                 |
 
 Clear the matching scope during logout and disable or unmount that session's readers:
 

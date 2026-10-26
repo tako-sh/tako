@@ -12,7 +12,7 @@ hooks {
                         check = "cargo fmt --check"
                         fix = "cargo fmt"
                     }
-                    ["oxfmt"] = new Step {
+                    ["bun-fmt"] = new Step {
                         glob = List("*.ts", "*.tsx", "*.js", "*.jsx", "*.mjs", "*.cjs")
                         check = "bun run fmt:check"
                         fix = "bun run fmt"

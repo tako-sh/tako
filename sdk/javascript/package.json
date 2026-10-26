@@ -65,7 +65,7 @@
   },
   "scripts": {
     "build": "bun --bun tsdown",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "bun check"
   },
   "dependencies": {
     "@microsoft/fetch-event-source": "^2.0.1",

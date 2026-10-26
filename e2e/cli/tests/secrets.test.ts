@@ -21,35 +21,29 @@ afterEach(async () => {
 });
 
 describe("secret expiry prompt", () => {
-  test(
-    "accepts blank input as no expiration",
-    async () => {
-      const term = TakoTerminal.spawn({
-        args: ["secrets", "set", "API_KEY", "--env", "production"],
-        cwd: tempDir,
-        env: { HOME: tempDir, TAKO_HOME: takoHome },
-      });
+  test("accepts blank input as no expiration", async () => {
+    const term = TakoTerminal.spawn({
+      args: ["secrets", "set", "API_KEY", "--env", "production"],
+      cwd: tempDir,
+      env: { HOME: tempDir, TAKO_HOME: takoHome },
+    });
 
-      await term.waitForText("Enter value for API_KEY", { timeout: 5000 });
-      term.write("secret-value\r");
+    await term.waitForText("Enter value for API_KEY", { timeout: 5000 });
+    term.write("secret-value\r");
 
-      await term.waitForText("Expires on", { timeout: 5000 });
-      await term.waitForText("No expiration if left blank", { timeout: 5000 });
+    await term.waitForText("Expires on", { timeout: 5000 });
+    await term.waitForText("No expiration if left blank", { timeout: 5000 });
+    term.press("\r");
+
+    if (process.platform === "darwin") {
+      await term.waitForText("Use iCloud Keychain?", { timeout: 5000 });
       term.press("\r");
+    }
 
-      if (process.platform === "darwin") {
-        await term.waitForText("Use iCloud Keychain?", { timeout: 5000 });
-        term.press("\r");
-      }
+    await term.waitForText("Set API_KEY in production", { timeout: 5000 });
+    expect(await term.waitForExit({ timeout: 5000 })).toBe(0);
 
-      await term.waitForText("Set API_KEY in production", { timeout: 5000 });
-      expect(await term.waitForExit({ timeout: 5000 })).toBe(0);
-
-      const secrets = JSON.parse(
-        await readFile(join(tempDir, ".tako", "secrets.json"), "utf8"),
-      );
-      expect(secrets.production.app.API_KEY.expires_on).toBeUndefined();
-    },
-    15_000,
-  );
+    const secrets = JSON.parse(await readFile(join(tempDir, ".tako", "secrets.json"), "utf8"));
+    expect(secrets.production.app.API_KEY.expires_on).toBeUndefined();
+  }, 15_000);
 });

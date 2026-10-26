@@ -35,14 +35,13 @@
     }
   },
   "scripts": {
-    "fmt": "oxfmt",
-    "fmt:check": "oxfmt --check",
+    "fmt": "bun fmt --no-script",
+    "fmt:check": "bun fmt --no-script --check",
     "lint": "oxlint",
     "lint:fix": "oxlint --fix"
   },
   "devDependencies": {
     "@types/bun": "^1.4.0",
-    "oxfmt": "^0.74.0",
     "oxlint": "^1.79.0",
     "oxlint-tsgolint": "^7.0.2001"
   }

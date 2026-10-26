@@ -101,10 +101,12 @@ function RoomPresence({ chatId, token, userId }: Props) {
     idle.current = setTimeout(stopTyping, 1500);
   }
 
-  const onlineUsers = new Set(members.flatMap((m) => m.subject ? [m.subject] : []));
-  const typingUsers = new Set(members.flatMap((m) =>
-    m.subject && m.subject !== userId && m.data?.typing === true ? [m.subject] : []
-  ));
+  const onlineUsers = new Set(members.flatMap((m) => (m.subject ? [m.subject] : [])));
+  const typingUsers = new Set(
+    members.flatMap((m) =>
+      m.subject && m.subject !== userId && m.data?.typing === true ? [m.subject] : [],
+    ),
+  );
 
   return (
     <section>
@@ -143,13 +145,13 @@ Mount this connection once per chat view. If the header, composer, and participa
 
 The hook waits for authorization before joining and considers the connection open after its first member snapshot. It sends a heartbeat every 15 seconds, reconnects with bounded backoff, and rejoins with its latest metadata. On disconnect, it clears the member list, so render “Connecting…” rather than presenting an empty list as proof everyone left.
 
-| Event | Presence behavior |
-| --- | --- |
-| Another tab opens | A separate connection entry joins the room |
-| A connection closes cleanly | Its entry is removed; other tabs remain |
+| Event                                      | Presence behavior                                  |
+| ------------------------------------------ | -------------------------------------------------- |
+| Another tab opens                          | A separate connection entry joins the room         |
+| A connection closes cleanly                | Its entry is removed; other tabs remain            |
 | Updates stop after network loss or a crash | Its lease expires 45 seconds after the last update |
-| A connection reconnects | It receives a new connection ID and fresh snapshot |
-| Authorization is rejected | Retries stop until connection options change |
+| A connection reconnects                    | It receives a new connection ID and fresh snapshot |
+| Authorization is rejected                  | Retries stop until connection options change       |
 
 Connected readers receive membership changes in approximately one second. A reconnect's old entry can remain until its lease expires, another reason to count unique subjects. The typing timeout is application behavior, separate from the connection lease: suspended browser timers or a lost connection can leave a typing hint visible until cleanup or expiry. Don't treat the indicator as an exact statement about someone's activity.
 

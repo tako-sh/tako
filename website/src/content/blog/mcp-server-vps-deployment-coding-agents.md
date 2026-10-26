@@ -26,12 +26,12 @@ tako agents --agent cursor --dry-run --json
 
 Setup installs bundled skills, merges the Tako MCP entry into the selected clients' configuration, and adds a marked section to `AGENTS.md`. Claude Code also gets that guidance in `CLAUDE.md`. Unrelated settings are preserved. Review the generated files before committing them.
 
-| Client | MCP configuration | Skill directory |
-| --- | --- | --- |
-| Codex | `.codex/config.toml` | `.agents/skills/` |
-| Claude Code | `.mcp.json` | `.claude/skills/` |
-| Cursor | `.cursor/mcp.json` | `.cursor/skills/` |
-| VS Code Copilot | `.vscode/mcp.json` | `.github/skills/` |
+| Client          | MCP configuration    | Skill directory   |
+| --------------- | -------------------- | ----------------- |
+| Codex           | `.codex/config.toml` | `.agents/skills/` |
+| Claude Code     | `.mcp.json`          | `.claude/skills/` |
+| Cursor          | `.cursor/mcp.json`   | `.cursor/skills/` |
+| VS Code Copilot | `.vscode/mcp.json`   | `.github/skills/` |
 
 Those paths are relative to the selected config's project directory. If your repository has several app configurations, select the intended one with `-c`. Setup records absolute paths to both the current executable and the selected configuration, so a different client working directory or `PATH` doesn't quietly choose another app.
 

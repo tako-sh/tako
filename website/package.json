@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "astro dev",
     "build": "bun ./scripts/sync-agent-skills.ts && astro build",
-    "check": "astro check && wrangler types .astro/worker-configuration.d.ts && tsc -p tsconfig.worker.json",
+    "check": "astro check && wrangler types .astro/worker-configuration.d.ts && bun check --no-script -p tsconfig.worker.json",
     "verify": "bun ./scripts/verify.ts",
     "preview": "astro preview",
     "deploy": "wrangler deploy"

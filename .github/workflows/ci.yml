@@ -16,7 +16,7 @@ permissions:
 
 env:
   TAKO_TELEMETRY: "0"
-  BUN_VERSION: 1.4.0
+  BUN_VERSION: 1.4.4
 
 jobs:
   alma-fixture:
