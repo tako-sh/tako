@@ -17,6 +17,7 @@ pub mod enqueue;
 pub mod enqueue_socket;
 pub mod in_flight;
 pub mod manager;
+pub mod monitoring;
 mod postgres_store;
 pub mod schema;
 pub mod supervisor;

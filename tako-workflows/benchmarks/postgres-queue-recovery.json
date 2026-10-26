@@ -1,0 +1,1226 @@
+{
+  "date": "2026-10-26",
+  "postgres": "17.11",
+  "profile": "dev",
+  "environment": "local Docker in managed cloud workspace",
+  "configurations": [
+    {
+      "event": "start",
+      "heartbeat_ms": 200,
+      "held_xmin": false,
+      "history": 10000,
+      "jobs_per_second": 200,
+      "lease_index": "partial",
+      "long_jobs": 128,
+      "recovery_seconds": 30,
+      "seconds": 30,
+      "workers": 4
+    },
+    {
+      "event": "start",
+      "heartbeat_ms": 200,
+      "held_xmin": true,
+      "history": 10000,
+      "jobs_per_second": 200,
+      "lease_index": "partial",
+      "long_jobs": 128,
+      "recovery_seconds": 30,
+      "seconds": 30,
+      "workers": 4
+    }
+  ],
+  "summaries": [
+    {
+      "autovacuums": 28,
+      "claim": {
+        "count": 6002,
+        "max_us": 95438,
+        "p50_us": 2724,
+        "p95_us": 4167
+      },
+      "completed": 6001,
+      "dead_tuples": 200,
+      "elapsed_seconds": 30.010533995,
+      "enqueued": 6002,
+      "event": "summary",
+      "heartbeat": {
+        "count": 19200,
+        "max_us": 100154,
+        "p50_us": 784,
+        "p95_us": 1368
+      },
+      "held_xmin": false,
+      "hot_updates": 0,
+      "index_bytes": 1474560,
+      "lease_index": "partial",
+      "phase": "normal",
+      "phase_elapsed_seconds": 30.010104025,
+      "reclaim": {
+        "count": 30,
+        "max_us": 1442,
+        "p50_us": 890,
+        "p95_us": 1307
+      },
+      "table_bytes": 1654784,
+      "updates": 30642,
+      "wal_bytes": 20791448.0
+    },
+    {
+      "autovacuums": 56,
+      "claim": {
+        "count": 6004,
+        "max_us": 28604,
+        "p50_us": 2791,
+        "p95_us": 4157
+      },
+      "completed": 6005,
+      "dead_tuples": 871,
+      "elapsed_seconds": 60.106125722,
+      "enqueued": 6005,
+      "event": "summary",
+      "heartbeat": {
+        "count": 19200,
+        "max_us": 7889,
+        "p50_us": 793,
+        "p95_us": 1366
+      },
+      "held_xmin": false,
+      "hot_updates": 0,
+      "index_bytes": 1474560,
+      "lease_index": "partial",
+      "phase": "recovery_control",
+      "phase_elapsed_seconds": 30.0,
+      "reclaim": {
+        "count": 30,
+        "max_us": 1463,
+        "p50_us": 905,
+        "p95_us": 1160
+      },
+      "table_bytes": 1654784,
+      "updates": 62540,
+      "wal_bytes": 20709224.0
+    },
+    {
+      "autovacuums": 28,
+      "claim": {
+        "count": 6001,
+        "max_us": 22471,
+        "p50_us": 3222,
+        "p95_us": 4970
+      },
+      "completed": 6001,
+      "dead_tuples": 36384,
+      "elapsed_seconds": 30.010048695,
+      "enqueued": 6002,
+      "event": "summary",
+      "heartbeat": {
+        "count": 19200,
+        "max_us": 9379,
+        "p50_us": 875,
+        "p95_us": 1673
+      },
+      "held_xmin": true,
+      "hot_updates": 0,
+      "index_bytes": 5070848,
+      "lease_index": "partial",
+      "phase": "held",
+      "phase_elapsed_seconds": 30.009782579,
+      "reclaim": {
+        "count": 30,
+        "max_us": 2096,
+        "p50_us": 1055,
+        "p95_us": 1694
+      },
+      "table_bytes": 11755520,
+      "updates": 30587,
+      "wal_bytes": 23719312.0
+    },
+    {
+      "autovacuums": 56,
+      "claim": {
+        "count": 6006,
+        "max_us": 15504,
+        "p50_us": 2766,
+        "p95_us": 4111
+      },
+      "completed": 6006,
+      "dead_tuples": 1172,
+      "elapsed_seconds": 60.231860792,
+      "enqueued": 6006,
+      "event": "summary",
+      "heartbeat": {
+        "count": 19206,
+        "max_us": 12212,
+        "p50_us": 792,
+        "p95_us": 1318
+      },
+      "held_xmin": false,
+      "hot_updates": 0,
+      "index_bytes": 5193728,
+      "lease_index": "partial",
+      "phase": "recovery",
+      "phase_elapsed_seconds": 30.0,
+      "reclaim": {
+        "count": 30,
+        "max_us": 1805,
+        "p50_us": 931,
+        "p95_us": 1503
+      },
+      "table_bytes": 11845632,
+      "updates": 62548,
+      "wal_bytes": 21198184.0
+    }
+  ],
+  "recovery_samples": [
+    {
+      "autovacuums": 29,
+      "claim": {
+        "count": 205,
+        "max_us": 7850,
+        "p50_us": 2754,
+        "p95_us": 3844
+      },
+      "completed": 205,
+      "dead_tuples": 307,
+      "elapsed_seconds": 31.033375933,
+      "enqueued": 205,
+      "event": "sample",
+      "heartbeat": {
+        "count": 660,
+        "max_us": 3207,
+        "p50_us": 790,
+        "p95_us": 1314
+      },
+      "held_xmin": false,
+      "hot_updates": 0,
+      "index_bytes": 5193728,
+      "lease_index": "partial",
+      "phase": "recovery",
+      "phase_elapsed_seconds": 1.0,
+      "reclaim": {
+        "count": 1,
+        "max_us": 931,
+        "p50_us": 931,
+        "p95_us": 931
+      },
+      "table_bytes": 11845632,
+      "updates": 31645,
+      "wal_bytes": 1260288.0
+    },
+    {
+      "autovacuums": 30,
+      "claim": {
+        "count": 200,
+        "max_us": 6846,
+        "p50_us": 2781,
+        "p95_us": 4585
+      },
+      "completed": 200,
+      "dead_tuples": 252,
+      "elapsed_seconds": 32.03397697,
+      "enqueued": 200,
+      "event": "sample",
+      "heartbeat": {
+        "count": 637,
+        "max_us": 2630,
+        "p50_us": 777,
+        "p95_us": 1318
+      },
+      "held_xmin": false,
+      "hot_updates": 0,
+      "index_bytes": 5193728,
+      "lease_index": "partial",
+      "phase": "recovery",
+      "phase_elapsed_seconds": 2.0,
+      "reclaim": {
+        "count": 1,
+        "max_us": 1285,
+        "p50_us": 1285,
+        "p95_us": 1285
+      },
+      "table_bytes": 11845632,
+      "updates": 32701,
+      "wal_bytes": 1957544.0
+    },
+    {
+      "autovacuums": 31,
+      "claim": {
+        "count": 200,
+        "max_us": 5305,
+        "p50_us": 2811,
+        "p95_us": 4157
+      },
+      "completed": 200,
+      "dead_tuples": 238,
+      "elapsed_seconds": 33.034245812,
+      "enqueued": 200,
+      "event": "sample",
+      "heartbeat": {
+        "count": 637,
+        "max_us": 2835,
+        "p50_us": 791,
+        "p95_us": 1328
+      },
+      "held_xmin": false,
+      "hot_updates": 0,
+      "index_bytes": 5193728,
+      "lease_index": "partial",
+      "phase": "recovery",
+      "phase_elapsed_seconds": 3.0,
+      "reclaim": {
+        "count": 1,
+        "max_us": 1283,
+        "p50_us": 1283,
+        "p95_us": 1283
+      },
+      "table_bytes": 11845632,
+      "updates": 33736,
+      "wal_bytes": 2646992.0
+    },
+    {
+      "autovacuums": 32,
+      "claim": {
+        "count": 200,
+        "max_us": 4612,
+        "p50_us": 2723,
+        "p95_us": 3678
+      },
+      "completed": 200,
+      "dead_tuples": 410,
+      "elapsed_seconds": 34.032795854,
+      "enqueued": 200,
+      "event": "sample",
+      "heartbeat": {
+        "count": 646,
+        "max_us": 2432,
+        "p50_us": 709,
+        "p95_us": 1156
+      },
+      "held_xmin": false,
+      "hot_updates": 0,
+      "index_bytes": 5193728,
+      "lease_index": "partial",
+      "phase": "recovery",
+      "phase_elapsed_seconds": 4.0,
+      "reclaim": {
+        "count": 1,
+        "max_us": 768,
+        "p50_us": 768,
+        "p95_us": 768
+      },
+      "table_bytes": 11845632,
+      "updates": 34776,
+      "wal_bytes": 3342672.0
+    },
+    {
+      "autovacuums": 33,
+      "claim": {
+        "count": 200,
+        "max_us": 4833,
+        "p50_us": 2644,
+        "p95_us": 3792
+      },
+      "completed": 200,
+      "dead_tuples": 208,
+      "elapsed_seconds": 35.033806506,
+      "enqueued": 200,
+      "event": "sample",
+      "heartbeat": {
+        "count": 637,
+        "max_us": 2080,
+        "p50_us": 741,
+        "p95_us": 1258
+      },
+      "held_xmin": false,
+      "hot_updates": 0,
+      "index_bytes": 5193728,
+      "lease_index": "partial",
+      "phase": "recovery",
+      "phase_elapsed_seconds": 5.0,
+      "reclaim": {
+        "count": 1,
+        "max_us": 837,
+        "p50_us": 837,
+        "p95_us": 837
+      },
+      "table_bytes": 11845632,
+      "updates": 35829,
+      "wal_bytes": 4026176.0
+    },
+    {
+      "autovacuums": 34,
+      "claim": {
+        "count": 200,
+        "max_us": 15504,
+        "p50_us": 2681,
+        "p95_us": 5083
+      },
+      "completed": 199,
+      "dead_tuples": 7,
+      "elapsed_seconds": 36.033653831,
+      "enqueued": 200,
+      "event": "sample",
+      "heartbeat": {
+        "count": 640,
+        "max_us": 5709,
+        "p50_us": 788,
+        "p95_us": 1249
+      },
+      "held_xmin": false,
+      "hot_updates": 0,
+      "index_bytes": 5193728,
+      "lease_index": "partial",
+      "phase": "recovery",
+      "phase_elapsed_seconds": 6.0,
+      "reclaim": {
+        "count": 1,
+        "max_us": 783,
+        "p50_us": 783,
+        "p95_us": 783
+      },
+      "table_bytes": 11845632,
+      "updates": 36855,
+      "wal_bytes": 4701712.0
+    },
+    {
+      "autovacuums": 35,
+      "claim": {
+        "count": 200,
+        "max_us": 8194,
+        "p50_us": 2676,
+        "p95_us": 3940
+      },
+      "completed": 201,
+      "dead_tuples": 244,
+      "elapsed_seconds": 37.033986082,
+      "enqueued": 200,
+      "event": "sample",
+      "heartbeat": {
+        "count": 643,
+        "max_us": 5244,
+        "p50_us": 750,
+        "p95_us": 1179
+      },
+      "held_xmin": false,
+      "hot_updates": 0,
+      "index_bytes": 5193728,
+      "lease_index": "partial",
+      "phase": "recovery",
+      "phase_elapsed_seconds": 7.0,
+      "reclaim": {
+        "count": 1,
+        "max_us": 1509,
+        "p50_us": 1509,
+        "p95_us": 1509
+      },
+      "table_bytes": 11845632,
+      "updates": 37910,
+      "wal_bytes": 5381136.0
+    },
+    {
+      "autovacuums": 36,
+      "claim": {
+        "count": 200,
+        "max_us": 5312,
+        "p50_us": 2622,
+        "p95_us": 4068
+      },
+      "completed": 199,
+      "dead_tuples": 208,
+      "elapsed_seconds": 38.03340644,
+      "enqueued": 200,
+      "event": "sample",
+      "heartbeat": {
+        "count": 631,
+        "max_us": 3230,
+        "p50_us": 764,
+        "p95_us": 1312
+      },
+      "held_xmin": false,
+      "hot_updates": 0,
+      "index_bytes": 5193728,
+      "lease_index": "partial",
+      "phase": "recovery",
+      "phase_elapsed_seconds": 8.0,
+      "reclaim": {
+        "count": 1,
+        "max_us": 865,
+        "p50_us": 865,
+        "p95_us": 865
+      },
+      "table_bytes": 11845632,
+      "updates": 38946,
+      "wal_bytes": 6059976.0
+    },
+    {
+      "autovacuums": 37,
+      "claim": {
+        "count": 200,
+        "max_us": 7750,
+        "p50_us": 2771,
+        "p95_us": 4120
+      },
+      "completed": 201,
+      "dead_tuples": 208,
+      "elapsed_seconds": 39.033531413,
+      "enqueued": 200,
+      "event": "sample",
+      "heartbeat": {
+        "count": 640,
+        "max_us": 3095,
+        "p50_us": 764,
+        "p95_us": 1353
+      },
+      "held_xmin": false,
+      "hot_updates": 0,
+      "index_bytes": 5193728,
+      "lease_index": "partial",
+      "phase": "recovery",
+      "phase_elapsed_seconds": 9.0,
+      "reclaim": {
+        "count": 1,
+        "max_us": 750,
+        "p50_us": 750,
+        "p95_us": 750
+      },
+      "table_bytes": 11845632,
+      "updates": 40008,
+      "wal_bytes": 6745448.0
+    },
+    {
+      "autovacuums": 38,
+      "claim": {
+        "count": 200,
+        "max_us": 7227,
+        "p50_us": 2858,
+        "p95_us": 4722
+      },
+      "completed": 200,
+      "dead_tuples": 410,
+      "elapsed_seconds": 40.03353213,
+      "enqueued": 200,
+      "event": "sample",
+      "heartbeat": {
+        "count": 638,
+        "max_us": 5771,
+        "p50_us": 824,
+        "p95_us": 1492
+      },
+      "held_xmin": false,
+      "hot_updates": 0,
+      "index_bytes": 5193728,
+      "lease_index": "partial",
+      "phase": "recovery",
+      "phase_elapsed_seconds": 10.0,
+      "reclaim": {
+        "count": 1,
+        "max_us": 872,
+        "p50_us": 872,
+        "p95_us": 872
+      },
+      "table_bytes": 11845632,
+      "updates": 41024,
+      "wal_bytes": 7430968.0
+    },
+    {
+      "autovacuums": 38,
+      "claim": {
+        "count": 200,
+        "max_us": 4851,
+        "p50_us": 2851,
+        "p95_us": 4167
+      },
+      "completed": 200,
+      "dead_tuples": 1438,
+      "elapsed_seconds": 41.032075962,
+      "enqueued": 199,
+      "event": "sample",
+      "heartbeat": {
+        "count": 644,
+        "max_us": 2986,
+        "p50_us": 817,
+        "p95_us": 1323
+      },
+      "held_xmin": false,
+      "hot_updates": 0,
+      "index_bytes": 5193728,
+      "lease_index": "partial",
+      "phase": "recovery",
+      "phase_elapsed_seconds": 11.0,
+      "reclaim": {
+        "count": 1,
+        "max_us": 969,
+        "p50_us": 969,
+        "p95_us": 969
+      },
+      "table_bytes": 11845632,
+      "updates": 42052,
+      "wal_bytes": 8086464.0
+    },
+    {
+      "autovacuums": 39,
+      "claim": {
+        "count": 200,
+        "max_us": 5085,
+        "p50_us": 2775,
+        "p95_us": 3637
+      },
+      "completed": 200,
+      "dead_tuples": 1309,
+      "elapsed_seconds": 42.036207552,
+      "enqueued": 201,
+      "event": "sample",
+      "heartbeat": {
+        "count": 641,
+        "max_us": 2431,
+        "p50_us": 800,
+        "p95_us": 1275
+      },
+      "held_xmin": false,
+      "hot_updates": 0,
+      "index_bytes": 5193728,
+      "lease_index": "partial",
+      "phase": "recovery",
+      "phase_elapsed_seconds": 12.0,
+      "reclaim": {
+        "count": 1,
+        "max_us": 904,
+        "p50_us": 904,
+        "p95_us": 904
+      },
+      "table_bytes": 11845632,
+      "updates": 43114,
+      "wal_bytes": 8775288.0
+    },
+    {
+      "autovacuums": 40,
+      "claim": {
+        "count": 200,
+        "max_us": 8077,
+        "p50_us": 2818,
+        "p95_us": 4375
+      },
+      "completed": 200,
+      "dead_tuples": 1268,
+      "elapsed_seconds": 43.033205747,
+      "enqueued": 199,
+      "event": "sample",
+      "heartbeat": {
+        "count": 637,
+        "max_us": 4905,
+        "p50_us": 798,
+        "p95_us": 1195
+      },
+      "held_xmin": false,
+      "hot_updates": 0,
+      "index_bytes": 5193728,
+      "lease_index": "partial",
+      "phase": "recovery",
+      "phase_elapsed_seconds": 13.0,
+      "reclaim": {
+        "count": 1,
+        "max_us": 1080,
+        "p50_us": 1080,
+        "p95_us": 1080
+      },
+      "table_bytes": 11845632,
+      "updates": 44146,
+      "wal_bytes": 9474784.0
+    },
+    {
+      "autovacuums": 41,
+      "claim": {
+        "count": 200,
+        "max_us": 5994,
+        "p50_us": 2997,
+        "p95_us": 4641
+      },
+      "completed": 200,
+      "dead_tuples": 1146,
+      "elapsed_seconds": 44.033016706,
+      "enqueued": 201,
+      "event": "sample",
+      "heartbeat": {
+        "count": 638,
+        "max_us": 6387,
+        "p50_us": 847,
+        "p95_us": 1479
+      },
+      "held_xmin": false,
+      "hot_updates": 0,
+      "index_bytes": 5193728,
+      "lease_index": "partial",
+      "phase": "recovery",
+      "phase_elapsed_seconds": 14.0,
+      "reclaim": {
+        "count": 1,
+        "max_us": 1130,
+        "p50_us": 1130,
+        "p95_us": 1130
+      },
+      "table_bytes": 11845632,
+      "updates": 45204,
+      "wal_bytes": 10155672.0
+    },
+    {
+      "autovacuums": 42,
+      "claim": {
+        "count": 200,
+        "max_us": 4903,
+        "p50_us": 2710,
+        "p95_us": 3855
+      },
+      "completed": 200,
+      "dead_tuples": 550,
+      "elapsed_seconds": 45.033660616,
+      "enqueued": 200,
+      "event": "sample",
+      "heartbeat": {
+        "count": 642,
+        "max_us": 3132,
+        "p50_us": 800,
+        "p95_us": 1277
+      },
+      "held_xmin": false,
+      "hot_updates": 0,
+      "index_bytes": 5193728,
+      "lease_index": "partial",
+      "phase": "recovery",
+      "phase_elapsed_seconds": 15.0,
+      "reclaim": {
+        "count": 1,
+        "max_us": 783,
+        "p50_us": 783,
+        "p95_us": 783
+      },
+      "table_bytes": 11845632,
+      "updates": 46220,
+      "wal_bytes": 10841856.0
+    },
+    {
+      "autovacuums": 43,
+      "claim": {
+        "count": 200,
+        "max_us": 6197,
+        "p50_us": 2850,
+        "p95_us": 4071
+      },
+      "completed": 200,
+      "dead_tuples": 210,
+      "elapsed_seconds": 46.035659628,
+      "enqueued": 200,
+      "event": "sample",
+      "heartbeat": {
+        "count": 639,
+        "max_us": 3744,
+        "p50_us": 841,
+        "p95_us": 1361
+      },
+      "held_xmin": false,
+      "hot_updates": 0,
+      "index_bytes": 5193728,
+      "lease_index": "partial",
+      "phase": "recovery",
+      "phase_elapsed_seconds": 16.0,
+      "reclaim": {
+        "count": 1,
+        "max_us": 1226,
+        "p50_us": 1226,
+        "p95_us": 1226
+      },
+      "table_bytes": 11845632,
+      "updates": 47280,
+      "wal_bytes": 11540392.0
+    },
+    {
+      "autovacuums": 44,
+      "claim": {
+        "count": 201,
+        "max_us": 5477,
+        "p50_us": 2815,
+        "p95_us": 4179
+      },
+      "completed": 201,
+      "dead_tuples": 241,
+      "elapsed_seconds": 47.036335123,
+      "enqueued": 200,
+      "event": "sample",
+      "heartbeat": {
+        "count": 640,
+        "max_us": 3786,
+        "p50_us": 831,
+        "p95_us": 1347
+      },
+      "held_xmin": false,
+      "hot_updates": 0,
+      "index_bytes": 5193728,
+      "lease_index": "partial",
+      "phase": "recovery",
+      "phase_elapsed_seconds": 17.0,
+      "reclaim": {
+        "count": 1,
+        "max_us": 1361,
+        "p50_us": 1361,
+        "p95_us": 1361
+      },
+      "table_bytes": 11845632,
+      "updates": 48319,
+      "wal_bytes": 12220184.0
+    },
+    {
+      "autovacuums": 45,
+      "claim": {
+        "count": 199,
+        "max_us": 5981,
+        "p50_us": 2738,
+        "p95_us": 3941
+      },
+      "completed": 199,
+      "dead_tuples": 7,
+      "elapsed_seconds": 48.032837136,
+      "enqueued": 199,
+      "event": "sample",
+      "heartbeat": {
+        "count": 639,
+        "max_us": 4710,
+        "p50_us": 783,
+        "p95_us": 1297
+      },
+      "held_xmin": false,
+      "hot_updates": 0,
+      "index_bytes": 5193728,
+      "lease_index": "partial",
+      "phase": "recovery",
+      "phase_elapsed_seconds": 18.0,
+      "reclaim": {
+        "count": 1,
+        "max_us": 877,
+        "p50_us": 877,
+        "p95_us": 877
+      },
+      "table_bytes": 11845632,
+      "updates": 49359,
+      "wal_bytes": 12903544.0
+    },
+    {
+      "autovacuums": 46,
+      "claim": {
+        "count": 200,
+        "max_us": 14097,
+        "p50_us": 2795,
+        "p95_us": 4282
+      },
+      "completed": 199,
+      "dead_tuples": 246,
+      "elapsed_seconds": 49.033097017,
+      "enqueued": 201,
+      "event": "sample",
+      "heartbeat": {
+        "count": 639,
+        "max_us": 12212,
+        "p50_us": 817,
+        "p95_us": 1373
+      },
+      "held_xmin": false,
+      "hot_updates": 0,
+      "index_bytes": 5193728,
+      "lease_index": "partial",
+      "phase": "recovery",
+      "phase_elapsed_seconds": 19.0,
+      "reclaim": {
+        "count": 1,
+        "max_us": 1021,
+        "p50_us": 1021,
+        "p95_us": 1021
+      },
+      "table_bytes": 11845632,
+      "updates": 50394,
+      "wal_bytes": 13599336.0
+    },
+    {
+      "autovacuums": 47,
+      "claim": {
+        "count": 200,
+        "max_us": 6021,
+        "p50_us": 2703,
+        "p95_us": 4270
+      },
+      "completed": 201,
+      "dead_tuples": 208,
+      "elapsed_seconds": 50.032978204,
+      "enqueued": 200,
+      "event": "sample",
+      "heartbeat": {
+        "count": 642,
+        "max_us": 4872,
+        "p50_us": 761,
+        "p95_us": 1349
+      },
+      "held_xmin": false,
+      "hot_updates": 0,
+      "index_bytes": 5193728,
+      "lease_index": "partial",
+      "phase": "recovery",
+      "phase_elapsed_seconds": 20.0,
+      "reclaim": {
+        "count": 1,
+        "max_us": 992,
+        "p50_us": 992,
+        "p95_us": 992
+      },
+      "table_bytes": 11845632,
+      "updates": 51418,
+      "wal_bytes": 14294840.0
+    },
+    {
+      "autovacuums": 48,
+      "claim": {
+        "count": 200,
+        "max_us": 7608,
+        "p50_us": 2726,
+        "p95_us": 4083
+      },
+      "completed": 200,
+      "dead_tuples": 242,
+      "elapsed_seconds": 51.034280723,
+      "enqueued": 200,
+      "event": "sample",
+      "heartbeat": {
+        "count": 638,
+        "max_us": 7983,
+        "p50_us": 753,
+        "p95_us": 1263
+      },
+      "held_xmin": false,
+      "hot_updates": 0,
+      "index_bytes": 5193728,
+      "lease_index": "partial",
+      "phase": "recovery",
+      "phase_elapsed_seconds": 21.0,
+      "reclaim": {
+        "count": 1,
+        "max_us": 1503,
+        "p50_us": 1503,
+        "p95_us": 1503
+      },
+      "table_bytes": 11845632,
+      "updates": 52495,
+      "wal_bytes": 14983016.0
+    },
+    {
+      "autovacuums": 49,
+      "claim": {
+        "count": 200,
+        "max_us": 6124,
+        "p50_us": 2746,
+        "p95_us": 3953
+      },
+      "completed": 200,
+      "dead_tuples": 209,
+      "elapsed_seconds": 52.034248139,
+      "enqueued": 200,
+      "event": "sample",
+      "heartbeat": {
+        "count": 637,
+        "max_us": 2788,
+        "p50_us": 850,
+        "p95_us": 1354
+      },
+      "held_xmin": false,
+      "hot_updates": 0,
+      "index_bytes": 5193728,
+      "lease_index": "partial",
+      "phase": "recovery",
+      "phase_elapsed_seconds": 22.0,
+      "reclaim": {
+        "count": 1,
+        "max_us": 1805,
+        "p50_us": 1805,
+        "p95_us": 1805
+      },
+      "table_bytes": 11845632,
+      "updates": 53510,
+      "wal_bytes": 15686200.0
+    },
+    {
+      "autovacuums": 49,
+      "claim": {
+        "count": 200,
+        "max_us": 4373,
+        "p50_us": 2640,
+        "p95_us": 3547
+      },
+      "completed": 200,
+      "dead_tuples": 1667,
+      "elapsed_seconds": 53.032814859,
+      "enqueued": 200,
+      "event": "sample",
+      "heartbeat": {
+        "count": 641,
+        "max_us": 2178,
+        "p50_us": 806,
+        "p95_us": 1199
+      },
+      "held_xmin": false,
+      "hot_updates": 0,
+      "index_bytes": 5193728,
+      "lease_index": "partial",
+      "phase": "recovery",
+      "phase_elapsed_seconds": 23.0,
+      "reclaim": {
+        "count": 1,
+        "max_us": 721,
+        "p50_us": 721,
+        "p95_us": 721
+      },
+      "table_bytes": 11845632,
+      "updates": 54568,
+      "wal_bytes": 16335960.0
+    },
+    {
+      "autovacuums": 50,
+      "claim": {
+        "count": 200,
+        "max_us": 7368,
+        "p50_us": 3160,
+        "p95_us": 4865
+      },
+      "completed": 200,
+      "dead_tuples": 1262,
+      "elapsed_seconds": 54.03353296,
+      "enqueued": 200,
+      "event": "sample",
+      "heartbeat": {
+        "count": 640,
+        "max_us": 5274,
+        "p50_us": 887,
+        "p95_us": 1508
+      },
+      "held_xmin": false,
+      "hot_updates": 0,
+      "index_bytes": 5193728,
+      "lease_index": "partial",
+      "phase": "recovery",
+      "phase_elapsed_seconds": 24.0,
+      "reclaim": {
+        "count": 1,
+        "max_us": 808,
+        "p50_us": 808,
+        "p95_us": 808
+      },
+      "table_bytes": 11845632,
+      "updates": 55591,
+      "wal_bytes": 17021888.0
+    },
+    {
+      "autovacuums": 51,
+      "claim": {
+        "count": 200,
+        "max_us": 7489,
+        "p50_us": 2848,
+        "p95_us": 4482
+      },
+      "completed": 200,
+      "dead_tuples": 1294,
+      "elapsed_seconds": 55.034777619,
+      "enqueued": 200,
+      "event": "sample",
+      "heartbeat": {
+        "count": 639,
+        "max_us": 5291,
+        "p50_us": 798,
+        "p95_us": 1421
+      },
+      "held_xmin": false,
+      "hot_updates": 0,
+      "index_bytes": 5193728,
+      "lease_index": "partial",
+      "phase": "recovery",
+      "phase_elapsed_seconds": 25.0,
+      "reclaim": {
+        "count": 1,
+        "max_us": 1184,
+        "p50_us": 1184,
+        "p95_us": 1184
+      },
+      "table_bytes": 11845632,
+      "updates": 56644,
+      "wal_bytes": 17714952.0
+    },
+    {
+      "autovacuums": 52,
+      "claim": {
+        "count": 200,
+        "max_us": 5672,
+        "p50_us": 2621,
+        "p95_us": 3648
+      },
+      "completed": 200,
+      "dead_tuples": 1084,
+      "elapsed_seconds": 56.033346873,
+      "enqueued": 200,
+      "event": "sample",
+      "heartbeat": {
+        "count": 639,
+        "max_us": 2030,
+        "p50_us": 765,
+        "p95_us": 1233
+      },
+      "held_xmin": false,
+      "hot_updates": 0,
+      "index_bytes": 5193728,
+      "lease_index": "partial",
+      "phase": "recovery",
+      "phase_elapsed_seconds": 26.0,
+      "reclaim": {
+        "count": 1,
+        "max_us": 918,
+        "p50_us": 918,
+        "p95_us": 918
+      },
+      "table_bytes": 11845632,
+      "updates": 57708,
+      "wal_bytes": 18409656.0
+    },
+    {
+      "autovacuums": 53,
+      "claim": {
+        "count": 200,
+        "max_us": 5607,
+        "p50_us": 2617,
+        "p95_us": 3912
+      },
+      "completed": 200,
+      "dead_tuples": 447,
+      "elapsed_seconds": 57.033116035,
+      "enqueued": 200,
+      "event": "sample",
+      "heartbeat": {
+        "count": 639,
+        "max_us": 5301,
+        "p50_us": 803,
+        "p95_us": 1306
+      },
+      "held_xmin": false,
+      "hot_updates": 0,
+      "index_bytes": 5193728,
+      "lease_index": "partial",
+      "phase": "recovery",
+      "phase_elapsed_seconds": 27.0,
+      "reclaim": {
+        "count": 1,
+        "max_us": 1022,
+        "p50_us": 1022,
+        "p95_us": 1022
+      },
+      "table_bytes": 11845632,
+      "updates": 58722,
+      "wal_bytes": 19112688.0
+    },
+    {
+      "autovacuums": 54,
+      "claim": {
+        "count": 200,
+        "max_us": 5269,
+        "p50_us": 2628,
+        "p95_us": 3575
+      },
+      "completed": 200,
+      "dead_tuples": 1140,
+      "elapsed_seconds": 58.032157422,
+      "enqueued": 199,
+      "event": "sample",
+      "heartbeat": {
+        "count": 640,
+        "max_us": 2928,
+        "p50_us": 751,
+        "p95_us": 1151
+      },
+      "held_xmin": false,
+      "hot_updates": 0,
+      "index_bytes": 5193728,
+      "lease_index": "partial",
+      "phase": "recovery",
+      "phase_elapsed_seconds": 28.0,
+      "reclaim": {
+        "count": 1,
+        "max_us": 696,
+        "p50_us": 696,
+        "p95_us": 696
+      },
+      "table_bytes": 11845632,
+      "updates": 59772,
+      "wal_bytes": 19801576.0
+    },
+    {
+      "autovacuums": 55,
+      "claim": {
+        "count": 201,
+        "max_us": 5456,
+        "p50_us": 2590,
+        "p95_us": 3755
+      },
+      "completed": 200,
+      "dead_tuples": 208,
+      "elapsed_seconds": 59.035622504,
+      "enqueued": 201,
+      "event": "sample",
+      "heartbeat": {
+        "count": 640,
+        "max_us": 2667,
+        "p50_us": 715,
+        "p95_us": 1167
+      },
+      "held_xmin": false,
+      "hot_updates": 0,
+      "index_bytes": 5193728,
+      "lease_index": "partial",
+      "phase": "recovery",
+      "phase_elapsed_seconds": 29.0,
+      "reclaim": {
+        "count": 1,
+        "max_us": 1043,
+        "p50_us": 1043,
+        "p95_us": 1043
+      },
+      "table_bytes": 11845632,
+      "updates": 60832,
+      "wal_bytes": 20503224.0
+    },
+    {
+      "autovacuums": 56,
+      "claim": {
+        "count": 199,
+        "max_us": 13889,
+        "p50_us": 2973,
+        "p95_us": 4415
+      },
+      "completed": 200,
+      "dead_tuples": 436,
+      "elapsed_seconds": 60.034600823,
+      "enqueued": 200,
+      "event": "sample",
+      "heartbeat": {
+        "count": 640,
+        "max_us": 11193,
+        "p50_us": 866,
+        "p95_us": 1406
+      },
+      "held_xmin": false,
+      "hot_updates": 0,
+      "index_bytes": 5193728,
+      "lease_index": "partial",
+      "phase": "recovery",
+      "phase_elapsed_seconds": 30.0,
+      "reclaim": {
+        "count": 1,
+        "max_us": 908,
+        "p50_us": 908,
+        "p95_us": 908
+      },
+      "table_bytes": 11845632,
+      "updates": 61812,
+      "wal_bytes": 21196472.0
+    }
+  ]
+}

@@ -320,6 +320,375 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "id": 9,
+      "title": "Oldest runnable workflow",
+      "description": "Age since the oldest pending job became due. Future and parked jobs are excluded.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 20
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "tako_workflow_oldest_runnable_age_seconds{server=~\"$server\",app=~\"$app\"}",
+          "legendFormat": "{{server}} / {{app}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Workflow claim p95",
+      "description": "Successful claim latency includes storage mutex wait, transaction commit, and step lookup.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 20
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, server, app) (rate(tako_workflow_claim_duration_seconds_bucket{server=~\"$server\",app=~\"$app\",outcome=\"claimed\"}[5m])))",
+          "legendFormat": "{{server}} / {{app}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "Workflow dead tuples",
+      "description": "Estimated dead tuples in the shared runs table. Apps sharing a table report the same value; do not sum these series.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 28
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "tako_workflow_pg_runs_dead_tuples{server=~\"$server\",app=~\"$app\"}",
+          "legendFormat": "{{server}} / {{app}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "Workflow storage size",
+      "description": "Shared table and index sizes. A normal vacuum can make space reusable without shrinking these files. Do not sum across apps sharing a database.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 28
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "tako_workflow_pg_runs_table_bytes{server=~\"$server\",app=~\"$app\"}",
+          "legendFormat": "{{server}} / {{app}} table",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "tako_workflow_pg_runs_index_bytes{server=~\"$server\",app=~\"$app\"}",
+          "legendFormat": "{{server}} / {{app}} indexes",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "title": "Oldest visible Postgres transaction",
+      "description": "Database-wide visible transaction age, excluding the sampler. Visibility is incomplete unless pg_activity_visibility_complete is 1.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 36
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "tako_workflow_pg_oldest_transaction_seconds{server=~\"$server\",app=~\"$app\"}",
+          "legendFormat": "{{server}} / {{app}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "title": "Oldest visible backend xmin",
+      "description": "Database-wide backend snapshot age in transactions, not seconds. Does not cover replication-slot or prepared-transaction horizons.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 36
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "tako_workflow_pg_oldest_backend_xmin_age_transactions{server=~\"$server\",app=~\"$app\"}",
+          "legendFormat": "{{server}} / {{app}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "title": "Workflow health sample age",
+      "description": "Time since the last successful health query. Normally around 0\u201330 seconds. Missing data or an increasing age needs investigation.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 44
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "time() - (tako_workflow_health_last_success_timestamp_seconds{server=~\"$server\",app=~\"$app\"} > 0)",
+          "legendFormat": "{{server}} / {{app}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "title": "Workflow health sample success",
+      "description": "1 means the latest sample succeeded; 0 means it failed or has not run yet. Last good gauges remain available on failure.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 44
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "tako_workflow_health_sample_success{server=~\"$server\",app=~\"$app\"}",
+          "legendFormat": "{{server}} / {{app}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",
@@ -330,7 +699,7 @@
       {
         "current": { "selected": false, "text": "All", "value": "$__all" },
         "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-        "definition": "label_values(tako_http_requests_total, server)",
+        "definition": "label_values({__name__=~\"tako_http_requests_total|tako_workflow_claim_duration_seconds_count\"}, server)",
         "hide": 0,
         "includeAll": true,
         "label": "Server",
@@ -339,7 +708,7 @@
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(tako_http_requests_total, server)",
+          "query": "label_values({__name__=~\"tako_http_requests_total|tako_workflow_claim_duration_seconds_count\"}, server)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 2,
@@ -351,7 +720,7 @@
       {
         "current": { "selected": false, "text": "All", "value": "$__all" },
         "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-        "definition": "label_values(tako_http_requests_total{server=~\"$server\"}, app)",
+        "definition": "label_values({__name__=~\"tako_http_requests_total|tako_workflow_claim_duration_seconds_count\",server=~\"$server\"}, app)",
         "hide": 0,
         "includeAll": true,
         "label": "App",
@@ -360,7 +729,7 @@
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(tako_http_requests_total{server=~\"$server\"}, app)",
+          "query": "label_values({__name__=~\"tako_http_requests_total|tako_workflow_claim_duration_seconds_count\",server=~\"$server\"}, app)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 2,
@@ -376,6 +745,6 @@
   "timezone": "browser",
   "title": "Tako",
   "uid": "tako-overview",
-  "version": 1,
+  "version": 2,
   "weekStart": ""
 }

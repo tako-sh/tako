@@ -646,8 +646,11 @@ fn init_schema(client: &mut Client, schema: &str) -> Result<(), RunsDbError> {
            WHERE status IN ('succeeded', 'cancelled', 'dead');
          CREATE INDEX IF NOT EXISTS idx_runs_app_status_run_at
            ON {schema}.runs(app_id, status, run_at);
-         CREATE INDEX IF NOT EXISTS idx_runs_app_lease
-           ON {schema}.runs(app_id, lease_until);
+         -- Only running runs can expire. Keep range lookups without indexing
+         -- pending jobs or the much larger retained terminal history.
+         CREATE INDEX IF NOT EXISTS idx_runs_app_running_lease
+           ON {schema}.runs(app_id, lease_until) WHERE status='running';
+         DROP INDEX IF EXISTS {schema}.idx_runs_app_lease;
 
          CREATE TABLE IF NOT EXISTS {schema}.steps (
              app_id TEXT NOT NULL,

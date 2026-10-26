@@ -84,6 +84,7 @@ pub enum RunsDbError {
 
 pub struct RunsDb {
     backend: RunsDbBackend,
+    pub(crate) monitoring: crate::monitoring::StoreMonitoring,
 }
 
 enum RunsDbBackend {
@@ -100,6 +101,7 @@ impl RunsDb {
                 schema,
                 app_id,
             } => Ok(Self {
+                monitoring: crate::monitoring::StoreMonitoring::postgres(&url, &schema, &app_id)?,
                 backend: RunsDbBackend::Postgres(Box::new(PostgresRunsDb::open(
                     &url, &schema, &app_id,
                 )?)),
@@ -114,6 +116,7 @@ impl RunsDb {
     pub fn open_sqlite(path: &Path) -> Result<Self, RunsDbError> {
         Ok(Self {
             backend: RunsDbBackend::Sqlite(SqliteRunsDb::open(path)?),
+            monitoring: Default::default(),
         })
     }
 
@@ -125,6 +128,7 @@ impl RunsDb {
     pub fn open_in_memory() -> Result<Self, RunsDbError> {
         Ok(Self {
             backend: RunsDbBackend::Sqlite(SqliteRunsDb::open_in_memory()?),
+            monitoring: Default::default(),
         })
     }
 
@@ -181,10 +185,28 @@ impl RunsDb {
         names: &[String],
         lease_ms: u64,
     ) -> Result<Option<RunPayload>, RunsDbError> {
-        match &self.backend {
+        let started = self
+            .monitoring
+            .claims
+            .get()
+            .map(|_| std::time::Instant::now());
+        let result = match &self.backend {
             RunsDbBackend::Sqlite(db) => db.claim(worker_id, names, lease_ms),
             RunsDbBackend::Postgres(db) => db.claim(worker_id, names, lease_ms),
+        };
+        if let Some(started) = started {
+            let outcome = match &result {
+                Ok(Some(_)) => 0,
+                Ok(None) => 1,
+                Err(_) => 2,
+            };
+            self.monitoring
+                .claims
+                .get()
+                .unwrap()
+                .observe(outcome, started.elapsed().as_secs_f64());
         }
+        result
     }
 
     /// All of these lifecycle writes are guarded by `worker_id = ?1 AND

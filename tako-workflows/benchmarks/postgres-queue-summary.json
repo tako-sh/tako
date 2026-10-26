@@ -1,0 +1,284 @@
+{
+  "date": "2026-10-26",
+  "postgres": "17.11",
+  "profile": "dev",
+  "environment": "local Docker in managed cloud workspace",
+  "runs": [
+    {
+      "configuration": {
+        "event": "start",
+        "heartbeat_ms": 200,
+        "held_xmin": false,
+        "history": 10000,
+        "jobs_per_second": 200,
+        "lease_index": "indexed",
+        "long_jobs": 128,
+        "seconds": 30,
+        "workers": 4
+      },
+      "summary": {
+        "autovacuums": 28,
+        "claim": {
+          "count": 6003,
+          "max_us": 11849,
+          "p50_us": 2725,
+          "p95_us": 4202
+        },
+        "completed": 6003,
+        "dead_tuples": 995,
+        "elapsed_seconds": 30,
+        "enqueued": 6003,
+        "event": "summary",
+        "heartbeat": {
+          "count": 19200,
+          "max_us": 24837,
+          "p50_us": 774,
+          "p95_us": 1352
+        },
+        "held_xmin": false,
+        "hot_updates": 0,
+        "index_bytes": 1597440,
+        "lease_index": "indexed",
+        "reclaim": {
+          "count": 30,
+          "max_us": 2382,
+          "p50_us": 827,
+          "p95_us": 1552
+        },
+        "table_bytes": 1679360,
+        "updates": 31334,
+        "wal_bytes": 22418888.0
+      }
+    },
+    {
+      "configuration": {
+        "event": "start",
+        "heartbeat_ms": 200,
+        "held_xmin": true,
+        "history": 10000,
+        "jobs_per_second": 200,
+        "lease_index": "indexed",
+        "long_jobs": 128,
+        "seconds": 30,
+        "workers": 4
+      },
+      "summary": {
+        "autovacuums": 28,
+        "claim": {
+          "count": 6004,
+          "max_us": 12977,
+          "p50_us": 3221,
+          "p95_us": 5200
+        },
+        "completed": 6004,
+        "dead_tuples": 37264,
+        "elapsed_seconds": 30,
+        "enqueued": 6004,
+        "event": "summary",
+        "heartbeat": {
+          "count": 19202,
+          "max_us": 11446,
+          "p50_us": 882,
+          "p95_us": 1743
+        },
+        "held_xmin": true,
+        "hot_updates": 0,
+        "index_bytes": 5881856,
+        "lease_index": "indexed",
+        "reclaim": {
+          "count": 30,
+          "max_us": 2822,
+          "p50_us": 1042,
+          "p95_us": 2222
+        },
+        "table_bytes": 11763712,
+        "updates": 31338,
+        "wal_bytes": 25330448.0
+      }
+    },
+    {
+      "configuration": {
+        "event": "start",
+        "heartbeat_ms": 200,
+        "held_xmin": false,
+        "history": 10000,
+        "jobs_per_second": 200,
+        "lease_index": "partial",
+        "long_jobs": 128,
+        "seconds": 30,
+        "workers": 4
+      },
+      "summary": {
+        "autovacuums": 27,
+        "claim": {
+          "count": 6003,
+          "max_us": 23962,
+          "p50_us": 2740,
+          "p95_us": 4111
+        },
+        "completed": 6003,
+        "dead_tuples": 1098,
+        "elapsed_seconds": 30,
+        "enqueued": 6004,
+        "event": "summary",
+        "heartbeat": {
+          "count": 19200,
+          "max_us": 19414,
+          "p50_us": 774,
+          "p95_us": 1304
+        },
+        "held_xmin": false,
+        "hot_updates": 0,
+        "index_bytes": 1474560,
+        "lease_index": "partial",
+        "reclaim": {
+          "count": 30,
+          "max_us": 2716,
+          "p50_us": 1005,
+          "p95_us": 1668
+        },
+        "table_bytes": 1654784,
+        "updates": 31334,
+        "wal_bytes": 20781944.0
+      }
+    },
+    {
+      "configuration": {
+        "event": "start",
+        "heartbeat_ms": 200,
+        "held_xmin": true,
+        "history": 10000,
+        "jobs_per_second": 200,
+        "lease_index": "partial",
+        "long_jobs": 128,
+        "seconds": 30,
+        "workers": 4
+      },
+      "summary": {
+        "autovacuums": 27,
+        "claim": {
+          "count": 6004,
+          "max_us": 14866,
+          "p50_us": 3282,
+          "p95_us": 5225
+        },
+        "completed": 6004,
+        "dead_tuples": 37783,
+        "elapsed_seconds": 30,
+        "enqueued": 6005,
+        "event": "summary",
+        "heartbeat": {
+          "count": 19202,
+          "max_us": 7956,
+          "p50_us": 883,
+          "p95_us": 1751
+        },
+        "held_xmin": true,
+        "hot_updates": 0,
+        "index_bytes": 5054464,
+        "lease_index": "partial",
+        "reclaim": {
+          "count": 30,
+          "max_us": 2194,
+          "p50_us": 1068,
+          "p95_us": 1850
+        },
+        "table_bytes": 11763712,
+        "updates": 31338,
+        "wal_bytes": 23719080.0
+      }
+    },
+    {
+      "configuration": {
+        "event": "start",
+        "heartbeat_ms": 200,
+        "held_xmin": false,
+        "history": 10000,
+        "jobs_per_second": 200,
+        "lease_index": "unindexed",
+        "long_jobs": 128,
+        "seconds": 30,
+        "workers": 4
+      },
+      "summary": {
+        "autovacuums": 27,
+        "claim": {
+          "count": 6004,
+          "max_us": 19379,
+          "p50_us": 2729,
+          "p95_us": 4049
+        },
+        "completed": 6004,
+        "dead_tuples": 814,
+        "elapsed_seconds": 30,
+        "enqueued": 6004,
+        "event": "summary",
+        "heartbeat": {
+          "count": 19202,
+          "max_us": 9402,
+          "p50_us": 759,
+          "p95_us": 1288
+        },
+        "held_xmin": false,
+        "hot_updates": 18964,
+        "index_bytes": 1343488,
+        "lease_index": "unindexed",
+        "reclaim": {
+          "count": 30,
+          "max_us": 1950,
+          "p50_us": 1096,
+          "p95_us": 1662
+        },
+        "table_bytes": 1662976,
+        "updates": 31338,
+        "wal_bytes": 14865136.0
+      }
+    },
+    {
+      "configuration": {
+        "event": "start",
+        "heartbeat_ms": 200,
+        "held_xmin": true,
+        "history": 10000,
+        "jobs_per_second": 200,
+        "lease_index": "unindexed",
+        "long_jobs": 128,
+        "seconds": 30,
+        "workers": 4
+      },
+      "summary": {
+        "autovacuums": 28,
+        "claim": {
+          "count": 6006,
+          "max_us": 20822,
+          "p50_us": 3240,
+          "p95_us": 5210
+        },
+        "completed": 6006,
+        "dead_tuples": 37400,
+        "elapsed_seconds": 30,
+        "enqueued": 6007,
+        "event": "summary",
+        "heartbeat": {
+          "count": 19201,
+          "max_us": 8868,
+          "p50_us": 871,
+          "p95_us": 1732
+        },
+        "held_xmin": true,
+        "hot_updates": 165,
+        "index_bytes": 4177920,
+        "lease_index": "unindexed",
+        "reclaim": {
+          "count": 30,
+          "max_us": 12312,
+          "p50_us": 5060,
+          "p95_us": 10901
+        },
+        "table_bytes": 11780096,
+        "updates": 31341,
+        "wal_bytes": 21572192.0
+      }
+    }
+  ]
+}

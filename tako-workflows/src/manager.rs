@@ -351,6 +351,14 @@ impl WorkflowManager {
         self.apps.read().contains_key(app)
     }
 
+    pub(crate) fn monitored_stores(&self) -> Vec<(String, Arc<RunsDb>)> {
+        self.apps
+            .read()
+            .iter()
+            .map(|(app, entry)| (app.clone(), entry.handlers.db.clone()))
+            .collect()
+    }
+
     /// Shut down every app, then the socket. Called on server shutdown.
     pub async fn shutdown_all(&self, drain_timeout: Duration) {
         let apps: Vec<(String, AppWorkflow)> = {

@@ -632,3 +632,111 @@ fn reclaim_expired_ignores_terminal_runs() {
 }
 
 mod identity;
+
+#[test]
+fn postgres_lease_index_migration_preserves_renewal_and_recovery() {
+    let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
+        return;
+    };
+    let schema = format!(
+        "lease_migration_{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let open = |app_id: &str| {
+        RunsDb::open_config(WorkflowStoreConfig::Postgres {
+            url: url.clone(),
+            schema: schema.clone(),
+            app_id: app_id.into(),
+        })
+        .unwrap()
+    };
+    let db = open("a");
+    let other = open("b");
+    let options = EnqueueOpts {
+        id: Some("shared-id".into()),
+        ..opts()
+    };
+    db.enqueue("work", &serde_json::json!({}), &options)
+        .unwrap();
+    other
+        .enqueue("work", &serde_json::json!({}), &options)
+        .unwrap();
+    db.claim("first", &["work".into()], 1).unwrap().unwrap();
+
+    // Recreate the previous schema's index, with both running and pending rows.
+    let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    client
+        .batch_execute(&format!(
+            "DROP INDEX IF EXISTS {schema}.idx_runs_app_running_lease;
+         CREATE INDEX IF NOT EXISTS idx_runs_app_lease ON {schema}.runs(app_id, lease_until);"
+        ))
+        .unwrap();
+    let migrated = open("a");
+    let indexes = client
+        .query_one(
+            "SELECT to_regclass($1) IS NULL, to_regclass($2) IS NOT NULL",
+            &[
+                &format!("{schema}.idx_runs_app_lease"),
+                &format!("{schema}.idx_runs_app_running_lease"),
+            ],
+        )
+        .unwrap();
+    assert!(indexes.get::<_, bool>(0), "legacy index should be removed");
+    assert!(
+        indexes.get::<_, bool>(1),
+        "running lease index should exist"
+    );
+
+    migrated.heartbeat("shared-id", "first", 60_000).unwrap();
+    assert_eq!(migrated.reclaim_expired().unwrap(), 0);
+    assert!(matches!(
+        migrated.heartbeat("shared-id", "wrong-worker", 60_000),
+        Err(RunsDbError::StaleWorker)
+    ));
+    assert!(matches!(
+        other.heartbeat("shared-id", "first", 60_000),
+        Err(RunsDbError::StaleWorker)
+    ));
+    // Force expiry without wall-clock sleeps, then recover through the public API.
+    client
+        .execute(
+            &format!("UPDATE {schema}.runs SET lease_until=0 WHERE app_id='a' AND id='shared-id'"),
+            &[],
+        )
+        .unwrap();
+    assert_eq!(
+        migrated.reclaim_expired_with_workers().unwrap(),
+        vec!["first"]
+    );
+    let recovered = migrated
+        .claim("second", &["work".into()], 60_000)
+        .unwrap()
+        .unwrap();
+    assert_eq!(recovered.id, "shared-id");
+    assert_eq!(recovered.attempts, 2);
+    assert!(matches!(
+        migrated.heartbeat("shared-id", "first", 60_000),
+        Err(RunsDbError::StaleWorker)
+    ));
+    migrated.heartbeat("shared-id", "second", 60_000).unwrap();
+    migrated.complete("shared-id", "second").unwrap();
+    assert_eq!(migrated.reclaim_expired().unwrap(), 0);
+    assert!(matches!(
+        migrated.heartbeat("shared-id", "second", 60_000),
+        Err(RunsDbError::StaleWorker)
+    ));
+    assert_eq!(other.pending_count().unwrap(), 1);
+    assert_eq!(
+        migrated
+            .prune_finished_before(now_ms() + 1000, 100)
+            .unwrap(),
+        1
+    );
+    assert_eq!(other.pending_count().unwrap(), 1);
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .unwrap();
+}

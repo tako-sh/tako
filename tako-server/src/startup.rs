@@ -264,6 +264,14 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     spawn_reload_signal_handlers(&rt, exe);
 
     metrics::init(state.runtime_config().server_name.as_deref());
+    if args.metrics_port != 0 {
+        tako_workflows::monitoring::register(
+            &state.workflows,
+            metrics::server(),
+            prometheus::default_registry(),
+            rt.handle(),
+        )?;
+    }
     if !should_skip_cloudflare_ip_refresh() {
         spawn_cloudflare_ip_refresh(
             &rt,

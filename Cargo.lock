@@ -5977,6 +5977,7 @@ dependencies = [
  "nanoid",
  "parking_lot 0.13.0",
  "postgres",
+ "prometheus",
  "rusqlite",
  "serde_json",
  "tako-core",
