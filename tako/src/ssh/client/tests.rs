@@ -101,9 +101,9 @@ impl russh::server::Handler for KeyAuthTestServer {
     fn auth_publickey(
         &mut self,
         _user: &str,
-        key: &russh::keys::PublicKey,
+        key: russh::server::VerifiedPublicKey<'_>,
     ) -> impl Future<Output = Result<russh::server::Auth, Self::Error>> + Send {
-        let accepted = key.key_data() == self.allowed_key.key_data();
+        let accepted = key.public_key.key_data() == self.allowed_key.key_data();
         async move {
             if accepted {
                 Ok(russh::server::Auth::Accept)

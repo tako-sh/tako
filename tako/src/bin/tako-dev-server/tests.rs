@@ -11,6 +11,23 @@ use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::time::Duration;
 
+#[tokio::test]
+async fn pingora_accepts_and_reads_tcp_connections() {
+    use tokio::io::AsyncReadExt;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut client = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
+        .await
+        .unwrap();
+    let (accepted, _) = listener.accept().await.unwrap();
+    // Tokio upgrades must preserve Pingora's zero-capacity stream buffers.
+    let mut stream = pingora_core::protocols::l4::stream::Stream::from(accepted);
+    client.write_all(b"GET").await.unwrap();
+    let mut bytes = [0; 3];
+    stream.read_exact(&mut bytes).await.unwrap();
+    assert_eq!(&bytes, b"GET");
+}
+
 /// Create a `WorkflowManager` backed by a throwaway tempdir so tests don't
 /// touch the user's real `~/Library/Application Support/tako` etc.
 fn test_workflows() -> Arc<tako_workflows::WorkflowManager> {

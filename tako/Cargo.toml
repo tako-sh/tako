@@ -34,7 +34,8 @@ clap_complete = "4.6"
 rmcp = { version = "3.7", default-features = false, features = ["server", "transport-io"] }
 toml_edit = "0.25"
 jsonc-parser = { version = "0.34", features = ["serde", "cst"] }
-tokio = { version = "1.53", features = ["full"] }
+# Pingora 0.9 creates zero-capacity buffers, which Tokio 1.54 rejects on every connection.
+tokio = { version = "=1.53.1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
 ctrlc.workspace = true

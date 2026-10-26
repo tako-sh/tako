@@ -17,7 +17,8 @@ tako-socket = { path = "../tako-socket" }
 tako-spawn = { path = "../tako-spawn" }
 tako-workflows = { path = "../tako-workflows" }
 clap = { version = "4.6", features = ["derive", "env"] }
-tokio = { version = "1.53", features = ["full", "signal"] }
+# Pingora 0.9 creates zero-capacity buffers, which Tokio 1.54 rejects on every connection.
+tokio = { version = "=1.53.1", features = ["full", "signal"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tracing-appender = "0.2"

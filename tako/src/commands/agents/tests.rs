@@ -63,9 +63,8 @@ fn jsonc_settings_accept_comments_and_trailing_commas() {
     }
     let text = std::fs::read_to_string(project.path().join(".vscode/mcp.json")).unwrap();
     assert!(text.contains("// a comment"));
-    let content = jsonc_parser::parse_to_serde_value(&text, &Default::default())
-        .unwrap()
-        .unwrap();
+    let content: serde_json::Value =
+        jsonc_parser::parse_to_serde_value(&text, &Default::default()).unwrap();
     assert_eq!(content["servers"]["other"]["command"], "other");
 }
 
