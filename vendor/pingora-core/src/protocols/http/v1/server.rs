@@ -1,3 +1,5 @@
+// Tako modification: release completed request-body buffers before response completion.
+// Patch provenance: vendor/README.md.
 // Copyright 2026 Cloudflare, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");

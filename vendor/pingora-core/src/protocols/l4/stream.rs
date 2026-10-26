@@ -1,3 +1,5 @@
+// Tako modification: use reclaimable read buffering with unchanged transfer capacities.
+// Patch provenance: vendor/README.md.
 // Copyright 2026 Cloudflare, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
