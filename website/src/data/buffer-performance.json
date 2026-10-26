@@ -1,0 +1,95 @@
+{
+  "date": "26 October 2026",
+  "stage": "Merged to master",
+  "reportUrl": "https://github.com/tako-sh/performance/blob/main/results/20261026-buffer-release/README.md",
+  "baselineRevision": "738e023e721cb6bfe63cda184b8e78ad7bf8d1c6",
+  "candidateRevision": "35c4234595be4e66fc86339c2a37a298653a4c63",
+  "candidateLabel": "Tako after",
+  "memory": [
+    {
+      "label": "20,000 held TLS connections",
+      "baseline": 2273.68,
+      "candidate": 1019.02,
+      "caddy": 1054.17,
+      "savingPercent": 55.2
+    },
+    {
+      "label": "2,000 uploads with streaming responses",
+      "baseline": 577.97,
+      "candidate": 335.3,
+      "caddy": 486.44,
+      "savingPercent": 42.0
+    }
+  ],
+  "traffic": [
+    {
+      "label": "HTTP/1.1 small responses",
+      "baseline": 15543.59,
+      "candidate": 15605.43,
+      "caddy": 12616.19
+    },
+    {
+      "label": "HTTP/1.1 1 MiB uploads",
+      "baseline": 913.14,
+      "candidate": 913.74,
+      "caddy": 1047.39
+    },
+    {
+      "label": "HTTP/1.1 1 MiB chunked uploads",
+      "baseline": 919.83,
+      "candidate": 892.55,
+      "caddy": 1069.0
+    },
+    {
+      "label": "HTTP/1.1 1 MiB downloads",
+      "baseline": 1034.66,
+      "candidate": 1052.53,
+      "caddy": 1190.43
+    },
+    {
+      "label": "HTTP/1.1 new TLS connection per request",
+      "baseline": 1488.47,
+      "candidate": 1526.39,
+      "caddy": 1141.42
+    },
+    {
+      "label": "HTTP/2 small responses",
+      "baseline": 14616.18,
+      "candidate": 14728.2,
+      "caddy": 9449.77
+    },
+    {
+      "label": "HTTP/2 1 MiB uploads",
+      "baseline": 252.5,
+      "candidate": 254.0,
+      "caddy": 563.14
+    },
+    {
+      "label": "HTTP/2 1 MiB downloads",
+      "baseline": 550.74,
+      "candidate": 538.46,
+      "caddy": 415.94
+    }
+  ],
+  "performanceNote": "Eight-pair checks found no repeatable regression: small responses averaged \u22120.13% RPS, chunked uploads \u22121.26% with mixed pairs, and HTTP/2 downloads +1.94% with substantial variability. At 250 uploads/s, CPU changed +0.10% and p99 by 0.024 ms. These results do not prove exact parity on every host.",
+  "longerTraffic": [
+    {
+      "label": "HTTP/1.1 small responses",
+      "baseline": 6032.2,
+      "candidate": 6024.16,
+      "changePercent": -0.13
+    },
+    {
+      "label": "HTTP/1.1 1 MiB chunked uploads",
+      "baseline": 912.31,
+      "candidate": 900.81,
+      "changePercent": -1.26
+    },
+    {
+      "label": "HTTP/2 1 MiB downloads",
+      "baseline": 552.28,
+      "candidate": 563.02,
+      "changePercent": 1.94
+    }
+  ]
+}
