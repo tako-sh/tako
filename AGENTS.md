@@ -1,6 +1,5 @@
 # Tako maintainer notes
 
-- Use Conventional Commits (`type(scope): description`, with scope optional). Inspect recent commit subjects before choosing the type and scope; hk validates commit messages with Cocogitto.
 - Protocol v0 allows breaking changes; update producers and consumers together without compatibility shims. See [PROTOCOL.md](PROTOCOL.md).
 - Skills in `sdk/javascript/skills/` are user-facing. Edit them there and run `bun website/scripts/sync-agent-skills.ts` to regenerate `skills/`, `.agents/skills/`, and `website/public/.well-known/agent-skills/`. Keep maintainer guidance out of these skills.
 - Docs7 generates website documentation. For skills, MCP, and agent discovery changes, follow [commands/sync-agents.md](commands/sync-agents.md). The CLI embeds skills and `website/docs/` at build time.
