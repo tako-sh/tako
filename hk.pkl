@@ -1,6 +1,15 @@
-amends "package://github.com/jdx/hk/releases/download/v1.53.0/hk@1.53.0#/Config.pkl"
+amends "package://github.com/jdx/hk/releases/download/v2.8.1/hk@2.8.1#/Config.pkl"
 
 hooks {
+    ["commit-msg"] {
+        steps {
+            ["cocogitto"] {
+                check = new Command {
+                    argv = List("cog", "--quiet", "verify", "--file", "{{commit_msg_file}}")
+                }
+            }
+        }
+    }
     ["pre-commit"] {
         fix = true
         stash = "git"
