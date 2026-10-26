@@ -30,24 +30,34 @@ support the claims.
   workflow pin for the requested build.
 - Default to the standard `ubuntu-24.04` Actions runner. No paid larger runner or
   cloud machine without explicit authorization.
-- The current memory workflow is `.github/workflows/memory.yml`; its harness is
-  `diagnostics/full-memory/`. Read both before running: the workflow pins source
-  revisions and toolchains rather than accepting a Tako revision input.
-- As of this guide's update, that workflow is in
+- Select the workflow for the question using the table below. Read its harness
+  before running: these workflows pin source revisions and toolchains rather
+  than accepting a Tako revision input.
+- As of this guide's update, the memory and buffer workflows are in
   [performance PR #2](https://github.com/tako-sh/performance/pull/2), branch
   `codex/memory-benchmark`. Check its current status. After merge, use the
   performance repository's default branch or the experiment branch derived from
   it. Do not assume an unmerged workflow can be manually dispatched.
-- The workflow currently compares full Tako and Caddy for HTTP/1.1 memory and
-  small-response traffic. It does not run the complete five-proxy report,
-  HTTP/2, bulk transfers, channels, workflows, or multi-node load balancing.
-  Extend the performance harness for missing coverage and label it accurately.
+- The independent TLS experiment is stacked in
+  [performance PR #3](https://github.com/tako-sh/performance/pull/3), branch
+  `codex/tls-offload-investigation`. Keep its results separate from buffer changes.
+- These diagnostics do not run the complete five-proxy report, channels,
+  workflows, or multi-node load balancing. Extend missing coverage and label it
+  accurately.
 - Use HTTPS with the same certificate, route, upstream response, request timeouts,
   URL/Host/SNI, source IPs, concurrency, warmup, and measurement interval for
   every compared proxy. Keep the load generator's request timeout at 60 seconds
   and its per-host connection cap equal to concurrency.
 - Keep only useful history, but preserve failed, incomplete, and superseded
   evidence that explains a correction. Do not select only favorable repetitions.
+
+| Question | Workflow | Harness |
+| --- | --- | --- |
+| Fixed 64/32/16 KiB buffers, active/held connection memory | `memory.yml` | `diagnostics/full-memory/` |
+| Release empty L4 buffers while preserving 64 KiB reads; release completed HTTP/1 upload buffers | `buffers.yml` | `diagnostics/buffer-lifetime/` |
+| Handshake interference with established requests, after profiling finds evidence | `tls.yml` | `diagnostics/tls-offload/` |
+
+All workflow paths are under `.github/workflows/` in the performance repository.
 
 ## Acceptance requirements
 
@@ -100,7 +110,7 @@ but must be labeled separately.
 Run these commands from the performance checkout. Pass `-R` explicitly so jobs
 cannot accidentally run in the main Tako repository.
 
-While `memory.yml` exists only on a PR branch, push relevant harness/workflow
+While the selected workflow exists only on a PR branch, push relevant harness/workflow
 changes and use its `pull_request` run. Inspect the workflow's path filters; an
 unrelated push may not trigger it. GitHub requires a workflow to exist on the
 default branch for `workflow_dispatch`. Do not merge a PR just to trigger a test.
@@ -110,6 +120,9 @@ Once the workflow is available on the default branch, dispatch the intended ref:
 ```bash
 gh workflow run memory.yml -R tako-sh/performance \
   --ref '<performance-branch>' -f stress=false
+# For buffer lifetime or TLS experiments, choose the matching workflow instead:
+gh workflow run buffers.yml -R tako-sh/performance --ref '<performance-branch>'
+gh workflow run tls.yml -R tako-sh/performance --ref '<performance-branch>'
 ```
 
 Find the run for the intended branch, event, and commit; never assume the newest
@@ -128,7 +141,7 @@ cancelled run or a failed build is not completed benchmark evidence. For an
 unchanged source/harness retry, `gh run rerun '<run-id>' -R tako-sh/performance`
 replays the existing run; it does not pick up a newer branch commit.
 
-Use `-f stress=true` only when investigating 20,000 continuously active workers.
+Use `-f stress=true` with `memory.yml` only when investigating 20,000 continuously active workers.
 That optional saturation test can overload the upstream and fail health checks.
 It is different from holding 20,000 exercised connections open.
 
@@ -141,7 +154,13 @@ needed to avoid source-port exhaustion and collisions during churn.
 
 ## Phase 3 — Collect and inspect the artifact
 
-Artifacts are named `full-memory-<github.sha>` and currently expire after 14 days.
+Result artifacts expire after 14 days. Their names depend on the workflow:
+
+- `memory.yml`: `full-memory-<github.sha>`.
+- `buffers.yml`: `buffer-results-<group>-<github.sha>` for `memory`, `h1`, `h2`.
+  Its separate `buffer-binaries` build artifact expires after seven days.
+- `tls.yml`: `tls-results-<github.sha>`.
+
 Download promptly to a new directory; do not overwrite an earlier run.
 
 ```bash
@@ -162,7 +181,7 @@ are excluded because they can contain machine-specific source paths. Downloaded
 artifacts and a rendered summary alone do not prove the run passed: check the job
 conclusion, expected cases, repetitions, and every case's `success` field.
 
-The current default matrix has four variants (Tako 64/32/16 KiB and Caddy), two
+The fixed-buffer `memory.yml` matrix has four variants (Tako 64/32/16 KiB and Caddy), two
 opposite-order repetitions, and two modes: eight active and eight held cases.
 
 | Mode | Workload | Memory statistic | What it establishes |
@@ -170,6 +189,29 @@ opposite-order repetitions, and two modes: eight active and eight held cases.
 | Active | 5,000 workers; 5 s warmup, 20 s nominal load; 13-byte responses over TLS HTTP/1.1 | Peak proxy-process PSS, including warmup and churn | Memory under this traffic and preliminary throughput/latency |
 | Held | 20,000 TLS connections; 21 verified requests each, at most 64 in flight; hold open 10 s | Median proxy-process PSS during the holding phase | Retained memory at a verified connection count, not maximum RPS |
 | Optional stress | 20,000 continuously active workers | Peak PSS plus errors, latency, and throughput | Saturation behavior; failures are not capacity wins |
+
+The buffer-lifetime matrix uses a separate unchanged Tako binary and four
+comparators: idle-buffer release, completed-body release, both, and Caddy. Three
+repetitions reverse variant order on alternating runs. Expect 30 memory cases
+(20,000 held connections and 2,000 completed uploads with responses held open),
+90 HTTP/1 cases (small, fixed-rate, upload, chunked upload, download, churn), and
+60 HTTP/2 cases (small, fixed-rate, upload, download). Each job is a separate
+machine; compare candidates with their control in the same job. Use
+`diagnostics/buffer-lifetime/summarize.py` on each downloaded group directory.
+
+The TLS matrix compares unchanged Tako, one and two offload threads, and Caddy.
+Expect 48 cases: four repetitions at 0, 1,500 and 2,500 new TLS connections/s
+alongside 1,000 established-connection requests/s. Use
+`diagnostics/tls-offload/summarize.py`. Inspect foreground p95/p99 and background
+completed rate and duration together. Lower foreground latency accompanied by
+less completed background work is not a win. CPU efficiency divides aligned
+server CPU by both streams' successful requests, not only foreground requests.
+This focused diagnostic does not establish peak-throughput or HTTP/2 acceptance.
+
+Both newer harnesses verify payloads and negotiated HTTP version, synchronize
+timed traffic with the memory/CPU sampler, and include arrival queueing in
+fixed-rate latency. Profiling must be a separate run so profiler overhead does
+not contaminate acceptance measurements.
 
 For every case, inspect:
 
