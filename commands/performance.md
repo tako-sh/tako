@@ -33,14 +33,12 @@ support the claims.
 - Select the workflow for the question using the table below. Read its harness
   before running: these workflows pin source revisions and toolchains rather
   than accepting a Tako revision input.
-- As of this guide's update, the memory and buffer workflows are in
-  [performance PR #2](https://github.com/tako-sh/performance/pull/2), branch
-  `codex/memory-benchmark`. Check its current status. After merge, use the
-  performance repository's default branch or the experiment branch derived from
-  it. Do not assume an unmerged workflow can be manually dispatched.
-- The independent TLS experiment is stacked in
-  [performance PR #3](https://github.com/tako-sh/performance/pull/3), branch
-  `codex/tls-offload-investigation`. Keep its results separate from buffer changes.
+- Use the performance repository's default branch after the workflows merge.
+  Before merge, inspect the relevant PR branch and use its PR-triggered run;
+  GitHub cannot manually dispatch a workflow absent from the default branch.
+  The production buffer validation is in
+  [performance PR #4](https://github.com/tako-sh/performance/pull/4); its history
+  includes the earlier memory and TLS investigations. Keep those results separate.
 - These diagnostics do not run the complete five-proxy report, channels,
   workflows, or multi-node load balancing. Extend missing coverage and label it
   accurately.
@@ -55,6 +53,7 @@ support the claims.
 | --- | --- | --- |
 | Fixed 64/32/16 KiB buffers, active/held connection memory | `memory.yml` | `diagnostics/full-memory/` |
 | Release empty L4 buffers while preserving 64 KiB reads; release completed HTTP/1 upload buffers | `buffers.yml` | `diagnostics/buffer-lifetime/` |
+| Production buffer implementation versus unchanged master, including longer small-response repeats | `buffer-release.yml` | `diagnostics/release-validation/` |
 | Handshake interference with established requests, after profiling finds evidence | `tls.yml` | `diagnostics/tls-offload/` |
 
 All workflow paths are under `.github/workflows/` in the performance repository.
@@ -122,6 +121,8 @@ gh workflow run memory.yml -R tako-sh/performance \
   --ref '<performance-branch>' -f stress=false
 # For buffer lifetime or TLS experiments, choose the matching workflow instead:
 gh workflow run buffers.yml -R tako-sh/performance --ref '<performance-branch>'
+# Production comparison: update both pinned source revisions first.
+gh workflow run buffer-release.yml -R tako-sh/performance --ref '<performance-branch>'
 gh workflow run tls.yml -R tako-sh/performance --ref '<performance-branch>'
 ```
 
@@ -198,6 +199,18 @@ repetitions reverse variant order on alternating runs. Expect 30 memory cases
 60 HTTP/2 cases (small, fixed-rate, upload, download). Each job is a separate
 machine; compare candidates with their control in the same job. Use
 `diagnostics/buffer-lifetime/summarize.py` on each downloaded group directory.
+
+The production `buffer-release.yml` workflow builds unchanged master and the
+always-enabled candidate separately from the same checkout path. It uses the
+same buffer harness without source rewriting or runtime switches in Tako.
+Expected cases are **18 memory, 54 HTTP/1, 36 HTTP/2 and 16 longer small-response**
+comparisons. The first three groups use baseline, combined and Caddy with three
+repetitions. The longer job uses eight alternating baseline/combined pairs and
+60-second measurement windows. `combined` names the production candidate binary.
+Check `build.txt`, `metadata.json` and `validation.json`; do not combine absolute
+RPS from these separate runner hosts. Result artifacts are named
+`buffer-release-<group>-<sha>` and retained for 14 days. The pinned refs are a
+reproduction of one experiment, not a rolling comparison with future master.
 
 The TLS matrix compares unchanged Tako, one and two offload threads, and Caddy.
 Expect 48 cases: four repetitions at 0, 1,500 and 2,500 new TLS connections/s
@@ -277,10 +290,11 @@ once merged instead of copying experimental numbers into this playbook.
 - `ListenerConfig` / `L4BufferSettings` configure fixed accepted-socket buffers.
   The 64/32/16 KiB experiment changes ordinary HTTP/TLS listeners only; it does
   not change the custom PROXY-protocol listener, upstream buffers, or HTTP body
-  buffers. No candidate has cleared the full performance acceptance requirement.
+  buffers. These fixed-size results do not establish acceptance of other changes.
 - Pingora 0.9 does not automatically resize or release these L4 buffers while
-  idle. Dynamic retention is an experiment requiring buffer-layer changes and
-  correctness checks; do not describe it as an available configuration switch.
+  idle. Tako's production candidate carries a local `pingora-core` override for
+  buffer lifetime, documented in `vendor/README.md`. It is not an upstream
+  configuration switch; consult the dated validation report for acceptance.
 - The buffer-lifetime prototype preserves 64 KiB reads and releases completed
   HTTP/1 body buffers separately. Its broader transfer coverage found existing
   Caddy advantages in some workloads. Follow the dated experiment report and
