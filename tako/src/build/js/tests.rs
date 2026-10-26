@@ -253,15 +253,15 @@ printf '%s\n' 'export interface TakoChannels {' '  "chat": import("tako.sh").Inf
 "#,
         )
         .unwrap();
-    make_executable(&fake_bun);
 
-    write_tako_declarations_for_adapter_with_bun(
-        dir.path(),
-        BuildAdapter::Unknown,
-        "src",
-        fake_bun.as_os_str(),
-    )
+    // Keep a writable handle open to reproduce the condition that makes direct
+    // execution fail with ETXTBSY on Linux. The shell only reads this fixture.
+    let writer = fs::OpenOptions::new().write(true).open(&fake_bun).unwrap();
+    write_tako_declarations_with_codegen_command(dir.path(), BuildAdapter::Unknown, "src", &|| {
+        shell_script_command(&fake_bun)
+    })
     .unwrap();
+    drop(writer);
 
     let content = fs::read_to_string(dir.path().join("src").join("tako.d.ts")).unwrap();
     assert!(content.contains("export interface TakoChannels"));
@@ -293,14 +293,10 @@ printf '%s\n' 'export interface TakoStores {' '  "messages": import("tako.sh").I
 "#,
     )
     .unwrap();
-    make_executable(&fake_bun);
 
-    write_tako_declarations_for_adapter_with_bun(
-        dir.path(),
-        BuildAdapter::Unknown,
-        "app",
-        fake_bun.as_os_str(),
-    )
+    write_tako_declarations_with_codegen_command(dir.path(), BuildAdapter::Unknown, "app", &|| {
+        shell_script_command(&fake_bun)
+    })
     .unwrap();
     let content = fs::read_to_string(dir.path().join("tako.d.ts")).unwrap();
     assert!(content.contains("export interface TakoStores"));
@@ -323,12 +319,11 @@ fn store_type_generation_errors_are_reported_before_overwriting_declarations() {
         "#!/bin/sh\nprintf '%s\\n' 'duplicate store messages' >&2\nexit 1\n",
     )
     .unwrap();
-    make_executable(&fake_bun);
-    let error = write_tako_declarations_for_adapter_with_bun(
+    let error = write_tako_declarations_with_codegen_command(
         dir.path(),
         BuildAdapter::Unknown,
         "src",
-        fake_bun.as_os_str(),
+        &|| shell_script_command(&fake_bun),
     )
     .unwrap_err();
     assert!(error.to_string().contains("store generation failed"));
@@ -528,10 +523,10 @@ fn link_sdk_package(project_dir: &Path) {
 }
 
 #[cfg(unix)]
-fn make_executable(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-
-    let mut perms = fs::metadata(path).unwrap().permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(path, perms).unwrap();
+fn shell_script_command(path: &Path) -> Command {
+    // Execute the installed shell, not a freshly written executable: concurrent
+    // process spawning can otherwise cause ETXTBSY on Linux CI runners.
+    let mut command = Command::new("/bin/sh");
+    command.arg(path);
+    command
 }

@@ -1,4 +1,3 @@
-use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -398,26 +397,29 @@ pub fn write_tako_declarations_for_adapter_and_app_root(
     adapter: BuildAdapter,
     app_root: &str,
 ) -> std::io::Result<bool> {
-    write_tako_declarations_for_adapter_with_bun(project_dir, adapter, app_root, OsStr::new("bun"))
+    write_tako_declarations_with_codegen_command(project_dir, adapter, app_root, &|| {
+        Command::new("bun")
+    })
 }
 
-fn write_tako_declarations_for_adapter_with_bun(
+fn write_tako_declarations_with_codegen_command(
     project_dir: &Path,
     _adapter: BuildAdapter,
     app_root: &str,
-    bun: &OsStr,
+    codegen_command: &impl Fn() -> Command,
 ) -> std::io::Result<bool> {
     let secret_names = read_secret_names(project_dir);
     let storage_names = read_storage_names(project_dir);
     let env_names = read_env_names(project_dir);
     let var_names = read_var_names(project_dir);
     let path = resolve_declaration_path(project_dir);
-    let mut channel_types = generate_channel_types_with_bun(project_dir, app_root, bun)?;
-    let store_types = generate_store_types_with_bun(
+    let mut channel_types =
+        generate_channel_types_with_command(project_dir, app_root, codegen_command)?;
+    let store_types = generate_store_types_with_command(
         project_dir,
         app_root,
         path.parent().unwrap_or(project_dir),
-        bun,
+        codegen_command,
     )?;
     channel_types.push_str(&store_types);
     let content = build_declarations(
@@ -442,17 +444,18 @@ fn write_tako_declarations_for_adapter_with_bun(
     Ok(true)
 }
 
-fn generate_channel_types_with_bun(
+fn generate_channel_types_with_command(
     project_dir: &Path,
     app_root: &str,
-    bun: &OsStr,
+    codegen_command: &impl Fn() -> Command,
 ) -> std::io::Result<String> {
     let channels_dir = js_app_root_dir(project_dir, app_root).join("channels");
     if !channels_dir.is_dir() {
         return Ok(String::new());
     }
 
-    let output = match channel_codegen_command(project_dir, &channels_dir, bun).output() {
+    let output = match channel_codegen_command(project_dir, &channels_dir, codegen_command).output()
+    {
         Ok(output) => output,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
         Err(err) => return Err(err),
@@ -466,19 +469,23 @@ fn generate_channel_types_with_bun(
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-fn channel_codegen_command(project_dir: &Path, channels_dir: &Path, bun: &OsStr) -> Command {
+fn channel_codegen_command(
+    project_dir: &Path,
+    channels_dir: &Path,
+    codegen_command: &impl Fn() -> Command,
+) -> Command {
     let repo_script = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("tako crate lives under repo root")
         .join("sdk/javascript/bin/gen-channel-types.ts");
     if repo_script.is_file() {
-        let mut command = Command::new(bun);
+        let mut command = codegen_command();
         command.arg(repo_script).arg(channels_dir);
         command.current_dir(project_dir);
         return command;
     }
 
-    let mut command = Command::new(bun);
+    let mut command = codegen_command();
     command
         .arg("run")
         .arg("tako-sh-gen-channel-types")
@@ -487,11 +494,11 @@ fn channel_codegen_command(project_dir: &Path, channels_dir: &Path, bun: &OsStr)
     command
 }
 
-fn generate_store_types_with_bun(
+fn generate_store_types_with_command(
     project_dir: &Path,
     app_root: &str,
     declaration_dir: &Path,
-    bun: &OsStr,
+    codegen_command: &impl Fn() -> Command,
 ) -> std::io::Result<String> {
     let stores_dir = js_app_root_dir(project_dir, app_root).join("stores");
     if !stores_dir.is_dir() {
@@ -501,7 +508,7 @@ fn generate_store_types_with_bun(
         .parent()
         .expect("tako crate lives under repo root")
         .join("sdk/javascript/bin/gen-store-types.ts");
-    let mut command = Command::new(bun);
+    let mut command = codegen_command();
     if repo_script.is_file() {
         command.arg(repo_script);
     } else {
