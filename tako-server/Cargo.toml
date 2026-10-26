@@ -64,6 +64,7 @@ ipnet = "2.12"
 socket2 = "0.6"
 
 [dev-dependencies]
+h2 = "0.4"
 filetime = "=0.2.29"
 image = { version = "=0.25.10", default-features = false, features = ["jpeg"] }
 tempfile = "=3.27.0"

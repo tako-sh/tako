@@ -11,6 +11,10 @@ use pingora_core::listeners::tls::TlsSettings;
 use pingora_core::prelude::*;
 use pingora_core::server::configuration::ServerConf;
 use std::sync::Arc;
+use std::time::Duration;
+
+#[cfg(test)]
+mod connection_tests;
 
 #[derive(Clone)]
 pub(crate) struct PublicListenerEndpoint {
@@ -108,11 +112,7 @@ pub(crate) fn build_server_with_acme(build: ServerBuildConfig) -> Result<Server>
         let mut proxy_service = pingora_proxy::http_proxy_service(&server.configuration, proxy);
 
         if let Some(app) = proxy_service.app_logic_mut() {
-            let mut opts = pingora_core::apps::HttpServerOptions::default();
-            // Pingora keeps per-connection memory while downstream keepalive is
-            // open. This frees it periodically without disabling keepalive.
-            opts.keepalive_request_limit = Some(1000);
-            app.server_options = Some(opts);
+            app.server_options = Some(public_http_server_options());
         }
 
         let http_endpoints = public_listener_endpoints(config.http_port);
@@ -151,6 +151,15 @@ pub(crate) fn build_server_with_acme(build: ServerBuildConfig) -> Result<Server>
     }
 
     Ok(server)
+}
+
+pub(super) fn public_http_server_options() -> pingora_core::apps::HttpServerOptions {
+    let mut options = pingora_core::apps::HttpServerOptions::default();
+    // Retire HTTP/1 connections periodically to free per-connection memory.
+    options.keepalive_request_limit = Some(1000);
+    // HTTP/2 has a separate idle limit; active streams (including SSE) are exempt.
+    options.h2_idle_timeout = Some(Duration::from_secs(60));
+    options
 }
 
 fn proxy_server_conf() -> Result<ServerConf> {

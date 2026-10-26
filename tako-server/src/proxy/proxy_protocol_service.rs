@@ -26,6 +26,7 @@ use tokio::net::TcpSocket;
 const H2_H1_ALPN_WIRE_PREFERENCE: &[u8] = b"\x02h2\x08http/1.1";
 const LISTENER_BACKLOG: u32 = 65535;
 const PROXY_PROTOCOL_HEADER_TIMEOUT: Duration = Duration::from_secs(60);
+const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub(crate) struct ProxyProtocolService {
     name: String,
@@ -54,11 +55,7 @@ impl ProxyProtocolService {
         trusted_proxy: TrustedProxyConfig,
     ) -> Self {
         let mut app_logic = http_proxy(conf, app);
-        let mut options = pingora_core::apps::HttpServerOptions::default();
-        // Keep this aligned with the normal listener: it bounds retained
-        // downstream keepalive memory without turning keepalive off.
-        options.keepalive_request_limit = Some(1000);
-        app_logic.server_options = Some(options);
+        app_logic.server_options = Some(super::server::public_http_server_options());
 
         Self {
             name: name.into(),
@@ -352,25 +349,40 @@ impl ProxyProtocolTlsAcceptor {
 }
 
 async fn handle_proxy_protocol_stream(
-    mut stream: L4Stream,
+    stream: L4Stream,
     tls: Option<Arc<ProxyProtocolTlsAcceptor>>,
     app_logic: Arc<HttpProxy<TakoProxy>>,
     shutdown: ShutdownWatch,
 ) -> Result<()> {
+    let stream = accept_proxy_protocol_stream(stream, tls, TLS_HANDSHAKE_TIMEOUT).await?;
+    handle_event(stream, app_logic, shutdown).await;
+    Ok(())
+}
+
+async fn accept_proxy_protocol_stream(
+    mut stream: L4Stream,
+    tls: Option<Arc<ProxyProtocolTlsAcceptor>>,
+    tls_timeout: Duration,
+) -> Result<Stream> {
     let parsed =
         read_proxy_protocol_header_with_timeout(&mut stream, PROXY_PROTOCOL_HEADER_TIMEOUT).await?;
     if let Some(source_addr) = parsed.source_addr {
         set_stream_peer_addr(&mut stream, source_addr);
     }
 
-    let stream: Stream = if let Some(tls) = tls {
-        tls.tls_handshake(stream).await?
+    if let Some(tls) = tls {
+        // The PROXY header deadline does not cover the subsequent TLS handshake.
+        tokio::time::timeout(tls_timeout, tls.tls_handshake(stream))
+            .await
+            .map_err(|_| {
+                Error::explain(
+                    ErrorType::TLSHandshakeTimedout,
+                    "Timed out waiting for TLS handshake after PROXY protocol header",
+                )
+            })?
     } else {
-        Box::new(stream)
-    };
-
-    handle_event(stream, app_logic, shutdown).await;
-    Ok(())
+        Ok(Box::new(stream))
+    }
 }
 
 async fn read_proxy_protocol_header_with_timeout<R>(
@@ -441,6 +453,58 @@ fn prefer_h2<'a>(_ssl: &mut SslRef, alpn_in: &'a [u8]) -> Result<&'a [u8], AlpnE
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    async fn proxy_protocol_connection() -> (tokio::net::TcpStream, L4Stream) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut client = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (server, _) = listener.accept().await.unwrap();
+        client
+            .write_all(b"PROXY TCP4 192.0.2.1 192.0.2.2 12345 443\r\n")
+            .await
+            .unwrap();
+        (client, server.into())
+    }
+
+    #[tokio::test]
+    async fn proxy_protocol_times_out_stalled_tls_after_valid_header() {
+        let (mut client, stream) = proxy_protocol_connection().await;
+        let builder = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls()).unwrap();
+        let tls = Arc::new(ProxyProtocolTlsAcceptor::from_builder(builder, None));
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            accept_proxy_protocol_stream(stream, Some(tls), Duration::from_millis(50)),
+        )
+        .await
+        .expect("stalled TLS must not outlive its deadline");
+        let error = result.err().expect("TLS handshake should time out");
+        assert_eq!(error.etype, ErrorType::TLSHandshakeTimedout);
+        let read = tokio::time::timeout(Duration::from_secs(2), client.read(&mut [0]))
+            .await
+            .expect("timed out socket must be closed")
+            .unwrap();
+        assert_eq!(read, 0);
+    }
+
+    #[tokio::test]
+    async fn proxy_protocol_cleartext_preserves_source_and_request() {
+        let (mut client, stream) = proxy_protocol_connection().await;
+        client.write_all(b"GET / HTTP/1.1\r\n").await.unwrap();
+        let mut stream = accept_proxy_protocol_stream(stream, None, Duration::ZERO)
+            .await
+            .unwrap();
+        let peer = stream.get_socket_digest().unwrap();
+        assert_eq!(
+            peer.peer_addr().unwrap().as_inet().unwrap(),
+            &"192.0.2.1:12345".parse::<SocketAddr>().unwrap(),
+        );
+        let mut request = [0; 16];
+        stream.read_exact(&mut request).await.unwrap();
+        assert_eq!(&request, b"GET / HTTP/1.1\r\n");
+    }
 
     #[tokio::test]
     async fn proxy_protocol_timeout_applies_to_header_read() {

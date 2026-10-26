@@ -5893,6 +5893,7 @@ dependencies = [
  "dashmap 6.2.1",
  "filetime",
  "flate2",
+ "h2",
  "hex",
  "hostname",
  "http-body-util",
