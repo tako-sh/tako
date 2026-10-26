@@ -1,447 +1,339 @@
 ---
-description: Run and publish Tako proxy performance benchmarks and website report
+description: Run Tako performance experiments in GitHub Actions and publish validated results
 ---
 
 $ARGUMENTS
 
 # Performance Benchmark
 
-Run a repeatable Tako performance benchmark, update the public performance
-report and `/performance` website page, and leave the main Tako repo with only
-a short TLDR link.
+Use [tako-sh/performance](https://github.com/tako-sh/performance) for benchmark
+workflows, harnesses, patches used only for measurement, raw data, and reports.
+Run experiments on free standard GitHub-hosted Linux runners in that public
+repository by default. Do not require an SSH VM or add benchmark workflows to
+`tako-sh/tako`. Use a dedicated VM when the workload needs isolation, additional
+capacity, or multiple machines.
 
-Use the dedicated performance repository for harness code, raw data, graphs,
-and the detailed report. Use this repo only for the high-level `BENCHMARKS.md`
-summary and website pages that summarize the public report.
+Carry the requested work through execution, inspection, necessary fixes, reruns,
+and a reviewable result. A diagnostic run belongs in its own dated report; it
+does not automatically replace the public benchmark or website charts. For a
+publication request, update those summaries only after complete comparable runs
+support the claims.
 
-This command is an end-to-end workflow. Do not stop at a plan or raw benchmark
-output unless blocked: prepare the VM, run the tests, inspect the results, fix
-obvious harness or simple Tako issues, rerun when needed, update reports,
-sanitize, validate, commit, and push.
+## Inputs and defaults
 
-## Inputs
+- Reuse the performance checkout available in the workspace, or clone
+  `https://github.com/tako-sh/performance.git`. Inspect existing work before
+  creating an isolated branch/worktree; preserve unrelated changes.
+- For release comparisons, resolve the latest published Tako release to an exact
+  revision. For optimization experiments, pin the unchanged baseline and
+  candidate source, and describe the patch. Never silently substitute an older
+  workflow pin for the requested build.
+- Default to the standard `ubuntu-24.04` Actions runner. No paid larger runner or
+  cloud machine without explicit authorization.
+- The current memory workflow is `.github/workflows/memory.yml`; its harness is
+  `diagnostics/full-memory/`. Read both before running: the workflow pins source
+  revisions and toolchains rather than accepting a Tako revision input.
+- As of this guide's update, that workflow is in
+  [performance PR #2](https://github.com/tako-sh/performance/pull/2), branch
+  `codex/memory-benchmark`. Check its current status. After merge, use the
+  performance repository's default branch or the experiment branch derived from
+  it. Do not assume an unmerged workflow can be manually dispatched.
+- The workflow currently compares full Tako and Caddy for HTTP/1.1 memory and
+  small-response traffic. It does not run the complete five-proxy report,
+  HTTP/2, bulk transfers, channels, workflows, or multi-node load balancing.
+  Extend the performance harness for missing coverage and label it accurately.
+- Use HTTPS with the same certificate, route, upstream response, request timeouts,
+  URL/Host/SNI, source IPs, concurrency, warmup, and measurement interval for
+  every compared proxy. Keep the load generator's request timeout at 60 seconds
+  and its per-host connection cap equal to concurrency.
+- Keep only useful history, but preserve failed, incomplete, and superseded
+  evidence that explains a correction. Do not select only favorable repetitions.
 
-The user should provide a benchmark server for each run. Do not assume a server
-from a previous chat still exists or is still accessible.
+## Acceptance requirements
 
-The user may provide:
+For memory optimizations, both comparisons must pass under equivalent conditions:
 
-- benchmark VM SSH host;
-- optional target IP or local-only mode;
-- target Tako release or branch;
-- whether to compare latest release, a patched build, or both;
-- whether to run only HTTP proxy tests or also channel/workflow tests;
-- whether a larger/multi-node server is available for load-balancer tests.
+1. Preserve unchanged Tako's throughput, p95/p99 latency, and CPU efficiency per
+   successful request or transferred byte. A repeatable regression blocks the
+   change; no percentage of slowdown has been approved in exchange for RAM.
+2. Keep Tako faster than Caddy on the compared workloads, with correct successful
+   responses. Beating Caddy does not excuse slowing down relative to Tako.
 
-If the VM host is not clear, ask for it before doing any remote work. If the
-target release is not clear, use the latest published Tako release unless the
-user explicitly asks for a local/patched build.
+Cover small requests, large uploads and downloads, HTTP/1.1 and HTTP/2, steady
+connections and connection churn. Add long-lived streaming and idle/reactivation
+cycles for changes to buffer lifetime. Check framing, pipelining, unread bytes,
+flush behavior, cancellation, and connection reuse when changing buffering.
 
-## Defaults
+Use enough paired repetitions, reversing or balancing order, to quantify noise.
+Compare tail latency at matched offered load as well as saturation throughput.
+Verify that the client and upstream are not hiding proxy differences. Two short
+runs or an inconclusive difference do not establish absence of a regression.
+The current memory workflow is a diagnostic, not this full acceptance suite.
 
-- Performance repo: `~/github/tako-performance`
-- Public repo: `git@github.com:tako-sh/performance.git`
-- Main repo summary: `BENCHMARKS.md`
-- Website performance page: `website/src/pages/performance.astro`
-- Website performance data: `website/src/data/performance.ts`
-- Homepage performance teaser: `website/src/pages/index.astro`
-- Detailed report: `RESULTS.md`
-- Benchmark server: supplied by the user for that run; never reuse an old host
-  from memory or thread history without the user confirming it.
-- Timed HTTP path: VM-local, HTTPS, HTTP/1.1, same certificate and route for
-  nginx, HAProxy, Envoy, Caddy, and Tako.
-- Load-balanced mode: skip on the small exe-node/2 vCPU VM. Only run LB on a
-  larger or multi-node testbed.
-- History policy: KISS. Keep the latest authoritative report and raw result
-  set. Keep only notable older runs when they explain an important correction.
+## Phase 1 — Preflight and build identity
 
-## Non-Negotiable Rules
+1. Inspect both repositories' status, instructions, intended branches, and open
+   benchmark PRs. Use isolated worktrees when needed.
+2. Read the selected workflow, harness README, and recent diagnostic report.
+   Confirm its scope matches the question before spending a benchmark run.
+3. Pin and record the Tako revision, performance revision, dependency lockfiles,
+   candidate patch/hash, Rust and Go toolchains, Caddy plus rate-limit plugin,
+   runtime libraries, and container image digest. Capture binary hashes too.
+   PR runs may check out a merge commit; record the actual measured checkout.
+4. Validate affected harness code and the candidate before measuring. The memory
+   workflow runs `cargo test --locked -p tako-server proxy:: -j 4` before the
+   release build. Run affected Go tests, Python syntax checks, and shell checks
+   when changing those parts.
+5. Confirm the resource limits and measurement boundaries. The memory workflow
+   uses a disposable container with **2 CPUs of quota, 8 GiB RAM, and no swap**;
+   the proxy, load generator, and upstream app share that quota. This is not an
+   exclusive two-core VM. Host contention and different runner CPUs can change
+   absolute results between jobs.
 
-- Do not expose sensitive data in public files. Never commit real SSH hosts,
-  public IPs, private IPs, local usernames, local absolute paths, peer names,
-  tokens, secrets, or Tailscale identifiers.
-- It is okay to name the server provider or VM platform, such as "exe.dev", if
-  that does not reveal the exact host, account, peer, or private network.
-- Real hostnames may be used in local commands, but public docs must use
-  placeholders such as `<ssh-host>` and controlled benchmark names such as
-  `bench.test`.
-- Before committing public reports, scan for sensitive strings.
-- Keep all proxies under equivalent conditions: same URL, Host, SNI, TLS cert,
-  upstream app behavior, warmup, duration, source IP set, and concurrency list.
-- Keep request/connection protection comparable without making the limiter the
-  benchmark. Tako's released default enforces 2048 active requests per derived
-  client IP, so high-concurrency runs must use the documented 16 loopback source
-  IPs. Configure nginx and HAProxy with high per-IP connection guards. Caddy
-  must use the benchmark repo's Caddy binary built with
-  `github.com/mholt/caddy-ratelimit`; keep its ceiling high enough not to
-  impose a different RPS bottleneck. Envoy must use the benchmark repo config
-  with high local-rate-limit and raised cluster circuit-breaker thresholds.
-- Do not compare Tako load-balanced mode on the 2 vCPU exe-node; it mostly
-  measures process contention, not load-balancer quality.
-- Do not treat high-load client errors as proxy failures until error samples
-  prove the source. Check `error_kinds` and `error_samples`.
-- Use the fixed load generator behavior: `REQUEST_TIMEOUT=60s`, sampled error
-  messages, and per-host connection cap equal to concurrency.
+The full-server harness uses Tako's original installer, Linux app identities and
+cgroups, and a real deployed Go app. Keep that setup for product-level claims.
+A minimal Pingora responder or fixed-upstream proxy is useful for attribution,
+but must be labeled separately.
 
-## Phase 1 — Preflight
+## Phase 2 — Run through GitHub Actions
 
-1. Check both worktrees:
+Run these commands from the performance checkout. Pass `-R` explicitly so jobs
+cannot accidentally run in the main Tako repository.
+
+While `memory.yml` exists only on a PR branch, push relevant harness/workflow
+changes and use its `pull_request` run. Inspect the workflow's path filters; an
+unrelated push may not trigger it. GitHub requires a workflow to exist on the
+default branch for `workflow_dispatch`. Do not merge a PR just to trigger a test.
+
+Once the workflow is available on the default branch, dispatch the intended ref:
 
 ```bash
-git -C ~/github/tako status --short --branch
-git -C ~/github/tako-performance status --short --branch
+gh workflow run memory.yml -R tako-sh/performance \
+  --ref '<performance-branch>' -f stress=false
 ```
 
-2. Check local machine load if the client will generate traffic. For VM-local
-   runs this is informational only.
-
-3. Check benchmark VM health before running:
+Find the run for the intended branch, event, and commit; never assume the newest
+run belongs to this task. Inspect PR checks as well when using a PR trigger.
 
 ```bash
-ssh <ssh-host> uptime
-ssh <ssh-host> free -h
-ssh <ssh-host> ps -eo pid,ppid,pcpu,pmem,comm,args --sort=-pcpu
-ssh <ssh-host> 'systemctl show tako-server -p LimitNOFILE 2>/dev/null || true'
+gh run list -R tako-sh/performance --branch '<performance-branch>' --limit 10 \
+  --json databaseId,workflowName,event,headSha,status,conclusion,url
+gh run view '<run-id>' -R tako-sh/performance \
+  --json databaseId,workflowName,event,headSha,status,conclusion,jobs,url
+gh run watch '<run-id>' -R tako-sh/performance --exit-status
 ```
 
-Abort or explain before continuing if another process is consuming enough CPU or
-memory to distort results.
+The workflow cancels an older run on the same ref when a new run starts. A
+cancelled run or a failed build is not completed benchmark evidence. For an
+unchanged source/harness retry, `gh run rerun '<run-id>' -R tako-sh/performance`
+replays the existing run; it does not pick up a newer branch commit.
 
-Also confirm the app processes used by the benchmark inherit a high file
-descriptor limit. A low app-side `nofile` limit can turn high-concurrency rows
-into upstream `502`s that look like proxy or SQLite failures.
+Use `-f stress=true` only when investigating 20,000 continuously active workers.
+That optional saturation test can overload the upstream and fail health checks.
+It is different from holding 20,000 exercised connections open.
 
-4. Capture non-sensitive server details for the report:
+The workflow builds release binaries and runs inside a disposable privileged
+container with private cgroup and network namespaces. Follow its Docker setup;
+never mount the host cgroup tree into the benchmark container. Keep network and
+file-descriptor limits equivalent across variants. The harness widens ephemeral
+ports and backlogs, reserves listener ports, and uses fresh upstream ports where
+needed to avoid source-port exhaustion and collisions during churn.
+
+## Phase 3 — Collect and inspect the artifact
+
+Artifacts are named `full-memory-<github.sha>` and currently expire after 14 days.
+Download promptly to a new directory; do not overwrite an earlier run.
 
 ```bash
-ssh <ssh-host> 'uname -a; lsb_release -a 2>/dev/null || cat /etc/os-release; nproc; free -h; df -h /'
+gh run download '<run-id>' -R tako-sh/performance \
+  --name '<artifact-name>' --dir 'results/<date>-<experiment>/ci-<run-id>'
+python3 diagnostics/full-memory/summarize.py 'results/<date>-<experiment>/ci-<run-id>/active'
+python3 diagnostics/full-memory/summarize.py 'results/<date>-<experiment>/ci-<run-id>/held'
 ```
 
-If region or ping matters, measure it for the current server. Report the
-provider/platform, sanitized region, and latency summary, but not exact
-hostnames or IPs.
+Inspect the artifact layout before running the summarizer. If CLI artifact
+download fails, use the GitHub UI or an available GitHub artifact tool. Verify
+the run ID and artifact identity; never commit temporary signed download URLs.
 
-5. Confirm benchmark tools are current and clean:
+Read `build.txt`, each mode's `metadata.json` and `summary.json`, and per-case
+`load.json`, `samples.json`, and `summary.json`. The workflow uploads
+JSON and build identity, including partial results when available. Runtime logs
+are excluded because they can contain machine-specific source paths. Downloaded
+artifacts and a rendered summary alone do not prove the run passed: check the job
+conclusion, expected cases, repetitions, and every case's `success` field.
+
+The current default matrix has four variants (Tako 64/32/16 KiB and Caddy), two
+opposite-order repetitions, and two modes: eight active and eight held cases.
+
+| Mode | Workload | Memory statistic | What it establishes |
+| --- | --- | --- | --- |
+| Active | 5,000 workers; 5 s warmup, 20 s nominal load; 13-byte responses over TLS HTTP/1.1 | Peak proxy-process PSS, including warmup and churn | Memory under this traffic and preliminary throughput/latency |
+| Held | 20,000 TLS connections; 21 verified requests each, at most 64 in flight; hold open 10 s | Median proxy-process PSS during the holding phase | Retained memory at a verified connection count, not maximum RPS |
+| Optional stress | 20,000 continuously active workers | Peak PSS plus errors, latency, and throughput | Saturation behavior; failures are not capacity wins |
+
+For every case, inspect:
+
+- Successful RPS, total RPS, p50/p95/p99, status counts, transport errors, response
+  correctness, `error_kinds`, and `error_samples`. Request draining can extend the
+  nominal duration; use the harness's recorded elapsed time.
+- CPU and memory over time, including client/upstream utilization when judging
+  bottlenecks. Do not divide CPU covering warmup and teardown by only timed
+  requests and call it precise CPU per request; align the intervals.
+- Proxy PSS, RSS, and private pages from `smaps_rollup`, sampled every 250 ms in
+  this harness. These exclude client and upstream process memory. They are
+  process-memory measurements, not Rust/Go heap measurements or total machine
+  memory; kernel socket memory is not included in process PSS.
+- Established connections on the TLS port, sampled about every five seconds.
+  Active worker count is not a simultaneous connection count. Held cases must
+  verify all 20,000 connections during the holding phase, before teardown.
+- Idle retention and memory after close separately from active peaks. Lower
+  post-burst memory does not establish lower memory while connections stay live.
+
+Any non-200, transport error, incorrect body, or failed held-connection count
+invalidates a successful-memory/capacity claim for that case. Preserve and
+investigate it. Missing cases remain incomplete, even if completed cases look good.
+
+## Phase 4 — Diagnose and rerun
+
+Classify the finding before changing production behavior:
+
+- **Capacity:** correct responses within an explicit latency/error SLO.
+- **Saturation:** CPU/queues overloaded; useful for overload behavior, not an SLO
+  capacity claim.
+- **Harness limitation:** loadgen bottleneck, local source-port exhaustion,
+  `TIME_WAIT`, listener-port collision, file-descriptor limits, or stale samplers.
+- **Product behavior:** for example, upstream health checks timing out under
+  shared CPU pressure and causing 502/503 responses. Do not relax production
+  checks solely to turn a failed benchmark green.
+
+Keep the 16 controlled loopback client IPs for high concurrency; otherwise Tako's
+2,048-active-request per-IP default can become the bottleneck. Keep Caddy's
+pinned `github.com/mholt/caddy-ratelimit` build and equivalent high-water guards
+for other proxies. Report logging differences too: the current Tako experiment
+retains its per-request app logging, while Caddy's access logging is off. These
+are product-configuration comparisons, not isolated language-runtime comparisons.
+
+Fix harness problems in the performance repo, validate them, and rerun all
+comparisons affected by the correction. Put production fixes in Tako with the
+appropriate tests. Preserve build identity and label patched builds explicitly.
+Do not combine candidates from one environment or harness revision with controls
+from another and present the difference as an optimization win.
+
+### Buffer and Pingora findings to carry forward
+
+Read the [full-server investigation](https://github.com/tako-sh/performance/blob/cf58e6278a9a618c36c0f33136a830dbb35fef21/results/20261026-full-memory/README.md)
+and [harness guide](https://github.com/tako-sh/performance/blob/cf58e6278a9a618c36c0f33136a830dbb35fef21/diagnostics/full-memory/README.md)
+for evidence and current limitations. Follow their default-branch successors
+once merged instead of copying experimental numbers into this playbook.
+
+- The tested baseline already uses Pingora 0.9. Its pooling, shutdown-contention,
+  and long-timeout improvements are included. Check the actual lockfile and
+  released source before crediting another upgrade or proposing a new setting.
+- `ListenerConfig` / `L4BufferSettings` configure fixed accepted-socket buffers.
+  The 64/32/16 KiB experiment changes ordinary HTTP/TLS listeners only; it does
+  not change the custom PROXY-protocol listener, upstream buffers, or HTTP body
+  buffers. No candidate has cleared the full performance acceptance requirement.
+- Pingora 0.9 does not automatically resize or release these L4 buffers while
+  idle. Dynamic retention is an experiment requiring buffer-layer changes and
+  correctness checks; do not describe it as an available configuration switch.
+- The earlier 64-to-4 KiB HTTP **body** buffer experiment was a different layer
+  and did not establish a useful win. Do not confuse it with socket-buffer data.
+- Smaller buffers can increase reads, syscalls, and CPU for large transfers.
+  Small-response RPS alone cannot establish that uploads/downloads are unaffected.
+- Keep equivalent connection reuse; disabling keepalive or closing connections
+  after every request can hide retained memory while increasing handshake costs.
+- `SSL_MODE_RELEASE_BUFFERS` is already enabled by the OpenSSL acceptor used
+  here. `MIMALLOC_PURGE_DELAY=0` helped post-burst retention in earlier probes,
+  not live peak memory. Neither is an established solution to live L4 allocation.
+- Tokio 1.54 rejects the zero-capacity buffers created by Pingora 0.9; current
+  Tako pins Tokio 1.53.1. Preserve the compatible lockfile and connection test
+  until a tested upstream fix replaces that constraint.
+- Separate released APIs from upstream proposals, and distinguish potential
+  allocation savings from measured PSS. Do not infer all unexplained memory is
+  TLS or GC overhead.
+
+## Dedicated VM and broader benchmark fallback
+
+Use a VM when the current Actions harness lacks the required workload or cannot
+isolate the bottleneck. Reuse a host authorized for this task only after checking
+it is still accessible and suitable. Ask for a host only if none is available
+and the chosen test actually requires one; never assume a host from another chat.
+
+Check VM load, OS, CPU/memory/swap, disk, and proxy **and app** file-descriptor
+limits. Record provider/shape and sanitized metadata, not `uname -a` output
+containing a real hostname. Verify the actual installed Tako binary/version.
+
+The performance repo retains scripts for the five-proxy and channel/workflow
+suites. Read their current inputs before use. Typical VM-local proxy invocation:
 
 ```bash
-cd ~/github/tako-performance
-go test ./...
-go build ./cmd/...
-bash -n scripts/run-vm-local-http-benchmarks.sh \
-  scripts/run-vm-local-tako-feature-benchmarks.sh \
-  scripts/run-http-benchmarks.sh \
-  scripts/run-tako-feature-benchmarks.sh \
-  scripts/remote/start-metrics.sh \
-  scripts/remote/sample-metrics.sh
-```
-
-## Phase 2 — Prepare VM
-
-Sync the performance repo to the VM:
-
-```bash
-cd ~/github/tako-performance
-BENCH_VM=<ssh-host> ./scripts/sync-to-vm.sh
-```
-
-Prefer the published Tako release for release benchmarks. Build locally only
-when intentionally benchmarking an unreleased patch, and label it clearly in
-`RESULTS.md`.
-
-Install the benchmarked release on the VM and pass its absolute path as
-`TAKO_SERVER_BIN`. Verify the running process version before the final run so a
-stale `/usr/local/bin/tako-server` cannot silently become the measured binary.
-
-For feature benchmarks, run separate rows for accepted enqueue/publish pressure
-and for worker execution pressure when investigating failures. The combined row
-is useful as an end-to-end product test, but it mixes app HTTP handling, SDK
-internal-socket RPC, SQLite persistence, and workflow worker writes.
-
-If the user asked to benchmark a release that is not available yet, wait for or
-verify the release before running the final benchmark. A patched/local build can
-be used for diagnosis, but do not present it as a release result.
-
-## Phase 3 — Run HTTP Proxy Benchmark
-
-Use VM-local load generation for the small exe-node so public internet latency
-and the laptop do not dominate the result.
-
-The performance repo configs are expected to include nginx `limit_conn`,
-HAProxy stick-table connection tracking, Envoy local rate limiting, and the
-Caddy rate-limit module so Tako is not the only proxy doing per-client
-protection work on the hot path.
-
-For controlled high-concurrency runs, use the documented 16 loopback source IPs.
-The production default is 2048 active requests per client IP; a single source IP
-can fail at exactly 2048 with `429`, which measures the safety limiter instead
-of proxy throughput. If a future released build supports
-`TAKO_MAX_REQUESTS_PER_IP`, it can also be passed, but do not depend on it for
-current release comparisons.
-
-```bash
-cd ~/github/tako-performance
-BENCH_VM=<ssh-host> \
-TAKO_SERVER_BIN=/opt/tako-performance/bin/<tako-server-release> \
+BENCH_VM='<ssh-host>' ./scripts/sync-to-vm.sh
+BENCH_VM='<ssh-host>' \
+TAKO_SERVER_BIN='<absolute-path-to-verified-binary>' \
 SOURCE_IPS='127.0.0.2,127.0.0.3,127.0.0.4,127.0.0.5,127.0.0.6,127.0.0.7,127.0.0.8,127.0.0.9,127.0.0.10,127.0.0.11,127.0.0.12,127.0.0.13,127.0.0.14,127.0.0.15,127.0.0.16,127.0.0.17' \
-PROXIES='nginx haproxy envoy tako caddy' \
-MODES=single \
-ENDPOINTS=plaintext \
+PROXIES='nginx haproxy envoy tako caddy' MODES=single ENDPOINTS=plaintext \
 CONCURRENCY_LIST='1000 2500 5000 7500 10000 15000 20000' \
-WARMUP=10s \
-DURATION=30s \
-REQUEST_TIMEOUT=60s \
-METRICS_INTERVAL=1 \
-METRICS_CONNECTIONS=1 \
-COOLDOWN_SECONDS=10 \
+WARMUP=10s DURATION=30s REQUEST_TIMEOUT=60s \
+METRICS_INTERVAL=1 METRICS_CONNECTIONS=1 COOLDOWN_SECONDS=10 \
 ./scripts/run-vm-local-http-benchmarks.sh
 ```
 
-Keep Caddy last in the ordered proxy list for the small-VM run. Its overload
-rows can leave the VM hot enough to bias the immediately following row.
+Use paired/balanced order for optimization comparisons; do not leave a hot
+previous case to bias the next proxy. High-load rows need separate lower-load,
+matched-SLO checks. Load-balanced mode needs a larger or multi-node testbed;
+skip it on the shared two-CPU setup.
 
-If the user mainly wants overload behavior, run the full list above. If the user
-mainly wants production capacity, add a separate lower-load/SLO-oriented run and
-report where p99 and errors cross the agreed threshold.
+Run channels/workflows separately with
+`scripts/run-vm-local-tako-feature-benchmarks.sh`. Separate enqueue/publish
+pressure from worker execution when diagnosing failures. Neither result is
+provided by the current memory Actions workflow.
 
-## Phase 4 — Run Channel/Workflow Benchmark
+## Phase 5 — Report and publish only supported claims
 
-Run this separately from the proxy comparison:
+For an experiment, add a concise `results/<date>-<experiment>/README.md` in the
+performance repo with raw artifacts and these details:
 
-```bash
-cd ~/github/tako-performance
-BENCH_VM=<ssh-host> \
-TAKO_SERVER_BIN=/opt/tako-performance/bin/<tako-server-release> \
-SOURCE_IPS='127.0.0.2,127.0.0.3,127.0.0.4,127.0.0.5,127.0.0.6,127.0.0.7,127.0.0.8,127.0.0.9,127.0.0.10,127.0.0.11,127.0.0.12,127.0.0.13,127.0.0.14,127.0.0.15,127.0.0.16,127.0.0.17' \
-CONCURRENCY_LIST='500 1000 2000 4000 8000' \
-WARMUP=10s \
-DURATION=30s \
-REQUEST_TIMEOUT=60s \
-METRICS_INTERVAL=1 \
-METRICS_CONNECTIONS=1 \
-COOLDOWN_SECONDS=10 \
-./scripts/run-vm-local-tako-feature-benchmarks.sh
-```
+- Question, baseline/candidate changes, exact build identity, Actions run URL/ID
+  and attempt, and sanitized resource/environment metadata.
+- Workloads, duration, repetition/order, measurement scope, per-run results and
+  spread, successful-response counts, and remaining uncertainty.
+- Failed/incomplete runs, harness corrections, and which cases supersede them.
+- Whether memory improved, whether performance preservation is established, and
+  how Tako compares with Caddy. State unmeasured workloads explicitly.
 
-## Phase 5 — Inspect Results
+Only after complete comparable runs justify replacing the public report:
 
-For every run, inspect:
+1. Update the performance repo's `RESULTS.md`, graphs, and raw-data links.
+2. Update Tako's `BENCHMARKS.md` with a short TLDR and report links.
+3. Update `website/src/data/performance.ts` and
+   `website/src/pages/performance.astro` so numbers, hardware, versions,
+   methodology, and claims agree with the report.
+4. Update `website/src/pages/index.astro` if its performance claim changed.
 
-- 200 RPS;
-- total RPS;
-- p50/p95/p99 latency;
-- non-200 percentage and status counts;
-- client error percentage;
-- `error_kinds` and `error_samples`;
-- CPU and RAM graphs;
-- proxy server process memory and load-generator memory;
-- proxy `VmRSS`, `RssAnon`, PSS, and private dirty when available from
-  `/proc/<pid>/status` and `/proc/<pid>/smaps_rollup`;
-- max TLS connections.
+Do not compare absolute Actions RPS against the old dedicated VM as if only the
+code changed. Keep diagnostic results separate from published release results,
+and never turn a failed or partial run into a headline win.
 
-Use raw JSON/CSV evidence. Do not rely only on the summary graph.
-Publish public Memory comparisons only on comparable rows: same endpoint,
-same TLS mode, same sampling method, and either the same health threshold or an
-explicit 200 rate beside every degraded row. For c20000, prefer PSS/private
-Memory from `/proc/<pid>/smaps_rollup`; do not relabel RSS as Memory for a
-Rust-vs-Go efficiency claim.
+## Phase 6 — Sanitize, validate, and deliver
 
-Known local profiling notes to avoid repeating:
+Before committing, inspect every changed report and raw artifact for real hosts,
+IPs, usernames, absolute machine paths, peer/Tailscale identifiers, email
+addresses, tokens, credentials, signed download URLs, and private runtime logs.
+Controlled names such as `bench.test`, loopback addresses, generic container
+paths, public revisions, and Actions run URLs are appropriate. Provider names
+are fine without account or host identifiers.
 
-- The published `proxy_rss_bytes` value is already process-scoped to the proxy
-  server PID; it is not whole-VM memory and does not include the app or
-  load-generator process. However, PID RSS still includes resident shared and
-  file-backed mappings, so use user-facing wording like "server process memory"
-  and do not claim private Rust-vs-Go heap efficiency from RSS alone. For memory
-  efficiency claims, add or inspect `smaps_rollup` fields such as PSS,
-  `RssAnon`, and private dirty.
-- A 2026-06-05 TLS `smaps_rollup` diagnostic showed why the public Memory
-  view should use clean comparable rows. At c1000/c2500/c4000, all 100% 200,
-  process PSS was Caddy 208/386/553 MiB, fixed Pingora 140/321/487 MiB, and
-  Tako 144/261/374 MiB. Private dirty showed the same shape: Caddy
-  171/349/515 MiB, fixed Pingora 131/312/478 MiB, and Tako 115/232/345 MiB.
-  This contradicts a naive c20000 RSS reading where Caddy was already degraded
-  and Tako was still clean.
-- A 2026-06-05 five-proxy rerun added `proxy_pss_bytes` and
-  `proxy_private_bytes` to the harness. Use that shape for public Memory:
-  nginx/HAProxy/Tako/Envoy/Caddy through c20000, with c20000 200 rate beside the
-  Memory values. The c20000 PSS row was nginx 451 MiB, HAProxy 624 MiB, Tako
-  1700 MiB, Envoy 1004 MiB, and Caddy 1511 MiB.
-- High proxy RSS at large downstream connection counts is not OpenSSL alone. A
-  local macOS 5k HTTPS keepalive control measured roughly 191 MB RSS for raw
-  Tokio + OpenSSL, roughly 356 MB for a Pingora-only HTTPS responder with no
-  upstream proxying, and roughly 524-558 MB for full Tako after deploy.
-- A follow-up Linux control on the 2 vCPU exe.dev VM confirmed the useful
-  split: raw Tokio + OpenSSL was ~136.6 MB at 5k HTTPS keepalive connections,
-  a Pingora-only HTTPS responder was ~341.4 MB, a fixed-upstream Pingora
-  reverse proxy was ~535.3 MB, and full Tako was ~549.0 MB. Full Tako's
-  post-deploy baseline was ~51.9 MB. The large 341->535 MB jump is the generic
-  Pingora reverse-proxy path, not Tako routing/LB. Tako's overhead above the
-  comparable fixed Pingora reverse proxy was only ~14 MB at 5k live
-  connections in that control.
-- A fixed-upstream Pingora reverse-proxy RPS control on the same small VM was
-  not faster than Tako: it measured roughly 7.1k RPS at c10000, 4.7k at c15000,
-  and 1.6k at c20000 with 502s. Treat this as diagnostic evidence that the
-  remaining nginx gap is not explained by Tako route lookup, load-balancer
-  lookup, or limiter accounting alone.
-- A local patched Tako build with a cheaper existing-IP limiter path did not
-  produce a stable headline win. Keep the cleanup if it stays simple, but do
-  not claim it as the reason for improved results without repeatable A/B rows.
-- Do not over-interpret the local macOS post-deploy baseline. `vmmap -summary`
-  showed large framework/IOAccelerator mappings, so Linux VM RSS is the source
-  of truth for published numbers.
-- `SSL_MODE_RELEASE_BUFFERS` did not materially reduce retained RSS in profiling
-  runs. `MIMALLOC_PURGE_DELAY=0` repeatedly lowered post-burst retained Tako RSS
-  on the Linux exe.dev VM, but it did not reduce the live c20000 RSS peak that
-  appears in published benchmark rows. Do not set it as the production service
-  default unless prod data shows retained RSS matters more than the extra purge
-  churn risk.
-- Disabling downstream keepalive, or setting the keepalive request limit to
-  `0`/`1`, hides much of the RSS but is not comparable to nginx, HAProxy,
-  Envoy, or Caddy and hurts RPS. Keep the bounded keepalive request limit
-  instead.
-- A temporary Pingora 0.8 H1 body-buffer patch that reduced the internal
-  `BODY_BUFFER_SIZE` from 64 KiB to 4 KiB did not improve the raw fixed-proxy
-  c20000 RSS/RPS control. Do not vendor or fork Pingora for that change without
-  stronger evidence.
+Validate what changed: affected Go tests/builds, shell syntax, Python syntax,
+Rust tests for a candidate, and website build when website files change. Run
+`git diff --check` in each changed repository. Documentation-only edits need
+link/command review, not a new performance run. Let required hooks finish; do not
+commit known failures without explicit authorization.
 
-Helpful command:
+Commit focused changes with Conventional Commit messages, push the working
+branches, and create/update reviewable PRs. Keep harness/workflow/results changes
+in the performance repo and production/summary changes in Tako. Preserve existing
+work and do not push directly to default branches as part of this playbook.
 
-```bash
-jq '{name, concurrency, request_timeout_sec, requests, errors, requests_per_sec, latency_ms, status_counts, error_kinds, error_samples}' results/<timestamp>/http-vm-local/*.json
-```
-
-Classify results honestly:
-
-- Saturation result: CPU near 100%, useful for maximum-pressure behavior.
-- Capacity result: latency and error rates still within an explicit SLO.
-- Harness artifact: error samples point to loadgen timeout, local address
-  exhaustion, file descriptors, or other client-side limits.
-
-## Phase 5b — Fix Obvious Issues And Rerun
-
-If inspection shows a benchmark-harness artifact, fix the harness in
-`~/github/tako-performance`, validate it, sync it to the VM, and rerun the
-affected cases before updating `RESULTS.md`.
-
-If inspection shows a simple, high-confidence Tako issue, fix it in
-`~/github/tako` with tests where required, commit it, wait for or produce the
-intended benchmark build, and rerun the affected cases. Do not publish a result
-whose main conclusion is based on a known-bad harness or a known-fixed local
-bug unless the report clearly labels it as superseded/diagnostic.
-
-Examples of issues to fix before publishing:
-
-- client errors caused by load-generator timeouts, file-descriptor limits, or
-  local source-port exhaustion;
-- metrics graphs distorted by stale samplers or negative process CPU deltas;
-- process metrics accidentally including unrelated system services, such as the
-  VM's default nginx;
-- wrong proxy mode, URL, Host/SNI, TLS, source IPs, or timeout settings;
-- an obvious Tako hot-path regression already fixed locally and awaiting a
-  release.
-
-## Phase 6 — Update Reports
-
-In `~/github/tako-performance`:
-
-1. Update `RESULTS.md` as the latest authoritative report.
-2. Keep the report public-safe and concise.
-3. Include:
-   - release/build under test;
-   - provider/platform, VM shape, OS, region, and ping summary without exact
-     host/IP;
-   - methodology;
-   - graph links;
-   - raw result directory links;
-   - HTTP proxy results;
-   - channel/workflow results when run;
-   - known limitations;
-   - next performance targets.
-4. Prefer latest-only. Do not add a large history unless the user asks. Keep a
-   short note for notable invalidated/superseded runs only when it prevents
-   confusion.
-
-In `~/github/tako`:
-
-1. Update `BENCHMARKS.md` with only a TLDR and links to the performance repo.
-2. Update `website/src/data/performance.ts` with the latest chart points,
-   chart scales, table rows, and structured-data wording needed by
-   `/performance`.
-3. Update `website/src/pages/performance.astro` so the hero, TLDR evidence,
-   hardware facts, key result cards, methodology, proxy versions, and raw
-   result links match the finalized public report.
-4. Update the performance teaser in `website/src/pages/index.astro` when the
-   headline numbers or comparison claims changed.
-5. Keep website copy concise and public-safe. The page should summarize the
-   latest report and link to raw data; do not duplicate full tables or raw data
-   in the main repo.
-
-## Phase 7 — Sanitize
-
-Before committing, scan both repos:
-
-```bash
-rg -n "workbench|exe\\.xyz|/Users/|tailscale|Tailscale|exedev|ssh-rsa|BEGIN .*KEY|token|secret|password" \
-  ~/github/tako-performance/README.md \
-  ~/github/tako-performance/RESULTS.md \
-  ~/github/tako-performance/results \
-  ~/github/tako/BENCHMARKS.md \
-  ~/github/tako/website/src/data/performance.ts \
-  ~/github/tako/website/src/pages/performance.astro \
-  ~/github/tako/website/src/pages/index.astro
-```
-
-Investigate any hit. Keep legitimate generic words only when they do not expose
-sensitive details.
-
-## Phase 8 — Verify, Commit, Push
-
-Run:
-
-```bash
-cd ~/github/tako-performance
-go test ./...
-go build ./cmd/...
-git diff --check
-
-cd ~/github/tako
-bun run --cwd website build
-git diff --check
-```
-
-Commit performance repo changes:
-
-```bash
-cd ~/github/tako-performance
-git add README.md RESULTS.md cmd scripts results
-git commit -m "perf(benchmarks): update performance results"
-git push origin main
-```
-
-Commit main repo summary:
-
-```bash
-cd ~/github/tako
-git add \
-  BENCHMARKS.md \
-  website/src/data/performance.ts \
-  website/src/pages/performance.astro \
-  website/src/pages/index.astro
-git commit -m "docs(benchmarks): update performance summary"
-git push origin master
-```
-
-If hooks run broader checks, let them finish. Do not commit with known failures
-unless the user explicitly approves.
-
-## Final Response
-
-Report:
-
-- what was run;
-- latest result directory and report links;
-- headline numbers;
-- whether client errors are real proxy failures or harness/client artifacts;
-- what changed in reports or harness;
-- validation commands;
-- commit hashes and push status.
+Report what changed or ran, run/PR/report links, decisive numbers and their
+limits, failed/incomplete checks, validation performed, and push status. For a
+documentation-only request, state that no benchmark or public result changed.
