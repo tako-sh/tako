@@ -154,17 +154,19 @@ pub fn run(
     env: Option<&str>,
     assume_yes: bool,
     force: bool,
+    description: Option<&str>,
     config_path: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Use tokio runtime for async SSH operations
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(run_async(env, assume_yes, force, config_path))
+    rt.block_on(run_async(env, assume_yes, force, description, config_path))
 }
 
 async fn run_async(
     requested_env: Option<&str>,
     assume_yes: bool,
     force: bool,
+    description: Option<&str>,
     config_path: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let context = project_context::resolve_existing(config_path)?;
@@ -405,6 +407,7 @@ async fn run_async(
         server_targets.clone(),
         build_groups.clone(),
         deploy_task_tree.clone(),
+        description.map(str::to_owned),
     ));
 
     let mut preflight_result: Option<Result<PreflightPhaseResult, String>> = None;

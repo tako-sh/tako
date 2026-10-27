@@ -274,3 +274,27 @@ impl Drop for EnvGuard {
         }
     }
 }
+
+#[test]
+fn release_manifest_metadata_preserves_custom_description_and_source() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("app.json");
+    std::fs::write(
+        &path,
+        serde_json::json!({
+            "description": "Fix reconnect handling",
+            "commit_message": "feat: live stores",
+            "git_dirty": true,
+        })
+        .to_string(),
+    )
+    .unwrap();
+    assert_eq!(
+        read_release_manifest_metadata(&path),
+        (
+            Some("feat: live stores".to_string()),
+            Some(true),
+            Some("Fix reconnect handling".to_string()),
+        )
+    );
+}

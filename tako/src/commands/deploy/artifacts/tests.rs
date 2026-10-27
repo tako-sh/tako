@@ -777,6 +777,7 @@ fn prepare_build_phase_packages_container_release_without_native_entrypoint() {
             display_target_label: None,
         }],
         None,
+        Some("Ship container update".to_string()),
     ));
     let build_phase = result.unwrap();
 
@@ -790,6 +791,7 @@ fn prepare_build_phase_packages_container_release_without_native_entrypoint() {
     BuildExecutor::extract_archive(archive, &unpacked).unwrap();
     let manifest_raw = std::fs::read_to_string(unpacked.join("app.json")).unwrap();
     let manifest: serde_json::Value = serde_json::from_str(&manifest_raw).unwrap();
+    assert_eq!(manifest["description"], "Ship container update");
     assert_eq!(manifest["release_kind"], "container");
     assert_eq!(manifest["container_file"], "Dockerfile");
     assert!(manifest["workflow_retention_ms"].is_null());
@@ -809,31 +811,35 @@ fn prepare_build_phase_packages_native_artifact_with_start_without_runtime() {
     tako_config.workflows.retention_ms = Some(3_600_000);
 
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let result = runtime.block_on(prepare_build_phase(
-        project.path().to_path_buf(),
-        project.path().to_path_buf(),
-        project.path().to_path_buf(),
-        "app".to_string(),
-        "production".to_string(),
-        tako_config,
-        crate::config::SecretsStore::default(),
-        "unknown".to_string(),
-        BuildAdapter::Unknown,
-        vec![(
-            "local".to_string(),
-            crate::config::ServerTarget {
-                arch: "x86_64".to_string(),
-                libc: "glibc".to_string(),
-            },
-        )],
-        vec![ArtifactBuildGroup {
-            build_target_label: "linux-x86_64-glibc".to_string(),
-            cache_target_label: "native".to_string(),
-            target_labels: vec!["linux-x86_64-glibc".to_string()],
-            display_target_label: None,
-        }],
-        None,
-    ));
+    let build = |description| {
+        runtime.block_on(prepare_build_phase(
+            project.path().to_path_buf(),
+            project.path().to_path_buf(),
+            project.path().to_path_buf(),
+            "app".to_string(),
+            "production".to_string(),
+            tako_config.clone(),
+            crate::config::SecretsStore::default(),
+            "unknown".to_string(),
+            BuildAdapter::Unknown,
+            vec![(
+                "local".to_string(),
+                crate::config::ServerTarget {
+                    arch: "x86_64".to_string(),
+                    libc: "glibc".to_string(),
+                },
+            )],
+            vec![ArtifactBuildGroup {
+                build_target_label: "linux-x86_64-glibc".to_string(),
+                cache_target_label: "native".to_string(),
+                target_labels: vec!["linux-x86_64-glibc".to_string()],
+                display_target_label: None,
+            }],
+            None,
+            description,
+        ))
+    };
+    let result = build(None);
     let build_phase = result.unwrap();
 
     assert_eq!(build_phase.manifest_main, "");
@@ -845,12 +851,27 @@ fn prepare_build_phase_packages_native_artifact_with_start_without_runtime() {
     BuildExecutor::extract_archive(archive, &unpacked).unwrap();
     let manifest_raw = std::fs::read_to_string(unpacked.join("app.json")).unwrap();
     let manifest: serde_json::Value = serde_json::from_str(&manifest_raw).unwrap();
+    assert_eq!(manifest["description"], "Local source snapshot");
     assert_eq!(manifest["runtime"], "unknown");
     assert_eq!(manifest["main"], "");
     assert_eq!(manifest["start"], serde_json::json!(["./app"]));
     assert_eq!(manifest["workflow_retention_ms"], 3_600_000);
     assert!(manifest.get("runtime_version").is_none());
     assert!(unpacked.join("app").is_file());
+
+    // Releasing unchanged source with a new description must not return the old cached manifest.
+    std::fs::remove_dir_all(&unpacked).unwrap();
+    let updated = build(Some("Fix reconnect handling".to_string())).unwrap();
+    let updated_archive = updated
+        .artifacts_by_target
+        .get("linux-x86_64-glibc")
+        .unwrap();
+    let updated_dir = project.path().join("unpacked-updated");
+    BuildExecutor::extract_archive(updated_archive, &updated_dir).unwrap();
+    let updated_manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(updated_dir.join("app.json")).unwrap()).unwrap();
+    assert_eq!(updated_manifest["version"], manifest["version"]);
+    assert_eq!(updated_manifest["description"], "Fix reconnect handling");
 }
 
 #[test]
@@ -902,6 +923,7 @@ dev = ["vite", "dev"]
             target_labels: vec!["linux-x86_64-glibc".to_string()],
             display_target_label: None,
         }],
+        None,
         None,
     ));
 

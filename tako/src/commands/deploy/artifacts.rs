@@ -43,6 +43,7 @@ pub(super) async fn prepare_build_phase(
     server_targets: Vec<(String, crate::config::ServerTarget)>,
     build_groups: Vec<ArtifactBuildGroup>,
     task_tree: Option<DeployTaskTreeController>,
+    description: Option<String>,
 ) -> Result<BuildPhaseResult, String> {
     let phase = if task_tree.is_none() {
         Some(output::PhaseSpinner::start("Building…"))
@@ -90,6 +91,7 @@ pub(super) async fn prepare_build_phase(
             env_idle_timeout,
             git_commit_message.clone(),
             git_dirty,
+            description.as_deref(),
             tako_config.get_merged_vars(&env),
             secrets.get_env(&env),
             tako_config.images.clone(),
@@ -268,6 +270,7 @@ pub(super) async fn prepare_build_phase(
         deploy_pm,
         git_commit_message.clone(),
         git_dirty,
+        description.as_deref(),
         tako_config.get_merged_vars(&env),
         runtime_env_vars,
         secrets.get_env(&env),

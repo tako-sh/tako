@@ -716,6 +716,8 @@ pub struct ReleaseInfo {
     #[serde(default)]
     pub commit_message: Option<String>,
     #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
     pub git_dirty: Option<bool>,
 }
 

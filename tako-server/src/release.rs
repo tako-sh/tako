@@ -19,6 +19,8 @@ struct ReleaseManifestMetadata {
     #[serde(default)]
     commit_message: Option<String>,
     #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
     git_dirty: Option<bool>,
 }
 
@@ -202,14 +204,16 @@ pub(crate) fn apply_release_runtime_to_config(
     Ok(())
 }
 
-pub(crate) fn read_release_manifest_metadata(path: &Path) -> (Option<String>, Option<bool>) {
+pub(crate) fn read_release_manifest_metadata(
+    path: &Path,
+) -> (Option<String>, Option<bool>, Option<String>) {
     let Ok(raw) = std::fs::read_to_string(path) else {
-        return (None, None);
+        return (None, None, None);
     };
     let Ok(parsed) = serde_json::from_str::<ReleaseManifestMetadata>(&raw) else {
-        return (None, None);
+        return (None, None, None);
     };
-    (parsed.commit_message, parsed.git_dirty)
+    (parsed.commit_message, parsed.git_dirty, parsed.description)
 }
 
 pub(crate) fn directory_modified_unix_secs(path: &Path) -> Option<i64> {

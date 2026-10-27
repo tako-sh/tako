@@ -163,6 +163,9 @@ async fn list_releases(
                     if entry.commit_message.is_none() && release.commit_message.is_some() {
                         entry.commit_message = release.commit_message.clone();
                     }
+                    if entry.description.is_none() {
+                        entry.description = release.description.clone();
+                    }
                     entry.git_dirty = merge_git_dirty(entry.git_dirty, release.git_dirty);
                 }
             }
@@ -401,14 +404,14 @@ fn max_unix_secs(a: Option<i64>, b: Option<i64>) -> Option<i64> {
 fn output_release_lines(release: &ReleaseInfo) {
     let head = format_release_head(release);
     let deployed = format_release_deployed(release);
-    let commit = format_release_commit_line(release);
+    let description = format_release_description_line(release);
 
     output::info(&format!(
         "{} {}",
         output::strong(&head),
         output::theme_muted(&deployed)
     ));
-    output::muted(&commit);
+    output::muted(&description);
 }
 
 fn format_release_head(release: &ReleaseInfo) -> String {
@@ -435,18 +438,18 @@ fn format_release_deployed(release: &ReleaseInfo) -> String {
     }
 }
 
-fn format_release_commit_line(release: &ReleaseInfo) -> String {
-    let commit_message = release
-        .commit_message
+fn format_release_description_line(release: &ReleaseInfo) -> String {
+    let description = release
+        .description
         .as_deref()
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or("(no commit message)");
+        .unwrap_or("-");
     let cleanliness = match release.git_dirty {
         Some(true) => "dirty",
         Some(false) => "clean",
         None => "unknown",
     };
-    format!("{} [{}]", commit_message, cleanliness)
+    format!("{} [{}]", description, cleanliness)
 }
 
 fn local_offset() -> UtcOffset {
@@ -579,6 +582,7 @@ mod tests {
             current: true,
             deployed_at_unix_secs: None,
             commit_message: None,
+            description: None,
             git_dirty: None,
         };
         assert_eq!(format_release_head(&release), "abc1234 [current]");
@@ -591,23 +595,25 @@ mod tests {
             current: false,
             deployed_at_unix_secs: None,
             commit_message: None,
+            description: None,
             git_dirty: None,
         };
         assert_eq!(format_release_deployed(&release), "deployed: -");
     }
 
     #[test]
-    fn release_commit_line_includes_cleanliness_marker() {
+    fn release_description_override_keeps_dirty_marker() {
         let release = ReleaseInfo {
             version: "abc1234".to_string(),
             current: false,
             deployed_at_unix_secs: None,
             commit_message: Some("feat: add rollback".to_string()),
+            description: Some("Fix reconnect handling".to_string()),
             git_dirty: Some(true),
         };
         assert_eq!(
-            format_release_commit_line(&release),
-            "feat: add rollback [dirty]"
+            format_release_description_line(&release),
+            "Fix reconnect handling [dirty]"
         );
     }
 }

@@ -33,6 +33,7 @@ pub(super) struct DeployArchiveManifest {
     pub(super) package_manager_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) commit_message: Option<String>,
+    pub(super) description: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) git_dirty: Option<bool>,
     /// Path from the archive root to the app directory (where tako.toml lives).
@@ -80,6 +81,23 @@ pub(super) fn resolve_deploy_version(
     }
     let source_hash = executor.compute_source_hash(source_root)?;
     executor.generate_version(Some(&source_hash))
+}
+
+fn resolve_release_description(
+    description: Option<&str>,
+    commit_message: Option<&str>,
+    git_dirty: Option<bool>,
+) -> String {
+    if let Some(description) = description {
+        return description.to_string();
+    }
+    match commit_message {
+        Some(subject) if git_dirty == Some(true) => {
+            format!("Uncommitted changes based on: {subject}")
+        }
+        Some(subject) => subject.to_string(),
+        None => "Local source snapshot".to_string(),
+    }
 }
 
 pub(super) fn resolve_git_commit_message(source_root: &Path) -> Option<String> {
@@ -208,6 +226,7 @@ pub(super) fn build_deploy_archive_manifest(
     package_manager: Option<String>,
     commit_message: Option<String>,
     git_dirty: Option<bool>,
+    description: Option<&str>,
     app_env_vars: HashMap<String, String>,
     runtime_env_vars: HashMap<String, String>,
     env_secrets: Option<&HashMap<String, EncryptedSecretValue>>,
@@ -244,6 +263,7 @@ pub(super) fn build_deploy_archive_manifest(
         images,
         package_manager,
         package_manager_version: None,
+        description: resolve_release_description(description, commit_message.as_deref(), git_dirty),
         commit_message,
         git_dirty,
         app_dir,
@@ -262,6 +282,7 @@ pub(super) fn build_container_deploy_archive_manifest(
     idle_timeout: u32,
     commit_message: Option<String>,
     git_dirty: Option<bool>,
+    description: Option<&str>,
     app_env_vars: HashMap<String, String>,
     env_secrets: Option<&HashMap<String, EncryptedSecretValue>>,
     images: tako_images::ImagesConfig,
@@ -296,6 +317,7 @@ pub(super) fn build_container_deploy_archive_manifest(
         images,
         package_manager: None,
         package_manager_version: None,
+        description: resolve_release_description(description, commit_message.as_deref(), git_dirty),
         commit_message,
         git_dirty,
         app_dir,
@@ -366,6 +388,39 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
+    fn release_description_defaults_and_overrides() {
+        let cases = [
+            (
+                None,
+                Some("feat: live stores"),
+                Some(false),
+                "feat: live stores",
+            ),
+            (
+                None,
+                Some("feat: live stores"),
+                Some(true),
+                "Uncommitted changes based on: feat: live stores",
+            ),
+            (None, None, None, "Local source snapshot"),
+            (None, None, Some(true), "Local source snapshot"),
+            (
+                Some("Fix reconnect handling"),
+                Some("feat: live stores"),
+                Some(true),
+                "Fix reconnect handling",
+            ),
+            (Some("Snapshot for QA"), None, None, "Snapshot for QA"),
+        ];
+        for (description, subject, dirty, expected) in cases {
+            assert_eq!(
+                resolve_release_description(description, subject, dirty),
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn decrypt_deploy_secrets_returns_empty_for_no_secrets() {
         let secrets = SecretsStore::default();
         let result = decrypt_deploy_secrets("production", &secrets, None).unwrap();
@@ -387,6 +442,7 @@ mod tests {
             Some("bun".to_string()),
             Some("feat: ship it".to_string()),
             Some(false),
+            None,
             HashMap::new(),
             HashMap::new(),
             None,
@@ -406,6 +462,7 @@ mod tests {
             Some(&"production".to_string())
         );
         assert_eq!(manifest.commit_message.as_deref(), Some("feat: ship it"));
+        assert_eq!(manifest.description, "feat: ship it");
         assert_eq!(manifest.git_dirty, Some(false));
         assert_eq!(manifest.release_kind, DeployReleaseKind::Native);
         assert_eq!(manifest.container_file, None);
@@ -430,6 +487,7 @@ mod tests {
             300,
             Some("feat: ship it".to_string()),
             Some(false),
+            Some("Ship container update"),
             HashMap::from([("APP_ENV".to_string(), "prod".to_string())]),
             Some(&secrets),
             tako_images::ImagesConfig::default(),
@@ -438,6 +496,7 @@ mod tests {
             Some(tako_workflows::DEFAULT_RETENTION_MS),
         );
 
+        assert_eq!(manifest.description, "Ship container update");
         assert_eq!(manifest.release_kind, DeployReleaseKind::Container);
         assert_eq!(manifest.runtime, "container");
         assert_eq!(manifest.main, "");
@@ -512,6 +571,7 @@ mod tests {
             None,
             None,
             Some(true),
+            None,
             app_env_vars,
             runtime_env_vars,
             Some(&secrets),
@@ -568,6 +628,7 @@ mod tests {
             None,
             Some(tako_workflows::DEFAULT_RETENTION_MS),
             300,
+            None,
             None,
             None,
             None,
