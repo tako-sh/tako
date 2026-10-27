@@ -19,6 +19,14 @@ does not automatically replace the public benchmark or website charts. For a
 publication request, update those summaries only after complete comparable runs
 support the claims.
 
+When asked to refresh the benchmark page, run the **complete public suite** with
+`full-suite.yml`: Tako, nginx, HAProxy, Envoy, and Caddy at all seven published
+HTTP concurrency levels, plus channel publish and workflow enqueue at all five
+feature levels. A targeted memory/Caddy diagnostic does not satisfy that request.
+Replace the page's entire current dataset, charts, tables, hardware, software
+versions, conclusions, and homepage figures. Archive previous results in the
+performance repository; do not append new tables above old benchmark charts.
+
 ## Inputs and defaults
 
 - Reuse the performance checkout available in the workspace, or clone
@@ -36,12 +44,9 @@ support the claims.
 - Use the performance repository's default branch after the workflows merge.
   Before merge, inspect the relevant PR branch and use its PR-triggered run;
   GitHub cannot manually dispatch a workflow absent from the default branch.
-  The production buffer validation is in
-  [performance PR #4](https://github.com/tako-sh/performance/pull/4); its history
-  includes the earlier memory and TLS investigations. Keep those results separate.
-- These diagnostics do not run the complete five-proxy report, channels,
-  workflows, or multi-node load balancing. Extend missing coverage and label it
-  accurately.
+- The complete public suite covers all five proxies, channels, and workflows.
+  Memory and TLS diagnostics answer narrower questions. Multi-node load balancing
+  needs a separate testbed and remains outside the single-host public suite.
 - Use HTTPS with the same certificate, route, upstream response, request timeouts,
   URL/Host/SNI, source IPs, concurrency, warmup, and measurement interval for
   every compared proxy. Keep the load generator's request timeout at 60 seconds
@@ -51,6 +56,7 @@ support the claims.
 
 | Question | Workflow | Harness |
 | --- | --- | --- |
+| Refresh the whole public benchmark page and all five-proxy/feature results | `full-suite.yml` | `diagnostics/full-suite/` |
 | Fixed 64/32/16 KiB buffers, active/held connection memory | `memory.yml` | `diagnostics/full-memory/` |
 | Release empty L4 buffers while preserving 64 KiB reads; release completed HTTP/1 upload buffers | `buffers.yml` | `diagnostics/buffer-lifetime/` |
 | Production buffer implementation versus unchanged master, including longer small-response repeats | `buffer-release.yml` | `diagnostics/release-validation/` |
@@ -117,6 +123,7 @@ default branch for `workflow_dispatch`. Do not merge a PR just to trigger a test
 Once the workflow is available on the default branch, dispatch the intended ref:
 
 ```bash
+gh workflow run full-suite.yml -R tako-sh/performance --ref '<performance-branch>'
 gh workflow run memory.yml -R tako-sh/performance \
   --ref '<performance-branch>' -f stress=false
 # For buffer lifetime or TLS experiments, choose the matching workflow instead:
@@ -366,12 +373,23 @@ performance repo with raw artifacts and these details:
 
 Only after complete comparable runs justify replacing the public report:
 
-1. Update the performance repo's `RESULTS.md`, graphs, and raw-data links.
-2. Update Tako's `BENCHMARKS.md` with a short TLDR and report links.
-3. Update `website/src/data/performance.ts` and
+1. Run `python3 diagnostics/full-suite/analyze.py results/<dated-full-suite>`.
+   It verifies all 135 cases, common build/image identities, quotas, counts,
+   source pins, and sample-derived metrics. Preserve all three repetitions and
+   publish their means and spread, including errors and unfavorable results.
+   If raw collection exposes a sampling defect, preserve the raw files and add
+   an explicit, narrowly checked quality flag in the dated report analyzer.
+   Mark an invalid aggregate unavailable; do not publish negative process CPU,
+   silently substitute zero, or average only favorable/valid repetitions.
+   Disclose sparse sampling next to the resource measurements it affects.
+2. Update the performance repo's `RESULTS.md`, graphs, and raw-data links.
+3. Update Tako's `BENCHMARKS.md` with a short TLDR and report links.
+4. Copy the validated `website-data.json` to
+   `website/src/data/benchmark-results.json`. Update `website/src/data/performance.ts` and
    `website/src/pages/performance.astro` so numbers, hardware, versions,
-   methodology, and claims agree with the report.
-4. Update `website/src/pages/index.astro` if its performance claim changed.
+   methodology, and claims agree with the report. Remove superseded benchmark
+   sections from this page; historical articles may link to the current suite.
+5. Update `website/src/components/home/HomeBenchmark.astro` from the same dataset.
 
 Do not compare absolute Actions RPS against the old dedicated VM as if only the
 code changed. Keep diagnostic results separate from published release results,

@@ -5,7 +5,9 @@ description: "Raw HTTPS proxy benchmarks for Tako, nginx, HAProxy, Envoy, and Ca
 image: 7137c5fd0be8
 ---
 
-We just published a public [Tako performance report](/performance/) with the data people usually ask for first: HTTPS throughput, p99 latency, CPU, memory, and clean-run behavior under heavy concurrency.
+This article records the June 2026 VM benchmark. For current builds and the complete rerun against all five proxies, see the [latest performance report](/performance/). The figures below are historical.
+
+The original report covered HTTPS throughput, p99 latency, CPU, memory, and clean-run behavior under heavy concurrency.
 
 The short version is honest and useful: nginx and HAProxy are still the raw reverse-proxy throughput leaders on this small VPS. Tako does not match them yet. But Tako stays clean through the largest tested row, beats Envoy and Caddy in the heavy rows, and does that while running the app-aware proxy path that powers [`tako deploy`](/docs/deployment/), routing, instance selection, and source-IP handling.
 

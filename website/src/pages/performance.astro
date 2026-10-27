@@ -4,381 +4,534 @@ import BaseLayout from "../layouts/BaseLayout.astro";
 import PerformanceChart from "../components/PerformanceChart.astro";
 import ExternalLinkIcon from "@hugeicons/core-free-icons/LinkSquare01Icon";
 import {
+  benchmark,
   featureCharts,
-  heavyRows,
+  featureRow,
+  format,
   httpCharts,
-  memoryRows,
+  httpRow,
+  labels,
   performanceStructuredData,
+  proxyOrder,
+  reportUrl,
+  short,
 } from "../data/performance";
-import type { SummaryMetric } from "../data/performance";
-import bufferPerformance from "../data/buffer-performance.json";
-
-const metricClasses = (metric: SummaryMetric) => ["metric-cell", !metric.clean && "metric-cell-overload"];
-const formatNumber = (value: number) => value.toLocaleString("en-US", { maximumFractionDigits: 1 });
-const [heldMemory, streamingMemory] = bufferPerformance.memory;
-if (!heldMemory || !streamingMemory) throw new Error("Both memory benchmark workloads are required.");
+const tako5 = httpRow("tako", 5000);
+const tako20 = httpRow("tako", 20000);
+const takoRows = benchmark.http.filter((r) => r.proxy === "tako");
+const clientErrors = takoRows.reduce((sum, r) => sum + r.clientErrors, 0);
+const non200 = takoRows.reduce((sum, r) => sum + r.non200, 0);
+const clean = takoRows.every((r) => r.clean);
+const channel = featureRow("channel-publish", 8000);
+const workflow = featureRow("workflow-enqueue", 8000);
+const cpus = [...new Set(benchmark.hosts.map((h) => h.cpu))];
+const kernels = [...new Set(benchmark.hosts.map((h) => h.kernel))];
+const date = new Date(`${benchmark.date}T12:00:00Z`).toLocaleDateString(
+  "en-GB",
+  { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" },
+);
+const rawUrl = `https://github.com/tako-sh/performance/tree/main/results/${benchmark.resultDirectory}`;
+const ranked = proxyOrder
+  .map((p) => httpRow(p, 5000))
+  .sort((a, b) => b.metrics.rps200.mean - a.metrics.rps200.mean);
+const leader = ranked[0];
+if (!leader) throw new Error("Five-proxy results are required");
 ---
 
 <BaseLayout
   title="Tako Performance Benchmarks for Self-Hosted Apps"
-  description="Tako benchmark results with raw proxy throughput, p99 latency, CPU, memory, channels, workflows, and methodology."
+  description="Current five-proxy HTTPS benchmarks: Tako, nginx, HAProxy, Envoy, and Caddy. Throughput, latency, errors, CPU, memory, channels, and workflows."
   structuredData={performanceStructuredData}
 >
   <section class="perf-hero" aria-labelledby="performance-title">
-    <div class="perf-hero-copy">
-      <h1 id="performance-title">Serious load, measured in public.</h1>
-      <p class="perf-lede">
-        Memory, throughput, tail latency, and CPU measured with raw results published for inspection. The latest buffer tests and earlier five-proxy VM measurements are shown with their own workloads and hardware.
-      </p>
-      <div class="perf-actions" aria-label="Performance report links">
-        <a class="button" href="https://github.com/tako-sh/performance/blob/main/RESULTS.md" target="_blank" rel="noopener noreferrer">
-          raw report
-          <HugeIcon icon={ExternalLinkIcon} class="button-icon" aria-hidden="true" focusable="false" />
-        </a>
-        <a class="action" href="#method">methodology</a>
-        <a class="action" href="#buffer-memory">latest memory results</a>
-      </div>
+    <span class="fact-label">Complete benchmark · {date}</span>
+    <h1 id="performance-title">Serious load, measured in public.</h1>
+    <p class="perf-lede">
+      Tako, nginx, HAProxy, Envoy, and Caddy under the same HTTPS load. Every
+      chart below comes from this benchmark suite: 105 proxy runs and 30 channel
+      and workflow runs, with three repetitions at every point.
+    </p>
+    <div class="perf-actions" aria-label="Performance report links">
+      <a
+        class="button"
+        href={reportUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        >full measured report <HugeIcon
+          icon={ExternalLinkIcon}
+          class="button-icon"
+          aria-hidden="true"
+          focusable="false"
+        /></a
+      >
+      <a class="action" href="#method">methodology</a>
+      <a class="action" href="#memory">memory results</a>
     </div>
   </section>
-
-  <section class="chart-section" id="buffer-memory" aria-labelledby="buffer-memory-title">
-    <div class="section-head">
-      <span class="fact-label">{bufferPerformance.date} · {bufferPerformance.stage}</span>
-      <div class="section-title-row">
-        <h2 id="buffer-memory-title">Less memory while connections stay open<a class="heading-anchor" href="#buffer-memory" aria-label="Link to section: Less memory while connections stay open" title="Link to this section">#</a></h2>
-      </div>
-      <p>
-        Empty socket buffers are released during idle reads, and completed upload buffers are released before a streaming response finishes. Transfers retain 64 KiB reads.
-      </p>
-      <p>
-        Tako uses {formatNumber(heldMemory.savingPercent)}% less memory with 20,000 held TLS connections and {formatNumber(streamingMemory.savingPercent)}% less during uploads followed by streaming responses, compared with the unchanged build.
-      </p>
-    </div>
-
-    <p class="table-scroll-hint">Scroll tables sideways to compare all columns.</p>
-    <div class="table-wrap">
-      <table>
-        <caption>Retained proxy memory, MiB PSS. Lower is better.</caption>
-        <thead>
-          <tr>
-            <th scope="col">workload</th>
-            <th scope="col" class="num">Tako before</th>
-            <th scope="col" class="num">{bufferPerformance.candidateLabel}</th>
-            <th scope="col" class="num">Caddy</th>
-            <th scope="col" class="num">Tako saving</th>
-          </tr>
-        </thead>
-        <tbody>
-          {bufferPerformance.memory.map((row) => (
-            <tr>
-              <th scope="row">{row.label}</th>
-              <td class="num">{formatNumber(row.baseline)}</td>
-              <td class="num"><strong>{formatNumber(row.candidate)}</strong></td>
-              <td class="num">{formatNumber(row.caddy)}</td>
-              <td class="num">{formatNumber(row.savingPercent)}%</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-    <p class="table-note" id="buffer-method">
-      Mean of three runs&rsquo; median holding-phase PSS. Each held connection completes 21 checked requests; each streaming request uploads 128 KiB before its response stays open for ten seconds. These measure live retained memory, not maximum throughput. Client, app, and kernel socket memory are excluded.
-    </p>
-
-    <div class="section-head">
-      <h3>Throughput alongside memory</h3>
-      <p>{bufferPerformance.performanceNote}</p>
-    </div>
-    <div class="table-wrap">
-      <table>
-        <caption>Longer checks: eight paired 60-second measurements per workload. Successful requests per second.</caption>
-        <thead>
-          <tr>
-            <th scope="col">workload</th>
-            <th scope="col" class="num">Tako before</th>
-            <th scope="col" class="num">{bufferPerformance.candidateLabel}</th>
-            <th scope="col" class="num">change</th>
-          </tr>
-        </thead>
-        <tbody>
-          {bufferPerformance.longerTraffic.map((row) => (
-            <tr>
-              <th scope="row">{row.label}</th>
-              <td class="num">{formatNumber(row.baseline)}</td>
-              <td class="num">{formatNumber(row.candidate)}</td>
-              <td class="num">{row.changePercent > 0 ? "+" : ""}{row.changePercent.toFixed(2)}%</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-    <div class="table-wrap">
-      <table>
-        <caption>Three-proxy comparison: means of three 15-second measurements. Successful requests per second; higher is better.</caption>
-        <thead>
-          <tr>
-            <th scope="col">workload</th>
-            <th scope="col" class="num">Tako before</th>
-            <th scope="col" class="num">{bufferPerformance.candidateLabel}</th>
-            <th scope="col" class="num">Caddy</th>
-          </tr>
-        </thead>
-        <tbody>
-          {bufferPerformance.traffic.map((row) => (
-            <tr>
-              <th scope="row">{row.label}</th>
-              <td class="num">{formatNumber(row.baseline)}</td>
-              <td class="num">{formatNumber(row.candidate)}</td>
-              <td class="num">{formatNumber(row.caddy)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-    <p class="table-note">
-      Free GitHub runners, with the proxy, load generator, and real deployed app sharing a 2 CPU quota, 8 GiB RAM, and no swap. Each row compares variants on the same runner; HTTP/1 and HTTP/2 groups use separate runners. Small-response results do not imply an advantage for every bulk-transfer workload. Full latency, CPU, correctness, repetitions, and build identities are in the report.
-    </p>
-    <div class="raw-links">
-      <a href={bufferPerformance.reportUrl} target="_blank" rel="noopener noreferrer">Read the measured report and raw data <HugeIcon icon={ExternalLinkIcon} class="button-icon" aria-hidden="true" focusable="false" /></a>
-    </div>
-  </section>
-
-  <div class="section-head">
-    <h2>Earlier five-proxy VM measurements</h2>
-    <p>The following charts retain the previously published VM results. Their active-load workloads and builds differ from the buffer-lifetime tests above.</p>
-  </div>
 
   <section class="verdict-band" id="summary" aria-label="Benchmark summary">
-    <p><strong>VM result:</strong> Tako stayed clean through c20000 on a small <a href="https://exe.dev" target="_blank" rel="noopener noreferrer nofollow">exe.dev</a> VM while doing app-aware routing, limiter accounting, forwarding headers, and instance selection.</p>
-    <dl class="verdict-proof" aria-label="TLDR evidence">
-      <div>
-        <dt>largest run</dt>
-        <dd>c20000</dd>
-      </div>
-      <div>
-        <dt>non-200</dt>
-        <dd>0</dd>
-      </div>
-      <div>
-        <dt>client errors</dt>
-        <dd>0</dd>
-      </div>
+    <p>
+      <strong
+        >{
+          clean
+            ? "All Tako HTTP runs completed cleanly."
+            : "Overload outcomes are part of the result."
+        }</strong
+      > At 5,000 concurrent clients, Tako averaged {
+        short(tako5.metrics.rps200.mean)
+      } complete 200 responses per second; {labels[leader.proxy]} led this row at
+      {short(leader.metrics.rps200.mean)}. All five proxies’ latency, memory,
+      and errors stay beside their throughput.
+    </p>
+    <dl class="verdict-proof">
+      <div><dt>largest HTTP load</dt><dd>c20000</dd></div>
+      <div><dt>Tako non-200</dt><dd>{format(non200)}</dd></div>
+      <div><dt>Tako client errors</dt><dd>{format(clientErrors)}</dd></div>
     </dl>
   </section>
 
   <section class="hardware-band" id="hardware" aria-label="Benchmark hardware">
     <div>
-      <span class="fact-label">Benchmark VM</span>
-      <strong>exe.dev, Tokyo</strong>
-      <p>Load generator, proxy, and app all share this host.</p>
+      <span class="fact-label">Test host</span><strong>GitHub Actions</strong><p
+      >
+        Free Ubuntu 24.04 runners. Each HTTP repetition runs all five proxies on
+        one host.
+      </p>
     </div>
     <div>
-      <span class="fact-label">CPU</span>
-      <strong>2 vCPU</strong>
-      <p>AMD EPYC 9554P on KVM.</p>
+      <span class="fact-label">CPU budget</span><strong>2 logical CPUs</strong
+      ><p>
+        Two assigned CPUs and a 2-CPU quota, shared by proxy, app, load
+        generator, and sampler.
+      </p>
     </div>
     <div>
-      <span class="fact-label">Memory</span>
-      <strong>7.8 GiB RAM</strong>
-      <p>No swap configured.</p>
+      <span class="fact-label">Memory limit</span><strong>8 GiB RAM</strong><p>
+        No swap. Measured proxy memory excludes the app and load generator.
+      </p>
     </div>
     <div>
-      <span class="fact-label">OS</span>
-      <strong>Ubuntu 24.04.4</strong>
-      <p>Linux 6.12.90.</p>
+      <span class="fact-label">Runtime</span><strong>Ubuntu 26.04</strong><p>
+        One identical container image across all six measurement jobs.
+      </p>
     </div>
   </section>
+  <p class="table-note">
+    Runner CPU models: {cpus.join("; ")}. Linux kernels: {kernels.join("; ")}.
+    This is a new hardware baseline; these numbers are not directly comparable
+    with the archived VM runs.
+  </p>
 
   <section class="facts" id="key-results" aria-label="Key results">
     <div>
-      <span class="fact-label">Tako at c5000</span>
-      <strong>12.5k clean 200 RPS</strong>
-      <p>0 non-200, 0 client errors.</p>
+      <span class="fact-label">Tako at c5000</span><strong
+        >{short(tako5.metrics.rps200.mean)} HTTP 200 RPS</strong
+      ><p>
+        {format(tako5.metrics.rps200.minimum)}–{
+          format(tako5.metrics.rps200.maximum)
+        } across three runs.
+      </p>
     </div>
     <div>
-      <span class="fact-label">Tako at c20000</span>
-      <strong>7.3k clean 200 RPS</strong>
-      <p>Stable at the largest tested HTTP concurrency.</p>
+      <span class="fact-label">Tako at c20000</span><strong
+        >{short(tako20.metrics.rps200.mean)} HTTP 200 RPS</strong
+      ><p>
+        {format(tako20.metrics.success_pct.mean, 2)}% complete 200 outcomes on
+        average.
+      </p>
     </div>
     <div>
-      <span class="fact-label">Clean through c20000</span>
-      <strong>all 200 responses</strong>
-      <p>0 client errors in every heavy Tako row.</p>
+      <span class="fact-label">Tako memory at c20000</span><strong
+        >{format(tako20.metrics.memory.mean)} MiB PSS</strong
+      ><p>Mean peak proxy memory during those same throughput runs.</p>
     </div>
     <div>
-      <span class="fact-label">Features</span>
-      <strong>clean through c8000</strong>
-      <p>Channels and workflows both stay clean through c8000.</p>
+      <span class="fact-label">Features at c8000</span><strong
+        >{short(channel.metrics.rps200.mean)} publish / {
+          short(workflow.metrics.rps200.mean)
+        } enqueue</strong
+      ><p>Successful HTTP requests per second, measured separately.</p>
+    </div>
+  </section>
+
+  <section class="chart-section" aria-labelledby="result-limits">
+    <div class="section-head">
+      <h2 id="result-limits">What these results show</h2>
+      <p>
+        Tako was faster than Caddy at every tested concurrency, while nginx,
+        HAProxy, and Envoy delivered higher successful throughput. Tako and
+        HAProxy returned all 200 responses across their HTTP runs. Memory
+        remains a substantial cost: Tako used {
+          format(tako20.metrics.memory.mean)
+        } MiB peak PSS on average at c20000.
+      </p>
+      <p>
+        All 135 runs are included; {benchmark.cleanCases} completed without HTTP
+        or client errors. Two nginx c15000 runs had 24 and 23 resource samples, below
+        the planned minimum of 25, so their memory peaks may be undersampled. One
+        load-generator CPU measurement at Tako c15000 was invalid after the process
+        exited; that aggregate is marked unavailable in the full report. The other
+        measurements were checked independently.
+      </p>
     </div>
   </section>
 
   <section class="chart-section" aria-labelledby="proxy-results">
     <div class="section-head">
       <div class="section-title-row">
-        <h2 id="proxy-results">Raw HTTPS proxy path<a class="heading-anchor" href="#proxy-results" aria-label="Link to section: Raw HTTPS proxy path" title="Link to this section">#</a></h2>
+        <h2 id="proxy-results">
+          The complete HTTPS comparison<a
+            class="heading-anchor"
+            href="#proxy-results"
+            aria-label="Link to HTTPS comparison">#</a
+          >
+        </h2>
       </div>
       <p>
-        Same route, same self-signed TLS certificate, same upstream application, same benchmark VM. The heavy rows show saturation behavior on one small VM; Memory uses a focused five-proxy rerun with process PSS sampling.
+        Same route, RSA certificate, Go upstream app, load generator, and
+        configured request and connection limits documented in the report. Each
+        point is the mean of three fresh runs. Proxy order rotates across
+        repetitions; the report retains every individual run and its range.
       </p>
     </div>
-
     <div class="chart-grid">
-      {httpCharts.map((chartConfig) => <PerformanceChart chart={chartConfig} />)}
+      {httpCharts.map((config) => <PerformanceChart chart={config} />)}
     </div>
-
+    <p class="table-scroll-hint">
+      Scroll tables sideways to compare all columns.
+    </p>
     <div class="table-wrap">
       <table>
-        <caption>Heavy rows; secondary labels show the percentage of requests that returned 200</caption>
-        <thead>
-          <tr>
-            <th scope="col">proxy</th>
-            <th scope="col" class="num">c5000</th>
-            <th scope="col" class="num">c10000</th>
-            <th scope="col" class="num">c20000</th>
-            <th scope="col" class="num">c20000 p99</th>
-            <th scope="col">notes</th>
-          </tr>
-        </thead>
-        <tbody>
-          {heavyRows.map((row) => (
-            <tr>
-              <th scope="row">{row.proxy}</th>
-              <td class="num">
-                <span class:list={metricClasses(row.c5000)}>
-                  <span class="metric-value">{row.c5000.value}</span>
-                  {row.c5000.detail && <span class="metric-detail">{row.c5000.detail}</span>}
-                </span>
-              </td>
-              <td class="num">
-                <span class:list={metricClasses(row.c10000)}>
-                  <span class="metric-value">{row.c10000.value}</span>
-                  {row.c10000.detail && <span class="metric-detail">{row.c10000.detail}</span>}
-                </span>
-              </td>
-              <td class="num">
-                <span class:list={metricClasses(row.c20000)}>
-                  <span class="metric-value">{row.c20000.value}</span>
-                  {row.c20000.detail && <span class="metric-detail">{row.c20000.detail}</span>}
-                </span>
-              </td>
-              <td class="num">
-                <span class:list={metricClasses(row.p99)}>
-                  <span class="metric-value">{row.p99.value}</span>
-                  {row.p99.detail && <span class="metric-detail">{row.p99.detail}</span>}
-                </span>
-              </td>
-              <td>{row.note}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-
-    <div class="table-wrap">
-      <p class="table-note">
-        <strong>Caddy c20000 is not equal capacity.</strong> Its Memory is lower than Tako's, but Caddy only returned 94.14% 200 while Tako returned 100% 200.
-      </p>
-      <table>
-        <caption>Memory detail from the focused PSS rerun</caption>
-        <thead>
-          <tr>
-            <th scope="col">proxy</th>
-            <th scope="col" class="num">c5000 Memory</th>
-            <th scope="col" class="num">c10000 Memory</th>
-            <th scope="col" class="num">c20000 Memory</th>
-            <th scope="col" class="num">c20000 200</th>
-          </tr>
-        </thead>
-        <tbody>
-          {memoryRows.map((row) => (
-            <tr>
-              <th scope="row">{row.proxy}</th>
-              <td class="num">{row.c5000}</td>
-              <td class="num">{row.c10000}</td>
-              <td class="num">{row.c20000}</td>
-              <td class="num">{row.c20000Detail}</td>
-            </tr>
-          ))}
-        </tbody>
+        <caption
+          >Successful HTTPS responses per second. Secondary labels show complete
+          200 outcomes as a percentage of all attempts.</caption
+        >
+        <thead
+          ><tr
+            ><th scope="col">proxy</th>{
+              [5000, 10000, 20000].map((c) => (
+                <th scope="col" class="num">
+                  c{c} RPS
+                </th>
+              ))
+            }<th scope="col" class="num">c20000 p99</th><th scope="col"
+              >c20000 range</th
+            ></tr
+          ></thead
+        >
+        <tbody
+          >{
+            proxyOrder.map((proxy) => {
+              const high = httpRow(proxy, 20000);
+              return (
+                <tr>
+                  <th scope="row">{labels[proxy]}</th>
+                  {[5000, 10000, 20000].map((c) => {
+                    const row = httpRow(proxy, c);
+                    return (
+                      <td class="num">
+                        <span
+                          class:list={[
+                            "metric-cell",
+                            !row.clean && "metric-cell-overload",
+                          ]}
+                        >
+                          <span class="metric-value">
+                            {format(row.metrics.rps200.mean)}
+                          </span>
+                          <span class="metric-detail">
+                            {format(row.metrics.success_pct.mean, 2)}% 200
+                          </span>
+                        </span>
+                      </td>
+                    );
+                  })}
+                  <td class="num">{format(high.metrics.p99.mean)} ms</td>
+                  <td>
+                    {format(high.metrics.rps200.minimum)}–
+                    {format(high.metrics.rps200.maximum)} RPS
+                  </td>
+                </tr>
+              );
+            })
+          }</tbody
+        >
       </table>
     </div>
   </section>
 
-  <section class="chart-section feature-section" aria-labelledby="feature-results">
+  <section class="chart-section" aria-labelledby="memory">
     <div class="section-head">
       <div class="section-title-row">
-        <h2 id="feature-results">Built-in feature paths, measured separately<a class="heading-anchor" href="#feature-results" aria-label="Link to section: Built-in feature paths" title="Link to this section">#</a></h2>
-      </div>
-      <p>
-        These rows exercise more than the proxy. The app uses the JavaScript SDK, publishes durable channel messages, and enqueues workflows with persisted steps while everything shares the same 2 vCPU budget.
+        <h2 id="memory">
+          Memory under the same load<a
+            class="heading-anchor"
+            href="#memory"
+            aria-label="Link to memory results">#</a
+          >
+        </h2>
+      </div><p>
+        Memory is process PSS, which apportions shared pages instead of counting
+        them twice. These values are the mean of each run’s peak during
+        measurement, including request drain. Compare memory with successful
+        outcomes: a proxy that rejects or times out requests is not serving
+        equivalent load.
       </p>
     </div>
-
-    <div class="chart-grid">
-      {featureCharts.map((chartConfig) => <PerformanceChart chart={chartConfig} />)}
+    <div class="table-wrap">
+      <table>
+        <caption
+          >Mean peak proxy PSS from the same HTTPS runs, in MiB. Lower is better
+          when successful outcomes are comparable.</caption
+        >
+        <thead
+          ><tr
+            ><th scope="col">proxy</th>{
+              [5000, 10000, 20000].map((c) => (
+                <th scope="col" class="num">
+                  c{c} MiB
+                </th>
+              ))
+            }<th scope="col" class="num">c20000 200</th><th scope="col"
+              >c20000 PSS range</th
+            ></tr
+          ></thead
+        >
+        <tbody
+          >{
+            proxyOrder.map((proxy) => {
+              const row = httpRow(proxy, 20000);
+              return (
+                <tr>
+                  <th scope="row">{labels[proxy]}</th>
+                  {[5000, 10000, 20000].map((c) => (
+                    <td class="num">
+                      {format(httpRow(proxy, c).metrics.memory.mean, 1)}
+                    </td>
+                  ))}
+                  <td class="num">
+                    {format(row.metrics.success_pct.mean, 2)}%
+                  </td>
+                  <td>
+                    {format(row.metrics.memory.minimum, 1)}–
+                    {format(row.metrics.memory.maximum, 1)} MiB
+                  </td>
+                </tr>
+              );
+            })
+          }</tbody
+        >
+      </table>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <caption
+          >CPU distribution at c20000, as a percentage of the shared two-CPU
+          budget. Means across three runs.</caption
+        >
+        <thead
+          ><tr
+            ><th scope="col">proxy</th><th scope="col" class="num">proxy CPU</th
+            ><th scope="col" class="num">app CPU</th><th scope="col" class="num"
+              >loadgen CPU</th
+            ><th scope="col" class="num">total CPU</th><th
+              scope="col"
+              class="num">app PSS</th
+            ></tr
+          ></thead
+        >
+        <tbody
+          >{
+            proxyOrder.map((proxy) => {
+              const row = httpRow(proxy, 20000);
+              return (
+                <tr>
+                  <th scope="row">{labels[proxy]}</th>
+                  {[
+                    row.metrics.proxyCpu,
+                    row.metrics.appCpu,
+                    row.metrics.loadgenCpu,
+                    row.metrics.cpu,
+                  ].map((metric) => (
+                    <td class="num">{format(metric.mean, 1)}%</td>
+                  ))}
+                  <td class="num">
+                    {format(row.metrics.appMemory.mean, 1)} MiB
+                  </td>
+                </tr>
+              );
+            })
+          }</tbody
+        >
+      </table>
     </div>
   </section>
 
-  <section class="explain-grid" aria-labelledby="what-it-means">
-    <div>
+  <section
+    class="chart-section feature-section"
+    aria-labelledby="feature-results"
+  >
+    <div class="section-head">
       <div class="section-title-row">
-        <h2 id="what-it-means">App-aware routing under load.<a class="heading-anchor" href="#what-it-means" aria-label="Link to section: App-aware routing under load" title="Link to this section">#</a></h2>
-      </div>
+        <h2 id="feature-results">
+          Channels and workflows<a
+            class="heading-anchor"
+            href="#feature-results"
+            aria-label="Link to feature results">#</a
+          >
+        </h2>
+      </div><p>
+        These are the same feature operations as the original benchmark, rerun
+        with the current server and SDK. Each runs in a real deployed
+        application, with the same two-CPU and 8 GiB limits. Channel publish
+        writes one durable message; workflow enqueue accepts a task whose
+        handler persists one ack step.
+      </p>
     </div>
-    <div class="explain-copy">
-      <p>
-        Tako stayed clean while doing product work a static reverse proxy does not need to do: route lookup, source IP derivation, per-client limiter accounting, app and instance selection, in-flight accounting, upstream peer construction, and forwarding header normalization.
-      </p>
-      <p>
-        The report still keeps static proxy references, p99, Memory, and clean-run percentages in view because those are the tuning levers. Future runs can isolate larger-VM behavior, external same-region load generation, and narrower Pingora session and upstream-proxy costs under 10k to 20k live TLS connections.
-      </p>
+    <div class="chart-grid">
+      {featureCharts.map((config) => <PerformanceChart chart={config} />)}
+    </div>
+    <div class="table-wrap">
+      <table>
+        <caption
+          >Feature results at c8000. Rates, latency, and memory are means; error
+          counts are totals across three runs. Enqueue RPS measures acceptance,
+          not completed workflows.</caption
+        >
+        <thead
+          ><tr
+            ><th scope="col">operation</th><th scope="col" class="num"
+              >200 RPS</th
+            ><th scope="col" class="num">p99</th><th scope="col" class="num"
+              >200 outcomes</th
+            ><th scope="col" class="num">client errors (total)</th><th
+              scope="col"
+              class="num">app / worker PSS</th
+            ></tr
+          ></thead
+        >
+        <tbody
+          >{
+            [
+              { label: "Channel publish", row: channel },
+              { label: "Workflow enqueue", row: workflow },
+            ].map(({ label, row }) => {
+              return (
+                <tr>
+                  <>
+                    <th scope="row">{label}</th>
+                    <td class="num">{format(row.metrics.rps200.mean)}</td>
+                    <td class="num">{format(row.metrics.p99.mean)} ms</td>
+                    <td class="num">
+                      {format(row.metrics.success_pct.mean, 2)}%
+                    </td>
+                    <td class="num">{format(row.clientErrors)}</td>
+                    <td class="num">
+                      {format(row.metrics.appMemory.mean, 1)} MiB
+                    </td>
+                  </>
+                </tr>
+              );
+            })
+          }</tbody
+        >
+      </table>
     </div>
   </section>
 
   <section class="method-section" aria-labelledby="method">
     <div class="section-head">
       <div class="section-title-row">
-        <h2 id="method">Same conditions, public raw data.<a class="heading-anchor" href="#method" aria-label="Link to section: benchmark method" title="Link to this section">#</a></h2>
-      </div>
-      <p>
-        The public report intentionally omits hostnames, public IPs, private network addresses, peer names, and user identifiers.
+        <h2 id="method">
+          Same conditions, public raw data.<a
+            class="heading-anchor"
+            href="#method"
+            aria-label="Link to methodology">#</a
+          >
+        </h2>
+      </div><p>
+        All 135 measurements are included. Results are generated from validated
+        raw JSON, and the complete dataset, configurations, build identities,
+        and workflow are public.
       </p>
     </div>
-
     <div class="method-list">
       <div>
-        <strong>HTTP path</strong>
-        <p>Load generator, proxy, and app all run on the VM. The route is <code>bench.test:18443</code>, resolved to loopback, with Host and SNI set to <code>bench.test</code>.</p>
+        <strong>Timing and transport</strong><p>
+          HTTP/1.1 over TLS; 10-second warmup, 30-second measurement, 60-second
+          per-request timeout, 16 loopback source addresses, and a 10-second
+          cooldown. RPS includes request drain. Latency measures time to
+          response headers; errors remain visible separately.
+        </p>
       </div>
       <div>
-        <strong>Proxy matrix</strong>
-        <p>Tako HTTP matrix <code>tako-server 0.0.0-09b3dc6</code>, feature rerun <code>tako-server 0.0.0-958986f</code>, nginx 1.24.0, HAProxy 2.8.16, Envoy 1.38.0, Caddy 2.11.3 with rate limiting.</p>
+        <strong>Measurement</strong><p>
+          Backend apps and workflow workers use matching 65,535-file descriptor
+          limits, verified during measurement. Tako’s production app default is
+          4,096; this high-concurrency benchmark configures the higher app
+          limit. One-second process and cgroup samples. nginx memory includes
+          master and worker processes. App and workflow workers are separate
+          from Tako’s proxy totals. PSS excludes kernel socket memory. Chart
+          points are means of three per-run values, not pooled latency
+          percentiles.
+        </p>
       </div>
       <div>
-        <strong>Timing</strong>
-        <p>10 second warmup, 30 second measurement window, HTTP/1.1 over TLS, 60 second request timeout, metrics sampled from <code>/proc</code> once per second.</p>
+        <strong>Reproducible builds</strong><p>
+          Tako server and SDK: <code>{benchmark.takoRevision.slice(0, 12)}</code
+          >. All jobs use identical binaries and one runtime image. The full
+          report records hashes and pinned sources. Worker counts and Go
+          parallelism are set to two.
+        </p>
       </div>
     </div>
-
+    <div class="table-wrap">
+      <table>
+        <caption>Measured software versions</caption><thead
+          ><tr><th scope="col">software</th><th scope="col">version</th></tr
+          ></thead
+        ><tbody
+          >{
+            Object.entries(benchmark.versions).map(([name, version]) => (
+              <tr>
+                <>
+                  <th scope="row">{labels[name] ?? name}</th>
+                  <td>{version.split("\n").find((line) => line.trim())}</td>
+                </>
+              </tr>
+            ))
+          }</tbody
+        >
+      </table>
+    </div>
+    <p class="table-note">
+      The load generator and backend share the test’s CPU budget with the proxy.
+      This measures the complete setup under saturation, not an isolated proxy
+      ceiling or a production capacity guarantee. Separate GitHub hosts can
+      vary; the full report shows individual repetitions. Historical
+      measurements remain archived in the performance repository.
+    </p>
     <div class="raw-links">
-      <a href="https://github.com/tako-sh/performance/tree/main/results/20260602T052009Z/http-vm-local" target="_blank" rel="noopener noreferrer">
-        HTTP raw rows
-        <HugeIcon icon={ExternalLinkIcon} class="button-icon" aria-hidden="true" focusable="false" />
-      </a>
-      <a href="https://github.com/tako-sh/performance/tree/main/results/20260604T055839Z/tako-features-vm-local" target="_blank" rel="noopener noreferrer">
-        feature raw rows
-        <HugeIcon icon={ExternalLinkIcon} class="button-icon" aria-hidden="true" focusable="false" />
-      </a>
-      <a href="https://github.com/tako-sh/performance" target="_blank" rel="noopener noreferrer">
-        benchmark harness
-        <HugeIcon icon={ExternalLinkIcon} class="button-icon" aria-hidden="true" focusable="false" />
-      </a>
+      <a href={rawUrl} target="_blank" rel="noopener noreferrer"
+        >all raw runs and derived data <HugeIcon
+          icon={ExternalLinkIcon}
+          class="button-icon"
+          aria-hidden="true"
+          focusable="false"
+        /></a
+      ><a
+        href="https://github.com/tako-sh/performance/blob/main/diagnostics/full-suite/README.md"
+        target="_blank"
+        rel="noopener noreferrer">reproduce this suite</a
+      >
     </div>
   </section>
 </BaseLayout>
 
 <script>
-  const headingRows = Array.from(document.querySelectorAll(".section-title-row"));
+  const headingRows = Array.from(
+    document.querySelectorAll(".section-title-row"),
+  );
   for (const row of headingRows) {
     const heading = row.querySelector("h2[id]");
     const anchor = row.querySelector(".heading-anchor");
@@ -575,7 +728,11 @@ if (!heldMemory || !streamingMemory) throw new Error("Both memory benchmark work
   }
 
   .section-title-row .clickable-heading:hover {
-    background: linear-gradient(color-mix(in srgb, var(--primary) 45%, transparent), color-mix(in srgb, var(--primary) 45%, transparent)) left bottom / 100% 0.3em no-repeat;
+    background: linear-gradient(
+        color-mix(in srgb, var(--primary) 45%, transparent),
+        color-mix(in srgb, var(--primary) 45%, transparent)
+      )
+      left bottom / 100% 0.3em no-repeat;
   }
 
   .heading-anchor {

@@ -36,6 +36,7 @@ const linePoints = (points: BenchPoint[], key: keyof BenchPoint, max: number): s
     .join(" ");
 
 const formatValue = (value: number, unit: ChartUnit): string => {
+  value = Number(value.toFixed(unit === "pct" ? 2 : 1));
   if (unit === "rps") {
     return value >= 1000 ? `${Number((value / 1000).toFixed(value >= 10000 ? 0 : 1))}k` : String(value);
   }

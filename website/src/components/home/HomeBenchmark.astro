@@ -1,40 +1,79 @@
+---
+import {
+  benchmark,
+  format,
+  httpRow,
+  labels,
+  proxyOrder,
+  short,
+} from "../../data/performance";
+const rows = proxyOrder
+  .map((proxy) => ({ proxy, row: httpRow(proxy, 5000) }))
+  .sort((a, b) => b.row.metrics.rps200.mean - a.row.metrics.rps200.mean);
+const maximum = Math.max(...rows.map(({ row }) => row.metrics.rps200.mean));
+const tako = httpRow("tako", 5000);
+const clean = benchmark.http
+  .filter((row) => row.proxy === "tako")
+  .every((row) => row.clean);
+const description = `Complete HTTPS 200 responses per second at 5,000 concurrent clients, higher is better: ${rows.map(({ proxy, row }) => `${labels[proxy]} ${format(row.metrics.rps200.mean)}`).join(", ")}.`;
+---
+
 <section class="band" data-accent="mint" aria-labelledby="performance-title">
   <div class="band-inner">
-    <h2 class="section-title section-title-lg" id="performance-title">Ready for serious load</h2>
-
+    <h2 class="section-title section-title-lg" id="performance-title">
+      Ready for serious load
+    </h2>
     <figure class="bench">
-      <div
-        class="bench-chart"
-        data-reveal
-        role="img"
-        aria-label="Clean HTTPS 200 responses per second on one small VM, higher is better: Tako 12.5k, Caddy 5.2k, Envoy 4.7k."
-      >
-        <div class="bench-row bench-row-tako">
-          <span class="bench-name">Tako</span>
-          <span class="bench-track"><span class="bench-fill" style="--f: 1"></span><span class="bench-value">12.5k</span></span>
-        </div>
-        <div class="bench-row">
-          <span class="bench-name">Caddy</span>
-          <span class="bench-track"><span class="bench-fill" style="--f: 0.416"></span><span class="bench-value">5.2k</span></span>
-        </div>
-        <div class="bench-row">
-          <span class="bench-name">Envoy</span>
-          <span class="bench-track"><span class="bench-fill" style="--f: 0.376"></span><span class="bench-value">4.7k</span></span>
-        </div>
+      <div class="bench-chart" data-reveal role="img" aria-label={description}>
+        {
+          rows.map(({ proxy, row }) => (
+            <div
+              class:list={["bench-row", proxy === "tako" && "bench-row-tako"]}
+            >
+              <span class="bench-name">{labels[proxy]}</span>
+              <span class="bench-track">
+                <>
+                  <span
+                    class="bench-fill"
+                    style={`--f: ${row.metrics.rps200.mean / maximum}`}
+                  />
+                  <span class="bench-value">
+                    {short(row.metrics.rps200.mean)}
+                  </span>
+                </>
+              </span>
+            </div>
+          ))
+        }
       </div>
-      <figcaption class="figure-note">June 2026 VM baseline: clean HTTPS 200 responses per second. Higher is better.</figcaption>
+      <figcaption class="figure-note">
+        {benchmark.date}: mean of three HTTPS runs at 5k concurrency. Proxy,
+        app, and load generator share two CPUs. Only complete 200 responses
+        count.
+      </figcaption>
     </figure>
-
     <div class="bench-copy">
       <p>
-        Tako can handle <strong>heavy traffic</strong> even on modest hardware: one small VM served
-        12.5k HTTPS 200 RPS at 5k concurrency, with <strong>zero client errors</strong> up to 20k concurrency.
-        In that June 2026 run, it outpaced <a href="https://caddyserver.com/" target="_blank" rel="noopener noreferrer nofollow">Caddy</a> and <a href="https://www.envoyproxy.io/" target="_blank" rel="noopener noreferrer nofollow">Envoy</a> under heavy HTTPS load.
+        Tako averaged <strong
+          >{short(tako.metrics.rps200.mean)} HTTPS 200 responses per second</strong
+        > at 5,000 concurrent clients in the latest benchmark. {
+          clean
+            ? "It returned all 200 responses with zero client errors across every tested HTTP concurrency, up to 20,000."
+            : "The full report shows successful outcomes, errors, and latency at every tested concurrency, up to 20,000."
+        }
       </p>
       <p>
-        Tako is written in Rust: fast, memory-safe, and light on resources. Its proxy is built on <a href="https://blog.cloudflare.com/how-we-built-pingora-the-proxy-that-connects-cloudflare-to-the-internet/" target="_blank" rel="noopener noreferrer">Pingora</a>, the Rust library behind Cloudflare&rsquo;s own network.
+        The complete comparison includes nginx, HAProxy, Envoy, and Caddy, with
+        memory and CPU measured during the same runs. Tako is written in Rust,
+        with a proxy built on <a
+          href="https://blog.cloudflare.com/how-we-built-pingora-the-proxy-that-connects-cloudflare-to-the-internet/"
+          target="_blank"
+          rel="noopener noreferrer">Pingora</a
+        >.
       </p>
-      <a class="action doc-link" href="/performance/">Read the full report and latest memory results</a>
+      <a class="action doc-link" href="/performance/"
+        >Explore the complete benchmark</a
+      >
     </div>
   </div>
 </section>
