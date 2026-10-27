@@ -205,7 +205,7 @@ tako releases list --env production
 tako releases rollback <release-id> --env production
 ```
 
-Logs include app stdout/stderr and app-scoped server diagnostics. Releases show merged release history across mapped servers and mark the current release.
+Logs include app stdout/stderr and app-scoped server diagnostics. Releases show merged release history across mapped servers and mark the current release. Each release has a description: the commit subject for clean checkouts, `Uncommitted changes based on: <commit subject>` for dirty checkouts, or `Local source snapshot` without Git history. Override it with `tako deploy --description "Fix reconnect handling"`. Custom descriptions retain the dirty indicator.
 
 ## Metrics
 

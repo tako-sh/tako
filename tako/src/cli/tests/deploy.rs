@@ -197,3 +197,23 @@ fn upgrade_command_parses() {
     let cli = Cli::try_parse_from(["tako", "upgrade"]).unwrap();
     assert!(matches!(cli.command, Some(Commands::Upgrade)));
 }
+
+#[test]
+fn deploy_parses_and_trims_release_description() {
+    let cli = Cli::try_parse_from([
+        "tako",
+        "deploy",
+        "--description",
+        "  Fix reconnect handling  ",
+    ])
+    .unwrap();
+    let Some(Commands::Deploy { description, .. }) = cli.command else {
+        panic!("expected Deploy");
+    };
+    assert_eq!(description.as_deref(), Some("Fix reconnect handling"));
+}
+
+#[test]
+fn deploy_rejects_blank_release_description() {
+    assert!(Cli::try_parse_from(["tako", "deploy", "--description", "  "]).is_err());
+}

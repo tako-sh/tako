@@ -19,6 +19,12 @@ describe("tako --help", () => {
     expect(screen).toContain("--ci");
   });
 
+  test("deploy help documents release descriptions", async () => {
+    const { screen, exitCode } = await run(["deploy", "--help"]);
+    expect(exitCode).toBe(0);
+    expect(screen).toContain("--description <DESCRIPTION>");
+  });
+
   test("subcommand help works", async () => {
     const { screen, exitCode } = await run(["init", "--help"]);
 

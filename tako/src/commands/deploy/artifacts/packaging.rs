@@ -6,8 +6,9 @@ use crate::config::BuildStage;
 use crate::output;
 
 use super::super::cache::{
-    ArtifactCachePaths, artifact_cache_paths, artifact_cache_temp_path, load_valid_cached_artifact,
-    persist_cached_artifact, remove_cached_artifact_files,
+    ArtifactCachePaths, artifact_cache_paths, artifact_cache_paths_for_manifest,
+    artifact_cache_temp_path, load_valid_cached_artifact, persist_cached_artifact,
+    remove_cached_artifact_files,
 };
 use super::super::format::{
     format_artifact_cache_hit_message_for_output, format_artifact_cache_invalid_message,
@@ -196,7 +197,13 @@ pub(super) async fn build_target_artifacts(
         } else {
             None
         };
-        let cache_paths = artifact_cache_paths(cache_dir, version, target_label_for_path);
+        // Descriptions can change without changing the source-derived release tag.
+        let cache_paths = artifact_cache_paths_for_manifest(
+            cache_dir,
+            version,
+            target_label_for_path,
+            app_manifest_bytes,
+        );
 
         match load_valid_cached_artifact(&cache_paths) {
             Ok(Some(cached)) => {

@@ -52,6 +52,18 @@ pub(super) fn artifact_cache_paths(
     }
 }
 
+pub(super) fn artifact_cache_paths_for_manifest(
+    cache_dir: &Path,
+    version: &str,
+    target_label: Option<&str>,
+    manifest: &[u8],
+) -> ArtifactCachePaths {
+    use sha2::{Digest, Sha256};
+
+    let cache_key = format!("{version}-{}", hex::encode(Sha256::digest(manifest)));
+    artifact_cache_paths(cache_dir, &cache_key, target_label)
+}
+
 pub(super) fn artifact_cache_temp_path(final_path: &Path) -> Result<PathBuf, String> {
     let file_name = final_path
         .file_name()
@@ -301,6 +313,31 @@ mod tests {
     use super::*;
 
     use tempfile::TempDir;
+
+    #[test]
+    fn artifact_cache_separates_descriptions_for_the_same_release_tag() {
+        let cache_dir = Path::new("artifacts");
+        let original = artifact_cache_paths_for_manifest(
+            cache_dir,
+            "abc123",
+            None,
+            br#"{"description":"First"}"#,
+        );
+        let changed = artifact_cache_paths_for_manifest(
+            cache_dir,
+            "abc123",
+            None,
+            br#"{"description":"Second"}"#,
+        );
+        assert_ne!(original.artifact_path, changed.artifact_path);
+        let repeated = artifact_cache_paths_for_manifest(
+            cache_dir,
+            "abc123",
+            None,
+            br#"{"description":"First"}"#,
+        );
+        assert_eq!(original.artifact_path, repeated.artifact_path);
+    }
 
     #[test]
     fn cached_artifact_round_trip_verifies_checksum_and_size() {

@@ -269,12 +269,14 @@ impl crate::ServerState {
             };
 
             let manifest_path = release_root.join("app.json");
-            let (commit_message, git_dirty) = read_release_manifest_metadata(&manifest_path);
+            let (commit_message, git_dirty, description) =
+                read_release_manifest_metadata(&manifest_path);
             releases.push(ReleaseInfo {
                 current: current_version.as_deref() == Some(version.as_str()),
                 deployed_at_unix_secs: directory_modified_unix_secs(&release_root),
                 version,
                 commit_message,
+                description,
                 git_dirty,
             });
         }

@@ -192,6 +192,10 @@ pub enum Commands {
 
     /// Deploy to an environment
     Deploy {
+        /// Release description (defaults to the commit subject or source snapshot)
+        #[arg(long, value_parser = parse_release_description)]
+        description: Option<String>,
+
         /// Environment to deploy to
         #[arg(long)]
         env: Option<String>,
@@ -470,8 +474,19 @@ impl Cli {
                 command,
                 self.config.as_deref(),
             ),
-            Commands::Deploy { env, yes, force } => {
-                commands::deploy::run(env.as_deref(), yes, force, self.config.as_deref())?;
+            Commands::Deploy {
+                env,
+                yes,
+                force,
+                description,
+            } => {
+                commands::deploy::run(
+                    env.as_deref(),
+                    yes,
+                    force,
+                    description.as_deref(),
+                    self.config.as_deref(),
+                )?;
                 json_success(json, "deploy")
             }
             Commands::Delete { env, server, yes } => {
@@ -521,4 +536,12 @@ fn print_version(json: bool) -> Result<(), Box<dyn std::error::Error>> {
         println!("{}", display_version());
         Ok(())
     }
+}
+
+fn parse_release_description(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err("Release description must not be empty".to_string());
+    }
+    Ok(value.to_string())
 }

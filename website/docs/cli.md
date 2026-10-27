@@ -156,7 +156,7 @@ Secrets are not process env vars. `tako run` is local-only in v0; it does not ru
 ## Deploy And Runtime Operations
 
 ```bash
-tako deploy [--env <env>] [-y|--yes] [--force]
+tako deploy [--env <env>] [-y|--yes] [--force] [--description <text>]
 ```
 
 Builds locally, uploads artifacts over signed HTTP management, prepares every mapped server, runs the optional release command on the leader, rolls instances, finalizes the release, and runs post-deploy backups when enabled. `--env` defaults to `production`. `development` is reserved for `tako dev`. Deploy requires the CLI, server, and release artifact to use the same protocol version; a mismatch fails before release commands, workflows, or app processes start. `--force` attempts the deploy despite a mismatch but does not skip normal validation or readiness checks. It is separate from `--yes`, which only skips confirmation.
@@ -190,6 +190,8 @@ tako releases list [--env <env>]
 tako releases ls [--env <env>]
 tako releases rollback <release-id> [--env <env>] [-y|--yes]
 ```
+
+Release descriptions default to the commit subject for clean checkouts, `Uncommitted changes based on: <commit subject>` for dirty checkouts, or `Local source snapshot` without Git history. Set `tako deploy --description "Fix reconnect handling"` to override the description. The dirty status remains visible with a custom description. `releases list --json` includes `description`, `commit_message`, and `git_dirty` for each release.
 
 Lists release/build history or rolls an environment back to a previous release. Rollback uses the standard rolling-update flow and reports partial server failures individually.
 
