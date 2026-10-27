@@ -1,0 +1,7686 @@
+{
+  "resultDirectory": "20261027-full-suite",
+  "takoRevision": "1093899fd6b09d6227e5b7b585ee8bfeb4b5c028",
+  "totalCases": 135,
+  "repetitions": 3,
+  "cleanCases": 122,
+  "qualityFlags": [
+    {
+      "case": "r1-nginx-plaintext-c15000",
+      "metric": "sample_density",
+      "samples": 24,
+      "note": "Below planned 25 samples. Full raw run retained; memory peaks may be undersampled."
+    },
+    {
+      "case": "r2-tako-plaintext-c15000",
+      "metric": "loadgenCpu",
+      "note": "Process exited during sampling; aggregate loadgen CPU is unavailable. Other metrics remain valid."
+    },
+    {
+      "case": "r3-nginx-plaintext-c15000",
+      "metric": "sample_density",
+      "samples": 23,
+      "note": "Below planned 25 samples. Full raw run retained; memory peaks may be undersampled."
+    }
+  ],
+  "date": "2026-10-27",
+  "versions": {
+    "nginx": "nginx version: nginx/1.28.3 (Ubuntu)",
+    "haproxy": "HAProxy version 3.2.25-0ubuntu0.26.04.1 2026/09/24 - https://haproxy.org/\nStatus: long-term supported branch - will stop receiving fixes around Q2 2030.\nKnown bugs: http://www.haproxy.org/bugs/bugs-3.2.25.html\nRunning on: Linux 6.17.0-1022-azure #22-Ubuntu SMP Mon Jul 27 17:24:03 UTC 2026 x86_64",
+    "envoy": "envoy  version: f1dd21b16c244bda00edfb5ffce577e12d0d2ec2/1.38.0/Clean/RELEASE/BoringSSL",
+    "tako": "tako-server 0.0.0",
+    "caddy": "v2.11.7 h1:yj0Y4fYZGPkSvibBJ1sTWE33xC0fxztVyXEW5iIdUT4=",
+    "bun": "1.4.4",
+    "openssl": "OpenSSL 3.5.5 27 Jan 2026 (Library: OpenSSL 3.5.5 27 Jan 2026)"
+  },
+  "runtimeImage": "sha256:af308fec67ab9b61dd6053db786e2bae7b40bb15b2780a0dee39c2739a9753ee",
+  "hosts": [
+    {
+      "group": "http",
+      "repetition": 1,
+      "cpu": "AMD EPYC 9V45 96-Core Processor",
+      "kernel": "6.17.0-1022-azure",
+      "os": "Ubuntu 26.04.1 LTS"
+    },
+    {
+      "group": "http",
+      "repetition": 2,
+      "cpu": "AMD EPYC 7763 64-Core Processor",
+      "kernel": "6.17.0-1022-azure",
+      "os": "Ubuntu 26.04.1 LTS"
+    },
+    {
+      "group": "http",
+      "repetition": 3,
+      "cpu": "AMD EPYC 7763 64-Core Processor",
+      "kernel": "6.17.0-1022-azure",
+      "os": "Ubuntu 26.04.1 LTS"
+    },
+    {
+      "group": "features",
+      "repetition": 1,
+      "cpu": "AMD EPYC 7763 64-Core Processor",
+      "kernel": "6.17.0-1022-azure",
+      "os": "Ubuntu 26.04.1 LTS"
+    },
+    {
+      "group": "features",
+      "repetition": 2,
+      "cpu": "AMD EPYC 9V74 80-Core Processor",
+      "kernel": "6.17.0-1022-azure",
+      "os": "Ubuntu 26.04.1 LTS"
+    },
+    {
+      "group": "features",
+      "repetition": 3,
+      "cpu": "AMD EPYC 7763 64-Core Processor",
+      "kernel": "6.17.0-1022-azure",
+      "os": "Ubuntu 26.04.1 LTS"
+    }
+  ],
+  "http": [
+    {
+      "proxy": "nginx",
+      "endpoint": "plaintext",
+      "conc": 1000,
+      "clean": true,
+      "requests": 1036828,
+      "clientErrors": 0,
+      "non200": 0,
+      "metrics": {
+        "rps200": {
+          "mean": 11504.317695212745,
+          "minimum": 7400.465083890531,
+          "maximum": 18886.919787552415,
+          "repetitions": [
+            18886.919787552415,
+            8225.568214195291,
+            7400.465083890531
+          ]
+        },
+        "success_pct": {
+          "mean": 100.0,
+          "minimum": 100.0,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            100.0,
+            100.0
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 82.54214,
+          "minimum": 22.206529,
+          "maximum": 117.529694,
+          "repetitions": [
+            22.206529,
+            107.890197,
+            117.529694
+          ]
+        },
+        "p95": {
+          "mean": 182.98932066666666,
+          "minimum": 135.617819,
+          "maximum": 227.443679,
+          "repetitions": [
+            135.617819,
+            185.906464,
+            227.443679
+          ]
+        },
+        "p99": {
+          "mean": 250.83439833333333,
+          "minimum": 183.101061,
+          "maximum": 320.917716,
+          "repetitions": [
+            183.101061,
+            248.484418,
+            320.917716
+          ]
+        },
+        "memory": {
+          "mean": 66.96061197916667,
+          "minimum": 61.337890625,
+          "maximum": 76.525390625,
+          "repetitions": [
+            76.525390625,
+            61.337890625,
+            63.0185546875
+          ]
+        },
+        "medianMemory": {
+          "mean": 66.95930989583333,
+          "minimum": 61.337890625,
+          "maximum": 76.521484375,
+          "repetitions": [
+            76.521484375,
+            61.337890625,
+            63.0185546875
+          ]
+        },
+        "privateMemory": {
+          "mean": 59.291666666666664,
+          "minimum": 53.80859375,
+          "maximum": 68.6875,
+          "repetitions": [
+            68.6875,
+            53.80859375,
+            55.37890625
+          ]
+        },
+        "proxyCpu": {
+          "mean": 31.07152535587783,
+          "minimum": 30.684682350304058,
+          "maximum": 31.502594253854642,
+          "repetitions": [
+            31.502594253854642,
+            30.684682350304058,
+            31.027299463474794
+          ]
+        },
+        "appMemory": {
+          "mean": 38.858072916666664,
+          "minimum": 35.69921875,
+          "maximum": 43.328125,
+          "repetitions": [
+            43.328125,
+            35.69921875,
+            37.546875
+          ]
+        },
+        "appCpu": {
+          "mean": 34.97658031979794,
+          "minimum": 34.921088597462564,
+          "maximum": 35.07292150914306,
+          "repetitions": [
+            34.921088597462564,
+            35.07292150914306,
+            34.93573085278819
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 31.52764151900423,
+          "minimum": 31.354422688794326,
+          "maximum": 31.848017436462694,
+          "repetitions": [
+            31.848017436462694,
+            31.354422688794326,
+            31.380484431755672
+          ]
+        },
+        "cpu": {
+          "mean": 99.15591338295238,
+          "minimum": 98.955113185326,
+          "maximum": 99.29285239001723,
+          "repetitions": [
+            99.29285239001723,
+            98.955113185326,
+            99.21977457351392
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-nginx-plaintext-c1000",
+        "r2-nginx-plaintext-c1000",
+        "r3-nginx-plaintext-c1000"
+      ]
+    },
+    {
+      "proxy": "haproxy",
+      "endpoint": "plaintext",
+      "conc": 1000,
+      "clean": true,
+      "requests": 1004025,
+      "clientErrors": 0,
+      "non200": 0,
+      "metrics": {
+        "rps200": {
+          "mean": 11140.007897229136,
+          "minimum": 7248.504898416656,
+          "maximum": 18339.32686835019,
+          "repetitions": [
+            18339.32686835019,
+            7832.191924920564,
+            7248.504898416656
+          ]
+        },
+        "success_pct": {
+          "mean": 100.0,
+          "minimum": 100.0,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            100.0,
+            100.0
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 96.14726033333334,
+          "minimum": 50.121899,
+          "maximum": 123.814632,
+          "repetitions": [
+            50.121899,
+            114.50525,
+            123.814632
+          ]
+        },
+        "p95": {
+          "mean": 157.70139366666666,
+          "minimum": 87.195554,
+          "maximum": 201.008316,
+          "repetitions": [
+            87.195554,
+            184.900311,
+            201.008316
+          ]
+        },
+        "p99": {
+          "mean": 209.55921899999998,
+          "minimum": 107.144474,
+          "maximum": 277.207999,
+          "repetitions": [
+            107.144474,
+            244.325184,
+            277.207999
+          ]
+        },
+        "memory": {
+          "mean": 113.916015625,
+          "minimum": 112.21484375,
+          "maximum": 115.01171875,
+          "repetitions": [
+            115.01171875,
+            112.21484375,
+            114.521484375
+          ]
+        },
+        "medianMemory": {
+          "mean": 107.57552083333333,
+          "minimum": 105.03125,
+          "maximum": 109.486328125,
+          "repetitions": [
+            109.486328125,
+            105.03125,
+            108.208984375
+          ]
+        },
+        "privateMemory": {
+          "mean": 92.30208333333333,
+          "minimum": 91.6015625,
+          "maximum": 92.86328125,
+          "repetitions": [
+            92.86328125,
+            91.6015625,
+            92.44140625
+          ]
+        },
+        "proxyCpu": {
+          "mean": 37.34829375369826,
+          "minimum": 37.10974647690437,
+          "maximum": 37.76400204175731,
+          "repetitions": [
+            37.76400204175731,
+            37.1711327424331,
+            37.10974647690437
+          ]
+        },
+        "appMemory": {
+          "mean": 38.91796875,
+          "minimum": 35.5859375,
+          "maximum": 41.609375,
+          "repetitions": [
+            35.5859375,
+            41.609375,
+            39.55859375
+          ]
+        },
+        "appCpu": {
+          "mean": 30.454746890415343,
+          "minimum": 28.878439441841792,
+          "maximum": 31.40083758410685,
+          "repetitions": [
+            28.878439441841792,
+            31.40083758410685,
+            31.084963645297393
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 30.886926753349123,
+          "minimum": 30.417408072119816,
+          "maximum": 31.74315384049038,
+          "repetitions": [
+            31.74315384049038,
+            30.417408072119816,
+            30.50021834743717
+          ]
+        },
+        "cpu": {
+          "mean": 99.59084768286166,
+          "minimum": 99.43916957694078,
+          "maximum": 99.69135786593823,
+          "repetitions": [
+            99.43916957694078,
+            99.64201560570599,
+            99.69135786593823
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-haproxy-plaintext-c1000",
+        "r2-haproxy-plaintext-c1000",
+        "r3-haproxy-plaintext-c1000"
+      ]
+    },
+    {
+      "proxy": "tako",
+      "endpoint": "plaintext",
+      "conc": 1000,
+      "clean": true,
+      "requests": 651082,
+      "clientErrors": 0,
+      "non200": 0,
+      "metrics": {
+        "rps200": {
+          "mean": 7216.406859522328,
+          "minimum": 4734.69605260329,
+          "maximum": 11977.487889288404,
+          "repetitions": [
+            11977.487889288404,
+            4937.03663667529,
+            4734.69605260329
+          ]
+        },
+        "success_pct": {
+          "mean": 100.0,
+          "minimum": 100.0,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            100.0,
+            100.0
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 159.07079066666665,
+          "minimum": 80.745762,
+          "maximum": 203.609257,
+          "repetitions": [
+            80.745762,
+            192.857353,
+            203.609257
+          ]
+        },
+        "p95": {
+          "mean": 265.54611033333333,
+          "minimum": 143.386587,
+          "maximum": 363.72961,
+          "repetitions": [
+            143.386587,
+            289.522134,
+            363.72961
+          ]
+        },
+        "p99": {
+          "mean": 333.40809233333334,
+          "minimum": 182.326272,
+          "maximum": 432.607448,
+          "repetitions": [
+            182.326272,
+            385.290557,
+            432.607448
+          ]
+        },
+        "memory": {
+          "mean": 156.416015625,
+          "minimum": 147.4765625,
+          "maximum": 163.287109375,
+          "repetitions": [
+            163.287109375,
+            147.4765625,
+            158.484375
+          ]
+        },
+        "medianMemory": {
+          "mean": 149.802734375,
+          "minimum": 143.72265625,
+          "maximum": 154.216796875,
+          "repetitions": [
+            154.216796875,
+            143.72265625,
+            151.46875
+          ]
+        },
+        "privateMemory": {
+          "mean": 153.22135416666666,
+          "minimum": 144.3515625,
+          "maximum": 160.03125,
+          "repetitions": [
+            160.03125,
+            144.3515625,
+            155.28125
+          ]
+        },
+        "proxyCpu": {
+          "mean": 49.917888530080155,
+          "minimum": 49.156950829396074,
+          "maximum": 50.740803368644414,
+          "repetitions": [
+            49.156950829396074,
+            49.85591139219998,
+            50.740803368644414
+          ]
+        },
+        "appMemory": {
+          "mean": 42.7734375,
+          "minimum": 42.09765625,
+          "maximum": 44.1015625,
+          "repetitions": [
+            44.1015625,
+            42.09765625,
+            42.12109375
+          ]
+        },
+        "appCpu": {
+          "mean": 24.370492566595917,
+          "minimum": 23.467061355083636,
+          "maximum": 25.010445979257877,
+          "repetitions": [
+            25.010445979257877,
+            24.63397036544624,
+            23.467061355083636
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 24.449486970007683,
+          "minimum": 24.22396783533908,
+          "maximum": 24.648928233948375,
+          "repetitions": [
+            24.475564840735593,
+            24.22396783533908,
+            24.648928233948375
+          ]
+        },
+        "cpu": {
+          "mean": 99.45684106558322,
+          "minimum": 99.21994350371985,
+          "maximum": 99.64465554616137,
+          "repetitions": [
+            99.21994350371985,
+            99.50592414686845,
+            99.64465554616137
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-tako-plaintext-c1000",
+        "r2-tako-plaintext-c1000",
+        "r3-tako-plaintext-c1000"
+      ]
+    },
+    {
+      "proxy": "envoy",
+      "endpoint": "plaintext",
+      "conc": 1000,
+      "clean": true,
+      "requests": 727884,
+      "clientErrors": 0,
+      "non200": 0,
+      "metrics": {
+        "rps200": {
+          "mean": 8074.246215179001,
+          "minimum": 5138.662173062842,
+          "maximum": 13435.407255240432,
+          "repetitions": [
+            13435.407255240432,
+            5648.669217233731,
+            5138.662173062842
+          ]
+        },
+        "success_pct": {
+          "mean": 100.0,
+          "minimum": 100.0,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            100.0,
+            100.0
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 141.27982733333334,
+          "minimum": 69.957296,
+          "maximum": 184.634313,
+          "repetitions": [
+            69.957296,
+            169.247873,
+            184.634313
+          ]
+        },
+        "p95": {
+          "mean": 199.20180866666666,
+          "minimum": 111.22801,
+          "maximum": 255.295258,
+          "repetitions": [
+            111.22801,
+            231.082158,
+            255.295258
+          ]
+        },
+        "p99": {
+          "mean": 241.87777833333334,
+          "minimum": 135.433161,
+          "maximum": 314.047166,
+          "repetitions": [
+            135.433161,
+            276.153008,
+            314.047166
+          ]
+        },
+        "memory": {
+          "mean": 125.04947916666667,
+          "minimum": 124.693359375,
+          "maximum": 125.29296875,
+          "repetitions": [
+            124.693359375,
+            125.29296875,
+            125.162109375
+          ]
+        },
+        "medianMemory": {
+          "mean": 125.04557291666667,
+          "minimum": 124.693359375,
+          "maximum": 125.28125,
+          "repetitions": [
+            124.693359375,
+            125.28125,
+            125.162109375
+          ]
+        },
+        "privateMemory": {
+          "mean": 123.81510416666667,
+          "minimum": 123.42578125,
+          "maximum": 124.08984375,
+          "repetitions": [
+            123.42578125,
+            124.08984375,
+            123.9296875
+          ]
+        },
+        "proxyCpu": {
+          "mean": 50.90390058087675,
+          "minimum": 50.57846488576716,
+          "maximum": 51.22656561614408,
+          "repetitions": [
+            50.90667124071901,
+            50.57846488576716,
+            51.22656561614408
+          ]
+        },
+        "appMemory": {
+          "mean": 41.962239583333336,
+          "minimum": 41.8203125,
+          "maximum": 42.0390625,
+          "repetitions": [
+            42.02734375,
+            42.0390625,
+            41.8203125
+          ]
+        },
+        "appCpu": {
+          "mean": 23.915743965823207,
+          "minimum": 23.214190170623674,
+          "maximum": 24.450216813921113,
+          "repetitions": [
+            23.214190170623674,
+            24.450216813921113,
+            24.082824912924835
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 24.327025943261614,
+          "minimum": 23.780091329500998,
+          "maximum": 25.10948495794278,
+          "repetitions": [
+            25.10948495794278,
+            24.09150154234106,
+            23.780091329500998
+          ]
+        },
+        "cpu": {
+          "mean": 99.76394120535477,
+          "minimum": 99.68809882161793,
+          "maximum": 99.81094378790843,
+          "repetitions": [
+            99.68809882161793,
+            99.79278100653795,
+            99.81094378790843
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-envoy-plaintext-c1000",
+        "r2-envoy-plaintext-c1000",
+        "r3-envoy-plaintext-c1000"
+      ]
+    },
+    {
+      "proxy": "caddy",
+      "endpoint": "plaintext",
+      "conc": 1000,
+      "clean": true,
+      "requests": 371684,
+      "clientErrors": 0,
+      "non200": 0,
+      "metrics": {
+        "rps200": {
+          "mean": 4111.038978009365,
+          "minimum": 2937.202265003009,
+          "maximum": 6212.9362647033195,
+          "repetitions": [
+            6212.9362647033195,
+            3182.9784043217655,
+            2937.202265003009
+          ]
+        },
+        "success_pct": {
+          "mean": 100.0,
+          "minimum": 100.0,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            100.0,
+            100.0
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 269.88310233333334,
+          "minimum": 160.944045,
+          "maximum": 335.741949,
+          "repetitions": [
+            160.944045,
+            312.963313,
+            335.741949
+          ]
+        },
+        "p95": {
+          "mean": 368.7861516666667,
+          "minimum": 219.843991,
+          "maximum": 456.964359,
+          "repetitions": [
+            219.843991,
+            429.550105,
+            456.964359
+          ]
+        },
+        "p99": {
+          "mean": 1236.4987106666667,
+          "minimum": 262.777226,
+          "maximum": 1751.22984,
+          "repetitions": [
+            262.777226,
+            1695.489066,
+            1751.22984
+          ]
+        },
+        "memory": {
+          "mean": 273.7734375,
+          "minimum": 269.6171875,
+          "maximum": 278.53125,
+          "repetitions": [
+            273.171875,
+            269.6171875,
+            278.53125
+          ]
+        },
+        "medianMemory": {
+          "mean": 261.0514322916667,
+          "minimum": 259.69140625,
+          "maximum": 262.296875,
+          "repetitions": [
+            259.69140625,
+            261.166015625,
+            262.296875
+          ]
+        },
+        "privateMemory": {
+          "mean": 273.7734375,
+          "minimum": 269.6171875,
+          "maximum": 278.53125,
+          "repetitions": [
+            273.171875,
+            269.6171875,
+            278.53125
+          ]
+        },
+        "proxyCpu": {
+          "mean": 51.259192454535075,
+          "minimum": 50.449942510195136,
+          "maximum": 52.482433439344554,
+          "repetitions": [
+            52.482433439344554,
+            50.449942510195136,
+            50.845201414065535
+          ]
+        },
+        "appMemory": {
+          "mean": 49.16796875,
+          "minimum": 48.09375,
+          "maximum": 50.25390625,
+          "repetitions": [
+            49.15625,
+            50.25390625,
+            48.09375
+          ]
+        },
+        "appCpu": {
+          "mean": 30.35573422888934,
+          "minimum": 29.603346198871648,
+          "maximum": 30.901408032028847,
+          "repetitions": [
+            29.603346198871648,
+            30.901408032028847,
+            30.562448455767523
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 16.017125284007342,
+          "minimum": 15.358198197962041,
+          "maximum": 16.568181254187657,
+          "repetitions": [
+            15.358198197962041,
+            16.568181254187657,
+            16.124996399872334
+          ]
+        },
+        "cpu": {
+          "mean": 99.4411184655069,
+          "minimum": 99.06391041885684,
+          "maximum": 99.66035297251247,
+          "repetitions": [
+            99.06391041885684,
+            99.66035297251247,
+            99.5990920051514
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-caddy-plaintext-c1000",
+        "r2-caddy-plaintext-c1000",
+        "r3-caddy-plaintext-c1000"
+      ]
+    },
+    {
+      "proxy": "caddy",
+      "endpoint": "plaintext",
+      "conc": 2500,
+      "clean": true,
+      "requests": 328730,
+      "clientErrors": 0,
+      "non200": 0,
+      "metrics": {
+        "rps200": {
+          "mean": 3609.3894037158666,
+          "minimum": 2583.9289116313716,
+          "maximum": 5493.2326882117495,
+          "repetitions": [
+            5493.2326882117495,
+            2751.0066113044786,
+            2583.9289116313716
+          ]
+        },
+        "success_pct": {
+          "mean": 100.0,
+          "minimum": 100.0,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            100.0,
+            100.0
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 712.69406,
+          "minimum": 439.840317,
+          "maximum": 870.917759,
+          "repetitions": [
+            439.840317,
+            827.324104,
+            870.917759
+          ]
+        },
+        "p95": {
+          "mean": 1015.682024,
+          "minimum": 578.670525,
+          "maximum": 1307.613232,
+          "repetitions": [
+            578.670525,
+            1160.762315,
+            1307.613232
+          ]
+        },
+        "p99": {
+          "mean": 4070.4096176666667,
+          "minimum": 2765.167935,
+          "maximum": 4730.194232,
+          "repetitions": [
+            2765.167935,
+            4715.866686,
+            4730.194232
+          ]
+        },
+        "memory": {
+          "mean": 483.9440104166667,
+          "minimum": 475.44921875,
+          "maximum": 499.60546875,
+          "repetitions": [
+            475.44921875,
+            476.77734375,
+            499.60546875
+          ]
+        },
+        "medianMemory": {
+          "mean": 462.95703125,
+          "minimum": 458.4140625,
+          "maximum": 467.71875,
+          "repetitions": [
+            458.4140625,
+            467.71875,
+            462.73828125
+          ]
+        },
+        "privateMemory": {
+          "mean": 483.9440104166667,
+          "minimum": 475.44921875,
+          "maximum": 499.60546875,
+          "repetitions": [
+            475.44921875,
+            476.77734375,
+            499.60546875
+          ]
+        },
+        "proxyCpu": {
+          "mean": 53.5156790564189,
+          "minimum": 52.60093782390467,
+          "maximum": 54.71345870248345,
+          "repetitions": [
+            54.71345870248345,
+            52.60093782390467,
+            53.23264064286857
+          ]
+        },
+        "appMemory": {
+          "mean": 103.60026041666667,
+          "minimum": 102.18359375,
+          "maximum": 104.37109375,
+          "repetitions": [
+            104.37109375,
+            102.18359375,
+            104.24609375
+          ]
+        },
+        "appCpu": {
+          "mean": 27.684767127865896,
+          "minimum": 27.119731457585257,
+          "maximum": 28.735996185001326,
+          "repetitions": [
+            27.198573741011106,
+            28.735996185001326,
+            27.119731457585257
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 15.281033127183331,
+          "minimum": 14.683812188530124,
+          "maximum": 15.685368662394408,
+          "repetitions": [
+            14.683812188530124,
+            15.473918530625463,
+            15.685368662394408
+          ]
+        },
+        "cpu": {
+          "mean": 99.5421096922066,
+          "minimum": 99.37519591850963,
+          "maximum": 99.65188302125146,
+          "repetitions": [
+            99.37519591850963,
+            99.65188302125146,
+            99.5992501368587
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-caddy-plaintext-c2500",
+        "r2-caddy-plaintext-c2500",
+        "r3-caddy-plaintext-c2500"
+      ]
+    },
+    {
+      "proxy": "envoy",
+      "endpoint": "plaintext",
+      "conc": 2500,
+      "clean": true,
+      "requests": 650691,
+      "clientErrors": 0,
+      "non200": 0,
+      "metrics": {
+        "rps200": {
+          "mean": 7202.099181759274,
+          "minimum": 4965.140078284359,
+          "maximum": 11359.522062782042,
+          "repetitions": [
+            11359.522062782042,
+            5281.63540421142,
+            4965.140078284359
+          ]
+        },
+        "success_pct": {
+          "mean": 100.0,
+          "minimum": 100.0,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            100.0,
+            100.0
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 361.01330733333333,
+          "minimum": 201.705316,
+          "maximum": 453.933956,
+          "repetitions": [
+            201.705316,
+            427.40065,
+            453.933956
+          ]
+        },
+        "p95": {
+          "mean": 510.2023883333333,
+          "minimum": 298.744695,
+          "maximum": 631.482772,
+          "repetitions": [
+            298.744695,
+            600.379698,
+            631.482772
+          ]
+        },
+        "p99": {
+          "mean": 1945.233837,
+          "minimum": 370.525443,
+          "maximum": 2935.808681,
+          "repetitions": [
+            370.525443,
+            2529.367387,
+            2935.808681
+          ]
+        },
+        "memory": {
+          "mean": 205.90885416666666,
+          "minimum": 205.60546875,
+          "maximum": 206.087890625,
+          "repetitions": [
+            205.60546875,
+            206.087890625,
+            206.033203125
+          ]
+        },
+        "medianMemory": {
+          "mean": 205.90234375,
+          "minimum": 205.60546875,
+          "maximum": 206.087890625,
+          "repetitions": [
+            205.60546875,
+            206.087890625,
+            206.013671875
+          ]
+        },
+        "privateMemory": {
+          "mean": 204.68359375,
+          "minimum": 204.3125,
+          "maximum": 204.89453125,
+          "repetitions": [
+            204.3125,
+            204.89453125,
+            204.84375
+          ]
+        },
+        "proxyCpu": {
+          "mean": 52.00974416794482,
+          "minimum": 51.54426580531384,
+          "maximum": 52.49637208785779,
+          "repetitions": [
+            51.98859461066282,
+            51.54426580531384,
+            52.49637208785779
+          ]
+        },
+        "appMemory": {
+          "mean": 87.69791666666667,
+          "minimum": 85.7265625,
+          "maximum": 89.6796875,
+          "repetitions": [
+            87.6875,
+            89.6796875,
+            85.7265625
+          ]
+        },
+        "appCpu": {
+          "mean": 21.947820826193304,
+          "minimum": 21.368129488903815,
+          "maximum": 22.435852463107256,
+          "repetitions": [
+            22.039480526568838,
+            22.435852463107256,
+            21.368129488903815
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 24.069077109093197,
+          "minimum": 23.869492218568148,
+          "maximum": 24.438210813059364,
+          "repetitions": [
+            24.438210813059364,
+            23.869492218568148,
+            23.899528295652075
+          ]
+        },
+        "cpu": {
+          "mean": 99.78131554522587,
+          "minimum": 99.743254940971,
+          "maximum": 99.82436001126122,
+          "repetitions": [
+            99.82436001126122,
+            99.77633168344536,
+            99.743254940971
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-envoy-plaintext-c2500",
+        "r2-envoy-plaintext-c2500",
+        "r3-envoy-plaintext-c2500"
+      ]
+    },
+    {
+      "proxy": "tako",
+      "endpoint": "plaintext",
+      "conc": 2500,
+      "clean": true,
+      "requests": 591549,
+      "clientErrors": 0,
+      "non200": 0,
+      "metrics": {
+        "rps200": {
+          "mean": 6524.130310213741,
+          "minimum": 4339.59937354246,
+          "maximum": 10578.425816882413,
+          "repetitions": [
+            10578.425816882413,
+            4654.365740216349,
+            4339.59937354246
+          ]
+        },
+        "success_pct": {
+          "mean": 100.0,
+          "minimum": 100.0,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            100.0,
+            100.0
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 409.2438916666666,
+          "minimum": 232.120868,
+          "maximum": 520.974305,
+          "repetitions": [
+            232.120868,
+            474.636502,
+            520.974305
+          ]
+        },
+        "p95": {
+          "mean": 845.017401,
+          "minimum": 463.527654,
+          "maximum": 1107.794305,
+          "repetitions": [
+            463.527654,
+            1107.794305,
+            963.730244
+          ]
+        },
+        "p99": {
+          "mean": 2251.7730626666666,
+          "minimum": 596.696939,
+          "maximum": 3438.337668,
+          "repetitions": [
+            596.696939,
+            2720.284581,
+            3438.337668
+          ]
+        },
+        "memory": {
+          "mean": 290.98828125,
+          "minimum": 277.578125,
+          "maximum": 310.400390625,
+          "repetitions": [
+            310.400390625,
+            277.578125,
+            284.986328125
+          ]
+        },
+        "medianMemory": {
+          "mean": 270.9583333333333,
+          "minimum": 262.412109375,
+          "maximum": 278.859375,
+          "repetitions": [
+            278.859375,
+            262.412109375,
+            271.603515625
+          ]
+        },
+        "privateMemory": {
+          "mean": 287.7838541666667,
+          "minimum": 274.453125,
+          "maximum": 307.14453125,
+          "repetitions": [
+            307.14453125,
+            274.453125,
+            281.75390625
+          ]
+        },
+        "proxyCpu": {
+          "mean": 50.822204764347966,
+          "minimum": 48.828577182575486,
+          "maximum": 52.61027511019635,
+          "repetitions": [
+            48.828577182575486,
+            52.61027511019635,
+            51.02776200027207
+          ]
+        },
+        "appMemory": {
+          "mean": 85.13411458333333,
+          "minimum": 79.703125,
+          "maximum": 87.87109375,
+          "repetitions": [
+            87.87109375,
+            87.828125,
+            79.703125
+          ]
+        },
+        "appCpu": {
+          "mean": 23.247727196344474,
+          "minimum": 20.699352073950152,
+          "maximum": 24.91735165835224,
+          "repetitions": [
+            24.91735165835224,
+            20.699352073950152,
+            24.12647785673103
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 24.319281329058157,
+          "minimum": 23.305948990508877,
+          "maximum": 25.057395487832313,
+          "repetitions": [
+            24.594499508833277,
+            25.057395487832313,
+            23.305948990508877
+          ]
+        },
+        "cpu": {
+          "mean": 99.65416766216839,
+          "minimum": 99.51861815166787,
+          "maximum": 99.75361118969454,
+          "repetitions": [
+            99.51861815166787,
+            99.69027364514278,
+            99.75361118969454
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-tako-plaintext-c2500",
+        "r2-tako-plaintext-c2500",
+        "r3-tako-plaintext-c2500"
+      ]
+    },
+    {
+      "proxy": "haproxy",
+      "endpoint": "plaintext",
+      "conc": 2500,
+      "clean": true,
+      "requests": 876575,
+      "clientErrors": 0,
+      "non200": 0,
+      "metrics": {
+        "rps200": {
+          "mean": 9706.37714977455,
+          "minimum": 6640.247778216249,
+          "maximum": 15357.332545672867,
+          "repetitions": [
+            15357.332545672867,
+            7121.551125434531,
+            6640.247778216249
+          ]
+        },
+        "success_pct": {
+          "mean": 100.0,
+          "minimum": 100.0,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            100.0,
+            100.0
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 247.86873066666666,
+          "minimum": 146.185415,
+          "maximum": 309.649292,
+          "repetitions": [
+            146.185415,
+            287.771485,
+            309.649292
+          ]
+        },
+        "p95": {
+          "mean": 422.32572266666665,
+          "minimum": 238.760493,
+          "maximum": 533.774852,
+          "repetitions": [
+            238.760493,
+            494.441823,
+            533.774852
+          ]
+        },
+        "p99": {
+          "mean": 2819.293432666667,
+          "minimum": 303.481155,
+          "maximum": 4526.874579,
+          "repetitions": [
+            303.481155,
+            4526.874579,
+            3627.524564
+          ]
+        },
+        "memory": {
+          "mean": 203.53515625,
+          "minimum": 201.53515625,
+          "maximum": 205.658203125,
+          "repetitions": [
+            205.658203125,
+            203.412109375,
+            201.53515625
+          ]
+        },
+        "medianMemory": {
+          "mean": 189.32877604166666,
+          "minimum": 187.76953125,
+          "maximum": 190.3203125,
+          "repetitions": [
+            190.3203125,
+            189.896484375,
+            187.76953125
+          ]
+        },
+        "privateMemory": {
+          "mean": 182.09244791666666,
+          "minimum": 180.05859375,
+          "maximum": 183.9296875,
+          "repetitions": [
+            183.9296875,
+            182.2890625,
+            180.05859375
+          ]
+        },
+        "proxyCpu": {
+          "mean": 38.25061898409433,
+          "minimum": 37.31660141446043,
+          "maximum": 39.35770111447963,
+          "repetitions": [
+            39.35770111447963,
+            37.31660141446043,
+            38.07755442334294
+          ]
+        },
+        "appMemory": {
+          "mean": 80.0234375,
+          "minimum": 73.12109375,
+          "maximum": 85.59375,
+          "repetitions": [
+            85.59375,
+            81.35546875,
+            73.12109375
+          ]
+        },
+        "appCpu": {
+          "mean": 29.303927946101116,
+          "minimum": 27.788153741138437,
+          "maximum": 30.447824225938287,
+          "repetitions": [
+            27.788153741138437,
+            30.447824225938287,
+            29.675805871226622
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 30.934589920059533,
+          "minimum": 30.522591963607788,
+          "maximum": 31.437848062508493,
+          "repetitions": [
+            31.437848062508493,
+            30.522591963607788,
+            30.84332973406232
+          ]
+        },
+        "cpu": {
+          "mean": 99.67616863011824,
+          "minimum": 99.65251555755007,
+          "maximum": 99.72055832426611,
+          "repetitions": [
+            99.65251555755007,
+            99.65543200853855,
+            99.72055832426611
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-haproxy-plaintext-c2500",
+        "r2-haproxy-plaintext-c2500",
+        "r3-haproxy-plaintext-c2500"
+      ]
+    },
+    {
+      "proxy": "nginx",
+      "endpoint": "plaintext",
+      "conc": 2500,
+      "clean": true,
+      "requests": 871031,
+      "clientErrors": 0,
+      "non200": 0,
+      "metrics": {
+        "rps200": {
+          "mean": 9622.730525354396,
+          "minimum": 6745.889088114532,
+          "maximum": 14957.309040209633,
+          "repetitions": [
+            14957.309040209633,
+            7164.9934477390225,
+            6745.889088114532
+          ]
+        },
+        "success_pct": {
+          "mean": 100.0,
+          "minimum": 100.0,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            100.0,
+            100.0
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 269.751207,
+          "minimum": 146.643101,
+          "maximum": 342.230762,
+          "repetitions": [
+            146.643101,
+            320.379758,
+            342.230762
+          ]
+        },
+        "p95": {
+          "mean": 454.67342966666666,
+          "minimum": 267.156318,
+          "maximum": 553.531457,
+          "repetitions": [
+            267.156318,
+            543.332514,
+            553.531457
+          ]
+        },
+        "p99": {
+          "mean": 602.6439023333334,
+          "minimum": 341.002133,
+          "maximum": 808.579442,
+          "repetitions": [
+            341.002133,
+            658.350132,
+            808.579442
+          ]
+        },
+        "memory": {
+          "mean": 103.384765625,
+          "minimum": 80.388671875,
+          "maximum": 147.7890625,
+          "repetitions": [
+            147.7890625,
+            80.388671875,
+            81.9765625
+          ]
+        },
+        "medianMemory": {
+          "mean": 92.05143229166667,
+          "minimum": 59.703125,
+          "maximum": 147.7890625,
+          "repetitions": [
+            147.7890625,
+            68.662109375,
+            59.703125
+          ]
+        },
+        "privateMemory": {
+          "mean": 95.63802083333333,
+          "minimum": 72.6484375,
+          "maximum": 139.921875,
+          "repetitions": [
+            139.921875,
+            72.6484375,
+            74.34375
+          ]
+        },
+        "proxyCpu": {
+          "mean": 34.045181627296486,
+          "minimum": 32.70551108164525,
+          "maximum": 34.89925204595469,
+          "repetitions": [
+            32.70551108164525,
+            34.53078175428953,
+            34.89925204595469
+          ]
+        },
+        "appMemory": {
+          "mean": 64.82552083333333,
+          "minimum": 60.65234375,
+          "maximum": 70.80859375,
+          "repetitions": [
+            70.80859375,
+            60.65234375,
+            63.015625
+          ]
+        },
+        "appCpu": {
+          "mean": 33.320373006458944,
+          "minimum": 32.84696451503408,
+          "maximum": 33.698686306688565,
+          "repetitions": [
+            33.698686306688565,
+            33.41546819765419,
+            32.84696451503408
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 30.522047425986116,
+          "minimum": 29.8755208066742,
+          "maximum": 31.356473607098284,
+          "repetitions": [
+            31.356473607098284,
+            29.8755208066742,
+            30.334147864185866
+          ]
+        },
+        "cpu": {
+          "mean": 99.30275899918144,
+          "minimum": 99.2273082175199,
+          "maximum": 99.4159316182649,
+          "repetitions": [
+            99.2273082175199,
+            99.4159316182649,
+            99.26503716175948
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-nginx-plaintext-c2500",
+        "r2-nginx-plaintext-c2500",
+        "r3-nginx-plaintext-c2500"
+      ]
+    },
+    {
+      "proxy": "nginx",
+      "endpoint": "plaintext",
+      "conc": 5000,
+      "clean": true,
+      "requests": 773105,
+      "clientErrors": 0,
+      "non200": 0,
+      "metrics": {
+        "rps200": {
+          "mean": 8467.342211637279,
+          "minimum": 6096.025850298305,
+          "maximum": 12533.528523388444,
+          "repetitions": [
+            12533.528523388444,
+            6772.4722612250835,
+            6096.025850298305
+          ]
+        },
+        "success_pct": {
+          "mean": 100.0,
+          "minimum": 100.0,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            100.0,
+            100.0
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 596.5302703333333,
+          "minimum": 342.531031,
+          "maximum": 762.94255,
+          "repetitions": [
+            342.531031,
+            684.11723,
+            762.94255
+          ]
+        },
+        "p95": {
+          "mean": 921.885968,
+          "minimum": 666.454578,
+          "maximum": 1142.172303,
+          "repetitions": [
+            666.454578,
+            957.031023,
+            1142.172303
+          ]
+        },
+        "p99": {
+          "mean": 1736.6405463333333,
+          "minimum": 1377.269277,
+          "maximum": 2332.538522,
+          "repetitions": [
+            2332.538522,
+            1377.269277,
+            1500.11384
+          ]
+        },
+        "memory": {
+          "mean": 199.70540364583334,
+          "minimum": 166.9638671875,
+          "maximum": 261.05859375,
+          "repetitions": [
+            261.05859375,
+            166.9638671875,
+            171.09375
+          ]
+        },
+        "medianMemory": {
+          "mean": 199.70279947916666,
+          "minimum": 166.9638671875,
+          "maximum": 261.05859375,
+          "repetitions": [
+            261.05859375,
+            166.9638671875,
+            171.0859375
+          ]
+        },
+        "privateMemory": {
+          "mean": 191.96484375,
+          "minimum": 159.26953125,
+          "maximum": 253.2265625,
+          "repetitions": [
+            253.2265625,
+            159.26953125,
+            163.3984375
+          ]
+        },
+        "proxyCpu": {
+          "mean": 35.1134138669807,
+          "minimum": 34.69040741756642,
+          "maximum": 35.403644601359815,
+          "repetitions": [
+            35.24618958201586,
+            35.403644601359815,
+            34.69040741756642
+          ]
+        },
+        "appMemory": {
+          "mean": 111.3203125,
+          "minimum": 89.734375,
+          "maximum": 150.34765625,
+          "repetitions": [
+            150.34765625,
+            89.734375,
+            93.87890625
+          ]
+        },
+        "appCpu": {
+          "mean": 32.035322253157595,
+          "minimum": 31.02282622287666,
+          "maximum": 33.19528551452088,
+          "repetitions": [
+            33.19528551452088,
+            31.88785502207524,
+            31.02282622287666
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 29.805896997890567,
+          "minimum": 28.78270495952585,
+          "maximum": 30.979657262007294,
+          "repetitions": [
+            28.78270495952585,
+            29.655328772138557,
+            30.979657262007294
+          ]
+        },
+        "cpu": {
+          "mean": 99.39395730622806,
+          "minimum": 99.37439811738537,
+          "maximum": 99.42187423565213,
+          "repetitions": [
+            99.42187423565213,
+            99.38559956564667,
+            99.37439811738537
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-nginx-plaintext-c5000",
+        "r2-nginx-plaintext-c5000",
+        "r3-nginx-plaintext-c5000"
+      ]
+    },
+    {
+      "proxy": "haproxy",
+      "endpoint": "plaintext",
+      "conc": 5000,
+      "clean": true,
+      "requests": 761807,
+      "clientErrors": 0,
+      "non200": 0,
+      "metrics": {
+        "rps200": {
+          "mean": 8406.1553937789,
+          "minimum": 5752.495295526787,
+          "maximum": 13059.12481689393,
+          "repetitions": [
+            13059.12481689393,
+            6406.846068915984,
+            5752.495295526787
+          ]
+        },
+        "success_pct": {
+          "mean": 100.0,
+          "minimum": 100.0,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            100.0,
+            100.0
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 489.11883033333334,
+          "minimum": 319.914061,
+          "maximum": 593.9527,
+          "repetitions": [
+            319.914061,
+            553.48973,
+            593.9527
+          ]
+        },
+        "p95": {
+          "mean": 864.410985,
+          "minimum": 545.768595,
+          "maximum": 1101.83455,
+          "repetitions": [
+            545.768595,
+            945.62981,
+            1101.83455
+          ]
+        },
+        "p99": {
+          "mean": 7648.5305616666665,
+          "minimum": 3426.838541,
+          "maximum": 10514.499834,
+          "repetitions": [
+            3426.838541,
+            9004.25331,
+            10514.499834
+          ]
+        },
+        "memory": {
+          "mean": 333.7838541666667,
+          "minimum": 321.36328125,
+          "maximum": 353.525390625,
+          "repetitions": [
+            353.525390625,
+            321.36328125,
+            326.462890625
+          ]
+        },
+        "medianMemory": {
+          "mean": 310.4114583333333,
+          "minimum": 302.310546875,
+          "maximum": 325.583984375,
+          "repetitions": [
+            325.583984375,
+            303.33984375,
+            302.310546875
+          ]
+        },
+        "privateMemory": {
+          "mean": 315.5924479166667,
+          "minimum": 303.734375,
+          "maximum": 334.1640625,
+          "repetitions": [
+            334.1640625,
+            303.734375,
+            308.87890625
+          ]
+        },
+        "proxyCpu": {
+          "mean": 41.0071492764108,
+          "minimum": 40.658245036037215,
+          "maximum": 41.59079602735461,
+          "repetitions": [
+            40.77240676584058,
+            40.658245036037215,
+            41.59079602735461
+          ]
+        },
+        "appMemory": {
+          "mean": 133.52994791666666,
+          "minimum": 118.8125,
+          "maximum": 162.859375,
+          "repetitions": [
+            162.859375,
+            118.8125,
+            118.91796875
+          ]
+        },
+        "appCpu": {
+          "mean": 26.486645345137184,
+          "minimum": 25.269170634877504,
+          "maximum": 27.814287994228092,
+          "repetitions": [
+            25.269170634877504,
+            27.814287994228092,
+            26.376477406305952
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 30.497871992789282,
+          "minimum": 29.900896327960467,
+          "maximum": 31.607478810214673,
+          "repetitions": [
+            31.607478810214673,
+            29.900896327960467,
+            29.985240840192706
+          ]
+        },
+        "cpu": {
+          "mean": 99.69945947503037,
+          "minimum": 99.57034774425955,
+          "maximum": 99.81485112643088,
+          "repetitions": [
+            99.57034774425955,
+            99.71317955440065,
+            99.81485112643088
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-haproxy-plaintext-c5000",
+        "r2-haproxy-plaintext-c5000",
+        "r3-haproxy-plaintext-c5000"
+      ]
+    },
+    {
+      "proxy": "tako",
+      "endpoint": "plaintext",
+      "conc": 5000,
+      "clean": true,
+      "requests": 534950,
+      "clientErrors": 0,
+      "non200": 0,
+      "metrics": {
+        "rps200": {
+          "mean": 5850.381512645603,
+          "minimum": 3797.9279657047223,
+          "maximum": 9694.1163181676,
+          "repetitions": [
+            9694.1163181676,
+            4059.1002540644863,
+            3797.9279657047223
+          ]
+        },
+        "success_pct": {
+          "mean": 100.0,
+          "minimum": 100.0,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            100.0,
+            100.0
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 816.3827516666666,
+          "minimum": 488.00044,
+          "maximum": 986.67997,
+          "repetitions": [
+            488.00044,
+            974.467845,
+            986.67997
+          ]
+        },
+        "p95": {
+          "mean": 2189.0298423333334,
+          "minimum": 1035.572586,
+          "maximum": 2958.344098,
+          "repetitions": [
+            1035.572586,
+            2573.172843,
+            2958.344098
+          ]
+        },
+        "p99": {
+          "mean": 6074.0041163333335,
+          "minimum": 2341.44311,
+          "maximum": 8264.694331,
+          "repetitions": [
+            2341.44311,
+            7615.874908,
+            8264.694331
+          ]
+        },
+        "memory": {
+          "mean": 504.0,
+          "minimum": 466.361328125,
+          "maximum": 532.705078125,
+          "repetitions": [
+            466.361328125,
+            532.705078125,
+            512.93359375
+          ]
+        },
+        "medianMemory": {
+          "mean": 459.5182291666667,
+          "minimum": 437.134765625,
+          "maximum": 487.662109375,
+          "repetitions": [
+            437.134765625,
+            487.662109375,
+            453.7578125
+          ]
+        },
+        "privateMemory": {
+          "mean": 500.7734375,
+          "minimum": 463.12890625,
+          "maximum": 529.47265625,
+          "repetitions": [
+            463.12890625,
+            529.47265625,
+            509.71875
+          ]
+        },
+        "proxyCpu": {
+          "mean": 53.86427048181639,
+          "minimum": 50.97924008196762,
+          "maximum": 55.47735397939674,
+          "repetitions": [
+            50.97924008196762,
+            55.13621738408481,
+            55.47735397939674
+          ]
+        },
+        "appMemory": {
+          "mean": 167.91145833333334,
+          "minimum": 163.1328125,
+          "maximum": 173.3984375,
+          "repetitions": [
+            173.3984375,
+            167.203125,
+            163.1328125
+          ]
+        },
+        "appCpu": {
+          "mean": 18.308163867499246,
+          "minimum": 16.229284724079175,
+          "maximum": 20.897753172706462,
+          "repetitions": [
+            20.897753172706462,
+            17.797453705712098,
+            16.229284724079175
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 24.98436817434435,
+          "minimum": 24.24995624313594,
+          "maximum": 25.805744571518197,
+          "repetitions": [
+            25.805744571518197,
+            24.24995624313594,
+            24.89740370837891
+          ]
+        },
+        "cpu": {
+          "mean": 99.51790299122524,
+          "minimum": 99.49102005524867,
+          "maximum": 99.56439755693735,
+          "repetitions": [
+            99.49102005524867,
+            99.56439755693735,
+            99.49829136148969
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-tako-plaintext-c5000",
+        "r2-tako-plaintext-c5000",
+        "r3-tako-plaintext-c5000"
+      ]
+    },
+    {
+      "proxy": "envoy",
+      "endpoint": "plaintext",
+      "conc": 5000,
+      "clean": true,
+      "requests": 606806,
+      "clientErrors": 0,
+      "non200": 0,
+      "metrics": {
+        "rps200": {
+          "mean": 6682.124543484745,
+          "minimum": 4626.385540525606,
+          "maximum": 10545.219735923352,
+          "repetitions": [
+            10545.219735923352,
+            4874.768354005276,
+            4626.385540525606
+          ]
+        },
+        "success_pct": {
+          "mean": 100.0,
+          "minimum": 100.0,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            100.0,
+            100.0
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 721.0644913333333,
+          "minimum": 423.289465,
+          "maximum": 891.493434,
+          "repetitions": [
+            423.289465,
+            848.410575,
+            891.493434
+          ]
+        },
+        "p95": {
+          "mean": 1011.297554,
+          "minimum": 585.93811,
+          "maximum": 1246.943812,
+          "repetitions": [
+            585.93811,
+            1201.01074,
+            1246.943812
+          ]
+        },
+        "p99": {
+          "mean": 4784.101538666667,
+          "minimum": 2932.121627,
+          "maximum": 5788.526955,
+          "repetitions": [
+            2932.121627,
+            5631.656034,
+            5788.526955
+          ]
+        },
+        "memory": {
+          "mean": 339.6875,
+          "minimum": 337.23046875,
+          "maximum": 342.623046875,
+          "repetitions": [
+            337.23046875,
+            342.623046875,
+            339.208984375
+          ]
+        },
+        "medianMemory": {
+          "mean": 336.33984375,
+          "minimum": 334.623046875,
+          "maximum": 337.208984375,
+          "repetitions": [
+            337.1875,
+            334.623046875,
+            337.208984375
+          ]
+        },
+        "privateMemory": {
+          "mean": 338.4544270833333,
+          "minimum": 335.98828125,
+          "maximum": 341.39453125,
+          "repetitions": [
+            335.98828125,
+            341.39453125,
+            337.98046875
+          ]
+        },
+        "proxyCpu": {
+          "mean": 53.526508141179406,
+          "minimum": 53.3978226673708,
+          "maximum": 53.74137178141343,
+          "repetitions": [
+            53.3978226673708,
+            53.440329974754,
+            53.74137178141343
+          ]
+        },
+        "appMemory": {
+          "mean": 162.20182291666666,
+          "minimum": 160.90234375,
+          "maximum": 162.859375,
+          "repetitions": [
+            162.84375,
+            160.90234375,
+            162.859375
+          ]
+        },
+        "appCpu": {
+          "mean": 19.69252663297118,
+          "minimum": 19.38874068289282,
+          "maximum": 20.26065741245597,
+          "repetitions": [
+            20.26065741245597,
+            19.42818180356475,
+            19.38874068289282
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 24.408597774039844,
+          "minimum": 24.166610538414073,
+          "maximum": 24.552286504468594,
+          "repetitions": [
+            24.506896279236866,
+            24.552286504468594,
+            24.166610538414073
+          ]
+        },
+        "cpu": {
+          "mean": 99.773755722747,
+          "minimum": 99.69319872929373,
+          "maximum": 99.83021095306475,
+          "repetitions": [
+            99.83021095306475,
+            99.79785748588253,
+            99.69319872929373
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-envoy-plaintext-c5000",
+        "r2-envoy-plaintext-c5000",
+        "r3-envoy-plaintext-c5000"
+      ]
+    },
+    {
+      "proxy": "caddy",
+      "endpoint": "plaintext",
+      "conc": 5000,
+      "clean": false,
+      "requests": 301063,
+      "clientErrors": 0,
+      "non200": 1703,
+      "metrics": {
+        "rps200": {
+          "mean": 3239.8841887068825,
+          "minimum": 2236.242914124915,
+          "maximum": 5114.866584914093,
+          "repetitions": [
+            5114.866584914093,
+            2368.5430670816386,
+            2236.242914124915
+          ]
+        },
+        "success_pct": {
+          "mean": 99.2757186631614,
+          "minimum": 98.24995755758022,
+          "maximum": 99.81361797409734,
+          "repetitions": [
+            99.81361797409734,
+            99.76358045780664,
+            98.24995755758022
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.7242813368386015,
+          "minimum": 0.1863820259026488,
+          "maximum": 1.7500424424197838,
+          "repetitions": [
+            0.1863820259026488,
+            0.23641954219337205,
+            1.7500424424197838
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 1424.4593866666667,
+          "minimum": 879.100756,
+          "maximum": 1709.062102,
+          "repetitions": [
+            879.100756,
+            1685.215302,
+            1709.062102
+          ]
+        },
+        "p95": {
+          "mean": 6080.524699,
+          "minimum": 1156.363509,
+          "maximum": 9411.420047,
+          "repetitions": [
+            1156.363509,
+            7673.790541,
+            9411.420047
+          ]
+        },
+        "p99": {
+          "mean": 8147.977274333333,
+          "minimum": 5306.759706,
+          "maximum": 10129.848266,
+          "repetitions": [
+            5306.759706,
+            9007.323851,
+            10129.848266
+          ]
+        },
+        "memory": {
+          "mean": 823.6002604166666,
+          "minimum": 811.58203125,
+          "maximum": 844.5859375,
+          "repetitions": [
+            844.5859375,
+            814.6328125,
+            811.58203125
+          ]
+        },
+        "medianMemory": {
+          "mean": 742.703125,
+          "minimum": 676.966796875,
+          "maximum": 790.34765625,
+          "repetitions": [
+            790.34765625,
+            760.794921875,
+            676.966796875
+          ]
+        },
+        "privateMemory": {
+          "mean": 823.6002604166666,
+          "minimum": 811.58203125,
+          "maximum": 844.5859375,
+          "repetitions": [
+            844.5859375,
+            814.6328125,
+            811.58203125
+          ]
+        },
+        "proxyCpu": {
+          "mean": 57.07551864012691,
+          "minimum": 56.240469932472536,
+          "maximum": 57.824680951122566,
+          "repetitions": [
+            57.16140503678562,
+            56.240469932472536,
+            57.824680951122566
+          ]
+        },
+        "appMemory": {
+          "mean": 184.49869791666666,
+          "minimum": 181.7578125,
+          "maximum": 187.91796875,
+          "repetitions": [
+            183.8203125,
+            187.91796875,
+            181.7578125
+          ]
+        },
+        "appCpu": {
+          "mean": 24.242667508733728,
+          "minimum": 22.878335844142565,
+          "maximum": 25.56096262170949,
+          "repetitions": [
+            25.56096262170949,
+            24.288704060349133,
+            22.878335844142565
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 15.597325611742086,
+          "minimum": 14.767412609503412,
+          "maximum": 16.120219539644566,
+          "repetitions": [
+            14.767412609503412,
+            15.904344686078279,
+            16.120219539644566
+          ]
+        },
+        "cpu": {
+          "mean": 99.65638204866751,
+          "minimum": 99.46823362773148,
+          "maximum": 99.83977925154247,
+          "repetitions": [
+            99.46823362773148,
+            99.83977925154247,
+            99.6611332667286
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-caddy-plaintext-c5000",
+        "r2-caddy-plaintext-c5000",
+        "r3-caddy-plaintext-c5000"
+      ]
+    },
+    {
+      "proxy": "caddy",
+      "endpoint": "plaintext",
+      "conc": 7500,
+      "clean": false,
+      "requests": 258209,
+      "clientErrors": 0,
+      "non200": 3843,
+      "metrics": {
+        "rps200": {
+          "mean": 2727.377529440501,
+          "minimum": 1785.7442307353838,
+          "maximum": 4286.27145446455,
+          "repetitions": [
+            4286.27145446455,
+            2110.116903121569,
+            1785.7442307353838
+          ]
+        },
+        "success_pct": {
+          "mean": 98.25319423652843,
+          "minimum": 95.92629176743077,
+          "maximum": 99.84616776762284,
+          "repetitions": [
+            98.98712317453166,
+            99.84616776762284,
+            95.92629176743077
+          ]
+        },
+        "non200_pct": {
+          "mean": 1.7468057634715746,
+          "minimum": 0.15383223237716043,
+          "maximum": 4.0737082325692295,
+          "repetitions": [
+            1.0128768254683336,
+            0.15383223237716043,
+            4.0737082325692295
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 2091.732468,
+          "minimum": 1394.846605,
+          "maximum": 2532.615039,
+          "repetitions": [
+            1394.846605,
+            2347.73576,
+            2532.615039
+          ]
+        },
+        "p95": {
+          "mean": 10875.08069,
+          "minimum": 7162.976864,
+          "maximum": 14762.909379,
+          "repetitions": [
+            7162.976864,
+            10699.355827,
+            14762.909379
+          ]
+        },
+        "p99": {
+          "mean": 13328.965822666667,
+          "minimum": 8498.834695,
+          "maximum": 16204.28736,
+          "repetitions": [
+            8498.834695,
+            16204.28736,
+            15283.775413
+          ]
+        },
+        "memory": {
+          "mean": 1217.66015625,
+          "minimum": 1158.25390625,
+          "maximum": 1336.0390625,
+          "repetitions": [
+            1158.6875,
+            1336.0390625,
+            1158.25390625
+          ]
+        },
+        "medianMemory": {
+          "mean": 977.4140625,
+          "minimum": 926.265625,
+          "maximum": 1038.6015625,
+          "repetitions": [
+            1038.6015625,
+            926.265625,
+            967.375
+          ]
+        },
+        "privateMemory": {
+          "mean": 1217.66015625,
+          "minimum": 1158.25390625,
+          "maximum": 1336.0390625,
+          "repetitions": [
+            1158.6875,
+            1336.0390625,
+            1158.25390625
+          ]
+        },
+        "proxyCpu": {
+          "mean": 58.544404078300154,
+          "minimum": 56.95100746041456,
+          "maximum": 59.5991098472289,
+          "repetitions": [
+            56.95100746041456,
+            59.5991098472289,
+            59.08309492725701
+          ]
+        },
+        "appMemory": {
+          "mean": 267.8502604166667,
+          "minimum": 254.6796875,
+          "maximum": 281.953125,
+          "repetitions": [
+            281.953125,
+            254.6796875,
+            266.91796875
+          ]
+        },
+        "appCpu": {
+          "mean": 19.75207444034271,
+          "minimum": 18.693894801810618,
+          "maximum": 21.75313942383127,
+          "repetitions": [
+            21.75313942383127,
+            18.693894801810618,
+            18.809189095386245
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 16.665227307777926,
+          "minimum": 15.239006081470718,
+          "maximum": 17.447238039389443,
+          "repetitions": [
+            15.239006081470718,
+            17.447238039389443,
+            17.309437802473614
+          ]
+        },
+        "cpu": {
+          "mean": 99.71143731910955,
+          "minimum": 99.64409519077215,
+          "maximum": 99.84359973416429,
+          "repetitions": [
+            99.84359973416429,
+            99.64661703239223,
+            99.64409519077215
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-caddy-plaintext-c7500",
+        "r2-caddy-plaintext-c7500",
+        "r3-caddy-plaintext-c7500"
+      ]
+    },
+    {
+      "proxy": "envoy",
+      "endpoint": "plaintext",
+      "conc": 7500,
+      "clean": true,
+      "requests": 560330,
+      "clientErrors": 0,
+      "non200": 0,
+      "metrics": {
+        "rps200": {
+          "mean": 6121.780009750862,
+          "minimum": 4053.656844360235,
+          "maximum": 9882.73522744504,
+          "repetitions": [
+            9882.73522744504,
+            4428.94795744731,
+            4053.656844360235
+          ]
+        },
+        "success_pct": {
+          "mean": 100.0,
+          "minimum": 100.0,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            100.0,
+            100.0
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 1117.3067469999999,
+          "minimum": 647.410099,
+          "maximum": 1408.762061,
+          "repetitions": [
+            647.410099,
+            1295.748081,
+            1408.762061
+          ]
+        },
+        "p95": {
+          "mean": 5609.284089666667,
+          "minimum": 894.12565,
+          "maximum": 8074.201319,
+          "repetitions": [
+            894.12565,
+            7859.5253,
+            8074.201319
+          ]
+        },
+        "p99": {
+          "mean": 7241.514396,
+          "minimum": 4568.988577,
+          "maximum": 8662.613776,
+          "repetitions": [
+            4568.988577,
+            8492.940835,
+            8662.613776
+          ]
+        },
+        "memory": {
+          "mean": 473.11328125,
+          "minimum": 463.173828125,
+          "maximum": 487.302734375,
+          "repetitions": [
+            487.302734375,
+            468.86328125,
+            463.173828125
+          ]
+        },
+        "medianMemory": {
+          "mean": 473.10546875,
+          "minimum": 463.150390625,
+          "maximum": 487.302734375,
+          "repetitions": [
+            487.302734375,
+            468.86328125,
+            463.150390625
+          ]
+        },
+        "privateMemory": {
+          "mean": 471.88671875,
+          "minimum": 461.94921875,
+          "maximum": 486.0390625,
+          "repetitions": [
+            486.0390625,
+            467.671875,
+            461.94921875
+          ]
+        },
+        "proxyCpu": {
+          "mean": 55.46185169021036,
+          "minimum": 55.11105815973778,
+          "maximum": 55.70775416772618,
+          "repetitions": [
+            55.11105815973778,
+            55.56674274316711,
+            55.70775416772618
+          ]
+        },
+        "appMemory": {
+          "mean": 233.16276041666666,
+          "minimum": 227.50390625,
+          "maximum": 238.2421875,
+          "repetitions": [
+            238.2421875,
+            227.50390625,
+            233.7421875
+          ]
+        },
+        "appCpu": {
+          "mean": 18.030689385065102,
+          "minimum": 17.568881121255224,
+          "maximum": 18.92431958349165,
+          "repetitions": [
+            18.92431958349165,
+            17.568881121255224,
+            17.598867450448438
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 23.852944798503575,
+          "minimum": 23.72384930363222,
+          "maximum": 24.07248848867233,
+          "repetitions": [
+            23.762496603206177,
+            24.07248848867233,
+            23.72384930363222
+          ]
+        },
+        "cpu": {
+          "mean": 99.77046792853753,
+          "minimum": 99.750321929409,
+          "maximum": 99.78573020376481,
+          "repetitions": [
+            99.77535165243879,
+            99.78573020376481,
+            99.750321929409
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-envoy-plaintext-c7500",
+        "r2-envoy-plaintext-c7500",
+        "r3-envoy-plaintext-c7500"
+      ]
+    },
+    {
+      "proxy": "tako",
+      "endpoint": "plaintext",
+      "conc": 7500,
+      "clean": true,
+      "requests": 475163,
+      "clientErrors": 0,
+      "non200": 0,
+      "metrics": {
+        "rps200": {
+          "mean": 5149.310583106532,
+          "minimum": 3152.4434259524523,
+          "maximum": 8707.829667415097,
+          "repetitions": [
+            8707.829667415097,
+            3587.6586559520483,
+            3152.4434259524523
+          ]
+        },
+        "success_pct": {
+          "mean": 100.0,
+          "minimum": 100.0,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            100.0,
+            100.0
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 1246.429963,
+          "minimum": 783.852589,
+          "maximum": 1582.846385,
+          "repetitions": [
+            783.852589,
+            1372.590915,
+            1582.846385
+          ]
+        },
+        "p95": {
+          "mean": 6728.466023999999,
+          "minimum": 1784.641965,
+          "maximum": 10488.460226,
+          "repetitions": [
+            1784.641965,
+            7912.295881,
+            10488.460226
+          ]
+        },
+        "p99": {
+          "mean": 10224.599250666666,
+          "minimum": 4623.970532,
+          "maximum": 13631.617552,
+          "repetitions": [
+            4623.970532,
+            12418.209668,
+            13631.617552
+          ]
+        },
+        "memory": {
+          "mean": 683.2259114583334,
+          "minimum": 646.103515625,
+          "maximum": 710.599609375,
+          "repetitions": [
+            692.974609375,
+            646.103515625,
+            710.599609375
+          ]
+        },
+        "medianMemory": {
+          "mean": 644.2233072916666,
+          "minimum": 618.376953125,
+          "maximum": 678.654296875,
+          "repetitions": [
+            635.638671875,
+            618.376953125,
+            678.654296875
+          ]
+        },
+        "privateMemory": {
+          "mean": 680.0768229166666,
+          "minimum": 642.96875,
+          "maximum": 707.47265625,
+          "repetitions": [
+            689.7890625,
+            642.96875,
+            707.47265625
+          ]
+        },
+        "proxyCpu": {
+          "mean": 54.975159637703264,
+          "minimum": 49.52238297437661,
+          "maximum": 57.86359097217375,
+          "repetitions": [
+            49.52238297437661,
+            57.53950496655943,
+            57.86359097217375
+          ]
+        },
+        "appMemory": {
+          "mean": 240.62630208333334,
+          "minimum": 233.59765625,
+          "maximum": 250.28125,
+          "repetitions": [
+            238.0,
+            233.59765625,
+            250.28125
+          ]
+        },
+        "appCpu": {
+          "mean": 16.7186874879629,
+          "minimum": 13.713442759549507,
+          "maximum": 22.343381220619765,
+          "repetitions": [
+            22.343381220619765,
+            14.099238483719423,
+            13.713442759549507
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 25.12288089858597,
+          "minimum": 25.00188618017265,
+          "maximum": 25.187964304304426,
+          "repetitions": [
+            25.187964304304426,
+            25.00188618017265,
+            25.178792211280832
+          ]
+        },
+        "cpu": {
+          "mean": 99.53757939932272,
+          "minimum": 99.50790890282619,
+          "maximum": 99.5944878304331,
+          "repetitions": [
+            99.5944878304331,
+            99.50790890282619,
+            99.51034146470887
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-tako-plaintext-c7500",
+        "r2-tako-plaintext-c7500",
+        "r3-tako-plaintext-c7500"
+      ]
+    },
+    {
+      "proxy": "haproxy",
+      "endpoint": "plaintext",
+      "conc": 7500,
+      "clean": true,
+      "requests": 741552,
+      "clientErrors": 0,
+      "non200": 0,
+      "metrics": {
+        "rps200": {
+          "mean": 8149.965667877275,
+          "minimum": 5202.012987763913,
+          "maximum": 13856.698067865109,
+          "repetitions": [
+            13856.698067865109,
+            5391.185948002805,
+            5202.012987763913
+          ]
+        },
+        "success_pct": {
+          "mean": 100.0,
+          "minimum": 100.0,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            100.0,
+            100.0
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 596.1961213333334,
+          "minimum": 436.739671,
+          "maximum": 701.947138,
+          "repetitions": [
+            436.739671,
+            649.901555,
+            701.947138
+          ]
+        },
+        "p95": {
+          "mean": 2427.3875926666665,
+          "minimum": 730.400964,
+          "maximum": 3382.435308,
+          "repetitions": [
+            730.400964,
+            3169.326506,
+            3382.435308
+          ]
+        },
+        "p99": {
+          "mean": 13074.013673,
+          "minimum": 4707.266206,
+          "maximum": 17314.187368,
+          "repetitions": [
+            4707.266206,
+            17314.187368,
+            17200.587445
+          ]
+        },
+        "memory": {
+          "mean": 495.005859375,
+          "minimum": 483.744140625,
+          "maximum": 504.859375,
+          "repetitions": [
+            504.859375,
+            483.744140625,
+            496.4140625
+          ]
+        },
+        "medianMemory": {
+          "mean": 456.4446614583333,
+          "minimum": 444.37890625,
+          "maximum": 474.265625,
+          "repetitions": [
+            444.37890625,
+            450.689453125,
+            474.265625
+          ]
+        },
+        "privateMemory": {
+          "mean": 476.6080729166667,
+          "minimum": 465.03125,
+          "maximum": 487.1875,
+          "repetitions": [
+            487.1875,
+            465.03125,
+            477.60546875
+          ]
+        },
+        "proxyCpu": {
+          "mean": 43.08369997861381,
+          "minimum": 40.29536411577769,
+          "maximum": 44.48536351061032,
+          "repetitions": [
+            40.29536411577769,
+            44.470372309453424,
+            44.48536351061032
+          ]
+        },
+        "appMemory": {
+          "mean": 160.73567708333334,
+          "minimum": 148.27734375,
+          "maximum": 183.77734375,
+          "repetitions": [
+            183.77734375,
+            150.15234375,
+            148.27734375
+          ]
+        },
+        "appCpu": {
+          "mean": 24.453362284293902,
+          "minimum": 23.627990591019273,
+          "maximum": 25.43094835860647,
+          "repetitions": [
+            25.43094835860647,
+            23.627990591019273,
+            24.301147903255966
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 30.13624253620284,
+          "minimum": 29.100209349944183,
+          "maximum": 31.987575800437313,
+          "repetitions": [
+            31.987575800437313,
+            29.320942458227023,
+            29.100209349944183
+          ]
+        },
+        "cpu": {
+          "mean": 99.71599600224496,
+          "minimum": 99.67043273270978,
+          "maximum": 99.74632873332877,
+          "repetitions": [
+            99.73122654069635,
+            99.67043273270978,
+            99.74632873332877
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-haproxy-plaintext-c7500",
+        "r2-haproxy-plaintext-c7500",
+        "r3-haproxy-plaintext-c7500"
+      ]
+    },
+    {
+      "proxy": "nginx",
+      "endpoint": "plaintext",
+      "conc": 7500,
+      "clean": true,
+      "requests": 775921,
+      "clientErrors": 0,
+      "non200": 0,
+      "metrics": {
+        "rps200": {
+          "mean": 8411.267448832225,
+          "minimum": 6217.555729790921,
+          "maximum": 12418.966343082002,
+          "repetitions": [
+            12418.966343082002,
+            6597.280273623749,
+            6217.555729790921
+          ]
+        },
+        "success_pct": {
+          "mean": 100.0,
+          "minimum": 100.0,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            100.0,
+            100.0
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 903.1204906666667,
+          "minimum": 528.845288,
+          "maximum": 1111.38123,
+          "repetitions": [
+            528.845288,
+            1069.134954,
+            1111.38123
+          ]
+        },
+        "p95": {
+          "mean": 1344.3367876666666,
+          "minimum": 863.096245,
+          "maximum": 1686.840491,
+          "repetitions": [
+            863.096245,
+            1483.073627,
+            1686.840491
+          ]
+        },
+        "p99": {
+          "mean": 2124.3150423333336,
+          "minimum": 1965.187867,
+          "maximum": 2368.189605,
+          "repetitions": [
+            2368.189605,
+            2039.567655,
+            1965.187867
+          ]
+        },
+        "memory": {
+          "mean": 217.02734375,
+          "minimum": 204.2734375,
+          "maximum": 236.4453125,
+          "repetitions": [
+            236.4453125,
+            210.36328125,
+            204.2734375
+          ]
+        },
+        "medianMemory": {
+          "mean": 216.77213541666666,
+          "minimum": 203.51953125,
+          "maximum": 236.4375,
+          "repetitions": [
+            236.4375,
+            210.359375,
+            203.51953125
+          ]
+        },
+        "privateMemory": {
+          "mean": 209.35546875,
+          "minimum": 196.703125,
+          "maximum": 228.625,
+          "repetitions": [
+            228.625,
+            202.73828125,
+            196.703125
+          ]
+        },
+        "proxyCpu": {
+          "mean": 35.43755282904281,
+          "minimum": 34.8455334944502,
+          "maximum": 35.78335786792597,
+          "repetitions": [
+            34.8455334944502,
+            35.68376712475225,
+            35.78335786792597
+          ]
+        },
+        "appMemory": {
+          "mean": 118.41015625,
+          "minimum": 112.65234375,
+          "maximum": 129.79296875,
+          "repetitions": [
+            129.79296875,
+            112.65234375,
+            112.78515625
+          ]
+        },
+        "appCpu": {
+          "mean": 31.027764379100688,
+          "minimum": 30.597736939746174,
+          "maximum": 31.542089719853045,
+          "repetitions": [
+            31.542089719853045,
+            30.597736939746174,
+            30.943466477702845
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 30.588166784450483,
+          "minimum": 30.34484785608713,
+          "maximum": 31.015602433234868,
+          "repetitions": [
+            31.015602433234868,
+            30.34484785608713,
+            30.40405006402945
+          ]
+        },
+        "cpu": {
+          "mean": 99.25093995593936,
+          "minimum": 99.20949163526657,
+          "maximum": 99.32680681324275,
+          "repetitions": [
+            99.32680681324275,
+            99.20949163526657,
+            99.21652141930876
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-nginx-plaintext-c7500",
+        "r2-nginx-plaintext-c7500",
+        "r3-nginx-plaintext-c7500"
+      ]
+    },
+    {
+      "proxy": "nginx",
+      "endpoint": "plaintext",
+      "conc": 10000,
+      "clean": true,
+      "requests": 719261,
+      "clientErrors": 0,
+      "non200": 0,
+      "metrics": {
+        "rps200": {
+          "mean": 7731.652891618985,
+          "minimum": 5651.601267484452,
+          "maximum": 11231.047890185073,
+          "repetitions": [
+            11231.047890185073,
+            6312.30951718743,
+            5651.601267484452
+          ]
+        },
+        "success_pct": {
+          "mean": 100.0,
+          "minimum": 100.0,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            100.0,
+            100.0
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 1283.93584,
+          "minimum": 753.354708,
+          "maximum": 1581.580417,
+          "repetitions": [
+            753.354708,
+            1516.872395,
+            1581.580417
+          ]
+        },
+        "p95": {
+          "mean": 1897.06387,
+          "minimum": 1352.848407,
+          "maximum": 2333.731415,
+          "repetitions": [
+            1352.848407,
+            2004.611788,
+            2333.731415
+          ]
+        },
+        "p99": {
+          "mean": 2831.63748,
+          "minimum": 2180.582696,
+          "maximum": 3586.730099,
+          "repetitions": [
+            3586.730099,
+            2180.582696,
+            2727.599645
+          ]
+        },
+        "memory": {
+          "mean": 250.42545572916666,
+          "minimum": 196.8701171875,
+          "maximum": 313.15625,
+          "repetitions": [
+            313.15625,
+            196.8701171875,
+            241.25
+          ]
+        },
+        "medianMemory": {
+          "mean": 250.06608072916666,
+          "minimum": 195.8037109375,
+          "maximum": 313.15234375,
+          "repetitions": [
+            313.15234375,
+            195.8037109375,
+            241.2421875
+          ]
+        },
+        "privateMemory": {
+          "mean": 242.70703125,
+          "minimum": 189.2421875,
+          "maximum": 305.19921875,
+          "repetitions": [
+            305.19921875,
+            189.2421875,
+            233.6796875
+          ]
+        },
+        "proxyCpu": {
+          "mean": 34.983208316926984,
+          "minimum": 34.29686924556137,
+          "maximum": 35.64869346812905,
+          "repetitions": [
+            35.64869346812905,
+            34.29686924556137,
+            35.00406223709053
+          ]
+        },
+        "appMemory": {
+          "mean": 125.02864583333333,
+          "minimum": 92.60546875,
+          "maximum": 161.5625,
+          "repetitions": [
+            161.5625,
+            92.60546875,
+            120.91796875
+          ]
+        },
+        "appCpu": {
+          "mean": 30.642275738802027,
+          "minimum": 29.927938642598928,
+          "maximum": 31.745887983388315,
+          "repetitions": [
+            30.25300059041884,
+            31.745887983388315,
+            29.927938642598928
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 31.052045316302923,
+          "minimum": 30.682164245155054,
+          "maximum": 31.69726634293563,
+          "repetitions": [
+            30.776705360818085,
+            30.682164245155054,
+            31.69726634293563
+          ]
+        },
+        "cpu": {
+          "mean": 99.31846217762225,
+          "minimum": 99.21757518380464,
+          "maximum": 99.50712154850494,
+          "repetitions": [
+            99.50712154850494,
+            99.23068980055717,
+            99.21757518380464
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-nginx-plaintext-c10000",
+        "r2-nginx-plaintext-c10000",
+        "r3-nginx-plaintext-c10000"
+      ]
+    },
+    {
+      "proxy": "haproxy",
+      "endpoint": "plaintext",
+      "conc": 10000,
+      "clean": true,
+      "requests": 684535,
+      "clientErrors": 0,
+      "non200": 0,
+      "metrics": {
+        "rps200": {
+          "mean": 7351.2216693257305,
+          "minimum": 4329.321145220809,
+          "maximum": 12909.109296235361,
+          "repetitions": [
+            12909.109296235361,
+            4815.2345665210205,
+            4329.321145220809
+          ]
+        },
+        "success_pct": {
+          "mean": 100.0,
+          "minimum": 100.0,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            100.0,
+            100.0
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 873.6218663333334,
+          "minimum": 580.273566,
+          "maximum": 1128.310938,
+          "repetitions": [
+            580.273566,
+            1128.310938,
+            912.281095
+          ]
+        },
+        "p95": {
+          "mean": 6323.043745666667,
+          "minimum": 1095.02991,
+          "maximum": 11336.398754,
+          "repetitions": [
+            1095.02991,
+            6537.702573,
+            11336.398754
+          ]
+        },
+        "p99": {
+          "mean": 17288.449319333333,
+          "minimum": 8266.089633,
+          "maximum": 24428.362878,
+          "repetitions": [
+            8266.089633,
+            19170.895447,
+            24428.362878
+          ]
+        },
+        "memory": {
+          "mean": 617.46484375,
+          "minimum": 584.92578125,
+          "maximum": 659.140625,
+          "repetitions": [
+            659.140625,
+            608.328125,
+            584.92578125
+          ]
+        },
+        "medianMemory": {
+          "mean": 519.0540364583334,
+          "minimum": 456.419921875,
+          "maximum": 578.66015625,
+          "repetitions": [
+            578.66015625,
+            456.419921875,
+            522.08203125
+          ]
+        },
+        "privateMemory": {
+          "mean": 598.171875,
+          "minimum": 565.359375,
+          "maximum": 641.31640625,
+          "repetitions": [
+            641.31640625,
+            587.83984375,
+            565.359375
+          ]
+        },
+        "proxyCpu": {
+          "mean": 45.045782139632,
+          "minimum": 41.083477568377866,
+          "maximum": 47.17682395116752,
+          "repetitions": [
+            41.083477568377866,
+            46.877044899350615,
+            47.17682395116752
+          ]
+        },
+        "appMemory": {
+          "mean": 168.98697916666666,
+          "minimum": 85.484375,
+          "maximum": 304.5625,
+          "repetitions": [
+            304.5625,
+            116.9140625,
+            85.484375
+          ]
+        },
+        "appCpu": {
+          "mean": 22.692679846461843,
+          "minimum": 21.52667893937933,
+          "maximum": 24.65448313145857,
+          "repetitions": [
+            24.65448313145857,
+            21.896877468547626,
+            21.52667893937933
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 29.90918815120898,
+          "minimum": 28.722798178471077,
+          "maximum": 31.813450797860384,
+          "repetitions": [
+            31.813450797860384,
+            29.191315477295475,
+            28.722798178471077
+          ]
+        },
+        "cpu": {
+          "mean": 99.78155775915704,
+          "minimum": 99.70232104127112,
+          "maximum": 99.83146362721533,
+          "repetitions": [
+            99.70232104127112,
+            99.83146362721533,
+            99.81088860898467
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-haproxy-plaintext-c10000",
+        "r2-haproxy-plaintext-c10000",
+        "r3-haproxy-plaintext-c10000"
+      ]
+    },
+    {
+      "proxy": "tako",
+      "endpoint": "plaintext",
+      "conc": 10000,
+      "clean": true,
+      "requests": 429810,
+      "clientErrors": 0,
+      "non200": 0,
+      "metrics": {
+        "rps200": {
+          "mean": 4610.278657518779,
+          "minimum": 2642.0667727520863,
+          "maximum": 8413.97336412286,
+          "repetitions": [
+            8413.97336412286,
+            2774.7958356813924,
+            2642.0667727520863
+          ]
+        },
+        "success_pct": {
+          "mean": 100.0,
+          "minimum": 100.0,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            100.0,
+            100.0
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 1767.6575253333335,
+          "minimum": 977.267234,
+          "maximum": 2243.747128,
+          "repetitions": [
+            977.267234,
+            2243.747128,
+            2081.958214
+          ]
+        },
+        "p95": {
+          "mean": 10875.58426,
+          "minimum": 2578.131696,
+          "maximum": 15246.125039,
+          "repetitions": [
+            2578.131696,
+            14802.496045,
+            15246.125039
+          ]
+        },
+        "p99": {
+          "mean": 13500.172744666668,
+          "minimum": 6724.233074,
+          "maximum": 16945.531018,
+          "repetitions": [
+            6724.233074,
+            16945.531018,
+            16830.754142
+          ]
+        },
+        "memory": {
+          "mean": 864.84765625,
+          "minimum": 744.986328125,
+          "maximum": 971.103515625,
+          "repetitions": [
+            971.103515625,
+            878.453125,
+            744.986328125
+          ]
+        },
+        "medianMemory": {
+          "mean": 812.8763020833334,
+          "minimum": 719.908203125,
+          "maximum": 892.181640625,
+          "repetitions": [
+            892.181640625,
+            826.5390625,
+            719.908203125
+          ]
+        },
+        "privateMemory": {
+          "mean": 861.6640625,
+          "minimum": 741.79296875,
+          "maximum": 967.87109375,
+          "repetitions": [
+            967.87109375,
+            875.328125,
+            741.79296875
+          ]
+        },
+        "proxyCpu": {
+          "mean": 55.889137656449826,
+          "minimum": 52.792480180632225,
+          "maximum": 57.71868834716989,
+          "repetitions": [
+            52.792480180632225,
+            57.71868834716989,
+            57.156244441547365
+          ]
+        },
+        "appMemory": {
+          "mean": 299.73828125,
+          "minimum": 285.5546875,
+          "maximum": 309.30859375,
+          "repetitions": [
+            309.30859375,
+            285.5546875,
+            304.3515625
+          ]
+        },
+        "appCpu": {
+          "mean": 15.296773041223261,
+          "minimum": 13.23517211147352,
+          "maximum": 18.568657309368657,
+          "repetitions": [
+            18.568657309368657,
+            14.086489702827606,
+            13.23517211147352
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 24.844586740889262,
+          "minimum": 24.6133716974713,
+          "maximum": 25.280652574569963,
+          "repetitions": [
+            25.280652574569963,
+            24.6133716974713,
+            24.639735950626527
+          ]
+        },
+        "cpu": {
+          "mean": 99.71191771311484,
+          "minimum": 99.58789835220243,
+          "maximum": 99.790220098929,
+          "repetitions": [
+            99.58789835220243,
+            99.790220098929,
+            99.75763468821312
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-tako-plaintext-c10000",
+        "r2-tako-plaintext-c10000",
+        "r3-tako-plaintext-c10000"
+      ]
+    },
+    {
+      "proxy": "envoy",
+      "endpoint": "plaintext",
+      "conc": 10000,
+      "clean": true,
+      "requests": 511267,
+      "clientErrors": 0,
+      "non200": 0,
+      "metrics": {
+        "rps200": {
+          "mean": 5569.661149857895,
+          "minimum": 3726.9427638486086,
+          "maximum": 9123.088865774052,
+          "repetitions": [
+            9123.088865774052,
+            3858.9518199510235,
+            3726.9427638486086
+          ]
+        },
+        "success_pct": {
+          "mean": 100.0,
+          "minimum": 100.0,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            100.0,
+            100.0
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 1481.0106113333331,
+          "minimum": 876.724517,
+          "maximum": 1783.299981,
+          "repetitions": [
+            876.724517,
+            1783.007336,
+            1783.299981
+          ]
+        },
+        "p95": {
+          "mean": 7886.463723,
+          "minimum": 1253.186615,
+          "maximum": 11492.43512,
+          "repetitions": [
+            1253.186615,
+            10913.769434,
+            11492.43512
+          ]
+        },
+        "p99": {
+          "mean": 10037.557412666665,
+          "minimum": 6317.285809,
+          "maximum": 11949.169605,
+          "repetitions": [
+            6317.285809,
+            11846.216824,
+            11949.169605
+          ]
+        },
+        "memory": {
+          "mean": 600.7272135416666,
+          "minimum": 593.998046875,
+          "maximum": 609.80078125,
+          "repetitions": [
+            609.80078125,
+            593.998046875,
+            598.3828125
+          ]
+        },
+        "medianMemory": {
+          "mean": 598.373046875,
+          "minimum": 587.947265625,
+          "maximum": 609.7890625,
+          "repetitions": [
+            609.7890625,
+            587.947265625,
+            597.3828125
+          ]
+        },
+        "privateMemory": {
+          "mean": 599.4934895833334,
+          "minimum": 592.765625,
+          "maximum": 608.53515625,
+          "repetitions": [
+            608.53515625,
+            592.765625,
+            597.1796875
+          ]
+        },
+        "proxyCpu": {
+          "mean": 56.12080382873715,
+          "minimum": 55.372261825639725,
+          "maximum": 56.76112590509433,
+          "repetitions": [
+            55.372261825639725,
+            56.76112590509433,
+            56.22902375547739
+          ]
+        },
+        "appMemory": {
+          "mean": 308.0533854166667,
+          "minimum": 306.4609375,
+          "maximum": 309.12890625,
+          "repetitions": [
+            309.12890625,
+            308.5703125,
+            306.4609375
+          ]
+        },
+        "appCpu": {
+          "mean": 16.15953565468127,
+          "minimum": 15.339483728703701,
+          "maximum": 17.619670065783943,
+          "repetitions": [
+            17.619670065783943,
+            15.519453169556163,
+            15.339483728703701
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 24.50519198909086,
+          "minimum": 24.24191161400697,
+          "maximum": 24.947159237363536,
+          "repetitions": [
+            24.326505115902073,
+            24.24191161400697,
+            24.947159237363536
+          ]
+        },
+        "cpu": {
+          "mean": 99.71194807993969,
+          "minimum": 99.70689917479888,
+          "maximum": 99.72159668849142,
+          "repetitions": [
+            99.72159668849142,
+            99.70689917479888,
+            99.70734837652876
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-envoy-plaintext-c10000",
+        "r2-envoy-plaintext-c10000",
+        "r3-envoy-plaintext-c10000"
+      ]
+    },
+    {
+      "proxy": "caddy",
+      "endpoint": "plaintext",
+      "conc": 10000,
+      "clean": false,
+      "requests": 215149,
+      "clientErrors": 0,
+      "non200": 2272,
+      "metrics": {
+        "rps200": {
+          "mean": 2238.065102811098,
+          "minimum": 1291.104883722662,
+          "maximum": 4019.1376147946103,
+          "repetitions": [
+            4019.1376147946103,
+            1291.104883722662,
+            1403.952809916021
+          ]
+        },
+        "success_pct": {
+          "mean": 99.40596182154277,
+          "minimum": 98.21788546462832,
+          "maximum": 100.0,
+          "repetitions": [
+            98.21788546462832,
+            100.0,
+            100.0
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.5940381784572264,
+          "minimum": 0.0,
+          "maximum": 1.7821145353716792,
+          "repetitions": [
+            1.7821145353716792,
+            0.0,
+            0.0
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 4907.8705150000005,
+          "minimum": 1823.777941,
+          "maximum": 6460.397454,
+          "repetitions": [
+            1823.777941,
+            6460.397454,
+            6439.43615
+          ]
+        },
+        "p95": {
+          "mean": 12118.265332666666,
+          "minimum": 10136.689511,
+          "maximum": 14385.616488,
+          "repetitions": [
+            10136.689511,
+            14385.616488,
+            11832.489999
+          ]
+        },
+        "p99": {
+          "mean": 13468.243397333334,
+          "minimum": 10780.923968,
+          "maximum": 15531.389632,
+          "repetitions": [
+            10780.923968,
+            15531.389632,
+            14092.416592
+          ]
+        },
+        "memory": {
+          "mean": 1286.9596354166667,
+          "minimum": 1075.3828125,
+          "maximum": 1467.28125,
+          "repetitions": [
+            1467.28125,
+            1075.3828125,
+            1318.21484375
+          ]
+        },
+        "medianMemory": {
+          "mean": 972.5729166666666,
+          "minimum": 750.69921875,
+          "maximum": 1340.4140625,
+          "repetitions": [
+            1340.4140625,
+            750.69921875,
+            826.60546875
+          ]
+        },
+        "privateMemory": {
+          "mean": 1286.9596354166667,
+          "minimum": 1075.3828125,
+          "maximum": 1467.28125,
+          "repetitions": [
+            1467.28125,
+            1075.3828125,
+            1318.21484375
+          ]
+        },
+        "proxyCpu": {
+          "mean": 62.897267791799734,
+          "minimum": 59.66600582412968,
+          "maximum": 65.80231693204726,
+          "repetitions": [
+            59.66600582412968,
+            65.80231693204726,
+            63.22348061922227
+          ]
+        },
+        "appMemory": {
+          "mean": 290.6627604166667,
+          "minimum": 238.64453125,
+          "maximum": 371.75,
+          "repetitions": [
+            371.75,
+            238.64453125,
+            261.59375
+          ]
+        },
+        "appCpu": {
+          "mean": 16.373519450808356,
+          "minimum": 14.283218123479017,
+          "maximum": 19.524118836609,
+          "repetitions": [
+            19.524118836609,
+            14.283218123479017,
+            15.313221392337049
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 15.421566362828292,
+          "minimum": 14.773841002122397,
+          "maximum": 16.297035758189743,
+          "repetitions": [
+            15.193822328172738,
+            14.773841002122397,
+            16.297035758189743
+          ]
+        },
+        "cpu": {
+          "mean": 99.65233020260997,
+          "minimum": 99.5934498252534,
+          "maximum": 99.69073914977665,
+          "repetitions": [
+            99.5934498252534,
+            99.67280163279987,
+            99.69073914977665
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-caddy-plaintext-c10000",
+        "r2-caddy-plaintext-c10000",
+        "r3-caddy-plaintext-c10000"
+      ]
+    },
+    {
+      "proxy": "caddy",
+      "endpoint": "plaintext",
+      "conc": 15000,
+      "clean": false,
+      "requests": 172369,
+      "clientErrors": 0,
+      "non200": 4118,
+      "metrics": {
+        "rps200": {
+          "mean": 1646.0838003531937,
+          "minimum": 888.9146870733766,
+          "maximum": 2923.780607774874,
+          "repetitions": [
+            2923.780607774874,
+            1125.5561062113302,
+            888.9146870733766
+          ]
+        },
+        "success_pct": {
+          "mean": 96.19833642599312,
+          "minimum": 88.59500927797934,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            100.0,
+            88.59500927797934
+          ]
+        },
+        "non200_pct": {
+          "mean": 3.8016635740068874,
+          "minimum": 0.0,
+          "maximum": 11.404990722020662,
+          "repetitions": [
+            0.0,
+            0.0,
+            11.404990722020662
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 7223.128473333334,
+          "minimum": 4582.88438,
+          "maximum": 9017.870693,
+          "repetitions": [
+            4582.88438,
+            9017.870693,
+            8068.630347
+          ]
+        },
+        "p95": {
+          "mean": 19006.881839,
+          "minimum": 10778.14634,
+          "maximum": 24553.465354,
+          "repetitions": [
+            10778.14634,
+            21689.033823,
+            24553.465354
+          ]
+        },
+        "p99": {
+          "mean": 20139.337048,
+          "minimum": 12603.648066,
+          "maximum": 25182.626568,
+          "repetitions": [
+            12603.648066,
+            22631.73651,
+            25182.626568
+          ]
+        },
+        "memory": {
+          "mean": 1514.0364583333333,
+          "minimum": 1079.296875,
+          "maximum": 1826.60546875,
+          "repetitions": [
+            1826.60546875,
+            1079.296875,
+            1636.20703125
+          ]
+        },
+        "medianMemory": {
+          "mean": 1168.7467447916667,
+          "minimum": 921.708984375,
+          "maximum": 1296.23046875,
+          "repetitions": [
+            1296.23046875,
+            921.708984375,
+            1288.30078125
+          ]
+        },
+        "privateMemory": {
+          "mean": 1514.0364583333333,
+          "minimum": 1079.296875,
+          "maximum": 1826.60546875,
+          "repetitions": [
+            1826.60546875,
+            1079.296875,
+            1636.20703125
+          ]
+        },
+        "proxyCpu": {
+          "mean": 66.07052496779099,
+          "minimum": 64.60254063986834,
+          "maximum": 67.39242444703946,
+          "repetitions": [
+            64.60254063986834,
+            67.39242444703946,
+            66.21660981646515
+          ]
+        },
+        "appMemory": {
+          "mean": 318.19921875,
+          "minimum": 224.32421875,
+          "maximum": 397.15234375,
+          "repetitions": [
+            397.15234375,
+            224.32421875,
+            333.12109375
+          ]
+        },
+        "appCpu": {
+          "mean": 12.857271055675218,
+          "minimum": 10.829421129429821,
+          "maximum": 14.44284052170105,
+          "repetitions": [
+            14.44284052170105,
+            13.299551515894784,
+            10.829421129429821
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 16.365901442185013,
+          "minimum": 15.403982730751872,
+          "maximum": 17.351641328013017,
+          "repetitions": [
+            16.342080267790145,
+            15.403982730751872,
+            17.351641328013017
+          ]
+        },
+        "cpu": {
+          "mean": 99.72966045758956,
+          "minimum": 99.6839621517283,
+          "maximum": 99.80445934250736,
+          "repetitions": [
+            99.6839621517283,
+            99.80445934250736,
+            99.70055987853303
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-caddy-plaintext-c15000",
+        "r2-caddy-plaintext-c15000",
+        "r3-caddy-plaintext-c15000"
+      ]
+    },
+    {
+      "proxy": "envoy",
+      "endpoint": "plaintext",
+      "conc": 15000,
+      "clean": false,
+      "requests": 428960,
+      "clientErrors": 0,
+      "non200": 6103,
+      "metrics": {
+        "rps200": {
+          "mean": 4564.413914781313,
+          "minimum": 2507.740601253732,
+          "maximum": 8173.869281566853,
+          "repetitions": [
+            8173.869281566853,
+            3011.631861523355,
+            2507.740601253732
+          ]
+        },
+        "success_pct": {
+          "mean": 97.59955003854564,
+          "minimum": 92.79865011563695,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            100.0,
+            92.79865011563695
+          ]
+        },
+        "non200_pct": {
+          "mean": 2.400449961454351,
+          "minimum": 0.0,
+          "maximum": 7.201349884363053,
+          "repetitions": [
+            0.0,
+            0.0,
+            7.201349884363053
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 2280.2774126666664,
+          "minimum": 1347.163616,
+          "maximum": 2860.711078,
+          "repetitions": [
+            1347.163616,
+            2632.957544,
+            2860.711078
+          ]
+        },
+        "p95": {
+          "mean": 14760.407050333333,
+          "minimum": 8906.211463,
+          "maximum": 17958.424852,
+          "repetitions": [
+            8906.211463,
+            17416.584836,
+            17958.424852
+          ]
+        },
+        "p99": {
+          "mean": 15462.943138,
+          "minimum": 9821.048637,
+          "maximum": 18609.445655,
+          "repetitions": [
+            9821.048637,
+            17958.335122,
+            18609.445655
+          ]
+        },
+        "memory": {
+          "mean": 833.8118489583334,
+          "minimum": 799.82421875,
+          "maximum": 852.037109375,
+          "repetitions": [
+            852.037109375,
+            849.57421875,
+            799.82421875
+          ]
+        },
+        "medianMemory": {
+          "mean": 714.8919270833334,
+          "minimum": 593.458984375,
+          "maximum": 837.947265625,
+          "repetitions": [
+            837.947265625,
+            713.26953125,
+            593.458984375
+          ]
+        },
+        "privateMemory": {
+          "mean": 832.5755208333334,
+          "minimum": 798.6015625,
+          "maximum": 850.7734375,
+          "repetitions": [
+            850.7734375,
+            848.3515625,
+            798.6015625
+          ]
+        },
+        "proxyCpu": {
+          "mean": 57.59119429486244,
+          "minimum": 57.028156426608376,
+          "maximum": 58.01752550609384,
+          "repetitions": [
+            57.028156426608376,
+            58.01752550609384,
+            57.727900951885104
+          ]
+        },
+        "appMemory": {
+          "mean": 397.7552083333333,
+          "minimum": 346.30078125,
+          "maximum": 438.6328125,
+          "repetitions": [
+            438.6328125,
+            408.33203125,
+            346.30078125
+          ]
+        },
+        "appCpu": {
+          "mean": 13.026836933833438,
+          "minimum": 11.255854193155722,
+          "maximum": 15.28165685405088,
+          "repetitions": [
+            15.28165685405088,
+            12.542999754293712,
+            11.255854193155722
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 25.52459109664399,
+          "minimum": 24.67319881079845,
+          "maximum": 26.267553048685055,
+          "repetitions": [
+            24.67319881079845,
+            25.633021430448473,
+            26.267553048685055
+          ]
+        },
+        "cpu": {
+          "mean": 99.66770209963605,
+          "minimum": 99.5900528605366,
+          "maximum": 99.72767151666837,
+          "repetitions": [
+            99.68538192170317,
+            99.5900528605366,
+            99.72767151666837
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-envoy-plaintext-c15000",
+        "r2-envoy-plaintext-c15000",
+        "r3-envoy-plaintext-c15000"
+      ]
+    },
+    {
+      "proxy": "tako",
+      "endpoint": "plaintext",
+      "conc": 15000,
+      "clean": true,
+      "requests": 373978,
+      "clientErrors": 0,
+      "non200": 0,
+      "metrics": {
+        "rps200": {
+          "mean": 3851.3168992494693,
+          "minimum": 1722.805626896709,
+          "maximum": 7651.774015983827,
+          "repetitions": [
+            7651.774015983827,
+            1722.805626896709,
+            2179.3710548678728
+          ]
+        },
+        "success_pct": {
+          "mean": 100.0,
+          "minimum": 100.0,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            100.0,
+            100.0
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 3813.4015263333335,
+          "minimum": 1579.602787,
+          "maximum": 5107.92622,
+          "repetitions": [
+            1579.602787,
+            4752.675572,
+            5107.92622
+          ]
+        },
+        "p95": {
+          "mean": 13541.603128333332,
+          "minimum": 4857.78552,
+          "maximum": 22302.271006,
+          "repetitions": [
+            4857.78552,
+            22302.271006,
+            13464.752859
+          ]
+        },
+        "p99": {
+          "mean": 15564.991711666667,
+          "minimum": 6486.639226,
+          "maximum": 24440.468153,
+          "repetitions": [
+            6486.639226,
+            24440.468153,
+            15767.867756
+          ]
+        },
+        "memory": {
+          "mean": 917.0078125,
+          "minimum": 803.611328125,
+          "maximum": 1072.6796875,
+          "repetitions": [
+            1072.6796875,
+            874.732421875,
+            803.611328125
+          ]
+        },
+        "medianMemory": {
+          "mean": 820.8932291666666,
+          "minimum": 694.306640625,
+          "maximum": 1049.28125,
+          "repetitions": [
+            1049.28125,
+            694.306640625,
+            719.091796875
+          ]
+        },
+        "privateMemory": {
+          "mean": 913.8294270833334,
+          "minimum": 800.484375,
+          "maximum": 1069.4765625,
+          "repetitions": [
+            1069.4765625,
+            871.52734375,
+            800.484375
+          ]
+        },
+        "proxyCpu": {
+          "mean": 57.452678835193076,
+          "minimum": 52.2599519376795,
+          "maximum": 63.38992351791695,
+          "repetitions": [
+            52.2599519376795,
+            63.38992351791695,
+            56.70816104998278
+          ]
+        },
+        "appMemory": {
+          "mean": 341.7083333333333,
+          "minimum": 233.60546875,
+          "maximum": 515.5703125,
+          "repetitions": [
+            515.5703125,
+            275.94921875,
+            233.60546875
+          ]
+        },
+        "appCpu": {
+          "mean": 13.60798118899593,
+          "minimum": 9.767188595628348,
+          "maximum": 15.54400677870516,
+          "repetitions": [
+            15.54400677870516,
+            9.767188595628348,
+            15.512748192654282
+          ]
+        },
+        "loadgenCpu": {
+          "mean": null,
+          "minimum": null,
+          "maximum": null,
+          "repetitions": [
+            26.758887358792038,
+            null,
+            24.049939975814283
+          ],
+          "note": "Unavailable: one of three process CPU counters reset on exit. No two-run substitute."
+        },
+        "cpu": {
+          "mean": 99.63840517001411,
+          "minimum": 99.46275846695652,
+          "maximum": 99.79801400693837,
+          "repetitions": [
+            99.46275846695652,
+            99.65444303614744,
+            99.79801400693837
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-tako-plaintext-c15000",
+        "r2-tako-plaintext-c15000",
+        "r3-tako-plaintext-c15000"
+      ]
+    },
+    {
+      "proxy": "haproxy",
+      "endpoint": "plaintext",
+      "conc": 15000,
+      "clean": true,
+      "requests": 633206,
+      "clientErrors": 0,
+      "non200": 0,
+      "metrics": {
+        "rps200": {
+          "mean": 6331.279506278383,
+          "minimum": 3595.2794153099258,
+          "maximum": 11451.49775448825,
+          "repetitions": [
+            11451.49775448825,
+            3947.0613490369756,
+            3595.2794153099258
+          ]
+        },
+        "success_pct": {
+          "mean": 100.0,
+          "minimum": 100.0,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            100.0,
+            100.0
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 1655.8473139999999,
+          "minimum": 817.099474,
+          "maximum": 2221.470403,
+          "repetitions": [
+            817.099474,
+            1928.972065,
+            2221.470403
+          ]
+        },
+        "p95": {
+          "mean": 11316.213393,
+          "minimum": 3897.980039,
+          "maximum": 16232.593887,
+          "repetitions": [
+            3897.980039,
+            13818.066253,
+            16232.593887
+          ]
+        },
+        "p99": {
+          "mean": 21640.797645333332,
+          "minimum": 12405.694106,
+          "maximum": 27187.913235,
+          "repetitions": [
+            12405.694106,
+            25328.785595,
+            27187.913235
+          ]
+        },
+        "memory": {
+          "mean": 813.45703125,
+          "minimum": 710.3828125,
+          "maximum": 991.29296875,
+          "repetitions": [
+            991.29296875,
+            710.3828125,
+            738.6953125
+          ]
+        },
+        "medianMemory": {
+          "mean": 698.6907552083334,
+          "minimum": 594.927734375,
+          "maximum": 889.03125,
+          "repetitions": [
+            889.03125,
+            612.11328125,
+            594.927734375
+          ]
+        },
+        "privateMemory": {
+          "mean": 796.8971354166666,
+          "minimum": 693.828125,
+          "maximum": 974.7578125,
+          "repetitions": [
+            974.7578125,
+            693.828125,
+            722.10546875
+          ]
+        },
+        "proxyCpu": {
+          "mean": 48.42664491367631,
+          "minimum": 41.81774146515373,
+          "maximum": 52.877557697278775,
+          "repetitions": [
+            41.81774146515373,
+            50.58463557859644,
+            52.877557697278775
+          ]
+        },
+        "appMemory": {
+          "mean": 164.09375,
+          "minimum": 70.84765625,
+          "maximum": 329.59375,
+          "repetitions": [
+            329.59375,
+            91.83984375,
+            70.84765625
+          ]
+        },
+        "appCpu": {
+          "mean": 19.432716750587236,
+          "minimum": 17.234342708234443,
+          "maximum": 22.98280726878848,
+          "repetitions": [
+            22.98280726878848,
+            18.081000274738784,
+            17.234342708234443
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 29.11528628973732,
+          "minimum": 27.062989262169694,
+          "maximum": 32.03792441062333,
+          "repetitions": [
+            32.03792441062333,
+            28.24494519641893,
+            27.062989262169694
+          ]
+        },
+        "cpu": {
+          "mean": 99.69054868177338,
+          "minimum": 99.5266412404171,
+          "maximum": 99.83847741684316,
+          "repetitions": [
+            99.70652738805985,
+            99.83847741684316,
+            99.5266412404171
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-haproxy-plaintext-c15000",
+        "r2-haproxy-plaintext-c15000",
+        "r3-haproxy-plaintext-c15000"
+      ]
+    },
+    {
+      "proxy": "nginx",
+      "endpoint": "plaintext",
+      "conc": 15000,
+      "clean": false,
+      "requests": 587986,
+      "clientErrors": 375,
+      "non200": 0,
+      "metrics": {
+        "rps200": {
+          "mean": 6249.636745104205,
+          "minimum": 4013.6631408386934,
+          "maximum": 10019.274360612002,
+          "repetitions": [
+            10019.274360612002,
+            4013.6631408386934,
+            4715.9727338619205
+          ]
+        },
+        "success_pct": {
+          "mean": 99.90351066786056,
+          "minimum": 99.71053200358169,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            99.71053200358169,
+            100.0
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.09648933213943867,
+          "minimum": 0.0,
+          "maximum": 0.289467996418316,
+          "repetitions": [
+            0.0,
+            0.289467996418316,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 2152.262782,
+          "minimum": 1228.094229,
+          "maximum": 2699.682659,
+          "repetitions": [
+            1228.094229,
+            2529.011458,
+            2699.682659
+          ]
+        },
+        "p95": {
+          "mean": 6855.163949333333,
+          "minimum": 3395.033667,
+          "maximum": 10278.061444,
+          "repetitions": [
+            3395.033667,
+            10278.061444,
+            6892.396737
+          ]
+        },
+        "p99": {
+          "mean": 9293.482469333334,
+          "minimum": 4807.056276,
+          "maximum": 15319.305849,
+          "repetitions": [
+            4807.056276,
+            15319.305849,
+            7754.085283
+          ]
+        },
+        "memory": {
+          "mean": 495.0384114583333,
+          "minimum": 335.7548828125,
+          "maximum": 610.953125,
+          "repetitions": [
+            610.953125,
+            335.7548828125,
+            538.4072265625
+          ]
+        },
+        "medianMemory": {
+          "mean": 495.0384114583333,
+          "minimum": 335.7548828125,
+          "maximum": 610.953125,
+          "repetitions": [
+            610.953125,
+            335.7548828125,
+            538.4072265625
+          ]
+        },
+        "privateMemory": {
+          "mean": 487.4544270833333,
+          "minimum": 328.234375,
+          "maximum": 603.19140625,
+          "repetitions": [
+            603.19140625,
+            328.234375,
+            530.9375
+          ]
+        },
+        "proxyCpu": {
+          "mean": 39.02824156964593,
+          "minimum": 36.533378113196214,
+          "maximum": 42.02917844504364,
+          "repetitions": [
+            36.533378113196214,
+            42.02917844504364,
+            38.52216815069792
+          ]
+        },
+        "appMemory": {
+          "mean": 184.30338541666666,
+          "minimum": 178.38671875,
+          "maximum": 190.60546875,
+          "repetitions": [
+            190.60546875,
+            183.91796875,
+            178.38671875
+          ]
+        },
+        "appCpu": {
+          "mean": 27.21111550833269,
+          "minimum": 25.854781770688508,
+          "maximum": 28.23656013962312,
+          "repetitions": [
+            28.23656013962312,
+            25.854781770688508,
+            27.542004614686437
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 29.849033677055385,
+          "minimum": 27.814379263707618,
+          "maximum": 31.678329749425554,
+          "repetitions": [
+            31.678329749425554,
+            27.814379263707618,
+            30.05439201803298
+          ]
+        },
+        "cpu": {
+          "mean": 99.25485226108927,
+          "minimum": 99.17754271787965,
+          "maximum": 99.34063207529145,
+          "repetitions": [
+            99.34063207529145,
+            99.17754271787965,
+            99.2463819900967
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-nginx-plaintext-c15000",
+        "r2-nginx-plaintext-c15000",
+        "r3-nginx-plaintext-c15000"
+      ]
+    },
+    {
+      "proxy": "nginx",
+      "endpoint": "plaintext",
+      "conc": 20000,
+      "clean": false,
+      "requests": 576468,
+      "clientErrors": 1379,
+      "non200": 0,
+      "metrics": {
+        "rps200": {
+          "mean": 5989.440888533169,
+          "minimum": 3919.9863275579346,
+          "maximum": 9200.924244880873,
+          "repetitions": [
+            9200.924244880873,
+            3919.9863275579346,
+            4847.4120931606985
+          ]
+        },
+        "success_pct": {
+          "mean": 99.64701033883424,
+          "minimum": 98.9410310165027,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            98.9410310165027,
+            100.0
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.35298966116576186,
+          "minimum": 0.0,
+          "maximum": 1.0589689834972855,
+          "repetitions": [
+            0.0,
+            1.0589689834972855,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 3182.401837666667,
+          "minimum": 1909.007915,
+          "maximum": 3857.849216,
+          "repetitions": [
+            1909.007915,
+            3780.348382,
+            3857.849216
+          ]
+        },
+        "p95": {
+          "mean": 6761.821969,
+          "minimum": 3925.522161,
+          "maximum": 11314.497591,
+          "repetitions": [
+            3925.522161,
+            11314.497591,
+            5045.446155
+          ]
+        },
+        "p99": {
+          "mean": 8571.935835,
+          "minimum": 5396.140868,
+          "maximum": 14823.173485,
+          "repetitions": [
+            5496.493152,
+            14823.173485,
+            5396.140868
+          ]
+        },
+        "memory": {
+          "mean": 495.662109375,
+          "minimum": 218.5078125,
+          "maximum": 711.919921875,
+          "repetitions": [
+            711.919921875,
+            556.55859375,
+            218.5078125
+          ]
+        },
+        "medianMemory": {
+          "mean": 492.259765625,
+          "minimum": 208.30078125,
+          "maximum": 711.919921875,
+          "repetitions": [
+            711.919921875,
+            556.55859375,
+            208.30078125
+          ]
+        },
+        "privateMemory": {
+          "mean": 487.98828125,
+          "minimum": 210.9375,
+          "maximum": 704.04296875,
+          "repetitions": [
+            704.04296875,
+            548.984375,
+            210.9375
+          ]
+        },
+        "proxyCpu": {
+          "mean": 37.918377435560025,
+          "minimum": 35.16881662781033,
+          "maximum": 41.2512288452118,
+          "repetitions": [
+            37.335086833657954,
+            41.2512288452118,
+            35.16881662781033
+          ]
+        },
+        "appMemory": {
+          "mean": 160.98828125,
+          "minimum": 113.09375,
+          "maximum": 184.96484375,
+          "repetitions": [
+            184.96484375,
+            184.90625,
+            113.09375
+          ]
+        },
+        "appCpu": {
+          "mean": 26.049995667770638,
+          "minimum": 25.140777287489495,
+          "maximum": 27.71425529901188,
+          "repetitions": [
+            25.294954416810533,
+            25.140777287489495,
+            27.71425529901188
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 31.84697407010448,
+          "minimum": 29.512433776578188,
+          "maximum": 33.55179803451394,
+          "repetitions": [
+            33.55179803451394,
+            29.512433776578188,
+            32.47669039922131
+          ]
+        },
+        "cpu": {
+          "mean": 99.09272345836628,
+          "minimum": 98.77171331160257,
+          "maximum": 99.31578795722977,
+          "repetitions": [
+            99.31578795722977,
+            99.19066910626651,
+            98.77171331160257
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-nginx-plaintext-c20000",
+        "r2-nginx-plaintext-c20000",
+        "r3-nginx-plaintext-c20000"
+      ]
+    },
+    {
+      "proxy": "haproxy",
+      "endpoint": "plaintext",
+      "conc": 20000,
+      "clean": true,
+      "requests": 520529,
+      "clientErrors": 0,
+      "non200": 0,
+      "metrics": {
+        "rps200": {
+          "mean": 4763.825307450682,
+          "minimum": 2728.622501462367,
+          "maximum": 8711.899582349648,
+          "repetitions": [
+            8711.899582349648,
+            2850.9538385400315,
+            2728.622501462367
+          ]
+        },
+        "success_pct": {
+          "mean": 100.0,
+          "minimum": 100.0,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            100.0,
+            100.0
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 2522.721335333333,
+          "minimum": 709.558268,
+          "maximum": 3478.464764,
+          "repetitions": [
+            709.558268,
+            3380.140974,
+            3478.464764
+          ]
+        },
+        "p95": {
+          "mean": 20007.212721333333,
+          "minimum": 15558.474372,
+          "maximum": 22702.394749,
+          "repetitions": [
+            15558.474372,
+            21760.769043,
+            22702.394749
+          ]
+        },
+        "p99": {
+          "mean": 30819.626069,
+          "minimum": 20309.794809,
+          "maximum": 36611.44759,
+          "repetitions": [
+            20309.794809,
+            35537.635808,
+            36611.44759
+          ]
+        },
+        "memory": {
+          "mean": 1048.1106770833333,
+          "minimum": 966.048828125,
+          "maximum": 1205.171875,
+          "repetitions": [
+            1205.171875,
+            973.111328125,
+            966.048828125
+          ]
+        },
+        "medianMemory": {
+          "mean": 831.4830729166666,
+          "minimum": 671.375,
+          "maximum": 1150.46484375,
+          "repetitions": [
+            1150.46484375,
+            672.609375,
+            671.375
+          ]
+        },
+        "privateMemory": {
+          "mean": 1029.5481770833333,
+          "minimum": 946.3203125,
+          "maximum": 1187.7734375,
+          "repetitions": [
+            1187.7734375,
+            954.55078125,
+            946.3203125
+          ]
+        },
+        "proxyCpu": {
+          "mean": 52.92571211603531,
+          "minimum": 43.71294342818036,
+          "maximum": 57.60713321011609,
+          "repetitions": [
+            43.71294342818036,
+            57.60713321011609,
+            57.457059709809464
+          ]
+        },
+        "appMemory": {
+          "mean": 141.37760416666666,
+          "minimum": 35.38671875,
+          "maximum": 353.19921875,
+          "repetitions": [
+            353.19921875,
+            35.38671875,
+            35.546875
+          ]
+        },
+        "appCpu": {
+          "mean": 15.740341466444434,
+          "minimum": 12.968532978971806,
+          "maximum": 21.261687965479023,
+          "repetitions": [
+            21.261687965479023,
+            12.968532978971806,
+            12.990803454882471
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 28.071472156176018,
+          "minimum": 26.25438404479118,
+          "maximum": 31.48072253815453,
+          "repetitions": [
+            31.48072253815453,
+            26.479309885582346,
+            26.25438404479118
+          ]
+        },
+        "cpu": {
+          "mean": 99.82479535363082,
+          "minimum": 99.76340259804357,
+          "maximum": 99.87745317198612,
+          "repetitions": [
+            99.87745317198612,
+            99.83353029086275,
+            99.76340259804357
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-haproxy-plaintext-c20000",
+        "r2-haproxy-plaintext-c20000",
+        "r3-haproxy-plaintext-c20000"
+      ]
+    },
+    {
+      "proxy": "tako",
+      "endpoint": "plaintext",
+      "conc": 20000,
+      "clean": true,
+      "requests": 284929,
+      "clientErrors": 0,
+      "non200": 0,
+      "metrics": {
+        "rps200": {
+          "mean": 2876.630046164014,
+          "minimum": 852.1817824864397,
+          "maximum": 6490.1456395016785,
+          "repetitions": [
+            6490.1456395016785,
+            1287.5627165039234,
+            852.1817824864397
+          ]
+        },
+        "success_pct": {
+          "mean": 100.0,
+          "minimum": 100.0,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            100.0,
+            100.0
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 12450.200855000001,
+          "minimum": 2258.594176,
+          "maximum": 20997.937386,
+          "repetitions": [
+            2258.594176,
+            14094.071003,
+            20997.937386
+          ]
+        },
+        "p95": {
+          "mean": 24439.737451666668,
+          "minimum": 11604.848663,
+          "maximum": 32673.387461,
+          "repetitions": [
+            11604.848663,
+            29040.976231,
+            32673.387461
+          ]
+        },
+        "p99": {
+          "mean": 26453.528165666667,
+          "minimum": 13174.12656,
+          "maximum": 33561.979469,
+          "repetitions": [
+            13174.12656,
+            32624.478468,
+            33561.979469
+          ]
+        },
+        "memory": {
+          "mean": 1342.8033854166667,
+          "minimum": 921.599609375,
+          "maximum": 1619.494140625,
+          "repetitions": [
+            1619.494140625,
+            1487.31640625,
+            921.599609375
+          ]
+        },
+        "medianMemory": {
+          "mean": 1131.123046875,
+          "minimum": 599.603515625,
+          "maximum": 1491.833984375,
+          "repetitions": [
+            1491.833984375,
+            1301.931640625,
+            599.603515625
+          ]
+        },
+        "privateMemory": {
+          "mean": 1339.6197916666667,
+          "minimum": 918.4375,
+          "maximum": 1616.2421875,
+          "repetitions": [
+            1616.2421875,
+            1484.1796875,
+            918.4375
+          ]
+        },
+        "proxyCpu": {
+          "mean": 59.71681314212426,
+          "minimum": 52.67718542123302,
+          "maximum": 66.42092614882739,
+          "repetitions": [
+            52.67718542123302,
+            60.05232785631236,
+            66.42092614882739
+          ]
+        },
+        "appMemory": {
+          "mean": 346.4453125,
+          "minimum": 200.48046875,
+          "maximum": 588.10546875,
+          "repetitions": [
+            588.10546875,
+            250.75,
+            200.48046875
+          ]
+        },
+        "appCpu": {
+          "mean": 11.221934465348712,
+          "minimum": 7.632724123673674,
+          "maximum": 16.35239842900445,
+          "repetitions": [
+            16.35239842900445,
+            9.680680843368014,
+            7.632724123673674
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 24.076811045703703,
+          "minimum": 21.190804494776195,
+          "maximum": 26.119577618782003,
+          "repetitions": [
+            26.119577618782003,
+            24.920051023552915,
+            21.190804494776195
+          ]
+        },
+        "cpu": {
+          "mean": 99.66763074595727,
+          "minimum": 99.35752834694944,
+          "maximum": 99.88559193567627,
+          "repetitions": [
+            99.35752834694944,
+            99.88559193567627,
+            99.7597719552461
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-tako-plaintext-c20000",
+        "r2-tako-plaintext-c20000",
+        "r3-tako-plaintext-c20000"
+      ]
+    },
+    {
+      "proxy": "envoy",
+      "endpoint": "plaintext",
+      "conc": 20000,
+      "clean": false,
+      "requests": 340571,
+      "clientErrors": 0,
+      "non200": 1428,
+      "metrics": {
+        "rps200": {
+          "mean": 3621.014052692738,
+          "minimum": 1937.6271300752603,
+          "maximum": 6914.9173033115785,
+          "repetitions": [
+            6914.9173033115785,
+            2010.4977246913754,
+            1937.6271300752603
+          ]
+        },
+        "success_pct": {
+          "mean": 99.24586891427303,
+          "minimum": 97.73760674281911,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            100.0,
+            97.73760674281911
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.7541310857269602,
+          "minimum": 0.0,
+          "maximum": 2.2623932571808805,
+          "repetitions": [
+            0.0,
+            0.0,
+            2.2623932571808805
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 3170.721659,
+          "minimum": 1725.286383,
+          "maximum": 3904.938493,
+          "repetitions": [
+            1725.286383,
+            3881.940101,
+            3904.938493
+          ]
+        },
+        "p95": {
+          "mean": 20581.320842666668,
+          "minimum": 12956.599364,
+          "maximum": 24698.263569,
+          "repetitions": [
+            12956.599364,
+            24089.099595,
+            24698.263569
+          ]
+        },
+        "p99": {
+          "mean": 21357.019088666668,
+          "minimum": 13758.609915,
+          "maximum": 25434.873435,
+          "repetitions": [
+            13758.609915,
+            24877.573916,
+            25434.873435
+          ]
+        },
+        "memory": {
+          "mean": 1042.8639322916667,
+          "minimum": 999.8125,
+          "maximum": 1067.615234375,
+          "repetitions": [
+            1061.1640625,
+            1067.615234375,
+            999.8125
+          ]
+        },
+        "medianMemory": {
+          "mean": 834.1959635416666,
+          "minimum": 715.154296875,
+          "maximum": 1054.07421875,
+          "repetitions": [
+            1054.07421875,
+            715.154296875,
+            733.359375
+          ]
+        },
+        "privateMemory": {
+          "mean": 1041.62109375,
+          "minimum": 998.58203125,
+          "maximum": 1066.3828125,
+          "repetitions": [
+            1059.8984375,
+            1066.3828125,
+            998.58203125
+          ]
+        },
+        "proxyCpu": {
+          "mean": 59.216904493513205,
+          "minimum": 57.350461525193516,
+          "maximum": 60.57281873156396,
+          "repetitions": [
+            57.350461525193516,
+            60.57281873156396,
+            59.727433223782135
+          ]
+        },
+        "appMemory": {
+          "mean": 478.8059895833333,
+          "minimum": 396.18359375,
+          "maximum": 542.5078125,
+          "repetitions": [
+            542.5078125,
+            497.7265625,
+            396.18359375
+          ]
+        },
+        "appCpu": {
+          "mean": 10.608368816037853,
+          "minimum": 8.681635028858556,
+          "maximum": 14.305094967411566,
+          "repetitions": [
+            14.305094967411566,
+            8.681635028858556,
+            8.838376451843438
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 25.993242448514724,
+          "minimum": 24.689063185121352,
+          "maximum": 27.26582260013755,
+          "repetitions": [
+            24.689063185121352,
+            26.024841560285267,
+            27.26582260013755
+          ]
+        },
+        "cpu": {
+          "mean": 99.72813193438218,
+          "minimum": 99.69454794838076,
+          "maximum": 99.75669352634213,
+          "repetitions": [
+            99.75669352634213,
+            99.69454794838076,
+            99.73315432842365
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-envoy-plaintext-c20000",
+        "r2-envoy-plaintext-c20000",
+        "r3-envoy-plaintext-c20000"
+      ]
+    },
+    {
+      "proxy": "caddy",
+      "endpoint": "plaintext",
+      "conc": 20000,
+      "clean": true,
+      "requests": 151890,
+      "clientErrors": 0,
+      "non200": 0,
+      "metrics": {
+        "rps200": {
+          "mean": 1358.5472244827479,
+          "minimum": 828.0229345320058,
+          "maximum": 2396.7884506314194,
+          "repetitions": [
+            2396.7884506314194,
+            828.0229345320058,
+            850.8302882848182
+          ]
+        },
+        "success_pct": {
+          "mean": 100.0,
+          "minimum": 100.0,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            100.0,
+            100.0
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 15775.011909666668,
+          "minimum": 6515.846806,
+          "maximum": 20882.508879,
+          "repetitions": [
+            6515.846806,
+            20882.508879,
+            19926.680044
+          ]
+        },
+        "p95": {
+          "mean": 23747.896015333332,
+          "minimum": 15409.677898,
+          "maximum": 29241.27422,
+          "repetitions": [
+            15409.677898,
+            29241.27422,
+            26592.735928
+          ]
+        },
+        "p99": {
+          "mean": 25118.410261,
+          "minimum": 16750.758147,
+          "maximum": 31019.50455,
+          "repetitions": [
+            16750.758147,
+            31019.50455,
+            27584.968086
+          ]
+        },
+        "memory": {
+          "mean": 1372.6653645833333,
+          "minimum": 1080.6640625,
+          "maximum": 1868.96484375,
+          "repetitions": [
+            1868.96484375,
+            1080.6640625,
+            1168.3671875
+          ]
+        },
+        "medianMemory": {
+          "mean": 1026.7278645833333,
+          "minimum": 879.8359375,
+          "maximum": 1238.470703125,
+          "repetitions": [
+            1238.470703125,
+            879.8359375,
+            961.876953125
+          ]
+        },
+        "privateMemory": {
+          "mean": 1372.6653645833333,
+          "minimum": 1080.6640625,
+          "maximum": 1868.96484375,
+          "repetitions": [
+            1868.96484375,
+            1080.6640625,
+            1168.3671875
+          ]
+        },
+        "proxyCpu": {
+          "mean": 69.81349529420642,
+          "minimum": 68.22628576253088,
+          "maximum": 71.9772045959732,
+          "repetitions": [
+            68.22628576253088,
+            71.9772045959732,
+            69.23699552411517
+          ]
+        },
+        "appMemory": {
+          "mean": 308.5651041666667,
+          "minimum": 249.7109375,
+          "maximum": 421.37890625,
+          "repetitions": [
+            421.37890625,
+            254.60546875,
+            249.7109375
+          ]
+        },
+        "appCpu": {
+          "mean": 11.004976627802826,
+          "minimum": 10.21074731555233,
+          "maximum": 12.56420588814243,
+          "repetitions": [
+            12.56420588814243,
+            10.21074731555233,
+            10.239976679713719
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 14.648215342564384,
+          "minimum": 12.214313507195449,
+          "maximum": 16.13090341760906,
+          "repetitions": [
+            16.13090341760906,
+            12.214313507195449,
+            15.599429102888646
+          ]
+        },
+        "cpu": {
+          "mean": 99.72855102277255,
+          "minimum": 99.7110810075643,
+          "maximum": 99.759530626337,
+          "repetitions": [
+            99.71504143441634,
+            99.759530626337,
+            99.7110810075643
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-caddy-plaintext-c20000",
+        "r2-caddy-plaintext-c20000",
+        "r3-caddy-plaintext-c20000"
+      ]
+    }
+  ],
+  "features": [
+    {
+      "proxy": "tako",
+      "endpoint": "channel-publish",
+      "conc": 500,
+      "clean": true,
+      "requests": 291158,
+      "clientErrors": 0,
+      "non200": 0,
+      "metrics": {
+        "rps200": {
+          "mean": 3223.7508233740964,
+          "minimum": 2967.405394031563,
+          "maximum": 3714.539014501224,
+          "repetitions": [
+            2989.3080615895024,
+            3714.539014501224,
+            2967.405394031563
+          ]
+        },
+        "success_pct": {
+          "mean": 100.0,
+          "minimum": 100.0,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            100.0,
+            100.0
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 149.51489266666667,
+          "minimum": 127.645647,
+          "maximum": 161.14319,
+          "repetitions": [
+            159.755841,
+            127.645647,
+            161.14319
+          ]
+        },
+        "p95": {
+          "mean": 191.32334266666666,
+          "minimum": 162.109303,
+          "maximum": 206.268139,
+          "repetitions": [
+            206.268139,
+            162.109303,
+            205.592586
+          ]
+        },
+        "p99": {
+          "mean": 280.48439633333334,
+          "minimum": 232.284552,
+          "maximum": 368.660833,
+          "repetitions": [
+            232.284552,
+            368.660833,
+            240.507804
+          ]
+        },
+        "memory": {
+          "mean": 173.67252604166666,
+          "minimum": 169.833984375,
+          "maximum": 175.82421875,
+          "repetitions": [
+            169.833984375,
+            175.359375,
+            175.82421875
+          ]
+        },
+        "medianMemory": {
+          "mean": 169.38606770833334,
+          "minimum": 164.408203125,
+          "maximum": 173.46484375,
+          "repetitions": [
+            164.408203125,
+            173.46484375,
+            170.28515625
+          ]
+        },
+        "privateMemory": {
+          "mean": 170.67708333333334,
+          "minimum": 166.8125,
+          "maximum": 172.82421875,
+          "repetitions": [
+            166.8125,
+            172.39453125,
+            172.82421875
+          ]
+        },
+        "proxyCpu": {
+          "mean": 63.28963532535196,
+          "minimum": 59.044085222235154,
+          "maximum": 65.43860472810262,
+          "repetitions": [
+            65.38621602571811,
+            59.044085222235154,
+            65.43860472810262
+          ]
+        },
+        "appMemory": {
+          "mean": 58.23046875,
+          "minimum": 57.0703125,
+          "maximum": 58.998046875,
+          "repetitions": [
+            58.998046875,
+            58.623046875,
+            57.0703125
+          ]
+        },
+        "appCpu": {
+          "mean": 17.025973378833967,
+          "minimum": 15.768387854360203,
+          "maximum": 17.710010896522363,
+          "repetitions": [
+            17.710010896522363,
+            15.768387854360203,
+            17.599521385619337
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 14.15770203185341,
+          "minimum": 12.492997299223287,
+          "maximum": 15.014867956340755,
+          "repetitions": [
+            15.014867956340755,
+            12.492997299223287,
+            14.965240839996188
+          ]
+        },
+        "cpu": {
+          "mean": 95.11303133946735,
+          "minimum": 87.86040093128821,
+          "maximum": 98.78131652183562,
+          "repetitions": [
+            98.78131652183562,
+            87.86040093128821,
+            98.69737656527825
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-tako-channel-publish-c500",
+        "r2-tako-channel-publish-c500",
+        "r3-tako-channel-publish-c500"
+      ]
+    },
+    {
+      "proxy": "tako",
+      "endpoint": "workflow-enqueue",
+      "conc": 500,
+      "clean": true,
+      "requests": 293997,
+      "clientErrors": 0,
+      "non200": 0,
+      "metrics": {
+        "rps200": {
+          "mean": 3253.8775249528508,
+          "minimum": 2983.1549111760946,
+          "maximum": 3777.503236819277,
+          "repetitions": [
+            3000.9744268631807,
+            3777.503236819277,
+            2983.1549111760946
+          ]
+        },
+        "success_pct": {
+          "mean": 100.0,
+          "minimum": 100.0,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            100.0,
+            100.0
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 149.21264933333333,
+          "minimum": 130.943681,
+          "maximum": 158.676309,
+          "repetitions": [
+            158.017958,
+            130.943681,
+            158.676309
+          ]
+        },
+        "p95": {
+          "mean": 195.473331,
+          "minimum": 152.387508,
+          "maximum": 219.009934,
+          "repetitions": [
+            215.022551,
+            152.387508,
+            219.009934
+          ]
+        },
+        "p99": {
+          "mean": 255.205127,
+          "minimum": 177.482726,
+          "maximum": 294.506401,
+          "repetitions": [
+            293.626254,
+            177.482726,
+            294.506401
+          ]
+        },
+        "memory": {
+          "mean": 190.33430989583334,
+          "minimum": 186.99609375,
+          "maximum": 192.552734375,
+          "repetitions": [
+            191.4541015625,
+            192.552734375,
+            186.99609375
+          ]
+        },
+        "medianMemory": {
+          "mean": 185.1279296875,
+          "minimum": 175.796875,
+          "maximum": 191.84375,
+          "repetitions": [
+            187.7431640625,
+            191.84375,
+            175.796875
+          ]
+        },
+        "privateMemory": {
+          "mean": 187.56510416666666,
+          "minimum": 184.23046875,
+          "maximum": 189.80859375,
+          "repetitions": [
+            188.65625,
+            189.80859375,
+            184.23046875
+          ]
+        },
+        "proxyCpu": {
+          "mean": 61.14589937257685,
+          "minimum": 56.56745831168597,
+          "maximum": 63.46726596177963,
+          "repetitions": [
+            63.46726596177963,
+            56.56745831168597,
+            63.402973844264956
+          ]
+        },
+        "appMemory": {
+          "mean": 73.34798177083333,
+          "minimum": 72.96484375,
+          "maximum": 73.783203125,
+          "repetitions": [
+            73.2958984375,
+            72.96484375,
+            73.783203125
+          ]
+        },
+        "appCpu": {
+          "mean": 18.109145532346563,
+          "minimum": 16.680877952240873,
+          "maximum": 18.93790428877772,
+          "repetitions": [
+            18.708654356021093,
+            16.680877952240873,
+            18.93790428877772
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 14.481821032618024,
+          "minimum": 12.42173840404587,
+          "maximum": 15.522738288665783,
+          "repetitions": [
+            15.50098640514242,
+            12.42173840404587,
+            15.522738288665783
+          ]
+        },
+        "cpu": {
+          "mean": 94.5197198508646,
+          "minimum": 86.32865280536618,
+          "maximum": 98.70391796355514,
+          "repetitions": [
+            98.5265887836725,
+            86.32865280536618,
+            98.70391796355514
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-tako-workflow-enqueue-c500",
+        "r2-tako-workflow-enqueue-c500",
+        "r3-tako-workflow-enqueue-c500"
+      ],
+      "workflowAfterLoad": [
+        {
+          "runs": {
+            "pending": 115221,
+            "running": 1,
+            "succeeded": 4430
+          },
+          "ack_steps": 4512
+        },
+        {
+          "runs": {
+            "pending": 148173,
+            "running": 3,
+            "succeeded": 4869
+          },
+          "ack_steps": 4972
+        },
+        {
+          "runs": {
+            "pending": 112094,
+            "running": 3,
+            "succeeded": 4933
+          },
+          "ack_steps": 5001
+        }
+      ]
+    },
+    {
+      "proxy": "tako",
+      "endpoint": "channel-publish",
+      "conc": 1000,
+      "clean": true,
+      "requests": 286337,
+      "clientErrors": 0,
+      "non200": 0,
+      "metrics": {
+        "rps200": {
+          "mean": 3156.926460981614,
+          "minimum": 2850.341041175129,
+          "maximum": 3764.236873997748,
+          "repetitions": [
+            2850.341041175129,
+            3764.236873997748,
+            2856.2014677719662
+          ]
+        },
+        "success_pct": {
+          "mean": 100.0,
+          "minimum": 100.0,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            100.0,
+            100.0
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 308.12529433333333,
+          "minimum": 257.211203,
+          "maximum": 334.024451,
+          "repetitions": [
+            333.140229,
+            257.211203,
+            334.024451
+          ]
+        },
+        "p95": {
+          "mean": 359.17939333333334,
+          "minimum": 294.742839,
+          "maximum": 393.797869,
+          "repetitions": [
+            388.997472,
+            294.742839,
+            393.797869
+          ]
+        },
+        "p99": {
+          "mean": 1028.1772186666667,
+          "minimum": 337.311653,
+          "maximum": 1387.902681,
+          "repetitions": [
+            1359.317322,
+            337.311653,
+            1387.902681
+          ]
+        },
+        "memory": {
+          "mean": 213.36979166666666,
+          "minimum": 206.607421875,
+          "maximum": 219.404296875,
+          "repetitions": [
+            206.607421875,
+            214.09765625,
+            219.404296875
+          ]
+        },
+        "medianMemory": {
+          "mean": 210.01171875,
+          "minimum": 204.349609375,
+          "maximum": 217.369140625,
+          "repetitions": [
+            204.349609375,
+            208.31640625,
+            217.369140625
+          ]
+        },
+        "privateMemory": {
+          "mean": 210.39192708333334,
+          "minimum": 203.60546875,
+          "maximum": 216.4921875,
+          "repetitions": [
+            203.60546875,
+            211.078125,
+            216.4921875
+          ]
+        },
+        "proxyCpu": {
+          "mean": 63.285315038111825,
+          "minimum": 59.90604344232523,
+          "maximum": 65.0922886581307,
+          "repetitions": [
+            64.85761301387956,
+            59.90604344232523,
+            65.0922886581307
+          ]
+        },
+        "appMemory": {
+          "mean": 61.3125,
+          "minimum": 60.330078125,
+          "maximum": 62.052734375,
+          "repetitions": [
+            60.330078125,
+            62.052734375,
+            61.5546875
+          ]
+        },
+        "appCpu": {
+          "mean": 17.033669210181312,
+          "minimum": 16.13833927024696,
+          "maximum": 17.595555305720996,
+          "repetitions": [
+            17.36711305457598,
+            16.13833927024696,
+            17.595555305720996
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 14.67162563875932,
+          "minimum": 12.899917685620332,
+          "maximum": 15.721512588532127,
+          "repetitions": [
+            15.721512588532127,
+            12.899917685620332,
+            15.393446642125502
+          ]
+        },
+        "cpu": {
+          "mean": 95.86155240716806,
+          "minimum": 89.61510647922444,
+          "maximum": 99.05844291659375,
+          "repetitions": [
+            98.91110782568602,
+            89.61510647922444,
+            99.05844291659375
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-tako-channel-publish-c1000",
+        "r2-tako-channel-publish-c1000",
+        "r3-tako-channel-publish-c1000"
+      ]
+    },
+    {
+      "proxy": "tako",
+      "endpoint": "workflow-enqueue",
+      "conc": 1000,
+      "clean": true,
+      "requests": 285373,
+      "clientErrors": 0,
+      "non200": 0,
+      "metrics": {
+        "rps200": {
+          "mean": 3141.093584123128,
+          "minimum": 2863.8495394322804,
+          "maximum": 3657.2820328894754,
+          "repetitions": [
+            2863.8495394322804,
+            3657.2820328894754,
+            2902.1491800476288
+          ]
+        },
+        "success_pct": {
+          "mean": 100.0,
+          "minimum": 100.0,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            100.0,
+            100.0
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 302.6106256666667,
+          "minimum": 265.745805,
+          "maximum": 323.629602,
+          "repetitions": [
+            323.629602,
+            265.745805,
+            318.45647
+          ]
+        },
+        "p95": {
+          "mean": 383.01777166666665,
+          "minimum": 300.262044,
+          "maximum": 438.575499,
+          "repetitions": [
+            438.575499,
+            300.262044,
+            410.215772
+          ]
+        },
+        "p99": {
+          "mean": 1073.24251,
+          "minimum": 352.916577,
+          "maximum": 1519.58106,
+          "repetitions": [
+            1347.229893,
+            352.916577,
+            1519.58106
+          ]
+        },
+        "memory": {
+          "mean": 222.697265625,
+          "minimum": 206.1826171875,
+          "maximum": 232.173828125,
+          "repetitions": [
+            206.1826171875,
+            232.173828125,
+            229.7353515625
+          ]
+        },
+        "medianMemory": {
+          "mean": 219.42838541666666,
+          "minimum": 203.2294921875,
+          "maximum": 227.8994140625,
+          "repetitions": [
+            203.2294921875,
+            227.15625,
+            227.8994140625
+          ]
+        },
+        "privateMemory": {
+          "mean": 219.91276041666666,
+          "minimum": 203.3828125,
+          "maximum": 229.390625,
+          "repetitions": [
+            203.3828125,
+            229.390625,
+            226.96484375
+          ]
+        },
+        "proxyCpu": {
+          "mean": 60.92818565672637,
+          "minimum": 56.352108539109466,
+          "maximum": 63.2170958864535,
+          "repetitions": [
+            63.21535254461615,
+            56.352108539109466,
+            63.2170958864535
+          ]
+        },
+        "appMemory": {
+          "mean": 77.572265625,
+          "minimum": 76.34375,
+          "maximum": 78.63671875,
+          "repetitions": [
+            78.63671875,
+            76.34375,
+            77.736328125
+          ]
+        },
+        "appCpu": {
+          "mean": 17.7124947634281,
+          "minimum": 16.534796113034332,
+          "maximum": 18.352205744704666,
+          "repetitions": [
+            18.250482432545308,
+            16.534796113034332,
+            18.352205744704666
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 15.140403713819618,
+          "minimum": 13.402124367814169,
+          "maximum": 16.202111805000815,
+          "repetitions": [
+            16.202111805000815,
+            13.402124367814169,
+            15.816974968643871
+          ]
+        },
+        "cpu": {
+          "mean": 94.80524835189941,
+          "minimum": 87.1287801932497,
+          "maximum": 98.77994889774297,
+          "repetitions": [
+            98.77994889774297,
+            87.1287801932497,
+            98.50701596470557
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-tako-workflow-enqueue-c1000",
+        "r2-tako-workflow-enqueue-c1000",
+        "r3-tako-workflow-enqueue-c1000"
+      ],
+      "workflowAfterLoad": [
+        {
+          "runs": {
+            "pending": 109192,
+            "running": 2,
+            "succeeded": 5100
+          },
+          "ack_steps": 5180
+        },
+        {
+          "runs": {
+            "pending": 142108,
+            "running": 2,
+            "succeeded": 5508
+          },
+          "ack_steps": 5589
+        },
+        {
+          "runs": {
+            "pending": 110176,
+            "running": 1,
+            "succeeded": 4458
+          },
+          "ack_steps": 4544
+        }
+      ]
+    },
+    {
+      "proxy": "tako",
+      "endpoint": "channel-publish",
+      "conc": 2000,
+      "clean": true,
+      "requests": 277971,
+      "clientErrors": 0,
+      "non200": 0,
+      "metrics": {
+        "rps200": {
+          "mean": 3037.297054566948,
+          "minimum": 2697.8660680905073,
+          "maximum": 3617.8786281588523,
+          "repetitions": [
+            2697.8660680905073,
+            3617.8786281588523,
+            2796.1464674514855
+          ]
+        },
+        "success_pct": {
+          "mean": 100.0,
+          "minimum": 100.0,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            100.0,
+            100.0
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 617.8442696666667,
+          "minimum": 525.321396,
+          "maximum": 676.123594,
+          "repetitions": [
+            676.123594,
+            525.321396,
+            652.087819
+          ]
+        },
+        "p95": {
+          "mean": 716.6419896666666,
+          "minimum": 579.366173,
+          "maximum": 785.880215,
+          "repetitions": [
+            785.880215,
+            579.366173,
+            784.679581
+          ]
+        },
+        "p99": {
+          "mean": 2468.807097666667,
+          "minimum": 1694.368465,
+          "maximum": 3037.171815,
+          "repetitions": [
+            3037.171815,
+            1694.368465,
+            2674.881013
+          ]
+        },
+        "memory": {
+          "mean": 287.6383463541667,
+          "minimum": 270.587890625,
+          "maximum": 296.9560546875,
+          "repetitions": [
+            296.9560546875,
+            295.37109375,
+            270.587890625
+          ]
+        },
+        "medianMemory": {
+          "mean": 282.2353515625,
+          "minimum": 266.146484375,
+          "maximum": 290.5703125,
+          "repetitions": [
+            289.9892578125,
+            290.5703125,
+            266.146484375
+          ]
+        },
+        "privateMemory": {
+          "mean": 284.6419270833333,
+          "minimum": 267.63671875,
+          "maximum": 293.9453125,
+          "repetitions": [
+            293.9453125,
+            292.34375,
+            267.63671875
+          ]
+        },
+        "proxyCpu": {
+          "mean": 63.39135301103319,
+          "minimum": 60.36909325186538,
+          "maximum": 64.99857426326857,
+          "repetitions": [
+            64.99857426326857,
+            60.36909325186538,
+            64.80639151796562
+          ]
+        },
+        "appMemory": {
+          "mean": 70.1474609375,
+          "minimum": 69.791015625,
+          "maximum": 70.7998046875,
+          "repetitions": [
+            70.7998046875,
+            69.8515625,
+            69.791015625
+          ]
+        },
+        "appCpu": {
+          "mean": 16.87938278358547,
+          "minimum": 16.06849385249832,
+          "maximum": 17.30216439961436,
+          "repetitions": [
+            17.30216439961436,
+            16.06849385249832,
+            17.267490098643727
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 14.81514868789471,
+          "minimum": 13.46852929854754,
+          "maximum": 15.623745233212949,
+          "repetitions": [
+            15.353171531923643,
+            13.46852929854754,
+            15.623745233212949
+          ]
+        },
+        "cpu": {
+          "mean": 96.27308026039607,
+          "minimum": 90.88590405166225,
+          "maximum": 98.99240212597098,
+          "repetitions": [
+            98.99240212597098,
+            90.88590405166225,
+            98.940934603555
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-tako-channel-publish-c2000",
+        "r2-tako-channel-publish-c2000",
+        "r3-tako-channel-publish-c2000"
+      ]
+    },
+    {
+      "proxy": "tako",
+      "endpoint": "workflow-enqueue",
+      "conc": 2000,
+      "clean": true,
+      "requests": 274316,
+      "clientErrors": 0,
+      "non200": 0,
+      "metrics": {
+        "rps200": {
+          "mean": 2991.445220711747,
+          "minimum": 2630.987333400501,
+          "maximum": 3550.319716841687,
+          "repetitions": [
+            2630.987333400501,
+            3550.319716841687,
+            2793.0286118930526
+          ]
+        },
+        "success_pct": {
+          "mean": 100.0,
+          "minimum": 100.0,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            100.0,
+            100.0
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 611.2304809999999,
+          "minimum": 532.371974,
+          "maximum": 668.71607,
+          "repetitions": [
+            668.71607,
+            532.371974,
+            632.603399
+          ]
+        },
+        "p95": {
+          "mean": 780.9963636666666,
+          "minimum": 586.865073,
+          "maximum": 922.725501,
+          "repetitions": [
+            922.725501,
+            586.865073,
+            833.398517
+          ]
+        },
+        "p99": {
+          "mean": 2724.785421,
+          "minimum": 1819.27348,
+          "maximum": 3336.698167,
+          "repetitions": [
+            3336.698167,
+            1819.27348,
+            3018.384616
+          ]
+        },
+        "memory": {
+          "mean": 312.3763020833333,
+          "minimum": 297.970703125,
+          "maximum": 320.0322265625,
+          "repetitions": [
+            297.970703125,
+            319.1259765625,
+            320.0322265625
+          ]
+        },
+        "medianMemory": {
+          "mean": 299.1848958333333,
+          "minimum": 287.498046875,
+          "maximum": 305.4736328125,
+          "repetitions": [
+            287.498046875,
+            305.4736328125,
+            304.5830078125
+          ]
+        },
+        "privateMemory": {
+          "mean": 309.61328125,
+          "minimum": 295.2109375,
+          "maximum": 317.29296875,
+          "repetitions": [
+            295.2109375,
+            316.3359375,
+            317.29296875
+          ]
+        },
+        "proxyCpu": {
+          "mean": 61.00757386301085,
+          "minimum": 56.377382904093444,
+          "maximum": 63.51472648204178,
+          "repetitions": [
+            63.51472648204178,
+            56.377382904093444,
+            63.13061220289731
+          ]
+        },
+        "appMemory": {
+          "mean": 88.06119791666667,
+          "minimum": 87.0205078125,
+          "maximum": 88.6416015625,
+          "repetitions": [
+            88.6416015625,
+            87.0205078125,
+            88.521484375
+          ]
+        },
+        "appCpu": {
+          "mean": 17.567947174452115,
+          "minimum": 16.907319943063936,
+          "maximum": 18.152784979552255,
+          "repetitions": [
+            18.152784979552255,
+            16.907319943063936,
+            17.64373660074016
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 15.172406082108472,
+          "minimum": 13.149045196966808,
+          "maximum": 16.570964545453535,
+          "repetitions": [
+            15.797208503905072,
+            13.149045196966808,
+            16.570964545453535
+          ]
+        },
+        "cpu": {
+          "mean": 95.1425809036668,
+          "minimum": 87.56689767236837,
+          "maximum": 98.94332324445307,
+          "repetitions": [
+            98.94332324445307,
+            87.56689767236837,
+            98.91752179417897
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-tako-workflow-enqueue-c2000",
+        "r2-tako-workflow-enqueue-c2000",
+        "r3-tako-workflow-enqueue-c2000"
+      ],
+      "workflowAfterLoad": [
+        {
+          "runs": {
+            "pending": 96707,
+            "running": 1,
+            "succeeded": 6264
+          },
+          "ack_steps": 6314
+        },
+        {
+          "runs": {
+            "pending": 138042,
+            "running": 3,
+            "succeeded": 5600
+          },
+          "ack_steps": 5685
+        },
+        {
+          "runs": {
+            "pending": 101970,
+            "running": 2,
+            "succeeded": 6370
+          },
+          "ack_steps": 6453
+        }
+      ]
+    },
+    {
+      "proxy": "tako",
+      "endpoint": "channel-publish",
+      "conc": 4000,
+      "clean": true,
+      "requests": 259994,
+      "clientErrors": 0,
+      "non200": 0,
+      "metrics": {
+        "rps200": {
+          "mean": 2789.3362415684164,
+          "minimum": 2466.15860899482,
+          "maximum": 3412.5253857413777,
+          "repetitions": [
+            2489.3247299690515,
+            3412.5253857413777,
+            2466.15860899482
+          ]
+        },
+        "success_pct": {
+          "mean": 100.0,
+          "minimum": 100.0,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            100.0,
+            100.0
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 1239.676115,
+          "minimum": 1057.473652,
+          "maximum": 1339.179448,
+          "repetitions": [
+            1322.375245,
+            1057.473652,
+            1339.179448
+          ]
+        },
+        "p95": {
+          "mean": 2765.3631976666666,
+          "minimum": 1371.165473,
+          "maximum": 3554.720266,
+          "repetitions": [
+            3554.720266,
+            1371.165473,
+            3370.203854
+          ]
+        },
+        "p99": {
+          "mean": 5857.796596333334,
+          "minimum": 3805.096106,
+          "maximum": 6987.915245,
+          "repetitions": [
+            6780.378438,
+            3805.096106,
+            6987.915245
+          ]
+        },
+        "memory": {
+          "mean": 476.1064453125,
+          "minimum": 460.6376953125,
+          "maximum": 490.1953125,
+          "repetitions": [
+            490.1953125,
+            477.486328125,
+            460.6376953125
+          ]
+        },
+        "medianMemory": {
+          "mean": 453.3512369791667,
+          "minimum": 450.6201171875,
+          "maximum": 455.115234375,
+          "repetitions": [
+            455.115234375,
+            454.318359375,
+            450.6201171875
+          ]
+        },
+        "privateMemory": {
+          "mean": 473.1536458333333,
+          "minimum": 457.71875,
+          "maximum": 487.23828125,
+          "repetitions": [
+            487.23828125,
+            474.50390625,
+            457.71875
+          ]
+        },
+        "proxyCpu": {
+          "mean": 63.314701021442275,
+          "minimum": 60.30610231107233,
+          "maximum": 64.97895892570912,
+          "repetitions": [
+            64.97895892570912,
+            60.30610231107233,
+            64.65904182754538
+          ]
+        },
+        "appMemory": {
+          "mean": 80.84798177083333,
+          "minimum": 78.4365234375,
+          "maximum": 83.03125,
+          "repetitions": [
+            81.076171875,
+            83.03125,
+            78.4365234375
+          ]
+        },
+        "appCpu": {
+          "mean": 15.727417878303433,
+          "minimum": 15.597250582610053,
+          "maximum": 15.900131377605998,
+          "repetitions": [
+            15.684871674694248,
+            15.597250582610053,
+            15.900131377605998
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 15.710240604275882,
+          "minimum": 14.600951721690173,
+          "maximum": 16.521181893678914,
+          "repetitions": [
+            16.008588197458558,
+            14.600951721690173,
+            16.521181893678914
+          ]
+        },
+        "cpu": {
+          "mean": 96.68537982747559,
+          "minimum": 92.06747916933622,
+          "maximum": 99.03464151184008,
+          "repetitions": [
+            98.95401880125044,
+            92.06747916933622,
+            99.03464151184008
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-tako-channel-publish-c4000",
+        "r2-tako-channel-publish-c4000",
+        "r3-tako-channel-publish-c4000"
+      ]
+    },
+    {
+      "proxy": "tako",
+      "endpoint": "workflow-enqueue",
+      "conc": 4000,
+      "clean": true,
+      "requests": 254216,
+      "clientErrors": 0,
+      "non200": 0,
+      "metrics": {
+        "rps200": {
+          "mean": 2725.0590459010655,
+          "minimum": 2390.878927684045,
+          "maximum": 3369.6371607118513,
+          "repetitions": [
+            2414.6610493073003,
+            3369.6371607118513,
+            2390.878927684045
+          ]
+        },
+        "success_pct": {
+          "mean": 100.0,
+          "minimum": 100.0,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            100.0,
+            100.0
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 1234.918684,
+          "minimum": 1065.500687,
+          "maximum": 1346.922075,
+          "repetitions": [
+            1292.33329,
+            1065.500687,
+            1346.922075
+          ]
+        },
+        "p95": {
+          "mean": 3116.4683633333334,
+          "minimum": 1206.354996,
+          "maximum": 4127.679384,
+          "repetitions": [
+            4127.679384,
+            1206.354996,
+            4015.37071
+          ]
+        },
+        "p99": {
+          "mean": 6166.092359666666,
+          "minimum": 4485.147585,
+          "maximum": 7361.212311,
+          "repetitions": [
+            7361.212311,
+            4485.147585,
+            6651.917183
+          ]
+        },
+        "memory": {
+          "mean": 529.787109375,
+          "minimum": 505.23046875,
+          "maximum": 569.2880859375,
+          "repetitions": [
+            514.8427734375,
+            569.2880859375,
+            505.23046875
+          ]
+        },
+        "medianMemory": {
+          "mean": 466.529296875,
+          "minimum": 465.2373046875,
+          "maximum": 467.4052734375,
+          "repetitions": [
+            467.4052734375,
+            465.2373046875,
+            466.9453125
+          ]
+        },
+        "privateMemory": {
+          "mean": 527.0221354166666,
+          "minimum": 502.47265625,
+          "maximum": 566.51171875,
+          "repetitions": [
+            512.08203125,
+            566.51171875,
+            502.47265625
+          ]
+        },
+        "proxyCpu": {
+          "mean": 60.96400240095708,
+          "minimum": 56.48119992375712,
+          "maximum": 63.49775627818898,
+          "repetitions": [
+            63.49775627818898,
+            56.48119992375712,
+            62.913051000925144
+          ]
+        },
+        "appMemory": {
+          "mean": 101.15234375,
+          "minimum": 98.3603515625,
+          "maximum": 103.9501953125,
+          "repetitions": [
+            103.9501953125,
+            101.146484375,
+            98.3603515625
+          ]
+        },
+        "appCpu": {
+          "mean": 16.50562654883545,
+          "minimum": 16.215677545176536,
+          "maximum": 16.796181914071425,
+          "repetitions": [
+            16.796181914071425,
+            16.215677545176536,
+            16.505020187258395
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 16.090848970929507,
+          "minimum": 14.624150260412486,
+          "maximum": 17.140296717947948,
+          "repetitions": [
+            16.50809993442808,
+            14.624150260412486,
+            17.140296717947948
+          ]
+        },
+        "cpu": {
+          "mean": 95.71368748971422,
+          "minimum": 89.07147022506643,
+          "maximum": 99.07448184386568,
+          "repetitions": [
+            98.99511040021054,
+            89.07147022506643,
+            99.07448184386568
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-tako-workflow-enqueue-c4000",
+        "r2-tako-workflow-enqueue-c4000",
+        "r3-tako-workflow-enqueue-c4000"
+      ],
+      "workflowAfterLoad": [
+        {
+          "runs": {
+            "pending": 84024,
+            "running": 2,
+            "succeeded": 7627
+          },
+          "ack_steps": 7678
+        },
+        {
+          "runs": {
+            "pending": 129665,
+            "running": 3,
+            "succeeded": 5451
+          },
+          "ack_steps": 5506
+        },
+        {
+          "runs": {
+            "pending": 84497,
+            "running": 1,
+            "succeeded": 6130
+          },
+          "ack_steps": 6171
+        }
+      ]
+    },
+    {
+      "proxy": "tako",
+      "endpoint": "channel-publish",
+      "conc": 8000,
+      "clean": true,
+      "requests": 225254,
+      "clientErrors": 0,
+      "non200": 0,
+      "metrics": {
+        "rps200": {
+          "mean": 2334.324187754718,
+          "minimum": 1956.2496235364545,
+          "maximum": 3028.6393763316046,
+          "repetitions": [
+            2018.0835633960955,
+            3028.6393763316046,
+            1956.2496235364545
+          ]
+        },
+        "success_pct": {
+          "mean": 100.0,
+          "minimum": 100.0,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            100.0,
+            100.0
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 2527.885701333333,
+          "minimum": 2140.800576,
+          "maximum": 2724.993137,
+          "repetitions": [
+            2717.863391,
+            2140.800576,
+            2724.993137
+          ]
+        },
+        "p95": {
+          "mean": 10578.683092,
+          "minimum": 6887.639949,
+          "maximum": 12666.489321,
+          "repetitions": [
+            12181.920006,
+            6887.639949,
+            12666.489321
+          ]
+        },
+        "p99": {
+          "mean": 12438.005127999999,
+          "minimum": 9071.061649,
+          "maximum": 14728.161236,
+          "repetitions": [
+            13514.792499,
+            9071.061649,
+            14728.161236
+          ]
+        },
+        "memory": {
+          "mean": 842.5338541666666,
+          "minimum": 752.578125,
+          "maximum": 958.484375,
+          "repetitions": [
+            752.578125,
+            816.5390625,
+            958.484375
+          ]
+        },
+        "medianMemory": {
+          "mean": 744.7513020833334,
+          "minimum": 660.90234375,
+          "maximum": 790.28125,
+          "repetitions": [
+            660.90234375,
+            790.28125,
+            783.0703125
+          ]
+        },
+        "privateMemory": {
+          "mean": 839.5481770833334,
+          "minimum": 749.59765625,
+          "maximum": 955.5078125,
+          "repetitions": [
+            749.59765625,
+            813.5390625,
+            955.5078125
+          ]
+        },
+        "proxyCpu": {
+          "mean": 63.03736461171791,
+          "minimum": 59.126453650517774,
+          "maximum": 65.37994065573093,
+          "repetitions": [
+            64.60569952890502,
+            59.126453650517774,
+            65.37994065573093
+          ]
+        },
+        "appMemory": {
+          "mean": 109.16341145833333,
+          "minimum": 107.6328125,
+          "maximum": 110.296875,
+          "repetitions": [
+            109.560546875,
+            110.296875,
+            107.6328125
+          ]
+        },
+        "appCpu": {
+          "mean": 13.454403408959651,
+          "minimum": 12.847631265660327,
+          "maximum": 14.627627492159226,
+          "repetitions": [
+            12.847631265660327,
+            14.627627492159226,
+            12.887951469059402
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 17.71279452859808,
+          "minimum": 17.313094477893372,
+          "maximum": 18.133496292722583,
+          "repetitions": [
+            18.133496292722583,
+            17.313094477893372,
+            17.691792815178285
+          ]
+        },
+        "cpu": {
+          "mean": 97.33452782926777,
+          "minimum": 93.69965080172136,
+          "maximum": 99.21619252334078,
+          "repetitions": [
+            99.08774016274117,
+            93.69965080172136,
+            99.21619252334078
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-tako-channel-publish-c8000",
+        "r2-tako-channel-publish-c8000",
+        "r3-tako-channel-publish-c8000"
+      ]
+    },
+    {
+      "proxy": "tako",
+      "endpoint": "workflow-enqueue",
+      "conc": 8000,
+      "clean": false,
+      "requests": 209476,
+      "clientErrors": 0,
+      "non200": 483,
+      "metrics": {
+        "rps200": {
+          "mean": 2165.4581352166324,
+          "minimum": 1778.2028225694432,
+          "maximum": 2916.299273353114,
+          "repetitions": [
+            1801.8723097273394,
+            2916.299273353114,
+            1778.2028225694432
+          ]
+        },
+        "success_pct": {
+          "mean": 99.72403626951886,
+          "minimum": 99.17210880855659,
+          "maximum": 100.0,
+          "repetitions": [
+            100.0,
+            100.0,
+            99.17210880855659
+          ]
+        },
+        "non200_pct": {
+          "mean": 0.27596373048113676,
+          "minimum": 0.0,
+          "maximum": 0.8278911914434103,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.8278911914434103
+          ]
+        },
+        "client_error_pct": {
+          "mean": 0.0,
+          "minimum": 0.0,
+          "maximum": 0.0,
+          "repetitions": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "p50": {
+          "mean": 2560.048413,
+          "minimum": 2194.769924,
+          "maximum": 2752.454767,
+          "repetitions": [
+            2732.920548,
+            2194.769924,
+            2752.454767
+          ]
+        },
+        "p95": {
+          "mean": 11906.732975666666,
+          "minimum": 7422.84137,
+          "maximum": 14425.073572,
+          "repetitions": [
+            14425.073572,
+            7422.84137,
+            13872.283985
+          ]
+        },
+        "p99": {
+          "mean": 13687.218323000001,
+          "minimum": 8874.475767,
+          "maximum": 16689.017069,
+          "repetitions": [
+            16689.017069,
+            8874.475767,
+            15498.162133
+          ]
+        },
+        "memory": {
+          "mean": 902.5611979166666,
+          "minimum": 850.44921875,
+          "maximum": 980.5302734375,
+          "repetitions": [
+            876.7041015625,
+            850.44921875,
+            980.5302734375
+          ]
+        },
+        "medianMemory": {
+          "mean": 773.2278645833334,
+          "minimum": 756.1572265625,
+          "maximum": 805.9443359375,
+          "repetitions": [
+            756.1572265625,
+            757.58203125,
+            805.9443359375
+          ]
+        },
+        "privateMemory": {
+          "mean": 899.7682291666666,
+          "minimum": 847.640625,
+          "maximum": 977.73046875,
+          "repetitions": [
+            873.93359375,
+            847.640625,
+            977.73046875
+          ]
+        },
+        "proxyCpu": {
+          "mean": 61.796506588981075,
+          "minimum": 57.31764537083267,
+          "maximum": 64.21212556317177,
+          "repetitions": [
+            64.21212556317177,
+            57.31764537083267,
+            63.85974883293878
+          ]
+        },
+        "appMemory": {
+          "mean": 135.12369791666666,
+          "minimum": 130.978515625,
+          "maximum": 140.3603515625,
+          "repetitions": [
+            134.0322265625,
+            140.3603515625,
+            130.978515625
+          ]
+        },
+        "appCpu": {
+          "mean": 13.833671805732106,
+          "minimum": 13.337578218804117,
+          "maximum": 14.638890018273171,
+          "repetitions": [
+            13.52454718011903,
+            14.638890018273171,
+            13.337578218804117
+          ]
+        },
+        "loadgenCpu": {
+          "mean": 17.13109639625253,
+          "minimum": 16.681169771905758,
+          "maximum": 17.91990940345982,
+          "repetitions": [
+            16.792210013392015,
+            16.681169771905758,
+            17.91990940345982
+          ]
+        },
+        "cpu": {
+          "mean": 96.56267010668842,
+          "minimum": 91.50437373660166,
+          "maximum": 99.10369853766048,
+          "repetitions": [
+            99.0799380458031,
+            91.50437373660166,
+            99.10369853766048
+          ]
+        }
+      },
+      "rawCases": [
+        "r1-tako-workflow-enqueue-c8000",
+        "r2-tako-workflow-enqueue-c8000",
+        "r3-tako-workflow-enqueue-c8000"
+      ],
+      "workflowAfterLoad": [
+        {
+          "runs": {
+            "pending": 57700,
+            "running": 2,
+            "succeeded": 9138
+          },
+          "ack_steps": 9189
+        },
+        {
+          "runs": {
+            "pending": 106271,
+            "running": 3,
+            "succeeded": 6925
+          },
+          "ack_steps": 6991
+        },
+        {
+          "runs": {
+            "pending": 59482,
+            "running": 3,
+            "succeeded": 6913
+          },
+          "ack_steps": 6923
+        }
+      ]
+    }
+  ]
+}

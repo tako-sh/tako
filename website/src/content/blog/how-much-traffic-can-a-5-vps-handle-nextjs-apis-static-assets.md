@@ -101,7 +101,7 @@ That is how a $5 VPS becomes capacity planning.
 
 ## The honest answer
 
-For tiny HTTPS responses through Tako's app-aware proxy path, the published small-VM baseline is thousands of clean 200 responses per second: 12.5k at c5000 and 7.3k at c20000 on the tested 2 vCPU VM. For static assets and warmed image variants, that is the right neighborhood to start thinking in. For API routes and server-rendered pages, your app work decides the number.
+For tiny HTTPS responses through Tako's app-aware proxy path, the historical June 2026 VM run reached 12.5k at c5000 and 7.3k at c20000. The [current benchmark](/performance/) reruns the full comparison on newer builds and records its own hardware and limits. Neither workload measures your Next.js routes or image processing; for API routes and server-rendered pages, your app work decides the number.
 
 That is good news. The cheap VPS argument is not only about price; it is about having enough headroom to run the app and platform layer together. Tako handles routing, TLS, static files, image optimization, health checks, secrets, logs, and rolling deploys on the same machine, so the traffic question becomes concrete: what is static, what is cached, and what actually needs your Next.js process?
 
