@@ -51,32 +51,4 @@
     --delay: 0.65s;
   }
 
-  /* Benchmark: the bars grow from zero, then the numbers land */
-  .bench-fill {
-    transform-origin: left center;
-  }
-
-  [data-reveal="pending"] .bench-fill {
-    scale: 0 1;
-  }
-
-  [data-reveal="pending"] .bench-value {
-    opacity: 0;
-  }
-
-  [data-reveal="in"] .bench-fill {
-    transition: scale 0.9s var(--ease-out) var(--delay, 0s);
-  }
-
-  [data-reveal="in"] .bench-value {
-    transition: opacity 0.4s ease calc(var(--delay, 0s) + 0.6s);
-  }
-
-  .bench-row:nth-child(2) {
-    --delay: 0.12s;
-  }
-
-  .bench-row:nth-child(3) {
-    --delay: 0.24s;
-  }
 </style>

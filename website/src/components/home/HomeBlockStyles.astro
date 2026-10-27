@@ -354,59 +354,36 @@
     font-size: 14px;
   }
 
-  /* Performance: the chart leads, values sit at the ends of their bars */
-  .bench {
-    margin: clamp(32px, 4vw, 56px) 0 0;
-  }
-
-  .bench-chart {
+  /* Performance: measured capacity and reliability lead the section. */
+  .bench-facts {
     display: grid;
-    gap: clamp(16px, 2vw, 24px);
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: clamp(24px, 4vw, 56px);
+    margin: clamp(36px, 5vw, 64px) 0 0;
   }
 
-  .bench-row {
-    display: grid;
-    grid-template-columns: clamp(72px, 9vw, 120px) minmax(0, 1fr);
-    gap: 16px;
-    align-items: center;
-  }
-
-  .bench-name {
-    color: var(--ink);
-    font-size: 15px;
-    font-weight: 600;
-  }
-
-  .bench-track {
+  .bench-facts > div {
     display: flex;
-    align-items: center;
-    gap: clamp(12px, 1.5vw, 20px);
-    min-width: 0;
+    flex-direction: column;
+    padding-top: 24px;
+    border-top: 1px solid var(--line);
   }
 
-  .bench-fill {
-    flex: none;
-    width: calc((100% - clamp(96px, 12vw, 180px)) * var(--f));
-    height: clamp(18px, 2.2vw, 30px);
-    border-radius: 1px;
-    background: var(--muted);
+  .bench-facts dt {
+    margin-top: 16px;
+    color: var(--muted);
+    font-size: 16px;
+    line-height: 1.5;
   }
 
-  .bench-value {
-    color: var(--ink);
-    font-size: clamp(22px, 3vw, 44px);
+  .bench-facts dd {
+    order: -1;
+    margin: 0;
+    color: var(--secondary);
+    font-size: clamp(64px, 8vw, 120px);
     font-weight: 700;
     line-height: 1;
     font-variant-numeric: tabular-nums;
-  }
-
-  /* Tako leads in mint: green reads as more, where coral would read as a warning */
-  .bench-row-tako .bench-fill {
-    background: var(--secondary);
-  }
-
-  .bench-row-tako .bench-value {
-    color: var(--secondary);
   }
 
   .bench-copy {
@@ -424,6 +401,12 @@
 
   .bench-copy p strong {
     color: var(--ink);
+  }
+
+  .bench-copy .bench-date {
+    grid-column: 1 / -1;
+    max-width: none;
+    font-size: 13px;
   }
 
   .bench-copy .doc-link {
@@ -540,6 +523,14 @@
   }
 
   @media (max-width: 640px) {
+    .bench-facts {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .bench-facts > div:first-child {
+      grid-column: 1 / -1;
+    }
+
     .spec-list {
       grid-template-columns: minmax(0, 1fr);
     }
