@@ -170,13 +170,6 @@ export const httpCharts: ChartConfig[] = [
     "pct",
     proxySeries,
   ),
-  chart(
-    "Total CPU usage",
-    "Proxy, application, load generator, and sampler share this budget. Saturation reflects the whole test, not just the proxy.",
-    "cpu",
-    "pct",
-    proxySeries,
-  ),
 ];
 export const featureCharts: ChartConfig[] = [
   chart(
