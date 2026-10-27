@@ -1,78 +1,62 @@
 ---
-import {
-  benchmark,
-  format,
-  httpRow,
-  labels,
-  proxyOrder,
-  short,
-} from "../../data/performance";
-const rows = proxyOrder
-  .map((proxy) => ({ proxy, row: httpRow(proxy, 5000) }))
-  .sort((a, b) => b.row.metrics.rps200.mean - a.row.metrics.rps200.mean);
-const maximum = Math.max(...rows.map(({ row }) => row.metrics.rps200.mean));
-const tako = httpRow("tako", 5000);
-const clean = benchmark.http
-  .filter((row) => row.proxy === "tako")
-  .every((row) => row.clean);
-const description = `Complete HTTPS 200 responses per second at 5,000 concurrent clients, higher is better: ${rows.map(({ proxy, row }) => `${labels[proxy]} ${format(row.metrics.rps200.mean)}`).join(", ")}.`;
+import { benchmark, format, short } from "../../data/performance";
+const rows = benchmark.http.filter((row) => row.proxy === "tako");
+const concurrency = Math.max(...rows.map((row) => row.conc));
+const failures = rows.reduce(
+  (total, row) => total + row.non200 + row.clientErrors,
+  0,
+);
+const runs = rows.reduce((total, row) => total + row.rawCases.length, 0);
+const clean = rows.every((row) => row.clean);
 ---
 
 <section class="band" data-accent="mint" aria-labelledby="performance-title">
   <div class="band-inner">
     <h2 class="section-title section-title-lg" id="performance-title">
-      Ready for serious load
+      Small server. Serious load.
     </h2>
-    <figure class="bench">
-      <div class="bench-chart" data-reveal role="img" aria-label={description}>
-        {
-          rows.map(({ proxy, row }) => (
-            <div
-              class:list={["bench-row", proxy === "tako" && "bench-row-tako"]}
-            >
-              <span class="bench-name">{labels[proxy]}</span>
-              <span class="bench-track">
-                <>
-                  <span
-                    class="bench-fill"
-                    style={`--f: ${row.metrics.rps200.mean / maximum}`}
-                  />
-                  <span class="bench-value">
-                    {short(row.metrics.rps200.mean)}
-                  </span>
-                </>
-              </span>
-            </div>
-          ))
-        }
+    <dl class="bench-facts">
+      <div>
+        <dt>concurrent clients tested</dt>
+        <dd>{short(concurrency)}</dd>
       </div>
-      <figcaption class="figure-note">
-        {benchmark.date}: mean of three HTTPS runs at 5k concurrency. Proxy,
-        app, and load generator share two CPUs. Only complete 200 responses
-        count.
-      </figcaption>
-    </figure>
+      <div>
+        <dt>failed requests</dt>
+        <dd>{format(failures)}</dd>
+      </div>
+      <div>
+        <dt>CPUs shared by the whole test</dt>
+        <dd>2</dd>
+      </div>
+    </dl>
     <div class="bench-copy">
       <p>
-        Tako averaged <strong
-          >{short(tako.metrics.rps200.mean)} HTTPS 200 responses per second</strong
-        > at 5,000 concurrent clients in the latest benchmark. {
-          clean
-            ? "It returned all 200 responses with zero client errors across every tested HTTP concurrency, up to 20,000."
-            : "The full report shows successful outcomes, errors, and latency at every tested concurrency, up to 20,000."
+        {
+          clean ? (
+            <>
+              Tako completed <strong>every request successfully</strong> across{" "}
+              {format(runs)} HTTPS test runs, up to {format(concurrency)}{" "}
+              concurrent clients. Zero HTTP errors. Zero client errors.
+            </>
+          ) : (
+            <>
+              We tested Tako across {format(runs)} HTTPS runs, up to{" "}
+              {format(concurrency)} concurrent clients. The full report includes
+              every successful response, HTTP error, and client error.
+            </>
+          )
         }
       </p>
       <p>
-        The complete comparison includes nginx, HAProxy, Envoy, and Caddy, with
-        memory and CPU measured during the same runs. Tako is written in Rust,
-        with a proxy built on <a
-          href="https://blog.cloudflare.com/how-we-built-pingora-the-proxy-that-connects-cloudflare-to-the-internet/"
-          target="_blank"
-          rel="noopener noreferrer">Pingora</a
-        >.
+        Proxy, app, and load generator shared two CPUs and an 8 GiB memory
+        limit. See throughput, latency, memory, and the full five-proxy
+        comparison in the report.
+      </p>
+      <p class="bench-date">
+        Measured {benchmark.date}. {benchmark.repetitions} runs at every tested concurrency.
       </p>
       <a class="action doc-link" href="/performance/"
-        >Explore the complete benchmark</a
+        >See the results and methodology</a
       >
     </div>
   </div>
