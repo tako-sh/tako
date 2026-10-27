@@ -23,6 +23,8 @@ Changes to the published source:
   allocation after copying its final chunk and retry data. Pipelined read-ahead
   remains separately owned. This releases memory during long streaming responses.
 - Focused tests cover buffer lifetime, data preservation and pipeline completion.
+- CodeQL comments document test-only TLS verification bypasses for self-signed
+  loopback fixtures and a load error that prints file paths without key material.
 
 The pool retains at most eight 64 KiB buffers per polling thread (512 KiB),
 independent of connection count. It does not reclaim unread data or allocations

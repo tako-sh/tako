@@ -77,6 +77,7 @@ impl TlsSettings {
 
             let Ok(Some((certs, key))) = load_certs_and_key_files(&self.cert_path, &self.key_path)
             else {
+                // CodeQL[rust/cleartext-logging]: only file paths, never certificate or key contents.
                 panic!(
                     "Failed to load provided certificates \"{}\" or key \"{}\".",
                     self.cert_path, self.key_path
@@ -313,6 +314,7 @@ mod tests {
             tls_stream.flush().await.unwrap();
         });
 
+        // CodeQL[rust/disabled-certificate-check]: test-only, self-signed loopback fixture.
         let client = reqwest::Client::builder()
             .danger_accept_invalid_certs(true)
             .build()

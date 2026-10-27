@@ -667,6 +667,7 @@ mod test {
         });
         // The listener is already bound, so the kernel accepts connections
         // into the backlog immediately. No readiness wait needed.
+        // CodeQL[rust/disabled-certificate-check]: test-only, self-signed loopback fixture.
         let client = reqwest::Client::builder()
             .danger_accept_invalid_certs(true)
             .build()
@@ -735,6 +736,7 @@ mod test {
         for _ in 0..REQUESTS {
             let url = url.clone();
             requests.push(tokio::spawn(async move {
+                // CodeQL[rust/disabled-certificate-check]: test-only, self-signed loopback fixture.
                 let client = reqwest::Client::builder()
                     .danger_accept_invalid_certs(true)
                     .build()

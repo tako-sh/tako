@@ -31,6 +31,7 @@ async fn test_http() {
 async fn test_https_http2() {
     utils::init();
 
+    // CodeQL[rust/disabled-certificate-check]: test-only, self-signed loopback fixture.
     let client = reqwest::Client::builder()
         .danger_accept_invalid_certs(true)
         .build()
@@ -40,6 +41,7 @@ async fn test_https_http2() {
     assert_eq!(res.status(), reqwest::StatusCode::OK);
     assert_eq!(res.version(), reqwest::Version::HTTP_2);
 
+    // CodeQL[rust/disabled-certificate-check]: test-only, self-signed loopback fixture.
     let client = reqwest::Client::builder()
         .danger_accept_invalid_certs(true)
         .http1_only()
@@ -69,6 +71,7 @@ async fn test_uds() {
 async fn test_h1_tls_with_h2c_enabled() {
     utils::init();
 
+    // CodeQL[rust/disabled-certificate-check]: test-only, self-signed loopback fixture.
     let client = reqwest::Client::builder()
         .danger_accept_invalid_certs(true)
         .http1_only()
@@ -85,6 +88,7 @@ async fn test_h1_tls_with_h2c_enabled() {
 async fn test_h2_tls_with_h2c_enabled() {
     utils::init();
 
+    // CodeQL[rust/disabled-certificate-check]: test-only, self-signed loopback fixture.
     let client = reqwest::Client::builder()
         .danger_accept_invalid_certs(true)
         .build()
