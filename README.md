@@ -6,13 +6,13 @@
 
 ## What is Tako?
 
-Ship apps to your own servers without turning deployment into a part-time job.
+Tako is a complete, opinionated application platform for solo builders, running on your own VPS.
 
-Tako gives you the "upload files, refresh, done" feeling with modern guardrails: rolling deploys, load balancing, HTTPS, secrets, and logs out of the box.
+Local development, rolling deploys, HTTPS, logs, secrets, workflows, channels, storage, and more work together in one platform designed to stay manageable by one person.
 
-Tako is not just a deployment tool. The vision is a self-hosted application platform: the backend for your backend.
+Keep control of your infrastructure, data, and costs, with access to a full runtime: Node.js, Bun, Go, or an application packaged with a Dockerfile.
 
-Deployment is the starting point, not the finish line. Over time, Tako should provide the core primitives teams end up rebuilding in every stack: durable channels, workflows, and other platform capabilities built into one tool instead of stitched together from many.
+Tako chooses a simple workflow and thoughtful defaults so you can build and run your application without assembling a platform yourself. Start on one VPS; run the same app on multiple servers when needed.
 
 ## Install
 

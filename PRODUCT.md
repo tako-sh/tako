@@ -12,25 +12,41 @@ brand
 
 ## Users
 
-Tako has two primary audiences, and both carry equal weight:
+Tako is built primarily for solo builders who want to run applications on their own VPS. A few people working together should fit naturally, but large-team requirements do not drive the product.
 
-- **Developers and small teams** who want to run their own apps on their own servers without turning deployment into a separate operations project. They move between local development, server setup, docs, CLI output, and production deploys, so the public site must help them understand the tool quickly and trust the details.
-- **The coding agents those developers delegate to** (Codex, Claude, and others). An agent may read the site, docs, `llms.txt`, and `SKILLS.md`, then migrate a project ("Move this project to tako.sh") or wire a feature in. Pages must work when an agent is the reader.
+- **Solo builders** who choose their own VPS for predictable costs, control, privacy, independence from hosting platforms, and access to a full runtime. They may be moving from Vercel or Cloudflare, or replacing a setup they assembled themselves. They want a coherent platform that one person can understand and operate.
+- **The coding agents those builders delegate to** (Codex, Claude, and others) are an important access path. An agent may read the site, docs, `llms.txt`, and `SKILLS.md`, then migrate a project ("Move this project to tako.sh") or wire a feature in. Pages must work when an agent is the reader.
 
 ## Product Purpose
 
-Tako makes self-hosted app deployment feel direct: install the CLI, run local HTTPS development, connect a server, and deploy with rolling updates, TLS, secrets, logs, routing, and runtime management handled by one tool.
+Tako is a complete, opinionated application platform for solo builders, running on their own VPS. It brings local development, deployment, operations, and app primitives such as workflows and channels into one system designed to stay manageable by one person.
 
-The website exists to make that promise concrete. Success means a developer can understand what Tako is, install it, see the first path to production, and find detailed docs without marketing fog.
+The website exists to make that promise concrete. Success means a builder understands the whole platform, can follow one clear path from local development to production, and can find the details needed to keep an application running.
 
 ## Positioning
 
-The platform layer that makes your own servers feel like a PaaS. Four claims together set Tako apart from other deploy tools and hosting platforms:
+A complete application platform for solo builders, on your own VPS. Full runtime power and one simple way to build and run. Four claims make that promise concrete:
 
 - **The whole platform runs on one VPS.** `tako-server` handles deploys, TLS, routing, processes, logs, secrets, rollbacks, and scale-to-zero. It also runs the app primitives (workflows, channels, image optimization, storage, cache, and backups), so apps need no extra services and no Docker.
 - **The same platform runs locally.** `tako dev` brings that platform to the laptop, with real HTTPS on `*.test`.
 - **It is agent-ready.** The primitives live in code, so an agent can migrate a project and wire features in the repo instead of provisioning services.
 - **It is fast and cheap to run.** The proxy is built in Rust on Cloudflare's Pingora. Idle apps scale to zero, so many apps fit on a small VPS with predictable bills.
+
+## Product Boundaries
+
+- **Design for one operator.** Setup, development, deployment, debugging, and ongoing maintenance should remain understandable to one person. Judge simplicity across the whole lifecycle, not only the first deploy.
+- **Offer one coherent workflow.** Choose thoughtful defaults and integrate the primitives. Add configuration only when it solves a concrete problem for the target user; avoid interchangeable infrastructure backends and a growing matrix of operating modes.
+- **Keep full runtime power.** Users control their server and can run the processes and dependencies their applications need. Infrastructure ownership does not require Tako to expose every internal implementation choice as a setting.
+- **Keep multi-server support bounded.** Running the same application on multiple servers is supported. It is not a mandate to pursue enterprise orchestration, large worker fleets, or highly customizable infrastructure management.
+- **Validate the market-fit hypothesis.** This audience and direction are the product thesis. Adoption, continued use, and concrete applications running on Tako must establish market fit; a broad feature list alone does not.
+
+## Possible Future Direction
+
+An optional Tako account could authenticate builders and sync encrypted secrets and selected private configuration remotely. This would make setup across machines and collaboration with a second person easier, without requiring that information to be committed to Git.
+
+This is a future possibility, not a current capability or delivery commitment. Keep it focused on the needs of one person or a few collaborators, with simple sharing and revocation rather than enterprise administration. It should preserve control of the user's VPS, and deployed applications should keep running independently of the account service.
+
+Before implementation, define which configuration belongs remotely versus in the repository, who holds decryption keys, who can decrypt secrets, and how sharing, recovery, revocation, and export work. Do not claim end-to-end encryption until that model exists. Authentication here means access to Tako's account and sync service; application-user authentication is a separate product decision.
 
 ## Operating Context
 
