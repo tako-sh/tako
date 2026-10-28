@@ -1,5 +1,5 @@
 ---
-title: Development
+title: Local Development
 description: "Learn how tako dev provides trusted HTTPS, custom .test domains, hot reload, variants, and a persistent local background daemon."
 ---
 
@@ -17,6 +17,8 @@ https://<app>.test/
 ```
 
 The CLI is a client for a persistent `tako-dev-server` daemon. It starts the daemon when needed, registers the selected config file, streams logs, and attaches to existing sessions. `tako dev --json` skips the logo and TUI and writes JSONL to stdout: a ready object with the app URL, then log and event records.
+
+For an agent, inspect existing apps with `tako dev list --json`, then use `tako dev --background --json` or the `tako_dev` MCP tool. These return after readiness instead of holding the tool call open. Verify through the returned HTTPS URL; raw framework ports bypass Tako. See [Background development for agents](#background-development-for-agents) for restart and finite-log behavior.
 
 ## What `tako dev` Does
 
@@ -211,17 +213,13 @@ Set development secrets:
 tako secrets set DATABASE_URL --env development
 ```
 
-Use them through the SDK:
-
-```ts
-import { tako } from "tako.sh";
-
-const url = tako.secrets.DATABASE_URL;
-```
+Use the matching JavaScript, Go, or Rust [Secrets example](/secrets/#read-from-application-code) to read the value through your backend SDK.
 
 Storage bindings from `[envs.development].storages` are delivered through `tako.storages`. In development, undeclared storage resource names default to local storage. Backup storage is not exposed to the SDK unless the same resource is also bound as app storage.
 
 Use `tako.cache` for server-side caching of JSON-serializable values. `get<T>(key)` returns `T | undefined`, `put(key, value, { ttl })` stores a value with a TTL in milliseconds, and `delete(key)` removes one key. Cache entries use Tako-managed local SQLite and are not included in app data backups.
+
+See [Secrets](/secrets/) for value rotation and SDK access, [Storage](/storage/) for upload/download URLs, [Cache](/cache/) for key isolation and TTLs, and [Images](/images/) for public optimization. These primitives have their own configuration and persistence boundaries.
 
 ## Channels, Presence, Stores, And Workflows
 

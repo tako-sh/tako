@@ -29,7 +29,7 @@ The app starts immediately when `tako dev` starts, goes idle after 30 minutes wi
 
 Deploys build locally and roll out on every mapped server:
 
-1. Validate config, routes, server targets, secrets, storage credentials, SSL credentials, workflow/channel storage requirements, and backup settings.
+1. Validate config, routes, server targets, secrets, storage credentials, SSL credentials, channel/presence/store/workflow storage requirements, and backup settings.
 2. Resolve the source root, app subdirectory, runtime, preset, entrypoint, assets, variables, and release command.
 3. Build in `.tako/build`, respecting `.gitignore`, omitting symlinks, and excluding `node_modules`, `.git`, `.tako`, and `.env*` from artifacts.
 4. Upload the target artifact over signed private HTTP management.
@@ -92,7 +92,7 @@ Each deployed app has durable data under the server data directory:
 
 Backups are opt-in with `[envs.<env>].backup`. Backup storage must be a private S3-compatible storage resource. Archives preserve symlinks as symlinks, are compressed and encrypted with environment-managed backup keys, uploaded under Tako's reserved backup prefix, and indexed remotely. Deploy creates a backup after successful finalize when backups are enabled; the server also runs due backups about every 24 hours.
 
-Workflow state is backed up. Channel replay and SDK cache storage are not backed up because they are transient and recomputable.
+Local workflow state is backed up. Channel replay and SDK cache storage are not backed up because they are transient and recomputable. External databases, shared Postgres state, and S3 object contents need their own backup policies; the app-data snapshot does not copy them. See [Backups](/backups/) for the exact boundary and recovery workflow.
 
 ## Remote Management
 

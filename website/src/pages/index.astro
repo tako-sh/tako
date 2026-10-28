@@ -16,10 +16,12 @@ import HomeTakosophy from "../components/home/HomeTakosophy.astro";
 import ExternalLinkIcon from "@hugeicons/core-free-icons/LinkSquare01Icon";
 import HomeSpot from "../components/home/HomeSpot.astro";
 import peek from "../assets/brand/peek.png";
+import { siteEntityIds } from "../config/site-identity.ts";
 
 const homeStructuredData = {
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
+  "@id": siteEntityIds.software,
   name: "Tako",
   applicationCategory: "DeveloperApplication",
   operatingSystem: "macOS, Linux",
@@ -29,6 +31,10 @@ const homeStructuredData = {
   softwareHelp: "https://tako.sh/docs/",
   downloadUrl: "https://tako.sh/install.sh",
   codeRepository: "https://github.com/tako-sh/tako",
+  license: "https://github.com/tako-sh/tako/blob/master/LICENSE",
+  publisher: { "@id": siteEntityIds.organization },
+  offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+  sameAs: ["https://github.com/tako-sh/tako", "https://www.npmjs.com/package/tako.sh"],
   featureList: [
     "Local development with HTTPS and custom domains",
     "Production deploys with rolling updates",

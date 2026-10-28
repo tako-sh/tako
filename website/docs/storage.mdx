@@ -1,0 +1,135 @@
+---
+title: Storage
+description: "Configure local and S3-compatible Tako storage bindings, issue signed upload and download URLs, and choose where application files persist."
+---
+
+Storage bindings let an app issue upload and download URLs without exposing storage credentials to the browser. Bind an app-facing name such as `uploads` to a storage resource, then access `tako.storages.uploads` from server-side JavaScript or TypeScript.
+
+The signed-URL helpers below are currently JavaScript/TypeScript APIs. Go and Rust do not provide equivalent storage-signing helpers. Native apps in all three languages can use the app-owned data directory shown below; a storage binding is a separate facility.
+
+## Choose where data lives
+
+| Need                                    | Use                                              | Boundary                                                                          |
+| --------------------------------------- | ------------------------------------------------ | --------------------------------------------------------------------------------- |
+| Files uploaded or downloaded by clients | A local or S3-compatible storage binding         | Local storage requires a single production server.                                |
+| App-owned local files or SQLite         | `tako.dataDir` / `TAKO_DATA_DIR` in a native app | Data is per server; container HTTP instances do not receive this directory in v0. |
+| Recover the deployed app data tree      | [Backups](/backups/)                             | A backup destination is a separate private S3 resource.                           |
+| Disposable computed JSON                | [Cache](/cache/)                                 | Cache entries are excluded from app backups.                                      |
+
+An application database and Tako's shared runtime-state Postgres credential are separate choices. A storage binding does not provision a database.
+
+## App-owned local files
+
+Resolve a file inside the persistent app data directory. Fail when the directory is unavailable instead of silently writing into the release directory:
+
+<CodeGroup>
+
+```ts JavaScript
+import { join } from "node:path";
+import { tako } from "tako.sh";
+
+if (!tako.dataDir) throw new Error("Tako data directory is unavailable");
+const databaseFile = join(tako.dataDir, "app.sqlite");
+```
+
+```go Go
+import (
+    "fmt"
+    "os"
+    "path/filepath"
+)
+
+func databasePath() (string, error) {
+    dataDir := os.Getenv("TAKO_DATA_DIR")
+    if dataDir == "" { return "", fmt.Errorf("Tako data directory is unavailable") }
+    return filepath.Join(dataDir, "app.sqlite"), nil
+}
+```
+
+```rust Rust
+use std::{io, path::PathBuf};
+
+fn database_path() -> io::Result<PathBuf> {
+    let data_dir = std::env::var_os("TAKO_DATA_DIR")
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Tako data directory is unavailable"))?;
+    Ok(PathBuf::from(data_dir).join("app.sqlite"))
+}
+```
+
+</CodeGroup>
+
+Pass the path to your database or filesystem library; these snippets do not open a database. Files remain local to that server. Container HTTP instances do not receive this directory in v0; see [Docker](/docker/).
+
+## Bind local development storage
+
+```toml
+[envs.development]
+storages = { uploads = "local" }
+```
+
+`local` is built in; do not declare `[storages.local]`. Undeclared resource names in development also fall back to local storage. Use the explicit `local` binding when that is the intended setup.
+
+## Bind production S3-compatible storage
+
+Create a binding and enter credentials when prompted:
+
+```bash
+tako storages add uploads --env production --resource prod_uploads \
+  --provider s3 --bucket app-uploads \
+  --endpoint https://example.r2.cloudflarestorage.com --region auto
+tako generate
+```
+
+This writes non-secret resource metadata and the environment binding to `tako.toml`, and encrypts credentials in `.tako/secrets.json`:
+
+```toml
+[envs.production]
+storages = { uploads = "prod_uploads" }
+
+[storages.prod_uploads]
+provider = "s3"
+bucket = "app-uploads"
+endpoint = "https://example.r2.cloudflarestorage.com"
+region = "auto"
+```
+
+Endpoints must use HTTPS. Set `force_path_style = true` when the provider requires path-style bucket URLs. See [storage configuration](/tako-toml/#storage) for all fields. Deploy to apply production bindings.
+
+## Issue upload and download URLs
+
+Run this on the backend after authorizing the caller and selecting an object key:
+
+```ts
+import { tako } from "tako.sh";
+
+const uploads = tako.storages.uploads;
+if (!uploads) throw new Error("uploads storage is not configured");
+
+const uploadUrl = await uploads.createUploadUrl("avatars/user-123.png", {
+  contentType: "image/png",
+  expiresInSeconds: 300,
+});
+
+const downloadUrl = await uploads.createDownloadUrl("avatars/user-123.png", {
+  expiresInSeconds: 300,
+});
+```
+
+Return the appropriate URL to the authorized browser. Upload with `PUT` and, for a signed S3 content type, send the same `Content-Type` used when creating the URL. Download with `GET`. Both default to a one-hour lifetime; supported lifetimes are 1–604800 seconds.
+
+S3 URLs target the storage provider. Local storage returns a relative signed `/_tako/storages/<binding>/<key>` URL, served by Tako. Use the app's origin to resolve it. A signed URL grants the matching operation until it expires; the application must enforce ownership before issuing one. Configure the S3 provider's CORS policy separately for direct browser uploads.
+
+## Public files and images
+
+Set `public_base_url` on an S3 resource only when objects are intentionally public. `createDownloadUrl(key, { public: true })` returns the public URL instead of signing it. Setting this field does not change bucket permissions or create a CDN.
+
+Public storage can also feed [image optimization](/images/). Private object download URLs remain direct signed downloads; private image transformations are not supported.
+
+## Rotate and verify
+
+```bash
+tako storages credentials prod_uploads --env production
+```
+
+Deploy after changing production storage metadata or credentials. Regenerate declarations when binding names change. Test the complete flow: authorize a caller, issue a short-lived upload URL, upload a file, obtain a download URL, and check the downloaded bytes. Check expiry and cross-user access rules. Do not log signed URLs or credentials.

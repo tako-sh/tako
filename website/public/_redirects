@@ -1,3 +1,7 @@
 /install.sh https://raw.githubusercontent.com/tako-sh/tako/master/scripts/install-tako.sh 301
 /install-server.sh https://raw.githubusercontent.com/tako-sh/tako/master/scripts/install-tako-server.sh 301
 /server-install.sh https://raw.githubusercontent.com/tako-sh/tako/master/scripts/install-tako-server.sh 301
+/docs/feature-requests https://github.com/tako-sh/tako/issues 301
+/docs/feature-requests/ https://github.com/tako-sh/tako/issues 301
+/docs/feature-requests.md https://github.com/tako-sh/tako/issues 301
+/docs/feature-requests.mdx https://github.com/tako-sh/tako/issues 301

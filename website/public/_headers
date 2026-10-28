@@ -3,6 +3,26 @@
   Link: </llms.txt>; rel="describedby"; type="text/plain"
   Link: </skills.md>; rel="describedby"; type="text/markdown"
   Link: </sitemap-index.xml>; rel="sitemap"; type="application/xml"
+  Link: </agent-readability.json>; rel="describedby"; type="application/json"
+  Link: </.well-known/api-catalog>; rel="api-catalog"; type="application/linkset+json"
+  Link: </.well-known/ai-catalog.json>; rel="ai-catalog"; type="application/ai-catalog+json"
+  Link: </.well-known/ard.json>; rel="ard"; type="application/json"
+  Link: </rss.xml>; rel="alternate"; type="application/rss+xml"
+
+/.well-known/api-catalog
+  Content-Type: application/linkset+json; profile="https://www.rfc-editor.org/info/rfc9727"
+  Access-Control-Allow-Origin: *
+
+/.well-known/ai-catalog.json
+  Content-Type: application/ai-catalog+json; charset=utf-8
+  Access-Control-Allow-Origin: *
+
+/.well-known/ard.json
+  Content-Type: application/json; charset=utf-8
+  Access-Control-Allow-Origin: *
+
+/agent-readability.json
+  Content-Type: application/json; charset=utf-8
 
 /.well-known/http-message-signatures-directory
   Content-Type: application/http-message-signatures-directory

@@ -1,13 +1,15 @@
 ---
 title: CLI Reference
-description: "Complete CLI reference for Tako commands including init, dev, run, deploy, servers, secrets, storage, status, logs, and global flags."
+description: "Look up Tako command groups, global options, environment selection, and structured output for local development, deployment, and operations."
 ---
 
 ```bash
 tako [--version] [-v|--verbose] [--ci] [--json] [--dry-run] [-c|--config <CONFIG>] [--ssh-passphrase <PASSPHRASE>] <command>
 ```
 
-Progress, prompts, diagnostics, and logs go to stderr. Command results and machine-readable data go to stdout.
+Progress, prompts, and diagnostics normally go to stderr. Command results and machine-readable data go to stdout. Interactive `tako dev` owns stdout for its live interface and logs; `tako run` preserves child stdout.
+
+Use `tako <command> --help` or the connected MCP tool's schema for the exact arguments supported by your installed CLI. This reference explains command groups and behavior; task pages cover complete workflows.
 
 ## Global Options
 
@@ -43,7 +45,7 @@ tako g
 
 Refreshes generated project files:
 
-- JS/TS: `tako.d.ts` with environment names, secret names, storage bindings, channel metadata, workflow metadata, and env var names.
+- JS/TS: `tako.d.ts` with environment names, secret names, storage bindings, channel metadata, typed Store params and data, workflow metadata, and env var names.
 - Go: `tako_secrets.go` with typed secret accessors.
   For JS/TS, generation keeps an existing `tako.d.ts` in `app/`, `src/`, or the project root. Empty existing `channels/` or `workflows/` directories get demo definitions.
 
@@ -244,7 +246,7 @@ Running `tako credentials` without a subcommand lists credentials. Set and remov
 
 Provider credentials are Tako-owned runtime credentials, not app secrets. Supported names are `ssl.cloudflare` and `postgres_url`. They are encrypted in `.tako/secrets.json`, never exposed to app code, and not synced by `tako secrets sync`.
 
-`ssl.cloudflare` powers Let's Encrypt DNS-01 and Cloudflare Origin CA. `postgres_url` enables shared channel/workflow storage for multi-server deployments.
+`ssl.cloudflare` powers Let's Encrypt DNS-01 and Cloudflare Origin CA. `postgres_url` enables shared channel replay, Presence membership, Store invalidation, and workflow state for multi-server deployments. It is a provider credential and is not exposed to app code.
 
 ## Storage
 

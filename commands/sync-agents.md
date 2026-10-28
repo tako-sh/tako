@@ -4,25 +4,25 @@ description: Synchronize Tako skills, MCP support, and agent discovery files wit
 
 # Sync Agents
 
-Maintain Tako's complete agent-facing experience: workflow skills, MCP capabilities, project setup, documentation discovery, and generated distribution files. Docs7 owns website documentation generation. Code and tests establish exact shipped behavior.
+Maintain Tako's complete agent-facing experience: workflow skills, MCP capabilities, project setup, documentation discovery, and generated distribution files. Follow [sync-docs.md](sync-docs.md) to maintain user-facing website documentation. Code and tests establish exact shipped behavior.
 
 ## Sources and generated artifacts
 
-| Surface                                      | Source of truth                                                                      | Generation                                                                                                |
-| -------------------------------------------- | ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------- |
-| Workflow and SDK skills                      | `sdk/javascript/skills/`                                                             | The skill sync script refreshes `skills/`, `.agents/skills/`, and website discovery copies and hashes.    |
-| MCP tools and schemas                        | `tako/src/cli.rs` and `tako/src/commands/mcp/`                                       | Tool schemas derive from CLI definitions; dedicated handlers implement docs search and finite local logs. |
-| Project agent setup                          | `tako/src/commands/agents/`                                                          | `tako agents` installs bundled skills, MCP settings, and project guidance.                                |
-| Root `/llms.txt`                             | Docs7 navigation, page frontmatter, blog collection, and `website/src/utils/llms.ts` | The Astro endpoint generates the index during the website build.                                          |
-| `/docs/llms.txt` and `/docs/llms-full.txt`   | Docs7 documentation                                                                  | Docs7 generates these; the website Worker proxies them.                                                   |
-| `/skills.md` and `.well-known/agent-skills/` | Canonical SDK skills                                                                 | Website generation publishes descriptions, URLs, contents, and hashes.                                    |
-| Bundled MCP docs and skills                  | `website/docs/` and canonical SDK skills                                             | `tako/build.rs` embeds them into each CLI build.                                                          |
+| Surface                                      | Source of truth                                                                            | Generation                                                                                                |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------- |
+| Workflow and SDK skills                      | `sdk/javascript/skills/`                                                                   | The skill sync script refreshes `skills/`, `.agents/skills/`, and website discovery copies and hashes.    |
+| MCP tools and schemas                        | `tako/src/cli.rs` and `tako/src/commands/mcp/`                                             | Tool schemas derive from CLI definitions; dedicated handlers implement docs search and finite local logs. |
+| Project agent setup                          | `tako/src/commands/agents/`                                                                | `tako agents` installs bundled skills, MCP settings, and project guidance.                                |
+| Root `/llms.txt`                             | Shared docs navigation, page frontmatter, blog collection, and `website/src/utils/llms.ts` | The Astro endpoint generates the index during the website build.                                          |
+| `/docs/llms.txt` and `/docs/llms-full.txt`   | Markdown in `website/docs/` and Blume configuration                                        | Blume generates these; the combined build publishes them under `/docs`.                                   |
+| `/skills.md` and `.well-known/agent-skills/` | Canonical SDK skills                                                                       | Website generation publishes descriptions, URLs, contents, and hashes.                                    |
+| Bundled MCP docs and skills                  | `website/docs/` and canonical SDK skills                                                   | `tako/build.rs` embeds them into each CLI build.                                                          |
 
 For a scoped change, inspect the affected sources and surfaces. For a full refresh, inspect all of them. Update sources first and regenerate their outputs.
 
 ## Reconcile skills and capabilities
 
-Read the relevant command implementations, config parsers, validation, runtime plugins, presets, public SDK exports, examples, and tests. Use the Docs7 guides for workflow and architecture context. If prose disagrees with code, ground agent guidance in shipped behavior and report the discrepancy.
+Read the relevant command implementations, config parsers, validation, runtime plugins, presets, public SDK exports, examples, and tests. Use the guides in `website/docs/` for workflow and architecture context. If prose disagrees with code, ground agent guidance in shipped behavior and report the discrepancy.
 
 Edit canonical skills in `sdk/javascript/skills/`:
 
@@ -35,11 +35,13 @@ Check that MCP tools cover the affected workflow, use accurate read/write annota
 
 ## Keep discovery current
 
-The root `llms.txt` reads `website/docs/docs.json` navigation and the corresponding Markdown titles/descriptions. Pages appear in Docs7 navigation order. The blog collection supplies newest-first Markdown links under Optional. Product guidance and project links live in `website/src/utils/llms.ts`.
+The root `llms.txt` reads `website/src/config/docs-navigation.ts` and the corresponding Markdown titles/descriptions. Blume uses the same navigation for its sidebar. The blog collection supplies newest-first Markdown links under Optional. Product guidance and project links live in `website/src/utils/llms.ts`.
 
-When Docs7 adds or renames a page, ensure its navigation entry points to a source page with title frontmatter, then rebuild the website. Keep the root index concise and link to Docs7's generated full-documentation endpoint for complete text. Avoid copying full docs into skills or creating another manually maintained page list.
+When adding or renaming a page, ensure its navigation entry points to a source page with title frontmatter, then rebuild the website. Keep the root index concise and link to Blume's generated full-documentation endpoint for complete text. Avoid copying full docs into skills or creating another manually maintained page list.
 
 Check that skills point to existing tools and documentation topics, that `/skills.md` and the discovery index agree, and that Context7 search information remains available in generated responses and discovery headers.
+
+The combined website build publishes `/agent-readability.json` and root `.well-known` API/AI/ARD catalogs from Blume's generated documentation artifacts. Keep advertised URLs valid across the composed site. Blume's skill index must publish canonical SDK skills, matching their contents and hashes. Shared website and publisher identities live in `website/src/config/site-identity.ts`; documentation structured data references the homepage entities. Preserve root ownership of robots policy, the blog RSS feed, and the Web Bot Auth public-key directory. Advertise only capabilities available in the static deployment; hosted MCP, HTTP search, and Markdown content negotiation require a server.
 
 ## Regenerate and verify
 
@@ -53,10 +55,10 @@ bun run --filter website verify
 git diff --check
 ```
 
-The website build also runs the skill sync script. Verification checks generated HTML/Markdown discovery information, Docs7 page and blog coverage in `llms.txt`, and published skill contents and hashes. CI runs verification after website or canonical skill changes and checks that regeneration leaves tracked skill distribution files unchanged.
+The website build also runs the skill sync script. Verification checks generated HTML/Markdown discovery information, documentation and blog coverage in `llms.txt`, rendered documentation pages, and published skill contents and hashes. CI runs verification after website or canonical skill changes and checks that regeneration leaves tracked skill distribution files unchanged.
 
 Check formatting on changed files and validate changed examples against the affected SDK or CLI behavior. Run the relevant Rust, SDK, and CLI integration suites when their implementations change. Follow `AGENTS.md` for additional checks required by configuration, build/deploy, or protocol changes.
 
-Review generated changes before committing; leave unrelated build artifacts out. Website deployment publishes discovery files, Docs7 publishes its documentation endpoints, and a new CLI build carries updated embedded docs/skills. Existing projects refresh installed skills and MCP settings by upgrading Tako and rerunning `tako agents`.
+Review generated changes before committing; leave unrelated build artifacts out. Website deployment publishes the complete Astro and Blume site with discovery files, and a new CLI build carries updated embedded docs/skills. Existing projects refresh installed skills and MCP settings by upgrading Tako and rerunning `tako agents`.
 
 Summarize the surfaces updated, verification performed, and any remaining code or documentation discrepancies.

@@ -15,7 +15,7 @@ Runtime SDK for JavaScript/TypeScript apps deployed with Tako.
 
 > **CRITICAL**: The `tako.sh` package is **required** — it provides the entrypoint binaries that tako-server launches to run your app. Tako v0 uses plain ES modules everywhere — no `Tako` global. Runtime state (env, secrets, logger, build info) is accessed through the `tako` object from `tako.sh`; channels and workflows are imported from their own files.
 
-> **CRITICAL**: Framework helpers are opt-in. Use `tako.sh/vite` for Vite-based SSR frameworks (TanStack Start, Nuxt, SolidStart) and `tako.sh/nextjs` for Next.js standalone builds. Plain fetch-handler apps do not need either helper.
+> **CRITICAL**: Framework helpers are opt-in. Use `tako.sh/vite` for TanStack Start or another Vite build whose server entry exports a fetch handler, and `tako.sh/nextjs` for Next.js. Vite alone does not establish framework compatibility. Plain fetch-handler apps do not need either helper. Select the matching guide at https://tako.sh/docs/framework-guides/.
 
 ## Core Concept: The Fetch Handler
 
@@ -200,7 +200,7 @@ object URLs.
 
 ## Vite Plugin
 
-For SSR framework builds (TanStack Start, Nuxt, SolidStart, etc.):
+For TanStack Start and other Vite builds with a fetch-compatible server entry:
 
 ```typescript
 // vite.config.ts

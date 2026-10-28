@@ -75,6 +75,41 @@ fn bundled_docs_and_skills_are_discoverable_and_searchable() {
             .contains("tako agents")
     );
     assert!(docs::content("skills/tako-sdk-rust").is_some());
+    for topic in [
+        "secrets",
+        "storage",
+        "images",
+        "cache",
+        "servers",
+        "routing",
+        "operations",
+        "backups",
+    ] {
+        assert!(docs::content(&format!("docs/{topic}")).is_some(), "{topic}");
+    }
+    let topics =
+        serde_json::to_string(&docs::call("tako_docs", &Default::default()).unwrap()).unwrap();
+    assert!(topics.contains("docs/secrets: # Secrets"));
+    assert!(topics.contains("docs/index: # Documentation"));
+    assert!(topics.contains("docs/tako-toml: # tako.toml Reference"));
+    assert!(topics.contains("skills/tako: # Working with Tako"));
+    for topic in [
+        "nextjs",
+        "tanstack-start",
+        "go-http",
+        "axum",
+        "docker",
+        "dockerfile",
+        "docker-workflows",
+    ] {
+        assert!(docs::content(&format!("docs/{topic}")).is_some(), "{topic}");
+    }
+    for topic in ["secrets", "presence", "stores"] {
+        let source = docs::content(&format!("docs/{topic}")).unwrap();
+        for variant in ["```ts JavaScript", "```go Go", "```rust Rust"] {
+            assert!(source.contains(variant), "{topic}: {variant}");
+        }
+    }
     assert!(
         docs::call(
             "tako_search_docs",

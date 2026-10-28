@@ -6,18 +6,19 @@ description: "Troubleshoot common Tako problems including deploy failures, TLS i
 Start with local diagnostics:
 
 ```bash
-tako doctor
+tako doctor --json
 ```
 
 For remote state:
 
 ```bash
-tako status
-tako logs --env production
-tako logs --env production --tail
+tako status --json
+tako logs --env production --days 1 --json
 ```
 
 Use `--verbose` for a timestamped transcript, `--ci` for deterministic non-interactive output, and global `--json` when an agent needs structured stdout. `tako dev --json` prints JSONL (a ready object, then log and event records) with no logo or TUI.
+
+Choose the failing subsystem before changing it: [Local Development](/development/) for startup, [Servers](/servers/) for management access, [Deployment](/deployment/) for builds/rollouts, [Routing and TLS](/routing/) for domains/certificates, [Secrets](/secrets/) for decryption or missing values, and [Storage](/storage/) or [Backups](/backups/) for file/data problems. Use finite logs for tool calls; keep `--tail` for an intentionally attached terminal.
 
 ## `tako dev` Will Not Start
 
@@ -64,7 +65,7 @@ Deploy performs validation before build work starts. Check for:
 - Missing or invalid server `arch`/`libc` metadata. Re-add the server with SSH checks enabled.
 - Expired app secrets, S3 credentials, or provider credentials.
 - Missing `ssl.cloudflare` for wildcard Let's Encrypt routes or Cloudflare SSL.
-- Missing `postgres_url` for multi-server channel/workflow deployments.
+- Missing `postgres_url` for multi-server Channels, Presence, Stores, or global workflows.
 - Local storage used in a multi-server deploy environment.
 
 Use:
@@ -159,7 +160,8 @@ If a server is unreachable:
 
 ```bash
 tako status
-tako servers reload <name>
 ```
 
 Use `tako servers add --install <host>` or `tako servers add admin@host` to install or repair a server before adding it to `config.toml`.
+
+Check Tailscale reachability and SSH recovery access before choosing a repair action. Reload requires a reachable host and is not a diagnostic probe; follow [Servers](/servers/) for maintenance.

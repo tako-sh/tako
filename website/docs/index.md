@@ -1,26 +1,59 @@
 ---
-title: Intro
-description: "Docs for running apps on your own servers with Tako: local HTTPS development, production deploys, routing, TLS, logs, secrets, and more."
+title: Documentation
+description: "Find the Tako task, primitive, or reference you need: agent setup, local development, deployments, secrets, storage, live data, and operations."
 ---
 
-Tako is an opinionated development and deployment tool for self-hosted apps. The CLI runs your app locally on `https://*.test` and deploys it to your own servers, where `tako-server` handles routing, TLS, rolling updates, logs, and secrets.
+Tako runs applications on local HTTPS and deploys them to your own servers. Use this index to select the relevant topic instead of loading the entire documentation set.
 
-For the overview and benchmarks, see [tako.sh](https://tako.sh).
+## Read with an agent
+
+Read the project's `AGENTS.md` and selected `tako.toml` first. With Tako MCP connected, use `tako_docs` to list topics or read `docs/<topic>`, and `tako_search_docs` for literal text search. Bundled docs match the installed CLI; use its tool schemas or `tako <command> --help` for exact arguments.
+
+On the web, use [llms.txt](/llms.txt) to discover topics and the `.md` version of a page for source text, for example [secrets.md](/secrets.md). The [JSON API](/openapi.json) lists and retrieves pages. Use the matching [SDK skill](https://tako.sh/skills.md) for JavaScript, Go, or Rust APIs.
 
 ## Start here
 
-- [Local setup](/quickstart/#local-setup): install the CLI and run your app on local HTTPS.
-- [Remote setup](/quickstart/#remote-setup): prepare a server and deploy your first app.
-- [Framework guides](/framework-guides/): framework-specific setup.
+- [Quickstart](/quickstart/): install, initialize, run locally, and deploy.
+- [Coding agents](/agents/): install skills, connect MCP, and use version-matched docs.
+- [Framework guides](/framework-guides/): Next.js, TanStack Start, Vite, fetch handlers, Go HTTP frameworks, and Rust/Axum.
+- [Docker](/docker/): package an SDK-aware image and deploy it with Tako.
 
-## Learn the model
+## Develop an app
 
-- [How Tako works](/how-tako-works/): the CLI, the server runtime, and how a deploy flows between them.
-- [Development](/development/) and [Deployment](/deployment/): the day-to-day guides.
+- [Local development](/development/): start and inspect apps, use HTTPS routes, and run one-off scripts.
+- [Secrets](/secrets/): set app secrets, access them through an SDK, and rotate deployed values.
+- [Storage](/storage/): bind local or S3-compatible files and issue upload/download URLs.
+- [Images](/images/): optimize public images and generate responsive image URLs.
+- [Cache](/cache/): cache server-side JSON results with a TTL.
+
+## Add live data and background work
+
+| Need                                  | Primitive                | Important boundary                                                                      |
+| ------------------------------------- | ------------------------ | --------------------------------------------------------------------------------------- |
+| Deliver events to every subscriber    | [Channels](/channels/)   | Params do not partition a channel's stream; replay is temporary.                        |
+| Track online connections and metadata | [Presence](/presence/)   | Membership is scoped by params; metadata does not establish identity.                   |
+| Keep database reads current in the UI | [Stores](/stores/)       | Invalidate after committed writes; Tako does not detect database changes automatically. |
+| Execute background jobs or schedules  | [Workflows](/workflows/) | Checkpointed side effects still need idempotency.                                       |
+
+Channels, Presence, and Stores require the `postgres_url` provider credential across multiple servers. Workflows support shared Postgres or intentional per-server execution; each primitive documents its requirements. Application databases, file storage, and caches are separate from this runtime state.
+
+## Deploy and operate
+
+- [Servers](/servers/): provision a host, enroll management access, and maintain the service.
+- [Deployment](/deployment/): build artifacts, run migrations, and roll a release into traffic.
+- [Routing and TLS](/routing/): configure domains, path routes, certificates, and client-IP policy.
+- [Operations](/operations/): inspect status and logs, scale instances, and roll back releases.
+- [Backups](/backups/): configure private backup storage, create backups, and restore app data.
+- [Troubleshooting](/troubleshooting/): choose diagnostics from the observed failure.
 
 ## Look something up
 
 - [CLI](/cli/): every command and flag.
 - [tako.toml](/tako-toml/): project configuration.
 - [Presets](/presets/): runtime and framework defaults.
-- [Troubleshooting](/troubleshooting/): common problems and fixes.
+
+## Learn the model
+
+[How Tako works](/how-tako-works/) explains the CLI, server, SDK bootstrap, request routing, and state ownership. Use it when a task depends on a runtime boundary; command, configuration, and primitive topics contain the actionable details.
+
+For product context, see [tako.sh](https://tako.sh). Report bugs or request features in [GitHub issues](https://github.com/tako-sh/tako/issues).

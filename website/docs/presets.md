@@ -62,6 +62,8 @@ Preset `dev` is used by `tako dev` unless a command is passed on the CLI or top-
 
 ## Creating Presets
 
+This is the runtime family's manifest format, not a table to paste into an app's `tako.toml`. App configuration selects a supported alias and may override `main`, `assets`, or `dev`. It does not load arbitrary `github:` preset manifests.
+
 A family manifest is a TOML file with one top-level section per alias:
 
 ```toml

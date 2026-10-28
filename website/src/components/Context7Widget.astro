@@ -1,0 +1,16 @@
+<script
+  is:inline
+  src="https://context7.com/widget.js"
+  data-library="/tako-sh/tako"
+  data-color="#C4605C"
+  data-position="bottom-right"
+  data-placeholder="Ask about Tako docs..."
+></script>
+
+<script>
+  // Blume uses Astro's client router. Carry the widget's shadow host across swaps.
+  document.addEventListener("astro:before-swap", (event) => {
+    const widget = document.getElementById("context7-widget");
+    if (widget) event.newDocument.body.append(widget);
+  });
+</script>

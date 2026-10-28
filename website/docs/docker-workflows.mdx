@@ -1,0 +1,44 @@
+---
+title: Container Workflows
+description: "Run a Tako workflow worker from the same image as a container app, configure its explicit command, and understand the v0 socket and process limits."
+---
+
+A container release can run a separate workflow process from the same image. The worker has its own entrypoint and receives the internal socket it needs to talk to Tako's workflow engine. The HTTP container does not receive that socket in v0.
+
+## Configure one worker command
+
+<CodeGroup>
+
+```toml JavaScript
+name = "container-app"
+container = "Dockerfile"
+
+[workflows]
+run = ["bun", "/app/node_modules/tako.sh/dist/entrypoints/bun-worker.mjs"]
+```
+
+```toml Go
+name = "container-app"
+container = "Dockerfile"
+
+[workflows]
+run = ["/app/worker"]
+```
+
+</CodeGroup>
+
+Keep your production environment routes and servers in the same config. JavaScript definitions must be in the configured `app_root` (default `src`) and copied into the image. A Go worker must register handlers before `RunWorker`; see [Workflows](/workflows/). The Rust SDK currently has no workflow authoring/worker API; use a separate supported worker when needed.
+
+Include the executable and its dependencies in the image. For the Go multi-stage [Dockerfile](/dockerfile/), build `./cmd/worker` into `/out/worker` and copy it to `/app/worker` in the final stage. The HTTP image command remains unchanged; Tako overrides the worker container's entrypoint with `run[0]` and passes the remaining arguments.
+
+## Know the boundaries
+
+In v0, one container release supports one configured workflow `run` command across the base and named workflow groups. Worker counts and concurrency values accepted by config do not currently control production supervision. The worker still follows the scale-to-zero workflow lifecycle.
+
+Keep workflow state configuration consistent with the number of servers. Shared workflows require `postgres_url` across multiple servers; Go workers have no source-level per-server opt-out. Configure that provider credential through [Secrets](/secrets/#provider-and-storage-credentials).
+
+An HTTP container's inability to access the internal socket also affects enqueue/signal calls from that process. Do not infer HTTP-to-worker RPC availability merely because the image contains both executables.
+
+## Verify
+
+Build the image and confirm both HTTP and worker commands exist. After an authorized deployment, inspect finite app/worker logs and exercise the worker through a supported producer. Check its application-side effect, retry behavior, and shared state model. See [Workflows](/workflows/) for checkpoint, idempotency, and recovery semantics.

@@ -1,15 +1,17 @@
 ---
 title: Stores
-description: "Keep backend data and React UI synchronized, with authenticated live reads and opt-in offline caching."
+description: "Keep backend data and React UI synchronized with Tako Stores: authorized reads, scoped invalidation, reconnects, and offline caching."
 ---
 
 Tako Stores keep a view of your backend data up to date in the UI. You define how to load data from your existing database; Tako handles authorized subscriptions, invalidation, reconnects, and optional cached offline reads. Stores use channels underneath and have their own definitions and client API.
 
 ## Define A Store
 
-Put one default export in each `<app_root>/stores/*.ts` file. The explicit name passed to `defineStore` identifies the store; it does not have to match the filename.
+JavaScript definitions live in `<app_root>/stores/*.ts`; Go and Rust register stores during application startup. Each tab defines the same `messages` store scoped by `chatId`. The native snippets belong in initialization before the SDK server starts. The explicit store name identifies it independently of its source filename.
 
-```ts
+<CodeGroup>
+
+```ts JavaScript
 // src/stores/messages.ts
 import { defineStore } from "tako.sh";
 import { db } from "../lib/db";
@@ -34,6 +36,64 @@ export default defineStore("messages", {
   offline: { maxAgeMs: 60 * 60 * 1000, version: "1" },
 });
 ```
+
+```go Go
+import (
+    "context"
+    "encoding/json"
+    "tako.sh"
+)
+
+messages := tako.RegisterStore("messages", tako.StoreDefinition{
+    ParamsSchema: json.RawMessage(`{
+        "type":"object",
+        "properties":{"chatId":{"type":"string"}},
+        "required":["chatId"]
+    }`),
+    Auth: &tako.ChannelAuthScheme{HeaderName: "authorization"},
+    Verify: func(input tako.VerifyInput) tako.ChannelAuthDecision {
+        userID, ok := authorizeMessages(input)
+        if !ok { return tako.RejectChannel() }
+        return tako.AllowChannel(tako.ChannelGrant{Subject: userID})
+    },
+    Load: func(ctx context.Context, input tako.StoreLoadInput) (any, error) {
+        var params struct { ChatID string `json:"chatId"` }
+        if err := json.Unmarshal(input.Params, &params); err != nil { return nil, err }
+        return listMessages(ctx, params.ChatID, input.Subject)
+    },
+    Offline: &tako.StoreOfflineConfig{MaxAgeMs: 3_600_000, Version: "1"},
+})
+
+// After the database transaction commits:
+err := messages.Invalidate(ctx, map[string]any{"chatId": chatID})
+```
+
+```rust Rust
+use std::sync::Arc;
+use serde_json::json;
+use tako::{StoreAuth, StoreDefinition, StoreError, StoreGrant, StoreRegistry};
+
+let stores = Arc::new(StoreRegistry::new());
+let messages = stores.register("messages", StoreDefinition::new(|input| async move {
+    load_messages(input).await.map_err(StoreError::loader)
+})
+    .params_schema(json!({
+        "type": "object",
+        "properties": {"chatId": {"type": "string"}},
+        "required": ["chatId"]
+    }))
+    .auth(StoreAuth::default(), |input| async move {
+        authorize_messages(&input).await.map(StoreGrant::new)
+    })
+    .offline(3_600_000))?;
+
+// After the database transaction commits:
+messages.invalidate(json!({"chatId": chat_id})).await?;
+
+tako::axum::serve_with_stores(app, stores).await?;
+```
+
+</CodeGroup>
 
 `db`, `verifyToken`, and `canAccessChat` are app-owned helpers. `load` runs on the backend and can use any database or service. Results use JSON serialization, with `null` for an empty result. Dates become strings, custom `toJSON` results are respected, unsupported object members are omitted, and unsupported array entries become `null`. Generated client types describe that serialized shape through `Jsonify`. BigInts, cycles, and non-finite numbers fail the read. For custom classes, use enumerable data properties or provide `toJSON`; explicit response objects make the wire shape easiest to control.
 
@@ -105,14 +165,30 @@ curl --get 'https://app.example/_tako/stores/messages' \
 
 ## Invalidate After Writes
 
-Import the backend definition and invalidate the exact params after the database transaction commits:
+Invalidate the exact params after the database transaction commits. JavaScript imports the definition; Go and Rust retain the handle returned by registration:
 
-```ts
+<CodeGroup>
+
+```ts JavaScript
 import messages from "../stores/messages";
 
 await db.message.create({ data: { chatId, text } });
 await messages.invalidate({ chatId });
 ```
+
+```go Go
+// After commit; messages is the *tako.Store returned by tako.RegisterStore.
+if err := messages.Invalidate(ctx, map[string]any{"chatId": chatID}); err != nil {
+    return err
+}
+```
+
+```rust Rust
+// After commit; messages is the StoreHandle returned by StoreRegistry::register.
+messages.invalidate(serde_json::json!({"chatId": chat_id})).await?;
+```
+
+</CodeGroup>
 
 All authorized readers of that store and params reload. An invalidation contains no records, credentials, or raw params. Different params have separate notification streams, and each read runs its own authorization and loader again. Invalidating `{ chatId: "one" }` does not refresh `{ chatId: "two" }`. There is no wildcard invalidation; for an unparameterized store, call `invalidate()`.
 
@@ -143,69 +219,17 @@ Offline reads expose previously authorized data on that device until its cache p
 
 ## Go Backends
 
+Select the Go tab in the definition example above.
+
 The root `tako.sh` Go module registers stores before `tako.ListenAndServe`:
-
-```go
-import (
-    "context"
-    "encoding/json"
-    "tako.sh"
-)
-
-messages := tako.RegisterStore("messages", tako.StoreDefinition{
-    ParamsSchema: json.RawMessage(`{
-        "type":"object",
-        "properties":{"chatId":{"type":"string"}},
-        "required":["chatId"]
-    }`),
-    Auth: &tako.ChannelAuthScheme{HeaderName: "authorization"},
-    Verify: func(input tako.VerifyInput) tako.ChannelAuthDecision {
-        userID, ok := authorizeMessages(input)
-        if !ok { return tako.RejectChannel() }
-        return tako.AllowChannel(tako.ChannelGrant{Subject: userID})
-    },
-    Load: func(ctx context.Context, input tako.StoreLoadInput) (any, error) {
-        var params struct { ChatID string `json:"chatId"` }
-        if err := json.Unmarshal(input.Params, &params); err != nil { return nil, err }
-        return listMessages(ctx, params.ChatID, input.Subject)
-    },
-    Offline: &tako.StoreOfflineConfig{MaxAgeMs: 3_600_000, Version: "1"},
-})
-
-// After the database transaction commits:
-err := messages.Invalidate(ctx, map[string]any{"chatId": chatID})
-```
 
 `authorizeMessages` verifies the credential and requested chat; `listMessages` reads your database. The verifier receives the public name in `input.Channel`. The loader receives a request context, validated JSON params, and the trusted subject. Omit `Auth` for public reads. Omit `Offline` to disable persisted cached reads. `Invalidate` honors context cancellation and returns publication errors. For an unparameterized store, pass `nil` or an empty object; this affects only that exact scope.
 
 ## Rust Backends
 
+Select the Rust tab in the definition example above.
+
 Enable the `axum` feature on the `tako` crate and register a loader:
-
-```rust
-use std::sync::Arc;
-use serde_json::json;
-use tako::{StoreAuth, StoreDefinition, StoreError, StoreGrant, StoreRegistry};
-
-let stores = Arc::new(StoreRegistry::new());
-let messages = stores.register("messages", StoreDefinition::new(|input| async move {
-    load_messages(input).await.map_err(StoreError::loader)
-})
-    .params_schema(json!({
-        "type": "object",
-        "properties": {"chatId": {"type": "string"}},
-        "required": ["chatId"]
-    }))
-    .auth(StoreAuth::default(), |input| async move {
-        authorize_messages(&input).await.map(StoreGrant::new)
-    })
-    .offline(3_600_000))?;
-
-// After the database transaction commits:
-messages.invalidate(json!({"chatId": chat_id})).await?;
-
-tako::axum::serve_with_stores(app, stores).await?;
-```
 
 `load_messages` is an app-owned async helper returning `Result<serde_json::Value, YourError>`; it receives `StoreLoadInput { store, params, subject }`. `authorize_messages` returns `Option<String>` with the verified user ID after checking credentials and access. Omit `.auth(...)` for public reads. `.offline(...)` opts into cached reads with version `"1"`; call `.offline_version("2")` after `.offline(...)` to change it.
 
@@ -220,3 +244,7 @@ The same React and browser APIs work with JavaScript, Go, and Rust backends.
 The dev daemon keeps notification state in memory. Single-server production uses Tako-managed SQLite by default. Multi-server deployments require the shared `postgres_url` credential so a write on one server can notify readers on another. JS store directories are detected by deployment preflight; configure `postgres_url` explicitly for multi-server Go and Rust apps using inline registrations. Your database remains the source of truth; this notification storage does not replace it.
 
 Use [Channels](/channels/) for application events, [Presence](/presence/) for current membership, and Stores for live data reads with optional offline caching.
+
+## Verify
+
+Test an initial authorized read, a denied read and subscription, a committed write followed by invalidation, and isolation between two params scopes. Disconnect and reconnect a reader to confirm it reloads current data. When offline caching is enabled, also test user/tenant switching, version mismatch, expiry, and logout clearing. For multiple servers, invalidate on one server and observe a reader connected to another.

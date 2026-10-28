@@ -24,10 +24,14 @@ checks exercise the same configuration the application deploys with.
 2. Use the Tako MCP tools when connected. Their schemas describe the current
    command arguments. Tools use the installed CLI's credentials and permissions.
 3. Read bundled docs through `tako_docs` (list topics with no arguments, then pass
-   a topic), or MCP resources at `tako://docs/<topic>`. Start with `quickstart`,
-   `tako-toml`, and the relevant workflow guide. Search with `tako_search_docs`.
+   a topic), or MCP resources at `tako://docs/<topic>`. Start with `index` for
+   task routing, then read the relevant topic. Use `secrets`, `storage`, `images`,
+   or `cache` for those primitives; `servers`, `deployment`, `routing`,
+   `operations`, and `backups` cover deployed apps. Search with `tako_search_docs`.
 4. Use the matching `tako-sdk-js`, `tako-sdk-go`, or `tako-sdk-rust` skill when
-   writing SDK code. Read `framework-guides` before changing a framework adapter.
+   writing SDK code. Read `framework-guides` and its matching framework topic
+   before changing an adapter. For image releases, read `docker`, `dockerfile`,
+   and `docker-workflows`; HTTP containers have different data/socket limits.
 5. Without MCP, use `tako <command> --help` for exact flags and `--json` for
    structured results. Full docs: https://tako.sh/llms.txt.
 

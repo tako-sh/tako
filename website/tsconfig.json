@@ -3,5 +3,5 @@
   "compilerOptions": {
     "allowJs": false
   },
-  "exclude": ["dist", "src/worker.ts", ".astro/worker-configuration.d.ts"]
+  "exclude": ["dist", "documentation/.blume", "documentation/dist"]
 }

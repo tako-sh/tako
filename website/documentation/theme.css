@@ -1,0 +1,180 @@
+/* Match the brand surfaces in BaseStyles.astro; syntax colors share SNIPPET_THEME. */
+:root {
+  --tako-site-gutter: clamp(20px, 5vw, 80px);
+  --blume-foreground: #2f2a44;
+  --blume-muted: #f0e9e5;
+  --blume-muted-foreground: #665e73;
+  --blume-border: rgb(47 42 68 / 16%);
+  --blume-code-background: #2f2a44;
+  --blume-radius: 3px;
+}
+
+:root[data-theme="dark"] {
+  --blume-foreground: #efebe6;
+  --blume-muted: #2f2a44;
+  --blume-muted-foreground: #b8b2c2;
+  --blume-border: rgb(239 235 230 / 14%);
+  --blume-code-background: #2f2a44;
+  --blume-accent-foreground: #1f1b2b;
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Share the main site's outer frame without widening the reading column. */
+[data-blume-header] {
+  padding-inline: var(--tako-site-gutter);
+}
+
+[data-blume-header] button {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--blume-radius);
+}
+
+[data-blume-header] > div:first-child > a {
+  gap: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+[data-blume-header] > div:first-child > a > [aria-hidden],
+[data-blume-header] > div:first-child > a svg {
+  width: 26px;
+  height: 26px;
+}
+
+[data-blume-doc-grid] {
+  width: calc(100% - 2 * var(--tako-site-gutter));
+}
+
+@media (min-width: 1024px) {
+  [data-blume-doc-grid] {
+    grid-template-columns: 14rem minmax(0, 1fr);
+  }
+
+  [data-blume-nav-drawer] {
+    padding-inline: 0;
+  }
+
+  [data-blume-toc] {
+    padding-inline-end: 0;
+  }
+}
+
+@media (min-width: 1280px) {
+  [data-blume-doc-grid] {
+    grid-template-columns: 14rem minmax(0, 1fr) 14rem;
+  }
+}
+
+@media (max-width: 1023px) {
+  /* Keep the brand at the frame edge and put the drawer control on the right. */
+  [data-blume-header] > div:first-child {
+    display: contents;
+  }
+
+  [data-blume-header] > div:last-child {
+    order: 1;
+  }
+
+  [data-blume-nav-toggle] {
+    order: 2;
+  }
+
+  [data-blume-doc-grid] > main {
+    padding-inline: 0;
+  }
+
+  .blume-nav-link {
+    min-height: 44px;
+    align-content: center;
+  }
+}
+
+::selection {
+  background: #e88783;
+  color: #1f1b2b;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+.prose :where(h1, h2, h3, h4, h5, h6) {
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+
+.prose {
+  color: var(--blume-foreground);
+  font-size: 15px;
+  line-height: 1.75;
+}
+
+.prose > h1 + p {
+  font-size: 17px;
+  line-height: 1.65;
+}
+
+.blume-nav-link {
+  border-radius: var(--blume-radius);
+}
+
+.blume-nav-link[aria-current="page"] {
+  color: var(--blume-foreground);
+  font-weight: 600;
+}
+
+.prose blume-tabs [role="tab"] {
+  min-height: 44px;
+  font-size: 13px;
+}
+
+/* Match the site's code editor, including readable labels and controls. */
+.prose pre {
+  --blume-background: #2f2a44;
+  --blume-foreground: #efebe6;
+  --blume-muted: #3d3756;
+  --blume-muted-foreground: #b8b2c2;
+  --blume-border: rgb(239 235 230 / 12%);
+  --blume-accent: #e88783;
+  line-height: 1.5;
+}
+
+.prose pre.astro-code {
+  background: var(--blume-code-background) !important;
+}
+
+.prose :not(pre) > code {
+  background: var(--blume-muted);
+  border-radius: var(--blume-radius);
+}
+
+.prose :where(p, li, td) a {
+  /* The same flat highlighter mark used by the main site's prose links. */
+  --mark-color: color-mix(in srgb, var(--blume-accent) 45%, transparent);
+  color: var(--blume-foreground);
+  text-decoration: none;
+  background-image: linear-gradient(var(--mark-color), var(--mark-color));
+  background-position: left bottom;
+  background-repeat: no-repeat;
+  background-size: 100% 0.3em;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  transition: background-size 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.prose :where(p, li, td) a:hover {
+  background-size: 100% 100%;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .prose :where(p, li, td) a {
+    transition: none;
+  }
+}

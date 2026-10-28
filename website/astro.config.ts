@@ -85,7 +85,7 @@ for (const filePath of walkFiles(contentRoot)) {
   }
 }
 
-// Static build (dist/). Cloudflare Workers serves the assets and handles installer script headers.
+// Astro builds the main site; the build script mounts Blume output at dist/docs.
 export default defineConfig({
   site: "https://tako.sh",
   output: "static",
@@ -107,6 +107,9 @@ export default defineConfig({
       exclude: ["@resvg/resvg-js"],
     },
     server: {
+      proxy: {
+        "/docs": "http://localhost:4322",
+      },
       fs: {
         allow: [workspaceRoot],
       },
@@ -129,6 +132,7 @@ export default defineConfig({
     },
     astroD2(d2Config),
     sitemap({
+      customSitemaps: ["https://tako.sh/docs/sitemap.xml"],
       serialize(item) {
         const itemUrl = new URL(item.url);
         const pathname = normalizeCanonicalPath(itemUrl.pathname);

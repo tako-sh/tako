@@ -4,10 +4,13 @@
   "type": "module",
   "scripts": {
     "dev": "astro dev",
-    "build": "bun ./scripts/sync-agent-skills.ts && astro build",
-    "check": "astro check && wrangler types .astro/worker-configuration.d.ts && bun check --no-script -p tsconfig.worker.json",
+    "docs:dev": "cd documentation && blume dev --port 4322",
+    "docs:build": "bun ./scripts/build-docs.ts",
+    "docs:check": "cd documentation && blume check && blume validate --strict",
+    "build": "bun ./scripts/sync-agent-skills.ts && astro build && bun ./scripts/build-docs.ts",
+    "check": "astro check && bun run docs:check",
     "verify": "bun ./scripts/verify.ts",
-    "preview": "astro preview",
+    "preview": "wrangler dev --port 4321",
     "deploy": "wrangler deploy"
   },
   "dependencies": {
@@ -18,6 +21,7 @@
     "asciinema-player": "^3.15.1",
     "astro": "catalog:dev",
     "astro-d2": "^0.14.0",
+    "blume": "2.2.4",
     "unist-util-visit": "^5.1.0"
   },
   "devDependencies": {

@@ -5,6 +5,10 @@ description: "Define typed SSE and WebSocket channels with authorization, replay
 
 Tako Channels are durable broadcast streams for live app events. The Tako proxy serves each channel over SSE or WebSocket, stores every published message before fanout, and retains a bounded replay window for reconnecting clients.
 
+JavaScript and Go can register channel definitions. JavaScript additionally provides the server-side `publish` helper. Rust currently has no general Channels registration or publishing API; its [Presence](/presence/) and [Stores](/stores/) registries are separate capabilities. Browser and React examples below use the JavaScript client with any supported backend definition.
+
+Local channel subscriptions bypass authorization callbacks. Test private access rules in a deployed test environment. Params do not isolate tenants or rooms; the stream-isolation rules below apply even when params validate.
+
 ## Choose Broadcast Semantics
 
 Channels are pub-sub, not work queues. Every authorized subscriber to a channel reads the same messages and keeps an independent replay cursor. A message is not claimed, acknowledged, or removed when one subscriber receives it.
@@ -28,9 +32,11 @@ type ChannelMessage<T> = {
 
 ## Define A Channel
 
-Put one default export in each `<app_root>/channels/*.ts` file. The first argument to `defineChannel` is the explicit wire name and is the source of truth for the public route; it does not have to match the file name. Use `.$messageTypes<M>()` to declare the payload for each message type without changing runtime behavior.
+In JavaScript, put one default export in each `<app_root>/channels/*.ts` file. The first argument to `defineChannel` is the explicit wire name and is the source of truth for the public route; it does not have to match the file name. Use `.$messageTypes<M>()` to declare the payload for each message type without changing runtime behavior. In Go, register the same wire name before starting `tako.ListenAndServe`:
 
-```ts
+<CodeGroup>
+
+```ts JavaScript
 // <app_root>/channels/site-events.ts
 import { defineChannel } from "tako.sh";
 import { readSession } from "../lib/auth";
@@ -52,15 +58,37 @@ export default defineChannel("site-events", {
 }).$messageTypes<SiteMessages>();
 ```
 
+```go Go
+import "tako.sh"
+
+func registerSiteEvents() {
+    tako.Channels.Register("site-events", tako.ChannelDefinition{
+        Auth: &tako.ChannelAuthScheme{HeaderName: "authorization"},
+        Verify: func(input tako.VerifyInput) tako.ChannelAuthDecision {
+            userID, ok := readSession(input.Header)
+            if !ok { return tako.RejectChannel() }
+            return tako.AllowChannel(tako.ChannelGrant{Subject: userID})
+        },
+        Transport: tako.ChannelTransportWS,
+    })
+}
+```
+
+</CodeGroup>
+
+`readSession` is application-owned authentication code. The JavaScript helper receives a parsed header; the Go helper above accepts `*tako.ChannelHeaderValue` and returns the verified user ID and a success flag. Go's SDK serves discovery and authorization through `ListenAndServe`; it does not provide the JavaScript handle or browser-client methods.
+
 ## Understand Channel Params
 
-`paramsSchema` is a TypeBox schema for typed query parameters. Tako validates the values before authorization and passes them to `auth.verify`.
+JavaScript's `paramsSchema` is a TypeBox schema for typed query parameters. Go's `ParamsSchema` accepts JSON Schema as `json.RawMessage`. Tako validates the values before authorization and passes them to the verifier.
 
 Params do **not** change the stored channel name or partition replay and fanout. Every authorized parameter binding for one wire channel receives the same stream. Use params only as connection context when every authorized binding may receive every event. Do not use `roomId`, `tenantId`, or similar params as an isolation boundary.
 
 For example, a shared announcements stream can reject unsupported client versions without creating one stream per version:
 
-```ts
+<CodeGroup>
+
+```ts JavaScript
 export default defineChannel("announcements", {
   paramsSchema: (t) =>
     t.Object({
@@ -74,7 +102,36 @@ export default defineChannel("announcements", {
 });
 ```
 
-Omit `paramsSchema` for an unparameterized channel. Parameterized exports are callable; unparameterized exports are already bound handles:
+```go Go
+import (
+    "encoding/json"
+    "tako.sh"
+)
+
+func registerAnnouncements() {
+    tako.Channels.Register("announcements", tako.ChannelDefinition{
+        ParamsSchema: json.RawMessage(`{
+            "type":"object",
+            "properties":{"clientVersion":{"type":"string","minLength":1}},
+            "required":["clientVersion"]
+        }`),
+        Auth: &tako.ChannelAuthScheme{HeaderName: "authorization"},
+        Verify: func(input tako.VerifyInput) tako.ChannelAuthDecision {
+            var params struct { ClientVersion string `json:"clientVersion"` }
+            if json.Unmarshal(input.Params, &params) != nil || !supportsAnnouncements(params.ClientVersion) {
+                return tako.RejectChannel()
+            }
+            return tako.AllowChannel(tako.ChannelGrant{})
+        },
+    })
+}
+```
+
+</CodeGroup>
+
+`supportsAnnouncements` is an app-owned compatibility check. The Go registration uses the default SSE transport.
+
+Omit the params schema for an unparameterized channel. In JavaScript, parameterized exports are callable; unparameterized exports are already bound handles:
 
 ```ts
 import announcements from "../channels/announcements";
@@ -107,7 +164,7 @@ WebSocket client frames are `{ type, data }`; the proxy stores and broadcasts th
 
 ## Publish From The Server
 
-Import the channel definition in server-side code, bind any params, and publish a typed event:
+The JavaScript SDK provides server-side publishing. Import the channel definition, bind any params, and publish a typed event:
 
 ```ts
 import siteEvents from "../channels/site-events";
@@ -193,7 +250,7 @@ A multi-server environment with channels requires the shared `postgres_url` envi
 tako credentials set postgres_url --env production
 ```
 
-Tako validates this before build and deploy work starts. `postgres_url` is an encrypted provider credential, not a `tako.toml` field or an app secret. A single-server environment can also use Postgres by setting the credential.
+Tako validates this for discovered JavaScript channel definitions before build and deploy work starts. Inline Go registrations are not detected by that preflight, so explicitly configure `postgres_url` before deploying them to multiple servers. It is an encrypted provider credential, not a `tako.toml` field or an app secret. A single-server environment can also use Postgres by setting the credential.
 
 ## Keep Canonical History In Your App Database
 
@@ -209,3 +266,7 @@ await siteEvents.publish({
 ```
 
 For canonical writes, use a normal authenticated app endpoint to commit the record, then publish the resulting channel event from server-side code. Treat browser-sent WebSocket frames as transient live signals. The app database remains the source of truth; channel replay only closes short delivery gaps.
+
+## Verify
+
+Connect two authorized clients and confirm both receive the same published event. Test a denied client in a deployed environment, reconnect with a replay cursor, and handle expired replay by reloading canonical app state. On multiple servers, publish through one and subscribe through another. Do not treat a successful local connection as proof of production authorization.

@@ -1,94 +1,52 @@
 ---
-title: Framework Guides
-description: "Framework-specific Tako guides for Next.js, Astro, SvelteKit, Nuxt, TanStack Start, and other apps using fetch handlers or Vite."
+title: Choose a Framework
+description: "Choose a verified Tako integration for Next.js, TanStack Start, Vite, fetch handlers, Go HTTP frameworks, or Rust/Axum, with SDK support boundaries."
 ---
+
+Choose the page matching the existing application. Keep its router and business code; connect Tako at the server entrypoint or listener boundary. Each guide covers configuration, runtime integration, and verification.
+
+## Choose a guide
+
+| Application                   | Guide                              | Integration                                                          |
+| ----------------------------- | ---------------------------------- | -------------------------------------------------------------------- |
+| Next.js                       | [Next.js](/nextjs/)                | `withTako()` and the `nextjs` preset                                 |
+| React TanStack Start          | [TanStack Start](/tanstack-start/) | Tako Vite plugin and the `tanstack-start` preset                     |
+| Other Vite application        | [Vite](/vite/)                     | Dev readiness and explicitly verified fetch-compatible server output |
+| Plain Bun or Node.js HTTP app | [Fetch Handlers](/fetch-handler/)  | Web Request/Response handler and SDK entrypoint                      |
+| Go standard library           | [Go net/http](/go-http/)           | `tako.ListenAndServe(http.Handler)`                                  |
+| Gin                           | [Gin](/gin/)                       | Pass the Gin engine to the Go SDK                                    |
+| Echo                          | [Echo](/echo/)                     | Pass the Echo application to the Go SDK                              |
+| Chi                           | [Chi](/chi/)                       | Pass the Chi router to the Go SDK                                    |
+| Rust/Axum                     | [Rust and Axum](/axum/)            | `tako::axum::serve` with the `axum` feature                          |
+
+For an image-based release, use the [Docker section](/docker/). A Dockerfile changes packaging; the app still needs its SDK's bootstrap and authenticated status handling.
 
 ## Pick a preset first
 
-If your framework matches a Tako preset, set `preset` in `tako.toml` and Tako fills in the entrypoint, asset directories, and dev command for you. Always prefer this over wiring `main` by hand.
+Built-in JavaScript framework presets are `nextjs`, `tanstack-start`, and `vite`. The Vite preset supplies a dev command, not a universal production server adapter. Go has a runtime preset rather than framework-specific entries. Rust uses explicit native build/start commands or a container release; `runtime = "rust"` is not a supported configuration value.
 
-| Framework      | `runtime`      | `preset`         |
-| -------------- | -------------- | ---------------- |
-| TanStack Start | `bun` / `node` | `tanstack-start` |
-| Next.js        | `bun` / `node` | `nextjs`         |
-| Other Vite app | `bun` / `node` | `vite`           |
+See [Presets](/presets/) for defaults. A framework being built with Vite does not establish that its server output implements the fetch contract. For frameworks not listed here, inspect and adapt their actual server exports or listener integration before choosing `main`.
 
-See [Presets](/presets/) for what each preset sets.
+## Language and SDK support
+
+| Capability                                                | JavaScript / TypeScript                                                         | Go                                               | Rust                            |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------- | ------------------------------------------------ | ------------------------------- |
+| HTTP runtime and app secrets                              | `tako.sh`                                                                       | Root `tako.sh` module                            | `tako` crate                    |
+| Presence and Store backends                               | Definitions discovered under `app_root`                                         | Explicit registrations                           | Explicit registries             |
+| Workflow handlers and workers                             | `defineWorkflow`                                                                | Separate `github.com/tako-sh/tako/sdk/go` module | No workflow SDK API currently   |
+| Storage URL helpers, image URL helpers, server JSON cache | JavaScript SDK helpers                                                          | No equivalent helpers currently                  | No equivalent helpers currently |
+| Browser realtime and React hooks                          | Shared `tako.sh/client` and `tako.sh/react` clients, including Go/Rust backends | Same browser clients                             | Same browser clients            |
+
+Code groups on multi-language pages show supported equivalents. Command-line configuration is shared, while SDK function names and feature availability differ. The individual [SDK skills](https://tako.sh/skills.md) provide language-specific details.
 
 ## TanStack Start (and other Vite SSR frameworks)
 
-Install the Tako Vite plugin so the build emits the SSR wrapper:
-
-```ts
-import { defineConfig } from "vite";
-import { tako } from "tako.sh/vite";
-
-export default defineConfig({
-  plugins: [tako()],
-});
-```
-
-Then in `tako.toml`:
-
-```toml
-runtime = "bun"
-preset = "tanstack-start"
-```
-
-The `tanstack-start` preset sets `main = "dist/server/tako-entry.mjs"`, `assets = ["dist/client"]`, and `dev = ["vite", "dev"]` — no manual `main` needed. Use the `vite` preset for non-SSR Vite apps.
+Use [TanStack Start](/tanstack-start/) for the supported preset and full configuration. For another Vite framework, follow [Vite](/vite/) and verify that the emitted server entry accepts a Request and returns a Response.
 
 ## Next.js
 
-Wrap your Next config with the Tako helper:
-
-```ts
-import { withTako } from "tako.sh/nextjs";
-
-export default withTako({});
-```
-
-This enables Next.js standalone output, installs the Tako adapter, adds `*.test` and `*.tako.test` to `allowedDevOrigins` so `next dev` accepts requests from Tako's dev hostnames, and generates `.next/tako-entry.mjs` for deploys. If Next emits standalone output, Tako uses it; otherwise the wrapper falls back to `next start`.
-
-`withTako()` configures `next/image` to use Tako's public optimizer globally:
-
-```tsx
-import Image from "next/image";
-
-export function Hero() {
-  return (
-    <Image
-      src="/images/hero.jpg"
-      width={1200}
-      height={800}
-      sizes="(min-width: 1200px) 1200px, 100vw"
-      alt="Hero"
-    />
-  );
-}
-```
-
-`withTako()` aligns Next's generated image widths with Tako's default public optimizer widths so `next/image` does not request variants the server would reject.
-
-Then in `tako.toml`:
-
-```toml
-runtime = "bun"
-preset = "nextjs"
-```
+The dedicated [Next.js guide](/nextjs/) covers `withTako()`, the server entry, static assets, local HTTPS, and the shared image optimizer.
 
 ## Fallback: fetch handler (no preset)
 
-For frameworks without a preset, export a standard fetch handler from your build output and point `main` at it:
-
-```ts
-export default function fetch(request: Request, env: Record<string, string>) {
-  return new Response("Hello from Tako");
-}
-```
-
-```toml
-runtime = "bun"
-main = "dist/server/index.js"
-```
-
-Tako automatically runs your app with the correct runtime (Bun or Node.js) based on your project configuration.
+Use [Fetch Handlers](/fetch-handler/) for a small Bun or Node.js service. Native Go and Rust apps instead integrate through their SDK listener. Do not add the Vite plugin to a plain fetch app just to make Tako run it.

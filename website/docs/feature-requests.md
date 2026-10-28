@@ -1,8 +1,0 @@
----
-title: Feature Requests
-description: "Suggest features and improvements for Tako."
----
-
-What is missing from Tako that you would like to see?
-
-<FeatureRequests />

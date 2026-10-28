@@ -1,0 +1,85 @@
+---
+title: Dockerfiles
+description: "Build SDK-aware Bun, Go, and Rust container images for Tako, control build inputs with ignore files, and verify the image's HTTP listener locally."
+---
+
+These Dockerfiles assume the application already uses its Tako SDK. Use the [fetch handler](/fetch-handler/), [Go](/go-http/), or [Axum](/axum/) guide for application code. Adapt dependency versions and binary names to the project and pin image versions or digests for production.
+
+## Choose a language
+
+<CodeGroup>
+
+```dockerfile JavaScript
+FROM oven/bun:1
+WORKDIR /app
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile --production
+COPY . .
+ENV HOST=0.0.0.0 PORT=3000
+EXPOSE 3000
+CMD ["bun", "node_modules/tako.sh/dist/entrypoints/bun-server.mjs", "src/index.ts"]
+```
+
+```dockerfile Go
+FROM golang:1.25-bookworm AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -o /out/app .
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /out/app /app/app
+ENV HOST=0.0.0.0 PORT=3000
+EXPOSE 3000
+CMD ["/app/app"]
+```
+
+```dockerfile Rust
+FROM rust:1-bookworm AS build
+WORKDIR /src
+COPY . .
+RUN cargo build --locked --release --bin my-app
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /src/target/release/my-app /app/app
+ENV HOST=0.0.0.0 PORT=3000
+EXPOSE 3000
+CMD ["/app/app"]
+```
+
+</CodeGroup>
+
+The JavaScript example is a Bun app with a committed `bun.lock`, `tako.sh` as a production dependency, and a fetch handler at `src/index.ts`. The SDK entrypoint loads bootstrap and serves internal status requests before application routes. Node.js apps use the corresponding packaged `node-server.mjs` entrypoint and compatible JavaScript output. Framework apps must build and launch their Tako-compatible server entry; a plain fetch-module command is not a universal framework Dockerfile.
+
+For Go, use the project's required compiler version and CGO/runtime libraries. For Rust, replace `my-app` with the Cargo binary name and include a committed lockfile. Build and runtime stages must provide compatible native libraries; add any required runtime packages. The examples keep build tools out of the final Go/Rust images.
+
+## Control build inputs
+
+Tako first stages source respecting `.gitignore` and excluding `.git/`, `.tako/`, `.env*`, `node_modules/`, and source symlinks. The image builder then applies `.dockerignore` to that uploaded context. A file excluded before upload cannot be restored by a Dockerfile `COPY`.
+
+```text .dockerignore
+.git
+.tako
+.env*
+node_modules
+target
+dist
+```
+
+Build application output inside the image or deliberately include the files it needs. Keep runtime secret values out of Dockerfile `ARG`, `ENV`, and copied configuration; [Secrets](/secrets/) supplies them at runtime.
+
+## Verify the image
+
+```bash
+docker build -t tako-app .
+docker run --rm -p 3000:3000 -e HOST=0.0.0.0 -e PORT=3000 tako-app
+```
+
+In another terminal, request `http://localhost:3000/`. Podman can perform the same smoke test. This checks image assembly and basic listening; Tako-only services require a real deployment. `EXPOSE` documents the port and does not open a listener. Use exec-form `CMD` so the application receives process signals.
+
+Configure [Docker deployment](/docker/) after the image works. Upstream: [multi-stage builds](https://docs.docker.com/build/building/multi-stage/) and [Dockerfile reference](https://docs.docker.com/reference/dockerfile/).

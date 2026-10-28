@@ -25,13 +25,15 @@ If you install Tako another way and use image optimization locally on macOS:
 brew install vips
 ```
 
-From your app directory, install the SDK:
+From an existing app directory, initialize the project:
 
 ```bash
-bun add tako.sh
+tako init
 ```
 
-Start local HTTPS development:
+`tako init` detects the runtime and preset, writes `tako.toml`, installs the SDK for JavaScript and Go projects, and updates `.gitignore` for the encrypted secrets file. It asks for an app name and production route, offers SSL credential setup for wildcard routes, and offers coding-agent setup. For Rust, use the [Rust SDK skill](https://tako.sh/.well-known/agent-skills/tako-sdk-rust/SKILL.md). Follow [Framework Integration](/framework-guides/) if your framework needs an adapter.
+
+Start local HTTPS development in a terminal:
 
 ```bash
 tako dev
@@ -40,6 +42,8 @@ tako dev
 On your first `tako dev` run, Tako asks for your `sudo` password to set up local no-port HTTPS and custom `*.test` URLs. This happens once and is reused for other apps.
 
 Open the URL shown in the terminal header. By default, Tako uses `{app}.test`, where `{app}` is your app name. The longer `{app}.tako.test` form is always available as a fallback.
+
+After first-time local setup, agents should inspect `tako dev list --json` before starting another session, then use `tako dev --background --json` or the `tako_dev` MCP tool for finite startup. Request the returned URL to verify the app. See [Local Development](/development/) for lifecycle details.
 
 ## Remote setup
 
@@ -73,20 +77,20 @@ The installer bootstraps the host and starts `tako-server`. Run `tako servers ad
 
 Run the following commands from your app directory.
 
-Initialize Tako config:
+The app already has a `tako.toml` from local setup. Check its production route and server mapping, and set the app's required [Secrets](/secrets/) and [Storage](/storage/) bindings before deploying.
 
 ```bash
-tako init
+tako servers list --json
 ```
 
-`tako init` prompts for app name and production route, writes them to `tako.toml`, offers encrypted SSL setup for wildcard routes, and updates `.gitignore` so `.tako/secrets.json` stays trackable. It also offers to install skills and configure MCP for your coding agents. Run `tako agents` anytime to set up or refresh agent support; see [Coding agents](/agents/).
+Run `tako agents` anytime to set up or refresh agent support; see [Coding agents](/agents/). If multiple servers exist, map the desired names in `[envs.production].servers`; see [Deployment](/deployment/#configure-an-environment).
 
 `tako dev` uses `{app}.test` by default. Add `[envs.development]` only when you want custom local routes.
 
 Deploy:
 
 ```bash
-tako deploy
+tako deploy --env production
 ```
 
-See the [tako.toml reference](/tako-toml/) for every config option, or [Framework Guides](/framework-guides/) for adapter examples.
+Inspect `tako status --json`, request the deployed hostname, and check finite app logs. See [Deployment](/deployment/) for build and rollout behavior and [Operations](/operations/) for status, logs, scaling, and rollback.

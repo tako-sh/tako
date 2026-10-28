@@ -5,13 +5,13 @@ description: "Build durable background workflows with typed payloads, checkpoint
 
 Tako workflows run background work next to your app without a separate queue service. A workflow can retry after failures, remember completed steps, sleep without holding a worker open, wait for an external signal, run on a cron schedule, and let its worker process scale to zero when idle.
 
-This guide uses the JavaScript and TypeScript API from `tako.sh`.
+Code tabs cover JavaScript/TypeScript and Go where their workflow APIs correspond. JavaScript uses `tako.sh`; the Go worker SDK is the separate `github.com/tako-sh/tako/sdk/go` module, not the root Go HTTP SDK. The Rust SDK does not currently provide workflow authoring or worker APIs. Shared runtime semantics apply to both supported worker SDKs; option tables below describe the JavaScript API unless stated otherwise.
 
 ## Vocabulary
 
 | Term     | Meaning                                                                         |
 | -------- | ------------------------------------------------------------------------------- |
-| Workflow | A named handler defined in `<app_root>/workflows/`.                             |
+| Workflow | A named handler discovered from a JS module or registered by a Go worker.       |
 | Run      | One execution of a workflow with its own payload, run ID, attempts, and status. |
 | Step     | A named, checkpointed operation inside a run, created with `ctx.run`.           |
 | Worker   | A separate process that claims and executes workflow runs.                      |
@@ -20,9 +20,11 @@ Run statuses are `pending`, `running`, `succeeded`, `cancelled`, and `dead`. A r
 
 ## Define A Workflow
 
-Create one module per workflow under `<app_root>/workflows/` and default-export the handle returned by `defineWorkflow`:
+For JavaScript, create a module under `<app_root>/workflows/` and default-export `defineWorkflow`. For Go, register the handler in the worker process before `RunWorker`:
 
-```ts
+<CodeGroup>
+
+```ts JavaScript
 // src/workflows/fulfill-order.ts
 import { defineWorkflow } from "tako.sh";
 
@@ -48,6 +50,39 @@ export default defineWorkflow<FulfillOrderPayload>("fulfill-order", {
 });
 ```
 
+```go Go
+// cmd/worker/main.go
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "log"
+
+    workflow "github.com/tako-sh/tako/sdk/go"
+)
+
+func main() {
+    workflow.RegisterWorkflow("fulfill-order", func(ctx *workflow.WorkflowContext, raw json.RawMessage) error {
+        var payload struct { OrderID string `json:"orderId"` }
+        if err := json.Unmarshal(raw, &payload); err != nil {
+            return ctx.Fail(err)
+        }
+        return ctx.Step.Run("fulfill", nil, func() (any, error) {
+            // Your helper must use the stable key to deduplicate external effects.
+            return nil, fulfillOrder(payload.OrderID, ctx.RunID+":fulfill")
+        })
+    }, workflow.WithMaxAttempts(5))
+    if err := workflow.RunWorker(context.Background()); err != nil {
+        log.Fatal(err)
+    }
+}
+```
+
+</CodeGroup>
+
+The Go `fulfillOrder` helper is app-owned. Install the Go worker module with `go get github.com/tako-sh/tako/sdk/go`, build a worker binary, and configure its command in `[workflows].run` when needed. `WithMaxAttempts(5)` counts all attempts; JavaScript `retries: 4` counts retries after the first attempt.
+
 The payload type flows into `.enqueue(payload)`, so callers get normal TypeScript checking without a generated workflow registry. The workflow name must be unique within the app. Using the filename stem as the name keeps discovery and logs easy to follow.
 
 Useful definition options include:
@@ -64,17 +99,37 @@ Useful definition options include:
 
 Import the workflow handle from server-side code and enqueue a JSON-serializable payload:
 
-```ts
+<CodeGroup>
+
+```ts JavaScript
 import fulfillOrder from "./workflows/fulfill-order";
 
 const runId = await fulfillOrder.enqueue({ orderId: "ord_123" });
 ```
 
-You can enqueue from a request handler, another workflow, or a script running with Tako's server runtime. Browser code cannot enqueue directly and throws `TakoError("TAKO_UNAVAILABLE")` if it reaches `.enqueue()`.
+```go Go
+import (
+    "context"
+    workflow "github.com/tako-sh/tako/sdk/go"
+)
 
-The second argument controls one run:
+func enqueueOrder(ctx context.Context, orderID string) (string, error) {
+    result, err := workflow.Enqueue(ctx, "fulfill-order",
+        map[string]string{"orderId": orderID}, workflow.EnqueueOpts{})
+    if err != nil { return "", err }
+    return result.ID, nil
+}
+```
 
-```ts
+</CodeGroup>
+
+You can enqueue from a request handler, another workflow, or a script running with Tako's server runtime. Go producers also need the Tako internal socket, and container HTTP processes do not receive it in v0; see [Container Workflows](/docker-workflows/). Browser code cannot enqueue directly and throws `TakoError("TAKO_UNAVAILABLE")` if it reaches `.enqueue()`.
+
+Set options for a delayed run with a stable ID and seven total attempts:
+
+<CodeGroup>
+
+```ts JavaScript
 await fulfillOrder.enqueue(
   { orderId: "ord_123" },
   {
@@ -85,6 +140,24 @@ await fulfillOrder.enqueue(
 );
 ```
 
+```go Go
+import (
+    "context"
+    "time"
+    workflow "github.com/tako-sh/tako/sdk/go"
+)
+
+func enqueueDelayedOrder(ctx context.Context) (*workflow.EnqueueResult, error) {
+    runAt := time.Now().Add(time.Minute)
+    id := "fulfill:ord_123"
+    maxAttempts := uint32(7)
+    return workflow.Enqueue(ctx, "fulfill-order", map[string]string{"orderId": "ord_123"},
+        workflow.EnqueueOpts{RunAt: &runAt, ID: &id, MaxAttempts: &maxAttempts})
+}
+```
+
+</CodeGroup>
+
 | Option    | Meaning                                                                                                 |
 | --------- | ------------------------------------------------------------------------------------------------------- |
 | `runAt`   | Do not make the run eligible before this time. The default is now.                                      |
@@ -92,6 +165,8 @@ await fulfillOrder.enqueue(
 | `id`      | Use this as the run ID. A retained run with the same ID, workflow, and payload is reused in any status. |
 
 `.enqueue()` returns the run ID, including the exact `id` you supply. Omit `id` to generate one and create a new run each time. IDs must contain 1–255 bytes and no NUL characters.
+
+Go's `EnqueueOpts` uses `ID`, `RunAt`, and `MaxAttempts` pointers. `MaxAttempts` counts the first attempt as well as retries. `Enqueue` returns an `EnqueueResult` with `ID` and `Deduplicated`.
 
 IDs are unique within the app and environment, across workflow names. Repeating an ID with a different workflow or payload produces a conflict. Concurrent enqueues with the same ID create one run. Existing runs keep their original schedule, retry budget, status, and completed steps; enqueue does not restart a succeeded, cancelled, or dead run.
 
@@ -105,14 +180,32 @@ The durability boundary is the saved result, not the side effect itself. If a wo
 
 Steps can retry independently before an error reaches the run-level retry policy:
 
-```ts
+<CodeGroup>
+
+```ts JavaScript
 await ctx.run("call-provider", callProvider, {
   retries: 2,
   backoff: { base: 500, max: 10_000 },
 });
 ```
 
-Step retries default to `0`. Set `retry: false` when an error from that step is permanent and should move the run directly to `dead`.
+```go Go
+import (
+    "time"
+    workflow "github.com/tako-sh/tako/sdk/go"
+)
+
+func callProviderStep(ctx *workflow.WorkflowContext, callProvider func() (any, error)) error {
+    opts := workflow.StepRunOpts{Retries: 2}
+    opts.Backoff.Base = 500 * time.Millisecond
+    opts.Backoff.Max = 10 * time.Second
+    return ctx.Step.Run("call-provider", nil, callProvider, opts)
+}
+```
+
+</CodeGroup>
+
+Step retries default to `0`. Set JavaScript's `retry: false` or Go's `StepRunOpts{NoRetry: true}` when an error from that step is permanent and should move the run directly to `dead`. Go's `out` argument (`nil` above) can be a pointer to receive the checkpointed result.
 
 The workflow context also provides `runId`, `workflowName`, `attempt`, and a workflow-scoped `logger`. Each step callback receives the same run metadata plus `stepName` and a step-scoped logger.
 
@@ -120,17 +213,30 @@ The workflow context also provides `runId`, `workflowName`, `attempt`, and a wor
 
 Use a stable name and a duration in milliseconds:
 
-```ts
+<CodeGroup>
+
+```ts JavaScript
 await ctx.sleep("wait-before-reminder", 24 * 60 * 60 * 1000);
 ```
+
+```go Go
+// Inside a registered Go workflow; import "time".
+if err := ctx.Step.Sleep("wait-before-reminder", 24*time.Hour); err != nil {
+    return err
+}
+```
+
+</CodeGroup>
 
 Sleeps shorter than 30 seconds run inline. Longer sleeps park the run until its wake time so the worker can process other work or exit. Sleeping does not consume the run's retry budget, and the wake time survives worker and server restarts.
 
 ## Wait For A Signal
 
-`ctx.waitFor` parks a run until matching server-side code calls `signal`. An optional timeout resolves the wait to `null` instead:
+`ctx.waitFor` (JavaScript) or `ctx.Step.WaitFor` (Go) parks a run until matching server-side code sends a signal. With a timeout, a missing signal becomes `null` in JavaScript or a nil pointer result in Go:
 
-```ts
+<CodeGroup>
+
+```ts JavaScript
 const decision = await ctx.waitFor<{ approved: boolean; by: string }>(
   `approval:order-${payload.orderId}`,
   { timeout: 7 * 24 * 60 * 60 * 1000 },
@@ -141,9 +247,37 @@ if (decision === null) {
 }
 ```
 
+```go Go
+import (
+    "time"
+    workflow "github.com/tako-sh/tako/sdk/go"
+)
+
+type ApprovalDecision struct {
+    Approved bool   `json:"approved"`
+    By       string `json:"by"`
+}
+
+func waitForApproval(ctx *workflow.WorkflowContext, orderID string) error {
+    var decision *ApprovalDecision
+    if err := ctx.Step.WaitFor("approval:order-"+orderID, &decision, 7*24*time.Hour); err != nil {
+        return err
+    }
+    if decision == nil { return ctx.Bail("approval timed out") }
+    if !decision.Approved { return ctx.Bail("approval rejected") }
+    return nil
+}
+```
+
+</CodeGroup>
+
+Call the Go helper from the registered handler and return its error so the worker can park or cancel the run. Its event name is also the durable step name; keep it stable across retries.
+
 Send the signal from a request handler, webhook, script, or another workflow:
 
-```ts
+<CodeGroup>
+
+```ts JavaScript
 import { signal } from "tako.sh";
 
 const woken = await signal(`approval:order-${orderId}`, {
@@ -151,6 +285,20 @@ const woken = await signal(`approval:order-${orderId}`, {
   by: userId,
 });
 ```
+
+```go Go
+import (
+    "context"
+    workflow "github.com/tako-sh/tako/sdk/go"
+)
+
+func approveOrder(ctx context.Context, orderID, userID string) (uint64, error) {
+    return workflow.Signal(ctx, "approval:order-"+orderID,
+        map[string]any{"approved": true, "by": userID})
+}
+```
+
+</CodeGroup>
 
 `signal` wakes every run waiting on that event name and returns the number of runs woken. Like enqueue, it is server-only and throws `TakoError("TAKO_UNAVAILABLE")` without an installed Tako runtime. Waiting and resuming do not consume retry attempts. Completed steps before the wait remain checkpointed.
 
@@ -165,6 +313,8 @@ const woken = await signal(`approval:order-${orderId}`, {
 | Long `ctx.sleep` or `ctx.waitFor` | Return to `pending` without spending the retry budget. |
 
 Run retries use exponential backoff with 20% jitter. The default delay starts at one second and is capped at one hour. `retries: 4` means four retries after the first attempt, for five total attempts.
+
+Go handlers return `nil` for success, an ordinary error for retry, `ctx.Bail(reason)` for cancellation, or `ctx.Fail(err)` for permanent failure. Return errors from `ctx.Step` operations so the worker can park or retry the run.
 
 Use `ctx.bail` when the work is no longer needed, such as a rejected or expired approval. Use `ctx.fail` for a permanent error that another attempt cannot fix. To finish successfully before the bottom of a handler, return normally.
 
@@ -224,7 +374,7 @@ Cron schedules are synchronized from the current workflow definitions when a wor
 
 `tako deploy` validates the storage model, packages workflow definitions with the app, and installs the workflow runtime for the release. A new release replaces the previous worker runtime after in-flight work drains. Removing the workflows directory in a later release retires the old workflow runtime. Durable runs remain scoped to the app and environment across releases.
 
-Use `tako logs --tail` to follow app and worker output in production. For local runtime details, see [Development](/development/). For release behavior, see [Deployment](/deployment/).
+Use finite `tako logs --env production --days 1 --json` to inspect app and worker output with an agent; an attached terminal can follow it with `--tail`. See [Operations](/operations/) for log inspection, [Development](/development/) for local runtime details, and [Deployment](/deployment/) for release behavior.
 
 ## Practical Rules
 
@@ -235,3 +385,7 @@ Use `tako logs --tail` to follow app and worker output in production. For local 
 - Use `ctx.bail` for expected cancellation and `ctx.fail` for permanent failure.
 - Keep `signal` and `.enqueue()` in server-side code.
 - Use Postgres for global workflows across multiple servers. Use `local: true` only when once per server is intentional.
+
+## Verify
+
+Enqueue a known payload, inspect the run/step logs, and check its application-side result. Force a retry in a test environment and confirm completed steps reuse saved results and external effects deduplicate. Test duplicate enqueue IDs, a signal or durable wait when used, and the intended shared-versus-per-server execution model.

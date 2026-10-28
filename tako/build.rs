@@ -16,7 +16,11 @@ fn main() {
             } else {
                 path.clone()
             };
-            if !source.is_file() || source.extension().is_none_or(|extension| extension != "md") {
+            if !source.is_file()
+                || source
+                    .extension()
+                    .is_none_or(|extension| extension != "md" && extension != "mdx")
+            {
                 continue;
             }
             let name = path.file_stem().unwrap().to_str().unwrap();

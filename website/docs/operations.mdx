@@ -1,0 +1,104 @@
+---
+title: Operations
+description: "Inspect deployed Tako apps with finite status and log queries, scale instances, inspect releases, and verify recovery after a rollback."
+---
+
+Use this page for an existing deployment. Select the app with the current `tako.toml` or `-c <config>`, and pass `--env` explicitly when operating on a deployment. [Servers](/servers/) covers host maintenance; [Deployment](/deployment/) covers creating a new release.
+
+## Inspect before changing
+
+```bash
+tako status --json
+tako releases list --env production --json
+tako logs --env production --days 1 --json
+```
+
+`status` shows servers and deployed apps. Release history identifies the current release. Finite log history returns a JSON object with a `logs` array. Check command failures and truncation before treating output as complete. Use the observed app, environment, server, and release to decide the next action.
+
+## Scaling
+
+```bash
+tako scale 3 --env production
+tako scale 0 --env production
+```
+
+Desired instances are server-side state. They persist across deploys, rollbacks, and server restarts. Scaling above the effective server maximum fails. Scaling to zero enables cold starts after idle timeout.
+
+## Logs And Releases
+
+```bash
+tako logs --env production
+tako logs --env production --json
+tako releases list --env production
+tako releases rollback <release-id> --env production
+```
+
+Logs include app stdout/stderr and app-scoped server diagnostics. Releases show merged release history across mapped servers and mark the current release. Each release has a description: the commit subject for clean checkouts, `Uncommitted changes based on: <commit subject>` for dirty checkouts, or `Local source snapshot` without Git history. Override it with `tako deploy --description "Fix reconnect handling"`. Custom descriptions retain the dirty indicator.
+
+## Write application logs
+
+Tako captures app stdout and stderr for every runtime. JavaScript provides an SDK logger; Go and Rust can emit JSON lines through their normal logging tools:
+
+<CodeGroup>
+
+```ts JavaScript
+import { tako } from "tako.sh";
+
+tako.logger.info("upload completed", { objectKey: "avatars/user-123.png" });
+tako.logger.error("upload failed", { error: new Error("storage unavailable") });
+```
+
+```go Go
+package main
+
+import (
+    "log/slog"
+    "os"
+)
+
+func main() {
+    logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+    logger.Info("upload completed", "objectKey", "avatars/user-123.png")
+    logger.Error("upload failed", "error", "storage unavailable")
+}
+```
+
+```rust Rust
+fn main() {
+    println!("{}", serde_json::json!({
+        "level": "info", "message": "upload completed", "objectKey": "avatars/user-123.png"
+    }));
+    eprintln!("{}", serde_json::json!({
+        "level": "error", "message": "upload failed", "error": "storage unavailable"
+    }));
+}
+```
+
+</CodeGroup>
+
+The JavaScript server logger serializes `Error` fields with their name, message, and stack. The Go example uses standard-library `log/slog`; the Rust example uses the `serde_json` crate. Read all three through the same app log stream. Keep secrets, access tokens, and signed URLs out of log fields. JavaScript workflows also provide run- and step-scoped loggers; see [Workflows](/workflows/).
+
+## Metrics
+
+`tako-server` exposes Prometheus metrics on `127.0.0.1:9898` by default. Set `--metrics-port` to use another port or `0` to disable the endpoint and request metrics.
+
+| Metric                                   | What it measures                                  |
+| ---------------------------------------- | ------------------------------------------------- |
+| `tako_http_requests_total`               | Proxied requests by app and status class.         |
+| `tako_http_request_duration_seconds`     | End-to-end proxy latency.                         |
+| `tako_upstream_request_duration_seconds` | Time from the proxy to upstream response headers. |
+| `tako_http_active_connections`           | Active connections per app.                       |
+| `tako_cold_starts_total`                 | Cold starts triggered per app.                    |
+| `tako_cold_start_duration_seconds`       | Successful and failed cold-start duration.        |
+| `tako_cold_start_failures_total`         | Cold-start failures by reason.                    |
+| `tako_tls_handshake_failures_total`      | Tako-visible SNI and certificate lookup failures. |
+| `tako_instance_health`                   | Health of each instance, reported as `1` or `0`.  |
+| `tako_instances_running`                 | Running instance count per app.                   |
+
+Every metric includes a `server` label so one scraper can distinguish hosts in a multi-server environment. Request latency metrics cover proxied backend traffic, not static files, ACME challenges, or unmatched hosts.
+
+## Verify a change
+
+After scaling, inspect status and request the real app hostname. After rollback, confirm the selected release is current and exercise the failing request again. A rollback restores release code; use [Backups](/backups/) for app data recovery. Application schema changes must remain compatible with the release you restore.
+
+Use finite log history or MCP's bounded local log tool for agent inspection. Keep `--tail` for an intentionally attached terminal. Detailed failures are in app logs; a generic production 5xx response alone does not identify its cause.

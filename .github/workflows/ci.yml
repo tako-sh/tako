@@ -346,7 +346,7 @@ jobs:
         if: steps.changes.outputs.website == 'true'
         run: bun run --filter website build --silent
 
-      - name: Verify agent discovery files
+      - name: Verify documentation and agent discovery files
         if: steps.changes.outputs.website == 'true'
         run: |
           bun run --filter website verify
@@ -356,8 +356,7 @@ jobs:
         if: steps.changes.outputs.website == 'true'
         uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2
         with:
-          # The Worker proxies /docs to Docs7; these routes are absent from dist.
-          args: --offline --root-dir website/dist --exclude '^file://.*/website/dist/docs([/?#]|$)' 'website/dist/**/*.html'
+          args: --offline --root-dir website/dist 'website/dist/**/*.html'
 
   # x86_64 glibc — needed for CLI tests + E2E
   build-x86_64-glibc:

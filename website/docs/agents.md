@@ -1,9 +1,7 @@
 ---
 title: Coding Agents
-description: "Set up Tako skills and MCP for Codex, Claude Code, Cursor, and VS Code Copilot."
+description: "Configure Codex, Claude Code, Cursor, and VS Code Copilot with Tako's project-local skills, MCP tools, and version-matched docs."
 ---
-
-# Coding agents
 
 Tako ships workflow skills, offline documentation, and an MCP server in the CLI.
 Skills teach agents how to develop, deploy, verify, and debug Tako apps. MCP tools
@@ -91,6 +89,21 @@ Stdout carries MCP messages only; diagnostics stay on stderr.
 
 ## Tools and documentation
 
+Start with `tako_docs` topic `docs/index` for a task map. Read one focused topic with `tako_docs`, then use `tako_search_docs` to locate exact names or errors. Search is case-insensitive literal text and returns at most 50 matching lines; narrow a broad query before loading more documents. Follow the returned topic to read the full context.
+
+| Task                                                    | Topic                                                             |
+| ------------------------------------------------------- | ----------------------------------------------------------------- |
+| Start and inspect local apps                            | `docs/development`                                                |
+| App secrets or provider credentials                     | `docs/secrets`                                                    |
+| File uploads, downloads, or local app data              | `docs/storage`                                                    |
+| Image optimization or backend caching                   | `docs/images`, `docs/cache`                                       |
+| Live events, membership, live reads, or background jobs | `docs/channels`, `docs/presence`, `docs/stores`, `docs/workflows` |
+| Provision hosts, deploy, or configure domains           | `docs/servers`, `docs/deployment`, `docs/routing`                 |
+| Logs, scaling, rollback, or data recovery               | `docs/operations`, `docs/backups`                                 |
+| Exact options and configuration                         | `docs/cli`, `docs/tako-toml`, installed tool schemas              |
+
+Use `docs/framework-guides` to select a framework-specific topic. Use `docs/docker`, `docs/dockerfile`, and `docs/docker-workflows` for image-based releases.
+
 Tools have named arguments generated from the CLI's command definitions. Examples
 include `tako_doctor`, `tako_status`, `tako_logs`, `tako_deploy`, `tako_dev_list`,
 `tako_dev_logs`, `tako_secrets_set`, `tako_releases_rollback`, and `tako_run`. Tool descriptions and
@@ -117,6 +130,7 @@ and agent setup also belong in a terminal.
 those documents. They are also available through MCP resources:
 
 - `tako://docs/quickstart`
+- `tako://docs/index`
 - `tako://docs/cli`
 - `tako://docs/tako-toml`
 - `tako://docs/troubleshooting`
@@ -126,6 +140,8 @@ those documents. They are also available through MCP resources:
 Docs and skills are bundled at build time and match the installed CLI. Upgrade
 Tako for newer content. The live docs index is https://tako.sh/llms.txt and the
 skills discovery index is https://tako.sh/.well-known/agent-skills/index.json.
+
+Live web docs can describe a newer release than the installed CLI. Prefer bundled docs for the selected tool version. Fetch individual web `.md` pages when needed; `llms-full.txt` loads the entire corpus and is usually unnecessary for a scoped task.
 
 MCP tools can change deployments, run local code with secrets, and delete or
 restore data. Client approval policies still apply. A `yes` argument skips a CLI

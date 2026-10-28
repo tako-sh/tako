@@ -1,0 +1,93 @@
+---
+title: Images
+description: "Optimize public images with Tako image URLs and responsive srcsets, configure allowed sources and sizes, and use public storage images safely."
+---
+
+Tako's public image optimizer serves resized WebP or AVIF images at `/_tako/image`. The JavaScript helpers build URLs; Tako performs the transformation when that URL is requested through the app's Tako route.
+
+## Generate an image URL
+
+The optimizer endpoint works with JavaScript, Go, and Rust apps. Go and Rust currently have no image helper API; generate the same public URL in application code or an HTML template:
+
+<CodeGroup>
+
+```ts JavaScript
+import { imageUrl } from "tako.sh";
+
+const src = imageUrl("/images/hero.jpg", { width: 1200 });
+```
+
+```go Go
+import "net/url"
+
+func heroImageURL() string {
+    query := url.Values{"src": {"/images/hero.jpg"}, "w": {"1200"}}
+    return "/_tako/image?" + query.Encode()
+}
+```
+
+```rust Rust
+// A fixed public source needs no SDK helper or additional dependency.
+const HERO_IMAGE_URL: &str = "/_tako/image?src=%2Fimages%2Fhero.jpg&w=1200";
+```
+
+</CodeGroup>
+
+Use a URL query encoder when building URLs from variable sources; do not concatenate untrusted strings. The endpoint accepts `src` (source), `w` (width), optional `q` (quality), and optional `f` (`webp` or `avif`). All variants remain subject to the server allowlists below.
+
+JavaScript also provides a responsive-image helper:
+
+```ts
+import { imageSrcSet } from "tako.sh";
+
+const responsive = imageSrcSet("/images/hero.jpg", {
+  width: 1200,
+  layout: "constrained",
+});
+// responsive contains src, srcSet, and sizes for your image element.
+```
+
+Helpers support widths `320`, `640`, `960`, `1200`, and `1920`; `imageUrl` defaults to width `1200` and quality `75`. `imageSrcSet` requires a width and accepts `constrained`, `full-width`, or `fixed` layout, optional explicit widths, and a custom `sizes` string. In HTML use `srcset`; JSX uses `srcSet`.
+
+Local sources begin with `/`. Remote sources must be HTTP(S) URLs without embedded credentials. Do not feed private signed download URLs into a public optimizer.
+
+## Allow sources and output variants
+
+```toml
+[images]
+local_patterns = ["/images/**"]
+remote_patterns = ["https://cdn.example.com/uploads/**"]
+sizes = [320, 640, 960, 1200, 1920]
+qualities = [75]
+formats = ["webp", "avif"]
+```
+
+Local sources default to `["/**"]`. Remote sources are denied unless allowed by `remote_patterns`. Defaults are the five widths above, quality `75`, and format `webp`; each configured array replaces its default. Requesting a quality or format requires it to be allowed. See [image configuration](/tako-toml/#images) for pattern and validation rules.
+
+The server can allow additional widths, but the JavaScript helpers still accept only the five built-in widths. Keep helper output within the server allowlist. Image URLs are public capabilities; use only sources suitable for public access.
+
+## Images in storage
+
+For an S3 binding with an intentionally public `public_base_url`, allow that source in `remote_patterns` and create optimized URLs on the backend:
+
+```ts
+import { tako } from "tako.sh";
+
+const uploads = tako.storages.uploads;
+if (!uploads) throw new Error("uploads storage is not configured");
+
+const image = await uploads.createImageSrcSet("avatars/user-123.png", {
+  public: true,
+  width: 640,
+});
+```
+
+`createImageUrl` also supports public transforms. For private objects, use `createDownloadUrl` for a direct signed URL. Private transformations and private srcsets are not supported. Adding `public_base_url` does not make a private bucket public; see [Storage](/storage/).
+
+## Next.js integration
+
+The `withTako()` adapter configures `next/image` to use Tako's optimizer and aligns generated widths with Tako's default widths. Follow [Framework integration](/framework-guides/#nextjs) rather than configuring a second optimizer.
+
+## Verify
+
+Request the generated URL through the local or deployed Tako hostname. Check the HTTP status, image content type, and rendered dimensions. Also test a disallowed remote source and a disallowed size. A working helper call alone does not verify source permissions or server image support; [Troubleshooting](/troubleshooting/) covers runtime setup.

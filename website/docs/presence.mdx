@@ -1,45 +1,27 @@
 ---
 title: Presence
-description: "Track live connections with authenticated identities, connection metadata, and a React hook."
+description: "Track who is connected with Tako Presence: authenticated identities, scoped membership, client metadata, and automatic reconnects."
 ---
 
 Presence tracks who is connected to a named space. Tako manages membership, metadata updates, reconnects, and expiry. Each browser tab has its own entry, so closing one tab does not remove another tab belonging to the same user.
 
 Use [Stores](/stores/) to keep backend data and UI synchronized with optional cached offline reads. Presence describes current connections; Stores loads data from your existing database.
 
+Local subscriptions bypass authorization callbacks; verify private membership in a deployed test environment. Presence params partition membership, unlike ordinary channel params. Client metadata is untrusted; use the server-verified subject for identity.
+
 ## Define A Space
 
-Put one default export in each `<app_root>/presence/*.ts` file. As with channels, the first argument is the space name and `auth.verify` decides access.
+JavaScript definitions live in `<app_root>/presence/*.ts`; Go and Rust register definitions during application startup. Each tab defines the same private `chat` space, scopes membership by `chatId`, and checks access through app-owned auth helpers. The native snippets belong in application initialization before starting the SDK server.
 
-```ts
-// src/presence/lobby.ts
-import { definePresence } from "tako.sh";
-import { verifyToken } from "../lib/auth";
+<CodeGroup>
 
-export default definePresence("lobby", {
-  auth: {
-    async verify({ header }) {
-      const user = await verifyToken(header?.value);
-      return user ? { subject: user.id } : false;
-    },
-  },
-});
-```
-
-Omit `auth` or set it to `false` for public presence. Auth supports the same `headerName`, `cookieName`, and verification inputs as [channels](/channels/#authorize-and-choose-a-transport). A verification result of `true` allows an anonymous connection; `{ subject: "user-id" }` attaches a trusted identity. A client cannot set its subject or connection ID.
-
-`paramsSchema` validates params before authorization. Presence membership is scoped by the space name and all validated params. For example, `params: { chatId: "one" }` and `params: { chatId: "two" }` have separate member lists. Auth must check that the user may access the requested chat. Authorized connections with the same params see each other. Channel and presence names have separate namespaces, so both can be named `lobby`.
-
-## Guard Private Chat Presence
-
-Authorize access on the server before returning any members:
-
-```ts
+```ts JavaScript
 // src/presence/chat.ts
 import { definePresence } from "tako.sh";
 import { verifyToken, canAccessChat } from "../lib/auth";
 
 export default definePresence("chat", {
+  maxConnectionLifetimeMs: 60_000,
   paramsSchema: (t) => t.Object({ chatId: t.String({ minLength: 1 }) }),
   auth: {
     async verify({ header, params }) {
@@ -50,6 +32,58 @@ export default definePresence("chat", {
   },
 });
 ```
+
+```go Go
+import (
+    "encoding/json"
+    "tako.sh"
+)
+
+tako.RegisterPresence("chat", tako.PresenceDefinition{
+    ParamsSchema: json.RawMessage(`{
+        "type":"object",
+        "properties":{"chatId":{"type":"string"}},
+        "required":["chatId"]
+    }`),
+    Auth: &tako.ChannelAuthScheme{HeaderName: "authorization"},
+    MaxConnectionLifetimeMs: 60_000,
+    Verify: func(input tako.VerifyInput) tako.ChannelAuthDecision {
+        userID, ok := authorizeChatPresence(input)
+        if !ok { return tako.RejectChannel() }
+        return tako.AllowChannel(tako.ChannelGrant{Subject: userID})
+    },
+})
+```
+
+```rust Rust
+use std::sync::Arc;
+use serde_json::json;
+use tako::{PresenceAuth, PresenceDefinition, PresenceGrant, PresenceRegistry};
+
+let presence = Arc::new(PresenceRegistry::new());
+presence.register("chat", PresenceDefinition::new()
+    .params_schema(json!({
+        "type": "object",
+        "properties": {"chatId": {"type": "string"}},
+        "required": ["chatId"]
+    }))
+    .max_connection_lifetime_ms(60_000)
+    .auth(PresenceAuth::default(), |input| async move {
+        authorize_chat_presence(&input).await.map(PresenceGrant::new)
+    }));
+
+tako::axum::serve_with_presence(app, presence).await?;
+```
+
+</CodeGroup>
+
+In JavaScript, omit `auth` or set it to `false` for public presence. Auth supports the same `headerName`, `cookieName`, and verification inputs as [channels](/channels/#authorize-and-choose-a-transport). A verification result of `true` allows an anonymous connection; `{ subject: "user-id" }` attaches a trusted identity. A client cannot set its subject or connection ID.
+
+`paramsSchema` validates params before authorization. Presence membership is scoped by the space name and all validated params. For example, `params: { chatId: "one" }` and `params: { chatId: "two" }` have separate member lists. Auth must check that the user may access the requested chat. Authorized connections with the same params see each other. Channel and presence names have separate namespaces, so both can be named `lobby`.
+
+## Guard Private Chat Presence
+
+The definition above authorizes access before returning members. Connect the shared browser client with the same space name and params:
 
 ```tsx
 const { members, status } = usePresence("chat", {
@@ -71,8 +105,9 @@ This remains true while any of that user's tabs are present in this chat. Every 
 
 import { usePresence } from "tako.sh/react";
 
-function Lobby({ token }: { token: string }) {
-  const { members, connectionId, update, status, error } = usePresence("lobby", {
+function ChatPresence({ token, chatId }: { token: string; chatId: string }) {
+  const { members, connectionId, update, status, error } = usePresence("chat", {
+    params: { chatId },
     authorization: token,
     data: { typing: false },
   });
@@ -117,30 +152,10 @@ Call the hook once in a provider and share its result when several components ne
 
 ## Go Backends
 
+Select the Go tab in the definition example above.
+
 The Go HTTP SDK is the root `tako.sh` module. Register spaces before calling
 `tako.ListenAndServe`:
-
-```go
-import (
-    "encoding/json"
-    "tako.sh"
-)
-
-tako.RegisterPresence("chat", tako.PresenceDefinition{
-    ParamsSchema: json.RawMessage(`{
-        "type":"object",
-        "properties":{"chatId":{"type":"string"}},
-        "required":["chatId"]
-    }`),
-    Auth: &tako.ChannelAuthScheme{HeaderName: "authorization"},
-    MaxConnectionLifetimeMs: 60_000,
-    Verify: func(input tako.VerifyInput) tako.ChannelAuthDecision {
-        userID, ok := authorizeChatPresence(input)
-        if !ok { return tako.RejectChannel() }
-        return tako.AllowChannel(tako.ChannelGrant{Subject: userID})
-    },
-})
-```
 
 `authorizeChatPresence` is your app's helper that verifies the credential and
 access to the requested `chatId`. Cookie-only auth uses
@@ -152,27 +167,9 @@ The separate `sdk/go` workflow-worker module does not need presence registration
 
 ## Rust Backends
 
+Select the Rust tab in the definition example above.
+
 Enable the `axum` feature on the `tako` crate and register definitions explicitly:
-
-```rust
-use std::sync::Arc;
-use serde_json::json;
-use tako::{PresenceAuth, PresenceDefinition, PresenceGrant, PresenceRegistry};
-
-let presence = Arc::new(PresenceRegistry::new());
-presence.register("chat", PresenceDefinition::new()
-    .params_schema(json!({
-        "type": "object",
-        "properties": {"chatId": {"type": "string"}},
-        "required": ["chatId"]
-    }))
-    .max_connection_lifetime_ms(60_000)
-    .auth(PresenceAuth::default(), |input| async move {
-        authorize_chat_presence(&input).await.map(PresenceGrant::new)
-    }));
-
-tako::axum::serve_with_presence(app, presence).await?;
-```
 
 Your `authorize_chat_presence` helper returns `Some(user_id)` after verifying the
 credential and chat access, or `None` to deny. Omit `.auth(...)` for a public
@@ -195,3 +192,7 @@ Connected clients receive membership changes within approximately one second. Cl
 Presence uses expiring records separate from durable channel replay. It does not replay old joins, leaves, or cursor positions. Use channels for durable live events and your app database for lasting records.
 
 Local development keeps presence in memory and permits connections without running auth callbacks, matching local channel behavior. Single-server production uses Tako-managed SQLite by default. Multi-server deployments require the shared `postgres_url` credential, so connections on different servers see the same members. Presence state is scoped to the deployed app and environment. Configure `postgres_url` explicitly for multi-server Go and Rust apps; the deployment preflight currently detects JavaScript definition directories, not inline native registrations.
+
+## Verify
+
+Join with two tabs, check connection IDs and trusted subjects, update metadata, and close one tab. Verify that membership in another params scope is hidden and a denied caller cannot join in production. Disconnect a client without a clean close and allow for lease expiry before assuming a stale member is permanent.

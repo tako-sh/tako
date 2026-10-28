@@ -29,6 +29,22 @@ pub(super) fn content(key: &str) -> Option<&'static str> {
         .map(|(_, content)| *content)
 }
 
+fn topic_title(content: &str) -> Option<&str> {
+    let mut lines = content.lines();
+    if lines.next() == Some("---") {
+        // Documentation uses single-line titles; skills use a body heading.
+        for line in lines.take_while(|line| *line != "---") {
+            if let Some(title) = line.strip_prefix("title:") {
+                let title = title.trim().trim_matches(['"', '\'']);
+                if !title.is_empty() {
+                    return Some(title);
+                }
+            }
+        }
+    }
+    content.lines().find_map(|line| line.strip_prefix("# "))
+}
+
 pub(super) fn call(
     name: &str,
     arguments: &Map<String, Value>,
@@ -45,14 +61,9 @@ pub(super) fn call(
         match arguments.get("topic") {
             None => ASSETS
                 .iter()
-                .map(|(key, content)| {
-                    format!(
-                        "{key}: {}",
-                        content
-                            .lines()
-                            .find(|line| line.starts_with("# "))
-                            .unwrap_or(key)
-                    )
+                .map(|(key, content)| match topic_title(content) {
+                    Some(title) => format!("{key}: # {title}"),
+                    None => key.to_string(),
                 })
                 .collect::<Vec<_>>()
                 .join("\n"),

@@ -1,47 +1,17 @@
 ---
 title: Deployment
-description: "Guide to deploying apps with Tako on your own servers, including server setup, rolling deploys, scaling, secrets, and production operations."
+description: "Build and deploy a Tako release: select an environment, package native or container artifacts, run release commands, and verify rolling updates."
 ---
 
 Tako deploys locally built apps to servers you control. The CLI validates project state, builds and packages the release, uploads artifacts over signed private HTTP management, and asks `tako-server` to prepare and roll the release into traffic.
 
 ## Server Setup
 
-Install the server on a Linux host with glibc and systemd, using x86_64 or ARM64. Alpine/musl and OpenRC hosts are not supported.
-
-Run the installer:
-
-```bash
-sudo sh -c "$(curl -fsSL https://tako.sh/install-server.sh)"
-```
-
-Custom public ports:
-
-```bash
-curl -fsSL https://tako.sh/install-server.sh | sudo sh -s -- --http-port 8080 --https-port 8443
-```
-
-The installer creates the `tako` service user, the shared `tako-app` group, `/opt/tako`, `/var/run/tako`, service files, maintenance helpers, restricted sudoers policy, public HTTP/HTTPS listeners, local metrics, libvips runtime support, and private Tailscale management.
-
-On Linux, each app/environment runs as a separate Unix identity. Apps can write their own release files and data, including dependencies, while the service protects the release manifest and control directories. The internal socket checks the connecting Unix identity against the requested app. Image decoding runs under a separate unprivileged account with bounded resources.
-
-Production isolation requires cgroup v2 with CPU, memory, and process controllers. Each app is limited to 2 GiB of memory, two CPUs, and 512 processes. Missing identity provisioning or resource enforcement stops app startup. The installer restarts an existing service so children launched under an older policy are replaced. If you use `TAKO_RESTART_SERVICE=0` when upgrading, restart the service before relying on the updated isolation policy.
-
-Normal installs require Tailscale for remote management. The CLI expects a Tailscale MagicDNS host or Tailscale IP, verifies SSH recovery access, enrolls the SSH key for signed management, and then uses signed HTTP for app operations.
+Provision a supported Linux host and enroll private management access using [Servers](/servers/#server-setup). That page covers system requirements, isolation, installation, and recovery access.
 
 ## Add A Server
 
-```bash
-tako servers add my-server.tailnet.ts.net
-```
-
-or:
-
-```bash
-tako servers add ubuntu@my-server.tailnet.ts.net
-```
-
-Interactive setup checks the management endpoint and `tako@host` SSH access. If the server is running but inaccessible, Tako offers to repair access; if its state is unknown, Tako offers to install or repair it. After confirmation, Tako asks for an administrator with `root` pre-filled. Use `--install` to skip the confirmation or `admin@host` to select the administrator without a prompt. Public HTTP and HTTPS ports default to `80` and `443`; override them with `--http-port` and `--https-port`. The add flow stores host, SSH port, public ports, description, and detected target metadata (`arch`, `libc`).
+Use [Servers](/servers/#add-a-server) to add or repair a host. Confirm the inventory name with `tako servers list --json`, then map it to the environment below.
 
 ## Configure An Environment
 
@@ -56,15 +26,15 @@ Deploy targets the servers listed in `[envs.<env>].servers`. If production has n
 ## Deploy
 
 ```bash
-tako deploy
+tako deploy --env production
 tako deploy --env staging
-tako deploy --env production --yes
-tako deploy --force
 ```
 
 When `--env` is omitted, deploy targets `production`. In an interactive terminal, an implicit production deploy asks for confirmation — but only if `tako.toml` declares more than one deployable environment (`development` doesn't count). With a single environment, there's nothing the deploy could have implicitly missed, so it proceeds without asking. Passing `--env production`, `--yes`, or `-y` also skips the prompt by making the target explicit.
 
 The CLI, server, and release artifact must use the same protocol version. Tako checks before parallel deployment starts and again on each server before dependency preparation, release commands, workflow synchronization, or app startup. A mismatch fails the deploy without starting those workloads. `--force` attempts the incompatible deploy but does not skip validation or readiness checks; unlike `--yes`, it does not control confirmation prompts.
+
+Inspect a mismatch before choosing to force it. For automation, select the environment explicitly and use `--yes` only when the deployment is already authorized.
 
 Deploy validates secrets, storage credentials, provider credentials, routes, server target metadata, workflow/channel storage requirements, and local-storage limitations before build work starts.
 
@@ -94,6 +64,8 @@ Runtime download or version resolution failures abort release preparation. Runti
 Native HTTP instances bind `127.0.0.1` on an OS-assigned port and signal readiness through fd 4. Secrets, storage bindings, and the internal health token arrive through fd 3.
 
 ## Container Releases
+
+The [Docker section](/docker/) covers image configuration, [Dockerfiles by language](/dockerfile/), and [container workflow workers](/docker-workflows/).
 
 ```toml
 container = "Dockerfile"
@@ -132,96 +104,32 @@ If desired instances are `0`, deploy still starts one warm instance for the new 
 
 Failures, including a new instance becoming unhealthy during the stability window, keep old instances running, clean partial release directories when needed, roll back release metadata, and report per-server results.
 
+After rollout, inspect `tako status --json`, request the real route, and read finite app logs. Verify the changed behavior through the application; successful upload or rollout alone does not prove that a database migration or user flow works.
+
 ## Scaling
 
-```bash
-tako scale 3 --env production
-tako scale 0 --env production
-```
-
-Desired instances are server-side state. They persist across deploys, rollbacks, and server restarts. Scaling above the effective server maximum fails. Scaling to zero enables cold starts after idle timeout.
+See [Operations](/operations/#scaling) for changing desired instance counts, scale-to-zero behavior, and post-change verification. Scaling is server-side state rather than a `tako.toml` instance-count field.
 
 ## Secrets And Credentials
 
-App secrets:
-
-```bash
-tako secrets set DATABASE_URL --env production
-tako secrets sync --env production
-```
-
-Provider credentials:
-
-```bash
-tako credentials set ssl.cloudflare --env production
-tako credentials set postgres_url --env production
-```
-
-Deploy sends app secrets only when the server's current secret hash differs. Provider credentials are sent only for the runtime binding that needs them, such as Cloudflare SSL, Let's Encrypt DNS-01, or shared channel/workflow storage.
+Configure [app secrets and provider credentials](/secrets/) before deployment. App secrets feed your SDK; `ssl.cloudflare` and `postgres_url` configure Tako-owned runtime services. Deployment sends the relevant changed values.
 
 ## Storage And Backups
 
-Attach app storage:
-
-```bash
-tako storages add uploads --env production --provider s3 --bucket app-uploads --endpoint https://example.r2.cloudflarestorage.com --region auto
-```
-
-Set backup-only credentials:
-
-```bash
-tako storages credentials private_backups --env production
-```
-
-Backups are enabled in `tako.toml` with `backup = { storage = "resource" }`. Deploy sends backup storage separately from app storage, and it is not exposed through SDK storage bindings unless also listed in `[envs.<env>].storages`. Backup archives preserve symlinks as symlinks.
+Use [Storage](/storage/) to bind app files and [Backups](/backups/) to protect the deployed data tree. Backup-only resources are not exposed as app storage bindings.
 
 ## TLS
 
-Let's Encrypt is the default. Exact routes can use HTTP-01; wildcard routes require Cloudflare DNS-01 with `ssl.cloudflare`. `ssl = "cloudflare"` uses Cloudflare Origin CA and also requires `ssl.cloudflare`.
-
-If public HTTPS uses a non-default port, deploy summaries include that port and HTTP redirects target it.
+See [Routing and TLS](/routing/) for domain routes, certificate providers, wildcard credentials, public ports, and client-IP policy.
 
 ## Server Maintenance
 
-```bash
-tako servers reload la
-tako servers reload la --force
-tako servers upgrade la
-tako servers upgrade la --force
-tako servers uninstall la --yes
-```
-
-`reload` is zero-downtime by default. Its `--force` flag performs a restart. `upgrade` installs a candidate `tako-server` binary, enters upgrade mode, and checks its protocol against the CLI and every active release before reloading. It checks again after readiness. A mismatch fails before reload; any failure after reload begins restores and restarts the previous binary before upgrade mode ends. `upgrade --force` attempts a protocol mismatch but keeps readiness and rollback enabled. `uninstall` removes the remote service and data, then removes the local server entry.
-
-Maintenance runs through restricted, root-owned helpers. Upgrades accept only official releases: the CLI verifies the signed release manifest, and the host verifies the archive against that manifest before installation. Install custom builds as administrator; `servers upgrade` rejects `TAKO_DOWNLOAD_BASE_URL` overrides.
+See [Servers](/servers/#server-maintenance) for reloads, protocol-checked upgrades, recovery, and uninstall behavior.
 
 ## Logs And Releases
 
-```bash
-tako logs --env production
-tako logs --env production --tail
-tako logs --env production --json
-tako releases list --env production
-tako releases rollback <release-id> --env production
-```
-
-Logs include app stdout/stderr and app-scoped server diagnostics. Releases show merged release history across mapped servers and mark the current release. Each release has a description: the commit subject for clean checkouts, `Uncommitted changes based on: <commit subject>` for dirty checkouts, or `Local source snapshot` without Git history. Override it with `tako deploy --description "Fix reconnect handling"`. Custom descriptions retain the dirty indicator.
+Use [Operations](/operations/#logs-and-releases) to inspect release history, collect finite logs, and roll back code. Verify the deployed route after every release.
 
 ## Metrics
 
-`tako-server` exposes Prometheus metrics on `127.0.0.1:9898` by default. Set `--metrics-port` to use another port or `0` to disable the endpoint and request metrics.
-
-| Metric                                   | What it measures                                  |
-| ---------------------------------------- | ------------------------------------------------- |
-| `tako_http_requests_total`               | Proxied requests by app and status class.         |
-| `tako_http_request_duration_seconds`     | End-to-end proxy latency.                         |
-| `tako_upstream_request_duration_seconds` | Time from the proxy to upstream response headers. |
-| `tako_http_active_connections`           | Active connections per app.                       |
-| `tako_cold_starts_total`                 | Cold starts triggered per app.                    |
-| `tako_cold_start_duration_seconds`       | Successful and failed cold-start duration.        |
-| `tako_cold_start_failures_total`         | Cold-start failures by reason.                    |
-| `tako_tls_handshake_failures_total`      | Tako-visible SNI and certificate lookup failures. |
-| `tako_instance_health`                   | Health of each instance, reported as `1` or `0`.  |
-| `tako_instances_running`                 | Running instance count per app.                   |
-
-Every metric includes a `server` label so one scraper can distinguish hosts in a multi-server environment. Request latency metrics cover proxied backend traffic, not static files, ACME challenges, or unmatched hosts.
+The Prometheus endpoint and metric names are documented in [Operations](/operations/#metrics).

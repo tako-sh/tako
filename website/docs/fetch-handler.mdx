@@ -1,0 +1,46 @@
+---
+title: Fetch Handlers
+description: "Run a plain JavaScript or TypeScript fetch handler on Bun or Node.js with Tako's SDK runtime, explicit entrypoint, secrets, and local HTTPS."
+---
+
+For a small HTTP app, export a Web `Request` to `Response` handler. The `tako.sh` package supplies the runtime entrypoint even when your handler does not import it.
+
+## Export the application
+
+```ts src/index.ts
+export default async function fetch(request: Request): Promise<Response> {
+  const url = new URL(request.url);
+  if (url.pathname === "/") {
+    return new Response("Hello from Tako");
+  }
+  return new Response("Not Found", { status: 404 });
+}
+```
+
+A default object with a `fetch` method also works. Return a `Response` or `Promise<Response>` and leave listening, bootstrap, and internal status handling to the SDK entrypoint.
+
+Install `tako.sh`, use ES modules, and select your runtime:
+
+<CodeGroup>
+
+```toml Bun
+name = "fetch-app"
+runtime = "bun"
+main = "src/index.ts"
+```
+
+```toml Node.js
+name = "fetch-app"
+runtime = "node"
+main = "src/index.ts"
+```
+
+</CodeGroup>
+
+Use a Node.js version compatible with the app's TypeScript syntax, or compile to JavaScript and point `main` at the build output. Plain fetch apps do not need Vite or a framework preset. Access private values server-side through [Secrets](/secrets/); runtime features are on `tako` from `tako.sh`.
+
+## Develop and deploy
+
+Start with `tako dev --background --json`, request `/` and a missing route through the returned HTTPS URL, and inspect finite logs. Add production routes and servers to `tako.toml`, then follow [Deployment](/deployment/). The SDK uses Bun or Node.js according to `runtime`; do not start a separate hard-coded listener inside the handler.
+
+For Docker, use the packaged SDK HTTP entrypoint rather than running a fetch module as a standalone program; see [Dockerfiles](/dockerfile/).

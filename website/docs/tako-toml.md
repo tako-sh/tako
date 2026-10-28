@@ -1,6 +1,6 @@
 ---
 title: "tako.toml Reference"
-description: "Complete tako.toml reference covering routes, runtime settings, builds, secrets, scaling, environments, and deployment configuration."
+description: "Look up Tako project configuration for identity, runtimes, builds, routes, variables, storage, backups, images, workflows, and deployment targets."
 ---
 
 `tako.toml` describes one app: identity, runtime, build, routes, variables, storage bindings, backups, SSL provider, source-IP policy, workflows, and target servers. App secrets, storage credentials, and provider credentials are encrypted in `.tako/secrets.json`, not stored in this file.
@@ -27,19 +27,19 @@ App names are DNS-compatible. They use lowercase letters, numbers, and hyphens, 
 
 ## Top-Level Fields
 
-| Field             | Type   | Purpose                                                                                               |
-| ----------------- | ------ | ----------------------------------------------------------------------------------------------------- |
-| `name`            | string | Stable app identity. Must be DNS-friendly lowercase letters, numbers, and hyphens.                    |
-| `runtime`         | string | Runtime adapter, optionally pinned with `@version`, such as `bun@1.2.3`, `node`, or `go`.             |
-| `package_manager` | string | JS package manager override: `bun`, `npm`, `pnpm`, or `yarn`.                                         |
-| `preset`          | string | Runtime-local preset alias such as `vite`, `tanstack-start`, or `nextjs`.                             |
-| `main`            | string | Runtime entrypoint override. May be a file path or module specifier.                                  |
-| `app_root`        | string | JS channels/workflows root, relative to `tako.toml`. Defaults to `src`; use `.` for root-level files. |
-| `dev`             | array  | Custom `tako dev` command. Overrides preset and runtime defaults unless a CLI command is passed.      |
-| `start`           | array  | Native deploy start command for prebuilt artifacts.                                                   |
-| `assets`          | array  | Additional asset directories merged into deployed `public/`.                                          |
-| `container`       | string | Container file path for container releases.                                                           |
-| `release`         | string | One-shot command run on the leader server before rolling update.                                      |
+| Field             | Type   | Purpose                                                                                                                      |
+| ----------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| `name`            | string | Stable app identity. Must be DNS-friendly lowercase letters, numbers, and hyphens.                                           |
+| `runtime`         | string | Runtime adapter, optionally pinned with `@version`, such as `bun@1.2.3`, `node`, or `go`.                                    |
+| `package_manager` | string | JS package manager override: `bun`, `npm`, `pnpm`, or `yarn`.                                                                |
+| `preset`          | string | Runtime-local preset alias such as `vite`, `tanstack-start`, or `nextjs`.                                                    |
+| `main`            | string | Runtime entrypoint override. May be a file path or module specifier.                                                         |
+| `app_root`        | string | JS channels, presence, stores, and workflows root, relative to `tako.toml`. Defaults to `src`; use `.` for root-level files. |
+| `dev`             | array  | Custom `tako dev` command. Overrides preset and runtime defaults unless a CLI command is passed.                             |
+| `start`           | array  | Native deploy start command for prebuilt artifacts.                                                                          |
+| `assets`          | array  | Additional asset directories merged into deployed `public/`.                                                                 |
+| `container`       | string | Container file path for container releases.                                                                                  |
+| `release`         | string | One-shot command run on the leader server before rolling update.                                                             |
 
 When `container` is set, native release fields are invalid: `main`, `start`, `assets`, `[build]`, and `[[build_stages]]`. `tako dev` still uses a CLI command override, the dev command, or runtime/preset dev defaults and does not build the container file locally.
 
@@ -206,7 +206,7 @@ Production supervises one scale-to-zero lane per JavaScript worker group, select
 
 The parser accepts `run` in named worker groups. It accepts `workers` and `concurrency` in `[workflows]`, `[workflows.<group>]`, `[servers.<server>.workflows]`, and `[servers.<server>.workflows.<group>]`. Parsed count/concurrency precedence is defaults (`workers = 0`, `concurrency = 10`), app base, app group, server base, then server group. These parsed counts and overrides do not yet control production supervision; do not rely on them to tune running workers. `run` must be a non-empty array of non-empty strings. Group and server names follow the app-name rules.
 
-In multi-server environments, JS workflows require `postgres_url` unless every workflow opts into local per-server execution. Go workflow deployments require `postgres_url` for multi-server environments. Channels also require `postgres_url` for multi-server deploys so every server can read and publish to the same broadcast replay log.
+In multi-server environments, JS workflows require `postgres_url` unless every workflow opts into local per-server execution. Go workflow deployments require `postgres_url` for multi-server environments. Channels, Presence, and Stores also require `postgres_url` so every server shares replay, membership, and invalidation state. Configure the credential explicitly for inline Go and Rust registrations; the deployment preflight detects JavaScript definition directories.
 
 ## Complete Example
 
