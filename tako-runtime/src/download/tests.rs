@@ -228,6 +228,43 @@ fn zip_extraction_works() {
 }
 
 #[test]
+fn zip_extraction_rejects_inconsistent_header_names() {
+    use std::io::Write;
+
+    let dir = TempDir::new().unwrap();
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    writer
+        .start_file("safe.txt", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    writer.write_all(b"archive payload").unwrap();
+    let mut buf = writer.finish().unwrap().into_inner();
+
+    // Change only the local header name; the central directory still says safe.txt.
+    assert_eq!(&buf[..4], b"PK\x03\x04");
+    buf[30..38].copy_from_slice(b"evil.txt");
+
+    let download = DownloadDef {
+        version_source: None,
+        url: None,
+        format: Some("zip".to_string()),
+        checksum_url: None,
+        checksum_format: None,
+        os_map: Default::default(),
+        arch_map: Default::default(),
+        extract: Some(crate::types::ExtractDef {
+            binary: None,
+            strip_components: None,
+            all: true,
+            symlinks: vec![],
+        }),
+    };
+
+    let err = extract_zip(&buf, dir.path(), &download, "1.0.0", "linux", "x64").unwrap_err();
+    assert!(err.contains("inconsistent zip archive headers"), "{err}");
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+}
+
+#[test]
 fn tar_gz_extraction_works() {
     let dir = TempDir::new().unwrap();
 
