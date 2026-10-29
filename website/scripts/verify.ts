@@ -203,7 +203,7 @@ for (const group of docsNavigation) {
     assert.deepEqual(article["publisher"], { "@id": siteEntityIds.organization });
     // Git dates are absent for new pages until their first commit.
     for (const field of ["datePublished", "dateModified"]) {
-      const value = article[field];
+      const value: unknown = article[field];
       if (value !== undefined) {
         assert.ok(typeof value === "string", `${page}: ${field} is a string`);
         assert.ok(Number.isFinite(Date.parse(value)), `${page}: ${field}`);
