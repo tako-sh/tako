@@ -162,11 +162,13 @@ Press `t` during `tako dev` to create a temporary public HTTPS URL for the curre
 
 The id is derived from the app name and the local Tako Identity public key, so the same app gets the same URL when the same identity is available. On macOS, Tako tries iCloud Keychain for the identity and falls back to local storage when synced Keychain access is unavailable. Other platforms use local identity storage. The tunnel service issues a nonce and only creates the tunnel after the client signs it, so tunnel mode does not require login or namespace setup.
 
-Starting a tunnel for the same app and identity replaces any previous active tunnel for that URL. Tunnels do not have a fixed session TTL. If the local tunnel connection is lost, `tako dev` keeps tunnel mode on, shows the URL as reconnecting, retries with bounded exponential backoff, and prints when reconnecting starts and when the tunnel reconnects. Tunnels turn off when you disable tunnel mode or unregister the app.
+Starting a tunnel for the same app and identity replaces any previous active tunnel for that URL. Tunnels do not have a fixed session TTL. If the local tunnel connection is lost, `tako dev` keeps tunnel mode on, shows the URL as reconnecting, retries with randomized, bounded exponential backoff, and prints when reconnecting starts and when the tunnel reconnects. Tunnels turn off when you disable tunnel mode or unregister the app.
 
 One Tako Identity can have up to five active tunnel URLs connected at the same time. Reconnecting or replacing the same app URL does not consume another slot. Starting a sixth active tunnel accepts the new tunnel and closes the oldest active tunnel for that identity; the closed client turns tunnel mode off and prints why it was closed.
 
 When a tunnel URL is inactive or disconnected, browser requests get a Tako-styled error page. Clients that send `Accept: application/json` get JSON, and other clients get plain text.
+
+Tunnel mode supports concurrent HTTP requests, streaming responses including SSE, and WebSockets. Each tunnel allows 32 concurrent HTTP requests and 32 WebSockets. HTTP uploads are buffered up to 2 MiB; WebSocket messages are limited to 1 MiB. Response headers must arrive within 30 seconds, but response bodies have no total duration limit. SSE apps should send periodic events or comments to stay within intermediary idle timeouts. Slow HTTP consumers pause their own upstream response; slow WebSockets close without blocking other requests.
 
 `tako dev list` shows the current tunnel URL for apps with tunnel mode enabled.
 

@@ -118,3 +118,25 @@ part of this protocol.
 ## Changing the protocol
 
 Update the typed owner, every producer and consumer, and the serialization or integration tests in one change. Update this document only when a cross-component boundary or invariant changes. User-facing behavior belongs in the website docs and SDK READMEs.
+
+## Public development tunnels
+
+The public tunnel relay (`tako-sh/tunnel`) and `tako-dev-server` negotiate
+`tako-tunnel-v1` as their WebSocket subprotocol. Each binary WebSocket message is a
+named MessagePack value; byte payloads use MessagePack binary values. The mirrored
+`tunnel_wire.rs` files own this contract and must change together. The relay
+rejects clients without the subprotocol with HTTP 426. There is no legacy fallback.
+
+HTTP exchanges are `Request` → `Response` headers → `ResponseChunk`* →
+`ResponseEnd`. `ResponseError` means the body was truncated; a dropped connection
+also fails unfinished bodies. `Cancel` aborts the request task. Each response has
+eight initial credits; each chunk consumes one credit, and the relay sends
+`ResponseCredit` when its downstream body is consumed. Chunks are at most 64 KiB.
+Response headers have a 30-second deadline; body streaming has no total timeout.
+Each session allows 32 HTTP requests and 32 WebSockets concurrently. Request
+bodies remain buffered with a 2 MiB limit; WebSocket messages are limited to 1 MiB.
+
+`Ping { nonce }` / `Pong { nonce }` provides application liveness every 25 seconds
+with a 75-second acknowledgement deadline. Reconnects use bounded jitter and only
+reset backoff after a stable connection. Session-owned tasks are aborted on every
+exit, including cancellation of the session future.

@@ -14,6 +14,7 @@ mod route_pattern;
 mod state;
 mod tls_accept;
 mod tunnel;
+mod tunnel_wire;
 
 use std::sync::{Arc, Mutex};
 

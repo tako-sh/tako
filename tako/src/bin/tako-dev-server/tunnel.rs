@@ -3,10 +3,10 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use base64::{Engine as _, engine::general_purpose::STANDARD};
+use crate::tunnel_wire::*;
 use futures_util::{SinkExt, StreamExt};
 use reqwest::header::{HeaderName, HeaderValue};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::AbortHandle;
@@ -51,69 +51,6 @@ struct CreatedTunnel {
 struct TunnelChallenge {
     host: String,
     nonce: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum ServerMessage {
-    Request(TunnelRequestMessage),
-    WebSocketOpen(TunnelWebSocketOpenMessage),
-    WebSocketFrame(TunnelWebSocketFrameMessage),
-    WebSocketClose(TunnelWebSocketCloseMessage),
-}
-
-#[derive(Debug, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum ClientMessage {
-    Response(TunnelResponseMessage),
-    WebSocketFrame(TunnelWebSocketFrameMessage),
-    WebSocketClose(TunnelWebSocketCloseMessage),
-    Ping,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct TunnelRequestMessage {
-    id: String,
-    method: String,
-    path: String,
-    headers: Vec<(String, String)>,
-    body_base64: String,
-}
-
-#[derive(Debug, Serialize)]
-struct TunnelResponseMessage {
-    id: String,
-    status: u16,
-    headers: Vec<(String, String)>,
-    body_base64: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct TunnelWebSocketOpenMessage {
-    id: String,
-    path: String,
-    headers: Vec<(String, String)>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct TunnelWebSocketFrameMessage {
-    id: String,
-    kind: TunnelWebSocketFrameKind,
-    data_base64: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct TunnelWebSocketCloseMessage {
-    id: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum TunnelWebSocketFrameKind {
-    Text,
-    Binary,
-    Ping,
-    Pong,
 }
 
 pub(super) async fn handle_toggle_tunnel(
@@ -461,7 +398,7 @@ async fn run_tunnel_session(
                     );
                     reported_reconnecting = false;
                 }
-                delay = TUNNEL_RECONNECT_INITIAL_DELAY;
+                let connected_at = tokio::time::Instant::now();
                 match run_tunnel_connection(
                     socket,
                     snapshot.clone(),
@@ -479,6 +416,9 @@ async fn run_tunnel_session(
                         disable_tunnel(&state, &config_path, reason);
                         return;
                     }
+                }
+                if connected_at.elapsed() >= Duration::from_secs(75) {
+                    delay = TUNNEL_RECONNECT_INITIAL_DELAY;
                 }
             }
             Err(TunnelConnectError::Retry(error)) => {
@@ -499,21 +439,47 @@ async fn run_tunnel_session(
             reported_reconnecting = true;
         }
 
-        tokio::time::sleep(delay).await;
+        let mut entropy = [0_u8; 8];
+        let _ = getrandom::fill(&mut entropy);
+        tokio::time::sleep(reconnect_delay(delay, u64::from_le_bytes(entropy))).await;
         delay = (delay * 2).min(TUNNEL_RECONNECT_MAX_DELAY);
     }
+}
+
+fn reconnect_delay(delay: Duration, entropy: u64) -> Duration {
+    delay / 2
+        + Duration::from_secs_f64(delay.as_secs_f64() / 2.0 * (entropy as f64 / u64::MAX as f64))
 }
 
 async fn connect_tunnel_socket(
     connect_url: &str,
 ) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>, TunnelConnectError> {
-    let (socket, _) = tokio::time::timeout(
+    let mut request = connect_url
+        .into_client_request()
+        .map_err(|error| TunnelConnectError::Retry(error.to_string()))?;
+    request.headers_mut().insert(
+        "sec-websocket-protocol",
+        HeaderValue::from_static(TUNNEL_PROTOCOL),
+    );
+    let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+        .max_message_size(Some(MAX_WIRE_MESSAGE))
+        .max_frame_size(Some(MAX_WIRE_MESSAGE));
+    let (socket, response) = tokio::time::timeout(
         TUNNEL_CONNECT_TIMEOUT,
-        tokio_tungstenite::connect_async(connect_url),
+        tokio_tungstenite::connect_async_with_config(request, Some(config), false),
     )
     .await
     .map_err(|_| TunnelConnectError::Retry("timed out connecting tunnel websocket".to_string()))?
     .map_err(classify_tunnel_connect_error)?;
+    if response
+        .headers()
+        .get("sec-websocket-protocol")
+        .is_none_or(|value| value != TUNNEL_PROTOCOL)
+    {
+        return Err(TunnelConnectError::Retry(
+            "tunnel protocol mismatch; update Tako and the relay together".into(),
+        ));
+    }
     Ok(socket)
 }
 
@@ -558,113 +524,178 @@ fn terminal_close_reason(close: Option<&CloseFrame>) -> Option<(TunnelCloseReaso
     }
 }
 
-async fn run_tunnel_connection(
-    socket: WebSocketStream<MaybeTlsStream<TcpStream>>,
+struct HttpTask {
+    abort: AbortHandle,
+    credit: Arc<tokio::sync::Semaphore>,
+}
+
+struct WebSocketTask {
+    abort: AbortHandle,
+    sender: mpsc::Sender<Message>,
+}
+
+async fn run_tunnel_connection<S>(
+    socket: WebSocketStream<S>,
     snapshot: TunnelSnapshot,
     state: Arc<Mutex<State>>,
     config_path: String,
-) -> Result<(), TunnelConnectionEnd> {
-    let (mut writer, mut reader) = socket.split();
+) -> Result<(), TunnelConnectionEnd>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
     let client = local_proxy_client(&snapshot.local_host, &snapshot.listen_addr)?;
-    let (outbound_tx, mut outbound_rx) = mpsc::channel::<String>(128);
-    let writer_task = tokio::spawn(async move {
+    run_connection(socket, snapshot, state, config_path, client).await
+}
+
+async fn run_connection<S>(
+    socket: WebSocketStream<S>,
+    snapshot: TunnelSnapshot,
+    state: Arc<Mutex<State>>,
+    config_path: String,
+    client: reqwest::Client,
+) -> Result<(), TunnelConnectionEnd>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let (mut writer, mut reader) = socket.split();
+    let (outbound_tx, mut outbound_rx) = mpsc::channel::<Vec<u8>>(16);
+    let mut writer_task = tokio::task::JoinSet::new();
+    writer_task.spawn(async move {
         while let Some(payload) = outbound_rx.recv().await {
-            writer
-                .send(Message::Text(payload.into()))
-                .await
-                .map_err(|error| format!("failed to send tunnel message: {error}"))?;
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                writer.send(Message::Binary(payload.into())),
+            )
+            .await
+            .map_err(|_| "tunnel writer timed out".to_string())?
+            .map_err(|error| format!("failed to send tunnel message: {error}"))?;
         }
         Ok::<(), String>(())
     });
-    let mut web_sockets: BTreeMap<String, mpsc::Sender<Message>> = BTreeMap::new();
+    // All children are aborted on every exit path, including cancellation of the session.
+    let mut tasks = tokio::task::JoinSet::new();
+    let mut requests: BTreeMap<String, HttpTask> = BTreeMap::new();
+    let mut web_sockets: BTreeMap<String, WebSocketTask> = BTreeMap::new();
     let mut keepalive = tokio::time::interval(TUNNEL_KEEPALIVE_INTERVAL);
+    keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut last_pong = tokio::time::Instant::now();
+    let mut ping_nonce = 0_u64;
 
     loop {
         tokio::select! {
+            _ = writer_task.join_next() => return Err("tunnel websocket writer stopped".to_string().into()),
+            completed = tasks.join_next(), if !tasks.is_empty() => {
+                if let Some(Ok(id)) = completed {
+                    requests.remove(&id);
+                    web_sockets.remove(&id);
+                }
+            }
+            _ = tokio::time::sleep_until(last_pong + Duration::from_secs(75)) => {
+                return Err("tunnel heartbeat timed out".to_string().into());
+            }
             _ = keepalive.tick() => {
-                send_client_message(&outbound_tx, ClientMessage::Ping).await?;
+                ping_nonce = ping_nonce.wrapping_add(1);
+                send_client_message(&outbound_tx, ClientMessage::Ping { nonce: ping_nonce }).await?;
             }
             message = reader.next() => {
-                let Some(message) = message else {
-                    break;
-                };
+                let Some(message) = message else { return Ok(()); };
                 let message = message.map_err(|error| format!("tunnel websocket error: {error}"))?;
-                let Message::Text(text) = message else {
+                let Message::Binary(data) = message else {
                     if let Message::Close(close) = message {
                         return match terminal_close_reason(close.as_ref()) {
-                            Some((reason, message)) => {
-                                Err(TunnelConnectionEnd::Terminal { reason, message })
-                            }
+                            Some((reason, message)) => Err(TunnelConnectionEnd::Terminal { reason, message }),
                             None => Ok(()),
                         };
                     }
                     continue;
                 };
-                let server_message = serde_json::from_str::<ServerMessage>(&text)
+                if data.len() > MAX_WIRE_MESSAGE { return Err("tunnel message too large".to_string().into()); }
+                let message = rmp_serde::from_slice::<ServerMessage>(&data)
                     .map_err(|error| format!("invalid tunnel message: {error}"))?;
-                match server_message {
+                match message {
                     ServerMessage::Request(request) => {
-                        let response = forward_to_local_proxy(&client, &snapshot, request).await;
-                        send_client_message(&outbound_tx, ClientMessage::Response(response)).await?;
+                        let id = request.id.clone();
+                        if requests.contains_key(&id) { return Err("duplicate tunnel request".to_string().into()); }
+                        if requests.len() >= MAX_IN_FLIGHT {
+                            send_error_response(&outbound_tx, &id, 503, "Too many concurrent tunnel requests").await?;
+                            continue;
+                        }
+                        let credit = Arc::new(tokio::sync::Semaphore::new(RESPONSE_WINDOW));
+                        let task_credit = Arc::clone(&credit);
+                        let client = client.clone();
+                        let snapshot = snapshot.clone();
+                        let outbound = outbound_tx.clone();
+                        let task_id = id.clone();
+                        let abort = tasks.spawn(async move {
+                            let _ = forward_to_local_proxy(&client, &snapshot, request, &outbound, &task_credit).await;
+                            task_id
+                        });
+                        requests.insert(id, HttpTask { abort, credit });
+                    }
+                    ServerMessage::Cancel { id } => {
+                        if let Some(task) = requests.remove(&id) { task.abort.abort(); }
+                    }
+                    ServerMessage::ResponseCredit { id } => {
+                        if let Some(task) = requests.get(&id) {
+                            if task.credit.available_permits() >= RESPONSE_WINDOW { return Err("invalid response credit".to_string().into()); }
+                            task.credit.add_permits(1);
+                        }
                     }
                     ServerMessage::WebSocketOpen(open) => {
                         let id = open.id.clone();
-                        let result = match current_upstream_port(&state, &config_path).await {
-                            Ok(upstream_port) => {
-                                open_local_websocket(
-                                    upstream_port,
-                                    open,
-                                    outbound_tx.clone(),
-                                )
-                                .await
-                            }
-                            Err(error) => Err(error),
-                        };
-                        match result {
-                            Ok(sender) => {
-                                web_sockets.insert(id, sender);
-                            }
-                            Err(error) => {
-                                tracing::debug!(error = %error, "failed to open local websocket");
-                                send_client_message(
-                                    &outbound_tx,
-                                    ClientMessage::WebSocketClose(TunnelWebSocketCloseMessage { id }),
-                                )
-                                .await?;
-                            }
+                        if web_sockets.contains_key(&id) { return Err("duplicate tunnel websocket".to_string().into()); }
+                        if web_sockets.len() >= MAX_IN_FLIGHT {
+                            send_client_message(&outbound_tx, ClientMessage::WebSocketClose(TunnelWebSocketCloseMessage { id })).await?;
+                            continue;
                         }
+                        let (sender, incoming) = mpsc::channel(8);
+                        let state = Arc::clone(&state);
+                        let config_path = config_path.clone();
+                        let outbound = outbound_tx.clone();
+                        let task_id = id.clone();
+                        let abort = tasks.spawn(async move {
+                            let result = async {
+                                let upstream_port = current_upstream_port(&state, &config_path).await?;
+                                relay_local_websocket(upstream_port, open, &outbound, incoming).await
+                            }.await;
+                            if let Err(error) = result { tracing::debug!(%error, "local websocket closed"); }
+                            let _ = send_client_message(&outbound, ClientMessage::WebSocketClose(TunnelWebSocketCloseMessage { id: task_id.clone() })).await;
+                            task_id
+                        });
+                        web_sockets.insert(id, WebSocketTask { abort, sender });
                     }
                     ServerMessage::WebSocketFrame(frame) => {
                         let id = frame.id.clone();
-                        if let Some(sender) = web_sockets.get(&id)
-                            && let Ok(message) = tunnel_frame_to_tungstenite_message(frame)
-                        {
-                            let _ = sender.send(message).await;
+                        let Some(task) = web_sockets.get(&id) else { continue; };
+                        let delivered = if frame.data.len() <= MAX_WS_FRAME {
+                            tunnel_frame_to_tungstenite_message(frame).ok().is_some_and(|message| task.sender.try_send(message).is_ok())
+                        } else { false };
+                        if !delivered {
+                            if let Some(task) = web_sockets.remove(&id) { task.abort.abort(); }
+                            send_client_message(&outbound_tx, ClientMessage::WebSocketClose(TunnelWebSocketCloseMessage { id })).await?;
                         }
                     }
                     ServerMessage::WebSocketClose(close) => {
-                        if let Some(sender) = web_sockets.remove(&close.id) {
-                            let _ = sender.send(Message::Close(None)).await;
-                        }
+                        if let Some(task) = web_sockets.remove(&close.id) { task.abort.abort(); }
+                    }
+                    ServerMessage::Pong { nonce } => {
+                        if nonce == ping_nonce { last_pong = tokio::time::Instant::now(); }
                     }
                 }
             }
         }
     }
-
-    writer_task.abort();
-    Ok(())
 }
 
 async fn send_client_message(
-    outbound: &mpsc::Sender<String>,
+    outbound: &mpsc::Sender<Vec<u8>>,
     message: ClientMessage,
 ) -> Result<(), String> {
-    let payload = serde_json::to_string(&message)
+    let payload = rmp_serde::to_vec_named(&message)
         .map_err(|error| format!("failed to encode tunnel message: {error}"))?;
-    outbound
-        .send(payload)
+    tokio::time::timeout(Duration::from_secs(10), outbound.send(payload))
         .await
+        .map_err(|_| "tunnel writer queue timed out".to_string())?
         .map_err(|_| "tunnel websocket writer closed".to_string())
 }
 
@@ -704,37 +735,89 @@ fn local_proxy_client_with_trusted_root(
         .map_err(|error| format!("failed to build tunnel HTTP client: {error}"))
 }
 
+async fn send_error_response(
+    outbound: &mpsc::Sender<Vec<u8>>,
+    id: &str,
+    status: u16,
+    error: &str,
+) -> Result<(), String> {
+    send_client_message(
+        outbound,
+        ClientMessage::Response(TunnelResponseMessage {
+            id: id.into(),
+            status,
+            headers: vec![("content-type".into(), "text/plain; charset=utf-8".into())],
+        }),
+    )
+    .await?;
+    send_client_message(
+        outbound,
+        ClientMessage::ResponseChunk(TunnelBodyChunk {
+            id: id.into(),
+            data: error.as_bytes().to_vec(),
+        }),
+    )
+    .await?;
+    send_client_message(outbound, ClientMessage::ResponseEnd { id: id.into() }).await
+}
+
 async fn forward_to_local_proxy(
     client: &reqwest::Client,
     snapshot: &TunnelSnapshot,
     request: TunnelRequestMessage,
-) -> TunnelResponseMessage {
-    match forward_to_local_proxy_inner(client, snapshot, &request).await {
+    outbound: &mpsc::Sender<Vec<u8>>,
+    credit: &tokio::sync::Semaphore,
+) -> Result<(), String> {
+    let id = request.id.clone();
+    let response = match forward_to_local_proxy_inner(client, snapshot, request).await {
         Ok(response) => response,
-        Err(error) => TunnelResponseMessage {
-            id: request.id,
-            status: 502,
-            headers: vec![(
-                "content-type".to_string(),
-                "text/plain; charset=utf-8".to_string(),
-            )],
-            body_base64: STANDARD.encode(error),
-        },
+        Err(error) => return send_error_response(outbound, &id, 502, &error).await,
+    };
+    send_client_message(
+        outbound,
+        ClientMessage::Response(TunnelResponseMessage {
+            id: id.clone(),
+            status: response.status().as_u16(),
+            headers: forwarded_response_headers(response.headers()),
+        }),
+    )
+    .await?;
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = match chunk {
+            Ok(chunk) => chunk,
+            Err(_) => {
+                return send_client_message(outbound, ClientMessage::ResponseError { id }).await;
+            }
+        };
+        for data in chunk.chunks(CHUNK_SIZE) {
+            credit
+                .acquire()
+                .await
+                .map_err(|_| "response cancelled".to_string())?
+                .forget();
+            send_client_message(
+                outbound,
+                ClientMessage::ResponseChunk(TunnelBodyChunk {
+                    id: id.clone(),
+                    data: data.to_vec(),
+                }),
+            )
+            .await?;
+        }
     }
+    send_client_message(outbound, ClientMessage::ResponseEnd { id }).await
 }
 
 async fn forward_to_local_proxy_inner(
     client: &reqwest::Client,
     snapshot: &TunnelSnapshot,
-    request: &TunnelRequestMessage,
-) -> Result<TunnelResponseMessage, String> {
+    request: TunnelRequestMessage,
+) -> Result<reqwest::Response, String> {
     let method = request
         .method
         .parse::<reqwest::Method>()
         .map_err(|error| format!("invalid method: {error}"))?;
-    let body = STANDARD
-        .decode(request.body_base64.as_bytes())
-        .map_err(|error| format!("invalid request body: {error}"))?;
     let url = local_proxy_url(&snapshot.local_host, &snapshot.listen_addr, &request.path)?;
     let mut builder = client
         .request(method, url)
@@ -748,31 +831,20 @@ async fn forward_to_local_proxy_inner(
         };
         builder = builder.header(name, value);
     }
-    let response = builder
-        .body(body)
-        .send()
+    // Only establishing the response has a deadline; SSE may live indefinitely.
+    tokio::time::timeout(Duration::from_secs(30), builder.body(request.body).send())
         .await
-        .map_err(|error| format!("local proxy request failed: {error}"))?;
-    let status = response.status().as_u16();
-    let headers = forwarded_response_headers(response.headers());
-    let body = response
-        .bytes()
-        .await
-        .map_err(|error| format!("local proxy response failed: {error}"))?;
-    Ok(TunnelResponseMessage {
-        id: request.id.clone(),
-        status,
-        headers,
-        body_base64: STANDARD.encode(body),
-    })
+        .map_err(|_| "local proxy response headers timed out".to_string())?
+        .map_err(|error| format!("local proxy request failed: {error}"))
 }
 
-async fn open_local_websocket(
+async fn relay_local_websocket(
     upstream_port: u16,
     open: TunnelWebSocketOpenMessage,
-    outbound: mpsc::Sender<String>,
-) -> Result<mpsc::Sender<Message>, String> {
-    let id = open.id.clone();
+    outbound: &mpsc::Sender<Vec<u8>>,
+    mut from_tunnel: mpsc::Receiver<Message>,
+) -> Result<(), String> {
+    let id = open.id;
     let mut request = local_websocket_url(upstream_port, &open.path)?
         .into_client_request()
         .map_err(|error| format!("invalid local websocket request: {error}"))?;
@@ -785,45 +857,34 @@ async fn open_local_websocket(
         };
         request.headers_mut().insert(name, value);
     }
-    let (socket, _) = tokio_tungstenite::connect_async(request)
-        .await
-        .map_err(|error| format!("local websocket request failed: {error}"))?;
-    let (mut local_writer, mut local_reader) = socket.split();
-    let (to_local, mut from_tunnel) = mpsc::channel::<Message>(128);
-    tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                message = from_tunnel.recv() => {
-                    let Some(message) = message else {
-                        break;
-                    };
-                    if local_writer.send(message).await.is_err() {
-                        break;
-                    }
-                }
-                message = local_reader.next() => {
-                    let Some(Ok(message)) = message else {
-                        break;
-                    };
-                    if matches!(message, Message::Close(_)) {
-                        break;
-                    }
-                    let Some(frame) = tungstenite_message_to_tunnel_frame(&id, message) else {
-                        continue;
-                    };
-                    if send_client_message(&outbound, ClientMessage::WebSocketFrame(frame)).await.is_err() {
-                        break;
-                    }
-                }
+    let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+        .max_message_size(Some(MAX_WS_FRAME))
+        .max_frame_size(Some(MAX_WS_FRAME));
+    let (socket, _) = tokio::time::timeout(
+        TUNNEL_CONNECT_TIMEOUT,
+        tokio_tungstenite::connect_async_with_config(request, Some(config), false),
+    )
+    .await
+    .map_err(|_| "local websocket handshake timed out".to_string())?
+    .map_err(|error| format!("local websocket request failed: {error}"))?;
+    let (mut writer, mut reader) = socket.split();
+    loop {
+        tokio::select! {
+            message = from_tunnel.recv() => {
+                let Some(message) = message else { break; };
+                tokio::time::timeout(Duration::from_secs(10), writer.send(message))
+                    .await.map_err(|_| "local websocket write timed out".to_string())?
+                    .map_err(|error| error.to_string())?;
+            }
+            message = reader.next() => {
+                let Some(Ok(message)) = message else { break; };
+                if matches!(message, Message::Close(_)) { break; }
+                let Some(frame) = tungstenite_message_to_tunnel_frame(&id, message) else { continue; };
+                send_client_message(outbound, ClientMessage::WebSocketFrame(frame)).await?;
             }
         }
-        let _ = send_client_message(
-            &outbound,
-            ClientMessage::WebSocketClose(TunnelWebSocketCloseMessage { id }),
-        )
-        .await;
-    });
-    Ok(to_local)
+    }
+    Ok(())
 }
 
 fn tunnel_base_url() -> String {
@@ -945,16 +1006,14 @@ fn tungstenite_message_to_tunnel_frame(
     Some(TunnelWebSocketFrameMessage {
         id: id.to_string(),
         kind,
-        data_base64: STANDARD.encode(data),
+        data,
     })
 }
 
 fn tunnel_frame_to_tungstenite_message(
     frame: TunnelWebSocketFrameMessage,
 ) -> Result<Message, String> {
-    let data = STANDARD
-        .decode(frame.data_base64.as_bytes())
-        .map_err(|error| format!("invalid websocket frame: {error}"))?;
+    let data = frame.data;
     match frame.kind {
         TunnelWebSocketFrameKind::Text => {
             let text = String::from_utf8(data)
@@ -986,6 +1045,236 @@ fn is_hop_by_hop_or_host(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reconnect_jitter_spreads_attempts_without_exceeding_backoff() {
+        for delay in [TUNNEL_RECONNECT_INITIAL_DELAY, TUNNEL_RECONNECT_MAX_DELAY] {
+            let low = reconnect_delay(delay, 0);
+            let high = reconnect_delay(delay, u64::MAX);
+            assert!(low >= delay / 2);
+            assert!(high <= delay);
+            assert!(high > low);
+        }
+    }
+
+    async fn send_relay<S>(socket: &mut WebSocketStream<S>, message: ServerMessage)
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
+        socket
+            .send(Message::Binary(
+                rmp_serde::to_vec_named(&message).unwrap().into(),
+            ))
+            .await
+            .unwrap();
+    }
+
+    async fn receive_client<S>(socket: &mut WebSocketStream<S>) -> ClientMessage
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
+        loop {
+            let Message::Binary(data) = tokio::time::timeout(Duration::from_secs(5), socket.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap()
+            else {
+                continue;
+            };
+            let message = rmp_serde::from_slice(&data).unwrap();
+            if let ClientMessage::Ping { nonce } = message {
+                send_relay(socket, ServerMessage::Pong { nonce }).await;
+            } else {
+                return message;
+            }
+        }
+    }
+
+    fn test_request(id: &str, path: &str) -> ServerMessage {
+        ServerMessage::Request(TunnelRequestMessage {
+            id: id.into(),
+            method: "GET".into(),
+            path: path.into(),
+            headers: vec![],
+            body: vec![],
+        })
+    }
+
+    // Exercise the actual session reader/writer and HTTPS forwarding, not just a
+    // semaphore: an unfinished response must leave the tunnel usable, and Cancel
+    // must close the upstream connection and release its task.
+    #[tokio::test]
+    async fn streaming_request_does_not_block_fast_request_and_cancel_closes_upstream() {
+        assert_slow_response_isolated(false, false).await;
+    }
+
+    #[tokio::test]
+    async fn exhausted_response_window_does_not_block_fast_request() {
+        assert_slow_response_isolated(true, false).await;
+    }
+
+    #[tokio::test]
+    async fn aborting_session_cancels_upstream_requests() {
+        assert_slow_response_isolated(false, true).await;
+    }
+
+    async fn assert_slow_response_isolated(bulk: bool, abort_session: bool) {
+        use openssl::{
+            pkey::PKey,
+            ssl::{SslAcceptor, SslMethod},
+            x509::X509,
+        };
+        use std::io::{Read, Write};
+        use tokio_tungstenite::tungstenite::protocol::Role;
+        let ca = tako::dev::LocalCA::generate().unwrap();
+        let cert = ca.generate_leaf_cert("app.test").unwrap();
+        let mut acceptor = SslAcceptor::mozilla_intermediate(SslMethod::tls()).unwrap();
+        acceptor
+            .set_certificate(&X509::from_pem(cert.cert_pem.as_bytes()).unwrap())
+            .unwrap();
+        acceptor
+            .set_private_key(&PKey::private_key_from_pem(cert.key_pem.as_bytes()).unwrap())
+            .unwrap();
+        let acceptor = Arc::new(acceptor.build());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let client = local_proxy_client_with_root("app.test", &addr, ca.ca_cert_pem()).unwrap();
+        let (closed_tx, closed_rx) = oneshot::channel();
+        let closed_tx = Arc::new(Mutex::new(Some(closed_tx)));
+        let server = tokio::spawn(async move {
+            let mut connections = tokio::task::JoinSet::new();
+            for _ in 0..2 {
+                let (stream, _) = listener.accept().await.unwrap();
+                let stream = stream.into_std().unwrap();
+                stream.set_nonblocking(false).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let acceptor = Arc::clone(&acceptor);
+                let closed_tx = Arc::clone(&closed_tx);
+                connections.spawn_blocking(move || {
+                    let mut stream = acceptor.accept(stream).unwrap();
+                    let mut request = Vec::new();
+                    while !request.ends_with(b"\r\n\r\n") {
+                        let mut byte = [0];
+                        stream.read_exact(&mut byte).unwrap();
+                        request.push(byte[0]);
+                    }
+                    if request.starts_with(b"GET /sse ") {
+                        let write = if bulk {
+                            let body = vec![42; CHUNK_SIZE * RESPONSE_WINDOW * 2];
+                            write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()).unwrap();
+                            stream.write_all(&body)
+                        } else {
+                            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\nd\r\ndata: first\n\n\r\n")
+                        };
+                        if write.is_err() {
+                            let _ = closed_tx.lock().unwrap().take().unwrap().send(true);
+                            return;
+                        }
+                        stream.flush().unwrap();
+                        let mut byte = [0];
+                        let closed = match stream.read(&mut byte) {
+                            Ok(0) => true,
+                            Err(error) => !matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut),
+                            _ => false,
+                        };
+                        let _ = closed_tx.lock().unwrap().take().unwrap().send(closed);
+                    } else {
+                        stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nfast").unwrap();
+                    }
+                });
+            }
+            while let Some(result) = connections.join_next().await {
+                result.unwrap();
+            }
+        });
+        let (client_socket, relay_socket) = tokio::io::duplex(MAX_WIRE_MESSAGE);
+        let client_socket =
+            WebSocketStream::from_raw_socket(client_socket, Role::Client, None).await;
+        let mut relay = WebSocketStream::from_raw_socket(relay_socket, Role::Server, None).await;
+        let snapshot = TunnelSnapshot {
+            config_path: "/tmp/tunnel.toml".into(),
+            app_name: "app".into(),
+            local_host: "app.test".into(),
+            listen_addr: addr,
+        };
+        let state = tunnel_state_with_app(&snapshot.config_path, 0, false);
+        let task = tokio::spawn(run_connection(
+            client_socket,
+            snapshot.clone(),
+            state,
+            snapshot.config_path,
+            client,
+        ));
+        send_relay(&mut relay, test_request("slow", "/sse")).await;
+        assert!(
+            matches!(receive_client(&mut relay).await, ClientMessage::Response(head) if head.id == "slow" && head.status == 200)
+        );
+        for _ in 0..if bulk { RESPONSE_WINDOW } else { 1 } {
+            let ClientMessage::ResponseChunk(chunk) = receive_client(&mut relay).await else {
+                panic!("expected slow body chunk")
+            };
+            assert_eq!(chunk.id, "slow");
+            assert!(chunk.data.len() <= CHUNK_SIZE);
+            if !bulk {
+                assert_eq!(chunk.data, b"data: first\n\n");
+            }
+        }
+        send_relay(&mut relay, test_request("fast", "/fast")).await;
+        assert!(
+            matches!(receive_client(&mut relay).await, ClientMessage::Response(head) if head.id == "fast" && head.status == 200)
+        );
+        assert!(
+            matches!(receive_client(&mut relay).await, ClientMessage::ResponseChunk(chunk) if chunk.id == "fast" && chunk.data == b"fast")
+        );
+        assert!(
+            matches!(receive_client(&mut relay).await, ClientMessage::ResponseEnd { id } if id == "fast")
+        );
+        if abort_session {
+            task.abort();
+        } else {
+            send_relay(&mut relay, ServerMessage::Cancel { id: "slow".into() }).await;
+        }
+        assert!(
+            tokio::time::timeout(Duration::from_secs(5), closed_rx)
+                .await
+                .unwrap()
+                .unwrap()
+        );
+        task.abort();
+        let _ = task.await;
+        server.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn missing_heartbeat_acknowledgement_ends_the_session() {
+        use tokio_tungstenite::tungstenite::protocol::Role;
+        let (client_socket, relay_socket) = tokio::io::duplex(4096);
+        let client_socket =
+            WebSocketStream::from_raw_socket(client_socket, Role::Client, None).await;
+        let mut relay = WebSocketStream::from_raw_socket(relay_socket, Role::Server, None).await;
+        let snapshot = TunnelSnapshot {
+            config_path: "/tmp/tunnel.toml".into(),
+            app_name: "app".into(),
+            local_host: "app.test".into(),
+            listen_addr: "127.0.0.1:47831".into(),
+        };
+        let state = tunnel_state_with_app(&snapshot.config_path, 0, false);
+        let task = tokio::spawn(run_tunnel_connection(
+            client_socket,
+            snapshot.clone(),
+            state,
+            snapshot.config_path,
+        ));
+        let _ = relay.next().await.unwrap().unwrap(); // Deliberately do not acknowledge the first Ping.
+        tokio::time::advance(Duration::from_secs(76)).await;
+        assert!(
+            matches!(task.await.unwrap(), Err(TunnelConnectionEnd::Retry(message)) if message.contains("heartbeat"))
+        );
+    }
+
     use tokio_tungstenite::tungstenite::handshake::server::Response as ServerResponse;
     use tokio_tungstenite::tungstenite::http::{Request, Response as HttpResponse};
 
@@ -1316,20 +1605,23 @@ mod tests {
             headers: vec![("sec-websocket-protocol".to_string(), "vite-hmr".to_string())],
         };
 
-        let _to_local = open_local_websocket(upstream_port, open, outbound)
-            .await
-            .expect("open local websocket");
+        let (_to_local, from_tunnel) = mpsc::channel(8);
+        let task = tokio::spawn(async move {
+            relay_local_websocket(upstream_port, open, &outbound, from_tunnel).await
+        });
         let message = tokio::time::timeout(Duration::from_secs(1), inbound.recv())
             .await
             .expect("initial frame timed out")
             .expect("initial frame");
-        let message: serde_json::Value = serde_json::from_str(&message).expect("client message");
-        assert_eq!(message["type"], "web_socket_frame");
-        assert_eq!(message["id"], "ws-1");
-        assert_eq!(message["kind"], "text");
-        let encoded = message["data_base64"].as_str().expect("frame data");
-        let decoded = STANDARD.decode(encoded).expect("frame data");
-        assert_eq!(decoded, br#"{"type":"connected"}"#);
+        let ClientMessage::WebSocketFrame(frame) =
+            rmp_serde::from_slice(&message).expect("client message")
+        else {
+            panic!("expected frame")
+        };
+        assert_eq!(frame.id, "ws-1");
+        assert_eq!(frame.kind, TunnelWebSocketFrameKind::Text);
+        assert_eq!(frame.data, br#"{"type":"connected"}"#);
+        task.await.unwrap().unwrap();
         server.await.expect("server task");
     }
 
