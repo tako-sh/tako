@@ -660,6 +660,8 @@ case "$action" in
 esac
 
 if command -v systemctl >/dev/null 2>&1; then
+  # Enrollment and maintenance repair installs that were started without enabling boot startup.
+  systemctl enable tako-server
   systemctl "$action" tako-server
 else
   echo "error: systemd is required to manage tako-server" >&2
@@ -1552,7 +1554,7 @@ fi
 if [ "$SERVICE_MANAGER" = "systemd" ]; then
   systemctl daemon-reload
   if is_enabled "$TAKO_RESTART_SERVICE"; then
-    systemctl enable tako-server >/dev/null 2>&1 || true
+    systemctl enable tako-server
     if systemctl is-active --quiet tako-server; then
       # Restart also replaces children started under the previous security policy.
       echo "Restarting tako-server service"
@@ -1568,8 +1570,14 @@ if [ "$SERVICE_MANAGER" = "systemd" ]; then
       exit 1
     fi
   else
-    echo "OK installed tako-server service (not started)"
-    echo 'Run `tako servers add <host>` from your workstation to start and verify it.'
+    if systemctl is-active --quiet tako-server; then
+      # Upgrades refresh a running service without restarting it. Repair boot startup too.
+      systemctl enable tako-server
+      echo "OK refreshed tako-server service without restarting"
+    else
+      echo "OK installed tako-server service (not started)"
+      echo 'Run `tako servers add <host>` from your workstation to start and verify it.'
+    fi
   fi
 else
   # Install-refresh mode can run before init is active (for example in image builds).

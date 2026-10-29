@@ -352,6 +352,57 @@ fn tako_service_status_command_uses_systemd() {
 }
 
 #[test]
+fn tako_service_status_preserves_states_with_nonzero_exit_codes() {
+    for (status, exit_code) in [
+        ("active", 0),
+        ("inactive", 3),
+        ("failed", 3),
+        ("activating", 3),
+        ("unknown", 4),
+    ] {
+        let command = format!(
+            "systemctl() {{ printf '%s\\n' '{status}'; return {exit_code}; }}; {}",
+            SshClient::tako_service_status_command()
+        );
+        let output = std::process::Command::new("sh")
+            .args(["-c", &command])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            format!("{status}\n")
+        );
+    }
+}
+
+#[test]
+fn tako_service_status_returns_unknown_when_systemd_returns_no_state() {
+    let command = format!(
+        "systemctl() {{ echo 'Failed to connect to bus' >&2; return 1; }}; {}",
+        SshClient::tako_service_status_command()
+    );
+    let output = std::process::Command::new("sh")
+        .args(["-c", &command])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), "unknown\n");
+}
+
+#[test]
+fn tako_service_status_returns_unknown_without_systemctl() {
+    let directory = tempfile::tempdir().unwrap();
+    let output = std::process::Command::new("/bin/sh")
+        .args(["-c", SshClient::tako_service_status_command()])
+        .env("PATH", directory.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), "unknown\n");
+}
+
+#[test]
 fn install_server_script_installs_and_verifies_runtime_dependencies() {
     let script = super::tako::INSTALL_SERVER_SCRIPT;
     assert!(script.contains("install_libvips_runtime"));
@@ -407,7 +458,6 @@ fn install_server_script_supports_explicit_stopped_bootstrap_install() {
             "Run `tako servers add <host>` from your workstation to start and verify it."
         )
     );
-    assert!(!script.contains("systemctl enable tako-server >/dev/null 2>&1 || true\n    echo \"OK install refreshed without restarting tako-server"));
 }
 
 #[test]

@@ -44,7 +44,7 @@ fn executable(path: &std::path::Path, contents: &str) {
 
 #[cfg(unix)]
 #[test]
-fn configure_helper_updates_ports_and_restarts_existing_service() {
+fn configure_helper_updates_ports_enables_and_restarts_existing_service() {
     check_configure_helper(" --management-host 100.64.0.2", "100.64.0.2", true);
 }
 
@@ -58,6 +58,48 @@ fn configure_helper_recovers_management_binding_after_tailscale_connects() {
 #[test]
 fn configure_helper_rejects_non_tailscale_management_address() {
     check_configure_helper("", "192.168.0.2", false);
+}
+
+#[test]
+fn service_maintenance_enables_boot_startup_before_reload_or_restart() {
+    for action in ["reload", "restart"] {
+        let directory = tempfile::tempdir().unwrap();
+        let log = directory.path().join("calls");
+        let command = format!(
+            "systemctl() {{ printf '%s\\n' \"$*\" >> '{}'; }};\n{}",
+            log.display(),
+            helper_body("service")
+        );
+        let output = std::process::Command::new("sh")
+            .args(["-c", &command, "service", action])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            std::fs::read_to_string(log).unwrap(),
+            format!("enable tako-server\n{action} tako-server\n")
+        );
+    }
+}
+
+#[test]
+fn service_maintenance_fails_without_restarting_when_boot_startup_cannot_be_enabled() {
+    let directory = tempfile::tempdir().unwrap();
+    let log = directory.path().join("calls");
+    let command = format!(
+        "systemctl() {{ printf '%s\\n' \"$*\" >> '{}'; [ \"$1\" != enable ]; }};\n{}",
+        log.display(),
+        helper_body("service")
+    );
+    let output = std::process::Command::new("sh")
+        .args(["-c", &command, "service", "restart"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert_eq!(
+        std::fs::read_to_string(log).unwrap(),
+        "enable tako-server\n"
+    );
 }
 
 #[cfg(unix)]
@@ -118,7 +160,7 @@ fn check_configure_helper(management_argument: &str, detected_address: &str, suc
     );
     assert_eq!(
         std::fs::read_to_string(log).unwrap(),
-        "daemon-reload\nrestart tako-server\n"
+        "daemon-reload\nenable tako-server\nrestart tako-server\n"
     );
 }
 
