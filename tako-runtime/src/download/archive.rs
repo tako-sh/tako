@@ -32,6 +32,10 @@ pub(super) fn extract_zip(
     let cursor = Cursor::new(data);
     let mut archive =
         zip::ZipArchive::new(cursor).map_err(|e| format!("failed to open zip archive: {e}"))?;
+    // Validate both filename headers before our custom extraction writes any files.
+    archive
+        .validate_header_consistency()
+        .map_err(|e| format!("inconsistent zip archive headers: {e}"))?;
 
     let extract = download.extract.as_ref();
     let binary_template = extract.and_then(|e| e.binary.as_deref());
@@ -47,7 +51,10 @@ pub(super) fn extract_zip(
             continue;
         }
 
-        let entry_name = file.name().to_string();
+        let entry_name = file
+            .name()
+            .map_err(|e| format!("failed to read zip entry {i} name: {e}"))?
+            .into_owned();
 
         let output_rel = if extract_all {
             strip_path_components(&entry_name, strip)
