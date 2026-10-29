@@ -168,7 +168,7 @@ One Tako Identity can have up to five active tunnel URLs connected at the same t
 
 When a tunnel URL is inactive or disconnected, browser requests get a Tako-styled error page. Clients that send `Accept: application/json` get JSON, and other clients get plain text.
 
-Tunnel mode supports concurrent HTTP requests, streaming responses including SSE, and WebSockets. Each tunnel allows 32 concurrent HTTP requests and 32 WebSockets. HTTP uploads are buffered up to 2 MiB; WebSocket messages are limited to 1 MiB. Response headers must arrive within 30 seconds, but response bodies have no total duration limit. SSE apps should send periodic events or comments to stay within intermediary idle timeouts. Slow HTTP consumers pause their own upstream response; slow WebSockets close without blocking other requests.
+Tunnel mode supports concurrent HTTP requests, streaming responses including SSE, and WebSockets. Each tunnel allows 32 concurrent HTTP requests and 32 WebSockets. HTTP uploads are buffered up to 2 MiB; WebSocket messages are limited to 1 MiB. Response headers must arrive within 30 seconds, but response bodies have no total duration limit. SSE apps should send periodic events or comments to stay within intermediary idle timeouts. Slow HTTP consumers pause their own upstream response; slow WebSockets close without blocking other requests. WebSocket upgrades wait for local app acceptance and use the subprotocol it selects. If the app rejects the handshake, the public URL returns its HTTP status and response headers with an empty body.
 
 `tako dev list` shows the current tunnel URL for apps with tunnel mode enabled.
 

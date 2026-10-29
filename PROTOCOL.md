@@ -122,7 +122,7 @@ Update the typed owner, every producer and consumer, and the serialization or in
 ## Public development tunnels
 
 The public tunnel relay (`tako-sh/tunnel`) and `tako-dev-server` negotiate
-`tako-tunnel-v1` as their WebSocket subprotocol. Each binary WebSocket message is a
+`tako-tunnel-v2` as their WebSocket subprotocol. Each binary WebSocket message is a
 named MessagePack value; byte payloads use MessagePack binary values. The mirrored
 `tunnel_wire.rs` files own this contract and must change together. The relay
 rejects clients without the subprotocol with HTTP 426. There is no legacy fallback.
@@ -130,11 +130,20 @@ rejects clients without the subprotocol with HTTP 426. There is no legacy fallba
 HTTP exchanges are `Request` → `Response` headers → `ResponseChunk`* →
 `ResponseEnd`. `ResponseError` means the body was truncated; a dropped connection
 also fails unfinished bodies. `Cancel` aborts the request task. Each response has
-eight initial credits; each chunk consumes one credit, and the relay sends
-`ResponseCredit` when its downstream body is consumed. Chunks are at most 64 KiB.
+a 128 KiB byte credit window. Each chunk consumes `max(length, 1024)` credits to
+bound tiny-frame overhead; the relay sends `ResponseCredit { id, bytes }` for
+that amount when its downstream body is consumed. Both peers enforce the budget.
+Chunks are at most 64 KiB and are flushed without batching SSE events.
 Response headers have a 30-second deadline; body streaming has no total timeout.
 Each session allows 32 HTTP requests and 32 WebSockets concurrently. Request
 bodies remain buffered with a 2 MiB limit; WebSocket messages are limited to 1 MiB.
+
+WebSocket exchanges start with `WebSocketOpen` → `WebSocketResponse` (HTTP status
+and headers). The relay waits up to 30 seconds before upgrading the browser and
+uses only the subprotocol selected by the local app. Rejections preserve status
+and end-to-end headers with an empty body; local connection failures return 502
+and local handshake timeouts return 504. Success precedes all `WebSocketFrame`
+messages; `WebSocketClose` cancels both pending handshakes and active sockets.
 
 `Ping { nonce }` / `Pong { nonce }` provides application liveness every 25 seconds
 with a 75-second acknowledgement deadline. Reconnects use bounded jitter and only

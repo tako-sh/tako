@@ -1,6 +1,9 @@
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicUsize, Ordering},
+};
 use std::time::Duration;
 
 use crate::tunnel_wire::*;
@@ -524,9 +527,60 @@ fn terminal_close_reason(close: Option<&CloseFrame>) -> Option<(TunnelCloseReaso
     }
 }
 
+// Track sent/reserved bytes separately: Semaphore::available_permits excludes
+// permits reserved by a waiting acquire_many, so it cannot validate peer credit.
+struct ResponseCredit {
+    permits: tokio::sync::Semaphore,
+    outstanding: AtomicUsize,
+}
+
+impl ResponseCredit {
+    fn new() -> Self {
+        Self {
+            permits: tokio::sync::Semaphore::new(RESPONSE_WINDOW),
+            outstanding: AtomicUsize::new(0),
+        }
+    }
+
+    async fn consume(&self, len: usize) -> Result<(), String> {
+        let bytes = response_chunk_cost(len);
+        let permit = self
+            .permits
+            .acquire_many(bytes as u32)
+            .await
+            .map_err(|_| "response cancelled".to_string())?;
+        self.outstanding.fetch_add(bytes, Ordering::Relaxed);
+        permit.forget();
+        Ok(())
+    }
+
+    fn replenish(&self, bytes: usize) -> Result<(), String> {
+        if bytes == 0 {
+            return Err("invalid response credit".into());
+        }
+        let mut outstanding = self.outstanding.load(Ordering::Relaxed);
+        loop {
+            let remaining = outstanding
+                .checked_sub(bytes)
+                .ok_or("invalid response credit")?;
+            match self.outstanding.compare_exchange_weak(
+                outstanding,
+                remaining,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(current) => outstanding = current,
+            }
+        }
+        self.permits.add_permits(bytes);
+        Ok(())
+    }
+}
+
 struct HttpTask {
     abort: AbortHandle,
-    credit: Arc<tokio::sync::Semaphore>,
+    credit: Arc<ResponseCredit>,
 }
 
 struct WebSocketTask {
@@ -617,10 +671,10 @@ where
                         let id = request.id.clone();
                         if requests.contains_key(&id) { return Err("duplicate tunnel request".to_string().into()); }
                         if requests.len() >= MAX_IN_FLIGHT {
-                            send_error_response(&outbound_tx, &id, 503, "Too many concurrent tunnel requests").await?;
+                            send_error_response(&outbound_tx, &id, 503, "Too many concurrent tunnel requests", None).await?;
                             continue;
                         }
-                        let credit = Arc::new(tokio::sync::Semaphore::new(RESPONSE_WINDOW));
+                        let credit = Arc::new(ResponseCredit::new());
                         let task_credit = Arc::clone(&credit);
                         let client = client.clone();
                         let snapshot = snapshot.clone();
@@ -635,17 +689,16 @@ where
                     ServerMessage::Cancel { id } => {
                         if let Some(task) = requests.remove(&id) { task.abort.abort(); }
                     }
-                    ServerMessage::ResponseCredit { id } => {
+                    ServerMessage::ResponseCredit { id, bytes } => {
                         if let Some(task) = requests.get(&id) {
-                            if task.credit.available_permits() >= RESPONSE_WINDOW { return Err("invalid response credit".to_string().into()); }
-                            task.credit.add_permits(1);
+                            task.credit.replenish(bytes)?;
                         }
                     }
                     ServerMessage::WebSocketOpen(open) => {
                         let id = open.id.clone();
                         if web_sockets.contains_key(&id) { return Err("duplicate tunnel websocket".to_string().into()); }
                         if web_sockets.len() >= MAX_IN_FLIGHT {
-                            send_client_message(&outbound_tx, ClientMessage::WebSocketClose(TunnelWebSocketCloseMessage { id })).await?;
+                            send_websocket_response(&outbound_tx, id, 503, vec![]).await?;
                             continue;
                         }
                         let (sender, incoming) = mpsc::channel(8);
@@ -654,10 +707,10 @@ where
                         let outbound = outbound_tx.clone();
                         let task_id = id.clone();
                         let abort = tasks.spawn(async move {
-                            let result = async {
-                                let upstream_port = current_upstream_port(&state, &config_path).await?;
-                                relay_local_websocket(upstream_port, open, &outbound, incoming).await
-                            }.await;
+                            let result = match current_upstream_port(&state, &config_path).await {
+                                Ok(upstream_port) => relay_local_websocket(upstream_port, open, &outbound, incoming).await,
+                                Err(_) => send_websocket_response(&outbound, open.id, 502, vec![]).await,
+                            };
                             if let Err(error) = result { tracing::debug!(%error, "local websocket closed"); }
                             let _ = send_client_message(&outbound, ClientMessage::WebSocketClose(TunnelWebSocketCloseMessage { id: task_id.clone() })).await;
                             task_id
@@ -740,6 +793,7 @@ async fn send_error_response(
     id: &str,
     status: u16,
     error: &str,
+    credit: Option<&ResponseCredit>,
 ) -> Result<(), String> {
     send_client_message(
         outbound,
@@ -750,11 +804,19 @@ async fn send_error_response(
         }),
     )
     .await?;
+    let mut end = error.len().min(CHUNK_SIZE);
+    while !error.is_char_boundary(end) {
+        end -= 1;
+    }
+    let data = error.as_bytes()[..end].to_vec();
+    if let Some(credit) = credit {
+        credit.consume(data.len()).await?;
+    }
     send_client_message(
         outbound,
         ClientMessage::ResponseChunk(TunnelBodyChunk {
             id: id.into(),
-            data: error.as_bytes().to_vec(),
+            data,
         }),
     )
     .await?;
@@ -766,12 +828,12 @@ async fn forward_to_local_proxy(
     snapshot: &TunnelSnapshot,
     request: TunnelRequestMessage,
     outbound: &mpsc::Sender<Vec<u8>>,
-    credit: &tokio::sync::Semaphore,
+    credit: &ResponseCredit,
 ) -> Result<(), String> {
     let id = request.id.clone();
     let response = match forward_to_local_proxy_inner(client, snapshot, request).await {
         Ok(response) => response,
-        Err(error) => return send_error_response(outbound, &id, 502, &error).await,
+        Err(error) => return send_error_response(outbound, &id, 502, &error, Some(credit)).await,
     };
     send_client_message(
         outbound,
@@ -791,11 +853,7 @@ async fn forward_to_local_proxy(
             }
         };
         for data in chunk.chunks(CHUNK_SIZE) {
-            credit
-                .acquire()
-                .await
-                .map_err(|_| "response cancelled".to_string())?
-                .forget();
+            credit.consume(data.len()).await?;
             send_client_message(
                 outbound,
                 ClientMessage::ResponseChunk(TunnelBodyChunk {
@@ -838,6 +896,71 @@ async fn forward_to_local_proxy_inner(
         .map_err(|error| format!("local proxy request failed: {error}"))
 }
 
+async fn send_websocket_response(
+    outbound: &mpsc::Sender<Vec<u8>>,
+    id: String,
+    status: u16,
+    headers: Vec<(String, String)>,
+) -> Result<(), String> {
+    send_client_message(
+        outbound,
+        ClientMessage::WebSocketResponse(TunnelWebSocketResponseMessage {
+            id,
+            status,
+            headers,
+        }),
+    )
+    .await
+}
+
+fn websocket_response_headers(headers: &reqwest::header::HeaderMap) -> Vec<(String, String)> {
+    // The relay needs Connection tokens to strip all hop-by-hop headers.
+    headers
+        .iter()
+        .filter_map(|(name, value)| Some((name.as_str().into(), value.to_str().ok()?.into())))
+        .collect()
+}
+
+fn valid_local_websocket_upgrade(
+    request: &reqwest::header::HeaderMap,
+    response: &reqwest::header::HeaderMap,
+) -> bool {
+    let Some(key) = request.get("sec-websocket-key") else {
+        return false;
+    };
+    let expected_accept =
+        tokio_tungstenite::tungstenite::handshake::derive_accept_key(key.as_bytes());
+    let has_upgrade = response
+        .get_all("connection")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .any(|token| token.trim().eq_ignore_ascii_case("upgrade"));
+    if !has_upgrade
+        || !response
+            .get("upgrade")
+            .is_some_and(|value| value.as_bytes().eq_ignore_ascii_case(b"websocket"))
+        || response.get_all("sec-websocket-accept").iter().count() != 1
+        || !response
+            .get("sec-websocket-accept")
+            .is_some_and(|value| value.as_bytes() == expected_accept.as_bytes())
+        || response.contains_key("sec-websocket-extensions")
+    {
+        return false;
+    }
+    let mut selected = response.get_all("sec-websocket-protocol").iter();
+    let Some(protocol) = selected.next() else {
+        return true;
+    };
+    selected.next().is_none()
+        && request
+            .get_all("sec-websocket-protocol")
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .flat_map(|value| value.split(','))
+            .any(|offered| offered.trim().as_bytes() == protocol.as_bytes())
+}
+
 async fn relay_local_websocket(
     upstream_port: u16,
     open: TunnelWebSocketOpenMessage,
@@ -855,18 +978,52 @@ async fn relay_local_websocket(
         let Ok(value) = HeaderValue::from_str(&value) else {
             continue;
         };
-        request.headers_mut().insert(name, value);
+        request.headers_mut().append(name, value);
     }
     let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
         .max_message_size(Some(MAX_WS_FRAME))
         .max_frame_size(Some(MAX_WS_FRAME));
-    let (socket, _) = tokio::time::timeout(
+    // Use the existing HTTP client for the upgrade. Tungstenite's HTTP client
+    // rejects a valid 101 with no selected subprotocol when one was offered.
+    // RFC 6455 allows the app to decline all offered protocols.
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .http1_only()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|error| error.to_string())?;
+    let url = request.uri().to_string().replacen("ws://", "http://", 1);
+    let response = match tokio::time::timeout(
         TUNNEL_CONNECT_TIMEOUT,
-        tokio_tungstenite::connect_async_with_config(request, Some(config), false),
+        client.get(url).headers(request.headers().clone()).send(),
     )
     .await
-    .map_err(|_| "local websocket handshake timed out".to_string())?
-    .map_err(|error| format!("local websocket request failed: {error}"))?;
+    {
+        Ok(Ok(response)) => response,
+        Ok(Err(_)) => return send_websocket_response(outbound, id, 502, vec![]).await,
+        Err(_) => return send_websocket_response(outbound, id, 504, vec![]).await,
+    };
+    let status = response.status().as_u16();
+    let headers = websocket_response_headers(response.headers());
+    if status != 101 {
+        return send_websocket_response(outbound, id, status, headers).await;
+    }
+    if !valid_local_websocket_upgrade(request.headers(), response.headers()) {
+        return send_websocket_response(outbound, id, 502, vec![]).await;
+    }
+    let upgraded = match tokio::time::timeout(TUNNEL_CONNECT_TIMEOUT, response.upgrade()).await {
+        Ok(Ok(upgraded)) => upgraded,
+        Ok(Err(_)) => return send_websocket_response(outbound, id, 502, vec![]).await,
+        Err(_) => return send_websocket_response(outbound, id, 504, vec![]).await,
+    };
+    let socket = WebSocketStream::from_raw_socket(
+        upgraded,
+        tokio_tungstenite::tungstenite::protocol::Role::Client,
+        Some(config),
+    )
+    .await;
+    // Queue acceptance before any frames, including an app's immediate greeting.
+    send_websocket_response(outbound, id.clone(), status, headers).await?;
     let (mut writer, mut reader) = socket.split();
     loop {
         tokio::select! {
@@ -1046,6 +1203,41 @@ fn is_hop_by_hop_or_host(name: &str) -> bool {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn byte_credit_rejects_unearned_acknowledgements_with_waiting_producer() {
+        let credit = Arc::new(ResponseCredit::new());
+        assert!(credit.replenish(0).is_err());
+        assert!(credit.replenish(1).is_err());
+        let spent = RESPONSE_WINDOW - 512;
+        credit.consume(spent).await.unwrap();
+        let waiting_credit = Arc::clone(&credit);
+        let waiting = tokio::spawn(async move { waiting_credit.consume(CHUNK_SIZE).await });
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished());
+        assert!(
+            credit.replenish(RESPONSE_WINDOW).is_err(),
+            "reserved permits must not look like sent bytes"
+        );
+        credit.replenish(spent).unwrap();
+        waiting.await.unwrap().unwrap();
+        credit.replenish(CHUNK_SIZE).unwrap();
+        assert_eq!(credit.permits.available_permits(), RESPONSE_WINDOW);
+    }
+
+    #[tokio::test]
+    async fn tiny_chunks_use_byte_budget_and_release_exact_credit() {
+        let credit = ResponseCredit::new();
+        for _ in 0..20 {
+            credit.consume(13).await.unwrap();
+        }
+        assert_eq!(
+            credit.outstanding.load(Ordering::Relaxed),
+            20 * MIN_CHUNK_CREDIT
+        );
+        credit.replenish(20 * MIN_CHUNK_CREDIT).unwrap();
+        assert_eq!(credit.permits.available_permits(), RESPONSE_WINDOW);
+    }
+
     #[test]
     fn reconnect_jitter_spreads_attempts_without_exceeding_backoff() {
         for delay in [TUNNEL_RECONNECT_INITIAL_DELAY, TUNNEL_RECONNECT_MAX_DELAY] {
@@ -1163,7 +1355,7 @@ mod tests {
                     }
                     if request.starts_with(b"GET /sse ") {
                         let write = if bulk {
-                            let body = vec![42; CHUNK_SIZE * RESPONSE_WINDOW * 2];
+                            let body = vec![42; RESPONSE_WINDOW * 4];
                             write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()).unwrap();
                             stream.write_all(&body)
                         } else {
@@ -1212,26 +1404,51 @@ mod tests {
         assert!(
             matches!(receive_client(&mut relay).await, ClientMessage::Response(head) if head.id == "slow" && head.status == 200)
         );
-        for _ in 0..if bulk { RESPONSE_WINDOW } else { 1 } {
+        let mut spent = 0;
+        while spent < if bulk { RESPONSE_WINDOW } else { 1 } {
             let ClientMessage::ResponseChunk(chunk) = receive_client(&mut relay).await else {
                 panic!("expected slow body chunk")
             };
             assert_eq!(chunk.id, "slow");
             assert!(chunk.data.len() <= CHUNK_SIZE);
+            spent += response_chunk_cost(chunk.data.len());
+            if bulk && RESPONSE_WINDOW - spent < CHUNK_SIZE {
+                break;
+            }
             if !bulk {
                 assert_eq!(chunk.data, b"data: first\n\n");
             }
         }
         send_relay(&mut relay, test_request("fast", "/fast")).await;
-        assert!(
-            matches!(receive_client(&mut relay).await, ClientMessage::Response(head) if head.id == "fast" && head.status == 200)
-        );
+        loop {
+            match receive_client(&mut relay).await {
+                ClientMessage::ResponseChunk(chunk) if bulk && chunk.id == "slow" => {
+                    spent += response_chunk_cost(chunk.data.len());
+                    assert!(spent <= RESPONSE_WINDOW);
+                }
+                ClientMessage::Response(head) if head.id == "fast" && head.status == 200 => break,
+                message => panic!("unexpected message: {message:?}"),
+            }
+        }
         assert!(
             matches!(receive_client(&mut relay).await, ClientMessage::ResponseChunk(chunk) if chunk.id == "fast" && chunk.data == b"fast")
         );
         assert!(
             matches!(receive_client(&mut relay).await, ClientMessage::ResponseEnd { id } if id == "fast")
         );
+        if bulk {
+            send_relay(
+                &mut relay,
+                ServerMessage::ResponseCredit {
+                    id: "slow".into(),
+                    bytes: spent,
+                },
+            )
+            .await;
+            assert!(
+                matches!(receive_client(&mut relay).await, ClientMessage::ResponseChunk(chunk) if chunk.id == "slow")
+            );
+        }
         if abort_session {
             task.abort();
         } else {
@@ -1577,13 +1794,13 @@ mod tests {
             let mut socket = tokio_tungstenite::accept_hdr_async(
                 stream,
                 |request: &Request<()>, mut response: ServerResponse| {
-                    assert_eq!(
-                        request
-                            .headers()
-                            .get("sec-websocket-protocol")
-                            .and_then(|value| value.to_str().ok()),
-                        Some("vite-hmr")
-                    );
+                    let offered: Vec<_> = request
+                        .headers()
+                        .get_all("sec-websocket-protocol")
+                        .iter()
+                        .map(|value| value.to_str().unwrap())
+                        .collect();
+                    assert_eq!(offered, vec!["first", "vite-hmr"]);
                     response
                         .headers_mut()
                         .insert("sec-websocket-protocol", "vite-hmr".parse().unwrap());
@@ -1602,13 +1819,23 @@ mod tests {
         let open = TunnelWebSocketOpenMessage {
             id: "ws-1".to_string(),
             path: "/".to_string(),
-            headers: vec![("sec-websocket-protocol".to_string(), "vite-hmr".to_string())],
+            headers: vec![
+                ("sec-websocket-protocol".into(), "first".into()),
+                ("sec-websocket-protocol".into(), "vite-hmr".into()),
+            ],
         };
 
         let (_to_local, from_tunnel) = mpsc::channel(8);
         let task = tokio::spawn(async move {
             relay_local_websocket(upstream_port, open, &outbound, from_tunnel).await
         });
+        let ready = tokio::time::timeout(Duration::from_secs(1), inbound.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(rmp_serde::from_slice::<ClientMessage>(&ready).unwrap(), ClientMessage::WebSocketResponse(response) if response.status == 101 && response.headers.contains(&("sec-websocket-protocol".into(), "vite-hmr".into())))
+        );
         let message = tokio::time::timeout(Duration::from_secs(1), inbound.recv())
             .await
             .expect("initial frame timed out")
@@ -1623,6 +1850,114 @@ mod tests {
         assert_eq!(frame.data, br#"{"type":"connected"}"#);
         task.await.unwrap().unwrap();
         server.await.expect("server task");
+    }
+
+    #[test]
+    fn websocket_upgrade_checks_accept_key_protocol_and_extensions() {
+        let mut request = "ws://127.0.0.1:1234/".into_client_request().unwrap();
+        request
+            .headers_mut()
+            .insert("sec-websocket-protocol", "first, second".parse().unwrap());
+        let good =
+            tokio_tungstenite::tungstenite::handshake::server::create_response(&request).unwrap();
+        assert!(valid_local_websocket_upgrade(
+            request.headers(),
+            good.headers()
+        ));
+        let mut selected = good.headers().clone();
+        selected.insert("sec-websocket-protocol", "second".parse().unwrap());
+        assert!(valid_local_websocket_upgrade(request.headers(), &selected));
+        selected.append("sec-websocket-protocol", "second".parse().unwrap());
+        assert!(!valid_local_websocket_upgrade(request.headers(), &selected));
+        for (name, value) in [
+            ("sec-websocket-accept", "wrong-key"),
+            ("sec-websocket-protocol", "unrequested"),
+            ("sec-websocket-extensions", "permessage-deflate"),
+            ("upgrade", "h2c"),
+            ("connection", "keep-alive"),
+        ] {
+            let mut headers = good.headers().clone();
+            headers.insert(
+                HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                value.parse().unwrap(),
+            );
+            assert!(
+                !valid_local_websocket_upgrade(request.headers(), &headers),
+                "accepted invalid {name}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn local_websocket_may_accept_without_selecting_an_offered_protocol() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            socket.send(Message::Text("accepted".into())).await.unwrap();
+            socket.close(None).await.unwrap();
+        });
+        let (outbound, mut inbound) = mpsc::channel(8);
+        let (_sender, receiver) = mpsc::channel(8);
+        relay_local_websocket(
+            port,
+            TunnelWebSocketOpenMessage {
+                id: "no-protocol".into(),
+                path: "/".into(),
+                headers: vec![("sec-websocket-protocol".into(), "optional".into())],
+            },
+            &outbound,
+            receiver,
+        )
+        .await
+        .unwrap();
+        let message = inbound.recv().await.unwrap();
+        assert!(
+            matches!(rmp_serde::from_slice::<ClientMessage>(&message).unwrap(), ClientMessage::WebSocketResponse(response) if response.status == 101)
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn local_websocket_rejection_preserves_status_and_headers() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                request.push(stream.read_u8().await.unwrap());
+            }
+            stream
+                .write_all(b"HTTP/1.1 403 Forbidden\r\nRetry-After: 5\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+        });
+        let (outbound, mut incoming) = mpsc::channel(4);
+        let (_sender, receiver) = mpsc::channel(8);
+        relay_local_websocket(
+            upstream_port,
+            TunnelWebSocketOpenMessage {
+                id: "rejected".into(),
+                path: "/".into(),
+                headers: vec![],
+            },
+            &outbound,
+            receiver,
+        )
+        .await
+        .unwrap();
+        let message = incoming.recv().await.unwrap();
+        assert!(
+            matches!(rmp_serde::from_slice::<ClientMessage>(&message).unwrap(), ClientMessage::WebSocketResponse(response) if response.id == "rejected" && response.status == 403 && response.headers.contains(&("retry-after".into(), "5".into())))
+        );
+        assert!(
+            incoming.try_recv().is_err(),
+            "rejection must not produce frames"
+        );
+        server.await.unwrap();
     }
 
     #[tokio::test]
@@ -1648,7 +1983,7 @@ mod tests {
         assert_eq!(port, 5173);
     }
 
-    fn tunnel_state_with_app(
+    pub(super) fn tunnel_state_with_app(
         config_path: &str,
         upstream_port: u16,
         active: bool,
@@ -1697,3 +2032,7 @@ mod tests {
         state
     }
 }
+
+#[cfg(test)]
+#[path = "tunnel_benchmark.rs"]
+mod benchmark;
