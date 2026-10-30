@@ -1,4 +1,5 @@
 use crate::output;
+use crate::private_network::NetworkProvider;
 use tracing::Instrument;
 
 use super::connection::{
@@ -33,12 +34,13 @@ pub(super) async fn install_start_and_verify(
     ssh_config: &SshConfig,
     admin_user: &str,
     public_ports: ServerPublicPorts,
+    network: NetworkProvider,
     verify_labels: VerifyLabels,
     scoped_timing: bool,
 ) -> Result<WizardConnectionResult, Box<dyn std::error::Error>> {
-    install_tako_server(ssh_config, admin_user, public_ports, scoped_timing).await?;
-    start_tako_server(ssh_config, public_ports).await?;
-    verify_tako_server(ssh_config, verify_labels, scoped_timing)
+    install_tako_server(ssh_config, admin_user, public_ports, network, scoped_timing).await?;
+    start_tako_server(ssh_config, public_ports, network).await?;
+    verify_tako_server(ssh_config, network, verify_labels, scoped_timing)
         .await
         .map_err(Into::into)
 }
@@ -46,11 +48,12 @@ pub(super) async fn install_start_and_verify(
 pub(super) async fn start_and_verify(
     ssh_config: &SshConfig,
     public_ports: ServerPublicPorts,
+    network: NetworkProvider,
     verify_labels: VerifyLabels,
     scoped_timing: bool,
 ) -> Result<WizardConnectionResult, Box<dyn std::error::Error>> {
-    start_tako_server(ssh_config, public_ports).await?;
-    verify_tako_server(ssh_config, verify_labels, scoped_timing)
+    start_tako_server(ssh_config, public_ports, network).await?;
+    verify_tako_server(ssh_config, network, verify_labels, scoped_timing)
         .await
         .map_err(Into::into)
 }
@@ -59,6 +62,7 @@ async fn install_tako_server(
     ssh_config: &SshConfig,
     admin_user: &str,
     public_ports: ServerPublicPorts,
+    network: NetworkProvider,
     scoped_timing: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let install = install_tako_server_with_admin(
@@ -66,6 +70,7 @@ async fn install_tako_server(
         admin_user,
         Some(public_ports),
         crate::ssh::InstallServerMode::BootstrapOnly,
+        network,
     );
     if scoped_timing {
         let install_scope = output::scope(&ssh_config.host);
@@ -97,6 +102,7 @@ async fn install_tako_server(
 pub(super) async fn start_tako_server(
     ssh_config: &SshConfig,
     public_ports: ServerPublicPorts,
+    network: NetworkProvider,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let start_scope = output::scope(&ssh_config.host);
     let _t = output::timed(&format!(
@@ -107,7 +113,7 @@ pub(super) async fn start_tako_server(
         "Starting tako-server",
         "tako-server started",
         "Start failed",
-        configure_tako_server_with_service_user(ssh_config, Some(public_ports))
+        configure_tako_server_with_service_user(ssh_config, Some(public_ports), network)
             .instrument(start_scope),
     )
     .await?;
@@ -118,6 +124,7 @@ pub(super) async fn start_tako_server(
 
 async fn verify_tako_server(
     ssh_config: &SshConfig,
+    network: NetworkProvider,
     labels: VerifyLabels,
     scoped_timing: bool,
 ) -> Result<WizardConnectionResult, String> {
@@ -131,7 +138,7 @@ async fn verify_tako_server(
             labels.progress,
             labels.success,
             labels.failure,
-            check_tako_connection(ssh_config).instrument(verify_scope),
+            check_tako_connection(ssh_config, network).instrument(verify_scope),
         )
         .await;
         drop(_t);
@@ -141,7 +148,7 @@ async fn verify_tako_server(
             labels.progress,
             labels.success,
             labels.failure,
-            check_tako_connection(ssh_config),
+            check_tako_connection(ssh_config, network),
         )
         .await
     }

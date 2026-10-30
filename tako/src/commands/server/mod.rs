@@ -14,6 +14,10 @@ pub enum ServerCommands {
         /// Server host. Use admin-user@host to install or repair with that SSH user.
         host: Option<String>,
 
+        /// Private network used for management
+        #[arg(long, value_enum)]
+        network: Option<crate::private_network::NetworkProvider>,
+
         /// Server name. Defaults to the host's first DNS label.
         #[arg(long)]
         name: Option<String>,
@@ -98,6 +102,7 @@ async fn run_async(cmd: ServerCommands) -> Result<(), Box<dyn std::error::Error>
     match cmd {
         ServerCommands::Add {
             host,
+            network,
             name,
             description,
             port,
@@ -115,6 +120,7 @@ async fn run_async(cmd: ServerCommands) -> Result<(), Box<dyn std::error::Error>
                 let _ = add_server(
                     &parsed_host.host,
                     AddServerOptions {
+                        network,
                         name: name.as_deref(),
                         description: description.as_deref(),
                         port,
@@ -132,6 +138,7 @@ async fn run_async(cmd: ServerCommands) -> Result<(), Box<dyn std::error::Error>
                 Ok(())
             } else {
                 let _ = wizard::run_add_server_wizard(wizard::WizardDefaults {
+                    network,
                     name: name.as_deref(),
                     description: description.as_deref(),
                     port,

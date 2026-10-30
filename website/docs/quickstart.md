@@ -47,15 +47,17 @@ After first-time local setup, agents should inspect `tako dev list --json` befor
 
 ## Remote setup
 
-Remote deploys require [Tailscale](https://tailscale.com/). Install it on your workstation and deployment host, then connect both to the same tailnet. Use the server's Tailscale MagicDNS name, for example `my-server`.
+Remote deploys require [Tailscale](https://tailscale.com/) or [NetBird](https://netbird.io/), including self-hosted networks. Install your preferred VPN and its CLI on your workstation and deployment host, connect both to the same network, and allow SSH and TCP port `9844` between them in its access policies.
 
-From your developer machine, add the server by MagicDNS name:
+From your developer machine, add the server by its VPN hostname or IP:
 
 ```bash
 tako servers add admin-user@my-server
 ```
 
-The `admin-user@host` form tells Tako which admin SSH user to use if install or repair is needed. Tako stores only the MagicDNS host and uses its first label as the server name. Before saving the server in your global `config.toml`, Tako checks Tailscale, verifies `tako` SSH recovery access, records target metadata, and verifies signed private management.
+Setup asks which private network to use. Connected providers appear first with a `detected` hint, and the first option is preselected. For scripts, pass `--network tailscale` or `--network netbird`. The choice is saved per server and reused for repair and upgrades. Existing server entries default to Tailscale. See [Servers](/servers/#choose-the-private-network) for NetBird examples, noninteractive selection, and direct installation.
+
+The `admin-user@host` form tells Tako which admin SSH user to use if install or repair is needed. Tako stores the VPN host and uses its first label as the server name. Before saving the server in your global `config.toml`, Tako checks the selected private network, verifies `tako` SSH recovery access, records target metadata, and verifies signed private management.
 
 If `tako-server` is missing or access needs repair, that shorthand bootstraps the host with the provided admin user. Tako starts the service with default listener settings, enrolls the SSH key used for signed management, and installs the libvips runtime used by the image optimizer.
 

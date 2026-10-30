@@ -40,7 +40,7 @@ tako dev --tunnel
 Set up a deployment host:
 
 ```bash
-# Connect the host and your workstation to Tailscale first.
+# Connect the host and your workstation to Tailscale or NetBird first.
 # If needed, servers add offers to install the service over SSH.
 sudo sh -c "$(curl -fsSL https://tako.sh/install-server.sh)"
 tako servers add my-server

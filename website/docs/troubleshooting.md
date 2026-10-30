@@ -154,7 +154,7 @@ On macOS, iCloud Keychain storage requires the signed `Tako.app` CLI. If Keychai
 
 ## Server Commands Fail
 
-Normal app operations use signed HTTP management on the server's private Tailscale address. SSH is used for setup, repair, reload, upgrade, and uninstall flows.
+Normal app operations use signed HTTP management on the server's selected Tailscale or NetBird address. SSH is used for setup, repair, reload, upgrade, and uninstall flows.
 
 If a server is unreachable:
 
@@ -164,4 +164,4 @@ tako status
 
 Use `tako servers add --install <host>` or `tako servers add admin@host` to install or repair a server before adding it to `config.toml`.
 
-Check Tailscale reachability and SSH recovery access before choosing a repair action. Reload requires a reachable host and is not a diagnostic probe; follow [Servers](/servers/) for maintenance.
+Check the saved VPN provider (`tako servers list --json`), its connection and access policies, and SSH recovery access before choosing a repair action. Reload requires a reachable host and is not a diagnostic probe; follow [Servers](/servers/) for maintenance.

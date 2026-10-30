@@ -20,8 +20,9 @@ set -eu
 #   TAKO_SOCKET             default: /var/run/tako/tako.sock
 #   TAKO_HTTP_PORT          public HTTP port for tako-server (default: 80)
 #   TAKO_HTTPS_PORT         public HTTPS port for tako-server (default: 443)
-#   TAKO_MANAGEMENT_HOST    Tailscale IP to bind remote management on (optional)
-#                           if unset, installer detects it with `tailscale ip -4`
+#   TAKO_NETWORK            tailscale or netbird (default: saved choice, then tailscale)
+#   TAKO_MANAGEMENT_HOST    assigned VPN IP to bind remote management on (optional)
+#                           if unset, installer asks the selected VPN agent
 #   TAKO_SSH_PUBKEY         public key line to authorize for TAKO_USER (optional)
 #                           if unset, installer prompts in interactive terminals
 #
@@ -55,13 +56,14 @@ TAKO_SOCKET="${TAKO_SOCKET:-/var/run/tako/tako.sock}"
 TAKO_HTTP_PORT="${TAKO_HTTP_PORT:-}"
 TAKO_HTTPS_PORT="${TAKO_HTTPS_PORT:-}"
 TAKO_MANAGEMENT_HOST="${TAKO_MANAGEMENT_HOST:-}"
+TAKO_NETWORK="${TAKO_NETWORK:-}"
 TAKO_DOWNLOAD_BASE_URL="${TAKO_DOWNLOAD_BASE_URL:-}"
 TAKO_ALLOW_INSECURE_DOWNLOAD_BASE="${TAKO_ALLOW_INSECURE_DOWNLOAD_BASE:-}"
 TAKO_REPO_OWNER="${TAKO_REPO_OWNER:-tako-sh}"
 TAKO_REPO_NAME="${TAKO_REPO_NAME:-tako}"
 TAKO_RELEASE_TAG="${TAKO_RELEASE_TAG:-latest}"
 TAKO_RESTART_SERVICE="${TAKO_RESTART_SERVICE:-1}"
-TAKO_MANAGEMENT_REQUIRED_MESSAGE="Remote management requires Tailscale so Tako can keep server control traffic private by default."
+TAKO_MANAGEMENT_REQUIRED_MESSAGE="Remote management requires a connected Tailscale or NetBird private network."
 TAKO_MANAGEMENT_ARGS=""
 TAKO_PUBLIC_PORT_ARGS=""
 TAKO_SERVER_CAPABILITIES="cap_net_bind_service,cap_setuid,cap_setgid,cap_kill"
@@ -192,78 +194,117 @@ is_enabled() {
   esac
 }
 
-is_tailscale_ipv4() {
-  printf '%s\n' "$1" | awk -F. '
-    NF == 4 {
-      for (i = 1; i <= 4; i++) {
-        if ($i !~ /^[0-9]+$/ || $i < 0 || $i > 255) {
-          exit 1
+# Shared by installation and the root-owned recovery helper. Accept only an
+# address reported by the selected local agent, never an arbitrary private IP.
+private_network_functions() {
+  cat <<'NETWORK_EOF'
+valid_management_ip() {
+  case "$1" in
+    *:*)
+      printf '%s\n' "$1" | awk -F: '
+        {
+          first = tolower($1)
+          if (length(first) != 4 || (substr(first, 1, 2) != "fc" && substr(first, 1, 2) != "fd")) exit 1
+          value = $0
+          compressed = sub(/::/, ":", value)
+          if (value ~ /::/ || (!compressed && NF != 8)) exit 1
+          groups = 0
+          for (i = 1; i <= NF; i++) {
+            if ($i == "") continue
+            if ($i !~ /^[a-fA-F0-9]+$/ || length($i) > 4) exit 1
+            groups++
+          }
+          if (compressed && groups >= 8) exit 1
+          if (!compressed && groups != 8) exit 1
         }
-      }
-      if ($1 == 100 && $2 >= 64 && $2 <= 127) {
-        exit 0
-      }
-    }
-    { exit 1 }
-  '
-}
-
-is_tailscale_ipv6() {
-  lower="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
-  case "$lower" in
-    fd7a:115c:a1e0:*)
-      return 0
+      '
       ;;
     *)
-      return 1
+      printf '%s\n' "$1" | awk -F. '
+        NF == 4 {
+          for (i = 1; i <= 4; i++) {
+            if ($i !~ /^[0-9]+$/ || $i < 0 || $i > 255) exit 1
+          }
+          if ($1 == 10 || ($1 == 172 && $2 >= 16 && $2 <= 31) ||
+              ($1 == 192 && $2 == 168) || ($1 == 100 && $2 >= 64 && $2 <= 127)) exit 0
+        }
+        { exit 1 }
+      '
       ;;
   esac
 }
 
-is_tailscale_ip() {
-  is_tailscale_ipv4 "$1" || is_tailscale_ipv6 "$1"
-}
-
-detect_tailscale_ip() {
-  if ! need_cmd tailscale; then
-    return 1
-  fi
-
-  for ip in $(tailscale ip -4 2>/dev/null || true); do
-    if is_tailscale_ip "$ip"; then
-      printf '%s\n' "$ip"
+detect_management_ip() {
+  provider="$1"
+  preferred="${2:-}"
+  case "$provider" in
+    tailscale)
+      tailscale status --json 2>/dev/null | grep -Eq '"BackendState"[[:space:]]*:[[:space:]]*"Running"' || return 1
+      addresses="$(tailscale ip -4 2>/dev/null || true)
+$(tailscale ip -6 2>/dev/null || true)"
+      ;;
+    netbird)
+      netbird status 2>/dev/null | awk '/^Management: / { connected = ($2 == "Connected") } END { exit !connected }' || return 1
+      addresses="$(netbird status --ipv4 2>/dev/null || true)
+$(netbird status --ipv6 2>/dev/null || true)"
+      ;;
+    *) echo "error: network must be tailscale or netbird" >&2; return 1 ;;
+  esac
+  for address in $addresses; do
+    if valid_management_ip "$address" && { [ -z "$preferred" ] || [ "$address" = "$preferred" ]; }; then
+      printf '%s\n' "$address"
       return 0
     fi
   done
-
   return 1
 }
+NETWORK_EOF
+}
+eval "$(private_network_functions)"
 
 configure_management_http() {
-  if [ -z "$TAKO_MANAGEMENT_HOST" ]; then
-    TAKO_MANAGEMENT_HOST="$(detect_tailscale_ip || true)"
+  saved_network=tailscale
+  if [ -r /usr/local/libexec/tako/network-provider ]; then
+    IFS= read -r saved_network < /usr/local/libexec/tako/network-provider
   fi
+  TAKO_NETWORK="${TAKO_NETWORK:-$saved_network}"
+  case "$TAKO_NETWORK" in
+    tailscale|netbird) ;;
+    *) echo "error: TAKO_NETWORK must be tailscale or netbird" >&2; exit 1 ;;
+  esac
 
-  if [ -n "$TAKO_MANAGEMENT_HOST" ]; then
-    if ! is_tailscale_ip "$TAKO_MANAGEMENT_HOST"; then
-      echo "error: TAKO_MANAGEMENT_HOST must be this server's Tailscale IP (100.64.0.0/10 or fd7a:115c:a1e0::/48)." >&2
-      exit 1
+  requested_management_host="$TAKO_MANAGEMENT_HOST"
+  preferred_management_host="$requested_management_host"
+  if [ -z "$preferred_management_host" ] && [ "$TAKO_NETWORK" = "$saved_network" ]; then
+    preferred_management_host="$(existing_service_arg_value --management-host || true)"
+  fi
+  TAKO_MANAGEMENT_HOST="$(detect_management_ip "$TAKO_NETWORK" "$preferred_management_host" || true)"
+  if [ -z "$TAKO_MANAGEMENT_HOST" ] && [ -z "$requested_management_host" ]; then
+    TAKO_MANAGEMENT_HOST="$(detect_management_ip "$TAKO_NETWORK" || true)"
+  fi
+  # An offline binary refresh must retain the existing private binding. Starting
+  # or repairing a service still requires an address from the selected agent.
+  if [ -z "$TAKO_MANAGEMENT_HOST" ] && [ -z "$requested_management_host" ] &&
+     ! is_enabled "$TAKO_RESTART_SERVICE" && [ "$TAKO_NETWORK" = "$saved_network" ]; then
+    previous_host="$(existing_service_arg_value --management-host || true)"
+    if [ -n "$previous_host" ] && valid_management_ip "$previous_host"; then
+      TAKO_MANAGEMENT_HOST="$previous_host"
     fi
-    TAKO_MANAGEMENT_ARGS="--management-host $TAKO_MANAGEMENT_HOST"
-    echo "OK remote management bound to Tailscale address $TAKO_MANAGEMENT_HOST"
-    return
   fi
-
-  if is_enabled "$TAKO_RESTART_SERVICE"; then
-    echo "error: $TAKO_MANAGEMENT_REQUIRED_MESSAGE" >&2
-    echo "Install and connect Tailscale on this server, then rerun the installer." >&2
-    echo "Or set TAKO_MANAGEMENT_HOST to this server's Tailscale IP." >&2
+  if [ -n "$requested_management_host" ] && [ -z "$TAKO_MANAGEMENT_HOST" ]; then
+    echo "error: TAKO_MANAGEMENT_HOST must be an address assigned to this server by $TAKO_NETWORK." >&2
     exit 1
   fi
-
-  if [ "$SERVICE_MANAGER" != "none" ]; then
-    echo "warning: remote management was not configured; connect Tailscale before starting tako-server." >&2
+  if [ -n "$TAKO_MANAGEMENT_HOST" ]; then
+    TAKO_MANAGEMENT_ARGS="--management-host $TAKO_MANAGEMENT_HOST"
+    echo "OK remote management bound to $TAKO_NETWORK address $TAKO_MANAGEMENT_HOST"
+    return
   fi
+  if is_enabled "$TAKO_RESTART_SERVICE"; then
+    echo "error: $TAKO_MANAGEMENT_REQUIRED_MESSAGE Connect this server to $TAKO_NETWORK, then rerun the installer." >&2
+    exit 1
+  fi
+  echo "warning: remote management was not configured; connect $TAKO_NETWORK before starting tako-server." >&2
 }
 
 process_has_management_host() {
@@ -494,6 +535,16 @@ EOF
   printf '%s\n%s\n%s\n' "$TAKO_USER" "$TAKO_HOME" "$TAKO_SOCKET" > "$helper_dir/install-settings"
   chown root:root "$helper_dir/install-settings"
   chmod 0644 "$helper_dir/install-settings"
+  printf '%s\n' "$TAKO_NETWORK" > "$helper_dir/network-provider"
+  chown root:root "$helper_dir/network-provider"
+  chmod 0644 "$helper_dir/network-provider"
+  {
+    printf '#!/bin/sh\nset -eu\n'
+    private_network_functions
+    printf 'detect_management_ip "$@"\n'
+  } > "$helper_dir/network-address"
+  chown root:root "$helper_dir/network-address"
+  chmod 0755 "$helper_dir/network-address"
   cat > "$TAKO_SERVER_INSTALL_REFRESH_HELPER" <<'EOF'
 #!/bin/sh
 set -eu
@@ -519,7 +570,11 @@ esac
   IFS= read -r TAKO_HOME
   IFS= read -r TAKO_SOCKET
 } < /usr/local/libexec/tako/install-settings
-export TAKO_USER TAKO_HOME TAKO_SOCKET
+TAKO_NETWORK=tailscale
+if [ -r /usr/local/libexec/tako/network-provider ]; then
+  IFS= read -r TAKO_NETWORK < /usr/local/libexec/tako/network-provider
+fi
+export TAKO_USER TAKO_HOME TAKO_SOCKET TAKO_NETWORK
 
 installer_url="https://tako.sh/install-server.sh"
 temporary_dir="$(mktemp -d)"
@@ -571,7 +626,11 @@ case "$action" in
     [ "$#" -eq 1 ] || { echo "error: expected one maintenance action" >&2; exit 1; }
     ;;
   configure)
-    [ "$#" -eq 3 ] || { echo "error: configure requires HTTP and HTTPS ports" >&2; exit 1; }
+    [ "$#" -eq 4 ] || [ "$#" -eq 5 ] || { echo "error: configure requires HTTP and HTTPS ports, a private network, and an optional VPN IP" >&2; exit 1; }
+    case "$4" in
+      tailscale|netbird) ;;
+      *) echo "error: network must be tailscale or netbird" >&2; exit 1 ;;
+    esac
     for port in "$2" "$3"; do
       case "$port" in
         ''|*[!0-9]*) echo "error: ports must be between 1 and 65535" >&2; exit 1 ;;
@@ -602,22 +661,22 @@ case "$action" in
     exit 0
     ;;
   configure)
+    saved_network=tailscale
+    if [ -r /usr/local/libexec/tako/network-provider ]; then
+      IFS= read -r saved_network < /usr/local/libexec/tako/network-provider
+    fi
+    [ "$saved_network" = "$4" ] || { echo "error: server uses $saved_network; reinstall as administrator to change its private network" >&2; exit 1; }
+    management_host="$(/usr/local/libexec/tako/network-address "$saved_network" "${5:-}")" || {
+      echo "error: connect this server to $saved_network before starting tako-server" >&2; exit 1;
+    }
     for service_file in /etc/systemd/system/tako-server.service /etc/systemd/system/tako-server-standby.service; do
       [ -f "$service_file" ] || continue
-      # Bootstrap may run before Tailscale connects. Configure the primary's
-      # private management listener when recovery starts that installation.
-      if [ "$service_file" != /etc/systemd/system/tako-server-standby.service ] && ! grep -q -- '--management-host ' "$service_file"; then
-        management_host="$(tailscale ip -4 2>/dev/null | awk -F. '
-          NF == 4 {
-            valid = 1
-            for (i = 1; i <= 4; i++) {
-              if ($i !~ /^[0-9]+$/ || $i < 0 || $i > 255) valid = 0
-            }
-            if (valid && $1 == 100 && $2 >= 64 && $2 <= 127) { print; exit }
-          }
-        ')"
-        [ -n "$management_host" ] || { echo "error: connect this server to Tailscale before starting tako-server" >&2; exit 1; }
-        sed -i "s/--https-port [0-9][0-9]*/& --management-host $management_host/" "$service_file"
+      if [ "$service_file" != /etc/systemd/system/tako-server-standby.service ]; then
+        if grep -q -- '--management-host ' "$service_file"; then
+          sed -i "s/--management-host [^ ]*/--management-host $management_host/" "$service_file"
+        else
+          sed -i "s/--https-port [0-9][0-9]*/& --management-host $management_host/" "$service_file"
+        fi
       fi
       sed -i "s/--http-port [0-9][0-9]*/--http-port $2/g; s/--https-port [0-9][0-9]*/--https-port $3/g" "$service_file"
     done

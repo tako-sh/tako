@@ -1,6 +1,27 @@
 use super::*;
 
 #[test]
+fn servers_add_accepts_supported_networks_only() {
+    for value in ["tailscale", "netbird"] {
+        let cli = Cli::try_parse_from([
+            "tako",
+            "servers",
+            "add",
+            "edge.internal",
+            "--network",
+            value,
+        ])
+        .unwrap();
+        let Commands::Servers(server::ServerCommands::Add { network, .. }) = cli.command.unwrap()
+        else {
+            panic!("expected add");
+        };
+        assert_eq!(network.unwrap().id(), value);
+    }
+    assert!(Cli::try_parse_from(["tako", "servers", "add", "--network", "unknown"]).is_err());
+}
+
+#[test]
 fn servers_add_defaults_to_tako_user() {
     let cli = Cli::try_parse_from(["tako", "servers", "add", "example.com"]).unwrap();
     let Commands::Servers(server::ServerCommands::Add { host, .. }) = cli.command.expect("command")

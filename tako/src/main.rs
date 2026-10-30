@@ -6,8 +6,8 @@ mod keychain;
 mod management_http;
 mod output;
 mod paths;
+mod private_network;
 pub mod shell;
-mod tailscale;
 mod telemetry;
 mod ui;
 

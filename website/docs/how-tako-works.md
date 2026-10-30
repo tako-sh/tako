@@ -96,7 +96,7 @@ Local workflow state is backed up. Channel replay and SDK cache storage are not 
 
 ## Remote Management
 
-Normal app operations use signed HTTP management over the server's private Tailscale address. SSH is used for setup, repair, and server maintenance. `hello` and `server_info` are public probes; all mutating commands require a signed request from an enrolled SSH key.
+Normal app operations use signed HTTP management over the server's selected Tailscale or NetBird address. SSH is used for setup, repair, and server maintenance. `hello` and `server_info` are public probes; all mutating commands require a signed request from an enrolled SSH key.
 
 Artifact uploads and log reads use dedicated signed HTTP endpoints. App-scoped commands such as deploy, status, logs, scale, releases, backups, delete, and secrets sync do not use SSH for the normal path.
 
