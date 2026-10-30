@@ -5,11 +5,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, SystemTime};
 use tako_images::{ImageCrop, ImageFit, OutputFormat, TransformOptions};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::watch;
 
 const CACHE_VERSION: &str = "tako-image-transform-v1";
-const CACHE_DIR_NAME: &str = "tako-image-cache";
+const CACHE_DIR_NAME: &str = "tako-image-cache-v2";
 const GIB: u64 = 1024 * 1024 * 1024;
 const TRANSFORM_CACHE_MIN_BYTES: u64 = GIB;
 const TRANSFORM_CACHE_FALLBACK_BYTES: u64 = 2 * GIB;
@@ -24,7 +24,19 @@ pub(super) struct CachedTransform {
 }
 
 pub(super) fn default_cache_root() -> PathBuf {
-    std::env::temp_dir().join(CACHE_DIR_NAME)
+    static ROOT: OnceLock<PathBuf> = OnceLock::new();
+    ROOT.get_or_init(|| {
+        // Canonicalize the OS temp directory once (e.g. /var -> /private/var on
+        // macOS), but never canonicalize or adopt an existing cache directory.
+        let temp = std::env::temp_dir();
+        let temp = temp.canonicalize().unwrap_or(temp);
+        #[cfg(unix)]
+        let name = format!("{CACHE_DIR_NAME}-{}", unsafe { libc::geteuid() });
+        #[cfg(not(unix))]
+        let name = CACHE_DIR_NAME;
+        temp.join(name)
+    })
+    .clone()
 }
 
 pub(super) fn transform_cache_key(
@@ -58,10 +70,20 @@ pub(super) fn transform_cache_key(
 
 pub(super) async fn read(root: &Path, key: &str, format: OutputFormat) -> Option<CachedTransform> {
     let path = cache_path(root, key)?;
-    if !cache_file_is_regular(root, &path).await {
+    if !cache_file_is_trusted(root, &path).await {
         return None;
     }
-    let bytes = tokio::fs::read(path).await.ok()?;
+    let mut options = tokio::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    let mut file = options.open(path).await.ok()?;
+    // Validate the opened inode, not just a path checked before open.
+    if !trusted_cache_file(&file.metadata().await.ok()?) {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).await.ok()?;
     let content_type = cached_content_type(&bytes, format);
     Some(CachedTransform {
         bytes,
@@ -76,18 +98,17 @@ pub(super) async fn write(root: &Path, key: &str, bytes: &[u8]) {
     let Some(parent) = path.parent() else {
         return;
     };
-    if !cache_dir_is_real(root).await {
+    if !ensure_private_cache_dir(root).await || !ensure_private_cache_dir(parent).await {
         return;
     }
-    if tokio::fs::create_dir_all(parent).await.is_err() {
-        return;
-    }
-    if !cache_dir_is_real(root).await || !cache_dir_is_real(parent).await {
-        return;
+    match tokio::fs::symlink_metadata(&path).await {
+        Ok(metadata) if !trusted_cache_file(&metadata) => return,
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return,
+        _ => {}
     }
     let tmp_id = TMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
     let tmp_path = path.with_extension(format!("tmp-{}-{tmp_id}", std::process::id()));
-    let mut file = match tokio::fs::File::create(&tmp_path).await {
+    let mut file = match create_cache_file(&tmp_path).await {
         Ok(file) => file,
         Err(_) => return,
     };
@@ -101,6 +122,14 @@ pub(super) async fn write(root: &Path, key: &str, bytes: &[u8]) {
     } else {
         let _ = tokio::fs::remove_file(&tmp_path).await;
     }
+}
+
+async fn create_cache_file(path: &Path) -> std::io::Result<tokio::fs::File> {
+    let mut options = tokio::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    options.open(path).await
 }
 
 static TMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -216,7 +245,7 @@ fn nearest_existing_path(path: &Path) -> Option<&Path> {
 
 async fn collect_cache_files(root: &Path) -> Vec<CacheFile> {
     let mut files = Vec::new();
-    if !cache_dir_is_real(root).await {
+    if !cache_dir_is_private(root).await {
         return files;
     }
     let Ok(mut entries) = tokio::fs::read_dir(root).await else {
@@ -229,7 +258,7 @@ async fn collect_cache_files(root: &Path) -> Vec<CacheFile> {
             continue;
         };
 
-        if !file_type.is_dir() || file_type.is_symlink() {
+        if !file_type.is_dir() || file_type.is_symlink() || !cache_dir_is_private(&path).await {
             continue;
         }
 
@@ -250,7 +279,7 @@ async fn collect_cache_files(root: &Path) -> Vec<CacheFile> {
             let Ok(child_metadata) = tokio::fs::symlink_metadata(&child_path).await else {
                 continue;
             };
-            if child_metadata.is_file() {
+            if trusted_cache_file(&child_metadata) {
                 files.push(cache_file(child_path, child_metadata));
             }
         }
@@ -298,7 +327,7 @@ fn is_cache_file_path(root: &Path, path: &Path) -> bool {
 }
 
 async fn remove_empty_cache_dirs(root: &Path) {
-    if !cache_dir_is_real(root).await {
+    if !cache_dir_is_private(root).await {
         return;
     }
     let Ok(mut entries) = tokio::fs::read_dir(root).await else {
@@ -310,31 +339,109 @@ async fn remove_empty_cache_dirs(root: &Path) {
         let Ok(file_type) = entry.file_type().await else {
             continue;
         };
-        if file_type.is_dir() && !file_type.is_symlink() {
+        if file_type.is_dir() && !file_type.is_symlink() && cache_dir_is_private(&path).await {
             let _ = tokio::fs::remove_dir(path).await;
         }
     }
 }
 
-async fn cache_file_is_regular(root: &Path, path: &Path) -> bool {
+async fn cache_file_is_trusted(root: &Path, path: &Path) -> bool {
     let Some(parent) = path.parent() else {
         return false;
     };
-    if !cache_dir_is_real(root).await || !cache_dir_is_real(parent).await {
+    if !cache_dir_is_private(root).await || !cache_dir_is_private(parent).await {
         return false;
     }
     let Ok(metadata) = tokio::fs::symlink_metadata(path).await else {
         return false;
     };
-    metadata.is_file() && !metadata.file_type().is_symlink()
+    trusted_cache_file(&metadata)
 }
 
-async fn cache_dir_is_real(path: &Path) -> bool {
-    match tokio::fs::symlink_metadata(path).await {
-        Ok(metadata) => metadata.is_dir() && !metadata.file_type().is_symlink(),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
-        Err(_) => false,
+#[cfg(unix)]
+fn trusted_cache_file(metadata: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    metadata.is_file()
+        && metadata.uid() == unsafe { libc::geteuid() }
+        && metadata.mode() & 0o022 == 0
+        && metadata.nlink() == 1
+}
+
+#[cfg(not(unix))]
+fn trusted_cache_file(_metadata: &std::fs::Metadata) -> bool {
+    false // No Unix ownership contract: transform normally without a disk cache.
+}
+
+// Validate from the filesystem root down. Every ancestor must be controlled by
+// root or this service UID; writable ancestors are allowed only with the sticky
+// bit, which prevents other users from replacing our owned child. Once checked,
+// an unrelated UID cannot swap a component between validation and I/O. Same-UID
+// processes and root are trusted, as for the rest of the service's private data.
+#[cfg(unix)]
+async fn trusted_ancestors(path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        return false;
     }
+    let uid = unsafe { libc::geteuid() };
+    let mut current = PathBuf::new();
+    for part in path.components() {
+        current.push(part);
+        let Ok(metadata) = tokio::fs::symlink_metadata(&current).await else {
+            return false;
+        };
+        if !metadata.is_dir()
+            || (metadata.uid() != 0 && metadata.uid() != uid)
+            || (metadata.mode() & 0o022 != 0 && metadata.mode() & 0o1000 == 0)
+        {
+            return false;
+        }
+    }
+    true
+}
+
+#[cfg(not(unix))]
+async fn trusted_ancestors(_path: &Path) -> bool {
+    false
+}
+
+async fn cache_dir_is_private(path: &Path) -> bool {
+    if !trusted_ancestors(path).await {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let Ok(metadata) = tokio::fs::symlink_metadata(path).await else {
+            return false;
+        };
+        metadata.uid() == unsafe { libc::geteuid() } && metadata.mode() & 0o777 == 0o700
+    }
+    #[cfg(not(unix))]
+    false
+}
+
+async fn ensure_private_cache_dir(path: &Path) -> bool {
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    if !trusted_ancestors(parent).await {
+        return false;
+    }
+    let mut builder = tokio::fs::DirBuilder::new();
+    #[cfg(unix)]
+    builder.mode(0o700);
+    match builder.create(path).await {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(_) => return false,
+    }
+    // Never chmod/chown an existing directory: it may already contain poison.
+    cache_dir_is_private(path).await
 }
 
 pub(super) enum TransformLease {
@@ -469,6 +576,16 @@ mod tests {
     use super::*;
     use tokio::time::{Duration, timeout};
 
+    fn private_tempdir() -> tempfile::TempDir {
+        let mut builder = tempfile::Builder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            builder.permissions(std::fs::Permissions::from_mode(0o700));
+        }
+        builder.tempdir().expect("private tempdir")
+    }
+
     fn options(format: OutputFormat, width: u32) -> TransformOptions {
         TransformOptions {
             format,
@@ -570,11 +687,219 @@ mod tests {
         }
     }
 
-    #[test]
-    fn default_cache_root_uses_system_temp_directory() {
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn untrusted_cache_storage_cannot_supply_responses() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // Exercise the real read/write API, including the old predictable root
+        // shape: moving the default path alone must not make this test pass.
+        for component in ["root", "partition", "file", "ancestor"] {
+            let temp = private_tempdir();
+            let root = temp.path().join("tako-image-cache");
+            let partition = root.join("aa");
+            std::fs::create_dir_all(&partition).unwrap();
+            for dir in [&root, &partition] {
+                std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+            }
+            let file = partition.join("1234");
+            std::fs::write(&file, b"injected-image").unwrap();
+            let unsafe_path = match component {
+                "root" => &root,
+                "partition" => &partition,
+                "file" => &file,
+                _ => temp.path(),
+            };
+            std::fs::set_permissions(unsafe_path, std::fs::Permissions::from_mode(0o777)).unwrap();
+
+            assert_eq!(
+                read(&root, "aa1234", OutputFormat::Webp).await,
+                None,
+                "{component}"
+            );
+            write(&root, "aa1234", b"trusted-image").await;
+            assert_eq!(
+                std::fs::read(&file).unwrap(),
+                b"injected-image",
+                "{component}"
+            );
+            prune_with_policy(
+                &root,
+                TransformCachePolicy {
+                    max_bytes: 0,
+                    max_age: Duration::ZERO,
+                },
+            )
+            .await;
+            assert!(file.exists(), "must not prune untrusted {component}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cache_creates_private_storage_and_reuses_it() {
+        use std::os::unix::fs::MetadataExt;
+        let temp = private_tempdir();
+        let root = temp.path().join("new-cache");
+        write(&root, "aa1234", b"trusted-image").await;
+        for (path, mode) in [
+            (&root, 0o700),
+            (&root.join("aa"), 0o700),
+            (&root.join("aa/1234"), 0o600),
+        ] {
+            let metadata = std::fs::symlink_metadata(path).unwrap();
+            assert_eq!(metadata.mode() & 0o777, mode);
+            assert_eq!(metadata.uid(), unsafe { libc::geteuid() });
+        }
         assert_eq!(
-            default_cache_root(),
-            std::env::temp_dir().join(CACHE_DIR_NAME)
+            read(&root, "aa1234", OutputFormat::Webp)
+                .await
+                .unwrap()
+                .bytes,
+            b"trusted-image"
+        );
+        write(&root, "aa1234", b"replacement-image").await;
+        assert_eq!(
+            read(&root, "aa1234", OutputFormat::Webp)
+                .await
+                .unwrap()
+                .bytes,
+            b"replacement-image"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn misowned_cache_storage_is_never_adopted() {
+        use std::os::unix::fs::{PermissionsExt, chown};
+        if unsafe { libc::geteuid() } != 0 {
+            eprintln!("ownership regression requires root to create foreign-owned fixtures");
+            return;
+        }
+        for component in ["root", "partition", "file", "ancestor"] {
+            let temp = private_tempdir();
+            let root = temp.path().join("cache");
+            let partition = root.join("aa");
+            std::fs::create_dir_all(&partition).unwrap();
+            for dir in [&root, &partition] {
+                std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+            }
+            let file = partition.join("1234");
+            std::fs::write(&file, b"foreign-image").unwrap();
+            let unsafe_path = match component {
+                "root" => &root,
+                "partition" => &partition,
+                "file" => &file,
+                _ => temp.path(),
+            };
+            chown(unsafe_path, Some(65534), None).unwrap();
+            assert_eq!(
+                read(&root, "aa1234", OutputFormat::Webp).await,
+                None,
+                "{component}"
+            );
+            write(&root, "aa1234", b"trusted-image").await;
+            prune_with_policy(
+                &root,
+                TransformCachePolicy {
+                    max_bytes: 0,
+                    max_age: Duration::ZERO,
+                },
+            )
+            .await;
+            assert_eq!(
+                std::fs::read(&file).unwrap(),
+                b"foreign-image",
+                "{component}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn another_uid_cannot_write_or_replace_private_cache_in_sticky_temp() {
+        use std::os::unix::{fs::PermissionsExt, process::CommandExt};
+        use std::process::{Command, Stdio};
+        if unsafe { libc::geteuid() } != 0 {
+            eprintln!("cross-user regression requires root to launch another UID");
+            return;
+        }
+        let temp = private_tempdir();
+        std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o1777)).unwrap();
+        let root = temp.path().join("cache");
+        write(&root, "aa1234", b"trusted-image").await;
+        for script in [
+            "printf poison > \"$1/aa/1234\"",
+            "mv \"$1\" \"$1-replaced\"",
+        ] {
+            let status = Command::new("sh")
+                .args(["-c", script, "cache-attacker"])
+                .arg(&root)
+                .uid(65534)
+                .gid(65534)
+                .stderr(Stdio::null())
+                .status()
+                .unwrap();
+            assert!(
+                !status.success(),
+                "untrusted UID must not control the cache"
+            );
+        }
+        assert_eq!(
+            read(&root, "aa1234", OutputFormat::Webp)
+                .await
+                .unwrap()
+                .bytes,
+            b"trusted-image"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cache_rejects_hard_links_and_exclusive_write_collisions() {
+        use std::os::unix::fs::symlink;
+        let temp = private_tempdir();
+        write(temp.path(), "aa1234", b"original").await;
+        let file = temp.path().join("aa/1234");
+        let alias = temp.path().join("alias");
+        std::fs::hard_link(&file, &alias).unwrap();
+        assert_eq!(read(temp.path(), "aa1234", OutputFormat::Webp).await, None);
+        write(temp.path(), "aa1234", b"replacement").await;
+        assert_eq!(std::fs::read(&alias).unwrap(), b"original");
+        assert!(create_cache_file(&file).await.is_err());
+        let link = temp.path().join("tmp-link");
+        symlink(&file, &link).unwrap();
+        assert!(create_cache_file(&link).await.is_err());
+        assert_eq!(std::fs::read(&file).unwrap(), b"original");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cache_rejects_symlinked_roots_and_ancestors() {
+        use std::os::unix::fs::symlink;
+        let temp = private_tempdir();
+        let real = temp.path().join("real");
+        write(&real, "aa1234", b"original").await;
+        let link = temp.path().join("link");
+        symlink(&real, &link).unwrap();
+        assert_eq!(read(&link, "aa1234", OutputFormat::Webp).await, None);
+        write(&link, "aa1234", b"replacement").await;
+        write(&link.join("nested"), "aa1234", b"replacement").await;
+        assert!(!real.join("nested").exists());
+        assert_eq!(std::fs::read(real.join("aa/1234")).unwrap(), b"original");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn default_cache_root_is_versioned_and_scoped_to_service_uid() {
+        let root = default_cache_root();
+        assert_eq!(
+            root.parent().unwrap(),
+            std::env::temp_dir().canonicalize().unwrap()
+        );
+        assert_eq!(
+            root.file_name().unwrap().to_str().unwrap(),
+            format!("tako-image-cache-v2-{}", unsafe { libc::geteuid() })
         );
     }
 
@@ -688,7 +1013,7 @@ mod tests {
 
     #[tokio::test]
     async fn cache_write_then_read_returns_bytes_with_transform_content_type() {
-        let temp = tempfile::tempdir().expect("tempdir");
+        let temp = private_tempdir();
         let key = transform_cache_key(
             "demo",
             test_app_root(),
@@ -712,7 +1037,7 @@ mod tests {
 
     #[tokio::test]
     async fn cache_read_detects_webp_bytes_for_avif_request_fallbacks() {
-        let temp = tempfile::tempdir().expect("tempdir");
+        let temp = private_tempdir();
         let key = transform_cache_key(
             "demo",
             test_app_root(),
@@ -737,7 +1062,7 @@ mod tests {
 
     #[tokio::test]
     async fn prune_removes_expired_transform_cache_files() {
-        let temp = tempfile::tempdir().expect("tempdir");
+        let temp = private_tempdir();
         let key = transform_cache_key(
             "demo",
             test_app_root(),
@@ -746,6 +1071,7 @@ mod tests {
         );
 
         write(temp.path(), &key, b"expired-image").await;
+        assert_eq!(cache_total_bytes(temp.path()).await, 13);
         prune_with_policy(
             temp.path(),
             TransformCachePolicy {
@@ -760,7 +1086,7 @@ mod tests {
 
     #[tokio::test]
     async fn prune_removes_transform_cache_files_to_fit_byte_limit() {
-        let temp = tempfile::tempdir().expect("tempdir");
+        let temp = private_tempdir();
         let transform_options = options(OutputFormat::Webp, 640);
 
         for source in [
@@ -772,6 +1098,7 @@ mod tests {
             write(temp.path(), &key, b"1234").await;
         }
 
+        assert_eq!(cache_total_bytes(temp.path()).await, 12);
         prune_with_policy(
             temp.path(),
             TransformCachePolicy {
@@ -786,7 +1113,7 @@ mod tests {
 
     #[tokio::test]
     async fn prune_ignores_temporary_transform_cache_files() {
-        let temp = tempfile::tempdir().expect("tempdir");
+        let temp = private_tempdir();
         let key = transform_cache_key(
             "demo",
             test_app_root(),
@@ -795,9 +1122,7 @@ mod tests {
         );
         let path = cache_path(temp.path(), &key).expect("cache path");
         let parent = path.parent().expect("cache parent");
-        tokio::fs::create_dir_all(parent)
-            .await
-            .expect("create cache dir");
+        assert!(ensure_private_cache_dir(parent).await);
         let tmp_path = path.with_extension("tmp-test");
         tokio::fs::write(&tmp_path, b"in-progress")
             .await
@@ -821,8 +1146,8 @@ mod tests {
     async fn cache_write_does_not_follow_symlinked_partition_dirs() {
         use std::os::unix::fs::symlink;
 
-        let temp = tempfile::tempdir().expect("tempdir");
-        let external = tempfile::tempdir().expect("external tempdir");
+        let temp = private_tempdir();
+        let external = private_tempdir();
         let partition = temp.path().join("aa");
         symlink(external.path(), &partition).expect("symlink cache partition");
 
@@ -836,15 +1161,13 @@ mod tests {
     async fn cache_read_ignores_symlinked_cache_files() {
         use std::os::unix::fs::symlink;
 
-        let temp = tempfile::tempdir().expect("tempdir");
+        let temp = private_tempdir();
         let target = temp.path().join("target");
         tokio::fs::write(&target, b"external-image")
             .await
             .expect("write target");
         let parent = temp.path().join("aa");
-        tokio::fs::create_dir(&parent)
-            .await
-            .expect("create cache partition");
+        assert!(ensure_private_cache_dir(&parent).await);
         symlink(&target, parent.join("1234")).expect("symlink cache file");
 
         assert_eq!(read(temp.path(), "aa1234", OutputFormat::Webp).await, None);
@@ -855,8 +1178,8 @@ mod tests {
     async fn prune_does_not_follow_symlinked_partition_dirs() {
         use std::os::unix::fs::symlink;
 
-        let temp = tempfile::tempdir().expect("tempdir");
-        let external = tempfile::tempdir().expect("external tempdir");
+        let temp = private_tempdir();
+        let external = private_tempdir();
         let external_cache_file = external.path().join("1234");
         tokio::fs::write(&external_cache_file, b"external-cache")
             .await

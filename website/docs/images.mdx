@@ -91,3 +91,27 @@ The `withTako()` adapter configures `next/image` to use Tako's optimizer and ali
 ## Verify
 
 Request the generated URL through the local or deployed Tako hostname. Check the HTTP status, image content type, and rendered dimensions. Also test a disallowed remote source and a disallowed size. A working helper call alone does not verify source permissions or server image support; [Troubleshooting](/troubleshooting/) covers runtime setup.
+
+## Server transform cache
+
+On Unix, `tako-server` caches transformed images under
+`<system-temp>/tako-image-cache-v2-<effective-uid>`. The server creates this directory
+and its partitions with mode `0700`, and cache files with mode `0600`. No installer
+step is needed, including when upgrading an existing service. The cache survives
+server restarts until the operating system clears temporary storage. It retains
+the existing 30-day eviction policy and filesystem-based 1–4 GiB size limit.
+
+The old shared `tako-image-cache` directory is neither read, migrated, nor removed.
+An upgrade starts with a cold cache. Do not copy old cache contents into the new
+namespace or change ownership or permissions to make an untrusted cache pass
+validation; remove it through trusted administrator maintenance and let the server
+recreate it instead.
+
+Cache roots and partitions must belong to the service's effective user and have
+mode `0700`. Files must belong to that user, have a single hard link, and deny
+group/other writes. Ancestors must belong to root or the service user and deny
+group/other writes, except sticky directories such as `/tmp`. Symlinked cache paths
+are rejected. A custom temporary directory must satisfy the same rules. If these
+checks fail, the server skips disk caching and still transforms the source image.
+Non-Unix systems also skip disk caching. Processes running as root or as the service
+user remain trusted; run untrusted native apps under their separate app users.
