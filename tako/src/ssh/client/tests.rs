@@ -42,7 +42,7 @@ fn server_configuration_uses_approved_helper_with_numeric_ports() {
                 http_port: 8080,
                 https_port: 8443,
             }),
-            crate::private_network::NetworkProvider::Netbird,
+            crate::vpn::VpnProvider::Netbird,
             "edge.internal",
         ),
         SshClient::run_as_root("/usr/local/bin/tako-server-service configure 8080 8443 netbird")
@@ -50,7 +50,7 @@ fn server_configuration_uses_approved_helper_with_numeric_ports() {
     assert_eq!(
         SshClient::configure_server_command(
             None,
-            crate::private_network::NetworkProvider::Tailscale,
+            crate::vpn::VpnProvider::Tailscale,
             "edge.internal",
         ),
         SshClient::run_as_root("/usr/local/bin/tako-server-service restart")
@@ -474,11 +474,11 @@ fn install_server_env_can_run_bootstrap_without_starting_service() {
         "ssh-ed25519 AAAA",
         None,
         super::tako::InstallServerMode::BootstrapOnly,
-        crate::private_network::NetworkProvider::Netbird,
+        crate::vpn::VpnProvider::Netbird,
     );
 
     assert!(env.contains("TAKO_RESTART_SERVICE='0'"));
-    assert!(env.contains("TAKO_NETWORK='netbird'"));
+    assert!(env.contains("TAKO_VPN='netbird'"));
 }
 
 #[test]
@@ -487,7 +487,7 @@ fn install_server_env_starts_service_for_configure_start_mode() {
         "ssh-ed25519 AAAA",
         None,
         super::tako::InstallServerMode::ConfigureAndStart,
-        crate::private_network::NetworkProvider::Tailscale,
+        crate::vpn::VpnProvider::Tailscale,
     );
 
     assert!(env.contains("TAKO_RESTART_SERVICE='1'"));

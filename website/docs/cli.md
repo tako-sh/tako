@@ -200,7 +200,7 @@ Lists release/build history or rolls an environment back to a previous release. 
 ## Servers
 
 ```bash
-tako servers add [host|admin@host] [--name <name>] [--description <text>] [--port <ssh-port>] [--ssh-key <path>] [--network tailscale|netbird] [--http-port <port>] [--https-port <port>] [--install]
+tako servers add [host|admin@host] [--name <name>] [--description <text>] [--port <ssh-port>] [--ssh-key <path>] [--vpn tailscale|netbird] [--http-port <port>] [--https-port <port>] [--install]
 tako servers list
 tako servers ls
 tako status
@@ -213,7 +213,7 @@ tako servers uninstall [name] [-y|--yes]
 
 `servers add` writes global `config.toml`, checks the management endpoint and `tako@host` SSH access, enrolls signed management access, and records target metadata. If the server is running but inaccessible, interactive setup offers to repair access; if its state is unknown, it offers to install or repair it. After confirmation, Tako asks for an administrator with `root` pre-filled. Use `--install` to skip the confirmation, or pass `admin@host` to select the administrator without a prompt. Public HTTP and HTTPS ports default to `80` and `443`; override them with `--http-port` and `--https-port`. `--ssh-key` pins a specific private key for the server; connections then use only that key instead of trying `~/.ssh` defaults and `ssh-agent`. The interactive wizard prompts for the key, prefilled with your default `~/.ssh` key.
 
-`servers add` asks which private network to use unless a provider is supplied or saved for that host. Connected providers appear first with a `detected` hint and the first is preselected. Use `--network tailscale` or `--network netbird` for scripts. Both machines must already be connected to the selected VPN. The provider is saved per server; existing entries default to Tailscale.
+`servers add` asks which VPN to use unless a provider is supplied or saved for that host. Connected providers appear first with a `detected` hint and the first is preselected. Use `--vpn tailscale` or `--vpn netbird` for scripts. Both machines must already be connected to the selected VPN. The provider is saved per server; existing entries default to Tailscale.
 
 `status` prints a deployment snapshot grouped by server, with compact server summary, routes, and app rows.
 

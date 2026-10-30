@@ -7,29 +7,29 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = (ROOT / "scripts/install-tako-server.sh").read_text()
-FUNCTIONS = SOURCE[SOURCE.index("private_network_functions() {"):SOURCE.index("process_has_management_host() {")]
+FUNCTIONS = SOURCE[SOURCE.index("vpn_functions() {"):SOURCE.index("process_has_management_host() {")]
 
 
-class ServerNetworkTests(unittest.TestCase):
+class ServerVpnTests(unittest.TestCase):
     def configure(self, *, provider="netbird", saved="netbird", host="",
                   tailscale="100.64.0.1", netbird="100.80.0.1", restart="1",
                   previous="100.80.0.9"):
         with tempfile.TemporaryDirectory() as temporary:
-            settings = Path(temporary) / "network-provider"
+            settings = Path(temporary) / "vpn-provider"
             settings.write_text(saved + "\n")
-            script = FUNCTIONS.replace("/usr/local/libexec/tako/network-provider", str(settings))
+            script = FUNCTIONS.replace("/usr/local/libexec/tako/vpn-provider", str(settings))
             script += """
 is_enabled() { [ "$1" = 1 ]; }
 existing_service_arg_value() { printf '%s\\n' "$TEST_PREVIOUS"; }
 tailscale() { [ "$TEST_TAILSCALE" != disconnected ] || return 1; if [ "$1" = status ]; then printf '%s\\n' '{"BackendState":"Running"}'; return; fi; printf '%s\\n' "$TEST_TAILSCALE"; }
 netbird() { [ "$TEST_NETBIRD" != disconnected ] || return 1; if [ "$#" = 1 ]; then printf '%s\\n' 'Management: Connected'; return; fi; printf '%s\\n' "$TEST_NETBIRD"; }
-TAKO_NETWORK=$TEST_PROVIDER
+TAKO_VPN=$TEST_PROVIDER
 TAKO_MANAGEMENT_HOST=$TEST_HOST
 TAKO_RESTART_SERVICE=$TEST_RESTART
-TAKO_MANAGEMENT_REQUIRED_MESSAGE='Private network required.'
+TAKO_MANAGEMENT_REQUIRED_MESSAGE='VPN required.'
 TAKO_MANAGEMENT_ARGS=''
 configure_management_http
-printf 'PROVIDER=%s\\nHOST=%s\\nARGS=%s\\n' "$TAKO_NETWORK" "$TAKO_MANAGEMENT_HOST" "$TAKO_MANAGEMENT_ARGS"
+printf 'PROVIDER=%s\\nHOST=%s\\nARGS=%s\\n' "$TAKO_VPN" "$TAKO_MANAGEMENT_HOST" "$TAKO_MANAGEMENT_ARGS"
 """
             return subprocess.run(["sh", "-eu"], input=script, text=True,
                                   capture_output=True, timeout=5, env={

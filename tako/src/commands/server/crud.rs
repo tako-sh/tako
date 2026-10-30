@@ -176,7 +176,7 @@ pub(super) async fn list_servers() -> Result<(), Box<dyn std::error::Error>> {
                 serde_json::json!({
                     "name": name,
                     "host": entry.host,
-                    "network": entry.network.id(),
+                    "vpn": entry.vpn.id(),
                     "port": entry.port,
                     "http_port": entry.http_port,
                     "https_port": entry.https_port,

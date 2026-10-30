@@ -43,20 +43,20 @@ or:
 tako servers add ubuntu@my-server.tailnet.ts.net
 ```
 
-Interactive setup checks the management endpoint and `tako@host` SSH access. If the server is running but inaccessible, Tako offers to repair access; if its state is unknown, Tako offers to install or repair it. After confirmation, Tako asks for an administrator with `root` pre-filled. Use `--install` to skip the confirmation or `admin@host` to select the administrator without a prompt. Public HTTP and HTTPS ports default to `80` and `443`; override them with `--http-port` and `--https-port`. The add flow stores the private network provider, host, SSH port, public ports, description, and detected target metadata (`arch`, `libc`).
+Interactive setup checks the management endpoint and `tako@host` SSH access. If the server is running but inaccessible, Tako offers to repair access; if its state is unknown, Tako offers to install or repair it. After confirmation, Tako asks for an administrator with `root` pre-filled. Use `--install` to skip the confirmation or `admin@host` to select the administrator without a prompt. Public HTTP and HTTPS ports default to `80` and `443`; override them with `--http-port` and `--https-port`. The add flow stores the VPN provider, host, SSH port, public ports, description, and detected target metadata (`arch`, `libc`).
 
-### Choose the private network
+### Choose the VPN provider
 
-Setup asks which private network connects you to the server. Connected providers appear first with a `detected` hint, and the first option is preselected. Detection checks the running agent; installing a VPN client alone does not mark it as detected.
+Setup asks which VPN connects you to the server. Connected providers appear first with a `detected` hint, and the first option is preselected. Detection checks the running agent; installing a VPN client alone does not mark it as detected.
 
 For scripts, select the provider explicitly:
 
 ```bash
-tako servers add ubuntu@my-server.netbird.cloud --network netbird
-tako servers add ubuntu@my-server.tailnet.ts.net --network tailscale
+tako servers add ubuntu@my-server.netbird.cloud --vpn netbird
+tako servers add ubuntu@my-server.tailnet.ts.net --vpn tailscale
 ```
 
-Use your server's actual VPN name. Without a flag, an existing host keeps its saved provider. For new hosts in noninteractive mode, Tako uses the only connected provider, defaults to Tailscale if neither is detected, and requires `--network` if both are connected. Connection checks still run unless you explicitly pass `--no-test`.
+Use your server's actual VPN name. Without a flag, an existing host keeps its saved provider. For new hosts in noninteractive mode, Tako uses the only connected provider, defaults to Tailscale if neither is detected, and requires `--vpn` if both are connected. Connection checks still run unless you explicitly pass `--no-test`.
 
 The provider is stored in the global `config.toml` server inventory:
 
@@ -64,17 +64,17 @@ The provider is stored in the global `config.toml` server inventory:
 [[servers]]
 name = "prod"
 host = "my-server.netbird.cloud"
-network = "netbird"
+vpn = "netbird"
 ```
 
-Entries without `network` use Tailscale. Repair and upgrades preserve the server's saved provider, even when both VPNs are installed. To migrate an existing entry to another VPN, configure the server on the new network as administrator, then remove and re-add the local entry.
+Entries without `vpn` use Tailscale. Repair and upgrades preserve the server's saved provider, even when both VPNs are installed. To migrate an existing entry to another VPN, configure the server on the new network as administrator, then remove and re-add the local entry.
 
 ### Install directly on the server
 
-For a direct NetBird installation, run the installer as root with `TAKO_NETWORK=netbird`:
+For a direct NetBird installation, run the installer as root with `TAKO_VPN=netbird`:
 
 ```bash
-curl -fsSL https://tako.sh/install-server.sh | sudo env TAKO_NETWORK=netbird sh
+curl -fsSL https://tako.sh/install-server.sh | sudo env TAKO_VPN=netbird sh
 ```
 
 The standalone installer otherwise uses its saved provider, then Tailscale. `TAKO_MANAGEMENT_HOST` can select an address assigned to this server by that provider. It cannot select an unrelated LAN or public address.
@@ -112,4 +112,4 @@ tako servers list --json
 tako status --json
 ```
 
-Check the selected host, `network`, target architecture/libc metadata, and management reachability before deploying. After a service upgrade, inspect status and request an existing app route. See [Troubleshooting](/troubleshooting/#server-commands-fail) for repair paths.
+Check the selected host, `vpn`, target architecture/libc metadata, and management reachability before deploying. After a service upgrade, inspect status and request an existing app route. See [Troubleshooting](/troubleshooting/#server-commands-fail) for repair paths.

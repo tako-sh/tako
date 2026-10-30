@@ -6,13 +6,13 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "lowercase")]
-pub enum NetworkProvider {
+pub enum VpnProvider {
     #[default]
     Tailscale,
     Netbird,
 }
 
-impl NetworkProvider {
+impl VpnProvider {
     pub const ALL: [Self; 2] = [Self::Tailscale, Self::Netbird];
 
     pub fn id(self) -> &'static str {
@@ -45,8 +45,8 @@ impl NetworkProvider {
 }
 
 #[derive(Debug)]
-pub(crate) struct NetworkStatus {
-    pub provider: NetworkProvider,
+pub(crate) struct VpnStatus {
+    pub provider: VpnProvider,
     pub addresses: Vec<IpAddr>,
 }
 
@@ -70,11 +70,11 @@ fn is_private_address(ip: &IpAddr) -> bool {
 
 // Server checks must use its own addresses, never the addresses of its peers.
 pub(crate) fn assigned_addresses(
-    provider: NetworkProvider,
+    provider: VpnProvider,
     value: &serde_json::Value,
 ) -> Option<Vec<IpAddr>> {
     let addresses = match provider {
-        NetworkProvider::Tailscale => {
+        VpnProvider::Tailscale => {
             if value["BackendState"].as_str()? != "Running" {
                 return None;
             }
@@ -84,7 +84,7 @@ pub(crate) fn assigned_addresses(
                 .filter_map(|ip| ip.as_str().and_then(parse_ip))
                 .collect::<Vec<_>>()
         }
-        NetworkProvider::Netbird => {
+        VpnProvider::Netbird => {
             if value["management"]["connected"].as_bool() != Some(true)
                 || value["daemonStatus"]
                     .as_str()
@@ -103,10 +103,10 @@ pub(crate) fn assigned_addresses(
 
 // Read assigned addresses and peer addresses from the agent, never infer a
 // provider from a shared CGNAT range or from the presence of its executable.
-fn parse_status(provider: NetworkProvider, value: &serde_json::Value) -> Option<NetworkStatus> {
+fn parse_status(provider: VpnProvider, value: &serde_json::Value) -> Option<VpnStatus> {
     let mut addresses = assigned_addresses(provider, value)?;
     match provider {
-        NetworkProvider::Tailscale => {
+        VpnProvider::Tailscale => {
             if let Some(peers) = value["Peer"].as_object() {
                 for peer in peers.values() {
                     if let Some(ips) = peer["TailscaleIPs"].as_array() {
@@ -116,7 +116,7 @@ fn parse_status(provider: NetworkProvider, value: &serde_json::Value) -> Option<
                 }
             }
         }
-        NetworkProvider::Netbird => {
+        VpnProvider::Netbird => {
             if let Some(peers) = value["peers"]["details"].as_array() {
                 for peer in peers {
                     addresses.extend(peer["netbirdIp"].as_str().and_then(parse_ip));
@@ -125,21 +125,21 @@ fn parse_status(provider: NetworkProvider, value: &serde_json::Value) -> Option<
             }
         }
     }
-    Some(NetworkStatus {
+    Some(VpnStatus {
         provider,
         addresses,
     })
 }
 
-pub(crate) async fn detect() -> Vec<NetworkStatus> {
+pub(crate) async fn detect() -> Vec<VpnStatus> {
     let (tailscale, netbird) = tokio::join!(
-        read_status(NetworkProvider::Tailscale),
-        read_status(NetworkProvider::Netbird),
+        read_status(VpnProvider::Tailscale),
+        read_status(VpnProvider::Netbird),
     );
     [tailscale, netbird].into_iter().flatten().collect()
 }
 
-async fn read_status(provider: NetworkProvider) -> Option<NetworkStatus> {
+async fn read_status(provider: VpnProvider) -> Option<VpnStatus> {
     let mut command = tokio::process::Command::new(provider.id());
     command.args(["status", "--json"]).kill_on_drop(true);
     let output = tokio::time::timeout(Duration::from_secs(3), command.output())
@@ -167,7 +167,7 @@ pub(crate) async fn host_addresses(host: &str) -> Result<Vec<IpAddr>, String> {
     .map_err(|error| format!("Could not resolve VPN hostname: {error}"))
 }
 
-pub(crate) async fn verify_host(host: &str, provider: NetworkProvider) -> Result<(), String> {
+pub(crate) async fn verify_host(host: &str, provider: VpnProvider) -> Result<(), String> {
     let status = read_status(provider)
         .await
         .ok_or_else(|| provider.unavailable_message())?;
@@ -200,26 +200,26 @@ pub(crate) async fn management_address(host: &str) -> Result<IpAddr, String> {
         .unwrap_or(addresses[0]))
 }
 
-pub(crate) fn ordered_providers(detected: &[NetworkStatus]) -> Vec<NetworkProvider> {
-    let mut providers = NetworkProvider::ALL.to_vec();
+pub(crate) fn ordered_providers(detected: &[VpnStatus]) -> Vec<VpnProvider> {
+    let mut providers = VpnProvider::ALL.to_vec();
     providers.sort_by_key(|provider| !detected.iter().any(|status| status.provider == *provider));
     providers
 }
 
 pub(crate) async fn select_provider(
-    explicit: Option<NetworkProvider>,
-    saved: Option<NetworkProvider>,
-) -> Result<NetworkProvider, Box<dyn std::error::Error>> {
+    explicit: Option<VpnProvider>,
+    saved: Option<VpnProvider>,
+) -> Result<VpnProvider, Box<dyn std::error::Error>> {
     if let (Some(explicit), Some(saved)) = (explicit, saved)
         && explicit != saved
     {
-        return Err("Changing a server private network requires configuring the server on the new VPN as administrator, then removing and re-adding its inventory entry.".into());
+        return Err("Changing a server's VPN provider requires configuring the server on the new VPN as administrator, then removing and re-adding its inventory entry.".into());
     }
     if let Some(provider) = explicit.or(saved) {
         return Ok(provider);
     }
     if crate::output::is_dry_run() {
-        return Ok(NetworkProvider::default());
+        return Ok(VpnProvider::default());
     }
     let detected = detect().await;
     if crate::output::is_interactive() {
@@ -238,19 +238,16 @@ pub(crate) async fn select_provider(
                 }
             })
             .collect::<Vec<_>>();
-        let mut wizard = crate::output::Wizard::new().with_fields(&[("Private network", false)]);
-        return Ok(wizard.select(
-            "Private network",
-            "Which private network connects you to this server?",
-            options,
-            &hints,
-            0,
-        )?);
+        let mut wizard = crate::output::Wizard::new().with_fields(&[("VPN provider", false)]);
+        return Ok(wizard.select("VPN provider", "VPN provider", options, &hints, 0)?);
     }
     match detected.as_slice() {
         [status] => Ok(status.provider),
-        [] => Ok(NetworkProvider::default()),
-        _ => Err("Both Tailscale and NetBird are connected. Select one with --network tailscale|netbird.".into()),
+        [] => Ok(VpnProvider::default()),
+        _ => Err(
+            "Both Tailscale and NetBird are connected. Select one with --vpn tailscale|netbird."
+                .into(),
+        ),
     }
 }
 
@@ -262,37 +259,37 @@ mod tests {
     #[test]
     fn netbird_detection_requires_connection_and_reads_cidr_and_peers() {
         let mut value = json!({"management":{"connected":true},"netbirdIp":"100.80.0.1/16", "peers":{"details":[{"netbirdIp":"100.80.0.2","netbirdIpv6":"fd00::2"}]}});
-        let status = parse_status(NetworkProvider::Netbird, &value).unwrap();
+        let status = parse_status(VpnProvider::Netbird, &value).unwrap();
         assert!(status.addresses.contains(&"100.80.0.2".parse().unwrap()));
         assert!(status.addresses.contains(&"fd00::2".parse().unwrap()));
         value["management"]["connected"] = json!(false);
-        assert!(parse_status(NetworkProvider::Netbird, &value).is_none());
+        assert!(parse_status(VpnProvider::Netbird, &value).is_none());
     }
 
     #[test]
     fn tailscale_detection_requires_running_agent() {
         let mut value = json!({"BackendState":"Running","TailscaleIPs":["100.64.0.1"],"Peer":{"key":{"TailscaleIPs":["100.64.0.2"]}}});
         assert_eq!(
-            parse_status(NetworkProvider::Tailscale, &value)
+            parse_status(VpnProvider::Tailscale, &value)
                 .unwrap()
                 .addresses
                 .len(),
             2
         );
         value["BackendState"] = json!("NeedsLogin");
-        assert!(parse_status(NetworkProvider::Tailscale, &value).is_none());
+        assert!(parse_status(VpnProvider::Tailscale, &value).is_none());
     }
 
     #[test]
     fn detected_provider_is_first_and_both_remain_available() {
         assert_eq!(
-            ordered_providers(&[NetworkStatus {
-                provider: NetworkProvider::Netbird,
+            ordered_providers(&[VpnStatus {
+                provider: VpnProvider::Netbird,
                 addresses: vec![]
             }]),
-            vec![NetworkProvider::Netbird, NetworkProvider::Tailscale]
+            vec![VpnProvider::Netbird, VpnProvider::Tailscale]
         );
-        assert_eq!(ordered_providers(&[]), NetworkProvider::ALL);
+        assert_eq!(ordered_providers(&[]), VpnProvider::ALL);
     }
 
     #[test]
@@ -300,7 +297,7 @@ mod tests {
         let value = json!({"management":{"connected":true}, "daemonStatus":"Connected",
             "netbirdIp":"10.9.0.1/16", "netbirdIpv6":"fd00::1/64",
             "peers":{"details":[{"netbirdIp":"10.9.0.2"}]}});
-        let assigned = assigned_addresses(NetworkProvider::Netbird, &value).unwrap();
+        let assigned = assigned_addresses(VpnProvider::Netbird, &value).unwrap();
         assert!(addresses_belong_to(
             &["fd00::1".parse().unwrap()],
             &assigned
@@ -335,23 +332,23 @@ mod tests {
             json!({"management":{"connected":true},"netbirdIp":"garbage"}),
             json!({"management":{"connected":true},"daemonStatus":"Idle","netbirdIp":"100.80.0.1"}),
         ] {
-            assert!(parse_status(NetworkProvider::Netbird, &value).is_none());
+            assert!(parse_status(VpnProvider::Netbird, &value).is_none());
         }
     }
 
     #[tokio::test]
     async fn explicit_and_saved_choices_do_not_depend_on_local_detection() {
         assert_eq!(
-            select_provider(Some(NetworkProvider::Netbird), None)
+            select_provider(Some(VpnProvider::Netbird), None)
                 .await
                 .unwrap(),
-            NetworkProvider::Netbird
+            VpnProvider::Netbird
         );
         assert_eq!(
-            select_provider(None, Some(NetworkProvider::Netbird))
+            select_provider(None, Some(VpnProvider::Netbird))
                 .await
                 .unwrap(),
-            NetworkProvider::Netbird
+            VpnProvider::Netbird
         );
         assert_eq!(
             management_address("[fd00::1]").await.unwrap(),
@@ -359,12 +356,9 @@ mod tests {
         );
         assert!(management_address("127.0.0.1").await.is_err());
         assert!(
-            select_provider(
-                Some(NetworkProvider::Netbird),
-                Some(NetworkProvider::Tailscale)
-            )
-            .await
-            .is_err()
+            select_provider(Some(VpnProvider::Netbird), Some(VpnProvider::Tailscale))
+                .await
+                .is_err()
         );
     }
 }

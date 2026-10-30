@@ -20,7 +20,7 @@ set -eu
 #   TAKO_SOCKET             default: /var/run/tako/tako.sock
 #   TAKO_HTTP_PORT          public HTTP port for tako-server (default: 80)
 #   TAKO_HTTPS_PORT         public HTTPS port for tako-server (default: 443)
-#   TAKO_NETWORK            tailscale or netbird (default: saved choice, then tailscale)
+#   TAKO_VPN                tailscale or netbird (default: saved choice, then tailscale)
 #   TAKO_MANAGEMENT_HOST    assigned VPN IP to bind remote management on (optional)
 #                           if unset, installer asks the selected VPN agent
 #   TAKO_SSH_PUBKEY         public key line to authorize for TAKO_USER (optional)
@@ -56,7 +56,7 @@ TAKO_SOCKET="${TAKO_SOCKET:-/var/run/tako/tako.sock}"
 TAKO_HTTP_PORT="${TAKO_HTTP_PORT:-}"
 TAKO_HTTPS_PORT="${TAKO_HTTPS_PORT:-}"
 TAKO_MANAGEMENT_HOST="${TAKO_MANAGEMENT_HOST:-}"
-TAKO_NETWORK="${TAKO_NETWORK:-}"
+TAKO_VPN="${TAKO_VPN:-}"
 TAKO_DOWNLOAD_BASE_URL="${TAKO_DOWNLOAD_BASE_URL:-}"
 TAKO_ALLOW_INSECURE_DOWNLOAD_BASE="${TAKO_ALLOW_INSECURE_DOWNLOAD_BASE:-}"
 TAKO_REPO_OWNER="${TAKO_REPO_OWNER:-tako-sh}"
@@ -196,8 +196,8 @@ is_enabled() {
 
 # Shared by installation and the root-owned recovery helper. Accept only an
 # address reported by the selected local agent, never an arbitrary private IP.
-private_network_functions() {
-  cat <<'NETWORK_EOF'
+vpn_functions() {
+  cat <<'VPN_EOF'
 valid_management_ip() {
   case "$1" in
     *:*)
@@ -248,7 +248,7 @@ $(tailscale ip -6 2>/dev/null || true)"
       addresses="$(netbird status --ipv4 2>/dev/null || true)
 $(netbird status --ipv6 2>/dev/null || true)"
       ;;
-    *) echo "error: network must be tailscale or netbird" >&2; return 1 ;;
+    *) echo "error: VPN must be tailscale or netbird" >&2; return 1 ;;
   esac
   for address in $addresses; do
     if valid_management_ip "$address" && { [ -z "$preferred" ] || [ "$address" = "$preferred" ]; }; then
@@ -258,53 +258,53 @@ $(netbird status --ipv6 2>/dev/null || true)"
   done
   return 1
 }
-NETWORK_EOF
+VPN_EOF
 }
-eval "$(private_network_functions)"
+eval "$(vpn_functions)"
 
 configure_management_http() {
-  saved_network=tailscale
-  if [ -r /usr/local/libexec/tako/network-provider ]; then
-    IFS= read -r saved_network < /usr/local/libexec/tako/network-provider
+  saved_vpn=tailscale
+  if [ -r /usr/local/libexec/tako/vpn-provider ]; then
+    IFS= read -r saved_vpn < /usr/local/libexec/tako/vpn-provider
   fi
-  TAKO_NETWORK="${TAKO_NETWORK:-$saved_network}"
-  case "$TAKO_NETWORK" in
+  TAKO_VPN="${TAKO_VPN:-$saved_vpn}"
+  case "$TAKO_VPN" in
     tailscale|netbird) ;;
-    *) echo "error: TAKO_NETWORK must be tailscale or netbird" >&2; exit 1 ;;
+    *) echo "error: TAKO_VPN must be tailscale or netbird" >&2; exit 1 ;;
   esac
 
   requested_management_host="$TAKO_MANAGEMENT_HOST"
   preferred_management_host="$requested_management_host"
-  if [ -z "$preferred_management_host" ] && [ "$TAKO_NETWORK" = "$saved_network" ]; then
+  if [ -z "$preferred_management_host" ] && [ "$TAKO_VPN" = "$saved_vpn" ]; then
     preferred_management_host="$(existing_service_arg_value --management-host || true)"
   fi
-  TAKO_MANAGEMENT_HOST="$(detect_management_ip "$TAKO_NETWORK" "$preferred_management_host" || true)"
+  TAKO_MANAGEMENT_HOST="$(detect_management_ip "$TAKO_VPN" "$preferred_management_host" || true)"
   if [ -z "$TAKO_MANAGEMENT_HOST" ] && [ -z "$requested_management_host" ]; then
-    TAKO_MANAGEMENT_HOST="$(detect_management_ip "$TAKO_NETWORK" || true)"
+    TAKO_MANAGEMENT_HOST="$(detect_management_ip "$TAKO_VPN" || true)"
   fi
   # An offline binary refresh must retain the existing private binding. Starting
   # or repairing a service still requires an address from the selected agent.
   if [ -z "$TAKO_MANAGEMENT_HOST" ] && [ -z "$requested_management_host" ] &&
-     ! is_enabled "$TAKO_RESTART_SERVICE" && [ "$TAKO_NETWORK" = "$saved_network" ]; then
+     ! is_enabled "$TAKO_RESTART_SERVICE" && [ "$TAKO_VPN" = "$saved_vpn" ]; then
     previous_host="$(existing_service_arg_value --management-host || true)"
     if [ -n "$previous_host" ] && valid_management_ip "$previous_host"; then
       TAKO_MANAGEMENT_HOST="$previous_host"
     fi
   fi
   if [ -n "$requested_management_host" ] && [ -z "$TAKO_MANAGEMENT_HOST" ]; then
-    echo "error: TAKO_MANAGEMENT_HOST must be an address assigned to this server by $TAKO_NETWORK." >&2
+    echo "error: TAKO_MANAGEMENT_HOST must be an address assigned to this server by $TAKO_VPN." >&2
     exit 1
   fi
   if [ -n "$TAKO_MANAGEMENT_HOST" ]; then
     TAKO_MANAGEMENT_ARGS="--management-host $TAKO_MANAGEMENT_HOST"
-    echo "OK remote management bound to $TAKO_NETWORK address $TAKO_MANAGEMENT_HOST"
+    echo "OK remote management bound to $TAKO_VPN address $TAKO_MANAGEMENT_HOST"
     return
   fi
   if is_enabled "$TAKO_RESTART_SERVICE"; then
-    echo "error: $TAKO_MANAGEMENT_REQUIRED_MESSAGE Connect this server to $TAKO_NETWORK, then rerun the installer." >&2
+    echo "error: $TAKO_MANAGEMENT_REQUIRED_MESSAGE Connect this server to $TAKO_VPN, then rerun the installer." >&2
     exit 1
   fi
-  echo "warning: remote management was not configured; connect $TAKO_NETWORK before starting tako-server." >&2
+  echo "warning: remote management was not configured; connect $TAKO_VPN before starting tako-server." >&2
 }
 
 process_has_management_host() {
@@ -535,16 +535,16 @@ EOF
   printf '%s\n%s\n%s\n' "$TAKO_USER" "$TAKO_HOME" "$TAKO_SOCKET" > "$helper_dir/install-settings"
   chown root:root "$helper_dir/install-settings"
   chmod 0644 "$helper_dir/install-settings"
-  printf '%s\n' "$TAKO_NETWORK" > "$helper_dir/network-provider"
-  chown root:root "$helper_dir/network-provider"
-  chmod 0644 "$helper_dir/network-provider"
+  printf '%s\n' "$TAKO_VPN" > "$helper_dir/vpn-provider"
+  chown root:root "$helper_dir/vpn-provider"
+  chmod 0644 "$helper_dir/vpn-provider"
   {
     printf '#!/bin/sh\nset -eu\n'
-    private_network_functions
+    vpn_functions
     printf 'detect_management_ip "$@"\n'
-  } > "$helper_dir/network-address"
-  chown root:root "$helper_dir/network-address"
-  chmod 0755 "$helper_dir/network-address"
+  } > "$helper_dir/vpn-address"
+  chown root:root "$helper_dir/vpn-address"
+  chmod 0755 "$helper_dir/vpn-address"
   cat > "$TAKO_SERVER_INSTALL_REFRESH_HELPER" <<'EOF'
 #!/bin/sh
 set -eu
@@ -570,11 +570,11 @@ esac
   IFS= read -r TAKO_HOME
   IFS= read -r TAKO_SOCKET
 } < /usr/local/libexec/tako/install-settings
-TAKO_NETWORK=tailscale
-if [ -r /usr/local/libexec/tako/network-provider ]; then
-  IFS= read -r TAKO_NETWORK < /usr/local/libexec/tako/network-provider
+TAKO_VPN=tailscale
+if [ -r /usr/local/libexec/tako/vpn-provider ]; then
+  IFS= read -r TAKO_VPN < /usr/local/libexec/tako/vpn-provider
 fi
-export TAKO_USER TAKO_HOME TAKO_SOCKET TAKO_NETWORK
+export TAKO_USER TAKO_HOME TAKO_SOCKET TAKO_VPN
 
 installer_url="https://tako.sh/install-server.sh"
 temporary_dir="$(mktemp -d)"
@@ -626,10 +626,10 @@ case "$action" in
     [ "$#" -eq 1 ] || { echo "error: expected one maintenance action" >&2; exit 1; }
     ;;
   configure)
-    [ "$#" -eq 4 ] || [ "$#" -eq 5 ] || { echo "error: configure requires HTTP and HTTPS ports, a private network, and an optional VPN IP" >&2; exit 1; }
+    [ "$#" -eq 4 ] || [ "$#" -eq 5 ] || { echo "error: configure requires HTTP and HTTPS ports, a VPN provider, and an optional VPN IP" >&2; exit 1; }
     case "$4" in
       tailscale|netbird) ;;
-      *) echo "error: network must be tailscale or netbird" >&2; exit 1 ;;
+      *) echo "error: VPN must be tailscale or netbird" >&2; exit 1 ;;
     esac
     for port in "$2" "$3"; do
       case "$port" in
@@ -661,13 +661,13 @@ case "$action" in
     exit 0
     ;;
   configure)
-    saved_network=tailscale
-    if [ -r /usr/local/libexec/tako/network-provider ]; then
-      IFS= read -r saved_network < /usr/local/libexec/tako/network-provider
+    saved_vpn=tailscale
+    if [ -r /usr/local/libexec/tako/vpn-provider ]; then
+      IFS= read -r saved_vpn < /usr/local/libexec/tako/vpn-provider
     fi
-    [ "$saved_network" = "$4" ] || { echo "error: server uses $saved_network; reinstall as administrator to change its private network" >&2; exit 1; }
-    management_host="$(/usr/local/libexec/tako/network-address "$saved_network" "${5:-}")" || {
-      echo "error: connect this server to $saved_network before starting tako-server" >&2; exit 1;
+    [ "$saved_vpn" = "$4" ] || { echo "error: server uses $saved_vpn; reinstall as administrator to change its VPN provider" >&2; exit 1; }
+    management_host="$(/usr/local/libexec/tako/vpn-address "$saved_vpn" "${5:-}")" || {
+      echo "error: connect this server to $saved_vpn before starting tako-server" >&2; exit 1;
     }
     for service_file in /etc/systemd/system/tako-server.service /etc/systemd/system/tako-server-standby.service; do
       [ -f "$service_file" ] || continue

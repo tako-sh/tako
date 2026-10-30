@@ -2,15 +2,12 @@ use super::*;
 use tempfile::TempDir;
 
 #[test]
-fn network_defaults_to_tailscale_and_round_trips_netbird() {
-    use crate::private_network::NetworkProvider;
+fn vpn_defaults_to_tailscale_and_round_trips_netbird() {
+    use crate::vpn::VpnProvider;
     let mut config =
         ServersToml::parse("[[servers]]\nname = 'edge'\nhost = 'edge.internal'\n").unwrap();
-    assert_eq!(
-        config.get("edge").unwrap().network,
-        NetworkProvider::Tailscale
-    );
-    config.servers.get_mut("edge").unwrap().network = NetworkProvider::Netbird;
+    assert_eq!(config.get("edge").unwrap().vpn, VpnProvider::Tailscale);
+    config.servers.get_mut("edge").unwrap().vpn = VpnProvider::Netbird;
     let directory = TempDir::new().unwrap();
     let path = directory.path().join("config.toml");
     config.save_to_file(&path).unwrap();
@@ -19,14 +16,12 @@ fn network_defaults_to_tailscale_and_round_trips_netbird() {
             .unwrap()
             .get("edge")
             .unwrap()
-            .network,
-        NetworkProvider::Netbird
+            .vpn,
+        VpnProvider::Netbird
     );
     assert!(
-        ServersToml::parse(
-            "[[servers]]\nname = 'edge'\nhost = 'edge.internal'\nnetwork = 'unknown'\n"
-        )
-        .is_err()
+        ServersToml::parse("[[servers]]\nname = 'edge'\nhost = 'edge.internal'\nvpn = 'unknown'\n")
+            .is_err()
     );
 }
 
@@ -543,7 +538,7 @@ fn test_update_server() {
                 https_port: 443,
                 description: None,
                 key_path: None,
-                network: Default::default(),
+                vpn: Default::default(),
             },
         )
         .unwrap();
@@ -558,7 +553,7 @@ fn test_update_server() {
                 https_port: 8443,
                 description: None,
                 key_path: None,
-                network: Default::default(),
+                vpn: Default::default(),
             },
         )
         .unwrap();
@@ -606,7 +601,7 @@ fn test_save_and_load() {
                 https_port: 8443,
                 description: Some("west coast".to_string()),
                 key_path: None,
-                network: Default::default(),
+                vpn: Default::default(),
             },
         )
         .unwrap();

@@ -34,7 +34,7 @@ describe("server add wizard", () => {
         "--name",
         "edge",
         "--no-test",
-        "--network",
+        "--vpn",
         "tailscale",
         "--http-port",
         "8080",
@@ -76,7 +76,7 @@ describe("server add wizard", () => {
     await term.waitForText("SSH key", { timeout: 5000 });
     term.press("\r");
 
-    await term.waitForText("Which private network", { timeout: 5000 });
+    await term.waitForText("VPN provider", { timeout: 5000 });
     term.press("\r");
 
     await term.waitForText("Server name", { timeout: 5000 });
@@ -105,7 +105,7 @@ describe("server add wizard", () => {
   });
 });
 
-describe("server private network", () => {
+describe("server VPN selection", () => {
   async function fakeAgents() {
     const bin = join(tempDir, "bin");
     await mkdir(bin);
@@ -134,7 +134,7 @@ describe("server private network", () => {
   test("saved provider is reused with both agents connected", async () => {
     const env = await fakeAgents();
     const first = await run(
-      ["--ci", "servers", "add", "edge.internal", "--network", "netbird", "--no-test"],
+      ["--ci", "servers", "add", "edge.internal", "--vpn", "netbird", "--no-test"],
       { cwd: tempDir, env },
     );
     expect(first.exitCode).toBe(0);
@@ -143,25 +143,30 @@ describe("server private network", () => {
       env,
     });
     expect(again.exitCode).toBe(0);
-    expect(await readFile(join(takoHome, "config.toml"), "utf8")).toContain('network = "netbird"');
+    expect(await readFile(join(takoHome, "config.toml"), "utf8")).toContain('vpn = "netbird"');
     const changed = await run(
-      ["--ci", "servers", "add", "edge.internal", "--network", "tailscale", "--no-test"],
+      ["--ci", "servers", "add", "edge.internal", "--vpn", "tailscale", "--no-test"],
       { cwd: tempDir, env },
     );
     expect(changed.exitCode).not.toBe(0);
-    expect(await readFile(join(takoHome, "config.toml"), "utf8")).toContain('network = "netbird"');
+    expect(await readFile(join(takoHome, "config.toml"), "utf8")).toContain('vpn = "netbird"');
   });
 
   test("stores an explicitly selected NetBird provider", async () => {
-    const result = await run(
-      ["servers", "add", "edge.internal", "--network", "netbird", "--no-test"],
-      {
-        cwd: tempDir,
-        env: { HOME: tempDir, TAKO_HOME: takoHome },
-      },
-    );
+    const result = await run(["servers", "add", "edge.internal", "--vpn", "netbird", "--no-test"], {
+      cwd: tempDir,
+      env: { HOME: tempDir, TAKO_HOME: takoHome },
+    });
     expect(result.exitCode).toBe(0);
-    expect(await readFile(join(takoHome, "config.toml"), "utf8")).toContain('network = "netbird"');
+    expect(await readFile(join(takoHome, "config.toml"), "utf8")).toContain('vpn = "netbird"');
+    const listed = await run(["servers", "list", "--json"], {
+      cwd: tempDir,
+      env: { HOME: tempDir, TAKO_HOME: takoHome },
+    });
+    expect(listed.exitCode).toBe(0);
+    const server = JSON.parse(listed.term.rawOutput()).servers[0];
+    expect(server.vpn).toBe("netbird");
+    expect(server).not.toHaveProperty("network");
   });
 
   test("connected NetBird appears first, marked detected and preselected", async () => {
@@ -181,12 +186,11 @@ describe("server private network", () => {
     try {
       await term.waitForText("NetBird (detected)");
       const screen = term.screenText();
+      expect(screen).toContain("VPN provider");
       expect(screen.indexOf("NetBird (detected)")).toBeLessThan(screen.indexOf("Tailscale"));
       term.press("\r");
       expect(await term.waitForExit()).toBe(0);
-      expect(await readFile(join(takoHome, "config.toml"), "utf8")).toContain(
-        'network = "netbird"',
-      );
+      expect(await readFile(join(takoHome, "config.toml"), "utf8")).toContain('vpn = "netbird"');
     } finally {
       term.kill();
     }

@@ -124,7 +124,7 @@ fn configure_helper_recovers_netbird_and_refreshes_stale_address() {
 fn check_configure_helper(
     management_argument: &str,
     detected_address: &str,
-    network: &str,
+    vpn: &str,
     succeeds: bool,
 ) {
     let directory = tempfile::tempdir().unwrap();
@@ -137,7 +137,7 @@ fn check_configure_helper(
     .unwrap();
     let log = root.join("calls");
     executable(
-        &root.join(network),
+        &root.join(vpn),
         &format!(
             "#!/bin/sh\nif [ \"$1\" = status ] && [ \"$2\" = --json ]; then echo '{{\"BackendState\":\"Running\"}}'; elif [ \"$#\" = 1 ]; then echo 'Management: Connected'; else echo {detected_address}; fi\n"
         ),
@@ -151,34 +151,34 @@ fn check_configure_helper(
         &root.join("sed"),
         "#!/bin/sh\nshift\nexec /usr/bin/sed -i '' \"$@\"\n",
     );
-    let other_network = if network == "netbird" {
+    let other_vpn = if vpn == "netbird" {
         "tailscale"
     } else {
         "netbird"
     };
-    executable(&root.join(other_network), "#!/bin/sh\necho 100.99.0.1\n");
-    let network_address = root.join("network-address");
+    executable(&root.join(other_vpn), "#!/bin/sh\necho 100.99.0.1\n");
+    let vpn_address = root.join("vpn-address");
     let functions = INSTALL_SERVER_SCRIPT
-        .split_once("cat <<'NETWORK_EOF'\n")
+        .split_once("cat <<'VPN_EOF'\n")
         .unwrap()
         .1
-        .split_once("\nNETWORK_EOF")
+        .split_once("\nVPN_EOF")
         .unwrap()
         .0;
     executable(
-        &network_address,
+        &vpn_address,
         &format!("#!/bin/sh\nset -eu\n{functions}\ndetect_management_ip \"$@\"\n"),
     );
-    let network_provider = root.join("network-provider");
-    std::fs::write(&network_provider, format!("{network}\n")).unwrap();
+    let vpn_provider = root.join("vpn-provider");
+    std::fs::write(&vpn_provider, format!("{vpn}\n")).unwrap();
     let command = helper_body("service")
         .replace(
-            "/usr/local/libexec/tako/network-address",
-            network_address.to_str().unwrap(),
+            "/usr/local/libexec/tako/vpn-address",
+            vpn_address.to_str().unwrap(),
         )
         .replace(
-            "/usr/local/libexec/tako/network-provider",
-            network_provider.to_str().unwrap(),
+            "/usr/local/libexec/tako/vpn-provider",
+            vpn_provider.to_str().unwrap(),
         )
         .replace(
             "/etc/systemd/system/tako-server.service",
@@ -189,15 +189,7 @@ fn check_configure_helper(
             root.join("absent-standby").to_str().unwrap(),
         );
     let output = std::process::Command::new("sh")
-        .args([
-            "-c",
-            &command,
-            "service",
-            "configure",
-            "8080",
-            "8443",
-            network,
-        ])
+        .args(["-c", &command, "service", "configure", "8080", "8443", vpn])
         .env("PATH", format!("{}:/usr/bin:/bin", root.display()))
         .output()
         .unwrap();
@@ -238,15 +230,15 @@ fn refresh_helper_binds_download_to_verified_hash_before_installing() {
         "custom-user\n/srv/custom-tako\n/run/custom-tako/server.sock\n",
     )
     .unwrap();
-    let network_provider = root.join("network-provider");
-    std::fs::write(&network_provider, "netbird\n").unwrap();
+    let vpn_provider = root.join("vpn-provider");
+    std::fs::write(&vpn_provider, "netbird\n").unwrap();
     let binary = root.join("tako-server");
     std::fs::write(&binary, "old binary").unwrap();
     let archive = root.join("payload");
     std::fs::write(&archive, "verified archive").unwrap();
     let installer = root.join("installer");
     let installed = root.join("installed");
-    std::fs::write(&installer, format!("#!/bin/sh\nset -eu\nprintf '%s\\n' \"$TAKO_USER\" \"$TAKO_HOME\" \"$TAKO_SOCKET\" \"$TAKO_RESTART_SERVICE\" \"$TAKO_NETWORK\" > '{}'\ncp \"${{TAKO_SERVER_URL#file://}}\" '{}'\n", installed.display(), binary.display())).unwrap();
+    std::fs::write(&installer, format!("#!/bin/sh\nset -eu\nprintf '%s\\n' \"$TAKO_USER\" \"$TAKO_HOME\" \"$TAKO_SOCKET\" \"$TAKO_RESTART_SERVICE\" \"$TAKO_VPN\" > '{}'\ncp \"${{TAKO_SERVER_URL#file://}}\" '{}'\n", installed.display(), binary.display())).unwrap();
     let urls = root.join("urls");
     executable(
         &root.join("curl"),
@@ -259,8 +251,8 @@ fn refresh_helper_binds_download_to_verified_hash_before_installing() {
     );
     let command = helper_body("refresh")
         .replace(
-            "/usr/local/libexec/tako/network-provider",
-            network_provider.to_str().unwrap(),
+            "/usr/local/libexec/tako/vpn-provider",
+            vpn_provider.to_str().unwrap(),
         )
         .replace(
             "/usr/local/libexec/tako/install-settings",

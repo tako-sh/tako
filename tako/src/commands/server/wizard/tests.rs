@@ -68,8 +68,7 @@ fn install_public_ports_preserves_cli_overrides() {
 
 #[test]
 fn remote_management_message_mentions_tailscale_without_endpoint_details() {
-    let message =
-        remote_management_unavailable_message(crate::private_network::NetworkProvider::Tailscale);
+    let message = remote_management_unavailable_message(crate::vpn::VpnProvider::Tailscale);
 
     assert!(message.contains("requires Tailscale"));
     assert!(message.contains("VPN hostname"));

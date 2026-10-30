@@ -55,7 +55,7 @@ From your developer machine, add the server by its VPN hostname or IP:
 tako servers add admin-user@my-server
 ```
 
-Setup asks which private network to use. Connected providers appear first with a `detected` hint, and the first option is preselected. For scripts, pass `--network tailscale` or `--network netbird`. The choice is saved per server and reused for repair and upgrades. Existing server entries default to Tailscale. See [Servers](/servers/#choose-the-private-network) for NetBird examples, noninteractive selection, and direct installation.
+Setup asks which VPN to use. Connected providers appear first with a `detected` hint, and the first option is preselected. For scripts, pass `--vpn tailscale` or `--vpn netbird`. The choice is saved per server and reused for repair and upgrades. Existing server entries default to Tailscale. See [Servers](/servers/#choose-the-vpn-provider) for NetBird examples, noninteractive selection, and direct installation.
 
 The `admin-user@host` form tells Tako which admin SSH user to use if install or repair is needed. Tako stores the VPN host and uses its first label as the server name. Before saving the server in your global `config.toml`, Tako checks the selected private network, verifies `tako` SSH recovery access, records target metadata, and verifies signed private management.
 

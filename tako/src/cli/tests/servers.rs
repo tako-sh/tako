@@ -1,24 +1,17 @@
 use super::*;
 
 #[test]
-fn servers_add_accepts_supported_networks_only() {
+fn servers_add_accepts_supported_vpns_only() {
     for value in ["tailscale", "netbird"] {
-        let cli = Cli::try_parse_from([
-            "tako",
-            "servers",
-            "add",
-            "edge.internal",
-            "--network",
-            value,
-        ])
-        .unwrap();
-        let Commands::Servers(server::ServerCommands::Add { network, .. }) = cli.command.unwrap()
+        let cli = Cli::try_parse_from(["tako", "servers", "add", "edge.internal", "--vpn", value])
+            .unwrap();
+        let Commands::Servers(server::ServerCommands::Add { vpn, .. }) = cli.command.unwrap()
         else {
             panic!("expected add");
         };
-        assert_eq!(network.unwrap().id(), value);
+        assert_eq!(vpn.unwrap().id(), value);
     }
-    assert!(Cli::try_parse_from(["tako", "servers", "add", "--network", "unknown"]).is_err());
+    assert!(Cli::try_parse_from(["tako", "servers", "add", "--vpn", "unknown"]).is_err());
 }
 
 #[test]

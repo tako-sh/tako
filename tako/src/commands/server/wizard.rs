@@ -10,8 +10,8 @@ mod ports;
 
 pub(super) use connection::detect_server_target;
 use connection::{
-    WizardConnectionResult, check_tako_connection, trace_management_probe, verify_network_host,
-    verify_remote_management,
+    WizardConnectionResult, check_tako_connection, trace_management_probe,
+    verify_remote_management, verify_vpn_host,
 };
 #[cfg(test)]
 use connection::{parse_detected_arch, parse_detected_libc, remote_management_unavailable_message};
@@ -44,7 +44,7 @@ pub async fn prompt_to_add_server(
 
 /// Initial values for the add-server wizard, typically from CLI flags.
 pub(super) struct WizardDefaults<'a> {
-    pub network: Option<crate::private_network::NetworkProvider>,
+    pub vpn: Option<crate::vpn::VpnProvider>,
     pub name: Option<&'a str>,
     pub description: Option<&'a str>,
     pub port: u16,
@@ -56,7 +56,7 @@ pub(super) struct WizardDefaults<'a> {
 impl Default for WizardDefaults<'_> {
     fn default() -> Self {
         Self {
-            network: None,
+            vpn: None,
             name: None,
             description: None,
             port: 22,
@@ -68,7 +68,7 @@ impl Default for WizardDefaults<'_> {
 }
 
 pub struct AddServerOptions<'a> {
-    pub network: Option<crate::private_network::NetworkProvider>,
+    pub vpn: Option<crate::vpn::VpnProvider>,
     pub name: Option<&'a str>,
     pub description: Option<&'a str>,
     pub port: u16,
@@ -99,12 +99,12 @@ struct ServerConnectionCheck {
 
 async fn check_server_connection(
     ssh_config: &SshConfig,
-    network: crate::private_network::NetworkProvider,
+    vpn: crate::vpn::VpnProvider,
 ) -> ServerConnectionCheck {
     let check = async {
         let (management, ssh) = tokio::join!(
             crate::management_http::probe_presence(&ssh_config.host),
-            check_tako_connection(ssh_config, network),
+            check_tako_connection(ssh_config, vpn),
         );
         let management_present = match management {
             Ok(()) => true,
@@ -143,7 +143,7 @@ pub(super) async fn run_add_server_wizard(
     use crate::config::{CliHistoryToml, ServersToml};
 
     let WizardDefaults {
-        network: initial_network,
+        vpn: initial_vpn,
         name: initial_name,
         description: initial_description,
         port: initial_port,
@@ -312,13 +312,13 @@ pub(super) async fn run_add_server_wizard(
         crate::ssh::set_key_passphrase(Some(passphrase));
     }
 
-    let saved_network = existing_servers
+    let saved_vpn = existing_servers
         .find_by_host(&host)
         .and_then(|name| existing_servers.get(name))
-        .map(|entry| entry.network);
-    let network = crate::private_network::select_provider(initial_network, saved_network).await?;
+        .map(|entry| entry.vpn);
+    let vpn = crate::vpn::select_provider(initial_vpn, saved_vpn).await?;
     if test_ssh {
-        verify_network_host(&host, network).await?;
+        verify_vpn_host(&host, vpn).await?;
     }
     let ssh_config = SshConfig::from_server(&host, port).with_key_path(key_path.as_deref());
 
@@ -330,7 +330,7 @@ pub(super) async fn run_add_server_wizard(
     if test_ssh {
         let host_span = output::scope(&host);
         let _t = output::timed(&format!("Test SSH connection to {host}:{port}"));
-        let check = check_server_connection(&ssh_config, network)
+        let check = check_server_connection(&ssh_config, vpn)
             .instrument(host_span)
             .await;
         let mut result = check.ssh;
@@ -346,7 +346,7 @@ pub(super) async fn run_add_server_wizard(
                     &ssh_config,
                     &admin_user,
                     public_ports,
-                    network,
+                    vpn,
                     VerifyLabels::INSTALL,
                     true,
                 )
@@ -365,7 +365,7 @@ pub(super) async fn run_add_server_wizard(
                 result = Ok(start_and_verify(
                     &ssh_config,
                     public_ports,
-                    network,
+                    vpn,
                     VerifyLabels::SERVER,
                     true,
                 )
@@ -486,7 +486,7 @@ pub(super) async fn run_add_server_wizard(
     add_server(
         &host,
         AddServerOptions {
-            network: Some(network),
+            vpn: Some(vpn),
             name: name_ref,
             description: description_ref,
             port,
@@ -510,7 +510,7 @@ pub async fn add_server(
     use crate::config::{ServerEntry, ServerTarget, ServersToml};
 
     let AddServerOptions {
-        network,
+        vpn,
         name,
         description,
         port,
@@ -531,11 +531,11 @@ pub async fn add_server(
     }
 
     let mut servers = ServersToml::load()?;
-    let saved_network = servers
+    let saved_vpn = servers
         .find_by_host(host)
         .and_then(|name| servers.get(name))
-        .map(|entry| entry.network);
-    let network = crate::private_network::select_provider(network, saved_network).await?;
+        .map(|entry| entry.vpn);
+    let vpn = crate::vpn::select_provider(vpn, saved_vpn).await?;
     let normalized_description = description.and_then(|d| {
         let trimmed = d.trim();
         if trimmed.is_empty() {
@@ -598,7 +598,7 @@ pub async fn add_server(
                 servers.update(
                     &existing_name,
                     ServerEntry {
-                        network,
+                        vpn,
                         host: existing.host,
                         port: existing.port,
                         http_port: desired_public_ports.http_port,
@@ -667,8 +667,7 @@ pub async fn add_server(
     let mut detected_target: Option<ServerTarget> = pre_detected_target;
     let should_verify_access = install_if_missing || !no_test || detected_target.is_some();
     if should_verify_access {
-        output::with_spinner_async_simple("Checking server", verify_network_host(host, network))
-            .await?;
+        output::with_spinner_async_simple("Checking server", verify_vpn_host(host, vpn)).await?;
     }
 
     // Test SSH connection unless skipped or already tested
@@ -676,14 +675,14 @@ pub async fn add_server(
         let ssh_config = SshConfig::from_server(host, port).with_key_path(key_path);
         let can_recover = install_if_missing || (allow_install_prompt && output::is_interactive());
         let (management_present, mut result) = if can_recover {
-            let check = check_server_connection(&ssh_config, network).await;
+            let check = check_server_connection(&ssh_config, vpn).await;
             (check.management_present, check.ssh)
         } else {
             let result = output::with_spinner_async_err(
                 "Connecting",
                 "Connection successful",
                 "Connection failed",
-                check_tako_connection(&ssh_config, network),
+                check_tako_connection(&ssh_config, vpn),
             )
             .await;
             (false, result)
@@ -703,7 +702,7 @@ pub async fn add_server(
                 &ssh_config,
                 &admin_user,
                 install_ports,
-                network,
+                vpn,
                 VerifyLabels::INSTALL,
                 false,
             )
@@ -721,7 +720,7 @@ pub async fn add_server(
                     &ssh_config,
                     &admin_user,
                     install_ports,
-                    network,
+                    vpn,
                     VerifyLabels::INSTALL,
                     false,
                 )
@@ -747,7 +746,7 @@ pub async fn add_server(
                 result = Ok(start_and_verify(
                     &ssh_config,
                     configure_ports,
-                    network,
+                    vpn,
                     VerifyLabels::SERVER,
                     false,
                 )
@@ -785,7 +784,7 @@ pub async fn add_server(
     if should_verify_access {
         let probe = output::with_spinner_async_simple(
             "Checking server",
-            verify_remote_management(host, network),
+            verify_remote_management(host, vpn),
         )
         .await?;
         resolved_public_ports = Some(ServerPublicPorts {
@@ -798,7 +797,7 @@ pub async fn add_server(
     // Add the server
     let resolved_public_ports = resolved_public_ports.unwrap_or_default();
     let entry = ServerEntry {
-        network,
+        vpn,
         host: host.to_string(),
         port,
         http_port: resolved_public_ports.http_port,

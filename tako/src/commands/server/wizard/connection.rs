@@ -1,5 +1,5 @@
-use crate::private_network::NetworkProvider;
 use crate::ssh::{SshClient, SshConfig};
+use crate::vpn::VpnProvider;
 
 pub(super) struct WizardConnectionResult {
     pub(super) target: crate::config::ServerTarget,
@@ -28,21 +28,20 @@ async fn with_ssh<T>(
 
 pub(super) async fn check_tako_connection(
     ssh_config: &SshConfig,
-    network: NetworkProvider,
+    vpn: VpnProvider,
 ) -> Result<WizardConnectionResult, String> {
     with_ssh(ssh_config.clone(), async |ssh| {
         let output = ssh
-            .exec(network.status_command())
+            .exec(vpn.status_command())
             .await
             .map_err(|error| error.to_string())?;
-        let value =
-            serde_json::from_str(&output.stdout).map_err(|_| network.unavailable_message())?;
-        let assigned = crate::private_network::assigned_addresses(network, &value)
+        let value = serde_json::from_str(&output.stdout).map_err(|_| vpn.unavailable_message())?;
+        let assigned = crate::vpn::assigned_addresses(vpn, &value)
             .filter(|_| output.success())
-            .ok_or_else(|| network.unavailable_message())?;
-        let destination = crate::private_network::host_addresses(&ssh_config.host).await?;
-        if !crate::private_network::addresses_belong_to(&destination, &assigned) {
-            return Err(network.unavailable_message());
+            .ok_or_else(|| vpn.unavailable_message())?;
+        let destination = crate::vpn::host_addresses(&ssh_config.host).await?;
+        if !crate::vpn::addresses_belong_to(&destination, &assigned) {
+            return Err(vpn.unavailable_message());
         }
         let target = detect_server_target(ssh)
             .await
@@ -88,10 +87,10 @@ pub(super) async fn install_tako_server_with_admin(
     admin_user: &str,
     public_ports: Option<super::ServerPublicPorts>,
     mode: crate::ssh::InstallServerMode,
-    network: NetworkProvider,
+    vpn: VpnProvider,
 ) -> Result<(), String> {
     with_ssh(ssh_config.as_user(admin_user), async |ssh| {
-        ssh.install_tako_server(public_ports.map(Into::into), mode, network)
+        ssh.install_tako_server(public_ports.map(Into::into), mode, vpn)
             .await
             .map_err(|e| format!("Install failed: {e}"))
     })
@@ -101,10 +100,10 @@ pub(super) async fn install_tako_server_with_admin(
 pub(super) async fn configure_tako_server_with_service_user(
     ssh_config: &SshConfig,
     public_ports: Option<super::ServerPublicPorts>,
-    network: NetworkProvider,
+    vpn: VpnProvider,
 ) -> Result<(), String> {
     with_ssh(ssh_config.clone(), async |ssh| {
-        ssh.configure_tako_server(public_ports.map(Into::into), network)
+        ssh.configure_tako_server(public_ports.map(Into::into), vpn)
             .await
             .map_err(|e| format!("Configure failed: {e}"))
     })
@@ -113,39 +112,36 @@ pub(super) async fn configure_tako_server_with_service_user(
 
 pub(super) async fn verify_remote_management(
     host: &str,
-    network: NetworkProvider,
+    vpn: VpnProvider,
 ) -> Result<crate::management_http::ManagementProbe, String> {
     let probe = crate::management_http::probe(host).await.map_err(|error| {
         tracing::debug!("Remote management probe failed: {error}");
-        remote_management_unavailable_message(network)
+        remote_management_unavailable_message(vpn)
     })?;
 
     let mut client = crate::management_http::ManagementClient::new(host)
         .await
         .map_err(|error| {
             tracing::debug!("Remote management auth setup failed: {error}");
-            remote_management_unavailable_message(network)
+            remote_management_unavailable_message(vpn)
         })?;
     client
         .send(&tako_core::Command::List)
         .await
         .map_err(|error| {
             tracing::debug!("Remote management signed probe failed: {error}");
-            remote_management_unavailable_message(network)
+            remote_management_unavailable_message(vpn)
         })?;
 
     Ok(probe)
 }
 
-pub(super) async fn verify_network_host(
-    host: &str,
-    network: NetworkProvider,
-) -> Result<(), String> {
-    crate::private_network::verify_host(host, network).await
+pub(super) async fn verify_vpn_host(host: &str, vpn: VpnProvider) -> Result<(), String> {
+    crate::vpn::verify_host(host, vpn).await
 }
 
-pub(super) fn remote_management_unavailable_message(network: NetworkProvider) -> String {
-    network.unavailable_message()
+pub(super) fn remote_management_unavailable_message(vpn: VpnProvider) -> String {
+    vpn.unavailable_message()
 }
 
 pub(super) fn trace_management_probe(host: &str, probe: &crate::management_http::ManagementProbe) {
