@@ -1,3 +1,4 @@
+use crate::vpn::VpnProvider;
 use std::time::Duration;
 
 use tako_core::{Command, Response, ServerRuntimeInfo};
@@ -14,7 +15,6 @@ const INSTALL_ENV_PASSTHROUGH: &[&str] = &[
     "TAKO_REPO_OWNER",
     "TAKO_REPO_NAME",
     "TAKO_RELEASE_TAG",
-    "TAKO_MANAGEMENT_HOST",
     "TAKO_HTTP_PORT",
     "TAKO_HTTPS_PORT",
 ];
@@ -265,29 +265,53 @@ impl SshClient {
         &self,
         ports: Option<ServerInstallPorts>,
         mode: InstallServerMode,
+        vpn: VpnProvider,
     ) -> SshResult<()> {
         let public_key = self.authenticated_public_key().ok_or_else(|| {
             SshError::Authentication("No authenticated SSH key available for install".to_string())
         })?;
-        let command = Self::run_with_root_or_sudo(&format!(
-            "{} sh -s",
-            install_server_env(public_key, ports, mode)
-        ));
+        let mut environment = install_server_env(public_key, ports, mode, vpn);
+        let ip = crate::vpn::management_address(&self.config.host)
+            .await
+            .map_err(SshError::CommandFailed)?;
+        environment.push_str(&format!(" TAKO_MANAGEMENT_HOST='{ip}'"));
+        let command = Self::run_with_root_or_sudo(&format!("{} sh -s", environment));
 
         self.exec_checked_with_stdin(&command, INSTALL_SERVER_SCRIPT.as_bytes())
             .await?;
         Ok(())
     }
 
-    pub async fn configure_tako_server(&self, ports: Option<ServerInstallPorts>) -> SshResult<()> {
-        self.exec_checked(&Self::configure_server_command(ports))
+    pub async fn configure_tako_server(
+        &self,
+        ports: Option<ServerInstallPorts>,
+        vpn: VpnProvider,
+    ) -> SshResult<()> {
+        let host = crate::vpn::management_address(&self.config.host)
+            .await
+            .map_err(SshError::CommandFailed)?
+            .to_string();
+        self.exec_checked(&Self::configure_server_command(ports, vpn, &host))
             .await?;
         Ok(())
     }
 
-    pub(super) fn configure_server_command(ports: Option<ServerInstallPorts>) -> String {
+    pub(super) fn configure_server_command(
+        ports: Option<ServerInstallPorts>,
+        vpn: VpnProvider,
+        host: &str,
+    ) -> String {
         let action = match ports {
-            Some(ports) => format!("configure {} {}", ports.http_port, ports.https_port),
+            Some(ports) => format!(
+                "configure {} {} {}{}",
+                ports.http_port,
+                ports.https_port,
+                vpn.id(),
+                host.trim_matches(['[', ']'])
+                    .parse::<std::net::IpAddr>()
+                    .map(|ip| format!(" {ip}"))
+                    .unwrap_or_default()
+            ),
             None => "restart".to_string(),
         };
         Self::run_as_root(&format!("{TAKO_SERVER_SERVICE_HELPER} {action}"))
@@ -374,8 +398,10 @@ pub(super) fn install_server_env(
     public_key: &str,
     ports: Option<ServerInstallPorts>,
     mode: InstallServerMode,
+    vpn: VpnProvider,
 ) -> String {
     let mut assignments = vec![
+        format!("TAKO_VPN='{}'", vpn.id()),
         format!("TAKO_SSH_PUBKEY={}", shell_quote(public_key)),
         format!("TAKO_RESTART_SERVICE='{}'", mode.restart_service_value()),
     ];
@@ -429,6 +455,7 @@ mod tests {
             "ssh-ed25519 AAAA test@example",
             None,
             InstallServerMode::ConfigureAndStart,
+            VpnProvider::Tailscale,
         );
 
         assert!(env.contains("TAKO_SSH_PUBKEY='ssh-ed25519 AAAA test@example'"));
@@ -443,6 +470,7 @@ mod tests {
             "ssh-ed25519 AAAA",
             None,
             InstallServerMode::ConfigureAndStart,
+            VpnProvider::Tailscale,
         );
 
         assert!(env.contains("TAKO_RELEASE_TAG='v0.0.0-test'"));
@@ -461,6 +489,7 @@ mod tests {
                 https_port: 8443,
             }),
             InstallServerMode::ConfigureAndStart,
+            VpnProvider::Tailscale,
         );
 
         assert!(env.contains("TAKO_HTTP_PORT='8080'"));

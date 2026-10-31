@@ -7,9 +7,9 @@ mod management_http;
 mod output;
 mod paths;
 pub mod shell;
-mod tailscale;
 mod telemetry;
 mod ui;
+mod vpn;
 
 // Internal modules (moved from tako-core)
 pub mod app;

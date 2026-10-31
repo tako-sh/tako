@@ -8,7 +8,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = (ROOT / "scripts/install-tako-server.sh").read_text()
 IS_ENABLED = SOURCE[
-    SOURCE.index("is_enabled() {") : SOURCE.index("is_tailscale_ipv4() {")
+    SOURCE.index("is_enabled() {") : SOURCE.index("vpn_functions() {")
 ]
 SERVICE_SETUP = SOURCE[
     SOURCE.rindex('\nif [ "$SERVICE_MANAGER" = "systemd" ]; then\n') :

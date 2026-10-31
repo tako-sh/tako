@@ -26,7 +26,7 @@ Rust crate for the remote Tako runtime and proxy.
 - Persist server upgrade mode in SQLite and reject mutating commands while upgrading.
 - Use a single-owner durable upgrade lock so only one upgrade controller can enter upgrading mode at a time.
 - Expose `server_info`, `enter_upgrading`, and `exit_upgrading` management commands for upgrade orchestration.
-- Serve signed remote management RPC over Tailscale-bound HTTP when `--management-host` is configured.
+- Serve signed remote management RPC over VPN-bound HTTP (Tailscale or NetBird) when `--management-host` is configured.
 - Enable zero-downtime reload handoff with SIGHUP child spawn, `SO_REUSEPORT` listener overlap, and pid-specific management sockets (`tako-{pid}.sock`) behind stable symlink `tako.sock`.
 
 Routing policy notes:
@@ -44,7 +44,7 @@ scope, pool bounds and tests. This does not enable TLS handshake offloading.
 
 - Socket: `/var/run/tako/tako.sock`
 - Public HTTP/HTTPS: `--http-port` and `--https-port` (defaults: `80` and `443`)
-- Remote management HTTP: `9844` on the configured Tailscale address
+- Remote management HTTP: `9844` on the configured VPN address
 - Data root: `/opt/tako`
 - State DB: `/opt/tako/state.sqlite`
 - Server identity: `/opt/tako/identity.key`, `/opt/tako/identity.pub`
