@@ -11,6 +11,7 @@ pub(crate) const SERVICE_LABEL: &str = "sh.tako.compose.service";
 pub(crate) const SLOT_LABEL: &str = "sh.tako.compose.slot";
 pub(crate) const FINGERPRINT_LABEL: &str = "sh.tako.compose.fingerprint";
 pub(crate) const RELEASE_LABEL: &str = "sh.tako.compose.release";
+pub(crate) const DEPENDENCIES_LABEL: &str = "sh.tako.compose.dependencies";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateOrder {
@@ -18,7 +19,8 @@ pub enum UpdateOrder {
     StopFirst,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DependencyCondition {
     Started,
     Healthy,
@@ -159,7 +161,9 @@ impl Plan {
                     object.remove("deploy");
                 }
             }
-            let mut identity = json!({"service": definition});
+            // Dependency conditions live in immutable container labels for
+            // rollback. A changed graph therefore needs a new generation too.
+            let mut identity = json!({"service": definition, "dependencies": plan.dependencies});
             for kind in ["networks", "volumes", "configs", "secrets"] {
                 let references = referenced_resources(&definition, kind);
                 for reference in references {
@@ -254,6 +258,7 @@ impl Plan {
         definition["labels"][SLOT_LABEL] = json!(slot.to_string());
         definition["labels"][FINGERPRINT_LABEL] = json!(service.fingerprint);
         definition["labels"][RELEASE_LABEL] = json!(runtime.directory);
+        definition["labels"][DEPENDENCIES_LABEL] = json!(json!(service.dependencies).to_string());
         if service.name == runtime.config.service {
             // Docker allocates the loopback port atomically; reuse it when adopting
             // this generation after a restart or an unchanged deployment.

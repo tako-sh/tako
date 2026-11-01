@@ -7,8 +7,10 @@ use serde_json::{Value, json};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Child;
 
-use crate::plan::{FINGERPRINT_LABEL, RELEASE_LABEL, SERVICE_LABEL, SLOT_LABEL};
-use crate::{ComposeRuntime, docker_command, engine_output};
+use crate::plan::{
+    DEPENDENCIES_LABEL, FINGERPRINT_LABEL, RELEASE_LABEL, SERVICE_LABEL, SLOT_LABEL,
+};
+use crate::{ComposeRuntime, DependencyCondition, docker_command, engine_output};
 
 #[derive(Debug, Clone)]
 pub struct ServiceContainer {
@@ -25,6 +27,7 @@ pub struct ServiceContainer {
     pub port: Option<u16>,
     pub release: Option<PathBuf>,
     pub writable_volumes: BTreeSet<String>,
+    pub(crate) dependencies: BTreeMap<String, DependencyCondition>,
 }
 
 impl ServiceContainer {
@@ -284,6 +287,12 @@ pub(crate) async fn inspect_container(
         started_at: value["started_at"].as_str().unwrap_or_default().into(),
         port,
         release: labels[RELEASE_LABEL].as_str().map(PathBuf::from),
+        dependencies: labels[DEPENDENCIES_LABEL]
+            .as_str()
+            .map(serde_json::from_str)
+            .transpose()
+            .map_err(|_| "Invalid Compose dependency metadata")?
+            .unwrap_or_default(),
         writable_volumes: value["mounts"]
             .as_array()
             .into_iter()

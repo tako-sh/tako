@@ -216,6 +216,17 @@ fn invalid_graph_and_unsupported_semantics_fail_before_container_changes() {
 }
 
 #[test]
+fn dependency_conditions_are_part_of_the_immutable_generation() {
+    let (_dir, runtime) = runtime();
+    let before = Plan::new(model(), &runtime).unwrap();
+    let mut changed = model();
+    changed["services"]["web"]["depends_on"]["redis"]["condition"] = json!("service_started");
+    let after = Plan::new(changed, &runtime).unwrap();
+    assert_ne!(fingerprint(&before, "web"), fingerprint(&after, "web"));
+    assert_eq!(fingerprint(&before, "redis"), fingerprint(&after, "redis"));
+}
+
+#[test]
 fn generation_model_preserves_restart_and_aliases_without_dependencies_or_builds() {
     let (_dir, runtime) = runtime();
     let plan = Plan::new(model(), &runtime).unwrap();

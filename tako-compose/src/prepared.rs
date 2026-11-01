@@ -107,13 +107,30 @@ impl ComposeRuntime {
                 .into(),
             images,
         };
-        // Keep the source before publishing the pointer. A crash may leave an
-        // unused private copy, but cannot publish a missing/partial preparation.
-        let _ = snapshot.keep();
-        write_private(
-            &self.preparation_root()?.join("current.json"),
-            &serde_json::to_vec(&record).map_err(|e| e.to_string())?,
-        )
+        let root = self.preparation_root()?;
+        let mut file = tempfile::NamedTempFile::new_in(&root).map_err(|e| e.to_string())?;
+        file.write_all(&serde_json::to_vec(&record).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        file.as_file().sync_all().map_err(|e| e.to_string())?;
+        // A release's first successful preparation remains authoritative for
+        // deployment, restart, and rollback. Concurrent attempts may finish in
+        // either order, but must never replace the winner's source or images.
+        // Keep the source before publishing; a crash can leave an unused copy,
+        // but cannot publish a pointer that TempDir cleanup would invalidate.
+        let source = snapshot.keep();
+        match file.persist_noclobber(root.join("current.json")) {
+            Ok(_) => File::open(root)
+                .and_then(|directory| directory.sync_all())
+                .map_err(|e| e.to_string()),
+            Err(error) => {
+                let _ = std::fs::remove_dir_all(source);
+                if error.error.kind() == std::io::ErrorKind::AlreadyExists {
+                    self.prepared().map(|_| ())
+                } else {
+                    Err(error.to_string())
+                }
+            }
+        }
     }
 
     pub(crate) fn prepared(&self) -> Result<(Self, BTreeMap<String, String>), String> {
@@ -352,6 +369,30 @@ mod tests {
         )
         .unwrap();
         (directory, runtime)
+    }
+
+    #[test]
+    fn a_prepared_release_cannot_be_replaced_by_a_later_attempt() {
+        let (_dir, runtime) = fixture("services: {web: {image: busybox}}\n");
+        // Both attempts can start before either publishes its record.
+        let (_, first) = runtime.snapshot().unwrap();
+        let (_, second) = runtime.snapshot().unwrap();
+        runtime
+            .commit_preparation(
+                first,
+                BTreeMap::from([("web".into(), "approved-image".into())]),
+            )
+            .unwrap();
+        let first_source = runtime.prepared().unwrap().0.source;
+        runtime
+            .commit_preparation(
+                second,
+                BTreeMap::from([("web".into(), "replacement-image".into())]),
+            )
+            .unwrap();
+        let (prepared, images) = runtime.prepared().unwrap();
+        assert_eq!(images["web"], "approved-image");
+        assert_eq!(prepared.source, first_source);
     }
 
     #[test]

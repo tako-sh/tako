@@ -333,6 +333,15 @@ impl ComposeRuntime {
         if self.development {
             return Err("Production preparation requested for a development project".into());
         }
+        if self
+            .preparation_root()?
+            .join("current.json")
+            .try_exists()
+            .map_err(|e| e.to_string())?
+        {
+            self.prepared()?;
+            return Ok(());
+        }
         let capture = self.clone();
         let (runtime, snapshot) = tokio::task::spawn_blocking(move || capture.snapshot())
             .await

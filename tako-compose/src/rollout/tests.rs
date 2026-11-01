@@ -302,17 +302,18 @@ async fn rollback_restarts_renamed_dependencies_before_waiting_for_consumers() {
     let mut fixture = Fixture::new();
     let model = serde_json::json!({
         "services": {
-            "redis": {
+            "z-redis": {
                 "image": "docker.io/library/redis:7-alpine",
                 "volumes": ["state:/data"],
+                "command": ["sh", "-c", "sleep 2; exec redis-server"],
                 "healthcheck": {"test": ["CMD", "redis-cli", "ping"], "interval":"1s", "timeout":"1s", "retries":3},
                 "deploy": {"update_config": {"monitor":"0s"}}
             },
             "web": {
                 "image": "docker.io/library/redis:7-alpine", "tmpfs": ["/data"],
-                "command": ["sh", "-c", "while true; do sleep 1; done"],
-                "depends_on": {"redis": {"condition":"service_healthy"}},
-                "healthcheck": {"test": ["CMD", "redis-cli", "-h", "redis", "ping"], "interval":"1s", "timeout":"1s", "retries":3},
+                "command": ["sh", "-c", "redis-cli -h z-redis ping || exit 1; while true; do sleep 1; done"],
+                "depends_on": {"z-redis": {"condition":"service_healthy"}},
+                "healthcheck": {"test": ["CMD", "redis-cli", "-h", "z-redis", "ping"], "interval":"1s", "timeout":"1s", "retries":3},
                 "deploy": {"update_config": {"order":"stop-first", "monitor":"0s"}}
             }
         },
@@ -323,14 +324,14 @@ async fn rollback_restarts_renamed_dependencies_before_waiting_for_consumers() {
     before.apply().await.unwrap();
     before.finish().await.unwrap();
     let web = before.ingress().unwrap().clone();
-    let redis = service(before.containers(), "redis").clone();
+    let redis = service(before.containers(), "z-redis").clone();
     exec(&redis, &["redis-cli", "SET", "marker", "preserved"]).await;
 
     let mut next = model;
     next["services"]["cache"] = next["services"]
         .as_object_mut()
         .unwrap()
-        .remove("redis")
+        .remove("z-redis")
         .unwrap();
     next["services"]["web"]["depends_on"] =
         serde_json::json!({"cache": {"condition":"service_healthy"}});
@@ -364,10 +365,88 @@ async fn rollback_restarts_renamed_dependencies_before_waiting_for_consumers() {
             .healthy()
     );
     assert_eq!(
-        exec(&web, &["redis-cli", "-h", "redis", "GET", "marker"])
+        exec(&web, &["redis-cli", "-h", "z-redis", "GET", "marker"])
             .await
             .trim(),
         "preserved"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires Docker Compose and shared Docker build paths; run with the Docker integration harness"]
+async fn rollback_preserves_started_and_completed_dependency_conditions() {
+    let mut fixture = Fixture::new();
+    let model = serde_json::json!({
+        "services": {
+            "z-parent": {
+                "image": "docker.io/library/busybox:1.37",
+                "volumes": ["state:/state"],
+                "command": ["sh", "-c", "rm -f /state/ready; while true; do sleep 1; done"],
+                "healthcheck": {"test": ["CMD", "test", "-f", "/state/ready"], "interval":"1s", "timeout":"1s", "retries":10},
+                "deploy": {"update_config": {"monitor":"0s"}}
+            },
+            "job": {
+                "image": "docker.io/library/busybox:1.37",
+                "volumes": ["state:/state"],
+                "command": ["sh", "-c", "echo migration >> /state/migrations"],
+                "depends_on": {"z-parent": {"condition":"service_started"}},
+                "deploy": {"update_config": {"monitor":"0s"}}
+            },
+            "web": {
+                "image": "docker.io/library/busybox:1.37",
+                "volumes": ["state:/state"],
+                "command": ["sh", "-c", "while true; do touch /state/ready; sleep 1; done"],
+                "depends_on": {
+                    "z-parent": {"condition":"service_started"},
+                    "job": {"condition":"service_completed_successfully"}
+                },
+                "deploy": {"update_config": {"monitor":"0s"}}
+            }
+        },
+        "volumes": {"state": {}}
+    });
+    let runtime = fixture
+        .release("dependency-conditions", &model.to_string())
+        .await;
+    let mut before = runtime.begin_rollout().await.unwrap();
+    before.apply().await.unwrap();
+    before.finish().await.unwrap();
+    let parent = service(before.containers(), "z-parent");
+    let job = service(before.containers(), "job");
+    let web = before.ingress().unwrap();
+
+    let mut next = model;
+    next["services"]["z-parent"]["environment"] = serde_json::json!({"REVISION":"two"});
+    next["services"]["web"]["command"] = serde_json::json!(["sh", "-c", "exit 1"]);
+    let changed = fixture
+        .release("failed-conditions", &next.to_string())
+        .await;
+    let mut pending = changed.begin_rollout().await.unwrap();
+    assert!(pending.apply().await.is_err());
+    tokio::time::timeout(Duration::from_secs(30), pending.rollback())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        inspect_container(&parent.id, false)
+            .await
+            .unwrap()
+            .unwrap()
+            .healthy()
+    );
+    assert!(
+        inspect_container(&web.id, false)
+            .await
+            .unwrap()
+            .unwrap()
+            .running()
+    );
+    let restored_job = inspect_container(&job.id, false).await.unwrap().unwrap();
+    assert!(restored_job.completed());
+    assert_eq!(restored_job.started_at, job.started_at);
+    assert_eq!(
+        exec(web, &["cat", "/state/migrations"]).await,
+        "migration\n"
     );
 }
 
@@ -663,24 +742,25 @@ volumes:
 #[tokio::test]
 #[ignore = "requires Docker Compose and shared build paths"]
 async fn image_volumes_require_an_exact_explicit_mount() {
+    async fn prepare(fixture: &mut Fixture, version: &str, yaml: &str) -> ComposeRuntime {
+        let runtime = fixture.unprepared_release(version, yaml);
+        let path = runtime.directory.join("Dockerfile");
+        let dockerfile = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(path, format!("{dockerfile}\nVOLUME [\"/state/data\"]\n")).unwrap();
+        runtime.prepare(version).await.unwrap();
+        runtime
+    }
     let mut fixture = Fixture::new();
     let parent_volume = SMALL_STACK.replace(
         "    build: .",
         "    build: .\n    volumes: [web-data:/state]",
     );
-    let runtime = fixture.unprepared_release("image-volume", &parent_volume);
-    let dockerfile_path = runtime.directory.join("Dockerfile");
-    let dockerfile = std::fs::read_to_string(&dockerfile_path).unwrap();
-    std::fs::write(
-        &dockerfile_path,
-        format!("{dockerfile}\nVOLUME [\"/state/data\"]\n"),
-    )
-    .unwrap();
-    runtime.prepare("image-volume").await.unwrap();
     let parent_tmpfs = SMALL_STACK.replace("    build: .", "    build: .\n    tmpfs: [/state]");
-    for yaml in [&parent_volume, &parent_tmpfs] {
-        std::fs::write(runtime.directory.join("compose.yaml"), yaml).unwrap();
-        runtime.prepare("image-volume").await.unwrap();
+    for (version, yaml) in [
+        ("parent-volume", &parent_volume),
+        ("parent-tmpfs", &parent_tmpfs),
+    ] {
+        let runtime = prepare(&mut fixture, version, yaml).await;
         let error = runtime
             .begin_rollout()
             .await
@@ -691,8 +771,7 @@ async fn image_volumes_require_an_exact_explicit_mount() {
     }
 
     let exact_volume = parent_volume.replace("web-data:/state", "web-data:/state/data");
-    std::fs::write(runtime.directory.join("compose.yaml"), exact_volume).unwrap();
-    runtime.prepare("image-volume").await.unwrap();
+    let runtime = prepare(&mut fixture, "exact-volume", &exact_volume).await;
     let mut rollout = runtime.begin_rollout().await.unwrap();
     rollout.apply().await.unwrap();
     assert_eq!(
@@ -702,13 +781,12 @@ async fn image_volumes_require_an_exact_explicit_mount() {
     assert!(
         http(rollout.ingress().unwrap())
             .await
-            .ends_with("image-volume\n")
+            .ends_with("exact-volume\n")
     );
     rollout.finish().await.unwrap();
 
     let exact_tmpfs = parent_tmpfs.replace("tmpfs: [/state]", "tmpfs: [/state/data]");
-    std::fs::write(runtime.directory.join("compose.yaml"), exact_tmpfs).unwrap();
-    runtime.prepare("image-volume").await.unwrap();
+    let runtime = prepare(&mut fixture, "exact-tmpfs", &exact_tmpfs).await;
     runtime.begin_rollout().await.unwrap();
 }
 
@@ -867,10 +945,29 @@ async fn concurrent_preparations_pin_their_own_images() {
             .await
             .ends_with("parallel-left\n")
     );
-    // Build isolation must also preserve identity on repeated preparation.
+    // Repeating preparation cannot replace the approved source or images,
+    // even when the original release directory has changed in the meantime.
+    std::fs::write(
+        right.directory.join("Dockerfile"),
+        "FROM docker.io/library/busybox:1.37\nCMD [\"false\"]\n",
+    )
+    .unwrap();
     right.prepare("parallel-right").await.unwrap();
-    let repeated = right.begin_rollout().await.unwrap();
+    let restarted = ComposeRuntime::new(
+        right.directory.clone(),
+        right.config.clone(),
+        right.env.clone(),
+    )
+    .unwrap();
+    let mut repeated = restarted.begin_rollout().await.unwrap();
     assert!(repeated.changes().is_empty());
+    repeated.apply().await.unwrap();
+    assert_eq!(repeated.ingress().unwrap().id, second.ingress().unwrap().id);
+    assert!(
+        http(repeated.ingress().unwrap())
+            .await
+            .ends_with("parallel-right\n")
+    );
     second.finish().await.unwrap();
 }
 

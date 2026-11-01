@@ -223,29 +223,29 @@ impl Rollout {
         if !errors.is_empty() {
             return Err(errors.join("; "));
         }
-        // The new dependency graph cannot order removed or renamed predecessors.
-        // Restart every predecessor before waiting for any consumer's readiness,
-        // so a health check can observe its restored dependencies.
+        // Use the predecessors' own dependency graph: the failed release may
+        // have renamed or removed services. Restore dependencies before starting
+        // a consumer that may exit immediately when its database is not ready.
+        let mut remaining: Vec<_> = self
+            .before
+            .iter()
+            .filter(|old| old.running() || old.state == "restarting")
+            .collect();
         let mut restored = Vec::new();
-        for old in &self.before {
-            if old.running() || old.state == "restarting" {
-                match inspect_container(&old.id, false).await? {
-                    Some(current) if current.running() => (),
-                    Some(_) => {
-                        if let Err(error) = self.runtime.start_container(&old.id).await {
-                            errors.push(error);
-                            continue;
-                        }
-                        let current = inspect_container(&old.id, false)
-                            .await?
-                            .ok_or("Previous Compose container disappeared after restart")?;
-                        restored.push(current);
-                    }
-                    None => errors.push(format!(
-                        "Previous container for '{}' disappeared during rollback",
-                        old.service
-                    )),
-                }
+        while !remaining.is_empty() {
+            let Some(index) = remaining.iter().position(|old| {
+                !remaining
+                    .iter()
+                    .any(|dependency| old.dependencies.contains_key(&dependency.service))
+            }) else {
+                errors.push("Previous Compose dependency graph contains a cycle".into());
+                break;
+            };
+            let old = remaining.remove(index);
+            match self.restore_predecessor(old).await {
+                Ok(Some(current)) => restored.push(current),
+                Ok(None) => (),
+                Err(error) => errors.push(error),
             }
         }
         for container in restored {
@@ -258,6 +258,53 @@ impl Rollout {
         } else {
             Err(errors.join("; "))
         }
+    }
+
+    async fn restore_predecessor(
+        &self,
+        old: &ServiceContainer,
+    ) -> Result<Option<ServiceContainer>, String> {
+        let current = inspect_container(&old.id, false).await?.ok_or_else(|| {
+            format!(
+                "Previous container for '{}' disappeared during rollback",
+                old.service
+            )
+        })?;
+        if current.running() {
+            return Ok(None);
+        }
+        for (service, condition) in &old.dependencies {
+            let dependencies: Vec<_> = self
+                .before
+                .iter()
+                .filter(|container| {
+                    &container.service == service
+                        && (container.running()
+                            || container.state == "restarting"
+                            || container.completed())
+                })
+                .collect();
+            if dependencies.is_empty() {
+                return Err(format!(
+                    "Previous dependency '{service}' disappeared during rollback"
+                ));
+            }
+            for dependency in dependencies {
+                // Inspect after restoration to establish a fresh start timestamp
+                // while preserving the declared started/healthy/completed condition.
+                let current = inspect_container(&dependency.id, false)
+                    .await?
+                    .ok_or_else(|| {
+                        format!("Previous dependency '{service}' disappeared during rollback")
+                    })?;
+                wait_ready(&current, Some(*condition), Duration::ZERO).await?;
+            }
+        }
+        self.runtime.start_container(&old.id).await?;
+        inspect_container(&old.id, false)
+            .await?
+            .ok_or_else(|| "Previous Compose container disappeared after restart".into())
+            .map(Some)
     }
 
     /// Call only after the new release is durable and old HTTP requests drained.

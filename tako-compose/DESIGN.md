@@ -10,9 +10,9 @@ update planner below.
 - The project, networks, and named volumes belong to the app/environment, never
   to an HTTP instance or release. Retiring an HTTP instance cannot stop a stack.
 - An immutable service generation is identified by the resolved container
-  configuration and image ID. Build paths, release tags, replica count, and
-  update policy are not container configuration. Secrets participate in the
-  fingerprint but are never written to generated files or deployment records.
+  configuration, dependency conditions, and image runtime contents. Build paths,
+  release tags, replica count, and update policy are not container configuration.
+  Secrets participate in the fingerprint but are never written to generated files or deployment records.
 - Each replica has a stable slot. An unchanged healthy container keeps its ID,
   endpoint, and data across deployment and server restart.
 - The selected stateless HTTP service defaults to start-first. Other services
@@ -21,7 +21,8 @@ update planner below.
 - New containers must pass Docker readiness and the selected service must pass
   Tako's HTTP readiness and stability checks before public traffic changes.
 - The old HTTP instance drains only after the replacement is in routing.
-- Rollback stops newly introduced containers and restarts stopped predecessors;
+- Rollback stops newly introduced containers and restarts stopped predecessors
+  using their original dependency graph and readiness conditions;
   it never restores database contents. An unchanged dependency stays running.
 - A durable pending marker precedes container changes. The active release,
   routes, and encrypted credentials commit in one SQLite transaction. Recovery
@@ -33,20 +34,24 @@ update planner below.
 
 Image preparation uses temporary tags unique to each attempt, including when
 the Compose file declares an image name for a build. It pins the inspected image
-ID before discarding those tags, so concurrent preparations cannot exchange
-images. The override contains only generated names and stays outside build
+runtime contents before discarding those tags, so concurrent preparations cannot
+exchange images. Creation pins the exact inspected image ID. The first successful
+preparation of a release is published atomically and cannot be replaced by a
+retry. Later preparations reuse it; changed sources or images require a new
+release. The override contains only generated names and stays outside build
 contexts, preserving identical-build caching and service identity.
 
 Production renders a single resolved service under an internal generation name,
 with its original network aliases and stable resource names. It passes this
-model to `compose create` through stdin, then starts the resulting container via
-Docker. This preserves normal Compose restart/resource/health settings and
-allows the old and new generations to coexist. Resolved models stay in memory;
-literal dollar signs must survive the second Compose parse.
+model to `compose create` and `compose start` through stdin. Compose start also
+injects environment-backed secrets and configs. This preserves normal Compose
+restart/resource/health settings and allows the old and new generations to
+coexist. Resolved models stay in memory; literal dollar signs must survive the second Compose parse.
 
 Container labels record only app ownership, original service name, replica slot,
-configuration fingerprint, and source release directory. They allow discovery
-after process termination without relying on an in-memory process handle.
+configuration fingerprint, dependency conditions, and source release directory.
+They allow discovery after process termination without relying on an in-memory
+process handle.
 
 The planner evaluates dependency ordering and readiness conditions before
 starting consumers. Jobs required to complete successfully are treated as jobs,

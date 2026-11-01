@@ -42,7 +42,11 @@ Client controls are reserved: `DOCKER_*`, `COMPOSE_*`, `BUILDX_*`, `BUILDKIT_*`,
 
 Production does not load an implicit `.env` file. Use Tako variables and secrets for interpolation, or an explicit project-local service `env_file` for container environment values. File references must be literal relative paths; interpolation in file paths is unsupported.
 
-Before invoking Docker, Tako copies production inputs into a service-owned private directory and validates the Compose model and every build input. Builds, restarts, secret rotation, and rollback use that captured source and pinned images. These deployment inputs stay outside the app-data tree, so restoring an app-data backup preserves them. Editing an uploaded release after preparation does not change its prepared deployment; deploy a new release to change it. Decrypted interpolation values remain in memory. Rotating an environment-backed Compose secret or config replaces its consuming services so their injected files receive the new value.
+Before invoking Docker, Tako copies production inputs into a service-owned private directory and validates the Compose model and every build input. Builds, restarts, secret rotation, and rollback use that captured source and pinned images. These deployment inputs stay outside the app-data tree, so restoring an app-data backup preserves them.
+
+The first successful preparation of a release is immutable. Preparing that release again reuses its captured source and images, even if uploaded files or image tags have changed; deploy a new release to rebuild or pull updated images.
+
+Decrypted interpolation values remain in memory. Rotating an environment-backed Compose secret or config replaces its consuming services so their injected files receive the new value.
 
 Build contexts, Dockerfiles, additional file contexts, build secrets, runtime configs/secrets, and bind sources must stay inside the app directory. Additional `service:` build contexts are supported. Source must contain only regular files and directories, without symlinks or hard links, and fit within 2 GiB, 100,000 entries, and 128 directory levels. The Compose file is limited to 16 MiB. The root `logs` directory is reserved for runtime output and excluded from preparation.
 
@@ -54,11 +58,11 @@ Use named volumes for persistent data. The project identity is stable for one ap
 
 Networks, volumes, configs, and secrets are scoped to the app/environment. External resources and custom resource names are rejected in production. Networks use Docker's bridge driver and volumes use its local driver; driver options and custom IPAM settings are unsupported.
 
-Named volumes survive deployment, stop/start, rollback, and application deletion. Deleting data requires an explicit Docker volume operation. Tako's app-data backups do **not** include Docker named volumes. Use database-native dumps or a coordinated volume backup, and verify restoration into a separate stack. Application rollback does not reverse schema migrations or restore database contents.
+Named volumes survive deployment, stop/start, rollback, and application deletion. Deleting data requires an explicit Docker volume operation. Tako's app-data backups do **not** include Docker named volumes. Use database-native dumps or a coordinated volume backup, and verify restoration into a separate stack. Application rollback restores the previous containers using their original dependency conditions. Completed dependency jobs stay completed. Rollback does not reverse schema migrations or restore database contents.
 
 ## Updates and recovery
 
-Tako prepares and pins all images before changing running containers. It compares each service's image configuration and filesystem, plus its resolved Compose configuration, referenced secrets, and mounted file contents and executable permissions. Build attestations and release directory names do not trigger replacements. Unchanged services keep their container IDs, network endpoints, and volumes. Updating a Bun web app therefore leaves unchanged Redis running.
+Tako prepares and pins all images before changing running containers. It compares each service's image configuration and filesystem, plus its resolved Compose configuration, dependency conditions, referenced secrets, and mounted file contents and executable permissions. Build attestations and release directory names do not trigger replacements. Unchanged services keep their container IDs, network endpoints, and volumes. Updating a Bun web app therefore leaves unchanged Redis running.
 
 | Service | Default update order |
 | --- | --- |
