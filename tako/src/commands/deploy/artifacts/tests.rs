@@ -567,7 +567,7 @@ fn build_container_target_artifacts_packages_source_and_manifest() {
 
     let cache_dir = temp.path().join("cache");
     std::fs::create_dir_all(&cache_dir).unwrap();
-    let manifest = br#"{"release_kind":"container","runtime":"container","main":"","container_file":"Dockerfile","container_port":3000}"#;
+    let manifest = br#"{"release_kind":"container","runtime":"container","main":"","container_file":"Dockerfile","container_options":{"port":3000}}"#;
     let groups = vec![ArtifactBuildGroup {
         build_target_label: "linux-x86_64-glibc".to_string(),
         cache_target_label: "container".to_string(),

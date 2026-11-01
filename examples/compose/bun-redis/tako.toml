@@ -1,0 +1,11 @@
+name = "bun-redis"
+
+[compose]
+file = "compose.yaml"
+service = "web"
+port = 3000
+health_path = "/health"
+
+[envs.production]
+route = "app.example.com"
+servers = ["prod"]

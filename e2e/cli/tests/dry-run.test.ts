@@ -240,3 +240,51 @@ function findCharInRow(term: TakoTerminal, row: number, char: string): number | 
   }
   return null;
 }
+
+describe("container and Compose deployment plans", () => {
+  test("plans a Compose stack without a native runtime", async () => {
+    await setupProject({ servers: { prod: { host: "10.0.0.1" } } });
+    await writeFile(
+      join(tempDir, "tako.toml"),
+      `name = "compose-app"
+[compose]
+file = "compose.yaml"
+service = "web"
+port = 80
+[envs.production]
+route = "compose.example.com"
+servers = ["prod"]
+`,
+    );
+    await writeFile(join(tempDir, "compose.yaml"), "services:\n  web:\n    image: nginx:alpine\n");
+    const { exitCode, screen } = await run(["--dry-run", "deploy"], {
+      cwd: tempDir,
+      env: { HOME: tempDir, TAKO_HOME: takoHome },
+    });
+    expect(exitCode).toBe(0);
+    expect(screen).toContain("compose-app");
+  });
+
+  test("plans an existing image with ordinary HTTP health", async () => {
+    await setupProject({ servers: { prod: { host: "10.0.0.1" } } });
+    await writeFile(
+      join(tempDir, "tako.toml"),
+      `name = "image-app"
+image = "nginx:alpine"
+[container_options]
+sdk = false
+port = 80
+health_path = "/"
+[envs.production]
+route = "image.example.com"
+servers = ["prod"]
+`,
+    );
+    const { exitCode, screen } = await run(["--dry-run", "deploy"], {
+      cwd: tempDir,
+      env: { HOME: tempDir, TAKO_HOME: takoHome },
+    });
+    expect(exitCode).toBe(0);
+    expect(screen).toContain("image-app");
+  });
+});

@@ -65,25 +65,41 @@ pub(super) async fn prepare(
         crate::output::warning(&format!("Validation: {}", warning));
     }
     let eff_app_dir = project_dir.clone();
-    let preset_ref = resolve_dev_preset_ref(&eff_app_dir, &cfg)?;
-    let runtime_adapter = resolve_effective_dev_build_adapter(&eff_app_dir, &cfg, &preset_ref)
-        .map_err(|e| format!("Failed to resolve runtime adapter: {}", e))?;
-    let (mut build_preset, _) = crate::build::load_dev_build_preset(&preset_ref)
-        .await
-        .map_err(|e| format!("Failed to resolve build preset '{}': {}", preset_ref, e))?;
-    let plugin_ctx = tako_runtime::PluginContext {
-        project_dir: &eff_app_dir,
-        package_manager: cfg.package_manager.as_deref(),
+    let (runtime_adapter, build_preset, main) = if cfg.compose.is_some() {
+        if command_override.is_some() || !cfg.dev.is_empty() {
+            return Err("Compose development uses service commands from the Compose file; remove the dev command override".into());
+        }
+        (
+            crate::build::BuildAdapter::Unknown,
+            crate::build::BuildPreset {
+                name: "compose".into(),
+                ..Default::default()
+            },
+            String::new(),
+        )
+    } else {
+        let preset_ref = resolve_dev_preset_ref(&eff_app_dir, &cfg)?;
+        let runtime_adapter = resolve_effective_dev_build_adapter(&eff_app_dir, &cfg, &preset_ref)
+            .map_err(|e| format!("Failed to resolve runtime adapter: {}", e))?;
+        let (mut build_preset, _) = crate::build::load_dev_build_preset(&preset_ref)
+            .await
+            .map_err(|e| format!("Failed to resolve build preset '{}': {}", preset_ref, e))?;
+        let plugin_ctx = tako_runtime::PluginContext {
+            project_dir: &eff_app_dir,
+            package_manager: cfg.package_manager.as_deref(),
+        };
+        apply_adapter_base_runtime_defaults(&mut build_preset, runtime_adapter, Some(&plugin_ctx))
+            .map_err(|e| format!("Failed to apply runtime defaults to preset: {}", e))?;
+        let main = crate::commands::deploy::resolve_deploy_main(
+            &eff_app_dir,
+            runtime_adapter,
+            &cfg,
+            build_preset.main.as_deref(),
+        )
+        .map_err(|e| format!("Failed to resolve deploy entrypoint: {}", e))?;
+
+        (runtime_adapter, build_preset, main)
     };
-    apply_adapter_base_runtime_defaults(&mut build_preset, runtime_adapter, Some(&plugin_ctx))
-        .map_err(|e| format!("Failed to apply runtime defaults to preset: {}", e))?;
-    let main = crate::commands::deploy::resolve_deploy_main(
-        &eff_app_dir,
-        runtime_adapter,
-        &cfg,
-        build_preset.main.as_deref(),
-    )
-    .map_err(|e| format!("Failed to resolve deploy entrypoint: {}", e))?;
 
     if runtime_adapter.preset_group() == PresetGroup::Js {
         let _ = js::write_generated_files_for_adapter_and_app_root(
@@ -199,19 +215,25 @@ pub(super) async fn prepare(
         );
     }
 
-    let cmd = resolve_dev_run_command(
-        &cfg,
-        &build_preset,
-        &main,
-        runtime_adapter,
-        has_explicit_dev_preset(&cfg),
-        &project_dir,
-        command_override.as_deref(),
-    )
-    .map_err(|e| format!("Invalid dev start command: {}", e))?;
-    let readiness_failure_hint = readiness_failure_hint_for_dev_command(&cmd);
-    let worker_command =
-        resolve_dev_worker_command(&project_dir, cfg.js_app_root(), runtime_adapter);
+    let (cmd, readiness_failure_hint, worker_command) = if cfg.compose.is_some() {
+        (Vec::new(), None, None)
+    } else {
+        let cmd = resolve_dev_run_command(
+            &cfg,
+            &build_preset,
+            &main,
+            runtime_adapter,
+            has_explicit_dev_preset(&cfg),
+            &project_dir,
+            command_override.as_deref(),
+        )
+        .map_err(|e| format!("Invalid dev start command: {}", e))?;
+        let readiness_failure_hint = readiness_failure_hint_for_dev_command(&cmd);
+        let worker_command =
+            resolve_dev_worker_command(&project_dir, cfg.js_app_root(), runtime_adapter);
+
+        (cmd, readiness_failure_hint, worker_command)
+    };
 
     // Start (or connect to) the dev server daemon.
     if let Err(e) = crate::dev_server_client::ensure_running(&listen_addr, daemon_dns_ip).await {

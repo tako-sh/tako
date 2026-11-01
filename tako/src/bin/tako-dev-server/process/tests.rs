@@ -45,6 +45,7 @@ async fn readiness_times_out_when_route_becomes_active_without_fd4_signal() {
         s.apps.insert(
             config_path.clone(),
             RuntimeApp {
+                compose: None,
                 project_dir: "/tmp/tako-readiness".to_string(),
                 name: "readiness".to_string(),
                 variant: None,
@@ -108,6 +109,7 @@ async fn spawn_app_exposes_bootstrap_envelope_on_fd3() {
         "postgres://localhost/dev".to_string(),
     )]);
     let app = RuntimeApp {
+        compose: None,
         project_dir: tmp.path().display().to_string(),
         name: "bootstrap-test".to_string(),
         variant: None,
@@ -151,6 +153,7 @@ async fn spawn_app_exposes_bootstrap_envelope_on_fd3() {
 #[test]
 fn readiness_failure_message_uses_client_hint() {
     let app = RuntimeApp {
+        compose: None,
         project_dir: "/tmp/tako-readiness".to_string(),
         name: "readiness".to_string(),
         variant: None,

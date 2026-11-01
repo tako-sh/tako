@@ -47,7 +47,9 @@ pub(super) fn spawn_config_reload_loop(
                 return;
             }
             if change == watcher::WatchChange::GeneratedDeclarations {
-                if let Err(err) = crate::build::js::write_generated_files(&ctx.project_dir) {
+                if load_dev_tako_toml(&ctx.config_path).is_ok_and(|cfg| cfg.compose.is_none())
+                    && let Err(err) = crate::build::js::write_generated_files(&ctx.project_dir)
+                {
                     let _ = ctx
                         .log_tx
                         .send(ScopedLog::warn(
@@ -97,8 +99,9 @@ pub(super) fn spawn_config_reload_loop(
             };
 
             let mut new_env = compute_dev_env(&cfg);
-            if crate::build::detect_build_adapter(&ctx.project_dir).preset_group()
-                == crate::build::PresetGroup::Js
+            if cfg.compose.is_none()
+                && crate::build::detect_build_adapter(&ctx.project_dir).preset_group()
+                    == crate::build::PresetGroup::Js
             {
                 new_env.insert("TAKO_APP_ROOT".to_string(), cfg.js_app_root().to_string());
             }
@@ -130,11 +133,13 @@ pub(super) fn spawn_config_reload_loop(
                 }
             };
 
-            let _ = crate::build::js::write_generated_files_for_adapter_and_app_root(
-                &ctx.project_dir,
-                crate::build::detect_build_adapter(&ctx.project_dir),
-                cfg.js_app_root(),
-            );
+            if cfg.compose.is_none() {
+                let _ = crate::build::js::write_generated_files_for_adapter_and_app_root(
+                    &ctx.project_dir,
+                    crate::build::detect_build_adapter(&ctx.project_dir),
+                    cfg.js_app_root(),
+                );
+            }
 
             *ctx.env_state.lock().await = new_env.clone();
             let hosts_changed = {
@@ -180,6 +185,7 @@ async fn register_updated_app(
     let project_dir_display = ctx.project_dir.to_string_lossy();
     let reg_result =
         crate::dev_server_client::register_app(crate::dev_server_client::RegisterAppRequest {
+            compose: cfg.compose.as_ref(),
             config_path: &ctx.config_key,
             project_dir: &project_dir_display,
             app_name: &ctx.app_name,

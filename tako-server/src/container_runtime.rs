@@ -2,8 +2,10 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 
+use crate::release::TAKO_APP_DATA_DIR_ENV;
 use tako_core::StorageBinding;
 use tako_core::bootstrap::{TAKO_BOOTSTRAP_DATA_ENV, envelope_string};
+use tako_core::container::ContainerOptions;
 use tokio::process::Command as TokioCommand;
 
 use crate::app_command::{ReleaseManifest, safe_subdir};
@@ -21,6 +23,25 @@ impl ContainerEngine {
             Self::Podman => "podman",
         }
     }
+}
+
+pub(crate) async fn remove_container(engine: ContainerEngine, name: &str) -> std::io::Result<()> {
+    let mut command = TokioCommand::new(engine.binary());
+    command
+        .args(["rm", "--force", "--ignore", "--time", "10", name])
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(std::time::Duration::from_secs(15), command.output())
+        .await
+        .map_err(|_| std::io::Error::other("timed out stopping container"))??;
+    if !output.status.success() {
+        return Err(std::io::Error::other(format_process_failure(
+            "stop container",
+            output.status,
+            &output.stdout,
+            &output.stderr,
+        )));
+    }
+    Ok(())
 }
 
 pub(crate) fn detect_container_engine() -> Result<ContainerEngine, String> {
@@ -43,6 +64,21 @@ pub(crate) async fn build_release_image(
 ) -> Result<String, String> {
     let engine = detect_container_engine()?;
     let tag = image_tag_for_manifest(manifest)?;
+    manifest.container_options.validate()?;
+    if let Some(image) = &manifest.container_image {
+        if manifest.container_file.is_some()
+            || image.is_empty()
+            || image.starts_with('-')
+            || image.chars().any(char::is_whitespace)
+        {
+            return Err("invalid container image reference or conflicting Dockerfile".into());
+        }
+        run_image_command(engine, &["pull", "--", image]).await?;
+        // Each release keeps its own local tag, so rolling back never repulls a
+        // mutable upstream tag that may now refer to a different image.
+        run_image_command(engine, &["tag", "--", image, &tag]).await?;
+        return Ok(tag);
+    }
     let context = container_build_context(release_dir, manifest)?;
     let container_file = container_file_path(release_dir, manifest)?;
 
@@ -72,6 +108,29 @@ pub(crate) async fn build_release_image(
     }
 
     Ok(tag)
+}
+
+async fn run_image_command(engine: ContainerEngine, args: &[&str]) -> Result<(), String> {
+    let child = TokioCommand::new(engine.binary())
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    let output = crate::process_output::capture(child, None)
+        .await
+        .map_err(|e| e.to_string())?;
+    let status = output.status.expect("no timeout configured");
+    if !status.success() {
+        return Err(format_process_failure(
+            "prepare container image",
+            status,
+            &output.stdout,
+            &output.stderr,
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn image_tag_for_manifest(manifest: &ReleaseManifest) -> Result<String, String> {
@@ -127,9 +186,12 @@ pub(crate) struct ContainerRunConfig<'a> {
     pub(crate) token: &'a str,
     pub(crate) secrets: &'a HashMap<String, String>,
     pub(crate) storages: &'a HashMap<String, StorageBinding>,
+    pub(crate) options: &'a ContainerOptions,
 }
 
-pub(crate) fn build_container_run_args(config: ContainerRunConfig<'_>) -> Vec<String> {
+pub(crate) fn build_container_run_args(
+    config: ContainerRunConfig<'_>,
+) -> Result<Vec<String>, String> {
     let ContainerRunConfig {
         name,
         image,
@@ -139,7 +201,13 @@ pub(crate) fn build_container_run_args(config: ContainerRunConfig<'_>) -> Vec<St
         token,
         secrets,
         storages,
+        options,
     } = config;
+    for key in &options.secret_env {
+        if !secrets.contains_key(key) {
+            return Err(format!("container secret '{key}' is not configured"));
+        }
+    }
 
     let mut args = vec![
         "run".to_string(),
@@ -148,12 +216,23 @@ pub(crate) fn build_container_run_args(config: ContainerRunConfig<'_>) -> Vec<St
         "--publish".to_string(),
         format!("127.0.0.1:{host_port}:{container_port}"),
     ];
-    for key in build_container_run_env(env, token, secrets, storages, container_port).keys() {
+    append_data_mount(&mut args, env, options)?;
+    args.extend(["--label".into(), "sh.tako.kind=http".into()]);
+    if let Some(source) = env.get(TAKO_APP_DATA_DIR_ENV) {
+        args.extend(["--label".into(), format!("sh.tako.data={source}")]);
+    }
+    for key in
+        build_container_run_env(env, token, secrets, storages, container_port, options).keys()
+    {
         args.push("--env".to_string());
         args.push(key.clone());
     }
+    if let Some(entrypoint) = &options.entrypoint {
+        args.extend(["--entrypoint".into(), entrypoint.clone()]);
+    }
     args.push(image.to_string());
-    args
+    args.extend(options.command.iter().cloned());
+    Ok(args)
 }
 
 pub(crate) fn build_container_workflow_run_args(
@@ -164,6 +243,7 @@ pub(crate) fn build_container_workflow_run_args(
     storages: &HashMap<String, StorageBinding>,
     run: &[String],
     internal_socket: &Path,
+    options: &ContainerOptions,
 ) -> Result<Vec<String>, String> {
     let Some((entrypoint, args_after_entrypoint)) = run.split_first() else {
         return Err("workflow run command cannot be empty".to_string());
@@ -179,7 +259,16 @@ pub(crate) fn build_container_workflow_run_args(
         "--entrypoint".to_string(),
         entrypoint.clone(),
     ];
-    for key in build_container_run_env(env, token, secrets, storages, DEFAULT_CONTAINER_PORT).keys()
+    append_data_mount(&mut args, env, options)?;
+    for key in build_container_run_env(
+        env,
+        token,
+        secrets,
+        storages,
+        DEFAULT_CONTAINER_PORT,
+        options,
+    )
+    .keys()
     {
         args.push("--env".to_string());
         args.push(key.clone());
@@ -195,18 +284,97 @@ pub(crate) fn build_container_run_env(
     secrets: &HashMap<String, String>,
     storages: &HashMap<String, StorageBinding>,
     container_port: u16,
+    options: &ContainerOptions,
 ) -> BTreeMap<String, String> {
     let mut merged = BTreeMap::new();
     for (key, value) in env {
         merged.insert(key.clone(), value.clone());
     }
+    if env.contains_key(TAKO_APP_DATA_DIR_ENV) {
+        merged.insert(TAKO_APP_DATA_DIR_ENV.to_string(), options.data_dir.clone());
+    }
     merged.insert("HOST".to_string(), "0.0.0.0".to_string());
     merged.insert("PORT".to_string(), container_port.to_string());
-    merged.insert(
-        TAKO_BOOTSTRAP_DATA_ENV.to_string(),
-        envelope_string(token, secrets, storages),
-    );
+    if options.sdk {
+        merged.insert(
+            TAKO_BOOTSTRAP_DATA_ENV.to_string(),
+            envelope_string(token, secrets, storages),
+        );
+    } else {
+        merged.remove(TAKO_BOOTSTRAP_DATA_ENV);
+        merged.remove("TAKO_INTERNAL_SOCKET");
+    }
+    for key in &options.secret_env {
+        if let Some(value) = secrets.get(key) {
+            merged.insert(key.clone(), value.clone());
+        }
+    }
     merged
+}
+
+fn append_data_mount(
+    args: &mut Vec<String>,
+    env: &HashMap<String, String>,
+    options: &ContainerOptions,
+) -> Result<(), String> {
+    options.validate()?;
+    if let Some(source) = env.get(TAKO_APP_DATA_DIR_ENV) {
+        if !Path::new(source).is_absolute() || source.chars().any(|c| c == ',' || c.is_control()) {
+            return Err("container data source must be an absolute path without commas or control characters".into());
+        }
+        args.extend([
+            "--mount".into(),
+            format!("type=bind,src={source},dst={}", options.data_dir),
+        ]);
+    }
+    if let Some(user) = &options.user {
+        args.extend([
+            "--userns".into(),
+            format!("keep-id:uid={},gid={}", user.uid, user.gid),
+            "--user".into(),
+            format!("{}:{}", user.uid, user.gid),
+        ]);
+    }
+    Ok(())
+}
+
+/// A server crash can leave the engine's containers running after the client
+/// exits. Reconcile only this server's app data path before restoring instances.
+pub(crate) async fn cleanup_app_containers(data_path: &str) -> Result<(), String> {
+    let engine = detect_container_engine()?;
+    let mut command = TokioCommand::new(engine.binary());
+    command
+        .args([
+            "ps",
+            "--all",
+            "--quiet",
+            "--filter",
+            "label=sh.tako.kind=http",
+            "--filter",
+        ])
+        .arg(format!("label=sh.tako.data={data_path}"))
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(std::time::Duration::from_secs(15), command.output())
+        .await
+        .map_err(|_| "timed out listing app containers".to_string())?
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err(format_process_failure(
+            "list app containers",
+            output.status,
+            &output.stdout,
+            &output.stderr,
+        ));
+    }
+    for id in String::from_utf8_lossy(&output.stdout).split_whitespace() {
+        if !id.bytes().all(|c| c.is_ascii_hexdigit()) {
+            return Err("container engine returned an invalid container ID".into());
+        }
+        remove_container(engine, id)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 fn sanitize_image_component(value: &str) -> String {
@@ -303,7 +471,9 @@ mod tests {
             app_dir: "apps/web".to_string(),
             install_dir: String::new(),
             container_file: Some("Dockerfile".to_string()),
-            container_port: Some(DEFAULT_CONTAINER_PORT),
+            container_image: None,
+            compose: None,
+            container_options: Default::default(),
         }
     }
 
@@ -343,7 +513,9 @@ mod tests {
             token: "tok",
             secrets: &secrets,
             storages: &storages,
-        });
+            options: &ContainerOptions::default(),
+        })
+        .unwrap();
 
         assert!(args.contains(&"127.0.0.1:49152:3000".to_string()));
         assert!(args.contains(&"ENV".to_string()));
@@ -368,6 +540,7 @@ mod tests {
             &HashMap::new(),
             &["./worker".to_string(), "video".to_string()],
             Path::new("/opt/tako/internal.sock"),
+            &ContainerOptions::default(),
         )
         .unwrap();
 
@@ -393,6 +566,7 @@ mod tests {
             &secrets,
             &HashMap::new(),
             DEFAULT_CONTAINER_PORT,
+            &ContainerOptions::default(),
         );
 
         assert_eq!(merged.get("ENV").map(String::as_str), Some("production"));
@@ -404,5 +578,93 @@ mod tests {
             serde_json::from_str(merged.get(TAKO_BOOTSTRAP_DATA_ENV).unwrap()).unwrap();
         assert_eq!(bootstrap["token"], "tok");
         assert_eq!(bootstrap["secrets"]["API_KEY"], "secret");
+    }
+    #[test]
+    fn data_mount_preserves_host_identity_and_translates_container_path() {
+        let env = HashMap::from([(
+            TAKO_APP_DATA_DIR_ENV.into(),
+            "/srv/tako/apps/demo/production/data/app".into(),
+        )]);
+        let options = ContainerOptions {
+            data_dir: "/data".into(),
+            user: Some(tako_core::container::ContainerUser {
+                uid: 1000,
+                gid: 1001,
+            }),
+            ..Default::default()
+        };
+        let args = build_container_run_args(ContainerRunConfig {
+            name: "test",
+            image: "test:v1",
+            host_port: 40000,
+            container_port: 3000,
+            env: &env,
+            token: "token",
+            secrets: &HashMap::new(),
+            storages: &HashMap::new(),
+            options: &options,
+        })
+        .unwrap();
+        assert!(
+            args.contains(
+                &"type=bind,src=/srv/tako/apps/demo/production/data/app,dst=/data".into()
+            )
+        );
+        assert!(args.contains(&"keep-id:uid=1000,gid=1001".into()));
+        assert!(!args.contains(&"--rm".into()));
+        let runtime = build_container_run_env(
+            &env,
+            "token",
+            &HashMap::new(),
+            &HashMap::new(),
+            3000,
+            &options,
+        );
+        assert_eq!(runtime[TAKO_APP_DATA_DIR_ENV], "/data");
+    }
+
+    #[test]
+    fn plain_images_receive_only_selected_secrets_without_sdk_token() {
+        let env = HashMap::new();
+        let secrets = HashMap::from([
+            ("DATABASE_URL".into(), "private-db".into()),
+            ("OTHER_KEY".into(), "private-other".into()),
+        ]);
+        let options = ContainerOptions {
+            sdk: false,
+            port: 8080,
+            health_path: "/health".into(),
+            secret_env: vec!["DATABASE_URL".into()],
+            ..Default::default()
+        };
+        let runtime = build_container_run_env(
+            &env,
+            "internal-token",
+            &secrets,
+            &HashMap::new(),
+            8080,
+            &options,
+        );
+        assert_eq!(runtime["DATABASE_URL"], "private-db");
+        assert!(!runtime.contains_key("OTHER_KEY"));
+        assert!(!runtime.contains_key(TAKO_BOOTSTRAP_DATA_ENV));
+        let args = build_container_run_args(ContainerRunConfig {
+            name: "plain",
+            image: "plain:v1",
+            host_port: 40000,
+            container_port: 8080,
+            env: &env,
+            token: "internal-token",
+            secrets: &secrets,
+            storages: &HashMap::new(),
+            options: &options,
+        })
+        .unwrap();
+        assert!(args.contains(&"DATABASE_URL".into()));
+        assert!(
+            !args
+                .iter()
+                .any(|arg| arg.contains("private-db") || arg.contains("internal-token"))
+        );
     }
 }

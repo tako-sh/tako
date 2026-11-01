@@ -48,7 +48,11 @@ pub(super) struct DeployArchiveManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) container_file: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) container_port: Option<u16>,
+    pub(super) container_image: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) compose: Option<tako_core::compose::ComposeConfig>,
+    #[serde(default)]
+    pub(super) container_options: tako_core::container::ContainerOptions,
 }
 
 fn default_workflow_retention_ms() -> Option<i64> {
@@ -62,6 +66,7 @@ pub(super) enum DeployReleaseKind {
     #[default]
     Native,
     Container,
+    Compose,
 }
 
 impl DeployReleaseKind {
@@ -269,7 +274,9 @@ pub(super) fn build_deploy_archive_manifest(
         app_dir,
         install_dir,
         container_file: None,
-        container_port: None,
+        container_image: None,
+        compose: None,
+        container_options: Default::default(),
     }
 }
 
@@ -323,7 +330,9 @@ pub(super) fn build_container_deploy_archive_manifest(
         app_dir,
         install_dir: String::new(),
         container_file: Some(container_file.to_string()),
-        container_port: Some(3000),
+        container_image: None,
+        compose: None,
+        container_options: Default::default(),
     }
 }
 
@@ -501,7 +510,7 @@ mod tests {
         assert_eq!(manifest.runtime, "container");
         assert_eq!(manifest.main, "");
         assert_eq!(manifest.container_file.as_deref(), Some("Dockerfile"));
-        assert_eq!(manifest.container_port, Some(3000));
+        assert_eq!(manifest.container_options.port, 3000);
         assert_eq!(manifest.app_dir, "apps/web");
         assert_eq!(
             manifest.workflow_retention_ms,

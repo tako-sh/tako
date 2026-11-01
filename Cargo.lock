@@ -5828,6 +5828,7 @@ dependencies = [
  "ssh-key 0.6.7",
  "sysinfo",
  "tako-channels",
+ "tako-compose",
  "tako-core",
  "tako-images",
  "tako-runtime",
@@ -5848,6 +5849,20 @@ dependencies = [
  "unicode-width",
  "x509-parser",
  "zstd 0.14.0",
+]
+
+[[package]]
+name = "tako-compose"
+version = "0.0.0"
+dependencies = [
+ "hex",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tako-core",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -5934,6 +5949,7 @@ dependencies = [
  "socket2",
  "ssh-key 0.6.7",
  "tako-channels",
+ "tako-compose",
  "tako-core",
  "tako-images",
  "tako-runtime",

@@ -88,6 +88,8 @@ pub enum Command {
     PrepareRelease {
         app: String,
         path: String,
+        /// This deployment's secrets, used for preparation without persisting them.
+        secrets: HashMap<String, String>,
         #[serde(default)]
         force: bool,
     },
@@ -626,6 +628,10 @@ impl Response {
 /// App status information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppStatus {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub services: Vec<ComposeServiceStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub services_error: Option<String>,
     pub name: String,
     pub version: String,
     pub instances: Vec<InstanceStatus>,
@@ -633,6 +639,14 @@ pub struct AppStatus {
     pub state: AppState,
 
     pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComposeServiceStatus {
+    pub service: String,
+    pub state: String,
+    pub health: String,
+    pub exit_code: i64,
 }
 
 /// Runtime status for a specific build/version of an app.

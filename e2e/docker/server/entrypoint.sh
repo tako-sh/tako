@@ -1,6 +1,12 @@
 #!/bin/sh
 set -eu
 
+# DNF does not use SSL_CERT_FILE. Configure the mounted session trust for this
+# disposable host as well as curl/Node, including installer subprocesses.
+if [ -n "${SSL_CERT_FILE:-}" ] && [ -s "$SSL_CERT_FILE" ] && [ -f /etc/dnf/dnf.conf ]; then
+  printf '\nsslcacert=%s\n' "$SSL_CERT_FILE" >> /etc/dnf/dnf.conf
+fi
+
 # Compose gives each server its own cgroup namespace. Never mount the host's
 # cgroup tree: this only delegates the disposable container's subtree.
 test "$(cat /proc/1/cgroup)" = "0::/"
@@ -15,6 +21,32 @@ fi
 if ! id -u tako >/dev/null 2>&1; then
   useradd --system --create-home --home-dir /home/tako --shell /bin/bash --gid tako tako
 fi
+
+# SSH starts with a fresh environment. Preserve the test host's proxy and CA
+# settings for the service it launches, including Compose's registry client.
+python3 - <<'PY'
+import os
+import shlex
+with open('/run/tako-e2e-env', 'w') as output:
+    for name in ('HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'no_proxy',
+                 'SSL_CERT_FILE', 'CURL_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS'):
+        if name in os.environ:
+            output.write(f'export {name}={shlex.quote(os.environ[name])}\n')
+PY
+chown tako:tako /run/tako-e2e-env
+chmod 0600 /run/tako-e2e-env
+
+# A separate Docker daemon exercises Compose against this host's real release
+# paths. Its socket and storage stay inside the disposable server container.
+dockerd --storage-driver=vfs --host=unix:///var/run/docker.sock > /tmp/docker.log 2>&1 &
+ready=0
+for attempt in $(seq 1 60); do
+  if docker info >/dev/null 2>&1; then ready=1; break; fi
+  sleep 1
+done
+if [ "$ready" != 1 ]; then cat /tmp/docker.log >&2; exit 1; fi
+chgrp tako /var/run/docker.sock
+chmod 0660 /var/run/docker.sock
 
 if command -v chpasswd >/dev/null 2>&1; then
   echo "tako:tako-e2e" | chpasswd

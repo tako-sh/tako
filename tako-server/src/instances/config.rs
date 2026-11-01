@@ -19,6 +19,8 @@ pub struct AppConfig {
     pub command: Vec<String>,
     /// How instances for this release are launched.
     pub launch: AppLaunch,
+    pub container_options: tako_core::container::ContainerOptions,
+    pub compose: Option<tako_core::compose::ComposeConfig>,
     /// Non-secret environment variables (read from app.json in release dir)
     pub env_vars: HashMap<String, String>,
     /// Secret environment variables (loaded from encrypted server state)
@@ -46,6 +48,7 @@ pub struct AppConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppLaunch {
     Native,
+    Compose,
     Container { image: String, port: u16 },
 }
 
@@ -77,6 +80,8 @@ impl Default for AppConfig {
             path: PathBuf::new(),
             command: vec![],
             launch: AppLaunch::Native,
+            container_options: Default::default(),
+            compose: None,
             env_vars: HashMap::new(),
             secrets: HashMap::new(),
             storages: HashMap::new(),

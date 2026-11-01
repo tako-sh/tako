@@ -8,6 +8,8 @@ use std::time::Duration;
 impl crate::ServerState {
     pub(crate) async fn stop_app(&self, app_name: &str) -> Response {
         tracing::info!(app = app_name, "Stopping app");
+        let lock = self.get_deploy_lock(app_name).await;
+        let _guard = lock.lock().await;
 
         // Drain workflow worker first so in-flight tasks get a chance to
         // finish before HTTP instances are torn down. 120s hard cap.
@@ -26,6 +28,8 @@ impl crate::ServerState {
 
     pub(crate) async fn scale_app(&self, app_name: &str, requested_instances: u8) -> Response {
         tracing::info!(app = app_name, requested_instances, "Scaling app");
+        let lock = self.get_deploy_lock(app_name).await;
+        let _guard = lock.lock().await;
 
         let app = match self.app_manager.get_app(app_name) {
             Some(app) => app,
@@ -33,6 +37,11 @@ impl crate::ServerState {
         };
 
         let previous_config = app.config.read().clone();
+        if previous_config.compose.is_some() && requested_instances != 1 {
+            return Response::error(
+                "Compose projects run as one stack; use stop to stop the stack and define service replicas in compose.yaml",
+            );
+        }
         let effective_instances = if self.runtime.standby {
             requested_instances.min(1)
         } else {

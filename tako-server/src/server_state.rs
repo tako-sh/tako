@@ -524,6 +524,10 @@ impl ServerState {
                 return;
             }
         };
+        if manifest.release_kind == crate::app_command::ReleaseKind::Compose {
+            self.workflows.retire(app_name).await;
+            return;
+        }
         let data_paths = match ensure_app_runtime_data_dirs(&self.runtime.data_dir, app_name) {
             Ok(paths) => paths,
             Err(error) => {
@@ -579,17 +583,19 @@ impl ServerState {
                     &secrets,
                     &storages,
                     crate::container_runtime::DEFAULT_CONTAINER_PORT,
+                    &manifest.container_options,
                 )
                 .into_iter()
                 .collect();
                 let args = match build_container_workflow_run_args(
                     &image,
-                    &container_env,
+                    &worker_env,
                     &token,
                     &secrets,
                     &storages,
                     run,
                     &internal_socket,
+                    &manifest.container_options,
                 ) {
                     Ok(args) => args,
                     Err(error) => {
@@ -724,6 +730,37 @@ impl ServerState {
 
     pub async fn restore_from_state_store(&self) -> Result<(), StateStoreError> {
         let apps = self.state_store.load_apps()?;
+        for (app, project) in self.state_store.pending_compose_deployments()? {
+            let existing = apps
+                .iter()
+                .find(|persisted| persisted.config.deployment_id() == app);
+            let was_compose = if let Some(persisted) = existing {
+                let mut config = persisted.config.clone();
+                let release_path = release_app_path(&self.runtime.data_dir, &config);
+                if let Err(error) = apply_release_runtime_to_config(&mut config, release_path, None)
+                {
+                    // Missing/corrupt release metadata cannot establish who
+                    // owns these containers. Leave them and the recovery marker
+                    // intact so a running committed release is not destroyed.
+                    tracing::error!(%app, %error, "Cannot determine interrupted Compose deployment ownership");
+                    continue;
+                }
+                config.compose.is_some()
+            } else {
+                false
+            };
+            // Existing Compose apps reconcile the committed release below.
+            // Interrupted first deployments (or native -> Compose transitions)
+            // have no committed Compose owner and must leave no live candidates.
+            if !was_compose {
+                match tako_compose::cleanup_pending_project(&project).await {
+                    Ok(()) => self.state_store.clear_compose_deployment(&app)?,
+                    Err(error) => {
+                        tracing::error!(%app, %error, "Could not clean interrupted Compose deployment")
+                    }
+                }
+            }
+        }
         if apps.is_empty() {
             return Ok(());
         }
@@ -769,6 +806,15 @@ impl ServerState {
                 tracing::warn!(app = %app_name, "Failed to read secrets: {}", e);
                 HashMap::new()
             });
+            if matches!(config.launch, crate::instances::AppLaunch::Container { .. }) {
+                if let Some(path) = config.env_vars.get(crate::release::TAKO_APP_DATA_DIR_ENV) {
+                    if let Err(error) = crate::container_runtime::cleanup_app_containers(path).await
+                    {
+                        tracing::error!(app = %app_name, %error, "Failed to reconcile app containers");
+                        continue;
+                    }
+                }
+            }
             config.storages = self
                 .state_store
                 .get_storages(&app_name)
@@ -801,6 +847,18 @@ impl ServerState {
                 match self.app_manager.start_app(&app_name).await {
                     Ok(()) => {
                         app.set_state(AppState::Running);
+                        if config.compose.is_some() {
+                            // The process or deploy client can disappear after
+                            // the database commit but before CLI finalization.
+                            // Repair the derived current link from that commit.
+                            if let Err(error) = self
+                                .finalize_release_inner(&app_name, &config.version)
+                                .await
+                            {
+                                tracing::warn!(app = %app_name, %error, "Could not finalize restored Compose release");
+                            }
+                            self.state_store.clear_compose_deployment(&app_name)?;
+                        }
                         tracing::info!(app = %app_name, "Restored and started app");
                     }
                     Err(e) => {

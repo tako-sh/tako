@@ -49,6 +49,7 @@ impl SqliteStateStore {
             "app_storages",
             "app_ssl",
             "app_backups",
+            "app_compose_pending",
         ] {
             conn.execute(
                 &format!("DELETE FROM {table} WHERE app = ?1;"),
@@ -114,7 +115,7 @@ impl SqliteStateStore {
     }
 }
 
-fn upsert_app_on(
+pub(super) fn upsert_app_on(
     conn: &rusqlite::Connection,
     config: &AppConfig,
     routes: &[String],

@@ -478,3 +478,45 @@ async fn test_three_probe_failures_trigger_dead() {
 
     let _ = instance.kill().await;
 }
+
+#[test]
+fn plain_health_accepts_redirects_while_sdk_health_requires_success_and_token() {
+    let redirect = "HTTP/1.1 302 Found\r\nLocation: /login\r\n\r\n";
+    assert!(http_response_is_success(redirect, None).is_ok());
+    assert!(http_response_is_success(redirect, Some("private-token")).is_err());
+    assert!(http_response_is_success("HTTP/1.1 500 Error\r\n\r\n", None).is_err());
+}
+
+#[tokio::test]
+async fn health_probe_keeps_the_instances_original_path_during_rollout() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, _rx) = mpsc::channel(4);
+    let app = App::new(AppConfig::default(), tx, noop_log_handle());
+    let instance = app.allocate_instance();
+    instance.set_port(port);
+    instance.set_sdk_health(false);
+    instance.set_health_probe("old.example.com".into(), "/old-health".into());
+    let server = tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut buffer = [0; 2048];
+        let count = socket.read(&mut buffer).await.unwrap();
+        let request = String::from_utf8_lossy(&buffer[..count]);
+        assert!(request.starts_with("GET /old-health HTTP/1.1\r\n"));
+        assert!(request.contains("Host: old.example.com\r\n"));
+        socket
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+            .await
+            .unwrap();
+    });
+    probe_instance_health(
+        &instance,
+        "new.example.com",
+        "/new-health",
+        Duration::from_secs(1),
+    )
+    .await
+    .unwrap();
+    server.await.unwrap();
+}

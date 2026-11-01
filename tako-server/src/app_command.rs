@@ -75,7 +75,11 @@ pub(crate) struct ReleaseManifest {
     #[serde(default)]
     pub container_file: Option<String>,
     #[serde(default)]
-    pub container_port: Option<u16>,
+    pub container_image: Option<String>,
+    #[serde(default)]
+    pub compose: Option<tako_core::compose::ComposeConfig>,
+    #[serde(default)]
+    pub container_options: tako_core::container::ContainerOptions,
 }
 
 fn default_workflow_retention_ms() -> Option<i64> {
@@ -88,6 +92,7 @@ pub(crate) enum ReleaseKind {
     #[default]
     Native,
     Container,
+    Compose,
 }
 
 pub(crate) fn load_release_manifest(release_dir: &Path) -> Result<ReleaseManifest, String> {
@@ -127,7 +132,7 @@ pub(crate) fn command_from_manifest(
     runtime_bin: Option<&str>,
 ) -> Result<Vec<String>, String> {
     let manifest_path = release_dir.join("app.json");
-    if manifest.release_kind == ReleaseKind::Container {
+    if manifest.release_kind != ReleaseKind::Native {
         return Err(format!(
             "deploy manifest {} is a container release, not a native release",
             manifest_path.display()
@@ -525,7 +530,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         std::fs::write(
             dir.path().join("app.json"),
-            r#"{"protocol_version":0,"release_kind":"container","app_name":"my-app","environment":"production","version":"v1","runtime":"container","main":"","idle_timeout":300,"container_file":"Dockerfile","container_port":3000}"#,
+            r#"{"protocol_version":0,"release_kind":"container","app_name":"my-app","environment":"production","version":"v1","runtime":"container","main":"","idle_timeout":300,"container_file":"Dockerfile","container_options":{"port":3000}}"#,
         )
         .unwrap();
 
@@ -535,13 +540,13 @@ mod tests {
         assert_eq!(manifest.environment, "production");
         assert_eq!(manifest.version, "v1");
         assert_eq!(manifest.container_file.as_deref(), Some("Dockerfile"));
-        assert_eq!(manifest.container_port, Some(3000));
+        assert_eq!(manifest.container_options.port, 3000);
     }
 
     #[test]
     fn container_release_manifest_deserializes_workflow_run() {
         let manifest: ReleaseManifest = serde_json::from_str(
-            r#"{"protocol_version":0,"release_kind":"container","app_name":"my-app","environment":"production","version":"v1","runtime":"container","main":"","workflow_run":["./worker","video"],"idle_timeout":300,"container_file":"Dockerfile","container_port":3000}"#,
+            r#"{"protocol_version":0,"release_kind":"container","app_name":"my-app","environment":"production","version":"v1","runtime":"container","main":"","workflow_run":["./worker","video"],"idle_timeout":300,"container_file":"Dockerfile","container_options":{"port":3000}}"#,
         )
         .unwrap();
 

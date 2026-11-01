@@ -277,7 +277,9 @@ pub(super) fn spawn_container_process_with_engine(
         token: instance.internal_token(),
         secrets,
         storages: &config.storages,
-    });
+        options: &config.container_options,
+    })
+    .map_err(std::io::Error::other)?;
     let mut child_cmd = Command::new(engine.binary());
     child_cmd
         .args(args)
@@ -297,8 +299,11 @@ pub(super) fn spawn_container_process_with_engine(
         secrets,
         &config.storages,
         container_port,
+        &config.container_options,
     ) {
         child_cmd.env(key, value);
     }
-    child_cmd.spawn()
+    let child = child_cmd.spawn()?;
+    instance.set_container(engine, name);
+    Ok(child)
 }

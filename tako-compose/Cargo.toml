@@ -1,0 +1,15 @@
+[package]
+name = "tako-compose"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+[dependencies]
+tako-core = { path = "../tako-core" }
+tokio.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+sha2 = "0.11"
+hex = "0.4"
+libc = "0.2"
+tempfile = "3"

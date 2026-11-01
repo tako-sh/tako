@@ -41,7 +41,13 @@ App names are DNS-compatible. They use lowercase letters, numbers, and hyphens, 
 | `container`       | string | Container file path for container releases.                                                                                  |
 | `release`         | string | One-shot command run on the leader server before rolling update.                                                             |
 
-When `container` is set, native release fields are invalid: `main`, `start`, `assets`, `[build]`, and `[[build_stages]]`. `tako dev` still uses a CLI command override, the dev command, or runtime/preset dev defaults and does not build the container file locally.
+`image = "registry/name:tag"` selects a prebuilt container image. `container`, `image`, and `[compose]` are mutually exclusive.
+
+`[container_options]` supports `port` (default 3000), `sdk` (default true), `health_path` (default `/status`), optional `health_host` for plain images, `data_dir` (default `/tako/data`), optional `user = { uid = 1000, gid = 1000 }`, `secret_env = ["DATABASE_URL"]`, `command = ["arg"]`, and `entrypoint = "/program"`. Paths must be absolute, non-root paths without parent traversal. Options require `container` or `image`. See [Container releases](/docker/).
+
+`[compose]` requires `file`, `service`, and `port`; `health_path` defaults to `/`, and optional `health_host` sets the HTTP Host header. The Compose file must be inside the app directory. Each environment must target one server. See [Docker Compose](/docker-compose/) for networking, volumes, and update behavior.
+
+When `container`, `image`, or `[compose]` is set, native release fields are invalid: `main`, `start`, `assets`, `[build]`, and `[[build_stages]]`. For `container` and `image`, `tako dev` uses a CLI command override, the dev command, or runtime/preset dev defaults. For `[compose]`, `tako dev` builds and starts the Compose stack; configure commands and source mounts in Compose instead of a native dev command.
 
 `start` is for native artifacts such as compiled binaries. An exact `{main}` argument is replaced with the resolved entrypoint. The process must still use a Tako SDK listener so fd 3 bootstrap, fd 4 readiness, secrets, storage bindings, and health checks work.
 

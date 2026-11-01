@@ -42,4 +42,5 @@ e2e fixture="":
         for fixture in $(find e2e/fixtures -mindepth 3 -maxdepth 3 -type f -name tako.toml -exec dirname {} \; | sort); do
             ./e2e/run.sh "$fixture"
         done
+        ./e2e/run.sh examples/compose/bun-redis
     fi

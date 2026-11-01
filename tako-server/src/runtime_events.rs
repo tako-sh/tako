@@ -123,6 +123,19 @@ async fn replace_instance_if_needed(
         }
     };
 
+    // A rollout owns every Compose container mutation for this app. Health
+    // events may observe intentional stop-first transitions; never race them
+    // with an independent reconciliation or orphan cleanup.
+    let lock = state.get_deploy_lock(app_name).await;
+    let _compose_guard = if app.config.read().compose.is_some() {
+        match lock.try_lock() {
+            Ok(guard) => Some(guard),
+            Err(_) => return,
+        }
+    } else {
+        None
+    };
+
     let instance = match app.get_instance(instance_id) {
         Some(inst) => inst,
         None => {

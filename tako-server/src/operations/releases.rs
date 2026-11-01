@@ -62,6 +62,7 @@ impl crate::ServerState {
         &self,
         app_name: &str,
         path: &str,
+        secrets: HashMap<String, String>,
         force: bool,
     ) -> Response {
         let release_path =
@@ -80,10 +81,6 @@ impl crate::ServerState {
             Err(error) => return Response::error(format!("Invalid app release: {}", error)),
         };
 
-        let secrets = match self.state_store.get_secrets(app_name) {
-            Ok(secrets) => secrets,
-            Err(error) => return Response::error(format!("Failed to read secrets: {error}")),
-        };
         let mut release_env = env_vars;
         release_env.extend(secrets);
         let data_paths = match ensure_app_runtime_data_dirs(&self.runtime.data_dir, app_name) {
@@ -332,20 +329,31 @@ impl crate::ServerState {
             .unwrap_or_default();
 
         let target_path = target_path.to_string_lossy();
-        self.deploy_app(super::deploy::DeployRequest {
-            app_name,
-            version,
-            path: &target_path,
-            routes,
-            source_ip,
-            secrets: None,
-            runtime_credentials: None,
-            storages: None,
-            ssl,
-            backup: None,
-            force: false,
-        })
-        .await
+        let response = self
+            .deploy_app(super::deploy::DeployRequest {
+                app_name,
+                version,
+                path: &target_path,
+                routes,
+                source_ip,
+                secrets: None,
+                runtime_credentials: None,
+                storages: None,
+                ssl,
+                backup: None,
+                force: false,
+            })
+            .await;
+        if matches!(response, Response::Ok { .. }) {
+            // Rollback runs directly through this RPC rather than the CLI's
+            // deploy pipeline, which normally finalizes the release marker.
+            if let Err(error) = self.finalize_release_inner(app_name, version).await {
+                return Response::error(format!(
+                    "Rollback activated '{version}', but release finalization failed: {error}"
+                ));
+            }
+        }
+        response
     }
 }
 

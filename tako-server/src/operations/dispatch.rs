@@ -33,11 +33,11 @@ impl crate::ServerState {
 
                 Response::ok(data)
             }
-            Command::PrepareRelease { app, path, force } => {
+            Command::PrepareRelease { app, path, secrets, force } => {
                 if let Err(msg) = validate_app_name(&app) {
                     return Response::error(msg);
                 }
-                self.prepare_release(&app, &path, force).await
+                self.prepare_release(&app, &path, secrets, force).await
             }
             Command::PrepareReleaseUpload { app, version } => {
                 if let Err(msg) = validate_app_name(&app) {

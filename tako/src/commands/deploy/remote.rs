@@ -265,6 +265,7 @@ async fn prepare_release(
         .send(&Command::PrepareRelease {
             app: config.app_name.clone(),
             path: release_dir.to_string(),
+            secrets: config.secrets.clone(),
             force: config.force,
         })
         .await?;

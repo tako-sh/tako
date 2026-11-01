@@ -57,6 +57,48 @@ impl TakoToml {
                 ));
             }
         }
+        if let Some(compose) = &self.compose {
+            compose.validate().map_err(ConfigError::Validation)?;
+            if self.container.is_some()
+                || self.image.is_some()
+                || self.container_options != Default::default()
+            {
+                return Err(ConfigError::Validation(
+                    "compose cannot be combined with container, image, or container_options".into(),
+                ));
+            }
+            validate_container_release_config(self)?;
+            if self.workflows.base.run.is_some() || !self.workflows.groups.is_empty() {
+                return Err(ConfigError::Validation(
+                    "Compose workers belong in compose.yaml".into(),
+                ));
+            }
+            for env in self.envs.values() {
+                if env.servers.len() > 1 {
+                    return Err(ConfigError::Validation(
+                        "Compose deployments require exactly one target server".into(),
+                    ));
+                }
+            }
+        }
+        if let Some(image) = &self.image {
+            if self.container.is_some()
+                || image.is_empty()
+                || image.starts_with('-')
+                || image.chars().any(char::is_whitespace)
+            {
+                return Err(ConfigError::Validation("image must be a nonempty image reference and cannot be combined with container".into()));
+            }
+            validate_container_release_config(self)?;
+        }
+        if self.container.is_none()
+            && self.image.is_none()
+            && self.container_options != Default::default()
+        {
+            return Err(ConfigError::Validation(
+                "container_options requires container or image".into(),
+            ));
+        }
         if let Some(container) = &self.container {
             validate_relative_file(container, "container")?;
             validate_container_release_config(self)?;
@@ -296,6 +338,9 @@ pub(super) fn validate_top_level_keys(raw: &toml::Value) -> Result<()> {
             "name"
                 | "runtime"
                 | "container"
+                | "image"
+                | "compose"
+                | "container_options"
                 | "package_manager"
                 | "preset"
                 | "dev"
@@ -375,6 +420,10 @@ fn validate_relative_file(value: &str, field: &str) -> Result<()> {
 }
 
 fn validate_container_release_config(config: &TakoToml) -> Result<()> {
+    config
+        .container_options
+        .validate()
+        .map_err(ConfigError::Validation)?;
     if config
         .main
         .as_deref()

@@ -1,0 +1,46 @@
+services:
+  web:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD-SHELL, "wget -q -O /dev/null http://127.0.0.1:8080/"]
+      interval: 1s
+      timeout: 2s
+      retries: 3
+  db:
+    image: docker.io/library/postgres:17-alpine
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD}
+    volumes:
+      - database:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U app"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+  redis:
+    image: docker.io/library/redis:7-alpine
+    command: [redis-server, --appendonly, "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+  worker:
+    image: docker.io/library/redis:7-alpine
+    tmpfs: [/data]
+    depends_on:
+      redis:
+        condition: service_healthy
+    entrypoint: [sh, -c]
+    command: ["while true; do redis-cli -h redis INCR jobs >/dev/null; sleep 1; done"]
+volumes:
+  database:
+  redis-data:

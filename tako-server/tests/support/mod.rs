@@ -139,7 +139,13 @@ impl TestServer {
         let http_port = pick_port();
         let tls_port = pick_port();
 
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_tako-server"));
+        let mut cmd = if let Some(wrapper) = std::env::var_os("TAKO_TEST_SERVER_WRAPPER") {
+            let mut cmd = Command::new(wrapper);
+            cmd.arg(env!("CARGO_BIN_EXE_tako-server"));
+            cmd
+        } else {
+            Command::new(env!("CARGO_BIN_EXE_tako-server"))
+        };
         cmd.args([
             "--socket",
             socket_path.to_string_lossy().as_ref(),
@@ -195,6 +201,44 @@ impl TestServer {
     }
 
     pub fn send_command(&self, cmd: &serde_json::Value) -> serde_json::Value {
+        // The installed-host wrapper runs the service as `tako`. Fixtures are
+        // created by the root test runner, so reproduce the ownership of a real
+        // SSH upload before asking the service to provision a new release.
+        if std::env::var_os("TAKO_TEST_SERVER_WRAPPER").is_some()
+            && cmd["command"] == "deploy"
+            && let Some(path) = cmd["path"].as_str()
+        {
+            use std::os::unix::fs::MetadataExt;
+            let path = Path::new(path).canonicalize().unwrap();
+            let data_root = self.data_dir.path().canonicalize().unwrap();
+            assert!(path.starts_with(&data_root));
+            let owner = fs::metadata(self.data_dir.path()).unwrap();
+            let identity = format!("{}:{}", owner.uid(), owner.gid());
+            assert!(
+                Command::new("chown")
+                    .args(["-R", &identity])
+                    .arg(&path)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            for parent in path
+                .ancestors()
+                .skip(1)
+                .take_while(|parent| *parent != data_root)
+            {
+                if fs::metadata(parent).unwrap().uid() == 0 {
+                    assert!(
+                        Command::new("chown")
+                            .arg(&identity)
+                            .arg(parent)
+                            .status()
+                            .unwrap()
+                            .success()
+                    );
+                }
+            }
+        }
         let mut stream = UnixStream::connect(&self.socket_path).expect("connect unix socket");
         stream
             .set_read_timeout(Some(Duration::from_secs(120)))
@@ -229,6 +273,7 @@ impl TestServer {
 
         test_http_runtime().block_on(async move {
             let client = match reqwest::Client::builder()
+                .no_proxy()
                 // CodeQL[rust/disabled-certificate-check]: test-only client resolves the fixture certificate host to loopback.
                 .danger_accept_invalid_certs(true)
                 .resolve(host, resolve)
@@ -258,6 +303,7 @@ impl TestServer {
 
         test_http_runtime().block_on(async move {
             let client = reqwest::Client::builder()
+                .no_proxy()
                 // CodeQL[rust/disabled-certificate-check]: test-only client resolves the fixture certificate host to loopback.
                 .danger_accept_invalid_certs(true)
                 .resolve(host, resolve)

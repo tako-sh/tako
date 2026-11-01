@@ -158,6 +158,20 @@ fn format_app_lines(apps: &[super::GlobalAppStatusResult]) -> Vec<String> {
             app_name = app.app_name.as_str(),
             details = segments.join("  "),
         ));
+        if let Some(status) = &app.status.app_status {
+            for service in &status.services {
+                lines.push(format!(
+                    "{}{}  {}  {}",
+                    output::INDENT.repeat(3),
+                    service.service,
+                    service.state,
+                    service.health
+                ));
+            }
+            if let Some(error) = &status.services_error {
+                lines.push(format!("{}Services  {}", output::INDENT.repeat(3), error));
+            }
+        }
     }
 
     lines
@@ -231,6 +245,8 @@ mod tests {
                     service_status: "active".to_string(),
                     server_version: Some("0.1.0".to_string()),
                     app_status: Some(AppStatus {
+                        services: Vec::new(),
+                        services_error: None,
                         name: "web".to_string(),
                         version: "abc123".to_string(),
                         instances: vec![InstanceStatus {

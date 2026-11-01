@@ -17,6 +17,7 @@ fn kill_all_app_processes_sends_sigterm_to_tracked_pids() {
         s.apps.insert(
             "/proj/tako.toml".to_string(),
             state::RuntimeApp {
+                compose: None,
                 project_dir: "/proj".to_string(),
                 name: "my-app".to_string(),
                 variant: None,

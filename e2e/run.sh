@@ -8,37 +8,86 @@ PROJECT_NAME="tako-e2e"
 E2E_BIN_DIR="${E2E_BIN_DIR:-$REPO_ROOT/.e2e-bin}"
 E2E_BIN_STAMP_FILE="$E2E_BIN_DIR/.build-stamp"
 GLIBC_BUILDER_IMAGE="tako-e2e-builder-glibc"
+# CI or constrained local engines can reuse already-built test artifacts.
+E2E_USE_PREBUILT="${E2E_USE_PREBUILT:-0}"
+COMPOSE=(docker compose -p "$PROJECT_NAME" -f "$COMPOSE_FILE")
+BUILD_TRUST=()
+RUN_TRUST=()
+TRUST_OVERRIDE=""
+CACHE_OVERRIDE=""
+export E2E_PROXY_CA="${E2E_PROXY_CA:-${CODEX_PROXY_CERT:-}}"
+if [[ -n "$E2E_PROXY_CA" ]]; then
+  test -s "$E2E_PROXY_CA"
+  BUILD_TRUST=(--secret "id=proxy_ca,src=$E2E_PROXY_CA")
+  RUN_TRUST=(--mount "type=bind,src=$E2E_PROXY_CA,dst=/run/e2e-proxy-ca.pem,readonly" --env CARGO_HTTP_CAINFO=/run/e2e-proxy-ca.pem)
+  TRUST_OVERRIDE=$(mktemp)
+  cat > "$TRUST_OVERRIDE" <<'YAML'
+services:
+  server-ubuntu: &trusted
+    build:
+      secrets: [proxy_ca]
+    volumes:
+      - ${E2E_PROXY_CA}:/run/e2e-proxy-ca.pem:ro
+    environment:
+      SSL_CERT_FILE: /run/e2e-proxy-ca.pem
+      CURL_CA_BUNDLE: /run/e2e-proxy-ca.pem
+      NODE_EXTRA_CA_CERTS: /run/e2e-proxy-ca.pem
+  server-alma: *trusted
+  runner: *trusted
+secrets:
+  proxy_ca:
+    file: ${E2E_PROXY_CA}
+YAML
+  COMPOSE+=(-f "$TRUST_OVERRIDE")
+fi
+if [[ -n "${E2E_BUN_CACHE_DIR:-}" ]]; then
+  export E2E_BUN_CACHE_DIR
+  test -d "$E2E_BUN_CACHE_DIR"
+  CACHE_OVERRIDE=$(mktemp)
+  cat > "$CACHE_OVERRIDE" <<'YAML'
+services:
+  runner:
+    environment:
+      BUN_INSTALL_CACHE_DIR: /opt/e2e/bun-cache
+    volumes:
+      - ${E2E_BUN_CACHE_DIR}:/opt/e2e/bun-cache
+YAML
+  COMPOSE+=(-f "$CACHE_OVERRIDE")
+fi
 
 current_e2e_build_stamp() {
-  local head arch dirty_suffix
+  local arch inputs_hash
   local -a binary_inputs=(
-    Cargo.lock
-    Cargo.toml
-    e2e/run.sh
-    tako
-    tako-channels
-    tako-core
-    tako-runtime
-    tako-server
-    tako-socket
-    tako-spawn
-    tako-workflows
+    Cargo.lock Cargo.toml e2e/run.sh e2e/docker/builder
+    tako tako-channels tako-compose tako-core tako-images tako-runtime
+    tako-server tako-socket tako-spawn tako-sqlite tako-workflows vendor
+    scripts/install-tako-server.sh website/docs sdk/javascript/skills
   )
   arch=$(uname -m)
-  head=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo "nogit")
-  dirty_suffix=""
-  if ! git -C "$REPO_ROOT" diff --quiet --ignore-submodules HEAD -- "${binary_inputs[@]}"; then
-    dirty_suffix="-dirty-$(git -C "$REPO_ROOT" diff --binary --ignore-submodules HEAD -- "${binary_inputs[@]}" | git -C "$REPO_ROOT" hash-object --stdin)"
-  fi
-  printf '%s-%s%s\n' "$head" "$arch" "$dirty_suffix"
+  inputs_hash=$(
+    git -C "$REPO_ROOT" ls-files -coz --exclude-standard -- "${binary_inputs[@]}" |
+      sort -zu |
+      while IFS= read -r -d '' path; do
+        printf '%s\0' "$path"
+        if [[ -f "$REPO_ROOT/$path" ]]; then
+          git -C "$REPO_ROOT" hash-object "$path"
+        else
+          printf 'deleted\n'
+        fi
+      done | git -C "$REPO_ROOT" hash-object --stdin
+  )
+  printf '%s-%s\n' "$arch" "$inputs_hash"
+
 }
 
 cleanup() {
   local exit_code=$?
   if [[ $exit_code -ne 0 ]]; then
-    docker compose -p "$PROJECT_NAME" -f "$COMPOSE_FILE" logs --no-color --tail=200 server-ubuntu server-alma runner || true
+    "${COMPOSE[@]}" logs --no-color --tail=200 server-ubuntu server-alma runner || true
   fi
-  docker compose -p "$PROJECT_NAME" -f "$COMPOSE_FILE" down --volumes --remove-orphans >/dev/null 2>&1 || true
+  "${COMPOSE[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
+  if [[ -n "$TRUST_OVERRIDE" ]]; then rm -f "$TRUST_OVERRIDE"; fi
+  if [[ -n "$CACHE_OVERRIDE" ]]; then rm -f "$CACHE_OVERRIDE"; fi
 }
 trap cleanup EXIT
 
@@ -49,15 +98,18 @@ cd "$REPO_ROOT"
 EXPECTED_E2E_BIN_STAMP=$(current_e2e_build_stamp)
 
 # Build Linux binaries when missing or stale for the current checkout.
-if [[ ! -f "$E2E_BIN_DIR/glibc/tako" ]] || [[ ! -f "$E2E_BIN_STAMP_FILE" ]] || [[ "$(cat "$E2E_BIN_STAMP_FILE" 2>/dev/null)" != "$EXPECTED_E2E_BIN_STAMP" ]]; then
+if [[ "$E2E_USE_PREBUILT" != 1 ]] && { [[ ! -f "$E2E_BIN_DIR/glibc/tako" ]] || [[ ! -f "$E2E_BIN_STAMP_FILE" ]] || [[ "$(cat "$E2E_BIN_STAMP_FILE" 2>/dev/null)" != "$EXPECTED_E2E_BIN_STAMP" ]]; }; then
   echo "Building fresh E2E binaries at $E2E_BIN_DIR..."
   mkdir -p "$E2E_BIN_DIR/glibc"
 
   docker build \
+    "${BUILD_TRUST[@]}" \
     --file e2e/docker/builder/glibc.Dockerfile \
     --tag "$GLIBC_BUILDER_IMAGE" \
     .
   docker run --rm \
+    "${RUN_TRUST[@]}" \
+    --env CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-4}" \
     --env CARGO_TARGET_DIR=/workspace/target/e2e-linux-glibc \
     --env TAKO_BUILD_SHA="$(git rev-parse HEAD 2>/dev/null || true)" \
     --volume "$REPO_ROOT:/workspace" \
@@ -77,9 +129,18 @@ if [[ ! -f "$E2E_BIN_DIR/glibc/tako" ]] || [[ ! -f "$E2E_BIN_STAMP_FILE" ]] || [
   printf '%s\n' "$EXPECTED_E2E_BIN_STAMP" > "$E2E_BIN_STAMP_FILE"
 fi
 
-docker compose -p "$PROJECT_NAME" -f "$COMPOSE_FILE" down --volumes --remove-orphans >/dev/null 2>&1 || true
-docker compose -p "$PROJECT_NAME" -f "$COMPOSE_FILE" build server-ubuntu server-alma runner
-docker compose -p "$PROJECT_NAME" -f "$COMPOSE_FILE" run --rm --no-deps --entrypoint sh runner \
+"${COMPOSE[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
+if [[ "$E2E_USE_PREBUILT" == 1 ]]; then
+  for binary in tako tako-dev-server tako-server; do
+    test -x "$E2E_BIN_DIR/glibc/$binary"
+  done
+  for image in tako-e2e-server-ubuntu tako-e2e-server-alma tako-e2e-runner; do
+    docker image inspect "$image" >/dev/null
+  done
+else
+  "${COMPOSE[@]}" build server-ubuntu server-alma runner
+fi
+"${COMPOSE[@]}" run --rm --no-deps --entrypoint sh runner \
   -c "rm -f /opt/e2e/keys/id_ed25519 /opt/e2e/keys/id_ed25519.pub && ssh-keygen -t ed25519 -N '' -f /opt/e2e/keys/id_ed25519 -q"
-docker compose -p "$PROJECT_NAME" -f "$COMPOSE_FILE" up -d --force-recreate server-ubuntu server-alma
-docker compose -p "$PROJECT_NAME" -f "$COMPOSE_FILE" run --rm runner "$FIXTURE"
+"${COMPOSE[@]}" up -d --force-recreate server-ubuntu server-alma
+"${COMPOSE[@]}" run --rm runner "$FIXTURE"

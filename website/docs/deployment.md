@@ -63,6 +63,10 @@ Runtime download or version resolution failures abort release preparation. Runti
 
 Native HTTP instances bind `127.0.0.1` on an OS-assigned port and signal readiness through fd 4. Secrets, storage bindings, and the internal health token arrive through fd 3.
 
+## Compose Releases
+
+[Docker Compose](/docker-compose/) deployments prepare images and update only changed services. The selected stateless HTTP service uses readiness checks, traffic switching, and draining while unchanged dependencies keep running. Stateful services and workers default to stop-first updates. Compose supports one server and one HTTP ingress service with persistent named volumes; rollback restores containers and configuration, not database contents.
+
 ## Container Releases
 
 The [Docker section](/docker/) covers image configuration, [Dockerfiles by language](/dockerfile/), and [container workflow workers](/docker-workflows/).
@@ -73,7 +77,7 @@ container = "Dockerfile"
 
 Container releases upload source and let `tako-server` build the image with Podman. HTTP containers run from the image defaults and receive `HOST=0.0.0.0`, `PORT=3000`, app vars, `TAKO_BUILD`, and `TAKO_BOOTSTRAP_DATA`.
 
-Use a Tako SDK inside the container so secrets, storage bindings, internal status, and health-probe authentication follow the same contract as native releases. In v0, container HTTP instances do not receive fd 3, fd 4, the internal socket, or `TAKO_DATA_DIR`.
+Use a Tako SDK inside the container so secrets, storage bindings, internal status, and health-probe authentication follow the same contract as native releases. Container HTTP instances receive a persistent data mount and `TAKO_DATA_DIR`. They do not receive fd 3, fd 4, or the internal workflow socket. Plain images may opt out of the SDK contract with `container_options.sdk = false`; see [Container releases](/docker/).
 
 A configured workflow `run` starts a separate container process from the same image with an entrypoint override, args from `run[1..]`, a mounted internal socket, and `TAKO_BOOTSTRAP_DATA`. In v0, container releases support one configured workflow `run` command across the base workflow config and named groups.
 
@@ -98,7 +102,7 @@ For each server, Tako starts replacement instances, waits for health, keeps the 
 
 During validation, a server may temporarily run both the old instance set and the new replacement set.
 
-After finalize, each server keeps the active release and prunes non-active releases older than 30 days or beyond 50 total releases.
+After finalize, each server keeps the active release and prunes non-active releases older than 30 days or beyond 50 total releases. Release files still referenced by Compose containers are retained until those containers are replaced or removed.
 
 If desired instances are `0`, deploy still starts one warm instance for the new build so traffic works immediately. It can later idle out.
 

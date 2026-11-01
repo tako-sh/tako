@@ -320,6 +320,9 @@ async fn probe_instance_health(
     health_path: &str,
     probe_timeout: Duration,
 ) -> Result<(), HealthProbeFailure> {
+    let (health_host, health_path) = instance
+        .health_probe()
+        .unwrap_or_else(|| (health_host.to_string(), health_path.to_string()));
     let Some(endpoint) = instance.endpoint() else {
         return Err(HealthProbeFailure::new(
             "missing_endpoint",
@@ -328,9 +331,9 @@ async fn probe_instance_health(
     };
     probe_endpoint_tcp(
         endpoint,
-        health_host,
-        health_path,
-        Some(instance.internal_token()),
+        &health_host,
+        &health_path,
+        instance.health_token(),
         probe_timeout,
     )
     .await
@@ -431,7 +434,7 @@ async fn read_http_response_headers(
     Ok(String::from_utf8_lossy(&response).into_owned())
 }
 
-fn http_status_is_success(status_line: &str) -> bool {
+fn http_status_is_success(status_line: &str, allow_redirect: bool) -> bool {
     let mut parts = status_line.split_whitespace();
     let Some(http_version) = parts.next() else {
         return false;
@@ -442,7 +445,7 @@ fn http_status_is_success(status_line: &str) -> bool {
     parts
         .next()
         .and_then(|code| code.parse::<u16>().ok())
-        .map(|code| (200..300).contains(&code))
+        .map(|code| (200..if allow_redirect { 400 } else { 300 }).contains(&code))
         .unwrap_or(false)
 }
 
@@ -452,7 +455,7 @@ fn http_response_is_success(
 ) -> Result<(), HealthProbeFailure> {
     let mut lines = response.lines();
     let status_line = lines.next().unwrap_or_default();
-    if !http_status_is_success(status_line) {
+    if !http_status_is_success(status_line, expected_token.is_none()) {
         return Err(HealthProbeFailure::new(
             "bad_status",
             status_line.to_string(),

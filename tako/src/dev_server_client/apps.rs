@@ -29,6 +29,7 @@ pub struct RegisteredAppInfo {
 }
 
 pub struct RegisterAppRequest<'a> {
+    pub compose: Option<&'a tako_core::compose::ComposeConfig>,
     pub config_path: &'a str,
     pub project_dir: &'a str,
     pub app_name: &'a str,
@@ -144,6 +145,7 @@ pub async fn register_app(
     let mut c = LineClient::new(stream);
     let mut req = serde_json::json!({
         "type": "RegisterApp",
+        "compose": args.compose,
         "config_path": args.config_path,
         "project_dir": args.project_dir,
         "app_name": args.app_name,

@@ -154,7 +154,8 @@ where
         move |cmd| {
             let handler = handler.clone();
             async move {
-                tracing::debug!("Received command: {:?}", cmd);
+                // Management requests can carry decrypted deployment secrets.
+                tracing::debug!("Received command");
                 handler(cmd).await
             }
         },
@@ -175,7 +176,7 @@ mod tests {
 
     #[test]
     fn test_parse_prepare_release_command() {
-        let json = r#"{"command": "prepare_release", "app": "my-app", "path": "/var/lib/tako/my-app/releases/1.0.0"}"#;
+        let json = r#"{"command": "prepare_release", "app": "my-app", "path": "/var/lib/tako/my-app/releases/1.0.0", "secrets": {}}"#;
         let cmd: Command = serde_json::from_str(json).unwrap();
         match cmd {
             Command::PrepareRelease { app, path, .. } => {

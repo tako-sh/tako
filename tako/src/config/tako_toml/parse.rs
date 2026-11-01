@@ -42,6 +42,16 @@ impl TakoToml {
         let main = parse_optional_string(&raw, "main")?;
         let (runtime, runtime_version_pin) = parse_runtime_spec(&raw)?;
         let container = parse_optional_string(&raw, "container")?;
+        let image = parse_optional_string(&raw, "image")?;
+        let compose = raw
+            .get("compose")
+            .map(|value| value.clone().try_into())
+            .transpose()?;
+        let container_options = raw
+            .get("container_options")
+            .map(|value| value.clone().try_into())
+            .transpose()?
+            .unwrap_or_default();
         let package_manager = parse_optional_string(&raw, "package_manager")?;
         let preset = parse_optional_string(&raw, "preset")?;
         let dev = parse_string_array(&raw, "dev")?.unwrap_or_default();
@@ -59,6 +69,9 @@ impl TakoToml {
             main,
             runtime,
             container,
+            image,
+            compose,
+            container_options,
             runtime_version_pin,
             package_manager,
             preset,

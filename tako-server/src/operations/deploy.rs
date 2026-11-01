@@ -217,6 +217,19 @@ impl crate::ServerState {
                 return Response::error(format!("Deploy failed: {error}"));
             }
             inject_app_data_dir_env(&mut config.env_vars, &data_paths);
+            if config.compose.is_some() {
+                config.secrets = secrets;
+                config.storages = storages;
+                return self
+                    .deploy_compose(super::compose::ComposeDeployment {
+                        config,
+                        routes,
+                        runtime_credentials,
+                        ssl: ssl.cloudflare_api_token.is_some().then_some(ssl),
+                        backup,
+                    })
+                    .await;
+            }
             if let Err(e) =
                 self.persist_credentials(app_name, &secrets, &runtime_credentials, &storages)
             {
@@ -257,6 +270,19 @@ impl crate::ServerState {
                 return Response::error(format!("Deploy failed: {error}"));
             }
             inject_app_data_dir_env(&mut config.env_vars, &data_paths);
+            if config.compose.is_some() {
+                config.secrets = secrets;
+                config.storages = storages;
+                return self
+                    .deploy_compose(super::compose::ComposeDeployment {
+                        config,
+                        routes,
+                        runtime_credentials,
+                        ssl: ssl.cloudflare_api_token.is_some().then_some(ssl),
+                        backup,
+                    })
+                    .await;
+            }
             if let Err(e) =
                 self.persist_credentials(app_name, &secrets, &runtime_credentials, &storages)
             {
@@ -299,6 +325,24 @@ impl crate::ServerState {
         self.sync_app_workflows(app_name, &release_path, runtime_bin_path.as_deref())
             .await;
 
+        let recreate = deploy_config.compose.is_some()
+            || rollback_snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.config.compose.is_some());
+        if recreate && !app.get_instances().is_empty() {
+            if let Err(error) = self.app_manager.stop_app(app_name).await {
+                if let Some(snapshot) = rollback_snapshot {
+                    self.restore_failed_rollout_snapshot(
+                        app_name,
+                        &app,
+                        snapshot,
+                        error.to_string(),
+                    )
+                    .await;
+                }
+                return Response::error(format!("Failed to stop the previous stack: {error}"));
+            }
+        }
         if app.get_instances().is_empty() {
             if deploy_config.min_instances == 0 {
                 match self.start_on_demand_warm_instance(&app).await {
@@ -512,6 +556,17 @@ impl crate::ServerState {
         snapshot: RollbackSnapshot,
         error: String,
     ) {
+        let recreate = snapshot.config.compose.is_some() || app.config.read().compose.is_some();
+        let restart = recreate && matches!(snapshot.state, AppState::Running | AppState::Deploying);
+        if recreate {
+            if let Err(stop_error) = self.app_manager.stop_app(app_name).await {
+                app.set_state(AppState::Error);
+                app.set_last_error(format!(
+                    "Deploy failed: {error}; could not stop the failed stack: {stop_error}"
+                ));
+                return;
+            }
+        }
         let previous_release_path =
             app_release_root(&self.runtime.data_dir, app_name, &snapshot.config.version);
         let previous_secrets = snapshot.config.secrets.clone();
@@ -579,5 +634,14 @@ impl crate::ServerState {
             runtime_bin_path.as_deref(),
         )
         .await;
+        if restart {
+            if let Err(restart_error) = self.app_manager.start_app(app_name).await {
+                app.set_state(AppState::Error);
+                app.set_last_error(format!(
+                    "Deploy failed: {error}; previous release could not restart: {restart_error}"
+                ));
+            }
+            self.persist_app_state(app_name).await;
+        }
     }
 }

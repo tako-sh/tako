@@ -257,7 +257,7 @@ impl RollingUpdater {
     /// Wait for newly healthy instances to stay healthy before draining old
     /// capacity. The background health monitor owns the HTTP probing; this
     /// gate observes the resulting instance states.
-    async fn wait_for_stable_health(
+    pub(crate) async fn wait_for_stable_health(
         &self,
         instances: &[Arc<Instance>],
     ) -> Result<(), InstanceError> {
@@ -298,7 +298,7 @@ impl RollingUpdater {
     }
 
     /// Drain and stop an old instance
-    async fn drain_and_stop(
+    pub(crate) async fn drain_and_stop(
         &self,
         app: &App,
         instance: &Arc<Instance>,

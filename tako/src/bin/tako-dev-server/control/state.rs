@@ -29,6 +29,7 @@ pub(crate) struct State {
 
     pub(crate) db: Option<state::DevStateStore>,
     pub(crate) apps: std::collections::HashMap<String, RuntimeApp>,
+    pub(crate) app_locks: std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>,
 
     /// Path to the shared Tako internal unix socket. `Some` once
     /// `workflows.start_socket()` succeeds in main; injected into every
@@ -73,6 +74,7 @@ impl State {
             mdns: None,
             db: None,
             apps: std::collections::HashMap::new(),
+            app_locks: std::collections::HashMap::new(),
             internal_socket: None,
             workflows: None,
         }

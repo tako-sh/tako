@@ -55,6 +55,7 @@ pub(crate) async fn handle_client(
             }
             Request::RegisterApp(request) => {
                 let RegisterAppRequest {
+                    compose,
                     config_path,
                     project_dir,
                     app_name,
@@ -73,6 +74,7 @@ pub(crate) async fn handle_client(
                 apps::register_app(
                     Arc::clone(&state),
                     apps::RegisterAppArgs {
+                        compose,
                         config_path,
                         project_dir,
                         app_name,

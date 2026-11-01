@@ -1,7 +1,5 @@
 use crate::app_command::{ReleaseKind, command_from_manifest, load_release_manifest, safe_subdir};
-use crate::container_runtime::{
-    DEFAULT_CONTAINER_PORT, build_release_image, image_tag_for_manifest,
-};
+use crate::container_runtime::{build_release_image, image_tag_for_manifest};
 use crate::instances::{AppConfig, AppLaunch};
 use crate::socket::{AppState, BuildStatus, InstanceState, InstanceStatus};
 use std::collections::HashMap;
@@ -186,11 +184,40 @@ pub(crate) fn apply_release_runtime_to_config(
     runtime_bin: Option<&str>,
 ) -> Result<(), String> {
     let manifest = load_release_manifest(&release_path)?;
-    if manifest.release_kind == ReleaseKind::Container {
+    if config.compose.is_some() && manifest.release_kind != ReleaseKind::Compose {
+        config.max_instances = crate::instances::default_max_instances_for_host();
+        config.startup_timeout = AppConfig::default().startup_timeout;
+    }
+    config.compose = None;
+    config.health_check_path = "/status".into();
+    config.health_check_host.clear();
+    if manifest.release_kind == ReleaseKind::Compose {
+        let compose = manifest
+            .compose
+            .clone()
+            .ok_or("Compose release is missing compose settings")?;
+        compose.validate()?;
+        config.command.clear();
+        config.launch = AppLaunch::Compose;
+        config.health_check_path = compose.health_path.clone();
+        config.health_check_host = compose.health_host.clone().unwrap_or_default();
+        config.compose = Some(compose);
+        config.min_instances = 1;
+        config.max_instances = 1;
+        config.startup_timeout = Duration::from_secs(150);
+    } else if manifest.release_kind == ReleaseKind::Container {
+        manifest.container_options.validate()?;
+        config.container_options = manifest.container_options.clone();
+        config.health_check_path = manifest.container_options.health_path.clone();
+        config.health_check_host = manifest
+            .container_options
+            .health_host
+            .clone()
+            .unwrap_or_default();
         config.command.clear();
         config.launch = AppLaunch::Container {
             image: image_tag_for_manifest(&manifest)?,
-            port: manifest.container_port.unwrap_or(DEFAULT_CONTAINER_PORT),
+            port: manifest.container_options.port,
         };
     } else {
         config.command = command_from_manifest(&manifest, &release_path, runtime_bin)?;
@@ -261,6 +288,10 @@ pub(crate) async fn prepare_release_runtime(
     #[cfg(unix)] isolation: Option<ProcessIsolation>,
 ) -> Result<Option<String>, String> {
     let manifest = load_release_manifest(release_dir)?;
+    if manifest.release_kind == ReleaseKind::Compose {
+        crate::compose_runtime::prepare(release_dir, &manifest, env).await?;
+        return Ok(None);
+    }
     if manifest.release_kind == ReleaseKind::Container {
         build_release_image(release_dir, &manifest).await?;
         return Ok(None);
@@ -390,7 +421,7 @@ pub(crate) async fn resolve_release_runtime_bin(
     data_dir: &Path,
 ) -> Result<Option<String>, String> {
     let manifest = load_release_manifest(release_dir)?;
-    if manifest.release_kind == ReleaseKind::Container {
+    if manifest.release_kind != ReleaseKind::Native {
         return Ok(None);
     }
 

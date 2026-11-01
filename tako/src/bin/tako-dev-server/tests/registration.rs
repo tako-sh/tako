@@ -761,6 +761,7 @@ async fn unregister_app_kills_running_process() {
         s.apps.insert(
             "/tmp/test-kill/tako.toml".to_string(),
             state::RuntimeApp {
+                compose: None,
                 project_dir: tmp.path().to_string_lossy().to_string(),
                 name: "kill-test".to_string(),
                 variant: None,
@@ -856,6 +857,7 @@ async fn wake_on_request_spawns_exactly_one_process() {
         s.apps.insert(
             config_path.clone(),
             state::RuntimeApp {
+                compose: None,
                 project_dir: tmp.path().to_str().unwrap().to_string(),
                 name: "wake-race-test".to_string(),
                 variant: None,

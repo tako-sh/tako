@@ -1,4 +1,5 @@
 mod bootstrap;
+mod compose;
 mod control;
 mod dev_channels;
 mod identity;
@@ -272,6 +273,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ = shutdown_rx.changed() => {
                 if *shutdown_rx.borrow() {
                     tracing::info!("tako-dev-server shutting down");
+                    compose::stop_all(&state).await;
                     kill_all_app_processes(&state);
                     workflows.shutdown_all(std::time::Duration::from_secs(1)).await;
                     let _ = std::fs::remove_file(&sock);
