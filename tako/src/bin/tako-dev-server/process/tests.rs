@@ -4,6 +4,43 @@ use crate::proxy::Routes;
 use crate::state::RuntimeApp;
 use tokio::sync::watch;
 
+#[tokio::test]
+async fn child_output_drains_both_pipes_into_the_log_buffer() {
+    let mut child = tokio::process::Command::new("sh")
+        .args(["-c", "i=0; while [ $i -lt 10000 ]; do echo 'web | output'; echo 'redis | diagnostic' >&2; i=$((i + 1)); done"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let buffer = state::LogBuffer::new();
+    let (_, mut logs, _) = buffer.subscribe(None);
+    forward_child_pipes(&mut child, &buffer);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let mut info = 0;
+        let mut warn = 0;
+        for _ in 0..20000 {
+            let entry = logs.recv().await.unwrap();
+            let value: serde_json::Value = serde_json::from_str(&entry.line).unwrap();
+            match value["level"].as_str().unwrap() {
+                "info" => {
+                    assert_eq!(value["msg"], "web | output");
+                    info += 1;
+                }
+                "warn" => {
+                    assert_eq!(value["msg"], "redis | diagnostic");
+                    warn += 1;
+                }
+                level => panic!("unexpected level: {level}"),
+            }
+        }
+        assert_eq!((info, warn), (10000, 10000));
+        assert!(child.wait().await.unwrap().success());
+    })
+    .await
+    .expect("both pipes must drain without blocking the child");
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn kill_and_reap_app_process_waits_for_killed_child() {
