@@ -10,7 +10,7 @@ These Dockerfiles assume the application already uses its Tako SDK. Use the [fet
 <CodeGroup>
 
 ```dockerfile JavaScript
-FROM oven/bun:1
+FROM oven/bun:1@sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d
 WORKDIR /app
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile --production
@@ -21,14 +21,14 @@ CMD ["bun", "node_modules/tako.sh/dist/entrypoints/bun-server.mjs", "src/index.t
 ```
 
 ```dockerfile Go
-FROM golang:1.25-bookworm AS build
+FROM golang:1.25-bookworm@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -o /out/app .
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/app /app/app
@@ -38,12 +38,12 @@ CMD ["/app/app"]
 ```
 
 ```dockerfile Rust
-FROM rust:1-bookworm AS build
+FROM rust:1-bookworm@sha256:9181b56c2a21ab1d5e73cffe04fc762426d30aa7fac3c91141dd033f49a7fc8b AS build
 WORKDIR /src
 COPY . .
 RUN cargo build --locked --release --bin my-app
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /src/target/release/my-app /app/app
