@@ -493,6 +493,7 @@ async fn instance_idle_event_resets_cold_start_when_app_scales_to_zero() {
         name: "idle-app".to_string(),
         version: "v1".to_string(),
         min_instances: 0,
+        idle_timeout: Duration::ZERO,
         ..Default::default()
     });
     state.load_balancer.register_app(app.clone());
@@ -505,6 +506,8 @@ async fn instance_idle_event_resets_cold_start_when_app_scales_to_zero() {
     state.cold_start.begin("idle-app");
     state.cold_start.mark_ready("idle-app");
     assert!(!state.cold_start.begin("idle-app").leader);
+
+    tokio::time::sleep(Duration::from_millis(2)).await;
 
     handle_idle_event(
         &state,

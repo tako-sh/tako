@@ -70,11 +70,37 @@ pub(crate) fn update_instance_count_metric(app_name: &str, app: &App) {
 }
 
 pub(crate) async fn handle_idle_event(state: &ServerState, event: IdleEvent) {
+    let name = match &event {
+        IdleEvent::InstanceIdle { app, .. } | IdleEvent::AppIdle { app } => app,
+    };
+    // A deployment can temporarily attach two logical instances to one Compose
+    // ingress. Its predecessor still owns the container until commit. Skip
+    // eviction while any lifecycle mutation holds the lock; the monitor retries.
+    let lock = state.get_deploy_lock(name).await;
+    let Ok(_guard) = lock.try_lock() else {
+        return;
+    };
     match event {
         IdleEvent::InstanceIdle { app, instance_id } => {
             if let Some(app_ref) = state.app_manager.get_app(&app)
                 && let Some(instance) = app_ref.get_instance(&instance_id)
             {
+                let (min_instances, idle_timeout) = {
+                    let config = app_ref.config.read();
+                    (config.min_instances, config.idle_timeout)
+                };
+                let healthy = app_ref
+                    .get_instances()
+                    .iter()
+                    .filter(|instance| instance.state() == InstanceState::Healthy)
+                    .count();
+                if healthy <= min_instances as usize
+                    || instance.state() != InstanceState::Healthy
+                    || instance.in_flight() != 0
+                    || instance.idle_time() <= idle_timeout
+                {
+                    return;
+                }
                 if let Err(e) = instance.kill().await {
                     tracing::warn!(app = %app, instance = %instance_id, "Failed to kill idle instance: {}", e);
                 }
@@ -102,6 +128,16 @@ pub(crate) async fn handle_idle_event(state: &ServerState, event: IdleEvent) {
         }
         IdleEvent::AppIdle { app } => {
             if let Some(app_ref) = state.app_manager.get_app(&app) {
+                if app_ref.config.read().min_instances != 0
+                    || app_ref.get_instances().iter().any(|instance| {
+                        matches!(
+                            instance.state(),
+                            InstanceState::Starting | InstanceState::Ready | InstanceState::Healthy
+                        )
+                    })
+                {
+                    return;
+                }
                 app_ref.set_state(AppState::Idle);
             }
             state.cold_start.reset(&app);
@@ -210,5 +246,67 @@ async fn replace_instance_if_needed(
             );
             app.remove_instance(&new_instance.id);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{collections::HashMap, sync::Arc, time::Duration};
+
+    #[tokio::test]
+    async fn idle_events_cannot_mutate_instances_during_deployment_or_below_minimum() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = ServerState::new(
+            dir.path().into(),
+            Arc::new(crate::tls::CertManager::new(
+                crate::tls::CertManagerConfig {
+                    cert_dir: dir.path().join("certs"),
+                    ..Default::default()
+                },
+            )),
+            None,
+            Arc::new(parking_lot::RwLock::new(HashMap::new())),
+        )
+        .unwrap();
+        let app = state.app_manager.register_app(crate::instances::AppConfig {
+            name: "idle-rollout".into(),
+            environment: "production".into(),
+            min_instances: 1,
+            idle_timeout: Duration::ZERO,
+            ..Default::default()
+        });
+        app.set_state(AppState::Deploying);
+        let old = app.allocate_instance();
+        let new = app.allocate_instance();
+        old.set_state(InstanceState::Healthy);
+        new.set_state(InstanceState::Healthy);
+        let name = "idle-rollout/production";
+        let event = || IdleEvent::InstanceIdle {
+            app: name.into(),
+            instance_id: old.id.clone(),
+        };
+        let lock = state.get_deploy_lock(name).await;
+        let guard = lock.lock().await;
+        handle_idle_event(&state, event()).await;
+        handle_idle_event(&state, IdleEvent::AppIdle { app: name.into() }).await;
+        assert_eq!(old.state(), InstanceState::Healthy);
+        assert_eq!(app.state(), AppState::Deploying);
+        assert_eq!(app.get_instances().len(), 2);
+        drop(guard);
+        // Outside a rollout, an actually surplus idle instance is evicted.
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        handle_idle_event(&state, event()).await;
+        assert!(app.get_instance(&old.id).is_none());
+        // A queued event from an earlier monitor pass cannot remove the last.
+        handle_idle_event(
+            &state,
+            IdleEvent::InstanceIdle {
+                app: name.into(),
+                instance_id: new.id.clone(),
+            },
+        )
+        .await;
+        assert_eq!(new.state(), InstanceState::Healthy);
     }
 }

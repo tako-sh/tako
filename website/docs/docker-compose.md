@@ -27,6 +27,8 @@ servers = ["prod"]
 
 The target server needs Docker Engine and the Docker Compose plugin **2.24.4 or newer**, with local Docker socket access for the `tako-server` service account. Docker is required for Compose deployments; standalone Dockerfile/image releases continue to use Podman. The Tako installer currently installs Podman. Install and configure Docker separately for a Compose host, then verify `docker compose version` and `docker info` as the service account.
 
+Explicit service `platform` selection requires Docker Engine 28 or newer.
+
 ```bash
 tako secrets set DATABASE_PASSWORD --env production
 tako deploy --env production
@@ -36,19 +38,25 @@ tako logs --env production --days 1 --json
 
 Reference secrets explicitly in Compose, for example `POSTGRES_PASSWORD: ${DATABASE_PASSWORD:?Set DATABASE_PASSWORD}`. Tako supplies app variables and decrypted secrets to Compose interpolation. It does not write interpolated configuration or secrets into release artifacts. Docker's own container metadata contains the environment values that the Compose file assigns. `DOCKER_*`, `COMPOSE_*`, loader variables, `PATH`, and `HOME` are reserved for the client.
 
+Production does not load an implicit `.env` file. Use Tako variables and secrets for interpolation, or an explicit project-local service `env_file` for container environment values. File references must be literal relative paths; interpolation in file paths is unsupported.
+
+Before invoking Docker, Tako copies production inputs into a service-owned private directory and validates the Compose model and every build input. Builds, restarts, secret rotation, and rollback use that captured source and pinned images. Editing an uploaded release after preparation does not change its prepared deployment; deploy a new release to change it. Decrypted interpolation values remain in memory.
+
+Build contexts, Dockerfiles, additional file contexts, build secrets, runtime configs/secrets, and bind sources must stay inside the app directory. Additional `service:` build contexts are supported. Source must contain only regular files and directories, without symlinks or hard links, and fit within 2 GiB, 100,000 entries, and 128 directory levels. The Compose file is limited to 16 MiB. The root `logs` directory is reserved for runtime output and excluded from preparation.
+
 ## Networking and persistence
 
 Tako replaces Compose port publications. Only the selected HTTP service is published, on an assigned loopback port; Tako handles public HTTPS and routes. Databases, caches, and workers communicate through Compose networks and service names.
 
 Use named volumes for persistent data. The project identity is stable for one app/environment on one server, so new releases reuse the same volumes. Anonymous volumes are rejected in production. If an image declares a volume, mount a named volume there, or explicitly use tmpfs for disposable data. Read-only bind mounts and config/secret files must stay inside the uploaded app directory. Tako retains older release files while containers reference them.
 
-Default named volumes are scoped to the project. Explicit volume `name` or `external` settings follow Docker's shared-resource behavior and can share data between apps or environments.
+Networks, volumes, configs, and secrets are scoped to the app/environment. External resources and custom resource names are rejected in production. Networks use Docker's bridge driver and volumes use its local driver; driver options and custom IPAM settings are unsupported.
 
 Named volumes survive deployment, stop/start, rollback, and application deletion. Deleting data requires an explicit Docker volume operation. Tako's app-data backups do **not** include Docker named volumes. Use database-native dumps or a coordinated volume backup, and verify restoration into a separate stack. Application rollback does not reverse schema migrations or restore database contents.
 
 ## Updates and recovery
 
-Tako prepares all images before changing running containers. It compares each service's immutable image ID and resolved configuration, including referenced secrets and mounted file contents. Unchanged services keep their container IDs, network endpoints, and volumes. Updating a Bun web app therefore leaves unchanged Redis running.
+Tako prepares and pins all images before changing running containers. It compares each service's image configuration and filesystem, plus its resolved Compose configuration, referenced secrets, and mounted file contents. Build attestations and release directory names do not trigger replacements. Unchanged services keep their container IDs, network endpoints, and volumes. Updating a Bun web app therefore leaves unchanged Redis running.
 
 | Service | Default update order |
 | --- | --- |
@@ -78,6 +86,8 @@ Start-first updates protect traffic through Tako's HTTP ingress. Updates to data
 `tako status --json` includes original service names, state, health, and exit codes. Log prefixes include the service name and generation. The stack has one Tako HTTP instance; define worker replicas in Compose. Production supports one server, one HTTP ingress replica, and up to 128 replicas per other service.
 
 Production rejects writable bind mounts, outside build contexts, `container_name`, `network_mode`, profiles, links, `volumes_from`, shared service namespaces, Compose lifecycle hooks, optional dependencies, and `depends_on.restart`. `update_config` supports `order` and `monitor`; `rollback_config` is unsupported. These restrictions keep replacement and recovery behavior explicit.
+
+Host privileges and resource sharing are unsupported: this includes `privileged`, added capabilities, devices, host namespaces, custom runtimes, Docker socket injection, and providers. `security_opt` supports only `no-new-privileges`. Logging uses `json-file`, `local`, or `none`, with `max-size`, `max-file`, and `compress` options. Builds reject SSH forwarding, entitlements, host networking, and cache import/export settings. Compose `include` and `extends` are unsupported. Unrecognized production service and build settings fail validation before Docker creates containers.
 
 ## Verify and develop locally
 

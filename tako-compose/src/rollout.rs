@@ -26,12 +26,8 @@ impl ComposeRuntime {
         if self.development {
             return Err("Production rollout requested for a development project".into());
         }
-        let mut model = self.model().await?;
-        let images: BTreeMap<String, String> = serde_json::from_slice(
-            &std::fs::read(self.images_path())
-                .map_err(|e| format!("Compose release was not prepared: {e}"))?,
-        )
-        .map_err(|e| e.to_string())?;
+        let (runtime, images) = self.prepared()?;
+        let mut model = runtime.model().await?;
         let services = model["services"]
             .as_object_mut()
             .ok_or("Compose has no services")?;
@@ -84,10 +80,10 @@ impl ComposeRuntime {
             }
             service["image"] = Value::String(id.into());
         }
-        let plan = Plan::new(model, self)?;
+        let plan = Plan::new(model, &runtime)?;
         let before = self.containers().await?;
         Ok(Rollout {
-            runtime: self.clone(),
+            runtime,
             plan,
             before,
             selected: Vec::new(),

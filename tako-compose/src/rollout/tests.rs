@@ -55,7 +55,9 @@ impl Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        if let Some(runtime) = self.runtimes.first() {
+        if let Some(runtime) = self.runtimes.first()
+            && let Ok((runtime, _)) = runtime.prepared()
+        {
             let _ = runtime
                 .command(false)
                 .into_std()
@@ -112,11 +114,176 @@ async fn compose_model_preserves_large_environment_values() {
         "environment": {"LARGE_VALUE": value}
     }}});
     let runtime = fixture.unprepared_release("large", &model.to_string());
-    let resolved = runtime.model().await.unwrap();
+    std::fs::write(
+        runtime.directory.join(".env"),
+        "COMPOSE_FILE=/opt/tako/secret.key\nCOMPOSE_ENV_FILES=/opt/tako/secret.key\n",
+    )
+    .unwrap();
+    let (snapshot, _guard) = runtime.snapshot().unwrap();
+    let resolved = snapshot.model().await.unwrap();
     assert_eq!(
         resolved["services"]["web"]["environment"]["LARGE_VALUE"],
         value
     );
+}
+
+#[tokio::test]
+#[ignore = "requires Docker Compose and shared Docker build paths; run with the Docker integration harness"]
+async fn unchanged_non_root_service_keeps_its_private_mount_across_releases() {
+    let mut fixture = Fixture::new();
+    let mut model: serde_json::Value = serde_yaml_ng::from_str(SMALL_STACK).unwrap();
+    model["services"]["reader"] = serde_json::json!({
+        "image":"docker.io/library/busybox:1.37", "user":"12345:12345",
+        "command":["sh", "-c", "cat /input/settings.txt; sleep 3600"],
+        "volumes":["./input:/input:ro"], "deploy":{"update_config":{"monitor":"0s"}}
+    });
+    let yaml = model.to_string();
+    let mut original = None;
+    for version in ["mount-v1", "mount-v2"] {
+        let runtime = fixture.unprepared_release(version, &yaml);
+        std::fs::create_dir(runtime.directory.join("input")).unwrap();
+        std::fs::write(runtime.directory.join("input/settings.txt"), "stable-input").unwrap();
+        runtime.prepare(version).await.unwrap();
+        let mut rollout = runtime.begin_rollout().await.unwrap();
+        rollout.apply().await.unwrap();
+        let reader = service(rollout.containers(), "reader");
+        assert_eq!(
+            exec(reader, &["cat", "/input/settings.txt"]).await,
+            "stable-input"
+        );
+        if let Some(id) = &original {
+            assert_eq!(&reader.id, id);
+        } else {
+            original = Some(reader.id.clone());
+        }
+        rollout.finish().await.unwrap();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires Docker Compose and shared Docker build paths; run with the Docker integration harness"]
+async fn rollout_uses_private_prepared_inputs_after_release_tampering() {
+    let mut fixture = Fixture::new();
+    let yaml = SMALL_STACK.replace(
+        "    build: .",
+        "    build: .\n    environment:\n      APP_TOKEN: ${DB_PASSWORD}",
+    );
+    let runtime = fixture.release("immutable", &yaml).await;
+    std::fs::write(
+        runtime.directory.join("compose.yaml"),
+        "services:\n  web:\n    image: busybox\n    privileged: true\n    pid: host\n",
+    )
+    .unwrap();
+    std::fs::write(
+        runtime.directory.join(".tako-compose-images.json"),
+        "{\"web\":\"unprepared-image\"}",
+    )
+    .unwrap();
+    std::fs::write(runtime.directory.join("Dockerfile"), "FROM scratch\n").unwrap();
+    let mut rollout = runtime.begin_rollout().await.unwrap();
+    rollout.apply().await.unwrap();
+    assert!(
+        http(rollout.ingress().unwrap())
+            .await
+            .ends_with("immutable\n")
+    );
+    assert!(
+        rollout
+            .containers()
+            .iter()
+            .any(|container| container.service == "redis")
+    );
+    let mut inspect = docker_command(false);
+    inspect.args([
+        "inspect",
+        "--format",
+        "{{.HostConfig.Privileged}}:{{.HostConfig.PidMode}}",
+        &rollout.ingress().unwrap().id,
+    ]);
+    assert_eq!(
+        String::from_utf8(
+            engine_output(inspect, Duration::from_secs(10))
+                .await
+                .unwrap()
+        )
+        .unwrap()
+        .trim(),
+        "false:"
+    );
+    let redis_id = service(rollout.containers(), "redis").id.clone();
+    rollout.finish().await.unwrap();
+
+    // Secret changes still interpolate the captured source, without rebuilding
+    // images or rereading app-writable files.
+    let mut changed = runtime.clone();
+    changed
+        .env
+        .insert("DB_PASSWORD".into(), "rotated-fixture-only".into());
+    let mut rotated = changed.begin_rollout().await.unwrap();
+    rotated.apply().await.unwrap();
+    assert!(
+        exec(rotated.ingress().unwrap(), &["printenv", "APP_TOKEN"])
+            .await
+            .trim()
+            == "rotated-fixture-only"
+    );
+    assert_eq!(service(rotated.containers(), "redis").id, redis_id);
+    rotated.finish().await.unwrap();
+    fn assert_private_files(path: &std::path::Path) {
+        for entry in std::fs::read_dir(path).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                assert_private_files(&path);
+            } else {
+                let bytes = std::fs::read(path).unwrap();
+                assert!(
+                    !bytes
+                        .windows(b"rotated-fixture-only".len())
+                        .any(|v| v == b"rotated-fixture-only")
+                );
+            }
+        }
+    }
+    assert_private_files(&runtime.preparation_root().unwrap());
+}
+
+#[tokio::test]
+#[ignore = "requires Docker Compose and shared Docker build paths; run with the Docker integration harness"]
+async fn build_inputs_are_local_copied_and_validated_before_building() {
+    let mut fixture = Fixture::new();
+    let runtime = fixture.unprepared_release(
+        "build-inputs",
+        r#"
+services:
+  web:
+    build:
+      context: .
+      additional_contexts:
+        extra: ./extra
+      secrets: [build_token]
+secrets:
+  build_token:
+    file: ./build-token
+"#,
+    );
+    std::fs::create_dir(runtime.directory.join("extra")).unwrap();
+    std::fs::write(runtime.directory.join("extra/marker"), "safe-context\n").unwrap();
+    std::fs::write(runtime.directory.join("build-token"), "safe-build-token").unwrap();
+    std::fs::write(runtime.directory.join("Dockerfile"), "FROM docker.io/library/busybox:1.37\nCOPY --from=extra marker /www/index.html\nRUN --mount=type=secret,id=build_token test \"$(cat /run/secrets/build_token)\" = safe-build-token\nCMD [\"httpd\",\"-f\",\"-p\",\"8080\",\"-h\",\"/www\"]\n").unwrap();
+    runtime.prepare("build-inputs").await.unwrap();
+    std::fs::write(
+        runtime.directory.join("extra/marker"),
+        "changed-after-build\n",
+    )
+    .unwrap();
+    let mut rollout = runtime.begin_rollout().await.unwrap();
+    rollout.apply().await.unwrap();
+    assert!(
+        http(rollout.ingress().unwrap())
+            .await
+            .ends_with("safe-context\n")
+    );
+    rollout.finish().await.unwrap();
 }
 
 #[tokio::test]
@@ -384,6 +551,7 @@ async fn image_volumes_require_an_exact_explicit_mount() {
     let parent_tmpfs = SMALL_STACK.replace("    build: .", "    build: .\n    tmpfs: [/state]");
     for yaml in [&parent_volume, &parent_tmpfs] {
         std::fs::write(runtime.directory.join("compose.yaml"), yaml).unwrap();
+        runtime.prepare("image-volume").await.unwrap();
         let error = runtime
             .begin_rollout()
             .await
@@ -395,6 +563,7 @@ async fn image_volumes_require_an_exact_explicit_mount() {
 
     let exact_volume = parent_volume.replace("web-data:/state", "web-data:/state/data");
     std::fs::write(runtime.directory.join("compose.yaml"), exact_volume).unwrap();
+    runtime.prepare("image-volume").await.unwrap();
     let mut rollout = runtime.begin_rollout().await.unwrap();
     rollout.apply().await.unwrap();
     assert_eq!(
@@ -410,6 +579,7 @@ async fn image_volumes_require_an_exact_explicit_mount() {
 
     let exact_tmpfs = parent_tmpfs.replace("tmpfs: [/state]", "tmpfs: [/state/data]");
     std::fs::write(runtime.directory.join("compose.yaml"), exact_tmpfs).unwrap();
+    runtime.prepare("image-volume").await.unwrap();
     runtime.begin_rollout().await.unwrap();
 }
 

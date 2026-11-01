@@ -166,18 +166,30 @@ impl Plan {
                     let resource = &model[kind][&reference];
                     identity[kind][&reference] = resource.clone();
                     if let Some(file) = resource["file"].as_str() {
-                        identity["files"][file] =
-                            json!(hash_project_file(Path::new(file), &runtime.directory)?);
+                        let relative = relative_input(file, runtime.working_directory())?;
+                        identity[kind][&reference]["file"] = json!(relative);
+                        identity["files"][&relative] = json!(hash_project_file(
+                            Path::new(file),
+                            runtime.working_directory()
+                        )?);
                     }
                 }
             }
-            for volume in definition["volumes"].as_array().into_iter().flatten() {
+            for volume in identity["service"]["volumes"]
+                .as_array_mut()
+                .into_iter()
+                .flatten()
+            {
                 if volume["type"] == "bind" {
                     let path = volume["source"]
                         .as_str()
                         .ok_or("Bind mount has no source")?;
-                    identity["files"][path] =
-                        json!(hash_project_file(Path::new(path), &runtime.directory)?);
+                    let relative = relative_input(path, runtime.working_directory())?;
+                    let contents = hash_project_file(Path::new(path), runtime.working_directory())?;
+                    volume["source"] = json!(relative);
+                    // Store the content identity on this mount, not in the
+                    // actual Compose model used to create containers.
+                    volume["x-tako-content"] = json!(contents);
                 }
             }
             if plan.name == runtime.config.service {
@@ -245,6 +257,15 @@ impl Plan {
     }
 }
 
+fn relative_input(path: &str, root: &Path) -> Result<String, String> {
+    Path::new(path)
+        .canonicalize()
+        .map_err(|e| e.to_string())?
+        .strip_prefix(root.canonicalize().map_err(|e| e.to_string())?)
+        .map(|path| path.to_string_lossy().into_owned())
+        .map_err(|_| "Compose input must stay inside the app directory".into())
+}
+
 impl ServicePlan {
     pub fn generation(&self, slot: u32) -> String {
         format!("{}-{slot}-{}", self.name, &self.fingerprint[..24])
@@ -302,6 +323,7 @@ fn visit(
 }
 
 fn validate_service(name: &str, service: &Value) -> Result<(), String> {
+    crate::validation::validate_service(name, service)?;
     for key in [
         "container_name",
         "network_mode",

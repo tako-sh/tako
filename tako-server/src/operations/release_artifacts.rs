@@ -46,9 +46,7 @@ impl crate::ServerState {
                         "Cannot remove release files referenced by Compose containers",
                     );
                 }
-                if paths.release_path.exists()
-                    && let Err(error) = std::fs::remove_dir_all(&paths.release_path)
-                {
+                if let Err(error) = remove_release(&paths.release_path) {
                     return Response::error(format!(
                         "Failed to remove release {}: {error}",
                         paths.release_path.display()
@@ -301,7 +299,7 @@ fn prune_old_releases(
             .duration_since(modified)
             .is_ok_and(|age| age > OLD_RELEASE_RETENTION)
         {
-            let _ = std::fs::remove_dir_all(path);
+            let _ = remove_release(&path);
         } else {
             retained.push((path, modified));
         }
@@ -317,8 +315,20 @@ fn prune_old_releases(
         MAX_RELEASE_RETENTION_COUNT
     };
     for (path, _) in retained.into_iter().skip(non_active_limit) {
-        let _ = std::fs::remove_dir_all(path);
+        let _ = remove_release(&path);
     }
+}
+
+fn remove_release(path: &Path) -> Result<(), String> {
+    let app_root = path
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("Invalid release path")?;
+    tako_compose::remove_release_preparations(path, &app_root.join("data/app"))?;
+    if path.exists() {
+        std::fs::remove_dir_all(path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -389,25 +399,44 @@ mod tests {
 
     #[test]
     fn prune_keeps_release_files_still_mounted_by_unchanged_compose_services() {
+        use std::os::unix::fs::PermissionsExt;
         let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("releases");
         let now = SystemTime::now();
-        let active = create_release(temp.path(), "current", now);
+        let active = create_release(&root, "current", now);
         let referenced = create_release(
-            temp.path(),
+            &root,
             "referenced",
             now - OLD_RELEASE_RETENTION - Duration::from_secs(1),
         );
         let obsolete = create_release(
-            temp.path(),
+            &root,
             "obsolete",
             now - OLD_RELEASE_RETENTION - Duration::from_secs(1),
         );
+        let private = temp.path().join("data/compose");
+        std::fs::create_dir_all(&private).unwrap();
+        std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o700)).unwrap();
+        for release in [&referenced, &obsolete] {
+            let preparation = private.join(release.file_name().unwrap());
+            std::fs::create_dir(&preparation).unwrap();
+            std::fs::set_permissions(&preparation, std::fs::Permissions::from_mode(0o700)).unwrap();
+            std::fs::write(
+                preparation.join("release.json"),
+                serde_json::to_vec(&release.join("app")).unwrap(),
+            )
+            .unwrap();
+            std::fs::write(preparation.join("source.txt"), "mounted input").unwrap();
+        }
         let protected = std::collections::BTreeSet::from([referenced.join("app")]);
-        prune_old_releases(temp.path(), &active, &protected);
+        prune_old_releases(&root, &active, &protected);
         assert!(referenced.is_dir());
+        assert!(private.join("referenced/source.txt").is_file());
         assert!(!obsolete.exists());
-        prune_old_releases(temp.path(), &active, &Default::default());
+        assert!(!private.join("obsolete").exists());
+        prune_old_releases(&root, &active, &Default::default());
         assert!(!referenced.exists());
+        assert!(!private.join("referenced").exists());
     }
 
     #[test]

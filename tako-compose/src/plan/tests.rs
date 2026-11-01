@@ -223,6 +223,37 @@ fn mounted_file_content_changes_are_part_of_identity() {
 }
 
 #[test]
+fn identical_mounted_inputs_keep_identity_across_release_directories() {
+    let (_dir, runtime) = runtime();
+    let mut fingerprints = Vec::new();
+    for version in ["v1", "v2", "v3"] {
+        let root = runtime.directory.join(version);
+        std::fs::create_dir(&root).unwrap();
+        let file = root.join("settings.txt");
+        std::fs::write(&file, if version == "v3" { "changed" } else { "same" }).unwrap();
+        let mut release = runtime.clone();
+        release.directory = root;
+        let mut input = model();
+        input["services"]["redis"]["volumes"] = json!([
+            {"type":"bind", "source":file, "target":"/settings", "read_only":true}
+        ]);
+        input["services"]["redis"]["configs"] = json!([{"source":"settings"}]);
+        input["services"]["redis"]["secrets"] = json!([{"source":"token"}]);
+        input["configs"] = json!({"settings":{"file":file}});
+        input["secrets"] = json!({"token":{"file":file}});
+        let plan = Plan::new(input, &release).unwrap();
+        assert_eq!(plan.model["configs"]["settings"]["file"], json!(file));
+        assert_eq!(
+            plan.model["services"]["redis"]["volumes"][0]["source"],
+            json!(file)
+        );
+        fingerprints.push(fingerprint(&plan, "redis"));
+    }
+    assert_eq!(fingerprints[0], fingerprints[1]);
+    assert_ne!(fingerprints[1], fingerprints[2]);
+}
+
+#[test]
 fn monitor_duration_accepts_compound_values_and_rejects_unbounded_waits() {
     assert_eq!(
         parse_duration(&json!("1m2.5s")).unwrap(),

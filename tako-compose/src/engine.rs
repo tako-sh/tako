@@ -91,7 +91,7 @@ impl ComposeRuntime {
         command
             .envs(&self.env)
             .env("COMPOSE_IGNORE_ORPHANS", "true")
-            .current_dir(&self.directory)
+            .current_dir(self.working_directory())
             .args([
                 "compose",
                 "--ansi",
@@ -100,8 +100,8 @@ impl ComposeRuntime {
                 &self.project,
                 "--project-directory",
             ])
-            .arg(&self.directory)
-            .args(["--file", "-"])
+            .arg(self.working_directory())
+            .args(["--file", "-", "--env-file", "/dev/null"])
             .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

@@ -10,8 +10,11 @@ use tokio::process::{Child, Command};
 const TAKO_APP_DATA_DIR_ENV: &str = "TAKO_DATA_DIR";
 mod engine;
 mod plan;
+mod prepared;
+pub use prepared::remove_release_preparations;
 mod process_output;
 mod rollout;
+mod validation;
 pub use engine::ServiceContainer;
 pub use plan::{DependencyCondition, UpdateOrder};
 pub use rollout::Rollout;
@@ -34,7 +37,6 @@ pub async fn cleanup_pending_project(project: &str) -> Result<(), String> {
 }
 use tako_core::compose::ComposeConfig;
 
-const IMAGE_RECORD: &str = ".tako-compose-images.json";
 const OVERRIDE_FILE: &str = ".tako-compose-override.yaml";
 
 fn docker_command(development: bool) -> Command {
@@ -85,6 +87,8 @@ pub struct ComposeRuntime {
     env: HashMap<String, String>,
     development: bool,
     override_file: PathBuf,
+    // Bound to one immutable, service-private preparation during a rollout.
+    source: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for ComposeRuntime {
@@ -111,12 +115,16 @@ impl ComposeRuntime {
             .get(TAKO_APP_DATA_DIR_ENV)
             .ok_or("Compose requires an app data directory")?;
         let project = format!("tako-{}", digest(data));
-        let file = directory.join(&config.file);
-        let canonical = file
-            .canonicalize()
-            .map_err(|e| format!("Compose file: {e}"))?;
-        if !canonical.starts_with(directory.canonicalize().map_err(|e| e.to_string())?) {
-            return Err("Compose file must stay inside the app directory".into());
+        let prepared =
+            prepared::root_for(&directory, &config.file, Path::new(data))?.join("current.json");
+        if !prepared.is_file() {
+            let file = directory.join(&config.file);
+            let canonical = file
+                .canonicalize()
+                .map_err(|e| format!("Compose file: {e}"))?;
+            if !canonical.starts_with(directory.canonicalize().map_err(|e| e.to_string())?) {
+                return Err("Compose file must stay inside the app directory".into());
+            }
         }
         for key in env.keys() {
             if key.starts_with("DOCKER_")
@@ -135,6 +143,7 @@ impl ComposeRuntime {
             env,
             development: false,
             override_file: PathBuf::from(OVERRIDE_FILE),
+            source: None,
         })
     }
 
@@ -157,15 +166,23 @@ impl ComposeRuntime {
     pub fn command(&self, with_override: bool) -> Command {
         let mut command = docker_command(self.development);
         command.envs(&self.env);
-        command.current_dir(&self.directory).args([
+        command.current_dir(self.working_directory()).args([
             "compose",
             "--ansi",
             "never",
             "--project-name",
             &self.project,
-            "--file",
-            &self.config.file,
+            "--project-directory",
         ]);
+        command.arg(self.working_directory()).arg("--file");
+        command.arg(if let Some(source) = &self.source {
+            source.parent().unwrap().join("compose.json")
+        } else {
+            self.directory.join(&self.config.file)
+        });
+        if !self.development {
+            command.args(["--env-file", "/dev/null"]);
+        }
         if with_override {
             command.arg("--file").arg(&self.override_file);
         }
@@ -246,15 +263,18 @@ impl ComposeRuntime {
             .map_err(|e| format!("Invalid Compose config output: {e}"))?;
         validate_model_with_mode(
             &model,
-            &self.directory,
+            self.working_directory(),
             &self.config.service,
             self.development,
         )?;
+        if !self.development {
+            validation::validate_resources(&model, false, Some(&self.env))?;
+        }
         Ok(model)
     }
 
-    fn images_path(&self) -> PathBuf {
-        self.directory.join(IMAGE_RECORD)
+    fn working_directory(&self) -> &Path {
+        self.source.as_deref().unwrap_or(&self.directory)
     }
 
     async fn check_version(&self) -> Result<(), String> {
@@ -282,18 +302,20 @@ impl ComposeRuntime {
     }
 
     pub async fn prepare(&self, _version: &str) -> Result<(), String> {
-        self.check_version().await?;
-        let mut model = self.model().await?;
+        if self.development {
+            return Err("Production preparation requested for a development project".into());
+        }
+        let capture = self.clone();
+        let (runtime, snapshot) = tokio::task::spawn_blocking(move || capture.snapshot())
+            .await
+            .map_err(|e| format!("Compose source capture failed: {e}"))??;
+        runtime.check_version().await?;
+        let mut model = runtime.model().await?;
         // Compose otherwise builds into a mutable project/service tag (or the
         // user's image tag). Concurrent preparations must never share that tag.
-        // The private override contains only generated names, never resolved
-        // environment or credentials, and disappears when preparation finishes.
-        // Keep it outside the build context: COPY . must not capture this file
-        // or make an otherwise identical build depend on a random attempt ID.
-        let override_file = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
-        let override_path = override_file.path().to_string_lossy().into_owned();
-        let attempt = digest(&override_path);
-        let mut overrides = serde_json::Map::new();
+        // Build exactly the validated model, with inputs in the private source
+        // copy. Resolved values travel on stdin, never through a release file.
+        let attempt = digest(&snapshot.path().to_string_lossy());
         let mut temporary_images = Vec::new();
         for (service, definition) in model["services"]
             .as_object_mut()
@@ -306,28 +328,30 @@ impl ComposeRuntime {
                     digest(service)
                 );
                 definition["image"] = serde_json::json!(image);
-                overrides.insert(service.clone(), serde_json::json!({"image":image}));
                 temporary_images.push(image);
             }
         }
-        std::fs::write(
-            override_file.path(),
-            serde_json::to_vec(&serde_json::json!({"services":overrides}))
-                .map_err(|e| e.to_string())?,
-        )
-        .map_err(|e| e.to_string())?;
-        self.run(
-            &["--file", &override_path, "build"],
-            false,
-            Duration::from_secs(1800),
-        )
-        .await?;
-        self.run(
-            &["--file", &override_path, "pull", "--ignore-buildable"],
-            false,
-            Duration::from_secs(1800),
-        )
-        .await?;
+        for args in [&["build"][..], &["pull", "--ignore-buildable"][..]] {
+            let child = runtime.spawn_model(&model, args).await?;
+            let output = process_output::capture(
+                child,
+                Some(Duration::from_secs(1800)),
+                process_output::StdoutMode::Tail,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+            if !output.status.is_some_and(|status| status.success()) {
+                let mut detail = String::from_utf8_lossy(&output.stderr).into_owned();
+                for value in self.env.values().filter(|value| !value.is_empty()) {
+                    detail = detail.replace(value, "[redacted]");
+                }
+                return Err(format!(
+                    "Compose {} failed or timed out: {}",
+                    args[0],
+                    detail.trim()
+                ));
+            }
+        }
         let services = model["services"]
             .as_object()
             .ok_or("Compose has no services")?;
@@ -338,15 +362,26 @@ impl ComposeRuntime {
                 .map(str::to_string)
                 .unwrap_or_else(|| format!("{}-{service}", self.project));
             let mut inspect = docker_command(self.development);
-            inspect.args(["image", "inspect", "--format", "{{.Id}}", &original]);
-            let id = engine_output(inspect, Duration::from_secs(30)).await?;
-            let id = String::from_utf8_lossy(&id).trim().to_string();
-            let hash = id
-                .strip_prefix("sha256:")
+            inspect.args(["image", "inspect", "--format", "{{json .}}"]);
+            if let Some(platform) = definition["platform"].as_str() {
+                inspect.args(["--platform", platform]);
+            }
+            inspect.arg(&original);
+            let metadata = engine_output(inspect, Duration::from_secs(30)).await?;
+            let metadata: Value = serde_json::from_slice(&metadata)
+                .map_err(|_| "Docker returned invalid image metadata")?;
+            let id = metadata["Id"]
+                .as_str()
+                .ok_or("Docker returned no image ID")?;
+            id.strip_prefix("sha256:")
                 .filter(|hash| hash.len() == 64 && hash.bytes().all(|c| c.is_ascii_hexdigit()))
                 .ok_or("Docker returned an invalid image ID")?;
+            let hash = image_fingerprint(&metadata)?;
             // Content-addressed tags keep unchanged services stable across
             // releases while protecting prepared images from dangling-image GC.
+            // Containerd-backed engines can identify an attestation-bearing
+            // index whose digest changes on a cached rebuild. Identity follows
+            // the runnable configuration, filesystem, and platform instead.
             let image = format!("tako-compose/{}:{}-{hash}", self.project, digest(service));
             let result = docker_command(self.development)
                 .args([
@@ -354,7 +389,7 @@ impl ComposeRuntime {
                     "unix:///var/run/docker.sock",
                     "image",
                     "tag",
-                    &id,
+                    id,
                     &image,
                 ])
                 .output()
@@ -367,10 +402,6 @@ impl ComposeRuntime {
             }
             images.insert(service.clone(), image);
         }
-        write_private(
-            &self.images_path(),
-            &serde_json::to_vec(&images).map_err(|e| e.to_string())?,
-        )?;
         for image in temporary_images {
             // The content-addressed tag now protects this image. Removing only
             // this attempt's build tag cannot affect another preparation.
@@ -378,7 +409,7 @@ impl ComposeRuntime {
             remove.args(["image", "rm", &image]);
             let _ = engine_output(remove, Duration::from_secs(30)).await;
         }
-        Ok(())
+        self.commit_preparation(snapshot, images)
     }
 
     pub async fn start_development(&self, port: u16) -> Result<Child, String> {
@@ -502,6 +533,26 @@ impl ComposeRuntime {
     }
 }
 
+fn image_fingerprint(metadata: &Value) -> Result<String, String> {
+    if !metadata["Config"].is_object()
+        || metadata["RootFS"]["Type"] != "layers"
+        || !(metadata["RootFS"]["Layers"].is_array() || metadata["RootFS"]["Layers"].is_null())
+        || !metadata["Architecture"].is_string()
+        || !metadata["Os"].is_string()
+    {
+        return Err("Docker image metadata is missing its runtime configuration".into());
+    }
+    let identity = json!({
+        "config":metadata["Config"], "rootfs":metadata["RootFS"],
+        "architecture":metadata["Architecture"], "os":metadata["Os"],
+        "variant":metadata["Variant"], "os_version":metadata["OsVersion"],
+        "os_features":metadata["OsFeatures"]
+    });
+    Ok(hex::encode(Sha256::digest(
+        serde_json::to_vec(&identity).map_err(|e| e.to_string())?,
+    )))
+}
+
 async fn engine_output(mut command: Command, deadline: Duration) -> Result<Vec<u8>, String> {
     let child = command
         .stdout(std::process::Stdio::piped())
@@ -552,7 +603,17 @@ fn validate_model_with_mode(
         return Err(format!("Compose service '{ingress}' does not exist"));
     }
     let root = directory.canonicalize().map_err(|e| e.to_string())?;
+    if !development {
+        validation::validate_resources(model, false, None)?;
+        validation::validate_resource_files(model, &root)?;
+    }
     for (name, service) in services {
+        if !development {
+            validation::validate_service(name, service)?;
+            if let Some(build) = service.get("build") {
+                validation::validate_build(build, &root, false)?;
+            }
+        }
         for key in ["container_name", "network_mode", "profiles"] {
             if service.get(key).is_some() {
                 return Err(format!(
@@ -618,6 +679,37 @@ pub fn render_override(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_identity_ignores_attestations_but_tracks_runtime_contents() {
+        let original = json!({
+            "Id":"sha256:first-index", "Created":"first-build",
+            "Architecture":"amd64", "Os":"linux",
+            "Config":{"Cmd":["serve"], "Env":["MODE=production"]},
+            "RootFS":{"Type":"layers", "Layers":["sha256:filesystem"]}
+        });
+        let mut rebuilt = original.clone();
+        rebuilt["Id"] = json!("sha256:second-index");
+        rebuilt["Created"] = json!("second-build");
+        rebuilt["RepoTags"] = json!(["different-build-attempt"]);
+        assert_eq!(
+            image_fingerprint(&original).unwrap(),
+            image_fingerprint(&rebuilt).unwrap()
+        );
+        for (pointer, replacement) in [
+            ("/Config/Cmd/0", "different-command"),
+            ("/Config/Env/0", "MODE=staging"),
+            ("/RootFS/Layers/0", "sha256:different-filesystem"),
+            ("/Architecture", "arm64"),
+        ] {
+            let mut changed = original.clone();
+            *changed.pointer_mut(pointer).unwrap() = json!(replacement);
+            assert_ne!(
+                image_fingerprint(&original).unwrap(),
+                image_fingerprint(&changed).unwrap()
+            );
+        }
+    }
 
     fn config() -> ComposeConfig {
         ComposeConfig {
