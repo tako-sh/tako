@@ -1,6 +1,7 @@
 #!/bin/sh
 # Exercise the native app identity against a real production preparation.
 set -eu
+test "$(id -u)" = 0
 app=$1
 release=$2
 root="/opt/tako/apps/$app"
