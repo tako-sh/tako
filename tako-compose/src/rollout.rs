@@ -40,11 +40,13 @@ impl ComposeRuntime {
         }
         for (name, service) in services {
             let mut command = docker_command(false);
+            // Docker can omit Volumes entirely for images without VOLUME.
+            // `index` handles both an absent key and an explicit null value.
             command.args([
                 "image",
                 "inspect",
                 "--format",
-                r#"{"id":{{json .Id}},"volumes":{{json .Config.Volumes}}}"#,
+                r#"{"id":{{json .Id}},"volumes":{{json (index .Config "Volumes")}}}"#,
                 &images[name],
             ]);
             let output = engine_output(command, Duration::from_secs(30)).await?;
