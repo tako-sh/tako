@@ -147,21 +147,62 @@ pub struct ChannelDefinitionMeta {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(try_from = "ChannelLifecycleWire", into = "ChannelLifecycleWire")]
 pub struct ChannelLifecycle {
-    #[serde(default = "default_replay_window_ms")]
+    pub ephemeral: bool,
     pub replay_window_ms: u64,
-    #[serde(default = "default_inactivity_ttl_ms")]
     pub inactivity_ttl_ms: u64,
-    #[serde(default = "default_keepalive_interval_ms")]
     pub keepalive_interval_ms: u64,
-    #[serde(default = "default_max_connection_lifetime_ms")]
     pub max_connection_lifetime_ms: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChannelLifecycleWire {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    ephemeral: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    replay_window_ms: Option<u64>,
+    #[serde(default = "default_inactivity_ttl_ms")]
+    inactivity_ttl_ms: u64,
+    #[serde(default = "default_keepalive_interval_ms")]
+    keepalive_interval_ms: u64,
+    #[serde(default = "default_max_connection_lifetime_ms")]
+    max_connection_lifetime_ms: u64,
+}
+
+impl TryFrom<ChannelLifecycleWire> for ChannelLifecycle {
+    type Error = &'static str;
+    fn try_from(wire: ChannelLifecycleWire) -> Result<Self, Self::Error> {
+        if wire.ephemeral && wire.replay_window_ms.is_some() {
+            return Err("ephemeral channels cannot set replayWindowMs");
+        }
+        Ok(Self {
+            ephemeral: wire.ephemeral,
+            replay_window_ms: wire.replay_window_ms.unwrap_or(DEFAULT_REPLAY_WINDOW_MS),
+            inactivity_ttl_ms: wire.inactivity_ttl_ms,
+            keepalive_interval_ms: wire.keepalive_interval_ms,
+            max_connection_lifetime_ms: wire.max_connection_lifetime_ms,
+        })
+    }
+}
+
+impl From<ChannelLifecycle> for ChannelLifecycleWire {
+    fn from(value: ChannelLifecycle) -> Self {
+        Self {
+            ephemeral: value.ephemeral,
+            replay_window_ms: (!value.ephemeral).then_some(value.replay_window_ms),
+            inactivity_ttl_ms: value.inactivity_ttl_ms,
+            keepalive_interval_ms: value.keepalive_interval_ms,
+            max_connection_lifetime_ms: value.max_connection_lifetime_ms,
+        }
+    }
 }
 
 impl Default for ChannelLifecycle {
     fn default() -> Self {
         Self {
+            ephemeral: false,
             replay_window_ms: DEFAULT_REPLAY_WINDOW_MS,
             inactivity_ttl_ms: DEFAULT_INACTIVITY_TTL_MS,
             keepalive_interval_ms: DEFAULT_KEEPALIVE_INTERVAL_MS,
@@ -176,6 +217,7 @@ impl ChannelDefinitionMeta {
             ok: true,
             subject: None,
             transport: self.transport.clone(),
+            ephemeral: self.lifecycle.ephemeral,
             replay_window_ms: self.lifecycle.replay_window_ms,
             inactivity_ttl_ms: self.lifecycle.inactivity_ttl_ms,
             keepalive_interval_ms: self.lifecycle.keepalive_interval_ms,
@@ -185,30 +227,42 @@ impl ChannelDefinitionMeta {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(from = "ChannelAuthWire")]
 pub struct ChannelAuthResponse {
+    pub ephemeral: bool,
     pub ok: bool,
-    #[serde(default)]
     pub subject: Option<String>,
-    #[serde(default)]
     pub transport: Option<ChannelTransport>,
-    #[serde(default = "default_replay_window_ms", rename = "replayWindowMs")]
     pub replay_window_ms: u64,
-    #[serde(default = "default_inactivity_ttl_ms", rename = "inactivityTtlMs")]
     pub inactivity_ttl_ms: u64,
-    #[serde(
-        default = "default_keepalive_interval_ms",
-        rename = "keepaliveIntervalMs"
-    )]
     pub keepalive_interval_ms: u64,
-    #[serde(
-        default = "default_max_connection_lifetime_ms",
-        rename = "maxConnectionLifetimeMs"
-    )]
     pub max_connection_lifetime_ms: u64,
 }
 
-fn default_replay_window_ms() -> u64 {
-    DEFAULT_REPLAY_WINDOW_MS
+#[derive(Deserialize)]
+struct ChannelAuthWire {
+    ok: bool,
+    #[serde(default)]
+    subject: Option<String>,
+    #[serde(default)]
+    transport: Option<ChannelTransport>,
+    #[serde(flatten)]
+    lifecycle: ChannelLifecycle,
+}
+
+impl From<ChannelAuthWire> for ChannelAuthResponse {
+    fn from(wire: ChannelAuthWire) -> Self {
+        Self {
+            ok: wire.ok,
+            subject: wire.subject,
+            transport: wire.transport,
+            ephemeral: wire.lifecycle.ephemeral,
+            replay_window_ms: wire.lifecycle.replay_window_ms,
+            inactivity_ttl_ms: wire.lifecycle.inactivity_ttl_ms,
+            keepalive_interval_ms: wire.lifecycle.keepalive_interval_ms,
+            max_connection_lifetime_ms: wire.lifecycle.max_connection_lifetime_ms,
+        }
+    }
 }
 
 fn default_inactivity_ttl_ms() -> u64 {

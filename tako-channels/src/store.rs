@@ -52,6 +52,7 @@ pub fn channels_db_path(data_dir: &std::path::Path) -> PathBuf {
 
 pub struct ChannelStore {
     backend: Arc<ChannelStoreBackend>,
+    ephemeral: Arc<crate::ephemeral::EphemeralHub>,
     changes: Arc<Mutex<StreamChanges>>,
     _lifetime: Arc<()>,
 }
@@ -135,6 +136,7 @@ impl ChannelStore {
         // keeping synchronous Postgres client shutdown off async executor threads.
         Ok(Self {
             backend,
+            ephemeral: Arc::default(),
             changes,
             _lifetime: lifetime,
         })
@@ -223,7 +225,11 @@ impl ChannelStore {
     }
 
     pub fn open_sqlite(path: &Path) -> Result<Self, ChannelError> {
-        Self::from_backend(ChannelStoreBackend::Sqlite(SqliteChannelStore::open(path)?))
+        let mut store =
+            Self::from_backend(ChannelStoreBackend::Sqlite(SqliteChannelStore::open(path)?))?;
+        let path = std::fs::canonicalize(path).map_err(|e| ChannelError::Storage(e.to_string()))?;
+        store.ephemeral = crate::ephemeral::EphemeralHub::for_path(path);
+        Ok(store)
     }
 
     pub fn open_postgres(url: &str, app_id: &str) -> Result<Self, ChannelError> {
@@ -279,6 +285,30 @@ impl ChannelStore {
             .expect("raw query string")
     }
 
+    pub fn ensure_ephemeral_supported(&self) -> Result<(), ChannelError> {
+        if matches!(self.backend.as_ref(), ChannelStoreBackend::Postgres(_)) {
+            return Err(crate::ephemeral::unsupported());
+        }
+        Ok(())
+    }
+
+    pub fn subscribe_ephemeral(
+        &self,
+        channel: &str,
+    ) -> Result<crate::ephemeral::EphemeralSubscription, ChannelError> {
+        self.ensure_ephemeral_supported()?;
+        Ok(self.ephemeral.subscribe(channel))
+    }
+
+    pub fn publish_ephemeral(
+        &self,
+        channel: &str,
+        payload: &ChannelPublishPayload,
+    ) -> Result<ChannelMessage, ChannelError> {
+        self.ensure_ephemeral_supported()?;
+        Ok(self.ephemeral.publish(channel, payload))
+    }
+
     pub fn append(
         &self,
         channel: &str,
@@ -318,6 +348,9 @@ impl ChannelStore {
         channel: &str,
         auth: &ChannelAuthResponse,
     ) -> Result<(), ChannelError> {
+        if auth.ephemeral {
+            return Ok(());
+        }
         match self.backend.as_ref() {
             ChannelStoreBackend::Sqlite(store) => store.sync_channel(channel, auth),
             ChannelStoreBackend::Postgres(store) => store.sync_channel(channel, auth),

@@ -286,7 +286,9 @@ interface TakoStatus {
 
 ## Channels
 
-Durable pub-sub routes with SSE and WebSocket transport, plus a bounded replay window. Channels are broadcast streams, not work queues: all authorized subscribers to the same channel read the same messages, and each subscriber keeps its own cursor. Production stores replay by deployed app id (`{name}/{env}`); local dev keeps replay in memory for the current daemon process.
+Use `defineChannel("live-progress", { ephemeral: true })` for memory-only events. Omitted or false preserves durable delivery. Ephemeral channels support local dev and single-server production without shared Postgres; Postgres rejects ephemeral publication/subscription. They deliver only to connected subscribers, use a bounded 64-message buffer, skip evicted events for slow clients, and never replay on reconnect. Messages have `id: ""` and SSE omits replay IDs. Combining `ephemeral: true` with `replayWindowMs` throws. Verify two connected clients receive an event and a disconnected client does not replay it after reconnect.
+
+Pub-sub routes with SSE and WebSocket transport, durable by default with a bounded replay window. Channels are broadcast streams, not work queues: all authorized subscribers to the same channel read the same messages, and each subscriber keeps its own cursor. Production stores replay by deployed app id (`{name}/{env}`); local dev keeps replay in memory for the current daemon process.
 
 ### Defining channels (file-based)
 

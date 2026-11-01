@@ -252,6 +252,7 @@ fn postgres_channel_store_round_trips_when_url_is_set() {
                 ok: true,
                 subject: None,
                 transport: None,
+                ephemeral: false,
                 replay_window_ms: DEFAULT_REPLAY_WINDOW_MS,
                 inactivity_ttl_ms: 0,
                 keepalive_interval_ms: DEFAULT_KEEPALIVE_INTERVAL_MS,
@@ -389,6 +390,7 @@ fn channel_store_append_updates_channel_activity() {
                 ok: true,
                 subject: None,
                 transport: None,
+                ephemeral: false,
                 replay_window_ms: DEFAULT_REPLAY_WINDOW_MS,
                 inactivity_ttl_ms: 0,
                 keepalive_interval_ms: DEFAULT_KEEPALIVE_INTERVAL_MS,
@@ -496,6 +498,7 @@ fn channel_store_persists_lifecycle_and_prunes_inactive_channels() {
                 ok: true,
                 subject: None,
                 transport: None,
+                ephemeral: false,
                 replay_window_ms: DEFAULT_REPLAY_WINDOW_MS,
                 inactivity_ttl_ms: 1,
                 keepalive_interval_ms: DEFAULT_KEEPALIVE_INTERVAL_MS,
@@ -516,6 +519,7 @@ fn channel_store_persists_lifecycle_and_prunes_inactive_channels() {
                 ok: true,
                 subject: None,
                 transport: Some(ChannelTransport::Ws),
+                ephemeral: false,
                 replay_window_ms: DEFAULT_REPLAY_WINDOW_MS,
                 inactivity_ttl_ms: 0,
                 keepalive_interval_ms: DEFAULT_KEEPALIVE_INTERVAL_MS,
@@ -685,6 +689,7 @@ fn test_auth() -> ChannelAuthResponse {
         ok: true,
         subject: None,
         transport: None,
+        ephemeral: false,
         replay_window_ms: DEFAULT_REPLAY_WINDOW_MS,
         inactivity_ttl_ms: 0,
         keepalive_interval_ms: DEFAULT_KEEPALIVE_INTERVAL_MS,
@@ -773,4 +778,18 @@ fn write_with_live_read_cursor_persists() {
         Ok(_) => assert_eq!(count, 6, "write returned Ok but did not persist"),
         Err(_) => assert_eq!(count, 5, "write failed loudly; nothing should persist"),
     }
+}
+
+#[test]
+fn postgres_rejects_ephemeral_delivery_when_configured() {
+    let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
+        return;
+    };
+    let store = ChannelStore::open_postgres(&url, "ephemeral-rejection/test").unwrap();
+    assert!(
+        matches!(store.subscribe_ephemeral("live"), Err(ChannelError::BadRequest(message)) if message.contains("single server"))
+    );
+    assert!(
+        matches!(store.publish_ephemeral("live", &ChannelPublishPayload { r#type: "progress".into(), data: 1.into() }), Err(ChannelError::BadRequest(message)) if message.contains("single server"))
+    );
 }

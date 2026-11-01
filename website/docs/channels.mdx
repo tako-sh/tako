@@ -3,7 +3,7 @@ title: Channels
 description: "Define typed SSE and WebSocket channels with authorization, replay, browser clients, server-side publishing, and multi-server Postgres storage."
 ---
 
-Tako Channels are durable broadcast streams for live app events. The Tako proxy serves each channel over SSE or WebSocket, stores every published message before fanout, and retains a bounded replay window for reconnecting clients.
+Tako Channels are broadcast streams for live app events over SSE or WebSocket. Channels are durable by default: Tako stores each message before fanout and retains a bounded replay window. Set `ephemeral: true` for memory-only delivery on a single server.
 
 JavaScript and Go can register channel definitions. JavaScript additionally provides the server-side `publish` helper. Rust currently has no general Channels registration or publishing API; its [Presence](/presence/) and [Stores](/stores/) registries are separate capabilities. Browser and React examples below use the JavaScript client with any supported backend definition.
 
@@ -11,7 +11,7 @@ Local channel subscriptions bypass authorization callbacks. Test private access 
 
 ## Choose Broadcast Semantics
 
-Channels are pub-sub, not work queues. Every authorized subscriber to a channel reads the same messages and keeps an independent replay cursor. A message is not claimed, acknowledged, or removed when one subscriber receives it.
+Channels are pub-sub, not work queues. Every authorized subscriber to a channel reads the same messages and, for durable channels, keeps an independent replay cursor. A message is not claimed, acknowledged, or removed when one subscriber receives it.
 
 Use a channel for live dashboards, chat delivery, presence updates, notifications, and collaborative updates. Use a workflow when work should be claimed and executed with retries instead of broadcast to every subscriber.
 
@@ -23,7 +23,7 @@ Every delivered message has this wire shape:
 
 ```ts
 type ChannelMessage<T> = {
-  id: string; // server-assigned replay cursor
+  id: string; // replay cursor for durable channels; "" for ephemeral events
   channel: string; // exact wire channel name
   type: string; // application-defined message type
   data: T;
@@ -77,6 +77,39 @@ func registerSiteEvents() {
 </CodeGroup>
 
 `readSession` is application-owned authentication code. The JavaScript helper receives a parsed header; the Go helper above accepts `*tako.ChannelHeaderValue` and returns the verified user ID and a success flag. Go's SDK serves discovery and authorization through `ListenAndServe`; it does not provide the JavaScript handle or browser-client methods.
+
+## Use Memory-Only Channels
+
+Set `ephemeral: true` when only current subscribers need an event, such as live progress or transient telemetry. Omit it or set it to `false` for durable delivery.
+
+<CodeGroup>
+
+```ts JavaScript
+import { defineChannel } from "tako.sh";
+
+export default defineChannel("live-progress", {
+  ephemeral: true,
+  // Add transport: "ws" to enable browser publishing.
+});
+```
+
+```go Go
+import "tako.sh"
+
+tako.Channels.Register("live-progress", tako.ChannelDefinition{
+    ChannelLifecycleConfig: tako.ChannelLifecycleConfig{Ephemeral: true},
+})
+```
+
+</CodeGroup>
+
+Ephemeral messages never enter the channel database or replay log. They reach only subscribers currently connected to the same Tako server process. Messages published without subscribers, during disconnects, or before a server restart are lost. Each active channel has a bounded 64-message buffer; slow subscribers skip events that have been evicted. The buffer is released when the last subscriber disconnects.
+
+Ephemeral messages have `id: ""`; SSE frames omit the `id` field. Reconnects start with live events and do not resume from a replay cursor. Authorization, params, SSE/WebSocket transport, keepalives, and connection lifetime still apply. Setting `replayWindowMs` together with `ephemeral: true` is rejected; in Go, leave `ReplayWindowMs` at its zero value.
+
+Ephemeral channels currently support local development and single-server production without a `postgres_url` credential. Shared Postgres deployments reject ephemeral publishing and subscriptions because the current cross-server transport requires persisted messages. A channel can be durable or ephemeral independently of other channels in the app. Use [Presence](/presence/) for membership and current typing/cursor metadata.
+
+To verify, connect two clients and publish an event. Both should receive it. Disconnect, publish another event, then reconnect: the disconnected event must not replay.
 
 ## Understand Channel Params
 
@@ -175,7 +208,7 @@ const published = await siteEvents.publish({
 });
 ```
 
-`publish()` requires the Tako server runtime and returns the stored `ChannelMessage`. Browser code does not call it. An SSE browser only receives events, while a WebSocket browser sends `{ type, data }` through its connection.
+`publish()` requires the Tako server runtime and returns the published `ChannelMessage`. Browser code does not call it. An SSE browser only receives events, while a WebSocket browser sends `{ type, data }` through its connection.
 
 ## Consume In The Browser
 
@@ -224,7 +257,7 @@ function LiveStatus({ token }: { token: string }) {
 
 ## Recover After Disconnects
 
-Each publish is inserted before delivery. `replayWindowMs` defaults to 10 minutes, so a reconnect can bridge a browser reload, laptop sleep, network change, server restart, or rolling deploy.
+For durable channels, each publish is inserted before delivery. `replayWindowMs` defaults to 10 minutes, so a reconnect can bridge a browser reload, laptop sleep, network change, server restart, or rolling deploy.
 
 Replay cleanup runs every second, including when no clients are connected. Channel definitions carry their lifecycle settings with server-side publishes, so retention applies before the first subscription. Connections share an app-wide change poller; database reads run outside the async request workers. Shared Postgres stores detect publishes from every server.
 
@@ -244,7 +277,7 @@ Storage is a deployment choice; application publish and subscribe code stays the
 | One production server       | Tako-managed SQLite (`channels.sqlite`) by default               |
 | Multiple production servers | Shared Postgres schema `tako_channels`, keyed by deployed app id |
 
-A multi-server environment with channels requires the shared `postgres_url` environment credential so publishes and replay are visible on every server:
+A multi-server environment with durable channels requires the shared `postgres_url` environment credential so publishes and replay are visible on every server:
 
 ```bash
 tako credentials set postgres_url --env production

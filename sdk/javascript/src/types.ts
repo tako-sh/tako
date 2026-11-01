@@ -66,6 +66,8 @@ export type ChannelAuthResult = boolean | ChannelGrant | Promise<boolean | Chann
 
 /** Lifecycle knobs controlling replay, idle eviction, and keepalives per channel. */
 export interface ChannelLifecycleConfig {
+  /** Deliver only live events in memory, without persistence or replay. Default: false. */
+  ephemeral?: boolean;
   /** @defaultValue 600_000 (10 min) */
   replayWindowMs?: number;
   /** @defaultValue 0 (no inactivity eviction) */
@@ -111,9 +113,9 @@ export interface ChannelPublishInput<T = unknown> {
   data: T;
 }
 
-/** Persisted channel message with server-assigned id and channel name. */
+/** Published channel message with its channel name and optional replay cursor. */
 export interface ChannelMessage<T = unknown> extends ChannelPublishInput<T> {
-  /** Server-assigned monotonic message id. */
+  /** Server-assigned monotonic replay id, or an empty string for ephemeral events. */
   id: string;
   /** The exact channel the message was published on. */
   channel: string;
