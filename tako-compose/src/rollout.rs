@@ -34,6 +34,7 @@ impl ComposeRuntime {
         if images.keys().ne(services.keys()) {
             return Err("Compose service definitions changed since release preparation".into());
         }
+        let mut creation_images = BTreeMap::new();
         for (name, service) in services {
             let mut command = docker_command(false);
             // Docker can omit Volumes entirely for images without VOLUME.
@@ -43,8 +44,11 @@ impl ComposeRuntime {
                 "inspect",
                 "--format",
                 r#"{"id":{{json .Id}},"volumes":{{json (index .Config "Volumes")}}}"#,
-                &images[name],
             ]);
+            if let Some(platform) = service["platform"].as_str() {
+                command.args(["--platform", platform]);
+            }
+            command.arg(&images[name]);
             let output = engine_output(command, Duration::from_secs(30)).await?;
             let image: Value =
                 serde_json::from_slice(&output).map_err(|_| "Invalid prepared image metadata")?;
@@ -78,9 +82,16 @@ impl ComposeRuntime {
                     ));
                 }
             }
-            service["image"] = Value::String(id.into());
+            creation_images.insert(name.clone(), id.to_owned());
+            service["image"] = Value::String(images[name].clone());
         }
-        let plan = Plan::new(model, &runtime)?;
+        // Compare stable runtime-content identities, then freeze creation to
+        // the exact inspected IDs. Attestation-only rebuilds do not replace
+        // healthy services, and later tag updates cannot change a rollout.
+        let mut plan = Plan::new(model, &runtime)?;
+        for (service, id) in creation_images {
+            plan.model["services"][service]["image"] = Value::String(id);
+        }
         let before = self.containers().await?;
         Ok(Rollout {
             runtime,

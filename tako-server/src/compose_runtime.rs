@@ -181,6 +181,126 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires Docker Compose and shared host/container loopback and project paths"]
+    async fn delete_then_redeploy_recreates_private_mounts_and_preserves_named_data() {
+        use std::sync::Arc;
+        use tako_core::{Command, Response};
+        let dir = crate::isolation::fixture::TestDataDir::new().unwrap();
+        let name = "delete-compose/production";
+        let state = crate::ServerState::new(
+            dir.path().into(),
+            Arc::new(crate::tls::CertManager::new(
+                crate::tls::CertManagerConfig {
+                    cert_dir: dir.path().join("certs"),
+                    ..Default::default()
+                },
+            )),
+            None,
+            Arc::new(parking_lot::RwLock::new(HashMap::new())),
+        )
+        .unwrap();
+        let config = ComposeConfig {
+            file: "compose.yaml".into(),
+            service: "web".into(),
+            port: 8080,
+            health_path: "/".into(),
+            health_host: None,
+        };
+        let release = crate::release::app_release_root(dir.path(), name, "v1");
+        let yaml = "services:\n  web:\n    image: docker.io/library/busybox:1.37\n    command: [httpd, -f, -p, '8080', -h, /www]\n    volumes: ['./public:/www:ro', 'state:/state']\nvolumes:\n  state:\n";
+        struct Cleanup(String);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                if let Ok(output) = std::process::Command::new("docker")
+                    .args([
+                        "ps",
+                        "-aq",
+                        "--filter",
+                        &format!("label=com.docker.compose.project={}", self.0),
+                    ])
+                    .output()
+                {
+                    let ids = String::from_utf8_lossy(&output.stdout);
+                    if !ids.trim().is_empty() {
+                        let _ = std::process::Command::new("docker")
+                            .args(["rm", "--force", "--volumes"])
+                            .args(ids.split_whitespace())
+                            .output();
+                    }
+                }
+                let _ = std::process::Command::new("docker")
+                    .args(["volume", "rm", &format!("{}_state", self.0)])
+                    .output();
+            }
+        }
+        let mut cleanup = None;
+        let mut old = None;
+        for attempt in 0..2 {
+            let data = crate::release::ensure_app_runtime_data_dirs(dir.path(), name).unwrap();
+            std::fs::create_dir_all(release.join("public")).unwrap();
+            std::fs::write(release.join("public/index.html"), "mounted content").unwrap();
+            std::fs::write(release.join("compose.yaml"), yaml).unwrap();
+            std::fs::write(
+                release.join("app.json"),
+                json!({
+                    "protocol_version":tako_core::PROTOCOL_VERSION, "release_kind":"compose",
+                    "app_name":"delete-compose", "environment":"production", "version":"v1",
+                    "runtime":"compose", "main":"", "idle_timeout":300, "compose":config,
+                })
+                .to_string(),
+            )
+            .unwrap();
+            let runtime = ComposeRuntime::new(
+                release.clone(),
+                config.clone(),
+                HashMap::from([(TAKO_APP_DATA_DIR_ENV.into(), data.app.display().to_string())]),
+            )
+            .unwrap();
+            if cleanup.is_none() {
+                cleanup = Some(Cleanup(runtime.project.clone()));
+            }
+            runtime.prepare("v1").await.unwrap();
+            let deploy = serde_json::from_value(json!({"command":"deploy", "app":name,
+                "version":"v1", "path":release, "routes":["delete.localhost"]}))
+            .unwrap();
+            assert!(matches!(
+                state.handle_command(deploy).await,
+                Response::Ok { .. }
+            ));
+            let containers = runtime.containers().await.unwrap();
+            let id = &containers[0].id;
+            if attempt == 0 {
+                assert!(
+                    tokio::process::Command::new("docker")
+                        .args(["exec", id, "sh", "-c", "echo retained > /state/marker"])
+                        .status()
+                        .await
+                        .unwrap()
+                        .success()
+                );
+                old = Some(id.clone());
+            } else {
+                assert_ne!(Some(id), old.as_ref());
+                let output = tokio::process::Command::new("docker")
+                    .args(["exec", id, "cat", "/state/marker"])
+                    .output()
+                    .await
+                    .unwrap();
+                assert!(output.status.success());
+                assert_eq!(output.stdout, b"retained\n");
+            }
+            assert!(matches!(
+                state
+                    .handle_command(Command::Delete { app: name.into() })
+                    .await,
+                Response::Ok { .. }
+            ));
+            assert!(runtime.containers().await.unwrap().is_empty());
+            assert!(!crate::release::app_root(dir.path(), name).exists());
+        }
+    }
+
+    #[tokio::test]
     #[ignore = "requires Docker Compose, Python 3, and shared host/container loopback and project paths"]
     async fn leaving_compose_stops_background_services_and_failed_native_deploy_restores_them() {
         use std::sync::Arc;

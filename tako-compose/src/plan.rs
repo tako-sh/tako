@@ -49,8 +49,8 @@ impl Plan {
         let mut plans = BTreeMap::new();
         for (name, definition) in definitions.iter_mut() {
             validate_service(name, definition)?;
-            // Builds and image tags belong to preparation. The model has already
-            // been pinned to immutable image IDs by the runtime.
+            // Builds belong to preparation. Compare stable prepared image
+            // identities; the runtime pins creation to exact inspected IDs.
             definition.as_object_mut().unwrap().remove("build");
             definition.as_object_mut().unwrap().remove("pull_policy");
             definition["ports"] = json!([]);

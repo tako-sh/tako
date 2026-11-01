@@ -173,14 +173,27 @@ impl crate::ServerState {
             .delete(app_name, Duration::from_secs(120))
             .await;
 
+        let app_root = app_root(&self.runtime.data_dir, app_name);
+        let owns_compose = app_root.join("data/compose").is_dir()
+            || self
+                .app_manager
+                .get_app(app_name)
+                .is_some_and(|app| app.config.read().compose.is_some());
         let mut existed = false;
         if self.app_manager.get_app(app_name).is_some() {
             existed = true;
             if let Err(e) = self.app_manager.stop_app(app_name).await {
                 return Response::error(format!("Delete failed: {}", e));
             }
-            self.app_manager.remove_app(app_name);
         }
+        if owns_compose {
+            if let Err(error) =
+                tako_compose::remove_app_containers(&app_root.join("data/app")).await
+            {
+                return Response::error(format!("Delete failed: {error}"));
+            }
+        }
+        self.app_manager.remove_app(app_name);
 
         self.load_balancer.unregister_app(app_name);
         self.cold_start.reset(app_name);
@@ -198,7 +211,6 @@ impl crate::ServerState {
                 e
             );
         }
-        let app_root = app_root(&self.runtime.data_dir, app_name);
         if let Err(e) = std::fs::remove_dir_all(&app_root)
             && e.kind() != std::io::ErrorKind::NotFound
         {

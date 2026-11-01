@@ -611,6 +611,97 @@ async fn readiness_rejects_restarts_between_healthy_observations() {
 
 #[tokio::test]
 #[ignore = "requires Docker Compose and shared build paths"]
+async fn rebuilt_image_ids_with_identical_runtime_content_keep_running_containers() {
+    let mut fixture = Fixture::new();
+    let runtime = fixture.unprepared_release(
+        "image-identity",
+        r#"
+services:
+  web:
+    image: docker.io/library/busybox:1.37
+    command: [sh, -c, 'mkdir -p /www; echo stable > /www/index.html; exec httpd -f -p 8080 -h /www']
+    deploy:
+      update_config:
+        monitor: 0s
+"#,
+    );
+    let archive = fixture.dir.path().join("rootfs.tar");
+    let mut create = docker_command(false);
+    create.args(["create", "docker.io/library/busybox:1.37", "sh"]);
+    let source = String::from_utf8(
+        engine_output(create, Duration::from_secs(30))
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let mut export = docker_command(false);
+    export
+        .args(["export", "--output"])
+        .arg(&archive)
+        .arg(source.trim());
+    engine_output(export, Duration::from_secs(30))
+        .await
+        .unwrap();
+    let mut remove = docker_command(false);
+    remove.args(["rm", source.trim()]);
+    engine_output(remove, Duration::from_secs(30))
+        .await
+        .unwrap();
+    let mut previous = None;
+    for attempt in 0..2 {
+        // Import exactly the same filesystem and configuration twice. The
+        // creation timestamp changes the image ID, like new attestations do,
+        // without changing anything that a running container consumes.
+        let mut import = docker_command(false);
+        import
+            .args(["import", "--change", "CMD [\"sh\"]"])
+            .arg(&archive);
+        let id = String::from_utf8(
+            engine_output(import, Duration::from_secs(30))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let id = id.trim();
+        let mut inspect = docker_command(false);
+        inspect.args(["image", "inspect", "--format", "{{json .}}", id]);
+        let metadata: Value = serde_json::from_slice(
+            &engine_output(inspect, Duration::from_secs(30))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let identity = crate::image_fingerprint(&metadata).unwrap();
+        let tag = format!("tako-compose/{}:{identity}", runtime.project);
+        let mut tag_image = docker_command(false);
+        tag_image.args(["tag", id, &tag]);
+        engine_output(tag_image, Duration::from_secs(30))
+            .await
+            .unwrap();
+        let (_, snapshot) = runtime.snapshot().unwrap();
+        runtime
+            .commit_preparation(snapshot, BTreeMap::from([("web".into(), tag)]))
+            .unwrap();
+        let mut rollout = runtime.begin_rollout().await.unwrap();
+        assert_eq!(rollout.plan.model["services"]["web"]["image"], id);
+        if let Some((old_id, old_identity, _)) = &previous {
+            assert_ne!(old_id, id);
+            assert_eq!(old_identity, &identity);
+            assert!(rollout.changes().is_empty());
+        }
+        rollout.apply().await.unwrap();
+        let container = rollout.ingress().unwrap();
+        assert!(http(container).await.ends_with("stable\n"));
+        if attempt == 1 {
+            assert_eq!(container.id, previous.as_ref().unwrap().2);
+        }
+        previous = Some((id.to_string(), identity, container.id.clone()));
+        rollout.finish().await.unwrap();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires Docker Compose and shared build paths"]
 async fn concurrent_preparations_pin_their_own_images() {
     let mut fixture = Fixture::new();
     let shared_tag = format!(

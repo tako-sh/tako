@@ -35,6 +35,12 @@ pub async fn cleanup_pending_project(project: &str) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// Remove every owned container before deleting its prepared inputs. Named
+/// volumes remain available if the same app/environment is deployed again.
+pub async fn remove_app_containers(app_data: &Path) -> Result<(), String> {
+    cleanup_pending_project(&format!("tako-{}", digest(&app_data.to_string_lossy()))).await
+}
 use tako_core::compose::ComposeConfig;
 
 const OVERRIDE_FILE: &str = ".tako-compose-override.yaml";
