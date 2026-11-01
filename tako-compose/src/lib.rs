@@ -44,26 +44,45 @@ pub async fn remove_app_containers(app_data: &Path) -> Result<(), String> {
 use tako_core::compose::ComposeConfig;
 
 const OVERRIDE_FILE: &str = ".tako-compose-override.yaml";
+const CLIENT_ENV: &[&str] = &[
+    "PATH",
+    "HOME",
+    "DOCKER_CONFIG",
+    "BUILDX_CONFIG",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+];
 
 fn docker_command(development: bool) -> Command {
     let mut command = Command::new("docker");
     command.env_clear();
-    for key in [
-        "PATH",
-        "HOME",
-        "DOCKER_CONFIG",
-        "BUILDX_CONFIG",
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "NO_PROXY",
-        "http_proxy",
-        "https_proxy",
-        "no_proxy",
-        "SSL_CERT_FILE",
-        "SSL_CERT_DIR",
-    ] {
+    for &key in CLIENT_ENV {
         if let Some(value) = std::env::var_os(key) {
-            command.env(key, value);
+            // Resolve service-owned client state before switching the child to
+            // the captured app directory. Relative config paths must never
+            // select files supplied by that app.
+            if matches!(key, "HOME" | "DOCKER_CONFIG" | "BUILDX_CONFIG") {
+                let path = PathBuf::from(&value);
+                if path.is_relative() {
+                    // A missing service cwd cannot safely resolve client state.
+                    command.env(
+                        key,
+                        std::env::current_dir()
+                            .map(|cwd| cwd.join(path))
+                            .unwrap_or_else(|_| PathBuf::from("/dev/null")),
+                    );
+                } else {
+                    command.env(key, value);
+                }
+            } else {
+                command.env(key, value);
+            }
         }
     }
     if development {
@@ -135,9 +154,12 @@ impl ComposeRuntime {
         for key in env.keys() {
             if key.starts_with("DOCKER_")
                 || key.starts_with("COMPOSE_")
+                || key.starts_with("BUILDX_")
+                || key.starts_with("BUILDKIT_")
                 || key.starts_with("LD_")
                 || key.starts_with("DYLD_")
-                || matches!(key.as_str(), "PATH" | "HOME")
+                || CLIENT_ENV.contains(&key.as_str())
+                || matches!(key.as_str(), "EXPERIMENTAL_BUILDKIT_SOURCE_POLICY")
             {
                 return Err(format!("'{key}' is reserved for the Compose client"));
             }
@@ -685,6 +707,41 @@ pub fn render_override(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn app_variables_cannot_select_buildkit_client_state_or_builders() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(
+            directory.path().join("compose.yaml"),
+            "services: {web: {build: .}}\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(directory.path().join(".buildx/instances")).unwrap();
+        std::fs::write(directory.path().join(".buildx/instances/evil"),
+            r#"{"Name":"evil","Driver":"docker-container","Nodes":[{"DriverOpts":{"image":"attacker/builder"}}]}"#).unwrap();
+        for (key, value) in [
+            ("BUILDX_CONFIG", ".buildx"),
+            ("BUILDX_BUILDER", "evil"),
+            ("BUILDX_BAKE_FILE", "attacker.json"),
+            ("BUILDKIT_HOST", "tcp://attacker:1234"),
+            ("EXPERIMENTAL_BUILDKIT_SOURCE_POLICY", "attacker.json"),
+            ("SSL_CERT_FILE", "attacker-ca.pem"),
+            ("HTTPS_PROXY", "https://attacker:1234"),
+        ] {
+            let env = HashMap::from([
+                (
+                    TAKO_APP_DATA_DIR_ENV.into(),
+                    directory.path().join("data").display().to_string(),
+                ),
+                (key.into(), value.into()),
+            ]);
+            let error = ComposeRuntime::new(directory.path().into(), config(), env).unwrap_err();
+            assert!(
+                error.contains("reserved for the Compose client"),
+                "{key}: {error}"
+            );
+        }
+    }
 
     #[test]
     fn image_identity_ignores_attestations_but_tracks_runtime_contents() {

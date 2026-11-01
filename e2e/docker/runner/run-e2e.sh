@@ -689,7 +689,7 @@ run_compose_lifecycle_checks() {
   # client finalizes the derived current symlink. Restart must repair it.
   local committed_release
   committed_release=$(resolve_current_release_link "$server_host")
-  ssh_exec "$server_host" "sudo -n sh -s -- '$APP_NAME/production' '$committed_release'" < "$WORKSPACE/e2e/docker/server/verify-compose-inputs.sh"
+  ssh_exec "$server_host" 'sudo -n /usr/local/bin/tako-e2e-verify-compose-inputs'
   ssh_exec "$server_host" "ln -sfn /opt/tako/apps/$APP_NAME/production/releases/$first_release /opt/tako/apps/$APP_NAME/production/current"
   start_tako_server "$server_host"
   [[ $(resolve_current_release_link "$server_host") == "$committed_release" ]]

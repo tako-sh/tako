@@ -73,6 +73,13 @@ if [ -x "/opt/e2e/bin/$libc_kind/tako-server" ]; then
   rmdir "$archive_dir"
 fi
 
+# Only this fixed fixture assertion needs to switch to the native app account.
+# Keep arbitrary root shells forbidden by the installed production sudo policy.
+install -o root -g root -m 0755 /opt/e2e/verify-compose-inputs.sh /usr/local/bin/tako-e2e-verify-compose-inputs
+printf '%s\n' 'tako ALL=(root) NOPASSWD: /usr/local/bin/tako-e2e-verify-compose-inputs ""' > /etc/sudoers.d/tako-e2e-compose
+chmod 0440 /etc/sudoers.d/tako-e2e-compose
+visudo -cf /etc/sudoers.d/tako-e2e-compose
+
 cat > /etc/ssh/sshd_config <<'CFG'
 Port 22
 Protocol 2

@@ -76,12 +76,27 @@ fn service<'a>(containers: &'a [ServiceContainer], name: &str) -> &'a ServiceCon
 async fn exec(container: &ServiceContainer, args: &[&str]) -> String {
     let mut command = docker_command(false);
     command.args(["exec", &container.id]).args(args);
-    String::from_utf8(
-        engine_output(command, Duration::from_secs(30))
-            .await
-            .unwrap(),
+    let child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let output = crate::process_output::capture(
+        child,
+        Some(Duration::from_secs(30)),
+        crate::process_output::StdoutMode::Complete,
     )
-    .unwrap()
+    .await
+    .unwrap();
+    assert!(
+        output.status.is_some_and(|status| status.success()),
+        "exec {args:?} in {}: status {:?}\nstdout: {}\nstderr: {}",
+        container.service,
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
 }
 
 async fn http(container: &ServiceContainer) -> String {
@@ -130,6 +145,7 @@ async fn compose_model_preserves_large_environment_values() {
 #[tokio::test]
 #[ignore = "requires Docker Compose and shared Docker build paths; run with the Docker integration harness"]
 async fn unchanged_non_root_service_keeps_its_private_mount_across_releases() {
+    use std::os::unix::fs::PermissionsExt;
     let mut fixture = Fixture::new();
     let mut model: serde_json::Value = serde_yaml_ng::from_str(SMALL_STACK).unwrap();
     model["services"]["reader"] = serde_json::json!({
@@ -139,20 +155,38 @@ async fn unchanged_non_root_service_keeps_its_private_mount_across_releases() {
     });
     let yaml = model.to_string();
     let mut original = None;
-    for version in ["mount-v1", "mount-v2"] {
+    let script = "#!/bin/sh\necho stable-input\n";
+    for (version, mode) in [
+        ("mount-v1", 0o644),
+        ("mount-v2", 0o644),
+        ("mount-v3", 0o755),
+    ] {
         let runtime = fixture.unprepared_release(version, &yaml);
         std::fs::create_dir(runtime.directory.join("input")).unwrap();
-        std::fs::write(runtime.directory.join("input/settings.txt"), "stable-input").unwrap();
+        let path = runtime.directory.join("input/settings.txt");
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
         runtime.prepare(version).await.unwrap();
         let mut rollout = runtime.begin_rollout().await.unwrap();
         rollout.apply().await.unwrap();
         let reader = service(rollout.containers(), "reader");
+        assert_eq!(exec(reader, &["cat", "/input/settings.txt"]).await, script);
         assert_eq!(
-            exec(reader, &["cat", "/input/settings.txt"]).await,
-            "stable-input"
+            exec(reader, &["stat", "-c", "%a", "/input/settings.txt"])
+                .await
+                .trim(),
+            format!("{mode:o}")
         );
         if let Some(id) = &original {
-            assert_eq!(&reader.id, id);
+            if mode == 0o755 {
+                assert_ne!(&reader.id, id);
+                assert_eq!(
+                    exec(reader, &["/input/settings.txt"]).await.trim(),
+                    "stable-input"
+                );
+            } else {
+                assert_eq!(&reader.id, id);
+            }
         } else {
             original = Some(reader.id.clone());
         }
@@ -313,11 +347,16 @@ async fn production_rollouts_preserve_dependencies_and_recover_interrupted_gener
             .trim(),
         "literal$VALUE/${UNKNOWN}/$$"
     );
+    // This IPv4 fixture uses Docker's service alias, independently of the CI
+    // host's search domains or upstream IPv6 DNS configuration.
     assert_eq!(
-        exec(service(&initial, "web"), &["nslookup", "redis"])
-            .await
-            .matches("redis")
-            .count()
+        exec(
+            service(&initial, "web"),
+            &["nslookup", "-type=A", "redis", "127.0.0.11"]
+        )
+        .await
+        .matches("redis")
+        .count()
             > 0,
         true
     );

@@ -2,9 +2,10 @@
 # Exercise the native app identity against a real production preparation.
 set -eu
 test "$(id -u)" = 0
-app=$1
-release=$2
+test "$#" = 0
+app=bun-redis/production
 root="/opt/tako/apps/$app"
+release=$(readlink -f "$root/current")
 identity=$(stat -c %G "$root")
 test "$(id -u "$identity")" != "$(id -u tako)"
 private="$root/data/compose"

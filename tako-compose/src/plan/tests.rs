@@ -223,6 +223,30 @@ fn mounted_file_content_changes_are_part_of_identity() {
 }
 
 #[test]
+fn mounted_executable_mode_changes_replace_only_the_consumer() {
+    use std::os::unix::fs::PermissionsExt;
+    let (dir, runtime) = runtime();
+    let scripts = dir.path().join("scripts");
+    std::fs::create_dir(&scripts).unwrap();
+    let script = scripts.join("maintenance.sh");
+    std::fs::write(&script, "#!/bin/sh\necho maintenance\n").unwrap();
+    let mut input = model();
+    input["services"]["web"]["volumes"] = json!([
+        {"type":"bind", "source":scripts, "target":"/scripts", "read_only":true}
+    ]);
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let before = Plan::new(input.clone(), &runtime).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let after = Plan::new(input.clone(), &runtime).unwrap();
+    assert_ne!(fingerprint(&before, "web"), fingerprint(&after, "web"));
+    assert_eq!(fingerprint(&before, "redis"), fingerprint(&after, "redis"));
+    // Capture normalizes any executable source file to 0755.
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let normalized = Plan::new(input, &runtime).unwrap();
+    assert_eq!(fingerprint(&after, "web"), fingerprint(&normalized, "web"));
+}
+
+#[test]
 fn identical_mounted_inputs_keep_identity_across_release_directories() {
     let (_dir, runtime) = runtime();
     let mut fingerprints = Vec::new();

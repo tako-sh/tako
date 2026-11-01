@@ -36,7 +36,9 @@ tako status --json
 tako logs --env production --days 1 --json
 ```
 
-Reference secrets explicitly in Compose, for example `POSTGRES_PASSWORD: ${DATABASE_PASSWORD:?Set DATABASE_PASSWORD}`. Tako supplies app variables and decrypted secrets to Compose interpolation. It does not write interpolated configuration or secrets into release artifacts. Docker's own container metadata contains the environment values that the Compose file assigns. `DOCKER_*`, `COMPOSE_*`, loader variables, `PATH`, and `HOME` are reserved for the client.
+Reference secrets explicitly in Compose, for example `POSTGRES_PASSWORD: ${DATABASE_PASSWORD:?Set DATABASE_PASSWORD}`. Tako supplies app variables and decrypted secrets to Compose interpolation. It does not write interpolated configuration or secrets into release artifacts. Docker's own container metadata contains the environment values that the Compose file assigns.
+
+Client controls are reserved: `DOCKER_*`, `COMPOSE_*`, `BUILDX_*`, `BUILDKIT_*`, `EXPERIMENTAL_BUILDKIT_SOURCE_POLICY`, loader variables, `PATH`, `HOME`, `SSL_CERT_FILE`, `SSL_CERT_DIR`, and proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` and their lowercase forms). Docker and Buildx configuration comes from the service account, outside the captured app directory. To configure a container's proxy or CA settings, use explicit service `environment` entries, optionally referencing app variables with different names.
 
 Production does not load an implicit `.env` file. Use Tako variables and secrets for interpolation, or an explicit project-local service `env_file` for container environment values. File references must be literal relative paths; interpolation in file paths is unsupported.
 
@@ -56,7 +58,7 @@ Named volumes survive deployment, stop/start, rollback, and application deletion
 
 ## Updates and recovery
 
-Tako prepares and pins all images before changing running containers. It compares each service's image configuration and filesystem, plus its resolved Compose configuration, referenced secrets, and mounted file contents. Build attestations and release directory names do not trigger replacements. Unchanged services keep their container IDs, network endpoints, and volumes. Updating a Bun web app therefore leaves unchanged Redis running.
+Tako prepares and pins all images before changing running containers. It compares each service's image configuration and filesystem, plus its resolved Compose configuration, referenced secrets, and mounted file contents and executable permissions. Build attestations and release directory names do not trigger replacements. Unchanged services keep their container IDs, network endpoints, and volumes. Updating a Bun web app therefore leaves unchanged Redis running.
 
 | Service | Default update order |
 | --- | --- |

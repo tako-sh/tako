@@ -432,6 +432,7 @@ fn hash_project_file(path: &Path, directory: &Path) -> Result<String, String> {
         return Err("Compose bind/config/secret files must stay inside the app directory".into());
     }
     fn hash(path: &Path, root: &Path, digest: &mut Sha256) -> Result<(), String> {
+        use std::os::unix::fs::PermissionsExt;
         let canonical = path
             .canonicalize()
             .map_err(|_| "Cannot read a Compose mounted file")?;
@@ -447,20 +448,28 @@ fn hash_project_file(path: &Path, directory: &Path) -> Result<String, String> {
             return Err("Compose mounted files must not contain symlinks".into());
         }
         if path.is_dir() {
+            digest.update(b"directory");
             let mut entries = std::fs::read_dir(path)
                 .map_err(|e| e.to_string())?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| e.to_string())?;
             entries.sort_by_key(|e| e.file_name());
+            digest.update((entries.len() as u64).to_le_bytes());
             for entry in entries {
                 digest.update(entry.file_name().as_encoded_bytes());
                 digest.update([0]);
                 hash(&entry.path(), root, digest)?;
             }
         } else {
+            digest.update(b"file");
             use std::io::Read;
             let mut file =
                 std::fs::File::open(path).map_err(|_| "Cannot read a Compose mounted file")?;
+            // Capture normalizes regular files to 0644 or 0755. Both content
+            // and that effective executable mode affect an existing mount.
+            let metadata = file.metadata().map_err(|e| e.to_string())?;
+            digest.update([u8::from(metadata.permissions().mode() & 0o111 != 0)]);
+            digest.update(metadata.len().to_le_bytes());
             let mut buffer = [0u8; 16 * 1024];
             loop {
                 let n = file.read(&mut buffer).map_err(|e| e.to_string())?;
