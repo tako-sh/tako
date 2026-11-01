@@ -41,6 +41,7 @@ pub(crate) async fn stop_all(state: &Arc<Mutex<State>>) {
 
 pub(crate) async fn spawn(
     runtime: &tako_compose::ComposeRuntime,
+    log_buffer: &crate::state::LogBuffer,
 ) -> Result<(tokio::process::Child, Option<OwnedFd>), Box<dyn std::error::Error + Send + Sync>> {
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
@@ -55,6 +56,7 @@ pub(crate) async fn spawn(
             .into());
         }
     };
+    crate::process::forward_child_pipes(&mut child, log_buffer);
     let ready = async {
         let client = reqwest::Client::builder()
             .no_proxy()

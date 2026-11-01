@@ -164,7 +164,7 @@ mod tests {
             .await;
         assert!(
             matches!(prepared, tako_core::Response::Ok { .. }),
-            "{prepared:?}"
+            "Compose preparation with incoming secrets must succeed"
         );
         assert!(state.state_store.get_secrets(app).unwrap().is_empty());
         let runtime = ComposeRuntime::new(
@@ -178,5 +178,195 @@ mod tests {
         .unwrap();
         assert!(runtime.begin_rollout().await.is_ok());
         assert!(runtime.containers().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker Compose, Python 3, and shared host/container loopback and project paths"]
+    async fn leaving_compose_stops_background_services_and_failed_native_deploy_restores_them() {
+        use std::sync::Arc;
+        use tako_core::{Command, Response};
+
+        for missing_http_instance in [false, true] {
+            let dir = crate::isolation::fixture::TestDataDir::new().unwrap();
+            let app_name = "transition/production";
+            let data = crate::release::ensure_app_runtime_data_dirs(dir.path(), app_name).unwrap();
+            let release = crate::release::app_release_root(dir.path(), app_name, "compose");
+            std::fs::create_dir_all(&release).unwrap();
+            let config = ComposeConfig {
+                file: "compose.yaml".into(),
+                service: "web".into(),
+                port: 8080,
+                health_path: "/".into(),
+                health_host: None,
+            };
+            std::fs::write(release.join("app.json"), json!({
+                "protocol_version":tako_core::PROTOCOL_VERSION,
+                "release_kind":"compose", "app_name":"transition", "environment":"production",
+                "version":"compose", "runtime":"compose", "main":"", "idle_timeout":300, "compose":config,
+            }).to_string()).unwrap();
+            std::fs::write(release.join("compose.yaml"), r#"
+services:
+  web:
+    image: docker.io/library/busybox:1.37
+    command: [sh, -c, 'mkdir -p /www; echo compose > /www/index.html; exec httpd -f -p 8080 -h /www']
+  worker:
+    image: docker.io/library/busybox:1.37
+    command: [sleep, '3600']
+    volumes: [worker-data:/data]
+volumes:
+  worker-data:
+"#).unwrap();
+            let runtime = ComposeRuntime::new(
+                release.clone(),
+                config,
+                HashMap::from([(TAKO_APP_DATA_DIR_ENV.into(), data.app.display().to_string())]),
+            )
+            .unwrap();
+            struct Cleanup(ComposeRuntime);
+            impl Drop for Cleanup {
+                fn drop(&mut self) {
+                    let _ = self
+                        .0
+                        .command(false)
+                        .into_std()
+                        .args(["down", "--volumes", "--remove-orphans"])
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status();
+                }
+            }
+            let _cleanup = Cleanup(runtime.clone());
+            runtime.prepare("compose").await.unwrap();
+            let state = crate::ServerState::new(
+                dir.path().into(),
+                Arc::new(crate::tls::CertManager::new(
+                    crate::tls::CertManagerConfig {
+                        cert_dir: dir.path().join("certs"),
+                        ..Default::default()
+                    },
+                )),
+                None,
+                Arc::new(parking_lot::RwLock::new(HashMap::new())),
+            )
+            .unwrap();
+            let deploy = |version: &str| -> Command {
+                serde_json::from_value(json!({
+                    "command":"deploy", "app":app_name, "version":version,
+                    "path":crate::release::app_release_root(dir.path(), app_name, version),
+                    "routes":["transition.localhost"],
+                }))
+                .unwrap()
+            };
+            assert!(matches!(
+                state.handle_command(deploy("compose")).await,
+                Response::Ok { .. }
+            ));
+            let app = state.app_manager.get_app(app_name).unwrap();
+            let initial_worker = runtime
+                .containers()
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|container| container.service == "worker")
+                .unwrap();
+
+            // A native process that exits before readiness must restore the old
+            // stack, including the worker that was stopped for the transition.
+            for version in ["broken", "native"] {
+                let native = crate::release::app_release_root(dir.path(), app_name, version);
+                std::fs::create_dir_all(&native).unwrap();
+                std::fs::write(
+                    native.join("app.json"),
+                    json!({
+                        "protocol_version":tako_core::PROTOCOL_VERSION,
+                        "app_name":"transition", "environment":"production", "version":version,
+                        "runtime":"go", "main":"server.py", "idle_timeout":300,
+                        "start":["/usr/bin/python3", "{main}"],
+                    })
+                    .to_string(),
+                )
+                .unwrap();
+                std::fs::write(
+                    native.join("server.py"),
+                    if version == "broken" {
+                        "raise SystemExit(1)\n"
+                    } else {
+                        r#"import http.server, json, os
+with os.fdopen(3) as pipe:
+    token = json.load(pipe)['token']
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('x-tako-internal-token', token)
+        self.end_headers()
+        self.wfile.write(b'native')
+    def log_message(self, *args):
+        pass
+server = http.server.HTTPServer(('127.0.0.1', 0), Handler)
+with os.fdopen(4, 'w') as pipe:
+    pipe.write(str(server.server_port) + '\n')
+server.serve_forever()
+"#
+                    },
+                )
+                .unwrap();
+            }
+            assert!(matches!(
+                state.handle_command(deploy("broken")).await,
+                Response::Error { .. }
+            ));
+            assert!(app.config.read().compose.is_some());
+            assert_eq!(app.config.read().version, "compose");
+            let restored = runtime.containers().await.unwrap();
+            assert_eq!(restored.len(), 2);
+            assert!(restored.iter().all(|container| container.running()));
+            let restored_worker = restored
+                .iter()
+                .find(|container| container.service == "worker")
+                .unwrap();
+            assert_ne!(restored_worker.started_at, initial_worker.started_at);
+
+            if missing_http_instance {
+                for instance in app.get_instances() {
+                    instance.kill().await.unwrap();
+                    app.remove_instance(&instance.id);
+                }
+                assert!(app.get_instances().is_empty());
+                assert!(
+                    runtime
+                        .containers()
+                        .await
+                        .unwrap()
+                        .iter()
+                        .any(|container| container.service == "worker" && container.running())
+                );
+            }
+            assert!(matches!(
+                state.handle_command(deploy("native")).await,
+                Response::Ok { .. }
+            ));
+            assert!(app.config.read().compose.is_none());
+            assert_eq!(app.config.read().version, "native");
+            let containers = runtime.containers().await.unwrap();
+            assert_eq!(containers.len(), 2);
+            assert!(containers.iter().all(|container| !container.running()));
+            assert_eq!(app.get_instances().len(), 1);
+            assert!(app.get_instances()[0].is_alive().await);
+            let endpoint = app.get_instances()[0].endpoint().unwrap();
+            let body = reqwest::Client::builder()
+                .no_proxy()
+                .timeout(std::time::Duration::from_secs(5))
+                .build()
+                .unwrap()
+                .get(format!("http://{endpoint}/"))
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap();
+            assert_eq!(body, "native");
+            state.app_manager.stop_app(app_name).await.unwrap();
+        }
     }
 }

@@ -179,6 +179,28 @@ impl ComposeRuntime {
         with_override: bool,
         limit: Duration,
     ) -> Result<Vec<u8>, String> {
+        self.capture_output(
+            args,
+            with_override,
+            limit,
+            process_output::StdoutMode::Complete,
+        )
+        .await
+    }
+
+    async fn run(&self, args: &[&str], with_override: bool, limit: Duration) -> Result<(), String> {
+        self.capture_output(args, with_override, limit, process_output::StdoutMode::Tail)
+            .await
+            .map(|_| ())
+    }
+
+    async fn capture_output(
+        &self,
+        args: &[&str],
+        with_override: bool,
+        limit: Duration,
+        stdout_mode: process_output::StdoutMode,
+    ) -> Result<Vec<u8>, String> {
         let mut command = self.command(with_override);
         command
             .args(args)
@@ -187,7 +209,7 @@ impl ComposeRuntime {
         let child = command
             .spawn()
             .map_err(|e| format!("Docker Compose v2 is required on this server: {e}"))?;
-        let result = crate::process_output::capture(child, Some(limit))
+        let result = crate::process_output::capture(child, Some(limit), stdout_mode)
             .await
             .map_err(|e| e.to_string())?;
         if !result.status.is_some_and(|s| s.success()) {
@@ -294,13 +316,13 @@ impl ComposeRuntime {
                 .map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
-        self.output(
+        self.run(
             &["--file", &override_path, "build"],
             false,
             Duration::from_secs(1800),
         )
         .await?;
-        self.output(
+        self.run(
             &["--file", &override_path, "pull", "--ignore-buildable"],
             false,
             Duration::from_secs(1800),
@@ -385,7 +407,7 @@ impl ComposeRuntime {
             &override_path,
             render_override(&images, &self.config, port).as_bytes(),
         )?;
-        self.output(
+        self.run(
             &[
                 "up",
                 "--detach",
@@ -486,9 +508,10 @@ async fn engine_output(mut command: Command, deadline: Duration) -> Result<Vec<u
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| e.to_string())?;
-    let output = crate::process_output::capture(child, Some(deadline))
-        .await
-        .map_err(|e| e.to_string())?;
+    let output =
+        crate::process_output::capture(child, Some(deadline), process_output::StdoutMode::Complete)
+            .await
+            .map_err(|e| e.to_string())?;
     if !output.status.is_some_and(|status| status.success()) {
         return Err(format!(
             "Docker project cleanup failed or timed out: {}",

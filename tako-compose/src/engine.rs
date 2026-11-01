@@ -62,9 +62,13 @@ impl ComposeRuntime {
                 ],
             )
             .await?;
-        let output = crate::process_output::capture(child, Some(Duration::from_secs(120)))
-            .await
-            .map_err(|e| e.to_string())?;
+        let output = crate::process_output::capture(
+            child,
+            Some(Duration::from_secs(120)),
+            crate::process_output::StdoutMode::Tail,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
         if !output.status.is_some_and(|s| s.success()) {
             // Compose diagnostics can quote resolved environment values. Keep
             // those out of management errors and server logs.
@@ -204,9 +208,13 @@ pub(crate) async fn inspect_container(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| e.to_string())?;
-    let output = crate::process_output::capture(child, Some(Duration::from_secs(15)))
-        .await
-        .map_err(|e| e.to_string())?;
+    let output = crate::process_output::capture(
+        child,
+        Some(Duration::from_secs(15)),
+        crate::process_output::StdoutMode::Complete,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
     if !output.status.is_some_and(|s| s.success()) {
         if String::from_utf8_lossy(&output.stderr).contains("No such") {
             return Ok(None);

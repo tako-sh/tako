@@ -104,6 +104,23 @@ async fn http(container: &ServiceContainer) -> String {
 
 #[tokio::test]
 #[ignore = "requires Docker Compose and shared Docker build paths; run with the Docker integration harness"]
+async fn compose_model_preserves_large_environment_values() {
+    let mut fixture = Fixture::new();
+    let value = "x".repeat(96 * 1024);
+    let model = serde_json::json!({"services": {"web": {
+        "image": "docker.io/library/busybox:1.37",
+        "environment": {"LARGE_VALUE": value}
+    }}});
+    let runtime = fixture.unprepared_release("large", &model.to_string());
+    let resolved = runtime.model().await.unwrap();
+    assert_eq!(
+        resolved["services"]["web"]["environment"]["LARGE_VALUE"],
+        value
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires Docker Compose and shared Docker build paths; run with the Docker integration harness"]
 async fn production_rollouts_preserve_dependencies_and_recover_interrupted_generations() {
     let mut fixture = Fixture::new();
     let yaml = include_str!("../../../e2e/fixtures/compose/web-worker/compose.yaml").replace(

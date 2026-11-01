@@ -403,7 +403,7 @@ async fn spawn_app(
     internal_socket: Option<&std::path::Path>,
 ) -> Result<(tokio::process::Child, Option<OwnedFd>), Box<dyn std::error::Error + Send + Sync>> {
     if let Some(runtime) = &app.compose {
-        return crate::compose::spawn(runtime).await;
+        return crate::compose::spawn(runtime, &app.log_buffer).await;
     }
     if app.command.is_empty() {
         return Err("app has empty command".into());
@@ -486,7 +486,15 @@ async fn spawn_app(
     #[cfg(not(unix))]
     let readiness_fd: Option<OwnedFd> = None;
 
-    let log_buffer = app.log_buffer.clone();
+    forward_child_pipes(&mut child, &app.log_buffer);
+
+    Ok((child, readiness_fd))
+}
+
+pub(crate) fn forward_child_pipes(
+    child: &mut tokio::process::Child,
+    log_buffer: &state::LogBuffer,
+) {
     if let Some(stdout) = child.stdout.take() {
         let buf = log_buffer.clone();
         tokio::spawn(async move {
@@ -499,8 +507,6 @@ async fn spawn_app(
             drain_pipe_to_buffer(stderr, buf, "warn").await;
         });
     }
-
-    Ok((child, readiness_fd))
 }
 
 /// Forward subprocess output to the log buffer.

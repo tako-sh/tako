@@ -34,6 +34,14 @@ async fn compose_registration_restart_stop_and_shutdown_keep_redis_data() {
     ] {
         std::fs::copy(source.join(file), project.path().join(file)).unwrap();
     }
+    let server = project.path().join("server.ts");
+    let mut source = std::fs::read_to_string(&server).unwrap();
+    // Exceed pipe capacity on both streams before the markers. The log client
+    // must keep draining while startup waits for HTTP readiness.
+    source.push_str(
+        "\nconsole.log('o'.repeat(96 * 1024));\nconsole.log('compose-stdout-end');\nconsole.error('e'.repeat(96 * 1024));\nconsole.error('compose-stderr-end');\n",
+    );
+    std::fs::write(server, source).unwrap();
     let key = project
         .path()
         .join("tako.toml")
@@ -131,6 +139,22 @@ async fn compose_registration_restart_stop_and_shutdown_keep_redis_data() {
         Response::AppRegistered { .. }
     ));
     let port = ready(&state, &key).await;
+    let (backlog, mut logs, _) = state.lock().unwrap().apps[&key].log_buffer.subscribe(None);
+    let mut stdout_seen = backlog
+        .iter()
+        .any(|entry| entry.line.contains("compose-stdout-end"));
+    let mut stderr_seen = backlog
+        .iter()
+        .any(|entry| entry.line.contains("compose-stderr-end"));
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !stdout_seen || !stderr_seen {
+            let entry = logs.recv().await.expect("Compose log stream closed");
+            stdout_seen |= entry.line.contains("compose-stdout-end");
+            stderr_seen |= entry.line.contains("compose-stderr-end");
+        }
+    })
+    .await
+    .expect("Compose stdout and stderr did not reach the log buffer");
     let first: serde_json::Value = http
         .get(format!("http://127.0.0.1:{port}/"))
         .send()

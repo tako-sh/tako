@@ -243,6 +243,26 @@ impl crate::ServerState {
             }
             config.secrets = secrets;
             config.storages = storages;
+            // Preserve ownership of the entire previous Compose project until
+            // it has stopped, even if its HTTP instance has already disappeared.
+            // After update_config the manager would only see the native runtime.
+            if rollback_snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.config.compose.is_some())
+            {
+                if let Err(error) = self.app_manager.stop_app(app_name).await {
+                    if let Some(snapshot) = rollback_snapshot {
+                        self.restore_failed_rollout_snapshot(
+                            app_name,
+                            &existing,
+                            snapshot,
+                            error.to_string(),
+                        )
+                        .await;
+                    }
+                    return Response::error(format!("Failed to stop the previous stack: {error}"));
+                }
+            }
             existing.update_config(config.clone());
             (existing, config, false)
         } else {
@@ -325,24 +345,6 @@ impl crate::ServerState {
         self.sync_app_workflows(app_name, &release_path, runtime_bin_path.as_deref())
             .await;
 
-        let recreate = deploy_config.compose.is_some()
-            || rollback_snapshot
-                .as_ref()
-                .is_some_and(|snapshot| snapshot.config.compose.is_some());
-        if recreate && !app.get_instances().is_empty() {
-            if let Err(error) = self.app_manager.stop_app(app_name).await {
-                if let Some(snapshot) = rollback_snapshot {
-                    self.restore_failed_rollout_snapshot(
-                        app_name,
-                        &app,
-                        snapshot,
-                        error.to_string(),
-                    )
-                    .await;
-                }
-                return Response::error(format!("Failed to stop the previous stack: {error}"));
-            }
-        }
         if app.get_instances().is_empty() {
             if deploy_config.min_instances == 0 {
                 match self.start_on_demand_warm_instance(&app).await {
