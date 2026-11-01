@@ -165,6 +165,13 @@ impl Plan {
                 for reference in references {
                     let resource = &model[kind][&reference];
                     identity[kind][&reference] = resource.clone();
+                    if let Some(key) = resource["environment"].as_str() {
+                        let value = runtime.env.get(key).ok_or_else(|| {
+                            format!("Compose resource environment '{key}' is not an app variable or secret")
+                        })?;
+                        identity[kind][&reference]["x-tako-environment-content"] =
+                            json!(hex::encode(Sha256::digest(value.as_bytes())));
+                    }
                     if let Some(file) = resource["file"].as_str() {
                         let relative = relative_input(file, runtime.working_directory())?;
                         identity[kind][&reference]["file"] = json!(relative);

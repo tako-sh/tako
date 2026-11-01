@@ -141,6 +141,29 @@ impl ComposeRuntime {
         Ok(())
     }
 
+    pub(crate) async fn start_service(
+        &self,
+        model: &Value,
+        generation: &str,
+    ) -> Result<(), String> {
+        // Compose injects environment-backed secrets and configs during start,
+        // after create. Starting directly through Docker would skip those files.
+        let child = self.spawn_model(model, &["start", generation]).await?;
+        let output = crate::process_output::capture(
+            child,
+            Some(Duration::from_secs(60)),
+            crate::process_output::StdoutMode::Tail,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        if !output.status.is_some_and(|status| status.success()) {
+            return Err(format!(
+                "Could not start Compose container for '{generation}'"
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) async fn remove_container(&self, id: &str) -> Result<(), String> {
         self.stop_container(id).await?;
         if inspect_container(id, self.development).await?.is_some() {

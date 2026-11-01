@@ -174,7 +174,7 @@ impl crate::ServerState {
             .await;
 
         let app_root = app_root(&self.runtime.data_dir, app_name);
-        let owns_compose = app_root.join("data/compose").is_dir()
+        let owns_compose = app_root.join("compose").is_dir()
             || self
                 .app_manager
                 .get_app(app_name)

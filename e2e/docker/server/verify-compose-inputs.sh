@@ -8,7 +8,7 @@ root="/opt/tako/apps/$app"
 release=$(readlink -f "$root/current")
 identity=$(stat -c %G "$root")
 test "$(id -u "$identity")" != "$(id -u tako)"
-private="$root/data/compose"
+private="$root/compose"
 test "$(stat -c %U:%a "$private")" = tako:700
 record=$(find "$private" -name current.json -print -quit)
 test -n "$record"

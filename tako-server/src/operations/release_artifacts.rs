@@ -414,7 +414,7 @@ mod tests {
             "obsolete",
             now - OLD_RELEASE_RETENTION - Duration::from_secs(1),
         );
-        let private = temp.path().join("data/compose");
+        let private = temp.path().join("compose");
         std::fs::create_dir_all(&private).unwrap();
         std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o700)).unwrap();
         for release in [&referenced, &obsolete] {

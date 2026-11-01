@@ -48,6 +48,30 @@ fn fingerprint(plan: &Plan, name: &str) -> String {
 }
 
 #[test]
+fn environment_resource_rotation_replaces_only_its_consumers() {
+    let (_dir, mut runtime) = runtime();
+    runtime.env.insert("APP_TOKEN".into(), "first-value".into());
+    for kind in ["secrets", "configs"] {
+        let mut input = model();
+        input[kind] = json!({"token": {"environment": "APP_TOKEN"}});
+        input["services"]["web"][kind] = json!([{ "source": "token" }]);
+        let before = Plan::new(input.clone(), &runtime).unwrap();
+        runtime
+            .env
+            .insert("APP_TOKEN".into(), "rotated-value".into());
+        let after = Plan::new(input, &runtime).unwrap();
+        assert_ne!(fingerprint(&before, "web"), fingerprint(&after, "web"));
+        assert_eq!(fingerprint(&before, "redis"), fingerprint(&after, "redis"));
+        assert!(
+            !serde_json::to_string(&after.model)
+                .unwrap()
+                .contains("rotated-value")
+        );
+        runtime.env.insert("APP_TOKEN".into(), "first-value".into());
+    }
+}
+
+#[test]
 fn unchanged_dependency_is_independent_of_web_image_build_and_release() {
     let (_dir, runtime) = runtime();
     let before = Plan::new(model(), &runtime).unwrap();

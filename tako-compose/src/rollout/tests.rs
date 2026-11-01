@@ -23,7 +23,7 @@ impl Fixture {
         let env = HashMap::from([
             (
                 crate::TAKO_APP_DATA_DIR_ENV.into(),
-                dir.path().join("data").display().to_string(),
+                dir.path().join("data/app").display().to_string(),
             ),
             ("DB_PASSWORD".into(), "fixture-only".into()),
             ("LITERAL".into(), "literal$VALUE/${UNKNOWN}/$$".into()),
@@ -198,10 +198,13 @@ async fn unchanged_non_root_service_keeps_its_private_mount_across_releases() {
 #[ignore = "requires Docker Compose and shared Docker build paths; run with the Docker integration harness"]
 async fn rollout_uses_private_prepared_inputs_after_release_tampering() {
     let mut fixture = Fixture::new();
-    let yaml = SMALL_STACK.replace(
-        "    build: .",
-        "    build: .\n    environment:\n      APP_TOKEN: ${DB_PASSWORD}",
-    );
+    let mut model: Value = serde_yaml_ng::from_str(SMALL_STACK).unwrap();
+    model["secrets"] = serde_json::json!({"token": {"environment": "DB_PASSWORD"}});
+    model["configs"] = serde_json::json!({"token_config": {"environment": "DB_PASSWORD"}});
+    model["services"]["web"]["secrets"] = serde_json::json!(["token"]);
+    model["services"]["web"]["configs"] =
+        serde_json::json!([{"source":"token_config", "target":"/token-config"}]);
+    let yaml = model.to_string();
     let runtime = fixture.release("immutable", &yaml).await;
     std::fs::write(
         runtime.directory.join("compose.yaml"),
@@ -245,6 +248,15 @@ async fn rollout_uses_private_prepared_inputs_after_release_tampering() {
         "false:"
     );
     let redis_id = service(rollout.containers(), "redis").id.clone();
+    let web_id = rollout.ingress().unwrap().id.clone();
+    assert_eq!(
+        exec(
+            rollout.ingress().unwrap(),
+            &["cat", "/run/secrets/token", "/token-config"]
+        )
+        .await,
+        "fixture-onlyfixture-only"
+    );
     rollout.finish().await.unwrap();
 
     // Secret changes still interpolate the captured source, without rebuilding
@@ -255,11 +267,14 @@ async fn rollout_uses_private_prepared_inputs_after_release_tampering() {
         .insert("DB_PASSWORD".into(), "rotated-fixture-only".into());
     let mut rotated = changed.begin_rollout().await.unwrap();
     rotated.apply().await.unwrap();
-    assert!(
-        exec(rotated.ingress().unwrap(), &["printenv", "APP_TOKEN"])
-            .await
-            .trim()
-            == "rotated-fixture-only"
+    assert_ne!(rotated.ingress().unwrap().id, web_id);
+    assert_eq!(
+        exec(
+            rotated.ingress().unwrap(),
+            &["cat", "/run/secrets/token", "/token-config"]
+        )
+        .await,
+        "rotated-fixture-onlyrotated-fixture-only"
     );
     assert_eq!(service(rotated.containers(), "redis").id, redis_id);
     rotated.finish().await.unwrap();
@@ -279,6 +294,81 @@ async fn rollout_uses_private_prepared_inputs_after_release_tampering() {
         }
     }
     assert_private_files(&runtime.preparation_root().unwrap());
+}
+
+#[tokio::test]
+#[ignore = "requires Docker Compose and shared Docker build paths; run with the Docker integration harness"]
+async fn rollback_restarts_renamed_dependencies_before_waiting_for_consumers() {
+    let mut fixture = Fixture::new();
+    let model = serde_json::json!({
+        "services": {
+            "redis": {
+                "image": "docker.io/library/redis:7-alpine",
+                "volumes": ["state:/data"],
+                "healthcheck": {"test": ["CMD", "redis-cli", "ping"], "interval":"1s", "timeout":"1s", "retries":3},
+                "deploy": {"update_config": {"monitor":"0s"}}
+            },
+            "web": {
+                "image": "docker.io/library/redis:7-alpine", "tmpfs": ["/data"],
+                "command": ["sh", "-c", "while true; do sleep 1; done"],
+                "depends_on": {"redis": {"condition":"service_healthy"}},
+                "healthcheck": {"test": ["CMD", "redis-cli", "-h", "redis", "ping"], "interval":"1s", "timeout":"1s", "retries":3},
+                "deploy": {"update_config": {"order":"stop-first", "monitor":"0s"}}
+            }
+        },
+        "volumes": {"state": {}}
+    });
+    let runtime = fixture.release("before-rename", &model.to_string()).await;
+    let mut before = runtime.begin_rollout().await.unwrap();
+    before.apply().await.unwrap();
+    before.finish().await.unwrap();
+    let web = before.ingress().unwrap().clone();
+    let redis = service(before.containers(), "redis").clone();
+    exec(&redis, &["redis-cli", "SET", "marker", "preserved"]).await;
+
+    let mut next = model;
+    next["services"]["cache"] = next["services"]
+        .as_object_mut()
+        .unwrap()
+        .remove("redis")
+        .unwrap();
+    next["services"]["web"]["depends_on"] =
+        serde_json::json!({"cache": {"condition":"service_healthy"}});
+    next["services"]["web"]["command"] = serde_json::json!(["sh", "-c", "exit 1"]);
+    let changed = fixture.release("after-rename", &next.to_string()).await;
+    let mut pending = changed.begin_rollout().await.unwrap();
+    assert!(pending.apply().await.is_err());
+    assert!(
+        !inspect_container(&redis.id, false)
+            .await
+            .unwrap()
+            .unwrap()
+            .running()
+    );
+    assert!(
+        !inspect_container(&web.id, false)
+            .await
+            .unwrap()
+            .unwrap()
+            .running()
+    );
+    tokio::time::timeout(Duration::from_secs(30), pending.rollback())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        inspect_container(&web.id, false)
+            .await
+            .unwrap()
+            .unwrap()
+            .healthy()
+    );
+    assert_eq!(
+        exec(&web, &["redis-cli", "-h", "redis", "GET", "marker"])
+            .await
+            .trim(),
+        "preserved"
+    );
 }
 
 #[tokio::test]

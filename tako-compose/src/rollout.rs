@@ -159,7 +159,10 @@ impl Rollout {
                     }
                 }
                 if !(candidate.running() || (service.completed && candidate.completed())) {
-                    self.runtime.start_container(&candidate.id).await?;
+                    let model = self.plan.container_model(service, slot, &self.runtime);
+                    self.runtime
+                        .start_service(&model, &candidate.generation)
+                        .await?;
                 }
                 candidate = inspect_container(&candidate.id, false)
                     .await?
@@ -220,18 +223,11 @@ impl Rollout {
         if !errors.is_empty() {
             return Err(errors.join("; "));
         }
-        // Service order is dependencies first. The before snapshot also contains
-        // removed services, which are restored after the known graph.
-        let order: BTreeMap<_, _> = self
-            .plan
-            .services
-            .iter()
-            .enumerate()
-            .map(|(i, s)| (s.name.as_str(), i))
-            .collect();
-        let mut before: Vec<_> = self.before.iter().collect();
-        before.sort_by_key(|c| order.get(c.service.as_str()).copied().unwrap_or(usize::MAX));
-        for old in before {
+        // The new dependency graph cannot order removed or renamed predecessors.
+        // Restart every predecessor before waiting for any consumer's readiness,
+        // so a health check can observe its restored dependencies.
+        let mut restored = Vec::new();
+        for old in &self.before {
             if old.running() || old.state == "restarting" {
                 match inspect_container(&old.id, false).await? {
                     Some(current) if current.running() => (),
@@ -240,20 +236,21 @@ impl Rollout {
                             errors.push(error);
                             continue;
                         }
-                        let restored = inspect_container(&old.id, false)
+                        let current = inspect_container(&old.id, false)
                             .await?
                             .ok_or("Previous Compose container disappeared after restart")?;
-                        if let Err(error) =
-                            wait_ready(&restored, None, Duration::from_secs(1)).await
-                        {
-                            errors.push(error);
-                        }
+                        restored.push(current);
                     }
                     None => errors.push(format!(
                         "Previous container for '{}' disappeared during rollback",
                         old.service
                     )),
                 }
+            }
+        }
+        for container in restored {
+            if let Err(error) = wait_ready(&container, None, Duration::from_secs(1)).await {
+                errors.push(error);
             }
         }
         if errors.is_empty() {

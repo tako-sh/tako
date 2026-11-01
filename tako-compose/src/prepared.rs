@@ -1,4 +1,4 @@
-//! Production inputs live under the service-owned data directory, never in an
+//! Production inputs live beside the app's replaceable data directory, never in an
 //! app-writable release. Only source text and image identities are persisted;
 //! interpolated environments remain in memory.
 use std::collections::BTreeMap;
@@ -36,9 +36,9 @@ impl ComposeRuntime {
             return Err("Compose private data must be outside the source directory".into());
         }
         let private = root.parent().unwrap();
-        // Keep snapshots beside data/tako: the server recursively resets the
-        // permissions inside data/tako, whereas mounted source must remain
-        // readable by non-root containers behind these private ancestors.
+        // Keep deployment inputs outside data/: restoring an app-data backup
+        // replaces that entire tree. These private ancestors also protect source
+        // files whose mounts must remain readable by non-root containers.
         create_private_directory(private)?;
         create_private_directory(&root)?;
         write_private(
@@ -138,20 +138,24 @@ impl ComposeRuntime {
 }
 
 pub(crate) fn root_for(directory: &Path, file: &str, data: &Path) -> Result<PathBuf, String> {
-    let private = data
-        .parent()
-        .ok_or("Invalid app data directory")?
-        .join("compose");
+    let private = app_preparations(data)?;
     Ok(private.join(digest(&format!("{}\n{file}", directory.display()))))
+}
+
+fn app_preparations(app_data: &Path) -> Result<PathBuf, String> {
+    // TAKO_DATA_DIR is <app root>/data/app. Preparations belong to the app
+    // lifecycle, but are deployment artifacts rather than restorable app data.
+    Ok(app_data
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("Invalid app data directory")?
+        .join("compose"))
 }
 
 /// Remove private inputs only after the caller has verified that no containers
 /// reference this release. Includes interrupted preparation attempts.
 pub fn remove_release_preparations(release: &Path, app_data: &Path) -> Result<(), String> {
-    let root = app_data
-        .parent()
-        .ok_or("Invalid app data directory")?
-        .join("compose");
+    let root = app_preparations(app_data)?;
     if !root.try_exists().map_err(|e| e.to_string())? {
         return Ok(());
     }

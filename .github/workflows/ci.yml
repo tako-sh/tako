@@ -116,6 +116,7 @@ jobs:
         run: |
           cargo test -p tako-compose --locked --lib -- --ignored --test-threads=1
           cargo test -p tako-server --locked --bin tako-server compose_runtime::tests -- --ignored --test-threads=1
+          cargo test -p tako-server --locked --bin tako-server compose_preparation_survives_app_data_restore -- --ignored --test-threads=1
           cargo test -p tako-cli --locked --bin tako-dev-server tests::compose::compose_registration_restart_stop_and_shutdown_keep_redis_data -- --ignored --test-threads=1
 
       - name: Test patched Pingora buffering and protocols
