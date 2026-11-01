@@ -23,6 +23,7 @@ fn dev_auth_response() -> ChannelAuthResponse {
         ok: true,
         subject: None,
         transport: None,
+        ephemeral: false,
         replay_window_ms: 10 * 60 * 1000,
         inactivity_ttl_ms: 0,
         keepalive_interval_ms: 25_000,
@@ -74,10 +75,17 @@ impl DevChannelStore {
         lifecycle: Option<tako_channels::ChannelLifecycle>,
     ) -> Result<tako_channels::ChannelMessage, tako_channels::ChannelError> {
         let store = self.store_for_app(app_id);
+        if lifecycle
+            .as_ref()
+            .is_some_and(|lifecycle| lifecycle.ephemeral)
+        {
+            return store.publish_ephemeral(channel, payload);
+        }
         if let Some(lifecycle) = lifecycle {
             store.sync_channel(
                 channel,
                 &ChannelAuthResponse {
+                    ephemeral: lifecycle.ephemeral,
                     replay_window_ms: lifecycle.replay_window_ms,
                     inactivity_ttl_ms: lifecycle.inactivity_ttl_ms,
                     keepalive_interval_ms: lifecycle.keepalive_interval_ms,
@@ -95,7 +103,7 @@ impl DevChannelStore {
 pub async fn try_handle(
     session: &mut Session,
     dev_store: &DevChannelStore,
-    app_id: &str,
+    target: &crate::proxy::RouteTarget,
     path: &str,
     method: &str,
 ) -> Result<bool> {
@@ -108,7 +116,38 @@ pub async fn try_handle(
     if method != "GET" {
         return write_json(session, 405, r#"{"error":"Method not allowed"}"#).await;
     }
-    serve_sse(session, dev_store, app_id, &route.channel).await
+    let Some(context) = &target.store_auth else {
+        return write_json(session, 503, r#"{"error":"Channel metadata unavailable"}"#).await;
+    };
+    let definitions = tako_channels::live_store::internal_store_json(
+        &format!("127.0.0.1:{}", target.upstream_port),
+        &context.internal_host,
+        &context.token,
+        tako_channels::INTERNAL_CHANNEL_REGISTRY_PATH,
+        None,
+    )
+    .await;
+    let auth = match definitions.and_then(|value| {
+        serde_json::from_value::<Vec<tako_channels::ChannelDefinitionMeta>>(value)
+            .map_err(|e| tako_channels::ChannelError::BadRequest(e.to_string()))
+    }) {
+        Ok(definitions) => definitions
+            .iter()
+            .find(|meta| meta.channel == route.channel)
+            .map(|meta| meta.lifecycle_auth())
+            .unwrap_or_else(dev_auth_response),
+        Err(_) => {
+            return write_json(session, 503, r#"{"error":"Channel metadata unavailable"}"#).await;
+        }
+    };
+    serve_sse(
+        session,
+        dev_store,
+        &target.channel_store_key,
+        &route.channel,
+        auth,
+    )
+    .await
 }
 
 /// Stores use app authorization even in local dev, including schema coercion
@@ -215,6 +254,7 @@ async fn serve_sse(
     dev_store: &DevChannelStore,
     app_id: &str,
     channel: &str,
+    auth: ChannelAuthResponse,
 ) -> Result<bool> {
     let dev_store = dev_store.clone();
     let app_id = app_id.to_owned();
@@ -223,7 +263,6 @@ async fn serve_sse(
         .map_err(|error| {
             pingora_core::Error::explain(pingora_core::ErrorType::InternalError, error.to_string())
         })?;
-    let auth = dev_auth_response();
     if session.as_downstream().is_upgrade_req() {
         let params = match tako_channels::params::validate_query(
             &serde_json::json!({"type":"object"}),
@@ -257,13 +296,24 @@ async fn serve_sse(
         .await;
     }
 
+    let ephemeral = if auth.ephemeral {
+        Some(store.subscribe_ephemeral(channel).map_err(|e| {
+            pingora_core::Error::explain(pingora_core::ErrorType::InternalError, e.to_string())
+        })?)
+    } else {
+        None
+    };
     // Resolve the initial cursor — start from the latest message so new
     // subscribers only see future events (matching production behavior).
-    let mut after = match store.replay_cursor_async(channel, None).await {
-        Ok(cursor) => cursor,
-        Err(e) => {
-            let msg = format!(r#"{{"error":"Failed to resolve cursor: {e}"}}"#);
-            return write_json(session, 500, &msg).await;
+    let mut after = if auth.ephemeral {
+        None
+    } else {
+        match store.replay_cursor_async(channel, None).await {
+            Ok(cursor) => cursor,
+            Err(e) => {
+                let msg = format!(r#"{{"error":"Failed to resolve cursor: {e}"}}"#);
+                return write_json(session, 500, &msg).await;
+            }
         }
     };
 
@@ -279,6 +329,9 @@ async fn serve_sse(
         .write_response_header(Box::new(header), false)
         .await?;
 
+    if let Some(events) = ephemeral {
+        return tako_channels::ephemeral::serve_events(session, events, &auth).await;
+    }
     let started = tokio::time::Instant::now();
     let mut next_keepalive = started + keepalive_interval;
     let mut changes = store.changes(channel);
@@ -366,6 +419,9 @@ async fn write_json(session: &mut Session, status: u16, body: &str) -> Result<bo
 
 #[cfg(test)]
 mod store_tests;
+
+#[cfg(test)]
+mod ephemeral_tests;
 
 #[cfg(test)]
 mod tests {

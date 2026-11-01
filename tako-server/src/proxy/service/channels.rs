@@ -415,6 +415,12 @@ impl TakoProxy {
                 }
             };
 
+            if meta.lifecycle.ephemeral
+                && let Err(error) = store.ensure_ephemeral_supported()
+            {
+                return self.write_channel_error(session, error).await;
+            }
+
             if use_first_frame_auth {
                 let Some(endpoint) = instance.endpoint() else {
                     ctx.observation.set_handler_result("unavailable");
@@ -559,6 +565,21 @@ impl TakoProxy {
                     &serde_json::json!({ "error": "Method not allowed" }),
                 )
                 .await;
+        }
+        if auth_result.ephemeral {
+            let events = match store.subscribe_ephemeral(&route.channel) {
+                Ok(events) => events,
+                Err(error) => return self.write_channel_error(session, error).await,
+            };
+            let mut header = ResponseHeader::build(200, None)?;
+            header.insert_header("Content-Type", "text/event-stream")?;
+            header.insert_header("Cache-Control", "no-store")?;
+            header.insert_header("Connection", "keep-alive")?;
+            session
+                .write_response_header(Box::new(header), false)
+                .await?;
+            ctx.observation.set_handler_result("sse");
+            return tako_channels::ephemeral::serve_events(session, events, &auth_result).await;
         }
         let cursor = match parse_message_id_cursor(
             session

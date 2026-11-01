@@ -436,8 +436,13 @@ export class ChannelRegistry {
 export function definitionLifecycleConfig(
   definition: ChannelLifecycleConfig & { readonly transport?: "ws" },
 ) {
+  if (definition.ephemeral && definition.replayWindowMs !== undefined) {
+    throw new Error("ephemeral channels cannot set replayWindowMs");
+  }
   const config: Omit<ChannelAuthorizeResponse, "ok" | "subject" | "reason"> = {
-    replayWindowMs: definition.replayWindowMs ?? DEFAULT_CHANNEL_REPLAY_WINDOW_MS,
+    ...(definition.ephemeral
+      ? { ephemeral: true }
+      : { replayWindowMs: definition.replayWindowMs ?? DEFAULT_CHANNEL_REPLAY_WINDOW_MS }),
     inactivityTtlMs: definition.inactivityTtlMs ?? DEFAULT_CHANNEL_INACTIVITY_TTL_MS,
     keepaliveIntervalMs: definition.keepaliveIntervalMs ?? DEFAULT_CHANNEL_KEEPALIVE_INTERVAL_MS,
     maxConnectionLifetimeMs:

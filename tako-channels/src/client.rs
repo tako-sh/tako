@@ -113,6 +113,7 @@ mod tests {
                 ok: false,
                 subject: None,
                 transport: None,
+                ephemeral: false,
                 replay_window_ms: 0,
                 inactivity_ttl_ms: 0,
                 keepalive_interval_ms: 0,

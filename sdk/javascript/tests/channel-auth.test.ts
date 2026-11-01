@@ -160,3 +160,18 @@ describe("ChannelRegistry.authorize", () => {
     expect(resp).toEqual({ ok: false });
   });
 });
+
+test("ephemeral authorization preserves mode for public and private channels", async () => {
+  for (const auth of [false, { verify: () => ({ subject: "user" }) }] as const) {
+    const registry = newRegistry();
+    registry.register("live", defineChannel("live", { ephemeral: true, auth }));
+    const response = await registry.authorize({
+      channel: "live",
+      operation: "subscribe",
+      params: {},
+    });
+    expect(response.ok).toBe(true);
+    expect(response.ephemeral).toBe(true);
+    expect(response.replayWindowMs).toBeUndefined();
+  }
+});

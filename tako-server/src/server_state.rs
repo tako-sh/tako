@@ -264,6 +264,15 @@ impl ServerState {
                         }
                     };
 
+                    if lifecycle
+                        .as_ref()
+                        .is_some_and(|lifecycle| lifecycle.ephemeral)
+                    {
+                        return store
+                            .publish_ephemeral(channel, &typed)
+                            .map(|msg| serde_json::to_value(msg).unwrap())
+                            .map_err(|e| e.to_string());
+                    }
                     if let Some(lifecycle) = lifecycle {
                         store
                             .sync_channel(
@@ -272,6 +281,7 @@ impl ServerState {
                                     ok: true,
                                     subject: None,
                                     transport: None,
+                                    ephemeral: lifecycle.ephemeral,
                                     replay_window_ms: lifecycle.replay_window_ms,
                                     inactivity_ttl_ms: lifecycle.inactivity_ttl_ms,
                                     keepalive_interval_ms: lifecycle.keepalive_interval_ms,
