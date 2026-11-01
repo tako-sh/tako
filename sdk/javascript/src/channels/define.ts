@@ -138,7 +138,11 @@ export type ChannelExport<
   ChannelExportMeta<Params, Transport>;
 
 function lifecycle(config: ChannelLifecycleConfig): ChannelLifecycleConfig {
+  if (config.ephemeral && config.replayWindowMs !== undefined) {
+    throw new Error("ephemeral channels cannot set replayWindowMs");
+  }
   return {
+    ...(config.ephemeral !== undefined && { ephemeral: config.ephemeral }),
     ...(config.replayWindowMs !== undefined && {
       replayWindowMs: config.replayWindowMs,
     }),

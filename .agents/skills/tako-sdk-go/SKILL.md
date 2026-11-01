@@ -290,3 +290,7 @@ tako.ListenAndServe(mux)
 // or if you need Listener (Fiber), the framework must handle
 // Host: <app>.tako requests itself — this is an advanced path
 ```
+
+## Ephemeral Channels
+
+Register `tako.ChannelDefinition{ChannelLifecycleConfig: tako.ChannelLifecycleConfig{Ephemeral: true}}` with `tako.Channels.Register`. Leave `ReplayWindowMs` zero; registration panics if a nonzero replay window is supplied. Authorization grants cannot change the definition's delivery mode. This supports local dev and single-server production without shared Postgres. Ephemeral events never enter replay storage, have `id: ""`, reach only connected subscribers, and use a bounded 64-message buffer that skips evicted events for slow subscribers. Shared Postgres rejects ephemeral publishing/subscribing. Test two live subscribers, then disconnect one and verify it receives only new events after reconnect. Go supports registration and WebSocket browser publishing; the JavaScript SDK provides the server-side publish helper.

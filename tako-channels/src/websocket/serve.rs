@@ -35,11 +35,24 @@ pub async fn serve(
     if channel.starts_with(crate::live_store::STORE_CHANNEL_PREFIX) {
         return write_close(session, crate::ChannelCloseCode::VerifyRejected, true).await;
     }
-    if let Err(error) = store.sync_channel_async(channel, &auth).await {
+    if !auth.ephemeral
+        && let Err(error) = store.sync_channel_async(channel, &auth).await
+    {
         tracing::error!("failed to sync websocket channel metadata: {error}");
         return write_close(session, crate::ChannelCloseCode::VerifyRejected, true).await;
     }
 
+    let mut ephemeral = if auth.ephemeral {
+        match store.subscribe_ephemeral(channel) {
+            Ok(events) => Some(events),
+            Err(error) => {
+                tracing::warn!(%error, "ephemeral channel unavailable");
+                return write_close(session, crate::ChannelCloseCode::VerifyRejected, true).await;
+            }
+        }
+    } else {
+        None
+    };
     let mut presence = if channel.starts_with(PRESENCE_CHANNEL_PREFIX) {
         let scope = crate::presence_scope(channel, &params);
         let presence = PresenceSession::new(store.clone(), &scope, auth.subject.clone())
@@ -56,14 +69,18 @@ pub async fn serve(
     } else {
         None
     };
-    let mut after = match store.replay_cursor_async(channel, requested_after).await {
-        Ok(after) => after,
-        Err(ChannelError::StaleCursor) => {
-            return write_close(session, crate::ChannelCloseCode::ReplayTooOld, true).await;
-        }
-        Err(error) => {
-            tracing::error!("failed to resolve websocket replay cursor: {error}");
-            return write_close(session, crate::ChannelCloseCode::VerifyRejected, true).await;
+    let mut after = if auth.ephemeral {
+        None
+    } else {
+        match store.replay_cursor_async(channel, requested_after).await {
+            Ok(after) => after,
+            Err(ChannelError::StaleCursor) => {
+                return write_close(session, crate::ChannelCloseCode::ReplayTooOld, true).await;
+            }
+            Err(error) => {
+                tracing::error!("failed to resolve websocket replay cursor: {error}");
+                return write_close(session, crate::ChannelCloseCode::VerifyRejected, true).await;
+            }
         }
     };
 
@@ -71,8 +88,12 @@ pub async fn serve(
     let max_connection_lifetime = Duration::from_millis(auth.max_connection_lifetime_ms.max(1));
     let started_at = tokio::time::Instant::now();
     let mut next_ping = started_at + keepalive_interval;
-    let mut changes = store.changes(channel);
-    let mut read_replay = presence.is_none();
+    let mut changes = if auth.ephemeral {
+        tokio::sync::watch::channel(None).1
+    } else {
+        store.changes(channel)
+    };
+    let mut read_replay = presence.is_none() && !auth.ephemeral;
     let mut buffered = true;
 
     loop {
@@ -150,6 +171,7 @@ pub async fn serve(
             Read(Option<Bytes>),
             Tick,
             Changed,
+            Ephemeral(Option<Arc<crate::ChannelMessage>>),
         }
 
         let action = if buffered {
@@ -161,7 +183,13 @@ pub async fn serve(
             tokio::select! {
                 body = &mut read => WebSocketAction::Read(body?),
                 _ = &mut sleep => WebSocketAction::Tick,
-                _ = changes.changed() => WebSocketAction::Changed,
+                _ = changes.changed(), if !auth.ephemeral => WebSocketAction::Changed,
+                message = async {
+                    match ephemeral.as_mut() {
+                        Some(events) => events.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => WebSocketAction::Ephemeral(message),
             }
         };
 
@@ -201,17 +229,17 @@ pub async fn serve(
                                         format!("Invalid websocket publish payload: {error}"),
                                     )
                                 })?;
-                            store
-                                .append_async(channel, &payload)
-                                .await
-                                .map_err(|error| {
-                                    Error::explain(
-                                        ErrorType::InternalError,
-                                        format!(
-                                            "Failed to append websocket channel payload: {error}"
-                                        ),
-                                    )
-                                })?;
+                            let result = if auth.ephemeral {
+                                store.publish_ephemeral(channel, &payload)
+                            } else {
+                                store.append_async(channel, &payload).await
+                            };
+                            result.map_err(|error| {
+                                Error::explain(
+                                    ErrorType::InternalError,
+                                    format!("Failed to append websocket channel payload: {error}"),
+                                )
+                            })?;
                         }
                         0x8 => {
                             session
@@ -247,7 +275,14 @@ pub async fn serve(
                 }
                 next_ping = tokio::time::Instant::now() + keepalive_interval;
             }
-            WebSocketAction::Read(None) => return Ok(true),
+            WebSocketAction::Ephemeral(Some(message)) => {
+                let encoded = serde_json::to_string(&*message).expect("JSON channel message");
+                session
+                    .write_response_body(Some(Bytes::from(websocket_text_frame(&encoded))), false)
+                    .await?;
+                next_ping = tokio::time::Instant::now() + keepalive_interval;
+            }
+            WebSocketAction::Ephemeral(None) | WebSocketAction::Read(None) => return Ok(true),
             WebSocketAction::Changed => read_replay = presence.is_none(),
             WebSocketAction::Tick => {
                 if tokio::time::Instant::now() >= next_ping {

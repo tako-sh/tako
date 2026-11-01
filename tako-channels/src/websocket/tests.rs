@@ -117,3 +117,73 @@ async fn presence_websockets_isolate_chats_and_track_verified_tabs() {
     other_chat.close(None).await.unwrap();
     server.abort();
 }
+
+#[tokio::test]
+async fn ephemeral_websockets_publish_live_without_replaying_old_events() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let store = Arc::new(ChannelStore::open_in_memory().unwrap());
+    let server_store = store.clone();
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (socket, _) = listener.accept().await.unwrap();
+            let store = server_store.clone();
+            tokio::spawn(async move {
+                let mut session = Session::new_h1(Box::new(Stream::from(socket)));
+                session.read_request().await.unwrap();
+                let auth =
+                    serde_json::from_value(json!({"ok":true,"ephemeral":true,"transport":"ws"}))
+                        .unwrap();
+                let response = build_websocket_upgrade_response(session.req_header()).unwrap();
+                session
+                    .write_response_header(Box::new(response), false)
+                    .await
+                    .unwrap();
+                let _ = serve(
+                    &mut session,
+                    &store,
+                    "live",
+                    Some(-100),
+                    auth,
+                    json!({}),
+                    Default::default(),
+                )
+                .await;
+            });
+        }
+    });
+    store
+        .publish_ephemeral(
+            "live",
+            &crate::ChannelPublishPayload {
+                r#type: "old".into(),
+                data: json!(0),
+            },
+        )
+        .unwrap();
+    for n in [1, 2] {
+        let (mut client, _) = connect_async(format!("ws://{addr}/")).await.unwrap();
+        client
+            .send(Message::text(
+                json!({"type":"progress","data":n}).to_string(),
+            ))
+            .await
+            .unwrap();
+        let message = tokio::time::timeout(std::time::Duration::from_secs(2), client.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(message.to_text().unwrap()).unwrap(),
+            json!({"id":"","channel":"live","type":"progress","data":n})
+        );
+        client.close(None).await.unwrap();
+    }
+    assert!(store.read_after("live", None, 100).unwrap().is_empty());
+    assert_eq!(
+        store.raw_query_i64("SELECT COUNT(*) FROM channel_metadata", []),
+        0
+    );
+    server.abort();
+}

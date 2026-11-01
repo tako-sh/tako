@@ -40,6 +40,8 @@ export interface ChannelAuthConfig<Params> {
 
 /** Lifecycle knobs controlling replay, idle eviction, and keepalives per channel. */
 export interface ChannelLifecycleConfig {
+  /** Deliver only live events in memory, without persistence or replay. Default: false. */
+  ephemeral?: boolean;
   /** @defaultValue 600_000 (10 min) */
   replayWindowMs?: number;
   /** @defaultValue 0 (no inactivity eviction) */

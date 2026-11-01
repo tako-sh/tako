@@ -154,6 +154,7 @@ fn auth() -> ChannelAuthResponse {
         ok: true,
         subject: Some("verified".into()),
         transport: None,
+        ephemeral: false,
         replay_window_ms: 60_000,
         inactivity_ttl_ms: 0,
         keepalive_interval_ms: 25_000,

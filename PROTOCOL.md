@@ -52,6 +52,12 @@ The server probes `GET /status` with `Host: <app>.tako` and an `X-Tako-Internal-
 
 The token is infrastructure-only. SDKs must not expose it to application code or public responses.
 
+## Ephemeral channels
+
+Channel registry metadata, authorization responses, and internal publish lifecycle metadata carry optional `ephemeral: true`. Omission or false selects durable delivery. Ephemeral definitions omit `replayWindowMs`; supplying both is invalid. Durability is a definition setting and cannot be changed by client input or an authorization grant.
+
+Ephemeral publication uses a bounded process-local broadcast bus shared by the publisher and proxy stores for the same deployed app database path. It does not write channel metadata or message rows. Only active subscriptions receive events; lagging subscribers skip evicted events and reconnects have no replay. Ephemeral `ChannelMessage` values have an empty `id`; SSE frames omit the replay ID. Shared Postgres stores reject ephemeral delivery until a transient cross-server transport is available. Local development fetches channel registry metadata to select the same delivery mode while preserving permissive channel authorization.
+
 ## Presence
 
 JavaScript, Go, and Rust presence definitions use the channel registry and authorization endpoint, with wire names prefixed by `tako.presence:`. Channel and presence names therefore have separate namespaces. The connect authorization result supplies the trusted `subject`; it must succeed before the server creates a presence session or returns membership.

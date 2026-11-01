@@ -41,6 +41,8 @@ const (
 // ChannelLifecycleConfig controls replay, idle, keepalive, and max lifetime
 // behavior for channel subscriptions.
 type ChannelLifecycleConfig struct {
+	// Ephemeral delivers live events without persistence or replay.
+	Ephemeral bool `json:"ephemeral,omitempty"`
 	// ReplayWindowMs is how long events remain available for resume/replay.
 	ReplayWindowMs int64 `json:"replayWindowMs,omitempty"`
 	// InactivityTtlMs closes idle subscriptions after the given duration.
@@ -52,7 +54,7 @@ type ChannelLifecycleConfig struct {
 }
 
 func (c ChannelLifecycleConfig) withDefaults() ChannelLifecycleConfig {
-	if c.ReplayWindowMs == 0 {
+	if c.ReplayWindowMs == 0 && !c.Ephemeral {
 		c.ReplayWindowMs = DefaultChannelRetentionMs
 	}
 	if c.KeepaliveIntervalMs == 0 {
@@ -104,7 +106,8 @@ type VerifyInput struct {
 
 // ChannelGrant describes the authorized subject and optional lifecycle
 // overrides for an accepted channel request. Zero lifecycle fields inherit
-// the corresponding definition setting.
+// the corresponding definition setting. Ephemeral is always inherited from the
+// definition; grants cannot change the delivery mode.
 type ChannelGrant struct {
 	// Subject is the application-defined authorized identity.
 	Subject string `json:"subject,omitempty"`
@@ -215,6 +218,9 @@ var Channels = NewChannelRegistry()
 
 // Register adds or replaces a channel definition.
 func (r *ChannelRegistry) Register(name string, definition ChannelDefinition) {
+	if definition.Ephemeral && definition.ReplayWindowMs != 0 {
+		panic("ephemeral channels cannot set ReplayWindowMs")
+	}
 	if definition.ParamsSchema == nil {
 		definition.ParamsSchema = json.RawMessage(`{"type":"object"}`)
 	}
@@ -281,7 +287,7 @@ func (r *ChannelRegistry) Authorize(input ChannelAuthorizeInput) (ChannelAuthori
 
 	grant := decision.ChannelGrant
 	lifecycle := definition.ChannelLifecycleConfig
-	if grant.ReplayWindowMs != 0 {
+	if grant.ReplayWindowMs != 0 && !lifecycle.Ephemeral {
 		lifecycle.ReplayWindowMs = grant.ReplayWindowMs
 	}
 	if grant.InactivityTtlMs != 0 {

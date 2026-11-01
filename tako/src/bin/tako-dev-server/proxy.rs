@@ -412,17 +412,6 @@ impl ProxyHttp for DevProxy {
                         .channel
                         .starts_with(tako_channels::live_store::STORE_CHANNEL_PREFIX)
                 });
-        if path.starts_with(tako_channels::CHANNELS_BASE_PATH) && !is_store {
-            let method = session.req_header().method.as_str().to_string();
-            return crate::dev_channels::try_handle(
-                session,
-                &self.channels,
-                &target.channel_store_key,
-                &path,
-                &method,
-            )
-            .await;
-        }
 
         if !target.active {
             let ready_port = self
@@ -442,6 +431,18 @@ impl ProxyHttp for DevProxy {
             };
             target.upstream_port = active_port;
             target.active = true;
+        }
+
+        if path.starts_with(tako_channels::CHANNELS_BASE_PATH) && !is_store {
+            let method = session.req_header().method.as_str().to_string();
+            return crate::dev_channels::try_handle(
+                session,
+                &self.channels,
+                &target,
+                &path,
+                &method,
+            )
+            .await;
         }
 
         if is_store {

@@ -151,3 +151,34 @@ describe("isChannelDefinition", () => {
     expect(isChannelDefinition("string")).toBe(false);
   });
 });
+
+test("ephemeral publishes carry the flag without a replay window", async () => {
+  let received: unknown;
+  setChannelSocketPublisher(async (channel, payload) => {
+    received = payload;
+    return { id: "", channel, ...payload };
+  });
+  try {
+    const live = defineChannel("live", { ephemeral: true });
+    expect(live.definition.ephemeral).toBe(true);
+    await live.publish({ type: "progress", data: 42 });
+    expect(received).toEqual({
+      type: "progress",
+      data: 42,
+      lifecycle: {
+        ephemeral: true,
+        inactivityTtlMs: 0,
+        keepaliveIntervalMs: 25000,
+        maxConnectionLifetimeMs: 7200000,
+      },
+    });
+    for (const replayWindowMs of [0, 100, 600000]) {
+      expect(() => defineChannel("invalid", { ephemeral: true, replayWindowMs })).toThrow(
+        "cannot set replayWindowMs",
+      );
+    }
+    expect(() => defineChannel("durable", { ephemeral: false, replayWindowMs: 100 })).not.toThrow();
+  } finally {
+    setChannelSocketPublisher(null);
+  }
+});

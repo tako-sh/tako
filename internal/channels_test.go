@@ -151,3 +151,45 @@ func contains(haystack, needle string) bool {
 	}
 	return false
 }
+
+func TestEphemeralChannelMetadataAndAuthorization(t *testing.T) {
+	r := NewChannelRegistry()
+	r.Register("live", ChannelDefinition{ChannelLifecycleConfig: ChannelLifecycleConfig{Ephemeral: true}})
+	for _, private := range []bool{false, true} {
+		definition := *r.Lookup("live")
+		if private {
+			definition.Auth = &ChannelAuthScheme{}
+			definition.Verify = func(VerifyInput) ChannelAuthDecision {
+				return AllowChannel(ChannelGrant{Subject: "user", ChannelLifecycleConfig: ChannelLifecycleConfig{ReplayWindowMs: 1000}})
+			}
+			r.Register("live", definition)
+		}
+		response, found, allowed := r.Authorize(ChannelAuthorizeInput{Channel: "live", Operation: ChannelOperationSubscribe})
+		if !found || !allowed || !response.Ephemeral || response.ReplayWindowMs != 0 {
+			t.Fatalf("unexpected response: %+v", response)
+		}
+		encoded, err := json.Marshal(response)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fields map[string]any
+		if err := json.Unmarshal(encoded, &fields); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := fields["replayWindowMs"]; ok {
+			t.Fatalf("ephemeral response contains replay: %s", encoded)
+		}
+	}
+	if !r.Metadata()[0].Ephemeral || r.Metadata()[0].ReplayWindowMs != 0 {
+		t.Fatal("metadata lost ephemeral mode")
+	}
+}
+
+func TestEphemeralChannelRejectsReplayWindow(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected invalid channel registration to panic")
+		}
+	}()
+	NewChannelRegistry().Register("invalid", ChannelDefinition{ChannelLifecycleConfig: ChannelLifecycleConfig{Ephemeral: true, ReplayWindowMs: 10}})
+}
