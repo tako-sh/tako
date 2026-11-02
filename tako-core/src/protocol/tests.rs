@@ -43,15 +43,22 @@ fn test_prepare_release_command_roundtrip() {
     let cmd = Command::PrepareRelease {
         app: "my-app".to_string(),
         path: "/opt/tako/apps/my-app/releases/v1".to_string(),
+        secrets: HashMap::from([("DATABASE_PASSWORD".into(), "new-deployment-secret".into())]),
         force: false,
     };
     let json = serde_json::to_string(&cmd).unwrap();
     assert!(json.contains(r#""command":"prepare_release""#));
     let parsed: Command = serde_json::from_str(&json).unwrap();
     match parsed {
-        Command::PrepareRelease { app, path, force } => {
+        Command::PrepareRelease {
+            app,
+            path,
+            secrets,
+            force,
+        } => {
             assert_eq!(app, "my-app");
             assert_eq!(path, "/opt/tako/apps/my-app/releases/v1");
+            assert_eq!(secrets["DATABASE_PASSWORD"], "new-deployment-secret");
             assert!(!force);
         }
         _ => panic!("Expected PrepareRelease command"),

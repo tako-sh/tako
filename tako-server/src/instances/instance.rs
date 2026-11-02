@@ -2,7 +2,7 @@ use crate::socket::{InstanceState, InstanceStatus};
 use parking_lot::RwLock;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::process::Child;
 
@@ -55,10 +55,15 @@ pub struct Instance {
     build_version: String,
     /// Shared secret for internal status and secret-delivery requests.
     internal_token: String,
+    sdk_health: AtomicBool,
+    health_probe: RwLock<Option<(String, String)>>,
     /// Upstream endpoint and runtime cleanup metadata.
     upstream: RwLock<Option<PreparedInstanceNetwork>>,
     /// Process handle
     process: RwLock<Option<Child>>,
+    container: RwLock<Option<(crate::container_runtime::ContainerEngine, String)>>,
+    compose: RwLock<Option<ComposeInstance>>,
+    stop_lock: tokio::sync::Mutex<()>,
     /// Process ID
     pid: AtomicU32,
     /// Current state
@@ -80,6 +85,13 @@ pub struct Instance {
 }
 
 #[derive(Clone)]
+struct ComposeInstance {
+    runtime: crate::compose_runtime::ComposeRuntime,
+    container_id: String,
+    owned: bool,
+}
+
+#[derive(Clone)]
 pub(crate) struct HealthyInstance {
     pub(crate) instance: Arc<Instance>,
     pub(crate) endpoint: Option<SocketAddr>,
@@ -96,8 +108,13 @@ impl Instance {
             id,
             build_version,
             internal_token: generate_internal_token(),
+            sdk_health: AtomicBool::new(true),
+            health_probe: RwLock::new(None),
             upstream: RwLock::new(None),
             process: RwLock::new(None),
+            container: RwLock::new(None),
+            compose: RwLock::new(None),
+            stop_lock: tokio::sync::Mutex::new(()),
             pid: AtomicU32::new(0),
             state: AtomicU8::new(encode_instance_state(InstanceState::Starting)),
             started_at: RwLock::new(None),
@@ -164,6 +181,55 @@ impl Instance {
 
     pub fn take_process(&self) -> Option<Child> {
         self.process.write().take()
+    }
+
+    pub(crate) fn set_container(
+        &self,
+        engine: crate::container_runtime::ContainerEngine,
+        name: String,
+    ) {
+        *self.container.write() = Some((engine, name));
+    }
+
+    pub(crate) fn set_sdk_health(&self, enabled: bool) {
+        self.sdk_health.store(enabled, Ordering::Release);
+    }
+
+    pub(crate) fn set_health_probe(&self, host: String, path: String) {
+        *self.health_probe.write() = Some((host, path));
+    }
+
+    pub(crate) fn health_probe(&self) -> Option<(String, String)> {
+        self.health_probe.read().clone()
+    }
+
+    pub(crate) fn set_compose(
+        &self,
+        runtime: crate::compose_runtime::ComposeRuntime,
+        container_id: String,
+    ) {
+        // The pending rollout owns cleanup until its durable commit.
+        *self.compose.write() = Some(ComposeInstance {
+            runtime,
+            container_id,
+            owned: false,
+        });
+    }
+
+    pub(crate) fn compose_container_id(&self) -> Option<String> {
+        self.compose.read().as_ref().map(|c| c.container_id.clone())
+    }
+
+    pub(crate) fn own_compose_container(&self, owned: bool) {
+        if let Some(compose) = self.compose.write().as_mut() {
+            compose.owned = owned;
+        }
+    }
+
+    pub(crate) fn health_token(&self) -> Option<&str> {
+        self.sdk_health
+            .load(Ordering::Acquire)
+            .then_some(self.internal_token())
     }
 
     pub fn request_started(&self) {
@@ -249,6 +315,23 @@ impl Instance {
 
     /// Kill the process
     pub async fn kill(&self) -> Result<(), std::io::Error> {
+        let _guard = self.stop_lock.lock().await;
+        let compose = self.compose.read().clone();
+        if let Some(compose) = compose {
+            if compose.owned {
+                compose
+                    .runtime
+                    .stop_container(&compose.container_id)
+                    .await
+                    .map_err(std::io::Error::other)?;
+            }
+            *self.compose.write() = None;
+        }
+        let container = self.container.read().clone();
+        if let Some((engine, name)) = container {
+            crate::container_runtime::remove_container(engine, &name).await?;
+            *self.container.write() = None;
+        }
         if let Some(mut child) = self.take_process() {
             child.kill().await?;
         }

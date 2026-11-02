@@ -3,6 +3,7 @@ resolver = "3"
 exclude = ["vendor/pingora-core"]
 members = [
   "tako-core",
+  "tako-compose",
   "tako-socket",
   "tako-sqlite",
   "tako-runtime",

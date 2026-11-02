@@ -21,7 +21,7 @@ export const docsNavigation = [
   },
   {
     title: "Docker",
-    pages: ["docker", "dockerfile", "docker-workflows"],
+    pages: ["docker", "docker-compose", "dockerfile", "docker-workflows"],
   },
   {
     title: "Primitives",

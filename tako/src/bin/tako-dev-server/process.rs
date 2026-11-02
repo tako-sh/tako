@@ -139,6 +139,17 @@ pub(crate) async fn spawn_and_monitor_app(
     state: Arc<Mutex<State>>,
     config_path: &str,
 ) -> Result<u32, Box<dyn std::error::Error + Send + Sync>> {
+    let lock = crate::compose::app_lock(&state, config_path);
+    let _guard = lock.lock().await;
+    if *state.lock().unwrap().shutdown_tx.borrow() {
+        return Err("development server is shutting down".into());
+    }
+    if let Some(app) = state.lock().unwrap().apps.get(config_path)
+        && app.compose.is_some()
+        && let Some(pid) = app.pid
+    {
+        return Ok(pid);
+    }
     let (project_dir, app_clone, log_buffer, internal_socket) = {
         let s = state.lock().unwrap();
         let app = s.apps.get(config_path).ok_or("app not found")?;
@@ -289,7 +300,7 @@ pub(crate) async fn spawn_and_monitor_app(
 /// The write end is passed to the child as fd 4; the read end is kept by the parent
 /// to receive the bound port written by the SDK.
 #[cfg(unix)]
-fn create_readiness_pipe() -> std::io::Result<(OwnedFd, OwnedFd)> {
+pub(crate) fn create_readiness_pipe() -> std::io::Result<(OwnedFd, OwnedFd)> {
     let mut fds = [0i32; 2];
     // SAFETY: pipe() is a standard POSIX call; fds is a valid 2-element array.
     if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
@@ -391,6 +402,9 @@ async fn spawn_app(
     app: &state::RuntimeApp,
     internal_socket: Option<&std::path::Path>,
 ) -> Result<(tokio::process::Child, Option<OwnedFd>), Box<dyn std::error::Error + Send + Sync>> {
+    if let Some(runtime) = &app.compose {
+        return crate::compose::spawn(runtime, &app.log_buffer).await;
+    }
     if app.command.is_empty() {
         return Err("app has empty command".into());
     }
@@ -472,7 +486,15 @@ async fn spawn_app(
     #[cfg(not(unix))]
     let readiness_fd: Option<OwnedFd> = None;
 
-    let log_buffer = app.log_buffer.clone();
+    forward_child_pipes(&mut child, &app.log_buffer);
+
+    Ok((child, readiness_fd))
+}
+
+pub(crate) fn forward_child_pipes(
+    child: &mut tokio::process::Child,
+    log_buffer: &state::LogBuffer,
+) {
     if let Some(stdout) = child.stdout.take() {
         let buf = log_buffer.clone();
         tokio::spawn(async move {
@@ -485,8 +507,6 @@ async fn spawn_app(
             drain_pipe_to_buffer(stderr, buf, "warn").await;
         });
     }
-
-    Ok((child, readiness_fd))
 }
 
 /// Forward subprocess output to the log buffer.
@@ -573,6 +593,16 @@ pub(crate) async fn handle_wake_on_request(state: Arc<Mutex<State>>, host: Strin
     let Some((config_path, app, internal_socket)) = app_info else {
         return;
     };
+
+    if app.compose.is_some() {
+        if let Err(error) = spawn_and_monitor_app(state.clone(), &config_path).await {
+            push_scoped_log(&app.log_buffer, "error", "tako", &error.to_string());
+            if let Some(app) = state.lock().unwrap().apps.get_mut(&config_path) {
+                app.is_idle = true;
+            }
+        }
+        return;
+    }
 
     tracing::info!(
         app_name = %app.name,
@@ -709,18 +739,40 @@ pub(crate) async fn stale_app_cleanup_loop(state: Arc<Mutex<State>>) {
     let mut ticker = tokio::time::interval(Duration::from_secs(60));
     loop {
         ticker.tick().await;
-        let mut s = state.lock().unwrap();
-        if let Some(db) = &s.db
-            && let Ok(removed) = db.cleanup_stale()
-        {
-            for config_path in &removed {
-                s.apps.remove(config_path);
-                let route_id = format!("reg:{}", config_path);
-                s.routes.remove_app(&route_id);
+        let removed = {
+            let s = state.lock().unwrap();
+            let mut removed =
+                s.db.as_ref()
+                    .and_then(|db| db.cleanup_stale().ok())
+                    .unwrap_or_default();
+            // Also retry Compose cleanup after a previous Docker failure.
+            removed.extend(
+                s.apps
+                    .iter()
+                    .filter(|(key, app)| {
+                        app.compose.is_some() && !std::path::Path::new(key).exists()
+                    })
+                    .map(|(key, _)| key.clone()),
+            );
+            removed.sort();
+            removed.dedup();
+            removed
+        };
+        for config_path in removed {
+            let lock = crate::compose::app_lock(&state, &config_path);
+            let _guard = lock.lock().await;
+            if let Err(error) = crate::compose::stop(&state, &config_path).await {
+                tracing::warn!(%error, "failed to stop stale Compose app; will retry");
+                continue;
             }
-            if !removed.is_empty() {
-                tracing::info!(count = removed.len(), "cleaned up stale app registrations");
+            let mut s = state.lock().unwrap();
+            if let Some(app) = s.apps.remove(&config_path) {
+                if let Some(pid) = app.pid {
+                    kill_app_process(pid);
+                }
+                state::remove_pid_file(&app.project_dir, &config_path);
             }
+            s.routes.remove_app(&format!("reg:{config_path}"));
         }
     }
 }

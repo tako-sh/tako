@@ -23,11 +23,30 @@ impl crate::ServerState {
     }
 
     pub(crate) async fn cleanup_release(&self, app: &str, version: &str) -> Response {
+        let lock = self.get_deploy_lock(app).await;
+        let _guard = lock.lock().await;
+        if self
+            .app_manager
+            .get_app(app)
+            .is_some_and(|current| current.version() == version)
+        {
+            return Response::error("Cannot remove the active release");
+        }
+        let protected = match self.compose_release_references(app).await {
+            Ok(paths) => paths,
+            Err(error) => return Response::error(error),
+        };
         match self.release_paths(app, version) {
             Ok(paths) => {
-                if paths.release_path.exists()
-                    && let Err(error) = std::fs::remove_dir_all(&paths.release_path)
+                if protected
+                    .iter()
+                    .any(|used| used.starts_with(&paths.release_path))
                 {
+                    return Response::error(
+                        "Cannot remove release files referenced by Compose containers",
+                    );
+                }
+                if let Err(error) = remove_release(&paths.release_path) {
                     return Response::error(format!(
                         "Failed to remove release {}: {error}",
                         paths.release_path.display()
@@ -40,7 +59,7 @@ impl crate::ServerState {
     }
 
     pub(crate) async fn finalize_release(&self, app: &str, version: &str) -> Response {
-        match self.finalize_release_inner(app, version) {
+        match self.finalize_release_inner(app, version).await {
             Ok(()) => {
                 let backup = match self.backup_after_deploy(app).await {
                     Some(Ok(info)) => serde_json::json!({
@@ -152,7 +171,19 @@ impl crate::ServerState {
         ))
     }
 
-    fn finalize_release_inner(&self, app: &str, version: &str) -> Result<(), String> {
+    pub(crate) async fn finalize_release_inner(
+        &self,
+        app: &str,
+        version: &str,
+    ) -> Result<(), String> {
+        let lock = self.get_deploy_lock(app).await;
+        let _guard = lock.lock().await;
+        if let Some(current) = self.app_manager.get_app(app) {
+            if current.version() != version {
+                return Err("Cannot finalize a release that is not active".into());
+            }
+        }
+        let protected = self.compose_release_references(app).await?;
         let paths = self.release_paths(app, version)?;
         if !paths.release_path.is_dir() {
             return Err(format!(
@@ -173,8 +204,28 @@ impl crate::ServerState {
 
         std::fs::rename(&temp_link, &current_link)
             .map_err(|e| format!("update current symlink {}: {e}", current_link.display()))?;
-        prune_old_releases(&paths.releases_root, &paths.release_path);
+        prune_old_releases(&paths.releases_root, &paths.release_path, &protected);
         Ok(())
+    }
+
+    async fn compose_release_references(
+        &self,
+        app: &str,
+    ) -> Result<std::collections::BTreeSet<PathBuf>, String> {
+        let Some(app) = self.app_manager.get_app(app) else {
+            return Ok(Default::default());
+        };
+        let config = app.config.read().clone();
+        if config.compose.is_none() {
+            return Ok(Default::default());
+        }
+        let runtime = crate::compose_runtime::for_config(&config)?;
+        Ok(runtime
+            .containers()
+            .await?
+            .into_iter()
+            .filter_map(|container| container.release)
+            .collect())
     }
 
     fn release_paths(&self, app: &str, version: &str) -> Result<ReleasePaths, String> {
@@ -220,7 +271,11 @@ fn replace_logs_with_shared_link(release_path: &Path, shared_logs: &Path) -> Res
     Ok(())
 }
 
-fn prune_old_releases(releases_root: &Path, active_release: &Path) {
+fn prune_old_releases(
+    releases_root: &Path,
+    active_release: &Path,
+    protected: &std::collections::BTreeSet<PathBuf>,
+) {
     let Ok(entries) = std::fs::read_dir(releases_root) else {
         return;
     };
@@ -228,7 +283,10 @@ fn prune_old_releases(releases_root: &Path, active_release: &Path) {
     let mut retained = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
-        if path == active_release || !path.is_dir() {
+        if path == active_release
+            || !path.is_dir()
+            || protected.iter().any(|used| used.starts_with(&path))
+        {
             continue;
         }
         let Ok(metadata) = entry.metadata() else {
@@ -241,7 +299,7 @@ fn prune_old_releases(releases_root: &Path, active_release: &Path) {
             .duration_since(modified)
             .is_ok_and(|age| age > OLD_RELEASE_RETENTION)
         {
-            let _ = std::fs::remove_dir_all(path);
+            let _ = remove_release(&path);
         } else {
             retained.push((path, modified));
         }
@@ -257,8 +315,20 @@ fn prune_old_releases(releases_root: &Path, active_release: &Path) {
         MAX_RELEASE_RETENTION_COUNT
     };
     for (path, _) in retained.into_iter().skip(non_active_limit) {
-        let _ = std::fs::remove_dir_all(path);
+        let _ = remove_release(&path);
     }
+}
+
+fn remove_release(path: &Path) -> Result<(), String> {
+    let app_root = path
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("Invalid release path")?;
+    tako_compose::remove_release_preparations(path, &app_root.join("data/app"))?;
+    if path.exists() {
+        std::fs::remove_dir_all(path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -318,13 +388,55 @@ mod tests {
             );
         }
 
-        prune_old_releases(root, &active);
+        prune_old_releases(root, &active, &Default::default());
 
         assert_eq!(release_dirs(root), MAX_RELEASE_RETENTION_COUNT);
         assert!(active.is_dir());
         assert!(root.join("r048").is_dir());
         assert!(!root.join("r049").exists());
         assert!(!root.join("r053").exists());
+    }
+
+    #[test]
+    fn prune_keeps_release_files_still_mounted_by_unchanged_compose_services() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("releases");
+        let now = SystemTime::now();
+        let active = create_release(&root, "current", now);
+        let referenced = create_release(
+            &root,
+            "referenced",
+            now - OLD_RELEASE_RETENTION - Duration::from_secs(1),
+        );
+        let obsolete = create_release(
+            &root,
+            "obsolete",
+            now - OLD_RELEASE_RETENTION - Duration::from_secs(1),
+        );
+        let private = temp.path().join("compose");
+        std::fs::create_dir_all(&private).unwrap();
+        std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o700)).unwrap();
+        for release in [&referenced, &obsolete] {
+            let preparation = private.join(release.file_name().unwrap());
+            std::fs::create_dir(&preparation).unwrap();
+            std::fs::set_permissions(&preparation, std::fs::Permissions::from_mode(0o700)).unwrap();
+            std::fs::write(
+                preparation.join("release.json"),
+                serde_json::to_vec(&release.join("app")).unwrap(),
+            )
+            .unwrap();
+            std::fs::write(preparation.join("source.txt"), "mounted input").unwrap();
+        }
+        let protected = std::collections::BTreeSet::from([referenced.join("app")]);
+        prune_old_releases(&root, &active, &protected);
+        assert!(referenced.is_dir());
+        assert!(private.join("referenced/source.txt").is_file());
+        assert!(!obsolete.exists());
+        assert!(!private.join("obsolete").exists());
+        prune_old_releases(&root, &active, &Default::default());
+        assert!(!referenced.exists());
+        assert!(!private.join("referenced").exists());
     }
 
     #[test]
@@ -336,7 +448,7 @@ mod tests {
         let expired = create_release(root, "expired", now - OLD_RELEASE_RETENTION * 2);
         let fresh = create_release(root, "fresh", now - Duration::from_secs(60));
 
-        prune_old_releases(root, &active);
+        prune_old_releases(root, &active, &Default::default());
 
         assert!(active.is_dir());
         assert!(fresh.is_dir());

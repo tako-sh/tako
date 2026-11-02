@@ -5234,6 +5234,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_yaml_ng"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b4db627b98b36d4203a7b458cf3573730f2bb591b28871d916dfa9efabfd41f"
+dependencies = [
+ "indexmap 2.14.1",
+ "itoa",
+ "ryu",
+ "serde",
+ "unsafe-libyaml",
+]
+
+[[package]]
 name = "serdect"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5828,6 +5841,7 @@ dependencies = [
  "ssh-key 0.6.7",
  "sysinfo",
  "tako-channels",
+ "tako-compose",
  "tako-core",
  "tako-images",
  "tako-runtime",
@@ -5848,6 +5862,21 @@ dependencies = [
  "unicode-width",
  "x509-parser",
  "zstd 0.14.0",
+]
+
+[[package]]
+name = "tako-compose"
+version = "0.0.0"
+dependencies = [
+ "hex",
+ "libc",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "sha2 0.11.0",
+ "tako-core",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -5934,6 +5963,7 @@ dependencies = [
  "socket2",
  "ssh-key 0.6.7",
  "tako-channels",
+ "tako-compose",
  "tako-core",
  "tako-images",
  "tako-runtime",

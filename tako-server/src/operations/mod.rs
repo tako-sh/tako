@@ -1,4 +1,5 @@
 mod backup;
+mod compose;
 mod deploy;
 mod dispatch;
 mod lifecycle;

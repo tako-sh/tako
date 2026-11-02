@@ -77,13 +77,17 @@ pub(super) async fn prepare_build_phase(
     let git_dirty = executor.is_git_dirty().ok();
     tracing::debug!("Version: {}", version);
 
-    if let Some(container_file) = tako_config.container.as_deref() {
+    if tako_config.container.is_some()
+        || tako_config.image.is_some()
+        || tako_config.compose.is_some()
+    {
+        let container_file = tako_config.container.as_deref().unwrap_or_default();
         let env_idle_timeout = tako_config.get_idle_timeout(&env);
         let app_dir = project_dir
             .strip_prefix(&source_root)
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
-        let manifest = build_container_deploy_archive_manifest(
+        let mut manifest = build_container_deploy_archive_manifest(
             &app_name,
             &env,
             &version,
@@ -99,6 +103,17 @@ pub(super) async fn prepare_build_phase(
             resolve_configured_workflow_run(&tako_config)?,
             tako_config.workflows.retention_ms,
         );
+        manifest.container_file = tako_config.container.clone();
+        manifest.container_image = tako_config.image.clone();
+        manifest.container_options = tako_config.container_options.clone();
+        if let Some(compose) = &tako_config.compose {
+            if server_targets.len() != 1 {
+                return Err("Compose deployments require exactly one target server".into());
+            }
+            manifest.release_kind = super::manifest::DeployReleaseKind::Compose;
+            manifest.runtime = "compose".into();
+            manifest.compose = Some(compose.clone());
+        }
         let deploy_secrets = decrypt_deploy_secrets(&env, &secrets, Some(&project_dir))
             .map_err(|e| e.to_string())?;
         let deploy_runtime_credentials = crate::commands::credentials::decrypt_runtime_credentials(

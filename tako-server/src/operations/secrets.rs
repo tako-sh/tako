@@ -22,12 +22,55 @@ impl crate::ServerState {
             }
         };
 
+        if let Some(app) = self.app_manager.get_app(app_name) {
+            let mut config = app.config.read().clone();
+            if config.compose.is_some() && !app.get_instances().is_empty() {
+                config.secrets = new_secrets;
+                let credentials = (|| -> Result<_, crate::state_store::StateStoreError> {
+                    Ok((
+                        self.state_store.get_runtime_credentials(app_name)?,
+                        self.state_store.get_ssl(app_name)?,
+                        self.state_store.get_backup(app_name)?,
+                    ))
+                })();
+                let (runtime_credentials, ssl, backup) = match credentials {
+                    Ok(bindings) => bindings,
+                    Err(error) => {
+                        return Response::error(format!(
+                            "Could not load deployment credentials: {error}"
+                        ));
+                    }
+                };
+                let routes = self.routes.read().routes_for_app(app_name);
+                let response = self
+                    .deploy_compose(super::compose::ComposeDeployment {
+                        config,
+                        routes,
+                        runtime_credentials,
+                        ssl,
+                        backup,
+                    })
+                    .await;
+                return match response {
+                    Response::Ok { mut data } => {
+                        data["status"] = serde_json::json!("updated");
+                        data["restarted"] = serde_json::json!(
+                            data["updates"].as_array().is_some_and(|v| !v.is_empty())
+                        );
+                        Response::Ok { data }
+                    }
+                    error => error,
+                };
+            }
+        }
+
         if let Err(e) = self.state_store.set_secrets(app_name, &new_secrets) {
             return Response::error(format!("Failed to store secrets: {}", e));
         }
 
         if let Some(app) = self.app_manager.get_app(app_name) {
-            let mut config = app.config.read().clone();
+            let previous_config = app.config.read().clone();
+            let mut config = previous_config.clone();
             config.secrets = new_secrets;
             app.update_config(config.clone());
             self.persist_app_state(app_name).await;

@@ -131,6 +131,7 @@ impl LogBuffer {
 /// Runtime app state (in-memory only, lost on server restart).
 #[derive(Debug, Clone)]
 pub struct RuntimeApp {
+    pub compose: Option<tako_compose::ComposeRuntime>,
     pub project_dir: String,
     pub name: String,
     pub variant: Option<String>,

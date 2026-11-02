@@ -449,7 +449,28 @@ pub(crate) async fn handle_rpc_command(
     state: Arc<ServerState>,
     command: Command,
 ) -> tako_core::Response {
-    state.handle_command(command).await
+    if matches!(
+        &command,
+        Command::Deploy { .. }
+            | Command::Rollback { .. }
+            | Command::UpdateSecrets { .. }
+            | Command::Stop { .. }
+            | Command::Delete { .. }
+            | Command::Scale { .. }
+    ) {
+        // Hyper may drop the request future when the client disconnects. A
+        // container transaction must reach commit or recovery independently of
+        // the connection that initiated it. Process termination is handled by
+        // the durable deployment marker instead.
+        match tokio::spawn(async move { state.handle_command(command).await }).await {
+            Ok(response) => response,
+            Err(error) => {
+                tako_core::Response::error(format!("Management operation failed: {error}"))
+            }
+        }
+    } else {
+        state.handle_command(command).await
+    }
 }
 
 fn command_is_public_probe(command: &Command) -> bool {
@@ -530,6 +551,43 @@ mod tests {
             )
             .expect("server state"),
         )
+    }
+
+    #[tokio::test]
+    async fn client_disconnect_does_not_cancel_an_accepted_lifecycle_operation() {
+        let state = test_state();
+        let app = state.app_manager.register_app(crate::instances::AppConfig {
+            name: "disconnect".into(),
+            environment: "production".into(),
+            ..Default::default()
+        });
+        app.set_state(crate::socket::AppState::Running);
+        let lock = state.get_deploy_lock("disconnect/production").await;
+        let guard = lock.lock().await;
+        let request = tokio::spawn(handle_rpc_command(
+            state.clone(),
+            Command::Stop {
+                app: "disconnect/production".into(),
+            },
+        ));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            // The operation has cloned the app lock and is waiting to mutate it.
+            while Arc::strong_count(&lock) < 3 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        request.abort();
+        let _ = request.await;
+        drop(guard);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while app.state() != crate::socket::AppState::Stopped {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]

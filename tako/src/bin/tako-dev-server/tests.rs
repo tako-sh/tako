@@ -88,6 +88,7 @@ fn insert_test_app(state: &Arc<Mutex<State>>, project_dir: &str, name: &str) {
     s.apps.insert(
         config_path.clone(),
         state::RuntimeApp {
+            compose: None,
             project_dir: project_dir.to_string(),
             name: name.to_string(),
             variant: None,
@@ -121,6 +122,7 @@ fn runtime_app_with_env(
     env: std::collections::HashMap<String, String>,
 ) -> state::RuntimeApp {
     state::RuntimeApp {
+        compose: None,
         project_dir: "/tmp/proj".to_string(),
         name: name.to_string(),
         variant: None,
@@ -143,6 +145,7 @@ fn runtime_app_with_env(
 }
 
 mod certs;
+mod compose;
 mod control;
 mod logs;
 mod network;

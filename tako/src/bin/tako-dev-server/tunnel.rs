@@ -2009,6 +2009,7 @@ mod tests {
         state.lock().expect("state lock").apps.insert(
             config_path.to_string(),
             crate::state::RuntimeApp {
+                compose: None,
                 project_dir: "/tmp".to_string(),
                 name: "app".to_string(),
                 variant: None,

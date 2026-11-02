@@ -501,6 +501,7 @@ mod tests {
             management_rpc_timeout_for_command(&Command::PrepareRelease {
                 app: "demo".to_string(),
                 path: "/opt/tako/apps/demo/production/releases/v1".to_string(),
+                secrets: Default::default(),
                 force: false,
             }),
             MANAGEMENT_DEPLOY_RPC_TIMEOUT

@@ -237,6 +237,102 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    #[tokio::test]
+    #[ignore = "requires Docker Compose and shared host/container project paths"]
+    async fn compose_preparation_survives_app_data_restore() {
+        use std::collections::HashMap;
+        use std::process::Stdio;
+        let temp = TempDir::new().unwrap();
+        let release = temp.path().join("releases/v1");
+        let data_root = temp.path().join("data");
+        std::fs::create_dir_all(release.join("public")).unwrap();
+        std::fs::create_dir_all(data_root.join("app")).unwrap();
+        std::fs::create_dir_all(data_root.join("tako")).unwrap();
+        std::fs::write(release.join("public/index.html"), "prepared-content").unwrap();
+        std::fs::write(
+            release.join("compose.yaml"),
+            r#"
+services:
+  web:
+    image: docker.io/library/busybox:1.37
+    command: [httpd, -f, -p, '8080', -h, /www]
+    volumes: ['./public:/www:ro']
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, 'http://127.0.0.1:8080/']
+      interval: 1s
+      timeout: 1s
+      retries: 3
+    deploy:
+      update_config: {monitor: 0s}
+"#,
+        )
+        .unwrap();
+        let runtime = tako_compose::ComposeRuntime::new(
+            release,
+            tako_core::compose::ComposeConfig {
+                file: "compose.yaml".into(),
+                service: "web".into(),
+                port: 8080,
+                health_path: "/".into(),
+                health_host: None,
+            },
+            HashMap::from([(
+                crate::release::TAKO_APP_DATA_DIR_ENV.into(),
+                data_root.join("app").display().to_string(),
+            )]),
+        )
+        .unwrap();
+        struct Cleanup(tako_compose::ComposeRuntime);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = self
+                    .0
+                    .command(false)
+                    .into_std()
+                    .args(["down", "--volumes", "--remove-orphans"])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+            }
+        }
+        let _cleanup = Cleanup(runtime.clone());
+        runtime.prepare("v1").await.unwrap();
+        let mut first = runtime.begin_rollout().await.unwrap();
+        first.apply().await.unwrap();
+        first.finish().await.unwrap();
+        let id = first.ingress().unwrap().id.clone();
+        runtime.stop().await.unwrap();
+
+        std::fs::write(data_root.join("app/marker"), "from-backup").unwrap();
+        let snapshot = temp.path().join("snapshot");
+        snapshot_data_tree(&data_root, &snapshot).unwrap();
+        let archive = temp.path().join("backup.tar.zst");
+        create_backup_archive(&snapshot, &archive).unwrap();
+        let extracted = temp.path().join("extracted");
+        crate::extract_zstd_archive(&archive, &extracted).unwrap();
+        std::fs::write(data_root.join("app/marker"), "after-backup").unwrap();
+        restore_data_tree(&extracted, &data_root).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(data_root.join("app/marker")).unwrap(),
+            "from-backup"
+        );
+
+        let mut restored = runtime.begin_rollout().await.unwrap();
+        restored.apply().await.unwrap();
+        restored.finish().await.unwrap();
+        assert_eq!(restored.ingress().unwrap().id, id);
+        let output = tokio::process::Command::new("docker")
+            .args(["exec", &id, "wget", "-qO-", "http://127.0.0.1:8080/"])
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            "prepared-content"
+        );
+    }
+
     #[test]
     fn snapshot_uses_sqlite_online_backup_for_sqlite_files() {
         let temp = TempDir::new().unwrap();

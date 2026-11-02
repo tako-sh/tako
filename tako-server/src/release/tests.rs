@@ -108,7 +108,7 @@ fn apply_release_runtime_to_config_sets_container_launch() {
     let temp = TempDir::new().unwrap();
     std::fs::write(
         temp.path().join("app.json"),
-        r#"{"protocol_version":0,"release_kind":"container","app_name":"my-app","environment":"production","version":"v1","runtime":"container","main":"","idle_timeout":300,"container_file":"Dockerfile","container_port":3000}"#,
+        r#"{"protocol_version":0,"release_kind":"container","app_name":"my-app","environment":"production","version":"v1","runtime":"container","main":"","idle_timeout":300,"container_file":"Dockerfile","container_options":{"port":3000}}"#,
     )
     .unwrap();
 

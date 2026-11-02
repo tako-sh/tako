@@ -10,7 +10,7 @@ Tako is a complete, opinionated application platform for solo builders, running 
 
 Local development, rolling deploys, HTTPS, logs, secrets, workflows, channels, storage, and more work together in one platform designed to stay manageable by one person.
 
-Keep control of your infrastructure, data, and costs, with access to a full runtime: Node.js, Bun, Go, or an application packaged with a Dockerfile.
+Keep control of your infrastructure, data, and costs, with access to a full runtime: Node.js, Bun, Go, an application packaged with a Dockerfile, or an existing Docker Compose stack on one server.
 
 Tako chooses a simple workflow and thoughtful defaults so you can build and run your application without assembling a platform yourself. Start on one VPS; run the same app on multiple servers when needed.
 

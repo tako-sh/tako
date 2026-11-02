@@ -105,12 +105,29 @@ impl AppManager {
 
         app.set_state(AppState::Stopped);
 
+        let compose_config = app.config.read().clone();
+        let compose = if compose_config.compose.is_some() {
+            Some(
+                crate::compose_runtime::for_config(&compose_config)
+                    .map_err(InstanceError::HealthCheckFailed)?,
+            )
+        } else {
+            None
+        };
+
         // Kill all instances
         let instances = app.get_instances();
         for instance in instances {
             app.set_instance_state(&instance, InstanceState::Draining);
             instance.kill().await.map_err(InstanceError::StopError)?;
             app.remove_instance(&instance.id);
+        }
+
+        if let Some(compose) = compose {
+            compose
+                .stop()
+                .await
+                .map_err(InstanceError::HealthCheckFailed)?;
         }
 
         Ok(())
@@ -128,6 +145,9 @@ impl AppManager {
             app.set_state(AppState::Stopped);
             for instance in app.get_instances() {
                 app.set_instance_state(&instance, InstanceState::Draining);
+                // Docker owns these processes across Tako server restarts.
+                // Detach log clients and adopt the same containers on startup.
+                instance.own_compose_container(false);
                 if let Err(error) = instance.kill().await {
                     tracing::warn!(
                         app = %name,

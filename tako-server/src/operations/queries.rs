@@ -11,8 +11,29 @@ impl crate::ServerState {
         let instances: Vec<InstanceStatus> =
             app.get_instances().iter().map(|i| i.status()).collect();
         let builds = collect_running_build_statuses(&app);
+        let config = app.config.read().clone();
+        let (services, services_error) = if let Some(compose) = config.compose {
+            let mut env = config.env_vars.clone();
+            env.extend(config.secrets);
+            if let Some(data) = config.env_vars.get(crate::release::TAKO_APP_DATA_DIR_ENV) {
+                env.insert(crate::release::TAKO_APP_DATA_DIR_ENV.into(), data.clone());
+            }
+            let result =
+                match crate::compose_runtime::ComposeRuntime::new(config.path, compose, env) {
+                    Ok(runtime) => runtime.status().await,
+                    Err(error) => Err(error),
+                };
+            match result {
+                Ok(services) => (services, None),
+                Err(error) => (Vec::new(), Some(error)),
+            }
+        } else {
+            (Vec::new(), None)
+        };
 
         let status = AppStatus {
+            services,
+            services_error,
             name: app.name(),
             version: app.version(),
             instances,

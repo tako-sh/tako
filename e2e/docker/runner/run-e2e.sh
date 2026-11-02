@@ -4,6 +4,18 @@ set -euo pipefail
 WORKSPACE=${WORKSPACE:-/workspace}
 FIXTURE_REL=${1:-${E2E_FIXTURE:-e2e/fixtures/javascript/tanstack-start}}
 FIXTURE_DIR="$WORKSPACE/$FIXTURE_REL"
+export BUN_CONFIG_MAX_HTTP_REQUESTS="${BUN_CONFIG_MAX_HTTP_REQUESTS:-1}"
+
+bun_install() {
+  for attempt in 1 2 3; do
+    if bun install --prefer-offline --network-concurrency "$BUN_CONFIG_MAX_HTTP_REQUESTS"; then
+      return 0
+    fi
+    if (( attempt == 3 )); then return 1; fi
+    echo "Retrying fixture dependency download ($attempt/3)" >&2
+    sleep "$((attempt * 2))"
+  done
+}
 
 if [[ ! -d "$FIXTURE_DIR" ]]; then
   echo "Fixture directory not found: $FIXTURE_DIR" >&2
@@ -26,6 +38,21 @@ fi
 
 TMP_ROOT=$(mktemp -d)
 cleanup() {
+  local exit_code=$?
+  if [[ -n "${COMPOSE_PROBE_PID:-}" ]]; then
+    kill "$COMPOSE_PROBE_PID" >/dev/null 2>&1 || true
+    wait "$COMPOSE_PROBE_PID" >/dev/null 2>&1 || true
+  fi
+  if (( exit_code != 0 )); then
+    for log in "$TMP_ROOT"/*.log; do
+      [[ -f "$log" ]] || continue
+      echo "--- $(basename "$log") ---" >&2
+      tail -n 80 "$log" >&2
+    done
+    if [[ -n "${server:-}" ]]; then
+      ssh_exec "$server" 'tail -n 100 /tmp/tako-server.log' >&2 || true
+    fi
+  fi
   rm -rf "$TMP_ROOT"
 }
 trap cleanup EXIT
@@ -190,25 +217,6 @@ fetch_route_path() {
     --connect-timeout 3 \
     --max-time 10 \
     -H "Host: ${route_host}" \
-    -H "Connection: close" \
-    -D "$headers_file" \
-    -o "$body_file" \
-    -w "%{http_code}" \
-    "http://${server_host}:8080${route_path}"
-}
-
-fetch_route_path_forwarded_https() {
-  local server_host=$1
-  local route_host=$2
-  local route_path=$3
-  local headers_file=$4
-  local body_file=$5
-
-  curl -sS \
-    --http1.1 \
-    --connect-timeout 3 \
-    --max-time 10 \
-    -H "Host: ${route_host}" \
     -H "X-Forwarded-Proto: https" \
     -H "Forwarded: proto=https" \
     -H "Connection: close" \
@@ -326,7 +334,7 @@ run_secret_checks() {
 
   for path in /api/secret /secret /; do
     status=$(
-      fetch_route_path_forwarded_https \
+      fetch_route_path \
         "$server_host" "$route_host" "$path" "$headers_file" "$body_file" || true
     )
     if [[ "$status" =~ ^[0-9]+$ ]] && (( status >= 200 && status < 400 )); then
@@ -588,6 +596,150 @@ run_cli_post_deploy_checks() {
   require_file_contains "$logs_log" '"source":"e2e"' "tako logs --json"
 }
 
+run_compose_lifecycle_checks() {
+  local server_host=$1 route_host=$2 first_release=$3
+  local body="$TMP_ROOT/compose-body.json" headers="$TMP_ROOT/compose-headers"
+  local previous=0 visits current redis_id web_id deployment_pid
+  echo "Checking Compose redeploy, restart, rollback, and Redis persistence on $server_host"
+  compose_assert_response() {
+    local expected=$1 status
+    status=$(fetch_route_path "$server_host" "$route_host" / "$headers" "$body")
+    if [[ "$status" != 200 ]]; then
+      echo "Compose response check failed: HTTP $status" >&2
+      cat "$body" >&2
+      return 1
+    fi
+    if ! jq -e --arg expected "$expected" '.message == $expected' "$body" >/dev/null; then
+      echo "Expected Compose response from '$expected':" >&2
+      cat "$body" >&2
+      return 1
+    fi
+    visits=$(jq -r '.visits | tonumber' "$body")
+    if (( visits <= previous )); then
+      echo "Redis counter did not survive lifecycle transition: $previous -> $visits" >&2
+      return 1
+    fi
+    previous=$visits
+  }
+  compose_assert_release() {
+    current=$(resolve_current_release_link "$server_host")
+    if [[ "$(basename "$current")" != "$first_release" ]]; then
+      echo "Expected current release $first_release, got $current" >&2
+      return 1
+    fi
+  }
+  compose_container_id() {
+    ssh_exec "$server_host" "docker ps --no-trunc --filter label=sh.tako.compose.service=$1 --format '{{.ID}}'"
+  }
+  compose_assert_redis_unchanged() {
+    local actual
+    actual=$(compose_container_id redis)
+    if [[ "$actual" != "$redis_id" ]]; then
+      echo "Unchanged Redis was replaced: $redis_id -> $actual" >&2
+      return 1
+    fi
+  }
+  compose_probe_start() {
+    rm -f "$TMP_ROOT/compose-probe-stop"
+    : > "$TMP_ROOT/compose-probe.log"
+    (
+      while [[ ! -f "$TMP_ROOT/compose-probe-stop" ]]; do
+        fetch_route_path "$server_host" "$route_host" / "$TMP_ROOT/probe-headers" "$TMP_ROOT/probe-body"
+        printf '\n'
+        sleep 0.05
+      done
+    ) > "$TMP_ROOT/compose-probe.log" 2> "$TMP_ROOT/compose-probe-errors.log" &
+    COMPOSE_PROBE_PID=$!
+  }
+  compose_probe_finish() {
+    touch "$TMP_ROOT/compose-probe-stop"
+    wait "$COMPOSE_PROBE_PID"
+    unset COMPOSE_PROBE_PID
+    if [[ $(wc -l < "$TMP_ROOT/compose-probe.log") -lt 10 ]] || grep -qv '^200$' "$TMP_ROOT/compose-probe.log"; then
+      echo "Compose update dropped HTTP requests" >&2
+      sort "$TMP_ROOT/compose-probe.log" | uniq -c >&2
+      return 1
+    fi
+    echo "Compose update served $(wc -l < "$TMP_ROOT/compose-probe.log") consecutive successful requests"
+  }
+  redis_id=$(compose_container_id redis)
+  web_id=$(compose_container_id web)
+  [[ -n "$redis_id" && -n "$web_id" ]]
+  compose_assert_response 'Hello from Bun!'
+  sed -i 's/Hello from Bun!/Updated Bun release!/' "$PROJECT_DIR/server.ts"
+  # Exercise secret-only updates without changing the public example.
+  sed -i '/REDIS_URL:/a\      ROTATION_TOKEN: ${ROTATION_TOKEN:-initial}' "$PROJECT_DIR/compose.yaml"
+  compose_probe_start
+  HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" deploy --env production --yes
+  compose_probe_finish
+  compose_assert_redis_unchanged
+  [[ $(compose_container_id web) != "$web_id" ]]
+  compose_assert_response 'Updated Bun release!'
+  web_id=$(compose_container_id web)
+  compose_probe_start
+  jq -nc --arg app "$APP_NAME/production" '{command:"update_secrets",app:$app,secrets:{ROTATION_TOKEN:"rotated$VALUE"}}' > "$TMP_ROOT/compose-secrets.json"
+  ssh_exec "$server_host" "python3 -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.settimeout(300); s.connect(\"/var/run/tako/tako.sock\"); s.sendall(sys.stdin.buffer.read()); s.shutdown(socket.SHUT_WR); print(s.makefile().readline(), end=\"\")'" < "$TMP_ROOT/compose-secrets.json" > "$TMP_ROOT/compose-secrets-result.json"
+  jq -e '.status == "ok" and .data.restarted == true' "$TMP_ROOT/compose-secrets-result.json" >/dev/null
+  compose_probe_finish
+  compose_assert_redis_unchanged
+  [[ $(compose_container_id web) != "$web_id" ]]
+  web_id=$(compose_container_id web)
+  [[ $(ssh_exec "$server_host" "docker exec $web_id printenv ROTATION_TOKEN") == 'rotated$VALUE' ]]
+  # Simulate termination after the durable deployment commit but before the
+  # client finalizes the derived current symlink. Restart must repair it.
+  local committed_release
+  committed_release=$(resolve_current_release_link "$server_host")
+  ssh_exec "$server_host" 'sudo -n /usr/local/bin/tako-e2e-verify-compose-inputs'
+  ssh_exec "$server_host" "ln -sfn /opt/tako/apps/$APP_NAME/production/releases/$first_release /opt/tako/apps/$APP_NAME/production/current"
+  start_tako_server "$server_host"
+  [[ $(resolve_current_release_link "$server_host") == "$committed_release" ]]
+  run_universal_http_checks "$server_host" "$route_host" /opt/tako
+  compose_assert_response 'Updated Bun release!'
+  compose_assert_redis_unchanged
+  [[ $(compose_container_id web) == "$web_id" ]]
+  compose_probe_start
+  HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" releases rollback "$first_release" --env production --yes
+  compose_probe_finish
+  compose_assert_redis_unchanged
+  compose_assert_release
+  compose_assert_response 'Hello from Bun!'
+
+  # A failed HTTP health check must recover the old release with its data.
+  sed -i 's#health_path = "/health"#health_path = "/missing"#' "$PROJECT_DIR/tako.toml"
+  compose_probe_start
+  if HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" deploy --env production --yes >"$TMP_ROOT/compose-failed-deploy.log" 2>&1; then
+    echo "Compose deployment with a failing health check unexpectedly succeeded" >&2
+    return 1
+  fi
+  compose_probe_finish
+  require_file_contains "$TMP_ROOT/compose-failed-deploy.log" "did not become healthy" "failing Compose HTTP health check"
+  compose_assert_redis_unchanged
+  compose_assert_release
+  compose_assert_response 'Hello from Bun!'
+
+  # Kill the daemon after a candidate exists but before HTTP readiness/commit.
+  # Startup must adopt the committed web container and clean the candidate.
+  web_id=$(compose_container_id web)
+  HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" deploy --env production --yes >"$TMP_ROOT/compose-interrupted-deploy.log" 2>&1 &
+  deployment_pid=$!
+  local candidate_seen=0
+  for _ in $(seq 1 240); do
+    if [[ $(compose_container_id web | wc -l) -eq 2 ]]; then candidate_seen=1; break; fi
+    sleep 0.25
+  done
+  if (( candidate_seen != 1 )); then echo "No pending Compose candidate appeared" >&2; return 1; fi
+  ssh_exec "$server_host" 'pkill -KILL -x tako-server'
+  if wait "$deployment_pid"; then echo "Interrupted deployment unexpectedly succeeded" >&2; return 1; fi
+  start_tako_server "$server_host"
+  compose_assert_redis_unchanged
+  [[ $(compose_container_id web) == "$web_id" ]]
+  compose_assert_release
+  compose_assert_response 'Hello from Bun!'
+  sed -i 's#health_path = "/missing"#health_path = "/health"#' "$PROJECT_DIR/tako.toml"
+  sed -i 's/Updated Bun release!/Hello from Bun!/' "$PROJECT_DIR/server.ts"
+  sed -i '/ROTATION_TOKEN:/d' "$PROJECT_DIR/compose.yaml"
+}
+
 run_universal_http_checks() {
   local server_host=$1
   local route_host=$2
@@ -686,8 +838,14 @@ start_tako_server() {
   # Keep production defaults strict while making the test proxy relationship explicit.
   ssh_exec "$host" "printf '%s\n' '$server_config' > /opt/tako/config.json && chmod 0644 /opt/tako/config.json"
   ssh_exec "$host" "pkill -x tako-server >/dev/null 2>&1 || true"
+  ssh_exec "$host" 'for attempt in $(seq 1 120); do
+    if ! ps -C tako-server -o stat= | grep -q "^[^Z]"; then exit 0; fi
+    sleep 0.25
+  done
+  echo "Previous tako-server did not stop" >&2
+  exit 1'
   ssh_exec "$host" "rm -f /var/run/tako/tako.sock"
-  ssh_exec "$host" "RUST_LOG=info nohup /usr/local/bin/tako-server --no-acme --http-port 8080 --https-port 8443 --data-dir /opt/tako --management-host 0.0.0.0 >/tmp/tako-server.log 2>&1 &"
+  ssh_exec "$host" ". /run/tako-e2e-env; RUST_LOG=info nohup /usr/local/bin/tako-server --no-acme --http-port 8080 --https-port 8443 --data-dir /opt/tako --management-host 0.0.0.0 >/tmp/tako-server.log 2>&1 &"
   wait_tako_socket "$host"
   wait_tako_management_http "$host"
 }
@@ -719,7 +877,7 @@ fi
 mkdir -p "$(dirname "$PROJECT_DIR")"
 cp -R "$FIXTURE_DIR" "$PROJECT_DIR"
 
-if [[ "$FIXTURE_REL" == examples/go/* ]]; then
+if [[ "$FIXTURE_REL" == examples/go/* || "$FIXTURE_REL" == examples/compose/* ]]; then
   # The committed examples point at a real demo server. E2E runs against the
   # disposable server named "ssh" that is written below.
   sed -i 's/^servers = .*/servers = ["ssh"]/' "$PROJECT_DIR/tako.toml"
@@ -742,6 +900,9 @@ else
   jq --arg fixture_rel "$FIXTURE_REL" '
     .workspaces.packages = ["sdk/javascript", $fixture_rel]
   ' "$WORKSPACE/package.json" > "$JS_WORKSPACE_DIR/package.json"
+  if [[ -f "$WORKSPACE/bun.lock" ]]; then
+    cp "$WORKSPACE/bun.lock" "$JS_WORKSPACE_DIR/bun.lock"
+  fi
   mkdir -p "$JS_WORKSPACE_DIR/sdk"
   cp -R "$WORKSPACE/sdk/javascript" "$JS_WORKSPACE_DIR/sdk/javascript"
   rm -rf "$JS_WORKSPACE_DIR/sdk/javascript/node_modules" "$PROJECT_DIR/node_modules"
@@ -756,7 +917,29 @@ if [[ -f "$PROJECT_DIR/package.json" ]]; then
     exit 1
   fi
 
-  (cd "$JS_WORKSPACE_DIR" && bun install)
+  # Production installs deliberately do not inherit the service environment.
+  # Supply this disposable runner's network settings as explicit fixture vars.
+  # Keep the committed fixture and the production environment boundary intact.
+  bun - "$PROJECT_DIR/tako.toml" <<'JS'
+import { readFileSync, writeFileSync } from "node:fs";
+const path = process.argv[2];
+let source = readFileSync(path, "utf8");
+const config = Bun.TOML.parse(source);
+const keys = ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy",
+  "SSL_CERT_FILE", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "BUN_CONFIG_MAX_HTTP_REQUESTS"];
+const entries = keys
+  .filter(key => process.env[key] && config.vars?.production?.[key] === undefined)
+  .map(key => `${key} = ${JSON.stringify(process.env[key])}`).join("\n");
+if (entries) {
+  const section = /^\[vars\.production\][^\n]*$/m;
+  source = section.test(source)
+    ? source.replace(section, header => `${header}\n${entries}`)
+    : `${source}\n[vars.production]\n${entries}\n`;
+  writeFileSync(path, source);
+}
+JS
+
+  (cd "$JS_WORKSPACE_DIR" && bun_install)
   (cd "$JS_WORKSPACE_DIR/sdk/javascript" && bun run build)
 
   # Pack the built SDK as a tarball so bun copies (not symlinks) it into
@@ -772,7 +955,7 @@ if [[ -f "$PROJECT_DIR/package.json" ]]; then
 
   # Install deps in the fixture dir. This creates a bun.lock that matches
   # the rewritten package.json (tarball instead of workspace:*).
-  (cd "$PROJECT_DIR" && bun install)
+  (cd "$PROJECT_DIR" && bun_install)
 fi
 
 ARCH_RAW=$(uname -m)
@@ -854,6 +1037,9 @@ CFG
     run_store_checks "$server" "$ROUTE_HOST"
   fi
   run_cli_post_deploy_checks "$server" "$APP_NAME" "$ROUTE_HOST" "$CURRENT_VERSION"
+  if [[ "$FIXTURE_REL" == "examples/compose/bun-redis" ]]; then
+    run_compose_lifecycle_checks "$server" "$ROUTE_HOST" "$CURRENT_VERSION"
+  fi
 
   echo "=== $server passed ==="
 done

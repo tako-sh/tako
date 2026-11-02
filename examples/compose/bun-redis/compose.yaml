@@ -1,0 +1,34 @@
+services:
+  web:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8080:3000"
+    environment:
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - bun
+        - -e
+        - "process.exit((await fetch('http://127.0.0.1:3000/health')).ok ? 0 : 1)"
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  redis:
+    image: docker.io/library/redis:7-alpine
+    restart: unless-stopped
+    command: [redis-server, --appendonly, "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  redis-data:

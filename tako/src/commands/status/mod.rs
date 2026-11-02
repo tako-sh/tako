@@ -404,6 +404,8 @@ mod tests {
             service_status: "active".to_string(),
             server_version: Some("0.1.0".to_string()),
             app_status: Some(AppStatus {
+                services: Vec::new(),
+                services_error: None,
                 name: "demo".to_string(),
                 version: "v2".to_string(),
                 instances: vec![],
@@ -645,6 +647,8 @@ servers = ["second"]
             service_status: "active".to_string(),
             server_version: Some("0.1.0".to_string()),
             app_status: Some(AppStatus {
+                services: Vec::new(),
+                services_error: None,
                 name: "demo".to_string(),
                 version: "v123".to_string(),
                 instances: vec![
@@ -688,6 +692,8 @@ servers = ["second"]
             service_status: "active".to_string(),
             server_version: Some("0.1.0".to_string()),
             app_status: Some(AppStatus {
+                services: Vec::new(),
+                services_error: None,
                 name: "demo".to_string(),
                 version: "v123".to_string(),
                 instances: vec![],

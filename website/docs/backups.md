@@ -71,3 +71,7 @@ Restore verifies the archive checksum and decrypts it, stops app and workflow pr
 ## Verify recovery
 
 Inspect status and finite app logs, request the deployed app, and check a known record or file from the restored snapshot. Verify a recovery procedure before depending on backups for an application. If setup or credential checks fail, use [backup troubleshooting](/troubleshooting/#backups-fail).
+
+## Container data
+
+Standalone container releases mount the app data directory, so its files follow the same backup and restore path as native releases. Compose named volumes are managed by Docker and are outside the Tako backup. Back them up with database-native dumps or a coordinated volume backup, and test restoration separately from application rollback.

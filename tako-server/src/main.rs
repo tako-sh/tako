@@ -8,6 +8,7 @@ mod app_command;
 mod archive;
 mod boot;
 mod channels;
+mod compose_runtime;
 mod container_runtime;
 mod defaults;
 mod identity;

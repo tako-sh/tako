@@ -2,6 +2,66 @@ use super::*;
 use crate::isolation::fixture::TestDataDir as TempDir;
 
 #[tokio::test]
+async fn native_deploy_must_stop_previous_compose_even_without_http_instances() {
+    let temp = TempDir::new().unwrap();
+    let state = ServerState::new(
+        temp.path().into(),
+        Arc::new(CertManager::new(CertManagerConfig {
+            cert_dir: temp.path().join("certs"),
+            ..Default::default()
+        })),
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+    let app_id = "compose/production";
+    let release = crate::release::app_release_root(temp.path(), app_id, "v2");
+    std::fs::create_dir_all(&release).unwrap();
+    write_release_manifest(&release, "go", "app", &[], None, 300);
+    std::fs::write(release.join("app"), "unused").unwrap();
+    let previous = state.app_manager.register_app(AppConfig {
+        name: "compose".into(),
+        environment: "production".into(),
+        version: "v1".into(),
+        path: temp.path().into(),
+        env_vars: HashMap::from([(
+            crate::release::TAKO_APP_DATA_DIR_ENV.into(),
+            temp.path().join("data").display().to_string(),
+        )]),
+        compose: Some(tako_core::compose::ComposeConfig {
+            file: "missing-compose.yaml".into(),
+            service: "web".into(),
+            port: 8080,
+            health_path: "/".into(),
+            health_host: None,
+        }),
+        ..Default::default()
+    });
+    let response = state
+        .handle_command(Command::Deploy {
+            app: app_id.into(),
+            version: "v2".into(),
+            path: release.display().to_string(),
+            routes: vec!["compose.localhost".into()],
+            source_ip: Default::default(),
+            secrets: None,
+            runtime_credentials: None,
+            storages: None,
+            ssl: Default::default(),
+            backup: None,
+            force: false,
+        })
+        .await;
+    let Response::Error { message } = response else {
+        panic!("expected stack cleanup failure");
+    };
+    assert!(message.starts_with("Failed to stop the previous stack:"));
+    assert!(message.contains("Compose file:"));
+    assert_eq!(previous.version(), "v1");
+    assert!(previous.config.read().compose.is_some());
+}
+
+#[tokio::test]
 async fn deploy_rejects_invalid_app_name() {
     let temp = TempDir::new().unwrap();
     let cert_manager = Arc::new(CertManager::new(CertManagerConfig {

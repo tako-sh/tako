@@ -19,6 +19,7 @@ use crate::{advertised_https_port, app_short_host, default_hosts};
 use super::super::state::State;
 
 pub(super) struct RegisterAppArgs {
+    pub(super) compose: Option<tako_core::compose::ComposeConfig>,
     pub(super) config_path: String,
     pub(super) project_dir: String,
     pub(super) app_name: String,
@@ -40,6 +41,7 @@ pub(super) async fn register_app(
     args: RegisterAppArgs,
 ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
     let RegisterAppArgs {
+        compose,
         config_path,
         project_dir,
         app_name,
@@ -55,6 +57,32 @@ pub(super) async fn register_app(
         worker_command,
         workflow_retention_ms,
     } = args;
+
+    let lock = crate::compose::app_lock(&state, &config_path);
+    let _guard = lock.lock().await;
+    let compose = compose
+        .map(|config| {
+            let directory = Path::new(&project_dir)
+                .canonicalize()
+                .map_err(|e| e.to_string())?;
+            let canonical_config = Path::new(&config_path)
+                .canonicalize()
+                .map_err(|e| e.to_string())?;
+            let mut environment = env.clone();
+            environment.extend(secrets.clone());
+            tako_compose::ComposeRuntime::development(
+                directory,
+                config,
+                environment,
+                &format!(
+                    "{}:{}",
+                    canonical_config.display(),
+                    variant.as_deref().unwrap_or_default()
+                ),
+            )
+        })
+        .transpose()?;
+    crate::compose::stop(&state, &config_path).await?;
 
     let app_name = sanitize_app_name(&app_name);
     let route_id = format!("reg:{}", config_path);
@@ -123,6 +151,7 @@ pub(super) async fn register_app(
         s.apps.insert(
             config_path.clone(),
             RuntimeApp {
+                compose,
                 project_dir: project_dir.clone(),
                 name: app_name.clone(),
                 variant: variant.clone(),
@@ -282,6 +311,11 @@ async fn ensure_workflow_runtime(
 }
 
 pub(super) async fn unregister_app(state: &Arc<Mutex<State>>, config_path: String) -> Response {
+    let lock = crate::compose::app_lock(state, &config_path);
+    let _guard = lock.lock().await;
+    if let Err(message) = crate::compose::stop(state, &config_path).await {
+        return Response::Error { message };
+    }
     let (app_name, workflows) = {
         let mut s = state.lock().unwrap();
 
@@ -345,6 +379,11 @@ pub(super) async fn unregister_app(state: &Arc<Mutex<State>>, config_path: Strin
 }
 
 pub(super) async fn restart_app(state: &Arc<Mutex<State>>, config_path: String) -> Response {
+    let lock = crate::compose::app_lock(state, &config_path);
+    let _guard = lock.lock().await;
+    if let Err(message) = crate::compose::stop(state, &config_path).await {
+        return Response::Error { message };
+    }
     let restart = {
         let s = state.lock().unwrap();
         s.apps.get(&config_path).map(|app| {

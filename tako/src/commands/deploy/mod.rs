@@ -221,7 +221,9 @@ async fn run_async(
 
     let eff_app_dir = project_dir.clone();
 
-    let is_container_release = tako_config.container.is_some();
+    let is_container_release = tako_config.container.is_some()
+        || tako_config.image.is_some()
+        || tako_config.compose.is_some();
     let (preflight_preset_ref, preflight_runtime_adapter) = if is_container_release {
         ("container".to_string(), BuildAdapter::Unknown)
     } else {

@@ -16,6 +16,11 @@ pub struct TakoToml {
     /// Containerfile used for container releases. When set, production releases
     /// are built from this file instead of the native runtime artifact flow.
     pub container: Option<String>,
+    pub image: Option<String>,
+    pub compose: Option<tako_core::compose::ComposeConfig>,
+
+    #[serde(default)]
+    pub container_options: tako_core::container::ContainerOptions,
 
     /// Pinned runtime version parsed from `runtime = "<id>@<version>"`.
     /// Used by deploy instead of auto-detecting.

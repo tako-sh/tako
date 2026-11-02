@@ -7,6 +7,8 @@
 //! lives in the `tako` crate.
 
 pub mod bootstrap;
+pub mod compose;
+pub mod container;
 pub mod instance_env;
 mod protocol;
 pub mod storage;

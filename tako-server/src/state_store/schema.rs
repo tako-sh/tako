@@ -98,6 +98,7 @@ fn migrate_schema_on(
         )?;
     }
 
+    ensure_schema_objects(tx)?;
     ensure_default_rows(tx)?;
     tx.execute_batch(&format!("PRAGMA user_version = {STATE_SCHEMA_VERSION};"))?;
     Ok(())
@@ -152,6 +153,11 @@ fn ensure_schema_objects(conn: &rusqlite::Connection) -> Result<(), StateStoreEr
         CREATE TABLE IF NOT EXISTS app_ssl (
             app TEXT NOT NULL PRIMARY KEY,
             encrypted_data BLOB NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS app_compose_pending (
+            app TEXT NOT NULL PRIMARY KEY,
+            project TEXT NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS app_backups (

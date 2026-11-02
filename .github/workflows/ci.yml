@@ -112,6 +112,13 @@ jobs:
       - name: Run workspace tests
         run: cargo test --workspace --locked --lib --bins
 
+      - name: Run Compose integration tests
+        run: |
+          cargo test -p tako-compose --locked --lib -- --ignored --test-threads=1
+          cargo test -p tako-server --locked --bin tako-server compose_runtime::tests -- --ignored --test-threads=1
+          cargo test -p tako-server --locked --bin tako-server compose_preparation_survives_app_data_restore -- --ignored --test-threads=1
+          cargo test -p tako-cli --locked --bin tako-dev-server tests::compose::compose_registration_restart_stop_and_shutdown_keep_redis_data -- --ignored --test-threads=1
+
       - name: Test patched Pingora buffering and protocols
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/target
@@ -521,28 +528,20 @@ jobs:
       - name: Make binaries executable
         run: chmod +x .e2e-bin/glibc/*
 
-      - name: Write E2E build stamp
-        run: |
-          set -euo pipefail
-          arch=$(uname -m)
-          head=$(git rev-parse HEAD)
-          dirty_suffix=""
-          if ! git diff --quiet --ignore-submodules HEAD --; then
-            dirty_suffix="-dirty"
-          fi
-          printf '%s-%s%s\n' "$head" "$arch" "$dirty_suffix" > .e2e-bin/.build-stamp
-
       - name: Install libvips runtime
         run: sh scripts/install-libvips-runtime.sh
 
       - name: Run E2E suites
         env:
           E2E_BIN_DIR: ${{ github.workspace }}/.e2e-bin
+          E2E_USE_PREBUILT: "1"
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           sh e2e/prepare-ci-host.sh
-          for fixture in $(find e2e/fixtures -mindepth 2 -maxdepth 2 -type d | sort); do
+          docker compose -p tako-e2e -f e2e/docker/compose.yml build server-ubuntu server-alma runner
+          for fixture in $(find e2e/fixtures -mindepth 3 -maxdepth 3 -type f -name tako.toml -exec dirname {} \; | sort); do
             ./e2e/run.sh "$fixture"
           done
           ./e2e/run.sh examples/go/basic
+          ./e2e/run.sh examples/compose/bun-redis

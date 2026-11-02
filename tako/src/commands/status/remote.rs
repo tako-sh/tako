@@ -292,6 +292,8 @@ pub(super) fn expand_status_by_running_builds(
             service_status: status.service_status.clone(),
             server_version: status.server_version.clone(),
             app_status: Some(AppStatus {
+                services: app_status.services.clone(),
+                services_error: app_status.services_error.clone(),
                 name: app_status.name.clone(),
                 version: build.version.clone(),
                 instances: build.instances.clone(),

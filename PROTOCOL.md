@@ -8,6 +8,8 @@ Tako has one active protocol version. The CLI, server, and every deploy artifact
 
 Normal deploys check the CLI/server protocol before parallel deployment starts. After upload, the server checks the artifact again before preparing dependencies, running a release command, synchronizing workflows, or starting app processes. `--force` bypasses only these version gates so an operator can attempt an incompatible deploy; normal validation and readiness checks still apply.
 
+`PrepareRelease` carries the current deployment's secrets for preparation, including Compose interpolation on a first deploy. Preparation does not replace persisted app secrets; activation persists them after preparation succeeds.
+
 Server upgrades run the candidate binary in check-only mode before reload. The candidate checks the invoking CLI version and every active release, then repeats the check after the new process is ready. A mismatch aborts the upgrade. If a failure happens after reload starts, Tako restores and restarts the previous binary before leaving upgrade mode. `tako servers upgrade --force` permits an incompatible attempt but does not disable readiness or rollback.
 
 Before the controlled reload, the CLI writes a one-shot upgrade-owner marker under the server data directory. The candidate consumes it and preserves the matching persisted upgrade fence through state restoration and the post-readiness check. An ordinary reload has no marker, so it still clears a stale upgrade lock.
@@ -45,6 +47,10 @@ Native HTTP processes receive `HOST=127.0.0.1` and `PORT=0`. The SDK binds an av
 Tako-managed processes also receive `TAKO_APP_NAME` and `TAKO_INTERNAL_SOCKET`. SDKs require those variables as a pair before making workflow or channel RPCs.
 
 Container processes receive the same bootstrap envelope through `TAKO_BOOTSTRAP_DATA`. HTTP containers bind `HOST=0.0.0.0` and `PORT=3000`; they do not use file descriptors 3 and 4. Container workflow processes receive the internal socket mount and the same app identity contract.
+
+Container release artifacts carry `container_options`, including the container port, persistent data mount, optional numeric user mapping, and SDK mode. The host app data directory is mounted at the configured container path and `TAKO_DATA_DIR` is translated to that path. Plain containers (`sdk = false`) receive no bootstrap token and use an ordinary HTTP health probe. Only explicitly selected secrets become environment variables. SDK containers retain the authenticated `/status` contract during both startup and steady-state health checks.
+
+Compose releases carry `release_kind = "compose"` and the shared `ComposeConfig`. They represent one project on one server and use plain HTTP ingress health checks. The server prepares immutable service images without persisting interpolated secrets. Project identity is derived from the persistent app data path, independent of release version. Production creates immutable service generations with stable network aliases and resources; fingerprints compare resolved configuration and image IDs. Unchanged containers are adopted. The selected stateless HTTP service defaults to start-first replacement with readiness and draining; writable persistent volumes and other services default to stop-first. `deploy.update_config.order` and `monitor` control per-service updates. A pending marker precedes mutations; active release, routes, and encrypted credentials commit atomically. Recovery reconciles the committed release and cleans abandoned generations. HTTP instance cleanup owns only its container, while explicit app stop owns the project. Named volumes survive stop and deletion and remain outside Tako app-data backups. Referenced release files are protected from pruning. `AppStatus.services` reports original service names, state, health, and exit codes; `services_error` reports query failures.
 
 ## Health probes
 

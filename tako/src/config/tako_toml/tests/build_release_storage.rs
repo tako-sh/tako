@@ -443,3 +443,60 @@ storages = { uploads = "uploads" }
     );
     assert!(!config.storages.contains_key("uploads"));
 }
+
+#[test]
+fn plain_image_has_explicit_runtime_settings() {
+    let config = TakoToml::parse(
+        r#"
+image = "docker.io/library/nginx:alpine"
+[container_options]
+sdk = false
+port = 80
+health_path = "/"
+data_dir = "/var/cache/app"
+secret_env = ["DATABASE_URL"]
+user = { uid = 1000, gid = 1000 }
+"#,
+    )
+    .unwrap();
+    assert_eq!(config.container_options.port, 80);
+    assert!(!config.container_options.sdk);
+    assert_eq!(config.container_options.user.unwrap().uid, 1000);
+}
+
+#[test]
+fn compose_validates_deployment_boundaries() {
+    let base = r#"
+[compose]
+file = "compose.yaml"
+service = "web"
+port = 8080
+[envs.production]
+servers = ["one"]
+route = "compose.example.com"
+"#;
+    TakoToml::parse(base).unwrap();
+    assert!(TakoToml::parse(&base.replace("[\"one\"]", "[\"one\", \"two\"]")).is_err());
+    assert!(TakoToml::parse(&base.replace("compose.yaml", "../compose.yaml")).is_err());
+    assert!(TakoToml::parse(&format!("container = \"Dockerfile\"\n{base}")).is_err());
+    assert!(TakoToml::parse(&format!("main = \"app.js\"\n{base}")).is_err());
+}
+
+#[test]
+fn container_runtime_rejects_invalid_paths_and_health() {
+    for options in [
+        "data_dir = \"/\"",
+        "data_dir = \"/a/../b\"",
+        "port = 0",
+        "sdk = true\nhealth_path = \"/health\"",
+        "secret_env = [\"TAKO_BOOTSTRAP_DATA\"]",
+    ] {
+        assert!(
+            TakoToml::parse(&format!(
+                "container = \"Dockerfile\"\n[container_options]\n{options}\n"
+            ))
+            .is_err(),
+            "{options}"
+        );
+    }
+}

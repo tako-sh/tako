@@ -194,6 +194,7 @@ pub async fn run(
     let project_dir_display = project_dir.to_string_lossy();
     let reg_url =
         crate::dev_server_client::register_app(crate::dev_server_client::RegisterAppRequest {
+            compose: cfg.compose.as_ref(),
             config_path: &config_key,
             project_dir: &project_dir_display,
             app_name: &app_name,
