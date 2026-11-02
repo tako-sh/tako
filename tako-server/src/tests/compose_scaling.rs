@@ -33,7 +33,7 @@ fn scale(count: Option<u8>, service: Option<&str>) -> Command {
 fn ok(response: Response) -> Value {
     match response {
         Response::Ok { data } => data,
-        Response::Error { message } => panic!("{message}"),
+        Response::Error { .. } => panic!("Compose command should succeed"),
     }
 }
 
