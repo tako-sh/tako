@@ -322,3 +322,46 @@ fn monitor_duration_accepts_compound_values_and_rejects_unbounded_waits() {
     assert!(parse_duration(&json!("1h")).is_err());
     assert!(parse_duration(&json!("NaNs")).is_err());
 }
+
+#[test]
+fn replica_overrides_win_without_changing_container_identity() {
+    let (_dir, runtime) = runtime();
+    let mut model = model();
+    model["services"]["web"]["deploy"] = json!({"replicas": 2});
+    model["services"]["worker"] = json!({"image":"sha256:worker", "deploy":{"replicas":3}});
+    let defaults = Plan::new(model.clone(), &runtime).unwrap();
+    let overridden = runtime
+        .clone()
+        .with_replicas(BTreeMap::from([("web".into(), 5), ("worker".into(), 0)]));
+    let plan = Plan::new(model.clone(), &overridden).unwrap();
+    for service in &plan.services {
+        assert_eq!(service.fingerprint, fingerprint(&defaults, &service.name));
+        assert_eq!(
+            service.replicas,
+            match service.name.as_str() {
+                "web" => 5,
+                "worker" => 0,
+                _ => 1,
+            }
+        );
+    }
+    let reset = Plan::new(model.clone(), &runtime).unwrap();
+    assert_eq!(
+        reset
+            .services
+            .iter()
+            .find(|s| s.name == "web")
+            .unwrap()
+            .replicas,
+        2
+    );
+    for (service, count) in [("web", 0), ("web", 129), ("worker", 129), ("redis", 0)] {
+        let runtime = runtime
+            .clone()
+            .with_replicas(BTreeMap::from([(service.into(), count)]));
+        assert!(
+            Plan::new(model.clone(), &runtime).is_err(),
+            "{service}={count}"
+        );
+    }
+}

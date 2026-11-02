@@ -17,18 +17,30 @@ struct ScaleTarget {
 }
 
 pub fn run(
-    instances: u8,
+    instances: Option<u8>,
+    service: Option<&str>,
+    reset: bool,
     env: Option<&str>,
     server: Option<&str>,
     app: Option<&str>,
     config_path: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(run_async(instances, env, server, app, config_path))
+    rt.block_on(run_async(
+        instances,
+        service,
+        reset,
+        env,
+        server,
+        app,
+        config_path,
+    ))
 }
 
 async fn run_async(
-    instances: u8,
+    instances: Option<u8>,
+    service: Option<&str>,
+    reset: bool,
     env: Option<&str>,
     server: Option<&str>,
     app: Option<&str>,
@@ -53,15 +65,19 @@ async fn run_async(
         server,
     )?;
 
+    let desired = instances
+        .map(|n| format!("{n} instance(s)"))
+        .unwrap_or_else(|| "Compose default".into());
+    let service_label = service.map(|s| format!(" / {s}")).unwrap_or_default();
     output::section("Scale");
     if let Some(env_name) = target.env_name.as_deref() {
         output::info(&format!(
-            "{} ({}) -> {instances} instance(s)",
+            "{} ({}){service_label} -> {desired}",
             target.display_app_name, env_name
         ));
     } else {
         output::info(&format!(
-            "{} -> {instances} instance(s)",
+            "{}{service_label} -> {desired}",
             target.display_app_name
         ));
     }
@@ -74,10 +90,11 @@ async fn run_async(
         let server_name = server_name.clone();
         let entry = entry.clone();
         let app_name = target.remote_app_name.clone();
+        let service = service.map(str::to_owned);
         let span = output::scope(&server_name);
         tasks.push(tokio::spawn(
             async move {
-                let result = scale_server(&app_name, &entry, instances).await;
+                let result = scale_server(&app_name, &entry, instances, service, reset).await;
                 (server_name, result)
             }
             .instrument(span),
@@ -105,8 +122,13 @@ async fn run_async(
     for result in results {
         match result {
             Ok((server_name, Ok(scale_result))) => {
+                let service_label = scale_result
+                    .service
+                    .as_ref()
+                    .map(|s| format!(" / {s}"))
+                    .unwrap_or_default();
                 output::bullet(&format!(
-                    "{server_name}: {} instance(s)",
+                    "{server_name}{service_label}: {} instance(s)",
                     scale_result.instances
                 ));
                 if scale_result.standby_limited {
@@ -245,40 +267,50 @@ fn resolve_scale_server_names(
 #[derive(Debug)]
 struct ScaleResult {
     instances: u8,
+    service: Option<String>,
     standby_limited: bool,
 }
 
 async fn scale_server(
     app_name: &str,
     server: &ServerEntry,
-    instances: u8,
+    instances: Option<u8>,
+    service: Option<String>,
+    reset: bool,
 ) -> Result<ScaleResult, Box<dyn std::error::Error + Send + Sync>> {
-    let _t = output::timed(&format!("Scale {app_name} to {instances} instance(s)"));
+    let _t = output::timed(&format!("Scale {app_name}"));
     let mut client = ManagementClient::new(&server.host).await?;
     let response = client
         .send(&Command::Scale {
             app: app_name.to_string(),
             instances,
+            service,
+            reset,
         })
         .await?;
 
     match response {
         Response::Ok { data } => {
             let result = ScaleResult {
+                service: data
+                    .get("service")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned),
                 instances: data
                     .get("instances")
                     .and_then(|value| value.as_u64())
                     .and_then(|value| u8::try_from(value).ok())
-                    .unwrap_or(instances),
+                    .ok_or("Scale response is missing the effective instance count")?,
                 standby_limited: data
                     .get("standby_limited")
                     .and_then(|value| value.as_bool())
                     .unwrap_or(false),
             };
-            tracing::debug!(
-                "Scale response: {} instance(s), standby_limited={}",
-                result.instances,
-                result.standby_limited
+            tracing::info!(
+                service = result.service.as_deref(),
+                instances = result.instances,
+                standby_limited = result.standby_limited,
+                "Scaled {app_name}"
             );
             Ok(result)
         }

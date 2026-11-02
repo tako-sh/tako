@@ -107,6 +107,20 @@ impl Rollout {
         &self.selected
     }
 
+    pub fn replicas(&self) -> std::collections::BTreeMap<String, u32> {
+        self.plan
+            .services
+            .iter()
+            .map(|s| (s.name.clone(), s.replicas))
+            .collect()
+    }
+
+    pub fn ingresses(&self) -> impl Iterator<Item = &ServiceContainer> {
+        self.selected
+            .iter()
+            .filter(|c| c.service == self.runtime.config.service)
+    }
+
     pub fn ingress(&self) -> Result<&ServiceContainer, String> {
         self.selected
             .iter()
@@ -173,7 +187,8 @@ impl Rollout {
         // Start consumers according to their declared dependency condition;
         // only then require every service to be ready for the deployment. A
         // service_started dependency must not silently become service_healthy.
-        for container in &mut self.selected {
+        let mut readiness = tokio::task::JoinSet::new();
+        for (index, container) in self.selected.iter().enumerate() {
             let service = self
                 .plan
                 .services
@@ -192,7 +207,17 @@ impl Rollout {
             } else {
                 service.monitor
             };
-            *container = wait_ready(container, condition, monitor).await?;
+            let container = container.clone();
+            readiness
+                .spawn(async move { (index, wait_ready(&container, condition, monitor).await) });
+        }
+        // Observe replicas concurrently so a service's monitor window does not
+        // grow with its desired replica count. Dropping the set cancels probes
+        // before the caller rolls back any failed attempt.
+        while let Some(result) = readiness.join_next().await {
+            let (index, container) =
+                result.map_err(|e| format!("Compose readiness task failed: {e}"))?;
+            self.selected[index] = container?;
         }
         self.ingress()?;
         Ok(())
@@ -312,11 +337,21 @@ impl Rollout {
     pub async fn finish(&self) -> Result<(), String> {
         let selected: BTreeSet<_> = self.selected.iter().map(|c| c.id.as_str()).collect();
         let mut errors = Vec::new();
+        let runtime = std::sync::Arc::new(self.runtime.clone());
+        let mut cleanup = tokio::task::JoinSet::new();
         for container in self.runtime.containers().await? {
             if !selected.contains(container.id.as_str()) {
-                if let Err(error) = self.runtime.remove_container(&container.id).await {
-                    errors.push(error);
-                }
+                let runtime = runtime.clone();
+                cleanup.spawn(async move { runtime.remove_container(&container.id).await });
+            }
+        }
+        // All these containers have retired. Their independent stop grace
+        // periods must not multiply the duration of a scale-down operation.
+        while let Some(result) = cleanup.join_next().await {
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => errors.push(error),
+                Err(error) => errors.push(format!("Compose cleanup task failed: {error}")),
             }
         }
         if errors.is_empty() {
@@ -331,14 +366,17 @@ impl Rollout {
             .services
             .iter()
             .filter(|service| {
-                (0..service.replicas).any(|slot| {
-                    !self.before.iter().any(|c| {
-                        c.service == service.name
-                            && c.slot == slot
-                            && c.fingerprint == service.fingerprint
-                            && (c.healthy() || (service.completed && c.completed()))
+                self.before
+                    .iter()
+                    .any(|c| c.service == service.name && c.slot >= service.replicas)
+                    || (0..service.replicas).any(|slot| {
+                        !self.before.iter().any(|c| {
+                            c.service == service.name
+                                && c.slot == slot
+                                && c.fingerprint == service.fingerprint
+                                && (c.healthy() || (service.completed && c.completed()))
+                        })
                     })
-                })
             })
             .map(|s| (s.name.clone(), s.order))
             .collect()

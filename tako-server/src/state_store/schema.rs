@@ -155,6 +155,13 @@ fn ensure_schema_objects(conn: &rusqlite::Connection) -> Result<(), StateStoreEr
             encrypted_data BLOB NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS app_compose_scales (
+            app TEXT NOT NULL,
+            service TEXT NOT NULL,
+            replicas INTEGER NOT NULL CHECK (replicas BETWEEN 0 AND 128),
+            PRIMARY KEY (app, service)
+        );
+
         CREATE TABLE IF NOT EXISTS app_compose_pending (
             app TEXT NOT NULL PRIMARY KEY,
             project TEXT NOT NULL

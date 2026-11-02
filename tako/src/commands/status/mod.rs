@@ -404,6 +404,7 @@ mod tests {
             service_status: "active".to_string(),
             server_version: Some("0.1.0".to_string()),
             app_status: Some(AppStatus {
+                replica_overrides: Default::default(),
                 services: Vec::new(),
                 services_error: None,
                 name: "demo".to_string(),
@@ -647,6 +648,7 @@ servers = ["second"]
             service_status: "active".to_string(),
             server_version: Some("0.1.0".to_string()),
             app_status: Some(AppStatus {
+                replica_overrides: Default::default(),
                 services: Vec::new(),
                 services_error: None,
                 name: "demo".to_string(),
@@ -692,6 +694,7 @@ servers = ["second"]
             service_status: "active".to_string(),
             server_version: Some("0.1.0".to_string()),
             app_status: Some(AppStatus {
+                replica_overrides: Default::default(),
                 services: Vec::new(),
                 services_error: None,
                 name: "demo".to_string(),

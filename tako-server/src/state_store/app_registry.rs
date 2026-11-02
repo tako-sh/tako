@@ -50,6 +50,7 @@ impl SqliteStateStore {
             "app_ssl",
             "app_backups",
             "app_compose_pending",
+            "app_compose_scales",
         ] {
             conn.execute(
                 &format!("DELETE FROM {table} WHERE app = ?1;"),
@@ -98,7 +99,21 @@ impl SqliteStateStore {
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
 
+            let mut scale_stmt = conn.prepare(
+                "SELECT service, replicas FROM app_compose_scales WHERE app = ?1 ORDER BY service;",
+            )?;
+            let compose_replicas = scale_stmt
+                .query_map(
+                    [if environment.is_empty() {
+                        name.clone()
+                    } else {
+                        tako_core::deployment_app_id(&name, &environment)
+                    }],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?)),
+                )?
+                .collect::<Result<_, _>>()?;
             let config = AppConfig {
+                compose_replicas,
                 name,
                 environment,
                 version,
@@ -143,6 +158,15 @@ pub(super) fn upsert_app_on(
         "DELETE FROM app_routes WHERE name = ?1 AND environment = ?2;",
         (config.name.as_str(), config.environment.as_str()),
     )?;
+
+    let app = config.deployment_id();
+    conn.execute("DELETE FROM app_compose_scales WHERE app = ?1;", [&app])?;
+    for (service, replicas) in &config.compose_replicas {
+        conn.execute(
+            "INSERT INTO app_compose_scales (app, service, replicas) VALUES (?1, ?2, ?3);",
+            (&app, service, replicas),
+        )?;
+    }
 
     for route in routes {
         conn.execute(

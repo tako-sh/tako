@@ -782,22 +782,6 @@ impl ServerState {
             let app_name = config.deployment_id();
             let routes = persisted.routes.clone();
 
-            if self.runtime.standby && config.min_instances > 1 {
-                config.min_instances = 1;
-                config.max_instances = config.max_instances.max(1);
-            }
-            if let Some((requested_instances, max_instances)) =
-                clamp_instances_to_limit(&mut config)
-            {
-                tracing::warn!(
-                    app = %app_name,
-                    requested_instances,
-                    max_instances,
-                    "Clamped restored app instance count to server maximum"
-                );
-            }
-
-            let should_start = config.min_instances > 0;
             let release_path = release_app_path(&self.runtime.data_dir, &config);
             if let Err(error) =
                 apply_release_runtime_to_config(&mut config, release_path.clone(), None)
@@ -805,6 +789,23 @@ impl ServerState {
                 tracing::error!(app = %app_name, "Failed to restore app config: {}", error);
                 continue;
             }
+            if config.compose.is_none() {
+                if self.runtime.standby && config.min_instances > 1 {
+                    config.min_instances = 1;
+                    config.max_instances = config.max_instances.max(1);
+                }
+                if let Some((requested_instances, max_instances)) =
+                    clamp_instances_to_limit(&mut config)
+                {
+                    tracing::warn!(
+                        app = %app_name,
+                        requested_instances,
+                        max_instances,
+                        "Clamped restored app instance count to server maximum"
+                    );
+                }
+            }
+            let should_start = config.min_instances > 0;
             match ensure_app_runtime_data_dirs(&self.runtime.data_dir, &app_name) {
                 Ok(paths) => inject_app_data_dir_env(&mut config.env_vars, &paths),
                 Err(error) => {

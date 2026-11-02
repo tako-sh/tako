@@ -110,6 +110,8 @@ mod tests {
             ..Default::default()
         };
         config.secrets.insert("TOKEN".into(), "previous".into());
+        config.compose_replicas.insert("web".into(), 5);
+        config.compose_replicas.insert("worker".into(), 0);
         store
             .commit_compose_deployment(
                 &config,
@@ -123,6 +125,8 @@ mod tests {
             .begin_compose_deployment("app/production", "tako-test")
             .unwrap();
         config.version = "v2".into();
+        config.compose_replicas.remove("web");
+        config.compose_replicas.insert("worker".into(), 3);
         config.secrets.insert("TOKEN".into(), "next".into());
         // A late SQL failure must roll back the app row, routes, and every secret
         // write, leaving the marker for recovery.
@@ -138,7 +142,10 @@ mod tests {
                 )
                 .is_err()
         );
-        assert_eq!(store.load_apps().unwrap()[0].config.version, "v1");
+        let persisted = store.load_apps().unwrap();
+        assert_eq!(persisted[0].config.compose_replicas["web"], 5);
+        assert_eq!(persisted[0].config.compose_replicas["worker"], 0);
+        assert_eq!(persisted[0].config.version, "v1");
         assert_eq!(store.load_apps().unwrap()[0].routes, ["old.example"]);
         assert_eq!(
             store.get_secrets("app/production").unwrap()["TOKEN"],
@@ -161,9 +168,49 @@ mod tests {
             .unwrap();
         assert_eq!(store.load_apps().unwrap()[0].config.version, "v2");
         assert_eq!(
+            store.load_apps().unwrap()[0].config.compose_replicas,
+            config.compose_replicas
+        );
+        assert_eq!(
             store.get_secrets("app/production").unwrap()["TOKEN"],
             "next"
         );
         assert!(store.pending_compose_deployments().unwrap().is_empty());
+        store.delete_app("app", "production").unwrap();
+        config.compose_replicas.clear();
+        store.upsert_app(&config, &[]).unwrap();
+        assert!(
+            store.load_apps().unwrap()[0]
+                .config
+                .compose_replicas
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn upgrade_from_schema_nine_preserves_apps_without_overrides() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let store = SqliteStateStore::new(path.clone(), [7; 32]);
+        store.init().unwrap();
+        let config = AppConfig {
+            name: "app".into(),
+            environment: "production".into(),
+            version: "v1".into(),
+            ..Default::default()
+        };
+        store.upsert_app(&config, &["old.example".into()]).unwrap();
+        store
+            .lock_conn()
+            .unwrap()
+            .execute_batch("DROP TABLE app_compose_scales; PRAGMA user_version = 9;")
+            .unwrap();
+        drop(store);
+        let store = SqliteStateStore::new(path, [7; 32]);
+        store.init().unwrap();
+        let apps = store.load_apps().unwrap();
+        assert_eq!(apps[0].config.version, "v1");
+        assert_eq!(apps[0].routes, ["old.example"]);
+        assert!(apps[0].config.compose_replicas.is_empty());
     }
 }

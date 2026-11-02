@@ -27,11 +27,12 @@ fn scale_parses_instances_and_env() {
         env,
         server,
         app,
+        ..
     }) = cli.command
     else {
         panic!("expected Scale");
     };
-    assert_eq!(instances, 3);
+    assert_eq!(instances, Some(3));
     assert_eq!(env.as_deref(), Some("staging"));
     assert!(server.is_none());
     assert!(app.is_none());
@@ -56,11 +57,12 @@ fn scale_parses_server_env_and_app() {
         env,
         server,
         app,
+        ..
     }) = cli.command
     else {
         panic!("expected Scale");
     };
-    assert_eq!(instances, 2);
+    assert_eq!(instances, Some(2));
     assert_eq!(env.as_deref(), Some("production"));
     assert_eq!(server.as_deref(), Some("la-1"));
     assert_eq!(app.as_deref(), Some("my-app"));
@@ -216,4 +218,18 @@ fn deploy_parses_and_trims_release_description() {
 #[test]
 fn deploy_rejects_blank_release_description() {
     assert!(Cli::try_parse_from(["tako", "deploy", "--description", "  "]).is_err());
+}
+
+#[test]
+fn scale_compose_service_and_reset_arguments() {
+    let cli = Cli::try_parse_from(["tako", "scale", "5", "--service", "api"]).unwrap();
+    assert!(
+        matches!(cli.command, Some(Commands::Scale { instances: Some(5), service: Some(s), reset: false, .. }) if s == "api")
+    );
+    let cli = Cli::try_parse_from(["tako", "scale", "--reset", "--service", "worker"]).unwrap();
+    assert!(
+        matches!(cli.command, Some(Commands::Scale { instances: None, service: Some(s), reset: true, .. }) if s == "worker")
+    );
+    assert!(Cli::try_parse_from(["tako", "scale"]).is_err());
+    assert!(Cli::try_parse_from(["tako", "scale", "5", "--reset"]).is_err());
 }

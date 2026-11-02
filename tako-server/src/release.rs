@@ -188,6 +188,9 @@ pub(crate) fn apply_release_runtime_to_config(
         config.max_instances = crate::instances::default_max_instances_for_host();
         config.startup_timeout = AppConfig::default().startup_timeout;
     }
+    if manifest.release_kind != ReleaseKind::Compose {
+        config.compose_replicas.clear();
+    }
     config.compose = None;
     config.health_check_path = "/status".into();
     config.health_check_host.clear();
@@ -203,7 +206,7 @@ pub(crate) fn apply_release_runtime_to_config(
         config.health_check_host = compose.health_host.clone().unwrap_or_default();
         config.compose = Some(compose);
         config.min_instances = 1;
-        config.max_instances = 1;
+        config.max_instances = 128;
         config.startup_timeout = Duration::from_secs(150);
     } else if manifest.release_kind == ReleaseKind::Container {
         manifest.container_options.validate()?;

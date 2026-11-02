@@ -225,8 +225,16 @@ async fn replace_instance_if_needed(
     }
     app.remove_instance(instance_id);
 
-    let new_instance = app.allocate_instance();
     let spawner = state.app_manager.spawner();
+    if app.config.read().compose.is_some() {
+        if let Err(error) = spawner.reconcile_compose(&app).await {
+            app.set_last_error(format!("Compose recovery failed: {error}"));
+            tracing::error!(app = %app_name, %error, "Could not reconcile Compose replicas");
+        }
+        update_instance_count_metric(app_name, &app);
+        return;
+    }
+    let new_instance = app.allocate_instance();
 
     match spawner.spawn(&app, new_instance.clone()).await {
         Ok(()) => {

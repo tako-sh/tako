@@ -12,7 +12,7 @@ mod upgrade;
 pub(crate) use app_registry::load_persisted_releases_read_only;
 pub use device_key::load_or_create_device_key;
 
-pub const STATE_SCHEMA_VERSION: i32 = 9;
+pub const STATE_SCHEMA_VERSION: i32 = 10;
 
 #[derive(Debug, Clone)]
 pub struct PersistedApp {

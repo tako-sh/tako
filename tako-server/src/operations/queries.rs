@@ -32,6 +32,7 @@ impl crate::ServerState {
         };
 
         let status = AppStatus {
+            replica_overrides: config.compose_replicas.clone(),
             services,
             services_error,
             name: app.name(),

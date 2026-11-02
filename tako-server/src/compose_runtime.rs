@@ -27,6 +27,7 @@ pub(crate) fn for_config(config: &crate::instances::AppConfig) -> Result<Compose
             .ok_or("App is not a Compose project")?,
         env,
     )
+    .map(|runtime| runtime.with_replicas(config.compose_replicas.clone()))
 }
 
 pub(crate) async fn prepare(
@@ -63,6 +64,7 @@ mod tests {
         ]);
         let output = render_override(&images, &config, 45001);
         assert!(output.contains("ports: !override [\"127.0.0.1:45001:8080\"]"));
+        assert!(output.contains("scale: 1\n    deploy:\n      replicas: 1"));
         assert!(output.contains("image: \"local:db-v1\"\n    ports: !override []"));
     }
 

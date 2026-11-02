@@ -170,10 +170,13 @@ tako logs [--env <env>] [--tail] [--days N]
 Shows app logs from all servers mapped to the environment. History defaults to three days. `--tail` streams. Global `--json` emits a final object with a `logs` array in history mode; with `--tail`, it emits JSONL records.
 
 ```bash
-tako scale <instances> [--env <env>] [--server <server>] [--app <app>]
+tako scale <instances> [--service <service>] [--env <env>] [--server <server>] [--app <app>]
+tako scale --reset [--service <service>] [--env <env>] [--server <server>] [--app <app>]
 ```
 
 Changes desired instance count on targeted servers. From a project, app identity is resolved from the config. Outside a project, pass `--app`, either as a base app with `--env` or as a full `{app}/{env}` deployment id.
+
+For Compose, the target defaults to `[compose].service`; `--service` selects another service. The count is a persistent override that survives deploys, rollbacks, and restarts. `--reset` clears the selected service override and applies its current Compose `deploy.replicas` default (one when omitted). Supply either a count or `--reset`. These flags require a Compose app. See [Compose scaling](/docker-compose/#scale-individual-services) for limits and shared-volume behavior.
 
 ```bash
 tako delete [--env <env>] [--server <server>] [-y|--yes]

@@ -112,7 +112,7 @@ After rollout, inspect `tako status --json`, request the real route, and read fi
 
 ## Scaling
 
-See [Operations](/operations/#scaling) for changing desired instance counts, scale-to-zero behavior, and post-change verification. Scaling is server-side state rather than a `tako.toml` instance-count field.
+See [Operations](/operations/#scaling) for changing desired instance counts, scale-to-zero behavior, and post-change verification. Scaling is server-side state rather than a `tako.toml` instance-count field. For Compose, per-service scale overrides survive deployments and take precedence over `deploy.replicas`; `tako scale --reset` restores the selected service’s Compose default.
 
 ## Secrets And Credentials
 

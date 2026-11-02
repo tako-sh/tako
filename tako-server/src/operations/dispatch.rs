@@ -201,14 +201,14 @@ impl crate::ServerState {
                 }
                 self.restore_backup(&app, &backup_id).await
             }
-            Command::Scale { app, instances } => {
+            Command::Scale { app, instances, service, reset } => {
                 if let Err(msg) = validate_app_name(&app) {
                     return Response::error(msg);
                 }
                 if let Some(resp) = self.reject_mutating_when_upgrading("scale").await {
                     return resp;
                 }
-                self.scale_app(&app, instances).await
+                self.scale_app(&app, instances, service.as_deref(), reset).await
             }
             Command::Stop { app } => {
                 if let Err(msg) = validate_app_name(&app) {

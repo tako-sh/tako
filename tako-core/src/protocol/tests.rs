@@ -316,7 +316,9 @@ fn test_deployment_app_id_filename_encodes_separator() {
 fn test_scale_command_serialization() {
     let cmd = Command::Scale {
         app: "my-app".to_string(),
-        instances: 3,
+        instances: Some(3),
+        service: None,
+        reset: false,
     };
     let json = serde_json::to_string(&cmd).unwrap();
     assert!(json.contains(r#""command":"scale""#));
@@ -329,9 +331,9 @@ fn test_scale_command_deserialization() {
     let json = r#"{"command":"scale","app":"my-app","instances":2}"#;
     let cmd: Command = serde_json::from_str(json).unwrap();
     match cmd {
-        Command::Scale { app, instances } => {
+        Command::Scale { app, instances, .. } => {
             assert_eq!(app, "my-app");
-            assert_eq!(instances, 2);
+            assert_eq!(instances, Some(2));
         }
         _ => panic!("Expected scale command"),
     }

@@ -222,6 +222,7 @@ fn pick_free_port() -> Option<u16> {
 }
 
 mod archive_boot;
+mod compose_scaling;
 mod delete_upgrade;
 mod deploy;
 mod lifecycle;

@@ -600,6 +600,7 @@ run_compose_lifecycle_checks() {
   local server_host=$1 route_host=$2 first_release=$3
   local body="$TMP_ROOT/compose-body.json" headers="$TMP_ROOT/compose-headers"
   local previous=0 visits current redis_id web_id deployment_pid
+  local desired_web=5
   echo "Checking Compose redeploy, restart, rollback, and Redis persistence on $server_host"
   compose_assert_response() {
     local expected=$1 status
@@ -629,9 +630,18 @@ run_compose_lifecycle_checks() {
     fi
   }
   compose_container_id() {
-    ssh_exec "$server_host" "docker ps --no-trunc --filter label=sh.tako.compose.service=$1 --format '{{.ID}}'"
+    ssh_exec "$server_host" "docker ps --no-trunc --filter label=sh.tako.compose.service=$1 --format '{{.ID}}'" | sort
+  }
+  compose_assert_web_count() {
+    local actual
+    actual=$(compose_container_id web | wc -l)
+    if [[ "$actual" -ne "$desired_web" ]]; then
+      echo "Expected $desired_web HTTP replicas, got $actual" >&2
+      return 1
+    fi
   }
   compose_assert_redis_unchanged() {
+    compose_assert_web_count
     local actual
     actual=$(compose_container_id redis)
     if [[ "$actual" != "$redis_id" ]]; then
@@ -666,6 +676,13 @@ run_compose_lifecycle_checks() {
   web_id=$(compose_container_id web)
   [[ -n "$redis_id" && -n "$web_id" ]]
   compose_assert_response 'Hello from Bun!'
+  compose_probe_start
+  HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" scale 5 --env production
+  compose_probe_finish
+  compose_assert_redis_unchanged
+  # Scaling retains slot zero and creates independent routed HTTP instances.
+  compose_container_id web | grep -Fx "$web_id" >/dev/null
+  web_id=$(compose_container_id web)
   sed -i 's/Hello from Bun!/Updated Bun release!/' "$PROJECT_DIR/server.ts"
   # Exercise secret-only updates without changing the public example.
   sed -i '/REDIS_URL:/a\      ROTATION_TOKEN: ${ROTATION_TOKEN:-initial}' "$PROJECT_DIR/compose.yaml"
@@ -684,7 +701,9 @@ run_compose_lifecycle_checks() {
   compose_assert_redis_unchanged
   [[ $(compose_container_id web) != "$web_id" ]]
   web_id=$(compose_container_id web)
-  [[ $(ssh_exec "$server_host" "docker exec $web_id printenv ROTATION_TOKEN") == 'rotated$VALUE' ]]
+  while IFS= read -r replica_id; do
+    [[ $(ssh_exec "$server_host" "docker exec $replica_id printenv ROTATION_TOKEN") == 'rotated$VALUE' ]]
+  done <<< "$web_id"
   # Simulate termination after the durable deployment commit but before the
   # client finalizes the derived current symlink. Restart must repair it.
   local committed_release
@@ -724,7 +743,7 @@ run_compose_lifecycle_checks() {
   deployment_pid=$!
   local candidate_seen=0
   for _ in $(seq 1 240); do
-    if [[ $(compose_container_id web | wc -l) -eq 2 ]]; then candidate_seen=1; break; fi
+    if [[ $(compose_container_id web | wc -l) -gt "$desired_web" ]]; then candidate_seen=1; break; fi
     sleep 0.25
   done
   if (( candidate_seen != 1 )); then echo "No pending Compose candidate appeared" >&2; return 1; fi
@@ -738,6 +757,21 @@ run_compose_lifecycle_checks() {
   sed -i 's#health_path = "/missing"#health_path = "/health"#' "$PROJECT_DIR/tako.toml"
   sed -i 's/Updated Bun release!/Hello from Bun!/' "$PROJECT_DIR/server.ts"
   sed -i '/ROTATION_TOKEN:/d' "$PROJECT_DIR/compose.yaml"
+
+  desired_web=2
+  compose_probe_start
+  HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" scale 2 --service web --env production
+  compose_probe_finish
+  compose_assert_redis_unchanged
+  while IFS= read -r replica_id; do
+    grep -Fx "$replica_id" <<< "$web_id" >/dev/null
+  done < <(compose_container_id web)
+  desired_web=1
+  compose_probe_start
+  HOME="$HOME_DIR" TAKO_HOME="$TAKO_HOME" "$TAKO_BIN" --ci --config "$PROJECT_DIR/tako.toml" scale --service web --reset --env production
+  compose_probe_finish
+  compose_assert_redis_unchanged
+  compose_assert_response 'Hello from Bun!'
 }
 
 run_universal_http_checks() {

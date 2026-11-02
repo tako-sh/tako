@@ -26,8 +26,23 @@ impl crate::ServerState {
         }
     }
 
-    pub(crate) async fn scale_app(&self, app_name: &str, requested_instances: u8) -> Response {
-        tracing::info!(app = app_name, requested_instances, "Scaling app");
+    pub(crate) async fn scale_app(
+        &self,
+        app_name: &str,
+        requested_instances: Option<u8>,
+        service: Option<&str>,
+        reset: bool,
+    ) -> Response {
+        tracing::info!(
+            app = app_name,
+            ?requested_instances,
+            service,
+            reset,
+            "Scaling app"
+        );
+        if reset == requested_instances.is_some() {
+            return Response::error("Specify an instance count or reset, exclusively");
+        }
         let lock = self.get_deploy_lock(app_name).await;
         let _guard = lock.lock().await;
 
@@ -37,11 +52,15 @@ impl crate::ServerState {
         };
 
         let previous_config = app.config.read().clone();
-        if previous_config.compose.is_some() && requested_instances != 1 {
-            return Response::error(
-                "Compose projects run as one stack; use stop to stop the stack and define service replicas in compose.yaml",
-            );
+        if previous_config.compose.is_some() {
+            return self
+                .scale_compose(previous_config, requested_instances, service)
+                .await;
         }
+        if service.is_some() || reset {
+            return Response::error("--service and --reset require a Compose app");
+        }
+        let requested_instances = requested_instances.unwrap();
         let effective_instances = if self.runtime.standby {
             requested_instances.min(1)
         } else {
