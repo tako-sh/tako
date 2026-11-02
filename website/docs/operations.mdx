@@ -22,7 +22,9 @@ tako scale 3 --env production
 tako scale 0 --env production
 ```
 
-Desired instances are server-side state. They persist across deploys, rollbacks, and server restarts. Scaling above the effective server maximum fails. Scaling to zero enables cold starts after idle timeout.
+Desired instances are server-side state. They persist across deploys, rollbacks, and server restarts. For native and standalone container apps, scaling above the effective server maximum fails and scaling to zero enables cold starts after idle timeout.
+
+For Compose, `tako scale 5` targets the configured HTTP service. Add `--service worker` to scale a different service. These counts override Compose `deploy.replicas` until `tako scale --service worker --reset` clears that service override. HTTP replicas must remain at one or more; dependencies keep their own counts. See [Compose scaling](/docker-compose/#scale-individual-services).
 
 ## Logs And Releases
 

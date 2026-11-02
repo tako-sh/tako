@@ -28,7 +28,9 @@ async fn scale_command_rejects_instances_above_app_limit() {
     let response = state
         .handle_command(Command::Scale {
             app: "my-app/production".to_string(),
-            instances: 100,
+            instances: Some(100),
+            service: None,
+            reset: false,
         })
         .await;
 
@@ -77,7 +79,9 @@ async fn standby_scale_still_caps_before_app_limit() {
     let response = state
         .handle_command(Command::Scale {
             app: "my-app/production".to_string(),
-            instances: 100,
+            instances: Some(100),
+            service: None,
+            reset: false,
         })
         .await;
 
@@ -239,4 +243,43 @@ async fn restore_clamps_instances_above_app_limit() {
         crate::instances::effective_instance_limit(4)
     );
     assert_eq!(restored.config.read().max_instances, 4);
+}
+
+#[tokio::test]
+async fn scale_rejects_invalid_actions_and_compose_flags_for_native_apps() {
+    let temp = TempDir::new().unwrap();
+    let state = ServerState::new(
+        temp.path().into(),
+        Arc::new(CertManager::new(CertManagerConfig {
+            cert_dir: temp.path().join("certs"),
+            ..Default::default()
+        })),
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+    let app = state.app_manager.register_app(AppConfig {
+        name: "native/production".into(),
+        ..Default::default()
+    });
+    for (instances, service, reset) in [
+        (None, None, false),
+        (Some(2), None, true),
+        (Some(2), Some("web".into()), false),
+        (None, None, true),
+    ] {
+        assert!(matches!(
+            state
+                .handle_command(Command::Scale {
+                    app: app.name(),
+                    instances,
+                    service,
+                    reset,
+                })
+                .await,
+            Response::Error { .. }
+        ));
+    }
+    assert_eq!(app.config.read().min_instances, 1);
+    assert!(app.get_instances().is_empty());
 }

@@ -209,7 +209,14 @@ pub enum Command {
     RestoreBackup { app: String, backup_id: String },
 
     /// Update the desired minimum number of instances for an app.
-    Scale { app: String, instances: u8 },
+    Scale {
+        app: String,
+        instances: Option<u8>,
+        #[serde(default)]
+        service: Option<String>,
+        #[serde(default)]
+        reset: bool,
+    },
 
     /// Stop an app
     Stop { app: String },
@@ -628,6 +635,8 @@ impl Response {
 /// App status information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppStatus {
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub replica_overrides: std::collections::BTreeMap<String, u32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub services: Vec<ComposeServiceStatus>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

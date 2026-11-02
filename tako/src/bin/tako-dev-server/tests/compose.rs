@@ -34,6 +34,14 @@ async fn compose_registration_restart_stop_and_shutdown_keep_redis_data() {
     ] {
         std::fs::copy(source.join(file), project.path().join(file)).unwrap();
     }
+    // Production replicas must not compete for the single local dev port.
+    let yaml = project.path().join("compose.yaml");
+    let source = std::fs::read_to_string(&yaml).unwrap().replacen(
+        "  web:\n",
+        "  web:\n    deploy:\n      replicas: 3\n",
+        1,
+    );
+    std::fs::write(yaml, source).unwrap();
     let server = project.path().join("server.ts");
     let mut source = std::fs::read_to_string(&server).unwrap();
     // Exceed pipe capacity on both streams before the markers. The log client

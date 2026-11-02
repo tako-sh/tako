@@ -114,6 +114,7 @@ pub struct ComposeRuntime {
     override_file: PathBuf,
     // Bound to one immutable, service-private preparation during a rollout.
     source: Option<PathBuf>,
+    replicas: BTreeMap<String, u32>,
 }
 
 impl std::fmt::Debug for ComposeRuntime {
@@ -172,7 +173,14 @@ impl ComposeRuntime {
             development: false,
             override_file: PathBuf::from(OVERRIDE_FILE),
             source: None,
+            replicas: BTreeMap::new(),
         })
+    }
+
+    /// Desired replica overrides, scoped to service names in this project.
+    pub fn with_replicas(mut self, replicas: BTreeMap<String, u32>) -> Self {
+        self.replicas = replicas;
+        self
     }
 
     pub fn development(
@@ -703,7 +711,7 @@ pub fn render_override(
         ));
         if service == &config.service {
             text.push_str(&format!(
-                "[{}]\n",
+                "[{}]\n    scale: 1\n    deploy:\n      replicas: 1\n",
                 json!(format!("127.0.0.1:{host_port}:{}", config.port))
             ));
         } else {

@@ -1,6 +1,7 @@
 //! Instance spawner - spawns and monitors app processes
 
 mod bootstrap;
+mod compose;
 mod health_probe;
 mod readiness;
 mod spawn_command;
@@ -55,7 +56,9 @@ impl Spawner {
             config.health_check_path.clone(),
         );
         if config.compose.is_some() {
-            return self.spawn_compose(app, instance, config).await;
+            return Err(InstanceError::HealthCheckFailed(
+                "Compose instances must be started by stack reconciliation".into(),
+            ));
         }
         if let AppLaunch::Container { image, port } = config.launch.clone() {
             return self
@@ -140,112 +143,6 @@ impl Spawner {
                 let detail = startup_timeout_detail(instance.clone(), config.startup_timeout).await;
                 let _ = instance.kill().await;
                 Err(InstanceError::StartupTimeoutWithDetail(detail))
-            }
-        }
-    }
-
-    async fn spawn_compose(
-        &self,
-        app: &App,
-        instance: Arc<Instance>,
-        config: super::AppConfig,
-    ) -> Result<(), InstanceError> {
-        let runtime = crate::compose_runtime::for_config(&config)
-            .map_err(InstanceError::HealthCheckFailed)?;
-        let mut rollout = runtime
-            .begin_rollout()
-            .await
-            .map_err(InstanceError::HealthCheckFailed)?;
-        let result: Result<(), InstanceError> = async {
-            rollout
-                .apply()
-                .await
-                .map_err(InstanceError::HealthCheckFailed)?;
-            self.attach_compose(
-                app,
-                instance.clone(),
-                &config,
-                &runtime,
-                rollout.containers(),
-            )
-            .await?;
-            rollout
-                .finish()
-                .await
-                .map_err(InstanceError::HealthCheckFailed)?;
-            instance.own_compose_container(true);
-            Ok(())
-        }
-        .await;
-        if let Err(error) = result {
-            let _ = instance.kill().await;
-            app.remove_instance(&instance.id);
-            return Err(InstanceError::HealthCheckFailed(
-                match rollout.rollback().await {
-                    Ok(()) => error.to_string(),
-                    Err(recovery) => format!("{error}; Compose recovery failed: {recovery}"),
-                },
-            ));
-        }
-        Ok(())
-    }
-
-    pub(crate) async fn attach_compose(
-        &self,
-        app: &App,
-        instance: Arc<Instance>,
-        config: &super::AppConfig,
-        runtime: &crate::compose_runtime::ComposeRuntime,
-        containers: &[tako_compose::ServiceContainer],
-    ) -> Result<(), InstanceError> {
-        let web = containers
-            .iter()
-            .find(|c| c.service == runtime.config.service)
-            .ok_or_else(|| {
-                InstanceError::HealthCheckFailed("Compose rollout has no HTTP ingress".into())
-            })?;
-        let port = web.port.ok_or_else(|| {
-            InstanceError::HealthCheckFailed("Compose HTTP ingress has no loopback port".into())
-        })?;
-        instance.set_compose(runtime.clone(), web.id.clone());
-        instance.set_health_probe(
-            config.health_check_host.clone(),
-            config.health_check_path.clone(),
-        );
-        instance.set_sdk_health(false);
-        app.set_instance_state(&instance, InstanceState::Starting);
-        let child = runtime
-            .logs(containers)
-            .await
-            .map_err(InstanceError::HealthCheckFailed)?;
-        instance.set_process(child);
-        instance.set_port(port);
-        instance.drain_pipes();
-        match timeout(
-            config.startup_timeout,
-            wait_for_container_health(app, instance.clone(), &config),
-        )
-        .await
-        {
-            Ok(Ok(())) => {
-                app.set_instance_state(&instance, InstanceState::Healthy);
-                let _ = app
-                    .instance_tx
-                    .send(InstanceEvent::Ready {
-                        app: config.deployment_id(),
-                        instance_id: instance.id.clone(),
-                    })
-                    .await;
-                Ok(())
-            }
-            result => {
-                let _ = instance.kill().await;
-                app.set_instance_state(&instance, InstanceState::Unhealthy);
-                Err(InstanceError::HealthCheckFailed(match result {
-                    Ok(Err(error)) => error.to_string(),
-                    _ => "Compose HTTP service did not become healthy before the startup deadline"
-                        .into(),
-                }))
             }
         }
     }

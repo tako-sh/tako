@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -21,6 +21,8 @@ pub struct AppConfig {
     pub launch: AppLaunch,
     pub container_options: tako_core::container::ContainerOptions,
     pub compose: Option<tako_core::compose::ComposeConfig>,
+    /// Persistent CLI replica overrides, separate from release defaults.
+    pub compose_replicas: BTreeMap<String, u32>,
     /// Non-secret environment variables (read from app.json in release dir)
     pub env_vars: HashMap<String, String>,
     /// Secret environment variables (loaded from encrypted server state)
@@ -82,6 +84,7 @@ impl Default for AppConfig {
             launch: AppLaunch::Native,
             container_options: Default::default(),
             compose: None,
+            compose_replicas: BTreeMap::new(),
             env_vars: HashMap::new(),
             secrets: HashMap::new(),
             storages: HashMap::new(),

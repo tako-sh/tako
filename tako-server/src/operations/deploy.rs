@@ -211,8 +211,9 @@ impl crate::ServerState {
             ) {
                 return Response::error(format!("Invalid app release: {}", error));
             }
-            if let Err(error) =
-                validate_requested_instances(config.min_instances, config.max_instances)
+            if config.compose.is_none()
+                && let Err(error) =
+                    validate_requested_instances(config.min_instances, config.max_instances)
             {
                 return Response::error(format!("Deploy failed: {error}"));
             }
@@ -284,8 +285,9 @@ impl crate::ServerState {
             ) {
                 return Response::error(format!("Invalid app release: {}", error));
             }
-            if let Err(error) =
-                validate_requested_instances(config.min_instances, config.max_instances)
+            if config.compose.is_none()
+                && let Err(error) =
+                    validate_requested_instances(config.min_instances, config.max_instances)
             {
                 return Response::error(format!("Deploy failed: {error}"));
             }

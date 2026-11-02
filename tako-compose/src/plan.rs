@@ -61,9 +61,14 @@ impl Plan {
                 .or_else(|| definition.get("scale"))
                 .and_then(Value::as_u64)
                 .unwrap_or(1);
-            if replicas > 128 || (name == &runtime.config.service && replicas != 1) {
+            let replicas = runtime
+                .replicas
+                .get(name)
+                .map(|n| u64::from(*n))
+                .unwrap_or(replicas);
+            if replicas > 128 || (name == &runtime.config.service && replicas == 0) {
                 return Err(format!(
-                    "Compose service '{name}': HTTP ingress requires one replica; other services support 0..128 replicas"
+                    "Compose service '{name}': HTTP ingress supports 1..128 replicas; other services support 0..128 replicas"
                 ));
             }
             let writable_volumes = definition["volumes"]

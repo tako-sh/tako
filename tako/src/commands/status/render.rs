@@ -168,6 +168,14 @@ fn format_app_lines(apps: &[super::GlobalAppStatusResult]) -> Vec<String> {
                     service.health
                 ));
             }
+            for (service, replicas) in &status.replica_overrides {
+                lines.push(format!(
+                    "{}{}  desired {} (override)",
+                    output::INDENT.repeat(3),
+                    service,
+                    replicas
+                ));
+            }
             if let Some(error) = &status.services_error {
                 lines.push(format!("{}Services  {}", output::INDENT.repeat(3), error));
             }
@@ -245,6 +253,7 @@ mod tests {
                     service_status: "active".to_string(),
                     server_version: Some("0.1.0".to_string()),
                     app_status: Some(AppStatus {
+                        replica_overrides: Default::default(),
                         services: Vec::new(),
                         services_error: None,
                         name: "web".to_string(),

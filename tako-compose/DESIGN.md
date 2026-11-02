@@ -25,7 +25,7 @@ update planner below.
   using their original dependency graph and readiness conditions;
   it never restores database contents. An unchanged dependency stays running.
 - A durable pending marker precedes container changes. The active release,
-  routes, and encrypted credentials commit in one SQLite transaction. Recovery
+  routes, replica overrides, and encrypted credentials commit in one SQLite transaction. Recovery
   reconciles the committed release, then removes abandoned generations.
 - Cleanup uses exact owned container IDs and labels, never an interpolated
   failed Compose file. Referenced release files remain protected from pruning.
@@ -55,8 +55,17 @@ process handle.
 
 The planner evaluates dependency ordering and readiness conditions before
 starting consumers. Jobs required to complete successfully are treated as jobs,
-not long-running HTTP instances. The initial HTTP ingress has one replica;
-workers may declare replicas and explicit start-first updates.
+not long-running HTTP instances. Every HTTP replica gets its own loopback port,
+logical instance, readiness checks, and routing entry. The HTTP service supports
+1–128 replicas; other services support 0–128 subject to dependency checks.
+
+Compose `deploy.replicas` is the default, with one when omitted. Per-service CLI
+overrides live in app state and survive deploys, rollbacks, and restarts. Reset
+removes an override and reconciles the current release default. A successful
+release removes overrides for services it no longer defines. Override changes
+use the same pending marker, readiness, durable commit, and draining boundary as
+release changes; failures preserve previous desired counts. Scale counts never
+participate in generation fingerprints, so retained slots keep their containers.
 
 ## Failure boundaries
 

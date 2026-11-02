@@ -257,7 +257,16 @@ pub enum Commands {
     /// Change the desired instance count for a deployed app
     Scale {
         /// Desired instance count per targeted server
-        instances: u8,
+        #[arg(required_unless_present = "reset", conflicts_with = "reset")]
+        instances: Option<u8>,
+
+        /// Compose service to scale (defaults to the HTTP service)
+        #[arg(long)]
+        service: Option<String>,
+
+        /// Clear a Compose service override and use its deploy.replicas default
+        #[arg(long)]
+        reset: bool,
 
         /// Environment to scale
         #[arg(long)]
@@ -500,12 +509,16 @@ impl Cli {
             }
             Commands::Scale {
                 instances,
+                service,
+                reset,
                 env,
                 server,
                 app,
             } => {
                 scale::run(
                     instances,
+                    service.as_deref(),
+                    reset,
                     env.as_deref(),
                     server.as_deref(),
                     app.as_deref(),

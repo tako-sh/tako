@@ -60,7 +60,9 @@ async fn scale_command_persists_zero_instances_across_restore() {
     let response = state_a
         .handle_command(Command::Scale {
             app: "my-app/production".to_string(),
-            instances: 0,
+            instances: Some(0),
+            service: None,
+            reset: false,
         })
         .await;
     assert!(matches!(response, Response::Ok { .. }));

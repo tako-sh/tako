@@ -226,9 +226,9 @@ mod tests {
         let cmd: Command = serde_json::from_str(json).unwrap();
 
         match cmd {
-            Command::Scale { app, instances } => {
+            Command::Scale { app, instances, .. } => {
                 assert_eq!(app, "my-app");
-                assert_eq!(instances, 4);
+                assert_eq!(instances, Some(4));
             }
             _ => panic!("Expected Scale command"),
         }

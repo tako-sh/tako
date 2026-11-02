@@ -89,6 +89,10 @@ impl AppManager {
         let min_instances = app.config.read().min_instances;
         app.set_state(AppState::Running);
 
+        if app.config.read().compose.is_some() {
+            return self.spawner.reconcile_compose(&app).await;
+        }
+
         for _ in 0..min_instances {
             let instance = app.allocate_instance();
             self.spawner.spawn(&app, instance).await?;
