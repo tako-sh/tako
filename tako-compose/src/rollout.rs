@@ -337,11 +337,21 @@ impl Rollout {
     pub async fn finish(&self) -> Result<(), String> {
         let selected: BTreeSet<_> = self.selected.iter().map(|c| c.id.as_str()).collect();
         let mut errors = Vec::new();
+        let runtime = std::sync::Arc::new(self.runtime.clone());
+        let mut cleanup = tokio::task::JoinSet::new();
         for container in self.runtime.containers().await? {
             if !selected.contains(container.id.as_str()) {
-                if let Err(error) = self.runtime.remove_container(&container.id).await {
-                    errors.push(error);
-                }
+                let runtime = runtime.clone();
+                cleanup.spawn(async move { runtime.remove_container(&container.id).await });
+            }
+        }
+        // All these containers have retired. Their independent stop grace
+        // periods must not multiply the duration of a scale-down operation.
+        while let Some(result) = cleanup.join_next().await {
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => errors.push(error),
+                Err(error) => errors.push(format!("Compose cleanup task failed: {error}")),
             }
         }
         if errors.is_empty() {

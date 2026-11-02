@@ -1,7 +1,8 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::instances::{AppConfig, RollingUpdateConfig, RollingUpdater};
-use crate::socket::{AppState, Response};
+use crate::socket::{AppState, InstanceState, Response};
 
 pub(super) struct ComposeDeployment {
     pub config: AppConfig,
@@ -64,8 +65,10 @@ impl crate::ServerState {
         // normalized config for readiness as the ordinary spawner does.
         let config = app.config.read().clone();
         let mut instances = Vec::new();
-        let updater =
-            RollingUpdater::new(self.app_manager.spawner(), RollingUpdateConfig::default());
+        let updater = Arc::new(RollingUpdater::new(
+            self.app_manager.spawner(),
+            RollingUpdateConfig::default(),
+        ));
         let result: Result<(), String> = async {
             rollout.apply().await?;
             for web in rollout.ingresses() {
@@ -160,6 +163,7 @@ impl crate::ServerState {
             instance.own_compose_container(true);
             app.enable_instance_routing(instance);
         }
+        let mut drains = tokio::task::JoinSet::new();
         for old in &old_instances {
             if instances
                 .iter()
@@ -169,9 +173,26 @@ impl crate::ServerState {
                 // logical release. Retiring the old log client cannot stop it.
                 old.own_compose_container(false);
             }
-            let _ = updater.drain_and_stop(&app, old).await;
+            // Stop admitting traffic to every predecessor before waiting for
+            // any one request or Docker stop grace period to finish.
+            app.set_instance_state(old, InstanceState::Draining);
+            let app = app.clone();
+            let old = old.clone();
+            let updater = updater.clone();
+            drains.spawn(async move { updater.drain_and_stop(&app, &old).await });
         }
-        let cleanup_error = rollout.finish().await.err();
+        let mut cleanup_errors = Vec::new();
+        while let Some(result) = drains.join_next().await {
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => cleanup_errors.push(error.to_string()),
+                Err(error) => cleanup_errors.push(format!("Replica drain failed: {error}")),
+            }
+        }
+        if let Err(error) = rollout.finish().await {
+            cleanup_errors.push(error);
+        }
+        let cleanup_error = (!cleanup_errors.is_empty()).then(|| cleanup_errors.join("; "));
         app.set_state(AppState::Running);
         if let Some(error) = &cleanup_error {
             app.set_last_error(format!(

@@ -318,37 +318,52 @@ volumes:
     assert_eq!(String::from_utf8(marker.stdout).unwrap().trim(), "retained");
 
     deploy(&server, dir.path(), "v2").await;
-    // An HTTP replica selected for removal keeps serving an in-flight request
-    // until request accounting releases it. The other replicas already route.
-    let retiring_id = runtime
+    // Both retiring replicas must leave routing together, while each keeps
+    // its own in-flight request alive until request accounting releases it.
+    let retiring_ids: BTreeSet<_> = runtime
         .containers()
         .await
         .unwrap()
         .into_iter()
-        .find(|c| c.service == "web" && c.slot == 4)
-        .unwrap()
-        .id;
-    let retiring = app
+        .filter(|c| c.service == "web" && c.slot >= 3)
+        .map(|c| c.id)
+        .collect();
+    let retiring: Vec<_> = app
         .get_instances()
         .into_iter()
-        .find(|i| i.compose_container_id().as_deref() == Some(retiring_id.as_str()))
-        .unwrap();
-    retiring.request_started();
+        .filter(|i| {
+            i.compose_container_id()
+                .is_some_and(|id| retiring_ids.contains(&id))
+        })
+        .collect();
+    assert_eq!(retiring.len(), 2);
+    for instance in &retiring {
+        instance.request_started();
+    }
     let (response, ()) = tokio::join!(server.handle_command(scale(None, Some("web"))), async {
         tokio::time::timeout(Duration::from_secs(60), async {
-            while retiring.state() != InstanceState::Draining {
+            while !retiring
+                .iter()
+                .all(|i| i.state() == InstanceState::Draining)
+            {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
         .await
         .unwrap();
         let current = runtime.containers().await.unwrap();
-        assert!(current.iter().any(|c| c.id == retiring_id && c.running()));
-        assert_ne!(
-            server.load_balancer.get_backend(APP).unwrap().instance_id(),
-            retiring.id
+        assert!(
+            retiring_ids
+                .iter()
+                .all(|id| current.iter().any(|c| &c.id == id && c.running()))
         );
-        retiring.request_finished();
+        for _ in 0..10 {
+            let backend = server.load_balancer.get_backend(APP).unwrap();
+            assert!(retiring.iter().all(|i| backend.instance_id() != i.id));
+        }
+        for instance in &retiring {
+            instance.request_finished();
+        }
     });
     let reset = ok(response);
     assert_eq!(reset["instances"], 3);
