@@ -1,0 +1,43 @@
+name: Demo nightly
+
+on:
+  schedule:
+    - cron: "17 17 * * *" # 02:17 JST
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check demo pages and optimized image
+        shell: bash
+        run: |
+          set -euo pipefail
+          check() {
+            local url="$1" content_type="$2" marker="${3:-}"
+            local status mime
+            echo "Checking $url"
+            status=$(curl --silent --show-error --fail-with-body \
+              --connect-timeout 10 --max-time 30 \
+              --retry 2 --retry-delay 5 --retry-max-time 60 \
+              --dump-header headers.txt --output body.txt \
+              --write-out '%{http_code}' "$url") || {
+                echo "::error::Request failed: $url (HTTP $status)"
+                head -c 1000 body.txt || true
+                return 1
+              }
+            test "$status" = 200
+            mime=$(tr -d '\r' < headers.txt | awk 'tolower($1) == "content-type:" {print tolower($2)}' | tail -1)
+            [[ "$mime" == "$content_type"* ]]
+            test -s body.txt
+            if [ -n "$marker" ]; then
+              grep -Fq "$marker" body.txt
+            fi
+          }
+          check 'https://demo.tako.sh/' 'text/html' 'Supply Desk'
+          check 'https://valles-hub.demo.tako.sh/' 'text/html' 'Request Supplies'
+          check 'https://demo.tako.sh/_tako/image?src=%2Fimages%2Feuropa-dock.jpg&w=640' 'image/'

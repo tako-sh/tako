@@ -36,6 +36,14 @@ cd examples/javascript/demo
 bun test
 ```
 
+## Nightly production check
+
+The `Demo nightly` workflow checks the deployed homepage, wildcard base page,
+expected page content, and optimized image response daily at 02:17 JST
+(17:17 UTC), or on manual dispatch. It uses curl without installing dependencies
+or submitting shipments. This checks HTTP availability, not browser interactions,
+channels, or workflow execution. The schedule activates on the default branch.
+
 ## Notes
 
 - `tako.toml` sets `preset = "tanstack-start"` with `runtime = "bun"`.
