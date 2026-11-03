@@ -299,6 +299,85 @@ async fn restore_from_state_store_rehydrates_apps_routes_and_secrets() {
 }
 
 #[tokio::test]
+async fn restore_uses_the_pinned_runtime_for_http_instances() {
+    let temp = TempDir::new().unwrap();
+    let cert_manager = Arc::new(CertManager::new(CertManagerConfig {
+        cert_dir: temp.path().join("certs"),
+        ..Default::default()
+    }));
+    let state = ServerState::new(
+        temp.path().to_path_buf(),
+        cert_manager,
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+    let runtime_dir = temp.path().join("runtimes/bun/1.4.2");
+    std::fs::create_dir_all(&runtime_dir).unwrap();
+    let runtime_bin = runtime_dir.join("bun");
+    std::fs::write(&runtime_bin, "cached runtime").unwrap();
+    let release_dir = temp.path().join("apps/demo/production/releases/v1");
+    std::fs::create_dir_all(&release_dir).unwrap();
+    std::fs::write(
+        release_dir.join("app.json"),
+        serde_json::json!({
+            "protocol_version": tako_core::PROTOCOL_VERSION,
+            "runtime": "bun",
+            "runtime_version": "1.4.2",
+            "main": "index.js",
+            "idle_timeout": 300
+        })
+        .to_string(),
+    )
+    .unwrap();
+    state
+        .state_store
+        .upsert_app(
+            &AppConfig {
+                name: "demo".to_string(),
+                environment: "production".to_string(),
+                version: "v1".to_string(),
+                min_instances: 0,
+                ..Default::default()
+            },
+            &["demo.example.com".to_string()],
+        )
+        .unwrap();
+
+    state.restore_from_state_store().await.unwrap();
+
+    let app = state.app_manager.get_app("demo/production").unwrap();
+    assert_eq!(app.config.read().command[0], runtime_bin.to_string_lossy());
+    assert_eq!(app.state(), AppState::Idle);
+
+    // An unusable pin must not silently restore an app using a different PATH runtime.
+    let mut manifest: Value =
+        serde_json::from_slice(&std::fs::read(release_dir.join("app.json")).unwrap()).unwrap();
+    manifest["runtime_version"] = "../invalid".into();
+    std::fs::write(release_dir.join("app.json"), manifest.to_string()).unwrap();
+    drop(state);
+    let state = ServerState::new(
+        temp.path().to_path_buf(),
+        Arc::new(CertManager::new(CertManagerConfig {
+            cert_dir: temp.path().join("certs"),
+            ..Default::default()
+        })),
+        None,
+        empty_challenge_tokens(),
+    )
+    .unwrap();
+    state.restore_from_state_store().await.unwrap();
+    assert!(state.app_manager.get_app("demo/production").is_none());
+    assert!(
+        state
+            .routes
+            .read()
+            .routes_for_app("demo/production")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
 async fn restore_from_state_store_restarts_internal_socket_for_apps_with_workflows() {
     let temp = TempDir::new().unwrap();
     let app_id = "workflow-app/production";

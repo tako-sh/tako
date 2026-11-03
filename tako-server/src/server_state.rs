@@ -783,9 +783,19 @@ impl ServerState {
             let routes = persisted.routes.clone();
 
             let release_path = release_app_path(&self.runtime.data_dir, &config);
-            if let Err(error) =
-                apply_release_runtime_to_config(&mut config, release_path.clone(), None)
-            {
+            let runtime_bin_path =
+                match resolve_release_runtime_bin(&release_path, &self.runtime.data_dir).await {
+                    Ok(bin) => bin,
+                    Err(error) => {
+                        tracing::error!(app = %app_name, %error, "Failed to restore app runtime");
+                        continue;
+                    }
+                };
+            if let Err(error) = apply_release_runtime_to_config(
+                &mut config,
+                release_path.clone(),
+                runtime_bin_path.as_deref(),
+            ) {
                 tracing::error!(app = %app_name, "Failed to restore app config: {}", error);
                 continue;
             }
@@ -846,11 +856,6 @@ impl ServerState {
                 );
             }
 
-            let runtime_bin_path =
-                resolve_release_runtime_bin(&release_path, &self.runtime.data_dir)
-                    .await
-                    .ok()
-                    .flatten();
             self.sync_app_workflows(&app_name, &release_path, runtime_bin_path.as_deref())
                 .await;
 
