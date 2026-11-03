@@ -20,3 +20,5 @@ dist/
 .worktrees/
 .apple/
 __pycache__/
+playwright-report/
+test-results/

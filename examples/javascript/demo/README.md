@@ -36,6 +36,30 @@ cd examples/javascript/demo
 bun test
 ```
 
+## Nightly production check
+
+The `Demo nightly` GitHub Actions workflow builds and tests this app, then checks
+the deployed demo daily at 02:17 JST (17:17 UTC). It can also be run manually.
+Pull requests affecting the demo run the build and unit tests only.
+
+The Chromium check covers the landing page, optimized artwork, wildcard routing,
+channel connection, a supply request delivered through live updates, and shipment
+persistence after reload. Each run creates one unique `ci-…` base and shipment;
+the existing three-day retention cron removes them. Failures retain screenshots,
+traces, and an HTML report as workflow artifacts for 14 days.
+
+Run the production check manually from this directory:
+
+```bash
+bun --bun playwright install chromium
+bun --bun playwright test
+```
+
+A 503 from both the root and wildcard pages indicates unavailable capacity or no
+healthy backend in Tako's proxy. Inspect the `demo` app and `tako-server` logs on
+the configured production server (`atlas`) before restarting or redeploying; a
+successful local build alone does not establish production health.
+
 ## Notes
 
 - `tako.toml` sets `preset = "tanstack-start"` with `runtime = "bun"`.

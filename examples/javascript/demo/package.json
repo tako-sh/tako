@@ -30,6 +30,7 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@playwright/test": "1.58.2",
     "@tailwindcss/vite": "catalog:dev",
     "@tsconfig/strictest": "catalog:dev",
     "@types/node": "catalog:dev",

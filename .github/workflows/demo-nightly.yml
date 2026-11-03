@@ -1,0 +1,60 @@
+name: Demo nightly
+
+on:
+  schedule:
+    - cron: "17 17 * * *" # 02:17 JST
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - examples/javascript/demo/**
+      - .github/workflows/demo-nightly.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: demo-nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TAKO_TELEMETRY: "0"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Setup Bun
+        run: bash scripts/install-bun.sh 1.4.4
+      - run: bun install --frozen-lockfile
+      - run: bun run --filter 'tako.sh' build
+      - run: bun run --cwd examples/javascript/demo build
+      - run: bun test --cwd examples/javascript/demo tests
+
+  live:
+    # Keep production checks independent of build failures; PRs never write to production.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: examples/javascript/demo
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Setup Bun
+        working-directory: .
+        run: bash scripts/install-bun.sh 1.4.4
+      - run: bun install --frozen-lockfile
+      - run: bun --bun playwright install --with-deps chromium
+      - name: Check deployed demo
+        run: bun --bun playwright test
+      - name: Save browser diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: demo-browser-diagnostics
+          path: |
+            examples/javascript/demo/playwright-report/
+            examples/javascript/demo/test-results/
+          retention-days: 14
