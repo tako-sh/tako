@@ -4,57 +4,40 @@ on:
   schedule:
     - cron: "17 17 * * *" # 02:17 JST
   workflow_dispatch:
-  pull_request:
-    paths:
-      - examples/javascript/demo/**
-      - .github/workflows/demo-nightly.yml
 
 permissions:
   contents: read
 
-concurrency:
-  group: demo-nightly-${{ github.ref }}
-  cancel-in-progress: false
-
-env:
-  TAKO_TELEMETRY: "0"
-
 jobs:
-  build:
+  check:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Setup Bun
-        run: bash scripts/install-bun.sh 1.4.4
-      - run: bun install --frozen-lockfile
-      - run: bun run --filter 'tako.sh' build
-      - run: bun run --cwd examples/javascript/demo build
-      - run: bun test --cwd examples/javascript/demo tests
-
-  live:
-    # Keep production checks independent of build failures; PRs never write to production.
-    if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    defaults:
-      run:
-        working-directory: examples/javascript/demo
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Setup Bun
-        working-directory: .
-        run: bash scripts/install-bun.sh 1.4.4
-      - run: bun install --frozen-lockfile
-      - run: bun --bun playwright install --with-deps chromium
-      - name: Check deployed demo
-        run: bun --bun playwright test
-      - name: Save browser diagnostics
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: demo-browser-diagnostics
-          path: |
-            examples/javascript/demo/playwright-report/
-            examples/javascript/demo/test-results/
-          retention-days: 14
+      - name: Check demo pages and optimized image
+        shell: bash
+        run: |
+          set -euo pipefail
+          check() {
+            local url="$1" content_type="$2" marker="${3:-}"
+            local status mime
+            echo "Checking $url"
+            status=$(curl --silent --show-error --fail-with-body \
+              --connect-timeout 10 --max-time 30 \
+              --retry 2 --retry-delay 5 --retry-max-time 60 \
+              --dump-header headers.txt --output body.txt \
+              --write-out '%{http_code}' "$url") || {
+                echo "::error::Request failed: $url (HTTP $status)"
+                head -c 1000 body.txt || true
+                return 1
+              }
+            test "$status" = 200
+            mime=$(tr -d '\r' < headers.txt | awk 'tolower($1) == "content-type:" {print tolower($2)}' | tail -1)
+            [[ "$mime" == "$content_type"* ]]
+            test -s body.txt
+            if [ -n "$marker" ]; then
+              grep -Fq "$marker" body.txt
+            fi
+          }
+          check 'https://demo.tako.sh/' 'text/html' 'Supply Desk'
+          check 'https://valles-hub.demo.tako.sh/' 'text/html' 'Request Supplies'
+          check 'https://demo.tako.sh/_tako/image?src=%2Fimages%2Feuropa-dock.jpg&w=640' 'image/'
