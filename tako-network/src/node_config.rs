@@ -134,6 +134,7 @@ const RESERVED: &[&str] = &[
     "services.json",
     "service-publication.json",
     "agent.sock",
+    "management.sock",
     "desired.json",
     "known-registry.json",
     "bootstrap-complete",

@@ -151,6 +151,7 @@ fn node_config_fullchain_unknown_fields_and_unsafe_paths() {
         "../key",
         "/key",
         "desired.json",
+        "management.sock",
         "local-services-owner.json",
         "local-services-export.lock",
         "runtime.db-wal",
