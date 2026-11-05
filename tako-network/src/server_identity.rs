@@ -149,7 +149,7 @@ impl ServerIdentity {
         Self::renew_with_clock(directory.as_ref(), current_time)
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn renew_at(directory: &Path, now: i64) -> Result<Self> {
         Self::renew_with_clock(directory, || Ok(now))
     }
@@ -680,6 +680,7 @@ fn validate_leaf(
             "leaf encoding or private key mismatch",
         ));
     }
+    validate_leaf_roles(&leaf, gossip)?;
     let start = timestamp(leaf.not_before())?;
     let end = timestamp(leaf.not_after())?;
     if start > now || end <= start || (policy == LeafValidation::Current && end <= now) {
@@ -732,6 +733,83 @@ fn validate_leaf(
         ));
     }
     Ok(leaf)
+}
+
+fn validate_leaf_roles(leaf: &X509, gossip: bool) -> Result<()> {
+    // OpenSSL purpose checks allow absent EKU (unrestricted use). Require the
+    // explicit managed-leaf extensions as well. Inspect only OpenSSL's own DER
+    // output, then leave signature/chain validation to OpenSSL below.
+    let mut eku = ExtendedKeyUsage::new();
+    eku.server_auth();
+    if gossip {
+        eku.client_auth();
+    }
+    let expected_eku = eku.build()?.to_der()?;
+    let expected_constraints = BasicConstraints::new().critical().build()?.to_der()?;
+    let der = leaf.to_der()?;
+    let (_, mut certificate) = der_item(&mut der.as_slice())?;
+    let (_, mut tbs) = der_item(&mut certificate)?;
+    let mut roles = false;
+    let mut constraints = false;
+    while !tbs.is_empty() {
+        let (tag, mut value) = der_item(&mut tbs)?;
+        if tag != 0xa3 {
+            continue;
+        }
+        let (_, mut extensions) = der_item(&mut value)?;
+        while !extensions.is_empty() {
+            let encoded = extensions;
+            let (_, mut extension) = der_item(&mut extensions)?;
+            let encoded = &encoded[..encoded.len() - extensions.len()];
+            let (_, oid) = der_item(&mut extension)?;
+            match oid {
+                [0x55, 0x1d, 0x25] if !roles && encoded == expected_eku => roles = true,
+                [0x55, 0x1d, 0x13] if !constraints && encoded == expected_constraints => {
+                    constraints = true
+                }
+                [0x55, 0x1d, 0x25] | [0x55, 0x1d, 0x13] => {
+                    return Err(invalid(
+                        "server TLS",
+                        "unexpected leaf roles or CA constraints",
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
+    if !roles || !constraints {
+        return Err(invalid(
+            "server TLS",
+            "missing explicit leaf roles or CA constraints",
+        ));
+    }
+    Ok(())
+}
+
+// Minimal bounds-checked TLV traversal for the already parsed/re-encoded X509.
+fn der_item<'a>(input: &mut &'a [u8]) -> Result<(u8, &'a [u8])> {
+    let error = || invalid("server TLS", "invalid certificate DER");
+    let (&tag, rest) = input.split_first().ok_or_else(error)?;
+    let (&length, mut rest) = rest.split_first().ok_or_else(error)?;
+    let length = if length < 128 {
+        usize::from(length)
+    } else {
+        let count = usize::from(length & 0x7f);
+        if count == 0 || count > 4 {
+            return Err(error());
+        }
+        let bytes = rest.get(..count).ok_or_else(error)?;
+        rest = &rest[count..];
+        bytes
+            .iter()
+            .try_fold(0usize, |n, b| {
+                n.checked_mul(256)?.checked_add(usize::from(*b))
+            })
+            .ok_or_else(error)?
+    };
+    let content = rest.get(..length).ok_or_else(error)?;
+    *input = &rest[length..];
+    Ok((tag, content))
 }
 
 fn verify_leaf(
@@ -828,7 +906,7 @@ impl LeafUpdate {
 }
 
 fn renewal_boundary() -> Result<()> {
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     tests::renewal_boundary()?;
     Ok(())
 }
@@ -1535,6 +1613,7 @@ mod tests {
             let before = snapshot(case.path());
             assert!(prepare(case.path()).is_err(), "missing {missing:?}");
             assert!(ServerIdentity::load(case.path()).is_err());
+            assert!(ServerIdentity::renew(case.path()).is_err());
             assert_eq!(snapshot(case.path()), before);
         }
         for filename in [
@@ -1630,6 +1709,7 @@ mod tests {
         symlink(&private, &alias).unwrap();
         assert!(prepare(&alias).is_err());
         assert!(ServerIdentity::load(&alias).is_err());
+        assert!(ServerIdentity::renew(&alias).is_err());
         assert!(prepare(&alias.join("new-identity")).is_err());
         assert!(!private.join("new-identity").exists());
         assert!(prepare(&private.join("..").join("traversal")).is_err());
@@ -1661,18 +1741,21 @@ mod tests {
             fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
             assert!(prepare(&path).is_err(), "permissions {name:?}");
             assert!(ServerIdentity::load(&path).is_err());
+            assert!(ServerIdentity::renew(&path).is_err());
             assert_eq!(fs::read(&file).unwrap(), original);
             fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
             let link = temp.path().join("hardlink");
             fs::hard_link(&file, &link).unwrap();
             assert!(prepare(&path).is_err(), "hardlink {name:?}");
             assert!(ServerIdentity::load(&path).is_err());
+            assert!(ServerIdentity::renew(&path).is_err());
             fs::remove_file(&link).unwrap();
             let saved = temp.path().join("saved");
             fs::rename(&file, &saved).unwrap();
             symlink(&saved, &file).unwrap();
             assert!(prepare(&path).is_err(), "symlink {name:?}");
             assert!(ServerIdentity::load(&path).is_err());
+            assert!(ServerIdentity::renew(&path).is_err());
             assert_eq!(fs::read(&saved).unwrap(), original);
             fs::remove_file(&file).unwrap();
             fs::create_dir(&file).unwrap();
@@ -1906,6 +1989,370 @@ mod tests {
             let before = snapshot(temp.path());
             assert!(ServerIdentity::renew_at(temp.path(), now).is_err());
             assert_eq!(snapshot(temp.path()), before);
+        }
+    }
+    fn restore_snapshot(
+        path: &Path,
+        files: &std::collections::BTreeMap<std::ffi::OsString, Vec<u8>>,
+    ) {
+        let dir = secure::Directory::open(path, false).unwrap();
+        for (name, bytes) in files {
+            dir.write_new(name.to_str().unwrap(), bytes).unwrap();
+        }
+    }
+
+    fn interrupt_renewal(path: &Path, now: i64, boundary: usize) -> Result<ServerIdentity> {
+        RENEWAL_FAILURE.with(|failure| failure.set(Some(boundary)));
+        let result = ServerIdentity::renew_at(path, now);
+        RENEWAL_FAILURE.with(|failure| failure.set(None));
+        result
+    }
+
+    fn assert_recovered(
+        path: &Path,
+        now: i64,
+        original: &ServerIdentity,
+        before: &std::collections::BTreeMap<std::ffi::OsString, Vec<u8>>,
+    ) {
+        let renewed = ServerIdentity::renew_at(path, now).unwrap();
+        assert_eq!(renewed.request(), original.request());
+        assert_eq!(renewed.server_info(), original.server_info());
+        assert_immutable_files(before, path);
+        assert!(!path.join(RENEWAL_JOURNAL).exists());
+        assert!(!path.join(RENEWAL_STAGE).exists());
+        let after = snapshot(path);
+        ServerIdentity::renew_at(path, now).unwrap();
+        assert_eq!(snapshot(path), after);
+    }
+
+    #[test]
+    fn renewal_recovers_at_every_write_and_sync_boundary_including_recovery_itself() {
+        let seed = tempfile::tempdir().unwrap();
+        let original = prepare(seed.path()).unwrap();
+        let before = snapshot(seed.path());
+        let now = timestamp(materials(&original)[0].leaf.not_after()).unwrap() + DAY;
+        let mut interrupted = Vec::new();
+        let mut failures = 0;
+        for boundary in 0..64 {
+            let case = tempfile::tempdir().unwrap();
+            restore_snapshot(case.path(), &before);
+            match interrupt_renewal(case.path(), now, boundary) {
+                Ok(_) => break,
+                Err(error) => assert!(
+                    error.to_string().contains("injected renewal interruption"),
+                    "{error}"
+                ),
+            }
+            failures += 1;
+            if case.path().join(RENEWAL_JOURNAL).exists() {
+                let data = std::fs::read_to_string(case.path().join(RENEWAL_JOURNAL)).unwrap();
+                assert!(!data.contains("PRIVATE"));
+                assert!(
+                    ServerIdentity::load(case.path())
+                        .unwrap_err()
+                        .to_string()
+                        .contains("pending leaf renewal")
+                );
+                if boundary == 8 {
+                    // Leaf rename is visible, while its fullchain still contains the old leaf.
+                    assert_ne!(
+                        std::fs::read(case.path().join("https-leaf.pem")).unwrap(),
+                        before[std::ffi::OsStr::new("https-leaf.pem")]
+                    );
+                    assert_eq!(
+                        std::fs::read(case.path().join("https-fullchain.pem")).unwrap(),
+                        before[std::ffi::OsStr::new("https-fullchain.pem")]
+                    );
+                }
+                if boundary == 7 || boundary == 8 {
+                    interrupted.push((snapshot(case.path()), if boundary == 7 { 24 } else { 17 }));
+                }
+            }
+            assert_recovered(case.path(), now, &original, &before);
+        }
+        assert_eq!(failures, 27); // journal + four certificate replacements + journal removal
+        assert_eq!(interrupted.len(), 2);
+        for (interrupted, expected_failures) in interrupted {
+            let mut failures = 0;
+            for boundary in 0..64 {
+                let case = tempfile::tempdir().unwrap();
+                restore_snapshot(case.path(), &interrupted);
+                if interrupt_renewal(case.path(), now, boundary).is_ok() {
+                    break;
+                }
+                failures += 1;
+                assert_recovered(case.path(), now, &original, &before);
+            }
+            assert_eq!(failures, expected_failures);
+        }
+    }
+
+    #[test]
+    fn recovery_discards_only_safe_uncommitted_staging_data() {
+        let seed = tempfile::tempdir().unwrap();
+        let original = prepare(seed.path()).unwrap();
+        let before = snapshot(seed.path());
+        let now = timestamp(materials(&original)[0].leaf.not_after()).unwrap() + DAY;
+        for committed in [false, true] {
+            for fragment in [
+                b"".as_slice(),
+                b"{\"version\":",
+                b"-----BEGIN CERTIFICATE-----\npartial",
+            ] {
+                let case = tempfile::tempdir().unwrap();
+                restore_snapshot(case.path(), &before);
+                if committed {
+                    assert!(interrupt_renewal(case.path(), now, 5).is_err());
+                }
+                let dir = secure::Directory::open(case.path(), false).unwrap();
+                if case.path().join(RENEWAL_STAGE).exists() {
+                    std::fs::write(case.path().join(RENEWAL_STAGE), fragment).unwrap();
+                } else {
+                    dir.write_new(RENEWAL_STAGE, fragment).unwrap();
+                }
+                assert_recovered(case.path(), now, &original, &before);
+            }
+        }
+    }
+
+    #[test]
+    fn recovery_rejects_journal_tampering_and_unrelated_disk_state_without_writes() {
+        let seed = tempfile::tempdir().unwrap();
+        let identity = prepare(seed.path()).unwrap();
+        let now = timestamp(materials(&identity)[0].leaf.not_after()).unwrap() + DAY;
+        assert!(interrupt_renewal(seed.path(), now, 4).is_err());
+        let baseline = snapshot(seed.path());
+        let journal: serde_json::Value =
+            serde_json::from_slice(&baseline[std::ffi::OsStr::new(RENEWAL_JOURNAL)]).unwrap();
+        for change in 0..9 {
+            let case = tempfile::tempdir().unwrap();
+            restore_snapshot(case.path(), &baseline);
+            let mut corrupted = journal.clone();
+            match change {
+                0 => corrupted["version"] = 2.into(),
+                1 => {
+                    corrupted["prepared_digest"] = KeyFingerprint::of_bytes(b"other identity")
+                        .to_string()
+                        .into()
+                }
+                2 => {
+                    corrupted["https"]["replacement_pem"] =
+                        journal["gossip"]["replacement_pem"].clone()
+                }
+                3 => corrupted["gossip"]["previous_pem"] = "bad PEM".into(),
+                4 => corrupted["https"]["path"] = "../victim".into(),
+                5 => std::fs::write(case.path().join("https-leaf.pem"), b"corrupt leaf").unwrap(),
+                6 => std::fs::write(case.path().join("gossip-fullchain.pem"), b"corrupt chain")
+                    .unwrap(),
+                7 => std::fs::write(case.path().join(RENEWAL_JOURNAL), b"{").unwrap(),
+                8 => std::fs::write(
+                    case.path().join(RENEWAL_JOURNAL),
+                    vec![b' '; MAX_FILE_BYTES + 1],
+                )
+                .unwrap(),
+                _ => unreachable!(),
+            }
+            if change < 5 {
+                std::fs::write(
+                    case.path().join(RENEWAL_JOURNAL),
+                    serde_json::to_vec(&corrupted).unwrap(),
+                )
+                .unwrap();
+            }
+            let before = snapshot(case.path());
+            assert!(
+                ServerIdentity::renew_at(case.path(), now).is_err(),
+                "case {change}"
+            );
+            assert_eq!(snapshot(case.path()), before);
+        }
+        // Even a valid journal cannot waive CA expiry, or historical validation
+        // of a replacement that itself expired while the server was offline.
+        let ca_end = timestamp(
+            X509::from_pem(&baseline[std::ffi::OsStr::new("https-ca.pem")])
+                .unwrap()
+                .not_after(),
+        )
+        .unwrap();
+        assert!(ServerIdentity::renew_at(seed.path(), ca_end).is_err());
+        assert_eq!(snapshot(seed.path()), baseline);
+        assert_recovered(seed.path(), now + 400 * DAY, &identity, &baseline);
+    }
+
+    #[test]
+    fn journal_and_stage_reject_symlinks_hardlinks_and_unsafe_permissions() {
+        use std::{
+            fs,
+            os::unix::fs::{PermissionsExt, symlink},
+        };
+        let seed = tempfile::tempdir().unwrap();
+        let identity = prepare(seed.path()).unwrap();
+        let now = timestamp(materials(&identity)[0].leaf.not_after()).unwrap() + DAY;
+        assert!(interrupt_renewal(seed.path(), now, 5).is_err());
+        let baseline = snapshot(seed.path());
+        for name in [RENEWAL_JOURNAL, RENEWAL_STAGE] {
+            for change in 0..4 {
+                let case = tempfile::tempdir().unwrap();
+                let path = case.path().join("identity");
+                std::fs::create_dir(&path).unwrap();
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+                restore_snapshot(&path, &baseline);
+                let target = path.join(name);
+                let victim = case.path().join("victim");
+                match change {
+                    0 => fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap(),
+                    1 => fs::hard_link(&target, &victim).unwrap(),
+                    2 => {
+                        fs::rename(&target, &victim).unwrap();
+                        symlink(&victim, &target).unwrap();
+                    }
+                    3 => {
+                        fs::remove_file(&target).unwrap();
+                        fs::create_dir(&target).unwrap();
+                    }
+                    _ => unreachable!(),
+                }
+                assert!(ServerIdentity::renew_at(&path, now).is_err());
+                assert_immutable_files(&baseline, &path);
+                assert_eq!(
+                    fs::read(path.join("https-leaf.pem")).unwrap(),
+                    baseline[std::ffi::OsStr::new("https-leaf.pem")]
+                );
+                if change == 2 {
+                    assert_eq!(
+                        fs::read(&victim).unwrap(),
+                        baseline[std::ffi::OsStr::new(name)]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn concurrent_renewal_uses_exclusive_inode_lock_and_one_leaf_generation() {
+        let temp = tempfile::tempdir().unwrap();
+        let identity = prepare(temp.path()).unwrap();
+        let before = snapshot(temp.path());
+        let now = timestamp(materials(&identity)[0].leaf.not_after()).unwrap() + DAY;
+        let dir = secure::Directory::open(temp.path(), false).unwrap();
+        dir.lock().unwrap();
+        let other = rustix::fs::open(
+            temp.path(),
+            rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::DIRECTORY,
+            rustix::fs::Mode::empty(),
+        )
+        .unwrap();
+        assert_eq!(
+            rustix::fs::flock(&other, rustix::fs::FlockOperation::NonBlockingLockExclusive)
+                .unwrap_err(),
+            rustix::io::Errno::WOULDBLOCK
+        );
+        drop(dir);
+        let barrier = std::sync::Barrier::new(4);
+        std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..4)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        ServerIdentity::renew_at(temp.path(), now).unwrap()
+                    })
+                })
+                .collect();
+            for worker in workers {
+                let result = worker.join().unwrap();
+                assert_eq!(result.server_info(), identity.server_info());
+            }
+        });
+        assert_recovered(temp.path(), now, &identity, &before);
+    }
+    #[test]
+    fn renewal_refuses_missing_or_wrong_eku_ca_leaf_and_mismatched_sans() {
+        let temp = tempfile::tempdir().unwrap();
+        let identity = prepare(temp.path()).unwrap();
+        let tls = materials(&identity);
+        let names = certificate_names(&identity.prepared.config, identity.request()).unwrap();
+        for (material, paths, gossip) in [
+            (&tls[0], identity.tls_paths(), false),
+            (&tls[1], identity.gossip_paths(), true),
+        ] {
+            let original = snapshot(temp.path());
+            for corruption in 0..4 {
+                let mut leaf =
+                    certificate(&material.leaf_key, "malformed managed leaf", 365).unwrap();
+                leaf.set_not_before(material.ca.not_before()).unwrap();
+                let end = Asn1Time::from_unix(current_time().unwrap() + DAY).unwrap();
+                leaf.set_not_after(&end).unwrap();
+                leaf.set_issuer_name(material.ca.subject_name()).unwrap();
+                let mut constraints = BasicConstraints::new();
+                constraints.critical();
+                if corruption == 2 {
+                    constraints.ca();
+                }
+                leaf.append_extension(constraints.build().unwrap()).unwrap();
+                leaf.append_extension(
+                    KeyUsage::new()
+                        .critical()
+                        .digital_signature()
+                        .build()
+                        .unwrap(),
+                )
+                .unwrap();
+                if corruption != 0 {
+                    let mut eku = ExtendedKeyUsage::new();
+                    if corruption == 1 {
+                        if gossip {
+                            eku.server_auth();
+                        } else {
+                            eku.client_auth();
+                        }
+                    } else {
+                        eku.server_auth();
+                        if gossip {
+                            eku.client_auth();
+                        }
+                    }
+                    leaf.append_extension(eku.build().unwrap()).unwrap();
+                }
+                let mut san = SubjectAlternativeName::new();
+                san.dns(if corruption == 3 {
+                    "other.tako.internal"
+                } else {
+                    &names.hostname
+                });
+                if gossip {
+                    san.dns(&names.gossip);
+                }
+                for ip in names.ips {
+                    san.ip(&ip.to_string());
+                }
+                let san = san
+                    .build(&leaf.x509v3_context(Some(&material.ca), None))
+                    .unwrap();
+                leaf.append_extension(san).unwrap();
+                let aki = AuthorityKeyIdentifier::new()
+                    .keyid(true)
+                    .build(&leaf.x509v3_context(Some(&material.ca), None))
+                    .unwrap();
+                leaf.append_extension(aki).unwrap();
+                leaf.sign(&material.ca_key, MessageDigest::sha256())
+                    .unwrap();
+                let pem = leaf.build().to_pem().unwrap();
+                std::fs::write(&paths.certificate, &pem).unwrap();
+                std::fs::write(
+                    &paths.fullchain,
+                    [pem, material.ca.to_pem().unwrap()].concat(),
+                )
+                .unwrap();
+                let before = snapshot(temp.path());
+                assert!(
+                    ServerIdentity::renew(temp.path()).is_err(),
+                    "role {gossip}, corruption {corruption}"
+                );
+                assert_eq!(snapshot(temp.path()), before);
+            }
+            for path in [&paths.certificate, &paths.fullchain] {
+                std::fs::write(path, &original[path.file_name().unwrap()]).unwrap();
+            }
         }
     }
 }
