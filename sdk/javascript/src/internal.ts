@@ -39,6 +39,7 @@ export type {
   ChannelPublishOptions,
   ChannelSocket,
   ChannelSubscribeOptions,
+  SseRecoveryReason,
   ChannelSubscription,
   FetchHandler,
 } from "./types";

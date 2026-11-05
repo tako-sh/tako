@@ -32,6 +32,7 @@ export type {
   ChannelRequestOptions,
   ChannelSocket,
   ChannelSubscribeOptions,
+  SseRecoveryReason,
   ChannelSubscription,
   EventSourceFactoryInit,
 } from "./types";

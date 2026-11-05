@@ -151,7 +151,13 @@ export interface ChannelSubscribeOptions {
   lastEventId?: string;
   /** Inject a custom SSE implementation (e.g. for tests). */
   eventSourceFactory?: (url: string, init?: EventSourceFactoryInit) => unknown;
+  /** Recovery runs outside the channel's application messages. */
+  onRecovery?: (reason: SseRecoveryReason) => void;
+  onError?: (error: Error) => void;
+  signal?: AbortSignal;
 }
+
+export type SseRecoveryReason = "reconnecting" | "history-expired";
 
 /** Options for {@link import("./channels").Channel.connect}. */
 export interface ChannelConnectOptions {

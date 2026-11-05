@@ -1,4 +1,5 @@
 import { fetchEventSource, type EventSourceMessage } from "@microsoft/fetch-event-source";
+import type { SseRecoveryReason } from "../types";
 
 export interface SseReaderMessage {
   id?: string;
@@ -6,7 +7,7 @@ export interface SseReaderMessage {
   data: string;
 }
 
-export type SseRecoveryReason = "reconnecting" | "history-expired";
+export type { SseRecoveryReason } from "../types";
 
 export interface SseReaderOptions {
   fetch?: typeof fetch;

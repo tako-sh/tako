@@ -7,7 +7,7 @@ import type {
   ChannelPublishInput,
   ChannelPublishOptions,
   ChannelSocket,
-  ChannelSubscribeOptions as BaseChannelSubscribeOptions,
+  ChannelSubscribeOptions,
   ChannelSubscription,
 } from "./types";
 import {
@@ -16,17 +16,9 @@ import {
   type ChannelLifecycleConfig,
 } from "./channels/meta";
 import { getChannelsConfig } from "./channels/configure";
-import { SseReader, type SseRecoveryReason } from "./channels/sse-reader";
+import { SseReader } from "./channels/sse-reader";
 
-export type { SseRecoveryReason } from "./channels/sse-reader";
-
-export interface ChannelSubscribeOptions extends BaseChannelSubscribeOptions {
-  /** Retry status, separate from channel messages. */
-  onRecovery?: (reason: SseRecoveryReason) => void;
-  /** Called when the subscription stops after an error. */
-  onError?: (error: Error) => void;
-  signal?: AbortSignal;
-}
+export type { SseRecoveryReason, ChannelSubscribeOptions } from "./types";
 
 /**
  * Server-side publisher hook used by the Tako runtime to fan out channel
