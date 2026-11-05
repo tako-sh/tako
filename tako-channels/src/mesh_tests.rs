@@ -39,6 +39,81 @@ async fn committed_notifications_wake_readers_without_persisting_or_republishing
 }
 
 #[test]
+fn broker_reader_never_creates_or_mutates_a_database() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("reader.sqlite");
+    assert!(ChannelStore::open_reader_config(ChannelStoreConfig::sqlite(&path)).is_err());
+    assert!(!path.exists());
+    let empty = rusqlite::Connection::open(&path).unwrap();
+    assert!(ChannelStore::open_reader_config(ChannelStoreConfig::sqlite(&path)).is_err());
+    assert_eq!(
+        empty
+            .query_row("SELECT COUNT(*) FROM sqlite_master", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    drop(empty);
+
+    let writer = ChannelStore::open(&path).unwrap();
+    let cursor = writer.replay_cursor("events", None).unwrap();
+    let reader = ChannelStore::open_reader_config(ChannelStoreConfig::sqlite(&path)).unwrap();
+    assert!(reader.sqlite_conn().is_readonly("main").unwrap());
+    let changes = reader.changes("events");
+    let message = writer.append("events", &payload(1)).unwrap();
+    assert!(changes.has_changed().unwrap());
+    assert_eq!(
+        reader.read_after("events", cursor, 10).unwrap(),
+        vec![message]
+    );
+    assert!(reader.append("events", &payload(2)).is_err());
+    assert!(reader.publish_ephemeral("events", &payload(2)).is_err());
+    assert!(reader.invalidate_replay().is_err());
+    assert!(
+        reader
+            .update_presence(
+                "events",
+                &PresenceMember {
+                    connection_id: "connection".into(),
+                    subject: None,
+                    data: serde_json::Value::Null,
+                },
+                0
+            )
+            .is_err()
+    );
+    assert!(reader.remove_presence("events", "connection").is_err());
+    assert_eq!(reader.sqlite_conn().total_changes(), 0);
+}
+
+#[test]
+fn broker_reader_enforces_expiry_and_replay_fences_without_pruning() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("reader.sqlite");
+    let writer = ChannelStore::open(&path).unwrap();
+    let cursor = writer.replay_cursor("events", None).unwrap();
+    writer.append("events", &payload(1)).unwrap();
+    let reader = ChannelStore::open_reader_config(ChannelStoreConfig::sqlite(&path)).unwrap();
+    writer.raw_execute("UPDATE channel_messages SET created_at_unix_ms = 1", []);
+    assert!(reader.read_after("events", None, 10).unwrap().is_empty());
+    assert!(matches!(
+        reader.read_after("events", cursor, 10),
+        Err(ChannelError::StaleCursor)
+    ));
+    assert!(matches!(
+        reader.replay_cursor("events", cursor),
+        Err(ChannelError::StaleCursor)
+    ));
+    let head = reader.replay_cursor("events", None).unwrap();
+    writer.invalidate_replay().unwrap();
+    assert!(matches!(
+        reader.replay_cursor("events", head),
+        Err(ChannelError::StaleCursor)
+    ));
+    assert_eq!(reader.sqlite_conn().total_changes(), 0);
+}
+
+#[test]
 fn canonical_handles_publish_and_wake_synchronously_for_all_paths() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("a.sqlite");

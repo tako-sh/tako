@@ -1,5 +1,5 @@
 mod serve;
-pub use serve::serve;
+pub use serve::{serve, serve_with_writer};
 #[cfg(test)]
 #[path = "websocket/tests.rs"]
 mod integration_tests;

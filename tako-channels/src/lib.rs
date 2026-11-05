@@ -14,6 +14,8 @@ pub mod registry;
 mod routing;
 mod store;
 mod types;
+mod writer;
+pub use writer::{ChannelWriter, LocalChannelWriter};
 pub mod websocket;
 
 pub use client::authorize_channel_request;

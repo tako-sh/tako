@@ -56,6 +56,7 @@ pub struct ChannelStore {
     backend: Arc<ChannelStoreBackend>,
     delivery: Arc<DeliveryState>,
     _lifetime: Arc<()>,
+    read_only: bool,
 }
 
 enum ChannelStoreBackend {
@@ -77,6 +78,14 @@ impl ChannelStore {
         backend: ChannelStoreBackend,
         delivery: Arc<DeliveryState>,
     ) -> Result<Self, ChannelError> {
+        Self::from_backend_mode(backend, delivery, false)
+    }
+
+    fn from_backend_mode(
+        backend: ChannelStoreBackend,
+        delivery: Arc<DeliveryState>,
+        read_only: bool,
+    ) -> Result<Self, ChannelError> {
         let backend = Arc::new(backend);
         let changes = delivery.changes.clone();
         let lifetime = Arc::new(());
@@ -84,6 +93,14 @@ impl ChannelStore {
         let worker_backend = backend.clone();
         let sender = changes.clone();
         let poll_remote = matches!(backend.as_ref(), ChannelStoreBackend::Postgres(_));
+        if read_only && !poll_remote {
+            return Ok(Self {
+                backend,
+                delivery,
+                _lifetime: lifetime,
+                read_only,
+            });
+        }
         std::thread::Builder::new()
             .name("channel-store".into())
             .spawn(move || {
@@ -93,7 +110,7 @@ impl ChannelStore {
                         break;
                     }
                     let backend = &worker_backend;
-                    if std::time::Instant::now() >= next_prune {
+                    if !read_only && std::time::Instant::now() >= next_prune {
                         if let Err(error) = backend.prune() {
                             tracing::warn!(%error, "channel replay cleanup failed");
                         }
@@ -140,7 +157,18 @@ impl ChannelStore {
             backend,
             delivery,
             _lifetime: lifetime,
+            read_only,
         })
+    }
+
+    fn ensure_writable(&self) -> Result<(), ChannelError> {
+        if self.read_only {
+            Err(ChannelError::Storage(
+                "channel mutations require the owning broker".into(),
+            ))
+        } else {
+            Ok(())
+        }
     }
 
     /// Subscribe before reading replay so changes racing with the read remain visible.
@@ -215,6 +243,33 @@ impl ChannelStore {
                 schema,
                 app_id,
             } => Self::open_postgres_with_schema(&url, &schema, &app_id),
+        }
+    }
+
+    /// Open an existing broker-owned store without schema or replay mutations.
+    pub fn open_reader_config(config: ChannelStoreConfig) -> Result<Self, ChannelError> {
+        match config {
+            ChannelStoreConfig::Sqlite { path } => {
+                let sqlite = SqliteChannelStore::open_reader(&path)?;
+                let path = std::fs::canonicalize(path)
+                    .map_err(|e| ChannelError::Storage(e.to_string()))?;
+                Self::from_backend_mode(
+                    ChannelStoreBackend::Sqlite(sqlite),
+                    DeliveryState::for_path(path),
+                    true,
+                )
+            }
+            ChannelStoreConfig::Postgres {
+                url,
+                schema,
+                app_id,
+            } => Self::from_backend_mode(
+                ChannelStoreBackend::Postgres(Box::new(PostgresChannelStore::open_reader(
+                    &url, &schema, &app_id,
+                )?)),
+                Arc::default(),
+                true,
+            ),
         }
     }
 
@@ -346,6 +401,7 @@ impl ChannelStore {
         payload: &ChannelPublishPayload,
         ephemeral: bool,
     ) -> Result<ChannelMessage, ChannelError> {
+        self.ensure_writable()?;
         let _publication = self.delivery.publish.lock();
         let (message, publication) = match self.backend.as_ref() {
             ChannelStoreBackend::Sqlite(store) => {
@@ -396,6 +452,7 @@ impl ChannelStore {
 
     /// Ingest authenticated, app-scoped events in FIFO order per origin. Never republishes.
     pub fn ingest_remote(&self, event: &ChannelEvent) -> Result<RemoteIngest, ChannelError> {
+        self.ensure_writable()?;
         let _publication = self.delivery.publish.lock();
         let ChannelStoreBackend::Sqlite(store) = self.backend.as_ref() else {
             return Err(ChannelError::BadRequest(
@@ -438,6 +495,7 @@ impl ChannelStore {
     /// Invalidate SQLite replay after transport loss, including clients that reconnect later.
     /// The persisted event origin remains stable; PostgreSQL retains its shared history.
     pub fn invalidate_replay(&self) -> Result<(), ChannelError> {
+        self.ensure_writable()?;
         let _publication = self.delivery.publish.lock();
         match self.backend.as_ref() {
             ChannelStoreBackend::Sqlite(store) => store.invalidate_replay(|| self.signal_gap(None)),
@@ -485,6 +543,7 @@ impl ChannelStore {
         channel: &str,
         auth: &ChannelAuthResponse,
     ) -> Result<(), ChannelError> {
+        self.ensure_writable()?;
         if auth.ephemeral {
             return Ok(());
         }
@@ -541,7 +600,7 @@ mod ordering_tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("channels.sqlite");
         let store = Arc::new(ChannelStore::open(&path).unwrap());
-        let reader = ChannelStore::open(&path).unwrap();
+        let reader = ChannelStore::open_reader_config(ChannelStoreConfig::sqlite(&path)).unwrap();
         let observer = rusqlite::Connection::open(&path).unwrap();
         let reset = reader.resets("a");
         let after = reader.replay_cursor("a", None).unwrap();
@@ -587,7 +646,11 @@ mod ordering_tests {
             (0, 0),
             "row and dedup must stay hidden until reset"
         );
-        let messages = reader.read_after("a", after, 10).unwrap();
+        assert!(matches!(
+            reader.read_after("a", after, 10),
+            Err(ChannelError::StaleCursor)
+        ));
+        let messages = reader.read_after("a", None, 10).unwrap();
         assert_eq!(messages.len(), 1);
         assert!(reset.has_changed().unwrap());
         assert_eq!(messages[0].event_id.as_ref().unwrap().sequence, 2);

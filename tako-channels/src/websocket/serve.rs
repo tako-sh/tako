@@ -30,7 +30,31 @@ pub async fn serve(
     requested_after: Option<crate::ReplayCursor>,
     auth: ChannelAuthResponse,
     params: serde_json::Value,
+    reader: WebSocketFrameReader,
+) -> Result<bool> {
+    serve_with_writer(
+        session,
+        store,
+        channel,
+        requested_after,
+        auth,
+        params,
+        reader,
+        Arc::new(crate::LocalChannelWriter::new(store.clone())),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn serve_with_writer(
+    session: &mut Session,
+    store: &Arc<ChannelStore>,
+    channel: &str,
+    requested_after: Option<crate::ReplayCursor>,
+    auth: ChannelAuthResponse,
+    params: serde_json::Value,
     mut reader: WebSocketFrameReader,
+    writer: Arc<dyn crate::ChannelWriter>,
 ) -> Result<bool> {
     if channel.starts_with(crate::live_store::STORE_CHANNEL_PREFIX) {
         return write_close(session, crate::ChannelCloseCode::VerifyRejected, true).await;
@@ -38,7 +62,7 @@ pub async fn serve(
     let mut resets = store.resets(channel);
     let mut changes = store.changes(channel);
     if !auth.ephemeral
-        && let Err(error) = store.sync_channel_async(channel, &auth).await
+        && let Err(error) = writer.sync_channel(channel, &auth).await
     {
         tracing::error!("failed to sync websocket channel metadata: {error}");
         return write_close(session, crate::ChannelCloseCode::VerifyRejected, true).await;
@@ -57,8 +81,9 @@ pub async fn serve(
     };
     let mut presence = if channel.starts_with(PRESENCE_CHANNEL_PREFIX) {
         let scope = crate::presence_scope(channel, &params);
-        let presence = PresenceSession::new(store.clone(), &scope, auth.subject.clone())
-            .map_err(|e| Error::explain(ErrorType::InternalError, e.to_string()))?;
+        let presence =
+            PresenceSession::new_with_writer(writer.clone(), &scope, auth.subject.clone())
+                .map_err(|e| Error::explain(ErrorType::InternalError, e.to_string()))?;
         session
             .write_response_body(
                 Some(Bytes::from(websocket_text_frame(
@@ -237,14 +262,7 @@ pub async fn serve(
                                         format!("Invalid websocket publish payload: {error}"),
                                     )
                                 })?;
-                            let result = if auth.ephemeral {
-                                let channel = channel.to_owned();
-                                store
-                                    .run(move |store| store.publish_ephemeral(&channel, &payload))
-                                    .await
-                            } else {
-                                store.append_async(channel, &payload).await
-                            };
+                            let result = writer.publish(channel, &payload, auth.ephemeral).await;
                             result.map_err(|error| {
                                 Error::explain(
                                     ErrorType::InternalError,

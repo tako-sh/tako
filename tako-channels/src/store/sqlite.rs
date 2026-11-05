@@ -69,6 +69,7 @@ impl SqliteReplayLimits {
 pub(super) struct SqliteChannelStore {
     pub(crate) conn: Mutex<rusqlite::Connection>,
     epoch: [u8; 16],
+    read_only: bool,
 }
 
 impl SqliteChannelStore {
@@ -86,6 +87,7 @@ impl SqliteChannelStore {
         Ok(Self {
             epoch,
             conn: Mutex::new(conn),
+            read_only: false,
         })
     }
 
@@ -95,6 +97,29 @@ impl SqliteChannelStore {
         Ok(Self {
             epoch,
             conn: Mutex::new(conn),
+            read_only: false,
+        })
+    }
+
+    pub(super) fn open_reader(path: &Path) -> Result<Self, ChannelError> {
+        let conn = rusqlite::Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        conn.busy_timeout(std::time::Duration::from_secs(3))?;
+        let epoch: Vec<u8> = conn.query_row(
+            "SELECT epoch FROM channel_store_state WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        load_limits(&conn)?;
+        replay_epoch(&conn)?;
+        Ok(Self {
+            epoch: epoch
+                .try_into()
+                .map_err(|_| storage_err("invalid channel epoch"))?,
+            conn: Mutex::new(conn),
+            read_only: true,
         })
     }
 
@@ -187,18 +212,25 @@ impl SqliteChannelStore {
         limit: u32,
     ) -> Result<Vec<ChannelMessage>, ChannelError> {
         let mut conn = self.conn.lock();
-        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        prune_age(&tx, load_limits(&tx)?, now_unix_ms())?;
+        let tx = conn.transaction_with_behavior(if self.read_only {
+            rusqlite::TransactionBehavior::Deferred
+        } else {
+            rusqlite::TransactionBehavior::Immediate
+        })?;
+        let expired_floor = prepare_replay_read(&tx, channel, self.read_only)?;
         let epoch = replay_epoch(&tx)?;
         if let Some(cursor) = after {
             validate_cursor(&tx, epoch, channel, cursor)?;
+            if cursor.position < expired_floor {
+                return Err(ChannelError::StaleCursor);
+            }
         }
         let rows = {
             let mut stmt = tx.prepare_cached(READ_AFTER_SQL)?;
             stmt.query_map(
                 rusqlite::params![
                     channel,
-                    after.map_or(0, |cursor| cursor.position),
+                    after.map_or(0, |cursor| cursor.position).max(expired_floor),
                     i64::from(limit)
                 ],
                 |row| {
@@ -235,11 +267,18 @@ impl SqliteChannelStore {
         requested: Option<ReplayCursor>,
     ) -> Result<Option<ReplayCursor>, ChannelError> {
         let mut conn = self.conn.lock();
-        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        prune_age(&tx, load_limits(&tx)?, now_unix_ms())?;
+        let tx = conn.transaction_with_behavior(if self.read_only {
+            rusqlite::TransactionBehavior::Deferred
+        } else {
+            rusqlite::TransactionBehavior::Immediate
+        })?;
+        let expired_floor = prepare_replay_read(&tx, channel, self.read_only)?;
         let epoch = replay_epoch(&tx)?;
         let cursor = if let Some(cursor) = requested {
             validate_cursor(&tx, epoch, channel, cursor)?;
+            if cursor.position < expired_floor {
+                return Err(ChannelError::StaleCursor);
+            }
             cursor
         } else {
             ReplayCursor::sqlite(epoch, channel, stream_head(&tx, channel)?)
@@ -305,6 +344,29 @@ impl SqliteChannelStore {
         }
         Ok(())
     }
+}
+
+fn prepare_replay_read(
+    conn: &rusqlite::Connection,
+    channel: &str,
+    read_only: bool,
+) -> Result<i64, ChannelError> {
+    let limits = load_limits(conn)?;
+    let now = now_unix_ms();
+    if !read_only {
+        prune_age(conn, limits, now)?;
+        return Ok(0);
+    }
+    Ok(conn.query_row(
+        "SELECT COALESCE(MAX(id), 0) FROM channel_messages WHERE channel = ?3 AND (
+            (?2 > 0 AND created_at_unix_ms < ?1 - ?2) OR EXISTS (
+                SELECT 1 FROM channel_metadata m WHERE m.channel = channel_messages.channel AND (
+                    (m.replay_window_ms > 0 AND channel_messages.created_at_unix_ms < ?1 - m.replay_window_ms)
+                    OR (m.inactivity_ttl_ms > 0 AND m.last_activity_unix_ms < ?1 - m.inactivity_ttl_ms)
+                )
+            )
+        )", rusqlite::params![now, limits.max_age_ms as i64, channel], |row| row.get(0),
+    )?)
 }
 
 fn replay_epoch(conn: &rusqlite::Connection) -> Result<[u8; 16], ChannelError> {

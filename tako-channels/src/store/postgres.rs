@@ -12,6 +12,23 @@ pub(super) struct PostgresChannelStore {
 }
 
 impl PostgresChannelStore {
+    pub(super) fn open_reader(url: &str, schema: &str, app_id: &str) -> Result<Self, ChannelError> {
+        validate_pg_identifier(schema)?;
+        let mut client =
+            Client::connect(url, NoTls).map_err(|e| ChannelError::Storage(e.to_string()))?;
+        client
+            .batch_execute("SET default_transaction_read_only = on")
+            .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        client
+            .simple_query(&format!("SELECT id FROM {schema}.channel_messages LIMIT 0"))
+            .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        Ok(Self {
+            client: Mutex::new(client),
+            schema: schema.into(),
+            app_id: app_id.into(),
+        })
+    }
+
     pub(super) fn open(url: &str, schema: &str, app_id: &str) -> Result<Self, ChannelError> {
         validate_pg_identifier(schema)?;
         let mut client =

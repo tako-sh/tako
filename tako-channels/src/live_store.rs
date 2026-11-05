@@ -366,10 +366,27 @@ pub async fn serve_store_events(
     stream: &str,
     auth: &ChannelAuthResponse,
 ) -> Result<bool> {
+    serve_store_events_with_writer(
+        session,
+        store,
+        stream,
+        auth,
+        &crate::LocalChannelWriter::new(store.clone()),
+    )
+    .await
+}
+
+pub async fn serve_store_events_with_writer(
+    session: &mut Session,
+    store: &Arc<ChannelStore>,
+    stream: &str,
+    auth: &ChannelAuthResponse,
+    writer: &dyn crate::ChannelWriter,
+) -> Result<bool> {
     validate_store_lifecycle(auth).map_err(store_error)?;
     let mut resets = store.resets(stream);
-    store
-        .sync_channel_async(stream, auth)
+    writer
+        .sync_channel(stream, auth)
         .await
         .map_err(store_error)?;
     let mut changes = store.changes(stream);

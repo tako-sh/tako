@@ -14,6 +14,7 @@ impl ChannelStore {
         member: &PresenceMember,
         now: i64,
     ) -> Result<(), ChannelError> {
+        self.ensure_writable()?;
         let data = serde_json::to_string(&member.data).map_err(storage_error)?;
         if data.len() > 16_384 {
             return Err(ChannelError::BadRequest(
@@ -64,6 +65,7 @@ impl ChannelStore {
     }
 
     pub fn remove_presence(&self, channel: &str, connection_id: &str) -> Result<(), ChannelError> {
+        self.ensure_writable()?;
         match self.backend.as_ref() {
             ChannelStoreBackend::Sqlite(store) => {
                 store
