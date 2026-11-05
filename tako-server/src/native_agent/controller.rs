@@ -528,6 +528,11 @@ impl Controller {
                     "clock moved backwards during authority recheck",
                 ));
             }
+            // With zero remaining peers, expiry of this server may leave the
+            // helper bytes unchanged. Serving authority is an independent gate.
+            if !serving(&self.config, &snapshot, time)? {
+                return Err(RuntimeError::Denied.into());
+            }
             let desired = projection::desired(&self.config, &self.keys, &snapshot, time, false)?;
             if self.applied.hash != Some(openssl::sha::sha256(&desired))
                 || !self.control.matches(&snapshot)
@@ -1181,6 +1186,20 @@ mod tests {
             .write(&config.files.gossip_certificate, b"corrupt fullchain")
             .unwrap();
         assert!(renew_identity(&config, &root, &directory).is_err());
+    }
+    #[test]
+    fn serving_expiry_is_checked_even_when_empty_host_projection_is_unchanged() {
+        let fixture = super::super::tests::Fixture::new();
+        let mut snapshot = fixture.config.bootstrap.clone();
+        snapshot.members[0].expires_at = Some(2);
+        snapshot.members[1].expires_at = Some(3);
+        let before =
+            projection::desired(&fixture.config, &fixture.keys, &snapshot, 2, false).unwrap();
+        let after =
+            projection::desired(&fixture.config, &fixture.keys, &snapshot, 3, false).unwrap();
+        assert_eq!(&*before, &*after);
+        assert!(serving(&fixture.config, &snapshot, 2).unwrap());
+        assert!(!serving(&fixture.config, &snapshot, 3).unwrap());
     }
     #[test]
     fn unready_gate_allows_only_authenticated_repair_methods() {
