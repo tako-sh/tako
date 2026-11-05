@@ -185,9 +185,12 @@ export function useChannel<T = unknown>(
       if (!active()) return;
       try {
         const parsed = JSON.parse(raw) as ChannelMessage<T>;
-        if (parsed.id) {
-          if (seen.has(parsed.id)) return;
-          seen.add(parsed.id);
+        const identity = parsed.eventId
+          ? `${parsed.eventId.origin}:${parsed.eventId.sequence}`
+          : parsed.id;
+        if (identity) {
+          if (seen.has(identity)) return;
+          seen.add(identity);
           if (seen.size > MAX_MESSAGES) seen.delete(seen.values().next().value!);
           lastMessageId = parsed.id;
         }

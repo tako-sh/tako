@@ -14,6 +14,7 @@ use pingora_proxy::Session;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
+use tako_channels::ReplayCursor;
 use tako_channels::live_store::{
     STORE_CHANNEL_PREFIX, load_store, parse_store_route, serve_store_events, store_scope,
     valid_store_name, validate_store_lifecycle, validate_store_query,
@@ -150,8 +151,9 @@ impl TakoProxy {
         session: &mut Session,
         store: &Arc<ChannelStore>,
         channel: &str,
-        mut after: Option<i64>,
+        mut after: Option<ReplayCursor>,
         auth: &ChannelAuthResponse,
+        mut resets: tokio::sync::watch::Receiver<u64>,
     ) -> Result<bool> {
         let mut header = ResponseHeader::build(200, None)?;
         header.insert_header("Content-Type", "text/event-stream")?;
@@ -169,17 +171,35 @@ impl TakoProxy {
         let mut read_replay = true;
 
         loop {
+            if resets.has_changed().unwrap_or(true) {
+                session
+                    .write_response_body(
+                        Some(Bytes::from_static(b"id:\nevent: tako.reset\ndata: {}\n\n")),
+                        true,
+                    )
+                    .await?;
+                return Ok(true);
+            }
             let messages = if read_replay {
                 changes.borrow_and_update();
-                store
-                    .read_after_async(channel, after, 100)
-                    .await
-                    .map_err(|error| {
-                        Error::explain(
+                match store.read_after_async(channel, after, 100).await {
+                    Ok(messages) => messages,
+                    Err(ChannelError::StaleCursor) => {
+                        session
+                            .write_response_body(
+                                Some(Bytes::from_static(b"id:\nevent: tako.reset\ndata: {}\n\n")),
+                                true,
+                            )
+                            .await?;
+                        return Ok(true);
+                    }
+                    Err(error) => {
+                        return Err(Error::explain(
                             ErrorType::InternalError,
                             format!("Failed to read channel replay: {error}"),
-                        )
-                    })?
+                        ));
+                    }
+                }
             } else {
                 Vec::new()
             };
@@ -187,6 +207,15 @@ impl TakoProxy {
 
             if !messages.is_empty() {
                 for message in messages {
+                    if resets.has_changed().unwrap_or(true) {
+                        session
+                            .write_response_body(
+                                Some(Bytes::from_static(b"id:\nevent: tako.reset\ndata: {}\n\n")),
+                                true,
+                            )
+                            .await?;
+                        return Ok(true);
+                    }
                     let encoded = serde_json::to_string(&message).map_err(|error| {
                         Error::explain(
                             ErrorType::InternalError,
@@ -200,8 +229,8 @@ impl TakoProxy {
                     after = Some(
                         message
                             .id
-                            .parse::<i64>()
-                            .expect("channel ids are always numeric"),
+                            .parse::<ReplayCursor>()
+                            .expect("stored channel cursor is valid"),
                     );
                 }
                 next_keepalive = tokio::time::Instant::now() + keepalive_interval;
@@ -224,6 +253,10 @@ impl TakoProxy {
                 continue;
             }
             tokio::select! {
+                _ = resets.changed() => {
+                    session.write_response_body(Some(Bytes::from_static(b"id:\nevent: tako.reset\ndata: {}\n\n")), true).await?;
+                    return Ok(true);
+                },
                 _ = changes.changed() => read_replay = true,
                 _ = tokio::time::sleep_until(next_keepalive.min(started_at + max_connection_lifetime)) => {}
             }
@@ -595,13 +628,21 @@ impl TakoProxy {
                 return self.write_channel_error(session, error).await;
             }
         };
+        let resets = store.resets(&route.channel);
         let cursor = match store.replay_cursor_async(&route.channel, cursor).await {
             Ok(cursor) => cursor,
             Err(error) => return self.write_channel_error(session, error).await,
         };
         ctx.observation.set_handler_result("sse");
-        self.write_channel_events(session, &store, &route.channel, cursor, &auth_result)
-            .await
+        self.write_channel_events(
+            session,
+            &store,
+            &route.channel,
+            cursor,
+            &auth_result,
+            resets,
+        )
+        .await
     }
 }
 

@@ -143,6 +143,23 @@ export class SseReader {
     let attempt = 0;
     const fetchImpl = this.#opts.fetch ?? globalThis.fetch;
     const headers = headersRecord(this.#opts.headers, this.lastEventId);
+    let activeHeaders: HeadersInit | undefined;
+    const clearCursor = () => {
+      this.lastEventId = undefined;
+      for (const target of [headers, activeHeaders]) {
+        if (!target) continue;
+        if (target instanceof Headers) target.delete("last-event-id");
+        else if (Array.isArray(target)) {
+          for (let i = target.length - 1; i >= 0; i--) {
+            if (target[i]![0].toLowerCase() === "last-event-id") target.splice(i, 1);
+          }
+        } else {
+          for (const name of Object.keys(target)) {
+            if (name.toLowerCase() === "last-event-id") Reflect.deleteProperty(target, name);
+          }
+        }
+      }
+    };
     const cleanupGlobals = installFetchEventSourceGlobals();
 
     try {
@@ -150,18 +167,10 @@ export class SseReader {
       await fetchEventSource(this.#url, {
         fetch: Object.assign(
           async (input: RequestInfo | URL, init?: RequestInit) => {
+            activeHeaders = init?.headers;
             const response = await fetchImpl(input, init);
             if (response.status === 410) {
-              this.lastEventId = undefined;
-              // fetch-event-source owns this mutable header copy across retries.
-              const requestHeaders = init?.headers;
-              if (requestHeaders) {
-                for (const name of Object.keys(requestHeaders)) {
-                  if (name.toLowerCase() === "last-event-id") {
-                    Reflect.deleteProperty(requestHeaders, name);
-                  }
-                }
-              }
+              clearCursor();
             }
             return response;
           },
@@ -184,7 +193,13 @@ export class SseReader {
           this.#opts.onOpen?.();
           this.dispatchEvent(new Event("open"));
         },
-        onmessage: (message) => this.#handleMessage(message),
+        onmessage: (message) => {
+          if (message.event === "tako.reset") {
+            clearCursor();
+            throw new SseResponseError(410);
+          }
+          this.#handleMessage(message);
+        },
         onclose: () => {
           if (this.#abort.signal.aborted || !this.#opts.retryOnDisconnect) {
             return;

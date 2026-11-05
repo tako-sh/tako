@@ -14,7 +14,8 @@ use tako_channels::live_store::{
     store_scope, valid_store_name,
 };
 use tako_channels::{
-    ChannelAuthResponse, ChannelPublishPayload, ChannelStore, parse_channel_route,
+    ChannelAuthResponse, ChannelError, ChannelPublishPayload, ChannelStore, ReplayCursor,
+    parse_channel_route, parse_message_id_cursor,
 };
 
 /// Default auth response for dev mode — permissive, no subject, SSE transport.
@@ -303,13 +304,28 @@ async fn serve_sse(
     } else {
         None
     };
-    // Resolve the initial cursor — start from the latest message so new
-    // subscribers only see future events (matching production behavior).
+    let mut resets = store.resets(channel);
     let mut after = if auth.ephemeral {
         None
     } else {
-        match store.replay_cursor_async(channel, None).await {
+        let requested = match parse_message_id_cursor(
+            session
+                .req_header()
+                .headers
+                .get("last-event-id")
+                .and_then(|value| value.to_str().ok()),
+            "Last-Event-ID",
+        ) {
             Ok(cursor) => cursor,
+            Err(_) => {
+                return write_json(session, 400, r#"{"error":"Invalid replay cursor"}"#).await;
+            }
+        };
+        match store.replay_cursor_async(channel, requested).await {
+            Ok(cursor) => cursor,
+            Err(ChannelError::StaleCursor) => {
+                return write_json(session, 410, r#"{"error":"Replay history expired"}"#).await;
+            }
             Err(e) => {
                 let msg = format!(r#"{{"error":"Failed to resolve cursor: {e}"}}"#);
                 return write_json(session, 500, &msg).await;
@@ -338,6 +354,12 @@ async fn serve_sse(
     let mut read_replay = true;
 
     loop {
+        if resets.has_changed().unwrap_or(true) {
+            session
+                .write_response_body(Some("id:\nevent: tako.reset\ndata: {}\n\n".into()), true)
+                .await?;
+            return Ok(true);
+        }
         if read_replay {
             changes.borrow_and_update();
             match store.read_after_async(channel, after, 100).await {
@@ -345,6 +367,15 @@ async fn serve_sse(
                     read_replay = messages.len() == 100;
                     if !messages.is_empty() {
                         for message in messages {
+                            if resets.has_changed().unwrap_or(true) {
+                                session
+                                    .write_response_body(
+                                        Some("id:\nevent: tako.reset\ndata: {}\n\n".into()),
+                                        true,
+                                    )
+                                    .await?;
+                                return Ok(true);
+                            }
                             let encoded = serde_json::to_string(&message).unwrap_or_default();
                             let frame = format!("id: {}\ndata: {}\n\n", message.id, encoded);
                             if session
@@ -357,12 +388,21 @@ async fn serve_sse(
                             after = Some(
                                 message
                                     .id
-                                    .parse::<i64>()
-                                    .expect("channel ids are always numeric"),
+                                    .parse::<ReplayCursor>()
+                                    .expect("stored channel cursor is valid"),
                             );
                         }
                         next_keepalive = tokio::time::Instant::now() + keepalive_interval;
                     }
+                }
+                Err(ChannelError::StaleCursor) => {
+                    session
+                        .write_response_body(
+                            Some("id:\nevent: tako.reset\ndata: {}\n\n".into()),
+                            true,
+                        )
+                        .await?;
+                    return Ok(true);
                 }
                 Err(error) => {
                     return Err(pingora_core::Error::explain(
@@ -397,6 +437,10 @@ async fn serve_sse(
             continue;
         }
         tokio::select! {
+            _ = resets.changed() => {
+                session.write_response_body(Some("id:\nevent: tako.reset\ndata: {}\n\n".into()), true).await?;
+                return Ok(true);
+            },
             _ = changes.changed() => read_replay = true,
             _ = tokio::time::sleep_until(next_keepalive.min(started + max_connection_lifetime)) => {}
         }

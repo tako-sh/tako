@@ -22,6 +22,36 @@ function mockFetchStream(chunks: string[]): typeof fetch {
 }
 
 describe("SseReader", () => {
+  test("recovers a midstream reset without delivering a control message", async () => {
+    const messages: string[] = [];
+    const recovery: SseRecoveryReason[] = [];
+    const cursors: (string | null)[] = [];
+    let requests = 0;
+    const reader = new SseReader("http://fixture/events", {
+      retryOnDisconnect: true,
+      backoffBaseMs: 1,
+      jitter: 0,
+      fetch: Object.assign(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        cursors.push(new Headers(init?.headers).get("last-event-id"));
+        requests++;
+        return new Response(requests === 1
+          ? "id: first\ndata: first\n\nid:\nevent: tako.reset\ndata: {}\n\nid: invalid\ndata: stale\n\n"
+          : "id: second\ndata: second\n\n", { headers: { "content-type": "text/event-stream" } });
+      }, { preconnect: fetch.preconnect }),
+      onRecovery: (reason) => recovery.push(reason),
+      onMessage: (message) => {
+        messages.push(message.data);
+        if (message.data === "second") reader.close();
+      },
+    });
+    await reader.start();
+    await reader.drain();
+    expect(messages).toEqual(["first", "second"]);
+    expect(recovery).toEqual(["history-expired"]);
+    expect(cursors).toEqual([null, null]);
+    expect(reader.lastEventId).toBe("second");
+  });
+
   test("dispatches messages assembled from data lines", async () => {
     const messages: string[] = [];
     const reader = new SseReader("http://x/_tako/channels/chat", {

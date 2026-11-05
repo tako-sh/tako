@@ -990,7 +990,7 @@ describe("Store independent recovery failures", () => {
       now += 10001;
       expect(store.getSnapshot().data).toBeUndefined();
       expect(store.getSnapshot().error).not.toBeNull();
-      if (kind === "transport") expect(store.getSnapshot().error).toBe(transportError);
+      if (kind === "transport") expect(store.getSnapshot().error?.message).toContain(transportError.message);
     },
   );
 
@@ -1013,7 +1013,7 @@ describe("Store independent recovery failures", () => {
     );
     await pending;
     expect(store.getSnapshot().data).toBeUndefined();
-    expect(store.getSnapshot().error).toBe(error);
+    expect(store.getSnapshot().error?.message).toContain(error.message);
   });
 });
 

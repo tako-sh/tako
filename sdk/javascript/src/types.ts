@@ -115,8 +115,10 @@ export interface ChannelPublishInput<T = unknown> {
 
 /** Published channel message with its channel name and optional replay cursor. */
 export interface ChannelMessage<T = unknown> extends ChannelPublishInput<T> {
-  /** Server-assigned monotonic replay id, or an empty string for ephemeral events. */
+  /** Opaque server replay cursor, or an empty string for ephemeral events. */
   id: string;
+  /** Stable publication identity across servers; independent of the replay cursor. */
+  eventId?: { origin: string; sequence: number };
   /** The exact channel the message was published on. */
   channel: string;
 }

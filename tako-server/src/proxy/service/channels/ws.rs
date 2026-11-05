@@ -46,7 +46,7 @@ impl TakoProxy {
         session: &mut Session,
         store: &Arc<ChannelStore>,
         channel: &str,
-        query_after: Option<i64>,
+        query_after: Option<tako_channels::ReplayCursor>,
         presence_params: serde_json::Value,
         auth_mode: ChannelWebSocketAuth,
     ) -> Result<bool> {
