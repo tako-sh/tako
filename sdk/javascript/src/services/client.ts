@@ -99,13 +99,20 @@ export function createServiceClient<S extends ServiceDefinition>(
       }
       const schema = operation.responses[response.status];
       if (schema === undefined) {
-        await response.body?.cancel();
+        let cause: unknown;
+        try {
+          await response.body?.cancel();
+        } catch (error) {
+          cause = error;
+        }
         throw new ServiceError(
           "unexpected-status",
           name,
           "response",
           `Unexpected HTTP status ${response.status}`,
           response.status,
+          [],
+          { cause },
         );
       }
       let data: unknown;
