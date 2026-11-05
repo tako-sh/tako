@@ -93,6 +93,7 @@
       "version": "0.0.0",
       "bin": {
         "tako-sh-gen-channel-types": "./dist/gen-channel-types.mjs",
+        "tako-sh-gen-service-types": "./dist/gen-service-types.mjs",
         "tako-sh-gen-store-types": "./dist/gen-store-types.mjs",
         "tako-worker": "./dist/entrypoints/bun-worker.mjs",
       },
