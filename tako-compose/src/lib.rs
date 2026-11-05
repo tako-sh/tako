@@ -9,6 +9,8 @@ use tokio::process::{Child, Command};
 
 const TAKO_APP_DATA_DIR_ENV: &str = "TAKO_DATA_DIR";
 mod engine;
+mod native_network;
+pub use native_network::NativeNetwork;
 mod plan;
 mod prepared;
 pub use prepared::remove_release_preparations;
@@ -115,6 +117,7 @@ pub struct ComposeRuntime {
     // Bound to one immutable, service-private preparation during a rollout.
     source: Option<PathBuf>,
     replicas: BTreeMap<String, u32>,
+    native_network: Option<NativeNetwork>,
 }
 
 impl std::fmt::Debug for ComposeRuntime {
@@ -174,7 +177,13 @@ impl ComposeRuntime {
             override_file: PathBuf::from(OVERRIDE_FILE),
             source: None,
             replicas: BTreeMap::new(),
+            native_network: None,
         })
+    }
+
+    pub fn with_native_network(mut self, network: NativeNetwork) -> Self {
+        self.native_network = Some(network);
+        self
     }
 
     /// Desired replica overrides, scoped to service names in this project.

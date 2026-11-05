@@ -151,6 +151,9 @@ impl Plan {
             plan.completed = true;
             plan.order = UpdateOrder::StopFirst;
         }
+        if let Some(network) = &runtime.native_network {
+            network.apply(&mut model)?;
+        }
         // Fingerprint only what affects this service's containers, including the
         // referenced resource definitions and file contents, never unrelated services.
         for plan in plans.values_mut() {
@@ -248,7 +251,10 @@ impl Plan {
             deploy.insert("replicas".into(), json!(1));
         }
         if let Some(networks) = object.get_mut("networks").and_then(Value::as_object_mut) {
-            for options in networks.values_mut() {
+            for (name, options) in networks.iter_mut() {
+                if crate::NativeNetwork::is_resource(name) {
+                    continue;
+                }
                 if options.is_null() {
                     *options = json!({});
                 }

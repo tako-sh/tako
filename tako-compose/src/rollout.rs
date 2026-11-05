@@ -27,6 +27,9 @@ impl ComposeRuntime {
             return Err("Production rollout requested for a development project".into());
         }
         let (runtime, images) = self.prepared()?;
+        if let Some(network) = &runtime.native_network {
+            network.ensure_bridge().await?;
+        }
         let mut model = runtime.model().await?;
         let services = model["services"]
             .as_object_mut()
