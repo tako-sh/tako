@@ -429,10 +429,13 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(self.ssh, '')
         self.assertNotIn('tcp dport 22 accept', self.runner.policy)
         self.assertNotIn('udp dport 8787 accept', self.runner.policy)
+        self.assertNotIn('tcp dport 9850 accept', self.runner.policy)
         data['peers'][0]['kind'] = 'server'
         self.apply(data)
         self.assertIn('udp dport 8787 accept', self.runner.policy)
+        self.assertIn('tcp dport 9850 accept', self.runner.policy)
         self.assertIn('udp dport 8787 drop', self.runner.policy)
+        self.assertIn('tcp dport 9850 drop', self.runner.policy)
         self.assertIn(f'iifname "{DEV}" drop', self.runner.policy)
         self.apply()
         self.assertIn('from="fd00:1234:5678::2",no-agent-forwarding,no-X11-forwarding,no-port-forwarding', self.ssh)

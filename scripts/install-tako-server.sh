@@ -996,7 +996,7 @@ install_native_network() {
     native_source="$tmp_extract/scripts/tako-network-helper.py"
     if [ ! -f "$native_source" ] || [ -L "$native_source" ]; then
       native_source="$tmp_extract/native-helper.py"
-      native_expected="013ed68b68b349a97cd17d75994ec286d6cf623808b60d353b1cb1cb8872d1ec"
+      native_expected="f051c12b94c1eeb92bca4940dcd6dcd1869ca0a8662869ecdcbf87778562848b"
       download_file "https://raw.githubusercontent.com/$TAKO_REPO_OWNER/$TAKO_REPO_NAME/$TAKO_RELEASE_TAG/scripts/tako-network-helper.py" "$native_source"
     fi
   fi
@@ -1281,7 +1281,7 @@ ExecStart=/usr/local/bin/tako-server --network-agent --data-dir /opt/tako
 Restart=on-failure
 RestartSec=1
 KillMode=control-group
-TimeoutStopSec=60
+TimeoutStopSec=120
 UMask=0077
 NoNewPrivileges=true
 ProtectSystem=strict

@@ -237,13 +237,14 @@ def firewall(state):
             if peer['kind'] == 'server':
                 lines.append(f'{match} udp dport 8787 accept')
                 lines.append(f'{match} udp sport 8787 ct state established ct direction reply accept')
+                lines.append(f'{match} tcp dport 9850 accept')
             if 'ssh_public_key' in peer:
                 lines.append(f'{match} tcp dport 22 accept')
             lines.append(f'{match} tcp dport {{ 53, 80, 443, 9844 }} accept')
             lines.append(f'{match} udp dport 53 accept')
             lines.append(f'{match} meta l4proto ipv6-icmp accept')
         lines.append(f'iifname "{dev}" drop')
-    lines.extend(['udp dport 8787 drop', '}',
+    lines.extend(['udp dport 8787 drop', 'tcp dport 9850 drop', '}',
                   'chain forward { type filter hook forward priority -10; policy accept;'])
     for ident in state['networks']:
         lines.extend([f'iifname "{interface(ident)}" drop', f'oifname "{interface(ident)}" drop'])
