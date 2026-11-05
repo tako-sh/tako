@@ -152,6 +152,11 @@ function terminalStatus(status: number): boolean {
   return status >= 400 && status < 500 && status !== 408 && status !== 429;
 }
 
+interface StoreFailure {
+  error: Error;
+  quiet: boolean;
+}
+
 /**
  * A live, authorized view of backend data. Subscribe to activate realtime reads;
  * refresh() can also perform a single read without opening a subscription.
@@ -179,8 +184,15 @@ export class Store<T = unknown> {
   private pending: Promise<void> | undefined;
   private unregisterCache: (() => void) | undefined;
   private cacheRevision: number;
-  private failure: { error: Error; quiet: boolean; stream: boolean } | null = null;
+  private readFailure: StoreFailure | null = null;
+  private streamFailure: StoreFailure | null = null;
   private readRevision = 0;
+
+  private get failure(): StoreFailure | null {
+    if (this.streamFailure && !this.streamFailure.quiet) return this.streamFailure;
+    if (this.readFailure && !this.readFailure.quiet) return this.readFailure;
+    return this.readFailure ?? this.streamFailure;
+  }
 
   constructor(
     readonly name: string,
@@ -419,7 +431,7 @@ export class Store<T = unknown> {
   private async loadOnce(generation: number): Promise<void> {
     const request = new AbortController();
     this.request = request;
-    let receivedResponse = false;
+    let phase: "transport" | "validation" = "transport";
     try {
       const url = makeURL(this.base, `/_tako/stores/${encodeURIComponent(this.name)}`, this.params);
       const response = await this.fetch(url, {
@@ -428,17 +440,19 @@ export class Store<T = unknown> {
         signal: request.signal,
         cache: "no-store",
       });
-      receivedResponse = true;
       if (!response.ok) {
         throw new StoreRequestError(`Store read failed (${response.status}).`, response.status);
       }
-      const value = (await response.json()) as StoreResponse<T>;
+      const body = await response.text();
+      phase = "validation";
+      const value = JSON.parse(body) as StoreResponse<T>;
       if (!value || typeof value !== "object" || !Object.hasOwn(value, "data")) {
         throw new Error("Store response must contain data.");
       }
       if (generation !== this.generation || request.signal.aborted) return;
       this.readRevision++;
-      if (!this.failure?.stream || this.streamReady) this.failure = null;
+      this.readFailure = null;
+      if (this.streamReady && !this.dirty) this.streamFailure = null;
       this.hasData = true;
       this.expiresAt = undefined;
       const policy = this.policy(value.offline);
@@ -446,7 +460,7 @@ export class Store<T = unknown> {
       this.emit({
         data: value.data,
         status: "ready",
-        error: null,
+        error: this.streamFailure && !this.streamFailure.quiet ? this.streamFailure.error : null,
         isStale: !this.streamReady || this.dirty,
       });
       this.scheduleExpiry();
@@ -483,7 +497,7 @@ export class Store<T = unknown> {
       if (generation !== this.generation || request.signal.aborted) return;
       this.fail(
         asError(error),
-        !receivedResponse || (error instanceof StoreRequestError && !terminalStatus(error.status)),
+        error instanceof StoreRequestError ? !terminalStatus(error.status) : phase === "transport",
       );
     } finally {
       if (this.request === request) this.request = undefined;
@@ -564,16 +578,19 @@ export class Store<T = unknown> {
     }: { disconnectStream?: boolean; quiet?: boolean } = {},
   ): void {
     if (disconnectStream) this.streamReady = false;
-    if (!quiet || !this.failure || this.failure.quiet) {
-      this.failure = { error, quiet, stream: disconnectStream };
+    const previous = disconnectStream ? this.streamFailure : this.readFailure;
+    if (!quiet || !previous || previous.quiet) {
+      if (disconnectStream) this.streamFailure = { error, quiet };
+      else this.readFailure = { error, quiet };
     }
+    const failure = this.failure!;
     const readable = this.hasData && this.expiresAt !== undefined && Date.now() < this.expiresAt;
     const status = this.hasData ? "offline" : "error";
     if (!readable) this.hasData = false;
     this.emit({
       data: readable ? this.state.data : undefined,
       status,
-      error: readable && this.failure.quiet ? null : this.failure.error,
+      error: readable && failure.quiet ? null : failure.error,
       isStale: true,
     });
     this.expire();
