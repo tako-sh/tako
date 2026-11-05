@@ -261,3 +261,41 @@ fn project_native_environment_never_falls_back_to_legacy_inventory() {
         assert!(!error.contains("No SSH keys"), "{args:?}: {error}");
     }
 }
+
+#[test]
+fn native_scale_resolves_the_enrolled_server_name_and_excludes_legacy_servers() {
+    let fixture = Fixture::new();
+    fs::write(
+        fixture.directory.path().join("tako.toml"),
+        format!("name = 'demo'\nimage = 'example/demo:latest'\n[envs.production]\nnetwork = '{}'\nroute = 'demo.example.com'\n", fixture.profile.snapshot.network.id),
+    ).unwrap();
+    let config = fixture.tako_home.join("config.toml");
+    let mut contents = fs::read_to_string(&config).unwrap();
+    contents.push_str("\n[[servers]]\nname = 'legacy'\nhost = '127.0.0.1'\n");
+    fs::write(config, contents).unwrap();
+    let selected = format!("fleet/node/{}", fixture.servers[0]);
+    for (server, expected) in [
+        (selected.as_str(), "Server has no pinned HTTPS certificate"),
+        ("legacy", "Server 'legacy' not found"),
+    ] {
+        let output = run_tako_with_env(
+            &[
+                "--ci",
+                "--dry-run",
+                "scale",
+                "2",
+                "--env",
+                "production",
+                "--server",
+                server,
+            ],
+            fixture.directory.path(),
+            &fixture.home,
+            &fixture.tako_home,
+        );
+        assert!(!output.status.success());
+        let error = stderr_str(&output);
+        assert!(error.contains(expected), "{error}");
+        assert!(!error.contains("No SSH keys"), "{error}");
+    }
+}
