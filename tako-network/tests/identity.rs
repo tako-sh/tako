@@ -314,3 +314,53 @@ fn enrollment_proof_is_verifiable_by_openssh() {
         String::from_utf8_lossy(&result.stderr)
     );
 }
+
+#[test]
+fn exported_ssh_identity_matches_device_and_stays_out_of_enrollment() {
+    let keys = LocalDeviceKeys::generate().unwrap();
+    let exported: zeroize::Zeroizing<String> = keys.ssh_private_key().unwrap();
+    let identity = ssh_key::PrivateKey::from_openssh(exported.as_bytes()).unwrap();
+    assert_eq!(
+        identity.public_key().to_openssh().unwrap(),
+        keys.ssh_public_key().unwrap().as_str()
+    );
+    let encoded = serde_json::to_string(&request(&keys)).unwrap();
+    assert!(!encoded.contains(exported.as_str()));
+    assert!(!encoded.contains("PRIVATE KEY"));
+}
+
+#[cfg(unix)]
+#[test]
+#[ignore = "requires the OpenSSH ssh-keygen executable"]
+fn exported_ssh_identity_is_usable_by_openssh() {
+    use std::{io::Write, os::unix::fs::PermissionsExt, process::Command};
+    let keys = LocalDeviceKeys::generate().unwrap();
+    let mut identity_file = tempfile::NamedTempFile::new().unwrap();
+    assert_eq!(
+        identity_file
+            .as_file()
+            .metadata()
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    identity_file
+        .write_all(keys.ssh_private_key().unwrap().as_bytes())
+        .unwrap();
+    let output = Command::new("ssh-keygen")
+        .args(["-y", "-P", "", "-f"])
+        .arg(identity_file.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap().trim(),
+        keys.ssh_public_key().unwrap().as_str()
+    );
+}

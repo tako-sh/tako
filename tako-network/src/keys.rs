@@ -64,6 +64,12 @@ impl LocalDeviceKeys {
         Ok(Zeroizing::new(STANDARD.encode(raw.as_slice())))
     }
 
+    /// Export only to a temporary owner-only identity file for the SSH client.
+    /// Pass its path to SSH, never the key contents as an argument or log value.
+    pub fn ssh_private_key(&self) -> Result<Zeroizing<String>> {
+        Ok(self.ssh.to_openssh(ssh_key::LineEnding::LF)?)
+    }
+
     pub fn sign(&self, namespace: &str, message: &[u8]) -> Result<ssh_key::SshSig> {
         Ok(self
             .ssh
@@ -111,7 +117,7 @@ impl LocalDeviceKeys {
     pub fn save_new(&self, path: &Path) -> Result<()> {
         let payload = SecretFile {
             version: 1,
-            ssh_private_key: self.ssh.to_openssh(ssh_key::LineEnding::LF)?,
+            ssh_private_key: self.ssh_private_key()?,
             wg_private_key: self.wireguard_private_key()?,
         };
         let bytes = Zeroizing::new(serde_json::to_vec(&payload)?);

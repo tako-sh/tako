@@ -26,6 +26,23 @@ pub struct Permissions {
 }
 
 impl Permissions {
+    pub fn validate(&self) -> Result<()> {
+        if self
+            .ssh_user
+            .as_ref()
+            .is_some_and(|user| matches!(user.as_str(), "tako" | "root"))
+            && !(self.network_admin && self.server_admin)
+        {
+            return Err(Error::PermissionDenied(
+                "SSH access to tako or root requires both network_admin and server_admin",
+            ));
+        }
+        if self.deployments.len() > 1024 {
+            return Err(invalid("deployment permissions", "too many scopes"));
+        }
+        Ok(())
+    }
+
     pub fn can_deploy(&self, scope: &AppEnv) -> bool {
         self.deployments.contains(scope)
     }
@@ -154,6 +171,7 @@ impl Member {
     }
 
     pub fn validate(&self) -> Result<()> {
+        self.permissions.validate()?;
         self.request.verify()?;
         if self.device_id != self.request.device_id_for(&self.network_id)?
             || self.kind.device_kind() != self.request.kind
@@ -191,9 +209,6 @@ impl Member {
                 "approval authority",
                 "independent roots require local-operator admission; devices cannot approve themselves",
             ));
-        }
-        if self.permissions.deployments.len() > 1024 {
-            return Err(invalid("deployment permissions", "too many scopes"));
         }
         if let MemberKind::Server(server) = &self.kind {
             server.validate()?;

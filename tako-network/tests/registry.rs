@@ -678,3 +678,72 @@ fn transport_certificate_fields_reject_malformed_oversize_bundled_and_extra_data
     crlf.https_certificate_pem = Some(valid.replace('\n', "\r\n"));
     crlf.validate().unwrap();
 }
+
+#[test]
+fn privileged_ssh_accounts_require_both_admin_capabilities_and_explicit_ssh_scope() {
+    let (snapshot, _, admin_id) = bootstrap();
+    assert!(
+        snapshot
+            .permissions(&admin_id, 2)
+            .unwrap()
+            .ssh_user
+            .is_none()
+    );
+    let keys = LocalDeviceKeys::generate().unwrap();
+    let evidence = verified(&keys, &snapshot.network.id, DeviceKind::Laptop, 2);
+    for user in ["tako", "root"] {
+        for (network_admin, server_admin) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
+            let permissions = Permissions {
+                network_admin,
+                server_admin,
+                ssh_user: Some(user.parse().unwrap()),
+                deployments: Default::default(),
+            };
+            let command = approval(
+                MemberKind::Laptop,
+                permissions.clone(),
+                Some(admin_id.clone()),
+                2,
+            );
+            let result = snapshot.approve(evidence.clone(), command);
+            if network_admin && server_admin {
+                permissions.validate().unwrap();
+                assert_eq!(result.unwrap().permissions.ssh_user.unwrap().as_str(), user);
+            } else {
+                assert!(matches!(
+                    permissions.validate(),
+                    Err(Error::PermissionDenied(_))
+                ));
+                assert!(matches!(result, Err(Error::PermissionDenied(_))));
+            }
+        }
+    }
+    let permissions = Permissions {
+        ssh_user: Some("member".parse().unwrap()),
+        ..Permissions::default()
+    };
+    snapshot
+        .approve(
+            evidence,
+            approval(MemberKind::Laptop, permissions, Some(admin_id), 2),
+        )
+        .unwrap();
+}
+
+#[test]
+fn replicated_tako_ssh_without_both_admin_flags_fails_closed() {
+    let (mut snapshot, _, admin_id) = bootstrap();
+    let (_, member_id) = add_laptop(&mut snapshot, &admin_id, Permissions::default(), false, 2);
+    let member = snapshot
+        .members
+        .iter_mut()
+        .find(|member| member.device_id == member_id)
+        .unwrap();
+    member.permissions.ssh_user = Some("tako".parse().unwrap());
+    assert!(matches!(
+        snapshot.effective_members(3),
+        Err(Error::PermissionDenied(_))
+    ));
+}
