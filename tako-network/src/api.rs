@@ -63,7 +63,7 @@ pub struct ApproveRequest {
     deny_unknown_fields
 )]
 pub enum RpcRequest {
-    Approve(ApproveRequest),
+    Approve(Box<ApproveRequest>),
     Begin {
         pending_id: RequestId,
     },

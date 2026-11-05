@@ -481,4 +481,28 @@ mod tests {
             2
         );
     }
+
+    #[test]
+    fn bearer_and_origin_validation_rejects_remote_or_ambiguous_endpoints() {
+        assert!(BearerToken::new("short".into()).is_err());
+        assert!(BearerToken::new("not-a-token\nsecret".into()).is_err());
+        for endpoint in [
+            "http://example.com:8080",
+            "http://localhost:8080",
+            "https://127.0.0.1:8080",
+            "http://127.0.0.1:8080/api",
+            "http://user:pass@127.0.0.1:8080",
+            "http://127.0.0.1:8080/?secret=token",
+        ] {
+            let token = BearerToken::new("fixture-token-123456789".into()).unwrap();
+            assert!(CorrosionStore::new(endpoint, token, network()).is_err());
+        }
+        let store = CorrosionStore::new(
+            "http://127.0.0.1:8080",
+            BearerToken::new("fixture-token-123456789".into()).unwrap(),
+            network(),
+        )
+        .unwrap();
+        assert_eq!(store.endpoint.as_str(), "http://127.0.0.1:8080/");
+    }
 }

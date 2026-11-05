@@ -5,14 +5,14 @@
 //! authenticated channel; validating its contents cannot establish its provenance.
 
 pub mod api;
-pub mod corrosion;
-pub mod runtime;
 mod challenge;
+pub mod corrosion;
 mod enrollment;
 mod error;
 mod keys;
 mod profile;
 mod registry;
+pub mod runtime;
 mod types;
 
 pub use challenge::*;

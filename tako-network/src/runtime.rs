@@ -157,21 +157,31 @@ impl<S: RegistryStore> ServerRuntime<S> {
         let db = Connection::open(state_path)?;
         db.busy_timeout(Duration::from_secs(3))?;
         db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
-            CREATE TABLE IF NOT EXISTS runtime_identity (singleton INTEGER PRIMARY KEY CHECK(singleton=1), network TEXT NOT NULL, server TEXT NOT NULL, last_time INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS runtime_identity (singleton INTEGER PRIMARY KEY CHECK(singleton=1), network TEXT NOT NULL, server TEXT NOT NULL, last_time INTEGER NOT NULL, auth_window INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS consumed_nonces (signer TEXT NOT NULL, nonce TEXT NOT NULL, expires INTEGER NOT NULL, PRIMARY KEY(signer, nonce));
             CREATE INDEX IF NOT EXISTS nonce_expiry ON consumed_nonces(expires);
             CREATE TABLE IF NOT EXISTS pending_entitlements (id TEXT PRIMARY KEY, expires INTEGER NOT NULL, payload TEXT NOT NULL);")?;
         let network = serde_json::to_string(&config.network)?;
         db.execute(
-            "INSERT OR IGNORE INTO runtime_identity VALUES (1, ?1, ?2, 0)",
-            params![network, config.server_id.to_string()],
+            "INSERT OR IGNORE INTO runtime_identity VALUES (1, ?1, ?2, 0, ?3)",
+            params![
+                network,
+                config.server_id.to_string(),
+                sql_time(config.limits.auth_window_seconds)?
+            ],
         )?;
-        let identity: (String, String) = db.query_row(
-            "SELECT network, server FROM runtime_identity WHERE singleton=1",
+        let identity: (String, String, i64) = db.query_row(
+            "SELECT network, server, auth_window FROM runtime_identity WHERE singleton=1",
             [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )?;
-        if identity != (network, config.server_id.to_string()) {
+        if identity
+            != (
+                network,
+                config.server_id.to_string(),
+                sql_time(config.limits.auth_window_seconds)?,
+            )
+        {
             return Err(RuntimeError::Conflict("local runtime identity"));
         }
         Ok(Self {
@@ -242,7 +252,9 @@ impl<S: RegistryStore> ServerRuntime<S> {
             .retain(|_, challenge| challenge.expires_at > now);
         match signed.request {
             RpcRequest::Snapshot => Ok(RpcResponse::Snapshot(snapshot)),
-            RpcRequest::Approve(grant) => self.approve_pending(grant, signed.signer, snapshot, now),
+            RpcRequest::Approve(grant) => {
+                self.approve_pending(*grant, signed.signer, snapshot, now)
+            }
             RpcRequest::Begin { pending_id } => self.begin(
                 pending_id,
                 entitlement.ok_or(RuntimeError::PendingUnavailable)?,
@@ -473,14 +485,12 @@ impl<S: RegistryStore> ServerRuntime<S> {
         {
             return Err(RuntimeError::Denied);
         }
+        let wg_fingerprint = grant.request.wg_public_key.fingerprint();
+        let ssh_fingerprint = grant.request.ssh_public_key.fingerprint()?;
         if snapshot.revocations.iter().any(|revocation| {
             revocation.target == id
-                || revocation.wg_fingerprint == grant.request.wg_public_key.fingerprint()
-                || grant
-                    .request
-                    .ssh_public_key
-                    .fingerprint()
-                    .is_ok_and(|fp| revocation.ssh_fingerprint == fp)
+                || revocation.wg_fingerprint == wg_fingerprint
+                || revocation.ssh_fingerprint == ssh_fingerprint
         }) {
             return Err(RuntimeError::Denied);
         }
@@ -948,7 +958,12 @@ mod tests {
         }
         fn approve(&self, runtime: &mut ServerRuntime<MemoryStore>, grant: &ApproveRequest) {
             let RpcResponse::Pending(profile) = self
-                .call(runtime, &self.admin, RpcRequest::Approve(grant.clone()), 10)
+                .call(
+                    runtime,
+                    &self.admin,
+                    RpcRequest::Approve(Box::new(grant.clone())),
+                    10,
+                )
                 .unwrap()
             else {
                 panic!("expected pending");
@@ -1050,7 +1065,7 @@ mod tests {
                 .call(
                     &mut runtime,
                     &keys,
-                    RpcRequest::Approve(fixture.grant(&keys)),
+                    RpcRequest::Approve(Box::new(fixture.grant(&keys))),
                     13
                 )
                 .is_err()
@@ -1173,7 +1188,7 @@ mod tests {
                 .call(
                     &mut runtime,
                     &fixture.admin,
-                    RpcRequest::Approve(grant.clone()),
+                    RpcRequest::Approve(Box::new(grant.clone())),
                     10
                 )
                 .is_err()
@@ -1185,7 +1200,7 @@ mod tests {
                 .call(
                     &mut runtime,
                     &fixture.admin,
-                    RpcRequest::Approve(grant.clone()),
+                    RpcRequest::Approve(Box::new(grant.clone())),
                     10
                 )
                 .is_err()
@@ -1198,7 +1213,7 @@ mod tests {
             fixture.call(
                 &mut runtime,
                 &fixture.admin,
-                RpcRequest::Approve(changed),
+                RpcRequest::Approve(Box::new(changed)),
                 10
             ),
             Err(RuntimeError::Conflict(_))
@@ -1264,7 +1279,7 @@ mod tests {
             fixture.call(
                 &mut runtime,
                 &fixture.admin,
-                RpcRequest::Approve(fixture.grant(&keys)),
+                RpcRequest::Approve(Box::new(fixture.grant(&keys))),
                 10
             ),
             Err(RuntimeError::Capacity("pending entitlements"))
@@ -1308,5 +1323,210 @@ mod tests {
         wrong.network.initial_admin = fixture.config.server_id.clone();
         fixture.store.0.borrow_mut().snapshot.network = wrong.network.clone();
         assert!(open(wrong).is_err());
+    }
+
+    #[test]
+    fn invalid_proofs_and_cross_applicant_challenges_never_activate_members() {
+        let fixture = Fixture::new();
+        let mut runtime = fixture.open();
+        let keys = LocalDeviceKeys::generate().unwrap();
+        let grant = fixture.grant(&keys);
+        let stranger = LocalDeviceKeys::generate().unwrap();
+        let other = fixture.grant(&stranger);
+        fixture.approve(&mut runtime, &grant);
+        fixture.approve(&mut runtime, &other);
+        assert!(
+            fixture
+                .call(
+                    &mut runtime,
+                    &stranger,
+                    RpcRequest::Begin {
+                        pending_id: grant.pending_id.clone()
+                    },
+                    11
+                )
+                .is_err()
+        );
+        let valid = fixture.challenge(&mut runtime, &keys, &grant, 11);
+        let RpcRequest::Complete {
+            challenge_id,
+            proof,
+            ..
+        } = valid.clone()
+        else {
+            unreachable!()
+        };
+        let wrong_owner = RpcRequest::Complete {
+            pending_id: other.pending_id.clone(),
+            challenge_id,
+            proof,
+        };
+        assert!(matches!(
+            fixture.call(&mut runtime, &stranger, wrong_owner, 11),
+            Err(RuntimeError::ChallengeUnavailable)
+        ));
+        let mut invalid = valid.clone();
+        if let RpcRequest::Complete { proof, .. } = &mut invalid {
+            proof.response = crate::KeyFingerprint::of_bytes(b"wrong WG secret");
+        }
+        assert!(fixture.call(&mut runtime, &keys, invalid, 12).is_err());
+        assert!(matches!(
+            fixture.call(&mut runtime, &keys, valid, 12),
+            Err(RuntimeError::ChallengeUnavailable)
+        ));
+        assert_eq!(runtime.snapshot().unwrap().members.len(), 2);
+        let fresh = fixture.challenge(&mut runtime, &keys, &grant, 13);
+        assert!(matches!(
+            fixture.call(&mut runtime, &keys, fresh, 14).unwrap(),
+            RpcResponse::Active(_)
+        ));
+    }
+
+    #[test]
+    fn future_nonce_is_retained_through_its_last_valid_second() {
+        let fixture = Fixture::new();
+        let mut runtime = fixture.open();
+        let signed = fixture.signed(&fixture.admin, RpcRequest::Snapshot, 130);
+        let mut invalid = signed.clone();
+        invalid.signature.push('\n');
+        assert!(matches!(
+            runtime.handle(invalid, "POST", signed.request.path(), 10),
+            Err(RuntimeError::Authentication)
+        ));
+        runtime
+            .handle(signed.clone(), "POST", signed.request.path(), 10)
+            .unwrap();
+        assert!(matches!(
+            runtime.handle(signed.clone(), "POST", signed.request.path(), 250),
+            Err(RuntimeError::Replay)
+        ));
+        assert!(matches!(
+            runtime.handle(signed.clone(), "POST", signed.request.path(), 251),
+            Err(RuntimeError::Authentication)
+        ));
+        fixture
+            .call(&mut runtime, &fixture.admin, RpcRequest::Snapshot, 251)
+            .unwrap();
+        let count: i64 = runtime
+            .db
+            .query_row("SELECT count(*) FROM consumed_nonces", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn revoked_server_projects_empty_host_and_new_boot_needs_new_ack() {
+        let mut fixture = Fixture::new();
+        let mut runtime = fixture.open();
+        let id = RevocationId::random().unwrap();
+        fixture
+            .call(
+                &mut runtime,
+                &fixture.admin,
+                RpcRequest::Revoke {
+                    id: id.clone(),
+                    target: fixture.config.server_id.clone(),
+                },
+                10,
+            )
+            .unwrap();
+        assert!(
+            fixture
+                .call(&mut runtime, &fixture.admin, RpcRequest::Snapshot, 11)
+                .is_err()
+        );
+        let desired = runtime.desired_host_state(11).unwrap();
+        assert!(desired.peers.is_empty());
+        assert!(desired.ssh_authorizations.is_empty());
+        runtime.acknowledge_applied(&desired.snapshot).unwrap();
+        drop(runtime);
+        fixture.config.boot_id = BootId::random().unwrap();
+        let mut runtime = fixture.open();
+        let boots = BTreeMap::from([(
+            fixture.config.server_id.clone(),
+            fixture.config.boot_id.clone(),
+        )]);
+        assert!(
+            runtime
+                .snapshot()
+                .unwrap()
+                .revocation_progress(&id, &boots)
+                .unwrap()
+                .pending_servers
+                .contains(&fixture.config.server_id)
+        );
+        runtime.acknowledge_applied(&desired.snapshot).unwrap();
+        assert!(
+            runtime
+                .snapshot()
+                .unwrap()
+                .revocation_progress(&id, &boots)
+                .unwrap()
+                .pending_servers
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn revoked_approver_cannot_resume_an_uncommitted_activation_journal() {
+        let fixture = Fixture::new();
+        let mut runtime = fixture.open();
+        let keys = LocalDeviceKeys::generate().unwrap();
+        let grant = fixture.grant(&keys);
+        fixture.approve(&mut runtime, &grant);
+        let command = fixture.challenge(&mut runtime, &keys, &grant, 11);
+        fixture.store.0.borrow_mut().fail_before_member = true;
+        assert!(fixture.call(&mut runtime, &keys, command, 12).is_err());
+        fixture
+            .call(
+                &mut runtime,
+                &fixture.admin,
+                RpcRequest::Revoke {
+                    id: RevocationId::random().unwrap(),
+                    target: fixture.config.network.initial_admin.clone(),
+                },
+                13,
+            )
+            .unwrap();
+        drop(runtime);
+        let mut runtime = fixture.open();
+        assert!(
+            fixture
+                .call(
+                    &mut runtime,
+                    &keys,
+                    RpcRequest::Begin {
+                        pending_id: grant.pending_id
+                    },
+                    14
+                )
+                .is_err()
+        );
+        assert_eq!(runtime.snapshot().unwrap().members.len(), 2);
+    }
+
+    #[test]
+    fn authentication_window_cannot_expand_after_nonce_garbage_collection() {
+        let mut fixture = Fixture::new();
+        fixture.config.limits.auth_window_seconds = 1;
+        let mut runtime = fixture.open();
+        fixture
+            .call(&mut runtime, &fixture.admin, RpcRequest::Snapshot, 10)
+            .unwrap();
+        fixture
+            .call(&mut runtime, &fixture.admin, RpcRequest::Snapshot, 12)
+            .unwrap();
+        drop(runtime);
+        fixture.config.limits.auth_window_seconds = 120;
+        let result = ServerRuntime::open(
+            fixture.store.clone(),
+            LocalDeviceKeys::load(&fixture.dir.path().join("keys")).unwrap(),
+            fixture.config.clone(),
+            &fixture.dir.path().join("runtime.db"),
+        );
+        assert!(matches!(
+            result,
+            Err(RuntimeError::Conflict("local runtime identity"))
+        ));
     }
 }
