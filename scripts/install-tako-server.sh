@@ -996,7 +996,7 @@ install_native_network() {
     native_source="$tmp_extract/scripts/tako-network-helper.py"
     if [ ! -f "$native_source" ] || [ -L "$native_source" ]; then
       native_source="$tmp_extract/native-helper.py"
-      native_expected="846193165e0dc8c9491e2d4f07711ef38a7600e5a3f91d83cb40feb62918cdd5"
+      native_expected="b214d9fb6b89e54f9111e6b10b7de044cb330357b17964ad89cc80b564253588"
       download_file "https://raw.githubusercontent.com/$TAKO_REPO_OWNER/$TAKO_REPO_NAME/$TAKO_RELEASE_TAG/scripts/tako-network-helper.py" "$native_source"
     fi
   fi
@@ -1289,8 +1289,8 @@ ReadWritePaths=/opt/tako
 ProtectHome=true
 PrivateTmp=true
 PrivateDevices=true
-CapabilityBoundingSet=
-AmbientCapabilities=
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 [Install]
 WantedBy=multi-user.target

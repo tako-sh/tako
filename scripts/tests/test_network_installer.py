@@ -90,7 +90,8 @@ fake_sshd() {
         unit = (root / 'etc/systemd/system/tako-network-agent.service').read_text()
         self.assertEqual((root / 'etc/systemd/system/tako-network-agent.service').stat().st_mode & 0o777, 0o644)
         for line in ('User=tako', 'Group=tako', 'NoNewPrivileges=true',
-                     'CapabilityBoundingSet=', 'AmbientCapabilities=', 'UMask=0077',
+                     'CapabilityBoundingSet=CAP_NET_BIND_SERVICE', 'AmbientCapabilities=CAP_NET_BIND_SERVICE', 'UMask=0077',
+                     'TimeoutStopSec=120',
                      'KillMode=control-group', 'ProtectSystem=strict',
                      'ReadWritePaths=/opt/tako', 'Type=exec',
                      f'ConditionPathExists={root}/opt/tako/native-network.json',

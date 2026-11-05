@@ -373,6 +373,66 @@ class Host:
                 self.runner.run('firewall-cmd', '--add-rich-rule=' + rule)
                 self.runner.run('firewall-cmd', '--permanent', '--add-rich-rule=' + rule)
 
+    def dns_values(self, dev, setting):
+        text = self.runner.run('resolvectl', setting, dev).strip()
+        heading, separator, value = text.partition(':')
+        require(separator and re.fullmatch(r'Link [0-9]+ \(' + re.escape(dev) + r'\)', heading),
+                'unsupported per-link resolved response')
+        values = value.split()
+        require(len(values) <= 32 and all(len(v) <= 255 and not v.startswith('-') and
+                re.fullmatch(r'[A-Za-z0-9:.%#_\[\]~+-]+', v) for v in values),
+                'unsupported per-link resolved values')
+        if setting == 'default-route':
+            require(values in (['yes'], ['no']), 'unsupported resolved default route')
+        return values
+
+    def configure_dns(self, ident, config):
+        mutating = False
+        if not self.runner.available('resolvectl'):
+            return {'dns_supported': False, 'dns_error': 'native service DNS requires systemd-resolved; resolver configuration was not changed'}
+        try:
+            active = self.runner.run('systemctl', 'show', 'systemd-resolved.service',
+                                     '--property=ActiveState', '--value').strip()
+            require(active == 'active', 'native service DNS requires active systemd-resolved')
+            dev = interface(ident)
+            installed = {'dns': [config['address'].split('/')[0]],
+                         'domain': ['~' + ident + '.tako.internal'], 'default-route': ['no']}
+            current = {setting: self.dns_values(dev, setting) for setting in installed}
+            previous = config.get('dns_settings')
+            if previous:
+                for setting, value in current.items():
+                    baseline = ['yes'] if setting == 'default-route' else []
+                    require(value in (previous['installed'][setting], previous['original'][setting], baseline),
+                            'per-link DNS settings changed outside Tako')
+            config['dns_settings'] = {'original': previous['original'] if previous else current,
+                                      'installed': installed}
+            self.save(self.state)
+            mutating = True
+            for setting, values in installed.items():
+                self.runner.run('resolvectl', setting, dev, *values)
+            return {'dns_supported': True}
+        except Rejected as error:
+            diagnostic = str(error)
+            if mutating:
+                try:
+                    self.restore_dns(ident, config)
+                except Rejected:
+                    diagnostic += '; per-link DNS rollback is incomplete'
+            return {'dns_supported': False, 'dns_error': diagnostic}
+
+    def restore_dns(self, ident, config):
+        record = config.get('dns_settings')
+        if not record or not self.runner.available('resolvectl'):
+            return
+        active = self.runner.run('systemctl', 'show', 'systemd-resolved.service',
+                                 '--property=ActiveState', '--value').strip()
+        if active != 'active':
+            return
+        for setting, installed in record['installed'].items():
+            if self.dns_values(interface(ident), setting) == installed:
+                original = record['original'][setting]
+                self.runner.run('resolvectl', setting, interface(ident), *(original or ['']))
+
     def apply(self, ident, desired):
         dev = interface(ident)
         require(all(other == ident or interface(other) != dev for other in self.state['networks']),
@@ -398,6 +458,9 @@ class Host:
         public_key = self.runner.run('wg', 'pubkey', input=desired['private_key'] + '\n').strip()
         require(public_key not in {p['public_key'] for p in desired['peers']}, 'peer uses local WireGuard key')
         config = {k: v for k, v in desired.items() if k != 'private_key'}
+        for retained in ('dns_settings', 'compose_bridge'):
+            if previous and retained in previous:
+                config[retained] = previous[retained]
         config['alias'] = previous['alias'] if previous else 'tako-network:' + ident + ':' + secrets.token_hex(16)
         config['managed_addresses'] = sorted(set((previous or {}).get('managed_addresses', []) + [desired['address']]))
         old_routes = {p['address'] for p in (previous or {}).get('peers', [])} | set((previous or {}).get('retiring_routes', []))
@@ -441,6 +504,7 @@ class Host:
                 self.runner.run('ip', '-6', 'route', 'replace', destination, 'dev', dev, 'proto', '242', 'metric', '42760')
             self.open_host_firewall(ident, desired['listen_port'])
             self.runner.run('systemctl', 'enable', f'tako-network@{ident}.service')
+            dns_result = self.configure_dns(ident, config)
             config['managed_addresses'] = [desired['address']]
             config['retiring_routes'] = []
             self.save(self.state)
@@ -449,7 +513,7 @@ class Host:
                 self.runner.run('ip', 'link', 'set', 'dev', dev, 'down')
             raise
         return {'address': desired['address'].split('/')[0],
-                'applied_device_ids': [p['device_id'] for p in desired['peers']]}
+                'applied_device_ids': [p['device_id'] for p in desired['peers']], **dns_result}
 
     def remove(self, ident):
         link = self.owned_link(ident)
@@ -458,6 +522,7 @@ class Host:
             return {'applied_device_ids': []}
         self.inspect_host_state(ident, link, self.state['networks'][ident])
         if link:
+            self.restore_dns(ident, self.state['networks'][ident])
             self.runner.run('ip', 'link', 'set', 'dev', interface(ident), 'down')
             self.runner.run('ip', 'link', 'delete', 'dev', interface(ident))
         self.runner.run('systemctl', 'disable', f'tako-network@{ident}.service')
