@@ -22,6 +22,8 @@ Replace the example IP with the server's reachable IP. Native servers require Li
 
 Allow the configured HTTPS TCP port (default `443`) for management and the configured WireGuard UDP port (default `51820`) for private network traffic. The advertised endpoint must be reachable by peers. There is no hosted relay or automatic NAT traversal service; HTTPS management reachability alone does not establish WireGuard connectivity.
 
+A public listener configured with mandatory `trusted_proxy.proxy_protocol` cannot also accept direct native pinned HTTPS. Remove that mandatory listener setting before native enrollment; the server refuses to start with both enabled. Ordinary Cloudflare HTTP forwarding headers remain supported without PROXY protocol. Review the listener configuration before bootstrap so enrollment does not leave a server awaiting an incompatible restart.
+
 Copy the stable ID from `network list` into your project:
 
 ```toml
@@ -103,6 +105,8 @@ shop.production.0123456789abcdef0123456789abcdef.tako.internal
 ```
 
 The components are app name, environment, and stable network ID. Native service discovery uses current authenticated placement information. Missing, expired, revoked, or drained placements are unavailable; a private name must not fall through to a public wildcard route. Supported Compose services use Tako's private gateway and resolver for this traffic.
+
+Automatic private DNS for native processes on the server requires an active systemd-resolved service. If it is absent, the WireGuard helper can still configure the link but reports `dns_supported = false` with a DNS error; do not treat link setup as successful DNS setup. Compose uses its managed gateway DNS independently of host systemd-resolved.
 
 The CLI does not install workstation DNS configuration. `tako connect [network]` creates the optional local WireGuard connection and requires the platform's network privileges; it does not make private app names resolve in every workstation application. `tako disconnect [network]` removes that connection. A scoped HTTPS deployment does not need either command. Typed HTTP clients still need an explicit reachable `baseURL`; a contract package does not configure DNS.
 

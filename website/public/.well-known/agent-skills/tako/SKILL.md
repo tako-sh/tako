@@ -112,7 +112,12 @@ have applied a revocation.
 WireGuard private traffic needs the advertised UDP endpoint; there is no hosted
 relay. `connect` needs network privileges and does not configure workstation DNS.
 Private app names are `{app}.{env}.{network-id}.tako.internal`. Public ingress
-and DNS remain separately provisioned.
+and DNS remain separately provisioned. Native process DNS on a server requires
+active systemd-resolved; without it, WireGuard can work while the helper reports
+`dns_supported = false` and a DNS error. Compose gateway DNS is independent.
+A listener that mandates `trusted_proxy.proxy_protocol` cannot coexist with
+direct native pinned HTTPS; resolve that configuration before enrollment.
+Ordinary Cloudflare HTTP forwarding headers remain supported.
 
 Use `tako network drain <server> --network <alias> --timeout 120 --json` and
 `tako network resume <server> --network <alias> --json` for server maintenance.
