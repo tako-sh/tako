@@ -20,7 +20,10 @@ set -eu
 #   TAKO_SOCKET             default: /var/run/tako/tako.sock
 #   TAKO_HTTP_PORT          public HTTP port for tako-server (default: 80)
 #   TAKO_HTTPS_PORT         public HTTPS port for tako-server (default: 443)
-#   TAKO_VPN                tailscale or netbird (default: saved choice, then tailscale)
+#   TAKO_VPN_PROVIDER       native, tailscale or netbird (alias: TAKO_VPN)
+#                           default: saved choice, then tailscale
+#   TAKO_NETWORK_HELPER_SOURCE / TAKO_NETWORK_HELPER_SHA256
+#                           optional local native helper and required digest
 #   TAKO_MANAGEMENT_HOST    assigned VPN IP to bind remote management on (optional)
 #                           if unset, installer asks the selected VPN agent
 #   TAKO_SSH_PUBKEY         public key line to authorize for TAKO_USER (optional)
@@ -56,15 +59,17 @@ TAKO_SOCKET="${TAKO_SOCKET:-/var/run/tako/tako.sock}"
 TAKO_HTTP_PORT="${TAKO_HTTP_PORT:-}"
 TAKO_HTTPS_PORT="${TAKO_HTTPS_PORT:-}"
 TAKO_MANAGEMENT_HOST="${TAKO_MANAGEMENT_HOST:-}"
-TAKO_VPN="${TAKO_VPN:-}"
+TAKO_VPN="${TAKO_VPN_PROVIDER:-${TAKO_VPN:-}}"
 TAKO_DOWNLOAD_BASE_URL="${TAKO_DOWNLOAD_BASE_URL:-}"
 TAKO_ALLOW_INSECURE_DOWNLOAD_BASE="${TAKO_ALLOW_INSECURE_DOWNLOAD_BASE:-}"
 TAKO_REPO_OWNER="${TAKO_REPO_OWNER:-tako-sh}"
 TAKO_REPO_NAME="${TAKO_REPO_NAME:-tako}"
 TAKO_RELEASE_TAG="${TAKO_RELEASE_TAG:-latest}"
 TAKO_RESTART_SERVICE="${TAKO_RESTART_SERVICE:-1}"
-TAKO_MANAGEMENT_REQUIRED_MESSAGE="Remote management requires a connected Tailscale or NetBird private network."
+TAKO_MANAGEMENT_REQUIRED_MESSAGE="Remote management requires a configured native WireGuard, Tailscale or NetBird private network."
 TAKO_MANAGEMENT_ARGS=""
+TAKO_NETWORK_UNIT_ARGS=""
+TAKO_NETWORK_BOUNDING_CAPABILITY=""
 TAKO_PUBLIC_PORT_ARGS=""
 TAKO_SERVER_CAPABILITIES="cap_net_bind_service,cap_setuid,cap_setgid,cap_kill"
 TAKO_SERVER_INSTALL_REFRESH_HELPER="/usr/local/bin/tako-server-install-refresh"
@@ -238,6 +243,9 @@ detect_management_ip() {
   provider="$1"
   preferred="${2:-}"
   case "$provider" in
+    native)
+      addresses="$(/usr/local/libexec/tako/native-address "$preferred" 2>/dev/null)" || return 1
+      ;;
     tailscale)
       tailscale status --json 2>/dev/null | grep -Eq '"BackendState"[[:space:]]*:[[:space:]]*"Running"' || return 1
       addresses="$(tailscale ip -4 2>/dev/null || true)
@@ -248,7 +256,7 @@ $(tailscale ip -6 2>/dev/null || true)"
       addresses="$(netbird status --ipv4 2>/dev/null || true)
 $(netbird status --ipv6 2>/dev/null || true)"
       ;;
-    *) echo "error: VPN must be tailscale or netbird" >&2; return 1 ;;
+    *) echo "error: VPN must be native, tailscale or netbird" >&2; return 1 ;;
   esac
   for address in $addresses; do
     if valid_management_ip "$address" && { [ -z "$preferred" ] || [ "$address" = "$preferred" ]; }; then
@@ -269,8 +277,8 @@ configure_management_http() {
   fi
   TAKO_VPN="${TAKO_VPN:-$saved_vpn}"
   case "$TAKO_VPN" in
-    tailscale|netbird) ;;
-    *) echo "error: TAKO_VPN must be tailscale or netbird" >&2; exit 1 ;;
+    native|tailscale|netbird) ;;
+    *) echo "error: TAKO_VPN must be native, tailscale or netbird" >&2; exit 1 ;;
   esac
 
   requested_management_host="$TAKO_MANAGEMENT_HOST"
@@ -285,7 +293,8 @@ configure_management_http() {
   # An offline binary refresh must retain the existing private binding. Starting
   # or repairing a service still requires an address from the selected agent.
   if [ -z "$TAKO_MANAGEMENT_HOST" ] && [ -z "$requested_management_host" ] &&
-     ! is_enabled "$TAKO_RESTART_SERVICE" && [ "$TAKO_VPN" = "$saved_vpn" ]; then
+     ! is_enabled "$TAKO_RESTART_SERVICE" && [ "$TAKO_VPN" = "$saved_vpn" ] &&
+     [ "$TAKO_VPN" != native ]; then
     previous_host="$(existing_service_arg_value --management-host || true)"
     if [ -n "$previous_host" ] && valid_management_ip "$previous_host"; then
       TAKO_MANAGEMENT_HOST="$previous_host"
@@ -628,8 +637,8 @@ case "$action" in
   configure)
     [ "$#" -eq 4 ] || [ "$#" -eq 5 ] || { echo "error: configure requires HTTP and HTTPS ports, a VPN provider, and an optional VPN IP" >&2; exit 1; }
     case "$4" in
-      tailscale|netbird) ;;
-      *) echo "error: VPN must be tailscale or netbird" >&2; exit 1 ;;
+      native|tailscale|netbird) ;;
+      *) echo "error: VPN must be native, tailscale or netbird" >&2; exit 1 ;;
     esac
     for port in "$2" "$3"; do
       case "$port" in
@@ -736,6 +745,9 @@ EOF
 # Fixed root-owned helpers validate their arguments; no arbitrary root shell.
 $TAKO_USER ALL=(root) NOPASSWD: /usr/local/bin/tako-provision-app *, $TAKO_SERVER_INSTALL_REFRESH_HELPER *, $TAKO_SERVER_SERVICE_HELPER reload, $TAKO_SERVER_SERVICE_HELPER restart, $TAKO_SERVER_SERVICE_HELPER configure *, $TAKO_SERVER_SERVICE_HELPER rollback, $TAKO_SERVER_SERVICE_HELPER cleanup-upgrade, $TAKO_SERVER_SERVICE_HELPER implode
 EOF
+  if [ "$TAKO_VPN" = native ]; then
+    printf '%s\n' 'tako ALL=(root) NOPASSWD: /usr/local/libexec/tako/tako-network-helper * apply, /usr/local/libexec/tako/tako-network-helper * remove' >> /etc/sudoers.d/tako
+  fi
   chmod 0440 /etc/sudoers.d/tako
 
   if need_cmd visudo; then
@@ -780,7 +792,11 @@ if is_enabled "$TAKO_RESTART_SERVICE" && [ "$SERVICE_MANAGER" = "none" ]; then
   exit 1
 fi
 
-configure_management_http
+if [ -z "$TAKO_VPN" ] && [ -r /usr/local/libexec/tako/vpn-provider ]; then
+  IFS= read -r TAKO_VPN < /usr/local/libexec/tako/vpn-provider
+fi
+TAKO_VPN="${TAKO_VPN:-tailscale}"
+if [ "$TAKO_VPN" != native ]; then configure_management_http; fi
 
 maybe_prompt_ssh_pubkey() {
   is_valid_ssh_public_key() {
@@ -913,6 +929,196 @@ install_pkgs() {
     echo "error: unsupported package manager; install curl + ca-certificates + tar manually" >&2
     exit 1
   fi
+}
+
+install_native_network() {
+  [ "$TAKO_VPN" = native ] || return 0
+  [ "$TAKO_USER:$TAKO_HOME" = tako:/opt/tako ] || {
+    echo 'error: native networking requires TAKO_USER=tako and TAKO_HOME=/opt/tako' >&2
+    exit 1
+  }
+  if need_cmd pacman; then
+    install_pkgs wireguard-tools iproute2 nftables python openssh
+  elif need_cmd apt-get || need_cmd zypper; then
+    install_pkgs wireguard-tools iproute2 nftables python3 openssh-server
+  else
+    install_pkgs wireguard-tools iproute nftables python3 openssh-server
+  fi
+  for native_command in wg ip nft python3; do
+    need_cmd "$native_command" || { echo "error: missing $native_command" >&2; exit 1; }
+  done
+
+  native_source="${TAKO_NETWORK_HELPER_SOURCE:-}"
+  if [ -n "$native_source" ]; then
+    [ -f "$native_source" ] && [ ! -L "$native_source" ] || {
+      echo 'error: native helper source must be a regular local file' >&2; exit 1;
+    }
+    native_expected="${TAKO_NETWORK_HELPER_SHA256:-}"
+    case "$native_expected" in
+      ''|*[!0-9a-f]*) echo 'error: native helper requires an explicit SHA256' >&2; exit 1 ;;
+    esac
+    [ "${#native_expected}" -eq 64 ] || { echo 'error: invalid helper SHA256' >&2; exit 1; }
+    native_actual="$(sha256sum "$native_source" | awk '{print $1}')"
+    [ "$native_actual" = "$native_expected" ] || { echo 'error: native helper checksum mismatch' >&2; exit 1; }
+  else
+    native_source="$tmp_extract/scripts/tako-network-helper.py"
+    [ -f "$native_source" ] && [ ! -L "$native_source" ] || {
+      echo 'error: verified release archive lacks scripts/tako-network-helper.py; supply TAKO_NETWORK_HELPER_SOURCE and TAKO_NETWORK_HELPER_SHA256 for a local build' >&2
+      exit 1
+    }
+  fi
+
+  # Refuse symlinked roots before installing privileged state or executable files.
+  python3 -I - <<'PY'
+import os
+for path in ('/opt/tako/networks', '/var/lib/tako-network-helper', '/etc/ssh/tako-network'):
+    fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in path.split('/')[1:]:
+            try:
+                os.mkdir(part, 0o755, dir_fd=fd)
+            except FileExistsError:
+                pass
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        if path != '/opt/tako/networks':
+            info = os.fstat(fd)
+            if info.st_uid != 0 or info.st_mode & 0o022:
+                raise SystemExit('error: unsafe privileged network directory')
+    finally:
+        os.close(fd)
+PY
+  chown tako:tako /opt/tako/networks
+  chmod 0700 /opt/tako/networks
+  chown root:root /var/lib/tako-network-helper /etc/ssh/tako-network
+  chmod 0700 /var/lib/tako-network-helper
+  chmod 0755 /etc/ssh/tako-network
+  install -m 0644 "$native_source" /usr/local/libexec/tako/tako-network-helper.py
+  cat > /usr/local/libexec/tako/tako-network-helper <<'EOF'
+#!/bin/sh
+exec /usr/bin/python3 -I /usr/local/libexec/tako/tako-network-helper.py "$@"
+EOF
+  chmod 0755 /usr/local/libexec/tako/tako-network-helper
+  chown root:root /usr/local/libexec/tako/tako-network-helper /usr/local/libexec/tako/tako-network-helper.py
+  cat > /usr/local/libexec/tako/native-address <<'EOF'
+#!/usr/bin/python3 -I
+import importlib.util
+import json
+import sys
+spec = importlib.util.spec_from_file_location('network', '/usr/local/libexec/tako/tako-network-helper.py')
+network = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(network)
+try:
+    with network.directory(network.STATE) as fd:
+        state = json.loads(network.read_file(fd, 'state.json'))
+    host = network.Host(network.Runner(), state, None, None)
+    candidates = []
+    for ident, config in state['networks'].items():
+        desired = network.read_desired(ident)
+        link = host.owned_link(ident)
+        if not link or 'UP' not in link.get('flags', []):
+            continue
+        value = desired['address'].split('/')[0]
+        if config['address'] != desired['address']:
+            continue
+        addresses = json.loads(host.runner.run('ip', '-j', '-6', 'address', 'show', 'dev', network.interface(ident)))
+        if any(a.get('local') == value and a.get('prefixlen') == 128
+               for entry in addresses for a in entry.get('addr_info', [])):
+            candidates.append(value)
+    preferred = sys.argv[1] if len(sys.argv) == 2 else ''
+    if preferred:
+        candidates = [value for value in candidates if value == preferred]
+    if len(candidates) != 1:
+        raise ValueError('ambiguous or unavailable native management address')
+    print(candidates[0])
+except (OSError, ValueError, KeyError, network.Rejected):
+    sys.exit(1)
+EOF
+  chown root:root /usr/local/libexec/tako/native-address
+  chmod 0755 /usr/local/libexec/tako/native-address
+
+  mkdir -p /etc/ssh/sshd_config.d /etc/systemd/system
+  native_admin_keys="$(/usr/sbin/sshd -T -C user=tako,host=localhost,addr=127.0.0.1 | awk '/^authorizedkeysfile / { for (i=2; i<=NF; i++) if ($i != "/etc/ssh/tako-network/authorized_keys" && $i != "none") printf "%s ", $i }')"
+  cat > /etc/ssh/sshd_config.d/00-tako-network.conf <<EOF
+Match User tako
+    AuthorizedKeysFile $native_admin_keys /etc/ssh/tako-network/authorized_keys
+Match all
+EOF
+  # Include is not universal (notably older distribution defaults).
+  if ! grep -Eq '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config.d/\*.conf' /etc/ssh/sshd_config; then
+    sed -i '1i Include /etc/ssh/sshd_config.d/*.conf' /etc/ssh/sshd_config
+  fi
+  /usr/sbin/sshd -t
+  /usr/sbin/sshd -T -C user=tako,host=localhost,addr=127.0.0.1 | grep -q '/etc/ssh/tako-network/authorized_keys' || {
+    echo 'error: sshd configuration overrides native network authorized keys' >&2; exit 1;
+  }
+  if [ "$SERVICE_MANAGER" = systemd ]; then
+    if systemctl is-active --quiet ssh; then systemctl reload ssh; fi
+    if systemctl is-active --quiet sshd; then systemctl reload sshd; fi
+  fi
+
+  cat > /etc/systemd/system/tako-network.target <<'EOF'
+[Unit]
+Description=Tako native networks
+Before=tako-server.service tako-server-standby.service
+[Install]
+WantedBy=multi-user.target
+EOF
+  cat > /etc/systemd/system/tako-network@.service <<'EOF'
+[Unit]
+Description=Tako native network %i
+After=network-online.target
+Wants=network-online.target
+Before=tako-network.target
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/libexec/tako/tako-network-helper %i apply
+[Install]
+WantedBy=tako-network.target
+EOF
+
+  # No release is fetched until a compatible Corrosion version and digest are pinned.
+  if ! id -u tako-corrosion >/dev/null 2>&1; then
+    useradd --system --user-group --no-create-home --home-dir /var/lib/tako-corrosion --shell /usr/sbin/nologin tako-corrosion
+  fi
+  cat > /etc/systemd/system/tako-corrosion.service <<'EOF'
+[Unit]
+Description=Tako replicated network registry
+After=tako-network.target
+Wants=tako-network.target
+ConditionPathIsExecutable=/usr/local/libexec/tako/corrosion
+ConditionPathExists=/etc/tako/corrosion.toml
+[Service]
+User=tako-corrosion
+Group=tako-corrosion
+ExecStart=/usr/local/libexec/tako/corrosion agent --config /etc/tako/corrosion.toml
+Restart=on-failure
+StateDirectory=tako-corrosion
+StateDirectoryMode=0700
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+[Install]
+WantedBy=multi-user.target
+EOF
+  TAKO_NETWORK_UNIT_ARGS='Wants=tako-network.target
+After=tako-network.target'
+  # The runtime has no ambient NET_ADMIN. Only its setuid-root sudo helper can acquire it.
+  TAKO_NETWORK_BOUNDING_CAPABILITY=CAP_NET_ADMIN
+  if [ "$SERVICE_MANAGER" = systemd ]; then systemctl daemon-reload; fi
+  for desired_file in /opt/tako/networks/*/desired.json; do
+    [ -e "$desired_file" ] || continue
+    native_id="${desired_file%/desired.json}"
+    native_id="${native_id##*/}"
+    /usr/local/libexec/tako/tako-network-helper "$native_id" apply
+  done
+  echo 'OK native WireGuard installed. Allow its UDP listen port in your cloud security group if required.'
+  echo 'Corrosion service hook prepared; no unverified binary installed or service enabled.'
 }
 
 install_setcap_tool() {
@@ -1379,6 +1585,9 @@ chmod 0710 "$TAKO_HOME"
 chmod 0700 "$socket_dir"
 echo "OK prepared data and socket directories"
 
+install_native_network
+if [ "$TAKO_VPN" = native ]; then configure_management_http; fi
+
 maybe_prompt_ssh_pubkey
 
 # Install authorized_keys for SSH (optional).
@@ -1404,7 +1613,9 @@ if [ -n "${TAKO_SSH_PUBKEY:-}" ]; then
   chmod 600 "$auth_keys"
   chown -R "$TAKO_USER":"$TAKO_USER" "$home_dir/.ssh" 2>/dev/null || true
 
-  printf '%s\n' "$TAKO_SSH_PUBKEY" > "$TAKO_MANAGEMENT_AUTH_KEYS"
+  if ! grep -qxF "$TAKO_SSH_PUBKEY" "$TAKO_MANAGEMENT_AUTH_KEYS" 2>/dev/null; then
+    printf '\n%s\n' "$TAKO_SSH_PUBKEY" >> "$TAKO_MANAGEMENT_AUTH_KEYS"
+  fi
   chmod 600 "$TAKO_MANAGEMENT_AUTH_KEYS"
   chown "$TAKO_USER":"$TAKO_USER" "$TAKO_MANAGEMENT_AUTH_KEYS" 2>/dev/null || true
   echo "OK enrolled SSH key for remote management"
@@ -1548,6 +1759,7 @@ install_systemd_service_unit() {
 [Unit]
 Description=Tako Server
 After=network.target
+$TAKO_NETWORK_UNIT_ARGS
 
 [Service]
 Type=notify
@@ -1558,7 +1770,7 @@ Group=$TAKO_USER
 NoNewPrivileges=false
 SupplementaryGroups=tako-app
 AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE $TAKO_NETWORK_BOUNDING_CAPABILITY
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/usr/local/bin/tako-server --socket $TAKO_SOCKET --data-dir $TAKO_HOME $TAKO_PUBLIC_PORT_ARGS $TAKO_MANAGEMENT_ARGS
 ExecReload=/bin/kill -HUP \$MAINPID
@@ -1580,6 +1792,7 @@ install_systemd_standby_unit() {
 [Unit]
 Description=Tako Server Standby
 After=network.target
+$TAKO_NETWORK_UNIT_ARGS
 
 [Service]
 Type=notify
@@ -1589,7 +1802,7 @@ Group=$TAKO_USER
 NoNewPrivileges=false
 SupplementaryGroups=tako-app
 AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE $TAKO_NETWORK_BOUNDING_CAPABILITY
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/usr/local/bin/tako-server --standby --socket $TAKO_SOCKET --data-dir $TAKO_HOME $TAKO_PUBLIC_PORT_ARGS --instance-port-offset 1000
 Restart=always

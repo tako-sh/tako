@@ -13,12 +13,14 @@ FUNCTIONS = SOURCE[SOURCE.index("vpn_functions() {"):SOURCE.index("process_has_m
 class ServerVpnTests(unittest.TestCase):
     def configure(self, *, provider="netbird", saved="netbird", host="",
                   tailscale="100.64.0.1", netbird="100.80.0.1", restart="1",
-                  previous="100.80.0.9"):
+                  previous="100.80.0.9", native="fd00:1234:5678::1"):
         with tempfile.TemporaryDirectory() as temporary:
             settings = Path(temporary) / "vpn-provider"
             settings.write_text(saved + "\n")
             script = FUNCTIONS.replace("/usr/local/libexec/tako/vpn-provider", str(settings))
+            script = script.replace("/usr/local/libexec/tako/native-address", "native_address")
             script += """
+native_address() { [ "$TEST_NATIVE" != disconnected ] || return 1; printf '%s\\n' "$TEST_NATIVE"; }
 is_enabled() { [ "$1" = 1 ]; }
 existing_service_arg_value() { printf '%s\\n' "$TEST_PREVIOUS"; }
 tailscale() { [ "$TEST_TAILSCALE" != disconnected ] || return 1; if [ "$1" = status ]; then printf '%s\\n' '{"BackendState":"Running"}'; return; fi; printf '%s\\n' "$TEST_TAILSCALE"; }
@@ -36,7 +38,7 @@ printf 'PROVIDER=%s\\nHOST=%s\\nARGS=%s\\n' "$TAKO_VPN" "$TAKO_MANAGEMENT_HOST" 
                                       **os.environ, "TEST_PROVIDER": provider,
                                       "TEST_HOST": host, "TEST_TAILSCALE": tailscale,
                                       "TEST_NETBIRD": netbird, "TEST_RESTART": restart,
-                                      "TEST_PREVIOUS": previous,
+                                      "TEST_PREVIOUS": previous, "TEST_NATIVE": native,
                                   })
 
     def test_selected_provider_wins_when_both_agents_report_addresses(self):
@@ -88,6 +90,25 @@ printf 'PROVIDER=%s\\nHOST=%s\\nARGS=%s\\n' "$TAKO_VPN" "$TAKO_MANAGEMENT_HOST" 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("ARGS=\n", result.stdout)
         self.assertNotIn("--management-host", result.stdout)
+
+    def test_native_management_uses_assigned_ipv6(self):
+        result = self.configure(provider="native", saved="native")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--management-host fd00:1234:5678::1", result.stdout)
+
+    def test_native_rejects_unassigned_address(self):
+        result = self.configure(provider="native", host="fd00:1234:5678::9")
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_native_bootstrap_does_not_reuse_unverified_previous_binding(self):
+        result = self.configure(provider="native", saved="native", restart="0",
+                                previous="fd00::1", native="disconnected")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("ARGS=\n", result.stdout)
+
+    def test_native_start_requires_applied_state(self):
+        result = self.configure(provider="native", saved="native", native="disconnected")
+        self.assertNotEqual(result.returncode, 0)
 
 
 if __name__ == "__main__":
