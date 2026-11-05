@@ -2,7 +2,8 @@ use super::*;
 use crate::operations::logs::LogRead;
 
 const SCAN_CHUNK: usize = 64 * 1024;
-const MAX_SCAN_BYTES: usize = 16 * 1024 * 1024;
+// Two normal 10 MiB log files plus rotation overshoot fit within this bound.
+const MAX_SCAN_BYTES: usize = 32 * 1024 * 1024;
 
 pub(super) fn read(state: &ServerState, metadata: &Logs) -> Result<LogRead, ()> {
     let Some(since) = metadata.since else {
@@ -51,7 +52,8 @@ pub(super) fn read(state: &ServerState, metadata: &Logs) -> Result<LogRead, ()> 
             let count = SCAN_CHUNK.min((len - offset).min(usize::MAX as u64) as usize);
             scanned += count;
             if scanned > MAX_SCAN_BYTES {
-                return Err(());
+                result.truncated = true;
+                return Ok(result);
             }
             let chunk = state
                 .read_logs(
@@ -125,3 +127,6 @@ fn append_line(
     result.bytes.extend_from_slice(line);
     false
 }
+
+#[cfg(test)]
+mod tests;
