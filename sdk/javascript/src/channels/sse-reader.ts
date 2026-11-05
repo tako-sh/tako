@@ -6,12 +6,15 @@ export interface SseReaderMessage {
   data: string;
 }
 
+export type SseRecoveryReason = "reconnecting" | "history-expired";
+
 export interface SseReaderOptions {
   fetch?: typeof fetch;
   headers?: Record<string, string>;
   onMessage: (message: SseReaderMessage) => void;
   onOpen?: () => void;
   onError?: (error: Error) => void;
+  onRecovery?: (reason: SseRecoveryReason) => void;
   signal?: AbortSignal;
   backoffBaseMs?: number;
   backoffMaxMs?: number;
@@ -43,6 +46,12 @@ interface FetchEventSourceGlobalSnapshot {
 
 let fetchEventSourceGlobalSnapshot: FetchEventSourceGlobalSnapshot | null = null;
 let fetchEventSourceGlobalRefs = 0;
+
+class SseResponseError extends Error {
+  constructor(readonly status: number) {
+    super(`SSE request failed with status ${status}.`);
+  }
+}
 
 export class SseReader {
   lastEventId: string | undefined;
@@ -136,14 +145,33 @@ export class SseReader {
     const cleanupGlobals = installFetchEventSourceGlobals();
 
     try {
+      if (this.#abort.signal.aborted) return;
       await fetchEventSource(this.#url, {
-        fetch: fetchImpl,
+        fetch: Object.assign(
+          async (input: RequestInfo | URL, init?: RequestInit) => {
+            const response = await fetchImpl(input, init);
+            if (response.status === 410) {
+              this.lastEventId = undefined;
+              // fetch-event-source owns this mutable header copy across retries.
+              const requestHeaders = init?.headers;
+              if (requestHeaders) {
+                for (const name of Object.keys(requestHeaders)) {
+                  if (name.toLowerCase() === "last-event-id") {
+                    Reflect.deleteProperty(requestHeaders, name);
+                  }
+                }
+              }
+            }
+            return response;
+          },
+          { preconnect: fetchImpl.preconnect },
+        ),
         headers,
         signal: this.#abort.signal,
         openWhenHidden: true,
         onopen: async (response) => {
           if (!response.ok) {
-            throw new Error(`SSE request failed with status ${response.status}.`);
+            throw new SseResponseError(response.status);
           }
           if (!response.body) {
             throw new Error("SSE response body is not readable.");
@@ -157,7 +185,7 @@ export class SseReader {
         },
         onmessage: (message) => this.#handleMessage(message),
         onclose: () => {
-          if (!this.#opts.retryOnDisconnect) {
+          if (this.#abort.signal.aborted || !this.#opts.retryOnDisconnect) {
             return;
           }
           throw new Error("SSE stream disconnected; reconnecting.");
@@ -167,11 +195,18 @@ export class SseReader {
             return;
           }
           const err = asError(error);
-          this.#opts.onError?.(err);
-          this.dispatchEvent(new ErrorEvent("error", { error: err, message: err.message }));
-          if (!this.#opts.retryOnDisconnect) {
+          const terminal = err instanceof SseResponseError && [401, 403, 404].includes(err.status);
+          if (terminal || !this.#opts.retryOnDisconnect) {
+            this.#opts.onError?.(err);
+            this.dispatchEvent(new ErrorEvent("error", { error: err, message: err.message }));
             throw err;
           }
+          this.#opts.onRecovery?.(
+            err instanceof SseResponseError && err.status === 410
+              ? "history-expired"
+              : "reconnecting",
+          );
+          if (this.#abort.signal.aborted) throw err;
           attempt++;
           return backoff(attempt, this.#opts);
         },
@@ -179,9 +214,9 @@ export class SseReader {
     } catch {
       // Errors are reported through onerror. A rejection means the stream is done.
     } finally {
+      this.close();
       cleanupGlobals();
       this.#resolveStart?.();
-      this.#resolveConnectionWaiters();
     }
   }
 
@@ -226,9 +261,9 @@ function headersRecord(
   headers: Record<string, string> | undefined,
   lastEventId: string | undefined,
 ): Record<string, string> {
-  const out = { ...headers };
+  const out = Object.fromEntries(new Headers(headers));
   if (lastEventId !== undefined) {
-    out["Last-Event-ID"] = lastEventId;
+    out["last-event-id"] = lastEventId;
   }
   return out;
 }

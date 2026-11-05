@@ -7,7 +7,7 @@ import type {
   ChannelPublishInput,
   ChannelPublishOptions,
   ChannelSocket,
-  ChannelSubscribeOptions,
+  ChannelSubscribeOptions as BaseChannelSubscribeOptions,
   ChannelSubscription,
 } from "./types";
 import {
@@ -16,7 +16,17 @@ import {
   type ChannelLifecycleConfig,
 } from "./channels/meta";
 import { getChannelsConfig } from "./channels/configure";
-import { SseReader } from "./channels/sse-reader";
+import { SseReader, type SseRecoveryReason } from "./channels/sse-reader";
+
+export type { SseRecoveryReason } from "./channels/sse-reader";
+
+export interface ChannelSubscribeOptions extends BaseChannelSubscribeOptions {
+  /** Retry status, separate from channel messages. */
+  onRecovery?: (reason: SseRecoveryReason) => void;
+  /** Called when the subscription stops after an error. */
+  onError?: (error: Error) => void;
+  signal?: AbortSignal;
+}
 
 /**
  * Server-side publisher hook used by the Tako runtime to fan out channel
@@ -281,6 +291,9 @@ export class Channel {
       fetch: getChannelsConfig().fetch,
       onMessage: () => {},
       retryOnDisconnect: true,
+      ...(options.onRecovery !== undefined && { onRecovery: options.onRecovery }),
+      ...(options.onError !== undefined && { onError: options.onError }),
+      ...(options.signal !== undefined && { signal: options.signal }),
       ...(headers !== undefined && { headers }),
     };
     const reader = new SseReader(url.toString(), readerOptions);
