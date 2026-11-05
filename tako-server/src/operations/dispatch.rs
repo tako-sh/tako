@@ -5,7 +5,14 @@ use tako_core::{HelloResponse, PROTOCOL_VERSION};
 impl crate::ServerState {
     /// Handle a command from the management socket
     pub async fn handle_command(&self, cmd: Command) -> Response {
+        if self.is_draining() && super::drain::blocked_while_draining(&cmd) {
+            return Response::error(
+                "Server is drained; resume it before starting new application work.",
+            );
+        }
         match cmd {
+            Command::DrainServer { timeout_seconds } => self.drain_server(timeout_seconds).await,
+            Command::ResumeServer => self.resume_server().await,
             Command::Hello { protocol_version } => {
                 let data = HelloResponse {
                     protocol_version: PROTOCOL_VERSION,
@@ -20,6 +27,7 @@ impl crate::ServerState {
                         "rollback".to_string(),
                         "management_http_uploads".to_string(),
                         "backups".to_string(),
+                        "server_drain_resume".to_string(),
                     ],
                     server_identity: self.runtime_config().server_identity.clone(),
                 };

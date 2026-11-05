@@ -2,6 +2,7 @@ mod backup;
 mod compose;
 mod deploy;
 mod dispatch;
+mod drain;
 mod lifecycle;
 pub(crate) mod logs;
 mod queries;

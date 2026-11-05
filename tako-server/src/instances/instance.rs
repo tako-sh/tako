@@ -332,8 +332,30 @@ impl Instance {
             crate::container_runtime::remove_container(engine, &name).await?;
             *self.container.write() = None;
         }
-        if let Some(mut child) = self.take_process() {
-            child.kill().await?;
+        {
+            let mut process = self.process.write();
+            if let Some(child) = process.as_mut() {
+                child.start_kill()?;
+            }
+        }
+        loop {
+            let stopped = {
+                let mut process = self.process.write();
+                if let Some(child) = process.as_mut() {
+                    if child.try_wait()?.is_some() {
+                        process.take();
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    true
+                }
+            };
+            if stopped {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
         self.cleanup_upstream();
         self.set_state(InstanceState::Stopped);
