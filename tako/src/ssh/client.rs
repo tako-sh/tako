@@ -3,6 +3,7 @@
 mod auth;
 mod exec;
 mod filesystem;
+mod native;
 mod tako;
 
 #[cfg(test)]
