@@ -333,7 +333,7 @@ mod unix {
             .components()
         {
             match component {
-                Component::RootDir => (),
+                Component::RootDir => continue,
                 Component::Normal(name) => ancestor.push(name),
                 _ => return Err("host path traversal is forbidden".into()),
             }
@@ -362,6 +362,7 @@ mod unix {
     }
 
     #[cfg(test)]
-    #[path = "tests.rs"]
-    mod tests;
+    mod tests {
+        include!("network_bootstrap/tests.rs");
+    }
 }
