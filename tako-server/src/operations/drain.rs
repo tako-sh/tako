@@ -74,26 +74,67 @@ pub(super) fn blocked_while_draining(command: &Command) -> bool {
 }
 
 impl crate::ServerState {
-    pub(crate) async fn drain_server(&self, timeout_seconds: u64) -> Response {
+    fn prepare_server_drain(
+        &self,
+        timeout_seconds: u64,
+    ) -> Result<(crate::state_store::DrainLease, Instant), Response> {
         if timeout_seconds > MAX_DRAIN_SECONDS {
-            return Response::error("Drain timeout must be between 0 and 3600 seconds.");
+            return Err(Response::error(
+                "Drain timeout must be between 0 and 3600 seconds.",
+            ));
         }
         let deadline = Instant::now() + Duration::from_secs(timeout_seconds);
-        let _operation = match self.state_store.try_drain_operation() {
+        let operation = match self.state_store.try_drain_operation() {
             Ok(Some(lease)) => lease,
             Ok(None) => {
-                return Response::error(
+                return Err(Response::error(
                     "Another server drain/resume is in progress; retry shortly.",
-                );
+                ));
             }
-            Err(error) => return Response::error(error.to_string()),
+            Err(error) => return Err(Response::error(error.to_string())),
         };
         let wall_deadline = crate::drain_observer::unix_millis()
             .saturating_add(timeout_seconds.saturating_mul(1000));
         if let Err(error) = self.state_store.request_drain_until(wall_deadline) {
-            return Response::error(format!("Could not persist server drain: {error}"));
+            return Err(Response::error(format!(
+                "Could not persist server drain: {error}"
+            )));
         }
         self.drain_requested.store(true, Ordering::Release);
+        Ok((operation, deadline))
+    }
+
+    // Management dispatch calls this inside its owned task, BEFORE taking management_lock.
+    pub(crate) async fn drain_server_before_management(&self, timeout_seconds: u64) -> Response {
+        let (_operation, deadline) = match self.prepare_server_drain(timeout_seconds) {
+            Ok(prepared) => prepared,
+            Err(response) => return response,
+        };
+        let _management = match tokio::time::timeout_at(deadline, self.management_lock.lock()).await
+        {
+            Ok(guard) => guard,
+            Err(_) => {
+                return Response::ok(serde_json::json!({
+                    "status": "draining", "completed": false, "local_completed": false,
+                    "other_processes_quiescent": false, "counts_scope": "local_process",
+                    "timed_out": true, "http_drained": false,
+                    "errors": ["Drain intent persisted; an existing management operation exceeded the drain deadline. Local cleanup will continue through the observer."]
+                }));
+            }
+        };
+        self.finish_server_drain(deadline).await
+    }
+
+    // Direct dispatch callers already hold management_lock.
+    pub(crate) async fn drain_server(&self, timeout_seconds: u64) -> Response {
+        let (_operation, deadline) = match self.prepare_server_drain(timeout_seconds) {
+            Ok(prepared) => prepared,
+            Err(response) => return response,
+        };
+        self.finish_server_drain(deadline).await
+    }
+
+    async fn finish_server_drain(&self, deadline: Instant) -> Response {
         let mut report = self.drain_runtime_until(deadline).await;
         if report.local_completed {
             loop {

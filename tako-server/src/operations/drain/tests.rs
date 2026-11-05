@@ -478,3 +478,35 @@ async fn competing_operation_returns_without_waiting_under_local_management_lock
     assert!(second.management_lock.try_lock().is_ok());
     drop(operation);
 }
+
+#[tokio::test]
+async fn prelock_drain_persists_and_closes_gate_while_preparation_owns_management() {
+    let (_dir, state) = fixture();
+    let management = state.management_lock.lock().await;
+    let response = tokio::time::timeout(
+        Duration::from_millis(100),
+        state.drain_server_before_management(0),
+    )
+    .await
+    .unwrap();
+    assert_eq!(response.data().unwrap()["completed"], false);
+    assert_eq!(response.data().unwrap()["timed_out"], true);
+    assert!(state.state_store.drain_requested().unwrap());
+    assert!(state.drain_flag().load(Ordering::Acquire));
+    assert!(state.drain_activity.lock().is_some());
+    // A preparation already admitted can finish unwinding before observer cleanup.
+    let app = app(&state, "finishing-preparation");
+    app.allocate_instance();
+    drop(management);
+    state.observe_drain_once().await.unwrap();
+    assert!(app.get_instances().is_empty());
+    assert!(state.drain_activity.lock().is_none());
+    assert_eq!(
+        state
+            .drain_server_before_management(0)
+            .await
+            .data()
+            .unwrap()["completed"],
+        true
+    );
+}
