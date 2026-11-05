@@ -13,6 +13,7 @@ mod keys;
 mod profile;
 mod registry;
 pub mod runtime;
+mod server_identity;
 mod types;
 
 pub use challenge::*;
@@ -21,4 +22,5 @@ pub use error::{Error, Result};
 pub use keys::LocalDeviceKeys;
 pub use profile::{NetworkPublicProfile, PendingApprovalProfile};
 pub use registry::*;
+pub use server_identity::{ServerIdentity, ServerTlsPaths};
 pub use types::*;
