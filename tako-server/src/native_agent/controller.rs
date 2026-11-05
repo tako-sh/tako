@@ -17,7 +17,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tako_network::{
-    BootId, DeviceKind, LocalDeviceKeys, MemberKind, NodeConfig, RegistrySnapshot,
+    BootId, DeviceKind, LocalDeviceKeys, MemberKind, NodeConfig, RegistrySnapshot, ServerIdentity,
     api::{RpcRequest, RuntimeError},
     corrosion::{BearerToken, CorrosionStore, MAX_REGISTRY_BYTES, RegistryStore},
     node_config::protected::Directory,
@@ -99,6 +99,7 @@ struct Controller {
     ready: bool,
     revoked: bool,
     stop: Arc<AtomicBool>,
+    renewal: Renewal,
 }
 impl Controller {
     fn start(
@@ -110,6 +111,9 @@ impl Controller {
         config.validate()?;
         let root = config.network_dir(&data_dir);
         let directory = Directory::open(&root, true)?;
+        // Recover any committed leaf journal before loading keys/certificates.
+        // Renewal validates immutable keys/issuers and never changes their pins.
+        let gossip_leaf_hash = renew_identity(&config, &root, &directory)?;
         for name in config.files.names() {
             directory.read(name, 128 * 1024)?;
         }
@@ -252,6 +256,7 @@ impl Controller {
             ready: false,
             revoked: false,
             stop,
+            renewal: Renewal::new(gossip_leaf_hash),
         })
     }
     fn initial_isolate(
@@ -297,7 +302,7 @@ impl Controller {
         }
         let (bundle, seeds) = projection::gossip(&self.config, &snapshot, now)?;
         let hash = gossip_hash(&bundle, &seeds)?;
-        if hash != self.gossip_hash || !self.child.running()? {
+        if hash != self.gossip_hash || self.renewal.restart || !self.child.running()? {
             self.child.stop()?;
             projection::write_corrosion(
                 &self.config,
@@ -310,6 +315,7 @@ impl Controller {
             )?;
             self.child = OwnedChild::corrosion(&self.config, &self.data_dir)?;
             self.gossip_hash = hash;
+            self.renewal.restart = false;
             // The new child must answer a validated read before readiness/ACK.
             self.runtime.snapshot()?;
         }
@@ -338,6 +344,11 @@ impl Controller {
                     "local server is revoked or ineffective",
                 ));
             }
+            if Instant::now() >= self.renewal.next {
+                let root = self.config.network_dir(&self.data_dir);
+                let hash = renew_identity(&self.config, &root, &self.directory)?;
+                self.renewal.observe(hash);
+            }
             if !self.child.running()? {
                 // A forced-but-reaped stop must never restart stale CA trust.
                 let (bundle, seeds) =
@@ -353,6 +364,7 @@ impl Controller {
                 )?;
                 self.child = OwnedChild::corrosion(&self.config, &self.data_dir)?;
                 self.gossip_hash = gossip_hash(&bundle, &seeds)?;
+                self.renewal.restart = false;
             }
             self.reconcile()
         })();
@@ -442,6 +454,72 @@ impl ApplyCache {
         self.hash = Some(hash);
         Ok(())
     }
+}
+
+const RENEWAL_INTERVAL: Duration = Duration::from_secs(3600);
+struct Renewal {
+    next: Instant,
+    gossip: [u8; 32],
+    restart: bool,
+}
+impl Renewal {
+    fn new(gossip: [u8; 32]) -> Self {
+        Self {
+            next: Instant::now() + RENEWAL_INTERVAL,
+            gossip,
+            restart: false,
+        }
+    }
+    fn observe(&mut self, gossip: [u8; 32]) {
+        // Keep an outstanding restart after a forced/failed stop. A later no-op
+        // renewal is not evidence that the existing child loaded the new leaf.
+        self.restart |= gossip != self.gossip;
+        self.gossip = gossip;
+        self.next = Instant::now() + RENEWAL_INTERVAL;
+    }
+}
+
+fn renew_identity(config: &NodeConfig, root: &Path, directory: &Directory) -> Result<[u8; 32]> {
+    let identity = ServerIdentity::renew(root)?;
+    let https = identity.tls_paths();
+    let gossip = identity.gossip_paths();
+    // NodeFiles stay explicit. Accept either managed leaf or fullchain references,
+    // but never renew one identity while actually serving unrelated files.
+    let https_file = root.join(&config.files.https_certificate);
+    let gossip_file = root.join(&config.files.gossip_certificate);
+    if root.join(&config.files.keys) != identity.keys_path()
+        || (https_file != https.certificate && https_file != https.fullchain)
+        || root.join(&config.files.https_private_key) != https.private_key
+        || (gossip_file != gossip.certificate && gossip_file != gossip.fullchain)
+        || root.join(&config.files.gossip_private_key) != gossip.private_key
+        || root.join(&config.files.gossip_ca_certificate) != gossip.ca_certificate
+    {
+        return Err(AgentError::Invalid(
+            "configured files differ from prepared server identity",
+        ));
+    }
+    let member = config
+        .bootstrap
+        .members
+        .iter()
+        .find(|m| m.device_id == config.server_id)
+        .ok_or(AgentError::Invalid(
+            "prepared server is absent from bootstrap",
+        ))?;
+    let MemberKind::Server(info) = &member.kind else {
+        return Err(AgentError::Invalid("prepared identity is not a server"));
+    };
+    if identity.request() != &member.request || identity.server_info() != info {
+        return Err(AgentError::Invalid(
+            "prepared identity differs from admitted keys or pins",
+        ));
+    }
+    let name = gossip
+        .fullchain
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or(AgentError::Invalid("invalid managed gossip fullchain path"))?;
+    Ok(openssl::sha::sha256(&directory.read(name, 128 * 1024)?))
 }
 
 fn allowed_while_unready(request: &RpcRequest) -> bool {
@@ -559,6 +637,80 @@ fn validate_gossip_leaf(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn renewal_restart_requires_changed_gossip_bytes_and_survives_retry() {
+        let mut renewal = Renewal::new([1; 32]);
+        renewal.observe([1; 32]);
+        assert!(!renewal.restart);
+        renewal.observe([2; 32]);
+        assert!(renewal.restart);
+        renewal.observe([2; 32]);
+        assert!(renewal.restart); // no-op after a failed restart cannot clear it
+        renewal.restart = false;
+        renewal.observe([2; 32]);
+        assert!(!renewal.restart);
+    }
+    #[test]
+    fn startup_and_periodic_renewal_validate_paths_pins_and_fullchain() {
+        let fixture = super::super::tests::Fixture::new();
+        let mut config = fixture.config;
+        let temp = tempfile::tempdir().unwrap();
+        let root = config.network_dir(temp.path());
+        std::fs::create_dir_all(root.parent().unwrap()).unwrap();
+        let identity = ServerIdentity::prepare(
+            &root,
+            config.network.id.clone(),
+            "renewal-fixture".parse().unwrap(),
+            "203.0.113.7:51820".parse().unwrap(),
+            fixture.keys.ssh_public_key().unwrap(),
+            22,
+            443,
+        )
+        .unwrap();
+        let name = |path: &Path| path.file_name().unwrap().to_str().unwrap().to_owned();
+        config.files.keys = name(identity.keys_path());
+        config.files.https_certificate = name(&identity.tls_paths().fullchain);
+        config.files.https_private_key = name(&identity.tls_paths().private_key);
+        config.files.gossip_ca_certificate = name(&identity.gossip_paths().ca_certificate);
+        config.files.gossip_certificate = name(&identity.gossip_paths().fullchain);
+        config.files.gossip_private_key = name(&identity.gossip_paths().private_key);
+        config.server_id = identity
+            .keys()
+            .device_id(&config.network.id, DeviceKind::Server)
+            .unwrap();
+        let member = &mut config.bootstrap.members[1];
+        member.device_id = config.server_id.clone();
+        member.request = identity.request().clone();
+        member.kind = MemberKind::Server(identity.server_info().clone());
+        config.validate().unwrap();
+        let directory = Directory::open(&root, true).unwrap();
+        let first = renew_identity(&config, &root, &directory).unwrap();
+        let before = std::fs::metadata(&identity.gossip_paths().fullchain)
+            .unwrap()
+            .modified()
+            .unwrap();
+        assert_eq!(first, renew_identity(&config, &root, &directory).unwrap());
+        assert_eq!(
+            before,
+            std::fs::metadata(&identity.gossip_paths().fullchain)
+                .unwrap()
+                .modified()
+                .unwrap()
+        );
+        let mut wrong = config.clone();
+        wrong.files.gossip_certificate = "unmanaged.pem".into();
+        assert!(renew_identity(&wrong, &root, &directory).is_err());
+        let MemberKind::Server(info) = &mut wrong.bootstrap.members[1].kind else {
+            unreachable!()
+        };
+        info.https_port = 8443;
+        wrong.files.gossip_certificate = config.files.gossip_certificate.clone();
+        assert!(renew_identity(&wrong, &root, &directory).is_err());
+        directory
+            .write(&config.files.gossip_certificate, b"corrupt fullchain")
+            .unwrap();
+        assert!(renew_identity(&config, &root, &directory).is_err());
+    }
     #[test]
     fn unready_gate_allows_only_authenticated_repair_methods() {
         assert!(allowed_while_unready(&RpcRequest::Snapshot));
