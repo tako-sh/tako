@@ -47,6 +47,7 @@ pub fn host_nameservers() -> io::Result<Vec<IpAddr>> {
                 continue;
             }
             if let Some(address) = words.next().and_then(|s| s.parse::<IpAddr>().ok()) {
+                let address = address.to_canonical();
                 if valid_upstream(address) && !addresses.contains(&address) {
                     addresses.push(address);
                 }
@@ -65,7 +66,7 @@ fn valid_upstream(ip: IpAddr) -> bool {
     !ip.is_loopback()
         && !ip.is_unspecified()
         && !ip.is_multicast()
-        && !matches!(ip, IpAddr::V4(v4) if v4.is_broadcast() || v4.is_link_local())
+        && !matches!(ip, IpAddr::V4(v4) if v4.is_broadcast())
 }
 
 fn now() -> u64 {
@@ -108,7 +109,7 @@ fn authoritative(
         return None;
     }
     let zone = format!("{}.tako.internal.", directory.network());
-    let hostname = host.to_ascii_lowercase();
+    let hostname = format!("{}.", host.trim_end_matches('.').to_ascii_lowercase());
     if hostname != zone && !hostname.ends_with(&format!(".{zone}")) {
         return Some(response(query, ResponseCode::Refused));
     }
@@ -256,7 +257,7 @@ pub async fn serve_dns(
             || upstreams.len() > 3
             || upstreams.iter().any(|ip| {
                 !valid_upstream(*ip)
-                    || *ip == bind.ip()
+                    || ip.to_canonical() == bind.ip().to_canonical()
                     || directory
                         .read()
                         .view

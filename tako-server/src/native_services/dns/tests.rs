@@ -124,6 +124,7 @@ fn malformed_queries_and_oversized_udp_answers_are_bounded() {
             .metadata
             .truncation
     );
+    assert!(valid_upstream("169.254.169.254".parse().unwrap()));
     for address in [
         "127.0.0.53",
         "::1",
