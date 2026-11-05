@@ -30,7 +30,10 @@ use tokio::{
     time::timeout,
 };
 
-use crate::{ServerState, native_management_ownership::PrimaryHandoff};
+use crate::{
+    ServerState,
+    native_management_ownership::{PrimaryGeneration, PrimaryHandoff},
+};
 
 const SOCKET: &str = "management.sock";
 const PUBLICATION_LOCK: &str = "agent-management-publish.lock";
@@ -170,55 +173,81 @@ fn bind(data_dir: &Path, tako_uid: u32) -> io::Result<(UnixListener, SocketOwner
     Ok((listener, owner))
 }
 
-/// Parent lifecycle starts this only for the selected primary and owns cancellation.
-pub(crate) async fn serve(
+pub(crate) struct PreparedManagement {
+    uid: u32,
+    listener: UnixListener,
+    owner: SocketOwner,
+    state: Arc<ServerState>,
+    generation: Arc<PrimaryGeneration>,
+}
+
+/// Await before startup readiness, with freshly reconciled state under the handoff lease.
+pub(crate) async fn prepare(
     data_dir: PathBuf,
     state: Arc<ServerState>,
     handoff: PrimaryHandoff,
-) -> io::Result<()> {
+) -> io::Result<PreparedManagement> {
     let prepared = (|| {
         let uid = service_uid()?;
         let (listener, owner) = bind(&data_dir, uid)?;
         Ok::<_, io::Error>((uid, listener, owner))
     })();
-    let (uid, listener, _owner) = match prepared {
+    let (uid, listener, owner) = match prepared {
         Ok(prepared) => prepared,
         Err(error) => {
             tracing::error!(%error, "Native primary management listener failed to bind");
             return Err(error);
         }
     };
-    let generation = handoff.finish();
-    let mut tasks = JoinSet::new();
-    let result = loop {
-        tokio::select! {
-            biased;
-            _ = tasks.join_next(), if !tasks.is_empty() => (),
-            accepted = listener.accept() => {
-                let (stream, _) = match accepted {
-                    Ok(accepted) => accepted,
-                    Err(error) => break Err(error),
-                };
-                if authenticate(&stream, uid).is_err() { continue; }
-                let state = state.clone();
-                let generation = generation.clone();
-                spawn_connection(&mut tasks, async move {
-                    let _ = serve_connection(stream, move |request| {
-                        let state = state.clone();
-                        let admitted = generation.admit();
-                        async move {
-                            let Ok(guard) = admitted else {
-                                return error(StatusCode::SERVICE_UNAVAILABLE, "Primary management ownership changed");
-                            };
-                            crate::native_management::handle_request(request, state, guard).await
-                        }
-                    }, EXCHANGE_TIME).await;
-                });
+    Ok(PreparedManagement {
+        uid,
+        listener,
+        owner,
+        state,
+        generation: handoff.finish(),
+    })
+}
+
+impl PreparedManagement {
+    pub(crate) async fn run(self) -> io::Result<()> {
+        let Self {
+            uid,
+            listener,
+            owner: _owner,
+            state,
+            generation,
+        } = self;
+        let mut tasks = JoinSet::new();
+        let result = loop {
+            tokio::select! {
+                biased;
+                _ = tasks.join_next(), if !tasks.is_empty() => (),
+                accepted = listener.accept() => {
+                    let (stream, _) = match accepted {
+                        Ok(accepted) => accepted,
+                        Err(error) => break Err(error),
+                    };
+                    if authenticate(&stream, uid).is_err() { continue; }
+                    let state = state.clone();
+                    let generation = generation.clone();
+                    spawn_connection(&mut tasks, async move {
+                        let _ = serve_connection(stream, move |request| {
+                            let state = state.clone();
+                            let admitted = generation.admit();
+                            async move {
+                                let Ok(guard) = admitted else {
+                                    return error(StatusCode::SERVICE_UNAVAILABLE, "Primary management ownership changed");
+                                };
+                                crate::native_management::handle_request(request, state, guard).await
+                            }
+                        }, EXCHANGE_TIME).await;
+                    });
+                }
             }
-        }
-    };
-    tasks.shutdown().await;
-    result
+        };
+        tasks.shutdown().await;
+        result
+    }
 }
 
 fn spawn_connection<F>(tasks: &mut JoinSet<()>, future: F) -> bool
