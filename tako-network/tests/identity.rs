@@ -1,5 +1,21 @@
 use tako_network::*;
 
+#[test]
+fn ssh_identity_points_are_rejected_before_enrollment() {
+    for first in [0, 1] {
+        let mut point = [0u8; 32];
+        point[0] = first;
+        let key = ssh_key::PublicKey::from(ssh_key::public::Ed25519PublicKey(point));
+        let encoded = key.to_openssh().unwrap();
+        assert!(encoded.parse::<SshPublicKey>().is_err());
+        assert!(serde_json::from_value::<SshPublicKey>(serde_json::json!(encoded)).is_err());
+        let keys = LocalDeviceKeys::generate().unwrap();
+        let mut enrollment = serde_json::to_value(request(&keys)).unwrap();
+        enrollment["ssh_public_key"] = serde_json::json!(encoded);
+        assert!(serde_json::from_value::<EnrollmentRequest>(enrollment).is_err());
+    }
+}
+
 fn request(keys: &LocalDeviceKeys) -> EnrollmentRequest {
     keys.enrollment_request(
         Some(NetworkId::random().unwrap()),

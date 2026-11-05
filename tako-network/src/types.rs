@@ -220,6 +220,15 @@ impl FromStr for SshPublicKey {
                 "expected canonical comment-free Ed25519 key",
             ));
         }
+        let ed25519 = key
+            .key_data()
+            .ed25519()
+            .ok_or_else(|| invalid("SSH public key", "expected Ed25519 key"))?;
+        let verifier = ed25519_dalek::VerifyingKey::from_bytes(&ed25519.0)
+            .map_err(|_| invalid("SSH public key", "invalid Ed25519 point"))?;
+        if verifier.is_weak() {
+            return Err(invalid("SSH public key", "weak Ed25519 point"));
+        }
         Ok(Self(value.into()))
     }
 }
