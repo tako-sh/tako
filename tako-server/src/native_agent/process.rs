@@ -158,7 +158,25 @@ fn kill_with_agent(command: &mut Command) {
     }
 }
 
-pub(super) fn apply(config: &NodeConfig, desired: &[u8]) -> Result<()> {
+/// DNS is a separate helper outcome: degraded split DNS does not negate the
+/// exact peer/SSH enforcement ACK, but must remain retryable and observable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct DnsStatus {
+    pub dns_supported: bool,
+    pub dns_error: Option<String>,
+}
+impl DnsStatus {
+    fn report(&self) {
+        if self.dns_supported {
+            tracing::info!(dns_supported = true, "native host DNS configured");
+        } else {
+            tracing::warn!(dns_supported = false, dns_error = ?self.dns_error,
+                "native host DNS degraded; membership enforcement acknowledged");
+        }
+    }
+}
+
+pub(super) fn apply(config: &NodeConfig, desired: &[u8]) -> Result<DnsStatus> {
     let mut command = Command::new(HELPER);
     command
         .arg(config.network.id.to_string())
@@ -166,10 +184,16 @@ pub(super) fn apply(config: &NodeConfig, desired: &[u8]) -> Result<()> {
         .env_clear()
         .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin");
     let bytes = bounded_output(command, Duration::from_secs(45), MAX_HELPER_BYTES)?;
-    validate_helper_response(config, desired, &bytes)
+    let dns = validate_helper_response(config, desired, &bytes)?;
+    dns.report();
+    Ok(dns)
 }
 
-fn validate_helper_response(config: &NodeConfig, desired: &[u8], bytes: &[u8]) -> Result<()> {
+pub(super) fn validate_helper_response(
+    config: &NodeConfig,
+    desired: &[u8],
+    bytes: &[u8],
+) -> Result<DnsStatus> {
     let response: serde_json::Value = serde_json::from_slice(bytes)?;
     let state: serde_json::Value = serde_json::from_slice(desired)?;
     let ids: std::collections::BTreeSet<&str> = state["peers"]
@@ -208,7 +232,27 @@ fn validate_helper_response(config: &NodeConfig, desired: &[u8], bytes: &[u8]) -
             "helper did not acknowledge exact desired state",
         ));
     }
-    Ok(())
+    let dns_supported = match response.get("dns_supported") {
+        Some(value) => value
+            .as_bool()
+            .ok_or(AgentError::Invalid("invalid helper DNS status"))?,
+        // Older helpers must not silently become permanently cached DNS success.
+        None => false,
+    };
+    let dns_error = match response.get("dns_error") {
+        Some(serde_json::Value::Null) | None => None,
+        Some(serde_json::Value::String(error)) if error.len() <= 1024 => Some(error.clone()),
+        _ => return Err(AgentError::Invalid("invalid helper DNS diagnostic")),
+    };
+    if dns_supported && dns_error.is_some() {
+        return Err(AgentError::Invalid("contradictory helper DNS status"));
+    }
+    Ok(DnsStatus {
+        dns_supported,
+        dns_error: dns_error.or_else(|| {
+            (!dns_supported).then(|| "helper did not acknowledge host DNS configuration".to_owned())
+        }),
+    })
 }
 
 /// Pipes are nonblocking and drained with one byte cap; no unbounded output
@@ -286,8 +330,36 @@ mod tests {
             "interface": format!("tako{}", &id[..10]),
             "address": desired["address"].as_str().unwrap().trim_end_matches("/128"),
             "applied_device_ids": [desired["peers"][0]["device_id"].clone()]});
-        validate_helper_response(&fixture.config, &bytes, &serde_json::to_vec(&ack).unwrap())
-            .unwrap();
+        let parse = |ack: &serde_json::Value| {
+            validate_helper_response(&fixture.config, &bytes, &serde_json::to_vec(ack).unwrap())
+        };
+        // Missing DNS metadata is unknown/degraded, never permanent success.
+        let unknown = parse(&ack).unwrap();
+        assert!(!unknown.dns_supported);
+        assert!(unknown.dns_error.is_some());
+        let mut dns_ack = ack.clone();
+        dns_ack["dns_supported"] = serde_json::json!(false);
+        dns_ack["dns_error"] =
+            serde_json::json!("native service DNS requires active systemd-resolved");
+        let degraded = parse(&dns_ack).unwrap();
+        assert!(!degraded.dns_supported);
+        assert_eq!(
+            degraded.dns_error.as_deref(),
+            Some("native service DNS requires active systemd-resolved")
+        );
+        dns_ack["dns_supported"] = serde_json::json!(true);
+        assert!(parse(&dns_ack).is_err()); // contradictory success/error
+        dns_ack.as_object_mut().unwrap().remove("dns_error");
+        let recovered = parse(&dns_ack).unwrap();
+        assert!(recovered.dns_supported);
+        assert_eq!(recovered.dns_error, None);
+        dns_ack["dns_supported"] = serde_json::json!("true");
+        assert!(parse(&dns_ack).is_err());
+        dns_ack["dns_supported"] = serde_json::json!(false);
+        for diagnostic in [serde_json::json!(7), serde_json::json!("x".repeat(1025))] {
+            dns_ack["dns_error"] = diagnostic;
+            assert!(parse(&dns_ack).is_err());
+        }
         for (field, value) in [
             ("ok", serde_json::json!(false)),
             ("action", serde_json::json!("remove")),

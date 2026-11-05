@@ -2,7 +2,7 @@ use super::{
     AgentError, AgentRequest, AgentResponse, Result,
     lifecycle::{Control, WithdrawOnDrop},
     now,
-    process::{self, OwnedChild},
+    process::{self, DnsStatus, OwnedChild},
     projection,
     services::Publisher,
     store::{MonotonicStore, preserves},
@@ -317,7 +317,7 @@ impl Controller {
     ) -> Result<()> {
         let bytes = projection::desired(config, keys, &config.bootstrap, now()?, true)?;
         directory.write("desired.json", &bytes)?;
-        process::apply(config, &bytes)
+        process::apply(config, &bytes).map(|_| ())
     }
     fn withdraw(&mut self) {
         self.ready = false;
@@ -586,31 +586,85 @@ impl Controller {
     }
 }
 /// No durable hash: each process boot must enforce its first snapshot.
+/// Host DNS has separate ACK status and a completion-relative retry deadline.
+const DNS_RETRY_INITIAL: Duration = Duration::from_secs(5);
+const DNS_RETRY_MAX: Duration = Duration::from_secs(60);
 #[derive(Default)]
 struct ApplyCache {
     hash: Option<[u8; 32]>,
+    dns_status: Option<DnsStatus>,
+    dns_retry_at: Option<Instant>,
+    dns_backoff: Duration,
 }
 impl ApplyCache {
     fn enforce_with_membership(
         &mut self,
         bytes: &[u8],
         control: &Control,
-        apply: impl FnOnce() -> Result<()>,
+        apply: impl FnOnce() -> Result<DnsStatus>,
+    ) -> Result<()> {
+        self.enforce_with_membership_clock(bytes, control, Instant::now, apply)
+    }
+
+    fn enforce_with_membership_clock(
+        &mut self,
+        bytes: &[u8],
+        control: &Control,
+        clock: impl Fn() -> Instant,
+        apply: impl FnOnce() -> Result<DnsStatus>,
     ) -> Result<()> {
         if self.hash != Some(openssl::sha::sha256(bytes)) {
             control.withdraw();
         }
-        self.enforce(bytes, apply)
+        let result = self.enforce_with_clock(bytes, clock, apply);
+        if result.is_err() {
+            // A retry that loses the membership ACK is a full enforcement error,
+            // unlike an exact ACK carrying only degraded DNS status.
+            control.withdraw();
+        }
+        result
     }
 
-    fn enforce(&mut self, bytes: &[u8], apply: impl FnOnce() -> Result<()>) -> Result<()> {
+    #[cfg(test)]
+    fn enforce(&mut self, bytes: &[u8], apply: impl FnOnce() -> Result<DnsStatus>) -> Result<()> {
+        self.enforce_with_clock(bytes, Instant::now, apply)
+    }
+
+    fn enforce_with_clock(
+        &mut self,
+        bytes: &[u8],
+        clock: impl Fn() -> Instant,
+        apply: impl FnOnce() -> Result<DnsStatus>,
+    ) -> Result<()> {
         let hash = openssl::sha::sha256(bytes);
-        if self.hash == Some(hash) {
+        let unchanged = self.hash == Some(hash);
+        if unchanged
+            && self.dns_status.as_ref().is_some_and(|dns| {
+                dns.dns_supported || self.dns_retry_at.is_some_and(|deadline| clock() < deadline)
+            })
+        {
             return Ok(());
         }
+        if !unchanged {
+            self.dns_backoff = Duration::ZERO;
+        }
         self.hash = None;
-        apply()?;
+        self.dns_status = None;
+        self.dns_retry_at = None;
+        let dns = apply()?;
+        if dns.dns_supported {
+            self.dns_backoff = Duration::ZERO;
+        } else {
+            self.dns_backoff = if self.dns_backoff.is_zero() {
+                DNS_RETRY_INITIAL
+            } else {
+                (self.dns_backoff * 2).min(DNS_RETRY_MAX)
+            };
+            // A slow helper must not make its own retry immediately overdue.
+            self.dns_retry_at = Some(clock() + self.dns_backoff);
+        }
         self.hash = Some(hash);
+        self.dns_status = Some(dns);
         Ok(())
     }
 }
@@ -805,6 +859,12 @@ fn validate_gossip_leaf(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn healthy_dns() -> DnsStatus {
+        DnsStatus {
+            dns_supported: true,
+            dns_error: None,
+        }
+    }
     #[test]
     fn membership_is_withdrawn_before_helper_and_stays_absent_after_failure() {
         let fixture = super::super::tests::Fixture::new();
@@ -823,7 +883,7 @@ mod tests {
         applied
             .enforce_with_membership(b"new-policy", &control, || {
                 assert!(members.borrow().is_none());
-                Ok(())
+                Ok(healthy_dns())
             })
             .unwrap();
         // Even a helper ACK is insufficient until runtime's final state check.
@@ -831,6 +891,164 @@ mod tests {
         assert!(control.publish_enforced(&fixture.config.bootstrap));
         assert!(members.borrow().is_some());
     }
+    #[test]
+    fn inactive_resolver_recovers_by_retrying_identical_desired_state() {
+        use std::cell::Cell;
+        let fixture = super::super::tests::Fixture::new();
+        let desired = projection::desired(
+            &fixture.config,
+            &fixture.keys,
+            &fixture.config.bootstrap,
+            2,
+            false,
+        )
+        .unwrap();
+        let state: serde_json::Value = serde_json::from_slice(&desired).unwrap();
+        let network = fixture.config.network.id.to_string();
+        let mut ack = serde_json::json!({
+            "ok": true, "action": "apply", "network_id": network,
+            "interface": format!("tako{}", &network[..10]),
+            "address": state["address"].as_str().unwrap().trim_end_matches("/128"),
+            "applied_device_ids": state["peers"].as_array().unwrap().iter()
+                .map(|peer| peer["device_id"].clone()).collect::<Vec<_>>(),
+            "dns_supported": false,
+            "dns_error": "native service DNS requires active systemd-resolved"
+        });
+        let (control, mut members, _) = Control::new();
+        let mut cache = ApplyCache::default();
+        let clock = Cell::new(Instant::now());
+        let calls = Cell::new(0);
+        let apply = |cache: &mut ApplyCache, ack: &serde_json::Value| {
+            cache
+                .enforce_with_membership_clock(
+                    &desired,
+                    &control,
+                    || clock.get(),
+                    || {
+                        calls.set(calls.get() + 1);
+                        process::validate_helper_response(
+                            &fixture.config,
+                            &desired,
+                            &serde_json::to_vec(ack).unwrap(),
+                        )
+                    },
+                )
+                .unwrap();
+        };
+        apply(&mut cache, &ack);
+        assert_eq!(calls.get(), 1);
+        let dns = cache.dns_status.as_ref().unwrap();
+        assert!(!dns.dns_supported);
+        assert_eq!(
+            dns.dns_error.as_deref(),
+            Some("native service DNS requires active systemd-resolved")
+        );
+        assert!(control.publish_enforced(&fixture.config.bootstrap));
+        assert!(members.borrow_and_update().is_some());
+        let due = cache.dns_retry_at.unwrap();
+        // Resolved recovers without any membership/config change. RPC-triggered
+        // reconciles cannot bypass the DNS backoff or withdraw healthy membership.
+        ack["dns_supported"] = serde_json::json!(true);
+        ack.as_object_mut().unwrap().remove("dns_error");
+        clock.set(due - Duration::from_millis(1));
+        apply(&mut cache, &ack);
+        assert_eq!(calls.get(), 1);
+        assert!(cache.dns_status.as_ref().unwrap().dns_error.is_some());
+        clock.set(due);
+        apply(&mut cache, &ack);
+        assert_eq!(calls.get(), 2);
+        assert_eq!(cache.dns_status, Some(healthy_dns()));
+        assert!(cache.dns_retry_at.is_none());
+        assert_eq!(cache.dns_backoff, Duration::ZERO);
+        assert!(members.borrow().is_some());
+        assert!(!members.has_changed().unwrap());
+        clock.set(due + Duration::from_secs(3600));
+        apply(&mut cache, &ack);
+        assert_eq!(calls.get(), 2); // stable successful DNS can now be cached
+    }
+
+    #[test]
+    fn dns_retry_backoff_is_capped_completion_relative_and_resets_for_new_policy() {
+        use std::cell::Cell;
+        let mut cache = ApplyCache::default();
+        let clock = Cell::new(Instant::now());
+        for seconds in [5, 10, 20, 40, 60, 60] {
+            cache
+                .enforce_with_clock(
+                    b"policy",
+                    || clock.get(),
+                    || {
+                        clock.set(clock.get() + Duration::from_secs(45)); // slow helper
+                        Ok(DnsStatus {
+                            dns_supported: false,
+                            dns_error: Some("resolver unavailable".into()),
+                        })
+                    },
+                )
+                .unwrap();
+            assert_eq!(
+                cache.dns_retry_at,
+                Some(clock.get() + Duration::from_secs(seconds))
+            );
+            clock.set(cache.dns_retry_at.unwrap());
+        }
+        cache
+            .enforce_with_clock(
+                b"new-policy",
+                || clock.get(),
+                || {
+                    Ok(DnsStatus {
+                        dns_supported: false,
+                        dns_error: Some("resolver unavailable".into()),
+                    })
+                },
+            )
+            .unwrap();
+        assert_eq!(cache.dns_retry_at, Some(clock.get() + DNS_RETRY_INITIAL));
+    }
+
+    #[test]
+    fn failed_dns_retry_invalidates_membership_ack_and_does_not_cache_failure() {
+        let fixture = super::super::tests::Fixture::new();
+        let (control, members, _) = Control::new();
+        let mut cache = ApplyCache::default();
+        let start = Instant::now();
+        cache
+            .enforce_with_membership_clock(
+                b"policy",
+                &control,
+                || start,
+                || {
+                    Ok(DnsStatus {
+                        dns_supported: false,
+                        dns_error: Some("resolver unavailable".into()),
+                    })
+                },
+            )
+            .unwrap();
+        control.publish_enforced(&fixture.config.bootstrap);
+        let due = cache.dns_retry_at.unwrap();
+        assert!(
+            cache
+                .enforce_with_membership_clock(
+                    b"policy",
+                    &control,
+                    || due,
+                    || Err(AgentError::Timeout)
+                )
+                .is_err()
+        );
+        assert!(members.borrow().is_none());
+        assert!(cache.hash.is_none());
+        assert!(cache.dns_status.is_none());
+        cache
+            .enforce_with_membership_clock(b"policy", &control, || due, || Ok(healthy_dns()))
+            .unwrap();
+        // Helper success alone cannot republish until runtime's final checks.
+        assert!(members.borrow().is_none());
+        assert_eq!(cache.dns_status, Some(healthy_dns()));
+    }
+
     #[test]
     fn renewal_restart_requires_changed_gossip_bytes_and_survives_retry() {
         let mut renewal = Renewal::new([1; 32]);
@@ -945,7 +1163,7 @@ mod tests {
                 .is_err()
         );
         assert!(cache.hash.is_none());
-        cache.enforce(b"snapshot-a", || Ok(())).unwrap();
+        cache.enforce(b"snapshot-a", || Ok(healthy_dns())).unwrap();
         cache
             .enforce(b"snapshot-a", || {
                 panic!("unchanged desired state reapplied")
@@ -961,7 +1179,7 @@ mod tests {
         cache
             .enforce(b"snapshot-a", || {
                 called = true;
-                Ok(())
+                Ok(healthy_dns())
             })
             .unwrap();
         assert!(called);
@@ -970,7 +1188,7 @@ mod tests {
         reboot
             .enforce(b"snapshot-a", || {
                 called = true;
-                Ok(())
+                Ok(healthy_dns())
             })
             .unwrap();
         assert!(called);
