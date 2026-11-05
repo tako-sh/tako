@@ -28,3 +28,6 @@ mod uninstall_commands;
 
 #[path = "cli_integration/agents.rs"]
 mod agents;
+
+#[path = "cli_integration/native_management.rs"]
+mod native_management;
