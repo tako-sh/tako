@@ -204,9 +204,33 @@ Release descriptions default to the commit subject for clean checkouts, `Uncommi
 
 Lists release/build history or rolls an environment back to a previous release. Rollback uses the standard rolling-update flow and reports partial server failures individually.
 
+## Networks
+
+```bash
+tako network create <name>
+tako network request [--name <device>] [--network <id-or-alias>] --output <file>
+tako network approve <request-file> [--network <id-or-alias>] --output <file> [--deploy <app/env>] [--admin] [--ssh] [--expires-in <seconds>]
+tako network import <profile-file> [--name <local-alias>]
+tako network export [network] --output <file>
+tako network list --json
+tako network status [network] --json
+tako network revoke <device> [--network <id-or-alias>]
+tako network drain <server> [--network <id-or-alias>] [--timeout <seconds>]
+tako network resume <server> [--network <id-or-alias>]
+tako connect [network]
+tako disconnect [network]
+```
+
+Each device generates and retains its own keys. Repeat `--deploy` for exact app/environment scopes; `--ssh` requires `--admin`. `--expires-in` accepts `1..31536000` seconds and limits membership lifetime, separately from the request's activation window. Import requires the original requesting device's keys. Export contains public network configuration, not private keys or app secrets.
+
+`drain` and `resume` require server administration and a unique member name or device ID. Drain defaults to 120 seconds and accepts `0..3600`; zero requests immediate force. Inspect the structured completion report, not only the drained intent. See [Native server maintenance](/operations/#native-server-maintenance).
+
+`connect` sets up an optional workstation WireGuard connection and needs network privileges; it does not configure workstation DNS. Normal native management uses pinned HTTPS without a tunnel or SSH agent. See [Native networks](/networks/) for sandbox enrollment, revocation, endpoints, and private service names.
+
 ## Servers
 
 ```bash
+tako servers add <admin@host> --network <id-or-alias> [--name <name>] [--wireguard-endpoint <ip:udp-port>]
 tako servers add [host|admin@host] [--name <name>] [--description <text>] [--port <ssh-port>] [--ssh-key <path>] [--vpn tailscale|netbird] [--http-port <port>] [--https-port <port>] [--install]
 tako servers list
 tako servers ls
@@ -218,9 +242,11 @@ tako servers rm [name]
 tako servers uninstall [name] [-y|--yes]
 ```
 
-`servers add` writes global `config.toml`, checks the management endpoint and `tako@host` SSH access, enrolls signed management access, and records target metadata. If the server is running but inaccessible, interactive setup offers to repair access; if its state is unknown, it offers to install or repair it. After confirmation, Tako asks for an administrator with `root` pre-filled. Use `--install` to skip the confirmation, or pass `admin@host` to select the administrator without a prompt. Public HTTP and HTTPS ports default to `80` and `443`; override them with `--http-port` and `--https-port`. `--ssh-key` pins a specific private key for the server; connections then use only that key instead of trying `~/.ssh` defaults and `ssh-agent`. The interactive wizard prompts for the key, prefilled with your default `~/.ssh` key.
+With `--network`, `servers add` bootstraps the server over administrator SSH and enrolls its own keys, HTTPS pins, and endpoint in network membership. Server names resolve from that membership; no legacy inventory entry is written.
 
-`servers add` asks which VPN to use unless a provider is supplied or saved for that host. Connected providers appear first with a `detected` hint and the first is preselected. Use `--vpn tailscale` or `--vpn netbird` for scripts. Both machines must already be connected to the selected VPN. The provider is saved per server; existing entries default to Tailscale.
+Without `--network`, `servers add` writes global `config.toml`, checks the management endpoint and `tako@host` SSH access, enrolls signed management access, and records target metadata. If the server is running but inaccessible, interactive setup offers to repair access; if its state is unknown, it offers to install or repair it. After confirmation, Tako asks for an administrator with `root` pre-filled. Use `--install` to skip the confirmation, or pass `admin@host` to select the administrator without a prompt. Public HTTP and HTTPS ports default to `80` and `443`; override them with `--http-port` and `--https-port`. `--ssh-key` pins a specific private key for the server; connections then use only that key instead of trying `~/.ssh` defaults and `ssh-agent`. The interactive wizard prompts for the key, prefilled with your default `~/.ssh` key.
+
+Legacy `servers add` asks which VPN to use unless a provider is supplied or saved for that host. Connected providers appear first with a `detected` hint and the first is preselected. Use `--vpn tailscale` or `--vpn netbird` for scripts. Both machines must already be connected to the selected VPN. The provider is saved per server; existing entries default to Tailscale.
 
 `status` prints a deployment snapshot grouped by server, with compact server summary, routes, and app rows.
 

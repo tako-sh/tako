@@ -39,7 +39,7 @@ export const docsNavigation = [
   },
   {
     title: "Deploy and operate",
-    pages: ["servers", "deployment", "routing", "operations", "backups", "troubleshooting"],
+    pages: ["networks", "servers", "deployment", "routing", "operations", "backups", "troubleshooting"],
   },
   { title: "Reference", pages: ["cli", "tako-toml", "presets", "how-tako-works"] },
 ];

@@ -36,10 +36,11 @@ On the web, use [llms.txt](/llms.txt) to discover topics and the `.md` version o
 | Keep database reads current in the UI | [Stores](/stores/)       | Invalidate after committed writes; Tako does not detect database changes automatically. |
 | Execute background jobs or schedules  | [Workflows](/workflows/) | Checkpointed side effects still need idempotency.                                       |
 
-Channels, Presence, and Stores require the `postgres_url` provider credential across multiple servers. Workflows support shared Postgres or intentional per-server execution; each primitive documents its requirements. Application databases, file storage, and caches are separate from this runtime state.
+Native networks support bounded channel replication, presence leases, and store invalidation fanout. Current multi-server JavaScript preflight still requires `postgres_url`; legacy multi-server deployments use that shared provider credential. Workflows support shared Postgres or intentional per-server execution; each primitive documents its requirements. Application databases, file storage, and caches are separate from this runtime state.
 
 ## Deploy and operate
 
+- [Native networks](/networks/): enroll devices and servers, deploy from scoped sandboxes, and operate private networking.
 - [Servers](/servers/): provision a host, enroll management access, and maintain the service.
 - [Deployment](/deployment/): build artifacts, run migrations, and roll a release into traffic.
 - [Routing and TLS](/routing/): configure domains, path routes, certificates, and client-IP policy.

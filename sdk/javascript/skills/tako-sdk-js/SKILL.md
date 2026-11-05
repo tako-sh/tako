@@ -290,8 +290,10 @@ interface TakoStatus {
 
 Use `tako.sh/services` for a shared HTTP contract with typed handlers, clients,
 and runtime validation. Clients use explicit HTTP or HTTPS `baseURL` values.
-This package works without Tako Cloud or the Tako runtime. It does not provide
-private DNS, service discovery, or automatic native-mesh connectivity.
+This package works without Tako Cloud or the Tako runtime. It does not configure
+networking. Native environments separately provide private app discovery at
+`{app}.{env}.{network-id}.tako.internal` to supported runtimes; workstation DNS
+is not installed automatically. Supply an explicit reachable `baseURL`.
 
 ```ts
 import { Type as t } from "@sinclair/typebox";
@@ -490,10 +492,12 @@ Non-React SSE clients can reload on `onRecovery("history-expired")`. A raw
 `connect()` returns one WebSocket and requires application reconnection logic.
 A custom `eventSourceFactory` owns cursor reset and recovery callbacks itself.
 
-Production SQLite replay is a per-server window. It does not replicate history
-or fan out automatically across servers. Keep shared `postgres_url` when durable
-replay must span servers. Native network integration does not yet make that
-fanout automatic, and SDK reconnect is not automatic application-state failover.
+Native network brokers replicate bounded SQLite replay and fan out to trusted
+server peers. Replay gaps trigger quiet SDK resync, not business reset messages;
+reload authoritative state when history expires. This does not migrate durable
+workflows or databases. Legacy multi-server replay uses shared `postgres_url`.
+Current CLI preflight still requires that credential for multi-server JavaScript
+channel/presence/store definitions, including native networks.
 Verify replay expiry, a current-state reload, async callback failure, and clean
 shutdown as well as ordinary delivery. See https://tako.sh/docs/channels/.
 
@@ -529,7 +533,7 @@ update({ typing: true });
 
 `members` contains `{ connectionId, subject?, data }`, including the current connection. Every hook call creates one connection; multiple tabs belonging to the same subject remain separate. Only the server controls identity; member data is untrusted client-provided JSON (up to 16 KiB). `data` supplies initial metadata; `update()` replaces it. The hook waits for authorization, sends heartbeats every 15 seconds, reconnects with current metadata, clears stale state on disconnect, and leaves on unmount. Authorization failures stop retries until connection options change. Membership converges within approximately one second. Connections without updates expire after 45 seconds, so a reconnect can briefly overlap its old connection. Presence has no durable replay. Validated params scope membership: different `chatId` values have separate member lists. Auth must verify access to the requested chat. Channel and presence names have separate namespaces.
 
-Single-server production uses SQLite; multi-server deployments require the shared `postgres_url` credential. Local dev uses an in-memory store and permits connections without running auth callbacks, as with channels. Use channels for durable events and presence for current membership.
+Single-server production uses SQLite. Native networks exchange expiring server-bound presence leases; legacy multi-server presence uses shared `postgres_url`. Current multi-server JavaScript preflight still requires that credential. Local dev uses an in-memory store and permits connections without running auth callbacks, as with channels. Use channels for durable events and presence for current membership.
 
 ### Stores
 
@@ -614,8 +618,10 @@ data. The app shell must already be available: no PWA/service worker, offline
 write queue, or conflict-resolution engine is installed.
 
 Store names follow `^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$`; params are capped at
-16 KiB and complete read responses at 1 MiB. Multi-server subscriptions require
-shared `postgres_url`. See https://tako.sh/docs/stores/ for native backends and
+16 KiB and complete read responses at 1 MiB. Native brokers fan out invalidations
+with bounded replay; legacy multi-server subscriptions require shared
+`postgres_url`. Current multi-server JavaScript preflight still requires that
+credential. See https://tako.sh/docs/stores/ for native backends and
 the complete lifecycle. Verify scoped invalidation, reconnection, user switching,
 and offline expiry, not just the initial render.
 
@@ -725,7 +731,7 @@ export default defineWorkflow<{ userId: string; to: string }>("send-email", {
 });
 ```
 
-Use `local: true` only when per-server local queues and cron are intentional. Multi-server workflows require the encrypted `postgres_url` credential unless every JavaScript workflow is local. Multi-server channels always require `postgres_url` so all servers share publish and replay state.
+Use `local: true` only when per-server local queues and cron are intentional. Multi-server workflows require the encrypted `postgres_url` credential unless every JavaScript workflow is local. Native channel brokers support bounded replication separately from workflow storage. Current CLI preflight still requires `postgres_url` for multi-server JavaScript channel definitions; legacy multi-server channels need it for shared replay.
 
 ### Enqueuing
 

@@ -124,3 +124,9 @@ Run `tako dev` from the app directory. Tako builds and starts the whole Compose 
 Press `r` in the dev session or run `tako dev --restart` after changing the image or Compose configuration. For live source updates, use a project-local bind mount and a watch command in your Compose service. Development permits writable bind mounts inside the project; production requires read-only binds. Published ports are replaced with private ingress in both modes.
 
 Stopping the app or shutting down the dev daemon stops its containers and preserves named volumes. Each checkout and dev variant has its own Compose project and default named volumes. Reopening the same checkout and variant reuses that data. A daemon crash can leave containers running; starting the same app again reconciles them. Standalone `docker compose up --build --wait` remains available and uses a separate project and its original port mappings.
+
+## Native private networking
+
+On a native network, supported Compose services use Tako's private gateway and DNS resolver for `{app}.{env}.{network-id}.tako.internal` addresses. The gateway admits current trusted placements; it does not publish these names in workstation DNS. See [Native networks](/networks/#use-private-service-addresses).
+
+Compose deployments still target one server. Network membership and server drain do not replicate named volumes, move databases, or switch global ingress. Preserve separate backup and migration procedures for stateful services.

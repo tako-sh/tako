@@ -323,21 +323,24 @@ If you supply a custom `eventSourceFactory`, that factory owns transport errors,
 
 Storage is a deployment choice; application publish and subscribe code stays the same.
 
-| Deployment                  | Replay storage                                                   |
-| --------------------------- | ---------------------------------------------------------------- |
-| Local development           | In-memory for the current dev daemon process                     |
-| One production server       | Tako-managed SQLite (`channels.sqlite`) by default               |
-| Multiple production servers | Shared Postgres schema `tako_channels`, keyed by deployed app id |
+| Deployment | Replay storage and delivery |
+| ---------- | --------------------------- |
+| Local development | In-memory for the current dev daemon process |
+| One production server | Tako-managed SQLite (`channels.sqlite`) by default |
+| Native network servers | Bounded SQLite replay replication and fanout over native private transport; Postgres can remain the shared replay backend |
+| Legacy multi-server deployment | Shared Postgres schema `tako_channels`, keyed by deployed app id |
 
-SQLite retains a replay window on each server. Those files are not replicated, and there is no automatic cross-server fanout between SQLite-backed servers. A reconnect to another server cannot assume the first server's history is available. Native network integration does not yet make channel fanout automatic.
+Native brokers exchange events only with trusted active server peers. Replay has byte and event-count limits; membership changes, transport gaps, or expired history can require a reset. The JavaScript SDK keeps reset messages out of business handlers and resumes subscriptions. Custom channels must reload authoritative application state through their recovery callback; stores reload their authorized snapshot. Reconnect does not recover missing business records by itself.
 
-A multi-server environment with durable channels requires the shared `postgres_url` environment credential so publishes and replay are visible on every server:
+Current CLI deployment preflight still requires the shared `postgres_url` credential for JavaScript channel, presence, and store definitions targeting multiple servers, including native networks:
 
 ```bash
 tako credentials set postgres_url --env production
 ```
 
-Tako validates this for discovered JavaScript channel definitions before build and deploy work starts. Inline Go registrations are not detected by that preflight, so explicitly configure `postgres_url` before deploying them to multiple servers. It is an encrypted provider credential, not a `tako.toml` field or an app secret. A single-server environment can also use Postgres by setting the credential.
+This is an encrypted provider credential, not a `tako.toml` field or an app secret. Inline Go and Rust registrations are not detected by that preflight. On legacy multi-server deployments, configure Postgres explicitly so those runtimes also share publish and replay state. A single-server environment can use Postgres too.
+
+Native replication is a bounded delivery mechanism. It does not replicate an application's database or move durable workflow execution state. Keep workflow storage configured independently, and test recovery by reloading current state after a gap.
 
 ## Keep Canonical History In Your App Database
 
@@ -356,4 +359,4 @@ For canonical writes, use a normal authenticated app endpoint to commit the reco
 
 ## Verify
 
-Connect two authorized clients and confirm both receive the same published event. Test a denied client in a deployed environment and reconnect with a retained replay cursor. Then reconnect after expiry and confirm the SDK resumes, the application reloads authoritative state, and no reset message reaches business handlers. Test an async reload failure and stop a reconnecting subscription with `close()`. With shared Postgres on multiple servers, publish through one and subscribe through another. A successful local connection does not verify production authorization or cross-server fanout.
+Connect two authorized clients and confirm both receive the same published event. Test a denied client in a deployed environment and reconnect with a retained replay cursor. Then reconnect after expiry and confirm the SDK resumes, the application reloads authoritative state, and no reset message reaches business handlers. Test an async reload failure and stop a reconnecting subscription with `close()`. On multiple servers, publish through one and subscribe through another using the configured native or shared Postgres transport. A successful local connection does not verify production authorization or cross-server fanout.

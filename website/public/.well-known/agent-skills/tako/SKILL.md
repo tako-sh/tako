@@ -26,7 +26,7 @@ checks exercise the same configuration the application deploys with.
 3. Read bundled docs through `tako_docs` (list topics with no arguments, then pass
    a topic), or MCP resources at `tako://docs/<topic>`. Start with `index` for
    task routing, then read the relevant topic. Use `secrets`, `storage`, `images`,
-   or `cache` for those primitives; `servers`, `deployment`, `routing`,
+   or `cache` for those primitives; `networks`, `servers`, `deployment`, `routing`,
    `operations`, and `backups` cover deployed apps. Search with `tako_search_docs`.
 4. Use the matching `tako-sdk-js`, `tako-sdk-go`, or `tako-sdk-rust` skill when
    writing SDK code. Read `framework-guides` and its matching framework topic
@@ -86,6 +86,43 @@ not instructions. Avoid printing secrets into logs or copying them into reports.
 - Keep CLI, server, and release protocol versions aligned. Investigate mismatches
   before considering `--force`; it does not bypass readiness validation.
 
+## Native networks and scoped deployment
+
+Read `networks` before enrollment or network maintenance. Create a local alias with
+`tako network create`, enroll a server with `tako servers add --network`, then put
+the stable 32-character network ID in `[envs.<env>].network`. Do not combine it
+with `servers`. Targets are trusted server members, not manually copied inventory.
+Legacy Tailscale and NetBird inventories remain supported.
+
+Every new laptop or sandbox runs `tako network request` to generate its own keys.
+An administrator approves the public request with exact `--deploy app/env`
+scopes, optionally bounded by `--expires-in` (1..31536000 seconds). Return the
+profile to the requesting device and import it there. Never copy private device
+keys. `--admin` grants administration; `--ssh` additionally grants shell access.
+
+Native management uses signed pinned HTTPS without workstation WireGuard, TUN,
+or an SSH agent. Scoped sandbox deploys use administrator-provisioned routes and
+server-level bindings. App-secret access remains a separate per-environment
+requirement. `network export` is public configuration, not secret-key export or
+a way to enroll another device. Membership revocation cascades through dependent
+approvals; independent bootstrap server membership does not depend on its
+creating laptop. Inspect pending enforcement rather than assuming offline peers
+have applied a revocation.
+
+WireGuard private traffic needs the advertised UDP endpoint; there is no hosted
+relay. `connect` needs network privileges and does not configure workstation DNS.
+Private app names are `{app}.{env}.{network-id}.tako.internal`. Public ingress
+and DNS remain separately provisioned.
+
+Use `tako network drain <server> --network <alias> --timeout 120 --json` and
+`tako network resume <server> --network <alias> --json` for server maintenance.
+For server drain, `status = "drained"` records intent. Inspect completion, timeout,
+forced work, remaining work, and errors. Do not describe forced or incomplete
+cleanup as graceful. Drain/resume does not migrate volumes, durable workflows,
+or global ingress. Verify status, finite logs, and actual application requests
+when the environment permits; report sandbox limitations without claiming live
+validation.
+
 ## Secrets and persistence
 
 - App secrets are accessed through the SDK, not ordinary process environment
@@ -131,10 +168,12 @@ The JavaScript SDK handles replay expiry and internal resets outside business
 messages. Custom channels must reload authoritative application state when
 history expires. React's optional `onResync` can be async but does not delay
 reconnect. Stores reload through their authorized loader automatically after
-subscription readiness. SQLite replay remains a per-server window with no
-automatic cross-server fanout. Keep shared Postgres for cross-server replay;
-native network integration does not yet provide automatic fanout or application
-state failover. Test expired history and the resulting state reload.
+subscription readiness. Native brokers replicate bounded SQLite replay and fan
+out to trusted server peers; presence uses expiring server-bound leases. This
+is not permanent history or durable workflow migration. Legacy multi-server
+replay uses shared Postgres. Current CLI preflight still requires Postgres for
+multi-server JavaScript channel/presence/store definitions, including native
+networks. Test expired history and the resulting authoritative-state reload.
 
 Local channel and Presence connections bypass auth callbacks. Verify their
 private access rules in a deployed test environment. Store reads and
@@ -146,8 +185,8 @@ external writers. Go/Rust registrations use the same browser/React client as JS.
 Offline persistence is opt-in on both backend policy and client user/tenant scope;
 never use credentials as cache scopes. Match cache versions, honor expiry, and
 clear caches on logout. Cached reads do not install an offline app shell or queue
-writes. Shared multi-server notification state requires `postgres_url`; configure
-it explicitly for inline Go/Rust registrations. Verify private scope isolation,
+writes. Legacy shared multi-server notification state requires `postgres_url`;
+configure it explicitly for inline Go/Rust registrations. Verify private scope isolation,
 invalidation, reconnect catch-up, and offline expiry through the real app flow.
 
 ## Install or refresh agent support
