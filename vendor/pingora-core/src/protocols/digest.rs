@@ -127,6 +127,18 @@ impl SocketDigest {
             .as_ref()
     }
 
+    /// Read the actual peer, ignoring addresses supplied by PROXY protocol.
+    #[cfg(unix)]
+    pub fn kernel_peer_addr(&self) -> Option<SocketAddr> {
+        SocketAddr::from_raw_fd(self.raw_fd, true)
+    }
+
+    /// Read the actual local endpoint from the connected socket.
+    #[cfg(unix)]
+    pub fn kernel_local_addr(&self) -> Option<SocketAddr> {
+        SocketAddr::from_raw_fd(self.raw_fd, false)
+    }
+
     #[cfg(windows)]
     pub fn peer_addr(&self) -> Option<&SocketAddr> {
         self.peer_addr
