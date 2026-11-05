@@ -1,0 +1,315 @@
+use super::{
+    AgentError, AgentRequest, AgentResponse, CONNECTIONS, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES,
+    QUEUE_SIZE, Result,
+    controller::{self, Work},
+};
+use std::{
+    os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt},
+    path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    time::{Duration, Instant},
+};
+use tako_network::{BootId, NodeConfig, api::SignedRequest, node_config::protected::Directory};
+use tokio::{
+    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
+    net::{UnixListener, UnixStream},
+    sync::{Semaphore, oneshot},
+    task::JoinSet,
+    time::timeout,
+};
+
+const FRAME_TIME: Duration = Duration::from_secs(5);
+const RELAY_TIME: Duration = Duration::from_secs(60);
+
+/// One JSON line and EOF. Callers half-close their write side. Bounded before
+/// parsing; embedded/new trailing frames and missing delimiters are rejected.
+async fn read_frame<R: AsyncRead + Unpin>(stream: &mut R, limit: usize) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        let n = stream.read(&mut chunk).await?;
+        if n == 0 {
+            break;
+        }
+        if bytes.len() + n > limit + 1 {
+            return Err(AgentError::Invalid("IPC frame exceeds limit"));
+        }
+        bytes.extend_from_slice(&chunk[..n]);
+        if bytes[..bytes.len().saturating_sub(1)].contains(&b'\n') {
+            return Err(AgentError::Invalid("IPC accepts exactly one JSON line"));
+        }
+    }
+    if bytes.pop() != Some(b'\n') || bytes.is_empty() || bytes.contains(&b'\r') {
+        return Err(AgentError::Invalid("IPC requires one terminated JSON line"));
+    }
+    Ok(bytes)
+}
+
+fn service_uid() -> Result<u32> {
+    let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut result = std::ptr::null_mut();
+    let mut buffer = vec![0u8; 16384];
+    let status = unsafe {
+        libc::getpwnam_r(
+            c"tako".as_ptr(),
+            &mut entry,
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+            &mut result,
+        )
+    };
+    if status != 0 || result.is_null() {
+        return Err(AgentError::Invalid("installed tako account is required"));
+    }
+    Ok(entry.pw_uid)
+}
+fn authorized(uid: u32, tako_uid: u32) -> bool {
+    uid == 0 || uid == tako_uid
+}
+fn authenticate(stream: &UnixStream, tako_uid: u32) -> Result<()> {
+    if !authorized(stream.peer_cred()?.uid(), tako_uid) {
+        return Err(AgentError::Invalid("unauthorized Unix peer"));
+    }
+    Ok(())
+}
+
+/// Proxy entry point. Errors mean no acknowledged IPC result. A timeout may
+/// follow a committed mutation; retry the signed protocol with its idempotency
+/// identifiers, never assume timeout means no mutation occurred.
+pub async fn relay(
+    data_dir: &Path,
+    method: &str,
+    path: &str,
+    bytes: &[u8],
+) -> Result<AgentResponse> {
+    if bytes.len() > tako_network::api::MAX_RPC_BYTES || method.len() > 16 || path.len() > 256 {
+        return Err(AgentError::Invalid("RPC input exceeds limit"));
+    }
+    let signed: SignedRequest = serde_json::from_slice(bytes)?;
+    signed.check_size()?;
+    let config = NodeConfig::load(data_dir)?;
+    let socket = config.socket_path(data_dir);
+    Directory::open(&config.network_dir(data_dir), true)?;
+    let uid = service_uid()?;
+    let meta = std::fs::symlink_metadata(&socket)?;
+    if !meta.file_type().is_socket() || meta.uid() != uid || meta.mode() & 0o7777 != 0o600 {
+        return Err(AgentError::Invalid("unsafe agent socket"));
+    }
+    let request = AgentRequest {
+        method: method.into(),
+        path: path.into(),
+        signed,
+    };
+    let mut wire = serde_json::to_vec(&request)?;
+    if wire.len() > MAX_REQUEST_BYTES {
+        return Err(AgentError::Invalid("IPC request exceeds limit"));
+    }
+    wire.push(b'\n');
+    timeout(RELAY_TIME, async {
+        let mut stream = UnixStream::connect(socket).await?;
+        authenticate(&stream, uid)?;
+        stream.write_all(&wire).await?;
+        stream.shutdown().await?;
+        let bytes = read_frame(&mut stream, MAX_RESPONSE_BYTES).await?;
+        let response: AgentResponse = serde_json::from_slice(&bytes)?;
+        if !(100..=599).contains(&response.status)
+            || (response.response.is_some() && response.error.is_some())
+        {
+            return Err(AgentError::Invalid("invalid agent response"));
+        }
+        Ok(response)
+    })
+    .await
+    .map_err(|_| AgentError::Timeout)?
+}
+
+/// Run only in the separate unprivileged systemd agent process. This function
+/// owns SIGTERM/SIGINT and returns after bounded owned-child shutdown.
+pub async fn run(data_dir: &Path) -> Result<()> {
+    if data_dir != Path::new("/opt/tako") {
+        return Err(AgentError::Invalid(
+            "host helper requires /opt/tako data directory",
+        ));
+    }
+    let uid = service_uid()?;
+    if unsafe { libc::geteuid() } != uid || uid == 0 {
+        return Err(AgentError::Invalid(
+            "network agent must run as the unprivileged tako account",
+        ));
+    }
+    // This is a dedicated process, before starting workers or creating sockets.
+    unsafe {
+        libc::umask(0o077);
+    }
+    let config = NodeConfig::load(data_dir)?;
+    let directory = Directory::open(&config.network_dir(data_dir), true)?;
+    let lock = directory.lock("agent-process-lock")?;
+    let socket = config.socket_path(data_dir);
+    match std::fs::symlink_metadata(&socket) {
+        Ok(meta)
+            if meta.file_type().is_socket()
+                && meta.uid() == uid
+                && meta.mode() & 0o7777 == 0o600 =>
+        {
+            std::fs::remove_file(&socket)?
+        }
+        Ok(_) => {
+            return Err(AgentError::Invalid(
+                "refusing to replace unexpected socket path",
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+        Err(error) => return Err(error.into()),
+    }
+    let listener = UnixListener::bind(&socket)?;
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
+    let _socket_cleanup = SocketCleanup(socket);
+    let boot = BootId::random()?;
+    let (tx, rx) = mpsc::sync_channel(QUEUE_SIZE);
+    let (finished_tx, mut finished_rx) = oneshot::channel();
+    let stop = Arc::new(AtomicBool::new(false));
+    let worker_stop = stop.clone();
+    let worker_boot = boot.clone();
+    let data_dir = data_dir.to_owned();
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+    let worker = std::thread::Builder::new()
+        .name("tako-network-agent".into())
+        .spawn(move || {
+            let outcome = controller::worker(config, data_dir, worker_boot, rx, worker_stop);
+            let _ = finished_tx.send(outcome);
+        })?;
+    let permits = Arc::new(Semaphore::new(CONNECTIONS));
+    let mut tasks = JoinSet::new();
+    let mut worker_done = false;
+    let outcome = loop {
+        tokio::select! {
+            result = &mut finished_rx => {
+                worker_done = true;
+                break result.map_err(|_| AgentError::Invalid("controller thread stopped unexpectedly")).and_then(|r| r);
+            }
+            _ = terminate.recv() => break Ok(()),
+            _ = interrupt.recv() => break Ok(()),
+            _ = tasks.join_next(), if !tasks.is_empty() => (),
+            accepted = listener.accept() => {
+                let (stream, _) = match accepted { Ok(value) => value, Err(error) => break Err(error.into()) };
+                // Check SO_PEERCRED before allocating a task, frame, or queue item.
+                if authenticate(&stream, uid).is_err() { continue; }
+                let Ok(permit) = permits.clone().try_acquire_owned() else { continue; };
+                let tx = tx.clone();
+                let boot = boot.clone();
+                tasks.spawn(async move {
+                    let _permit = permit;
+                    let _ = serve(stream, tx, boot).await;
+                });
+            }
+        }
+    };
+    stop.store(true, Ordering::Release);
+    tasks.abort_all();
+    while tasks.join_next().await.is_some() {}
+    drop(tx);
+    let shutdown = if worker_done {
+        Ok(())
+    } else {
+        // The controller may be in a bounded HTTP/helper call. Never detach it
+        // and report a clean exit while it still owns the DB lock or child.
+        finished_rx
+            .await
+            .map_err(|_| AgentError::Invalid("controller thread failed during shutdown"))?
+    };
+    worker
+        .join()
+        .map_err(|_| AgentError::Invalid("controller thread panicked"))?;
+    drop(lock);
+    outcome.and(shutdown)
+}
+struct SocketCleanup(std::path::PathBuf);
+impl Drop for SocketCleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+async fn serve(mut stream: UnixStream, tx: mpsc::SyncSender<Work>, boot: BootId) -> Result<()> {
+    let frame = timeout(FRAME_TIME, read_frame(&mut stream, MAX_REQUEST_BYTES))
+        .await
+        .map_err(|_| AgentError::Timeout)??;
+    let request: AgentRequest = serde_json::from_slice(&frame)?;
+    if request.method.len() > 16 || request.path.len() > 256 {
+        return Err(AgentError::Invalid("IPC route exceeds limit"));
+    }
+    request.signed.check_size()?;
+    let (reply, receiver) = oneshot::channel();
+    let response = if tx
+        .try_send(Work {
+            request,
+            reply,
+            deadline: Instant::now() + RELAY_TIME,
+        })
+        .is_err()
+    {
+        AgentResponse::unavailable(&boot)
+    } else {
+        match timeout(RELAY_TIME, receiver).await {
+            Ok(Ok(response)) => response,
+            _ => AgentResponse::unavailable(&boot),
+        }
+    };
+    let mut bytes = serde_json::to_vec(&response)?;
+    if bytes.len() > MAX_RESPONSE_BYTES {
+        return Err(AgentError::Invalid("IPC response exceeds limit"));
+    }
+    bytes.push(b'\n');
+    timeout(FRAME_TIME, async {
+        stream.write_all(&bytes).await?;
+        stream.shutdown().await
+    })
+    .await
+    .map_err(|_| AgentError::Timeout)??;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    async fn frame(bytes: &[u8], limit: usize) -> Result<Vec<u8>> {
+        let (mut writer, mut reader) = tokio::io::duplex(bytes.len() + 1);
+        writer.write_all(bytes).await.unwrap();
+        writer.shutdown().await.unwrap();
+        read_frame(&mut reader, limit).await
+    }
+    #[tokio::test]
+    async fn bounded_single_line_and_eof_required() {
+        assert_eq!(frame(b"{}\n", 2).await.unwrap(), b"{}");
+        for bytes in [
+            b"{}".as_slice(),
+            b"{}\n{}\n",
+            b"{}\n ",
+            b"\n",
+            b"{}\r\n",
+            b"123\n",
+        ] {
+            assert!(frame(bytes, 2).await.is_err());
+        }
+    }
+    #[tokio::test]
+    async fn stalled_authenticated_peer_has_a_deadline() {
+        let (_writer, mut reader) = tokio::io::duplex(8);
+        assert!(
+            timeout(Duration::from_millis(10), read_frame(&mut reader, 10))
+                .await
+                .is_err()
+        );
+    }
+    #[test]
+    fn root_and_service_only() {
+        assert!(authorized(0, 900));
+        assert!(authorized(900, 900));
+        assert!(!authorized(901, 900));
+    }
+}
