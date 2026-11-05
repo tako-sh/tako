@@ -5905,6 +5905,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "tako-network"
+version = "0.0.0"
+dependencies = [
+ "base64 0.23.1",
+ "hex",
+ "openssl",
+ "rustix",
+ "serde",
+ "serde_json",
+ "ssh-key 0.6.7",
+ "tempfile",
+ "thiserror 2.0.20",
+ "zeroize",
+]
+
+[[package]]
 name = "tako-runtime"
 version = "0.0.0"
 dependencies = [
@@ -7329,6 +7345,9 @@ name = "zeroize"
 version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64e"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "zerotrie"
