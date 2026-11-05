@@ -8,10 +8,14 @@ mod challenge;
 mod enrollment;
 mod error;
 mod keys;
+mod profile;
+mod registry;
 mod types;
 
 pub use challenge::*;
 pub use enrollment::*;
 pub use error::{Error, Result};
 pub use keys::LocalDeviceKeys;
+pub use profile::NetworkPublicProfile;
+pub use registry::*;
 pub use types::*;

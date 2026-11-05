@@ -233,3 +233,84 @@ fn key_storage_rejects_symlink_components_and_hardlinks() {
     assert!(LocalDeviceKeys::load(&original).is_err());
     assert!(!dir.path().join("new").exists());
 }
+
+#[cfg(unix)]
+#[test]
+fn concurrent_key_creation_has_one_winner_and_never_clobbers_it() {
+    use std::sync::{Arc, Barrier};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("keys");
+    let start = Arc::new(Barrier::new(4));
+    let writers: Vec<_> = (0..4)
+        .map(|_| {
+            let path = path.clone();
+            let start = start.clone();
+            std::thread::spawn(move || {
+                let keys = LocalDeviceKeys::generate().unwrap();
+                start.wait();
+                keys.save_new(&path)
+                    .ok()
+                    .map(|()| keys.wg_public_key().unwrap())
+            })
+        })
+        .collect();
+    let winners: Vec<_> = writers
+        .into_iter()
+        .filter_map(|thread| thread.join().unwrap())
+        .collect();
+    assert_eq!(winners.len(), 1);
+    assert_eq!(
+        LocalDeviceKeys::load(&path)
+            .unwrap()
+            .wg_public_key()
+            .unwrap(),
+        winners[0]
+    );
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+}
+
+#[test]
+#[ignore = "requires the OpenSSH ssh-keygen executable"]
+fn enrollment_proof_is_verifiable_by_openssh() {
+    use std::{
+        io::Write,
+        process::{Command, Stdio},
+    };
+    let keys = LocalDeviceKeys::generate().unwrap();
+    let request = request(&keys);
+    let dir = tempfile::tempdir().unwrap();
+    let allowed = dir.path().join("allowed_signers");
+    let signature = dir.path().join("request.sig");
+    std::fs::write(&allowed, format!("device {}\n", request.ssh_public_key)).unwrap();
+    std::fs::write(&signature, &request.proof).unwrap();
+    let mut command = Command::new("ssh-keygen")
+        .args([
+            "-Y",
+            "verify",
+            "-I",
+            "device",
+            "-n",
+            ENROLLMENT_NAMESPACE,
+            "-f",
+        ])
+        .arg(&allowed)
+        .arg("-s")
+        .arg(&signature)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    command
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&request.canonical_bytes().unwrap())
+        .unwrap();
+    let result = command.wait_with_output().unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
