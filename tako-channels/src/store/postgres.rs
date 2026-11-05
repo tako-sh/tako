@@ -76,6 +76,7 @@ impl PostgresChannelStore {
 
         Ok(ChannelMessage {
             id: id.to_string(),
+            event_id: None,
             channel: channel.to_string(),
             r#type: payload.r#type.clone(),
             data: payload.data.clone(),

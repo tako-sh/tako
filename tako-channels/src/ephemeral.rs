@@ -1,5 +1,5 @@
 //! Process-local, bounded live fanout. Nothing is retained without a subscriber.
-use crate::{ChannelAuthResponse, ChannelError, ChannelMessage, ChannelPublishPayload};
+use crate::{ChannelAuthResponse, ChannelError, ChannelMessage};
 use parking_lot::Mutex;
 use std::{
     collections::HashMap,
@@ -42,17 +42,10 @@ impl EphemeralHub {
         }
     }
 
-    pub(crate) fn publish(&self, channel: &str, payload: &ChannelPublishPayload) -> ChannelMessage {
-        let message = ChannelMessage {
-            id: String::new(),
-            channel: channel.to_owned(),
-            r#type: payload.r#type.clone(),
-            data: payload.data.clone(),
-        };
-        if let Some(sender) = self.channels.lock().get(channel) {
+    pub(crate) fn deliver(&self, message: &ChannelMessage) {
+        if let Some(sender) = self.channels.lock().get(&message.channel) {
             let _ = sender.send(Arc::new(message.clone()));
         }
-        message
     }
 }
 
@@ -127,7 +120,7 @@ pub(crate) fn unsupported() -> ChannelError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ChannelLifecycle, ChannelStore};
+    use crate::{ChannelLifecycle, ChannelPublishPayload, ChannelStore};
     use std::time::Duration;
     fn payload(n: i32) -> ChannelPublishPayload {
         ChannelPublishPayload {
@@ -137,7 +130,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn separate_stores_share_live_events_without_database_writes_or_replay() {
+    async fn separate_stores_share_live_events_without_replay_rows() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("channels.sqlite");
         let writer = ChannelStore::open(&path).unwrap();
@@ -236,7 +229,7 @@ mod tests {
 #[cfg(test)]
 mod transport_tests {
     use super::*;
-    use crate::ChannelStore;
+    use crate::{ChannelPublishPayload, ChannelStore};
     use pingora_core::protocols::l4::stream::Stream;
     use pingora_proxy::Session;
     use tokio::net::TcpListener;

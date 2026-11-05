@@ -1,3 +1,5 @@
+use crate::{ChannelEvent, ChannelEventId};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use parking_lot::Mutex;
 use std::path::Path;
 
@@ -9,7 +11,8 @@ use super::{channel_message_from_row, now_unix_ms};
 use rusqlite::OptionalExtension;
 
 // Autoincrement message IDs start at one, so zero is the initial cursor.
-const READ_AFTER_SQL: &str = "SELECT id, channel, type, data_json
+const READ_AFTER_SQL: &str = "SELECT id, channel, type, data_json,
+    (SELECT event_json FROM channel_message_events WHERE message_id = channel_messages.id)
     FROM channel_messages WHERE channel = ?1 AND id > ?2 ORDER BY id ASC LIMIT ?3";
 
 const INCREMENTAL_VACUUM_PAGES: i64 = 128;
@@ -91,71 +94,77 @@ impl SqliteChannelStore {
         })
     }
 
-    pub(super) fn append(
+    pub(super) fn publish(
         &self,
         channel: &str,
         payload: &ChannelPublishPayload,
-    ) -> Result<ChannelMessage, ChannelError> {
-        let data_json = serde_json::to_string(&payload.data)
-            .map_err(|e| ChannelError::BadRequest(format!("serialize payload: {e}")))?;
+        ephemeral: bool,
+    ) -> Result<(ChannelMessage, ChannelEvent), ChannelError> {
         let mut conn = self.conn.lock();
-        let tx = conn
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-            .map_err(storage_err)?;
-        let limits = load_limits(&tx)?;
-        let bytes = channel
-            .len()
-            .saturating_add(payload.r#type.len())
-            .saturating_add(data_json.len()) as u64;
-        if bytes > limits.max_bytes || bytes > limits.max_bytes_per_stream {
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let sequence: i64 = tx.query_row(
+            "UPDATE channel_event_sequence SET sequence = sequence + 1
+             WHERE singleton = 1 AND sequence < 9223372036854775807 RETURNING sequence",
+            [],
+            |row| row.get(0),
+        )?;
+        let event = ChannelEvent {
+            id: ChannelEventId {
+                origin: URL_SAFE_NO_PAD.encode(self.epoch),
+                sequence: sequence as u64,
+            },
+            channel: channel.into(),
+            payload: payload.clone(),
+            ephemeral,
+        };
+        let message = append_event(&tx, self.epoch, &event)?;
+        tx.commit()?;
+        Ok((message, event))
+    }
+
+    pub(super) fn ingest_remote(
+        &self,
+        event: &ChannelEvent,
+    ) -> Result<Option<(ChannelMessage, bool)>, ChannelError> {
+        if event.id.sequence == 0
+            || event.id.sequence > i64::MAX as u64
+            || event.id.origin.is_empty()
+            || event.id.origin.len() > 128
+            || !event
+                .id
+                .origin
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+        {
             return Err(ChannelError::BadRequest(
-                "message exceeds SQLite replay byte budget".into(),
+                "invalid channel event identity".into(),
             ));
         }
-        tx.execute(
-            "INSERT INTO channel_metadata (channel, replay_window_ms, inactivity_ttl_ms, keepalive_interval_ms, max_connection_lifetime_ms, last_activity_unix_ms)
-             VALUES (?1, 600000, 0, 25000, 7200000, ?2) ON CONFLICT(channel) DO NOTHING",
-            rusqlite::params![channel, now_unix_ms()],
-        ).map_err(storage_err)?;
-        {
-            let mut stmt = tx
-                .prepare_cached(
-                    "UPDATE channel_metadata SET last_activity_unix_ms = ?2 WHERE channel = ?1",
-                )
-                .map_err(storage_err)?;
-            stmt.execute(rusqlite::params![channel, now_unix_ms()])
-                .map_err(storage_err)?;
+        if event.id.origin == URL_SAFE_NO_PAD.encode(self.epoch) {
+            return Ok(None);
         }
-        {
-            let mut stmt = tx
-                .prepare_cached(
-                    "INSERT INTO channel_messages (channel, type, data_json, created_at_unix_ms) VALUES (?1, ?2, ?3, ?4)",
-                )
-                .map_err(storage_err)?;
-            stmt.execute(rusqlite::params![
-                channel,
-                payload.r#type,
-                data_json,
-                now_unix_ms()
-            ])
-            .map_err(storage_err)?;
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let previous: i64 = tx
+            .query_row(
+                "SELECT sequence FROM channel_remote_origins WHERE origin = ?1",
+                [&event.id.origin],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(0);
+        let sequence = event.id.sequence as i64;
+        if sequence <= previous {
+            return Ok(None);
         }
-
-        let id = tx.last_insert_rowid();
+        let message = append_event(&tx, self.epoch, event)?;
         tx.execute(
-            "UPDATE channel_metadata SET latest_message_id = ?2 WHERE channel = ?1",
-            rusqlite::params![channel, id],
-        )
-        .map_err(storage_err)?;
-        prune_replay(&tx, limits, now_unix_ms())?;
-        tx.commit().map_err(storage_err)?;
-
-        Ok(ChannelMessage {
-            id: ReplayCursor::sqlite(self.epoch, channel, id).to_string(),
-            channel: channel.to_string(),
-            r#type: payload.r#type.clone(),
-            data: payload.data.clone(),
-        })
+            "INSERT INTO channel_remote_origins(origin, sequence) VALUES (?1, ?2)
+            ON CONFLICT(origin) DO UPDATE SET sequence = excluded.sequence",
+            rusqlite::params![event.id.origin, sequence],
+        )?;
+        tx.commit()?;
+        Ok(Some((message, sequence > previous + 1)))
     }
 
     pub(super) fn read_after(
@@ -184,6 +193,7 @@ impl SqliteChannelStore {
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
                         row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
                     ))
                 },
             )?
@@ -193,7 +203,12 @@ impl SqliteChannelStore {
         rows.into_iter()
             .map(|row| {
                 let cursor = ReplayCursor::sqlite(self.epoch, channel, row.0);
-                let mut message = channel_message_from_row(row)?;
+                let mut message = channel_message_from_row((row.0, row.1, row.2, row.3))?;
+                message.event_id = row
+                    .4
+                    .map(|json| serde_json::from_str(&json))
+                    .transpose()
+                    .map_err(storage_err)?;
                 message.id = cursor.to_string();
                 Ok(message)
             })
@@ -267,25 +282,6 @@ impl SqliteChannelStore {
         Ok(())
     }
 
-    pub(super) fn latest_ids(
-        &self,
-        channels: &[String],
-    ) -> Result<Vec<(String, i64)>, ChannelError> {
-        let channels = serde_json::to_string(channels).map_err(storage_err)?;
-        let conn = self.conn.lock();
-        let mut statement = conn
-            .prepare_cached(
-                "SELECT channel, latest_message_id FROM channel_metadata
-             WHERE channel IN (SELECT value FROM json_each(?1)) AND latest_message_id > 0",
-            )
-            .map_err(storage_err)?;
-        statement
-            .query_map([channels], |row| Ok((row.get(0)?, row.get(1)?)))
-            .map_err(storage_err)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(storage_err)
-    }
-
     pub(super) fn prune(&self) -> Result<(), ChannelError> {
         let mut conn = self.conn.lock();
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -298,6 +294,54 @@ impl SqliteChannelStore {
         }
         Ok(())
     }
+}
+
+fn append_event(
+    tx: &rusqlite::Connection,
+    epoch: [u8; 16],
+    event: &ChannelEvent,
+) -> Result<ChannelMessage, ChannelError> {
+    let mut message = ChannelMessage {
+        id: String::new(),
+        event_id: Some(event.id.clone()),
+        channel: event.channel.clone(),
+        r#type: event.payload.r#type.clone(),
+        data: event.payload.data.clone(),
+    };
+    if event.ephemeral {
+        return Ok(message);
+    }
+    let data_json = serde_json::to_string(&event.payload.data).map_err(storage_err)?;
+    let limits = load_limits(tx)?;
+    let bytes = event
+        .channel
+        .len()
+        .saturating_add(event.payload.r#type.len())
+        .saturating_add(data_json.len()) as u64;
+    if bytes > limits.max_bytes || bytes > limits.max_bytes_per_stream {
+        return Err(ChannelError::BadRequest(
+            "message exceeds SQLite replay byte budget".into(),
+        ));
+    }
+    let now = now_unix_ms();
+    tx.execute(
+        "INSERT INTO channel_metadata (channel, replay_window_ms, inactivity_ttl_ms, keepalive_interval_ms, max_connection_lifetime_ms, last_activity_unix_ms)
+         VALUES (?1, 600000, 0, 25000, 7200000, ?2)
+         ON CONFLICT(channel) DO UPDATE SET last_activity_unix_ms = excluded.last_activity_unix_ms", rusqlite::params![event.channel, now])?;
+    tx.execute("INSERT INTO channel_messages (channel, type, data_json, created_at_unix_ms) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![event.channel, event.payload.r#type, data_json, now])?;
+    let id = tx.last_insert_rowid();
+    tx.execute(
+        "INSERT INTO channel_message_events(message_id, event_json) VALUES (?1, ?2)",
+        rusqlite::params![id, serde_json::to_string(&event.id).map_err(storage_err)?],
+    )?;
+    tx.execute(
+        "UPDATE channel_metadata SET latest_message_id = ?2 WHERE channel = ?1",
+        rusqlite::params![event.channel, id],
+    )?;
+    prune_replay(tx, limits, now)?;
+    message.id = ReplayCursor::sqlite(epoch, &event.channel, id).to_string();
+    Ok(message)
 }
 
 fn load_limits(conn: &rusqlite::Connection) -> Result<SqliteReplayLimits, ChannelError> {
@@ -416,6 +460,13 @@ fn init_connection(conn: &mut rusqlite::Connection) -> Result<[u8; 16], ChannelE
         "CREATE TABLE IF NOT EXISTS channel_store_state (
             singleton INTEGER PRIMARY KEY CHECK(singleton = 1), epoch BLOB NOT NULL, limits_json TEXT NOT NULL
          );
+         CREATE TABLE IF NOT EXISTS channel_event_sequence (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), sequence INTEGER NOT NULL);
+         INSERT INTO channel_event_sequence VALUES (1, 0) ON CONFLICT DO NOTHING;
+         CREATE TABLE IF NOT EXISTS channel_message_events (message_id INTEGER PRIMARY KEY, event_json TEXT NOT NULL);
+         CREATE TRIGGER IF NOT EXISTS channel_event_deleted AFTER DELETE ON channel_messages BEGIN
+            DELETE FROM channel_message_events WHERE message_id = OLD.id;
+         END;
+         CREATE TABLE IF NOT EXISTS channel_remote_origins (origin TEXT PRIMARY KEY, sequence INTEGER NOT NULL);
          CREATE TABLE IF NOT EXISTS channel_replay_floor (channel TEXT PRIMARY KEY, floor INTEGER NOT NULL);
          CREATE TRIGGER IF NOT EXISTS channel_replay_deleted AFTER DELETE ON channel_messages BEGIN
             INSERT INTO channel_replay_floor(channel, floor) VALUES (OLD.channel, OLD.id)

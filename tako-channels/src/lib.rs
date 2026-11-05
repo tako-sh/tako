@@ -1,6 +1,8 @@
 mod client;
 mod cursor;
+mod mesh;
 pub use cursor::ReplayCursor;
+pub use mesh::{ChannelEvent, ChannelEventId, ChannelPublication, RemoteIngest};
 pub mod ephemeral;
 pub mod live_store;
 mod presence;
@@ -45,3 +47,6 @@ mod presence_tests;
 
 #[cfg(test)]
 mod replay_tests;
+
+#[cfg(test)]
+mod mesh_tests;
