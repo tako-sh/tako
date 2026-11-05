@@ -277,23 +277,58 @@ pub(crate) async fn load_management_servers(
         servers = ServersToml::default();
     }
     let refresh = !output::is_dry_run();
+    // Without a project every configured network is only listed, so one
+    // unreachable network must not fail the whole command.
+    let targeted = project.is_some();
     for alias in selected {
+        let network = alias.name.clone();
         let entries = tokio::task::spawn_blocking(move || {
-            let profile = if refresh {
+            let profile = match if refresh {
                 crate::network::client::refresh(&alias)
             } else {
                 crate::network::load_profile(&alias)
-            }
-            .map_err(|error| error.to_string())?;
+            } {
+                Ok(profile) => profile,
+                // Listing only: the saved membership still names the servers, and
+                // the status call itself reports one that stays unreachable. A
+                // targeted environment keeps requiring refreshed membership.
+                Err(error) if refresh && !targeted => match crate::network::load_profile(&alias) {
+                    Ok(profile) => {
+                        warn_network(&format!(
+                            "Network {}: using saved membership ({error})",
+                            alias.name
+                        ));
+                        profile
+                    }
+                    Err(_) => return Err(error.to_string()),
+                },
+                Err(error) => return Err(error.to_string()),
+            };
             native_server_entries(&alias, &profile)
         })
         .await
-        .map_err(|error| error.to_string())??;
-        for (name, entry) in entries {
-            servers.servers.insert(name, entry);
+        .map_err(|error| error.to_string())?;
+        match entries {
+            Ok(entries) => {
+                for (name, entry) in entries {
+                    servers.servers.insert(name, entry);
+                }
+            }
+            Err(error) if !targeted => {
+                warn_network(&format!("Skipping network {network}: {error}"));
+            }
+            Err(error) => return Err(format!("Network {network}: {error}")),
         }
     }
     Ok(servers)
+}
+
+fn warn_network(message: &str) {
+    if output::is_pretty() {
+        output::warning(message);
+    } else {
+        tracing::warn!("{message}");
+    }
 }
 
 fn native_server_entries(

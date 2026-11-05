@@ -40,7 +40,7 @@ tako status --json
 tako logs --env production --days 1 --json
 ```
 
-Check the command exit status, membership, and application response separately. A successful dry run or upload does not verify a deployed application. Compose environments still require exactly one target server.
+Check the command exit status, membership, and application response separately. A successful dry run or upload does not verify a deployed application. Compose environments still require exactly one target server. Outside a project, `tako status` lists every configured network; one whose membership cannot be refreshed is reported as a warning and skipped instead of failing the command.
 
 ## Enroll another laptop or sandbox
 
