@@ -230,12 +230,24 @@ impl ServerState {
         // Stores are opened lazily and cached so repeated publishes reuse
         // the same SQLite connection.
         {
+            let native_publisher = native_channel_client(&data_dir)?
+                .map(crate::native_channel_client::BlockingPublisher::new)
+                .transpose()
+                .map_err(|error| StateStoreError::InvalidData(error.to_string()))?;
             let data_dir = data_dir.clone();
             let state_store = state_store.clone();
             let stores: parking_lot::RwLock<HashMap<String, Arc<tako_channels::ChannelStore>>> =
                 parking_lot::RwLock::new(HashMap::new());
             workflows.set_channel_publisher(std::sync::Arc::new(
                 move |app: &str, channel: &str, payload: serde_json::Value| {
+                    if let Some(publisher) = &native_publisher {
+                        let postgres_url = state_store
+                            .get_runtime_credentials(app)
+                            .map_err(|_| "channel credentials unavailable".to_string())?
+                            .get("postgres_url")
+                            .cloned();
+                        return publisher.publish(app, channel, payload, postgres_url);
+                    }
                     let channel = tako_channels::live_store::publication_channel(channel, &payload)
                         .map_err(|error| error.to_string())?;
                     let channel = channel.as_str();
@@ -354,11 +366,11 @@ impl ServerState {
         self.cold_start.clone()
     }
 
-    pub(crate) fn runtime_postgres_url(&self, app: &str) -> Option<String> {
+    pub(crate) fn runtime_postgres_url(&self, app: &str) -> Result<Option<String>, String> {
         self.state_store
             .get_runtime_credentials(app)
-            .ok()
-            .and_then(|credentials| credentials.get("postgres_url").cloned())
+            .map(|credentials| credentials.get("postgres_url").cloned())
+            .map_err(|_| "channel credentials unavailable".to_string())
     }
 
     pub async fn set_acme_client(&self, client: Arc<AcmeClient>) {
@@ -926,4 +938,19 @@ pub(crate) fn ssl_binding_needs_cloudflare_token(
     provider == tako_core::SslProvider::Cloudflare
         || (provider == tako_core::SslProvider::LetsEncrypt
             && routes.iter().any(|route| route.starts_with("*.")))
+}
+
+pub(crate) fn native_channel_client(
+    data_dir: &std::path::Path,
+) -> Result<Option<crate::native_channels::Client>, StateStoreError> {
+    match std::fs::symlink_metadata(data_dir.join("native-network.json")) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(StateStoreError::InvalidData(error.to_string())),
+        Ok(_) => {}
+    }
+    let config = tako_network::NodeConfig::load(data_dir)
+        .map_err(|error| StateStoreError::InvalidData(error.to_string()))?;
+    Ok(Some(crate::native_channels::Client::new(
+        config.network_dir(data_dir).join("channels.sock"),
+    )))
 }
