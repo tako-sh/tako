@@ -65,6 +65,10 @@ pub(super) enum Frame {
     Gap {
         app: AppEnv,
     },
+    Presence {
+        app: AppEnv,
+        publication: super::presence::Publication,
+    },
     Keepalive,
 }
 

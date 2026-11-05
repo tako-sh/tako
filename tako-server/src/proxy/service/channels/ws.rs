@@ -51,11 +51,6 @@ impl TakoProxy {
         presence_params: serde_json::Value,
         auth_mode: ChannelWebSocketAuth,
     ) -> Result<bool> {
-        if store.is_native() && channel.starts_with(tako_channels::PRESENCE_CHANNEL_PREFIX) {
-            return self
-                .write_channel_error(session, ChannelError::Unsupported)
-                .await;
-        }
         if !session.as_downstream().is_upgrade_req() {
             return self
                 .write_json_response(
@@ -167,7 +162,7 @@ impl TakoProxy {
             auth,
             presence_params,
             reader,
-            store.as_ref(),
+            store.clone(),
         )
         .await
     }

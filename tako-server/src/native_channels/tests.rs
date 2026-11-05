@@ -15,6 +15,12 @@ use tako_network::{
 };
 use tokio::{io::AsyncWriteExt, sync::oneshot};
 
+fn remote_id() -> DeviceId {
+    "11".repeat(32).parse().unwrap()
+}
+fn local_id() -> DeviceId {
+    "00".repeat(32).parse().unwrap()
+}
 fn app() -> AppEnv {
     "chat/production".parse().unwrap()
 }
@@ -238,7 +244,7 @@ fn signatures_bind_both_identities_challenges_network_and_direction() {
 }
 async fn new_broker() -> (tempfile::TempDir, Broker) {
     let temp = tempfile::tempdir().unwrap();
-    let mut broker = Broker::new(temp.path().into(), Budget::new(8 * MAX_FRAME));
+    let mut broker = Broker::new(temp.path().into(), Budget::new(8 * MAX_FRAME), local_id());
     assert!(matches!(
         broker
             .local(Request::Register {
@@ -364,8 +370,8 @@ async fn remote_ingest_is_idempotent_not_echoed_and_notified_without_repersistin
             app: app(),
             publication,
         };
-        broker.remote(frame.clone()).await.unwrap();
-        broker.remote(frame).await.unwrap();
+        broker.remote(&remote_id(), frame.clone()).await.unwrap();
+        broker.remote(&remote_id(), frame).await.unwrap();
         let packet = notices.recv().await.unwrap();
         let Notice::Notification { notification } = serde_json::from_slice(&packet.bytes).unwrap()
         else {
@@ -398,18 +404,21 @@ async fn remote_ingest_is_idempotent_not_echoed_and_notified_without_repersistin
 async fn unknown_remote_app_never_creates_database() {
     let (temp, mut broker) = new_broker().await;
     broker
-        .remote(Frame::Publication {
-            app: "unknown/production".parse().unwrap(),
-            publication: ChannelPublication::Event(ChannelEvent {
-                id: ChannelEventId {
-                    origin: "remote".into(),
-                    sequence: 1,
-                },
-                channel: "events".into(),
-                payload: payload(1),
-                ephemeral: false,
-            }),
-        })
+        .remote(
+            &remote_id(),
+            Frame::Publication {
+                app: "unknown/production".parse().unwrap(),
+                publication: ChannelPublication::Event(ChannelEvent {
+                    id: ChannelEventId {
+                        origin: "remote".into(),
+                        sequence: 1,
+                    },
+                    channel: "events".into(),
+                    payload: payload(1),
+                    ephemeral: false,
+                }),
+            },
+        )
         .await
         .unwrap();
     assert!(!temp.path().join("unknown").exists());
@@ -444,7 +453,7 @@ async fn first_registration_after_restart_invalidates_offline_cursor() {
     let (temp, mut broker) = new_broker().await;
     let before = publish(&mut broker, 1).await;
     drop(broker);
-    let mut restarted = Broker::new(temp.path().into(), Budget::new(MAX_FRAME));
+    let mut restarted = Broker::new(temp.path().into(), Budget::new(MAX_FRAME), local_id());
     restarted
         .local(Request::Register {
             app: app(),
@@ -569,12 +578,15 @@ async fn postgres_wake_seam_never_reinserts_or_echoes_and_commit_dispatches_only
         panic!()
     };
     broker
-        .remote(Frame::Publication {
-            app: app(),
-            publication: ChannelPublication::Wake {
-                channel: "events".into(),
+        .remote(
+            &remote_id(),
+            Frame::Publication {
+                app: app(),
+                publication: ChannelPublication::Wake {
+                    channel: "events".into(),
+                },
             },
-        })
+        )
         .await
         .unwrap();
     assert!(changes.has_changed().unwrap());
@@ -586,18 +598,21 @@ async fn postgres_wake_seam_never_reinserts_or_echoes_and_commit_dispatches_only
         }
     ));
     broker
-        .remote(Frame::Publication {
-            app: app(),
-            publication: ChannelPublication::Event(ChannelEvent {
-                id: ChannelEventId {
-                    origin: "remote".into(),
-                    sequence: 1,
-                },
-                channel: "events".into(),
-                payload: payload(1),
-                ephemeral: false,
-            }),
-        })
+        .remote(
+            &remote_id(),
+            Frame::Publication {
+                app: app(),
+                publication: ChannelPublication::Event(ChannelEvent {
+                    id: ChannelEventId {
+                        origin: "remote".into(),
+                        sequence: 1,
+                    },
+                    channel: "events".into(),
+                    payload: payload(1),
+                    ephemeral: false,
+                }),
+            },
+        )
         .await
         .unwrap();
     assert!(store.read_after("events", None, 100).unwrap().is_empty());
@@ -822,4 +837,213 @@ async fn stale_socket_cleanup_refuses_regular_files_and_symlink_locks() {
     symlink(&socket, temp.path().join("channels.lock")).unwrap();
     assert!(ipc::bind(temp.path()).await.is_err());
     assert_eq!(std::fs::read(&socket).unwrap(), b"not a socket");
+}
+
+fn presence_member() -> tako_channels::PresenceMember {
+    tako_channels::PresenceMember {
+        connection_id: "ab".repeat(16),
+        subject: Some("verified-user".into()),
+        data: serde_json::json!({"typing":true}),
+    }
+}
+async fn presence_members(broker: &mut Broker) -> Vec<tako_channels::PresenceMember> {
+    let Reply::Response(Response::Presence { members }) = broker
+        .local(Request::Presence {
+            app: app(),
+            channel: "room".into(),
+        })
+        .await
+        .unwrap()
+    else {
+        panic!("presence rejected")
+    };
+    members
+}
+#[tokio::test]
+async fn presence_updates_and_leaves_cross_peers_once_with_origin_bound_identity() {
+    let (_left_dir, mut left) = new_broker().await;
+    let right_dir = tempfile::tempdir().unwrap();
+    let mut right = Broker::new(right_dir.path().into(), Budget::new(MAX_FRAME), remote_id());
+    right
+        .local(Request::Register {
+            app: app(),
+            postgres_url: None,
+        })
+        .await
+        .unwrap();
+    let (send, mut frames) = wire::queue(Budget::new(MAX_FRAME));
+    left.peers.insert(remote_id(), send);
+    let (send, mut echoes) = wire::queue(Budget::new(MAX_FRAME));
+    right.peers.insert(local_id(), send);
+    let member = presence_member();
+    let Reply::Response(Response::Ok) = left
+        .local(Request::UpdatePresence {
+            app: app(),
+            channel: "room".into(),
+            member: member.clone(),
+        })
+        .await
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(presence_members(&mut left).await, vec![member.clone()]);
+    let frame: Frame = serde_json::from_slice(&frames.recv().await.unwrap().bytes).unwrap();
+    right.remote(&local_id(), frame.clone()).await.unwrap();
+    right.remote(&local_id(), frame).await.unwrap();
+    let rows = presence_members(&mut right).await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].connection_id,
+        format!("{}:{}", local_id(), member.connection_id)
+    );
+    assert!(echoes.try_recv().is_err());
+    assert!(
+        left.apps[&app()]
+            .store
+            .presence("room", 0)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        right.apps[&app()]
+            .store
+            .presence("room", 0)
+            .unwrap()
+            .is_empty()
+    );
+    left.local(Request::RemovePresence {
+        app: app(),
+        channel: "room".into(),
+        connection_id: member.connection_id,
+    })
+    .await
+    .unwrap();
+    let frame: Frame = serde_json::from_slice(&frames.recv().await.unwrap().bytes).unwrap();
+    right.remote(&local_id(), frame).await.unwrap();
+    assert!(presence_members(&mut left).await.is_empty());
+    assert!(presence_members(&mut right).await.is_empty());
+}
+#[tokio::test]
+async fn presence_rejects_foreign_identity_and_drops_peer_leases_on_gap() {
+    let (_temp, mut broker) = new_broker().await;
+    broker
+        .local(Request::UpdatePresence {
+            app: app(),
+            channel: "room".into(),
+            member: presence_member(),
+        })
+        .await
+        .unwrap();
+    let peer = remote_id();
+    let member = super::presence::local_member(&peer, "room", &presence_member()).unwrap();
+    let expires_at_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64
+        + 45_000;
+    let frame = Frame::Presence {
+        app: app(),
+        publication: super::presence::Publication::Update {
+            channel: "room".into(),
+            member,
+            expires_at_ms,
+            sequence: 1,
+        },
+    };
+    assert!(broker.remote(&local_id(), frame.clone()).await.is_err());
+    broker.remote(&peer, frame).await.unwrap();
+    assert_eq!(presence_members(&mut broker).await.len(), 2);
+    broker.fence().await.unwrap();
+    assert_eq!(presence_members(&mut broker).await, vec![presence_member()]);
+}
+#[tokio::test]
+async fn postgres_presence_seam_uses_shared_table_and_does_not_forward_or_reinsert() {
+    let (_temp, mut broker) = new_broker().await;
+    broker.postgres_seam(&app());
+    let (sender, mut outgoing) = wire::queue(Budget::new(MAX_FRAME));
+    broker.peers.insert(remote_id(), sender);
+    broker
+        .local(Request::UpdatePresence {
+            app: app(),
+            channel: "room".into(),
+            member: presence_member(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(presence_members(&mut broker).await, vec![presence_member()]);
+    assert_eq!(
+        broker.apps[&app()].store.presence("room", 0).unwrap().len(),
+        1
+    );
+    assert!(outgoing.try_recv().is_err());
+    let remote_member =
+        super::presence::local_member(&remote_id(), "room", &presence_member()).unwrap();
+    broker
+        .remote(
+            &remote_id(),
+            Frame::Presence {
+                app: app(),
+                publication: super::presence::Publication::Update {
+                    channel: "room".into(),
+                    member: remote_member,
+                    expires_at_ms: i64::MAX,
+                    sequence: 1,
+                },
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        broker.apps[&app()].store.presence("room", 0).unwrap().len(),
+        1
+    );
+    broker
+        .local(Request::RemovePresence {
+            app: app(),
+            channel: "room".into(),
+            connection_id: presence_member().connection_id,
+        })
+        .await
+        .unwrap();
+    assert!(presence_members(&mut broker).await.is_empty());
+    assert!(outgoing.try_recv().is_err());
+}
+#[tokio::test]
+async fn presence_ipc_roundtrips_over_real_duplex() {
+    let (_temp, broker) = new_broker().await;
+    let (commands, receiver) = mpsc::channel(8);
+    let (_control, control_rx) = watch::channel(broker::Control::default());
+    let (shutdown, shutdown_rx) = watch::channel(false);
+    let actor = tokio::spawn(broker::run(broker, receiver, control_rx, shutdown_rx));
+    for request in [
+        Request::UpdatePresence {
+            app: app(),
+            channel: "room".into(),
+            member: presence_member(),
+        },
+        Request::Presence {
+            app: app(),
+            channel: "room".into(),
+        },
+    ] {
+        let (mut client, server) = tokio::io::duplex(8192);
+        let task = tokio::spawn(ipc::serve(server, commands.clone(), Budget::new(MAX_FRAME)));
+        let querying = matches!(request, Request::Presence { .. });
+        wire::write(&mut client, &request).await.unwrap();
+        let response: Response = wire::read(&mut client, &Budget::new(MAX_FRAME))
+            .await
+            .unwrap()
+            .value;
+        if querying {
+            assert!(
+                matches!(response, Response::Presence { members } if members == vec![presence_member()])
+            );
+        } else {
+            assert!(matches!(response, Response::Ok));
+        }
+        task.await.unwrap().unwrap();
+    }
+    shutdown.send_replace(true);
+    actor.await.unwrap().unwrap();
 }

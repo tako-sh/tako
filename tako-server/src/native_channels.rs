@@ -3,6 +3,7 @@
 mod broker;
 mod ipc;
 mod peer;
+mod presence;
 mod wire;
 
 pub use ipc::{Client, Notification, Subscription};
@@ -71,7 +72,11 @@ pub async fn run(
     let inbound = wire::Budget::new(8 * wire::MAX_FRAME);
     let outbound = wire::Budget::new(16 * wire::MAX_FRAME);
     let notifications = wire::Budget::new(8 * wire::MAX_FRAME);
-    let broker = Broker::new(PathBuf::from("/opt/tako/apps"), notifications);
+    let broker = Broker::new(
+        PathBuf::from("/opt/tako/apps"),
+        notifications,
+        config.server_id.clone(),
+    );
     let (control, control_rx) = watch::channel(broker::Control::default());
     let (broker_shutdown, broker_shutdown_rx) = watch::channel(false);
     let mut broker_task = tokio::spawn(async move {

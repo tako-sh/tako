@@ -14,6 +14,7 @@ use tako_channels::{
     ChannelAuthResponse, ChannelError, ChannelMessage, ChannelPublishPayload, ChannelStore,
     ChannelStoreConfig,
 };
+use tako_channels::{ChannelWriter, PresenceMember};
 use tako_network::AppEnv;
 use tokio::{sync::watch, task::JoinHandle};
 use zeroize::Zeroizing;
@@ -48,6 +49,19 @@ trait BrokerLink: Send + Sync {
         payload: ChannelPublishPayload,
         ephemeral: bool,
     ) -> io::Result<ChannelMessage>;
+    async fn update_presence(
+        &self,
+        app: AppEnv,
+        channel: String,
+        member: PresenceMember,
+    ) -> io::Result<()>;
+    async fn presence(&self, app: AppEnv, channel: String) -> io::Result<Vec<PresenceMember>>;
+    async fn remove_presence(
+        &self,
+        app: AppEnv,
+        channel: String,
+        connection_id: String,
+    ) -> io::Result<()>;
 }
 #[async_trait]
 impl BrokerLink for Client {
@@ -73,6 +87,25 @@ impl BrokerLink for Client {
         ephemeral: bool,
     ) -> io::Result<ChannelMessage> {
         self.publish(app, channel, payload, ephemeral).await
+    }
+    async fn update_presence(
+        &self,
+        app: AppEnv,
+        channel: String,
+        member: PresenceMember,
+    ) -> io::Result<()> {
+        self.update_presence(app, channel, member).await
+    }
+    async fn presence(&self, app: AppEnv, channel: String) -> io::Result<Vec<PresenceMember>> {
+        self.presence(app, channel).await
+    }
+    async fn remove_presence(
+        &self,
+        app: AppEnv,
+        channel: String,
+        connection_id: String,
+    ) -> io::Result<()> {
+        self.remove_presence(app, channel, connection_id).await
     }
 }
 
@@ -289,6 +322,57 @@ impl tako_channels::ChannelWriter for ProxyChannelStore {
         ephemeral: bool,
     ) -> Result<ChannelMessage, ChannelError> {
         self.publish(channel, payload, ephemeral).await
+    }
+    async fn update_presence(
+        &self,
+        channel: &str,
+        member: &PresenceMember,
+    ) -> Result<(), ChannelError> {
+        self.ensure_ready().await?;
+        if let Some(native) = &self.native {
+            native
+                .link
+                .update_presence(native.app.clone(), channel.into(), member.clone())
+                .await
+                .map_err(|_| unavailable())
+        } else {
+            tako_channels::LocalChannelWriter::new(self.store.clone())
+                .update_presence(channel, member)
+                .await
+        }
+    }
+    async fn presence(&self, channel: &str) -> Result<Vec<PresenceMember>, ChannelError> {
+        self.ensure_ready().await?;
+        if let Some(native) = &self.native {
+            native
+                .link
+                .presence(native.app.clone(), channel.into())
+                .await
+                .map_err(|_| unavailable())
+        } else {
+            tako_channels::LocalChannelWriter::new(self.store.clone())
+                .presence(channel)
+                .await
+        }
+    }
+    async fn remove_presence(
+        &self,
+        channel: &str,
+        connection_id: &str,
+    ) -> Result<(), ChannelError> {
+        // Cleanup is best effort at the broker; a disconnected subscription must not
+        // suppress a leave that can still reach the broker on a fresh IPC connection.
+        if let Some(native) = &self.native {
+            native
+                .link
+                .remove_presence(native.app.clone(), channel.into(), connection_id.into())
+                .await
+                .map_err(|_| unavailable())
+        } else {
+            tako_channels::LocalChannelWriter::new(self.store.clone())
+                .remove_presence(channel, connection_id)
+                .await
+        }
     }
 }
 

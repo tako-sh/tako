@@ -69,6 +69,18 @@ impl BrokerLink for FakeBroker {
             data: payload.data,
         })
     }
+    async fn update_presence(&self, _: AppEnv, _: String, _: PresenceMember) -> io::Result<()> {
+        self.calls.lock().push("update_presence");
+        Ok(())
+    }
+    async fn presence(&self, _: AppEnv, _: String) -> io::Result<Vec<PresenceMember>> {
+        self.calls.lock().push("presence");
+        Ok(Vec::new())
+    }
+    async fn remove_presence(&self, _: AppEnv, _: String, _: String) -> io::Result<()> {
+        self.calls.lock().push("remove_presence");
+        Ok(())
+    }
 }
 fn scope() -> AppEnv {
     app_scope("chat/production").unwrap()
@@ -279,4 +291,34 @@ async fn terminated_subscription_worker_cannot_leave_reader_marked_ready() {
     proxy.native.as_ref().unwrap().task.abort();
     tokio::task::yield_now().await;
     assert!(proxy.ensure_ready().await.is_err());
+}
+
+#[tokio::test]
+async fn native_presence_uses_ipc_writer_and_drop_cleanup_keeps_wrapper_until_leave() {
+    let (proxy, link, _server) = attached().await;
+    let proxy = Arc::new(proxy);
+    let mut presence = tako_channels::PresenceSession::new_with_writer(
+        proxy.clone(),
+        "room",
+        Some("verified-user".into()),
+    )
+    .unwrap();
+    presence
+        .update(br#"{"type":"tako.presence","data":{"typing":true}}"#)
+        .await
+        .unwrap();
+    presence.snapshot().await.unwrap();
+    assert_eq!(
+        *link.calls.lock(),
+        vec!["subscribe", "update_presence", "presence"]
+    );
+    assert!(proxy.store().presence("room", 0).unwrap().is_empty());
+    drop(presence);
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !link.calls.lock().contains(&"remove_presence") {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
 }

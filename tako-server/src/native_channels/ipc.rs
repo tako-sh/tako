@@ -9,7 +9,7 @@ use std::{
     },
     path::{Path, PathBuf},
 };
-use tako_channels::{ChannelAuthResponse, ChannelMessage, ChannelPublishPayload};
+use tako_channels::{ChannelAuthResponse, ChannelMessage, ChannelPublishPayload, PresenceMember};
 use tako_network::AppEnv;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -40,6 +40,20 @@ pub(super) enum Request {
     },
     Subscribe {
         app: AppEnv,
+    },
+    UpdatePresence {
+        app: AppEnv,
+        channel: String,
+        member: PresenceMember,
+    },
+    Presence {
+        app: AppEnv,
+        channel: String,
+    },
+    RemovePresence {
+        app: AppEnv,
+        channel: String,
+        connection_id: String,
     },
 }
 fn serialize_auth<S: serde::Serializer>(
@@ -85,6 +99,7 @@ pub enum Notification {
 pub(super) enum Response {
     Ok,
     Published { message: ChannelMessage },
+    Presence { members: Vec<PresenceMember> },
     Rejected,
 }
 #[derive(Serialize, Deserialize)]
@@ -160,6 +175,50 @@ impl Client {
         {
             Response::Published { message } => Ok(message),
             _ => Err(error("unexpected channel broker response")),
+        }
+    }
+    pub async fn update_presence(
+        &self,
+        app: AppEnv,
+        channel: String,
+        member: PresenceMember,
+    ) -> io::Result<()> {
+        match self
+            .request(Request::UpdatePresence {
+                app,
+                channel,
+                member,
+            })
+            .await?
+            .1
+        {
+            Response::Ok => Ok(()),
+            _ => Err(error("unexpected presence response")),
+        }
+    }
+    pub async fn presence(&self, app: AppEnv, channel: String) -> io::Result<Vec<PresenceMember>> {
+        match self.request(Request::Presence { app, channel }).await?.1 {
+            Response::Presence { members } => Ok(members),
+            _ => Err(error("unexpected presence response")),
+        }
+    }
+    pub async fn remove_presence(
+        &self,
+        app: AppEnv,
+        channel: String,
+        connection_id: String,
+    ) -> io::Result<()> {
+        match self
+            .request(Request::RemovePresence {
+                app,
+                channel,
+                connection_id,
+            })
+            .await?
+            .1
+        {
+            Response::Ok => Ok(()),
+            _ => Err(error("unexpected presence response")),
         }
     }
     pub async fn subscribe(&self, app: AppEnv) -> io::Result<Subscription> {

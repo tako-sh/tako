@@ -1,3 +1,4 @@
+mod presence;
 use super::{
     MAX_APPS, error,
     ipc::{Notice, Notification, Reply, Request, Response},
@@ -39,6 +40,7 @@ pub(super) async fn run(
     mut shutdown: watch::Receiver<bool>,
 ) -> io::Result<()> {
     let mut seen = Control::default();
+    let mut expiry = tokio::time::interval(std::time::Duration::from_secs(1));
     loop {
         if *shutdown.borrow() {
             break;
@@ -60,6 +62,7 @@ pub(super) async fn run(
                 broker.fence().await?;
                 seen = next;
             }
+            _ = expiry.tick() => { broker.expire_presence(); }
             command = commands.recv() => match command {
                 Some(command) => broker.handle(command).await?,
                 None => break,
@@ -74,6 +77,7 @@ pub(super) struct Application {
     postgres_url: Option<Zeroizing<String>>,
     publications: broadcast::Receiver<ChannelPublication>,
     subscribers: Vec<wire::Sender>,
+    presence: super::presence::Leases,
 }
 pub(super) struct Broker {
     apps_root: PathBuf,
@@ -81,15 +85,17 @@ pub(super) struct Broker {
     pub peers: BTreeMap<DeviceId, wire::Sender>,
     pub generation: u64,
     notifications: wire::Budget,
+    local: DeviceId,
 }
 impl Broker {
-    pub fn new(apps_root: PathBuf, notifications: wire::Budget) -> Self {
+    pub fn new(apps_root: PathBuf, notifications: wire::Budget, local: DeviceId) -> Self {
         Self {
             apps_root,
             apps: BTreeMap::new(),
             peers: BTreeMap::new(),
             generation: 0,
             notifications,
+            local,
         }
     }
     pub async fn handle(&mut self, command: Command) -> io::Result<()> {
@@ -120,7 +126,7 @@ impl Broker {
             } => {
                 if generation == self.generation
                     && self.peers.contains_key(&peer)
-                    && self.remote(frame.value).await.is_err()
+                    && self.remote(&peer, frame.value).await.is_err()
                 {
                     self.peers.remove(&peer);
                     self.fence().await?;
@@ -180,12 +186,43 @@ impl Broker {
                 postgres_url,
                 publications,
                 subscribers: Vec::new(),
+                presence: Default::default(),
             },
         );
         Ok(())
     }
     pub(super) async fn local(&mut self, request: Request) -> io::Result<Reply> {
         let response = match request {
+            Request::UpdatePresence {
+                app,
+                channel,
+                member,
+            } => {
+                if self.update_presence(&app, channel, member).await.is_ok() {
+                    Response::Ok
+                } else {
+                    Response::Rejected
+                }
+            }
+            Request::Presence { app, channel } => match self.presence(&app, channel).await {
+                Ok(members) => Response::Presence { members },
+                Err(_) => Response::Rejected,
+            },
+            Request::RemovePresence {
+                app,
+                channel,
+                connection_id,
+            } => {
+                if self
+                    .remove_presence(&app, channel, connection_id)
+                    .await
+                    .is_ok()
+                {
+                    Response::Ok
+                } else {
+                    Response::Rejected
+                }
+            }
             Request::Register { app, postgres_url } => {
                 if self.register(app, postgres_url).await.is_ok() {
                     Response::Ok
@@ -343,7 +380,8 @@ impl Broker {
         Ok(())
     }
     async fn fence_app(&mut self, app: &AppEnv) -> io::Result<()> {
-        if let Some(application) = self.apps.get(app) {
+        if let Some(application) = self.apps.get_mut(app) {
+            application.presence.clear_remote(&self.local);
             application
                 .store
                 .run(|store| store.invalidate_replay())
@@ -353,7 +391,7 @@ impl Broker {
         }
         Ok(())
     }
-    pub(super) async fn remote(&mut self, frame: Frame) -> io::Result<()> {
+    pub(super) async fn remote(&mut self, peer: &DeviceId, frame: Frame) -> io::Result<()> {
         match frame {
             Frame::Publication { app, publication } => {
                 let Some(application) = self.apps.get(&app) else {
@@ -411,6 +449,9 @@ impl Broker {
             }
             Frame::Gap { app } => {
                 self.fence_app(&app).await?;
+            }
+            Frame::Presence { app, publication } => {
+                self.remote_presence(peer, &app, publication)?;
             }
             Frame::Keepalive => (),
         }
