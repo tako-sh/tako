@@ -301,8 +301,8 @@ fn bounded_headers<B>(request: &Request<B>) -> bool {
 /// Transport only. Failure can follow a committed mutation; never retry automatically.
 pub(crate) async fn relay<B>(data_dir: &Path, request: Request<B>) -> HttpResponse
 where
-    B: Body<Data = Bytes> + Unpin + Send,
-    B::Error: Display,
+    B: Body<Data = Bytes> + Unpin + Send + 'static,
+    B::Error: Display + 'static,
 {
     if !bounded_headers(&request) {
         return error(
@@ -340,8 +340,8 @@ where
 async fn relay_io<I, B>(stream: I, mut request: Request<B>, deadline: Duration) -> HttpResponse
 where
     I: AsyncRead + AsyncWrite + Unpin,
-    B: Body<Data = Bytes> + Unpin,
-    B::Error: Display,
+    B: Body<Data = Bytes> + Unpin + 'static,
+    B::Error: Display + 'static,
 {
     if !bounded_headers(&request) {
         return error(
