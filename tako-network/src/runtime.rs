@@ -204,6 +204,16 @@ impl<S: RegistryStore> ServerRuntime<S> {
     }
 
     pub fn snapshot(&mut self) -> RuntimeResult<RegistrySnapshot> {
+        self.with_registry(|runtime| {
+            let snapshot = runtime.store.snapshot()?;
+            runtime.observe(snapshot)
+        })
+    }
+
+    fn with_registry<T>(
+        &mut self,
+        operation: impl FnOnce(&mut Self) -> RuntimeResult<T>,
+    ) -> RuntimeResult<T> {
         let failed: bool =
             self.db
                 .query_row("SELECT EXISTS(SELECT 1 FROM registry_failure)", [], |r| {
@@ -212,11 +222,10 @@ impl<S: RegistryStore> ServerRuntime<S> {
         if failed {
             return Err(RuntimeError::Capacity("registry requires local recovery"));
         }
-        let result = self
-            .store
-            .snapshot()
-            .and_then(|snapshot| self.observe(snapshot));
-        if matches!(result, Err(RuntimeError::Capacity(_))) {
+        let result = operation(self);
+        if matches!(result, Err(RuntimeError::Capacity(reason))
+            if reason != "registry admissions" && reason != "registry record")
+        {
             self.db
                 .execute("INSERT OR IGNORE INTO registry_failure VALUES (1)", [])?;
         }
@@ -401,8 +410,10 @@ impl<S: RegistryStore> ServerRuntime<S> {
                 if !observed.revocations.contains(&revocation) {
                     observed.revocations.push(revocation.clone());
                 }
-                self.observe(observed)?;
-                self.store.append_revocation(&revocation)?;
+                self.with_registry(|runtime| {
+                    runtime.observe(observed)?;
+                    runtime.store.append_revocation(&revocation)
+                })?;
                 Ok(RpcResponse::Revoked(revocation))
             }
         }
@@ -742,7 +753,7 @@ impl<S: RegistryStore> ServerRuntime<S> {
         // HTTP outcome can therefore only retry this exact immutable admission.
         entitlement.candidate = Some(candidate.clone());
         self.save_pending(&entitlement)?;
-        self.store.append_member(&candidate)?;
+        self.with_registry(|runtime| runtime.store.append_member(&candidate))?;
         let updated = self.snapshot()?;
         self.require_server(&updated, now)?;
         self.check_grant(&entitlement, &updated, now)?;
@@ -801,10 +812,12 @@ impl<S: RegistryStore> ServerRuntime<S> {
             }
         }
         for revocation in &applied.revocations {
-            self.store.append_ack(&Ack {
-                revocation: revocation.id.clone(),
-                server: self.config.server_id.clone(),
-                boot: self.config.boot_id.clone(),
+            self.with_registry(|runtime| {
+                runtime.store.append_ack(&Ack {
+                    revocation: revocation.id.clone(),
+                    server: runtime.config.server_id.clone(),
+                    boot: runtime.config.boot_id.clone(),
+                })
             })?;
         }
         Ok(())

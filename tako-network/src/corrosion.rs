@@ -51,6 +51,9 @@ impl BearerToken {
 /// Trusted server storage only. Never expose these mutation methods as RPCs.
 /// Membership and denial records are immutable. ACKs are replaceable boot observations.
 /// Snapshot capacity errors must fail closed at the caller, never fall back to old grants.
+/// Mutations use `Capacity("registry admissions")` or `Capacity("registry record")`
+/// only for candidate rejection before publication. Other capacity errors mean
+/// unreadable registry state, including when a mutation encounters them internally.
 pub trait RegistryStore {
     fn snapshot(&mut self) -> RuntimeResult<RegistrySnapshot>;
     fn append_member(&mut self, member: &Member) -> RuntimeResult<()>;
@@ -438,7 +441,7 @@ fn record_payload(row: &[Value]) -> RuntimeResult<&str> {
         .and_then(Value::as_str)
         .ok_or(RuntimeError::Corrosion("non-text record"))?;
     if payload.len() > record_limit(row[0].as_str().unwrap_or_default()) {
-        return Err(RuntimeError::Capacity("registry record"));
+        return Err(RuntimeError::Capacity("registry stored record"));
     }
     if row[2].as_str() != Some(&hex::encode(openssl::sha::sha256(payload.as_bytes()))) {
         return Err(RuntimeError::Corrosion("payload digest mismatch"));

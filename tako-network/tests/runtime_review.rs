@@ -124,9 +124,9 @@ impl Fixture {
         .unwrap()
     }
 
-    fn call(
+    fn call<S: RegistryStore>(
         &self,
-        runtime: &mut ServerRuntime<Store>,
+        runtime: &mut ServerRuntime<S>,
         keys: &LocalDeviceKeys,
         request: RpcRequest,
         timestamp: u64,
@@ -474,4 +474,180 @@ fn failed_denial_publication_retains_local_intent_and_retries_after_reopen() {
         Ok(RpcResponse::Revoked(_))
     ));
     assert_eq!(fixture.store.0.borrow().revocations.len(), 1);
+}
+
+#[derive(Clone, Copy)]
+enum StoreFailure {
+    AdmissionQuota,
+    CandidateBytes,
+    RevocationHistory,
+    AckHistory,
+}
+
+struct FailingStore(Store, StoreFailure);
+
+impl RegistryStore for FailingStore {
+    fn snapshot(&mut self) -> RuntimeResult<RegistrySnapshot> {
+        self.0.snapshot()
+    }
+    fn append_member(&mut self, member: &Member) -> RuntimeResult<()> {
+        match self.1 {
+            StoreFailure::AdmissionQuota => Err(RuntimeError::Capacity("registry admissions")),
+            StoreFailure::CandidateBytes => Err(RuntimeError::Capacity("registry record")),
+            _ => self.0.append_member(member),
+        }
+    }
+    fn append_revocation(&mut self, revocation: &Revocation) -> RuntimeResult<()> {
+        match self.1 {
+            StoreFailure::RevocationHistory => Err(RuntimeError::Capacity("registry projection")),
+            _ => self.0.append_revocation(revocation),
+        }
+    }
+    fn append_ack(&mut self, ack: &Ack) -> RuntimeResult<()> {
+        match self.1 {
+            StoreFailure::AckHistory => Err(RuntimeError::Capacity("registry stored record")),
+            _ => self.0.append_ack(ack),
+        }
+    }
+}
+
+#[test]
+fn candidate_capacity_rejection_does_not_latch_the_runtime() {
+    for fault in [StoreFailure::AdmissionQuota, StoreFailure::CandidateBytes] {
+        let fixture = Fixture::new(None);
+        let mut runtime = ServerRuntime::open(
+            FailingStore(fixture.store.clone(), fault),
+            LocalDeviceKeys::load(&fixture.dir.path().join("keys")).unwrap(),
+            fixture.config.clone(),
+            &fixture.dir.path().join("runtime.db"),
+        )
+        .unwrap();
+        let applicant = LocalDeviceKeys::generate().unwrap();
+        let grant = tako_network::api::ApproveRequest {
+            pending_id: RequestId::random().unwrap(),
+            request: applicant
+                .enrollment_request(None, DeviceKind::Laptop, "applicant".parse().unwrap())
+                .unwrap(),
+            kind: MemberKind::Laptop,
+            permissions: Permissions::default(),
+            expires_at: 1000,
+            member_expires_at: None,
+        };
+        fixture
+            .call(
+                &mut runtime,
+                &fixture.admin,
+                RpcRequest::Approve(Box::new(grant.clone())),
+                10,
+                10,
+            )
+            .unwrap();
+        let RpcResponse::Challenge {
+            challenge_id,
+            challenge,
+        } = fixture
+            .call(
+                &mut runtime,
+                &applicant,
+                RpcRequest::Begin {
+                    pending_id: grant.pending_id.clone(),
+                },
+                11,
+                11,
+            )
+            .unwrap()
+        else {
+            panic!("expected challenge")
+        };
+        let proof = applicant
+            .answer_challenge(&challenge, &grant.request, 12)
+            .unwrap();
+        assert!(matches!(
+            fixture.call(
+                &mut runtime,
+                &applicant,
+                RpcRequest::Complete {
+                    pending_id: grant.pending_id,
+                    challenge_id,
+                    proof,
+                },
+                12,
+                12
+            ),
+            Err(RuntimeError::Capacity(
+                "registry admissions" | "registry record"
+            ))
+        ));
+        assert!(
+            runtime
+                .desired_host_state(13)
+                .unwrap()
+                .peers
+                .iter()
+                .any(|p| p.device_id == fixture.laptop_id)
+        );
+        drop(runtime);
+        let mut runtime = fixture.open();
+        fixture
+            .call(&mut runtime, &fixture.admin, RpcRequest::Snapshot, 14, 14)
+            .unwrap();
+    }
+}
+
+#[test]
+fn hard_capacity_in_denial_or_ack_publication_latches_before_rollback() {
+    for fault in [StoreFailure::RevocationHistory, StoreFailure::AckHistory] {
+        let fixture = Fixture::new(None);
+        let original = fixture.store.0.borrow().clone();
+        let mut runtime = ServerRuntime::open(
+            FailingStore(fixture.store.clone(), fault),
+            LocalDeviceKeys::load(&fixture.dir.path().join("keys")).unwrap(),
+            fixture.config.clone(),
+            &fixture.dir.path().join("runtime.db"),
+        )
+        .unwrap();
+        let revoke = fixture.call(
+            &mut runtime,
+            &fixture.admin,
+            RpcRequest::Revoke {
+                id: RevocationId::random().unwrap(),
+                target: fixture.laptop_id.clone(),
+            },
+            10,
+            10,
+        );
+        match fault {
+            StoreFailure::RevocationHistory => {
+                assert!(matches!(revoke, Err(RuntimeError::Capacity(_))))
+            }
+            StoreFailure::AckHistory => {
+                revoke.unwrap();
+                let applied = runtime.desired_host_state(11).unwrap().snapshot;
+                assert!(matches!(
+                    runtime.acknowledge_applied(&applied),
+                    Err(RuntimeError::Capacity(_))
+                ));
+            }
+            _ => unreachable!(),
+        }
+        *fixture.store.0.borrow_mut() = original;
+        assert!(matches!(
+            runtime.desired_host_state(12),
+            Err(RuntimeError::Capacity(_))
+        ));
+        assert!(matches!(
+            fixture.call(&mut runtime, &fixture.laptop, RpcRequest::Snapshot, 12, 12),
+            Err(RuntimeError::Capacity(_))
+        ));
+        drop(runtime);
+        assert!(matches!(
+            ServerRuntime::open(
+                fixture.store.clone(),
+                LocalDeviceKeys::load(&fixture.dir.path().join("keys")).unwrap(),
+                fixture.config.clone(),
+                &fixture.dir.path().join("runtime.db")
+            ),
+            Err(RuntimeError::Capacity(_))
+        ));
+    }
 }
