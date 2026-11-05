@@ -578,3 +578,68 @@ fn node_config_wireguard_port_accepts_udp443_and_unprivileged_except_gossip() {
         );
     }
 }
+
+#[test]
+fn trusted_authority_recheck_does_not_replay_or_consume_the_original_nonce() {
+    use tako_network::{
+        api::{ManagementAction, RpcResponse, SignedRequest},
+        runtime::{RuntimeConfig, RuntimeLimits, ServerRuntime},
+    };
+    let fixture = Fixture::new();
+    let temp = tempfile::tempdir().unwrap();
+    let snapshot = fixture.config.bootstrap.clone();
+    let backend = Rc::new(RefCell::new(snapshot.clone()));
+    let guard = store::MonotonicStore::new(
+        MemoryStore(backend.clone()),
+        Directory::open(temp.path(), true).unwrap(),
+        Rc::new(RefCell::new(snapshot.clone())),
+    );
+    let mut runtime = ServerRuntime::open(
+        guard,
+        fixture.keys,
+        RuntimeConfig {
+            network: fixture.config.network.clone(),
+            server_id: fixture.config.server_id.clone(),
+            boot_id: BootId::random().unwrap(),
+            limits: RuntimeLimits::default(),
+        },
+        &temp.path().join("runtime.db"),
+    )
+    .unwrap();
+    let signed = SignedRequest::sign(
+        &fixture.admin,
+        fixture.config.network.id.clone(),
+        fixture.config.server_id.clone(),
+        DeviceKind::Laptop,
+        2,
+        RpcRequest::Authorize {
+            action: ManagementAction::ReleaseArtifact {
+                scope: Some("api/prod".parse().unwrap()),
+                sha256: "a".repeat(64),
+            },
+        },
+    )
+    .unwrap();
+    let original = runtime
+        .handle(signed.clone(), "POST", "/v1/network/authorize", 2)
+        .unwrap();
+    let current = runtime.desired_host_state(500).unwrap().snapshot;
+    let (control, _, _) = lifecycle::Control::new();
+    control.publish_enforced(&current);
+    for _ in 0..2 {
+        let rechecked =
+            authority::check(&fixture.config, &signed, &current, 500, true, &control).unwrap();
+        assert_eq!(rechecked, original);
+        assert!(matches!(rechecked, RpcResponse::Authorized { .. }));
+    }
+    assert_eq!(*backend.borrow(), snapshot); // no registry mutation
+    let db = rusqlite::Connection::open_with_flags(
+        temp.path().join("runtime.db"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    let nonces: i64 = db
+        .query_row("SELECT count(*) FROM consumed_nonces", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(nonces, 1); // first authentication only
+}

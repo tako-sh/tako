@@ -1,5 +1,5 @@
 use super::{
-    AgentError, AgentRequest, AgentResponse, Result,
+    AgentError, AgentRequest, AgentResponse, Result, authority,
     lifecycle::{Control, WithdrawOnDrop},
     now,
     process::{self, DnsStatus, OwnedChild},
@@ -508,7 +508,63 @@ impl Controller {
             self.reconcile_or_isolate();
         }
     }
+    fn recheck_authority(&mut self, signed: &tako_network::api::SignedRequest) -> AgentResponse {
+        if let Err(error) = authority::validate(&self.config, signed) {
+            return self.response(Err(error));
+        }
+        if !self.ready || self.revoked || self.stop.load(Ordering::Acquire) {
+            return AgentResponse::unavailable(&self.boot);
+        }
+        // Read through runtime's durable denial/clock guard, without replaying
+        // handle(), consuming another nonce, or creating a management grant.
+        let current = (|| -> Result<_> {
+            let read_at = now()?;
+            let snapshot = self.runtime.desired_host_state(read_at)?.snapshot;
+            // Store I/O can outlast a member's remaining lifetime. Evaluate
+            // expiry after that read, not against its earlier start timestamp.
+            let time = now()?;
+            if time < read_at {
+                return Err(AgentError::Invalid(
+                    "clock moved backwards during authority recheck",
+                ));
+            }
+            let desired = projection::desired(&self.config, &self.keys, &snapshot, time, false)?;
+            if self.applied.hash != Some(openssl::sha::sha256(&desired))
+                || !self.control.matches(&snapshot)
+                || self.stop.load(Ordering::Acquire)
+            {
+                return Err(AgentError::Invalid(
+                    "management authority is not currently enforced",
+                ));
+            }
+            Ok((snapshot, time))
+        })();
+        let (snapshot, time) = match current {
+            Ok(value) => value,
+            Err(error) => {
+                self.withdraw();
+                if let Err(isolation) = self.isolate() {
+                    tracing::error!(error = %isolation, "management authority recheck isolation not acknowledged");
+                }
+                return self.response(Err(error));
+            }
+        };
+        self.response(authority::check(
+            &self.config,
+            signed,
+            &snapshot,
+            time,
+            self.ready,
+            &self.control,
+        ))
+    }
     fn handle(&mut self, request: AgentRequest) -> AgentResponse {
+        if authority::reserved_route(&request.method, &request.path) {
+            if request.method == authority::METHOD && request.path == authority::PATH {
+                return self.recheck_authority(&request.signed);
+            }
+            return self.response(Err(AgentError::Runtime(RuntimeError::Authentication)));
+        }
         let repair = allowed_while_unready(&request.signed.request);
         let was_ready = self.ready;
         if self.ready {
@@ -549,6 +605,9 @@ impl Controller {
         if was_ready {
             self.reconcile_or_isolate();
         }
+        self.response(result)
+    }
+    fn response(&self, result: Result<tako_network::api::RpcResponse>) -> AgentResponse {
         match result {
             Ok(response) => AgentResponse {
                 status: 200,

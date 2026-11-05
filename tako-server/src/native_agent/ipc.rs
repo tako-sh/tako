@@ -1,6 +1,6 @@
 use super::{
     AgentError, AgentRequest, AgentResponse, CONNECTIONS, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES,
-    QUEUE_SIZE, Result,
+    QUEUE_SIZE, Result, authority,
     controller::{self, Work},
     lifecycle::{self, BrokerOwner, Control},
     services,
@@ -93,11 +93,48 @@ pub async fn relay(
     path: &str,
     bytes: &[u8],
 ) -> Result<AgentResponse> {
+    // This entry point accepts public transport inputs. Internal capabilities
+    // must never be reachable through it, even if a parent whitelist regresses.
+    if authority::reserved_route(method, path) {
+        return Err(AgentError::Invalid(
+            "internal agent route is not a public RPC",
+        ));
+    }
     if bytes.len() > tako_network::api::MAX_RPC_BYTES || method.len() > 16 || path.len() > 256 {
         return Err(AgentError::Invalid("RPC input exceeds limit"));
     }
     let signed: SignedRequest = serde_json::from_slice(bytes)?;
     check_signed_size(&signed)?;
+    exchange(
+        data_dir,
+        AgentRequest {
+            method: method.into(),
+            path: path.into(),
+            signed,
+        },
+    )
+    .await
+}
+
+/// Trusted local management continuation only: caller must first authenticate
+/// this exact envelope once, consume its nonce, and retain the bound action/body.
+/// Call after reading an upload and acquiring the dispatch guard. This is not an
+/// authentication entry point and must never be exposed as a public HTTP route.
+pub async fn recheck_authority(data_dir: &Path, signed: &SignedRequest) -> Result<AgentResponse> {
+    check_signed_size(signed)?;
+    authority::action(signed)?;
+    exchange(
+        data_dir,
+        AgentRequest {
+            method: authority::METHOD.into(),
+            path: authority::PATH.into(),
+            signed: signed.clone(),
+        },
+    )
+    .await
+}
+
+async fn exchange(data_dir: &Path, request: AgentRequest) -> Result<AgentResponse> {
     let config = NodeConfig::load(data_dir)?;
     let socket = config.socket_path(data_dir);
     Directory::open(&config.network_dir(data_dir), true)?;
@@ -106,11 +143,6 @@ pub async fn relay(
     if !meta.file_type().is_socket() || meta.uid() != uid || meta.mode() & 0o7777 != 0o600 {
         return Err(AgentError::Invalid("unsafe agent socket"));
     }
-    let request = AgentRequest {
-        method: method.into(),
-        path: path.into(),
-        signed,
-    };
     let mut wire = serde_json::to_vec(&request)?;
     if wire.len() > MAX_REQUEST_BYTES {
         return Err(AgentError::Invalid("IPC request exceeds limit"));
@@ -393,6 +425,39 @@ mod tests {
         writer.write_all(bytes).await.unwrap();
         writer.shutdown().await.unwrap();
         read_frame(&mut reader, limit).await
+    }
+    #[tokio::test]
+    async fn public_relay_rejects_internal_routes_before_parsing_or_connecting() {
+        for (method, path) in [
+            (authority::METHOD, authority::PATH),
+            ("POST", authority::PATH),
+            (authority::METHOD, "/v1/network/authorize"),
+            ("POST", "/internal/other"),
+        ] {
+            assert!(matches!(
+                relay(Path::new("/does-not-exist"), method, path, b"invalid").await,
+                Err(AgentError::Invalid(
+                    "internal agent route is not a public RPC"
+                ))
+            ));
+        }
+        assert!(!authority::reserved_route("POST", "/v1/network/authorize"));
+        let fixture = super::super::tests::Fixture::new();
+        let signed = SignedRequest::sign(
+            &fixture.admin,
+            fixture.config.network.id,
+            fixture.config.server_id,
+            tako_network::DeviceKind::Laptop,
+            2,
+            tako_network::api::RpcRequest::Snapshot,
+        )
+        .unwrap();
+        assert!(matches!(
+            recheck_authority(Path::new("/does-not-exist"), &signed).await,
+            Err(AgentError::Runtime(
+                tako_network::api::RuntimeError::Authentication
+            ))
+        ));
     }
     #[tokio::test]
     async fn bounded_single_line_and_eof_required() {

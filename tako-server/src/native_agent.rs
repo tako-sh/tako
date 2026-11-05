@@ -2,6 +2,8 @@
 //! the controller or its nonce database. Parent startup wires `run` separately.
 #![cfg(target_os = "linux")]
 
+#[path = "native_agent/authority.rs"]
+mod authority;
 #[path = "native_agent/controller.rs"]
 mod controller;
 #[path = "native_agent/ipc.rs"]
@@ -17,7 +19,7 @@ mod services;
 #[path = "native_agent/store.rs"]
 mod store;
 
-pub use ipc::{relay, run};
+pub use ipc::{recheck_authority, relay, run};
 use serde::{Deserialize, Serialize};
 use tako_network::{
     BootId,
