@@ -51,6 +51,7 @@ pub(crate) use limits::MAX_REQUEST_BODY_BYTES;
 
 /// Tako HTTP proxy service
 pub struct TakoProxy {
+    native_control: Option<Arc<crate::native_control::NativeControl>>,
     /// Load balancer
     lb: Arc<LoadBalancer>,
     /// Route table (app_name -> route patterns)
@@ -98,6 +99,7 @@ impl TakoProxy {
             .as_ref()
             .map(ResponseCacheRuntime::new);
         Self {
+            native_control: None,
             lb,
             routes,
             config,
@@ -127,6 +129,7 @@ impl TakoProxy {
             .as_ref()
             .map(ResponseCacheRuntime::new);
         Self {
+            native_control: None,
             lb,
             routes,
             config,

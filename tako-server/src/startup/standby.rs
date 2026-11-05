@@ -66,7 +66,7 @@ pub(super) fn spawn_standby_monitor(rt: &Runtime, config: StandbyPromotionConfig
                                 tokio::spawn(async move {
                                     if let Err(e) = SocketServer::serve(listener, move |cmd| {
                                         let state = socket_state.clone();
-                                        async move { state.handle_command(cmd).await }
+                                        async move { crate::management_http::handle_rpc_command(state, cmd).await }
                                     })
                                     .await
                                     {

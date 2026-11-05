@@ -93,6 +93,8 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     if let Err(e) = cert_manager.init() {
         tracing::warn!("Failed to initialize certificate manager: {}", e);
     }
+    let native_control =
+        crate::native_control::NativeControl::load(&data_dir, &cert_manager)?.map(Arc::new);
 
     let (_socket_server, socket_listener) = if standby {
         (None, None)
@@ -183,6 +185,9 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             runtime,
         )?
     });
+    if let Some(control) = &native_control {
+        control.attach(state.clone());
+    }
     rt.block_on(async { state.ensure_internal_socket_started() })?;
 
     if let Err(e) = rt.block_on(state.restore_from_state_store()) {
@@ -282,6 +287,7 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let server = proxy::build_server_with_acme(proxy::ServerBuildConfig {
+        native_control,
         lb: state.load_balancer(),
         routes: state.routes(),
         config: proxy_config,

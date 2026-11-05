@@ -23,6 +23,7 @@ pub(crate) struct PublicListenerEndpoint {
 }
 
 pub(crate) struct ServerBuildConfig {
+    pub(crate) native_control: Option<Arc<crate::native_control::NativeControl>>,
     pub(crate) lb: Arc<LoadBalancer>,
     pub(crate) routes: Arc<RwLock<RouteTable>>,
     pub(crate) config: ProxyConfig,
@@ -36,6 +37,7 @@ pub(crate) struct ServerBuildConfig {
 /// Build and start the Pingora server with ACME and SNI support
 pub(crate) fn build_server_with_acme(build: ServerBuildConfig) -> Result<Server> {
     let ServerBuildConfig {
+        native_control,
         lb,
         routes,
         config,
@@ -49,7 +51,7 @@ pub(crate) fn build_server_with_acme(build: ServerBuildConfig) -> Result<Server>
     let mut server = Server::new_with_opt_and_conf(None, proxy_server_conf()?);
     server.bootstrap();
 
-    let proxy = if let Some(tokens) = acme_tokens {
+    let mut proxy = if let Some(tokens) = acme_tokens {
         TakoProxy::with_acme(
             lb,
             routes.clone(),
@@ -67,6 +69,7 @@ pub(crate) fn build_server_with_acme(build: ServerBuildConfig) -> Result<Server>
             cloudflare_ips,
         )
     };
+    proxy.native_control = native_control;
     if let Some(resolver) = channel_postgres_url {
         proxy.set_channel_postgres_url_resolver(resolver);
     }

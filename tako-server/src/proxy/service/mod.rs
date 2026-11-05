@@ -119,6 +119,13 @@ impl ProxyHttp for TakoProxy {
     async fn request_filter(&self, session: &mut Session, ctx: &mut Self::CTX) -> Result<bool> {
         ctx.observation.initialize_request_id(session.req_header());
 
+        if let Some(control) = &self.native_control
+            && control.matches_host(request_host(session.req_header()))
+        {
+            ctx.observation.set_handler("network", "control");
+            return control.handle(session).await;
+        }
+
         if let Some(cl) = session
             .req_header()
             .headers
