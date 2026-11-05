@@ -1,0 +1,70 @@
+Tako native networking — implementation and verification
+
+Source checked: 4b65923531720f3b38b5c7210ab36096e495941f
+Branch: feat/native-networks
+Base: 558135869072cd1e64e3dda08d3ee8663d786fe7
+
+Implemented
+- Managed standard WireGuard, stable network identities and local aliases.
+- Per-device enrollment, expiring scopes, approval/import and monotonic revocation.
+- Separate application/environment secret keys; no hosted account requirement.
+- Corrosion membership, signed expiring service placements, private DNS/routing.
+- Pinned HTTPS management for scoped sandboxes without local WireGuard or SSH.
+- Cross-server channels/presence with bounded replay and internal SDK recovery.
+- Locally generated typed HTTP contracts.
+- Drain/resume with shared process leases, complete request accounting, bounded
+  subprocess cancellation, primary management ownership and fresh-state promotion.
+- Installer, CLI documentation and canonical/generated agent skills.
+
+Final checks
+PASS cargo check --offline -p tako-cli -p tako-server --all-targets.
+     Existing unrelated unused TcpListener import warning in tako-dev-proxy remains.
+PASS just test cli: 73 passed, 7 existing skips, normal test timeouts. Repeated
+     after final source changes with the same result.
+PASS cargo test --offline -p tako-cli --bin tako network:: -- --test-threads=1:
+     30 passed, 1477 unrelated cases filtered out.
+PASS cargo test --offline -p tako-compose --lib -- --test-threads=1:
+     35 passed, 13 existing Docker integration tests ignored.
+PASS final focused tako-server binary suite: 264 passed, 1 existing Docker test
+     ignored. 639 unrelated or explicitly excluded cases filtered out.
+PASS git diff --check and canonical skill regeneration.
+PASS helper source SHA256 matches the installer receipt.
+
+The server suite selects native_, operations::drain::, request_drain::,
+state_store::tests, proxy::service::native::tests, proxy::service::drain_tests,
+proxy::server::tests, process_output::tests, production_install_observes_drain,
+completed_health_probe_cannot_restore and network_bootstrap::.
+Four socket-dependent cases were explicitly excluded after sandbox EPERM:
+- forwards_public_udp_and_tcp_and_rejects_mismatched_replies
+- serves_real_udp_and_tcp_queries_and_stops_on_shutdown
+- native_deploy_must_stop_previous_compose_even_without_http_instances
+- scale_rejects_invalid_actions_and_compose_flags_for_native_apps
+
+Additional recorded slices passed: Rust CLI regression, helper/installer/policy
+fixtures, network domain/runtime tests, service generation, JavaScript channel
+recovery, and website source/type/link checks. These are offline verification,
+not proof of kernel policy or successful remote deployment.
+
+Review
+Separate agents reviewed membership authority, the privileged host helper,
+management scopes/uploads, private routing, replay recovery, and drain lifecycle.
+Confirmed findings were fixed and regression tests added. Reviews used the
+inherited model; no cross-model review is claimed.
+
+Outstanding verification
+- Required Docker E2E was attempted with E2E_USE_PREBUILT=1 just test e2e;
+  Docker Unix socket access returned EPERM.
+- Live WireGuard/nftables/systemd/private DNS, pinned TLS, multi-host deployment,
+  real reload/promotion, PostgreSQL integration and Go checks are unverified.
+- Website static build was blocked by esbuild EPERM; rendered verification could
+  not run without dist output. Source/type/link checks passed.
+- No remote branch or PR was published. Previous permission-gated publication
+  attempts were aborted; they were not repeated. User authorization is already
+  provided, but execution/tool access remains the operational limitation.
+
+No merge, installation or production deployment occurred. Keep the proposed PR
+in draft until the live scenarios above have been verified.
+
+Portable delivery
+/workspace/tako-delivery contains the PR description, final logs and a Git bundle.
+The bundle preserves the small commits and requires the base commit above.
