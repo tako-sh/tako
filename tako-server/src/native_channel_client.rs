@@ -14,7 +14,7 @@ use tako_channels::{
     ChannelAuthResponse, ChannelError, ChannelMessage, ChannelPublishPayload, ChannelStore,
     ChannelStoreConfig,
 };
-use tako_channels::{ChannelWriter, PresenceMember};
+use tako_channels::PresenceMember;
 use tako_network::AppEnv;
 use tokio::{sync::watch, task::JoinHandle};
 use zeroize::Zeroizing;

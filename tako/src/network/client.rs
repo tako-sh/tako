@@ -130,16 +130,6 @@ fn prepare_request(
     Ok((http, request))
 }
 
-pub(crate) fn server(profile: &Profile) -> Result<DeviceId> {
-    if let Profile::Pending { profile } = profile {
-        return Ok(profile.issuer.clone());
-    }
-    trusted_servers(profile)?
-        .into_keys()
-        .next()
-        .ok_or_else(|| "Network has no trusted servers".into())
-}
-
 pub(crate) fn refresh(alias: &NetworkAlias) -> Result<Profile> {
     let mut profile = super::load_profile(alias)?;
     if let Profile::Pending { profile: pending } = &profile {

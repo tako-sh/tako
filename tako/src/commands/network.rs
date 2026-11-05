@@ -52,6 +52,20 @@ pub enum NetworkCommands {
         #[arg(long)]
         network: Option<String>,
     },
+    /// Stop new application traffic and drain a server, keeping management available
+    Drain {
+        device: String,
+        #[arg(long)]
+        network: Option<String>,
+        #[arg(long, default_value_t = 120, value_name = "SECONDS", value_parser = clap::value_parser!(u64).range(0..=3600))]
+        timeout: u64,
+    },
+    /// Resume persisted applications on a drained server
+    Resume {
+        device: String,
+        #[arg(long)]
+        network: Option<String>,
+    },
     /// Refresh and inspect network membership
     Status { network: Option<String> },
     /// Import an approved profile for keys generated on this machine
@@ -109,8 +123,89 @@ pub fn run(command: NetworkCommands, config_path: Option<&Path>) -> Result<()> {
         NetworkCommands::Revoke { device, network } => {
             revoke(&device, network.as_deref(), config_path)
         }
+        NetworkCommands::Drain {
+            device,
+            network,
+            timeout,
+        } => manage_server(
+            &device,
+            network.as_deref(),
+            config_path,
+            tako_core::Command::DrainServer {
+                timeout_seconds: timeout,
+            },
+        ),
+        NetworkCommands::Resume { device, network } => manage_server(
+            &device,
+            network.as_deref(),
+            config_path,
+            tako_core::Command::ResumeServer,
+        ),
         NetworkCommands::Status { network } => status(network.as_deref(), config_path),
     }
+}
+
+fn manage_server(
+    device: &str,
+    value: Option<&str>,
+    config_path: Option<&Path>,
+    command: tako_core::Command,
+) -> Result<()> {
+    use crate::management_http::{ManagementClient, ManagementTarget, NativeTarget, parse_ok_data};
+    let alias = network::resolve_network(value, config_path)?;
+    let profile = if output::is_dry_run() {
+        network::load_profile(&alias)?
+    } else {
+        network::client::refresh(&alias)?
+    };
+    let members = network::server_members(&profile)?;
+    let candidates: Vec<_> = members
+        .iter()
+        .filter(|(id, member)| id.to_string() == device || member.request.name.as_str() == device)
+        .collect();
+    let [(id, _)] = candidates.as_slice() else {
+        return Err("Server must uniquely match a name or device ID".into());
+    };
+    if output::is_dry_run() {
+        return finish(
+            "Would update server drain state",
+            serde_json::json!({"dry_run": true, "network": alias.name, "device": id, "command": command}),
+        );
+    }
+    let target = ManagementTarget::Native(NativeTarget {
+        network: alias.clone(),
+        server_id: (*id).clone(),
+    });
+    let runtime = tokio::runtime::Runtime::new()?;
+    let result: serde_json::Value = runtime.block_on(async {
+        let mut client = ManagementClient::for_target(&target).await?;
+        parse_ok_data(client.send(&command).await?, "server drain")
+    })?;
+    if matches!(command, tako_core::Command::DrainServer { .. }) {
+        if result.get("completed").and_then(serde_json::Value::as_bool) == Some(true) {
+            output::success("Server drained; network management remains available");
+        } else {
+            output::hint(
+                "Drain remains in progress. The server rejects new application traffic; run this command again to check and finish cleanup.",
+            );
+        }
+        if result.get("timed_out").and_then(serde_json::Value::as_bool) == Some(true) {
+            output::hint(
+                "The drain deadline expired; remaining processes were asked to stop. Review the drain report before removing the server.",
+            );
+        }
+        output::hint(
+            "Drain does not move databases, volumes, or external ingress. Revoke the server only after its work and data are accounted for.",
+        );
+    } else {
+        output::success("Server resumed");
+    }
+    if output::is_json() {
+        output::json_result(
+            serde_json::json!({"network": alias.name, "device": id, "result": result}),
+        )?;
+    }
+    Ok(())
 }
 
 fn create(name: &str) -> Result<()> {
