@@ -3,7 +3,7 @@ use crate::{
     Approval, DeviceKind, MemberKind, NetworkDescriptor, Permissions, ServerInfo, WgChallenge,
 };
 
-fn fixture() -> (RegistrySnapshot, LocalDeviceKeys) {
+pub(super) fn fixture() -> (RegistrySnapshot, LocalDeviceKeys) {
     let keys = LocalDeviceKeys::generate().unwrap();
     let network = NetworkId::random().unwrap();
     let id = keys.device_id(&network, DeviceKind::Server).unwrap();
