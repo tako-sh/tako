@@ -104,6 +104,7 @@ pub struct ServerState {
     pub(crate) drain_requested: Arc<AtomicBool>,
     pub(crate) drain_activity: parking_lot::Mutex<Option<crate::state_store::DrainLease>>,
     pub(crate) drain_observer_started: AtomicBool,
+    pub(crate) proxy_requests: Arc<crate::request_drain::RequestDrain>,
     pub(crate) runtime: ServerRuntimeConfig,
     pub(crate) workflows: Arc<crate::workflows::WorkflowManager>,
 }
@@ -197,6 +198,10 @@ impl ServerState {
         }
         let drain_requested = Arc::new(AtomicBool::new(requested));
         let drain_activity = parking_lot::Mutex::new(if requested { None } else { activity });
+        let proxy_requests = crate::request_drain::RequestDrain::default();
+        if requested {
+            proxy_requests.begin_drain();
+        }
         let persisted_mode = state_store.server_mode()?;
         let persisted_owner = state_store.upgrade_lock_owner()?;
         let preserve_upgrade_mode = match expected_upgrade_owner {
@@ -360,6 +365,7 @@ impl ServerState {
             drain_requested,
             drain_activity,
             drain_observer_started: AtomicBool::new(false),
+            proxy_requests,
             server_mode: AsyncRwLock::new(server_mode),
             runtime,
             workflows,

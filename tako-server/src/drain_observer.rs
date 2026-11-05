@@ -38,6 +38,7 @@ impl ServerState {
         })?;
         if requested {
             self.drain_requested.store(true, Ordering::Release);
+            self.proxy_requests.begin_drain();
         }
         if !self.drain_requested.load(Ordering::Acquire) {
             return Ok(());

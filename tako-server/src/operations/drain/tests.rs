@@ -510,3 +510,50 @@ async fn prelock_drain_persists_and_closes_gate_while_preparation_owns_managemen
         true
     );
 }
+
+#[tokio::test]
+async fn proxy_guard_without_transport_keeps_activity_after_force_until_it_drops() {
+    let (_dir, state) = fixture();
+    let request = state.proxy_requests.register(None).unwrap();
+    let response = state.drain_server(0).await;
+    let report = response.data().unwrap();
+    assert_eq!(report["completed"], false);
+    assert_eq!(report["forced_proxy_requests"], 1);
+    assert_eq!(report["forced_proxy_transports"], 0);
+    assert_eq!(report["remaining_proxy_requests"], 1);
+    assert!(state.drain_activity.lock().is_some());
+    assert!(state.proxy_requests.register(None).is_none());
+    assert!(!state.resume_server().await.is_ok());
+    assert!(state.state_store.drain_requested().unwrap());
+    drop(request);
+    state.observe_drain_once().await.unwrap();
+    assert!(state.drain_activity.lock().is_none());
+    assert!(state.resume_server().await.is_ok());
+    assert!(state.proxy_requests.register(None).is_some());
+}
+
+#[tokio::test]
+async fn remote_proxy_guard_prevents_global_completion_after_local_apps_stop() {
+    let (dir, first) = fixture();
+    let second = open_state(dir.path());
+    let request = second.proxy_requests.register(None).unwrap();
+    assert_eq!(
+        first.drain_server(0).await.data().unwrap()["completed"],
+        false
+    );
+    assert!(second.observe_drain_once().await.is_err());
+    assert_eq!(second.proxy_requests.active_count(), 1);
+    assert!(second.drain_activity.lock().is_some());
+    assert_eq!(
+        first.drain_server(0).await.data().unwrap()["completed"],
+        false
+    );
+    drop(request);
+    second.observe_drain_once().await.unwrap();
+    assert_eq!(
+        first.drain_server(0).await.data().unwrap()["completed"],
+        true
+    );
+    let restarted = open_state(dir.path());
+    assert!(restarted.proxy_requests.register(None).is_none());
+}

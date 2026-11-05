@@ -18,6 +18,9 @@ pub(crate) struct DrainReport {
     http_drained: bool,
     forced_instances: usize,
     forced_http_requests: u64,
+    forced_proxy_requests: usize,
+    forced_proxy_transports: usize,
+    remaining_proxy_requests: usize,
     forced_workflow_workers: usize,
     remaining_instances: usize,
     remaining_workflow_workers: usize,
@@ -101,6 +104,7 @@ impl crate::ServerState {
             )));
         }
         self.drain_requested.store(true, Ordering::Release);
+        self.proxy_requests.begin_drain();
         Ok((operation, deadline))
     }
 
@@ -168,6 +172,7 @@ impl crate::ServerState {
 
     pub(crate) async fn drain_runtime_until(&self, deadline: Instant) -> DrainReport {
         self.drain_requested.store(true, Ordering::Release);
+        self.proxy_requests.begin_drain();
         self.workflows.begin_server_drain();
         let apps: Vec<_> = self
             .app_manager
@@ -188,7 +193,10 @@ impl crate::ServerState {
             let http_done = instances
                 .iter()
                 .all(|(_, instance)| instance.in_flight() == 0);
-            if http_done && self.workflows.server_drain_status().is_complete() {
+            if http_done
+                && self.proxy_requests.active_count() == 0
+                && self.workflows.server_drain_status().is_complete()
+            {
                 break;
             }
             if Instant::now() >= deadline {
@@ -206,6 +214,12 @@ impl crate::ServerState {
             .iter()
             .map(|(_, instance)| instance.in_flight())
             .sum();
+        let forced_proxy_requests = self.proxy_requests.active_count();
+        let forced_proxy_transports = if forced_proxy_requests > 0 {
+            self.proxy_requests.force_drain()
+        } else {
+            0
+        };
         let workflows_before_stop = self.workflows.server_drain_status();
         let (forced_workflow_workers, workflow_errors) = self.workflows.force_server_drain();
         let mut report = DrainReport {
@@ -214,10 +228,15 @@ impl crate::ServerState {
             local_completed: false,
             other_processes_quiescent: false,
             counts_scope: "local_process",
-            timed_out: forced_instances > 0 || !workflows_before_stop.is_complete(),
-            http_drained: forced_instances == 0,
+            timed_out: forced_instances > 0
+                || forced_proxy_requests > 0
+                || !workflows_before_stop.is_complete(),
+            http_drained: forced_instances == 0 && forced_proxy_requests == 0,
             forced_instances,
             forced_http_requests,
+            forced_proxy_requests,
+            forced_proxy_transports,
+            remaining_proxy_requests: self.proxy_requests.active_count(),
             forced_workflow_workers,
             remaining_instances: 0,
             remaining_workflow_workers: workflows_before_stop.workers,
@@ -273,8 +292,11 @@ impl crate::ServerState {
         let workflows = self.workflows.server_drain_status();
         report.remaining_workflow_workers = workflows.workers;
         report.remaining_workflow_background_tasks = workflows.background_tasks;
-        report.completed =
-            report.remaining_instances == 0 && workflows.is_complete() && report.errors.is_empty();
+        report.remaining_proxy_requests = self.proxy_requests.active_count();
+        report.completed = report.remaining_instances == 0
+            && report.remaining_proxy_requests == 0
+            && workflows.is_complete()
+            && report.errors.is_empty();
         report.local_completed = report.completed;
         if report.local_completed {
             self.drain_activity.lock().take();
@@ -343,6 +365,13 @@ impl crate::ServerState {
             let cleanup = self.drain_runtime_until(Instant::now()).await;
             return Err(format!(
                 "Server remains drained; restore failed: {error}; cleanup completed: {}",
+                cleanup.completed
+            ));
+        }
+        if !self.proxy_requests.resume() {
+            let cleanup = self.drain_runtime_until(Instant::now()).await;
+            return Err(format!(
+                "Server remains drained; proxy requests still active; cleanup completed: {}",
                 cleanup.completed
             ));
         }
