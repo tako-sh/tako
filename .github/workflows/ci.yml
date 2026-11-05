@@ -91,6 +91,18 @@ jobs:
     needs: [detect-changes]
     if: needs.detect-changes.outputs.website_only != 'true'
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432/tcp
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -111,6 +123,11 @@ jobs:
 
       - name: Run workspace tests
         run: cargo test --workspace --locked --lib --bins
+
+      - name: Test shared runtime storage
+        env:
+          TAKO_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:${{ job.services.postgres.ports[5432] }}/postgres
+        run: cargo test --locked -p tako-channels -p tako-workflows --lib
 
       - name: Run Compose integration tests
         run: |

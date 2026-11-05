@@ -16,6 +16,21 @@ const CHANNELS_DB_FILENAME: &str = "channels.sqlite";
 pub const POSTGRES_CHANNELS_SCHEMA: &str = "tako_channels";
 type StreamChanges = HashMap<String, tokio::sync::watch::Sender<Option<i64>>>;
 
+fn notify_committed(streams: &StreamChanges, channel: &str, latest: i64) {
+    if let Some(changes) = streams.get(channel) {
+        changes.send_if_modified(|seen| {
+            // A poll or publisher can finish notifying after a newer commit.
+            // Never move the observed head backwards or wake readers twice.
+            if seen.is_none_or(|previous| latest > previous) {
+                *seen = Some(latest);
+                true
+            } else {
+                false
+            }
+        });
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChannelStoreConfig {
     Sqlite {
@@ -63,10 +78,10 @@ enum ChannelStoreBackend {
 }
 
 impl ChannelStoreBackend {
-    fn prune(&self) -> Result<(), ChannelError> {
+    fn prune(&self, now: i64) -> Result<(), ChannelError> {
         match self {
-            Self::Sqlite(store) => store.prune(),
-            Self::Postgres(store) => store.prune(),
+            Self::Sqlite(store) => store.prune(now),
+            Self::Postgres(store) => store.prune(now),
         }
     }
 
@@ -96,7 +111,7 @@ impl ChannelStore {
                     }
                     let backend = &worker_backend;
                     if std::time::Instant::now() >= next_prune {
-                        if let Err(error) = backend.prune() {
+                        if let Err(error) = backend.prune(now_unix_ms()) {
                             tracing::warn!(%error, "channel replay cleanup failed");
                         }
                         next_prune = std::time::Instant::now() + std::time::Duration::from_secs(1);
@@ -113,16 +128,7 @@ impl ChannelStore {
                             Ok(heads) => {
                                 let streams = sender.lock();
                                 for (channel, latest) in heads {
-                                    if let Some(changes) = streams.get(&channel) {
-                                        changes.send_if_modified(|seen| {
-                                            if *seen == Some(latest) {
-                                                false
-                                            } else {
-                                                *seen = Some(latest);
-                                                true
-                                            }
-                                        });
-                                    }
+                                    notify_committed(&streams, &channel, latest);
                                 }
                             }
                             Err(error) => tracing::warn!(%error, "channel change poll failed"),
@@ -254,6 +260,19 @@ impl ChannelStore {
         ))
     }
 
+    /// Logical-clock histories drive maintenance themselves.
+    #[cfg(test)]
+    pub(crate) fn open_in_memory_without_maintenance() -> Self {
+        Self {
+            backend: Arc::new(ChannelStoreBackend::Sqlite(
+                SqliteChannelStore::open_in_memory().unwrap(),
+            )),
+            ephemeral: Arc::default(),
+            changes: Arc::default(),
+            _lifetime: Arc::new(()),
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn sqlite_conn(&self) -> parking_lot::MutexGuard<'_, rusqlite::Connection> {
         match self.backend.as_ref() {
@@ -269,6 +288,11 @@ impl ChannelStore {
     pub(crate) fn raw_execute(&self, sql: &str, params: impl rusqlite::Params) {
         let conn = self.sqlite_conn();
         conn.execute(sql, params).expect("raw execute");
+    }
+
+    #[cfg(test)]
+    pub(crate) fn prune_at(&self, now: i64) {
+        self.backend.prune(now).unwrap();
     }
 
     #[cfg(test)]
@@ -314,10 +338,18 @@ impl ChannelStore {
         channel: &str,
         payload: &ChannelPublishPayload,
     ) -> Result<ChannelMessage, ChannelError> {
-        match self.backend.as_ref() {
+        let message = match self.backend.as_ref() {
             ChannelStoreBackend::Sqlite(store) => store.append(channel, payload),
             ChannelStoreBackend::Postgres(store) => store.append(channel, payload),
-        }
+        }?;
+        // Wake local readers only after commit. The poller remains responsible
+        // for commits from other processes/servers; replay remains authoritative.
+        notify_committed(
+            &self.changes.lock(),
+            channel,
+            message.id.parse().expect("channel ids are numeric"),
+        );
+        Ok(message)
     }
 
     pub fn read_after(
@@ -392,4 +424,23 @@ pub(super) fn channel_message_from_row(
         r#type,
         data,
     })
+}
+
+#[cfg(test)]
+mod notification_tests {
+    use super::*;
+
+    #[test]
+    fn delayed_poll_or_publisher_cannot_regress_the_committed_head() {
+        let (sender, mut receiver) = tokio::sync::watch::channel(None);
+        let streams = HashMap::from([("events".to_string(), sender)]);
+        notify_committed(&streams, "events", 20);
+        assert_eq!(*receiver.borrow_and_update(), Some(20));
+        notify_committed(&streams, "events", 10);
+        notify_committed(&streams, "events", 20);
+        assert!(!receiver.has_changed().unwrap());
+        assert_eq!(*receiver.borrow(), Some(20));
+        notify_committed(&streams, "events", 21);
+        assert!(receiver.has_changed().unwrap());
+    }
 }

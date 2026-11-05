@@ -20,6 +20,15 @@ unit-go:
 workspace:
     cargo test --workspace
 
+# Reproduce a storage history workload; omit the seed to run the built-in corpus.
+histories seed="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -n "{{ seed }}" ]; then
+        export TAKO_TEST_HISTORY_SEED="{{ seed }}"
+    fi
+    cargo test --locked -p tako-channels -p tako-workflows --lib histor -- --nocapture
+
 sdk:
     bun run --filter 'tako.sh' build
     bun run --filter 'tako.sh' typecheck

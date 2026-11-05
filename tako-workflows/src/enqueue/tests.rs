@@ -1,6 +1,8 @@
 use super::*;
 use rusqlite::types::Value;
 
+mod histories;
+
 fn opts() -> EnqueueOpts {
     EnqueueOpts::default()
 }

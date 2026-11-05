@@ -336,6 +336,8 @@ If a worker exits with an error before it can claim any work, Tako stops the imm
 
 On one server, Tako stores durable workflow state locally. Runs belong to the deployed app and environment, not to one worker process or release, so a worker restart or rolling deploy does not discard progress.
 
+Local workflow transactions synchronize the SQLite write-ahead log before acknowledging changes, including enqueues and saved steps. Acknowledged state survives a process or host crash when the filesystem and storage device honor synchronization requests. This does not protect against loss of the disk or server; configure [backups](/backups/) for recovery. External step side effects still have the at-least-once contract described above.
+
 Tako keeps finished runs for at least 184 days by default, covering six calendar months, then removes them and their saved steps in small batches. The age is measured from completion, so long sleeps and waits do not shorten a run's history. Cleanup is best effort while the workflow runtime is active; stopped or retired stores can keep older rows until the runtime starts again. To change the age or keep history indefinitely, set `retention` in `tako.toml`:
 
 ```toml

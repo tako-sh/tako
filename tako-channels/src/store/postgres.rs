@@ -190,9 +190,8 @@ impl PostgresChannelStore {
             .map_err(|e| ChannelError::Storage(e.to_string()))
     }
 
-    pub(super) fn prune(&self) -> Result<(), ChannelError> {
+    pub(super) fn prune(&self, now: i64) -> Result<(), ChannelError> {
         let mut client = self.client.lock();
-        let now = now_unix_ms();
         client
             .execute(
                 &format!(
@@ -245,6 +244,36 @@ fn init_postgres(client: &mut Client, schema: &str) -> Result<(), ChannelError> 
         &[&format!("tako-channel-schema:{schema}")],
     )
     .map_err(|e| ChannelError::Storage(e.to_string()))?;
+    // IF NOT EXISTS still takes table locks (notably CREATE INDEX and ALTER).
+    // Reopening a ready store during a rolling restart must not run DDL while
+    // other connections publish or prune in the same schema. Keep this readiness
+    // check in sync with the tables, indexes, and migrations below.
+    let ready: bool = tx
+        .query_one(
+            "SELECT to_regclass($1) IS NOT NULL
+             AND to_regclass($2) IS NOT NULL
+             AND to_regclass($3) IS NOT NULL
+             AND to_regclass($4) IS NOT NULL
+             AND EXISTS (SELECT 1 FROM pg_attribute
+                         WHERE attrelid=to_regclass($5)
+                           AND attname='latest_message_id' AND NOT attisdropped)",
+            &[
+                &format!("{schema}.presence"),
+                &format!("{schema}.channel_messages"),
+                &format!("{schema}.idx_channel_messages_app_channel_id"),
+                &format!("{schema}.idx_channel_messages_app_id"),
+                &format!("{schema}.channel_metadata"),
+            ],
+        )
+        .map_err(|e| ChannelError::Storage(e.to_string()))?
+        .get(0);
+    if ready {
+        return tx
+            .commit()
+            .map_err(|e| ChannelError::Storage(e.to_string()));
+    }
+    // Publishers lock metadata before messages. Keep DDL in the same order:
+    // even an idempotent ALTER needs an exclusive lock on an existing table.
     tx
         .batch_execute(&format!(
             "CREATE SCHEMA IF NOT EXISTS {schema};
@@ -253,18 +282,6 @@ fn init_postgres(client: &mut Client, schema: &str) -> Result<(), ChannelError> 
                  member_json TEXT NOT NULL, expires_at BIGINT NOT NULL,
                  PRIMARY KEY(app_id, channel, connection_id)
              );
-             CREATE TABLE IF NOT EXISTS {schema}.channel_messages (
-                 id BIGSERIAL PRIMARY KEY,
-                 app_id TEXT NOT NULL,
-                 channel TEXT NOT NULL,
-                 type TEXT NOT NULL,
-                 data_json TEXT NOT NULL,
-                 created_at_unix_ms BIGINT NOT NULL DEFAULT ((extract(epoch from clock_timestamp()) * 1000)::BIGINT)
-             );
-             CREATE INDEX IF NOT EXISTS idx_channel_messages_app_channel_id
-               ON {schema}.channel_messages(app_id, channel, id);
-             CREATE INDEX IF NOT EXISTS idx_channel_messages_app_id
-               ON {schema}.channel_messages(app_id, id);
              CREATE TABLE IF NOT EXISTS {schema}.channel_metadata (
                  app_id TEXT NOT NULL,
                  channel TEXT NOT NULL,
@@ -276,7 +293,19 @@ fn init_postgres(client: &mut Client, schema: &str) -> Result<(), ChannelError> 
                  latest_message_id BIGINT NOT NULL DEFAULT 0,
                  PRIMARY KEY(app_id, channel)
              );
-             ALTER TABLE {schema}.channel_metadata ADD COLUMN IF NOT EXISTS latest_message_id BIGINT NOT NULL DEFAULT 0;"
+             ALTER TABLE {schema}.channel_metadata ADD COLUMN IF NOT EXISTS latest_message_id BIGINT NOT NULL DEFAULT 0;
+             CREATE TABLE IF NOT EXISTS {schema}.channel_messages (
+                 id BIGSERIAL PRIMARY KEY,
+                 app_id TEXT NOT NULL,
+                 channel TEXT NOT NULL,
+                 type TEXT NOT NULL,
+                 data_json TEXT NOT NULL,
+                 created_at_unix_ms BIGINT NOT NULL DEFAULT ((extract(epoch from clock_timestamp()) * 1000)::BIGINT)
+             );
+             CREATE INDEX IF NOT EXISTS idx_channel_messages_app_channel_id
+               ON {schema}.channel_messages(app_id, channel, id);
+             CREATE INDEX IF NOT EXISTS idx_channel_messages_app_id
+               ON {schema}.channel_messages(app_id, id);"
         ))
         .map_err(|e| ChannelError::Storage(e.to_string()))?;
     tx.commit()
