@@ -68,18 +68,23 @@ impl SqliteStateStore {
 
     pub(crate) fn drain_deadline_unix_ms(&self) -> Result<u64, StateStoreError> {
         let conn = self.lock_conn()?;
-        Ok(conn.query_row(
+        let deadline: i64 = conn.query_row(
             "SELECT deadline_unix_ms FROM server_drain WHERE id = 1",
             [],
             |row| row.get(0),
-        )?)
+        )?;
+        u64::try_from(deadline)
+            .map_err(|_| StateStoreError::InvalidData("negative drain deadline".into()))
     }
 
     pub(crate) fn request_drain_until(&self, deadline_unix_ms: u64) -> Result<(), StateStoreError> {
+        let deadline = i64::try_from(deadline_unix_ms).map_err(|_| {
+            StateStoreError::InvalidData("drain deadline exceeds SQLite integer range".into())
+        })?;
         let conn = self.lock_conn()?;
         let changed = conn.execute(
             "UPDATE server_drain SET requested = 1, deadline_unix_ms = ?1 WHERE id = 1",
-            [deadline_unix_ms],
+            [deadline],
         )?;
         if changed != 1 {
             return Err(StateStoreError::InvalidData(
