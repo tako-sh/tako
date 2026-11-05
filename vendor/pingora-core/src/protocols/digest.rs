@@ -80,6 +80,10 @@ impl Default for TimingDigest {
 pub struct SocketDigest {
     #[cfg(unix)]
     raw_fd: std::os::unix::io::RawFd,
+    // Retain ownership before the transport can move to an independent H2 connection driver.
+    // raw_fd is this duplicate's number (or -1 on failure), never the caller's recyclable FD.
+    #[cfg(unix)]
+    owned_fd: Option<std::os::fd::OwnedFd>,
     #[cfg(windows)]
     raw_sock: std::os::windows::io::RawSocket,
     /// Remote socket address
@@ -91,10 +95,39 @@ pub struct SocketDigest {
 }
 
 impl SocketDigest {
+    /// Duplicate the retained connection descriptor for independently owned transport shutdown.
+    /// This remains safe after the original connection driver exits or its FD number is reused.
+    /// Returns an error if the constructor could not retain a descriptor; never falls back to
+    /// duplicating the original raw FD. The duplicate has close-on-exec set.
+    #[cfg(unix)]
+    pub fn duplicate_socket(&self) -> std::io::Result<std::os::fd::OwnedFd> {
+        use std::os::fd::AsFd;
+        self.owned_fd
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("socket descriptor was not retained"))?
+            .as_fd()
+            .try_clone_to_owned()
+    }
+
+    /// Capture socket information while the caller still owns the live connection descriptor.
+    /// One close-on-exec duplicate is retained for the digest's lifetime, including H2 sessions
+    /// whose connection driver has already stopped. An invalid FD or duplication failure leaves
+    /// socket operations unavailable instead of accessing a potentially recycled descriptor.
     #[cfg(unix)]
     pub fn from_raw_fd(raw_fd: std::os::unix::io::RawFd) -> SocketDigest {
+        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+        // SAFETY: fcntl accepts any integer descriptor and returns an error for invalid input.
+        // Unlike BorrowedFd::borrow_raw, this does not assert validity of an unchecked RawFd.
+        let duplicate = unsafe { libc::fcntl(raw_fd, libc::F_DUPFD_CLOEXEC, 0) };
+        let owned_fd = if duplicate < 0 {
+            None
+        } else {
+            // SAFETY: successful F_DUPFD_CLOEXEC returned a new, uniquely owned descriptor.
+            Some(unsafe { OwnedFd::from_raw_fd(duplicate) })
+        };
         SocketDigest {
-            raw_fd,
+            raw_fd: owned_fd.as_ref().map_or(-1, AsRawFd::as_raw_fd),
+            owned_fd,
             peer_addr: OnceCell::new(),
             local_addr: OnceCell::new(),
             original_dst: OnceCell::new(),
@@ -271,6 +304,50 @@ pub trait GetSocketDigest {
 mod tests {
     use super::SocketDigest;
     use std::os::unix::io::AsRawFd;
+
+    #[test]
+    fn duplicate_socket_owns_a_distinct_close_on_exec_descriptor() {
+        // Exercise descriptor ownership without requiring permission to create sockets.
+        let source = std::fs::File::open("/dev/null").unwrap();
+        let digest = SocketDigest::from_raw_fd(source.as_raw_fd());
+        let duplicate = digest.duplicate_socket().unwrap();
+        assert_ne!(source.as_raw_fd(), duplicate.as_raw_fd());
+        drop(digest);
+        drop(source);
+        // SAFETY: duplicate owns a valid descriptor through both fcntl calls.
+        let flags = unsafe { libc::fcntl(duplicate.as_raw_fd(), libc::F_GETFD) };
+        assert_ne!(flags, -1);
+        assert_ne!(flags & libc::FD_CLOEXEC, 0);
+        let second = duplicate.try_clone().unwrap();
+        drop(duplicate);
+        assert_ne!(
+            unsafe { libc::fcntl(second.as_raw_fd(), libc::F_GETFD) },
+            -1
+        );
+    }
+
+    #[test]
+    fn duplicate_socket_remains_bound_after_original_owner_exits() {
+        use std::io::Read;
+        let original = std::fs::File::open("/dev/null").unwrap();
+        let digest = SocketDigest::from_raw_fd(original.as_raw_fd());
+        drop(original);
+        // This may reuse the original FD number; the digest must never follow that number.
+        let mut unrelated = std::fs::File::open("/dev/zero").unwrap();
+        let duplicate = digest.duplicate_socket().unwrap();
+        let mut retained = std::fs::File::from(duplicate);
+        let mut byte = [0xff];
+        assert_eq!(retained.read(&mut byte).unwrap(), 0);
+        assert_eq!(unrelated.read(&mut byte).unwrap(), 1);
+        assert_eq!(byte, [0]);
+    }
+
+    #[test]
+    fn duplicate_socket_fails_closed_without_retained_descriptor() {
+        let digest = SocketDigest::from_raw_fd(-1);
+        assert!(digest.duplicate_socket().is_err());
+        assert_eq!(digest.raw_fd, -1);
+    }
 
     #[test]
     fn socket_cookie_returns_cookie_for_tcp_socket() {
