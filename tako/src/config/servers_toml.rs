@@ -312,28 +312,6 @@ impl ServersToml {
     pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
         let path = path.as_ref();
 
-        // Ensure parent directory exists
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| ConfigError::FileWrite(parent.to_path_buf(), e))?;
-        }
-
-        let mut doc = if path.exists() {
-            let existing = fs::read_to_string(path)
-                .map_err(|e| ConfigError::FileRead(path.to_path_buf(), e))?;
-            if existing.trim().is_empty() {
-                toml::Value::Table(toml::map::Map::new())
-            } else {
-                toml::from_str::<toml::Value>(&existing)?
-            }
-        } else {
-            toml::Value::Table(toml::map::Map::new())
-        };
-
-        let root = doc.as_table_mut().ok_or_else(|| {
-            ConfigError::Validation("Global config must be a TOML table".to_string())
-        })?;
-
         let mut names: Vec<&str> = self.servers.keys().map(|k| k.as_str()).collect();
         names.sort_unstable();
 
@@ -386,17 +364,15 @@ impl ServersToml {
             servers_array.push(toml::Value::Table(table));
         }
 
-        if servers_array.is_empty() {
-            root.remove("servers");
-        } else {
-            root.insert("servers".to_string(), toml::Value::Array(servers_array));
-        }
-        root.remove("server_targets");
-
-        let content = toml::to_string_pretty(&doc)?;
-        fs::write(path, content).map_err(|e| ConfigError::FileWrite(path.to_path_buf(), e))?;
-
-        Ok(())
+        super::global::edit(path, |root| {
+            if servers_array.is_empty() {
+                root.remove("servers");
+            } else {
+                root.insert("servers".to_string(), toml::Value::Array(servers_array));
+            }
+            root.remove("server_targets");
+            Ok(())
+        })
     }
 
     /// Get a server by name
@@ -538,7 +514,7 @@ fn parse_port_field(
 }
 
 /// Validate server name format
-fn validate_server_name(name: &str) -> Result<()> {
+pub(super) fn validate_server_name(name: &str) -> Result<()> {
     if name.is_empty() {
         return Err(ConfigError::Validation(
             "Server name cannot be empty".to_string(),
