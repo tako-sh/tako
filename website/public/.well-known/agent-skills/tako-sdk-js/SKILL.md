@@ -2,7 +2,8 @@
 name: tako-sdk-js
 description: >-
   tako.sh SDK: fetch handler interface, tako runtime object, generated tako.d.ts type augmentation,
-  defineChannel/definePresence/defineStore/defineWorkflow, live data and offline reads, Vite and Next.js adapters.
+  typed HTTP service contracts, defineChannel/definePresence/defineStore/defineWorkflow, replay recovery,
+  live data and offline reads, Vite and Next.js adapters.
 type: framework
 library: tako.sh
 sources:
@@ -56,6 +57,7 @@ export default {
 | ------------------ | ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
 | `tako.sh`          | Isomorphic runtime + authoring helpers          | `tako`, `imageUrl`, `imageSrcSet`, `defineChannel`, `definePresence`, `defineStore`, `defineWorkflow`, runtime types |
 | `tako.sh/server`   | Server-only runtime re-export                   | `tako`, `TakoRuntime`                                                                                                |
+| `tako.sh/services` | Typed HTTP contracts and runtime validation     | `defineService`, `createServiceHandler`, `createServiceClient`, `ServiceError`, `serviceManifest`, `serviceOpenApi`  |
 | `tako.sh/client`   | Browser-safe realtime clients                   | `Channel`, `configureChannels`, `Store`, `clearStoreCache`                                                           |
 | `tako.sh/react`    | React hooks for realtime data                   | `useChannel`, `usePresence`, `useStore`                                                                              |
 | `tako.sh/vite`     | Vite plugin for SSR builds                      | `tako()` plugin function                                                                                             |
@@ -283,6 +285,79 @@ interface TakoStatus {
   uptime_seconds: number;
 }
 ```
+
+## Typed HTTP service contracts
+
+Use `tako.sh/services` for a shared HTTP contract with typed handlers, clients,
+and runtime validation. Clients use explicit HTTP or HTTPS `baseURL` values.
+This package works without Tako Cloud or the Tako runtime. It does not provide
+private DNS, service discovery, or automatic native-mesh connectivity.
+
+```ts
+import { Type as t } from "@sinclair/typebox";
+import { defineService, createServiceHandler, createServiceClient } from "tako.sh/services";
+
+const health = defineService("health", {
+  check: {
+    method: "GET",
+    path: "/health",
+    responses: { 200: t.Object({ ok: t.Boolean() }) },
+  },
+});
+
+export const handler = createServiceHandler(health, {
+  check: () => ({ status: 200, body: { ok: true } }),
+});
+
+const client = createServiceClient(health, { baseURL: "https://api.example.com" });
+const result = await client.check();
+console.log(result.body.ok);
+```
+
+Mount the returned handler in your app or export it as the fetch handler.
+The app owns authentication, authorization, CORS, and request limits. Handler
+functions receive typed input and the original `Request`. A handler `basePath`
+option must match the path prefix in the client's `baseURL`.
+
+For generation, default-export one contract per flat `<app_root>/services/`
+file with a `.ts`, `.mts`, `.js`, or `.mjs` extension. Keep declarations free of
+server implementation imports and side effects. `tako generate` imports them
+and writes `<app_root>/tako.services.ts`, separately from ambient `tako.d.ts`.
+Dev regenerates before restarting. JavaScript deploy generates before the build
+copies sources. Invalid contracts stop startup or deployment preparation;
+failed regeneration during dev leaves the current app running.
+
+The generated module exports `services`, `ServiceContracts`, and
+`createClient(name, { baseURL })`. It has no producer-app imports. Export it from
+a shared package, compile JavaScript and declarations with your package build,
+and declare `tako.sh` and `@sinclair/typebox` dependencies. A consumer can install
+that package without the producer's source tree or a Tako Cloud account.
+Removing all declarations regenerates an existing module with an empty set.
+The SDK binary `tako-sh-gen-service-types <services-dir>` also accepts
+`--format manifest` or `--format openapi` and writes to stdout.
+
+Use required string path params matching `/items/{id}`. Query fields accept
+scalars or arrays of scalars encoded as repeated keys. Bodies are JSON; GET and
+HEAD cannot have request bodies. A response entry of `null` means no body, with
+`body: undefined` in the handler result. `t.Null()` means JSON null. Declared
+statuses, including 4xx and 5xx responses, return typed results that narrow by
+`status`. Undeclared statuses and invalid payloads throw `ServiceError`. Inspect
+`code`, `operation`, `phase`, `status`, and `issues`. Invalid handler inputs return 400. Invalid handler outputs throw and need host error handling.
+
+Validation supports inline TypeBox strings, finite numbers, integers, booleans,
+nulls, literals, arrays, objects, unions, and intersections. Supported constraints
+include string length/pattern, number bounds/multipleOf, array length/uniqueItems,
+and object size/additionalProperties. References, transforms, formats, and other
+unsupported keywords are rejected. Defaults do not fill missing input. Set
+`additionalProperties: false` to close body objects. Validated objects have null
+prototypes; use `Object.hasOwn`. Body snapshots reject cycles and non-JSON values
+and do not invoke `toJSON`. Getter execution, payload size/depth, and regex cost
+remain host concerns. Bound arrays with `maxItems` when using `uniqueItems`,
+which has quadratic worst-case comparison cost.
+
+See https://tako.sh/docs/service-contracts/ for constraint details and generation
+commands. Verify valid requests, invalid input, each declared status, and a
+separate consumer package with your TypeScript check.
 
 ## Channels
 

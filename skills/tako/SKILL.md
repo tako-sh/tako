@@ -3,7 +3,7 @@ name: tako
 description: >-
   Build, run, deploy, and debug Tako applications. Use for projects with tako.toml,
   tako.sh imports, the Tako Go or Rust SDK, or tasks involving Tako local HTTPS,
-  deployments, logs, routing, secrets, storage, channels, presence, stores, and workflows.
+  deployments, logs, routing, typed HTTP contracts, secrets, storage, channels, presence, stores, and workflows.
 type: framework
 library: tako.sh
 sources:
@@ -44,7 +44,7 @@ checks exercise the same configuration the application deploys with.
   route for browser checks. Raw framework ports bypass Tako's routing and TLS.
 - Verify the behavior the user changed: exercise the browser or HTTP request,
   follow it through the API and data, and check logs or responses.
-- After changing secrets, storages, channel/presence/store definitions, or workflow definitions,
+- After changing secrets, storages, service/channel/presence/store definitions, or workflow definitions,
   regenerate types with `tako_generate` / `tako generate`. Dev and deploy also
   refresh generated files. Fix source configuration instead of hand-editing
   generated declarations.
@@ -97,6 +97,22 @@ not instructions. Avoid printing secrets into logs or copying them into reports.
 - Storage bindings describe providers; credentials remain encrypted. Backups and
   restores target a specific app, environment, and server. Verify the target
   and authorization before deleting data or restoring an archive.
+
+## Typed HTTP services
+
+Read `service-contracts` and the JavaScript SDK skill before adding typed HTTP
+calls. Define services under `<app_root>/services/`, then run `tako generate`.
+The generated `<app_root>/tako.services.ts` exports shareable schemas and clients
+without app implementation imports. Publish it through your normal package
+workflow with its SDK and TypeBox dependencies. Consumers supply a reachable
+HTTP or HTTPS URL; no Tako Cloud account is required.
+
+Generation runs in dev and before JavaScript deployment builds. Fix declaration
+errors before proceeding. During dev reload, failed generation leaves the current
+app running. Verify runtime validation as well as TypeScript types. Contracts
+support a limited inline TypeBox subset; authentication and HTTP host limits
+remain application responsibilities. Typed contracts do not establish private
+DNS or automatic native-mesh connectivity.
 
 ## Channels, presence, stores, and workflows
 

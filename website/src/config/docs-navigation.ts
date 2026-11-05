@@ -25,7 +25,17 @@ export const docsNavigation = [
   },
   {
     title: "Primitives",
-    pages: ["secrets", "storage", "images", "cache", "channels", "presence", "stores", "workflows"],
+    pages: [
+      "secrets",
+      "storage",
+      "images",
+      "cache",
+      "service-contracts",
+      "channels",
+      "presence",
+      "stores",
+      "workflows",
+    ],
   },
   {
     title: "Deploy and operate",

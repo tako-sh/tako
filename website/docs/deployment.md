@@ -49,6 +49,8 @@ Build precedence:
 
 Tako copies the source root into `.tako/build`, respects `.gitignore`, symlinks `node_modules` from the original tree for JS builds, omits source symlinks, runs build commands, merges assets into `public/`, verifies the resolved `main`, and archives the result without `node_modules`.
 
+JavaScript deployment preparation generates `<app_root>/tako.services.ts` from [service contracts](/service-contracts/) before copying sources into the build directory. Generation failures stop preparation. Install the project SDK before deploying, and include the generated module in builds that import it.
+
 The final native artifact includes regular files only; build-created symlinks are omitted too. Do not depend on linked files being deployed. This differs from app data backups, which preserve symlinks.
 
 Always-excluded paths: `.git/`, `.tako/`, `.env*`, and `node_modules/`.

@@ -46,8 +46,12 @@ tako g
 Refreshes generated project files:
 
 - JS/TS: `tako.d.ts` with environment names, secret names, storage bindings, channel metadata, typed Store params and data, workflow metadata, and env var names.
+- JS/TS service contracts: `<app_root>/tako.services.ts`, generated from default exports in `<app_root>/services/`. This executable module exports `services`, `ServiceContracts`, and `createClient` without importing app implementations. It always uses the configured app root, independently of the `tako.d.ts` location. See [Service contracts](/service-contracts/).
 - Go: `tako_secrets.go` with typed secret accessors.
-  For JS/TS, generation keeps an existing `tako.d.ts` in `app/`, `src/`, or the project root. Empty existing `channels/` or `workflows/` directories get demo definitions.
+
+For JS/TS, generation keeps an existing `tako.d.ts` in `app/`, `src/`, or the project root. Empty existing `channels/` or `workflows/` directories get demo definitions. Service directories do not get demo definitions.
+
+Service generation requires the installed SDK and Bun. It also runs during development and before JavaScript deployment builds. Invalid contracts stop initial dev startup or deployment preparation. If a watched contract becomes invalid during development, Tako reports the failure and keeps the current app running.
 
 ## `tako agents`
 

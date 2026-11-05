@@ -25,6 +25,7 @@ On the web, use [llms.txt](/llms.txt) to discover topics and the `.md` version o
 - [Storage](/storage/): bind local or S3-compatible files and issue upload/download URLs.
 - [Images](/images/): optimize public images and generate responsive image URLs.
 - [Cache](/cache/): cache server-side JSON results with a TTL.
+- [Service contracts](/service-contracts/): define typed HTTP handlers and share generated clients between projects.
 
 ## Add live data and background work
 
