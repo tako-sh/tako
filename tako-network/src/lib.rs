@@ -6,6 +6,7 @@
 
 pub mod api;
 pub mod corrosion;
+pub mod runtime;
 mod challenge;
 mod enrollment;
 mod error;
