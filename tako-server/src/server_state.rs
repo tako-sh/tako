@@ -66,7 +66,8 @@ impl ServerRuntimeConfig {
                 "musl"
             } else {
                 "unsupported"
-            }.into(),
+            }
+            .into(),
             mode,
             process_started_at_unix_secs: self.process_started_at_unix_secs,
             socket: self.socket.clone(),
