@@ -49,10 +49,46 @@ impl Profile {
         }
     }
 
+    fn normalize_trusted_servers(&mut self) -> Result<()> {
+        if let Self::Active { profile } = self {
+            profile.trusted_servers = current_server_pins(profile, now()?)?;
+        }
+        Ok(())
+    }
+
+    fn validate_for_storage(&self, keys: &LocalDeviceKeys) -> Result<()> {
+        let Self::Active { profile } = self else {
+            return self.validate(keys);
+        };
+        profile.request.verify()?;
+        let id = profile
+            .request
+            .device_id_for(&profile.snapshot.network.id)?;
+        if profile.request.wg_public_key != keys.wg_public_key()?
+            || profile.request.ssh_public_key != keys.ssh_public_key()?
+            || !profile
+                .snapshot
+                .members
+                .iter()
+                .any(|member| member.device_id == id && member.request == profile.request)
+        {
+            return Err("Network profile does not match this device".into());
+        }
+        let servers = server_members_from_snapshot(&profile.snapshot)?;
+        if servers != profile.trusted_servers {
+            return Err("Network profile server pins do not match its membership".into());
+        }
+        Ok(())
+    }
+
     pub fn validate(&self, keys: &LocalDeviceKeys) -> Result<()> {
         let now = now()?;
         match self {
-            Self::Active { profile } => profile.validate_for(keys, now)?,
+            Self::Active { profile } => {
+                let mut current = profile.clone();
+                current.trusted_servers = current_server_pins(profile, now)?;
+                current.validate_for(keys, now)?;
+            }
             Self::Pending { profile } => profile.validate_for(keys, now)?,
             Self::Created { request, snapshot } => {
                 request.verify()?;
@@ -91,7 +127,7 @@ pub(crate) fn store_keys(request: &RequestId, keys: &LocalDeviceKeys) -> Result<
 }
 
 pub(crate) fn load_profile(network: &NetworkAlias) -> Result<Profile> {
-    let profile: Profile = read_json(&network.profile_path()?)?;
+    let mut profile: Profile = read_json(&network.profile_path()?)?;
     if profile.snapshot().network.id.to_string() != network.id
         || profile
             .request()
@@ -101,14 +137,17 @@ pub(crate) fn load_profile(network: &NetworkAlias) -> Result<Profile> {
     {
         return Err("Saved network alias does not match its profile".into());
     }
+    profile.normalize_trusted_servers()?;
     let keys = LocalDeviceKeys::load(&keys_path(&profile.request().request_id)?)?;
     profile.validate(&keys)?;
     Ok(profile)
 }
 
 pub(crate) fn save_profile(name: &str, profile: &Profile) -> Result<NetworkAlias> {
+    let mut profile = profile.clone();
+    profile.normalize_trusted_servers()?;
     let keys = LocalDeviceKeys::load(&keys_path(&profile.request().request_id)?)?;
-    profile.validate(&keys)?;
+    profile.validate_for_storage(&keys)?;
     let alias = NetworkAlias {
         name: name.into(),
         id: profile.snapshot().network.id.to_string(),
@@ -125,9 +164,105 @@ pub(crate) fn save_profile(name: &str, profile: &Profile) -> Result<NetworkAlias
     }
     let path = alias.profile_path()?;
     private_directory(path.parent().unwrap())?;
-    write_json(&path, profile, true)?;
+    let lock = private_file(&path.with_file_name("profile.lock"), true)?;
+    lock.lock()?;
+    match read_json::<Profile>(&path) {
+        Ok(previous) => {
+            previous.snapshot().validate()?;
+            if let Profile::Active { profile: active } = &previous {
+                current_server_pins(active, now()?)?;
+            }
+            if previous.request() != profile.request() {
+                return Err("Saved profile belongs to a different enrollment request".into());
+            }
+            match &mut profile {
+                Profile::Active { profile: active } => {
+                    merge_snapshot(&mut active.snapshot, previous.snapshot())?;
+                    active.trusted_servers = server_members_from_snapshot(&active.snapshot)?;
+                }
+                Profile::Pending { profile: pending } => {
+                    if matches!(previous, Profile::Active { .. }) {
+                        return Err(
+                            "Cannot replace an active profile with a pending approval".into()
+                        );
+                    }
+                    merge_snapshot(&mut pending.snapshot, previous.snapshot())?;
+                    pending.trusted_servers = server_members_from_snapshot(&pending.snapshot)?;
+                }
+                Profile::Created { snapshot, .. } => merge_snapshot(snapshot, previous.snapshot())?,
+            }
+        }
+        Err(error)
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) => {}
+        Err(error) => return Err(error),
+    }
+    profile.validate_for_storage(&keys)?;
+    write_json(&path, &profile, true)?;
+    // Persist authenticated revocations even when they remove this device or its last server.
+    profile.validate(&keys)?;
     NetworksToml::save_alias(&alias)?;
     Ok(alias)
+}
+
+fn current_server_pins(
+    profile: &NetworkPublicProfile,
+    now: u64,
+) -> Result<BTreeMap<tako_network::DeviceId, tako_network::ServerInfo>> {
+    let effective: BTreeMap<_, _> = profile
+        .snapshot
+        .effective_members(now)?
+        .into_iter()
+        .filter_map(|(id, member)| match &member.kind {
+            tako_network::MemberKind::Server(info) => Some((id, info.clone())),
+            _ => None,
+        })
+        .collect();
+    if effective.iter().any(|(id, info)| profile.trusted_servers.get(id) != Some(info))
+        || profile.trusted_servers.iter().any(|(id, info)| !profile.snapshot.members.iter().any(|member| {
+            member.wg_verified && &member.device_id == id && matches!(&member.kind, tako_network::MemberKind::Server(saved) if saved == info)
+        }))
+    {
+        return Err("Network profile server pins do not match its membership".into());
+    }
+    Ok(effective)
+}
+
+fn merge_snapshot(snapshot: &mut RegistrySnapshot, previous: &RegistrySnapshot) -> Result<()> {
+    if snapshot.network != previous.network {
+        return Err("Server returned a different network identity".into());
+    }
+    for member in &previous.members {
+        if !snapshot.members.contains(member) {
+            snapshot.members.push(member.clone());
+        }
+    }
+    for revocation in &previous.revocations {
+        if !snapshot.revocations.contains(revocation) {
+            snapshot.revocations.push(revocation.clone());
+        }
+    }
+    for ack in &previous.acks {
+        if !snapshot.acks.contains(ack) {
+            snapshot.acks.push(ack.clone());
+        }
+    }
+    snapshot.validate()?;
+    Ok(())
+}
+
+fn server_members_from_snapshot(
+    snapshot: &RegistrySnapshot,
+) -> Result<BTreeMap<tako_network::DeviceId, tako_network::ServerInfo>> {
+    Ok(snapshot
+        .effective_members(now()?)?
+        .into_iter()
+        .filter_map(|(id, member)| match &member.kind {
+            tako_network::MemberKind::Server(info) => Some((id, info.clone())),
+            _ => None,
+        })
+        .collect())
 }
 
 #[cfg(unix)]
@@ -370,15 +505,16 @@ pub(crate) fn resolve_network(
     if value.is_some() {
         return Ok(aliases.select(value)?.clone());
     }
-    if let Ok(context) = crate::commands::project_context::resolve(config_path)
-        && let Ok(project) = crate::config::TakoToml::load_from_file(context.config_path)
-        && let Some(network) = project
+    if let Some(context) = crate::commands::project_context::resolve_optional(config_path)? {
+        let project = crate::config::TakoToml::load_from_file(context.config_path)?;
+        if let Some(network) = project
             .envs
             .get("production")
             .and_then(|env| env.network.as_deref())
-    {
-        let _: NetworkId = network.parse()?;
-        return Ok(aliases.select(Some(network))?.clone());
+        {
+            let _: NetworkId = network.parse()?;
+            return Ok(aliases.select(Some(network))?.clone());
+        }
     }
     Ok(aliases.select(None)?.clone())
 }

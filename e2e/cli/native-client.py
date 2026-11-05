@@ -91,6 +91,11 @@ with tempfile.TemporaryDirectory(prefix="tako-native-client-") as temporary:
     keys_path.unlink()
     keys_path.write_bytes(original_keys)
     keys_path.chmod(0o600)
+    bad_project = root / "tako.toml"
+    bad_project.write_text("not valid toml [")
+    run("--dry-run", "connect", ok=False)
+    run("--dry-run", "--config", str(root / "missing.toml"), "connect", ok=False)
+    bad_project.unlink()
     config = home / "config.toml"
     config.write_text("not valid toml [")
     run("network", "list", ok=False)

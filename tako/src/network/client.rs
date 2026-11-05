@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use tako_network::api::{RpcRequest, RpcResponse, SignedRequest};
-use tako_network::{DeviceId, LocalDeviceKeys, MemberKind, NetworkPublicProfile, RegistrySnapshot, ServerInfo};
+use tako_network::{DeviceId, LocalDeviceKeys, NetworkPublicProfile, RegistrySnapshot, ServerInfo};
 
 use super::{Profile, Result};
 use crate::config::NetworkAlias;
@@ -22,7 +22,7 @@ fn trusted_servers(profile: &Profile) -> Result<BTreeMap<DeviceId, ServerInfo>> 
             Err("Add the first server before using network management".into())
         }
         Profile::Pending { profile } => Ok(profile.trusted_servers.clone()),
-        Profile::Active { profile } => Ok(profile.trusted_servers.clone()),
+        Profile::Active { profile } => super::current_server_pins(profile, super::now()?),
     }
 }
 
@@ -138,8 +138,10 @@ pub(crate) fn refresh(alias: &NetworkAlias) -> Result<Profile> {
             }
             _ => return Err("Unexpected network enrollment challenge response".into()),
         };
-        profile = Profile::Active { profile: active };
+        let keys = LocalDeviceKeys::load(&super::keys_path(&profile.request().request_id)?)?;
+        profile = accept_activation(&profile, active, &keys)?;
         super::save_profile(&alias.name, &profile)?;
+        profile = super::load_profile(alias)?;
     }
     let servers = trusted_servers(&profile)?;
     let mut last_error = None;
@@ -148,7 +150,7 @@ pub(crate) fn refresh(alias: &NetworkAlias) -> Result<Profile> {
             Ok(RpcResponse::Snapshot(snapshot)) => {
                 let refreshed = active_from_snapshot(&profile, snapshot)?;
                 super::save_profile(&alias.name, &refreshed)?;
-                return Ok(refreshed);
+                return super::load_profile(alias);
             }
             Ok(_) => return Err("Unexpected network snapshot response".into()),
             Err(error) => last_error = Some(error),
@@ -157,53 +159,125 @@ pub(crate) fn refresh(alias: &NetworkAlias) -> Result<Profile> {
     Err(last_error.unwrap_or_else(|| "No network server is reachable".into()))
 }
 
+fn accept_activation(
+    profile: &Profile,
+    active: NetworkPublicProfile,
+    keys: &LocalDeviceKeys,
+) -> Result<Profile> {
+    if active.request != *profile.request() || active.snapshot.network != profile.snapshot().network
+    {
+        return Err("Activation response does not match the pending enrollment".into());
+    }
+    let active = Profile::Active { profile: active };
+    active.validate_for_storage(keys)?;
+    active_from_snapshot(profile, active.snapshot().clone())
+}
+
 fn active_from_snapshot(profile: &Profile, mut snapshot: RegistrySnapshot) -> Result<Profile> {
-    if snapshot.network != profile.snapshot().network {
-        return Err("Server returned a different network identity".into());
-    }
-    for member in &profile.snapshot().members {
-        if !snapshot.members.contains(member) {
-            snapshot.members.push(member.clone());
-        }
-    }
-    for revocation in &profile.snapshot().revocations {
-        if !snapshot.revocations.contains(revocation) {
-            snapshot.revocations.push(revocation.clone());
-        }
-    }
-    for ack in &profile.snapshot().acks {
-        if !snapshot.acks.contains(ack) {
-            snapshot.acks.push(ack.clone());
-        }
-    }
-    let servers = snapshot
-        .effective_members(super::now()?)?
-        .into_iter()
-        .filter_map(|(id, member)| {
-            if let MemberKind::Server(info) = &member.kind {
-                Some((id, info.clone()))
-            } else {
-                None
-            }
-        })
-        .collect();
-    let active = Profile::Active {
+    super::merge_snapshot(&mut snapshot, profile.snapshot())?;
+    let servers = super::server_members_from_snapshot(&snapshot)?;
+    Ok(Profile::Active {
         profile: NetworkPublicProfile {
             request: profile.request().clone(),
             trusted_servers: servers,
             snapshot,
         },
-    };
-    active.validate(&LocalDeviceKeys::load(&super::keys_path(
-        &active.request().request_id,
-    )?)?)?;
-    Ok(active)
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::network::{tests::fixture, now};
+    use crate::network::{Profile, now, tests::fixture};
+
+    #[test]
+    fn refresh_merges_revocations_before_rebuilding_trust() {
+        let fixture = fixture();
+        let stale = fixture.profile.snapshot().clone();
+        let mut previous = fixture.profile.clone();
+        let Profile::Active { profile } = &mut previous else {
+            panic!()
+        };
+        let revocation = profile
+            .snapshot
+            .plan_revocation(
+                tako_network::RevocationId::random().unwrap(),
+                &profile.snapshot.network.initial_admin,
+                &fixture.server,
+                now().unwrap(),
+            )
+            .unwrap();
+        profile.snapshot.revocations.push(revocation.clone());
+        profile.trusted_servers.clear();
+        let refreshed = active_from_snapshot(&previous, stale).unwrap();
+        assert_eq!(refreshed.snapshot().revocations, vec![revocation]);
+        assert!(trusted_servers(&refreshed).unwrap().is_empty());
+        assert!(refreshed.validate(&fixture.keys).is_err());
+        let merged = active_from_snapshot(&refreshed, refreshed.snapshot().clone()).unwrap();
+        assert_eq!(merged.snapshot(), refreshed.snapshot());
+    }
+
+    #[test]
+    fn snapshots_reject_conflicting_records_and_network_identity() {
+        let fixture = fixture();
+        let mut snapshot = fixture.profile.snapshot().clone();
+        snapshot.members[0].request.name = "tampered".parse().unwrap();
+        assert!(active_from_snapshot(&fixture.profile, snapshot).is_err());
+        let mut snapshot = fixture.profile.snapshot().clone();
+        snapshot.network.initial_admin = fixture.server;
+        assert!(active_from_snapshot(&fixture.profile, snapshot).is_err());
+    }
+
+    #[test]
+    fn activation_binds_the_exact_request_and_keeps_known_denials() {
+        let fixture = fixture();
+        let Profile::Active {
+            profile: mut active,
+        } = fixture.profile.clone()
+        else {
+            panic!()
+        };
+        let mut pending = Profile::Pending {
+            profile: tako_network::PendingApprovalProfile {
+                request: active.request.clone(),
+                pending_id: tako_network::RequestId::random().unwrap(),
+                issuer: fixture.server.clone(),
+                expires_at: now().unwrap() + 60,
+                trusted_servers: active.trusted_servers.clone(),
+                snapshot: active.snapshot.clone(),
+            },
+        };
+        accept_activation(&pending, active.clone(), &fixture.keys).unwrap();
+        active.request = fixture
+            .keys
+            .enrollment_request(
+                Some(active.snapshot.network.id.clone()),
+                tako_network::DeviceKind::Laptop,
+                "changed".parse().unwrap(),
+            )
+            .unwrap();
+        assert!(accept_activation(&pending, active, &fixture.keys).is_err());
+        let Profile::Active { profile: active } = fixture.profile.clone() else {
+            panic!()
+        };
+        let Profile::Pending { profile } = &mut pending else {
+            panic!()
+        };
+        let revocation = profile
+            .snapshot
+            .plan_revocation(
+                tako_network::RevocationId::random().unwrap(),
+                &profile.snapshot.network.initial_admin,
+                &fixture.server,
+                now().unwrap(),
+            )
+            .unwrap();
+        profile.snapshot.revocations.push(revocation.clone());
+        let merged = accept_activation(&pending, active, &fixture.keys).unwrap();
+        assert_eq!(merged.snapshot().revocations, vec![revocation]);
+        assert!(merged.validate(&fixture.keys).is_err());
+    }
+
     #[test]
     fn transport_uses_the_signed_network_server_and_command_audience() {
         let fixture = fixture();
