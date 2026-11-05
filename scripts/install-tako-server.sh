@@ -655,11 +655,16 @@ case "$action" in
     ;;
 esac
 
+saved_vpn=tailscale
+if [ -r /usr/local/libexec/tako/vpn-provider ]; then
+  IFS= read -r saved_vpn < /usr/local/libexec/tako/vpn-provider
+fi
+
 case "$action" in
   rollback)
     [ -f /usr/local/bin/tako-server.prev ] || { echo "error: previous tako-server binary not found" >&2; exit 1; }
     install -m 0755 /usr/local/bin/tako-server.prev /usr/local/bin/tako-server
-    if command -v setcap >/dev/null 2>&1; then
+    if [ "$saved_vpn" != native ] && command -v setcap >/dev/null 2>&1; then
       setcap cap_net_bind_service,cap_setuid,cap_setgid,cap_kill=+ep /usr/local/bin/tako-server
     fi
     exit 0
@@ -669,10 +674,6 @@ case "$action" in
     exit 0
     ;;
   configure)
-    saved_vpn=tailscale
-    if [ -r /usr/local/libexec/tako/vpn-provider ]; then
-      IFS= read -r saved_vpn < /usr/local/libexec/tako/vpn-provider
-    fi
     [ "$saved_vpn" = "$4" ] || { echo "error: server uses $saved_vpn; reinstall as administrator to change its VPN provider" >&2; exit 1; }
     management_host="$(/usr/local/libexec/tako/vpn-address "$saved_vpn" "${5:-}")" || {
       echo "error: connect this server to $saved_vpn before starting tako-server" >&2; exit 1;
@@ -712,8 +713,11 @@ case "$action" in
     if command -v systemctl >/dev/null 2>&1; then
       systemctl stop tako-server tako-server-standby
       systemctl disable tako-server tako-server-standby 2>/dev/null || true
+      if [ -f /etc/systemd/system/tako-network-agent.service ]; then
+        systemctl disable --now tako-network-agent.service
+      fi
     fi
-    rm -f /etc/systemd/system/tako-server.service /etc/systemd/system/tako-server-standby.service
+    rm -f /etc/systemd/system/tako-server.service /etc/systemd/system/tako-server-standby.service /etc/systemd/system/tako-network-agent.service
     rm -rf /etc/systemd/system/tako-server.service.d
     if command -v systemctl >/dev/null 2>&1; then systemctl daemon-reload; fi
     rm -rf -- "$tako_home"
@@ -755,6 +759,8 @@ EOF
 }
 
 ensure_privileged_bind_capability() {
+  # The same binary runs the capability-free native agent. Proxy units grant their own capabilities.
+  [ "$TAKO_VPN" != native ] || return 0
   if ! need_cmd setcap && [ "$SERVICE_MANAGER" != "systemd" ]; then
     install_setcap_tool
   fi
@@ -1251,33 +1257,46 @@ ExecStart=/usr/local/libexec/tako/tako-network-helper %i apply
 RequiredBy=tako-network.target
 EOF
 
-  # No release is fetched until a compatible Corrosion version and digest are pinned.
-  if ! id -u tako-corrosion >/dev/null 2>&1; then
-    useradd --system --user-group --no-create-home --home-dir /var/lib/tako-corrosion --shell /usr/sbin/nologin tako-corrosion
+  if [ -f /etc/systemd/system/tako-corrosion.service ]; then
+    if [ "$SERVICE_MANAGER" = systemd ]; then
+      systemctl disable --now tako-corrosion.service
+    fi
+    rm -f /etc/systemd/system/tako-corrosion.service
   fi
-  cat > /etc/systemd/system/tako-corrosion.service <<'EOF'
+  cat > /etc/systemd/system/tako-network-agent.service <<'EOF'
 [Unit]
-Description=Tako replicated network registry
-After=tako-network.target
-Wants=tako-network.target
+Description=Tako native network agent
+Requires=tako-network-helper.socket
+After=network-online.target tako-network.target tako-network-helper.socket
+Wants=network-online.target tako-network.target
+Before=tako-server.service tako-server-standby.service
 ConditionPathIsExecutable=/usr/local/libexec/tako/corrosion
-ConditionPathExists=/etc/tako/corrosion.toml
+ConditionPathExists=/opt/tako/native-network.json
 [Service]
-User=tako-corrosion
-Group=tako-corrosion
-ExecStart=/usr/local/libexec/tako/corrosion agent --config /etc/tako/corrosion.toml
+Type=exec
+User=tako
+Group=tako
+WorkingDirectory=/opt/tako
+ExecStart=/usr/local/bin/tako-server --network-agent --data-dir /opt/tako
 Restart=on-failure
-StateDirectory=tako-corrosion
-StateDirectoryMode=0700
+RestartSec=1
+KillMode=control-group
+TimeoutStopSec=60
+UMask=0077
 NoNewPrivileges=true
 ProtectSystem=strict
+ReadWritePaths=/opt/tako
 ProtectHome=true
 PrivateTmp=true
+PrivateDevices=true
 CapabilityBoundingSet=
+AmbientCapabilities=
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 [Install]
 WantedBy=multi-user.target
 EOF
+  chown root:root /etc/systemd/system/tako-network-agent.service
+  chmod 0644 /etc/systemd/system/tako-network-agent.service
   TAKO_NETWORK_UNIT_ARGS='Requires=tako-network.target
 After=tako-network.target'
   if [ "$SERVICE_MANAGER" = systemd ]; then
@@ -1286,6 +1305,7 @@ After=tako-network.target'
     if systemctl is-active --quiet tako-network-helper.service; then
       systemctl restart tako-network-helper.service
     fi
+    systemctl enable tako-network-agent.service
   fi
   for desired_file in /opt/tako/networks/*/desired.json; do
     [ -e "$desired_file" ] || continue
@@ -1293,8 +1313,12 @@ After=tako-network.target'
     native_id="${native_id##*/}"
     /usr/local/libexec/tako/tako-network-helper "$native_id" apply
   done
+  if [ "$SERVICE_MANAGER" = systemd ] && is_enabled "$TAKO_RESTART_SERVICE" &&
+     [ -f /opt/tako/native-network.json ]; then
+    systemctl restart tako-network-agent.service
+  fi
   echo 'OK native WireGuard installed. Allow its UDP listen port in your cloud security group if required.'
-  echo 'Corrosion service hook prepared; no unverified binary installed or service enabled.'
+  echo 'OK native network agent installed; activation requires native-network.json and service-start mode.'
 }
 
 install_setcap_tool() {

@@ -1,6 +1,7 @@
 import hashlib
 import os
 import pwd
+import shutil
 from pathlib import Path
 import subprocess
 import tempfile
@@ -10,10 +11,12 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = (ROOT / 'scripts/install-tako-server.sh').read_text()
 NATIVE = SOURCE[SOURCE.index('install_native_network() {'):SOURCE.index('install_setcap_tool() {')]
+IS_ENABLED = SOURCE[SOURCE.index('is_enabled() {'):SOURCE.index('vpn_functions() {')]
 
 
 class NativeInstallerTests(unittest.TestCase):
-    def install(self, *, provider='native', source=True, digest=True, packaged=False, download=False):
+    def install(self, *, provider='native', source=True, digest=True, packaged=False, download=False,
+                manager='none', restart='0', prepared=False, legacy=False, agent_fails=False):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -26,13 +29,17 @@ class NativeInstallerTests(unittest.TestCase):
         local.write_bytes(payload)
         if packaged:
             (root / 'extract/scripts/tako-network-helper.py').write_bytes(payload)
+        if prepared:
+            (root / 'opt/tako/native-network.json').write_text('{}\n')
+        if legacy:
+            (root / 'etc/systemd/system/tako-corrosion.service').write_text('old placeholder\n')
         script = NATIVE
         # Relocate privileged paths; command fakes never alter this machine's services.
         for prefix in ('/usr/local/', '/etc/', '/var/lib/', '/opt/tako/'):
             script = script.replace(prefix, str(root) + prefix)
         script = script.replace('[ "$TAKO_USER:$TAKO_HOME" = tako:/opt/tako ]', '[ "$TAKO_USER" = tako ]')
         script = script.replace('/usr/sbin/sshd', 'fake_sshd')
-        result = subprocess.run(['sh', '-eu'], input='''
+        result = subprocess.run(['sh', '-eu'], input=IS_ENABLED + '''
 need_cmd() { case "$1" in apt-get|wg|ip|nft|python3) return 0;; *) return 1;; esac; }
 install_pkgs() { printf 'packages %s\\n' "$*"; }
 install_native_corrosion() { printf 'install verified corrosion\\n'; }
@@ -40,6 +47,13 @@ download_file() { [ "$TEST_DOWNLOAD" = 1 ] || return 1; cp "$TEST_HELPER" "$2"; 
 chown() { :; }
 python3() { cat >/dev/null; }
 id() { printf '1001\\n'; }
+systemctl() {
+  printf '%s\\n' "$*" >> "$TEST_ROOT/systemctl.log"
+  case "$1" in
+    is-active) return 1 ;;
+    restart) [ "$TEST_AGENT_FAILS" = 0 ] ;;
+  esac
+}
 fake_sshd() {
   [ "$1" != -T ] || printf 'authorizedkeysfile .ssh/authorized_keys /etc/admin-keys/tako %s/etc/ssh/tako-network/authorized_keys\\n' "$TEST_ROOT"
 }
@@ -48,7 +62,8 @@ fake_sshd() {
                  'TEST_DOWNLOAD': '1' if download else '0',
                  'TEST_HELPER': str(ROOT / 'scripts/tako-network-helper.py'),
                  'TAKO_REPO_OWNER': 'tako-sh', 'TAKO_REPO_NAME': 'tako', 'TAKO_RELEASE_TAG': 'latest',
-                 'TAKO_USER': 'tako', 'TAKO_HOME': '/opt/tako', 'SERVICE_MANAGER': 'none',
+                 'TAKO_USER': 'tako', 'TAKO_HOME': '/opt/tako', 'SERVICE_MANAGER': manager,
+                 'TAKO_RESTART_SERVICE': restart, 'TEST_AGENT_FAILS': '1' if agent_fails else '0',
                  'tmp_extract': str(root / 'extract'),
                  'TAKO_NETWORK_HELPER_SOURCE': str(local) if source else '',
                  'TAKO_NETWORK_HELPER_SHA256': hashlib.sha256(payload).hexdigest() if digest else ''})
@@ -64,11 +79,81 @@ fake_sshd() {
         self.assertIn('%i apply', unit)
         self.assertNotIn('ExecStop', unit)
         self.assertNotIn('PartOf=tako-server', unit)
-        self.assertIn('Corrosion service hook prepared', result.stdout)
-        self.assertFalse((root / 'usr/local/libexec/tako/corrosion').exists())
+        self.assertFalse((root / 'etc/systemd/system/tako-corrosion.service').exists())
         command = (root / 'usr/local/libexec/tako/network-authorized-keys').read_text()
         self.assertIn("sys.argv[1:] != ['tako']", command)
         self.assertIn("network.read_file(fd, 'authorized_keys', private=False)", command)
+
+    def test_agent_unit_owns_its_children_without_proxy_lifetime_or_privileges(self):
+        root, result = self.install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        unit = (root / 'etc/systemd/system/tako-network-agent.service').read_text()
+        self.assertEqual((root / 'etc/systemd/system/tako-network-agent.service').stat().st_mode & 0o777, 0o644)
+        for line in ('User=tako', 'Group=tako', 'NoNewPrivileges=true',
+                     'CapabilityBoundingSet=', 'AmbientCapabilities=', 'UMask=0077',
+                     'KillMode=control-group', 'ProtectSystem=strict',
+                     'ReadWritePaths=/opt/tako', 'Type=exec',
+                     f'ConditionPathExists={root}/opt/tako/native-network.json',
+                     f'ExecStart={root}/usr/local/bin/tako-server --network-agent --data-dir /opt/tako',
+                     'Requires=tako-network-helper.socket'):
+            self.assertIn(line, unit.splitlines())
+        for forbidden in ('CAP_NET_ADMIN', 'CAP_SETUID', 'PartOf=', 'BindsTo=', 'ExecStop=',
+                          'Requires=tako-server', 'RuntimeDirectory=tako', 'ExecReload='):
+            self.assertNotIn(forbidden, unit)
+        self.assertIn('Before=tako-server.service tako-server-standby.service', unit)
+
+    def test_agent_activation_requires_config_and_restart_mode(self):
+        for prepared in (False, True):
+            for restart in ('0', 'false', '1'):
+                with self.subTest(prepared=prepared, restart=restart):
+                    root, result = self.install(manager='systemd', restart=restart, prepared=prepared)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    calls = (root / 'systemctl.log').read_text().splitlines()
+                    self.assertIn('enable tako-network-agent.service', calls)
+                    activation = [call for call in calls if call.startswith(('start ', 'restart '))]
+                    expected = ['restart tako-network-agent.service'] if prepared and restart == '1' else []
+                    self.assertEqual(activation, expected)
+                    self.assertLess(calls.index('enable --now tako-network-helper.socket'),
+                                    calls.index('enable tako-network-agent.service'))
+                    if expected:
+                        self.assertLess(calls.index('enable tako-network-agent.service'), calls.index(expected[0]))
+
+    def test_agent_start_failure_fails_install(self):
+        _, result = self.install(manager='systemd', restart='1', prepared=True, agent_fails=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn('OK native network agent installed', result.stdout)
+
+    def test_old_placeholder_is_disabled_and_removed(self):
+        root, result = self.install(manager='systemd', legacy=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((root / 'etc/systemd/system/tako-corrosion.service').exists())
+        calls = (root / 'systemctl.log').read_text().splitlines()
+        self.assertIn('disable --now tako-corrosion.service', calls)
+        self.assertLess(calls.index('disable --now tako-corrosion.service'), calls.index('daemon-reload'))
+
+    def test_image_bootstrap_writes_agent_without_activation(self):
+        root, result = self.install(manager='none', prepared=True, legacy=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((root / 'etc/systemd/system/tako-network-agent.service').exists())
+        self.assertFalse((root / 'etc/systemd/system/tako-corrosion.service').exists())
+        self.assertFalse((root / 'systemctl.log').exists())
+
+    @unittest.skipUnless(shutil.which('systemd-analyze'), 'systemd-analyze is unavailable')
+    def test_generated_units_pass_offline_systemd_verification(self):
+        root, result = self.install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        server = root / 'usr/local/bin/tako-server'
+        server.parent.mkdir(parents=True)
+        server.write_text('#!/bin/sh\nexit 0\n')
+        server.chmod(0o755)
+        unit_dir = root / 'etc/systemd/system'
+        units = sorted(unit_dir.glob('tako-*'))
+        result = subprocess.run(['systemd-analyze', 'verify', '--man=no', *map(str, units)],
+            env={**os.environ, 'SYSTEMD_UNIT_PATH': f'{unit_dir}:'},
+            text=True, capture_output=True, timeout=10)
+        if result.returncode and result.stderr.strip() == 'SO_PASSCRED failed: Operation not permitted':
+            self.skipTest('sandbox blocks systemd-analyze credential socket setup')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_bootstrap_accepts_helper_in_verified_archive(self):
         _, result = self.install(source=False, packaged=True)
@@ -89,11 +174,13 @@ fake_sshd() {
 
     def test_other_providers_do_not_install_native_dependencies(self):
         for provider in ('netbird', 'tailscale'):
-            root, result = self.install(provider=provider)
+            root, result = self.install(provider=provider, manager='systemd', restart='1', prepared=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertNotIn('packages', result.stdout)
             self.assertNotIn('install verified corrosion', result.stdout)
             self.assertFalse((root / 'usr/local/libexec/tako/tako-network-helper.py').exists())
+            self.assertFalse((root / 'etc/systemd/system/tako-network-agent.service').exists())
+            self.assertFalse((root / 'systemctl.log').exists())
 
     def test_runtime_cannot_regain_net_admin_after_setuid(self):
         runtime = SOURCE[SOURCE.index('install_systemd_service_unit() {'):]
