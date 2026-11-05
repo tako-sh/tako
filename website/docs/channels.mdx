@@ -1,6 +1,6 @@
 ---
 title: Channels
-description: "Define typed SSE and WebSocket channels with authorization, replay, browser clients, server-side publishing, and multi-server Postgres storage."
+description: "Define SSE and WebSocket channels with typed messages, authorization, replay recovery, and SQLite or shared Postgres storage."
 ---
 
 Tako Channels are broadcast streams for live app events over SSE or WebSocket. Channels are durable by default: Tako stores each message before fanout and retains a bounded replay window. Set `ephemeral: true` for memory-only delivery on a single server.
@@ -257,15 +257,67 @@ function LiveStatus({ token }: { token: string }) {
 
 ## Recover After Disconnects
 
-For durable channels, each publish is inserted before delivery. `replayWindowMs` defaults to 10 minutes, so a reconnect can bridge a browser reload, laptop sleep, network change, server restart, or rolling deploy.
+For durable channels, each publish is inserted before delivery. `replayWindowMs` defaults to 10 minutes. A reconnect can replay retained events after a network interruption or a restart when the reconnect reaches storage that still has that history. Replay is a bounded delivery window, not automatic state failover.
 
 Replay cleanup runs every second, including when no clients are connected. Channel definitions carry their lifecycle settings with server-side publishes, so retention applies before the first subscription. Connections share an app-wide change poller; database reads run outside the async request workers. Shared Postgres stores detect publishes from every server.
 
-- SSE resumes with `Last-Event-ID`; `subscribe({ lastEventId })` sets an initial cursor. The built-in fetch-based SSE reader reconnects until `close()` is called and carries its latest message id forward.
-- WebSocket resumes with `last_message_id`; `connect({ lastMessageId })` sets it. `useChannel` tracks the latest id and reconnects WebSockets with bounded backoff and jitter. A lower-level `connect()` call returns one socket, so non-React code owns WebSocket reconnection.
-- With no cursor, Tako starts at the latest retained message and then follows live traffic.
+- SSE resumes with `Last-Event-ID`; `subscribe({ lastEventId })` sets an initial cursor. The built-in fetch-based reader reconnects after routine disconnects and carries its latest message ID forward. `close()` or an abort `signal` stops it. HTTP `401`, `403`, and `404` are terminal and reach `onError`.
+- WebSocket resumes with `last_message_id`; `connect({ lastMessageId })` sets it. `useChannel` tracks the latest ID and reconnects with bounded backoff and jitter. A lower-level `connect()` call returns one socket, so non-React code owns WebSocket reconnection.
+- With no cursor, Tako starts at the latest retained message and then follows live traffic. A fresh subscription does not recover all missed events.
 
-If an SSE cursor is older than retained replay, Tako responds with `410 Gone`; WebSocket closes with code `4410` and reason `replay-too-old`. Reload current state from the app's normal data API, then create a fresh subscription rather than assuming the missing events still exist.
+An expired SSE cursor produces HTTP `410 Gone`. A running SSE stream can also send the internal `tako.reset` control event. The built-in reader consumes either signal, clears its cursor, and reconnects without exposing a reset as an application message. The React hook handles WebSocket close code `4410` with reason `replay-too-old` the same way.
+
+Routine reconnects and expired history do not populate `useChannel.error` or invoke the built-in SSE subscription's `onError`. The hook reports `status: "connecting"` until the connection opens again. Optional `onRecovery(reason)` receives `"reconnecting"` or `"history-expired"` outside the message stream. Authorization failures and malformed application messages still need error handling.
+
+### Reload custom channel state
+
+The SDK restores the transport. Your application must restore any state that depends on missing events. With React, use the optional `onResync` callback to reload authoritative state when history expires:
+
+```tsx
+import { useChannel } from "tako.sh/react";
+
+export function LiveUpdates({
+  token,
+  reloadState,
+}: {
+  token: string;
+  reloadState: () => Promise<void>;
+}) {
+  const { status, error } = useChannel("site-events", {
+    transport: "ws",
+    authorization: token,
+    onResync: async () => {
+      await reloadState();
+    },
+  });
+
+  if (error) return <p>Updates are unavailable.</p>;
+  return <p>{status === "open" ? "Live" : "Reconnecting"}</p>;
+}
+```
+
+`reloadState` is app-owned code that fetches a current snapshot from the app's authenticated API and replaces the view's state. It must handle events that arrive during the fetch, for example through application revisions or another read after invalidation. `onResync` does not run for every ordinary reconnect.
+
+For a non-React SSE client, use `onRecovery` to start the same reload:
+
+```ts
+import { Channel } from "tako.sh/client";
+
+export function subscribeUpdates(reloadState: () => Promise<void>) {
+  const updates = new Channel("announcements", undefined, { clientVersion: "2.4.0" });
+  return updates.subscribe({
+    onRecovery: async (reason) => {
+      if (reason === "history-expired") await reloadState();
+    },
+  });
+}
+```
+
+Both callbacks are optional and can be async. Reconnection does not await them. The built-in SSE reader and `useChannel` catch and log callback failures without stopping recovery. Handle reload failures in your application's data UI. `useChannel` keeps its existing message buffer until `clear()`, unmount, or a change of connection identity; treat the reloaded snapshot as authoritative rather than assuming the buffer contains complete history.
+
+If you supply a custom `eventSourceFactory`, that factory owns transport errors, cursor reset, and recovery callbacks. If you use a raw WebSocket through `connect()`, handle close code `4410`, drop the expired cursor, reload state, and open another connection yourself. Custom transports do not acquire the built-in reader's recovery behavior.
+
+[Stores](/stores/#recover-current-data) implement snapshot reloads for backend data, so they do not need a custom channel resync callback.
 
 ## Deploy Replay Storage
 
@@ -276,6 +328,8 @@ Storage is a deployment choice; application publish and subscribe code stays the
 | Local development           | In-memory for the current dev daemon process                     |
 | One production server       | Tako-managed SQLite (`channels.sqlite`) by default               |
 | Multiple production servers | Shared Postgres schema `tako_channels`, keyed by deployed app id |
+
+SQLite retains a replay window on each server. Those files are not replicated, and there is no automatic cross-server fanout between SQLite-backed servers. A reconnect to another server cannot assume the first server's history is available. Native network integration does not yet make channel fanout automatic.
 
 A multi-server environment with durable channels requires the shared `postgres_url` environment credential so publishes and replay are visible on every server:
 
@@ -302,4 +356,4 @@ For canonical writes, use a normal authenticated app endpoint to commit the reco
 
 ## Verify
 
-Connect two authorized clients and confirm both receive the same published event. Test a denied client in a deployed environment, reconnect with a replay cursor, and handle expired replay by reloading canonical app state. On multiple servers, publish through one and subscribe through another. Do not treat a successful local connection as proof of production authorization.
+Connect two authorized clients and confirm both receive the same published event. Test a denied client in a deployed environment and reconnect with a retained replay cursor. Then reconnect after expiry and confirm the SDK resumes, the application reloads authoritative state, and no reset message reaches business handlers. Test an async reload failure and stop a reconnecting subscription with `close()`. With shared Postgres on multiple servers, publish through one and subscribe through another. A successful local connection does not verify production authorization or cross-server fanout.

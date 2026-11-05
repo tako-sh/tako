@@ -455,6 +455,48 @@ socket.send({ type: "typing", data: { userId: "me" } });
 
 For React apps, prefer `useChannel` from `tako.sh/react` — it wraps `Channel` with buffered state, reconnects, and an `onMessage` callback.
 
+### Channel replay recovery
+
+The built-in SSE reader retries routine disconnects with its latest cursor.
+HTTP `410` and internal `tako.reset` events clear the cursor and start a fresh
+subscription. Neither signal becomes a business message. `onRecovery(reason)`
+receives `"reconnecting"` or `"history-expired"`; `onError` is for terminal
+failures, including HTTP 401, 403, and 404. `close()` or an abort `signal` stops
+retries.
+
+`useChannel` handles SSE recovery and WebSocket close code 4410. It reports
+`status: "connecting"` with no routine recovery error, then returns to `"open"`.
+Use optional `onRecovery` for diagnostics and `onResync` to reload authoritative
+application state after expired history:
+
+```tsx
+import { useChannel } from "tako.sh/react";
+
+export function useLiveUpdates(reloadState: () => Promise<void>) {
+  return useChannel("updates", {
+    onResync: async () => {
+      await reloadState();
+    },
+  });
+}
+```
+
+`reloadState` belongs to the app and must reconcile live events with its snapshot.
+Callbacks may be async but do not delay reconnect. The built-in reader and channel
+hook log callback failures and continue. The existing message buffer remains
+until `clear()`, unmount, or a change of connection identity. A custom channel needs this application recovery when
+missing events affect state; reconnect alone cannot restore those events.
+Non-React SSE clients can reload on `onRecovery("history-expired")`. A raw
+`connect()` returns one WebSocket and requires application reconnection logic.
+A custom `eventSourceFactory` owns cursor reset and recovery callbacks itself.
+
+Production SQLite replay is a per-server window. It does not replicate history
+or fan out automatically across servers. Keep shared `postgres_url` when durable
+replay must span servers. Native network integration does not yet make that
+fanout automatic, and SDK reconnect is not automatic application-state failover.
+Verify replay expiry, a current-state reload, async callback failure, and clean
+shutdown as well as ordinary delivery. See https://tako.sh/docs/channels/.
+
 ### Presence
 
 Define presence spaces in `<app_root>/presence/*.ts` with `definePresence` from `tako.sh`. Auth has the same `headerName`, `cookieName`, `paramsSchema`, and `verify` pattern as channels. Return `false` to deny, `true` for anonymous access, or `{ subject: user.id }` for a verified identity. Omit `auth` for public access.
@@ -546,8 +588,14 @@ and `refresh`.
 After a committed write, import the definition server-side and call
 `await messages.invalidate({ chatId })`. This affects only the exact validated
 params scope; an empty scope is not a wildcard. Snapshots load separately per
-reader and never broadcast. Reconnects reload current data; invalidations during
-loads trigger another read. External writers must also invalidate; Tako does
+reader and never broadcast. Reconnects reload current data after subscription
+readiness; invalidations during loads trigger another read. Subscription 410 and
+internal reset signals clear replay state without becoming Store data. Optional
+`onRecovery` reports diagnostics; no resync callback is required. A valid offline
+lease keeps data readable and stale with `status: "offline"` and `error: null`
+during routine recovery when no other failure is active. Without a valid lease, stale data is hidden and an error
+can surface. Authorization failures, malformed data, and expired cache entries
+remain visible failures. HTTP 410 on the data read endpoint is terminal. External writers must also invalidate; Tako does
 not perform SQL dependency tracking or CDC. Publication failures reject without
 rolling back committed writes. Use a transactional app outbox for durable
 commit-and-notify.

@@ -127,6 +127,15 @@ still check access to the requested room or tenant. Presence tracks connections,
 so deduplicate trusted subjects when counting people across tabs. Its metadata
 is client-provided and must not establish identity or permissions.
 
+The JavaScript SDK handles replay expiry and internal resets outside business
+messages. Custom channels must reload authoritative application state when
+history expires. React's optional `onResync` can be async but does not delay
+reconnect. Stores reload through their authorized loader automatically after
+subscription readiness. SQLite replay remains a per-server window with no
+automatic cross-server fanout. Keep shared Postgres for cross-server replay;
+native network integration does not yet provide automatic fanout or application
+state failover. Test expired history and the resulting state reload.
+
 Local channel and Presence connections bypass auth callbacks. Verify their
 private access rules in a deployed test environment. Store reads and
 subscriptions enforce validation and authorization in both dev and production.
