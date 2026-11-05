@@ -162,6 +162,41 @@ pub(crate) fn save_profile(name: &str, profile: &Profile) -> Result<NetworkAlias
     {
         return Err(format!("Alias '{name}' already names another network").into());
     }
+    let profile = persist_profile(&alias, profile)?;
+    profile.validate(&keys)?;
+    NetworksToml::save_alias(&alias)?;
+    Ok(alias)
+}
+
+pub(crate) fn record_revocation(
+    alias: &NetworkAlias,
+    revocation: tako_network::Revocation,
+) -> Result<()> {
+    let mut profile: Profile = read_json(&alias.profile_path()?)?;
+    let Profile::Active { profile: active } = &mut profile else {
+        return Err("Revocation requires an active network profile".into());
+    };
+    if !active.snapshot.revocations.contains(&revocation) {
+        active.snapshot.revocations.push(revocation);
+    }
+    persist_profile(alias, profile)?;
+    Ok(())
+}
+
+fn persist_profile(alias: &NetworkAlias, mut profile: Profile) -> Result<Profile> {
+    alias.validate()?;
+    if profile.snapshot().network.id.to_string() != alias.id
+        || profile
+            .request()
+            .device_id_for(&profile.snapshot().network.id)?
+            .to_string()
+            != alias.device
+    {
+        return Err("Saved network alias does not match its profile".into());
+    }
+    profile.normalize_trusted_servers()?;
+    let keys = LocalDeviceKeys::load(&keys_path(&profile.request().request_id)?)?;
+    profile.validate_for_storage(&keys)?;
     let path = alias.profile_path()?;
     private_directory(path.parent().unwrap())?;
     let lock = private_file(&path.with_file_name("profile.lock"), true)?;
@@ -200,10 +235,7 @@ pub(crate) fn save_profile(name: &str, profile: &Profile) -> Result<NetworkAlias
     }
     profile.validate_for_storage(&keys)?;
     write_json(&path, &profile, true)?;
-    // Persist authenticated revocations even when they remove this device or its last server.
-    profile.validate(&keys)?;
-    NetworksToml::save_alias(&alias)?;
-    Ok(alias)
+    Ok(profile)
 }
 
 fn current_server_pins(

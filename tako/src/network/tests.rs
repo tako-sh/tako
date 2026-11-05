@@ -429,3 +429,40 @@ fn expired_server_pins_are_pruned_on_load_and_import_without_extending_own_membe
     assert!(profile.validate(&keys).is_err());
     assert!(save_profile("test", &profile).is_err());
 }
+
+#[test]
+fn recording_self_or_last_server_revocation_succeeds_and_is_idempotent() {
+    let _home = TestHome::new();
+    for revoke_self in [false, true] {
+        let Fixture {
+            keys,
+            profile,
+            server,
+        } = fixture();
+        store_keys(&profile.request().request_id, &keys).unwrap();
+        let alias = save_profile(if revoke_self { "self" } else { "server" }, &profile).unwrap();
+        let own = &profile.snapshot().network.initial_admin;
+        let target = if revoke_self { own } else { &server };
+        let revocation = profile
+            .snapshot()
+            .plan_revocation(
+                tako_network::RevocationId::random().unwrap(),
+                own,
+                target,
+                now().unwrap(),
+            )
+            .unwrap();
+        record_revocation(&alias, revocation.clone()).unwrap();
+        record_revocation(&alias, revocation.clone()).unwrap();
+        let saved: Profile = read_json(&alias.profile_path().unwrap()).unwrap();
+        assert_eq!(saved.snapshot().revocations, vec![revocation.clone()]);
+        saved.validate_for_storage(&keys).unwrap();
+        assert!(load_profile(&alias).is_err());
+        assert!(save_profile(&alias.name, &profile).is_err());
+        let before = fs::read(alias.profile_path().unwrap()).unwrap();
+        let mut conflicting = revocation;
+        conflicting.created_at += 1;
+        assert!(record_revocation(&alias, conflicting).is_err());
+        assert_eq!(fs::read(alias.profile_path().unwrap()).unwrap(), before);
+    }
+}
