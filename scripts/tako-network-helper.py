@@ -226,11 +226,15 @@ def firewall(state):
         for peer in config['peers']:
             ip = peer['address'].split('/')[0]
             match = f'iifname "{dev}" ip6 saddr {ip} ip6 daddr {local}'
+            lines.append(f'{match} meta l4proto tcp ct state established ct direction reply accept')
+            lines.append(f'{match} udp sport 53 ct state established ct direction reply accept')
             if peer['kind'] == 'server':
                 lines.append(f'{match} udp dport 8787 accept')
+                lines.append(f'{match} udp sport 8787 ct state established ct direction reply accept')
             if 'ssh_public_key' in peer:
                 lines.append(f'{match} tcp dport 22 accept')
-            lines.append(f'{match} tcp dport {{ 80, 443, 9844 }} accept')
+            lines.append(f'{match} tcp dport {{ 53, 80, 443, 9844 }} accept')
+            lines.append(f'{match} udp dport 53 accept')
             lines.append(f'{match} meta l4proto ipv6-icmp accept')
         lines.append(f'iifname "{dev}" drop')
     lines.extend(['udp dport 8787 drop', '}',
