@@ -29,6 +29,7 @@ impl TakoProxy {
     /// Keep the reader and its broker subscription in the existing per-app cache.
     async fn channel_store_for_app(&self, app_name: &str) -> Result<Arc<ProxyChannelStore>> {
         let native = self.native_channels.read().clone();
+        let native_configured = native.is_some();
         let resolver = self.channel_postgres_url.read().clone();
         let app_id = app_name.to_owned();
         let postgres_url =
@@ -67,6 +68,12 @@ impl TakoProxy {
                     })
             })
             .await?;
+        if store.is_native() != native_configured {
+            return Err(Error::explain(
+                ErrorType::InternalError,
+                "channel transport configuration changed; reopen app channel reader",
+            ));
+        }
         store.check_backend(postgres_url.as_deref()).map_err(|_| {
             Error::explain(
                 ErrorType::InternalError,

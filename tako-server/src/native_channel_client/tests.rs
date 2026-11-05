@@ -272,3 +272,11 @@ fn canonical_scope_defaults_to_production_without_allowing_paths() {
         assert!(app_scope(input).is_err());
     }
 }
+
+#[tokio::test]
+async fn terminated_subscription_worker_cannot_leave_reader_marked_ready() {
+    let (proxy, _link, _server) = attached().await;
+    proxy.native.as_ref().unwrap().task.abort();
+    tokio::task::yield_now().await;
+    assert!(proxy.ensure_ready().await.is_err());
+}
