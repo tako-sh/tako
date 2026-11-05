@@ -1,12 +1,9 @@
 use std::collections::BTreeMap;
-use std::io::Read;
 use std::net::SocketAddr;
 use std::time::Duration;
 
 use tako_network::api::{RpcRequest, RpcResponse, SignedRequest};
-use tako_network::{
-    DeviceId, LocalDeviceKeys, MemberKind, NetworkPublicProfile, RegistrySnapshot, ServerInfo,
-};
+use tako_network::{DeviceId, LocalDeviceKeys, MemberKind, NetworkPublicProfile, RegistrySnapshot, ServerInfo};
 
 use super::{Profile, Result};
 use crate::config::NetworkAlias;
@@ -40,14 +37,43 @@ pub(crate) fn call(
     let info = trusted
         .get(server)
         .ok_or("Server is not trusted by this network profile")?;
+    let request = SignedRequest::sign(
+        &keys,
+        profile.snapshot().network.id.clone(),
+        server.clone(),
+        profile.request().kind,
+        super::now()?,
+        command,
+    )?;
+    send(info, &request)
+}
+
+pub(crate) fn send(info: &ServerInfo, signed: &SignedRequest) -> Result<RpcResponse> {
+    let (http, request) = prepare_request(info, signed)?;
+    let response = http.execute(request)?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!(
+            "Network request was rejected by {} ({status})",
+            signed.server_id
+        )
+        .into());
+    }
+    super::read_bounded_json(response)
+}
+
+fn prepare_request(
+    info: &ServerInfo,
+    signed: &SignedRequest,
+) -> Result<(reqwest::blocking::Client, reqwest::blocking::Request)> {
+    info.validate()?;
     let certificate = reqwest::Certificate::from_pem(
         info.https_certificate_pem
             .as_ref()
             .ok_or("Server has no pinned HTTPS certificate")?
             .as_bytes(),
     )?;
-    let network = &profile.snapshot().network.id;
-    let host = hostname(network, server);
+    let host = hostname(&signed.network_id, &signed.server_id);
     let http = reqwest::blocking::Client::builder()
         .tls_certs_only([certificate])
         .resolve(
@@ -59,29 +85,12 @@ pub(crate) fn call(
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(20))
         .build()?;
-    let path = command.path();
-    let request = SignedRequest::sign(
-        &keys,
-        network.clone(),
-        server.clone(),
-        profile.request().kind,
-        super::now()?,
-        command,
-    )?;
-    let response = http
+    let path = signed.request.path();
+    let request = http
         .post(format!("https://{host}:{}{path}", info.https_port))
-        .json(&request)
-        .send()?;
-    let status = response.status();
-    if !status.is_success() {
-        return Err(format!("Network request was rejected by {server} ({status})").into());
-    }
-    let mut bytes = Vec::new();
-    response.take(4 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
-    if bytes.len() > 4 * 1024 * 1024 {
-        return Err("Network response exceeds 4 MiB".into());
-    }
-    Ok(serde_json::from_slice(&bytes)?)
+        .json(signed)
+        .build()?;
+    Ok((http, request))
 }
 
 pub(crate) fn server(profile: &Profile) -> Result<DeviceId> {
@@ -189,4 +198,87 @@ fn active_from_snapshot(profile: &Profile, mut snapshot: RegistrySnapshot) -> Re
         &active.request().request_id,
     )?)?)?;
     Ok(active)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::network::{tests::fixture, now};
+    #[test]
+    fn transport_uses_the_signed_network_server_and_command_audience() {
+        let fixture = fixture();
+        let info = trusted_servers(&fixture.profile)
+            .unwrap()
+            .remove(&fixture.server)
+            .unwrap();
+        for command in [
+            RpcRequest::Snapshot,
+            RpcRequest::Begin {
+                pending_id: tako_network::RequestId::random().unwrap(),
+            },
+        ] {
+            let signed = SignedRequest::sign(
+                &fixture.keys,
+                fixture.profile.snapshot().network.id.clone(),
+                fixture.server.clone(),
+                fixture.profile.request().kind,
+                now().unwrap(),
+                command,
+            )
+            .unwrap();
+            let (_, request) = prepare_request(&info, &signed).unwrap();
+            assert_eq!(request.method(), reqwest::Method::POST);
+            assert_eq!(request.url().scheme(), "https");
+            assert_eq!(
+                request.url().host_str(),
+                Some(hostname(&signed.network_id, &signed.server_id).as_str())
+            );
+            assert_eq!(request.url().port(), Some(info.https_port));
+            assert_eq!(request.url().path(), signed.request.path());
+            let body: SignedRequest =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(body, signed);
+        }
+    }
+
+    #[test]
+    fn transport_rejects_missing_and_mismatched_pins_before_connecting() {
+        let fixture = fixture();
+        let mut info = trusted_servers(&fixture.profile)
+            .unwrap()
+            .remove(&fixture.server)
+            .unwrap();
+        let signed = SignedRequest::sign(
+            &fixture.keys,
+            fixture.profile.snapshot().network.id.clone(),
+            fixture.server,
+            fixture.profile.request().kind,
+            now().unwrap(),
+            RpcRequest::Snapshot,
+        )
+        .unwrap();
+        info.https_spki_sha256 = Some(tako_network::KeyFingerprint::of_bytes(b"wrong"));
+        assert!(
+            send(&info, &signed)
+                .unwrap_err()
+                .to_string()
+                .contains("SPKI")
+        );
+        info.https_spki_sha256 = None;
+        info.https_certificate_pem = None;
+        assert!(
+            send(&info, &signed)
+                .unwrap_err()
+                .to_string()
+                .contains("pinned HTTPS")
+        );
+        assert!(
+            hostname(&signed.network_id, &signed.server_id)
+                .contains(&signed.network_id.to_string())
+        );
+        assert!(
+            hostname(&signed.network_id, &signed.server_id)
+                .contains(&signed.server_id.to_string()[..32])
+        );
+    }
 }
