@@ -232,7 +232,7 @@ impl ProxyChannelStore {
             && native.postgres_url.as_ref().map(|url| url.as_str()) != postgres_url
         {
             return Err(ChannelError::Storage(
-                "channel backend configuration changed; reopen the app channel reader".into(),
+                "channel backend configuration changed; broker re-registration required".into(),
             ));
         }
         Ok(())

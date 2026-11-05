@@ -14,7 +14,9 @@ use zeroize::Zeroizing;
 pub(super) enum Command {
     Local {
         request: wire::Received<Request>,
-        reply: oneshot::Sender<Reply>,
+        reply: oneshot::Sender<(Reply, tokio::sync::OwnedSemaphorePermit)>,
+        deadline: tokio::time::Instant,
+        admission: tokio::sync::OwnedSemaphorePermit,
     },
     Attach {
         peer: DeviceId,
@@ -101,9 +103,18 @@ impl Broker {
     }
     pub async fn handle(&mut self, command: Command) -> io::Result<()> {
         match command {
-            Command::Local { request, reply } => {
-                let result = self.local(request.value).await?;
-                let _ = reply.send(result);
+            Command::Local {
+                request,
+                reply,
+                deadline,
+                admission,
+            } => {
+                if reply.is_closed() || deadline <= tokio::time::Instant::now() {
+                    return Ok(());
+                }
+                let (request, _input) = request.into_parts();
+                let result = self.local(request).await?;
+                let _ = reply.send((result, admission));
             }
             Command::Attach {
                 peer,

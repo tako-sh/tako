@@ -71,6 +71,7 @@ pub async fn run(
     let (commands, receiver) = mpsc::channel(128);
     let inbound = wire::Budget::new(8 * wire::MAX_FRAME);
     let outbound = wire::Budget::new(16 * wire::MAX_FRAME);
+    let replies = wire::Budget::new(8 * wire::MAX_FRAME);
     let notifications = wire::Budget::new(8 * wire::MAX_FRAME);
     let broker = Broker::new(
         PathBuf::from("/opt/tako/apps"),
@@ -134,12 +135,15 @@ pub async fn run(
                 let inbound = inbound.clone();
                 let outbound = outbound.clone();
                 peers.spawn(async move {
-                    let result = async {
+                    let connected = async {
                         let socket = TcpSocket::new_v6()?;
                         socket.bind((address, 0).into())?;
-                        let stream = tokio::time::timeout(IO_TIMEOUT, socket.connect((remote, PEER_PORT).into())).await??;
-                        peer::serve(stream, &config, &keys, &roster, Some(&id), generation, commands, inbound, outbound).await
+                        tokio::time::timeout(IO_TIMEOUT, socket.connect((remote, PEER_PORT).into())).await?
                     }.await;
+                    let result = match connected {
+                        Ok(stream) => peer::serve(stream, &config, &keys, &roster, Some(&id), generation, commands, inbound, outbound).await,
+                        Err(error) => peer::SessionEnd::rejected(error),
+                    };
                     (id, result)
                 });
             }
@@ -153,12 +157,14 @@ pub async fn run(
             }
             _ = tick.tick() => { refresh = true; }
             Some(result) = peers.join_next(), if !peers.is_empty() => {
-                if let Ok((id, _result)) = result {
-                    pending.remove(&id);
+                let (id, outcome) = result.map_err(|_| error("channel peer worker failed"))?;
+                pending.remove(&id);
+                if outcome.authenticated {
                     control.send_modify(|state| { *state.losses.entry(id.clone()).or_default() += 1; });
-                    let failures = attempts.get(&id).map_or(0, |(n, _)| *n).saturating_add(1).min(5);
-                    attempts.insert(id, (failures, tokio::time::Instant::now() + Duration::from_secs(1 << failures)));
                 }
+                let failures = if outcome.authenticated { 1 } else { attempts.get(&id).map_or(0, |(n, _)| *n).saturating_add(1).min(5) };
+                let _ = outcome.result;
+                attempts.insert(id, (failures, tokio::time::Instant::now() + Duration::from_secs(1 << failures)));
             }
             Some(_) = local_tasks.join_next(), if !local_tasks.is_empty() => {}
             accepted = local_listener.accept(), if local_tasks.len() < MAX_LOCAL_CONNECTIONS => {
@@ -166,7 +172,8 @@ pub async fn run(
                 if ipc::authorized(&stream)? {
                     let commands = commands.clone();
                     let inbound = inbound.clone();
-                    local_tasks.spawn(async move { let _ = ipc::serve(stream, commands, inbound).await; });
+                    let replies = replies.clone();
+                    local_tasks.spawn(async move { let _ = ipc::serve(stream, commands, inbound, replies).await; });
                 }
             }
             accepted = async { listener.as_ref().unwrap().accept().await }, if listener.is_some() && peers.len() < MAX_CONNECTIONS => {
@@ -174,7 +181,8 @@ pub async fn run(
                 let candidate = roster.iter().find(|(id, member)| *id < &config.server_id
                     && std::net::IpAddr::V6(config.network.id.address(&member.request.wg_public_key)) == remote.ip())
                     .map(|(id, _)| id.clone());
-                if let Some(id) = candidate.filter(|id| !pending.contains(id)) {
+                if let Some(id) = candidate.filter(|id| !pending.contains(id)
+                    && attempts.get(id).is_none_or(|(_, retry)| *retry <= tokio::time::Instant::now())) {
                     pending.insert(id.clone());
                     let config = config.clone();
                     let keys = keys.clone();

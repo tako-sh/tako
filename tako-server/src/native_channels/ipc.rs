@@ -12,7 +12,7 @@ use std::{
 use tako_channels::{ChannelAuthResponse, ChannelMessage, ChannelPublishPayload, PresenceMember};
 use tako_network::AppEnv;
 use tokio::{
-    io::{AsyncRead, AsyncWrite},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite},
     net::{UnixListener, UnixStream},
     sync::{mpsc, oneshot},
 };
@@ -258,33 +258,62 @@ pub(super) async fn serve<S>(
     mut stream: S,
     commands: mpsc::Sender<Command>,
     budget: wire::Budget,
+    replies: wire::Budget,
 ) -> io::Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
+    let deadline = tokio::time::Instant::now() + IO_TIMEOUT;
     let request = wire::read(&mut stream, &budget).await?;
-    let (reply, receive) = oneshot::channel();
-    tokio::time::timeout(IO_TIMEOUT, commands.send(Command::Local { request, reply }))
+    let (mut reader, mut writer) = tokio::io::split(stream);
+    let response = async {
+        // Reserve response space before submitting a mutation. Waiting here leaves the
+        // broker free to process peer loss and prevents large snapshots exhausting memory.
+        let admission = tokio::time::timeout_at(deadline, replies.wait(wire::MAX_FRAME)).await??;
+        let (reply, receive) = oneshot::channel();
+        tokio::time::timeout_at(
+            deadline,
+            commands.send(Command::Local {
+                request,
+                reply,
+                deadline,
+                admission,
+            }),
+        )
         .await?
         .map_err(|_| error("channel broker stopped"))?;
-    let reply = tokio::time::timeout(IO_TIMEOUT, receive)
-        .await?
-        .map_err(|_| error("channel broker stopped"))?;
-    match reply {
-        Reply::Response(response) => wire::write(&mut stream, &response).await,
-        Reply::Subscription(mut receive) => {
-            wire::write(&mut stream, &Response::Ok).await?;
-            let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
-            loop {
-                tokio::select! {
-                    packet = receive.recv() => match packet {
-                        Some(packet) => wire::write_bytes(&mut stream, &packet.bytes).await?,
-                        None => return Ok(()),
-                    },
-                    _ = tick.tick() => wire::write(&mut stream, &Notice::Keepalive).await?,
+        let (reply, admission) = tokio::time::timeout_at(deadline, receive)
+            .await?
+            .map_err(|_| error("channel broker stopped"))?;
+        match reply {
+            Reply::Response(response) => {
+                let result =
+                    tokio::time::timeout_at(deadline, wire::write(&mut writer, &response)).await?;
+                drop(admission);
+                result
+            }
+            Reply::Subscription(mut receive) => {
+                tokio::time::timeout_at(deadline, wire::write(&mut writer, &Response::Ok))
+                    .await??;
+                drop(admission);
+                let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
+                loop {
+                    tokio::select! {
+                        packet = receive.recv() => match packet {
+                            Some(packet) => wire::write_bytes(&mut writer, &packet.bytes).await?,
+                            None => return Ok(()),
+                        },
+                        _ = tick.tick() => wire::write(&mut writer, &Notice::Keepalive).await?,
+                    }
                 }
             }
         }
+    };
+    // One request per connection. EOF cancels queued work; extra input is a protocol violation.
+    // A mutation already started may still commit, so callers never blindly retry a lost ack.
+    tokio::select! {
+        result = response => result,
+        _ = reader.read_u8() => Err(error("channel IPC connection closed or pipelined")),
     }
 }
 

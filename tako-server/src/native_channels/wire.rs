@@ -14,7 +14,14 @@ impl Budget {
     pub fn new(bytes: usize) -> Self {
         Self(Arc::new(Semaphore::new(bytes)))
     }
-    fn take(&self, bytes: usize) -> io::Result<OwnedSemaphorePermit> {
+    pub async fn wait(&self, bytes: usize) -> io::Result<OwnedSemaphorePermit> {
+        self.0
+            .clone()
+            .acquire_many_owned(bytes as u32)
+            .await
+            .map_err(|_| error("channel byte budget closed"))
+    }
+    pub fn take(&self, bytes: usize) -> io::Result<OwnedSemaphorePermit> {
         self.0
             .clone()
             .try_acquire_many_owned(bytes as u32)
@@ -24,6 +31,11 @@ impl Budget {
 pub(super) struct Received<T> {
     pub value: T,
     _bytes: OwnedSemaphorePermit,
+}
+impl<T> Received<T> {
+    pub fn into_parts(self) -> (T, OwnedSemaphorePermit) {
+        (self.value, self._bytes)
+    }
 }
 pub(super) struct Packet {
     pub bytes: Arc<Zeroizing<Vec<u8>>>,

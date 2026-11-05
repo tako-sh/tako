@@ -294,7 +294,12 @@ async fn fifo_commit_and_mesh_order_across_concurrent_local_duplex_publishers() 
         let commands = commands.clone();
         jobs.spawn(async move {
             let (mut client, server) = tokio::io::duplex(8192);
-            let task = tokio::spawn(ipc::serve(server, commands, Budget::new(MAX_FRAME)));
+            let task = tokio::spawn(ipc::serve(
+                server,
+                commands,
+                Budget::new(MAX_FRAME),
+                Budget::new(8 * MAX_FRAME),
+            ));
             wire::write(
                 &mut client,
                 &Request::Publish {
@@ -1044,7 +1049,12 @@ async fn presence_ipc_roundtrips_over_real_duplex() {
         },
     ] {
         let (mut client, server) = tokio::io::duplex(8192);
-        let task = tokio::spawn(ipc::serve(server, commands.clone(), Budget::new(MAX_FRAME)));
+        let task = tokio::spawn(ipc::serve(
+            server,
+            commands.clone(),
+            Budget::new(MAX_FRAME),
+            Budget::new(8 * MAX_FRAME),
+        ));
         let querying = matches!(request, Request::Presence { .. });
         wire::write(&mut client, &request).await.unwrap();
         let response: Response = wire::read(&mut client, &Budget::new(MAX_FRAME))
@@ -1094,4 +1104,234 @@ async fn first_presence_query_discovers_existing_peer_leases_without_client_rene
     right.remote(&local_id(), snapshot).await.unwrap();
     assert_eq!(presence_members(&mut right).await.len(), 1);
     assert!(right_out.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn disconnected_or_expired_ipc_cannot_commit_queued_mutations() {
+    let (_temp, mut broker) = new_broker().await;
+    let store = broker.apps[&app()].store.clone();
+    for expired in [false, true] {
+        let (mut client, server) = tokio::io::duplex(8192);
+        let (commands, mut receiver) = mpsc::channel(1);
+        let budget = Budget::new(MAX_FRAME);
+        let replies = Budget::new(MAX_FRAME);
+        let task = tokio::spawn(ipc::serve(
+            server,
+            commands,
+            budget.clone(),
+            replies.clone(),
+        ));
+        wire::write(
+            &mut client,
+            &Request::Publish {
+                app: app(),
+                channel: "events".into(),
+                payload: payload(1),
+                ephemeral: false,
+            },
+        )
+        .await
+        .unwrap();
+        let mut command = receiver.recv().await.unwrap();
+        if expired {
+            let Command::Local { deadline, .. } = &mut command else {
+                panic!("local")
+            };
+            *deadline = tokio::time::Instant::now();
+        } else {
+            drop(client);
+            assert!(task.await.unwrap().is_err());
+            broker.handle(command).await.unwrap();
+            assert!(budget.take(MAX_FRAME).is_ok());
+            assert!(replies.take(MAX_FRAME).is_ok());
+            continue;
+        }
+        broker.handle(command).await.unwrap();
+        assert!(task.await.unwrap().is_err());
+        assert!(budget.take(MAX_FRAME).is_ok());
+        assert!(replies.take(MAX_FRAME).is_ok());
+    }
+    assert!(store.read_after("events", None, 10).unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn ipc_reply_budget_survives_blocked_write_and_releases_on_disconnect() {
+    let (mut client, server) = tokio::io::duplex(256);
+    let (commands, mut receiver) = mpsc::channel(2);
+    let replies = Budget::new(MAX_FRAME);
+    let task = tokio::spawn(ipc::serve(
+        server,
+        commands.clone(),
+        Budget::new(MAX_FRAME),
+        replies.clone(),
+    ));
+    wire::write(
+        &mut client,
+        &Request::Presence {
+            app: app(),
+            channel: "events".into(),
+        },
+    )
+    .await
+    .unwrap();
+    let Command::Local {
+        reply, admission, ..
+    } = receiver.recv().await.unwrap()
+    else {
+        panic!("local")
+    };
+    let mut member = presence_member();
+    member.data = serde_json::json!("x".repeat(8192));
+    assert!(
+        reply
+            .send((
+                Reply::Response(Response::Presence {
+                    members: vec![member]
+                }),
+                admission
+            ))
+            .is_ok()
+    );
+    // The response is larger than the duplex capacity. Its reservation remains owned by IPC.
+    assert!(replies.take(1).is_err());
+    let (mut second, server) = tokio::io::duplex(256);
+    let second_task = tokio::spawn(ipc::serve(
+        server,
+        commands,
+        Budget::new(MAX_FRAME),
+        replies.clone(),
+    ));
+    wire::write(
+        &mut second,
+        &Request::Presence {
+            app: app(),
+            channel: "events".into(),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), receiver.recv())
+            .await
+            .is_err()
+    );
+    drop(client);
+    assert!(task.await.unwrap().is_err());
+    let next = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    drop(second);
+    assert!(second_task.await.unwrap().is_err());
+    drop(next);
+    assert!(replies.take(MAX_FRAME).is_ok());
+}
+
+#[tokio::test]
+async fn backend_registration_change_rejects_without_replacing_writer_and_same_config_recovers() {
+    let (_temp, mut broker) = new_broker().await;
+    let old = broker.apps[&app()].store.clone();
+    let first = publish(&mut broker, 1).await;
+    assert!(matches!(
+        broker
+            .local(Request::Register {
+                app: app(),
+                postgres_url: Some(zeroize::Zeroizing::new("postgres://secret".into())),
+            })
+            .await
+            .unwrap(),
+        Reply::Response(Response::Rejected)
+    ));
+    assert!(Arc::ptr_eq(&old, &broker.apps[&app()].store));
+    assert!(matches!(
+        broker
+            .local(Request::Register {
+                app: app(),
+                postgres_url: None
+            })
+            .await
+            .unwrap(),
+        Reply::Response(Response::Ok)
+    ));
+    publish(&mut broker, 2).await;
+    assert_eq!(
+        old.read_after("events", Some(first.id.parse().unwrap()), 10)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn unauthenticated_peer_failure_cannot_attach_or_request_replay_fence() {
+    let (net, a, _b, ma, mb) = identities();
+    let rogue = LocalDeviceKeys::generate().unwrap();
+    let roster = BTreeMap::from([(mb.device_id.clone(), mb.clone())]);
+    let remote_roster = BTreeMap::from([(ma.device_id.clone(), ma.clone())]);
+    let (server, mut remote) = tokio::io::duplex(8192);
+    let (commands, mut receiver) = mpsc::channel(1);
+    let (end, _) = tokio::join!(
+        peer::serve_stream(
+            server,
+            &net,
+            &ma.device_id,
+            &a,
+            &roster,
+            IpAddr::V6(net.address(&mb.request.wg_public_key)),
+            Some(&mb.device_id),
+            0,
+            commands,
+            Budget::new(MAX_FRAME),
+            Budget::new(MAX_FRAME)
+        ),
+        peer::authenticate(
+            &mut remote,
+            &net,
+            &mb.device_id,
+            &rogue,
+            &remote_roster,
+            IpAddr::V6(net.address(&ma.request.wg_public_key)),
+            None
+        ),
+    );
+    assert!(!end.authenticated);
+    assert!(end.result.is_err());
+    assert!(receiver.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn authenticated_peer_loss_requests_fence_even_when_admission_fails() {
+    let (net, a, b, ma, mb) = identities();
+    let roster = BTreeMap::from([(mb.device_id.clone(), mb.clone())]);
+    let remote_roster = BTreeMap::from([(ma.device_id.clone(), ma.clone())]);
+    let (server, mut remote) = tokio::io::duplex(8192);
+    let (commands, receiver) = mpsc::channel(1);
+    drop(receiver);
+    let (end, authenticated) = tokio::join!(
+        peer::serve_stream(
+            server,
+            &net,
+            &ma.device_id,
+            &a,
+            &roster,
+            IpAddr::V6(net.address(&mb.request.wg_public_key)),
+            Some(&mb.device_id),
+            0,
+            commands,
+            Budget::new(MAX_FRAME),
+            Budget::new(MAX_FRAME)
+        ),
+        peer::authenticate(
+            &mut remote,
+            &net,
+            &mb.device_id,
+            &b,
+            &remote_roster,
+            IpAddr::V6(net.address(&ma.request.wg_public_key)),
+            None
+        ),
+    );
+    assert!(authenticated.is_ok());
+    assert!(end.authenticated);
+    assert!(end.result.is_err());
 }

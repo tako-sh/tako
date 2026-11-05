@@ -159,9 +159,21 @@ pub(super) async fn authenticate<S: AsyncRead + AsyncWrite + Unpin>(
     .await?
 }
 
+pub(super) struct SessionEnd {
+    pub authenticated: bool,
+    pub result: io::Result<()>,
+}
+impl SessionEnd {
+    pub fn rejected(error: io::Error) -> Self {
+        Self {
+            authenticated: false,
+            result: Err(error),
+        }
+    }
+}
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn serve(
-    mut stream: TcpStream,
+    stream: TcpStream,
     config: &NodeConfig,
     keys: &LocalDeviceKeys,
     roster: &Roster,
@@ -170,38 +182,83 @@ pub(super) async fn serve(
     commands: mpsc::Sender<Command>,
     inbound: wire::Budget,
     outbound: wire::Budget,
-) -> io::Result<()> {
-    let remote_ip = stream.peer_addr()?.ip();
-    let peer = authenticate(
-        &mut stream,
+) -> SessionEnd {
+    let remote_ip = match stream.peer_addr() {
+        Ok(remote) => remote.ip(),
+        Err(error) => return SessionEnd::rejected(error),
+    };
+    serve_stream(
+        stream,
         &config.network.id,
         &config.server_id,
         keys,
         roster,
         remote_ip,
         expected,
+        generation,
+        commands,
+        inbound,
+        outbound,
     )
-    .await?;
-    let (sender, receiver) = wire::queue(outbound);
-    let (reply, receive) = oneshot::channel();
-    tokio::time::timeout(
-        IO_TIMEOUT,
-        commands.send(Command::Attach {
-            peer: peer.clone(),
-            generation,
-            sender,
-            reply,
-        }),
+    .await
+}
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn serve_stream<S: AsyncRead + AsyncWrite + Unpin>(
+    mut stream: S,
+    network: &NetworkId,
+    local: &DeviceId,
+    keys: &LocalDeviceKeys,
+    roster: &Roster,
+    remote_ip: IpAddr,
+    expected: Option<&DeviceId>,
+    generation: u64,
+    commands: mpsc::Sender<Command>,
+    inbound: wire::Budget,
+    outbound: wire::Budget,
+) -> SessionEnd {
+    let peer = match authenticate(
+        &mut stream,
+        network,
+        local,
+        keys,
+        roster,
+        remote_ip,
+        expected,
     )
-    .await?
-    .map_err(|_| error("channel broker stopped"))?;
-    if !tokio::time::timeout(IO_TIMEOUT, receive)
-        .await?
-        .map_err(|_| error("channel broker stopped"))?
+    .await
     {
-        return Err(error("stale channel membership"));
+        Ok(peer) => peer,
+        Err(error) => return SessionEnd::rejected(error),
+    };
+    // The authenticated peer may already be committing events while local broker admission waits.
+    // From this point onward, even admission timeout is a delivery gap; bad signatures are not.
+    let result = async {
+        let (sender, receiver) = wire::queue(outbound);
+        let (reply, receive) = oneshot::channel();
+        tokio::time::timeout(
+            IO_TIMEOUT,
+            commands.send(Command::Attach {
+                peer: peer.clone(),
+                generation,
+                sender,
+                reply,
+            }),
+        )
+        .await?
+        .map_err(|_| error("channel broker stopped"))?;
+        if !tokio::time::timeout(IO_TIMEOUT, receive)
+            .await?
+            .map_err(|_| error("channel broker stopped"))?
+        {
+            return Err(error("stale channel membership"));
+        }
+        pump(stream, peer, generation, commands, inbound, receiver).await
     }
-    pump(stream, peer, generation, commands, inbound, receiver).await
+    .await;
+    SessionEnd {
+        authenticated: true,
+        result,
+    }
 }
 
 pub(super) async fn pump<S: AsyncRead + AsyncWrite + Unpin>(
