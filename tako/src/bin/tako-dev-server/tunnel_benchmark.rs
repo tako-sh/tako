@@ -6,6 +6,7 @@ use openssl::{
     x509::X509,
 };
 use std::io::{Read, Write};
+use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::protocol::Role;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
