@@ -2,8 +2,8 @@
 //!
 //! Watches Tako-owned inputs for `tako dev`.
 
-use notify::RecursiveMode;
-use notify_debouncer_mini::new_debouncer;
+use notify::{RecursiveMode, Watcher};
+use notify_debouncer_mini::{Config, Debouncer, new_debouncer_opt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc as std_mpsc};
 use std::time::{Duration, SystemTime};
@@ -20,8 +20,42 @@ pub enum WatchChange {
 
 /// Handle that keeps the watcher alive
 pub struct WatcherHandle {
-    _debouncer: Arc<Mutex<notify_debouncer_mini::Debouncer<notify::RecommendedWatcher>>>,
+    _debouncer: Arc<Mutex<Debouncer<ChangesOnlyWatcher>>>,
     _thread: std::thread::JoinHandle<()>,
+}
+
+// The mini debouncer erases event kinds. Filter access events first so loading
+// tako.toml (including during a reload) cannot schedule another reload on Linux.
+struct ChangesOnlyWatcher(notify::RecommendedWatcher);
+
+impl Watcher for ChangesOnlyWatcher {
+    fn new<F: notify::EventHandler>(
+        mut handler: F,
+        config: notify::Config,
+    ) -> notify::Result<Self> {
+        notify::RecommendedWatcher::new(
+            move |event: notify::Result<notify::Event>| {
+                if event.as_ref().is_ok_and(|event| event.kind.is_access()) {
+                    return;
+                }
+                handler.handle_event(event);
+            },
+            config,
+        )
+        .map(Self)
+    }
+
+    fn watch(&mut self, path: &Path, mode: RecursiveMode) -> notify::Result<()> {
+        self.0.watch(path, mode)
+    }
+
+    fn unwatch(&mut self, path: &Path) -> notify::Result<()> {
+        self.0.unwatch(path)
+    }
+
+    fn kind() -> notify::WatcherKind {
+        notify::RecommendedWatcher::kind()
+    }
 }
 
 /// Watches files that affect Tako runtime metadata in a project directory.
@@ -49,7 +83,10 @@ impl ConfigWatcher {
 
     pub fn start(self) -> Result<WatcherHandle, Box<dyn std::error::Error>> {
         let (tx, rx) = std_mpsc::channel();
-        let debouncer = Arc::new(Mutex::new(new_debouncer(Duration::from_millis(150), tx)?));
+        let debouncer = Arc::new(Mutex::new(new_debouncer_opt::<_, ChangesOnlyWatcher>(
+            Config::default().with_timeout(Duration::from_millis(150)),
+            tx,
+        )?));
 
         watch_path(&debouncer, &self.config_path, RecursiveMode::NonRecursive)?;
 
@@ -156,7 +193,7 @@ impl ConfigWatcher {
 }
 
 fn watch_path(
-    debouncer: &Arc<Mutex<notify_debouncer_mini::Debouncer<notify::RecommendedWatcher>>>,
+    debouncer: &Arc<Mutex<Debouncer<ChangesOnlyWatcher>>>,
     path: &Path,
     mode: RecursiveMode,
 ) -> notify::Result<()> {
@@ -233,6 +270,36 @@ fn is_preexisting_runtime_definition_event(path: &Path, cutoff: Option<SystemTim
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn reading_config_does_not_reload_but_editing_it_does() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project_dir = temp.path().canonicalize().unwrap();
+        let config_path = project_dir.join("tako.toml");
+        std::fs::write(&config_path, "name = \"before\"\n").unwrap();
+        let (tx, mut rx) = mpsc::channel(8);
+        let _watcher =
+            ConfigWatcher::new(project_dir.clone(), project_dir, config_path.clone(), tx)
+                .unwrap()
+                .start()
+                .unwrap();
+
+        // Loading the config during a reload must not schedule another reload.
+        std::fs::read_to_string(&config_path).unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(600), rx.recv())
+                .await
+                .is_err()
+        );
+
+        std::fs::write(&config_path, "name = \"after\"\n").unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), rx.recv())
+                .await
+                .unwrap(),
+            Some(WatchChange::Config),
+        );
+    }
 
     #[test]
     fn relevant_paths_include_config_secrets_channels_workflows_and_generated_declarations() {
