@@ -1,0 +1,5 @@
+ts	phase	decision	why	evidence	result
+2026-11-05T02:50:00Z	frame	Keep all implementation commits on feat/native-networks and publish one PR	The user authorized the complete plan and requested small commits	.audit/tako-network.todo.md	open
+2026-11-05T02:50:01Z	baseline	Ground server authorization and channel delivery independently	The work changes security boundaries and cross-server delivery	.audit/grounding/server.md; .audit/grounding/channels.md	Source review complete; runtime integration pending
+2026-11-05T02:50:02Z	baseline	Run the unmodified core test suite before editing shared protocol types	Establish a behavioral baseline for the new network model	55813586; cargo test -p tako-core --locked	53 tests passed
+2026-11-05T02:50:03Z	workflow	Use independent inherited-model reviewers and isolated worktrees	Runtime policy requires explicit user request for model overrides	.audit/tako-network.todo.md	Independent review enabled; cross-family diversity unavailable
