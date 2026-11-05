@@ -396,12 +396,9 @@ impl ChannelStore {
                 "PostgreSQL delivery accepts wake hints, not remote events".into(),
             ));
         };
-        let Some((message, gap)) = store.ingest_remote(event)? else {
+        let Some(message) = store.ingest_remote(event, || self.signal_gap(None))? else {
             return Ok(RemoteIngest::Duplicate);
         };
-        if gap {
-            self.signal_gap(None);
-        }
         self.deliver(&message, event.ephemeral);
         Ok(RemoteIngest::Applied)
     }
@@ -514,4 +511,68 @@ pub(super) fn channel_message_from_row(
         r#type,
         data,
     })
+}
+
+#[cfg(test)]
+mod ordering_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn gap_reset_precedes_remote_row_visibility_to_an_independent_reader() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("channels.sqlite");
+        let store = Arc::new(ChannelStore::open(&path).unwrap());
+        let reader = ChannelStore::open(&path).unwrap();
+        let observer = rusqlite::Connection::open(&path).unwrap();
+        let reset = reader.resets("a");
+        let after = reader.replay_cursor("a", None).unwrap();
+        let mut publications = reader.publications();
+        let held = reset.borrow();
+        let worker_store = store.clone();
+        let worker = std::thread::spawn(move || {
+            worker_store.ingest_remote(&ChannelEvent {
+                id: crate::ChannelEventId {
+                    origin: "remote".into(),
+                    sequence: 2,
+                },
+                channel: "a".into(),
+                payload: ChannelPublishPayload {
+                    r#type: "event".into(),
+                    data: 2.into(),
+                },
+                ephemeral: false,
+            })
+        });
+        // The held watch borrow pauses signal_gap while it owns the reset map.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while store.delivery.resets.try_lock().is_some() {
+            assert!(
+                Instant::now() < deadline,
+                "ingest did not reach reset publication"
+            );
+            std::thread::yield_now();
+        }
+        let visible: (i64, i64) = observer
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM channel_messages),
+                    (SELECT COUNT(*) FROM channel_remote_origins)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(*held, 0);
+        drop(held);
+        assert_eq!(worker.join().unwrap().unwrap(), RemoteIngest::Applied);
+        assert_eq!(
+            visible,
+            (0, 0),
+            "row and dedup must stay hidden until reset"
+        );
+        let messages = reader.read_after("a", after, 10).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert!(reset.has_changed().unwrap());
+        assert_eq!(messages[0].event_id.as_ref().unwrap().sequence, 2);
+        assert!(publications.try_recv().is_err());
+    }
 }

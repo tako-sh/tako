@@ -230,15 +230,22 @@ fn failed_publish_or_ingest_does_not_advance_identity_or_dedup() {
     let mut event = ChannelEvent {
         id: ChannelEventId {
             origin: "remote".into(),
-            sequence: 1,
+            sequence: 2,
         },
         channel: "a".into(),
         payload: oversized,
         ephemeral: false,
     };
+    let resets = store.resets("a");
     assert!(store.ingest_remote(&event).is_err());
+    assert!(!resets.has_changed().unwrap());
+    assert_eq!(
+        store.raw_query_i64("SELECT COUNT(*) FROM channel_remote_origins", []),
+        0
+    );
     event.payload = payload(2);
     assert_eq!(store.ingest_remote(&event).unwrap(), RemoteIngest::Applied);
+    assert!(resets.has_changed().unwrap());
     assert!(events.try_recv().is_err());
 }
 

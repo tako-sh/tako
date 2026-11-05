@@ -129,7 +129,8 @@ impl SqliteChannelStore {
     pub(super) fn ingest_remote(
         &self,
         event: &ChannelEvent,
-    ) -> Result<Option<(ChannelMessage, bool)>, ChannelError> {
+        signal_gap: impl FnOnce(),
+    ) -> Result<Option<ChannelMessage>, ChannelError> {
         if event.id.sequence == 0
             || event.id.sequence > i64::MAX as u64
             || event.id.origin.is_empty()
@@ -167,8 +168,12 @@ impl SqliteChannelStore {
             ON CONFLICT(origin) DO UPDATE SET sequence = excluded.sequence",
             rusqlite::params![event.id.origin, sequence],
         )?;
+        if sequence > previous + 1 {
+            // Other connections can read the row as soon as this transaction commits.
+            signal_gap();
+        }
         tx.commit()?;
-        Ok(Some((message, sequence > previous + 1)))
+        Ok(Some(message))
     }
 
     pub(super) fn read_after(
