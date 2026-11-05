@@ -5,6 +5,7 @@
 //! authenticated channel; validating its contents cannot establish its provenance.
 
 pub mod api;
+pub mod corrosion;
 mod challenge;
 mod enrollment;
 mod error;
