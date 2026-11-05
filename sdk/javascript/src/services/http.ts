@@ -1,5 +1,6 @@
 import { OptionalKind, Type, type TObject, type TSchema } from "@sinclair/typebox";
 import { Value } from "@sinclair/typebox/value";
+import { serviceValidationSchema } from "./validation";
 
 export type ServiceErrorCode =
   | "validation"
@@ -63,14 +64,15 @@ export function validate(
   status?: number,
 ): void {
   const data = ownJsonProperties(value);
+  const checkSchema = schema && serviceValidationSchema(schema);
   if (
     schema
-      ? (value === undefined && schema[OptionalKind]) || Value.Check(schema, data)
+      ? (value === undefined && schema[OptionalKind]) || Value.Check(checkSchema!, data)
       : value === undefined
   )
     return;
   const issues = schema
-    ? [...Value.Errors(schema, data)].map(({ path, message }) => ({
+    ? [...Value.Errors(checkSchema!, data)].map(({ path, message }) => ({
         path: `/${field}${path}`,
         message,
       }))

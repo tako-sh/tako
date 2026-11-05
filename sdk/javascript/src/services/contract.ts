@@ -83,7 +83,7 @@ const annotations = new Set([
   "writeOnly",
 ]);
 
-/** Checks the portable JSON Schema subset; payload validation uses TypeBox Value.Check. */
+/** Checks the portable schema subset supported by service payload validation. */
 export function assertServiceSchema(schema: TSchema): void {
   if (
     !TypeGuard.IsSchema(schema) ||
