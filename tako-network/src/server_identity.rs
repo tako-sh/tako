@@ -923,4 +923,265 @@ mod tests {
             ));
         }
     }
+    fn snapshot(path: &Path) -> std::collections::BTreeMap<std::ffi::OsString, Vec<u8>> {
+        std::fs::read_dir(path)
+            .unwrap()
+            .map(|entry| {
+                let entry = entry.unwrap();
+                (entry.file_name(), std::fs::read(entry.path()).unwrap())
+            })
+            .collect()
+    }
+
+    fn prepare_config(path: &Path, config: Config) -> Result<ServerIdentity> {
+        ServerIdentity::prepare(
+            path,
+            config.network_id,
+            config.name,
+            config.wireguard_endpoint,
+            config.ssh_host_public_key,
+            config.ssh_port,
+            config.https_port,
+        )
+    }
+
+    #[test]
+    fn every_configuration_change_is_explicit_and_never_overwrites() {
+        let temp = tempfile::tempdir().unwrap();
+        let identity = prepare(temp.path()).unwrap();
+        let original = snapshot(temp.path());
+        for change in 0..6 {
+            let mut config = identity.prepared.config.clone();
+            match change {
+                0 => config.network_id = NetworkId::random().unwrap(),
+                1 => config.name = "other-server".parse().unwrap(),
+                2 => config.wireguard_endpoint = "192.0.2.99:51820".parse().unwrap(),
+                3 => {
+                    config.ssh_host_public_key = LocalDeviceKeys::generate()
+                        .unwrap()
+                        .ssh_public_key()
+                        .unwrap()
+                }
+                4 => config.ssh_port = 2222,
+                5 => config.https_port = 8443,
+                _ => unreachable!(),
+            }
+            let error = prepare_config(temp.path(), config).unwrap_err();
+            assert!(error.to_string().contains("configuration mismatch"));
+            assert_eq!(snapshot(temp.path()), original);
+        }
+    }
+
+    #[test]
+    fn invalid_endpoints_fail_before_creating_any_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let seed = prepare(&temp.path().join("seed")).unwrap();
+        for (index, endpoint) in [
+            "127.0.0.1:51820",
+            "0.0.0.0:51820",
+            "192.0.2.1:0",
+            "[ff02::1]:51820",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut config = seed.prepared.config.clone();
+            config.wireguard_endpoint = endpoint.parse().unwrap();
+            let path = temp.path().join(index.to_string());
+            assert!(prepare_config(&path, config).is_err());
+            assert!(!path.exists());
+        }
+        for https in [true, false] {
+            let mut config = seed.prepared.config.clone();
+            if https {
+                config.https_port = 0;
+            } else {
+                config.ssh_port = 0;
+            }
+            let path = temp.path().join("bad-port");
+            assert!(prepare_config(&path, config).is_err());
+            assert!(!path.exists());
+        }
+    }
+
+    #[test]
+    fn missing_files_and_interrupted_prepare_fail_closed() {
+        let temp = tempfile::tempdir().unwrap();
+        let seed = prepare(&temp.path().join("seed")).unwrap();
+        let files = snapshot(seed.tls_paths().certificate.parent().unwrap());
+        for missing in files.keys().filter(|name| *name != "prepare-started") {
+            let case = tempfile::tempdir().unwrap();
+            prepare(case.path()).unwrap();
+            std::fs::remove_file(case.path().join(missing)).unwrap();
+            let before = snapshot(case.path());
+            assert!(prepare(case.path()).is_err(), "missing {missing:?}");
+            assert_eq!(snapshot(case.path()), before);
+        }
+        for filename in [
+            "prepare-started",
+            DEVICE_KEYS,
+            "https-ca-key.pem",
+            "unrelated",
+        ] {
+            let case = tempfile::tempdir().unwrap();
+            std::fs::write(case.path().join(filename), b"do not replace").unwrap();
+            let before = snapshot(case.path());
+            assert!(prepare(case.path()).is_err());
+            assert_eq!(snapshot(case.path()), before);
+        }
+    }
+
+    #[test]
+    fn metadata_is_bounded_strict_and_bound_to_keys_and_pins() {
+        let temp = tempfile::tempdir().unwrap();
+        let identity = prepare(temp.path()).unwrap();
+        let original = serde_json::to_value(&identity.prepared).unwrap();
+        let mut unknown = original.clone();
+        unknown["private_key_path"] = "../../victim".into();
+        let mut version = original.clone();
+        version["version"] = 2.into();
+        let mut kind = original.clone();
+        kind["request"]["kind"] = "laptop".into();
+        let mut pin = original.clone();
+        pin["server_info"]["https_certificate_pem"] =
+            original["server_info"]["corrosion_ca_certificate_pem"].clone();
+        let mut endpoint = original.clone();
+        endpoint["server_info"]["https_port"] = 8443.into();
+        let mut cases = vec![b"{".to_vec(), vec![b' '; MAX_FILE_BYTES + 1]];
+        cases.extend(
+            [unknown, version, kind, pin, endpoint]
+                .iter()
+                .map(|v| serde_json::to_vec(v).unwrap()),
+        );
+        for bytes in cases {
+            std::fs::write(temp.path().join(METADATA), bytes).unwrap();
+            let before = snapshot(temp.path());
+            assert!(prepare(temp.path()).is_err());
+            assert_eq!(snapshot(temp.path()), before);
+        }
+    }
+
+    #[test]
+    fn rejects_substituted_device_and_tls_keys() {
+        let temp = tempfile::tempdir().unwrap();
+        let first_path = temp.path().join("first");
+        let other_path = temp.path().join("other");
+        let first = prepare(&first_path).unwrap();
+        let other = prepare(&other_path).unwrap();
+        for (target, substitute) in [
+            (first_path.join(DEVICE_KEYS), other_path.join(DEVICE_KEYS)),
+            (
+                first.tls_paths().private_key.clone(),
+                other.tls_paths().private_key.clone(),
+            ),
+            (
+                first.gossip_paths().ca_private_key.clone(),
+                other.gossip_paths().ca_private_key.clone(),
+            ),
+            (
+                first.tls_paths().certificate.clone(),
+                other.tls_paths().certificate.clone(),
+            ),
+        ] {
+            let original = std::fs::read(&target).unwrap();
+            std::fs::write(&target, std::fs::read(substitute).unwrap()).unwrap();
+            let before = snapshot(&first_path);
+            assert!(prepare(&first_path).is_err());
+            assert_eq!(snapshot(&first_path), before);
+            std::fs::write(target, original).unwrap();
+        }
+    }
+
+    #[test]
+    fn directories_reject_permissions_symlinks_and_parent_traversal() {
+        use std::{
+            fs,
+            os::unix::fs::{PermissionsExt, symlink},
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let private = temp.path().join("private");
+        let identity = prepare(&private).unwrap();
+        let before = snapshot(&private);
+        fs::set_permissions(&private, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(prepare(&private).is_err());
+        fs::set_permissions(&private, fs::Permissions::from_mode(0o700)).unwrap();
+        let alias = temp.path().join("alias");
+        symlink(&private, &alias).unwrap();
+        assert!(prepare(&alias).is_err());
+        assert!(prepare(&alias.join("new-identity")).is_err());
+        assert!(!private.join("new-identity").exists());
+        assert!(prepare(&private.join("..").join("traversal")).is_err());
+        assert!(!temp.path().join("traversal").exists());
+        assert_eq!(snapshot(&private), before);
+        assert_eq!(prepare(&private).unwrap().request(), identity.request());
+    }
+
+    #[test]
+    fn files_require_regular_single_link_owned_0600_and_no_symlinks() {
+        use std::{
+            fs,
+            os::unix::fs::{MetadataExt, PermissionsExt, symlink},
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("identity");
+        prepare(&path).unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().mode() & 0o7777, 0o700);
+        for name in snapshot(&path)
+            .keys()
+            .filter(|name| *name != "prepare-started")
+        {
+            let file = path.join(name);
+            let meta = fs::metadata(&file).unwrap();
+            assert_eq!(meta.mode() & 0o7777, 0o600);
+            assert_eq!(meta.uid(), rustix::process::geteuid().as_raw());
+            assert_eq!(meta.nlink(), 1);
+            let original = fs::read(&file).unwrap();
+            fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(prepare(&path).is_err(), "permissions {name:?}");
+            assert_eq!(fs::read(&file).unwrap(), original);
+            fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+            let link = temp.path().join("hardlink");
+            fs::hard_link(&file, &link).unwrap();
+            assert!(prepare(&path).is_err(), "hardlink {name:?}");
+            fs::remove_file(&link).unwrap();
+            let saved = temp.path().join("saved");
+            fs::rename(&file, &saved).unwrap();
+            symlink(&saved, &file).unwrap();
+            assert!(prepare(&path).is_err(), "symlink {name:?}");
+            assert_eq!(fs::read(&saved).unwrap(), original);
+            fs::remove_file(&file).unwrap();
+            fs::create_dir(&file).unwrap();
+            assert!(prepare(&path).is_err(), "directory {name:?}");
+            fs::remove_dir(&file).unwrap();
+            fs::rename(&saved, &file).unwrap();
+        }
+        prepare(&path).unwrap();
+    }
+
+    #[test]
+    fn concurrent_prepare_never_replaces_the_winners_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let barrier = std::sync::Barrier::new(4);
+        let results = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..4)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        prepare(temp.path())
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        let winners: Vec<_> = results.into_iter().filter_map(Result::ok).collect();
+        assert!(!winners.is_empty());
+        let reloaded = prepare(temp.path()).unwrap();
+        for winner in winners {
+            assert_eq!(winner.request(), reloaded.request());
+            assert_eq!(winner.server_info(), reloaded.server_info());
+        }
+    }
 }
