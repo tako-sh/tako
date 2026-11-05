@@ -1045,3 +1045,34 @@ test("ready during an in-flight read keeps malformed update errors until the que
     status: "ready",
   });
 });
+
+test("a Store recovery observer's late rejection is diagnosed after reconnect without exposing an error", async () => {
+  const diagnostic = spyOn(console, "error").mockImplementation(() => {});
+  cleanups.push(() => diagnostic.mockRestore());
+  const backend = new Backend();
+  let rejectObserver!: (error: Error) => void;
+  const store = new Store("messages", {
+    baseUrl: "https://app.test",
+    fetch: backend.fetch,
+    onRecovery: () =>
+      new Promise<void>((_, reject) => {
+        rejectObserver = reject;
+      }),
+  });
+  watch(store);
+  backend.reads[0]!.resolve("cached", { maxAgeMs: 10000, version: "1" });
+  await until(() => store.getSnapshot().data === "cached");
+  backend.streams[0]!.close();
+  await new Promise((resolve) => setTimeout(resolve, 1400));
+  expect(backend.streams).toHaveLength(2);
+  const observerError = new Error("observer rejected after reconnect");
+  rejectObserver(observerError);
+  await Promise.resolve();
+  expect(diagnostic).toHaveBeenCalledWith("SseReader onRecovery handler threw:", observerError);
+  expect(store.getSnapshot()).toMatchObject({ data: "cached", error: null, isStale: true });
+  backend.streams[1]!.send("tako.store.ready");
+  await until(() => backend.reads.length === 2);
+  backend.reads[1]!.resolve("canonical", { maxAgeMs: 10000, version: "1" });
+  await until(() => !store.getSnapshot().isStale);
+  expect(store.getSnapshot().error).toBeNull();
+});

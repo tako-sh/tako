@@ -954,18 +954,29 @@ test("publishes identity and callbacks before descendant layout actions", () => 
 });
 
 test.each([
-  ["sse", "onRecovery"],
-  ["sse", "onResync"],
-  ["sse", "both"],
-  ["ws", "onRecovery"],
-  ["ws", "onResync"],
-  ["ws", "both"],
+  ["sse", "onRecovery", "sync"],
+  ["sse", "onRecovery", "async"],
+  ["sse", "onResync", "sync"],
+  ["sse", "onResync", "async"],
+  ["sse", "both", "sync"],
+  ["sse", "both", "async"],
+  ["ws", "onRecovery", "sync"],
+  ["ws", "onRecovery", "async"],
+  ["ws", "onResync", "sync"],
+  ["ws", "onResync", "async"],
+  ["ws", "both", "sync"],
+  ["ws", "both", "async"],
 ] as const)(
-  "throwing %s recovery observers (%s) do not prevent reconnect",
-  async (transport, throwing) => {
+  "failing %s recovery observers (%s, %s) do not prevent reconnect",
+  async (transport, throwing, mode) => {
     const diagnostic = spyOn(console, "error").mockImplementation(() => {});
     const observerError = new Error("observer failed");
     const observed: string[] = [];
+    const rejections: Array<(error: Error) => void> = [];
+    const fail = () => {
+      if (mode === "async") return new Promise<void>((_, reject) => rejections.push(reject));
+      throw observerError;
+    };
     const sockets: MockWebSocket[] = [];
     let fetches = 0;
     configureChannels({
@@ -984,11 +995,11 @@ test.each([
     const observers = {
       onRecovery: () => {
         observed.push("recovery");
-        if (throwing !== "onResync") throw observerError;
+        if (throwing !== "onResync") return fail();
       },
       onResync: () => {
         observed.push("resync");
-        if (throwing !== "onRecovery") throw observerError;
+        if (throwing !== "onRecovery") return fail();
       },
     };
     const { result, unmount } = renderHook(() =>
@@ -1017,6 +1028,9 @@ test.each([
         await waitFor(() => expect(fetches).toBe(2), { timeout: 2000 });
       }
       expect(observed).toEqual(["recovery", "resync"]);
+      await act(async () => {
+        for (const reject of rejections) reject(observerError);
+      });
       expect(diagnostic).toHaveBeenCalledTimes(throwing === "both" ? 2 : 1);
       if (throwing !== "onResync")
         expect(diagnostic).toHaveBeenCalledWith(

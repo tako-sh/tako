@@ -218,11 +218,15 @@ export class SseReader {
             throw err;
           }
           try {
-            this.#opts.onRecovery?.(
-              err instanceof SseResponseError && err.status === 410
-                ? "history-expired"
-                : "reconnecting",
-            );
+            void Promise.resolve(
+              this.#opts.onRecovery?.(
+                err instanceof SseResponseError && err.status === 410
+                  ? "history-expired"
+                  : "reconnecting",
+              ),
+            ).catch((error) => {
+              console.error("SseReader onRecovery handler threw:", error);
+            });
           } catch (error) {
             console.error("SseReader onRecovery handler threw:", error);
           }

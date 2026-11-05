@@ -453,14 +453,20 @@ describe("SseReader", () => {
   });
 });
 
-test.each([503, 410])(
-  "throwing recovery observer does not stop SSE retry after %i",
-  async (status) => {
+test.each([
+  [503, "sync"],
+  [410, "sync"],
+  [503, "async"],
+  [410, "async"],
+] as const)(
+  "failing recovery observer does not stop SSE retry after %i (%s)",
+  async (status, mode) => {
     const observerError = new Error("observer failed");
     const diagnostic = spyOn(console, "error").mockImplementation(() => {});
     const messages: string[] = [];
     const errors: Error[] = [];
     const recoveries: string[] = [];
+    let rejectObserver: ((error: Error) => void) | undefined;
     let calls = 0;
     const reader = new SseReader("http://test/events", {
       fetch: (async () => {
@@ -473,6 +479,10 @@ test.each([503, 410])(
       jitter: 0,
       onRecovery(reason) {
         recoveries.push(reason);
+        if (mode === "async")
+          return new Promise<void>((_, reject) => {
+            rejectObserver = reject;
+          });
         throw observerError;
       },
       onError: (error) => errors.push(error),
@@ -487,6 +497,8 @@ test.each([503, 410])(
       expect(calls).toBe(2);
       expect(recoveries).toEqual([status === 410 ? "history-expired" : "reconnecting"]);
       expect(messages).toEqual(["business"]);
+      rejectObserver?.(observerError);
+      await Promise.resolve();
       expect(errors).toEqual([]);
       expect(diagnostic).toHaveBeenCalledWith("SseReader onRecovery handler threw:", observerError);
     } finally {

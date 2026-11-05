@@ -169,13 +169,17 @@ export function useChannel<T = unknown>(
       if (!active()) return;
       update("connecting");
       try {
-        optionsRef.current.onRecovery?.(reason);
+        void Promise.resolve(optionsRef.current.onRecovery?.(reason)).catch((error) => {
+          console.error("useChannel onRecovery handler threw:", error);
+        });
       } catch (error) {
         console.error("useChannel onRecovery handler threw:", error);
       }
       if (active() && reason === "history-expired") {
         try {
-          optionsRef.current.onResync?.();
+          void Promise.resolve(optionsRef.current.onResync?.()).catch((error) => {
+            console.error("useChannel onResync handler threw:", error);
+          });
         } catch (error) {
           console.error("useChannel onResync handler threw:", error);
         }

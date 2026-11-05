@@ -382,7 +382,7 @@ export class Store<T = unknown> {
           this.disconnected(new Error(`Store "${this.name}" recovery: ${reason}.`), {
             quiet: true,
           });
-          this.options.onRecovery?.(reason);
+          return this.options.onRecovery?.(reason);
         },
         onMessage: ({ data }) => {
           if (generation !== this.generation || this.blocked) return;
