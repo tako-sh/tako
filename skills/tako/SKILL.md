@@ -171,9 +171,11 @@ reconnect. Stores reload through their authorized loader automatically after
 subscription readiness. Native brokers replicate bounded SQLite replay and fan
 out to trusted server peers; presence uses expiring server-bound leases. This
 is not permanent history or durable workflow migration. Legacy multi-server
-replay uses shared Postgres. Current CLI preflight still requires Postgres for
-multi-server JavaScript channel/presence/store definitions, including native
-networks. Test expired history and the resulting authoritative-state reload.
+replay uses shared Postgres. Native multi-server channel/presence/store delivery
+can use SQLite without Postgres. Configured credentials remain in use; credential
+read or validation failures must not trigger a backend fallback. Multi-server
+workflows still require Postgres unless intentionally local. Test expired history
+and the resulting authoritative-state reload.
 
 Local channel and Presence connections bypass auth callbacks. Verify their
 private access rules in a deployed test environment. Store reads and

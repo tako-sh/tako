@@ -110,7 +110,7 @@ Public application DNS, certificates, and ingress routes remain separate. A nati
 
 ## Understand replay and maintenance limits
 
-Native servers can replicate bounded channel replay and fan out events over their private transport. Presence uses expiring, server-bound leases. These are live-delivery mechanisms, not permanent application history. When replay is unavailable, the JavaScript SDK handles protocol resets quietly and application code reloads authoritative state. See [Channels](/channels/#deploy-replay-storage) for storage and current deployment-validation requirements.
+Native servers can replicate bounded channel replay and fan out events over their private transport. Presence uses expiring, server-bound leases. These are live-delivery mechanisms, not permanent application history. When replay is unavailable, the JavaScript SDK handles protocol resets quietly and application code reloads authoritative state. See [Channels](/channels/#deploy-replay-storage) for replay storage and recovery requirements. Native channels, presence, and store notifications can use SQLite across servers without Postgres; a configured Postgres credential is preserved and validated.
 
 Channel replication does not migrate durable workflow executions, databases, or volumes. [Workflow storage](/workflows/) and [Compose volumes](/docker-compose/) retain their own persistence requirements.
 
