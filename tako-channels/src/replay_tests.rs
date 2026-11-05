@@ -372,3 +372,81 @@ fn tightening_limits_prunes_before_open_returns_and_preserves_cursor_epoch() {
         2
     );
 }
+
+#[test]
+fn budget_counters_match_retained_rows_across_pruning_and_reopen() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("a.sqlite");
+    let store = ChannelStore::open_sqlite_with_limits(&path, limits()).unwrap();
+    let size = "SUM(length(CAST(channel AS BLOB)) + length(CAST(type AS BLOB)) + length(CAST(data_json AS BLOB)))";
+    let counted = |store: &ChannelStore| {
+        let (store_count, store_bytes) = (
+            store.raw_query_i64("SELECT message_count FROM channel_store_state", []),
+            store.raw_query_i64("SELECT message_bytes FROM channel_store_state", []),
+        );
+        assert_eq!(
+            store_count,
+            store.raw_query_i64("SELECT COUNT(*) FROM channel_messages", [])
+        );
+        assert_eq!(
+            store_bytes,
+            store.raw_query_i64(
+                &format!("SELECT COALESCE({size}, 0) FROM channel_messages"),
+                []
+            )
+        );
+        for channel in ["a", "b"] {
+            assert_eq!(
+                store.raw_query_i64(
+                    "SELECT message_count FROM channel_metadata WHERE channel = ?1",
+                    [channel]
+                ),
+                store.raw_query_i64(
+                    "SELECT COUNT(*) FROM channel_messages WHERE channel = ?1",
+                    [channel]
+                )
+            );
+            assert_eq!(
+                store.raw_query_i64(
+                    "SELECT message_bytes FROM channel_metadata WHERE channel = ?1",
+                    [channel]
+                ),
+                store.raw_query_i64(
+                    &format!("SELECT COALESCE({size}, 0) FROM channel_messages WHERE channel = ?1"),
+                    [channel]
+                )
+            );
+        }
+        store_count
+    };
+    for stream in ["a", "b"] {
+        unaged(&store, stream);
+    }
+    for n in 0..5 {
+        store.append("a", &payload(&n.to_string())).unwrap();
+        store.append("b", &payload(&"x".repeat(n))).unwrap();
+        // Both streams stay within two rows and the store within three.
+        assert!(counted(&store) <= 3);
+    }
+    assert_eq!(store.read_after("a", None, 10).unwrap().len(), 1);
+    assert_eq!(store.read_after("b", None, 10).unwrap().len(), 2);
+    let other = ChannelStore::open(&path).unwrap();
+    other.append("a", &payload("other")).unwrap();
+    counted(&store);
+    counted(&other);
+    drop((store, other));
+    let reopened = ChannelStore::open(&path).unwrap();
+    reopened
+        .sync_channel(
+            "b",
+            &serde_json::from_value(serde_json::json!({"ok":true,"replayWindowMs":100})).unwrap(),
+        )
+        .unwrap();
+    reopened.raw_execute(
+        "UPDATE channel_messages SET created_at_unix_ms = 0 WHERE channel = 'b'",
+        [],
+    );
+    reopened.prune_at(crate::store::now_unix_ms());
+    assert!(reopened.read_after("b", None, 10).unwrap().is_empty());
+    counted(&reopened);
+}

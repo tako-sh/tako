@@ -71,6 +71,13 @@ impl ChannelStoreBackend {
             Self::Postgres(store) => store.prune(now),
         }
     }
+
+    fn latest_ids(&self, channels: &[String]) -> Result<Vec<(String, i64)>, ChannelError> {
+        match self {
+            Self::Sqlite(store) => store.latest_ids(channels),
+            Self::Postgres(store) => store.latest_ids(channels),
+        }
+    }
 }
 
 impl ChannelStore {
@@ -116,15 +123,17 @@ impl ChannelStore {
                         }
                         next_prune = std::time::Instant::now() + std::time::Duration::from_secs(1);
                     }
+                    // Commits in this process wake subscribers directly. Polling
+                    // covers commits by other writers of the same store: remote
+                    // Postgres servers, or the previous server process sharing
+                    // this SQLite file during a zero-downtime reload.
                     let subscribed_channels = {
                         let mut streams = sender.lock();
                         streams.retain(|_, changes| changes.receiver_count() > 0);
                         streams.keys().cloned().collect::<Vec<_>>()
                     };
-                    if let ChannelStoreBackend::Postgres(store) = backend.as_ref()
-                        && !subscribed_channels.is_empty()
-                    {
-                        match store.latest_ids(&subscribed_channels) {
+                    if !subscribed_channels.is_empty() {
+                        match backend.latest_ids(&subscribed_channels) {
                             Ok(heads) => {
                                 let streams = sender.lock();
                                 for (channel, latest) in heads {
