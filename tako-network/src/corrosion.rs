@@ -23,7 +23,11 @@ use crate::{
 pub const MAX_REGISTRY_ROWS: usize = 10_000;
 pub const MAX_REGISTRY_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_RECORD_BYTES: usize = 128 * 1024;
-const PAGE_ROWS: usize = 8;
+// Snapshots run several times per agent tick, so page size sets the number of
+// sequential loopback round-trips. Every response and the whole projection are
+// already bounded by MAX_REGISTRY_BYTES, so a page cannot exceed that cap unless
+// the registry itself is over capacity, which fails closed either way.
+const PAGE_ROWS: usize = 256;
 const MAX_ADMISSION_ROWS: usize = MAX_REGISTRY_ROWS / 2;
 const MAX_ADMISSION_BYTES: usize = MAX_REGISTRY_BYTES / 2;
 // A denial captures every known server, including those admitted on other replicas.
