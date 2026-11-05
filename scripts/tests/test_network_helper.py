@@ -240,6 +240,60 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(self.ssh, '')
         self.assertEqual(self.saved['networks'], {})
 
+    def test_large_accepted_state_can_reapply_revoke_and_restore(self):
+        configs = {}
+        first = None
+        for n in range(32):
+            ident = ID if n == 0 else f'{n:010x}' + 'ef' * 11
+            data = desired()
+            data.update(network_id=ident, address=f'fd00:{n+1:x}:5678::1/128', listen_port=51820+n)
+            data['peers'] = [dict(data['peers'][0], device_id=f'{i+256:064x}', name='a'*128,
+                                 public_key=base64.b64encode((i+1).to_bytes(32, 'little')).decode(),
+                                 address=f'fd00:{n+1:x}:5678::{i+2:x}/128') for i in range(256)]
+            data = helper.validate(data, ident)
+            config = {k: v for k, v in data.items() if k != 'private_key'}
+            config.update(alias='tako-network:' + ident + ':' + '00'*16, managed_addresses=[data['address']])
+            candidate = {'owner': 'test-owner', 'networks': {**configs, ident: config}}
+            if len((json.dumps(candidate) + '\n').encode()) > helper.MAX_BYTES:
+                break
+            configs[ident] = config
+            if first is None:
+                first = data
+        state = {'owner': 'test-owner', 'networks': configs}
+        size = len(helper.serialize_state(state).encode())
+        self.assertGreater(size + len(json.dumps(configs[ID])), helper.MAX_BYTES)
+        self.host = helper.Host(self.runner, state, self.save, self.write_ssh)
+        self.apply(first)
+        self.apply(first)
+        reduced = copy.deepcopy(first)
+        reduced['peers'].pop()
+        self.apply(reduced)
+        self.assertEqual(len(self.saved['networks'][ID]['peers']), 255)
+        self.runner.links, self.runner.addresses, self.runner.routes, self.runner.table = [], [], [], None
+        self.host = helper.Host(self.runner, copy.deepcopy(self.saved), self.save, self.write_ssh)
+        self.apply(reduced)
+        self.assertEqual(self.runner.links[0]['operstate'], 'up')
+
+    def test_state_limit_counts_exact_persisted_bytes_including_newline(self):
+        value = {'owner': 'test', 'networks': {}, 'label': 'é'}
+        content = json.dumps(value) + '\n'
+        with patch.object(helper, 'MAX_BYTES', len(content.encode())):
+            self.assertEqual(helper.serialize_state(value), content)
+        with patch.object(helper, 'MAX_BYTES', len(content.encode()) - 1):
+            with self.assertRaisesRegex(helper.Rejected, 'host state too large'):
+                helper.serialize_state(value)
+
+    def test_rejected_oversized_state_does_not_mutate_memory_or_disk(self):
+        self.apply()
+        before = copy.deepcopy(self.host.state)
+        data = desired()
+        data['peers'][0]['name'] = 'a' * 128
+        with patch.object(helper, 'MAX_BYTES', len(helper.serialize_state(before).encode())):
+            with self.assertRaisesRegex(helper.Rejected, 'host state too large'):
+                self.apply(data)
+        self.assertEqual(self.host.state, before)
+        self.assertEqual(self.saved, before)
+
     def test_foreign_interface_not_reused_or_removed(self):
         self.runner.links = [{'ifname': DEV, 'ifalias': 'admin', 'linkinfo': {'info_kind': 'wireguard'}}]
         for operation in (self.apply, lambda: self.host.remove(ID)):

@@ -197,6 +197,12 @@ def write_file(fd, name, content, mode=0o600):
             pass
 
 
+def serialize_state(state):
+    content = json.dumps(state) + '\n'
+    require(len(content.encode('utf-8')) <= MAX_BYTES, 'host state too large')
+    return content
+
+
 class Runner:
     def run(self, *args, input=None):
         try:
@@ -353,9 +359,10 @@ class Host:
         config = {k: v for k, v in desired.items() if k != 'private_key'}
         config['alias'] = previous['alias'] if previous else 'tako-network:' + ident + ':' + secrets.token_hex(16)
         config['managed_addresses'] = sorted(set((previous or {}).get('managed_addresses', []) + [desired['address']]))
-        require(len(json.dumps(self.state)) + len(json.dumps(config)) <= MAX_BYTES, 'host state too large')
-        self.state['networks'][ident] = config
-        self.save(self.state)
+        proposed = dict(self.state, networks={**self.state['networks'], ident: config})
+        serialize_state(proposed)
+        self.save(proposed)
+        self.state = proposed
         owned = bool(link)
         try:
             self.install_firewall()
@@ -433,7 +440,7 @@ def operation(args):
             except FileNotFoundError:
                 state = {'owner': 'tako-network-' + secrets.token_hex(16), 'networks': {}}
             host = Host(Runner(), state,
-                        lambda value: write_file(fd, 'state.json', json.dumps(value) + '\n'),
+                        lambda value: write_file(fd, 'state.json', serialize_state(value)),
                         lambda value: write_file(sshfd, 'authorized_keys', value, 0o644))
             result = host.apply(ident, read_desired(ident)) if action == 'apply' else host.remove(ident)
     return dict(ok=True, action=action, network_id=ident, interface=interface(ident), **result)
