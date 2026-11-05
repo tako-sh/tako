@@ -67,6 +67,7 @@ struct Lease {
 pub(super) struct Leases {
     members: BTreeMap<Key, Lease>,
     received: BTreeMap<DeviceId, u64>,
+    snapshots: BTreeMap<DeviceId, u64>,
     sequence: u64,
     bytes: usize,
 }
@@ -170,6 +171,7 @@ impl Leases {
             }
         });
         self.received.clear();
+        self.snapshots.clear();
     }
     pub fn local_snapshot(&self, local: &DeviceId) -> Publication {
         Publication::Snapshot {
@@ -198,6 +200,10 @@ impl Leases {
             .received
             .get(origin)
             .is_some_and(|seen| sequence < *seen)
+            || self
+                .snapshots
+                .get(origin)
+                .is_some_and(|seen| sequence <= *seen)
         {
             return Ok(());
         }
@@ -220,11 +226,22 @@ impl Leases {
         for record in records {
             let bytes = replacement.check(origin, &record.channel, &record.member, allowance)?;
             if let Some(ttl) = remaining(record.expires_at_ms, now_ms) {
+                let key = Key {
+                    origin: origin.clone(),
+                    channel: record.channel.clone(),
+                    connection_id: record.member.connection_id.clone(),
+                };
+                let mut expires = Instant::now() + ttl;
+                if let Some(previous) = self.members.get(&key)
+                    && previous.expires_at_ms == record.expires_at_ms
+                {
+                    expires = expires.min(previous.expires);
+                }
                 replacement.update(
                     origin.clone(),
                     record.channel,
                     record.member,
-                    Instant::now() + ttl,
+                    expires,
                     record.expires_at_ms,
                     bytes,
                 );
@@ -237,6 +254,7 @@ impl Leases {
         self.bytes = retained_bytes + replacement.bytes;
         self.members.append(&mut replacement.members);
         self.received.insert(origin.clone(), sequence);
+        self.snapshots.insert(origin.clone(), sequence);
         Ok(())
     }
     pub fn snapshot(&self, channel: &str, local: &DeviceId) -> Vec<PresenceMember> {
@@ -429,6 +447,10 @@ mod tests {
         let mut receiver = Leases::default();
         receiver
             .replace_remote(&origin, sequence, leases.clone(), 40_000, MAX_TOTAL_BYTES)
+            .unwrap();
+        // A duplicate response, even with a backwards wall clock, cannot renew this lease.
+        receiver
+            .replace_remote(&origin, sequence, leases.clone(), 0, MAX_TOTAL_BYTES)
             .unwrap();
         receiver.expire(Instant::now() + Duration::from_secs(6));
         assert!(receiver.snapshot("room", &origin).is_empty());
