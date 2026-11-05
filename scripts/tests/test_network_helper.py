@@ -1,5 +1,7 @@
 import base64
 import copy
+import contextlib
+import io
 import importlib.util
 import json
 import os
@@ -44,7 +46,7 @@ class ValidationTests(unittest.TestCase):
             ('address', '2001:4860::1/128'), ('address', 'fd00::1%eth0/128'),
             ('address', 'fd00::/48'), ('private_key', 'x\nPostUp = reboot'),
             ('private_key', base64.b64encode(bytes(32)).decode()),
-            ('listen_port', True), ('listen_port', 0), ('listen_port', 65536),
+            ('listen_port', True), ('listen_port', 0), ('listen_port', 65536), ('listen_port', 8787),
             ('listen_port', '51820\n'), ('PostUp', 'reboot'), ('routes', ['::/0']),
             ('peers', {}), ('peers', [desired()['peers'][0]] * 257),
         ]
@@ -88,6 +90,15 @@ class ValidationTests(unittest.TestCase):
     def test_duplicate_json_fields_rejected(self):
         with self.assertRaises(helper.Rejected):
             json.loads('{"a":1,"a":2}', object_pairs_hook=helper.unique_object)
+
+    def test_cli_rejects_extra_arguments_and_unknown_actions_as_json(self):
+        for args in ([ID, 'apply', '/tmp/payload'], [ID, 'shell'], ['../etc', 'remove'], []):
+            output = io.StringIO()
+            with patch.object(helper.os, 'geteuid', return_value=0), contextlib.redirect_stdout(output):
+                code = helper.main(args)
+            self.assertNotEqual(code, 0)
+            self.assertFalse(json.loads(output.getvalue())['ok'])
+            self.assertNotIn('/tmp/payload', output.getvalue())
 
     def test_ipv6_public_endpoint(self):
         self.assertEqual(helper.endpoint('[2606:4700:4700::1111]:51820'),
@@ -136,6 +147,8 @@ class FakeRunner:
         self.policy = ''
         self.secret = ''
         self.fail = None
+        self.listen_ports = ''
+        self.other_addresses = []
 
     def available(self, command):
         return False
@@ -149,7 +162,7 @@ class FakeRunner:
         if args[:4] == ('ip', '-j', '-6', 'route'):
             return json.dumps(self.routes)
         if args[:4] == ('ip', '-j', '-6', 'address'):
-            return json.dumps([{'addr_info': self.addresses}])
+            return json.dumps([{'ifname': DEV, 'addr_info': self.addresses}] + self.other_addresses)
         if args == ('nft', '-j', 'list', 'tables'):
             return json.dumps({'nftables': [{'table': {'name': helper.TABLE, 'family': 'inet'}}] if self.table else []})
         if args[:4] == ('nft', '-j', 'list', 'table'):
@@ -157,6 +170,8 @@ class FakeRunner:
         if args == ('nft', '-f', '-'):
             self.policy = input
             self.table = input.split('comment "')[1].split('"')[0]
+        if args == ('wg', 'show', 'all', 'listen-port'):
+            return self.listen_ports
         if args == ('wg', 'pubkey'):
             return KEY
         if args[:2] == ('wg', 'syncconf'):
@@ -174,6 +189,8 @@ class FakeRunner:
             self.links = []
             self.routes = []
             self.addresses = []
+        if args[:4] == ('ip', '-6', 'address', 'del'):
+            self.addresses = [a for a in self.addresses if a['local'] + '/' + str(a['prefixlen']) != args[4]]
         if args[:4] == ('ip', '-6', 'address', 'replace'):
             ip, prefix = args[4].split('/')
             self.addresses = [{'local': ip, 'prefixlen': int(prefix), 'scope': 'global'}]
@@ -235,6 +252,13 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(self.runner.policy, '')
         self.assertIsNone(self.saved)
 
+    def test_foreign_interface_address_not_reused(self):
+        self.runner.other_addresses = [{'ifname': 'eth0', 'addr_info': [
+            {'local': 'fd00:1234:5678::1', 'prefixlen': 64, 'scope': 'global'}]}]
+        with self.assertRaisesRegex(helper.Rejected, 'address belongs to another interface'):
+            self.apply()
+        self.assertIsNone(self.saved)
+
     def test_foreign_route_not_replaced(self):
         self.runner.routes = [{'dst': 'fd00:1234:5678::2/128', 'dev': 'eth0'}]
         with self.assertRaisesRegex(helper.Rejected, 'foreign route'):
@@ -276,6 +300,74 @@ class ReconcileTests(unittest.TestCase):
         self.runner.fail = None
         self.apply()
         self.assertEqual(self.runner.links[0]['operstate'], 'up')
+
+    def test_retry_recovers_address_change_after_command_failure(self):
+        self.apply()
+        changed = desired()
+        changed['address'] = 'fd00:1234:5678::9/128'
+        self.runner.fail = ('wg', 'syncconf')
+        with self.assertRaises(helper.Rejected):
+            self.apply(changed)
+        self.runner.fail = None
+        self.host = helper.Host(self.runner, copy.deepcopy(self.saved), self.save, self.write_ssh)
+        self.apply(changed)
+        self.assertEqual(self.runner.addresses[0]['local'], 'fd00:1234:5678::9')
+        self.assertEqual(self.saved['networks'][ID]['managed_addresses'], [changed['address']])
+
+    def test_reboot_recreates_only_owned_persistent_network(self):
+        self.apply()
+        self.runner.links = []
+        self.runner.routes = []
+        self.runner.addresses = []
+        self.runner.table = None
+        self.host = helper.Host(self.runner, copy.deepcopy(self.saved), self.save, self.write_ssh)
+        self.apply()
+        self.assertEqual(self.runner.links[0]['operstate'], 'up')
+        self.assertEqual(self.runner.table, 'test-owner')
+
+    def test_interface_prefix_collision_fails_before_mutation(self):
+        self.apply()
+        other = ID[:10] + 'ef' * 11
+        value = desired()
+        value['network_id'] = other
+        with self.assertRaisesRegex(helper.Rejected, 'interface name collision'):
+            self.host.apply(other, helper.validate(value, other))
+        self.assertEqual(list(self.saved['networks']), [ID])
+
+    def test_foreign_wireguard_listen_port_is_not_shared(self):
+        self.runner.listen_ports = 'wg0\t51820\n'
+        with self.assertRaisesRegex(helper.Rejected, 'listen port in use'):
+            self.apply()
+        self.assertIsNone(self.saved)
+
+    def test_sshd_can_read_root_owned_public_keys_despite_private_umask(self):
+        fd = os.open(self.tmp.name, os.O_RDONLY | os.O_DIRECTORY)
+        previous = os.umask(0o077)
+        try:
+            helper.write_file(fd, 'authorized_keys', SSH_KEY, 0o644)
+            self.assertEqual((Path(self.tmp.name) / 'authorized_keys').stat().st_mode & 0o777, 0o644)
+        finally:
+            os.umask(previous)
+            os.close(fd)
+
+    def test_active_host_firewalls_open_only_wireguard_udp(self):
+        calls = []
+        class Firewalls:
+            def available(self, command):
+                return True
+            def run(self, *args):
+                calls.append(args)
+                if args == ('ufw', 'status'):
+                    return 'Status: active\n'
+                if args[0] == 'systemctl':
+                    return 'active\n'
+                return ''
+        self.host.runner = Firewalls()
+        self.host.open_udp(ID, 51820)
+        self.assertIn(('ufw', 'allow', '51820/udp', 'comment', 'tako-network-' + ID), calls)
+        self.assertIn(('firewall-cmd', '--add-port=51820/udp'), calls)
+        self.assertIn(('firewall-cmd', '--permanent', '--add-port=51820/udp'), calls)
+        self.assertFalse(any('flush' in arg or 'disable' in arg for call in calls for arg in call))
 
     def test_foreign_interface_with_managed_name_after_apply_is_not_stopped(self):
         self.apply()

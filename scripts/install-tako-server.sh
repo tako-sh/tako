@@ -949,6 +949,7 @@ install_native_network() {
   done
 
   native_source="${TAKO_NETWORK_HELPER_SOURCE:-}"
+  native_expected=""
   if [ -n "$native_source" ]; then
     [ -f "$native_source" ] && [ ! -L "$native_source" ] || {
       echo 'error: native helper source must be a regular local file' >&2; exit 1;
@@ -958,19 +959,27 @@ install_native_network() {
       ''|*[!0-9a-f]*) echo 'error: native helper requires an explicit SHA256' >&2; exit 1 ;;
     esac
     [ "${#native_expected}" -eq 64 ] || { echo 'error: invalid helper SHA256' >&2; exit 1; }
-    native_actual="$(sha256sum "$native_source" | awk '{print $1}')"
-    [ "$native_actual" = "$native_expected" ] || { echo 'error: native helper checksum mismatch' >&2; exit 1; }
+    cp "$native_source" "$tmp_extract/native-helper.py"
+    native_source="$tmp_extract/native-helper.py"
   else
     native_source="$tmp_extract/scripts/tako-network-helper.py"
-    [ -f "$native_source" ] && [ ! -L "$native_source" ] || {
-      echo 'error: verified release archive lacks scripts/tako-network-helper.py; supply TAKO_NETWORK_HELPER_SOURCE and TAKO_NETWORK_HELPER_SHA256 for a local build' >&2
-      exit 1
-    }
+    if [ ! -f "$native_source" ] || [ -L "$native_source" ]; then
+      native_source="$tmp_extract/native-helper.py"
+      native_expected="3570d2634ec3de4dd64ffba96ac343b470b1355518b44d827239722561efc954"
+      download_file "https://raw.githubusercontent.com/$TAKO_REPO_OWNER/$TAKO_REPO_NAME/$TAKO_RELEASE_TAG/scripts/tako-network-helper.py" "$native_source"
+    fi
+  fi
+  if [ -n "$native_expected" ]; then
+    native_actual="$(sha256sum "$native_source" | awk '{print $1}')"
+    [ "$native_actual" = "$native_expected" ] || { echo 'error: native helper checksum mismatch' >&2; exit 1; }
   fi
 
   # Refuse symlinked roots before installing privileged state or executable files.
   python3 -I - <<'PY'
 import os
+import pwd
+uid = pwd.getpwnam('tako').pw_uid
+gid = pwd.getpwnam('tako').pw_gid
 for path in ('/opt/tako/networks', '/var/lib/tako-network-helper', '/etc/ssh/tako-network'):
     fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
     try:
@@ -982,18 +991,16 @@ for path in ('/opt/tako/networks', '/var/lib/tako-network-helper', '/etc/ssh/tak
             child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
             os.close(fd)
             fd = child
-        if path != '/opt/tako/networks':
             info = os.fstat(fd)
-            if info.st_uid != 0 or info.st_mode & 0o022:
-                raise SystemExit('error: unsafe privileged network directory')
+            allowed = (0, uid) if path == '/opt/tako/networks' else (0,)
+            if info.st_uid not in allowed or info.st_mode & 0o022:
+                raise SystemExit('error: unsafe network directory')
+        os.fchown(fd, uid if path == '/opt/tako/networks' else 0,
+                  gid if path == '/opt/tako/networks' else 0)
+        os.fchmod(fd, 0o755 if path == '/etc/ssh/tako-network' else 0o700)
     finally:
         os.close(fd)
 PY
-  chown tako:tako /opt/tako/networks
-  chmod 0700 /opt/tako/networks
-  chown root:root /var/lib/tako-network-helper /etc/ssh/tako-network
-  chmod 0700 /var/lib/tako-network-helper
-  chmod 0755 /etc/ssh/tako-network
   install -m 0644 "$native_source" /usr/local/libexec/tako/tako-network-helper.py
   cat > /usr/local/libexec/tako/tako-network-helper <<'EOF'
 #!/bin/sh
@@ -1076,7 +1083,7 @@ Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/local/libexec/tako/tako-network-helper %i apply
 [Install]
-WantedBy=tako-network.target
+RequiredBy=tako-network.target
 EOF
 
   # No release is fetched until a compatible Corrosion version and digest are pinned.
@@ -1106,7 +1113,7 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 [Install]
 WantedBy=multi-user.target
 EOF
-  TAKO_NETWORK_UNIT_ARGS='Wants=tako-network.target
+  TAKO_NETWORK_UNIT_ARGS='Requires=tako-network.target
 After=tako-network.target'
   # The runtime has no ambient NET_ADMIN. Only its setuid-root sudo helper can acquire it.
   TAKO_NETWORK_BOUNDING_CAPABILITY=CAP_NET_ADMIN

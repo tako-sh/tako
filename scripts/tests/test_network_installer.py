@@ -12,7 +12,7 @@ NATIVE = SOURCE[SOURCE.index('install_native_network() {'):SOURCE.index('install
 
 
 class NativeInstallerTests(unittest.TestCase):
-    def install(self, *, provider='native', source=True, digest=True, packaged=False):
+    def install(self, *, provider='native', source=True, digest=True, packaged=False, download=False):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -34,6 +34,7 @@ class NativeInstallerTests(unittest.TestCase):
         result = subprocess.run(['sh', '-eu'], input='''
 need_cmd() { case "$1" in apt-get|wg|ip|nft|python3) return 0;; *) return 1;; esac; }
 install_pkgs() { printf 'packages %s\\n' "$*"; }
+download_file() { [ "$TEST_DOWNLOAD" = 1 ] || return 1; cp "$TEST_HELPER" "$2"; }
 chown() { :; }
 python3() { cat >/dev/null; }
 id() { printf '1001\\n'; }
@@ -42,6 +43,9 @@ fake_sshd() {
 }
 ''' + script + '\ninstall_native_network\n', text=True, capture_output=True, timeout=10,
             env={**os.environ, 'TEST_ROOT': str(root), 'TAKO_VPN': provider,
+                 'TEST_DOWNLOAD': '1' if download else '0',
+                 'TEST_HELPER': str(ROOT / 'scripts/tako-network-helper.py'),
+                 'TAKO_REPO_OWNER': 'tako-sh', 'TAKO_REPO_NAME': 'tako', 'TAKO_RELEASE_TAG': 'latest',
                  'TAKO_USER': 'tako', 'TAKO_HOME': '/opt/tako', 'SERVICE_MANAGER': 'none',
                  'tmp_extract': str(root / 'extract'),
                  'TAKO_NETWORK_HELPER_SOURCE': str(local) if source else '',
@@ -66,6 +70,12 @@ fake_sshd() {
     def test_bootstrap_accepts_helper_in_verified_archive(self):
         _, result = self.install(source=False, packaged=True)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_default_download_is_pinned_to_this_helper(self):
+        root, result = self.install(source=False, download=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((root / 'usr/local/libexec/tako/tako-network-helper.py').read_bytes(),
+                         (ROOT / 'scripts/tako-network-helper.py').read_bytes())
 
     def test_missing_helper_or_unverified_local_source_fails(self):
         for options in ({'source': False}, {'digest': False}):

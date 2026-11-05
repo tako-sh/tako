@@ -104,8 +104,8 @@ def validate(data, ident):
     require(network_id(data['network_id']) == ident, 'network_id mismatch')
     result = dict(data, address=address(data['address']), device_id=device_id(data['device_id']),
                   private_key=key(data['private_key']), listen_port=data.get('listen_port', 51820))
-    require(type(result['listen_port']) is int and 1024 <= result['listen_port'] <= 65535,
-            'listen_port must be 1024..65535')
+    require(type(result['listen_port']) is int and 1024 <= result['listen_port'] <= 65535 and
+            result['listen_port'] != 8787, 'listen_port must be 1024..65535 except reserved gossip port 8787')
     require(isinstance(data['peers'], list) and len(data['peers']) <= 256, 'too many peers')
     prefix = ipaddress.IPv6Network(result['address'].split('/')[0] + '/48', strict=False)
     ids, addresses, keys = {result['device_id']}, {result['address']}, set()
@@ -312,11 +312,20 @@ class Host:
         for other, config in self.state['networks'].items():
             if other != ident:
                 require(config['listen_port'] != desired['listen_port'], 'listen port already managed')
-                require(config['address'] != desired['address'], 'address already managed')
+                require(ipaddress.IPv6Interface(config['address']).ip.packed[:6] !=
+                        ipaddress.IPv6Interface(desired['address']).ip.packed[:6], 'network /48 already managed')
         link = self.owned_link(ident)
+        for entry in self.runner.run('wg', 'show', 'all', 'listen-port').splitlines():
+            other, port = entry.split()
+            require(other == dev or int(port) != desired['listen_port'], 'WireGuard listen port in use')
         self.firewall_exists()
         routes = self.check_routes(ident, desired)
         previous = self.state['networks'].get(ident)
+        requested = {desired['address']} | {peer['address'] for peer in desired['peers']}
+        for item in json.loads(self.runner.run('ip', '-j', '-6', 'address', 'show')):
+            if item['ifname'] != dev:
+                require(all(a['local'] + '/128' not in requested for a in item.get('addr_info', [])),
+                        'address belongs to another interface')
         addresses = []
         if link:
             addresses = json.loads(self.runner.run('ip', '-j', '-6', 'address', 'show', 'dev', dev))
