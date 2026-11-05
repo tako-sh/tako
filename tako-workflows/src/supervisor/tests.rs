@@ -387,3 +387,50 @@ async fn effective_env_sets_concurrency_and_idle_timeout() {
     );
     assert_eq!(env.get("FOO").map(String::as_str), Some("bar"));
 }
+
+#[tokio::test]
+async fn server_drain_retains_workers_after_cancel_and_reports_forced_kill() {
+    let dir = tempdir().unwrap();
+    let mut spec = sleep_spec(dir.path().into(), 1, "60");
+    spec.command = vec![
+        "/bin/sh".into(),
+        "-c".into(),
+        "trap '' TERM; touch ready; exec sleep 60".into(),
+    ];
+    let sup = Arc::new(WorkerSupervisor::new(spec));
+    sup.start().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !dir.path().join("ready").exists() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let task = tokio::spawn({
+        let sup = sup.clone();
+        async move { sup.shutdown_gracefully().await }
+    });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !sup.state.lock().shutting_down {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    assert_eq!(sup.remaining_children(), 1);
+    sup.wake().unwrap();
+    assert_eq!(sup.remaining_children(), 1);
+    assert_eq!(sup.force_stop(), (1, 0));
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while sup.remaining_children() > 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    sup.wake().unwrap();
+    assert_eq!(sup.remaining_children(), 0);
+    assert_eq!(sup.force_stop(), (0, 0));
+}

@@ -48,6 +48,16 @@ pub struct WorkDispatcher {
 }
 
 impl WorkDispatcher {
+    pub(crate) fn request_shutdown(&mut self) {
+        if let Some(tx) = self.shutdown_tx.take() {
+            let _ = tx.send(());
+        }
+    }
+
+    pub(crate) fn is_finished(&self) -> bool {
+        self.join.as_ref().is_none_or(|join| join.is_finished())
+    }
+
     pub fn spawn(wake: WakeFn, has_runnable_work: RunnableCheck) -> Self {
         Self::spawn_with_intervals(
             wake,

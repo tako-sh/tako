@@ -154,6 +154,44 @@ struct State {
 }
 
 impl WorkerSupervisor {
+    pub(crate) fn begin_drain(&self) {
+        let mut state = self.state.lock();
+        if state.shutting_down {
+            return;
+        }
+        state.shutting_down = true;
+        for entry in &state.children {
+            #[cfg(unix)]
+            unsafe {
+                if let Some(pid) = entry.child.id() {
+                    libc::kill(pid as i32, libc::SIGTERM);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn remaining_children(&self) -> usize {
+        let mut state = self.state.lock();
+        state
+            .children
+            .retain_mut(|entry| !matches!(entry.child.try_wait(), Ok(Some(_))));
+        state.children.len()
+    }
+
+    pub(crate) fn force_stop(&self) -> (usize, usize) {
+        let mut state = self.state.lock();
+        state.shutting_down = true;
+        let mut signalled = 0;
+        let mut errors = 0;
+        for entry in &mut state.children {
+            match entry.child.start_kill() {
+                Ok(()) => signalled += 1,
+                Err(_) => errors += 1,
+            }
+        }
+        (signalled, errors)
+    }
+
     pub fn new(spec: WorkerSpec) -> Self {
         let state = Arc::new(Mutex::new(State {
             children: Vec::new(),
@@ -273,7 +311,7 @@ impl WorkerSupervisor {
                         cold_crashes.push((code, entry.spawned_at.elapsed()));
                     }
                 }
-                Err(_) => {}
+                Err(_) => still_live.push(entry),
             }
         }
         state.children = still_live;
@@ -367,29 +405,9 @@ impl WorkerSupervisor {
     /// running work should finish where it started, while new claims move to
     /// the replacement runtime or stop entirely.
     pub async fn shutdown_gracefully(&self) {
-        let mut children: Vec<ChildEntry> = {
-            let mut state = self.state.lock();
-            state.shutting_down = true;
-            std::mem::take(&mut state.children)
-        };
-
-        for entry in &children {
-            #[cfg(unix)]
-            unsafe {
-                if let Some(pid) = entry.child.id() {
-                    libc::kill(pid as i32, libc::SIGTERM);
-                }
-            }
-            #[cfg(not(unix))]
-            let _ = entry;
-        }
-
-        loop {
-            children.retain_mut(|entry| matches!(entry.child.try_wait(), Ok(None)));
-            if children.is_empty() {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
+        self.begin_drain();
+        while self.remaining_children() > 0 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
 
