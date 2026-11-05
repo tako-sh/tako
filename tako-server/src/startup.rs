@@ -365,6 +365,7 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             let state = state.clone();
             Arc::new(move |app: &str| state.runtime_postgres_url(app))
         }),
+        channel_credentials_generation: state.channel_credentials_generation.clone(),
     })?;
 
     sd_notify_ready();

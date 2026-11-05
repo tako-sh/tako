@@ -37,6 +37,7 @@ pub(crate) struct ServerBuildConfig {
     pub(crate) cold_start: Arc<ColdStartManager>,
     pub(crate) cloudflare_ips: CloudflareIpRanges,
     pub(crate) channel_postgres_url: Option<ChannelPostgresUrlResolver>,
+    pub(crate) channel_credentials_generation: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Build and start the Pingora server with ACME and SNI support
@@ -56,6 +57,7 @@ pub(crate) fn build_server_with_acme(build: ServerBuildConfig) -> Result<Server>
         cold_start,
         cloudflare_ips,
         channel_postgres_url,
+        channel_credentials_generation,
     } = build;
 
     if native_control.is_some() && config.trusted_proxy.proxy_protocol {
@@ -106,6 +108,7 @@ pub(crate) fn build_server_with_acme(build: ServerBuildConfig) -> Result<Server>
     if let Some(resolver) = channel_postgres_url {
         proxy.set_channel_postgres_url_resolver(resolver);
     }
+    proxy.channel_credentials_generation = channel_credentials_generation;
 
     if config.trusted_proxy.proxy_protocol {
         let mut proxy_service = ProxyProtocolService::new(

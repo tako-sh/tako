@@ -76,9 +76,9 @@ pub(super) async fn run(
 }
 pub(super) struct Application {
     pub store: Arc<ChannelStore>,
-    postgres_url: Option<Zeroizing<String>>,
+    pub(super) postgres_url: Option<Zeroizing<String>>,
     publications: broadcast::Receiver<ChannelPublication>,
-    subscribers: Vec<wire::Sender>,
+    pub(super) subscribers: Vec<wire::Sender>,
     presence: super::presence::Leases,
     presence_queried: std::collections::BTreeSet<DeviceId>,
 }
@@ -152,14 +152,12 @@ impl Broker {
         app: AppEnv,
         postgres_url: Option<Zeroizing<String>>,
     ) -> io::Result<()> {
-        if let Some(existing) = self.apps.get(&app) {
-            return if existing.postgres_url == postgres_url {
-                Ok(())
-            } else {
-                Err(error("channel backend changed during agent lifetime"))
-            };
-        }
-        if self.apps.len() >= MAX_APPS {
+        let replacing = match self.apps.get(&app) {
+            Some(existing) if existing.postgres_url == postgres_url => return Ok(()),
+            Some(_) => true,
+            None => false,
+        };
+        if !replacing && self.apps.len() >= MAX_APPS {
             return Err(error("channel app limit reached"));
         }
         if postgres_url
@@ -191,6 +189,20 @@ impl Broker {
         .await
         .map_err(|_| error("channel storage worker failed"))??;
         let publications = store.publications();
+        if replacing {
+            // A rotated credential or switched backend replaces the store beneath
+            // the existing subscribers. Their readers reopen against the new
+            // backend; the gap tells live streams to resync instead of continuing
+            // replay from the previous one.
+            let application = self.apps.get_mut(&app).expect("registered application");
+            application.store = store;
+            application.postgres_url = postgres_url;
+            application.publications = publications;
+            application.presence.clear_remote(&self.local);
+            application.presence_queried.clear();
+            self.notify(&app, Notification::Gap);
+            return Ok(());
+        }
         self.apps.insert(
             app,
             Application {

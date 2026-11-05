@@ -78,6 +78,11 @@ pub struct TakoProxy {
     channel_stores: SyncRwLock<HashMap<String, Arc<tokio::sync::OnceCell<Arc<ProxyChannelStore>>>>>,
     native_channels: SyncRwLock<Option<crate::native_channels::Client>>,
     channel_postgres_url: SyncRwLock<Option<ChannelPostgresUrlResolver>>,
+    /// Resolved channel backend per app, tagged with the credential generation
+    /// it was read at. Resolution reads and decrypts state, so it runs again
+    /// only after a deployment changes runtime credentials.
+    channel_credentials: SyncRwLock<HashMap<String, (u64, Option<String>)>>,
+    channel_credentials_generation: Arc<std::sync::atomic::AtomicU64>,
     /// Per-IP concurrent request limiter (DDoS mitigation)
     ip_tracker: IpRequestTracker,
     /// Cloudflare proxy CIDRs used for app-level source IP modes.
@@ -121,6 +126,8 @@ impl TakoProxy {
             channel_stores: SyncRwLock::new(HashMap::new()),
             native_channels: SyncRwLock::new(None),
             channel_postgres_url: SyncRwLock::new(None),
+            channel_credentials: SyncRwLock::new(HashMap::new()),
+            channel_credentials_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             ip_tracker: IpRequestTracker::new(),
             cloudflare_ips,
             channel_registry: ChannelRegistry::new(),
@@ -156,6 +163,8 @@ impl TakoProxy {
             channel_stores: SyncRwLock::new(HashMap::new()),
             native_channels: SyncRwLock::new(None),
             channel_postgres_url: SyncRwLock::new(None),
+            channel_credentials: SyncRwLock::new(HashMap::new()),
+            channel_credentials_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             ip_tracker: IpRequestTracker::new(),
             cloudflare_ips,
             channel_registry: ChannelRegistry::new(),

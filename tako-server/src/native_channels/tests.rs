@@ -1335,3 +1335,46 @@ async fn authenticated_peer_loss_requests_fence_even_when_admission_fails() {
     assert!(end.authenticated);
     assert!(end.result.is_err());
 }
+
+#[tokio::test]
+async fn re_registration_with_a_changed_backend_replaces_the_store_and_signals_a_gap() {
+    let (_temp, mut broker) = new_broker().await;
+    let before = publish(&mut broker, 1).await;
+    let previous = broker.apps[&app()].store.clone();
+    let Reply::Subscription(mut notices) = broker
+        .local(Request::Subscribe { app: app() })
+        .await
+        .unwrap()
+    else {
+        panic!()
+    };
+    broker.postgres_seam(&app());
+    assert!(matches!(
+        broker
+            .local(Request::Register {
+                app: app(),
+                postgres_url: None
+            })
+            .await
+            .unwrap(),
+        Reply::Response(Response::Ok)
+    ));
+    let application = &broker.apps[&app()];
+    assert!(!Arc::ptr_eq(&previous, &application.store));
+    assert!(application.postgres_url.is_none());
+    assert_eq!(application.subscribers.len(), 1);
+    let packet = notices.recv().await.unwrap();
+    assert!(matches!(
+        serde_json::from_slice::<Notice>(&packet.bytes).unwrap(),
+        Notice::Notification {
+            notification: Notification::Gap
+        }
+    ));
+    stale(&broker.apps[&app()].store, &before);
+    let after = publish(&mut broker, 2).await;
+    let rows = broker.apps[&app()]
+        .store
+        .read_after("events", None, 10)
+        .unwrap();
+    assert_eq!(rows.last().map(|row| row.id.clone()), Some(after.id));
+}

@@ -101,6 +101,9 @@ pub struct ServerState {
     /// started concurrently with a drain is still stopped by it. Deployments do
     /// not take it: the management lock must not stall other apps' spawns.
     pub(crate) spawn_gate: Arc<tokio::sync::RwLock<()>>,
+    /// Bumped whenever an app's runtime credentials change, so the proxy
+    /// re-resolves channel backends only then instead of on every request.
+    pub(crate) channel_credentials_generation: Arc<std::sync::atomic::AtomicU64>,
     pub(crate) deploy_locks: AsyncRwLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     prepared_deploy_ssl: AsyncRwLock<HashMap<PreparedDeployKey, PreparedDeploySsl>>,
     pub(crate) cold_start: Arc<crate::scaling::ColdStartManager>,
@@ -362,6 +365,7 @@ impl ServerState {
             routes: Arc::new(SyncRwLock::new(RouteTable::default())),
             management_lock: Arc::new(tokio::sync::Mutex::new(())),
             spawn_gate: Arc::new(tokio::sync::RwLock::new(())),
+            channel_credentials_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             deploy_locks: AsyncRwLock::new(HashMap::new()),
             prepared_deploy_ssl: AsyncRwLock::new(HashMap::new()),
             cold_start: Arc::new(crate::scaling::ColdStartManager::new(

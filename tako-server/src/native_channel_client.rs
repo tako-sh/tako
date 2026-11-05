@@ -10,11 +10,11 @@ use std::{
     sync::{Arc, Weak},
     time::Duration,
 };
+use tako_channels::PresenceMember;
 use tako_channels::{
     ChannelAuthResponse, ChannelError, ChannelMessage, ChannelPublishPayload, ChannelStore,
     ChannelStoreConfig,
 };
-use tako_channels::PresenceMember;
 use tako_network::AppEnv;
 use tokio::{sync::watch, task::JoinHandle};
 use zeroize::Zeroizing;
@@ -226,6 +226,14 @@ impl ProxyChannelStore {
     }
     pub(crate) fn is_native(&self) -> bool {
         self.native.is_some()
+    }
+    /// Stop the broker subscription now, before the last request drops this
+    /// wrapper. Readiness then fails closed: the worker must not re-register the
+    /// previous backend while a replacement reader owns the subscription.
+    pub(crate) fn detach(&self) {
+        if let Some(native) = &self.native {
+            native.task.abort();
+        }
     }
     pub(crate) fn check_backend(&self, postgres_url: Option<&str>) -> Result<(), ChannelError> {
         if let Some(native) = &self.native
