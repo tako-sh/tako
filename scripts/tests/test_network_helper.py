@@ -179,7 +179,8 @@ class FakeRunner:
             assert path.stat().st_mode & 0o777 == 0o600
             self.secret = path.read_text()
         if args[:3] == ('ip', 'link', 'add'):
-            self.links = [{'ifname': args[4], 'linkinfo': {'info_kind': 'wireguard'}}]
+            self.links = [{'ifname': args[4], 'ifalias': args[args.index('alias') + 1],
+                           'linkinfo': {'info_kind': 'wireguard'}}]
         if args[:3] == ('ip', 'link', 'set'):
             if args[5] == 'alias':
                 self.links[0]['ifalias'] = args[6]
@@ -377,6 +378,40 @@ class ReconcileTests(unittest.TestCase):
         self.apply(changed)
         self.assertEqual(self.runner.addresses[0]['local'], 'fd00:1234:5678::9')
         self.assertEqual(self.saved['networks'][ID]['managed_addresses'], [changed['address']])
+
+    def test_process_death_after_creation_leaves_atomic_ownership_for_retry_or_remove(self):
+        for action in ('apply', 'remove'):
+            with self.subTest(action=action):
+                self.runner = FakeRunner()
+                self.host = helper.Host(self.runner, {'owner': 'test-owner', 'networks': {}}, self.save, self.write_ssh)
+                run = self.runner.run
+                def die_after_create(*args, **kwargs):
+                    result = run(*args, **kwargs)
+                    if args[:3] == ('ip', 'link', 'add'):
+                        raise SystemExit('simulated process death')
+                    return result
+                with patch.object(self.runner, 'run', side_effect=die_after_create):
+                    with self.assertRaises(SystemExit):
+                        self.apply()
+                self.assertEqual(self.runner.links[0]['ifalias'], self.saved['networks'][ID]['alias'])
+                self.host = helper.Host(self.runner, copy.deepcopy(self.saved), self.save, self.write_ssh)
+                if action == 'apply':
+                    self.apply()
+                    self.assertEqual(self.runner.links[0]['operstate'], 'up')
+                else:
+                    self.host.remove(ID)
+                    self.assertEqual(self.runner.links, [])
+
+    def test_interface_create_failure_leaves_no_untagged_object(self):
+        self.runner.fail = ('ip', 'link', 'add')
+        with self.assertRaises(helper.Rejected):
+            self.apply()
+        self.assertEqual(self.runner.links, [])
+        self.runner.fail = None
+        self.apply()
+        self.assertEqual(self.runner.links[0]['operstate'], 'up')
+        self.assertFalse(any(args[:6] == ('ip', 'link', 'set', 'dev', DEV, 'alias')
+                             for args, _ in self.runner.calls))
 
     def test_reboot_recreates_only_owned_persistent_network(self):
         self.apply()

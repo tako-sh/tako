@@ -368,9 +368,8 @@ class Host:
             self.install_firewall()
             self.write_ssh(ssh_authorizations(self.state))
             if not link:
-                self.runner.run('ip', 'link', 'add', 'dev', dev, 'type', 'wireguard')
+                self.runner.run('ip', 'link', 'add', 'dev', dev, 'alias', config['alias'], 'type', 'wireguard')
                 owned = True
-                self.runner.run('ip', 'link', 'set', 'dev', dev, 'alias', config['alias'])
             lines = ['[Interface]', 'PrivateKey = ' + desired['private_key'],
                      'ListenPort = ' + str(desired['listen_port'])]
             for peer in desired['peers']:
