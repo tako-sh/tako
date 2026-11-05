@@ -41,6 +41,7 @@ mod routing;
 mod runtime_events;
 mod scaling;
 mod server_state;
+mod drain_observer;
 mod socket;
 mod startup;
 mod state_store;

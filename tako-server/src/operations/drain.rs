@@ -8,9 +8,12 @@ use tokio::time::Instant;
 const MAX_DRAIN_SECONDS: u64 = 3600;
 
 #[derive(Debug, Serialize)]
-struct DrainReport {
+pub(crate) struct DrainReport {
     status: &'static str,
-    completed: bool,
+    pub(crate) completed: bool,
+    local_completed: bool,
+    other_processes_quiescent: bool,
+    counts_scope: &'static str,
     timed_out: bool,
     http_drained: bool,
     forced_instances: usize,
@@ -76,14 +79,54 @@ impl crate::ServerState {
             return Response::error("Drain timeout must be between 0 and 3600 seconds.");
         }
         let deadline = Instant::now() + Duration::from_secs(timeout_seconds);
-        if let Err(error) = self.state_store.set_drain_requested(true) {
+        let _operation = match self.state_store.try_drain_operation() {
+            Ok(Some(lease)) => lease,
+            Ok(None) => {
+                return Response::error(
+                    "Another server drain/resume is in progress; retry shortly.",
+                );
+            }
+            Err(error) => return Response::error(error.to_string()),
+        };
+        let wall_deadline = crate::drain_observer::unix_millis()
+            .saturating_add(timeout_seconds.saturating_mul(1000));
+        if let Err(error) = self.state_store.request_drain_until(wall_deadline) {
             return Response::error(format!("Could not persist server drain: {error}"));
         }
         self.drain_requested.store(true, Ordering::Release);
-        Response::ok(self.drain_runtime_until(deadline).await)
+        let mut report = self.drain_runtime_until(deadline).await;
+        if report.local_completed {
+            loop {
+                match self.state_store.try_drain_activity(true) {
+                    Ok(Some(_exclusive)) => {
+                        report.other_processes_quiescent = true;
+                        break;
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        report.errors.push(error.to_string());
+                        break;
+                    }
+                }
+                if Instant::now() >= deadline {
+                    report.timed_out = true;
+                    break;
+                }
+                tokio::time::sleep_until(deadline.min(Instant::now() + Duration::from_millis(10)))
+                    .await;
+            }
+        }
+        report.completed = report.local_completed && report.other_processes_quiescent;
+        report.status = if report.completed {
+            "drained"
+        } else {
+            "draining"
+        };
+        Response::ok(report)
     }
 
-    async fn drain_runtime_until(&self, deadline: Instant) -> DrainReport {
+    pub(crate) async fn drain_runtime_until(&self, deadline: Instant) -> DrainReport {
+        self.drain_requested.store(true, Ordering::Release);
         self.workflows.begin_server_drain();
         let apps: Vec<_> = self
             .app_manager
@@ -127,6 +170,9 @@ impl crate::ServerState {
         let mut report = DrainReport {
             status: "drained",
             completed: false,
+            local_completed: false,
+            other_processes_quiescent: false,
+            counts_scope: "local_process",
             timed_out: forced_instances > 0 || !workflows_before_stop.is_complete(),
             http_drained: forced_instances == 0,
             forced_instances,
@@ -188,13 +234,30 @@ impl crate::ServerState {
         report.remaining_workflow_background_tasks = workflows.background_tasks;
         report.completed =
             report.remaining_instances == 0 && workflows.is_complete() && report.errors.is_empty();
+        report.local_completed = report.completed;
+        if report.local_completed {
+            self.drain_activity.lock().take();
+        }
         report
     }
 
     pub(crate) async fn resume_server(&self) -> Response {
+        let _operation = match self.state_store.try_drain_operation() {
+            Ok(Some(lease)) => lease,
+            Ok(None) => {
+                return Response::error(
+                    "Another server drain/resume is in progress; retry shortly.",
+                );
+            }
+            Err(error) => return Response::error(error.to_string()),
+        };
         if !self.is_draining() {
             return Response::ok(serde_json::json!({"status":"resumed", "already_running":true}));
         }
+        let requested = match self.state_store.drain_requested() {
+            Ok(value) => value,
+            Err(error) => return Response::error(error.to_string()),
+        };
         let cleanup = self.drain_runtime_until(Instant::now()).await;
         if !cleanup.completed {
             return Response::error(format!(
@@ -202,6 +265,33 @@ impl crate::ServerState {
                 serde_json::to_string(&cleanup).unwrap()
             ));
         }
+        if requested {
+            match self.state_store.try_drain_activity(true) {
+                Ok(Some(_exclusive)) => {}
+                Ok(None) => {
+                    return Response::error(
+                        "Server remains drained; other processes are still cleaning up. Retry resume shortly.",
+                    );
+                }
+                Err(error) => return Response::error(error.to_string()),
+            }
+        }
+        match self.restore_drained_runtime(requested).await {
+            Ok(()) => {
+                Response::ok(serde_json::json!({"status":"resumed", "already_running":false}))
+            }
+            Err(error) => Response::error(error),
+        }
+    }
+
+    // Caller holds both the local management and cross-process operation locks.
+    pub(crate) async fn restore_drained_runtime(&self, clear_intent: bool) -> Result<(), String> {
+        let activity = self
+            .state_store
+            .try_drain_activity(false)
+            .map_err(|error| error.to_string())?
+            .ok_or("Server remains drained; activity lease is busy")?;
+        *self.drain_activity.lock() = Some(activity);
         for name in self.app_manager.list_apps() {
             self.app_manager.remove_app(&name);
             self.load_balancer.unregister_app(&name);
@@ -210,20 +300,20 @@ impl crate::ServerState {
         }
         if let Err(error) = self.restore_apps_from_state_store(true).await {
             let cleanup = self.drain_runtime_until(Instant::now()).await;
-            return Response::error(format!(
+            return Err(format!(
                 "Server remains drained; restore failed: {error}; cleanup completed: {}",
                 cleanup.completed
             ));
         }
-        if let Err(error) = self.state_store.set_drain_requested(false) {
+        if clear_intent && let Err(error) = self.state_store.set_drain_requested(false) {
             let cleanup = self.drain_runtime_until(Instant::now()).await;
-            return Response::error(format!(
+            return Err(format!(
                 "Server remains drained; could not persist resume: {error}; cleanup completed: {}",
                 cleanup.completed
             ));
         }
         self.drain_requested.store(false, Ordering::Release);
-        Response::ok(serde_json::json!({"status":"resumed", "already_running":false}))
+        Ok(())
     }
 }
 

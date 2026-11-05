@@ -102,6 +102,8 @@ pub struct ServerState {
     pub(crate) state_store: Arc<SqliteStateStore>,
     pub(crate) server_mode: AsyncRwLock<UpgradeMode>,
     pub(crate) drain_requested: Arc<AtomicBool>,
+    pub(crate) drain_activity: parking_lot::Mutex<Option<crate::state_store::DrainLease>>,
+    pub(crate) drain_observer_started: AtomicBool,
     pub(crate) runtime: ServerRuntimeConfig,
     pub(crate) workflows: Arc<crate::workflows::WorkflowManager>,
 }
@@ -186,7 +188,15 @@ impl ServerState {
             device_key,
         ));
         state_store.init()?;
-        let drain_requested = Arc::new(AtomicBool::new(state_store.drain_requested()?));
+        let activity = state_store.try_drain_activity(false)?;
+        let requested = state_store.drain_requested()?;
+        if activity.is_none() && !requested {
+            return Err(StateStoreError::InvalidData(
+                "server drain completion in progress; retry startup".into(),
+            ));
+        }
+        let drain_requested = Arc::new(AtomicBool::new(requested));
+        let drain_activity = parking_lot::Mutex::new(if requested { None } else { activity });
         let persisted_mode = state_store.server_mode()?;
         let persisted_owner = state_store.upgrade_lock_owner()?;
         let preserve_upgrade_mode = match expected_upgrade_owner {
@@ -348,6 +358,8 @@ impl ServerState {
             )),
             state_store,
             drain_requested,
+            drain_activity,
+            drain_observer_started: AtomicBool::new(false),
             server_mode: AsyncRwLock::new(server_mode),
             runtime,
             workflows,
@@ -359,6 +371,9 @@ impl ServerState {
     }
 
     pub fn is_draining(&self) -> bool {
+        if self.state_store.drain_requested().unwrap_or(true) {
+            self.drain_requested.store(true, Ordering::Release);
+        }
         self.drain_requested.load(Ordering::Acquire)
     }
 

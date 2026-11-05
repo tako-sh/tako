@@ -156,8 +156,12 @@ async fn failed_persistence_does_not_withdraw_instances() {
         .unwrap();
     let response = state.drain_server(0).await;
     assert!(!response.is_ok());
-    assert!(!state.is_draining());
+    assert!(!state.drain_flag().load(Ordering::Acquire));
     assert_eq!(instance.state(), InstanceState::Healthy);
+    assert!(
+        state.is_draining(),
+        "unreadable shared intent must fail closed"
+    );
 }
 
 #[tokio::test]
@@ -327,4 +331,150 @@ async fn resume_does_not_reactivate_uncommitted_app_configuration() {
             .routes_for_app("uncommitted/production")
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn shared_drain_cannot_complete_while_another_runtime_holds_activity() {
+    let (dir, first) = fixture();
+    let second = open_state(dir.path());
+    let app = app(&second, "standby");
+    let instance = app.allocate_instance();
+    app.set_instance_state(&instance, InstanceState::Healthy);
+    let response = first.drain_server(0).await;
+    let report = response.data().unwrap();
+    assert_eq!(report["local_completed"], true);
+    assert_eq!(report["completed"], false);
+    assert_eq!(report["other_processes_quiescent"], false);
+    assert_eq!(report["timed_out"], true);
+    assert_eq!(report["counts_scope"], "local_process");
+    assert!(second.is_draining());
+    second.observe_drain_once().await.unwrap();
+    assert!(app.get_instances().is_empty());
+    let response = first.drain_server(0).await;
+    assert_eq!(response.data().unwrap()["completed"], true);
+    assert_eq!(response.data().unwrap()["other_processes_quiescent"], true);
+}
+
+#[tokio::test]
+async fn shared_drain_waits_for_remote_requests_and_serializes_observer_with_deployment() {
+    let (dir, first) = fixture();
+    let second = open_state(dir.path());
+    let management = second.management_lock.lock().await;
+    let drain = tokio::spawn({
+        let first = first.clone();
+        async move {
+            crate::management_http::handle_rpc_command(
+                first,
+                Command::DrainServer { timeout_seconds: 2 },
+            )
+            .await
+        }
+    });
+    wait_for_gate(&first).await;
+    let observer = tokio::spawn({
+        let second = second.clone();
+        async move { second.observe_drain_once().await }
+    });
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !second.drain_flag().load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    // Simulate a deployment admitted before drain and still holding management_lock.
+    let app = app(&second, "last-deployment");
+    let instance = app.allocate_instance();
+    app.set_instance_state(&instance, InstanceState::Healthy);
+    instance.request_started();
+    assert!(!observer.is_finished());
+    assert!(!drain.is_finished());
+    drop(management);
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while instance.state() != InstanceState::Draining {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!drain.is_finished());
+    instance.request_finished();
+    observer.await.unwrap().unwrap();
+    let response = drain.await.unwrap();
+    assert_eq!(response.data().unwrap()["completed"], true);
+    assert_eq!(response.data().unwrap()["timed_out"], false);
+    assert!(app.get_instances().is_empty());
+}
+
+#[tokio::test]
+async fn shared_resume_waits_for_quiescence_and_every_observer_reacquires_activity() {
+    let (dir, first) = fixture();
+    let second = open_state(dir.path());
+    assert_eq!(
+        first.drain_server(0).await.data().unwrap()["completed"],
+        false
+    );
+    assert!(!first.resume_server().await.is_ok());
+    assert!(first.state_store.drain_requested().unwrap());
+    second.observe_drain_once().await.unwrap();
+    assert!(first.resume_server().await.is_ok());
+    assert!(!first.is_draining());
+    assert!(second.drain_flag().load(Ordering::Acquire));
+    second.observe_drain_once().await.unwrap();
+    assert!(!second.is_draining());
+    assert!(first.drain_activity.lock().is_some());
+    assert!(second.drain_activity.lock().is_some());
+    assert_eq!(
+        first.drain_server(0).await.data().unwrap()["completed"],
+        false
+    );
+    second.observe_drain_once().await.unwrap();
+    assert_eq!(
+        first.drain_server(0).await.data().unwrap()["completed"],
+        true
+    );
+}
+
+#[tokio::test]
+async fn restart_during_shared_drain_is_gated_and_cannot_reopen_activity() {
+    let (dir, first) = fixture();
+    let second = open_state(dir.path());
+    assert_eq!(
+        first.drain_server(0).await.data().unwrap()["completed"],
+        false
+    );
+    let restarted = open_state(dir.path());
+    assert!(restarted.is_draining());
+    assert!(restarted.drain_activity.lock().is_none());
+    restarted.restore_from_state_store().await.unwrap();
+    assert!(restarted.app_manager.list_apps().is_empty());
+    drop(second);
+    assert_eq!(
+        first.drain_server(0).await.data().unwrap()["completed"],
+        true
+    );
+    assert!(first.resume_server().await.is_ok());
+    restarted.observe_drain_once().await.unwrap();
+    assert!(!restarted.is_draining());
+    assert!(restarted.drain_activity.lock().is_some());
+}
+
+#[tokio::test]
+async fn competing_operation_returns_without_waiting_under_local_management_lock() {
+    let (dir, first) = fixture();
+    let second = open_state(dir.path());
+    let operation = first.state_store.try_drain_operation().unwrap().unwrap();
+    let response = tokio::time::timeout(
+        Duration::from_millis(100),
+        crate::management_http::handle_rpc_command(
+            second.clone(),
+            Command::DrainServer { timeout_seconds: 1 },
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(!response.is_ok());
+    assert!(!first.state_store.drain_requested().unwrap());
+    assert!(second.management_lock.try_lock().is_ok());
+    drop(operation);
 }
