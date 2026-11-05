@@ -11,12 +11,17 @@ use tako_network::DeviceId;
 
 pub(super) const LEASE_MS: i64 = 45_000;
 pub(super) const MAX_TOTAL_BYTES: usize = 8 * 1024 * 1024;
-const MAX_APP_BYTES: usize = 1024 * 1024;
+const MAX_APP_BYTES: usize = 512 * 1024;
 const MAX_APP_MEMBERS: usize = 256;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum Publication {
+    Sync,
+    Snapshot {
+        sequence: u64,
+        leases: Vec<SnapshotLease>,
+    },
     Update {
         channel: String,
         member: PresenceMember,
@@ -32,9 +37,19 @@ pub(super) enum Publication {
 impl Publication {
     pub fn sequence(&self) -> u64 {
         match self {
-            Self::Update { sequence, .. } | Self::Leave { sequence, .. } => *sequence,
+            Self::Update { sequence, .. }
+            | Self::Leave { sequence, .. }
+            | Self::Snapshot { sequence, .. } => *sequence,
+            Self::Sync => 0,
         }
     }
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SnapshotLease {
+    channel: String,
+    member: PresenceMember,
+    expires_at_ms: i64,
 }
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct Key {
@@ -45,6 +60,7 @@ struct Key {
 struct Lease {
     member: PresenceMember,
     expires: Instant,
+    expires_at_ms: i64,
     bytes: usize,
 }
 #[derive(Default)]
@@ -103,6 +119,7 @@ impl Leases {
         channel: String,
         member: PresenceMember,
         expires: Instant,
+        expires_at_ms: i64,
         bytes: usize,
     ) {
         let key = Key {
@@ -115,6 +132,7 @@ impl Leases {
             Lease {
                 member,
                 expires,
+                expires_at_ms,
                 bytes,
             },
         ) {
@@ -152,6 +170,74 @@ impl Leases {
             }
         });
         self.received.clear();
+    }
+    pub fn local_snapshot(&self, local: &DeviceId) -> Publication {
+        Publication::Snapshot {
+            sequence: self.sequence,
+            leases: self
+                .members
+                .iter()
+                .filter(|(key, _)| &key.origin == local)
+                .map(|(key, lease)| SnapshotLease {
+                    channel: key.channel.clone(),
+                    member: lease.member.clone(),
+                    expires_at_ms: lease.expires_at_ms,
+                })
+                .collect(),
+        }
+    }
+    pub fn replace_remote(
+        &mut self,
+        origin: &DeviceId,
+        sequence: u64,
+        records: Vec<SnapshotLease>,
+        now_ms: i64,
+        allowance: usize,
+    ) -> io::Result<()> {
+        if self
+            .received
+            .get(origin)
+            .is_some_and(|seen| sequence < *seen)
+        {
+            return Ok(());
+        }
+        if records.len() > MAX_APP_MEMBERS {
+            return Err(error("presence snapshot exceeds member limit"));
+        }
+        let retained_bytes: usize = self
+            .members
+            .iter()
+            .filter(|(key, _)| &key.origin != origin)
+            .map(|(_, lease)| lease.bytes)
+            .sum();
+        let retained_count = self
+            .members
+            .keys()
+            .filter(|key| &key.origin != origin)
+            .count();
+        let allowance = allowance.min(MAX_APP_BYTES).saturating_sub(retained_bytes);
+        let mut replacement = Self::default();
+        for record in records {
+            let bytes = replacement.check(origin, &record.channel, &record.member, allowance)?;
+            if let Some(ttl) = remaining(record.expires_at_ms, now_ms) {
+                replacement.update(
+                    origin.clone(),
+                    record.channel,
+                    record.member,
+                    Instant::now() + ttl,
+                    record.expires_at_ms,
+                    bytes,
+                );
+            }
+        }
+        if retained_count + replacement.members.len() > MAX_APP_MEMBERS {
+            return Err(error("presence snapshot exceeds member limit"));
+        }
+        self.members.retain(|key, _| &key.origin != origin);
+        self.bytes = retained_bytes + replacement.bytes;
+        self.members.append(&mut replacement.members);
+        self.received.insert(origin.clone(), sequence);
+        Ok(())
     }
     pub fn snapshot(&self, channel: &str, local: &DeviceId) -> Vec<PresenceMember> {
         self.members
@@ -250,6 +336,7 @@ mod tests {
             "room".into(),
             member,
             start + Duration::from_secs(45),
+            45_000,
             bytes,
         );
         for second in [1, 20, 44] {
@@ -300,6 +387,7 @@ mod tests {
                 "room".into(),
                 member,
                 Instant::now() + Duration::from_secs(45),
+                45_000,
                 bytes,
             );
         }
@@ -316,5 +404,38 @@ mod tests {
         leases.clear_remote(&origin);
         assert_eq!(leases.snapshot("room", &origin).len(), 1);
         assert!(leases.fresh(&remote, 1));
+    }
+    #[test]
+    fn discovery_snapshot_preserves_original_expiry_and_cannot_resurrect_after_leave() {
+        let origin = origin();
+        let mut source = Leases::default();
+        let member = local_member(&origin, "room", &member()).unwrap();
+        let bytes = source
+            .check(&origin, "room", &member, MAX_TOTAL_BYTES)
+            .unwrap();
+        source.update(
+            origin.clone(),
+            "room".into(),
+            member.clone(),
+            Instant::now() + Duration::from_secs(45),
+            45_000,
+            bytes,
+        );
+        source.next_sequence().unwrap();
+        let Publication::Snapshot { sequence, leases } = source.local_snapshot(&origin) else {
+            panic!()
+        };
+        assert_eq!(leases[0].expires_at_ms, 45_000);
+        let mut receiver = Leases::default();
+        receiver
+            .replace_remote(&origin, sequence, leases.clone(), 40_000, MAX_TOTAL_BYTES)
+            .unwrap();
+        receiver.expire(Instant::now() + Duration::from_secs(6));
+        assert!(receiver.snapshot("room", &origin).is_empty());
+        receiver.received(origin.clone(), 2);
+        receiver
+            .replace_remote(&origin, sequence, leases, 40_000, MAX_TOTAL_BYTES)
+            .unwrap();
+        assert!(receiver.snapshot("room", &origin).is_empty());
     }
 }

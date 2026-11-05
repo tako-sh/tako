@@ -78,6 +78,7 @@ pub(super) struct Application {
     publications: broadcast::Receiver<ChannelPublication>,
     subscribers: Vec<wire::Sender>,
     presence: super::presence::Leases,
+    presence_queried: std::collections::BTreeSet<DeviceId>,
 }
 pub(super) struct Broker {
     apps_root: PathBuf,
@@ -187,6 +188,7 @@ impl Broker {
                 publications,
                 subscribers: Vec::new(),
                 presence: Default::default(),
+                presence_queried: Default::default(),
             },
         );
         Ok(())
@@ -382,6 +384,7 @@ impl Broker {
     async fn fence_app(&mut self, app: &AppEnv) -> io::Result<()> {
         if let Some(application) = self.apps.get_mut(app) {
             application.presence.clear_remote(&self.local);
+            application.presence_queried.clear();
             application
                 .store
                 .run(|store| store.invalidate_replay())

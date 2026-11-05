@@ -897,7 +897,23 @@ async fn presence_updates_and_leaves_cross_peers_once_with_origin_bound_identity
         rows[0].connection_id,
         format!("{}:{}", local_id(), member.connection_id)
     );
+    let probe: Frame = serde_json::from_slice(&echoes.try_recv().unwrap().bytes).unwrap();
+    assert!(matches!(
+        probe,
+        Frame::Presence {
+            publication: super::presence::Publication::Sync,
+            ..
+        }
+    ));
     assert!(echoes.try_recv().is_err());
+    let probe: Frame = serde_json::from_slice(&frames.try_recv().unwrap().bytes).unwrap();
+    assert!(matches!(
+        probe,
+        Frame::Presence {
+            publication: super::presence::Publication::Sync,
+            ..
+        }
+    ));
     assert!(
         left.apps[&app()]
             .store
@@ -1046,4 +1062,36 @@ async fn presence_ipc_roundtrips_over_real_duplex() {
     }
     shutdown.send_replace(true);
     actor.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn first_presence_query_discovers_existing_peer_leases_without_client_renewal() {
+    let (_left_dir, mut left) = new_broker().await;
+    left.local(Request::UpdatePresence {
+        app: app(),
+        channel: "room".into(),
+        member: presence_member(),
+    })
+    .await
+    .unwrap();
+    let right_dir = tempfile::tempdir().unwrap();
+    let mut right = Broker::new(right_dir.path().into(), Budget::new(MAX_FRAME), remote_id());
+    right
+        .local(Request::Register {
+            app: app(),
+            postgres_url: None,
+        })
+        .await
+        .unwrap();
+    let (left_sender, mut left_out) = wire::queue(Budget::new(MAX_FRAME));
+    let (right_sender, mut right_out) = wire::queue(Budget::new(MAX_FRAME));
+    left.peers.insert(remote_id(), left_sender);
+    right.peers.insert(local_id(), right_sender);
+    assert!(presence_members(&mut right).await.is_empty());
+    let query: Frame = serde_json::from_slice(&right_out.recv().await.unwrap().bytes).unwrap();
+    left.remote(&remote_id(), query).await.unwrap();
+    let snapshot: Frame = serde_json::from_slice(&left_out.recv().await.unwrap().bytes).unwrap();
+    right.remote(&local_id(), snapshot).await.unwrap();
+    assert_eq!(presence_members(&mut right).await.len(), 1);
+    assert!(right_out.try_recv().is_err());
 }

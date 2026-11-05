@@ -60,6 +60,7 @@ impl Broker {
             channel.clone(),
             member.clone(),
             Instant::now() + Duration::from_millis(presence::LEASE_MS as u64),
+            now.saturating_add(presence::LEASE_MS),
             bytes,
         );
         if !pg {
@@ -90,8 +91,22 @@ impl Broker {
         }
         let application = self
             .apps
-            .get(app)
+            .get_mut(app)
             .ok_or_else(|| error("unknown presence app"))?;
+        if application.postgres_url.is_none() {
+            for (peer, sender) in &self.peers {
+                if !application.presence_queried.contains(peer)
+                    && sender
+                        .send(&Frame::Presence {
+                            app: app.clone(),
+                            publication: Publication::Sync,
+                        })
+                        .is_ok()
+                {
+                    application.presence_queried.insert(peer.clone());
+                }
+            }
+        }
         let members = if application.postgres_url.is_some() {
             let now = now_ms();
             let rows = application
@@ -181,6 +196,28 @@ impl Broker {
         if application.postgres_url.is_some() {
             return Ok(());
         }
+        let publication = match publication {
+            Publication::Sync => {
+                let snapshot = application.presence.local_snapshot(&self.local);
+                if let Some(sender) = self.peers.get(peer) {
+                    sender.send(&Frame::Presence {
+                        app: app.clone(),
+                        publication: snapshot,
+                    })?;
+                }
+                return Ok(());
+            }
+            Publication::Snapshot { sequence, leases } => {
+                return application.presence.replace_remote(
+                    peer,
+                    sequence,
+                    leases,
+                    now_ms(),
+                    allowance,
+                );
+            }
+            publication => publication,
+        };
         let sequence = publication.sequence();
         if !application.presence.fresh(peer, sequence) {
             return Ok(());
@@ -201,6 +238,7 @@ impl Broker {
                         channel,
                         member,
                         Instant::now() + remaining,
+                        expires_at_ms,
                         bytes,
                     );
                 } else {
@@ -208,6 +246,9 @@ impl Broker {
                         .presence
                         .leave(peer, &channel, &member.connection_id);
                 }
+            }
+            Publication::Sync | Publication::Snapshot { .. } => {
+                unreachable!("presence control dispatched above")
             }
             Publication::Leave {
                 channel,
