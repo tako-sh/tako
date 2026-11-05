@@ -241,3 +241,99 @@ fn failed_publish_or_ingest_does_not_advance_identity_or_dedup() {
     assert_eq!(store.ingest_remote(&event).unwrap(), RemoteIngest::Applied);
     assert!(events.try_recv().is_err());
 }
+
+#[tokio::test]
+async fn reset_ends_ephemeral_subscription_before_queued_business_events() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("a.sqlite");
+    let writer = ChannelStore::open(&path).unwrap();
+    let reader = ChannelStore::open(&path).unwrap();
+    let mut reset = reader.subscribe_ephemeral("reset").unwrap();
+    let mut other = reader.subscribe_ephemeral("other").unwrap();
+    writer.publish_ephemeral("reset", &payload(1)).unwrap();
+    writer.publish_ephemeral("other", &payload(2)).unwrap();
+    writer.signal_gap(Some("reset"));
+    assert!(reset.recv().await.is_none());
+    assert!(reset.recv().await.is_none());
+    assert_eq!(other.recv().await.unwrap().data, 2);
+    assert_eq!(
+        reader.raw_query_i64("SELECT COUNT(*) FROM channel_messages", []),
+        0
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn async_appends_and_symlinked_handles_share_the_publication_queue() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("a.sqlite");
+    let writer = std::sync::Arc::new(ChannelStore::open(&path).unwrap());
+    let alias = temp.path().join("alias.sqlite");
+    std::os::unix::fs::symlink(&path, &alias).unwrap();
+    let reader = ChannelStore::open(&alias).unwrap();
+    let changes = reader.changes("a");
+    let mut events = reader.publications();
+    writer.append_async("a", &payload(1)).await.unwrap();
+    assert!(changes.has_changed().unwrap());
+    assert_eq!(next_event(&mut events).payload, payload(1));
+}
+
+#[test]
+fn lagged_publication_queue_is_bounded_and_can_reset_connected_streams() {
+    let store = ChannelStore::open_in_memory().unwrap();
+    let mut events = store.publications();
+    let resets = store.resets("a");
+    for n in 0..300 {
+        store.publish_ephemeral("a", &payload(n)).unwrap();
+    }
+    assert!(matches!(
+        events.try_recv(),
+        Err(broadcast::error::TryRecvError::Lagged(_))
+    ));
+    store.signal_gap(None);
+    assert!(resets.has_changed().unwrap());
+    assert_eq!(
+        store.raw_query_i64("SELECT COUNT(*) FROM channel_messages", []),
+        0
+    );
+    assert_eq!(
+        store.raw_query_i64("SELECT COUNT(*) FROM channel_metadata", []),
+        0
+    );
+}
+
+#[test]
+fn postgres_mesh_uses_wake_hints_without_reinserting_remote_events() {
+    let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
+        return;
+    };
+    let app = format!("mesh-wake-test/{}", std::process::id());
+    let writer = ChannelStore::open_postgres(&url, &app).unwrap();
+    let reader = ChannelStore::open_postgres(&url, &app).unwrap();
+    let mut events = writer.publications();
+    let mut echoes = reader.publications();
+    let after = reader.replay_cursor("a", None).unwrap();
+    let changes = reader.changes("a");
+    let message = writer.append("a", &payload(1)).unwrap();
+    assert_eq!(
+        events.try_recv().unwrap(),
+        ChannelPublication::Wake {
+            channel: "a".into()
+        }
+    );
+    reader.wake("a");
+    assert!(changes.has_changed().unwrap());
+    assert_eq!(reader.read_after("a", after, 100).unwrap(), vec![message]);
+    let remote = ChannelEvent {
+        id: ChannelEventId {
+            origin: "remote".into(),
+            sequence: 1,
+        },
+        channel: "a".into(),
+        payload: payload(2),
+        ephemeral: false,
+    };
+    assert!(reader.ingest_remote(&remote).is_err());
+    assert!(echoes.try_recv().is_err());
+    assert_eq!(reader.read_after("a", after, 100).unwrap().len(), 1);
+}

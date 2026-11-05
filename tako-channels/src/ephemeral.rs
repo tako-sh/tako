@@ -28,7 +28,11 @@ impl EphemeralHub {
         hub
     }
 
-    pub(crate) fn subscribe(self: &Arc<Self>, channel: &str) -> EphemeralSubscription {
+    pub(crate) fn subscribe(
+        self: &Arc<Self>,
+        channel: &str,
+        resets: tokio::sync::watch::Receiver<u64>,
+    ) -> EphemeralSubscription {
         let receiver = self
             .channels
             .lock()
@@ -39,6 +43,7 @@ impl EphemeralHub {
             hub: self.clone(),
             channel: channel.to_owned(),
             receiver: Some(receiver),
+            resets,
         }
     }
 
@@ -53,13 +58,22 @@ pub struct EphemeralSubscription {
     hub: Arc<EphemeralHub>,
     channel: String,
     receiver: Option<broadcast::Receiver<Arc<ChannelMessage>>>,
+    resets: tokio::sync::watch::Receiver<u64>,
 }
 
 impl EphemeralSubscription {
     /// Slow subscribers skip evicted messages; reconnecting never replays events.
     pub async fn recv(&mut self) -> Option<Arc<ChannelMessage>> {
         loop {
-            match self.receiver.as_mut()?.recv().await {
+            let result = tokio::select! {
+                biased;
+                _ = self.resets.changed() => {
+                    self.receiver.take();
+                    return None;
+                }
+                message = self.receiver.as_mut()?.recv() => message,
+            };
+            match result {
                 Ok(message) => return Some(message),
                 Err(broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(broadcast::error::RecvError::Closed) => return None,
@@ -100,7 +114,10 @@ pub async fn serve_events(
                 return Ok(true);
             }
             message = events.recv() => {
-                let Some(message) = message else { return Ok(true); };
+                let Some(message) = message else {
+                    session.write_response_body(None, true).await?;
+                    return Ok(true);
+                };
                 let frame = format!("data: {}\n\n", serde_json::to_string(&*message).expect("JSON channel message"));
                 session.write_response_body(Some(Bytes::from(frame)), false).await?;
             }
@@ -112,9 +129,7 @@ pub async fn serve_events(
 }
 
 pub(crate) fn unsupported() -> ChannelError {
-    ChannelError::BadRequest(
-        "ephemeral channels require a single server without shared Postgres".into(),
-    )
+    ChannelError::BadRequest("ephemeral channels require SQLite channel storage".into())
 }
 
 #[cfg(test)]

@@ -227,23 +227,26 @@ impl ChannelStore {
     }
 
     pub fn open_sqlite(path: &Path) -> Result<Self, ChannelError> {
-        let sqlite = SqliteChannelStore::open(path)?;
-        let path = std::fs::canonicalize(path).map_err(|e| ChannelError::Storage(e.to_string()))?;
-        Self::from_backend(
-            ChannelStoreBackend::Sqlite(sqlite),
-            DeliveryState::for_path(path),
-        )
+        Self::open_sqlite_config(path, None)
     }
 
     pub fn open_sqlite_with_limits(
         path: &Path,
         limits: SqliteReplayLimits,
     ) -> Result<Self, ChannelError> {
-        let store = Self::open_sqlite(path)?;
-        if let ChannelStoreBackend::Sqlite(sqlite) = store.backend.as_ref() {
-            sqlite.set_limits(limits)?;
-        }
-        Ok(store)
+        Self::open_sqlite_config(path, Some(limits))
+    }
+
+    fn open_sqlite_config(
+        path: &Path,
+        limits: Option<SqliteReplayLimits>,
+    ) -> Result<Self, ChannelError> {
+        let sqlite = SqliteChannelStore::open(path, limits)?;
+        let path = std::fs::canonicalize(path).map_err(|e| ChannelError::Storage(e.to_string()))?;
+        Self::from_backend(
+            ChannelStoreBackend::Sqlite(sqlite),
+            DeliveryState::for_path(path),
+        )
     }
 
     pub fn open_postgres(url: &str, app_id: &str) -> Result<Self, ChannelError> {
@@ -315,7 +318,10 @@ impl ChannelStore {
         channel: &str,
     ) -> Result<crate::ephemeral::EphemeralSubscription, ChannelError> {
         self.ensure_ephemeral_supported()?;
-        Ok(self.delivery.ephemeral.subscribe(channel))
+        Ok(self
+            .delivery
+            .ephemeral
+            .subscribe(channel, self.resets(channel)))
     }
 
     pub fn publish_ephemeral(

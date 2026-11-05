@@ -795,9 +795,9 @@ fn postgres_rejects_ephemeral_delivery_when_configured() {
     };
     let store = ChannelStore::open_postgres(&url, "ephemeral-rejection/test").unwrap();
     assert!(
-        matches!(store.subscribe_ephemeral("live"), Err(ChannelError::BadRequest(message)) if message.contains("single server"))
+        matches!(store.subscribe_ephemeral("live"), Err(ChannelError::BadRequest(message)) if message.contains("SQLite channel storage"))
     );
     assert!(
-        matches!(store.publish_ephemeral("live", &ChannelPublishPayload { r#type: "progress".into(), data: 1.into() }), Err(ChannelError::BadRequest(message)) if message.contains("single server"))
+        matches!(store.publish_ephemeral("live", &ChannelPublishPayload { r#type: "progress".into(), data: 1.into() }), Err(ChannelError::BadRequest(message)) if message.contains("SQLite channel storage"))
     );
 }

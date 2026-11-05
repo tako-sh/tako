@@ -35,6 +35,8 @@ pub async fn serve(
     if channel.starts_with(crate::live_store::STORE_CHANNEL_PREFIX) {
         return write_close(session, crate::ChannelCloseCode::VerifyRejected, true).await;
     }
+    let mut resets = store.resets(channel);
+    let mut changes = store.changes(channel);
     if !auth.ephemeral
         && let Err(error) = store.sync_channel_async(channel, &auth).await
     {
@@ -88,15 +90,13 @@ pub async fn serve(
     let max_connection_lifetime = Duration::from_millis(auth.max_connection_lifetime_ms.max(1));
     let started_at = tokio::time::Instant::now();
     let mut next_ping = started_at + keepalive_interval;
-    let mut changes = if auth.ephemeral {
-        tokio::sync::watch::channel(None).1
-    } else {
-        store.changes(channel)
-    };
     let mut read_replay = presence.is_none() && !auth.ephemeral;
     let mut buffered = true;
 
     loop {
+        if resets.has_changed().unwrap_or(true) {
+            return write_close(session, crate::ChannelCloseCode::ReplayTooOld, true).await;
+        }
         let next_presence = tokio::time::Instant::now() + Duration::from_secs(1);
         if let Some(presence) = &mut presence {
             changes.borrow_and_update();
@@ -112,18 +112,24 @@ pub async fn serve(
         }
         let messages = if read_replay {
             changes.borrow_and_update();
-            store
-                .read_after_async(channel, after, 100)
-                .await
-                .map_err(|error| {
-                    Error::explain(
+            match store.read_after_async(channel, after, 100).await {
+                Ok(messages) => messages,
+                Err(ChannelError::StaleCursor) => {
+                    return write_close(session, crate::ChannelCloseCode::ReplayTooOld, true).await;
+                }
+                Err(error) => {
+                    return Err(Error::explain(
                         ErrorType::InternalError,
                         format!("Failed to read channel replay: {error}"),
-                    )
-                })?
+                    ));
+                }
+            }
         } else {
             Vec::new()
         };
+        if resets.has_changed().unwrap_or(true) {
+            return write_close(session, crate::ChannelCloseCode::ReplayTooOld, true).await;
+        }
         read_replay = messages.len() == 100;
 
         if !messages.is_empty() {
@@ -171,6 +177,7 @@ pub async fn serve(
             Read(Option<Bytes>),
             Tick,
             Changed,
+            Reset,
             Ephemeral(Option<Arc<crate::ChannelMessage>>),
         }
 
@@ -184,6 +191,7 @@ pub async fn serve(
                 body = &mut read => WebSocketAction::Read(body?),
                 _ = &mut sleep => WebSocketAction::Tick,
                 _ = changes.changed(), if !auth.ephemeral => WebSocketAction::Changed,
+                _ = resets.changed() => WebSocketAction::Reset,
                 message = async {
                     match ephemeral.as_mut() {
                         Some(events) => events.recv().await,
@@ -230,7 +238,10 @@ pub async fn serve(
                                     )
                                 })?;
                             let result = if auth.ephemeral {
-                                store.publish_ephemeral(channel, &payload)
+                                let channel = channel.to_owned();
+                                store
+                                    .run(move |store| store.publish_ephemeral(&channel, &payload))
+                                    .await
                             } else {
                                 store.append_async(channel, &payload).await
                             };
@@ -282,7 +293,13 @@ pub async fn serve(
                     .await?;
                 next_ping = tokio::time::Instant::now() + keepalive_interval;
             }
-            WebSocketAction::Ephemeral(None) | WebSocketAction::Read(None) => return Ok(true),
+            WebSocketAction::Ephemeral(None) => {
+                return write_close(session, crate::ChannelCloseCode::ReplayTooOld, true).await;
+            }
+            WebSocketAction::Read(None) => return Ok(true),
+            WebSocketAction::Reset => {
+                return write_close(session, crate::ChannelCloseCode::ReplayTooOld, true).await;
+            }
             WebSocketAction::Changed => read_replay = presence.is_none(),
             WebSocketAction::Tick => {
                 if tokio::time::Instant::now() >= next_ping {

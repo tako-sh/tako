@@ -72,13 +72,17 @@ pub(super) struct SqliteChannelStore {
 }
 
 impl SqliteChannelStore {
-    pub(super) fn open(path: &Path) -> Result<Self, ChannelError> {
+    pub(super) fn open(
+        path: &Path,
+        limits: Option<SqliteReplayLimits>,
+    ) -> Result<Self, ChannelError> {
+        let limits = limits.map(SqliteReplayLimits::validate).transpose()?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| ChannelError::Storage(format!("create channel dir: {e}")))?;
         }
         let mut conn = tako_sqlite::open_local(path).map_err(storage_err)?;
-        let epoch = init_connection(&mut conn)?;
+        let epoch = init_connection(&mut conn, limits)?;
         Ok(Self {
             epoch,
             conn: Mutex::new(conn),
@@ -87,7 +91,7 @@ impl SqliteChannelStore {
 
     pub(super) fn open_in_memory() -> Result<Self, ChannelError> {
         let mut conn = tako_sqlite::open_in_memory().map_err(storage_err)?;
-        let epoch = init_connection(&mut conn)?;
+        let epoch = init_connection(&mut conn, None)?;
         Ok(Self {
             epoch,
             conn: Mutex::new(conn),
@@ -231,19 +235,6 @@ impl SqliteChannelStore {
         };
         tx.commit()?;
         Ok(Some(cursor))
-    }
-
-    pub(super) fn set_limits(&self, limits: SqliteReplayLimits) -> Result<(), ChannelError> {
-        let limits = limits.validate()?;
-        let mut conn = self.conn.lock();
-        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        tx.execute(
-            "UPDATE channel_store_state SET limits_json = ?1 WHERE singleton = 1",
-            [serde_json::to_string(&limits).map_err(storage_err)?],
-        )?;
-        prune_replay(&tx, limits, now_unix_ms())?;
-        tx.commit()?;
-        Ok(())
     }
 
     pub(super) fn sync_channel(
@@ -430,7 +421,10 @@ fn prune_replay(
     Ok(deleted)
 }
 
-fn init_connection(conn: &mut rusqlite::Connection) -> Result<[u8; 16], ChannelError> {
+fn init_connection(
+    conn: &mut rusqlite::Connection,
+    limits: Option<SqliteReplayLimits>,
+) -> Result<[u8; 16], ChannelError> {
     conn.execute_batch("PRAGMA auto_vacuum = INCREMENTAL;")?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let conn = &tx;
@@ -479,6 +473,13 @@ fn init_connection(conn: &mut rusqlite::Connection) -> Result<[u8; 16], ChannelE
     getrandom::fill(&mut epoch).map_err(storage_err)?;
     conn.execute("INSERT INTO channel_store_state(singleton, epoch, limits_json) VALUES(1, ?1, ?2) ON CONFLICT DO NOTHING",
         rusqlite::params![epoch.as_slice(), serde_json::to_string(&SqliteReplayLimits::default()).map_err(storage_err)?])?;
+    if let Some(limits) = limits {
+        conn.execute(
+            "UPDATE channel_store_state SET limits_json = ?1 WHERE singleton = 1",
+            [serde_json::to_string(&limits).map_err(storage_err)?],
+        )?;
+    }
+    prune_replay(conn, load_limits(conn)?, now_unix_ms())?;
     let saved: Vec<u8> = conn.query_row(
         "SELECT epoch FROM channel_store_state WHERE singleton = 1",
         [],

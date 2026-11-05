@@ -196,3 +196,98 @@ fn age_and_inactivity_pruning_preserve_metadata_and_presence() {
     );
     assert_eq!(store.raw_query_i64("SELECT COUNT(*) FROM presence", []), 1);
 }
+
+#[test]
+fn sqlite_replay_parser_rejects_malformed_inputs_without_losing_the_cursor() {
+    let store = ChannelStore::open_in_memory().unwrap();
+    let message = store.append("a", &payload("one")).unwrap();
+    let cursor = cursor(&message);
+    assert_eq!(
+        parse_message_id_cursor(Some(&message.id), "lastMessageId").unwrap(),
+        Some(cursor)
+    );
+    assert_eq!(
+        parse_ws_last_message_id(Some(&format!("last_message_id={}", message.id))).unwrap(),
+        Some(cursor)
+    );
+    let frame = serde_json::json!({"type":"tako.auth", "lastMessageId":message.id}).to_string();
+    assert_eq!(
+        crate::websocket::parse_first_frame(&frame)
+            .unwrap()
+            .last_message_id,
+        Some(cursor)
+    );
+    for invalid in ["s1.invalid", "s1...1", "-1", "9223372036854775808", "bogus"] {
+        assert!(parse_message_id_cursor(Some(invalid), "lastMessageId").is_err());
+        let frame = serde_json::json!({"type":"tako.auth", "lastMessageId":invalid}).to_string();
+        assert!(crate::websocket::parse_first_frame(&frame).is_err());
+    }
+}
+
+#[test]
+fn floor_tracks_deleted_stream_positions_despite_gaps_in_global_row_ids() {
+    let store = ChannelStore::open_in_memory().unwrap();
+    let first = store.append("a", &payload("one")).unwrap();
+    for _ in 0..3 {
+        store.append("b", &payload("interleaved")).unwrap();
+    }
+    let next = store.append("a", &payload("two")).unwrap();
+    store.raw_execute(
+        "DELETE FROM channel_messages WHERE channel = 'a' AND id = ?1",
+        [cursor(&first).position],
+    );
+    assert_eq!(
+        store.read_after("a", Some(cursor(&first)), 10).unwrap(),
+        vec![next]
+    );
+}
+
+#[test]
+fn postgres_replay_bounds_keep_numeric_ids_and_reject_future_or_expired_positions() {
+    assert_eq!(
+        crate::store::resolve_replay_cursor(None, Some(5), Some(10)).unwrap(),
+        Some(10)
+    );
+    assert_eq!(
+        crate::store::resolve_replay_cursor(Some(4), Some(5), Some(10)).unwrap(),
+        Some(4)
+    );
+    assert_eq!(
+        crate::store::resolve_replay_cursor(Some(10), None, Some(10)).unwrap(),
+        Some(10)
+    );
+    for requested in [3, 11] {
+        assert!(matches!(
+            crate::store::resolve_replay_cursor(Some(requested), Some(5), Some(10)),
+            Err(ChannelError::StaleCursor)
+        ));
+    }
+    assert_eq!("42".parse::<ReplayCursor>().unwrap().to_string(), "42");
+}
+
+#[test]
+fn tightening_limits_prunes_before_open_returns_and_preserves_cursor_epoch() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("a.sqlite");
+    let first = ChannelStore::open(&path).unwrap();
+    let start = first.replay_cursor("a", None).unwrap();
+    for _ in 0..4 {
+        first.append("a", &payload("one")).unwrap();
+    }
+    let head = first.replay_cursor("a", None).unwrap();
+    let configured = ChannelStore::open_sqlite_with_limits(&path, limits()).unwrap();
+    assert_eq!(
+        first.raw_query_i64("SELECT COUNT(*) FROM channel_messages", []),
+        2
+    );
+    assert_eq!(configured.replay_cursor("a", head).unwrap(), head);
+    assert!(matches!(
+        first.read_after("a", start, 10),
+        Err(ChannelError::StaleCursor)
+    ));
+    first.append("a", &payload("two")).unwrap();
+    assert_eq!(
+        configured.raw_query_i64("SELECT COUNT(*) FROM channel_messages", []),
+        2
+    );
+}
