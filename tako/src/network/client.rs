@@ -21,8 +21,12 @@ fn trusted_servers(profile: &Profile) -> Result<BTreeMap<DeviceId, ServerInfo>> 
         Profile::Created { .. } => {
             Err("Add the first server before using network management".into())
         }
-        Profile::Pending { profile } => Ok(profile.trusted_servers.clone()),
-        Profile::Active { profile } => super::current_server_pins(profile, super::now()?),
+        Profile::Pending { profile } => {
+            super::current_server_pins(&profile.snapshot, &profile.trusted_servers, super::now()?)
+        }
+        Profile::Active { profile } => {
+            super::current_server_pins(&profile.snapshot, &profile.trusted_servers, super::now()?)
+        }
     }
 }
 
@@ -131,26 +135,50 @@ fn prepare_request(
 }
 
 pub(crate) fn refresh(alias: &NetworkAlias) -> Result<Profile> {
+    refresh_with(alias, call)
+}
+
+fn refresh_with(
+    alias: &NetworkAlias,
+    mut send: impl FnMut(&Profile, &DeviceId, RpcRequest) -> Result<RpcResponse>,
+) -> Result<Profile> {
     let mut profile = super::load_profile(alias)?;
     if let Profile::Pending { profile: pending } = &profile {
         let issuer = pending.issuer.clone();
         let pending_id = pending.pending_id.clone();
-        let response = call(
+        let now = super::now()?;
+        let recovering = pending.expires_at <= now
+            || pending
+                .request
+                .expires_at
+                .is_some_and(|expires| expires <= now);
+        let response = send(
             &profile,
             &issuer,
-            RpcRequest::Begin {
-                pending_id: pending_id.clone(),
+            if recovering {
+                RpcRequest::Snapshot
+            } else {
+                RpcRequest::Begin {
+                    pending_id: pending_id.clone(),
+                }
             },
         )?;
         let active = match response {
-            RpcResponse::Active(active) => active,
+            RpcResponse::Snapshot(snapshot) if recovering => {
+                let Profile::Active { profile: active } = active_from_snapshot(&profile, snapshot)?
+                else {
+                    unreachable!()
+                };
+                active
+            }
+            RpcResponse::Active(active) if !recovering => active,
             RpcResponse::Challenge {
                 challenge_id,
                 challenge,
-            } => {
+            } if !recovering => {
                 let keys = LocalDeviceKeys::load(&super::keys_path(&pending.request.request_id)?)?;
                 let proof = keys.answer_challenge(&challenge, &pending.request, super::now()?)?;
-                match call(
+                match send(
                     &profile,
                     &issuer,
                     RpcRequest::Complete {
@@ -173,7 +201,7 @@ pub(crate) fn refresh(alias: &NetworkAlias) -> Result<Profile> {
     let servers = trusted_servers(&profile)?;
     let mut last_error = None;
     for server in servers.keys() {
-        match call(&profile, server, RpcRequest::Snapshot) {
+        match send(&profile, server, RpcRequest::Snapshot) {
             Ok(RpcResponse::Snapshot(snapshot)) => {
                 let refreshed = active_from_snapshot(&profile, snapshot)?;
                 super::save_profile(&alias.name, &refreshed)?;
@@ -216,6 +244,59 @@ fn active_from_snapshot(profile: &Profile, mut snapshot: RegistrySnapshot) -> Re
 mod tests {
     use super::*;
     use crate::network::{Profile, now, tests::fixture};
+
+    #[test]
+    fn expired_pending_refresh_recovers_through_current_membership_without_readmitting() {
+        let _home = crate::network::tests::TestHome::new();
+        for denied in [true, false] {
+            let fixture = fixture();
+            let Profile::Active { profile: active } = &fixture.profile else {
+                panic!()
+            };
+            let pending = Profile::Pending {
+                profile: tako_network::PendingApprovalProfile {
+                    request: active.request.clone(),
+                    pending_id: tako_network::RequestId::random().unwrap(),
+                    issuer: fixture.server.clone(),
+                    expires_at: now().unwrap() - 1,
+                    trusted_servers: active.trusted_servers.clone(),
+                    snapshot: active.snapshot.clone(),
+                },
+            };
+            crate::network::store_keys(&pending.request().request_id, &fixture.keys).unwrap();
+            let alias =
+                crate::network::save_profile(if denied { "denied" } else { "active" }, &pending)
+                    .unwrap();
+            let mut requests = 0;
+            let result = refresh_with(&alias, |_, server, request| {
+                requests += 1;
+                assert_eq!(server, &fixture.server);
+                assert_eq!(request, RpcRequest::Snapshot);
+                if denied {
+                    Err("Native server denied membership".into())
+                } else {
+                    Ok(RpcResponse::Snapshot(active.snapshot.clone()))
+                }
+            });
+            if denied {
+                assert!(result.is_err());
+                assert_eq!(requests, 1);
+                assert!(matches!(
+                    crate::network::load_profile(&alias).unwrap(),
+                    Profile::Pending { .. }
+                ));
+            } else {
+                let recovered = result.unwrap();
+                recovered.validate(&fixture.keys).unwrap();
+                assert_eq!(requests, 2);
+                assert_eq!(recovered.snapshot(), &active.snapshot);
+                assert!(matches!(
+                    crate::network::load_profile(&alias).unwrap(),
+                    Profile::Active { .. }
+                ));
+            }
+        }
+    }
 
     #[test]
     fn refresh_merges_revocations_before_rebuilding_trust() {

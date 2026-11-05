@@ -51,9 +51,12 @@ impl Profile {
     }
 
     fn normalize_trusted_servers(&mut self) -> Result<()> {
-        if let Self::Active { profile } = self {
-            profile.trusted_servers = current_server_pins(profile, now()?)?;
-        }
+        let (snapshot, pins) = match self {
+            Self::Active { profile } => (&profile.snapshot, &mut profile.trusted_servers),
+            Self::Pending { profile } => (&profile.snapshot, &mut profile.trusted_servers),
+            Self::Created { .. } => return Ok(()),
+        };
+        *pins = current_server_pins(snapshot, pins, now()?)?;
         Ok(())
     }
 
@@ -87,10 +90,16 @@ impl Profile {
         match self {
             Self::Active { profile } => {
                 let mut current = profile.clone();
-                current.trusted_servers = current_server_pins(profile, now)?;
+                current.trusted_servers =
+                    current_server_pins(&profile.snapshot, &profile.trusted_servers, now)?;
                 current.validate_for(keys, now)?;
             }
-            Self::Pending { profile } => profile.validate_for(keys, now)?,
+            Self::Pending { profile } => {
+                let mut current = profile.clone();
+                current.trusted_servers =
+                    current_server_pins(&profile.snapshot, &profile.trusted_servers, now)?;
+                current.validate_connection_for(keys, now)?;
+            }
             Self::Created { request, snapshot } => {
                 request.verify()?;
                 snapshot.validate()?;
@@ -206,7 +215,7 @@ fn persist_profile(alias: &NetworkAlias, mut profile: Profile) -> Result<Profile
         Ok(previous) => {
             previous.snapshot().validate()?;
             if let Profile::Active { profile: active } = &previous {
-                current_server_pins(active, now()?)?;
+                current_server_pins(&active.snapshot, &active.trusted_servers, now()?)?;
             }
             if previous.request() != profile.request() {
                 return Err("Saved profile belongs to a different enrollment request".into());
@@ -240,11 +249,11 @@ fn persist_profile(alias: &NetworkAlias, mut profile: Profile) -> Result<Profile
 }
 
 fn current_server_pins(
-    profile: &NetworkPublicProfile,
+    snapshot: &RegistrySnapshot,
+    trusted_servers: &BTreeMap<tako_network::DeviceId, tako_network::ServerInfo>,
     now: u64,
 ) -> Result<BTreeMap<tako_network::DeviceId, tako_network::ServerInfo>> {
-    let effective: BTreeMap<_, _> = profile
-        .snapshot
+    let effective: BTreeMap<_, _> = snapshot
         .effective_members(now)?
         .into_iter()
         .filter_map(|(id, member)| match &member.kind {
@@ -252,8 +261,8 @@ fn current_server_pins(
             _ => None,
         })
         .collect();
-    if effective.iter().any(|(id, info)| profile.trusted_servers.get(id) != Some(info))
-        || profile.trusted_servers.iter().any(|(id, info)| !profile.snapshot.members.iter().any(|member| {
+    if effective.iter().any(|(id, info)| trusted_servers.get(id) != Some(info))
+        || trusted_servers.iter().any(|(id, info)| !snapshot.members.iter().any(|member| {
             member.wg_verified && &member.device_id == id && matches!(&member.kind, tako_network::MemberKind::Server(saved) if saved == info)
         }))
     {

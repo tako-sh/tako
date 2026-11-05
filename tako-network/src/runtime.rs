@@ -1376,6 +1376,100 @@ mod tests {
     }
 
     #[test]
+    fn expired_admission_recovers_only_committed_members_through_authenticated_snapshot() {
+        for after_commit in [false, true] {
+            let fixture = Fixture::new();
+            let mut runtime = fixture.open();
+            let keys = LocalDeviceKeys::generate().unwrap();
+            let mut grant = fixture.grant(&keys);
+            grant.expires_at = 13;
+            grant.request = keys
+                .enrollment_request_expiring(
+                    None,
+                    DeviceKind::Laptop,
+                    "expiring-laptop".parse().unwrap(),
+                    Some(13),
+                )
+                .unwrap();
+            fixture.approve(&mut runtime, &grant);
+            let command = fixture.challenge(&mut runtime, &keys, &grant, 11);
+            if after_commit {
+                fixture.store.0.borrow_mut().fail_after_member = true;
+            } else {
+                fixture.store.0.borrow_mut().fail_before_member = true;
+            }
+            assert!(matches!(
+                fixture.call(&mut runtime, &keys, command, 12),
+                Err(RuntimeError::Transport)
+            ));
+            let candidate = runtime
+                .pending(&grant.pending_id, 12)
+                .unwrap()
+                .candidate
+                .unwrap();
+            drop(runtime);
+            let mut runtime = fixture.open();
+            fixture
+                .call(&mut runtime, &fixture.admin, RpcRequest::Snapshot, 13)
+                .unwrap();
+            assert!(matches!(
+                runtime.pending(&grant.pending_id, 13),
+                Err(RuntimeError::PendingUnavailable)
+            ));
+            let response = fixture.call(&mut runtime, &keys, RpcRequest::Snapshot, 13);
+            if after_commit {
+                let RpcResponse::Snapshot(snapshot) = response.unwrap() else {
+                    panic!()
+                };
+                assert!(
+                    snapshot
+                        .effective_members(13)
+                        .unwrap()
+                        .contains_key(&candidate.device_id)
+                );
+                assert_eq!(
+                    snapshot
+                        .members
+                        .iter()
+                        .find(|member| member.device_id == candidate.device_id),
+                    Some(&candidate)
+                );
+                fixture
+                    .call(
+                        &mut runtime,
+                        &fixture.admin,
+                        RpcRequest::Revoke {
+                            id: RevocationId::random().unwrap(),
+                            target: candidate.device_id,
+                        },
+                        14,
+                    )
+                    .unwrap();
+                assert!(
+                    fixture
+                        .call(&mut runtime, &keys, RpcRequest::Snapshot, 14)
+                        .is_err()
+                );
+            } else {
+                assert!(response.is_err());
+                assert!(
+                    fixture
+                        .call(
+                            &mut runtime,
+                            &keys,
+                            RpcRequest::Begin {
+                                pending_id: grant.pending_id
+                            },
+                            13
+                        )
+                        .is_err()
+                );
+                assert!(!runtime.snapshot().unwrap().members.contains(&candidate));
+            }
+        }
+    }
+
+    #[test]
     fn revocation_between_begin_and_complete_denies_activation_and_acks_require_helper_success() {
         let fixture = Fixture::new();
         let mut runtime = fixture.open();

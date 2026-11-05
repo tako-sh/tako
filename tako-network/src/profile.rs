@@ -31,11 +31,16 @@ pub struct PendingApprovalProfile {
 
 impl PendingApprovalProfile {
     pub fn validate_for(&self, keys: &LocalDeviceKeys, now: u64) -> Result<()> {
-        validate_device_request(&self.request, keys)?;
-        self.request.device_id_for(&self.snapshot.network.id)?;
         if now >= self.expires_at || self.request.expires_at.is_some_and(|expiry| now >= expiry) {
             return Err(invalid("pending approval", "expired"));
         }
+        self.validate_connection_for(keys, now)
+    }
+
+    /// Check pins and local identity for recovery of membership already admitted by a server.
+    pub fn validate_connection_for(&self, keys: &LocalDeviceKeys, now: u64) -> Result<()> {
+        validate_device_request(&self.request, keys)?;
+        self.request.device_id_for(&self.snapshot.network.id)?;
         let servers = server_pins(self.snapshot.effective_members(now)?);
         if servers != self.trusted_servers
             || !servers

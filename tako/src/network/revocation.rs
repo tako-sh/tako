@@ -50,7 +50,7 @@ impl Journal {
             return Err("Saved revocation requires its original network profile".into());
         };
         // Historical bindings authorize only this exact retry, even after local revocation.
-        super::current_server_pins(profile, super::now()?)?;
+        super::current_server_pins(&profile.snapshot, &profile.trusted_servers, super::now()?)?;
         self.pin.validate()?;
         if self.pin.https_certificate_pem.is_none()
             || !snapshot.members.iter().any(|member| {
@@ -238,7 +238,8 @@ fn run_with(
     let Profile::Active { profile: active } = &profile else {
         return Err("Revocation requires an active network profile".into());
     };
-    let mut candidates = super::current_server_pins(active, planned_at)?;
+    let mut candidates =
+        super::current_server_pins(&active.snapshot, &active.trusted_servers, planned_at)?;
     let mut prospective = snapshot.clone();
     prospective.revocations.push(expected.clone());
     let survivors = prospective.effective_members(planned_at)?;

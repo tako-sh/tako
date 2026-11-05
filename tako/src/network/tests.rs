@@ -346,7 +346,14 @@ fn expired_pending_state_does_not_block_a_bound_activation() {
     };
     stored.expires_at = now().unwrap() - 1;
     write_json(&alias.profile_path().unwrap(), &pending, true).unwrap();
-    assert!(load_profile(&alias).is_err());
+    assert!(matches!(
+        load_profile(&alias).unwrap(),
+        Profile::Pending { .. }
+    ));
+    let Profile::Pending { profile: expired } = &pending else {
+        panic!()
+    };
+    assert!(expired.validate_for(&keys, now().unwrap()).is_err());
     save_profile("test", &profile).unwrap();
     load_profile(&alias).unwrap().validate(&keys).unwrap();
 }
@@ -431,6 +438,46 @@ fn expired_server_pins_are_pruned_on_load_and_import_without_extending_own_membe
         panic!()
     };
     assert_eq!(imported.trusted_servers, loaded.trusted_servers);
+    let pending_keys = LocalDeviceKeys::generate().unwrap();
+    let pending_request = pending_keys
+        .enrollment_request(
+            Some(imported.snapshot.network.id.clone()),
+            DeviceKind::Laptop,
+            "pending-laptop".parse().unwrap(),
+        )
+        .unwrap();
+    store_keys(&pending_request.request_id, &pending_keys).unwrap();
+    let pending = Profile::Pending {
+        profile: PendingApprovalProfile {
+            request: pending_request,
+            pending_id: RequestId::random().unwrap(),
+            issuer: server.clone(),
+            expires_at: now + 60,
+            trusted_servers: match &profile {
+                Profile::Active { profile } => profile.trusted_servers.clone(),
+                _ => unreachable!(),
+            },
+            snapshot: imported.snapshot.clone(),
+        },
+    };
+    pending.validate(&pending_keys).unwrap();
+    let pending_alias = save_profile("pending", &pending).unwrap();
+    let Profile::Pending {
+        profile: loaded_pending,
+    } = load_profile(&pending_alias).unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(loaded_pending.trusted_servers, loaded.trusted_servers);
+    let mut expired_issuer = pending.clone();
+    let Profile::Pending {
+        profile: pending_issuer,
+    } = &mut expired_issuer
+    else {
+        panic!()
+    };
+    pending_issuer.issuer = expired.clone();
+    assert!(expired_issuer.validate(&pending_keys).is_err());
     let mut missing_pin = profile.clone();
     let Profile::Active { profile: missing } = &mut missing_pin else {
         panic!()
