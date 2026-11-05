@@ -23,6 +23,7 @@ use tako_channels::live_store::{
 use tako_channels::params::{ParamsError, validate_query};
 use ws::ChannelWebSocketAuth;
 
+mod drain;
 mod ws;
 
 impl TakoProxy {
@@ -292,6 +293,31 @@ impl TakoProxy {
     }
 
     pub(crate) async fn try_handle_channel_request(
+        &self,
+        session: &mut Session,
+        ctx: &mut RequestCtx,
+        app_name: &str,
+        path: &str,
+        _host: &str,
+    ) -> Result<bool> {
+        let result = drain::until_draining(
+            &self.draining,
+            self.try_handle_channel_request_inner(session, ctx, app_name, path, _host),
+        )
+        .await;
+        match result {
+            Some(result) => result,
+            None => {
+                // Dropping the handler cancels WS/SSE and releases its presence session.
+                // Close the transport itself; draining is not an application channel event.
+                session.set_keepalive(None);
+                session.as_downstream_mut().shutdown().await;
+                Ok(true)
+            }
+        }
+    }
+
+    async fn try_handle_channel_request_inner(
         &self,
         session: &mut Session,
         ctx: &mut RequestCtx,
