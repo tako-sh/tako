@@ -710,4 +710,217 @@ mod tests {
         assert_eq!(verified.request(), first.request());
         assert!(!format!("{first:?}").contains("PRIVATE"));
     }
+    fn openssl_verify(paths: &ServerTlsPaths, purpose: &str, name_flag: &str, name: &str) -> bool {
+        let result = std::process::Command::new("openssl")
+            .args(["verify", "-x509_strict", "-CAfile"])
+            .arg(&paths.ca_certificate)
+            .args(["-purpose", purpose, name_flag, name])
+            .arg(&paths.certificate)
+            .output()
+            .unwrap();
+        result.status.success()
+    }
+
+    #[test]
+    fn openssl_verifies_chain_sans_and_distinct_tls_roles() {
+        let temp = tempfile::tempdir().unwrap();
+        let identity = prepare(temp.path()).unwrap();
+        let names = certificate_names(&identity.prepared.config, identity.request()).unwrap();
+        let tls = identity.tls_paths();
+        let gossip = identity.gossip_paths();
+        assert!(openssl_verify(
+            tls,
+            "sslserver",
+            "-verify_hostname",
+            &names.hostname
+        ));
+        assert!(!openssl_verify(
+            tls,
+            "sslclient",
+            "-verify_hostname",
+            &names.hostname
+        ));
+        assert!(!openssl_verify(
+            tls,
+            "sslserver",
+            "-verify_hostname",
+            &names.gossip
+        ));
+        assert!(!openssl_verify(
+            tls,
+            "sslserver",
+            "-verify_hostname",
+            "wrong.tako.internal"
+        ));
+        assert!(!openssl_verify(
+            tls,
+            "sslserver",
+            "-verify_ip",
+            "192.0.2.99"
+        ));
+        for ip in names.ips {
+            assert!(openssl_verify(
+                tls,
+                "sslserver",
+                "-verify_ip",
+                &ip.to_string()
+            ));
+            assert!(openssl_verify(
+                gossip,
+                "sslserver",
+                "-verify_ip",
+                &ip.to_string()
+            ));
+        }
+        for hostname in [&names.hostname, &names.gossip] {
+            for purpose in ["sslclient", "sslserver"] {
+                assert!(openssl_verify(
+                    gossip,
+                    purpose,
+                    "-verify_hostname",
+                    hostname
+                ));
+            }
+        }
+        let mut wrong_issuer = tls.clone();
+        wrong_issuer.ca_certificate = gossip.ca_certificate.clone();
+        assert!(!openssl_verify(
+            &wrong_issuer,
+            "sslserver",
+            "-verify_hostname",
+            &names.hostname
+        ));
+    }
+
+    #[test]
+    fn all_tls_keys_are_independent_and_match_their_certificates() {
+        use std::{collections::BTreeSet, fs};
+        let temp = tempfile::tempdir().unwrap();
+        let first = prepare(&temp.path().join("first")).unwrap();
+        let second = prepare(&temp.path().join("second")).unwrap();
+        let mut public_keys = BTreeSet::new();
+        for identity in [&first, &second] {
+            let info = identity.server_info();
+            for (paths, pin) in [
+                (
+                    identity.tls_paths(),
+                    info.https_certificate_pem.as_ref().unwrap(),
+                ),
+                (
+                    identity.gossip_paths(),
+                    info.corrosion_ca_certificate_pem.as_ref().unwrap(),
+                ),
+            ] {
+                assert_eq!(fs::read_to_string(&paths.ca_certificate).unwrap(), *pin);
+                assert_eq!(X509::stack_from_pem(pin.as_bytes()).unwrap().len(), 1);
+                for (cert_path, key_path) in [
+                    (&paths.ca_certificate, &paths.ca_private_key),
+                    (&paths.certificate, &paths.private_key),
+                ] {
+                    let cert = X509::from_pem(&fs::read(cert_path).unwrap()).unwrap();
+                    let key = PKey::private_key_from_pem(&fs::read(key_path).unwrap()).unwrap();
+                    assert!(cert.public_key().unwrap().public_eq(&key));
+                    assert!(public_keys.insert(key.public_key_to_der().unwrap()));
+                }
+                let ca = X509::from_pem(pin.as_bytes()).unwrap();
+                assert!(ca.verify(&ca.public_key().unwrap()).unwrap());
+                let chain = X509::stack_from_pem(&fs::read(&paths.fullchain).unwrap()).unwrap();
+                assert_eq!(chain.len(), 2);
+                assert_eq!(chain[1].to_pem().unwrap(), pin.as_bytes());
+                assert_ne!(chain[0].to_pem().unwrap(), pin.as_bytes());
+            }
+            assert_eq!(
+                info.https_spki_sha256,
+                info.https_spki_fingerprint().unwrap()
+            );
+            let metadata = fs::read_to_string(
+                identity
+                    .tls_paths()
+                    .certificate
+                    .parent()
+                    .unwrap()
+                    .join(METADATA),
+            )
+            .unwrap();
+            assert!(!metadata.contains("PRIVATE KEY"));
+            assert!(!metadata.contains(identity.keys().wireguard_private_key().unwrap().as_str()));
+            let debug = format!("{identity:?}");
+            assert!(!debug.contains(identity.keys().wireguard_private_key().unwrap().as_str()));
+        }
+    }
+
+    #[test]
+    fn challenge_rejects_other_requests_networks_and_expiry() {
+        let temp = tempfile::tempdir().unwrap();
+        let identity = prepare(&temp.path().join("first")).unwrap();
+        let other = prepare(&temp.path().join("other")).unwrap();
+        let network = identity.prepared.config.network_id.clone();
+        let (challenge, _) =
+            WgChallenge::begin(other.request(), network.clone(), 100, 200).unwrap();
+        assert!(identity.answer_challenge(&challenge, 101).is_err());
+        let (mut challenge, _) = WgChallenge::begin(identity.request(), network, 100, 200).unwrap();
+        assert!(identity.answer_challenge(&challenge, 200).is_err());
+        challenge.network_id = NetworkId::random().unwrap();
+        assert!(identity.answer_challenge(&challenge, 101).is_err());
+    }
+
+    #[test]
+    fn leaf_renewal_with_the_local_ca_preserves_public_pins() {
+        use std::fs;
+        let temp = tempfile::tempdir().unwrap();
+        let identity = prepare(temp.path()).unwrap();
+        for paths in [identity.tls_paths(), identity.gossip_paths()] {
+            let ca_key = fs::read(&paths.ca_private_key).unwrap();
+            let old_leaf = fs::read(&paths.certificate).unwrap();
+            let output = std::process::Command::new("openssl")
+                .args(["x509", "-in"])
+                .arg(&paths.certificate)
+                .arg("-CA")
+                .arg(&paths.ca_certificate)
+                .arg("-CAkey")
+                .arg(&paths.ca_private_key)
+                .args(["-set_serial", "99", "-days", "364"])
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_ne!(output.stdout, old_leaf);
+            fs::write(&paths.certificate, &output.stdout).unwrap();
+            fs::write(
+                &paths.fullchain,
+                [output.stdout, fs::read(&paths.ca_certificate).unwrap()].concat(),
+            )
+            .unwrap();
+            assert_eq!(fs::read(&paths.ca_private_key).unwrap(), ca_key);
+        }
+        let renewed = prepare(temp.path()).unwrap();
+        assert_eq!(identity.request(), renewed.request());
+        assert_eq!(identity.server_info(), renewed.server_info());
+    }
+
+    #[test]
+    fn public_ipv6_endpoint_is_a_verified_ip_san() {
+        let temp = tempfile::tempdir().unwrap();
+        let identity = ServerIdentity::prepare(
+            temp.path(),
+            NetworkId::random().unwrap(),
+            "ipv6-server".parse().unwrap(),
+            "[2001:db8::42]:51820".parse().unwrap(),
+            host_key(),
+            22,
+            443,
+        )
+        .unwrap();
+        for paths in [identity.tls_paths(), identity.gossip_paths()] {
+            assert!(openssl_verify(
+                paths,
+                "sslserver",
+                "-verify_ip",
+                "2001:db8::42"
+            ));
+        }
+    }
 }
