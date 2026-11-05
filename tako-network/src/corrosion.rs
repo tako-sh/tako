@@ -130,7 +130,7 @@ impl CorrosionStore {
         Ok(())
     }
 
-    fn post(&self, path: &str, body: &Value) -> RuntimeResult<Vec<u8>> {
+    pub(crate) fn post(&self, path: &str, body: &Value) -> RuntimeResult<Vec<u8>> {
         #[cfg(test)]
         if let Some(post) = self.transport {
             return post(path, body);

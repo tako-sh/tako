@@ -16,6 +16,7 @@ mod profile;
 mod registry;
 pub mod runtime;
 mod server_identity;
+pub mod services;
 mod types;
 
 pub use bootstrap::{BootstrapRequest, BootstrapResponse, MAX_BOOTSTRAP_BYTES};

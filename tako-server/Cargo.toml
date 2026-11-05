@@ -65,6 +65,7 @@ time = "0.3"
 ssh-key = { version = "0.6", features = ["ed25519", "getrandom"] }
 ipnet = "2.12"
 socket2 = "0.6"
+hickory-proto = "0.26.1"
 
 [dev-dependencies]
 toml.workspace = true
