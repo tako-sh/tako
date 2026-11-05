@@ -115,7 +115,12 @@ pub(super) async fn resolve_deploy_server_names_with_setup(
     match resolve_deploy_server_names(tako_config, servers, env) {
         Ok(names) => Ok(names),
         Err(original_error) => {
-            if env != "production" {
+            if env != "production"
+                || tako_config
+                    .envs
+                    .get(env)
+                    .is_some_and(|env| env.network.is_some())
+            {
                 return Err(original_error);
             }
 
@@ -192,6 +197,46 @@ pub(super) fn persist_server_env_mapping(
             server_name, e
         )
     })
+}
+
+pub(super) async fn refresh_native_build_targets(
+    servers: &mut ServersToml,
+    server_names: &[String],
+) -> Result<(), String> {
+    let mut tasks = tokio::task::JoinSet::new();
+    for name in server_names {
+        let Some(server) = servers.get(name).filter(|server| server.native.is_some()) else {
+            continue;
+        };
+        let target = server.management_target();
+        let name = name.clone();
+        tasks.spawn(async move {
+            let mut client = crate::management_http::ManagementClient::for_target(&target)
+                .await
+                .map_err(|error| format!("{name}: {error}"))?;
+            let response = client
+                .send(&tako_core::Command::ServerInfo)
+                .await
+                .map_err(|error| format!("{name}: {error}"))?;
+            let info = crate::management_http::parse_ok_data::<tako_core::ServerRuntimeInfo>(
+                response,
+                "native server build target",
+            )
+            .map_err(|error| format!("{name}: {error}"))?;
+            let target = ServerTarget::normalized(&info.arch, &info.libc)?;
+            Ok::<_, String>((name, target, info.http_port))
+        });
+    }
+    while let Some(result) = tasks.join_next().await {
+        let (name, target, http_port) = result.map_err(|error| error.to_string())??;
+        servers
+            .set_target(&name, target)
+            .map_err(|error| error.to_string())?;
+        if let Some(server) = servers.servers.get_mut(&name) {
+            server.http_port = http_port;
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn resolve_deploy_server_targets(

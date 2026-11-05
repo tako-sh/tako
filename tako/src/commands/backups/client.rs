@@ -69,7 +69,7 @@ pub(super) async fn send_typed_to_server<T>(
 where
     T: DeserializeOwned,
 {
-    let mut client = ManagementClient::new(&server.host)
+    let mut client = ManagementClient::for_server(server)
         .await
         .map_err(|e| e.to_string())?;
     parse_typed_response(

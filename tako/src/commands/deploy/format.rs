@@ -227,7 +227,11 @@ pub(super) fn format_parallel_deploy_step(server_count: usize) -> String {
 }
 
 pub(super) fn format_server_deploy_target(name: &str, entry: &ServerEntry) -> String {
-    format!("{name} (tako@{}:{})", entry.host, entry.port)
+    if entry.native.is_some() {
+        format!("{name} (HTTPS {}:{})", entry.host, entry.https_port)
+    } else {
+        format!("{name} (tako@{}:{})", entry.host, entry.port)
+    }
 }
 
 pub(super) fn format_server_deploy_success(name: &str, entry: &ServerEntry) -> String {

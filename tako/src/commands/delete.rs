@@ -58,7 +58,8 @@ async fn run_async(
         None
     };
 
-    let servers = ServersToml::load()?;
+    let servers =
+        super::helpers::load_management_servers(project_tako.as_ref(), requested_env).await?;
 
     validate_confirmation_mode(assume_yes, interactive)
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
@@ -245,9 +246,21 @@ async fn discover_server_deployments(
     server: &ServerEntry,
 ) -> Result<Vec<RemoteDeployment>, Box<dyn std::error::Error + Send + Sync>> {
     let _t = output::timed("Discover deployments");
-    let mut client = ManagementClient::new(&server.host).await?;
-    let app_names = parse_list_apps_response(client.send(&Command::List).await?)
-        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
+    let mut client = ManagementClient::for_server(server).await?;
+    let app_names = match client.scoped_apps() {
+        Some(apps) => {
+            let mut deployed = Vec::new();
+            for app in apps {
+                match client.send(&Command::Status { app: app.clone() }).await? {
+                    Response::Ok { .. } => deployed.push(app),
+                    Response::Error { .. } => {}
+                }
+            }
+            deployed
+        }
+        None => parse_list_apps_response(client.send(&Command::List).await?)
+            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?,
+    };
     tracing::debug!("Found {} app(s)", app_names.len());
 
     let mut deployments = Vec::new();
@@ -593,7 +606,7 @@ async fn delete_from_server(
     remote_app_name: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let _t = output::timed(&format!("Delete app {remote_app_name}"));
-    let mut client = ManagementClient::new(&server.host).await?;
+    let mut client = ManagementClient::for_server(server).await?;
     parse_delete_response(
         client
             .send(&Command::Delete {

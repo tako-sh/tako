@@ -57,16 +57,19 @@ async fn run_async(
     let app_name = require_app_name_from_config_path(&context.config_path)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()))?;
     let tako_config = TakoToml::load_from_file(&context.config_path)?;
-    let servers = ServersToml::load()?;
 
     match cmd {
         ReleaseCommands::List { env } => {
             let env = resolve_env_name(env.as_deref(), &tako_config)?;
+            let servers =
+                super::helpers::load_management_servers(Some(&tako_config), Some(&env)).await?;
             let server_names = resolve_server_names_for_env(&tako_config, &servers, &env)?;
             list_releases(&app_name, &env, &server_names, &servers).await
         }
         ReleaseCommands::Rollback { release, env, yes } => {
             let env = resolve_env_name(env.as_deref(), &tako_config)?;
+            let servers =
+                super::helpers::load_management_servers(Some(&tako_config), Some(&env)).await?;
             let server_names = resolve_server_names_for_env(&tako_config, &servers, &env)?;
             rollback_release(&app_name, &release, &env, yes, &server_names, &servers).await
         }
@@ -326,7 +329,7 @@ async fn fetch_releases_for_server(
     app_name: &str,
 ) -> Result<Vec<ReleaseInfo>, String> {
     let _t = output::timed(&format!("Fetch releases for {app_name}"));
-    let mut client = ManagementClient::new(&server.host)
+    let mut client = ManagementClient::for_server(server)
         .await
         .map_err(|e| e.to_string())?;
     let response = client
@@ -348,7 +351,7 @@ async fn rollback_server_release(
     release: &str,
 ) -> Result<(), String> {
     let _t = output::timed(&format!("Rollback {app_name} to {release}"));
-    let mut client = ManagementClient::new(&server.host)
+    let mut client = ManagementClient::for_server(server)
         .await
         .map_err(|e| e.to_string())?;
     let response = client

@@ -57,7 +57,9 @@ async fn run_async(
         .map(|context| context.config_path.as_path());
 
     let target = resolve_scale_target(project_tako.as_ref(), config_path, app, env, server)?;
-    let servers = ServersToml::load()?;
+    let servers =
+        super::helpers::load_management_servers(project_tako.as_ref(), target.env_name.as_deref())
+            .await?;
     let server_names = resolve_scale_server_names(
         project_tako.as_ref(),
         &servers,
@@ -234,9 +236,9 @@ fn resolve_scale_server_names(
             if !tako_config.envs.contains_key(env_name) {
                 return Err(format!("Environment '{}' not found in tako.toml.", env_name).into());
             }
-            if !tako_config
-                .get_servers_for_env(env_name)
-                .contains(&server_name)
+            if !resolve_servers_for_env(tako_config, servers, env_name)?
+                .iter()
+                .any(|name| name == server_name)
             {
                 return Err(format!(
                     "Server '{}' is not configured for environment '{}'.",
@@ -279,7 +281,7 @@ async fn scale_server(
     reset: bool,
 ) -> Result<ScaleResult, Box<dyn std::error::Error + Send + Sync>> {
     let _t = output::timed(&format!("Scale {app_name}"));
-    let mut client = ManagementClient::new(&server.host).await?;
+    let mut client = ManagementClient::for_server(server).await?;
     let response = client
         .send(&Command::Scale {
             app: app_name.to_string(),

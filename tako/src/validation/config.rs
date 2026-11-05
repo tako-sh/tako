@@ -92,7 +92,12 @@ pub fn validate_tako_toml(config: &TakoToml) -> ValidationResult {
                         .to_string(),
                 );
             }
-        } else if servers.is_empty() {
+        } else if servers.is_empty()
+            && config
+                .envs
+                .get(env_name)
+                .is_none_or(|env| env.network.is_none())
+        {
             result.warn(format!(
                 "Environment '{}' has no servers configured",
                 env_name
