@@ -370,11 +370,6 @@ fn release_artifact_url(host: &str) -> String {
     management_url(host, "release-artifact")
 }
 
-#[cfg(test)]
-fn logs_url(host: &str) -> String {
-    management_url(host, "logs")
-}
-
 fn management_url(host: &str, path: &str) -> String {
     let trimmed = host.trim();
     let literal = trimmed
