@@ -267,6 +267,7 @@ async fn claim_respects_in_flight_limiter() {
     let mut r = BufReader::new(r);
 
     // First two claims succeed.
+    let mut claimed = Vec::new();
     for _ in 0..2 {
         let cmd = Command::ClaimRun {
             app: "a".into(),
@@ -278,6 +279,7 @@ async fn claim_respects_in_flight_limiter() {
         let resp: Response = read_json_line(&mut r).await.unwrap().unwrap();
         let v = resp.data().unwrap();
         assert!(!v.is_null(), "expected a run, got null: {resp:?}");
+        claimed.push(serde_json::from_value::<tako_core::RunPayload>(v.clone()).unwrap());
     }
 
     // Third claim: limiter refuses, DB row is NOT consumed, response
@@ -295,7 +297,8 @@ async fn claim_respects_in_flight_limiter() {
     assert_eq!(db.pending_count().unwrap(), 1);
 
     // Complete one run → slot frees → next claim succeeds.
-    limiter.release("w1");
+    db.complete(&claimed[0].id, &claimed[0].worker_id).unwrap();
+    limiter.release_claim(&claimed[0].worker_id);
     let cmd = Command::ClaimRun {
         app: "a".into(),
         worker_id: "w1".into(),
@@ -648,6 +651,91 @@ fn sqlite_same_process_reclaim_rejects_old_attempt() {
     assert_same_process_takeover(db.clone(), |id| {
         db.raw_execute("UPDATE runs SET lease_until=0 WHERE id=?1", [id])
     });
+}
+
+#[test]
+fn remotely_reclaimed_claim_does_not_exhaust_local_worker_budget() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("workflows.sqlite");
+    let db = Arc::new(RunsDb::open(&path).unwrap());
+    let remote = RunsDb::open(&path).unwrap();
+    assert_remote_reclaim_recovers_budget(db, |id| {
+        remote.raw_execute("UPDATE runs SET lease_until=0 WHERE id=?1", [id]);
+        remote.reclaim_expired_with_workers().unwrap()
+    });
+}
+
+fn assert_remote_reclaim_recovers_budget(
+    db: Arc<RunsDb>,
+    reclaim: impl FnOnce(&str) -> Vec<String>,
+) {
+    let limiter = Arc::new(crate::in_flight::InFlightLimiter::new(1));
+    let lookup: AppLookup = {
+        let db = db.clone();
+        let limiter = limiter.clone();
+        Arc::new(move |_| {
+            Some(AppHandlers {
+                db: db.clone(),
+                limiter: limiter.clone(),
+                accepting_new_work: accepting_new_work(),
+                on_enqueue: Arc::new(|| {}),
+                health_check: Arc::new(|| Ok(())),
+                on_claimed: Arc::new(|| {}),
+            })
+        })
+    };
+    let claim = || {
+        let response = handle_command(
+            &lookup,
+            None,
+            None,
+            None,
+            Command::ClaimRun {
+                app: "a".into(),
+                worker_id: "worker".into(),
+                names: vec!["work".into()],
+                lease_ms: 60_000,
+            },
+        );
+        serde_json::from_value::<Option<tako_core::RunPayload>>(response.data().unwrap().clone())
+            .unwrap()
+    };
+    db.enqueue("work", &serde_json::json!({}), &EnqueueOpts::default())
+        .unwrap();
+    let first = claim().unwrap();
+    assert_eq!(reclaim(&first.id), vec![first.worker_id.clone()]);
+    // Another server's ticker cannot directly update this server's limiter.
+    let second =
+        claim().expect("a remotely reclaimed claim must not hold the local budget forever");
+    assert_eq!(first.id, second.id);
+    assert_ne!(first.worker_id, second.worker_id);
+    // A delayed release must not decrement the replacement claim's slot.
+    limiter.release_claim(&first.worker_id);
+    assert_eq!(limiter.count("worker"), 1);
+    assert!(claim().is_none());
+}
+
+#[test]
+fn postgres_remote_reclaim_recovers_local_worker_budget() {
+    let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
+        return;
+    };
+    let app = format!("remote-reclaim-{}", nanoid::nanoid!());
+    let db = Arc::new(RunsDb::open_postgres(&url, &app).unwrap());
+    let remote = RunsDb::open_postgres(&url, &app).unwrap();
+    let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    assert_remote_reclaim_recovers_budget(db, |id| {
+        client
+            .execute(
+                "UPDATE tako_workflows.runs SET lease_until=0 WHERE app_id=$1 AND id=$2",
+                &[&app, &id],
+            )
+            .unwrap();
+        remote.reclaim_expired_with_workers().unwrap()
+    });
+    client
+        .execute("DELETE FROM tako_workflows.runs WHERE app_id=$1", &[&app])
+        .unwrap();
 }
 
 #[test]

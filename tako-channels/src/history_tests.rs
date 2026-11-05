@@ -183,7 +183,7 @@ fn postgres_store_open_does_not_deadlock_with_active_publishers() {
 }
 
 #[test]
-fn postgres_store_open_repairs_incomplete_schema() {
+fn postgres_store_open_migrates_unversioned_incomplete_schema() {
     let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
         return;
     };
@@ -202,7 +202,8 @@ fn postgres_store_open_repairs_incomplete_schema() {
     let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
     client
         .batch_execute(&format!(
-            "ALTER TABLE {schema}.channel_metadata DROP COLUMN latest_message_id;
+            "DROP TABLE {schema}.channel_schema_migrations;
+         ALTER TABLE {schema}.channel_metadata DROP COLUMN latest_message_id;
          DROP INDEX {schema}.idx_channel_messages_app_id;"
         ))
         .unwrap();

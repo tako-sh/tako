@@ -17,6 +17,11 @@ respects real-time ordering. Negative checker tests reject reads that miss an
 acknowledged append. Seeds reproduce workloads, not operating-system schedules;
 failures include the complete observed history.
 
+Postgres channel tests also reopen stores while publishers are active and
+upgrade an unversioned schema. Migration tests append a new migration, verify
+that it runs once, and check that a failed migration rolls back its schema
+changes and version before a successful retry.
+
 Workflow tests drive duplicate enqueues, retries, lease expiry, stale-owner
 writes, event signals/timeouts, and database reopenings. Every seed runs twice and
 must produce the same logical trace. Timestamps and generated identifiers are
@@ -25,6 +30,10 @@ these scenarios do not depend on sleeping until a deadline. SQLite and Postgres
 RPC tests also reclaim a run within the same worker process and reject every
 mutation from the previous claim. A Postgres test gates checkpoint insertion
 inside a trigger and verifies that ownership transfer waits for its transaction.
+Separate-connection reclaim tests on both databases verify that a worker at its
+concurrency cap recovers when another server reclaims its lease. Slot accounting
+tracks individual claims, so a delayed release cannot free a replacement claim's
+slot; concurrent admission and failed-claim tests cover the refresh path.
 
 SQLite contention tests use independent connections to a file-backed database
 with `synchronous=FULL`. A controlled writer gate checks that event signaling

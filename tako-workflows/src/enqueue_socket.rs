@@ -445,29 +445,15 @@ fn handle_command(
             if !accepting_new_work.load(Ordering::SeqCst) {
                 return Response::ok(serde_json::Value::Null);
             }
-            // Leaky bucket: refuse the claim without touching the queue
-            // if the worker is already holding its max concurrent runs.
-            // The SDK sees `Ok(None)` (same shape as "queue empty") and
-            // backs off until an in-flight run terminates and a slot
-            // frees up.
-            if !limiter.try_acquire(&worker_id) {
-                return Response::ok(serde_json::Value::Null);
-            }
-            let claim_owner = crate::in_flight::new_claim_owner(&worker_id);
-            match db.claim(&claim_owner, &names, lease_ms) {
+            // At capacity, refresh ownership before refusing a claim: another
+            // server may have reclaimed one of this process's expired leases.
+            match limiter.claim(&db, &worker_id, &names, lease_ms) {
                 Ok(Some(run)) => {
                     (on_claimed)();
                     Response::ok(run)
                 }
-                Ok(None) => {
-                    // No work to do — give the slot back right away.
-                    limiter.release(&worker_id);
-                    Response::ok(serde_json::Value::Null)
-                }
-                Err(e) => {
-                    limiter.release(&worker_id);
-                    Response::error(format!("claim failed: {e}"))
-                }
+                Ok(None) => Response::ok(serde_json::Value::Null),
+                Err(e) => Response::error(format!("claim failed: {e}")),
             }
         }
         Command::HeartbeatRun {

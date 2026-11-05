@@ -1,28 +1,17 @@
 //! Per-worker in-flight claim throttling.
 //!
-//! Tracks how many runs each worker currently holds (claimed but not yet
-//! completed/failed/deferred/cancelled). The `claim` path consults this
-//! before handing out a run, so a worker can't exceed its concurrency
-//! budget even if the SDK fires claim RPCs eagerly.
-//!
-//! State is in-memory. The durable view lives in the `runs` table (rows
-//! with `status='running'` and a valid lease ARE the in-flight set); this
-//! struct is just a cached count for O(1) claim-path checks. On process
-//! restart, call [`InFlightLimiter::rehydrate`] to reseed from the DB so
-//! the cached counts match reality before accepting traffic.
-//!
-//! Worker process identity is an opaque string. Each claim adds a random suffix. When a
-//! worker process dies and a new one starts, its old slots are reclaimed
-//! via lease expiry (see `RunsDb::reclaim_expired`), and [`InFlightLimiter::release_claim`] is
-//! called for each expired row — so the dead worker's entries drain to
-//! zero even though it never called `complete()`.
+//! Cache individual claim owners so delayed releases are idempotent. At the
+//! worker's concurrency cap, refresh from the database: another server may have
+//! reclaimed a lease without being able to update this server's cache.
 
 use parking_lot::Mutex;
 use std::collections::HashMap;
+use tako_core::RunPayload;
+
+use crate::enqueue::{RunsDb, RunsDbError};
 
 /// Keep process accounting separate from ownership of an individual attempt.
-/// The random suffix fences old attempts even if the same process reclaims a run.
-pub(crate) fn new_claim_owner(worker_id: &str) -> String {
+fn new_claim_owner(worker_id: &str) -> String {
     format!("{worker_id}:{}", nanoid::nanoid!())
 }
 
@@ -32,18 +21,24 @@ fn process_worker(claim_owner: &str) -> &str {
         .map_or(claim_owner, |(worker, _)| worker)
 }
 
+fn count_worker(claims: &HashMap<String, u32>, worker_id: &str) -> u32 {
+    claims
+        .iter()
+        .filter(|(owner, _)| process_worker(owner) == worker_id)
+        .fold(0u32, |total, (_, count)| total.saturating_add(*count))
+}
+
 pub struct InFlightLimiter {
     max_per_worker: u32,
-    counts: Mutex<HashMap<String, u32>>,
+    claims: Mutex<HashMap<String, u32>>,
 }
 
 impl InFlightLimiter {
-    /// `max_per_worker` must be ≥ 1. A value of 0 would permanently reject
-    /// every claim, so we clamp to at least 1.
+    /// Clamp a zero budget to one so workers can always make progress.
     pub fn new(max_per_worker: u32) -> Self {
         Self {
             max_per_worker: max_per_worker.max(1),
-            counts: Mutex::new(HashMap::new()),
+            claims: Mutex::new(HashMap::new()),
         }
     }
 
@@ -51,131 +46,164 @@ impl InFlightLimiter {
         self.max_per_worker
     }
 
-    /// Attempt to reserve one slot for `worker_id`. Returns `true` on
-    /// success (caller is now holding a slot and must eventually call
-    /// [`release`]); `false` when the worker is already at its cap.
-    pub fn try_acquire(&self, worker_id: &str) -> bool {
-        let mut counts = self.counts.lock();
-        let entry = counts.entry(worker_id.to_string()).or_insert(0);
-        if *entry >= self.max_per_worker {
-            return false;
+    pub fn claim(
+        &self,
+        db: &RunsDb,
+        worker_id: &str,
+        names: &[String],
+        lease_ms: u64,
+    ) -> Result<Option<RunPayload>, RunsDbError> {
+        // Serialize admission, database refresh, and claim commit. Otherwise a
+        // refresh could erase a reservation whose database claim is in flight.
+        // Store operations release their connection lock before releasing a
+        // claim here, so the lock order is always limiter -> connection.
+        let mut claims = self.claims.lock();
+        if count_worker(&claims, worker_id) >= self.max_per_worker {
+            *claims = db.in_flight_by_worker()?;
+            if count_worker(&claims, worker_id) >= self.max_per_worker {
+                return Ok(None);
+            }
         }
-        *entry += 1;
-        true
+        let owner = new_claim_owner(worker_id);
+        let run = db.claim(&owner, names, lease_ms)?;
+        if run.is_some() {
+            claims.insert(owner, 1);
+        }
+        Ok(run)
     }
 
-    /// Release one slot for `worker_id`. Safe to call even if the count is
-    /// already zero (no-op) — defensive, because release paths include
-    /// reclaimed leases from dead workers whose accounting may not have
-    /// survived a Rust restart.
-    pub fn release(&self, worker_id: &str) {
-        let mut counts = self.counts.lock();
-        if let Some(entry) = counts.get_mut(worker_id)
-            && *entry > 0
-        {
-            *entry -= 1;
-            if *entry == 0 {
-                counts.remove(worker_id);
+    /// Release exactly this claim. A refresh may already have removed it, and
+    /// its delayed completion/reclaim must not free a newer claim's slot.
+    pub fn release_claim(&self, claim_owner: &str) {
+        let mut claims = self.claims.lock();
+        if let Some(count) = claims.get_mut(claim_owner) {
+            if *count > 1 {
+                *count -= 1;
+            } else {
+                claims.remove(claim_owner);
             }
         }
     }
 
-    pub fn release_claim(&self, claim_owner: &str) {
-        self.release(process_worker(claim_owner));
-    }
-
-    /// Replace the current counts with a fresh snapshot. Intended for
-    /// rehydration from the DB on startup.
+    /// Seed from the database before accepting claims at startup.
     pub fn rehydrate(&self, snapshot: HashMap<String, u32>) {
-        let mut counts = HashMap::<String, u32>::new();
-        for (owner, count) in snapshot {
-            let total = counts.entry(process_worker(&owner).to_owned()).or_default();
-            *total = total.saturating_add(count);
-        }
-        *self.counts.lock() = counts;
+        *self.claims.lock() = snapshot;
     }
 
     #[cfg(test)]
     pub fn count(&self, worker_id: &str) -> u32 {
-        self.counts.lock().get(worker_id).copied().unwrap_or(0)
+        count_worker(&self.claims.lock(), worker_id)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Barrier};
+    use tako_core::EnqueueOpts;
 
-    #[test]
-    fn try_acquire_enforces_cap() {
-        let limiter = InFlightLimiter::new(3);
-        assert!(limiter.try_acquire("w"));
-        assert!(limiter.try_acquire("w"));
-        assert!(limiter.try_acquire("w"));
-        assert!(!limiter.try_acquire("w"));
-        assert_eq!(limiter.count("w"), 3);
+    fn queue() -> RunsDb {
+        let db = RunsDb::open_in_memory().unwrap();
+        for _ in 0..6 {
+            db.enqueue("work", &serde_json::json!({}), &EnqueueOpts::default())
+                .unwrap();
+        }
+        db
+    }
+
+    fn claim(limiter: &InFlightLimiter, db: &RunsDb, worker: &str) -> Option<RunPayload> {
+        limiter.claim(db, worker, &["work".into()], 60_000).unwrap()
     }
 
     #[test]
-    fn release_frees_a_slot() {
+    fn claims_enforce_cap_and_release_exact_owner() {
+        let db = queue();
         let limiter = InFlightLimiter::new(2);
-        assert!(limiter.try_acquire("w"));
-        assert!(limiter.try_acquire("w"));
-        assert!(!limiter.try_acquire("w"));
-        limiter.release("w");
-        assert!(limiter.try_acquire("w"));
+        let first = claim(&limiter, &db, "worker").unwrap();
+        claim(&limiter, &db, "worker").unwrap();
+        assert!(claim(&limiter, &db, "worker").is_none());
+        assert_eq!(db.pending_count().unwrap(), 4);
+        db.complete(&first.id, &first.worker_id).unwrap();
+        limiter.release_claim(&first.worker_id);
+        claim(&limiter, &db, "worker").unwrap();
+        limiter.release_claim(&first.worker_id);
+        assert_eq!(limiter.count("worker"), 2);
+        assert!(claim(&limiter, &db, "worker").is_none());
     }
 
     #[test]
-    fn release_below_zero_is_noop() {
+    fn different_workers_have_independent_budgets() {
+        let db = queue();
         let limiter = InFlightLimiter::new(1);
-        limiter.release("w"); // never acquired
-        assert_eq!(limiter.count("w"), 0);
-        assert!(limiter.try_acquire("w"));
-    }
-
-    #[test]
-    fn different_workers_have_independent_counts() {
-        let limiter = InFlightLimiter::new(1);
-        assert!(limiter.try_acquire("a"));
-        assert!(limiter.try_acquire("b"));
-        assert!(!limiter.try_acquire("a"));
-        assert!(!limiter.try_acquire("b"));
+        claim(&limiter, &db, "a").unwrap();
+        claim(&limiter, &db, "b").unwrap();
+        assert!(claim(&limiter, &db, "a").is_none());
+        assert!(claim(&limiter, &db, "b").is_none());
     }
 
     #[test]
     fn zero_cap_clamps_to_one() {
+        let db = queue();
         let limiter = InFlightLimiter::new(0);
         assert_eq!(limiter.max_per_worker(), 1);
-        assert!(limiter.try_acquire("w"));
-        assert!(!limiter.try_acquire("w"));
+        claim(&limiter, &db, "worker").unwrap();
+        assert!(claim(&limiter, &db, "worker").is_none());
     }
 
     #[test]
-    fn rehydrate_replaces_counts() {
-        let limiter = InFlightLimiter::new(5);
-        limiter.try_acquire("w");
-        let mut snapshot = HashMap::new();
-        snapshot.insert("other".to_string(), 4);
-        limiter.rehydrate(snapshot);
-        assert_eq!(limiter.count("w"), 0);
-        assert_eq!(limiter.count("other"), 4);
-        assert!(limiter.try_acquire("other"));
-        assert!(!limiter.try_acquire("other"));
+    fn claim_owners_share_process_slots_after_rehydration() {
+        let db = queue();
+        let original = InFlightLimiter::new(2);
+        let first = claim(&original, &db, "host:worker").unwrap();
+        let second = claim(&original, &db, "host:worker").unwrap();
+        assert_ne!(first.worker_id, second.worker_id);
+        let restarted = InFlightLimiter::new(2);
+        restarted.rehydrate(db.in_flight_by_worker().unwrap());
+        assert_eq!(restarted.count("host:worker"), 2);
+        assert!(claim(&restarted, &db, "host:worker").is_none());
+        db.complete(&first.id, &first.worker_id).unwrap();
+        db.complete(&second.id, &second.worker_id).unwrap();
+        restarted.release_claim(&first.worker_id);
+        restarted.release_claim(&second.worker_id);
+        assert_eq!(restarted.count("host:worker"), 0);
+        claim(&restarted, &db, "host:worker").unwrap();
     }
-}
 
-#[cfg(test)]
-#[test]
-fn claim_owners_share_process_slots_after_rehydration() {
-    let limiter = InFlightLimiter::new(2);
-    let first = new_claim_owner("host:worker");
-    let second = new_claim_owner("host:worker");
-    assert_ne!(first, second);
-    limiter.rehydrate(HashMap::from([(first.clone(), 1), (second.clone(), 1)]));
-    assert_eq!(limiter.count("host:worker"), 2);
-    assert!(!limiter.try_acquire("host:worker"));
-    limiter.release_claim(&first);
-    limiter.release_claim(&second);
-    assert_eq!(limiter.count("host:worker"), 0);
-    assert!(limiter.try_acquire("host:worker"));
+    #[test]
+    fn concurrent_claims_cannot_overbook_during_refresh() {
+        let db = Arc::new(queue());
+        let limiter = Arc::new(InFlightLimiter::new(2));
+        let barrier = Arc::new(Barrier::new(6));
+        let threads: Vec<_> = (0..6)
+            .map(|_| {
+                let (db, limiter, barrier) = (db.clone(), limiter.clone(), barrier.clone());
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    claim(&limiter, &db, "worker")
+                })
+            })
+            .collect();
+        let claimed = threads
+            .into_iter()
+            .filter_map(|t| t.join().unwrap())
+            .count();
+        assert_eq!(claimed, 2);
+        assert_eq!(limiter.count("worker"), 2);
+        assert_eq!(db.pending_count().unwrap(), 4);
+    }
+
+    #[test]
+    fn failed_claim_does_not_reserve_a_slot() {
+        let db = queue();
+        let limiter = InFlightLimiter::new(1);
+        db.raw_execute("CREATE TRIGGER reject_claim BEFORE UPDATE ON runs BEGIN SELECT RAISE(ABORT, 'injected claim failure'); END", ());
+        assert!(
+            limiter
+                .claim(&db, "worker", &["work".into()], 60_000)
+                .is_err()
+        );
+        assert_eq!(limiter.count("worker"), 0);
+        db.raw_execute("DROP TRIGGER reject_claim", ());
+        claim(&limiter, &db, "worker").unwrap();
+    }
 }
