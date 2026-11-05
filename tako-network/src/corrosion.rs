@@ -1,5 +1,9 @@
 //! Typed access to the authenticated, local Corrosion 1.0 HTTP API.
-use std::{collections::BTreeMap, io::Read, time::Duration};
+use std::{
+    collections::BTreeMap,
+    io::{Read, Write},
+    time::Duration,
+};
 
 use reqwest::{
     Url,
@@ -7,7 +11,7 @@ use reqwest::{
     header::{AUTHORIZATION, HeaderMap, HeaderValue},
     redirect::Policy,
 };
-use serde::Serialize;
+use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
@@ -19,6 +23,14 @@ use crate::{
 pub const MAX_REGISTRY_ROWS: usize = 10_000;
 pub const MAX_REGISTRY_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_RECORD_BYTES: usize = 128 * 1024;
+const PAGE_ROWS: usize = 8;
+const MAX_ADMISSION_ROWS: usize = MAX_REGISTRY_ROWS / 2;
+const MAX_ADMISSION_BYTES: usize = MAX_REGISTRY_BYTES / 2;
+// A denial captures every known server, including those admitted on other replicas.
+const MAX_REVOCATION_BYTES: usize = MAX_REGISTRY_ROWS * 67 + 1024;
+
+#[cfg(test)]
+type TestTransport = fn(&str, &Value) -> RuntimeResult<Vec<u8>>;
 pub const CORROSION_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS tako_network_records (\n\
     kind TEXT NOT NULL, record_id TEXT NOT NULL, digest TEXT NOT NULL, payload TEXT NOT NULL,\n\
     PRIMARY KEY (kind, record_id, digest)\n\
@@ -37,6 +49,8 @@ impl BearerToken {
 }
 
 /// Trusted server storage only. Never expose these mutation methods as RPCs.
+/// Membership and denial records are immutable. ACKs are replaceable boot observations.
+/// Snapshot capacity errors must fail closed at the caller, never fall back to old grants.
 pub trait RegistryStore {
     fn snapshot(&mut self) -> RuntimeResult<RegistrySnapshot>;
     fn append_member(&mut self, member: &Member) -> RuntimeResult<()>;
@@ -45,6 +59,8 @@ pub trait RegistryStore {
 }
 
 pub struct CorrosionStore {
+    #[cfg(test)]
+    pub(crate) transport: Option<TestTransport>,
     client: Client,
     endpoint: Url,
     network: NetworkDescriptor,
@@ -94,6 +110,8 @@ impl CorrosionStore {
             .build()
             .map_err(|_| RuntimeError::Transport)?;
         Ok(Self {
+            #[cfg(test)]
+            transport: None,
             client,
             endpoint,
             network,
@@ -103,8 +121,8 @@ impl CorrosionStore {
     /// Parent calls this only during locally authorized bootstrap, after schema setup.
     pub fn initialize(&mut self) -> RuntimeResult<()> {
         let rows = self.read_rows()?;
-        if !rows.is_empty() {
-            snapshot_from_rows(rows, &self.network)?;
+        if rows.last.is_some() {
+            rows.finish()?;
             return Ok(());
         }
         self.insert("network", "network", &self.network)?;
@@ -113,6 +131,10 @@ impl CorrosionStore {
     }
 
     fn post(&self, path: &str, body: &Value) -> RuntimeResult<Vec<u8>> {
+        #[cfg(test)]
+        if let Some(post) = self.transport {
+            return post(path, body);
+        }
         let url = self
             .endpoint
             .join(path)
@@ -143,17 +165,72 @@ impl CorrosionStore {
         Ok(bytes)
     }
 
-    fn read_rows(&self) -> RuntimeResult<Vec<Vec<Value>>> {
-        let body = json!([
-            "SELECT kind, record_id, digest, payload FROM tako_network_records ORDER BY kind, record_id, digest LIMIT ?",
-            [MAX_REGISTRY_ROWS + 1]
-        ]);
-        parse_query(&self.post("/v1/queries", &body)?)
+    fn read_rows(&self) -> RuntimeResult<RecordProjection> {
+        let mut projection = RecordProjection::new(&self.network);
+        let high = parse_query(&self.post("/v1/queries", &json!([
+            "SELECT kind, record_id, digest, payload FROM tako_network_records ORDER BY kind DESC, record_id DESC, digest DESC LIMIT 1", []
+        ]))?)?;
+        let Some(high) = high.first() else {
+            return Ok(projection);
+        };
+        let upper = record_key(high)?;
+        let mut cursor = (String::new(), String::new(), String::new());
+        loop {
+            let page = parse_query(&self.post("/v1/queries", &json!([
+                "SELECT kind, record_id, digest, payload FROM tako_network_records WHERE (kind, record_id, digest) > (?, ?, ?) AND (kind, record_id, digest) <= (?, ?, ?) ORDER BY kind, record_id, digest LIMIT ?",
+                [cursor.0, cursor.1, cursor.2, upper.0, upper.1, upper.2, PAGE_ROWS]
+            ]))?)?;
+            if page.is_empty() {
+                break;
+            }
+            if page.len() > PAGE_ROWS {
+                return Err(RuntimeError::Corrosion("page size"));
+            }
+            for row in page {
+                let key = record_key(&row)?;
+                if key <= cursor || key > upper {
+                    return Err(RuntimeError::Corrosion("page order"));
+                }
+                cursor = key;
+                projection.push(row)?;
+            }
+        }
+        Ok(projection)
+    }
+
+    fn record<T: DeserializeOwned>(&self, kind: &str, id: &str) -> RuntimeResult<Option<T>> {
+        let rows = parse_query(&self.post("/v1/queries", &json!([
+            "SELECT kind, record_id, digest, payload FROM tako_network_records WHERE kind=? AND record_id=? ORDER BY digest LIMIT 2",
+            [kind, id]
+        ]))?)?;
+        if rows.len() > 1 {
+            return Err(RuntimeError::Conflict("record ID"));
+        }
+        rows.first()
+            .map(|row| {
+                let (found_kind, found_id, _) = record_key(row)?;
+                if found_kind != kind || found_id != id {
+                    return Err(RuntimeError::Corrosion("record key"));
+                }
+                Ok(serde_json::from_str(record_payload(row)?)?)
+            })
+            .transpose()
+    }
+
+    fn require_network(&self) -> RuntimeResult<()> {
+        if self
+            .record::<NetworkDescriptor>("network", "network")?
+            .as_ref()
+            != Some(&self.network)
+        {
+            return Err(RuntimeError::Conflict("network descriptor"));
+        }
+        Ok(())
     }
 
     fn insert<T: Serialize>(&self, kind: &str, id: &str, payload: &T) -> RuntimeResult<()> {
         let payload = serde_json::to_string(payload)?;
-        if payload.len() > MAX_RECORD_BYTES {
+        if payload.len() > record_limit(kind) {
             return Err(RuntimeError::Capacity("registry record"));
         }
         let digest = hex::encode(openssl::sha::sha256(payload.as_bytes()));
@@ -167,7 +244,7 @@ impl CorrosionStore {
 
 impl RegistryStore for CorrosionStore {
     fn snapshot(&mut self) -> RuntimeResult<RegistrySnapshot> {
-        snapshot_from_rows(self.read_rows()?, &self.network)
+        self.read_rows()?.finish()
     }
 
     fn append_member(&mut self, member: &Member) -> RuntimeResult<()> {
@@ -184,8 +261,12 @@ impl RegistryStore for CorrosionStore {
                 Err(RuntimeError::Conflict("member"))
             };
         }
-        check_room(&snapshot)?;
         snapshot.members.push(member.clone());
+        if snapshot.members.len() + snapshot.revocations.len() + 1 > MAX_ADMISSION_ROWS
+            || bounded_snapshot_size(&snapshot)? > MAX_ADMISSION_BYTES
+        {
+            return Err(RuntimeError::Capacity("registry admissions"));
+        }
         snapshot.validate()?;
         self.insert("member", &member.device_id.to_string(), member)?;
         self.snapshot()?;
@@ -193,28 +274,38 @@ impl RegistryStore for CorrosionStore {
     }
 
     fn append_revocation(&mut self, revocation: &Revocation) -> RuntimeResult<()> {
-        let snapshot = self.snapshot()?;
-        if let Some(previous) = snapshot.revocations.iter().find(|r| r.id == revocation.id) {
-            return if previous == revocation {
-                Ok(())
-            } else {
-                Err(RuntimeError::Conflict("revocation"))
-            };
+        self.require_network()?;
+        if let Some(previous) =
+            self.record::<Revocation>("revocation", &revocation.id.to_string())?
+        {
+            if previous != *revocation {
+                return Err(RuntimeError::Conflict("revocation"));
+            }
+            return Ok(());
         }
-        check_room(&snapshot)?;
         self.insert("revocation", &revocation.id.to_string(), revocation)?;
-        self.snapshot()?;
+        if self
+            .record::<Revocation>("revocation", &revocation.id.to_string())?
+            .as_ref()
+            != Some(revocation)
+        {
+            return Err(RuntimeError::Corrosion("revocation absent after write"));
+        }
         Ok(())
     }
 
     fn append_ack(&mut self, ack: &Ack) -> RuntimeResult<()> {
-        let snapshot = self.snapshot()?;
-        if snapshot.acks.contains(ack) {
-            return Ok(());
+        self.require_network()?;
+        let revocation = self.record::<Revocation>("revocation", &ack.revocation.to_string())?;
+        let server = self.record::<Member>("member", &ack.server.to_string())?;
+        if let Some(server) = &server {
+            server.validate()?;
+            if server.network_id != self.network.id {
+                return Err(RuntimeError::Conflict("member network"));
+            }
         }
-        check_room(&snapshot)?;
-        if !snapshot.revocations.iter().any(|r| r.id == ack.revocation)
-            || !snapshot.members.iter().any(|m| {
+        if !revocation.is_some_and(|r| r.id == ack.revocation)
+            || !server.is_some_and(|m| {
                 m.device_id == ack.server
                     && m.wg_verified
                     && matches!(m.kind, crate::MemberKind::Server(_))
@@ -222,21 +313,29 @@ impl RegistryStore for CorrosionStore {
         {
             return Err(RuntimeError::Invalid("ACK target or server"));
         }
-        self.insert("ack", &ack_id(ack), ack)?;
-        self.snapshot()?;
-        Ok(())
+        let payload = serde_json::to_string(ack)?;
+        let digest = hex::encode(openssl::sha::sha256(payload.as_bytes()));
+        let id = ack_id(ack);
+        if self
+            .record::<Ack>("ack", &id)?
+            .is_some_and(|previous| previous != *ack)
+        {
+            return Err(RuntimeError::Conflict("ACK ID"));
+        }
+        let prefix = format!("{}:{}:", ack.revocation, ack.server);
+        // Only boot-specific observations are replaceable. Denials remain immutable.
+        let body = json!([
+            [
+                "INSERT INTO tako_network_records (kind, record_id, digest, payload) SELECT 'ack', ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM tako_network_records WHERE kind='ack' AND record_id=?)",
+                [id, digest, payload, id]
+            ],
+            [
+                "DELETE FROM tako_network_records WHERE kind='ack' AND substr(record_id, 1, length(?))=? AND record_id<>?",
+                [prefix, prefix, id]
+            ]
+        ]);
+        parse_transaction(&self.post("/v1/transactions", &body)?, 2)
     }
-}
-
-fn check_room(snapshot: &RegistrySnapshot) -> RuntimeResult<()> {
-    if snapshot.members.len() + snapshot.revocations.len() + snapshot.acks.len() + 1
-        >= MAX_REGISTRY_ROWS
-    {
-        return Err(RuntimeError::Capacity(
-            "registry rows; historical denials are never pruned",
-        ));
-    }
-    Ok(())
 }
 
 fn ack_id(ack: &Ack) -> String {
@@ -312,76 +411,197 @@ fn parse_query(bytes: &[u8]) -> RuntimeResult<Vec<Vec<Value>>> {
     Ok(rows)
 }
 
-fn snapshot_from_rows(
-    rows: Vec<Vec<Value>>,
-    pinned: &NetworkDescriptor,
-) -> RuntimeResult<RegistrySnapshot> {
-    let mut snapshot = RegistrySnapshot {
-        network: pinned.clone(),
-        members: vec![],
-        revocations: vec![],
-        acks: vec![],
+fn record_key(row: &[Value]) -> RuntimeResult<(String, String, String)> {
+    if row.len() != 4 {
+        return Err(RuntimeError::Corrosion("record width"));
+    }
+    let text = |i: usize| {
+        row[i]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or(RuntimeError::Corrosion("non-text record"))
     };
-    let mut seen = BTreeMap::new();
-    let mut network_seen = false;
-    for row in rows {
-        let fields = row
-            .iter()
-            .map(|v| v.as_str().ok_or(RuntimeError::Corrosion("non-text record")))
-            .collect::<RuntimeResult<Vec<_>>>()?;
-        let [kind, id, digest, payload] = fields.as_slice() else {
-            return Err(RuntimeError::Corrosion("record width"));
-        };
-        if payload.len() > MAX_RECORD_BYTES {
-            return Err(RuntimeError::Capacity("registry record"));
+    Ok((text(0)?, text(1)?, text(2)?))
+}
+
+fn record_limit(kind: &str) -> usize {
+    if kind == "revocation" {
+        MAX_REVOCATION_BYTES
+    } else {
+        MAX_RECORD_BYTES
+    }
+}
+
+fn record_payload(row: &[Value]) -> RuntimeResult<&str> {
+    let payload = row
+        .get(3)
+        .and_then(Value::as_str)
+        .ok_or(RuntimeError::Corrosion("non-text record"))?;
+    if payload.len() > record_limit(row[0].as_str().unwrap_or_default()) {
+        return Err(RuntimeError::Capacity("registry record"));
+    }
+    if row[2].as_str() != Some(&hex::encode(openssl::sha::sha256(payload.as_bytes()))) {
+        return Err(RuntimeError::Corrosion("payload digest mismatch"));
+    }
+    Ok(payload)
+}
+
+struct RecordProjection {
+    snapshot: RegistrySnapshot,
+    acks: BTreeMap<(crate::RevocationId, crate::DeviceId), Ack>,
+    last: Option<(String, String, String)>,
+    bytes: usize,
+    network_seen: bool,
+}
+
+impl RecordProjection {
+    fn new(pinned: &NetworkDescriptor) -> Self {
+        Self {
+            snapshot: RegistrySnapshot {
+                network: pinned.clone(),
+                members: vec![],
+                revocations: vec![],
+                acks: vec![],
+            },
+            acks: BTreeMap::new(),
+            last: None,
+            bytes: 0,
+            network_seen: false,
         }
-        if hex::encode(openssl::sha::sha256(payload.as_bytes())) != *digest {
-            return Err(RuntimeError::Corrosion("payload digest mismatch"));
-        }
-        if let Some(previous) = seen.insert((kind.to_string(), id.to_string()), payload.to_string())
-        {
-            if previous != *payload {
-                return Err(RuntimeError::Conflict("record ID"));
+    }
+
+    fn push(&mut self, row: Vec<Value>) -> RuntimeResult<()> {
+        let (kind, id, digest) = record_key(&row)?;
+        let payload = record_payload(&row)?;
+        if let Some((old_kind, old_id, old_digest)) = &self.last {
+            if old_kind == &kind && old_id == &id {
+                if old_digest != &digest {
+                    return Err(RuntimeError::Conflict("record ID"));
+                }
+                return Ok(());
             }
-            continue;
         }
-        match *kind {
+        self.last = Some((kind.clone(), id.clone(), digest));
+        if kind != "ack" {
+            self.bytes += payload.len();
+        }
+        match kind.as_str() {
             "network" => {
                 let network: NetworkDescriptor = serde_json::from_str(payload)?;
-                if *id != "network" || &network != pinned {
+                if id != "network" || network != self.snapshot.network {
                     return Err(RuntimeError::Conflict("network descriptor"));
                 }
-                network_seen = true;
+                self.network_seen = true;
             }
             "member" => {
                 let member: Member = serde_json::from_str(payload)?;
-                if member.device_id.to_string() != *id {
+                if member.device_id.to_string() != id {
                     return Err(RuntimeError::Corrosion("member ID"));
                 }
-                snapshot.members.push(member);
+                self.snapshot.members.push(member);
             }
             "revocation" => {
                 let revocation: Revocation = serde_json::from_str(payload)?;
-                if revocation.id.to_string() != *id {
+                if revocation.id.to_string() != id {
                     return Err(RuntimeError::Corrosion("revocation ID"));
                 }
-                snapshot.revocations.push(revocation);
+                self.snapshot.revocations.push(revocation);
             }
             "ack" => {
                 let ack: Ack = serde_json::from_str(payload)?;
-                if ack_id(&ack) != *id {
+                if ack_id(&ack) != id {
                     return Err(RuntimeError::Corrosion("ACK ID"));
                 }
-                snapshot.acks.push(ack);
+                // Concurrent boots may both survive replication. Keeping one exact
+                // boot can report pending, but cannot invent current enforcement.
+                let key = (ack.revocation.clone(), ack.server.clone());
+                if self.acks.len() < MAX_REGISTRY_ROWS || self.acks.contains_key(&key) {
+                    self.acks.insert(key, ack);
+                }
             }
             _ => return Err(RuntimeError::Corrosion("unknown record kind")),
         }
+        if self.bytes > MAX_REGISTRY_BYTES
+            || self.snapshot.members.len() + self.snapshot.revocations.len() + 1 > MAX_REGISTRY_ROWS
+        {
+            return Err(RuntimeError::Capacity("registry projection"));
+        }
+        Ok(())
     }
-    if !network_seen {
-        return Err(RuntimeError::Corrosion("missing pinned network descriptor"));
+
+    fn finish(mut self) -> RuntimeResult<RegistrySnapshot> {
+        if !self.network_seen {
+            return Err(RuntimeError::Corrosion("missing pinned network descriptor"));
+        }
+        self.snapshot.acks = self.acks.into_values().collect();
+        bound_projection(&mut self.snapshot)?;
+        self.snapshot.validate()?;
+        Ok(self.snapshot)
     }
-    snapshot.validate()?;
-    Ok(snapshot)
+}
+
+pub(crate) fn bounded_snapshot_size(snapshot: &RegistrySnapshot) -> RuntimeResult<usize> {
+    struct Counter {
+        bytes: usize,
+        exceeded: bool,
+    }
+    impl Write for Counter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if bytes.len() > MAX_REGISTRY_BYTES - self.bytes {
+                self.exceeded = true;
+                return Err(std::io::Error::other("registry bytes"));
+            }
+            self.bytes += bytes.len();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut counter = Counter {
+        bytes: 0,
+        exceeded: false,
+    };
+    let result = serde_json::to_writer(&mut counter, snapshot);
+    if counter.exceeded {
+        return Err(RuntimeError::Capacity("registry bytes"));
+    }
+    result?;
+    Ok(counter.bytes)
+}
+
+/// ACKs are evidence of progress, never authority. Omitting one only reports pending.
+pub(crate) fn bound_projection(snapshot: &mut RegistrySnapshot) -> RuntimeResult<()> {
+    let acks = std::mem::take(&mut snapshot.acks);
+    let rows = snapshot.members.len() + snapshot.revocations.len() + 1;
+    if rows > MAX_REGISTRY_ROWS {
+        return Err(RuntimeError::Capacity("registry projection"));
+    }
+    let mut bytes = bounded_snapshot_size(snapshot)?;
+    for ack in acks {
+        if rows + snapshot.acks.len() >= MAX_REGISTRY_ROWS {
+            break;
+        }
+        let size = serde_json::to_vec(&ack)?.len() + usize::from(!snapshot.acks.is_empty());
+        if bytes + size <= MAX_REGISTRY_BYTES {
+            bytes += size;
+            snapshot.acks.push(ack);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn snapshot_from_rows(
+    mut rows: Vec<Vec<Value>>,
+    pinned: &NetworkDescriptor,
+) -> RuntimeResult<RegistrySnapshot> {
+    rows.sort_by_key(|row| record_key(row).unwrap_or_default());
+    let mut projection = RecordProjection::new(pinned);
+    for row in rows {
+        projection.push(row)?;
+    }
+    projection.finish()
 }
 
 #[cfg(test)]
