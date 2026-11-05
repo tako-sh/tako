@@ -64,6 +64,7 @@ impl ServerTlsPaths {
 
 pub struct ServerIdentity {
     keys: LocalDeviceKeys,
+    keys_path: PathBuf,
     prepared: Prepared,
     tls: ServerTlsPaths,
     gossip: ServerTlsPaths,
@@ -112,7 +113,47 @@ struct Prepared {
     server_info: ServerInfo,
 }
 
+impl Prepared {
+    fn parse(bytes: &[u8]) -> Result<Self> {
+        let prepared: Self = serde_json::from_slice(bytes)
+            .map_err(|_| invalid("server identity", "invalid prepared metadata"))?;
+        if prepared.version != 1 {
+            return Err(invalid("server identity", "unsupported prepared version"));
+        }
+        Ok(prepared)
+    }
+}
+
 impl ServerIdentity {
+    /// Load and validate an already prepared identity without creating or
+    /// changing any files. Missing, partial, unsafe or corrupt state is an error.
+    pub fn load(directory: impl AsRef<Path>) -> Result<Self> {
+        let directory = std::path::absolute(directory)?;
+        let dir = secure::Directory::open(&directory, false)?;
+        let bytes = dir
+            .read_optional(METADATA)?
+            .ok_or_else(|| invalid("server identity", "identity is not prepared"))?;
+        Self::load_prepared(&directory, &dir, Prepared::parse(&bytes)?)
+    }
+
+    fn load_prepared(
+        directory: &Path,
+        dir: &secure::Directory,
+        prepared: Prepared,
+    ) -> Result<Self> {
+        let keys_path = directory.join(DEVICE_KEYS);
+        let identity = Self {
+            keys: LocalDeviceKeys::load(&keys_path)?,
+            keys_path,
+            prepared,
+            tls: ServerTlsPaths::new(directory, "https"),
+            gossip: ServerTlsPaths::new(directory, "gossip"),
+        };
+        identity.validate(dir)?;
+        dir.check_path(directory)?;
+        Ok(identity)
+    }
+
     /// Create or load a persistent, network-bound server identity. The parent
     /// directory must exist. The final directory must be owned mode 0700 and
     /// empty on first use; no path component may be a symlink or `..`.
@@ -140,30 +181,15 @@ impl ServerIdentity {
         config.server_info().validate()?;
         let directory = std::path::absolute(directory)?;
         let dir = secure::Directory::open(&directory, true)?;
-        let tls = ServerTlsPaths::new(&directory, "https");
-        let gossip = ServerTlsPaths::new(&directory, "gossip");
         if let Some(bytes) = dir.read_optional(METADATA)? {
-            let prepared: Prepared = serde_json::from_slice(&bytes)
-                .map_err(|_| invalid("server identity", "invalid prepared metadata"))?;
-            if prepared.version != 1 {
-                return Err(invalid("server identity", "unsupported prepared version"));
-            }
+            let prepared = Prepared::parse(&bytes)?;
             if prepared.config != config {
                 return Err(invalid(
                     "server identity",
                     "network or configuration mismatch",
                 ));
             }
-            let keys = LocalDeviceKeys::load(&directory.join(DEVICE_KEYS))?;
-            dir.check_path(&directory)?;
-            let identity = Self {
-                keys,
-                prepared,
-                tls,
-                gossip,
-            };
-            identity.validate(&dir)?;
-            return Ok(identity);
+            return Self::load_prepared(&directory, &dir, prepared);
         }
         if !dir.is_empty()? {
             return Err(invalid(
@@ -174,7 +200,8 @@ impl ServerIdentity {
         // Durable, exclusive reservation makes concurrent/partial preparation fail closed.
         dir.write_new("prepare-started", b"1\n")?;
         let keys = LocalDeviceKeys::generate()?;
-        keys.save_new(&directory.join(DEVICE_KEYS))?;
+        let keys_path = directory.join(DEVICE_KEYS);
+        keys.save_new(&keys_path)?;
         dir.check_path(&directory)?;
         let request = keys.enrollment_request(
             Some(config.network_id.clone()),
@@ -182,6 +209,8 @@ impl ServerIdentity {
             config.name.clone(),
         )?;
         let names = certificate_names(&config, &request)?;
+        let tls = ServerTlsPaths::new(&directory, "https");
+        let gossip = ServerTlsPaths::new(&directory, "gossip");
         let https_ca = generate_tls(&dir, &tls, &names, false)?;
         let gossip_ca = generate_tls(&dir, &gossip, &names, true)?;
         let mut server_info = config.server_info();
@@ -190,6 +219,7 @@ impl ServerIdentity {
         server_info.https_spki_sha256 = server_info.https_spki_fingerprint()?;
         let identity = Self {
             keys,
+            keys_path,
             prepared: Prepared {
                 version: 1,
                 config,
@@ -209,6 +239,13 @@ impl ServerIdentity {
     pub fn keys(&self) -> &LocalDeviceKeys {
         &self.keys
     }
+
+    /// Absolute local device-key path. Use its `file_name()` for a single-component
+    /// NodeFiles entry relative to the identity directory.
+    pub fn keys_path(&self) -> &Path {
+        &self.keys_path
+    }
+
     pub fn request(&self) -> &EnrollmentRequest {
         &self.prepared.request
     }
@@ -680,6 +717,63 @@ mod tests {
     }
 
     #[test]
+    fn load_preserves_identity_and_exposes_the_local_keys_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("identity");
+        let first = prepare(&path).unwrap();
+        let before = snapshot(&path);
+        let loaded = ServerIdentity::load(&path).unwrap();
+        assert_eq!(loaded.request(), first.request());
+        assert_eq!(loaded.server_info(), first.server_info());
+        assert_eq!(loaded.tls_paths(), first.tls_paths());
+        assert_eq!(loaded.gossip_paths(), first.gossip_paths());
+        assert_eq!(loaded.keys_path(), first.keys_path());
+        assert_eq!(loaded.keys_path(), path.join(DEVICE_KEYS));
+        let filename = Path::new(loaded.keys_path().file_name().unwrap());
+        assert_eq!(filename.components().count(), 1);
+        let keys = LocalDeviceKeys::load(&path.join(filename)).unwrap();
+        assert_eq!(
+            keys.wg_public_key().unwrap(),
+            loaded.request().wg_public_key
+        );
+        assert_eq!(
+            keys.ssh_public_key().unwrap(),
+            loaded.request().ssh_public_key
+        );
+        let (challenge, pending) = WgChallenge::begin(
+            first.request(),
+            first.prepared.config.network_id.clone(),
+            100,
+            200,
+        )
+        .unwrap();
+        pending
+            .verify(&loaded.answer_challenge(&challenge, 101).unwrap(), 101)
+            .unwrap();
+        assert_eq!(snapshot(&path), before);
+    }
+
+    #[test]
+    fn load_never_creates_or_completes_unprepared_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let missing = temp.path().join("missing");
+        assert!(ServerIdentity::load(&missing).is_err());
+        assert!(!missing.exists());
+        assert!(ServerIdentity::load(temp.path()).is_err());
+        assert!(snapshot(temp.path()).is_empty());
+        prepare(temp.path()).unwrap();
+        std::fs::remove_file(temp.path().join(METADATA)).unwrap();
+        let before = snapshot(temp.path());
+        assert!(
+            ServerIdentity::load(temp.path())
+                .unwrap_err()
+                .to_string()
+                .contains("not prepared")
+        );
+        assert_eq!(snapshot(temp.path()), before);
+    }
+
+    #[test]
     fn restart_preserves_keys_request_and_public_pins() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("identity");
@@ -1015,6 +1109,7 @@ mod tests {
             std::fs::remove_file(case.path().join(missing)).unwrap();
             let before = snapshot(case.path());
             assert!(prepare(case.path()).is_err(), "missing {missing:?}");
+            assert!(ServerIdentity::load(case.path()).is_err());
             assert_eq!(snapshot(case.path()), before);
         }
         for filename in [
@@ -1057,6 +1152,7 @@ mod tests {
             std::fs::write(temp.path().join(METADATA), bytes).unwrap();
             let before = snapshot(temp.path());
             assert!(prepare(temp.path()).is_err());
+            assert!(ServerIdentity::load(temp.path()).is_err());
             assert_eq!(snapshot(temp.path()), before);
         }
     }
@@ -1108,6 +1204,7 @@ mod tests {
         let alias = temp.path().join("alias");
         symlink(&private, &alias).unwrap();
         assert!(prepare(&alias).is_err());
+        assert!(ServerIdentity::load(&alias).is_err());
         assert!(prepare(&alias.join("new-identity")).is_err());
         assert!(!private.join("new-identity").exists());
         assert!(prepare(&private.join("..").join("traversal")).is_err());
@@ -1138,16 +1235,19 @@ mod tests {
             let original = fs::read(&file).unwrap();
             fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
             assert!(prepare(&path).is_err(), "permissions {name:?}");
+            assert!(ServerIdentity::load(&path).is_err());
             assert_eq!(fs::read(&file).unwrap(), original);
             fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
             let link = temp.path().join("hardlink");
             fs::hard_link(&file, &link).unwrap();
             assert!(prepare(&path).is_err(), "hardlink {name:?}");
+            assert!(ServerIdentity::load(&path).is_err());
             fs::remove_file(&link).unwrap();
             let saved = temp.path().join("saved");
             fs::rename(&file, &saved).unwrap();
             symlink(&saved, &file).unwrap();
             assert!(prepare(&path).is_err(), "symlink {name:?}");
+            assert!(ServerIdentity::load(&path).is_err());
             assert_eq!(fs::read(&saved).unwrap(), original);
             fs::remove_file(&file).unwrap();
             fs::create_dir(&file).unwrap();
