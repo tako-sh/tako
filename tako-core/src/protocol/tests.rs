@@ -662,6 +662,8 @@ fn parses_run_release_command() {
 fn test_server_runtime_info_pid_roundtrip() {
     let info = ServerRuntimeInfo {
         pid: 42,
+        arch: "x86_64".into(),
+        libc: "glibc".into(),
         mode: UpgradeMode::Normal,
         process_started_at_unix_secs: Some(1_778_220_000),
         socket: "/var/run/tako/tako.sock".to_string(),
@@ -680,6 +682,8 @@ fn test_server_runtime_info_pid_roundtrip() {
     let json = serde_json::to_string(&info).unwrap();
     let parsed: ServerRuntimeInfo = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed.pid, 42);
+    assert_eq!(parsed.arch, "x86_64");
+    assert_eq!(parsed.libc, "glibc");
     assert_eq!(parsed.server_name.as_deref(), Some("la"));
     assert_eq!(
         parsed.server_identity.as_deref(),

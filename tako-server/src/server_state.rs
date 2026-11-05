@@ -59,6 +59,14 @@ impl ServerRuntimeConfig {
     pub(crate) fn to_runtime_info(&self, mode: UpgradeMode) -> ServerRuntimeInfo {
         ServerRuntimeInfo {
             pid: self.pid,
+            arch: std::env::consts::ARCH.into(),
+            libc: if cfg!(target_env = "gnu") {
+                "glibc"
+            } else if cfg!(target_env = "musl") {
+                "musl"
+            } else {
+                "unsupported"
+            }.into(),
             mode,
             process_started_at_unix_secs: self.process_started_at_unix_secs,
             socket: self.socket.clone(),

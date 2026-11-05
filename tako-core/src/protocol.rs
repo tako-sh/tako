@@ -564,6 +564,8 @@ pub struct BackupDownloadUrlResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerRuntimeInfo {
     pub pid: u32,
+    pub arch: String,
+    pub libc: String,
     pub mode: UpgradeMode,
     #[serde(default)]
     pub process_started_at_unix_secs: Option<i64>,
