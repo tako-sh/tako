@@ -171,7 +171,12 @@ pub(super) fn write_corrosion(
     directory.write("corrosion-ca.pem", bundle.as_bytes())?;
     directory.write(
         "corrosion.schema.sql",
-        tako_network::corrosion::CORROSION_SCHEMA.as_bytes(),
+        format!(
+            "{}\n{}\n",
+            tako_network::corrosion::CORROSION_SCHEMA,
+            tako_network::services::SERVICE_SCHEMA
+        )
+        .as_bytes(),
     )?;
     directory.write("corrosion.toml", text.as_bytes())?;
     Ok(())

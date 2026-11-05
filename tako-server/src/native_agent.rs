@@ -12,6 +12,8 @@ mod lifecycle;
 mod process;
 #[path = "native_agent/projection.rs"]
 mod projection;
+#[path = "native_agent/services.rs"]
+mod services;
 #[path = "native_agent/store.rs"]
 mod store;
 

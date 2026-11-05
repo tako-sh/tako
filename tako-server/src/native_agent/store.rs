@@ -17,7 +17,7 @@ use tako_network::{
 };
 
 pub(super) struct MonotonicStore<S> {
-    inner: S,
+    inner: Rc<RefCell<S>>,
     stop: Arc<AtomicBool>,
     directory: Directory,
     pub(super) known: Rc<RefCell<RegistrySnapshot>>,
@@ -29,11 +29,14 @@ impl<S: RegistryStore> MonotonicStore<S> {
         known: Rc<RefCell<RegistrySnapshot>>,
     ) -> Self {
         Self {
-            inner,
+            inner: Rc::new(RefCell::new(inner)),
             stop: Arc::new(AtomicBool::new(false)),
             directory,
             known,
         }
+    }
+    pub(super) fn shared(&self) -> Rc<RefCell<S>> {
+        self.inner.clone()
     }
     pub(super) fn with_stop(mut self, stop: Arc<AtomicBool>) -> Self {
         self.stop = stop;
@@ -84,7 +87,7 @@ impl<S: RegistryStore> RegistryStore for MonotonicStore<S> {
         if self.stop.load(Ordering::Acquire) {
             return Err(RuntimeError::Transport);
         }
-        let candidate = self.inner.snapshot()?;
+        let candidate = self.inner.borrow_mut().snapshot()?;
         let mut known = self.known.borrow_mut();
         preserves(&known, &candidate)?;
         if *known != candidate {
@@ -96,13 +99,13 @@ impl<S: RegistryStore> RegistryStore for MonotonicStore<S> {
     }
     fn append_member(&mut self, member: &Member) -> RuntimeResult<()> {
         self.snapshot()?;
-        self.inner.append_member(member)?;
+        self.inner.borrow_mut().append_member(member)?;
         self.snapshot()?;
         Ok(())
     }
     fn append_revocation(&mut self, revocation: &Revocation) -> RuntimeResult<()> {
         self.snapshot()?;
-        self.inner.append_revocation(revocation)?;
+        self.inner.borrow_mut().append_revocation(revocation)?;
         self.snapshot()?;
         Ok(())
     }
@@ -117,7 +120,7 @@ impl<S: RegistryStore> RegistryStore for MonotonicStore<S> {
             return Ok(());
         }
         self.snapshot()?;
-        self.inner.append_ack(ack)?;
+        self.inner.borrow_mut().append_ack(ack)?;
         self.snapshot()?;
         Ok(())
     }

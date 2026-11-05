@@ -4,6 +4,7 @@ use super::{
     now,
     process::{self, OwnedChild},
     projection,
+    services::Publisher,
     store::{MonotonicStore, preserves},
 };
 use std::{
@@ -69,6 +70,7 @@ pub(super) fn worker(
     while !stop.load(Ordering::Acquire) {
         if Instant::now() >= next {
             controller.reconcile_or_isolate();
+            controller.refresh_services();
             next = Instant::now() + Duration::from_secs(2);
         }
         match rx.recv_timeout(
@@ -107,7 +109,9 @@ pub(super) fn worker(
 }
 
 fn wait_for_broker(control: &Control) {
-    while !control.broker_drained.load(Ordering::Acquire) {
+    while !control.broker_drained.load(Ordering::Acquire)
+        || !control.services_drained.load(Ordering::Acquire)
+    {
         thread::sleep(Duration::from_millis(25));
     }
 }
@@ -120,6 +124,8 @@ struct Controller {
     // This wrapper is required: runtime performs several reads within one RPC.
     runtime: ServerRuntime<MonotonicStore<CorrosionStore>>,
     known: Rc<RefCell<RegistrySnapshot>>,
+    service_store: Rc<RefCell<CorrosionStore>>,
+    publisher: Publisher,
     child: OwnedChild,
     token: Zeroizing<String>,
     gossip_hash: [u8; 32],
@@ -199,6 +205,7 @@ impl Controller {
         projection::write_corrosion(
             &config, &data_dir, &directory, &keys, &bundle, &seeds, &token,
         )?;
+        let publisher = Publisher::open(&config, &data_dir)?;
         let mut child = OwnedChild::corrosion(&config, &data_dir)?;
         let startup = (|| -> Result<_> {
             let mut store = CorrosionStore::new(
@@ -248,6 +255,7 @@ impl Controller {
                     directory.write(name, b"")?;
                 }
             }
+            let service_store = guarded.shared();
             let runtime = ServerRuntime::open(
                 guarded,
                 LocalDeviceKeys::load(&root.join(&config.files.keys))?,
@@ -260,9 +268,9 @@ impl Controller {
                 &root.join("runtime.db"),
             )?;
             directory.write("bootstrap-complete", b"1\n")?;
-            Ok((runtime, shared))
+            Ok((runtime, shared, service_store))
         })();
-        let (runtime, shared) = match startup {
+        let (runtime, shared, service_store) = match startup {
             Ok(value) => value,
             Err(error) => {
                 if stop.load(Ordering::Acquire) {
@@ -279,6 +287,8 @@ impl Controller {
             keys,
             runtime,
             known: shared,
+            service_store,
+            publisher,
             child,
             token,
             gossip_hash: gossip_hash(&bundle, &seeds)?,
@@ -424,6 +434,50 @@ impl Controller {
             if let Err(error) = self.isolate() {
                 tracing::error!(error = %error, "native agent host isolation not acknowledged");
             }
+        }
+    }
+    fn refresh_services(&mut self) {
+        if !self.ready || self.stop.load(Ordering::Acquire) {
+            return;
+        }
+        let result = (|| -> Result<()> {
+            let time = now()?;
+            let snapshot = self.runtime.desired_host_state(time)?.snapshot;
+            if !self.control.matches(&snapshot) {
+                self.withdraw();
+                return Err(AgentError::Invalid(
+                    "service membership changed before read",
+                ));
+            }
+            let leases = self.publisher.refresh(
+                &self.config,
+                &self.keys,
+                &self.service_store.borrow(),
+                &snapshot,
+                time,
+            )?;
+            // Do not re-stamp cached data after failure or a slow helper. Capture
+            // this read's timestamp before enforcing/checking the current state.
+            let observed_at = now()?;
+            self.reconcile_or_isolate();
+            if !self.ready {
+                return Err(AgentError::Invalid("service enforcement unavailable"));
+            }
+            self.control.publish_services(
+                &crate::native_services::ServiceSnapshot {
+                    observed_at,
+                    registry: snapshot,
+                    leases,
+                },
+                now()?,
+            )
+        })();
+        if let Err(error) = result {
+            self.control.clear_services();
+            tracing::warn!(error = %error, "native service refresh failed closed");
+            // Registry errors also need authoritative denial/host reconciliation;
+            // an unavailable service table alone must not disable admin repair.
+            self.reconcile_or_isolate();
         }
     }
     fn handle(&mut self, request: AgentRequest) -> AgentResponse {

@@ -125,6 +125,9 @@ impl NodeConfig {
 }
 
 const RESERVED: &[&str] = &[
+    "local-services.json",
+    "services.json",
+    "service-publication.json",
     "agent.sock",
     "desired.json",
     "known-registry.json",

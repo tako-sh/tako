@@ -15,6 +15,8 @@ pub(super) struct Control {
     pub stop: Arc<AtomicBool>,
     pub isolate: Arc<AtomicBool>,
     pub broker_drained: Arc<AtomicBool>,
+    pub services_drained: Arc<AtomicBool>,
+    services: Option<Arc<super::services::Shared>>,
     membership: watch::Sender<Option<RegistrySnapshot>>,
     shutdown: watch::Sender<bool>,
 }
@@ -31,6 +33,8 @@ impl Control {
                 stop: Arc::new(AtomicBool::new(false)),
                 isolate: Arc::new(AtomicBool::new(false)),
                 broker_drained: Arc::new(AtomicBool::new(false)),
+                services_drained: Arc::new(AtomicBool::new(true)),
+                services: None,
                 membership,
                 shutdown,
             },
@@ -38,9 +42,41 @@ impl Control {
             shutdown_rx,
         )
     }
+    pub fn attach_services(&mut self, services: Arc<super::services::Shared>) {
+        self.services = Some(services);
+        self.services_drained.store(false, Ordering::Release);
+    }
+    pub fn clear_services(&self) {
+        if let Some(services) = &self.services {
+            if let Err(error) = services.clear() {
+                tracing::error!(error = %error, "service view cleared; proxy file withdrawal failed (old file expires within 15 seconds)");
+            }
+        }
+    }
+    pub fn publish_services(
+        &self,
+        snapshot: &crate::native_services::ServiceSnapshot,
+        now: u64,
+    ) -> Result<()> {
+        let membership = self.membership.borrow();
+        if self.stop.load(Ordering::Acquire)
+            || membership.as_ref() != Some(&authority(&snapshot.registry))
+        {
+            return Err(AgentError::Invalid(
+                "service membership is no longer enforced",
+            ));
+        }
+        // Keep the read gate until publication completes: withdrawal waits, then
+        // clears the directory/file. A late result cannot resurrect availability.
+        self.services
+            .as_ref()
+            .ok_or(AgentError::Invalid("service directory absent"))?
+            .publish(snapshot, now)
+    }
     pub fn withdraw(&self) {
         self.membership
             .send_if_modified(|current| current.take().is_some());
+        self.clear_services();
     }
     pub fn shutdown(&self, failed: bool) {
         if failed {
@@ -98,24 +134,43 @@ fn authority(snapshot: &RegistrySnapshot) -> RegistrySnapshot {
 pub(super) struct BrokerOwner {
     control: Control,
     finished: bool,
+    services: bool,
 }
 impl BrokerOwner {
     pub fn new(control: Control) -> Self {
         Self {
             control,
             finished: false,
+            services: false,
+        }
+    }
+    pub fn services(control: Control) -> Self {
+        Self {
+            control,
+            finished: false,
+            services: true,
+        }
+    }
+    fn finished(&self, failed: bool) {
+        if self.services {
+            if failed {
+                self.control.shutdown(true);
+            }
+            self.control.services_drained.store(true, Ordering::Release);
+        } else {
+            self.control.broker_finished(failed);
         }
     }
     pub fn complete(&mut self, failed: bool) {
         let unexpected = !self.control.stop.load(Ordering::Acquire);
-        self.control.broker_finished(failed || unexpected);
+        self.finished(failed || unexpected);
         self.finished = true;
     }
 }
 impl Drop for BrokerOwner {
     fn drop(&mut self) {
         if !self.finished {
-            self.control.broker_finished(true);
+            self.finished(true);
         }
     }
 }

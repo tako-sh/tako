@@ -3,6 +3,7 @@ use super::{
     QUEUE_SIZE, Result,
     controller::{self, Work},
     lifecycle::{self, BrokerOwner, Control},
+    services,
 };
 use std::{
     os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt},
@@ -179,7 +180,12 @@ pub async fn run(data_dir: &Path) -> Result<()> {
     let boot = BootId::random()?;
     let (tx, rx) = mpsc::sync_channel(QUEUE_SIZE);
     let (finished_tx, mut finished_rx) = oneshot::channel();
-    let (control, membership, broker_shutdown) = Control::new();
+    let (mut control, membership, broker_shutdown) = Control::new();
+    let services = services::Shared::open(&config, data_dir)?;
+    control.attach_services(services.clone());
+    let service_config = config.clone();
+    let service_membership = membership.clone();
+    let service_shutdown = broker_shutdown.clone();
     let worker_control = control.clone();
     let broker_config = config.clone();
     let broker_data_dir = data_dir.to_owned();
@@ -207,13 +213,32 @@ pub async fn run(data_dir: &Path) -> Result<()> {
         owner.complete(result.is_err());
         result
     });
+    let service_control = control.clone();
+    let mut service_task = tokio::spawn(async move {
+        let mut owner = BrokerOwner::services(service_control.clone());
+        let result = services::run(
+            services,
+            service_config,
+            service_membership,
+            service_shutdown,
+            service_control,
+        )
+        .await;
+        owner.complete(result.is_err());
+        result
+    });
     let permits = Arc::new(Semaphore::new(CONNECTIONS));
     let mut tasks = JoinSet::new();
     let mut worker_done = false;
     let mut broker_done = false;
+    let mut services_done = false;
     let outcome = loop {
         tokio::select! {
             biased;
+            result = &mut service_task => {
+                services_done = true;
+                break services_outcome(result, false);
+            }
             result = &mut broker => {
                 broker_done = true;
                 break broker_outcome(result, false);
@@ -256,6 +281,14 @@ pub async fn run(data_dir: &Path) -> Result<()> {
         if broker_result.is_err() {
             control.shutdown(true);
         }
+        let service_result = if services_done {
+            Ok(())
+        } else {
+            services_outcome((&mut service_task).await, true)
+        };
+        if service_result.is_err() {
+            control.shutdown(true);
+        }
         let worker_result = if worker_done {
             Ok(())
         } else {
@@ -264,9 +297,9 @@ pub async fn run(data_dir: &Path) -> Result<()> {
                 .map_err(|_| AgentError::Invalid("controller thread failed during shutdown"))
                 .and_then(|result| result)
         };
-        (broker_result, worker_result)
+        (broker_result, service_result, worker_result)
     };
-    let (broker_result, worker_result) =
+    let (broker_result, service_result, worker_result) =
         match lifecycle::drain(lifecycle::DRAIN_DEADLINE, joins).await {
             Ok(results) => results,
             Err(_) => lifecycle::drain_timeout(),
@@ -277,7 +310,22 @@ pub async fn run(data_dir: &Path) -> Result<()> {
         .join()
         .map_err(|_| AgentError::Invalid("controller thread panicked"));
     drop(lock);
-    outcome.and(broker_result).and(worker_result).and(joined)
+    outcome
+        .and(broker_result)
+        .and(service_result)
+        .and(worker_result)
+        .and(joined)
+}
+fn services_outcome(
+    result: std::result::Result<std::io::Result<()>, tokio::task::JoinError>,
+    stopping: bool,
+) -> Result<()> {
+    match result {
+        Ok(Ok(())) if stopping => Ok(()),
+        Ok(Ok(())) => Err(AgentError::Invalid("service DNS exited unexpectedly")),
+        Ok(Err(error)) => Err(error.into()),
+        Err(_) => Err(AgentError::Invalid("service DNS task failed")),
+    }
 }
 fn broker_outcome(
     result: std::result::Result<std::io::Result<()>, tokio::task::JoinError>,
