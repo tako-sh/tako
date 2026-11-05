@@ -30,9 +30,16 @@ export function serviceManifest(service: ServiceDefinition): {
   name: string;
   operations: ServiceJson;
 } {
-  return JSON.parse(
-    serializeServiceDocument({ name: service.name, operations: service.operations }),
-  ) as { name: string; operations: ServiceJson };
+  const operations = Object.fromEntries(
+    Object.entries(service.operations).map(([name, operation]) => [
+      name,
+      { ...operation, ...(operation.body ? { bodyRequired: !operation.body[OptionalKind] } : {}) },
+    ]),
+  );
+  return JSON.parse(serializeServiceDocument({ name: service.name, operations })) as {
+    name: string;
+    operations: ServiceJson;
+  };
 }
 
 export function serviceOpenApi(services: readonly ServiceDefinition[]) {
