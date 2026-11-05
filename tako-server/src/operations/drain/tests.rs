@@ -519,7 +519,7 @@ async fn proxy_guard_without_transport_keeps_activity_after_force_until_it_drops
     let report = response.data().unwrap();
     assert_eq!(report["completed"], false);
     assert_eq!(report["forced_proxy_requests"], 1);
-    assert_eq!(report["forced_proxy_transports"], 0);
+    assert_eq!(report["forced_proxy_shutdown_requests"], 0);
     assert_eq!(report["remaining_proxy_requests"], 1);
     assert!(state.drain_activity.lock().is_some());
     assert!(state.proxy_requests.register(None).is_none());
@@ -556,4 +556,59 @@ async fn remote_proxy_guard_prevents_global_completion_after_local_apps_stop() {
     );
     let restarted = open_state(dir.path());
     assert!(restarted.proxy_requests.register(None).is_none());
+}
+
+#[tokio::test]
+async fn prelock_deadline_requests_shutdown_without_releasing_live_guards_or_activity() {
+    let (_dir, state) = fixture();
+    let management = state.management_lock.lock().await;
+    // Non-socket descriptors exercise shutdown requests, including syscall failure,
+    // without opening sockets. Separate guards count separately, even for duplicate FDs.
+    let file = std::fs::File::open("/dev/null").unwrap();
+    let first = state
+        .proxy_requests
+        .register(Some(file.try_clone().unwrap().into()))
+        .unwrap();
+    let second = state.proxy_requests.register(Some(file.into())).unwrap();
+    let socketless = state.proxy_requests.register(None).unwrap();
+
+    let response = tokio::time::timeout(
+        Duration::from_millis(100),
+        state.drain_server_before_management(0),
+    )
+    .await
+    .unwrap();
+    let report = response.data().unwrap();
+    assert_eq!(report["forced_proxy_requests"], 3);
+    assert_eq!(report["forced_proxy_shutdown_requests"], 2);
+    assert_eq!(report["remaining_proxy_requests"], 3);
+    assert_eq!(report["completed"], false);
+    assert_eq!(report["local_completed"], false);
+    assert_eq!(report["timed_out"], true);
+    assert!(state.state_store.drain_requested().unwrap());
+    assert!(state.drain_activity.lock().is_some());
+    assert!(
+        state
+            .state_store
+            .try_drain_activity(true)
+            .unwrap()
+            .is_none()
+    );
+    assert!(state.proxy_requests.register(None).is_none());
+
+    let retry = state.drain_server_before_management(0).await;
+    assert_eq!(retry.data().unwrap()["forced_proxy_shutdown_requests"], 0);
+    assert_eq!(retry.data().unwrap()["remaining_proxy_requests"], 3);
+    drop((first, second, socketless));
+    drop(management);
+    state.observe_drain_once().await.unwrap();
+    assert!(state.drain_activity.lock().is_none());
+    assert_eq!(
+        state
+            .drain_server_before_management(0)
+            .await
+            .data()
+            .unwrap()["completed"],
+        true
+    );
 }

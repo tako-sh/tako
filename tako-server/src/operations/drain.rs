@@ -19,7 +19,7 @@ pub(crate) struct DrainReport {
     forced_instances: usize,
     forced_http_requests: u64,
     forced_proxy_requests: usize,
-    forced_proxy_transports: usize,
+    forced_proxy_shutdown_requests: usize,
     remaining_proxy_requests: usize,
     forced_workflow_workers: usize,
     remaining_instances: usize,
@@ -118,10 +118,15 @@ impl crate::ServerState {
         {
             Ok(guard) => guard,
             Err(_) => {
+                let forced_proxy_requests = self.proxy_requests.active_count();
+                let forced_proxy_shutdown_requests = self.proxy_requests.force_drain();
                 return Response::ok(serde_json::json!({
                     "status": "draining", "completed": false, "local_completed": false,
                     "other_processes_quiescent": false, "counts_scope": "local_process",
                     "timed_out": true, "http_drained": false,
+                    "forced_proxy_requests": forced_proxy_requests,
+                    "forced_proxy_shutdown_requests": forced_proxy_shutdown_requests,
+                    "remaining_proxy_requests": self.proxy_requests.active_count(),
                     "errors": ["Drain intent persisted; an existing management operation exceeded the drain deadline. Local cleanup will continue through the observer."]
                 }));
             }
@@ -215,7 +220,7 @@ impl crate::ServerState {
             .map(|(_, instance)| instance.in_flight())
             .sum();
         let forced_proxy_requests = self.proxy_requests.active_count();
-        let forced_proxy_transports = if forced_proxy_requests > 0 {
+        let forced_proxy_shutdown_requests = if forced_proxy_requests > 0 {
             self.proxy_requests.force_drain()
         } else {
             0
@@ -235,7 +240,7 @@ impl crate::ServerState {
             forced_instances,
             forced_http_requests,
             forced_proxy_requests,
-            forced_proxy_transports,
+            forced_proxy_shutdown_requests,
             remaining_proxy_requests: self.proxy_requests.active_count(),
             forced_workflow_workers,
             remaining_instances: 0,
