@@ -29,6 +29,7 @@ export type ServiceInput<O extends ServiceOperation> = InputField<O, "params"> &
 export type ServiceResponse<O extends ServiceOperation> = {
   [S in keyof O["responses"] & number]: {
     status: S;
+    headers?: HeadersInit;
     body: O["responses"][S] extends TSchema ? Static<O["responses"][S]> : undefined;
   }
 }[keyof O["responses"] & number];
@@ -41,12 +42,12 @@ export function assertServiceSchema(schema: TSchema): void {
   if (!schemaKinds.has(schema[Kind]) || TransformKind in schema || "$ref" in schema || "format" in schema) {
     throw new Error(`Unsupported service schema '${schema[Kind]}'. Use inline JSON schemas without transforms, references, or formats.`);
   }
-  if (schema.type === "object") {
-    for (const child of Object.values(schema.properties ?? {})) assertServiceSchema(child as TSchema);
-    if (schema.additionalProperties && typeof schema.additionalProperties === "object") assertServiceSchema(schema.additionalProperties as TSchema);
-    if (schema.patternProperties) throw new Error("Service schemas do not support patternProperties.");
+  if (schema["type"] === "object") {
+    for (const child of Object.values(schema["properties"] ?? {})) assertServiceSchema(child as TSchema);
+    if (schema["additionalProperties"] && typeof schema["additionalProperties"] === "object") assertServiceSchema(schema["additionalProperties"] as TSchema);
+    if (schema["patternProperties"]) throw new Error("Service schemas do not support patternProperties.");
   }
-  if (schema.type === "array") assertServiceSchema(schema.items as TSchema);
+  if (schema["type"] === "array") assertServiceSchema(schema["items"] as TSchema);
   for (const key of ["anyOf", "allOf"] as const) {
     for (const child of (schema[key] ?? []) as TSchema[]) assertServiceSchema(child);
   }
@@ -61,10 +62,10 @@ export function assertServiceSchema(schema: TSchema): void {
 function assertParameters(schema: TObject | undefined, path: boolean): void {
   if (!schema) return;
   if (schema[Kind] !== "Object") throw new Error("HTTP params and query must be object schemas.");
-  if (schema.additionalProperties) throw new Error("HTTP parameters cannot declare additional properties.");
-  for (const field of Object.values(schema.properties)) {
-    const scalar = !path && field.type === "array" ? field.items as TSchema : field;
-    if (!(path ? ["string"] : ["string", "number", "integer", "boolean"]).includes(scalar.type as string)) {
+  if (schema["additionalProperties"]) throw new Error("HTTP parameters cannot declare additional properties.");
+  for (const field of Object.values(schema["properties"])) {
+    const scalar = !path && field["type"] === "array" ? field["items"] as TSchema : field;
+    if (!(path ? ["string"] : ["string", "number", "integer", "boolean"]).includes(scalar["type"] as string)) {
       throw new Error("Path params must be strings; query fields must be scalars or arrays of scalars.");
     }
     if (path && field[OptionalKind]) throw new Error("Path params must be required.");
@@ -87,7 +88,7 @@ export function defineService<const Operations extends Record<string, ServiceOpe
     if (routes.has(route)) throw new Error(`Duplicate HTTP route '${route}'.`);
     routes.add(route);
     const params = [...operation.path.matchAll(/\{([^}]+)\}/g)].map((match) => match[1]!);
-    const keys = Object.keys(operation.params?.properties ?? {});
+    const keys = Object.keys(operation.params?.["properties"] ?? {});
     if (new Set(params).size !== params.length || params.length !== keys.length || params.some((key) => !keys.includes(key))) {
       throw new Error(`Path placeholders and params schema must match for '${id}'.`);
     }
