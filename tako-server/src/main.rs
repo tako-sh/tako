@@ -20,12 +20,14 @@ mod management_auth;
 mod management_http;
 mod metrics;
 mod native_agent;
-#[cfg(target_os = "linux")]
+mod native_channel_client;
 mod native_channels;
 mod native_control;
 #[cfg(target_os = "linux")]
 mod native_management;
 mod native_management_policy;
+mod native_proxy;
+mod native_services;
 mod network_bootstrap;
 mod object_storage;
 mod operations;

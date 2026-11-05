@@ -1,6 +1,7 @@
 mod backend;
 mod channels;
 mod image;
+mod native;
 mod static_handler;
 
 pub(crate) use backend::BackendResolution;
@@ -39,6 +40,8 @@ impl TakoProxy {
 }
 
 pub struct RequestCtx {
+    pub(super) private_request: bool,
+    pub(super) native_remote: Option<std::net::Ipv6Addr>,
     pub(super) backend: Option<Backend>,
     pub(super) backend_request_started: bool,
     pub(super) is_https: bool,
@@ -101,6 +104,8 @@ impl ProxyHttp for TakoProxy {
 
     fn new_ctx(&self) -> Self::CTX {
         RequestCtx {
+            private_request: false,
+            native_remote: None,
             backend: None,
             backend_request_started: false,
             is_https: false,
@@ -125,6 +130,9 @@ impl ProxyHttp for TakoProxy {
             ctx.observation.set_handler("network", "control");
             return control.handle(session).await;
         }
+        if self.draining.load(std::sync::atomic::Ordering::Acquire) {
+            return native::reject(session, 503).await;
+        }
 
         if let Some(cl) = session
             .req_header()
@@ -144,12 +152,48 @@ impl ProxyHttp for TakoProxy {
             return Ok(true);
         }
 
+        let private_app = match self.native_route(session) {
+            crate::native_services::PrivateRoute::Public => None,
+            crate::native_services::PrivateRoute::Forbidden => {
+                return native::reject(session, 403).await;
+            }
+            crate::native_services::PrivateRoute::Unavailable => {
+                return native::reject(session, 503).await;
+            }
+            crate::native_services::PrivateRoute::Local(app) => {
+                ctx.private_request = true;
+                native::strip_credentials(session.req_header_mut());
+                Some(app.to_string())
+            }
+            crate::native_services::PrivateRoute::Remote { app, address } => {
+                ctx.private_request = true;
+                ctx.native_remote = Some(address);
+                native::strip_credentials(session.req_header_mut());
+                let peer = native::socket_addresses(session).1;
+                if let Some(peer) = peer {
+                    if !self.ip_tracker.try_acquire(peer) {
+                        return native::reject(session, 429).await;
+                    }
+                    ctx.client_ip = Some(peer);
+                }
+                ctx.observation.set_app_route(&app.to_string(), None);
+                ctx.observation.set_handler("network", "remote_service");
+                ctx.start_request_metrics(&app.to_string(), self.metrics_enabled());
+                return Ok(false);
+            }
+        };
         let path = session.req_header().uri.path();
         let host = request_host(session.req_header());
         let hostname = host.split(':').next().unwrap_or(host);
 
         let route_lookup_started_at = Instant::now();
-        let route_match = self.routes.read().select_with_route(hostname, path);
+        let route_match = private_app
+            .map(|app| crate::routing::SelectedRoute {
+                app: app.into(),
+                path: None,
+                source_ip: tako_core::SourceIpMode::Direct,
+            })
+            .or_else(|| self.routes.read().select_with_route(hostname, path));
         ctx.observation
             .set_route_lookup_elapsed(route_lookup_started_at.elapsed());
 
@@ -207,7 +251,8 @@ impl ProxyHttp for TakoProxy {
             }
         }
 
-        if let Some(ref handler) = self.challenge_handler
+        if !ctx.private_request
+            && let Some(ref handler) = self.challenge_handler
             && handler.is_challenge_request(path)
         {
             if let Some(response) = handler.handle_challenge(path) {
@@ -236,7 +281,7 @@ impl ProxyHttp for TakoProxy {
             }
         }
 
-        if !path.starts_with("/.well-known/acme-challenge/") {
+        if !ctx.private_request && !path.starts_with("/.well-known/acme-challenge/") {
             let transport_https = session
                 .digest()
                 .map(|d| d.ssl_digest.is_some())
@@ -436,7 +481,10 @@ impl ProxyHttp for TakoProxy {
         Ok(())
     }
 
-    fn request_cache_filter(&self, session: &mut Session, _ctx: &mut Self::CTX) -> Result<()> {
+    fn request_cache_filter(&self, session: &mut Session, ctx: &mut Self::CTX) -> Result<()> {
+        if ctx.private_request {
+            return Ok(());
+        }
         let Some(cache) = self.response_cache else {
             return Ok(());
         };
@@ -512,6 +560,25 @@ impl ProxyHttp for TakoProxy {
         _session: &mut Session,
         ctx: &mut Self::CTX,
     ) -> Result<Box<HttpPeer>> {
+        if let Some(address) = ctx.native_remote {
+            let local = self
+                .native_services
+                .as_ref()
+                .ok_or_else(|| Error::new(ErrorType::ConnectNoRoute))?
+                .address;
+            let mut peer = HttpPeer::new(
+                std::net::SocketAddr::from((address, 80)),
+                false,
+                String::new(),
+            );
+            let mut bind = pingora_core::connectors::l4::BindTo::default();
+            bind.addr = Some((local, 0).into());
+            peer.options.bind_to = Some(bind);
+            peer.options.connection_timeout = Some(Duration::from_secs(5));
+            peer.options.read_timeout = Some(Duration::from_secs(60));
+            peer.options.write_timeout = Some(Duration::from_secs(30));
+            return Ok(Box::new(peer));
+        }
         // ctx.is_https was already computed in request_filter
 
         let backend = ctx
@@ -563,8 +630,16 @@ impl ProxyHttp for TakoProxy {
 
         let _ = upstream_request.remove_header("Forwarded");
         let _ = upstream_request.remove_header("X-Tako-Internal-Token");
+        native::strip_credentials(upstream_request);
 
         ctx.mark_backend_request_started();
+        if self.draining.load(std::sync::atomic::Ordering::Acquire) {
+            ctx.finish_backend_request();
+            return Err(Error::explain(
+                ErrorType::HTTPStatus(503),
+                "Server is draining",
+            ));
+        }
 
         ctx.start_upstream_metrics(self.metrics_enabled());
 

@@ -23,7 +23,11 @@ pub(crate) struct PublicListenerEndpoint {
 }
 
 pub(crate) struct ServerBuildConfig {
+    pub(crate) draining: Arc<std::sync::atomic::AtomicBool>,
+    pub(crate) lifecycle_lock: Arc<tokio::sync::Mutex<()>>,
     pub(crate) native_control: Option<Arc<crate::native_control::NativeControl>>,
+    pub(crate) native_channels: Option<crate::native_channels::Client>,
+    pub(crate) native_services: Option<Arc<crate::native_proxy::NativeProxy>>,
     pub(crate) lb: Arc<LoadBalancer>,
     pub(crate) routes: Arc<RwLock<RouteTable>>,
     pub(crate) config: ProxyConfig,
@@ -37,7 +41,11 @@ pub(crate) struct ServerBuildConfig {
 /// Build and start the Pingora server with ACME and SNI support
 pub(crate) fn build_server_with_acme(build: ServerBuildConfig) -> Result<Server> {
     let ServerBuildConfig {
+        draining,
+        lifecycle_lock,
         native_control,
+        native_channels,
+        native_services,
         lb,
         routes,
         config,
@@ -47,6 +55,22 @@ pub(crate) fn build_server_with_acme(build: ServerBuildConfig) -> Result<Server>
         cloudflare_ips,
         channel_postgres_url,
     } = build;
+
+    if native_control.is_some() && config.trusted_proxy.proxy_protocol {
+        return Err(Error::explain(
+            ErrorType::InternalError,
+            "Native network management requires direct TLS; a server-wide mandatory PROXY protocol listener cannot serve native clients",
+        ));
+    }
+    let private_endpoints = native_services
+        .as_ref()
+        .filter(|_| config.http_port != 80)
+        .map(|services| {
+            [
+                format!("[{}]:80", services.address),
+                format!("{}:80", services.gateway),
+            ]
+        });
 
     let mut server = Server::new_with_opt_and_conf(None, proxy_server_conf()?);
     server.bootstrap();
@@ -70,6 +94,12 @@ pub(crate) fn build_server_with_acme(build: ServerBuildConfig) -> Result<Server>
         )
     };
     proxy.native_control = native_control;
+    proxy.native_services = native_services;
+    proxy.draining = draining;
+    proxy.lifecycle_lock = lifecycle_lock;
+    if let Some(client) = native_channels {
+        proxy.set_native_channel_client(client);
+    }
     if let Some(resolver) = channel_postgres_url {
         proxy.set_channel_postgres_url_resolver(resolver);
     }
@@ -121,6 +151,18 @@ pub(crate) fn build_server_with_acme(build: ServerBuildConfig) -> Result<Server>
         let http_endpoints = public_listener_endpoints(config.http_port);
         for endpoint in &http_endpoints {
             proxy_service.add_tcp_with_settings(&endpoint.addr, endpoint.options.clone());
+        }
+
+        #[cfg(target_os = "linux")]
+        if let Some(endpoints) = private_endpoints {
+            for addr in endpoints {
+                let mut options = TcpSocketOptions::default();
+                options.freebind = true;
+                if addr.starts_with('[') {
+                    options.ipv6_only = Some(true);
+                }
+                proxy_service.add_tcp_with_settings(&addr, options);
+            }
         }
 
         if config.enable_https {

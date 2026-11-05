@@ -95,6 +95,14 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     }
     let native_control =
         crate::native_control::NativeControl::load(&data_dir, &cert_manager)?.map(Arc::new);
+    let native_channels = crate::server_state::native_channel_client(&data_dir)?;
+    let native_config = native_control
+        .as_ref()
+        .map(|_| tako_network::NodeConfig::load(&data_dir))
+        .transpose()?;
+    if let Some(config) = &native_config {
+        crate::compose_runtime::configure_native_network(&config.network.id)?;
+    }
 
     let (_socket_server, socket_listener) = if standby {
         (None, None)
@@ -194,6 +202,12 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         tracing::error!("Failed to restore server state from SQLite: {}", e);
         return Err(e.into());
     }
+    let native_services = native_config
+        .as_ref()
+        .map(|config| {
+            crate::native_proxy::NativeProxy::start(&rt, state.clone(), config, state.drain_flag())
+        })
+        .transpose()?;
 
     let cloudflare_ips = proxy::CloudflareIpRanges::default();
     tracing::info!(
@@ -287,7 +301,11 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let server = proxy::build_server_with_acme(proxy::ServerBuildConfig {
+        draining: state.drain_flag(),
+        lifecycle_lock: state.management_lock.clone(),
         native_control,
+        native_channels,
+        native_services,
         lb: state.load_balancer(),
         routes: state.routes(),
         config: proxy_config,

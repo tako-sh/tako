@@ -22,8 +22,9 @@ pub(crate) use server::{ServerBuildConfig, build_server_with_acme};
 #[allow(unused_imports)]
 pub use static_files::*;
 
-use crate::channels::{ChannelStore, registry::ChannelRegistry};
+use crate::channels::registry::ChannelRegistry;
 use crate::lb::LoadBalancer;
+use crate::native_channel_client::ProxyChannelStore;
 use crate::routing::RouteTable;
 use crate::scaling::ColdStartManager;
 use crate::tls::{ChallengeHandler, ChallengeTokens};
@@ -52,6 +53,9 @@ pub(crate) use limits::MAX_REQUEST_BODY_BYTES;
 /// Tako HTTP proxy service
 pub struct TakoProxy {
     native_control: Option<Arc<crate::native_control::NativeControl>>,
+    native_services: Option<Arc<crate::native_proxy::NativeProxy>>,
+    draining: Arc<std::sync::atomic::AtomicBool>,
+    lifecycle_lock: Arc<tokio::sync::Mutex<()>>,
     /// Load balancer
     lb: Arc<LoadBalancer>,
     /// Route table (app_name -> route patterns)
@@ -70,7 +74,8 @@ pub struct TakoProxy {
     /// Reused per-app channel stores. Keyed by deployed app id; opened
     /// lazily the first time an app's channel route is hit and dropped
     /// when the app is unregistered.
-    channel_stores: SyncRwLock<HashMap<String, Arc<tokio::sync::OnceCell<Arc<ChannelStore>>>>>,
+    channel_stores: SyncRwLock<HashMap<String, Arc<tokio::sync::OnceCell<Arc<ProxyChannelStore>>>>>,
+    native_channels: SyncRwLock<Option<crate::native_channels::Client>>,
     channel_postgres_url: SyncRwLock<Option<ChannelPostgresUrlResolver>>,
     /// Per-IP concurrent request limiter (DDoS mitigation)
     ip_tracker: IpRequestTracker,
@@ -80,7 +85,8 @@ pub struct TakoProxy {
     channel_registry: ChannelRegistry,
 }
 
-pub(crate) type ChannelPostgresUrlResolver = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+pub(crate) type ChannelPostgresUrlResolver =
+    Arc<dyn Fn(&str) -> std::result::Result<Option<String>, String> + Send + Sync>;
 
 impl TakoProxy {
     fn metrics_enabled(&self) -> bool {
@@ -100,6 +106,9 @@ impl TakoProxy {
             .map(ResponseCacheRuntime::new);
         Self {
             native_control: None,
+            native_services: None,
+            draining: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            lifecycle_lock: Arc::new(tokio::sync::Mutex::new(())),
             lb,
             routes,
             config,
@@ -108,6 +117,7 @@ impl TakoProxy {
             response_cache,
             static_servers: SyncRwLock::new(HashMap::new()),
             channel_stores: SyncRwLock::new(HashMap::new()),
+            native_channels: SyncRwLock::new(None),
             channel_postgres_url: SyncRwLock::new(None),
             ip_tracker: IpRequestTracker::new(),
             cloudflare_ips,
@@ -130,6 +140,9 @@ impl TakoProxy {
             .map(ResponseCacheRuntime::new);
         Self {
             native_control: None,
+            native_services: None,
+            draining: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            lifecycle_lock: Arc::new(tokio::sync::Mutex::new(())),
             lb,
             routes,
             config,
@@ -138,6 +151,7 @@ impl TakoProxy {
             response_cache,
             static_servers: SyncRwLock::new(HashMap::new()),
             channel_stores: SyncRwLock::new(HashMap::new()),
+            native_channels: SyncRwLock::new(None),
             channel_postgres_url: SyncRwLock::new(None),
             ip_tracker: IpRequestTracker::new(),
             cloudflare_ips,
@@ -147,6 +161,10 @@ impl TakoProxy {
 
     pub(crate) fn set_channel_postgres_url_resolver(&self, resolver: ChannelPostgresUrlResolver) {
         *self.channel_postgres_url.write() = Some(resolver);
+    }
+
+    pub(crate) fn set_native_channel_client(&self, client: crate::native_channels::Client) {
+        *self.native_channels.write() = Some(client);
     }
 }
 

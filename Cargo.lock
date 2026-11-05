@@ -5960,6 +5960,7 @@ dependencies = [
  "flate2",
  "h2",
  "hex",
+ "hickory-proto",
  "hostname",
  "http-body-util",
  "hyper",
