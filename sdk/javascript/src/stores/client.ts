@@ -1,4 +1,4 @@
-import { SseReader } from "../channels/sse-reader";
+import { SseReader, type SseRecoveryReason } from "../channels/sse-reader";
 import {
   defaultStoreCache,
   mutateStoreCache,
@@ -27,6 +27,8 @@ export interface StoreOptions {
   fetch?: typeof fetch;
   /** Optional offline persistence adapter. Defaults to bounded IndexedDB storage. */
   cache?: StoreCache;
+  /** Reports automatic subscription recovery outside the store data. */
+  onRecovery?: (reason: SseRecoveryReason) => void;
 }
 
 export interface StoreSnapshot<T> {
@@ -177,6 +179,8 @@ export class Store<T = unknown> {
   private pending: Promise<void> | undefined;
   private unregisterCache: (() => void) | undefined;
   private cacheRevision: number;
+  private failure: { error: Error; quiet: boolean; stream: boolean } | null = null;
+  private readRevision = 0;
 
   constructor(
     readonly name: string,
@@ -252,8 +256,9 @@ export class Store<T = unknown> {
     this.state = Object.freeze(state);
     this.expiredState = Object.freeze({
       data: undefined,
-      status: state.status === "offline" ? "offline" : "loading",
-      error: state.error,
+      status:
+        state.status === "error" ? "error" : state.status === "offline" ? "offline" : "loading",
+      error: state.error ?? this.failure?.error ?? null,
       isStale: true,
     });
     for (const listener of this.listeners) listener();
@@ -322,7 +327,7 @@ export class Store<T = unknown> {
     if (!this.blocked) void this.load();
   };
   private readonly onOffline = (): void => {
-    this.disconnected(new Error(`Store "${this.name}" is offline.`));
+    this.disconnected(new Error(`Store "${this.name}" is offline.`), { quiet: true });
   };
   private readonly onVisible = (): void => {
     this.expire();
@@ -345,7 +350,11 @@ export class Store<T = unknown> {
         headers: this.headers,
         fetch: (async (input, init) => {
           const response = await this.fetch(input, init);
-          if (generation === this.generation && terminalStatus(response.status)) {
+          if (
+            generation === this.generation &&
+            response.status !== 410 &&
+            terminalStatus(response.status)
+          ) {
             this.fail(
               new StoreRequestError(
                 `Store subscription failed (${response.status}).`,
@@ -356,6 +365,13 @@ export class Store<T = unknown> {
           return response;
         }) as typeof fetch,
         retryOnDisconnect: true,
+        onRecovery: (reason) => {
+          if (generation !== this.generation || this.blocked) return;
+          this.disconnected(new Error(`Store "${this.name}" recovery: ${reason}.`), {
+            quiet: true,
+          });
+          this.options.onRecovery?.(reason);
+        },
         onMessage: ({ data }) => {
           if (generation !== this.generation || this.blocked) return;
           try {
@@ -403,6 +419,7 @@ export class Store<T = unknown> {
   private async loadOnce(generation: number): Promise<void> {
     const request = new AbortController();
     this.request = request;
+    let receivedResponse = false;
     try {
       const url = makeURL(this.base, `/_tako/stores/${encodeURIComponent(this.name)}`, this.params);
       const response = await this.fetch(url, {
@@ -411,6 +428,7 @@ export class Store<T = unknown> {
         signal: request.signal,
         cache: "no-store",
       });
+      receivedResponse = true;
       if (!response.ok) {
         throw new StoreRequestError(`Store read failed (${response.status}).`, response.status);
       }
@@ -419,6 +437,8 @@ export class Store<T = unknown> {
         throw new Error("Store response must contain data.");
       }
       if (generation !== this.generation || request.signal.aborted) return;
+      this.readRevision++;
+      if (!this.failure?.stream || this.streamReady) this.failure = null;
       this.hasData = true;
       this.expiresAt = undefined;
       const policy = this.policy(value.offline);
@@ -461,7 +481,10 @@ export class Store<T = unknown> {
       }
     } catch (error) {
       if (generation !== this.generation || request.signal.aborted) return;
-      this.fail(asError(error));
+      this.fail(
+        asError(error),
+        !receivedResponse || (error instanceof StoreRequestError && !terminalStatus(error.status)),
+      );
     } finally {
       if (this.request === request) this.request = undefined;
     }
@@ -480,10 +503,17 @@ export class Store<T = unknown> {
   }
 
   private async hydrate(generation: number): Promise<void> {
-    if (!this.cacheKey) return;
+    if (!this.cacheKey || this.readRevision > 0) return;
+    const readRevision = this.readRevision;
     try {
       const entry = await this.cache.read(this.cacheKey);
-      if (generation !== this.generation || this.hasData || !entry) return;
+      if (
+        generation !== this.generation ||
+        readRevision !== this.readRevision ||
+        this.hasData ||
+        !entry
+      )
+        return;
       if (
         entry.key !== this.cacheKey ||
         entry.scope !== this.options.cacheScope ||
@@ -503,8 +533,8 @@ export class Store<T = unknown> {
       this.expiresAt = entry.expiresAt;
       this.emit({
         data: entry.data as T,
-        status: this.state.status === "error" ? "offline" : "ready",
-        error: this.state.error,
+        status: this.failure || this.state.status === "error" ? "offline" : "ready",
+        error: this.failure?.quiet ? null : this.state.error,
         isStale: true,
       });
       this.scheduleExpiry();
@@ -513,7 +543,7 @@ export class Store<T = unknown> {
     }
   }
 
-  private fail(error: Error): void {
+  private fail(error: Error, quiet = false): void {
     if (error instanceof StoreRequestError && terminalStatus(error.status)) {
       this.blocked = true;
       this.stop();
@@ -523,15 +553,27 @@ export class Store<T = unknown> {
       if (this.cacheKey) void this.removeCached().catch(() => {});
       return;
     }
-    this.disconnected(error, false);
+    this.disconnected(error, { disconnectStream: false, quiet });
   }
 
-  private disconnected(error: Error, disconnectStream = true): void {
+  private disconnected(
+    error: Error,
+    {
+      disconnectStream = true,
+      quiet = false,
+    }: { disconnectStream?: boolean; quiet?: boolean } = {},
+  ): void {
     if (disconnectStream) this.streamReady = false;
+    if (!quiet || !this.failure || this.failure.quiet) {
+      this.failure = { error, quiet, stream: disconnectStream };
+    }
+    const readable = this.hasData && this.expiresAt !== undefined && Date.now() < this.expiresAt;
+    const status = this.hasData ? "offline" : "error";
+    if (!readable) this.hasData = false;
     this.emit({
-      ...this.state,
-      status: this.hasData ? "offline" : "error",
-      error,
+      data: readable ? this.state.data : undefined,
+      status,
+      error: readable && this.failure.quiet ? null : this.failure.error,
       isStale: true,
     });
     this.expire();
@@ -550,8 +592,13 @@ export class Store<T = unknown> {
     this.expiresAt = undefined;
     this.emit({
       data: undefined,
-      status: this.state.status === "offline" ? "offline" : "loading",
-      error: this.state.error,
+      status:
+        this.state.status === "error"
+          ? "error"
+          : this.state.status === "offline"
+            ? "offline"
+            : "loading",
+      error: this.state.error ?? this.failure?.error ?? null,
       isStale: true,
     });
     if (this.cacheKey) void this.removeCached().catch(() => {});
