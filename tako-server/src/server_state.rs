@@ -93,6 +93,7 @@ pub struct ServerState {
     pub(crate) acme_client: AsyncRwLock<Option<Arc<AcmeClient>>>,
     pub(crate) challenge_tokens: ChallengeTokens,
     pub(crate) routes: Arc<SyncRwLock<RouteTable>>,
+    pub(crate) management_lock: Arc<tokio::sync::Mutex<()>>,
     pub(crate) deploy_locks: AsyncRwLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     prepared_deploy_ssl: AsyncRwLock<HashMap<PreparedDeployKey, PreparedDeploySsl>>,
     pub(crate) cold_start: Arc<crate::scaling::ColdStartManager>,
@@ -323,6 +324,7 @@ impl ServerState {
             acme_client: AsyncRwLock::new(acme_client),
             challenge_tokens,
             routes: Arc::new(SyncRwLock::new(RouteTable::default())),
+            management_lock: Arc::new(tokio::sync::Mutex::new(())),
             deploy_locks: AsyncRwLock::new(HashMap::new()),
             prepared_deploy_ssl: AsyncRwLock::new(HashMap::new()),
             cold_start: Arc::new(crate::scaling::ColdStartManager::new(

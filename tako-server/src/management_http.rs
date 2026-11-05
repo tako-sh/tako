@@ -323,12 +323,16 @@ async fn handle_release_artifact_upload(
         );
     }
 
+    let management_guard = state.management_lock.clone().lock_owned().await;
     let store_result = tokio::task::spawn_blocking({
         let state = state.clone();
         let app = app.clone();
         let version = version.clone();
         let temp_path = temp_path.clone();
-        move || state.store_uploaded_release_artifact(&app, &version, &temp_path)
+        move || {
+            let _guard = management_guard;
+            state.store_uploaded_release_artifact(&app, &version, &temp_path)
+        }
     })
     .await
     .unwrap_or_else(|error| Err(format!("release artifact worker failed: {error}")));
@@ -449,27 +453,14 @@ pub(crate) async fn handle_rpc_command(
     state: Arc<ServerState>,
     command: Command,
 ) -> tako_core::Response {
-    if matches!(
-        &command,
-        Command::Deploy { .. }
-            | Command::Rollback { .. }
-            | Command::UpdateSecrets { .. }
-            | Command::Stop { .. }
-            | Command::Delete { .. }
-            | Command::Scale { .. }
-    ) {
-        // Hyper may drop the request future when the client disconnects. A
-        // container transaction must reach commit or recovery independently of
-        // the connection that initiated it. Process termination is handled by
-        // the durable deployment marker instead.
-        match tokio::spawn(async move { state.handle_command(command).await }).await {
-            Ok(response) => response,
-            Err(error) => {
-                tako_core::Response::error(format!("Management operation failed: {error}"))
-            }
-        }
-    } else {
+    match tokio::spawn(async move {
+        let _guard = state.management_lock.lock().await;
         state.handle_command(command).await
+    })
+    .await
+    {
+        Ok(response) => response,
+        Err(_) => tako_core::Response::error("Management operation failed"),
     }
 }
 
@@ -477,7 +468,10 @@ fn command_is_public_probe(command: &Command) -> bool {
     matches!(command, Command::Hello { .. } | Command::ServerInfo)
 }
 
-fn json_response(status: StatusCode, value: &impl serde::Serialize) -> Response<ResponseBody> {
+pub(crate) fn json_response(
+    status: StatusCode,
+    value: &impl serde::Serialize,
+) -> Response<ResponseBody> {
     match serde_json::to_vec(value) {
         Ok(body) => Response::builder()
             .status(status)
@@ -499,7 +493,7 @@ fn json_response(status: StatusCode, value: &impl serde::Serialize) -> Response<
     }
 }
 
-fn log_bytes_response(
+pub(crate) fn log_bytes_response(
     status: StatusCode,
     logs: crate::operations::logs::LogRead,
 ) -> Response<ResponseBody> {
@@ -531,26 +525,30 @@ mod tests {
     }
 
     fn test_state() -> Arc<ServerState> {
-        let temp = TempDir::new().expect("tempdir");
-        let cert_manager = Arc::new(CertManager::new(CertManagerConfig {
-            cert_dir: temp.path().join("certs"),
-            ..Default::default()
-        }));
-        let runtime = crate::ServerRuntimeConfig {
-            server_identity: Some("SHA256:testidentity".to_string()),
-            ..crate::ServerRuntimeConfig::for_defaults(temp.path().to_path_buf())
-        };
+        std::thread::spawn(|| {
+            let temp = TempDir::new().expect("tempdir");
+            let cert_manager = Arc::new(CertManager::new(CertManagerConfig {
+                cert_dir: temp.path().join("certs"),
+                ..Default::default()
+            }));
+            let runtime = crate::ServerRuntimeConfig {
+                server_identity: Some("SHA256:testidentity".to_string()),
+                ..crate::ServerRuntimeConfig::for_defaults(temp.path().to_path_buf())
+            };
 
-        Arc::new(
-            ServerState::new_with_runtime(
-                temp.path().to_path_buf(),
-                cert_manager,
-                None,
-                empty_challenge_tokens(),
-                runtime,
+            Arc::new(
+                ServerState::new_with_runtime(
+                    temp.path().to_path_buf(),
+                    cert_manager,
+                    None,
+                    empty_challenge_tokens(),
+                    runtime,
+                )
+                .expect("server state"),
             )
-            .expect("server state"),
-        )
+        })
+        .join()
+        .expect("state fixture thread")
     }
 
     #[tokio::test]
@@ -578,8 +576,10 @@ mod tests {
         })
         .await
         .unwrap();
+        assert!(state.management_lock.try_lock().is_err());
         request.abort();
         let _ = request.await;
+        assert!(state.management_lock.try_lock().is_err());
         drop(guard);
         tokio::time::timeout(Duration::from_secs(2), async {
             while app.state() != crate::socket::AppState::Stopped {
