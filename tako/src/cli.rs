@@ -161,6 +161,21 @@ pub enum Commands {
     #[command(subcommand)]
     Network(commands::network::NetworkCommands),
 
+    /// Connect this machine to a private network until explicitly disconnected
+    Connect { network: Option<String> },
+
+    /// Disconnect this machine from a private network
+    Disconnect { network: Option<String> },
+
+    /// SSH to an approved server using this machine's network identity
+    Ssh {
+        server: String,
+        #[arg(long)]
+        network: Option<String>,
+        #[arg(last = true)]
+        command: Vec<String>,
+    },
+
     /// Secret management commands
     #[command(subcommand)]
     Secrets(secret::SecretCommands),
@@ -305,6 +320,9 @@ fn telemetry_command(command: &Commands) -> &'static str {
         Commands::Status => "status",
         Commands::Servers(_) => "servers",
         Commands::Network(_) => "network",
+        Commands::Connect { .. } => "connect",
+        Commands::Disconnect { .. } => "disconnect",
+        Commands::Ssh { .. } => "ssh",
         Commands::Secrets(_) => "secrets",
         Commands::Storages(_) => "storages",
         Commands::Backups(_) => "backups",
@@ -420,6 +438,22 @@ impl Cli {
                 }
             }
             Commands::Network(cmd) => commands::network::run(cmd, self.config.as_deref()),
+            Commands::Connect { network } => {
+                commands::network::connect(network.as_deref(), self.config.as_deref())
+            }
+            Commands::Disconnect { network } => {
+                commands::network::disconnect(network.as_deref(), self.config.as_deref())
+            }
+            Commands::Ssh {
+                server,
+                network,
+                command,
+            } => commands::network::ssh(
+                &server,
+                network.as_deref(),
+                self.config.as_deref(),
+                &command,
+            ),
             Commands::Secrets(cmd) => {
                 let emit_generic = json && !matches!(cmd, secret::SecretCommands::List);
                 secret::run(cmd, self.config.as_deref())?;
