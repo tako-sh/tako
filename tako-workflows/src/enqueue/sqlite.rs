@@ -434,7 +434,9 @@ impl SqliteRunsDb {
         let payload_json = serde_json::to_string(payload)?;
         let now = now_ms();
         let mut conn = self.conn.lock();
-        let tx = conn.transaction()?;
+        // Acquire the writer lock before reading waiters. A deferred transaction
+        // cannot wait on a competing writer when upgrading an existing snapshot.
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let waiters = {
             let mut stmt =
                 tx.prepare("SELECT run_id, step_name FROM event_waiters WHERE event_name = ?1")?;
@@ -541,3 +543,6 @@ impl SqliteRunsDb {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;

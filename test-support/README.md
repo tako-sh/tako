@@ -26,6 +26,20 @@ RPC tests also reclaim a run within the same worker process and reject every
 mutation from the previous claim. A Postgres test gates checkpoint insertion
 inside a trigger and verifies that ownership transfer waits for its transaction.
 
+SQLite contention tests use independent connections to a file-backed database
+with `synchronous=FULL`. A controlled writer gate checks that event signaling
+acquires the write lock before reading waiters, then sees the other writer's
+committed waiter. A concurrent lifecycle workload checks persisted results under
+repeated writer contention. These tests cover the snapshot-upgrade race and a
+bounded workload; SQLite still permits one writer at a time, and a writer that
+cannot acquire the lock within the five-second busy timeout can return an error.
+
+Run the SQLite contention tests directly with:
+
+```sh
+cargo test --locked -p tako-workflows --lib enqueue::sqlite::tests
+```
+
 A subprocess exits without closing its workflow database after acknowledging a
 checkpoint. Recovery must retain the checkpoint and reject the old owner after
 reclaim. This tests process-crash recovery. The `synchronous=FULL` connection
