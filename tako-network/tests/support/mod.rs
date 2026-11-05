@@ -93,7 +93,9 @@ pub fn add_server(snapshot: &mut RegistrySnapshot, by: &DeviceId, now: u64) -> D
         ssh_host_key: keys.ssh_public_key().unwrap(),
         ssh_port: 22,
         https_port: 443,
-        https_spki_sha256: Some(KeyFingerprint::of_bytes(b"test tls pin")),
+        https_certificate_pem: Some(certificate_pem()),
+        corrosion_ca_certificate_pem: Some(certificate_pem()),
+        https_spki_sha256: None,
     };
     let member = snapshot
         .approve(
@@ -127,4 +129,46 @@ pub fn revoke(
 
 pub fn scopes(values: &[&str]) -> BTreeSet<AppEnv> {
     values.iter().map(|value| value.parse().unwrap()).collect()
+}
+
+pub fn certificate_pem() -> String {
+    use openssl::{
+        asn1::{Asn1Integer, Asn1Time},
+        bn::BigNum,
+        hash::MessageDigest,
+        pkey::PKey,
+        x509::{
+            X509, X509NameBuilder,
+            extension::{BasicConstraints, SubjectAlternativeName},
+        },
+    };
+    let key = PKey::generate_ed25519().unwrap();
+    let mut name = X509NameBuilder::new().unwrap();
+    name.append_entry_by_text("CN", "test server").unwrap();
+    let name = name.build();
+    let mut certificate = X509::builder().unwrap();
+    certificate.set_version(2).unwrap();
+    certificate
+        .set_serial_number(&Asn1Integer::from_bn(&BigNum::from_u32(1).unwrap()).unwrap())
+        .unwrap();
+    certificate.set_subject_name(&name).unwrap();
+    certificate.set_issuer_name(&name).unwrap();
+    certificate.set_pubkey(&key).unwrap();
+    certificate
+        .set_not_before(&Asn1Time::days_from_now(0).unwrap())
+        .unwrap();
+    certificate
+        .set_not_after(&Asn1Time::days_from_now(1).unwrap())
+        .unwrap();
+    certificate
+        .append_extension(BasicConstraints::new().critical().ca().build().unwrap())
+        .unwrap();
+    let san = SubjectAlternativeName::new()
+        .ip("203.0.113.7")
+        .ip("fd00::7")
+        .build(&certificate.x509v3_context(None, None))
+        .unwrap();
+    certificate.append_extension(san).unwrap();
+    certificate.sign(&key, MessageDigest::null()).unwrap();
+    String::from_utf8(certificate.build().to_pem().unwrap()).unwrap()
 }

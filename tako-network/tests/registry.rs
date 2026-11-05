@@ -406,6 +406,8 @@ fn endpoint_validation_rejects_loopback_broadcast_mapped_loopback_and_zero_ports
             ssh_host_key: keys.ssh_public_key().unwrap(),
             ssh_port: 22,
             https_port: 443,
+            https_certificate_pem: None,
+            corrosion_ca_certificate_pem: None,
             https_spki_sha256: None,
         };
         assert!(server.validate().is_err(), "{endpoint}");
@@ -447,4 +449,232 @@ fn conflicting_revocation_and_unknown_nested_permissions_fail_closed() {
     let mut encoded = serde_json::to_value(&snapshot.members[0]).unwrap();
     encoded["permissions"]["sql_writer"] = serde_json::json!(true);
     assert!(serde_json::from_value::<Member>(encoded).is_err());
+}
+
+#[test]
+fn request_approval_profile_and_online_import_activate_without_a_third_file() {
+    let (mut server_state, old_laptop, admin_id) = bootstrap();
+    let server_id = add_server(&mut server_state, &admin_id, 2);
+    let new_laptop = LocalDeviceKeys::generate().unwrap();
+    let request = new_laptop
+        .enrollment_request(None, DeviceKind::Laptop, "new-laptop".parse().unwrap())
+        .unwrap();
+    let request_file = serde_json::to_vec(&request).unwrap();
+    let received_request: EnrollmentRequest = serde_json::from_slice(&request_file).unwrap();
+    received_request.verify().unwrap();
+    assert!(server_state.can_admin(&admin_id, 3).unwrap());
+    let stored_entitlement = approval(
+        MemberKind::Laptop,
+        Permissions::default(),
+        Some(admin_id.clone()),
+        3,
+    );
+    let trusted_servers = server_state
+        .members
+        .iter()
+        .filter_map(|member| match &member.kind {
+            MemberKind::Server(server) => Some((member.device_id.clone(), server.clone())),
+            MemberKind::Laptop => None,
+        })
+        .collect();
+    let pending = PendingApprovalProfile {
+        request: received_request,
+        pending_id: RequestId::random().unwrap(),
+        issuer: server_id,
+        expires_at: 3600,
+        trusted_servers,
+        snapshot: server_state.clone(),
+    };
+    let approval_file = serde_json::to_vec(&pending).unwrap();
+    let imported: PendingApprovalProfile = serde_json::from_slice(&approval_file).unwrap();
+    imported.validate_for(&new_laptop, 1000).unwrap();
+    let device_id = request.device_id_for(&server_state.network.id).unwrap();
+    assert!(
+        !server_state
+            .effective_members(1000)
+            .unwrap()
+            .contains_key(&device_id)
+    );
+    let (challenge, pending_challenge) =
+        WgChallenge::begin(&request, server_state.network.id.clone(), 1000, 1060).unwrap();
+    assert!(
+        old_laptop
+            .answer_challenge(&challenge, &request, 1000)
+            .is_err()
+    );
+    let response = new_laptop
+        .answer_challenge(&challenge, &request, 1000)
+        .unwrap();
+    let verified = pending_challenge.verify(&response, 1001).unwrap();
+    let mut activation = stored_entitlement;
+    activation.created_at = 1001;
+    let member = server_state.approve(verified, activation).unwrap();
+    server_state.members.push(member);
+    let active = NetworkPublicProfile {
+        request,
+        trusted_servers: imported.trusted_servers,
+        snapshot: server_state,
+    };
+    active.validate_for(&new_laptop, 1001).unwrap();
+    assert!(
+        active
+            .snapshot
+            .effective_members(1001)
+            .unwrap()
+            .contains_key(&device_id)
+    );
+    let encoded = String::from_utf8(approval_file).unwrap();
+    assert!(!encoded.contains(new_laptop.wireguard_private_key().unwrap().as_str()));
+}
+
+#[test]
+fn pending_profile_requires_own_keys_live_deadlines_and_an_effective_pinned_issuer() {
+    let (mut snapshot, _, root) = bootstrap();
+    let issuer = add_server(&mut snapshot, &root, 2);
+    let keys = LocalDeviceKeys::generate().unwrap();
+    let request = keys
+        .enrollment_request_expiring(
+            None,
+            DeviceKind::Laptop,
+            "pending".parse().unwrap(),
+            Some(50),
+        )
+        .unwrap();
+    let trusted_servers = snapshot
+        .members
+        .iter()
+        .filter_map(|member| match &member.kind {
+            MemberKind::Server(server) => Some((member.device_id.clone(), server.clone())),
+            MemberKind::Laptop => None,
+        })
+        .collect();
+    let mut profile = PendingApprovalProfile {
+        request,
+        pending_id: RequestId::random().unwrap(),
+        issuer: issuer.clone(),
+        expires_at: 40,
+        trusted_servers,
+        snapshot,
+    };
+    profile.validate_for(&keys, 3).unwrap();
+    assert!(
+        profile
+            .validate_for(&LocalDeviceKeys::generate().unwrap(), 3)
+            .is_err()
+    );
+    assert!(profile.validate_for(&keys, 40).is_err());
+    profile.expires_at = 100;
+    assert!(profile.validate_for(&keys, 50).is_err());
+    profile.issuer = root;
+    assert!(profile.validate_for(&keys, 3).is_err());
+    profile.issuer = issuer.clone();
+    profile
+        .trusted_servers
+        .get_mut(&issuer)
+        .unwrap()
+        .https_certificate_pem = None;
+    if let MemberKind::Server(server) = &mut profile
+        .snapshot
+        .members
+        .iter_mut()
+        .find(|member| member.device_id == issuer)
+        .unwrap()
+        .kind
+    {
+        server.https_certificate_pem = None;
+    }
+    assert!(profile.validate_for(&keys, 3).is_err());
+}
+
+#[test]
+fn online_wg_proof_does_not_activate_an_entitlement_whose_admin_was_revoked() {
+    let (mut snapshot, _, root) = bootstrap();
+    add_server(&mut snapshot, &root, 2);
+    let keys = LocalDeviceKeys::generate().unwrap();
+    let request = keys
+        .enrollment_request(None, DeviceKind::Laptop, "pending".parse().unwrap())
+        .unwrap();
+    let mut stored_entitlement = approval(
+        MemberKind::Laptop,
+        Permissions::default(),
+        Some(root.clone()),
+        3,
+    );
+    revoke(&mut snapshot, &root, &root, 4);
+    let (challenge, pending) =
+        WgChallenge::begin(&request, snapshot.network.id.clone(), 5, 65).unwrap();
+    let response = keys.answer_challenge(&challenge, &request, 5).unwrap();
+    let verified = pending.verify(&response, 5).unwrap();
+    stored_entitlement.created_at = 5;
+    assert!(snapshot.approve(verified, stored_entitlement).is_err());
+    assert_eq!(snapshot.members.len(), 2);
+}
+
+#[test]
+fn public_transport_certificates_are_parsed_and_spki_is_only_a_derived_check() {
+    let (mut snapshot, _, root) = bootstrap();
+    let server_id = add_server(&mut snapshot, &root, 2);
+    let MemberKind::Server(mut server) = snapshot
+        .members
+        .iter()
+        .find(|member| member.device_id == server_id)
+        .unwrap()
+        .kind
+        .clone()
+    else {
+        panic!("server expected")
+    };
+    server.validate().unwrap();
+    let certificate =
+        openssl::x509::X509::from_pem(server.https_certificate_pem.as_ref().unwrap().as_bytes())
+            .unwrap();
+    assert!(
+        certificate
+            .verify(&certificate.public_key().unwrap())
+            .unwrap()
+    );
+    server.https_spki_sha256 = server.https_spki_fingerprint().unwrap();
+    assert!(server.https_spki_sha256.is_some());
+    server.validate().unwrap();
+    server.https_spki_sha256 = Some(KeyFingerprint::of_bytes(b"different key"));
+    assert!(server.validate().is_err());
+    server.https_spki_sha256 = server.https_spki_fingerprint().unwrap();
+    server.https_certificate_pem = None;
+    assert!(server.validate().is_err());
+}
+
+#[test]
+fn transport_certificate_fields_reject_malformed_oversize_bundled_and_extra_data() {
+    let (mut snapshot, _, root) = bootstrap();
+    let server_id = add_server(&mut snapshot, &root, 2);
+    let MemberKind::Server(server) = snapshot
+        .members
+        .iter()
+        .find(|member| member.device_id == server_id)
+        .unwrap()
+        .kind
+        .clone()
+    else {
+        panic!("server expected")
+    };
+    let valid = server.https_certificate_pem.clone().unwrap();
+    let invalid = [
+        String::new(),
+        "not PEM".into(),
+        "x".repeat(MAX_CERTIFICATE_PEM_BYTES + 1),
+        format!("{valid}{valid}"),
+        format!("{valid}unexpected data"),
+        format!("{valid}-----BEGIN PRIVATE KEY-----\nnot allowed\n-----END PRIVATE KEY-----\n"),
+    ];
+    for pem in invalid {
+        let mut changed = server.clone();
+        changed.https_certificate_pem = Some(pem.clone());
+        assert!(changed.validate().is_err());
+        let mut changed = server.clone();
+        changed.corrosion_ca_certificate_pem = Some(pem);
+        assert!(changed.validate().is_err());
+    }
+    let mut crlf = server;
+    crlf.https_certificate_pem = Some(valid.replace('\n', "\r\n"));
+    crlf.validate().unwrap();
 }

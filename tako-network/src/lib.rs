@@ -16,6 +16,6 @@ pub use challenge::*;
 pub use enrollment::*;
 pub use error::{Error, Result};
 pub use keys::LocalDeviceKeys;
-pub use profile::NetworkPublicProfile;
+pub use profile::{NetworkPublicProfile, PendingApprovalProfile};
 pub use registry::*;
 pub use types::*;

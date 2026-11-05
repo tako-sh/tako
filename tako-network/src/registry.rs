@@ -2,6 +2,7 @@ use crate::{
     AppEnv, BootId, DeviceId, DeviceKind, EnrollmentRequest, Error, KeyFingerprint, NetworkId,
     Result, RevocationId, SshPublicKey, SshUser, VerifiedEnrollment, error::invalid,
 };
+use openssl::x509::X509;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -43,11 +44,25 @@ pub struct ServerInfo {
     pub wireguard_endpoint: SocketAddr,
     pub ssh_host_key: SshPublicKey,
     pub ssh_port: u16,
+    pub https_certificate_pem: Option<String>,
+    pub corrosion_ca_certificate_pem: Option<String>,
     pub https_spki_sha256: Option<KeyFingerprint>,
     pub https_port: u16,
 }
 
 impl ServerInfo {
+    pub fn https_spki_fingerprint(&self) -> Result<Option<KeyFingerprint>> {
+        self.https_certificate_pem
+            .as_deref()
+            .map(|pem| {
+                let certificate = parse_certificate(pem, "HTTPS certificate")?;
+                Ok(KeyFingerprint::of_bytes(
+                    &certificate.public_key()?.public_key_to_der()?,
+                ))
+            })
+            .transpose()
+    }
+
     pub fn validate(&self) -> Result<()> {
         let ip = self.wireguard_endpoint.ip().to_canonical();
         if ip.is_unspecified()
@@ -64,8 +79,39 @@ impl ServerInfo {
                 "expected a unicast endpoint and nonzero ports",
             ));
         }
+        let derived_spki = self.https_spki_fingerprint()?;
+        if self
+            .https_spki_sha256
+            .as_ref()
+            .is_some_and(|pin| Some(pin) != derived_spki.as_ref())
+        {
+            return Err(invalid("HTTPS SPKI", "must match the supplied certificate"));
+        }
+        if let Some(pem) = &self.corrosion_ca_certificate_pem {
+            parse_certificate(pem, "Corrosion CA certificate")?;
+        }
         Ok(())
     }
+}
+
+pub const MAX_CERTIFICATE_PEM_BYTES: usize = 16 * 1024;
+
+fn parse_certificate(pem: &str, field: &'static str) -> Result<X509> {
+    if pem.is_empty() || pem.len() > MAX_CERTIFICATE_PEM_BYTES {
+        return Err(invalid(field, "expected at most 16 KiB of certificate PEM"));
+    }
+    let certificate = X509::from_pem(pem.as_bytes())
+        .map_err(|_| invalid(field, "invalid X.509 certificate PEM"))?;
+    let canonical = certificate.to_pem()?;
+    let canonical = std::str::from_utf8(&canonical)
+        .map_err(|_| invalid(field, "invalid certificate encoding"))?;
+    if pem.replace("\r\n", "\n").trim() != canonical.trim() {
+        return Err(invalid(
+            field,
+            "expected one certificate with no extra PEM blocks or data",
+        ));
+    }
+    Ok(certificate)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
