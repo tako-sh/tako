@@ -35,6 +35,7 @@ class NativeInstallerTests(unittest.TestCase):
         result = subprocess.run(['sh', '-eu'], input='''
 need_cmd() { case "$1" in apt-get|wg|ip|nft|python3) return 0;; *) return 1;; esac; }
 install_pkgs() { printf 'packages %s\\n' "$*"; }
+install_native_corrosion() { printf 'install verified corrosion\\n'; }
 download_file() { [ "$TEST_DOWNLOAD" = 1 ] || return 1; cp "$TEST_HELPER" "$2"; }
 chown() { :; }
 python3() { cat >/dev/null; }
@@ -57,6 +58,7 @@ fake_sshd() {
         root, result = self.install()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('packages wireguard-tools iproute2 nftables python3 openssh-server', result.stdout)
+        self.assertIn('install verified corrosion', result.stdout)
         self.assertEqual((root / 'usr/local/libexec/tako/tako-network-helper.py').read_text(), '# local helper fixture\n')
         unit = (root / 'etc/systemd/system/tako-network@.service').read_text()
         self.assertIn('%i apply', unit)
@@ -90,6 +92,7 @@ fake_sshd() {
             root, result = self.install(provider=provider)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertNotIn('packages', result.stdout)
+            self.assertNotIn('install verified corrosion', result.stdout)
             self.assertFalse((root / 'usr/local/libexec/tako/tako-network-helper.py').exists())
 
     def test_runtime_cannot_regain_net_admin_after_setuid(self):

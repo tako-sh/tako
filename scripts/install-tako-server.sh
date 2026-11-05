@@ -927,6 +927,33 @@ install_pkgs() {
   fi
 }
 
+install_native_corrosion() {
+  case "$arch" in
+    x86_64) corrosion_archive_sha256=3504d7d1b4b53737457fc40f2353a400cf4df0c1217ec318924d7ee310876194 ;;
+    aarch64) corrosion_archive_sha256=b00b5c6996dee89c36e51e1d4196602bb7e12bbb25abc9b68390e062bdd13be3 ;;
+    *) echo "error: unsupported Corrosion architecture: $arch" >&2; exit 1 ;;
+  esac
+  corrosion_archive="$tmp_extract/corrosion.tar.gz"
+  download_file "https://github.com/superfly/corrosion/releases/download/v1.0.0/corrosion-$arch-unknown-linux-gnu.tar.gz" "$corrosion_archive"
+  corrosion_actual="$(sha256sum "$corrosion_archive" | awk '{print $1}')"
+  [ "$corrosion_actual" = "$corrosion_archive_sha256" ] || {
+    echo 'error: Corrosion archive checksum mismatch' >&2; exit 1;
+  }
+  mkdir "$tmp_extract/corrosion-release"
+  tar -xzf "$corrosion_archive" -C "$tmp_extract/corrosion-release" -- corrosion
+  corrosion_source="$tmp_extract/corrosion-release/corrosion"
+  [ -f "$corrosion_source" ] && [ ! -L "$corrosion_source" ] && [ -s "$corrosion_source" ] || {
+    echo 'error: Corrosion archive must contain a regular executable' >&2; exit 1;
+  }
+  sha256sum "$corrosion_source" | awk '{print $1}' > "$tmp_extract/corrosion.sha256"
+  # Rename preserves a running agent's executable during install-refresh.
+  install -o root -g root -m 0755 "$corrosion_source" /usr/local/libexec/tako/corrosion.new
+  install -o root -g root -m 0644 "$tmp_extract/corrosion.sha256" /usr/local/libexec/tako/corrosion.sha256.new
+  mv -f /usr/local/libexec/tako/corrosion.new /usr/local/libexec/tako/corrosion
+  mv -f /usr/local/libexec/tako/corrosion.sha256.new /usr/local/libexec/tako/corrosion.sha256
+  echo 'OK installed checksum-verified Corrosion v1.0.0 and executable digest'
+}
+
 install_native_network() {
   [ "$TAKO_VPN" = native ] || return 0
   [ "$TAKO_USER:$TAKO_HOME" = tako:/opt/tako ] || {
@@ -943,6 +970,8 @@ install_native_network() {
   for native_command in wg ip nft python3; do
     need_cmd "$native_command" || { echo "error: missing $native_command" >&2; exit 1; }
   done
+
+  install_native_corrosion
 
   native_source="${TAKO_NETWORK_HELPER_SOURCE:-}"
   native_expected=""
