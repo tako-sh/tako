@@ -2,10 +2,15 @@
 //! the controller or its nonce database. Parent startup wires `run` separately.
 #![cfg(target_os = "linux")]
 
+#[path = "native_agent/controller.rs"]
 mod controller;
+#[path = "native_agent/ipc.rs"]
 mod ipc;
+#[path = "native_agent/process.rs"]
 mod process;
+#[path = "native_agent/projection.rs"]
 mod projection;
+#[path = "native_agent/store.rs"]
 mod store;
 
 pub use ipc::{relay, run};
@@ -77,3 +82,7 @@ fn now() -> Result<u64> {
         .map_err(|_| AgentError::Invalid("clock predates Unix epoch"))?
         .as_secs())
 }
+
+#[cfg(test)]
+#[path = "native_agent/tests.rs"]
+mod tests;

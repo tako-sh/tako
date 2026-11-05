@@ -1,6 +1,14 @@
 //! Every runtime read passes through this monotonic guard, including reads
 //! inside handle/ACK. A preflight-only guard would miss rollback between reads.
-use std::{cell::RefCell, collections::BTreeSet, rc::Rc};
+use std::{
+    cell::RefCell,
+    collections::BTreeSet,
+    rc::Rc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 use tako_network::{
     Ack, Member, RegistrySnapshot, Revocation,
     api::{RuntimeError, RuntimeResult},
@@ -10,6 +18,7 @@ use tako_network::{
 
 pub(super) struct MonotonicStore<S> {
     inner: S,
+    stop: Arc<AtomicBool>,
     directory: Directory,
     pub(super) known: Rc<RefCell<RegistrySnapshot>>,
 }
@@ -21,9 +30,14 @@ impl<S: RegistryStore> MonotonicStore<S> {
     ) -> Self {
         Self {
             inner,
+            stop: Arc::new(AtomicBool::new(false)),
             directory,
             known,
         }
+    }
+    pub(super) fn with_stop(mut self, stop: Arc<AtomicBool>) -> Self {
+        self.stop = stop;
+        self
     }
 }
 
@@ -40,9 +54,8 @@ fn records(snapshot: &RegistrySnapshot) -> RuntimeResult<BTreeSet<[u8; 32]>> {
             revocation,
         ))?));
     }
-    for ack in &snapshot.acks {
-        result.insert(openssl::sha::sha256(&serde_json::to_vec(&("ack", ack))?));
-    }
+    // ACKs are replaceable progress evidence. Corrosion may compact or omit
+    // them; only immutable membership and denial facts are monotonic.
     Ok(result)
 }
 pub(super) fn preserves(
@@ -68,6 +81,9 @@ pub(super) fn preserves(
 }
 impl<S: RegistryStore> RegistryStore for MonotonicStore<S> {
     fn snapshot(&mut self) -> RuntimeResult<RegistrySnapshot> {
+        if self.stop.load(Ordering::Acquire) {
+            return Err(RuntimeError::Transport);
+        }
         let candidate = self.inner.snapshot()?;
         let mut known = self.known.borrow_mut();
         preserves(&known, &candidate)?;
@@ -91,6 +107,15 @@ impl<S: RegistryStore> RegistryStore for MonotonicStore<S> {
         Ok(())
     }
     fn append_ack(&mut self, ack: &Ack) -> RuntimeResult<()> {
+        if self.stop.load(Ordering::Acquire) {
+            return Err(RuntimeError::Transport);
+        }
+        // A fresh snapshot is checked by acknowledge_applied before this loop.
+        // This is only the latest incoming ACK projection, never historical
+        // progress merged from disk. Re-posting an exact current ACK is needless.
+        if self.known.borrow().acks.contains(ack) {
+            return Ok(());
+        }
         self.snapshot()?;
         self.inner.append_ack(ack)?;
         self.snapshot()?;

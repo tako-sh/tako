@@ -3,7 +3,10 @@ use super::{AgentError, MAX_HELPER_BYTES, Result};
 use std::{
     fs::OpenOptions,
     io::Read,
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
+    os::{
+        fd::AsRawFd,
+        unix::fs::{MetadataExt, OpenOptionsExt},
+    },
     process::{Child, Command, Stdio},
     thread,
     time::{Duration, Instant},
@@ -59,7 +62,9 @@ impl OwnedChild {
                 "Corrosion executable checksum mismatch",
             ));
         }
-        let child = Command::new(CORROSION)
+        // Execute the exact verified inode even during an installer rename.
+        let executable = format!("/proc/self/fd/{}", file.as_raw_fd());
+        let child = Command::new(executable)
             .arg("--config")
             .arg(config.network_dir(data_dir).join("corrosion.toml"))
             .arg("agent")
@@ -86,6 +91,9 @@ impl OwnedChild {
     /// Forced kill is an error even after successful reaping. Callers may retry
     /// only after inspecting `running`; they must retain/report the timeout.
     pub(super) fn stop(&mut self) -> Result<()> {
+        self.stop_with_deadlines(Duration::from_secs(15), Duration::from_secs(5))
+    }
+    fn stop_with_deadlines(&mut self, graceful: Duration, kill: Duration) -> Result<()> {
         let Some(child) = &mut self.child else {
             return Ok(());
         };
@@ -98,7 +106,7 @@ impl OwnedChild {
         if result != 0 {
             return Err(std::io::Error::last_os_error().into());
         }
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = Instant::now() + graceful;
         while Instant::now() < deadline {
             if let Some(status) = child.try_wait()? {
                 self.child = None;
@@ -111,7 +119,7 @@ impl OwnedChild {
             thread::sleep(POLL);
         }
         child.kill()?;
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + kill;
         while Instant::now() < deadline {
             if child.try_wait()?.is_some() {
                 self.child = None;
@@ -196,15 +204,13 @@ fn bounded_output(mut command: Command, timeout: Duration, limit: usize) -> Resu
         .stdout
         .take()
         .ok_or(AgentError::Invalid("missing child stdout"))?;
+    let mut owned = OwnedChild { child: Some(child) };
     let flags = unsafe { libc::fcntl(pipe.as_raw_fd(), libc::F_GETFL) };
     if flags < 0
         || unsafe { libc::fcntl(pipe.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
     {
-        let _ = child.kill();
-        let _ = child.wait();
         return Err(std::io::Error::last_os_error().into());
     }
-    let mut owned = OwnedChild { child: Some(child) };
     let deadline = Instant::now() + timeout;
     let mut bytes = Vec::new();
     let mut eof = false;
@@ -236,5 +242,81 @@ fn bounded_output(mut command: Command, timeout: Duration, limit: usize) -> Resu
             return Err(AgentError::Timeout);
         }
         thread::sleep(POLL);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn helper_success_requires_exact_applied_state() {
+        let fixture = super::super::tests::Fixture::new();
+        let bytes = super::super::projection::desired(
+            &fixture.config,
+            &fixture.keys,
+            &fixture.config.bootstrap,
+            2,
+            false,
+        )
+        .unwrap();
+        let desired: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let id = fixture.config.network.id.to_string();
+        let ack = serde_json::json!({"ok": true, "action": "apply", "network_id": id,
+            "interface": format!("tako{}", &id[..10]),
+            "address": desired["address"].as_str().unwrap().trim_end_matches("/128"),
+            "applied_device_ids": [desired["peers"][0]["device_id"].clone()]});
+        validate_helper_response(&fixture.config, &bytes, &serde_json::to_vec(&ack).unwrap())
+            .unwrap();
+        for (field, value) in [
+            ("ok", serde_json::json!(false)),
+            ("action", serde_json::json!("remove")),
+            ("address", serde_json::json!("fd00::1")),
+            ("applied_device_ids", serde_json::json!([])),
+        ] {
+            let mut invalid = ack.clone();
+            invalid[field] = value;
+            assert!(
+                validate_helper_response(
+                    &fixture.config,
+                    &bytes,
+                    &serde_json::to_vec(&invalid).unwrap()
+                )
+                .is_err()
+            );
+        }
+    }
+    #[test]
+    fn fake_command_output_and_deadline_are_bounded() {
+        let mut small = Command::new("/bin/sh");
+        small.args(["-c", "printf ok"]);
+        assert_eq!(
+            bounded_output(small, Duration::from_secs(1), 2).unwrap(),
+            b"ok"
+        );
+        let mut oversized = Command::new("/bin/sh");
+        oversized.args(["-c", "printf oversized"]);
+        assert!(bounded_output(oversized, Duration::from_secs(1), 2).is_err());
+        let mut slow = Command::new("/bin/sleep");
+        slow.arg("5");
+        assert!(matches!(
+            bounded_output(slow, Duration::from_millis(30), 2),
+            Err(AgentError::Timeout)
+        ));
+    }
+    #[test]
+    fn forced_child_shutdown_is_reported_and_reaped() {
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "trap '' TERM; printf ready; exec sleep 5"])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut ready = [0; 5];
+        child.stdout.take().unwrap().read_exact(&mut ready).unwrap();
+        let mut owned = OwnedChild { child: Some(child) };
+        assert!(matches!(
+            owned.stop_with_deadlines(Duration::from_millis(30), Duration::from_secs(1)),
+            Err(AgentError::ForcedShutdown)
+        ));
+        assert!(owned.child.is_none());
     }
 }

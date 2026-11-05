@@ -18,7 +18,7 @@ use std::{
 };
 use tako_network::{
     BootId, DeviceKind, LocalDeviceKeys, MemberKind, NodeConfig, RegistrySnapshot,
-    api::RuntimeError,
+    api::{RpcRequest, RuntimeError},
     corrosion::{BearerToken, CorrosionStore, MAX_REGISTRY_BYTES, RegistryStore},
     node_config::protected::Directory,
     runtime::{RuntimeConfig, RuntimeLimits, ServerRuntime},
@@ -38,22 +38,26 @@ pub(super) fn worker(
     rx: mpsc::Receiver<Work>,
     stop: Arc<AtomicBool>,
 ) -> Result<()> {
-    let mut controller = match Controller::start(config.clone(), data_dir.clone(), boot) {
-        Ok(controller) => controller,
-        Err(error) => {
-            // Even errors before child spawn must revoke previously installed peers.
-            let isolation = (|| -> Result<()> {
-                let root = config.network_dir(&data_dir);
-                let directory = Directory::open(&root, true)?;
-                let keys = LocalDeviceKeys::load(&root.join(&config.files.keys))?;
-                Controller::initial_isolate(&config, &directory, &keys)
-            })();
-            if let Err(isolation) = isolation {
-                tracing::error!(error = %isolation, "startup host isolation not acknowledged");
+    let mut controller =
+        match Controller::start(config.clone(), data_dir.clone(), boot, stop.clone()) {
+            Ok(controller) => controller,
+            Err(error) => {
+                if stop.load(Ordering::Acquire) {
+                    return Err(error);
+                }
+                // Even errors before child spawn must revoke previously installed peers.
+                let isolation = (|| -> Result<()> {
+                    let root = config.network_dir(&data_dir);
+                    let directory = Directory::open(&root, true)?;
+                    let keys = LocalDeviceKeys::load(&root.join(&config.files.keys))?;
+                    Controller::initial_isolate(&config, &directory, &keys)
+                })();
+                if let Err(isolation) = isolation {
+                    tracing::error!(error = %isolation, "startup host isolation not acknowledged");
+                }
+                return Err(error);
             }
-            return Err(error);
-        }
-    };
+        };
     let mut next = Instant::now();
     while !stop.load(Ordering::Acquire) {
         if Instant::now() >= next {
@@ -94,9 +98,15 @@ struct Controller {
     boot: BootId,
     ready: bool,
     revoked: bool,
+    stop: Arc<AtomicBool>,
 }
 impl Controller {
-    fn start(config: NodeConfig, data_dir: PathBuf, boot: BootId) -> Result<Self> {
+    fn start(
+        config: NodeConfig,
+        data_dir: PathBuf,
+        boot: BootId,
+        stop: Arc<AtomicBool>,
+    ) -> Result<Self> {
         config.validate()?;
         let root = config.network_dir(&data_dir);
         let directory = Directory::open(&root, true)?;
@@ -141,6 +151,9 @@ impl Controller {
                 "initialized database missing; operator restore required",
             ));
         }
+        if marker {
+            verify_existing_databases(&directory, &root)?;
+        }
         validate_gossip_leaf(&config, &directory, &known)?;
         let current_time = now()?;
         // Bring up the overlay before binding gossip to its derived WG address.
@@ -162,6 +175,7 @@ impl Controller {
             // Only transport failures are retryable. An empty/malformed existing
             // registry is not permission to bootstrap a replacement database.
             loop {
+                check_stop(&stop)?;
                 if !child.running()? {
                     return Err(AgentError::Invalid("Corrosion exited during startup"));
                 }
@@ -180,18 +194,19 @@ impl Controller {
             }
             if !marker {
                 for member in &config.bootstrap.members {
+                    check_stop(&stop)?;
                     store.append_member(member)?;
                 }
                 for revocation in &config.bootstrap.revocations {
+                    check_stop(&stop)?;
                     store.append_revocation(revocation)?;
                 }
-                for ack in &config.bootstrap.acks {
-                    store.append_ack(ack)?;
-                }
+                // Historical bootstrap ACKs are not evidence of this boot's enforcement.
             }
             let shared = Rc::new(RefCell::new(known.clone()));
             let mut guarded =
-                MonotonicStore::new(store, Directory::open(&root, true)?, shared.clone());
+                MonotonicStore::new(store, Directory::open(&root, true)?, shared.clone())
+                    .with_stop(stop.clone());
             guarded.snapshot()?;
             for name in ["runtime.db", "runtime.runtime-lock"] {
                 if !directory.exists(name)? {
@@ -215,6 +230,9 @@ impl Controller {
         let (runtime, shared) = match startup {
             Ok(value) => value,
             Err(error) => {
+                if stop.load(Ordering::Acquire) {
+                    return Err(error);
+                }
                 Self::initial_isolate(&config, &directory, &keys)?;
                 return Err(error);
             }
@@ -233,6 +251,7 @@ impl Controller {
             boot,
             ready: false,
             revoked: false,
+            stop,
         })
     }
     fn initial_isolate(
@@ -259,7 +278,9 @@ impl Controller {
     fn reconcile(&mut self) -> Result<()> {
         self.ready = false;
         let now = now()?;
-        let snapshot = self.runtime.snapshot()?;
+        // Runtime projection advances its durable clock floor and includes
+        // local denial intent even when remote publication failed.
+        let snapshot = self.runtime.desired_host_state(now)?.snapshot;
         let desired = projection::desired(&self.config, &self.keys, &snapshot, now, false)?;
         self.apply(&desired)?;
         let effective = snapshot.effective_members(now)?;
@@ -304,10 +325,15 @@ impl Controller {
         Ok(())
     }
     fn reconcile_or_isolate(&mut self) {
+        if self.stop.load(Ordering::Acquire) {
+            self.ready = false;
+            return;
+        }
         // Restart a reaped child before reading the HTTP store. Never reopen the
         // runtime, so the nonce DB lock remains held through child restarts.
         let result = (|| {
             if self.revoked {
+                self.child.stop()?;
                 return Err(AgentError::Invalid(
                     "local server is revoked or ineffective",
                 ));
@@ -331,6 +357,10 @@ impl Controller {
             self.reconcile()
         })();
         if let Err(error) = result {
+            self.ready = false;
+            if self.stop.load(Ordering::Acquire) {
+                return;
+            }
             tracing::warn!(error = %error, "native agent reconciliation failed closed");
             if let Err(error) = self.isolate() {
                 tracing::error!(error = %error, "native agent host isolation not acknowledged");
@@ -338,8 +368,12 @@ impl Controller {
         }
     }
     fn handle(&mut self, request: AgentRequest) -> AgentResponse {
-        self.reconcile_or_isolate();
-        if !self.ready {
+        let repair = allowed_while_unready(&request.signed.request);
+        let was_ready = self.ready;
+        if self.ready {
+            self.reconcile_or_isolate();
+        }
+        if !self.ready && !repair {
             return AgentResponse::unavailable(&self.boot);
         }
         let result = now().and_then(|time| {
@@ -349,7 +383,13 @@ impl Controller {
         });
         // A successful mutation may introduce revocations, including our own.
         // Never return stale readiness or acknowledge unapplied records.
-        self.reconcile_or_isolate();
+        // Unready repair RPCs still pass through runtime authentication. The
+        // scheduled reconciler retries enforcement; another blocking helper
+        // attempt here would prevent an administrator from inspecting/repairing
+        // a capacity or helper failure. These responses retain ready=false.
+        if was_ready {
+            self.reconcile_or_isolate();
+        }
         match result {
             Ok(response) => AgentResponse {
                 status: 200,
@@ -402,6 +442,54 @@ impl ApplyCache {
         self.hash = Some(hash);
         Ok(())
     }
+}
+
+fn allowed_while_unready(request: &RpcRequest) -> bool {
+    matches!(request, RpcRequest::Snapshot | RpcRequest::Revoke { .. })
+}
+
+fn verify_existing_databases(directory: &Directory, root: &Path) -> Result<()> {
+    use std::io::Read;
+    for name in ["corrosion.db", "runtime.db"] {
+        let mut file = directory.open_file(name)?;
+        let mut header = [0u8; 16];
+        if file.read_exact(&mut header).is_err() || &header != b"SQLite format 3\0" {
+            return Err(AgentError::Invalid(
+                "initialized database empty or invalid; operator restore required",
+            ));
+        }
+    }
+    // Runtime::open creates its schema for first bootstrap; do not let that
+    // recreate an erased nonce journal on a previously initialized node.
+    let db = rusqlite::Connection::open_with_flags(
+        root.join("runtime.db"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|_| AgentError::Invalid("runtime journal requires operator restore"))?;
+    let identity: i64 = db
+        .query_row(
+            "SELECT count(*) FROM runtime_identity WHERE singleton=1",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|_| AgentError::Invalid("runtime identity missing; operator restore required"))?;
+    db.query_row("SELECT count(*) FROM consumed_nonces", [], |r| {
+        r.get::<_, i64>(0)
+    })
+    .map_err(|_| AgentError::Invalid("nonce journal missing; operator restore required"))?;
+    if identity != 1 {
+        return Err(AgentError::Invalid(
+            "runtime identity missing; operator restore required",
+        ));
+    }
+    Ok(())
+}
+
+fn check_stop(stop: &AtomicBool) -> Result<()> {
+    if stop.load(Ordering::Acquire) {
+        return Err(AgentError::Invalid("agent stopping"));
+    }
+    Ok(())
 }
 
 fn gossip_hash(bundle: &str, seeds: &[String]) -> Result<[u8; 32]> {
@@ -471,6 +559,37 @@ fn validate_gossip_leaf(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unready_gate_allows_only_authenticated_repair_methods() {
+        assert!(allowed_while_unready(&RpcRequest::Snapshot));
+        let fixture = super::super::tests::Fixture::new();
+        assert!(allowed_while_unready(&RpcRequest::Revoke {
+            id: tako_network::RevocationId::random().unwrap(),
+            target: fixture.config.server_id
+        }));
+        assert!(!allowed_while_unready(&RpcRequest::Begin {
+            pending_id: tako_network::RequestId::random().unwrap()
+        }));
+    }
+    #[test]
+    fn initialized_empty_database_cannot_rebootstrap() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = Directory::open(temp.path(), true).unwrap();
+        directory.write("corrosion.db", b"").unwrap();
+        directory.write("runtime.db", b"").unwrap();
+        assert!(verify_existing_databases(&directory, temp.path()).is_err());
+        let db = rusqlite::Connection::open(temp.path().join("corrosion.db")).unwrap();
+        db.execute_batch("CREATE TABLE fixture(x)").unwrap();
+        let db = rusqlite::Connection::open(temp.path().join("runtime.db")).unwrap();
+        db.execute_batch(
+            "CREATE TABLE runtime_identity(singleton); INSERT INTO runtime_identity VALUES (1)",
+        )
+        .unwrap();
+        assert!(verify_existing_databases(&directory, temp.path()).is_err());
+        db.execute_batch("CREATE TABLE consumed_nonces(nonce)")
+            .unwrap();
+        verify_existing_databases(&directory, temp.path()).unwrap();
+    }
     #[test]
     fn helper_failure_is_not_cached_and_each_boot_applies() {
         let mut cache = ApplyCache::default();

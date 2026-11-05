@@ -49,6 +49,15 @@ async fn read_frame<R: AsyncRead + Unpin>(stream: &mut R, limit: usize) -> Resul
     Ok(bytes)
 }
 
+fn check_signed_size(signed: &SignedRequest) -> Result<()> {
+    if signed.signature.len() > tako_network::api::MAX_SIGNATURE_BYTES
+        || serde_json::to_vec(signed)?.len() > tako_network::api::MAX_RPC_BYTES
+    {
+        return Err(AgentError::Invalid("signed request exceeds limit"));
+    }
+    Ok(())
+}
+
 fn service_uid() -> Result<u32> {
     let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
     let mut result = std::ptr::null_mut();
@@ -90,7 +99,7 @@ pub async fn relay(
         return Err(AgentError::Invalid("RPC input exceeds limit"));
     }
     let signed: SignedRequest = serde_json::from_slice(bytes)?;
-    signed.check_size()?;
+    check_signed_size(&signed)?;
     let config = NodeConfig::load(data_dir)?;
     let socket = config.socket_path(data_dir);
     Directory::open(&config.network_dir(data_dir), true)?;
@@ -243,7 +252,7 @@ async fn serve(mut stream: UnixStream, tx: mpsc::SyncSender<Work>, boot: BootId)
     if request.method.len() > 16 || request.path.len() > 256 {
         return Err(AgentError::Invalid("IPC route exceeds limit"));
     }
-    request.signed.check_size()?;
+    check_signed_size(&request.signed)?;
     let (reply, receiver) = oneshot::channel();
     let response = if tx
         .try_send(Work {

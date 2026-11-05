@@ -345,3 +345,17 @@ mod tests {
         assert!(protected::Directory::open(&temp.path().join(".."), false).is_err());
     }
 }
+
+#[cfg(all(test, unix))]
+mod lock_tests {
+    use super::protected::Directory;
+    #[test]
+    fn concurrent_agent_lock_never_replaces_the_inode() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = Directory::open(temp.path(), true).unwrap();
+        let held = dir.lock("agent-process-lock").unwrap();
+        assert!(dir.lock("agent-process-lock").is_err());
+        drop(held);
+        dir.lock("agent-process-lock").unwrap();
+    }
+}
