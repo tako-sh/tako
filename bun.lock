@@ -100,7 +100,6 @@
       "dependencies": {
         "@microsoft/fetch-event-source": "^2.0.1",
         "@sinclair/typebox": "^0.34.52",
-        "ajv": "^8.20.0",
       },
       "devDependencies": {
         "@happy-dom/global-registrator": "^20.11.6",

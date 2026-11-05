@@ -100,6 +100,9 @@ export function assertServiceSchema(schema: TSchema): void {
     if (!annotations.has(key) && !schemaKeywords[schema[Kind]]!.includes(key))
       throw new Error(`Unsupported service schema keyword '${key}'.`);
   }
+  if (schema["multipleOf"] !== undefined && !(schema["multipleOf"] > 0))
+    throw new Error("Service schema multipleOf must be positive.");
+  if (schema["pattern"] !== undefined) new RegExp(schema["pattern"] as string, "u");
   if (schema["type"] === "object") {
     for (const child of Object.values(schema["properties"] ?? {}))
       assertServiceSchema(child as TSchema);
