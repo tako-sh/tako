@@ -7,6 +7,10 @@ use tako_core::{Command, HelloResponse, Response, ServerRuntimeInfo};
 use tokio::io::AsyncReadExt;
 
 mod auth;
+mod native;
+
+use reqwest::header::HeaderMap;
+use tako_network::api::ManagementAction;
 
 pub(crate) const MANAGEMENT_PORT: u16 = 9844;
 const MANAGEMENT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -52,11 +56,19 @@ pub(crate) struct NativeTarget {
 }
 
 pub(crate) struct ManagementClient {
-    host: String,
     http: reqwest::Client,
     deploy_http: reqwest::Client,
     upload_http: reqwest::Client,
-    signer: auth::ManagementSigner,
+    signer: ManagementAuth,
+    preflight_scope: Option<tako_network::AppEnv>,
+}
+
+enum ManagementAuth {
+    Legacy {
+        host: String,
+        signer: auth::ManagementSigner,
+    },
+    Native(native::Identity),
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -76,19 +88,141 @@ pub(crate) struct LogFetch {
 
 impl ManagementClient {
     pub(crate) async fn new(host: &str) -> Result<Self, ManagementError> {
-        Ok(Self {
-            host: host.to_string(),
-            http: http_client(MANAGEMENT_RPC_TIMEOUT)?,
-            deploy_http: http_client(MANAGEMENT_DEPLOY_RPC_TIMEOUT)?,
-            upload_http: http_client(MANAGEMENT_UPLOAD_TIMEOUT)?,
-            signer: auth::ManagementSigner::load().await?,
+        Self::for_target(&ManagementTarget::Legacy {
+            host: host.to_owned(),
         })
+        .await
+    }
+
+    pub(crate) async fn for_server(
+        server: &crate::config::ServerEntry,
+    ) -> Result<Self, ManagementError> {
+        Self::for_target(&server.management_target()).await
+    }
+
+    pub(crate) async fn for_target(target: &ManagementTarget) -> Result<Self, ManagementError> {
+        match target {
+            ManagementTarget::Legacy { host } => Ok(Self {
+                http: http_client(MANAGEMENT_RPC_TIMEOUT)?,
+                deploy_http: http_client(MANAGEMENT_DEPLOY_RPC_TIMEOUT)?,
+                upload_http: http_client(MANAGEMENT_UPLOAD_TIMEOUT)?,
+                signer: ManagementAuth::Legacy {
+                    host: host.clone(),
+                    signer: auth::ManagementSigner::load().await?,
+                },
+                preflight_scope: None,
+            }),
+            ManagementTarget::Native(target) => {
+                let identity = native::Identity::load(target)?;
+                Ok(Self {
+                    http: identity.client(MANAGEMENT_RPC_TIMEOUT)?,
+                    deploy_http: identity.client(MANAGEMENT_DEPLOY_RPC_TIMEOUT)?,
+                    upload_http: identity.client(MANAGEMENT_UPLOAD_TIMEOUT)?,
+                    signer: ManagementAuth::Native(identity),
+                    preflight_scope: None,
+                })
+            }
+        }
+    }
+
+    pub(crate) fn set_preflight_scope(&mut self, app: &str) -> Result<(), ManagementError> {
+        if self.is_native() {
+            self.preflight_scope = Some(native::scope(app)?);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn is_native(&self) -> bool {
+        matches!(self.signer, ManagementAuth::Native(_))
+    }
+
+    pub(crate) fn can_manage_server(&self) -> bool {
+        match &self.signer {
+            ManagementAuth::Native(identity) => identity.permissions.server_admin,
+            ManagementAuth::Legacy { .. } => true,
+        }
+    }
+
+    pub(crate) fn scoped_apps(&self) -> Option<Vec<String>> {
+        match &self.signer {
+            ManagementAuth::Native(identity) if !identity.permissions.server_admin => Some(
+                identity
+                    .permissions
+                    .deployments
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect(),
+            ),
+            _ => None,
+        }
+    }
+
+    fn url(&self, endpoint: &str) -> String {
+        match &self.signer {
+            ManagementAuth::Native(identity) => identity.url(endpoint),
+            ManagementAuth::Legacy { host, .. } => management_url(host, endpoint),
+        }
+    }
+
+    fn request(
+        &self,
+        http: &reqwest::Client,
+        endpoint: &str,
+        headers: HeaderMap,
+    ) -> reqwest::RequestBuilder {
+        http.post(self.url(endpoint)).headers(headers)
+    }
+
+    pub(crate) fn log_fetch_limit(&self, requested: usize) -> usize {
+        if self.is_native() {
+            requested.min(native::MAX_LOG_BYTES)
+        } else {
+            requested
+        }
+    }
+
+    async fn signed_headers(
+        &self,
+        body: &[u8],
+        action: impl FnOnce() -> Result<ManagementAction, ManagementError>,
+    ) -> Result<Vec<HeaderMap>, ManagementError> {
+        match &self.signer {
+            ManagementAuth::Native(identity) => Ok(vec![identity.headers(action()?)?]),
+            ManagementAuth::Legacy { signer, .. } => signer
+                .sign_headers(body)
+                .await?
+                .into_iter()
+                .map(|signed| {
+                    let mut headers = HeaderMap::new();
+                    for (name, value) in [
+                        (auth::HEADER_KEY_FINGERPRINT, signed.key_fingerprint),
+                        (auth::HEADER_TIMESTAMP, signed.timestamp),
+                        (auth::HEADER_NONCE, signed.nonce),
+                        (auth::HEADER_SIGNATURE, signed.signature),
+                    ] {
+                        headers.insert(
+                            name,
+                            value.parse().map_err(
+                                |error: reqwest::header::InvalidHeaderValue| {
+                                    ManagementError::Message(error.to_string())
+                                },
+                            )?,
+                        );
+                    }
+                    Ok(headers)
+                })
+                .collect(),
+        }
     }
 
     pub(crate) async fn send(&mut self, command: &Command) -> Result<Response, ManagementError> {
         let body = serde_json::to_vec(command)
             .map_err(|error| ManagementError::Message(error.to_string()))?;
-        let signed_headers = self.signer.sign_headers(&body).await?;
+        let signed_headers = self
+            .signed_headers(&body, || {
+                native::rpc_action(command, &body, self.preflight_scope.as_ref())
+            })
+            .await?;
         let mut last_auth_error = None;
         let timeout = management_rpc_timeout_for_command(command);
         let http = if timeout == MANAGEMENT_DEPLOY_RPC_TIMEOUT {
@@ -98,12 +232,8 @@ impl ManagementClient {
         };
 
         for headers in signed_headers {
-            let response = http
-                .post(rpc_url(&self.host))
-                .header(auth::HEADER_KEY_FINGERPRINT, headers.key_fingerprint)
-                .header(auth::HEADER_TIMESTAMP, headers.timestamp)
-                .header(auth::HEADER_NONCE, headers.nonce)
-                .header(auth::HEADER_SIGNATURE, headers.signature)
+            let response = self
+                .request(http, "rpc", headers)
                 .header("content-type", "application/json")
                 .body(body.clone())
                 .send()
@@ -135,7 +265,14 @@ impl ManagementClient {
         let size = metadata.len();
         let sha256 = sha256_file_hex(artifact_path).await?;
         let auth_body = tako_core::release_artifact_upload_auth_body(app, version, size, &sha256);
-        let signed_headers = self.signer.sign_headers(&auth_body).await?;
+        let signed_headers = self
+            .signed_headers(&auth_body, || {
+                Ok(ManagementAction::ReleaseArtifact {
+                    scope: Some(native::scope(app)?),
+                    sha256: hex::encode(Sha256::digest(&auth_body)),
+                })
+            })
+            .await?;
         let mut last_auth_error = None;
 
         for headers in signed_headers {
@@ -143,12 +280,7 @@ impl ManagementClient {
                 .await
                 .map_err(|error| ManagementError::Message(error.to_string()))?;
             let response = self
-                .upload_http
-                .post(release_artifact_url(&self.host))
-                .header(auth::HEADER_KEY_FINGERPRINT, headers.key_fingerprint)
-                .header(auth::HEADER_TIMESTAMP, headers.timestamp)
-                .header(auth::HEADER_NONCE, headers.nonce)
-                .header(auth::HEADER_SIGNATURE, headers.signature)
+                .request(&self.upload_http, "release-artifact", headers)
                 .header(HEADER_UPLOAD_APP, app)
                 .header(HEADER_UPLOAD_VERSION, version)
                 .header(HEADER_UPLOAD_SIZE, size.to_string())
@@ -180,6 +312,7 @@ impl ManagementClient {
         since_unix_secs: Option<i64>,
         max_bytes: usize,
     ) -> Result<LogFetch, ManagementError> {
+        let max_bytes = self.log_fetch_limit(max_bytes);
         let auth_body = tako_core::logs_request_auth_body(
             app,
             cursor.previous,
@@ -187,17 +320,19 @@ impl ManagementClient {
             since_unix_secs,
             max_bytes,
         );
-        let signed_headers = self.signer.sign_headers(&auth_body).await?;
+        let signed_headers = self
+            .signed_headers(&auth_body, || {
+                Ok(ManagementAction::Logs {
+                    scope: Some(native::scope(app)?),
+                    sha256: hex::encode(Sha256::digest(&auth_body)),
+                })
+            })
+            .await?;
         let mut last_auth_error = None;
 
         for headers in signed_headers {
             let mut request = self
-                .http
-                .post(logs_url(&self.host))
-                .header(auth::HEADER_KEY_FINGERPRINT, headers.key_fingerprint)
-                .header(auth::HEADER_TIMESTAMP, headers.timestamp)
-                .header(auth::HEADER_NONCE, headers.nonce)
-                .header(auth::HEADER_SIGNATURE, headers.signature)
+                .request(&self.http, "logs", headers)
                 .header(HEADER_LOG_APP, app)
                 .header(HEADER_LOG_PREVIOUS_OFFSET, cursor.previous.to_string())
                 .header(HEADER_LOG_CURRENT_OFFSET, cursor.current.to_string())
@@ -230,11 +365,13 @@ pub(crate) fn rpc_url(host: &str) -> String {
     management_url(host, "rpc")
 }
 
-pub(crate) fn release_artifact_url(host: &str) -> String {
+#[cfg(test)]
+fn release_artifact_url(host: &str) -> String {
     management_url(host, "release-artifact")
 }
 
-pub(crate) fn logs_url(host: &str) -> String {
+#[cfg(test)]
+fn logs_url(host: &str) -> String {
     management_url(host, "logs")
 }
 
