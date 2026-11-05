@@ -99,6 +99,13 @@ fn migrate_schema_on(
     }
 
     ensure_schema_objects(tx)?;
+    let has_deadline: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('server_drain') WHERE name = 'deadline_unix_ms')",
+        [], |row| row.get(0),
+    )?;
+    if !has_deadline {
+        tx.execute_batch("ALTER TABLE server_drain ADD COLUMN deadline_unix_ms INTEGER NOT NULL DEFAULT 0 CHECK(deadline_unix_ms >= 0);")?;
+    }
     ensure_default_rows(tx)?;
     tx.execute_batch(&format!("PRAGMA user_version = {STATE_SCHEMA_VERSION};"))?;
     Ok(())
@@ -137,7 +144,8 @@ fn ensure_schema_objects(conn: &rusqlite::Connection) -> Result<(), StateStoreEr
 
         CREATE TABLE IF NOT EXISTS server_drain (
             id INTEGER PRIMARY KEY CHECK(id = 1),
-            requested INTEGER NOT NULL CHECK(requested IN (0, 1))
+            requested INTEGER NOT NULL CHECK(requested IN (0, 1)),
+            deadline_unix_ms INTEGER NOT NULL DEFAULT 0 CHECK(deadline_unix_ms >= 0)
         );
 
         CREATE TABLE IF NOT EXISTS app_secrets (

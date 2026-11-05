@@ -524,3 +524,81 @@ fn load_or_create_device_key_sets_mode_0600() {
     let mode = std::fs::metadata(&key_path).unwrap().permissions().mode();
     assert_eq!(mode & 0o777, 0o600);
 }
+
+#[test]
+fn drain_deadline_migrates_from_v11_and_is_shared_by_reopened_store() {
+    let (dir, store) = temp_store();
+    store.init().unwrap();
+    store.lock_conn().unwrap().execute_batch(
+        "DROP TABLE server_drain;
+         CREATE TABLE server_drain (id INTEGER PRIMARY KEY CHECK(id = 1), requested INTEGER NOT NULL CHECK(requested IN (0, 1)));
+         INSERT INTO server_drain VALUES (1, 1);
+         PRAGMA user_version = 11;",
+    ).unwrap();
+    store.init().unwrap();
+    assert!(store.drain_requested().unwrap());
+    assert_eq!(store.drain_deadline_unix_ms().unwrap(), 0);
+    store.request_drain_until(1_800_000_123_456).unwrap();
+    let other = SqliteStateStore::new(dir.path().join("state.sqlite"), TEST_KEY);
+    other.init().unwrap();
+    assert!(other.drain_requested().unwrap());
+    assert_eq!(other.drain_deadline_unix_ms().unwrap(), 1_800_000_123_456);
+    other.set_drain_requested(false).unwrap();
+    assert!(!store.drain_requested().unwrap());
+    assert_eq!(store.drain_deadline_unix_ms().unwrap(), 0);
+}
+
+#[test]
+fn drain_activity_requires_every_independent_holder_to_release() {
+    let (dir, store) = temp_store();
+    store.init().unwrap();
+    let first = store.try_drain_activity(false).unwrap().unwrap();
+    let path = dir.path().join("state.sqlite");
+    let second = std::thread::spawn(move || {
+        let store = SqliteStateStore::new(path, TEST_KEY);
+        store.try_drain_activity(false).unwrap().unwrap()
+    })
+    .join()
+    .unwrap();
+    assert!(store.try_drain_activity(true).unwrap().is_none());
+    drop(first);
+    assert!(store.try_drain_activity(true).unwrap().is_none());
+    drop(second);
+    let exclusive = store.try_drain_activity(true).unwrap().unwrap();
+    assert!(store.try_drain_activity(false).unwrap().is_none());
+    drop(exclusive);
+    assert!(store.try_drain_activity(false).unwrap().is_some());
+}
+
+#[test]
+fn drain_operation_serializes_without_blocking_activity_cleanup() {
+    let (_dir, store) = temp_store();
+    store.init().unwrap();
+    let operation = store.try_drain_operation().unwrap().unwrap();
+    assert!(store.try_drain_operation().unwrap().is_none());
+    let activity = store.try_drain_activity(false).unwrap().unwrap();
+    drop(activity);
+    assert!(store.try_drain_activity(true).unwrap().is_some());
+    drop(operation);
+    assert!(store.try_drain_operation().unwrap().is_some());
+}
+
+#[test]
+fn drain_leases_reject_links_and_nonprivate_files() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let (dir, store) = temp_store();
+    store.init().unwrap();
+    let path = dir.path().join("drain-activity.lock");
+    let target = dir.path().join("target");
+    std::fs::write(&target, b"").unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+    symlink(&target, &path).unwrap();
+    assert!(store.try_drain_activity(false).is_err());
+    std::fs::remove_file(&path).unwrap();
+    std::fs::hard_link(&target, &path).unwrap();
+    assert!(store.try_drain_activity(false).is_err());
+    std::fs::remove_file(&path).unwrap();
+    std::fs::write(&path, b"").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(store.try_drain_activity(false).is_err());
+}
