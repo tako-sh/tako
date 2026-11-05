@@ -337,4 +337,5 @@ where
 }
 
 #[cfg(test)]
+#[path = "services/tests.rs"]
 mod tests;
