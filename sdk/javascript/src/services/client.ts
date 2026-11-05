@@ -19,6 +19,19 @@ export type ServiceClient<S extends ServiceDefinition> = {
   ) => Promise<ServiceResponse<S["operations"][K]> & { headers: Headers }>;
 };
 
+function assertUrlText(value: string, operation: string, path: string): void {
+  if (!value.isWellFormed()) {
+    throw new ServiceError(
+      "validation",
+      operation,
+      "request",
+      "Invalid Unicode in URL field",
+      undefined,
+      [{ path, message: "URL fields must contain well-formed Unicode" }],
+    );
+  }
+}
+
 export function createServiceClient<S extends ServiceDefinition>(
   service: S,
   options: ServiceClientOptions,
@@ -62,6 +75,7 @@ export function createServiceClient<S extends ServiceDefinition>(
             "request",
             "Path params cannot be empty or dot segments",
           );
+        assertUrlText(value, name, `/params/${key}`);
         return encodeURIComponent(value);
       });
       url.pathname = base.pathname.replace(/\/$/, "") + path;
@@ -74,8 +88,14 @@ export function createServiceClient<S extends ServiceDefinition>(
             "request",
             `Query array '${key}' must not be empty`,
           );
-        for (const item of Array.isArray(value) ? value : [value])
-          url.searchParams.append(key, String(item));
+        const fieldPath = `/query/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`;
+        assertUrlText(key, name, fieldPath);
+        const values = Array.isArray(value) ? value : [value];
+        values.forEach((item, index) => {
+          const text = String(item);
+          assertUrlText(text, name, Array.isArray(value) ? `${fieldPath}/${index}` : fieldPath);
+          url.searchParams.append(key, text);
+        });
       }
       const headers = new Headers(options.headers);
       new Headers(call.headers).forEach((value, key) => headers.set(key, value));
