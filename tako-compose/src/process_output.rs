@@ -3,7 +3,7 @@
 use std::io;
 use std::process::ExitStatus;
 use std::time::Duration;
-use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Child;
 
 tokio::task_local! {
@@ -65,6 +65,38 @@ async fn stop_and_reap(child: &mut Child, group: Option<i32>) -> io::Result<()> 
         return Err(error);
     }
     Ok(())
+}
+
+/// Keep ownership until stdin is closed or the failed command has been reaped.
+pub(crate) async fn write_stdin(
+    mut child: Child,
+    bytes: &[u8],
+    deadline: Duration,
+) -> io::Result<Child> {
+    let group = owned_process_group(&child);
+    let write = async {
+        let mut input = child.stdin.take().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "Missing Compose input pipe")
+        })?;
+        tokio::time::timeout(deadline, input.write_all(bytes))
+            .await
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "Timed out sending the Compose model",
+                )
+            })?
+    };
+    let result = tokio::select! {
+        biased;
+        _ = cancelled() => Err(io::Error::new(io::ErrorKind::Interrupted, "Server drain cancelled preparation")),
+        result = write => result,
+    };
+    if let Err(error) = result {
+        stop_and_reap(&mut child, group).await?;
+        return Err(error);
+    }
+    Ok(child)
 }
 
 /// Run preparation under a shared drain gate. Command capture kills and reaps
@@ -255,3 +287,6 @@ mod tests {
         assert!(output.len() <= MAX_STDOUT_BYTES);
     }
 }
+
+#[cfg(test)]
+mod stdin_tests;
