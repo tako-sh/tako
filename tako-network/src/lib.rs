@@ -4,6 +4,7 @@
 //! prove key possession, not admission. A public profile must arrive through an
 //! authenticated channel; validating its contents cannot establish its provenance.
 
+pub mod api;
 mod challenge;
 mod enrollment;
 mod error;
