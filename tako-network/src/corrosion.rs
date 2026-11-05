@@ -473,13 +473,14 @@ impl RecordProjection {
     fn push(&mut self, row: Vec<Value>) -> RuntimeResult<()> {
         let (kind, id, digest) = record_key(&row)?;
         let payload = record_payload(&row)?;
-        if let Some((old_kind, old_id, old_digest)) = &self.last {
-            if old_kind == &kind && old_id == &id {
-                if old_digest != &digest {
-                    return Err(RuntimeError::Conflict("record ID"));
-                }
-                return Ok(());
+        if let Some((old_kind, old_id, old_digest)) = &self.last
+            && old_kind == &kind
+            && old_id == &id
+        {
+            if old_digest != &digest {
+                return Err(RuntimeError::Conflict("record ID"));
             }
+            return Ok(());
         }
         self.last = Some((kind.clone(), id.clone(), digest));
         if kind != "ack" {
