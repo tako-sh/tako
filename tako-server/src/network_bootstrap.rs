@@ -106,7 +106,10 @@ mod unix {
                 ssh_port,
                 https_port,
             } => {
-                if wireguard_endpoint.port() < 1024 || wireguard_endpoint.port() == 8787 {
+                validate_ingress(data_dir)?;
+                if (wireguard_endpoint.port() < 1024 && wireguard_endpoint.port() != 443)
+                    || wireguard_endpoint.port() == 8787
+                {
                     return Err("invalid WireGuard listen port".into());
                 }
                 if data.exists(NODE_CONFIG_FILE)? {
@@ -163,6 +166,39 @@ mod unix {
         }
     }
 
+    fn validate_ingress(data_dir: &Path) -> Result<()> {
+        let file = match OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+            .open(data_dir.join("config.json"))
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        };
+        let metadata = file.metadata()?;
+        if !metadata.is_file()
+            || metadata.nlink() != 1
+            || metadata.mode() & 0o022 != 0
+            || (metadata.uid() != 0 && metadata.uid() != unsafe { libc::geteuid() })
+        {
+            return Err("unsafe server ingress configuration".into());
+        }
+        let mut bytes = Vec::new();
+        file.take(64 * 1024 + 1).read_to_end(&mut bytes)?;
+        if bytes.len() > 64 * 1024 {
+            return Err("server ingress configuration exceeds 64 KiB".into());
+        }
+        let config: crate::boot::ServerConfigFile = serde_json::from_slice(&bytes)?;
+        if config
+            .trusted_proxy
+            .is_some_and(|proxy| proxy.proxy_protocol)
+        {
+            return Err("Native network management requires direct TLS; disable mandatory PROXY protocol before enrolling this server".into());
+        }
+        Ok(())
+    }
+
     fn load_identity(data_dir: &Path, network: &NetworkId) -> Result<ServerIdentity> {
         let path = data_dir.join("networks").join(network.to_string());
         Directory::open(&path, true)?;
@@ -180,6 +216,7 @@ mod unix {
         host: &Host<'_>,
         now: u64,
     ) -> Result<BootstrapResponse> {
+        validate_ingress(data_dir)?;
         let identity = load_identity(data_dir, &snapshot.network.id)?;
         let device = identity.request().device_id_for(&snapshot.network.id)?;
         let effective = snapshot.effective_members(now)?;

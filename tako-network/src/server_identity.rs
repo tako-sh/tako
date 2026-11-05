@@ -272,7 +272,15 @@ impl ServerIdentity {
                     "network or configuration mismatch",
                 ));
             }
-            return Self::load_prepared(&directory, &dir, prepared);
+            drop(dir);
+            let identity = Self::renew(&directory)?;
+            if identity.prepared.config != config {
+                return Err(invalid(
+                    "server identity",
+                    "configuration changed during renewal",
+                ));
+            }
+            return Ok(identity);
         }
         if !dir.is_empty()? {
             return Err(invalid(

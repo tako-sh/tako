@@ -189,6 +189,18 @@ fn prepare_answer_sign_install_and_retry_preserve_identity() {
 }
 
 #[test]
+fn mandatory_proxy_protocol_is_rejected_before_identity_creation() {
+    let f = Fixture::new();
+    fs::write(f.data.join("config.json"), br#"{"trusted_proxy":{"proxy_protocol":true,"trusted_cidrs":["10.0.0.0/8"]}}"#).unwrap();
+    let error = f.call(f.prepare_request()).err().expect("incompatible ingress must fail").to_string();
+    assert!(error.contains("direct TLS"));
+    assert!(!f.data.join("networks").exists());
+    fs::write(f.data.join("config.json"), b"{broken").unwrap();
+    assert!(f.call(f.prepare_request()).is_err());
+    assert!(!f.data.join("networks").exists());
+}
+
+#[test]
 fn install_rejects_invalid_members_without_creating_config_or_token() {
     let f = Fixture::new();
     let valid = f.snapshot();
