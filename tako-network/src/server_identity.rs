@@ -1,7 +1,6 @@
 //! Local-only server preparation. Public HTTPS pins identify a per-server CA
 //! issuer, not a leaf: clients verify its chain and the endpoint DNS name/IP.
-//! Admission, public snapshot publication, TLS renewal and listeners belong to
-//! the caller. CA private keys must never be included in enrollment or profiles.
+//! Admission, public snapshot publication and listeners belong to the caller. CA private keys must never be included in enrollment or profiles.
 
 use std::{
     fmt,
@@ -10,7 +9,7 @@ use std::{
 };
 
 use openssl::{
-    asn1::Asn1Time,
+    asn1::{Asn1Time, Asn1TimeRef},
     bn::{BigNum, MsbOption},
     ec::{EcGroup, EcKey},
     hash::MessageDigest,
@@ -31,13 +30,18 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::{
-    DeviceKind, DeviceName, EnrollmentRequest, LocalDeviceKeys, NetworkId, Result, ServerInfo,
-    SshPublicKey, WgChallenge, WgProof, error::invalid,
+    DeviceKind, DeviceName, EnrollmentRequest, KeyFingerprint, LocalDeviceKeys, NetworkId, Result,
+    ServerInfo, SshPublicKey, WgChallenge, WgProof, error::invalid,
 };
 
 const METADATA: &str = "identity-prepared.json";
 const DEVICE_KEYS: &str = "device-keys.json";
 const MAX_FILE_BYTES: usize = 64 * 1024;
+const RENEWAL_JOURNAL: &str = "leaf-renewal.json";
+const RENEWAL_STAGE: &str = ".leaf-renewal-stage";
+const DAY: i64 = 24 * 60 * 60;
+const RENEW_BEFORE: i64 = 30 * DAY;
+const LEAF_LIFETIME: i64 = 365 * DAY;
 
 /// Host-local paths. Only `ca_certificate` is a public trust issuer; the leaf
 /// and fullchain are served by TLS. Retain the CA key locally for leaf renewal.
@@ -130,10 +134,78 @@ impl ServerIdentity {
     pub fn load(directory: impl AsRef<Path>) -> Result<Self> {
         let directory = std::path::absolute(directory)?;
         let dir = secure::Directory::open(&directory, false)?;
+        dir.lock()?;
         let bytes = dir
             .read_optional(METADATA)?
             .ok_or_else(|| invalid("server identity", "identity is not prepared"))?;
         Self::load_prepared(&directory, &dir, Prepared::parse(&bytes)?)
+    }
+
+    /// Recover interrupted renewal, then renew leaves with at most 30 days left.
+    /// Existing CA, leaf and device keys and public pins are retained. Expired
+    /// leaves are accepted only after verifying their bindings and a currently
+    /// valid CA. Requires prepared state; never creates missing identities.
+    pub fn renew(directory: impl AsRef<Path>) -> Result<Self> {
+        Self::renew_with_clock(directory.as_ref(), current_time)
+    }
+
+    #[cfg(test)]
+    fn renew_at(directory: &Path, now: i64) -> Result<Self> {
+        Self::renew_with_clock(directory, || Ok(now))
+    }
+
+    fn renew_with_clock(directory: &Path, clock: impl Fn() -> Result<i64>) -> Result<Self> {
+        let directory = std::path::absolute(directory)?;
+        let dir = secure::Directory::open(&directory, false)?;
+        dir.lock()?;
+        let now = clock()?;
+        let bytes = dir
+            .read_optional(METADATA)?
+            .ok_or_else(|| invalid("server identity", "identity is not prepared"))?;
+        let identity = Self::read_identity(&directory, Prepared::parse(&bytes)?)?;
+        let digest = KeyFingerprint::of_bytes(&bytes);
+        if let Some(bytes) = dir.read_optional(RENEWAL_JOURNAL)? {
+            let renewal: Renewal = serde_json::from_slice(&bytes)
+                .map_err(|_| invalid("leaf renewal", "invalid journal"))?;
+            if renewal.version != 1 || renewal.prepared_digest != digest {
+                return Err(invalid(
+                    "leaf renewal",
+                    "journal does not bind prepared identity",
+                ));
+            }
+            let materials =
+                identity.validate_at(&dir, now, LeafValidation::Renewal, Some(&renewal))?;
+            dir.check_path(&directory)?;
+            dir.discard_stage()?;
+            renewal.https.apply(&dir, &identity.tls, &materials[0].ca)?;
+            renewal
+                .gossip
+                .apply(&dir, &identity.gossip, &materials[1].ca)?;
+            dir.remove_journal()?;
+        }
+        let materials = identity.validate_at(&dir, now, LeafValidation::Renewal, None)?;
+        dir.check_path(&directory)?;
+        dir.discard_stage()?;
+        let names = certificate_names(&identity.prepared.config, identity.request())?;
+        let renewal = Renewal {
+            version: 1,
+            prepared_digest: digest,
+            https: LeafUpdate::plan(&materials[0], &names, false, now)?,
+            gossip: LeafUpdate::plan(&materials[1], &names, true, now)?,
+        };
+        if renewal.https.previous_pem != renewal.https.replacement_pem
+            || renewal.gossip.previous_pem != renewal.gossip.replacement_pem
+        {
+            dir.publish_journal(&serde_json::to_vec(&renewal)?)?;
+            renewal.https.apply(&dir, &identity.tls, &materials[0].ca)?;
+            renewal
+                .gossip
+                .apply(&dir, &identity.gossip, &materials[1].ca)?;
+            dir.remove_journal()?;
+        }
+        identity.validate_at(&dir, clock()?, LeafValidation::Current, None)?;
+        dir.check_path(&directory)?;
+        Ok(identity)
     }
 
     fn load_prepared(
@@ -141,17 +213,27 @@ impl ServerIdentity {
         dir: &secure::Directory,
         prepared: Prepared,
     ) -> Result<Self> {
+        if dir.read_optional(RENEWAL_JOURNAL)?.is_some() {
+            return Err(invalid(
+                "server identity",
+                "pending leaf renewal: call renew to recover",
+            ));
+        }
+        let identity = Self::read_identity(directory, prepared)?;
+        identity.validate(dir)?;
+        dir.check_path(directory)?;
+        Ok(identity)
+    }
+
+    fn read_identity(directory: &Path, prepared: Prepared) -> Result<Self> {
         let keys_path = directory.join(DEVICE_KEYS);
-        let identity = Self {
+        Ok(Self {
             keys: LocalDeviceKeys::load(&keys_path)?,
             keys_path,
             prepared,
             tls: ServerTlsPaths::new(directory, "https"),
             gossip: ServerTlsPaths::new(directory, "gossip"),
-        };
-        identity.validate(dir)?;
-        dir.check_path(directory)?;
-        Ok(identity)
+        })
     }
 
     /// Create or load a persistent, network-bound server identity. The parent
@@ -181,6 +263,7 @@ impl ServerIdentity {
         config.server_info().validate()?;
         let directory = std::path::absolute(directory)?;
         let dir = secure::Directory::open(&directory, true)?;
+        dir.lock()?;
         if let Some(bytes) = dir.read_optional(METADATA)? {
             let prepared = Prepared::parse(&bytes)?;
             if prepared.config != config {
@@ -268,6 +351,17 @@ impl ServerIdentity {
     }
 
     fn validate(&self, dir: &secure::Directory) -> Result<()> {
+        self.validate_at(dir, current_time()?, LeafValidation::Current, None)
+            .map(|_| ())
+    }
+
+    fn validate_at(
+        &self,
+        dir: &secure::Directory,
+        now: i64,
+        policy: LeafValidation,
+        renewal: Option<&Renewal>,
+    ) -> Result<[TlsMaterial; 2]> {
         let config = &self.prepared.config;
         let request = self.request();
         request.verify()?;
@@ -285,9 +379,26 @@ impl ServerIdentity {
         }
         let names = certificate_names(config, request)?;
         let mut expected = config.server_info();
-        expected.https_certificate_pem = Some(validate_tls(dir, &self.tls, &names, false)?);
-        expected.corrosion_ca_certificate_pem =
-            Some(validate_tls(dir, &self.gossip, &names, true)?);
+        let https = validate_tls(
+            dir,
+            &self.tls,
+            &names,
+            false,
+            now,
+            policy,
+            renewal.map(|r| &r.https),
+        )?;
+        let gossip = validate_tls(
+            dir,
+            &self.gossip,
+            &names,
+            true,
+            now,
+            policy,
+            renewal.map(|r| &r.gossip),
+        )?;
+        expected.https_certificate_pem = Some(pem_string(https.ca.to_pem()?)?);
+        expected.corrosion_ca_certificate_pem = Some(pem_string(gossip.ca.to_pem()?)?);
         expected.https_spki_sha256 = expected.https_spki_fingerprint()?;
         expected.validate()?;
         if expected != self.prepared.server_info {
@@ -302,7 +413,7 @@ impl ServerIdentity {
                 "HTTPS and gossip issuers must be independent",
             ));
         }
-        Ok(())
+        Ok([https, gossip])
     }
 }
 
@@ -378,11 +489,46 @@ fn generate_tls(
     ca.append_extension(ski)?;
     ca.sign(&ca_key, MessageDigest::sha256())?;
     let ca = ca.build();
-    let mut leaf = certificate(
+    let now = current_time()?;
+    let leaf = issue_leaf(
+        &ca,
+        &ca_key,
         &leaf_key,
+        names,
+        gossip,
+        now,
+        (now + LEAF_LIFETIME).min(timestamp(ca.not_after())?),
+    )?;
+    let ca_pem = ca.to_pem()?;
+    let leaf_pem = leaf.to_pem()?;
+    let ca_secret = Zeroizing::new(ca_key.private_key_to_pem_pkcs8()?);
+    let leaf_secret = Zeroizing::new(leaf_key.private_key_to_pem_pkcs8()?);
+    dir.write_path(&paths.ca_private_key, &ca_secret)?;
+    dir.write_path(&paths.private_key, &leaf_secret)?;
+    dir.write_path(&paths.ca_certificate, &ca_pem)?;
+    dir.write_path(&paths.certificate, &leaf_pem)?;
+    dir.write_path(&paths.fullchain, &[leaf_pem, ca_pem.clone()].concat())?;
+    pem_string(ca_pem)
+}
+
+fn issue_leaf(
+    ca: &X509,
+    ca_key: &PKey<Private>,
+    leaf_key: &PKey<Private>,
+    names: &CertificateNames,
+    gossip: bool,
+    now: i64,
+    expires_at: i64,
+) -> Result<X509> {
+    let mut leaf = certificate(
+        leaf_key,
         if gossip { "Tako gossip" } else { "Tako HTTPS" },
         365,
     )?;
+    let start = Asn1Time::from_unix(now)?;
+    let end = Asn1Time::from_unix(expires_at)?;
+    leaf.set_not_before(&start)?;
+    leaf.set_not_after(&end)?;
     leaf.set_issuer_name(ca.subject_name())?;
     leaf.append_extension(BasicConstraints::new().critical().build()?)?;
     leaf.append_extension(KeyUsage::new().critical().digital_signature().build()?)?;
@@ -400,60 +546,144 @@ fn generate_tls(
     for ip in names.ips {
         san.ip(&ip.to_string());
     }
-    let san = san.build(&leaf.x509v3_context(Some(&ca), None))?;
+    let san = san.build(&leaf.x509v3_context(Some(ca), None))?;
     leaf.append_extension(san)?;
     let aki = AuthorityKeyIdentifier::new()
         .keyid(true)
-        .build(&leaf.x509v3_context(Some(&ca), None))?;
+        .build(&leaf.x509v3_context(Some(ca), None))?;
     leaf.append_extension(aki)?;
-    let ski = SubjectKeyIdentifier::new().build(&leaf.x509v3_context(Some(&ca), None))?;
+    let ski = SubjectKeyIdentifier::new().build(&leaf.x509v3_context(Some(ca), None))?;
     leaf.append_extension(ski)?;
-    leaf.sign(&ca_key, MessageDigest::sha256())?;
-    let ca_pem = ca.to_pem()?;
-    let leaf_pem = leaf.build().to_pem()?;
-    let ca_secret = Zeroizing::new(ca_key.private_key_to_pem_pkcs8()?);
-    let leaf_secret = Zeroizing::new(leaf_key.private_key_to_pem_pkcs8()?);
-    dir.write_path(&paths.ca_private_key, &ca_secret)?;
-    dir.write_path(&paths.private_key, &leaf_secret)?;
-    dir.write_path(&paths.ca_certificate, &ca_pem)?;
-    dir.write_path(&paths.certificate, &leaf_pem)?;
-    dir.write_path(&paths.fullchain, &[leaf_pem, ca_pem.clone()].concat())?;
-    pem_string(ca_pem)
+    leaf.sign(ca_key, MessageDigest::sha256())?;
+    Ok(leaf.build())
 }
 
 fn pem_string(bytes: Vec<u8>) -> Result<String> {
     String::from_utf8(bytes).map_err(|_| invalid("certificate", "invalid PEM encoding"))
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LeafValidation {
+    Current,
+    // CA validity is always checked at `now`, even when checking an old leaf.
+    Renewal,
+}
+
+struct TlsMaterial {
+    ca: X509,
+    ca_key: PKey<Private>,
+    leaf: X509,
+    leaf_key: PKey<Private>,
+}
+
+fn current_time() -> Result<i64> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| duration.as_secs().try_into().ok())
+        .ok_or_else(|| invalid("server TLS", "invalid system clock"))
+}
+
+fn timestamp(time: &Asn1TimeRef) -> Result<i64> {
+    let diff = Asn1Time::from_unix(0)?.diff(time)?;
+    Ok(i64::from(diff.days) * DAY + i64::from(diff.secs))
+}
+
+#[allow(clippy::too_many_arguments)]
 fn validate_tls(
     dir: &secure::Directory,
     paths: &ServerTlsPaths,
     names: &CertificateNames,
     gossip: bool,
-) -> Result<String> {
+    now: i64,
+    policy: LeafValidation,
+    update: Option<&LeafUpdate>,
+) -> Result<TlsMaterial> {
     let ca_bytes = dir.read_path(&paths.ca_certificate)?;
     let leaf_bytes = dir.read_path(&paths.certificate)?;
+    let fullchain = dir.read_path(&paths.fullchain)?;
     let ca = X509::from_pem(&ca_bytes)?;
-    let leaf = X509::from_pem(&leaf_bytes)?;
-    if ca.to_pem()? != *ca_bytes
-        || leaf.to_pem()? != *leaf_bytes
-        || *dir.read_path(&paths.fullchain)?
-            != [leaf_bytes.as_slice(), ca_bytes.as_slice()].concat()
-    {
+    if ca.to_pem()? != *ca_bytes {
         return Err(invalid(
             "server TLS",
-            "expected canonical certificate and fullchain",
+            "expected one canonical CA certificate",
         ));
+    }
+    if timestamp(ca.not_before())? > now || timestamp(ca.not_after())? <= now {
+        return Err(invalid("server TLS", "CA is expired or not yet valid"));
     }
     let ca_key = PKey::private_key_from_pem(&dir.read_path(&paths.ca_private_key)?)?;
     let leaf_key = PKey::private_key_from_pem(&dir.read_path(&paths.private_key)?)?;
     if !ca.public_key()?.public_eq(&ca_key)
-        || !leaf.public_key()?.public_eq(&leaf_key)
         || ca_key.public_eq(&leaf_key)
         || !ca.verify(&ca_key)?
         || ca.subject_name().to_der()? != ca.issuer_name().to_der()?
     {
         return Err(invalid("server TLS", "certificate/key or issuer mismatch"));
+    }
+    let validate = |pem: &[u8]| validate_leaf(&ca, &leaf_key, pem, names, gossip, now, policy);
+    let leaf = if let Some(update) = update {
+        validate(update.previous_pem.as_bytes())?;
+        let replacement = validate(update.replacement_pem.as_bytes())?;
+        let matches_leaf = [&update.previous_pem, &update.replacement_pem]
+            .iter()
+            .any(|pem| pem.as_bytes() == leaf_bytes.as_slice());
+        let matches_chain = [&update.previous_pem, &update.replacement_pem]
+            .iter()
+            .any(|pem| [pem.as_bytes(), ca_bytes.as_slice()].concat() == *fullchain);
+        if !matches_leaf || !matches_chain {
+            return Err(invalid(
+                "leaf renewal",
+                "files do not match journal old/new certificates",
+            ));
+        }
+        if timestamp(replacement.not_after())?
+            < timestamp(X509::from_pem(update.previous_pem.as_bytes())?.not_after())?
+        {
+            return Err(invalid(
+                "leaf renewal",
+                "journal would shorten leaf validity",
+            ));
+        }
+        replacement
+    } else {
+        if *fullchain != [leaf_bytes.as_slice(), ca_bytes.as_slice()].concat() {
+            return Err(invalid(
+                "server TLS",
+                "expected matching certificate and fullchain",
+            ));
+        }
+        validate(&leaf_bytes)?
+    };
+    Ok(TlsMaterial {
+        ca,
+        ca_key,
+        leaf,
+        leaf_key,
+    })
+}
+
+fn validate_leaf(
+    ca: &X509,
+    key: &PKey<Private>,
+    bytes: &[u8],
+    names: &CertificateNames,
+    gossip: bool,
+    now: i64,
+    policy: LeafValidation,
+) -> Result<X509> {
+    let leaf = X509::from_pem(bytes)?;
+    if leaf.to_pem()? != bytes || !leaf.public_key()?.public_eq(key) {
+        return Err(invalid(
+            "server TLS",
+            "leaf encoding or private key mismatch",
+        ));
+    }
+    let start = timestamp(leaf.not_before())?;
+    let end = timestamp(leaf.not_after())?;
+    if start > now || end <= start || (policy == LeafValidation::Current && end <= now) {
+        return Err(invalid("server TLS", "invalid leaf validity interval"));
     }
     let sans = leaf
         .subject_alt_names()
@@ -479,31 +709,127 @@ fn validate_tls(
             "SANs do not match server configuration",
         ));
     }
-    verify_leaf(&ca, &leaf, X509PurposeId::SSL_SERVER, &names.hostname)?;
-    if gossip {
-        verify_leaf(&ca, &leaf, X509PurposeId::SSL_CLIENT, &names.gossip)?;
+    // The issuer was checked at the real current time above. An expired leaf
+    // must still pass strict verification at a time within its own validity.
+    let verify_at = now.min(end - 1);
+    if !verify_leaf(
+        ca,
+        &leaf,
+        X509PurposeId::SSL_SERVER,
+        &names.hostname,
+        verify_at,
+    )? || verify_leaf(
+        ca,
+        &leaf,
+        X509PurposeId::SSL_CLIENT,
+        &names.hostname,
+        verify_at,
+    )? != gossip
+    {
+        return Err(invalid(
+            "server TLS",
+            "chain, validity, name or purpose mismatch",
+        ));
     }
-    pem_string(ca_bytes.to_vec())
+    Ok(leaf)
 }
 
-fn verify_leaf(ca: &X509, leaf: &X509, purpose: X509PurposeId, hostname: &str) -> Result<()> {
+fn verify_leaf(
+    ca: &X509,
+    leaf: &X509,
+    purpose: X509PurposeId,
+    hostname: &str,
+    now: i64,
+) -> Result<bool> {
     let mut store = X509StoreBuilder::new()?;
     store.add_cert(ca.clone())?;
     let mut param = X509VerifyParam::new()?;
     param.set_flags(X509VerifyFlags::X509_STRICT)?;
     param.set_purpose(purpose)?;
     param.set_host(hostname)?;
+    // OpenSSL time_t can be narrower than i64 on other supported platforms.
+    #[allow(clippy::useless_conversion)]
+    let time = now
+        .try_into()
+        .map_err(|_| invalid("server TLS", "time out of range"))?;
+    param.set_time(time);
     store.set_param(&param)?;
     let chain = Stack::new()?;
-    let valid = X509StoreContext::new()?.init(&store.build(), leaf, &chain, |context| {
-        context.verify_cert()
-    })?;
-    if !valid {
-        return Err(invalid(
-            "server TLS",
-            "chain, validity, name or purpose mismatch",
-        ));
+    Ok(
+        X509StoreContext::new()?.init(&store.build(), leaf, &chain, |context| {
+            context.verify_cert()
+        })?,
+    )
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Renewal {
+    version: u32,
+    prepared_digest: KeyFingerprint,
+    https: LeafUpdate,
+    gossip: LeafUpdate,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LeafUpdate {
+    previous_pem: String,
+    replacement_pem: String,
+}
+
+impl LeafUpdate {
+    fn plan(
+        material: &TlsMaterial,
+        names: &CertificateNames,
+        gossip: bool,
+        now: i64,
+    ) -> Result<Self> {
+        let previous_pem = pem_string(material.leaf.to_pem()?)?;
+        let expires = timestamp(material.leaf.not_after())?;
+        let new_expiry = (now + LEAF_LIFETIME).min(timestamp(material.ca.not_after())?);
+        let replacement_pem = if expires <= now + RENEW_BEFORE && expires < new_expiry {
+            let leaf = issue_leaf(
+                &material.ca,
+                &material.ca_key,
+                &material.leaf_key,
+                names,
+                gossip,
+                now,
+                new_expiry,
+            )?;
+            let pem = leaf.to_pem()?;
+            validate_leaf(
+                &material.ca,
+                &material.leaf_key,
+                &pem,
+                names,
+                gossip,
+                now,
+                LeafValidation::Current,
+            )?;
+            pem_string(pem)?
+        } else {
+            previous_pem.clone()
+        };
+        Ok(Self {
+            previous_pem,
+            replacement_pem,
+        })
     }
+
+    fn apply(&self, dir: &secure::Directory, paths: &ServerTlsPaths, ca: &X509) -> Result<()> {
+        dir.replace_path(&paths.certificate, self.replacement_pem.as_bytes())?;
+        dir.replace_path(
+            &paths.fullchain,
+            &[self.replacement_pem.as_bytes(), &ca.to_pem()?].concat(),
+        )
+    }
+}
+
+fn renewal_boundary() -> Result<()> {
+    #[cfg(test)]
+    tests::renewal_boundary()?;
     Ok(())
 }
 
@@ -526,6 +852,72 @@ mod secure {
     pub(super) struct Directory(OwnedFd);
 
     impl Directory {
+        // Lock the directory inode itself: no replaceable lock-file path, and
+        // read-only load acquires the same lock without creating any files.
+        pub(super) fn lock(&self) -> Result<()> {
+            fs::flock(&self.0, fs::FlockOperation::LockExclusive)?;
+            Ok(())
+        }
+
+        pub(super) fn discard_stage(&self) -> Result<()> {
+            if self.read_optional(RENEWAL_STAGE)?.is_some() {
+                fs::unlinkat(&self.0, RENEWAL_STAGE, fs::AtFlags::empty())?;
+                renewal_boundary()?;
+                fs::fsync(&self.0)?;
+                renewal_boundary()?;
+            }
+            Ok(())
+        }
+
+        pub(super) fn publish_journal(&self, bytes: &[u8]) -> Result<()> {
+            if self.read_optional(RENEWAL_JOURNAL)?.is_some() {
+                return Err(invalid("leaf renewal", "journal already exists"));
+            }
+            self.write_atomic(RENEWAL_JOURNAL, bytes)
+        }
+
+        pub(super) fn replace_path(&self, path: &Path, bytes: &[u8]) -> Result<()> {
+            if self.read_path(path)?.as_slice() != bytes {
+                self.write_atomic(filename(path)?, bytes)?;
+            }
+            Ok(())
+        }
+
+        fn write_atomic(&self, name: &str, bytes: &[u8]) -> Result<()> {
+            if bytes.len() > MAX_FILE_BYTES {
+                return Err(invalid("identity file", "too large"));
+            }
+            let fd = fs::openat(
+                &self.0,
+                RENEWAL_STAGE,
+                OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::RUSR | Mode::WUSR,
+            )?;
+            let mut file = File::from(fd);
+            fs::fchmod(&file, Mode::RUSR | Mode::WUSR)?;
+            renewal_boundary()?;
+            file.write_all(bytes)?;
+            renewal_boundary()?;
+            file.sync_all()?;
+            renewal_boundary()?;
+            fs::renameat(&self.0, RENEWAL_STAGE, &self.0, name)?;
+            renewal_boundary()?;
+            fs::fsync(&self.0)?;
+            renewal_boundary()?;
+            Ok(())
+        }
+
+        pub(super) fn remove_journal(&self) -> Result<()> {
+            // Recheck protected-file invariants before unlinking.
+            self.read_optional(RENEWAL_JOURNAL)?
+                .ok_or_else(|| invalid("leaf renewal", "missing journal"))?;
+            fs::unlinkat(&self.0, RENEWAL_JOURNAL, fs::AtFlags::empty())?;
+            renewal_boundary()?;
+            fs::fsync(&self.0)?;
+            renewal_boundary()?;
+            Ok(())
+        }
+
         pub(super) fn open(path: &Path, create: bool) -> Result<Self> {
             let mut fd = fs::open(
                 "/",
@@ -664,6 +1056,21 @@ mod secure {
     use super::*;
     pub(super) struct Directory;
     impl Directory {
+        pub(super) fn lock(&self) -> Result<()> {
+            Err(crate::Error::UnsupportedPlatform)
+        }
+        pub(super) fn discard_stage(&self) -> Result<()> {
+            Err(crate::Error::UnsupportedPlatform)
+        }
+        pub(super) fn publish_journal(&self, _: &[u8]) -> Result<()> {
+            Err(crate::Error::UnsupportedPlatform)
+        }
+        pub(super) fn replace_path(&self, _: &Path, _: &[u8]) -> Result<()> {
+            Err(crate::Error::UnsupportedPlatform)
+        }
+        pub(super) fn remove_journal(&self) -> Result<()> {
+            Err(crate::Error::UnsupportedPlatform)
+        }
         pub(super) fn open(_: &Path, _: bool) -> Result<Self> {
             Err(crate::Error::UnsupportedPlatform)
         }
@@ -691,6 +1098,24 @@ mod secure {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    thread_local! {
+        static RENEWAL_FAILURE: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    }
+
+    pub(super) fn renewal_boundary() -> Result<()> {
+        RENEWAL_FAILURE.with(|remaining| match remaining.get() {
+            Some(0) => {
+                remaining.set(None);
+                Err(std::io::Error::other("injected renewal interruption").into())
+            }
+            Some(n) => {
+                remaining.set(Some(n - 1));
+                Ok(())
+            }
+            None => Ok(()),
+        })
+    }
 
     fn prepare(path: &Path) -> Result<ServerIdentity> {
         ServerIdentity::prepare(
@@ -1282,6 +1707,205 @@ mod tests {
         for winner in winners {
             assert_eq!(winner.request(), reloaded.request());
             assert_eq!(winner.server_info(), reloaded.server_info());
+        }
+    }
+    fn materials(identity: &ServerIdentity) -> [TlsMaterial; 2] {
+        let dir = secure::Directory::open(identity.keys_path().parent().unwrap(), false).unwrap();
+        identity
+            .validate_at(&dir, current_time().unwrap(), LeafValidation::Current, None)
+            .unwrap()
+    }
+
+    fn assert_immutable_files(
+        before: &std::collections::BTreeMap<std::ffi::OsString, Vec<u8>>,
+        path: &Path,
+    ) {
+        for (name, bytes) in before {
+            if !matches!(
+                name.to_str().unwrap(),
+                "https-leaf.pem"
+                    | "https-fullchain.pem"
+                    | "gossip-leaf.pem"
+                    | "gossip-fullchain.pem"
+                    | RENEWAL_JOURNAL
+                    | RENEWAL_STAGE
+            ) {
+                assert_eq!(
+                    &std::fs::read(path.join(name)).unwrap(),
+                    bytes,
+                    "changed {name:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn native_renewal_preserves_keys_pins_and_renews_expiring_or_expired_leaves() {
+        use std::{fs, os::unix::fs::MetadataExt};
+        for remaining in [30 * DAY, -DAY] {
+            let temp = tempfile::tempdir().unwrap();
+            let first = prepare(temp.path()).unwrap();
+            let original = snapshot(temp.path());
+            let old = materials(&first);
+            let latest_expiry = old
+                .iter()
+                .map(|tls| timestamp(tls.leaf.not_after()).unwrap())
+                .max()
+                .unwrap();
+            let now = latest_expiry - remaining;
+            let renewed = ServerIdentity::renew_at(temp.path(), now).unwrap();
+            assert_eq!(first.request(), renewed.request());
+            assert_eq!(first.server_info(), renewed.server_info());
+            assert_immutable_files(&original, temp.path());
+            let names = certificate_names(&first.prepared.config, first.request()).unwrap();
+            for (paths, gossip) in [(renewed.tls_paths(), false), (renewed.gossip_paths(), true)] {
+                let leaf = X509::from_pem(&fs::read(&paths.certificate).unwrap()).unwrap();
+                assert_eq!(timestamp(leaf.not_before()).unwrap(), now);
+                assert_eq!(timestamp(leaf.not_after()).unwrap(), now + LEAF_LIFETIME);
+                assert_ne!(
+                    &fs::read(&paths.certificate).unwrap(),
+                    &original[paths.certificate.file_name().unwrap()]
+                );
+                for purpose in ["sslserver", "sslclient"] {
+                    let result = std::process::Command::new("openssl")
+                        .args([
+                            "verify",
+                            "-x509_strict",
+                            "-attime",
+                            &now.to_string(),
+                            "-CAfile",
+                        ])
+                        .arg(&paths.ca_certificate)
+                        .args(["-purpose", purpose, "-verify_hostname", &names.hostname])
+                        .arg(&paths.certificate)
+                        .output()
+                        .unwrap();
+                    assert_eq!(
+                        result.status.success(),
+                        gossip || purpose == "sslserver",
+                        "{}",
+                        String::from_utf8_lossy(&result.stderr)
+                    );
+                }
+                let meta = fs::metadata(&paths.certificate).unwrap();
+                assert_eq!(meta.mode() & 0o7777, 0o600);
+                assert_eq!(meta.nlink(), 1);
+                assert_eq!(meta.uid(), rustix::process::geteuid().as_raw());
+            }
+            let before = snapshot(temp.path());
+            let meta = fs::metadata(&renewed.tls_paths().fullchain).unwrap();
+            ServerIdentity::renew_at(temp.path(), now).unwrap();
+            assert_eq!(snapshot(temp.path()), before);
+            let again = fs::metadata(&renewed.tls_paths().fullchain).unwrap();
+            assert_eq!(meta.ino(), again.ino());
+            assert_eq!(meta.modified().unwrap(), again.modified().unwrap());
+        }
+    }
+
+    #[test]
+    fn renewal_is_read_only_before_threshold_and_never_creates_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let missing = temp.path().join("missing");
+        assert!(ServerIdentity::renew(&missing).is_err());
+        assert!(!missing.exists());
+        assert!(ServerIdentity::renew(temp.path()).is_err());
+        assert!(snapshot(temp.path()).is_empty());
+        let identity = prepare(temp.path()).unwrap();
+        let before = snapshot(temp.path());
+        let renewed = ServerIdentity::renew(temp.path()).unwrap();
+        assert_eq!(renewed.server_info(), identity.server_info());
+        let expires = materials(&identity)
+            .iter()
+            .map(|m| timestamp(m.leaf.not_after()).unwrap())
+            .min()
+            .unwrap();
+        ServerIdentity::renew_at(temp.path(), expires - RENEW_BEFORE - 1).unwrap();
+        assert_eq!(snapshot(temp.path()), before);
+        ServerIdentity::load(temp.path()).unwrap();
+    }
+
+    #[test]
+    fn renewal_caps_leaf_validity_and_refuses_expired_or_future_ca() {
+        let temp = tempfile::tempdir().unwrap();
+        let identity = prepare(temp.path()).unwrap();
+        let tls = materials(&identity);
+        let ca_start = tls
+            .iter()
+            .map(|m| timestamp(m.ca.not_before()).unwrap())
+            .max()
+            .unwrap();
+        let ca_end = tls
+            .iter()
+            .map(|m| timestamp(m.ca.not_after()).unwrap())
+            .min()
+            .unwrap();
+        for now in [ca_start - 1, ca_end] {
+            let before = snapshot(temp.path());
+            assert!(ServerIdentity::renew_at(temp.path(), now).is_err());
+            assert_eq!(snapshot(temp.path()), before);
+        }
+        ServerIdentity::renew_at(temp.path(), ca_end - 10 * DAY).unwrap();
+        for paths in [identity.tls_paths(), identity.gossip_paths()] {
+            let leaf = X509::from_pem(&std::fs::read(&paths.certificate).unwrap()).unwrap();
+            let ca = X509::from_pem(&std::fs::read(&paths.ca_certificate).unwrap()).unwrap();
+            assert_eq!(leaf.not_after(), ca.not_after());
+        }
+        let before = snapshot(temp.path());
+        ServerIdentity::renew_at(temp.path(), ca_end - 9 * DAY).unwrap();
+        assert_eq!(snapshot(temp.path()), before);
+    }
+
+    #[test]
+    fn renewal_refuses_corrupt_bindings_and_future_leaf_before_any_writes() {
+        let temp = tempfile::tempdir().unwrap();
+        let identity = prepare(temp.path()).unwrap();
+        let original = snapshot(temp.path());
+        let [tls, _] = materials(&identity);
+        let names = certificate_names(&identity.prepared.config, identity.request()).unwrap();
+        let now = current_time().unwrap();
+        let wrong_key = new_key().unwrap();
+        for target in [
+            &identity.tls_paths().ca_private_key,
+            &identity.tls_paths().private_key,
+        ] {
+            std::fs::write(target, wrong_key.private_key_to_pem_pkcs8().unwrap()).unwrap();
+            let before = snapshot(temp.path());
+            assert!(ServerIdentity::renew_at(temp.path(), now + LEAF_LIFETIME + DAY).is_err());
+            assert_eq!(snapshot(temp.path()), before);
+            std::fs::write(target, &original[target.file_name().unwrap()]).unwrap();
+        }
+        for leaf in [
+            issue_leaf(
+                &tls.ca,
+                &wrong_key,
+                &tls.leaf_key,
+                &names,
+                false,
+                now,
+                now + DAY,
+            )
+            .unwrap(),
+            issue_leaf(
+                &tls.ca,
+                &tls.ca_key,
+                &tls.leaf_key,
+                &names,
+                false,
+                now + DAY,
+                now + LEAF_LIFETIME,
+            )
+            .unwrap(),
+        ] {
+            let pem = leaf.to_pem().unwrap();
+            std::fs::write(&identity.tls_paths().certificate, &pem).unwrap();
+            std::fs::write(
+                &identity.tls_paths().fullchain,
+                [pem, tls.ca.to_pem().unwrap()].concat(),
+            )
+            .unwrap();
+            let before = snapshot(temp.path());
+            assert!(ServerIdentity::renew_at(temp.path(), now).is_err());
+            assert_eq!(snapshot(temp.path()), before);
         }
     }
 }
