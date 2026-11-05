@@ -629,6 +629,13 @@ fn hard_capacity_in_denial_or_ack_publication_latches_before_rollback() {
             _ => unreachable!(),
         }
         *fixture.store.0.borrow_mut() = original;
+        let RpcRequest::Revoke { id, .. } = &command else {
+            unreachable!()
+        };
+        assert!(matches!(
+            runtime.republish_revocation(id),
+            Err(RuntimeError::Capacity("registry requires local recovery"))
+        ));
         assert!(matches!(
             fixture.call(&mut runtime, &fixture.admin, command, 12, 12),
             Err(RuntimeError::Capacity(_))
@@ -928,5 +935,95 @@ fn snapshot_capacity_always_latches_even_with_a_candidate_quota_label() {
             &fixture.dir.path().join("runtime.db")
         ),
         Err(RuntimeError::Capacity("registry requires local recovery"))
+    ));
+}
+
+#[test]
+fn local_republication_is_exact_and_does_not_require_fresh_authority_or_store_reads() {
+    use std::cell::Cell;
+    struct PublicationStore {
+        inner: Store,
+        publication_down: Rc<Cell<bool>>,
+        reads_down: Rc<Cell<bool>>,
+        writes: Rc<Cell<usize>>,
+    }
+    impl RegistryStore for PublicationStore {
+        fn snapshot(&mut self) -> RuntimeResult<RegistrySnapshot> {
+            if self.reads_down.get() {
+                Err(RuntimeError::Transport)
+            } else {
+                self.inner.snapshot()
+            }
+        }
+        fn append_member(&mut self, member: &Member) -> RuntimeResult<()> {
+            self.inner.append_member(member)
+        }
+        fn append_revocation(&mut self, revocation: &Revocation) -> RuntimeResult<()> {
+            self.writes.set(self.writes.get() + 1);
+            if self.publication_down.get() {
+                Err(RuntimeError::Transport)
+            } else {
+                self.inner.append_revocation(revocation)
+            }
+        }
+        fn append_ack(&mut self, ack: &Ack) -> RuntimeResult<()> {
+            self.inner.append_ack(ack)
+        }
+    }
+    let fixture = Fixture::new(None);
+    let publication_down = Rc::new(Cell::new(true));
+    let reads_down = Rc::new(Cell::new(false));
+    let writes = Rc::new(Cell::new(0));
+    let mut runtime = ServerRuntime::open(
+        PublicationStore {
+            inner: fixture.store.clone(),
+            publication_down: publication_down.clone(),
+            reads_down: reads_down.clone(),
+            writes: writes.clone(),
+        },
+        LocalDeviceKeys::load(&fixture.dir.path().join("keys")).unwrap(),
+        fixture.config.clone(),
+        &fixture.dir.path().join("runtime.db"),
+    )
+    .unwrap();
+    let id = RevocationId::random().unwrap();
+    assert!(matches!(
+        fixture.call(
+            &mut runtime,
+            &fixture.admin,
+            RpcRequest::Revoke {
+                id: id.clone(),
+                target: fixture.config.server_id.clone(),
+            },
+            10,
+            10
+        ),
+        Err(RuntimeError::Transport)
+    ));
+    let before = runtime.snapshot().unwrap().revocations[0].clone();
+    assert_eq!(writes.get(), 1);
+    assert!(matches!(
+        runtime.republish_revocation(&RevocationId::random().unwrap()),
+        Err(RuntimeError::Invalid("revocation is not recorded"))
+    ));
+    assert_eq!(writes.get(), 1);
+    reads_down.set(true);
+    assert!(matches!(
+        runtime.republish_revocation(&id),
+        Err(RuntimeError::Transport)
+    ));
+    assert!(fixture.store.0.borrow().revocations.is_empty());
+    publication_down.set(false);
+    assert_eq!(runtime.republish_revocation(&id).unwrap(), before);
+    assert_eq!(fixture.store.0.borrow().revocations, vec![before.clone()]);
+    assert!(fixture.store.0.borrow().acks.is_empty());
+    drop(runtime);
+    fixture.store.0.borrow_mut().revocations.clear();
+    let mut runtime = fixture.open();
+    assert!(runtime.desired_host_state(11).unwrap().peers.is_empty());
+    assert_eq!(runtime.republish_revocation(&id).unwrap(), before);
+    assert!(matches!(
+        fixture.call(&mut runtime, &fixture.admin, RpcRequest::Snapshot, 11, 11),
+        Err(RuntimeError::Denied)
     ));
 }

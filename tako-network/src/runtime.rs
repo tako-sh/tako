@@ -15,8 +15,8 @@ use zeroize::Zeroizing;
 use crate::{
     Ack, Approval, BootId, DeviceId, DeviceKind, LocalDeviceKeys, Member, MemberKind,
     NetworkDescriptor, NetworkPublicProfile, PendingApprovalProfile, PendingWgChallenge,
-    Permissions, RegistrySnapshot, RequestId, ServerInfo, SshPublicKey, SshUser, WgChallenge,
-    WgPublicKey,
+    Permissions, RegistrySnapshot, RequestId, Revocation, RevocationId, ServerInfo, SshPublicKey,
+    SshUser, WgChallenge, WgPublicKey,
     api::{ApproveRequest, RpcRequest, RpcResponse, RuntimeError, RuntimeResult, SignedRequest},
     corrosion::{
         MAX_RECORD_BYTES, MAX_REGISTRY_BYTES, MAX_REGISTRY_ROWS, RegistryStore, bound_projection,
@@ -357,10 +357,9 @@ impl<S: RegistryStore> ServerRuntime<S> {
                 return Err(RuntimeError::Denied);
             }
             self.consume_nonce(&signed, now)?;
-            self.with_registry(RegistryOperation::Mutation, |runtime| {
-                runtime.store.append_revocation(previous)
-            })?;
-            return Ok(RpcResponse::Revoked(previous.clone()));
+            return Ok(RpcResponse::Revoked(
+                self.republish_revocation(&previous.id)?,
+            ));
         }
         self.require_server(&snapshot, now)?;
         let entitlement = match &signed.request {
@@ -787,6 +786,36 @@ impl<S: RegistryStore> ServerRuntime<S> {
         Ok(RpcResponse::Active(profile))
     }
 
+    /// Trusted local reconciliation only. Publish one exact durable denial without
+    /// granting current authority or consuming an administrator's nonce. Reads
+    /// only the local denial; store-specific write guards still apply. Never starts
+    /// storage or clears a latched registry failure.
+    /// Success confirms the store append only, never dissemination or enforcement.
+    /// An error leaves the denial recorded and publication unconfirmed; retry the
+    /// same ID after storage recovery. Unknown IDs cannot create revocations.
+    pub fn republish_revocation(&mut self, id: &RevocationId) -> RuntimeResult<Revocation> {
+        self.with_registry(RegistryOperation::Mutation, |runtime| {
+            let payload: Option<String> = runtime
+                .db
+                .query_row(
+                    "SELECT payload FROM observed_records WHERE kind='revocation' AND id=?1",
+                    [id.to_string()],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let payload = payload.ok_or(RuntimeError::Invalid("revocation is not recorded"))?;
+            if payload.len() > MAX_REGISTRY_BYTES {
+                return Err(RuntimeError::Capacity("observed registry"));
+            }
+            let revocation: Revocation = serde_json::from_str(&payload)?;
+            if &revocation.id != id {
+                return Err(RuntimeError::Conflict("recorded revocation ID"));
+            }
+            runtime.store.append_revocation(&revocation)?;
+            Ok(revocation)
+        })
+    }
+
     /// On any error the parent must remove peers and SSH grants and withdraw readiness.
     pub fn desired_host_state(&mut self, now: u64) -> RuntimeResult<HostDesiredState> {
         self.advance_clock(now)?;
@@ -886,7 +915,7 @@ fn server_pins(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{NetworkId, Revocation, RevocationId};
+    use crate::NetworkId;
     use std::{cell::RefCell, rc::Rc};
 
     #[derive(Clone)]
