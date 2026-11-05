@@ -55,7 +55,10 @@ async fn run_with_timeout(
     timeout_duration: Duration,
     #[cfg(unix)] isolation: Option<ProcessIsolation>,
 ) -> Result<ReleaseCommandOutcome, String> {
+    crate::process_output::check_cancellation().map_err(|e| e.to_string())?;
     let mut cmd = TokioCommand::new("sh");
+    #[cfg(unix)]
+    cmd.process_group(0);
     cmd.args(["-c", command_line])
         .current_dir(cwd)
         .env_clear()

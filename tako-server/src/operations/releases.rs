@@ -105,12 +105,15 @@ impl crate::ServerState {
                 }
             };
 
-        match prepare_release_runtime(
-            &release_path,
-            &release_env,
-            &self.runtime.data_dir,
-            #[cfg(unix)]
-            Some(isolation),
+        match crate::process_output::during_preparation(
+            self.drain_flag(),
+            prepare_release_runtime(
+                &release_path,
+                &release_env,
+                &self.runtime.data_dir,
+                #[cfg(unix)]
+                Some(isolation),
+            ),
         )
         .await
         {
@@ -195,12 +198,15 @@ impl crate::ServerState {
                 Err(error) => return Response::error(format!("Release command failed: {error}")),
             };
 
-        match release_command::run(
-            command_line,
-            &release_path,
-            &env,
-            #[cfg(unix)]
-            Some(isolation),
+        match crate::process_output::during_preparation(
+            self.drain_flag(),
+            release_command::run(
+                command_line,
+                &release_path,
+                &env,
+                #[cfg(unix)]
+                Some(isolation),
+            ),
         )
         .await
         {

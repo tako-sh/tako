@@ -62,6 +62,7 @@ pub(crate) async fn build_release_image(
     release_dir: &Path,
     manifest: &ReleaseManifest,
 ) -> Result<String, String> {
+    crate::process_output::check_cancellation().map_err(|e| e.to_string())?;
     let engine = detect_container_engine()?;
     let tag = image_tag_for_manifest(manifest)?;
     manifest.container_options.validate()?;
@@ -82,7 +83,9 @@ pub(crate) async fn build_release_image(
     let context = container_build_context(release_dir, manifest)?;
     let container_file = container_file_path(release_dir, manifest)?;
 
+    crate::process_output::check_cancellation().map_err(|e| e.to_string())?;
     let child = TokioCommand::new(engine.binary())
+        .process_group(0)
         .arg("build")
         .arg("-f")
         .arg(&container_file)
@@ -94,10 +97,13 @@ pub(crate) async fn build_release_image(
         .kill_on_drop(true)
         .spawn()
         .map_err(|e| format!("Failed to run {} build: {e}", engine.binary()))?;
-    let output = crate::process_output::capture(child, None)
-        .await
-        .map_err(|e| format!("Failed to collect {} build output: {e}", engine.binary()))?;
-    let status = output.status.expect("no timeout configured");
+    let output =
+        crate::process_output::capture(child, Some(crate::process_output::PREPARATION_TIMEOUT))
+            .await
+            .map_err(|e| format!("Failed to collect {} build output: {e}", engine.binary()))?;
+    let status = output
+        .status
+        .ok_or("Container preparation timed out after 600 seconds")?;
     if !status.success() {
         return Err(format_process_failure(
             &format!("{} build", engine.binary()),
@@ -111,17 +117,22 @@ pub(crate) async fn build_release_image(
 }
 
 async fn run_image_command(engine: ContainerEngine, args: &[&str]) -> Result<(), String> {
+    crate::process_output::check_cancellation().map_err(|e| e.to_string())?;
     let child = TokioCommand::new(engine.binary())
+        .process_group(0)
         .args(args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
         .spawn()
         .map_err(|e| e.to_string())?;
-    let output = crate::process_output::capture(child, None)
-        .await
-        .map_err(|e| e.to_string())?;
-    let status = output.status.expect("no timeout configured");
+    let output =
+        crate::process_output::capture(child, Some(crate::process_output::PREPARATION_TIMEOUT))
+            .await
+            .map_err(|e| e.to_string())?;
+    let status = output
+        .status
+        .ok_or("Container preparation timed out after 600 seconds")?;
     if !status.success() {
         return Err(format_process_failure(
             "prepare container image",
