@@ -26,7 +26,7 @@ if (exitCode !== 0) process.exit(exitCode);
 // Blume's deployment base rewrites URLs; the combined site supplies the directory mount.
 await rm(destination, { recursive: true, force: true });
 await mkdir(destination, { recursive: true });
-await cp(source, destination, {
+await cp(fileURLToPath(source), fileURLToPath(destination), {
   recursive: true,
   filter: (path) =>
     !["_headers", "_redirects", "vercel.json"].some(
@@ -83,7 +83,10 @@ if (existsSync(redirects)) {
 const site = new URL("../", destination);
 await mkdir(new URL(".well-known/", site), { recursive: true });
 for (const name of ["api-catalog", "ai-catalog.json", "ard.json"]) {
-  await cp(new URL(`.well-known/${name}`, destination), new URL(`.well-known/${name}`, site));
+  await cp(
+    fileURLToPath(new URL(`.well-known/${name}`, destination)),
+    fileURLToPath(new URL(`.well-known/${name}`, site)),
+  );
 }
 const manifest = JSON.parse(await readFile(new URL("agent-readability.json", destination), "utf8"));
 const rootManifest = {

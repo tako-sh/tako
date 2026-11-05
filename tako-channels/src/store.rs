@@ -15,7 +15,7 @@ pub use sqlite::SqliteReplayLimits;
 
 const CHANNELS_DB_FILENAME: &str = "channels.sqlite";
 pub const POSTGRES_CHANNELS_SCHEMA: &str = "tako_channels";
-use crate::mesh::DeliveryState;
+use crate::mesh::{DeliveryState, notify_committed};
 use crate::{ChannelEvent, ChannelPublication, RemoteIngest};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,10 +65,10 @@ enum ChannelStoreBackend {
 }
 
 impl ChannelStoreBackend {
-    fn prune(&self) -> Result<(), ChannelError> {
+    fn prune(&self, now: i64) -> Result<(), ChannelError> {
         match self {
-            Self::Sqlite(store) => store.prune(),
-            Self::Postgres(store) => store.prune(),
+            Self::Sqlite(store) => store.prune(now),
+            Self::Postgres(store) => store.prune(now),
         }
     }
 }
@@ -111,7 +111,7 @@ impl ChannelStore {
                     }
                     let backend = &worker_backend;
                     if !read_only && std::time::Instant::now() >= next_prune {
-                        if let Err(error) = backend.prune() {
+                        if let Err(error) = backend.prune(now_unix_ms()) {
                             tracing::warn!(%error, "channel replay cleanup failed");
                         }
                         next_prune = std::time::Instant::now() + std::time::Duration::from_secs(1);
@@ -128,16 +128,7 @@ impl ChannelStore {
                             Ok(heads) => {
                                 let streams = sender.lock();
                                 for (channel, latest) in heads {
-                                    if let Some(changes) = streams.get(&channel) {
-                                        changes.send_if_modified(|seen| {
-                                            if seen.is_some_and(|seen| seen >= latest) {
-                                                false
-                                            } else {
-                                                *seen = Some(latest);
-                                                true
-                                            }
-                                        });
-                                    }
+                                    notify_committed(&streams, &channel, latest);
                                 }
                             }
                             Err(error) => tracing::warn!(%error, "channel change poll failed"),
@@ -330,6 +321,19 @@ impl ChannelStore {
         )
     }
 
+    /// Logical-clock histories drive maintenance themselves.
+    #[cfg(test)]
+    pub(crate) fn open_in_memory_without_maintenance() -> Self {
+        Self {
+            backend: Arc::new(ChannelStoreBackend::Sqlite(
+                SqliteChannelStore::open_in_memory().unwrap(),
+            )),
+            delivery: Arc::default(),
+            _lifetime: Arc::new(()),
+            read_only: false,
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn sqlite_conn(&self) -> parking_lot::MutexGuard<'_, rusqlite::Connection> {
         match self.backend.as_ref() {
@@ -345,6 +349,11 @@ impl ChannelStore {
     pub(crate) fn raw_execute(&self, sql: &str, params: impl rusqlite::Params) {
         let conn = self.sqlite_conn();
         conn.execute(sql, params).expect("raw execute");
+    }
+
+    #[cfg(test)]
+    pub(crate) fn prune_at(&self, now: i64) {
+        self.backend.prune(now).unwrap();
     }
 
     #[cfg(test)]
@@ -655,5 +664,29 @@ mod ordering_tests {
         assert!(reset.has_changed().unwrap());
         assert_eq!(messages[0].event_id.as_ref().unwrap().sequence, 2);
         assert!(publications.try_recv().is_err());
+    }
+}
+
+#[cfg(test)]
+mod notification_tests {
+    use super::*;
+
+    #[test]
+    fn delayed_poll_or_publisher_cannot_regress_the_committed_head() {
+        let store = ChannelStore::open_in_memory_without_maintenance();
+        let mut receiver = store.changes("events");
+        store.delivery.wake("events", Some(20));
+        assert_eq!(*receiver.borrow_and_update(), Some(20));
+        store.delivery.wake("events", Some(10));
+        store.delivery.wake("events", Some(20));
+        assert!(!receiver.has_changed().unwrap());
+        assert_eq!(*receiver.borrow(), Some(20));
+        store.delivery.wake("events", Some(21));
+        assert!(receiver.has_changed().unwrap());
+        for _ in 0..2 {
+            assert_eq!(*receiver.borrow_and_update(), Some(21));
+            store.wake("events");
+            assert!(receiver.has_changed().unwrap());
+        }
     }
 }

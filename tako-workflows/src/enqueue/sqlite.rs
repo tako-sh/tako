@@ -128,9 +128,12 @@ impl SqliteRunsDb {
             params.push(Value::Text(n.clone()));
         }
 
-        let conn = self.conn.lock();
+        let mut conn = self.conn.lock();
+        // Claim, expired-wait materialization, and checkpoint hydration form
+        // one transaction, including when another server connection is active.
+        let tx = conn.transaction()?;
         let claimed = {
-            let mut stmt = conn.prepare_cached(&sql)?;
+            let mut stmt = tx.prepare_cached(&sql)?;
             let mut rows = stmt.query(params_from_iter(params))?;
             match rows.next()? {
                 Some(row) => Some((
@@ -150,7 +153,7 @@ impl SqliteRunsDb {
             return Ok(None);
         };
 
-        conn.execute(
+        tx.execute(
             "INSERT OR IGNORE INTO steps (run_id, name, result, completed_at)
              SELECT run_id, step_name, 'null', ?1
              FROM event_waiters
@@ -159,7 +162,7 @@ impl SqliteRunsDb {
                AND expires_at <= ?1",
             params![now, claimed.0.as_str()],
         )?;
-        conn.execute(
+        tx.execute(
             "DELETE FROM event_waiters
              WHERE run_id = ?1
                AND expires_at IS NOT NULL
@@ -169,7 +172,7 @@ impl SqliteRunsDb {
 
         let step_rows = {
             let mut step_stmt =
-                conn.prepare_cached("SELECT name, result FROM steps WHERE run_id = ?1")?;
+                tx.prepare_cached("SELECT name, result FROM steps WHERE run_id = ?1")?;
             let rows = step_stmt.query_map([claimed.0.as_str()], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })?;
@@ -182,8 +185,10 @@ impl SqliteRunsDb {
             state_map.insert(name, value);
         }
 
+        tx.commit()?;
         Ok(Some(RunPayload {
             id: claimed.0,
+            worker_id: worker_id.to_owned(),
             name: claimed.1,
             payload: serde_json::from_str(&claimed.2).unwrap_or(serde_json::Value::Null),
             status: claimed.3,
@@ -360,20 +365,21 @@ impl SqliteRunsDb {
 
     pub(super) fn reclaim_expired_with_workers(&self) -> Result<Vec<String>, RunsDbError> {
         let mut conn = self.conn.lock();
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let now = now_ms();
         let workers = {
             let mut stmt = tx.prepare(
                 "SELECT worker_id FROM runs
                  WHERE status='running' AND lease_until IS NOT NULL
                    AND lease_until < ?1 AND worker_id IS NOT NULL",
             )?;
-            let rows = stmt.query_map((now_ms(),), |row| row.get(0))?;
+            let rows = stmt.query_map((now,), |row| row.get(0))?;
             rows.collect::<Result<Vec<String>, _>>()?
         };
         tx.execute(
             "UPDATE runs SET status='pending', worker_id=NULL, lease_until=NULL
              WHERE status='running' AND lease_until IS NOT NULL AND lease_until < ?1",
-            (now_ms(),),
+            (now,),
         )?;
         tx.commit()?;
         Ok(workers)
@@ -428,7 +434,9 @@ impl SqliteRunsDb {
         let payload_json = serde_json::to_string(payload)?;
         let now = now_ms();
         let mut conn = self.conn.lock();
-        let tx = conn.transaction()?;
+        // Acquire the writer lock before reading waiters. A deferred transaction
+        // cannot wait on a competing writer when upgrading an existing snapshot.
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let waiters = {
             let mut stmt =
                 tx.prepare("SELECT run_id, step_name FROM event_waiters WHERE event_name = ?1")?;
@@ -535,3 +543,6 @@ impl SqliteRunsDb {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;

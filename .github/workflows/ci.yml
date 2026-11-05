@@ -91,6 +91,18 @@ jobs:
     needs: [detect-changes]
     if: needs.detect-changes.outputs.website_only != 'true'
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432/tcp
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -110,6 +122,8 @@ jobs:
         run: python3 -m unittest discover -s scripts/tests -v
 
       - name: Run workspace tests
+        env:
+          TAKO_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:${{ job.services.postgres.ports[5432] }}/postgres
         run: cargo test --workspace --locked --lib --bins
 
       - name: Run Compose integration tests
@@ -156,10 +170,14 @@ jobs:
           }
 
       - name: Vet
-        run: go vet ./...
+        run: |
+          go vet ./...
+          (cd sdk/go && go vet ./...)
 
       - name: Test
-        run: go test ./...
+        run: |
+          go test ./...
+          (cd sdk/go && go test ./...)
 
       - name: Build examples
         run: |
@@ -239,7 +257,9 @@ jobs:
           TAKO_BIN: ${{ github.workspace }}/.e2e-bin/tako
           TAKO_DEV_E2E: "1"
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: cd e2e/cli && sudo -E env "PATH=$PATH" bun test tests/dev.test.ts
+        run: |
+          cd e2e/cli
+          sudo --preserve-env=GITHUB_TOKEN env "PATH=$PATH" "TAKO_BIN=$TAKO_BIN" TAKO_DEV_E2E=1 TAKO_TELEMETRY=0 bun test tests/dev.test.ts
 
   cli-macos:
     name: CLI Tests (macOS)
@@ -289,7 +309,9 @@ jobs:
           TAKO_BIN: ${{ github.workspace }}/.e2e-bin/tako
           TAKO_DEV_E2E: "1"
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: cd e2e/cli && sudo -E env "PATH=$PATH" bun test tests/dev.test.ts
+        run: |
+          cd e2e/cli
+          sudo --preserve-env=GITHUB_TOKEN env "PATH=$PATH" "TAKO_BIN=$TAKO_BIN" TAKO_DEV_E2E=1 TAKO_TELEMETRY=0 bun test tests/dev.test.ts
 
   links:
     name: Links
@@ -381,9 +403,9 @@ jobs:
       - name: Install build deps
         run: |
           # Bullseye is retained for glibc 2.31; its security packages left the live mirror after EOL.
-          sed -i 's|^deb http://deb.debian.org/debian-security |deb [check-valid-until=no] https://snapshot.debian.org/archive/debian-security/20260901T000000Z/ |' /etc/apt/sources.list
-          apt-get update
-          apt-get install -y --no-install-recommends cmake pkg-config libssl-dev libvips-dev
+          sed -i 's|^deb http://deb.debian.org/debian-security |deb [check-valid-until=no] https://archive.debian.org/debian-security |' /etc/apt/sources.list
+          apt-get -o Acquire::Retries=5 -o APT::Update::Error-Mode=any update
+          apt-get -o Acquire::Retries=5 install -y --no-install-recommends cmake pkg-config libssl-dev libvips-dev
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -430,9 +452,9 @@ jobs:
       - name: Install build deps
         run: |
           # Bullseye is retained for glibc 2.31; its security packages left the live mirror after EOL.
-          sed -i 's|^deb http://deb.debian.org/debian-security |deb [check-valid-until=no] https://snapshot.debian.org/archive/debian-security/20260901T000000Z/ |' /etc/apt/sources.list
-          apt-get update
-          apt-get install -y --no-install-recommends cmake pkg-config libssl-dev libvips-dev
+          sed -i 's|^deb http://deb.debian.org/debian-security |deb [check-valid-until=no] https://archive.debian.org/debian-security |' /etc/apt/sources.list
+          apt-get -o Acquire::Retries=5 -o APT::Update::Error-Mode=any update
+          apt-get -o Acquire::Retries=5 install -y --no-install-recommends cmake pkg-config libssl-dev libvips-dev
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

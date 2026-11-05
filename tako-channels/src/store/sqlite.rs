@@ -332,10 +332,9 @@ impl SqliteChannelStore {
         Ok(())
     }
 
-    pub(super) fn prune(&self) -> Result<(), ChannelError> {
+    pub(super) fn prune(&self, now: i64) -> Result<(), ChannelError> {
         let mut conn = self.conn.lock();
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let now = now_unix_ms();
         tx.execute("DELETE FROM presence WHERE expires_at <= ?1", [now])?;
         let deleted = prune_replay(&tx, load_limits(&tx)?, now)?;
         tx.commit()?;

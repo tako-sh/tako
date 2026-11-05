@@ -445,28 +445,15 @@ fn handle_command(
             if !accepting_new_work.load(Ordering::SeqCst) {
                 return Response::ok(serde_json::Value::Null);
             }
-            // Leaky bucket: refuse the claim without touching the queue
-            // if the worker is already holding its max concurrent runs.
-            // The SDK sees `Ok(None)` (same shape as "queue empty") and
-            // backs off until an in-flight run terminates and a slot
-            // frees up.
-            if !limiter.try_acquire(&worker_id) {
-                return Response::ok(serde_json::Value::Null);
-            }
-            match db.claim(&worker_id, &names, lease_ms) {
+            // At capacity, refresh ownership before refusing a claim: another
+            // server may have reclaimed one of this process's expired leases.
+            match limiter.claim(&db, &worker_id, &names, lease_ms) {
                 Ok(Some(run)) => {
                     (on_claimed)();
                     Response::ok(run)
                 }
-                Ok(None) => {
-                    // No work to do — give the slot back right away.
-                    limiter.release(&worker_id);
-                    Response::ok(serde_json::Value::Null)
-                }
-                Err(e) => {
-                    limiter.release(&worker_id);
-                    Response::error(format!("claim failed: {e}"))
-                }
+                Ok(None) => Response::ok(serde_json::Value::Null),
+                Err(e) => Response::error(format!("claim failed: {e}")),
             }
         }
         Command::HeartbeatRun {
@@ -490,7 +477,7 @@ fn handle_command(
         },
         Command::CompleteRun { id, worker_id, .. } => match db.complete(&id, &worker_id) {
             Ok(()) => {
-                limiter.release(&worker_id);
+                limiter.release_claim(&worker_id);
                 Response::ok(serde_json::json!({}))
             }
             Err(e) => Response::error(format!("complete failed: {e}")),
@@ -502,7 +489,7 @@ fn handle_command(
             ..
         } => match db.cancel(&id, &worker_id, reason.as_deref()) {
             Ok(()) => {
-                limiter.release(&worker_id);
+                limiter.release_claim(&worker_id);
                 Response::ok(serde_json::json!({}))
             }
             Err(e) => Response::error(format!("cancel failed: {e}")),
@@ -516,7 +503,7 @@ fn handle_command(
             ..
         } => match db.fail(&id, &worker_id, &error, next_run_at_ms, finalize) {
             Ok(()) => {
-                limiter.release(&worker_id);
+                limiter.release_claim(&worker_id);
                 Response::ok(serde_json::json!({}))
             }
             Err(e) => Response::error(format!("fail failed: {e}")),
@@ -528,7 +515,7 @@ fn handle_command(
             ..
         } => match db.defer(&id, &worker_id, wake_at_ms) {
             Ok(()) => {
-                limiter.release(&worker_id);
+                limiter.release_claim(&worker_id);
                 Response::ok(serde_json::json!({}))
             }
             Err(e) => Response::error(format!("defer failed: {e}")),
@@ -542,7 +529,7 @@ fn handle_command(
             ..
         } => match db.wait_for_event(&id, &worker_id, &step_name, &event_name, timeout_at_ms) {
             Ok(()) => {
-                limiter.release(&worker_id);
+                limiter.release_claim(&worker_id);
                 Response::ok(serde_json::json!({}))
             }
             Err(e) => Response::error(format!("wait_for_event failed: {e}")),

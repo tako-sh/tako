@@ -52,3 +52,6 @@ mod replay_tests;
 
 #[cfg(test)]
 mod mesh_tests;
+
+#[cfg(test)]
+mod history_tests;

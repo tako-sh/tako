@@ -1,6 +1,8 @@
 use super::*;
 use rusqlite::types::Value;
 
+mod histories;
+
 fn opts() -> EnqueueOpts {
     EnqueueOpts::default()
 }
@@ -739,4 +741,33 @@ fn postgres_lease_index_migration_preserves_renewal_and_recovery() {
     client
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
         .unwrap();
+}
+
+#[test]
+fn failed_timeout_materialization_rolls_back_entire_claim() {
+    let db = RunsDb::open_in_memory().unwrap();
+    let id = db
+        .enqueue("work", &serde_json::json!({}), &opts())
+        .unwrap()
+        .id;
+    db.claim("first", &["work".into()], 60_000)
+        .unwrap()
+        .unwrap();
+    db.wait_for_event(&id, "first", "approval", "event", Some(0))
+        .unwrap();
+    db.raw_execute("CREATE TRIGGER reject_checkpoint BEFORE INSERT ON steps BEGIN SELECT RAISE(ABORT, 'injected checkpoint failure'); END", ());
+    assert!(db.claim("failed", &["work".into()], 60_000).is_err());
+    assert_eq!(db.pending_count().unwrap(), 1);
+    assert_eq!(
+        db.raw_query_values("SELECT attempts, worker_id FROM runs WHERE id=?1", [&id]),
+        vec![Value::Integer(0), Value::Null]
+    );
+    db.raw_execute("DROP TRIGGER reject_checkpoint", ());
+    let run = db.claim("next", &["work".into()], 60_000).unwrap().unwrap();
+    assert_eq!(run.attempts, 1);
+    assert_eq!(run.step_state["approval"], serde_json::Value::Null);
+    assert_eq!(
+        db.raw_query_values("SELECT COUNT(*) FROM event_waiters WHERE run_id=?1", [&id]),
+        vec![Value::Integer(0)]
+    );
 }

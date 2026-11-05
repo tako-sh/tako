@@ -259,7 +259,9 @@ function LiveStatus({ token }: { token: string }) {
 
 For durable channels, each publish is inserted before delivery. `replayWindowMs` defaults to 10 minutes. A reconnect can replay retained events after a network interruption or a restart when the reconnect reaches storage that still has that history. Replay is a bounded delivery window, not automatic state failover.
 
-Replay cleanup runs every second, including when no clients are connected. Channel definitions carry their lifecycle settings with server-side publishes, so retention applies before the first subscription. Connections share an app-wide change poller; database reads run outside the async request workers. Shared Postgres stores detect publishes from every server.
+Replay cleanup runs every second, including when no clients are connected. Channel definitions carry their lifecycle settings with server-side publishes, so retention applies before the first subscription. A committed publish immediately notifies subscribers using the same store. Native SQLite brokers deliver notifications over the private transport. Shared Postgres stores also poll for commits from other processes or servers every 100 ms. Database reads run outside the async request workers.
+
+Local replay uses SQLite WAL with `synchronous=NORMAL`: committed messages survive an application process crash, but recent commits can be lost after a host crash or power failure. Replay is a short delivery buffer; keep canonical history in the app database as described below.
 
 - SSE resumes with `Last-Event-ID`; `subscribe({ lastEventId })` sets an initial cursor. The built-in fetch-based reader reconnects after routine disconnects and carries its latest message ID forward. `close()` or an abort `signal` stops it. HTTP `401`, `403`, and `404` are terminal and reach `onError`.
 - WebSocket resumes with `last_message_id`; `connect({ lastMessageId })` sets it. `useChannel` tracks the latest ID and reconnects with bounded backoff and jitter. A lower-level `connect()` call returns one socket, so non-React code owns WebSocket reconnection.

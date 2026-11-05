@@ -1,7 +1,10 @@
 //! SQLite schema for the workflow engine. Kept in sync with the JS/Go SDKs.
 
 pub(crate) const SCHEMA_SQL: &str = r#"
-PRAGMA synchronous = NORMAL;
+-- Workflow checkpoints are acknowledged only after the WAL is synchronized.
+-- Channel replay and caches use NORMAL; workflow state must also survive a
+-- host crash when the filesystem and device honor synchronization requests.
+PRAGMA synchronous = FULL;
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS runs (

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -124,6 +125,13 @@ func (s *mockServer) dispatch(cmd map[string]any) map[string]any {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if cmd["command"] != "claim_run" && cmd["command"] != "register_schedules" && cmd["command"] != "enqueue_run" && cmd["command"] != "signal" {
+		id, _ := cmd["id"].(string)
+		task := s.tasks[id]
+		if task == nil || task.Status != "running" || task.WorkerID != cmd["worker_id"] {
+			return map[string]any{"status": "error", "message": "stale worker"}
+		}
+	}
 	switch cmd["command"] {
 	case "claim_run":
 		rawNames, _ := cmd["names"].([]any)
@@ -137,10 +145,12 @@ func (s *mockServer) dispatch(cmd map[string]any) map[string]any {
 			if t.Status == "pending" && contains(names, t.Name) && t.RunAtMs <= time.Now().UnixMilli() {
 				t.Status = "running"
 				t.Attempts++
+				t.WorkerID = fmt.Sprintf("%s:%s:%d", cmd["worker_id"], t.ID, t.Attempts)
 				return map[string]any{
 					"status": "ok",
 					"data": map[string]any{
 						"id":           t.ID,
+						"worker_id":    t.WorkerID,
 						"name":         t.Name,
 						"payload":      json.RawMessage(t.Payload),
 						"status":       t.Status,

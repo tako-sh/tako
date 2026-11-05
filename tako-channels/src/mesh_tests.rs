@@ -21,10 +21,13 @@ async fn committed_notifications_wake_readers_without_persisting_or_republishing
     let writer = ChannelStore::open(&temp.path().join("writer.sqlite")).unwrap();
     let reader = ChannelStore::open(&temp.path().join("reader.sqlite")).unwrap();
     let mut publications = reader.publications();
-    let changes = reader.changes("events");
+    let mut changes = reader.changes("events");
     let durable = writer.append("events", &payload(1)).unwrap();
     reader.notify_committed(&durable, false);
     assert!(changes.has_changed().unwrap());
+    changes.borrow_and_update();
+    reader.notify_committed(&durable, false);
+    assert!(!changes.has_changed().unwrap());
     assert!(reader.read_after("events", None, 10).unwrap().is_empty());
 
     let mut live = reader.subscribe_ephemeral("live").unwrap();

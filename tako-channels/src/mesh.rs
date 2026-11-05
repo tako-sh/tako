@@ -46,6 +46,19 @@ pub enum RemoteIngest {
 
 pub(crate) type StreamChanges = HashMap<String, watch::Sender<Option<i64>>>;
 
+pub(crate) fn notify_committed(streams: &StreamChanges, channel: &str, latest: i64) {
+    if let Some(changes) = streams.get(channel) {
+        changes.send_if_modified(|seen| {
+            if seen.is_none_or(|previous| latest > previous) {
+                *seen = Some(latest);
+                true
+            } else {
+                false
+            }
+        });
+    }
+}
+
 pub(crate) struct DeliveryState {
     pub(crate) ephemeral: Arc<EphemeralHub>,
     pub(crate) changes: Arc<Mutex<StreamChanges>>,
@@ -84,12 +97,11 @@ impl DeliveryState {
     }
 
     pub(crate) fn wake(&self, channel: &str, head: Option<i64>) {
-        if let Some(changes) = self.changes.lock().get(channel) {
-            changes.send_modify(|seen| {
-                if let Some(head) = head {
-                    *seen = Some(seen.unwrap_or(0).max(head));
-                }
-            });
+        let streams = self.changes.lock();
+        if let Some(head) = head {
+            notify_committed(&streams, channel, head);
+        } else if let Some(changes) = streams.get(channel) {
+            changes.send_modify(|_| {});
         }
     }
 }
