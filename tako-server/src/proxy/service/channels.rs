@@ -32,15 +32,21 @@ impl TakoProxy {
         let native_configured = native.is_some();
         let resolver = self.channel_postgres_url.read().clone();
         let app_id = app_name.to_owned();
-        let postgres_url =
-            tokio::task::spawn_blocking(move || resolver.and_then(|resolve| resolve(&app_id)))
-                .await
-                .map_err(|_| {
-                    Error::explain(
-                        ErrorType::InternalError,
-                        "channel credential resolver failed",
-                    )
-                })?;
+        let postgres_url = tokio::task::spawn_blocking(move || match resolver {
+            Some(resolve) => resolve(&app_id),
+            None if native_configured => {
+                Err("native channel credentials resolver missing".to_string())
+            }
+            None => Ok(None),
+        })
+        .await
+        .map_err(|_| {
+            Error::explain(
+                ErrorType::InternalError,
+                "channel credential resolver failed",
+            )
+        })?
+        .map_err(|_| Error::explain(ErrorType::InternalError, "channel credentials unavailable"))?;
         let cell = self
             .channel_stores
             .write()
