@@ -133,6 +133,7 @@ struct Controller {
     boot: BootId,
     ready: bool,
     revoked: bool,
+    repair_mode: bool,
     stop: Arc<AtomicBool>,
     renewal: Renewal,
     control: Control,
@@ -201,10 +202,17 @@ impl Controller {
         let desired = projection::desired(&config, &keys, &known, current_time, true)?;
         directory.write("desired.json", &desired)?;
         process::apply(&config, &desired)?;
-        let (bundle, seeds) = projection::gossip(&config, &known, current_time)?;
-        projection::write_corrosion(
-            &config, &data_dir, &directory, &keys, &bundle, &seeds, &token,
-        )?;
+        let repair_mode = !serving(&config, &known, current_time)?;
+        let (bundle, seeds) = if repair_mode {
+            projection::write_repair_corrosion(&config, &data_dir, &directory, &token)?;
+            (String::new(), Vec::new())
+        } else {
+            let (bundle, seeds) = projection::gossip(&config, &known, current_time)?;
+            projection::write_corrosion(
+                &config, &data_dir, &directory, &keys, &bundle, &seeds, &token,
+            )?;
+            (bundle, seeds)
+        };
         let publisher = Publisher::open(&config, &data_dir)?;
         let mut child = OwnedChild::corrosion(&config, &data_dir)?;
         let startup = (|| -> Result<_> {
@@ -295,7 +303,8 @@ impl Controller {
             applied: ApplyCache::default(),
             boot,
             ready: false,
-            revoked: false,
+            revoked: repair_mode,
+            repair_mode,
             stop,
             renewal: Renewal::new(gossip_leaf_hash),
             control,
@@ -340,18 +349,12 @@ impl Controller {
         }
         let desired = projection::desired(&self.config, &self.keys, &snapshot, now, false)?;
         self.apply(&desired)?;
-        let effective = snapshot.effective_members(now)?;
-        if !effective
-            .get(&self.config.server_id)
-            .is_some_and(|m| matches!(m.kind, MemberKind::Server(_)) && m.permissions.server_admin)
-        {
+        if !serving(&self.config, &snapshot, now)? {
             // Empty desired state has already removed peers and SSH access.
             self.withdraw();
             self.revoked = true;
-            self.child.stop()?;
-            return Err(AgentError::Invalid(
-                "local server is revoked or ineffective",
-            ));
+            self.maintain_repair()?;
+            return Ok(());
         }
         let (bundle, seeds) = projection::gossip(&self.config, &snapshot, now)?;
         let hash = gossip_hash(&bundle, &seeds)?;
@@ -394,16 +397,13 @@ impl Controller {
         // Restart a reaped child before reading the HTTP store. Never reopen the
         // runtime, so the nonce DB lock remains held through child restarts.
         let result = (|| {
-            if self.revoked {
-                self.child.stop()?;
-                return Err(AgentError::Invalid(
-                    "local server is revoked or ineffective",
-                ));
-            }
             if Instant::now() >= self.renewal.next {
                 let root = self.config.network_dir(&self.data_dir);
                 let hash = renew_identity(&self.config, &root, &self.directory)?;
                 self.renewal.observe(hash);
+            }
+            if self.revoked {
+                return self.maintain_repair();
             }
             if !self.child.running()? {
                 self.withdraw();
@@ -431,10 +431,38 @@ impl Controller {
                 return;
             }
             tracing::warn!(error = %error, "native agent reconciliation failed closed");
+            if self.revoked {
+                if let Err(error) = self.child.stop() {
+                    tracing::error!(error = %error, "isolated repair child stop failed");
+                }
+            }
             if let Err(error) = self.isolate() {
                 tracing::error!(error = %error, "native agent host isolation not acknowledged");
             }
         }
+    }
+    fn maintain_repair(&mut self) -> Result<()> {
+        // A revoked latch is terminal for positive authority, including across
+        // child restarts. Keep zero peers/SSH and all admission watches withdrawn.
+        self.isolate()?;
+        if !self.repair_mode || self.renewal.restart {
+            self.child.stop()?;
+        }
+        if !self.child.running()? {
+            validate_gossip_leaf(&self.config, &self.directory, &self.known.borrow())?;
+            projection::write_repair_corrosion(
+                &self.config,
+                &self.data_dir,
+                &self.directory,
+                &self.token,
+            )?;
+            self.child = OwnedChild::corrosion(&self.config, &self.data_dir)?;
+            self.repair_mode = true;
+            self.renewal.restart = false;
+        }
+        // This enables only local SQL persistence. No ACK/readiness or claim of
+        // peer dissemination follows a successful loopback child restart.
+        Ok(())
     }
     fn refresh_services(&mut self) {
         if !self.ready || self.stop.load(Ordering::Acquire) {
@@ -651,6 +679,15 @@ fn renew_identity(config: &NodeConfig, root: &Path, directory: &Directory) -> Re
         .and_then(|name| name.to_str())
         .ok_or(AgentError::Invalid("invalid managed gossip fullchain path"))?;
     Ok(openssl::sha::sha256(&directory.read(name, 128 * 1024)?))
+}
+
+fn serving(config: &NodeConfig, snapshot: &RegistrySnapshot, now: u64) -> Result<bool> {
+    Ok(snapshot
+        .effective_members(now)?
+        .get(&config.server_id)
+        .is_some_and(|member| {
+            matches!(member.kind, MemberKind::Server(_)) && member.permissions.server_admin
+        }))
 }
 
 fn allowed_while_unready(request: &RpcRequest) -> bool {

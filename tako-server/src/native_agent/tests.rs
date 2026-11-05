@@ -359,3 +359,149 @@ fn compacted_or_omitted_ack_progress_never_blocks_authority_reads() {
     after.revocations.clear();
     assert!(store::preserves(&before, &after).is_err());
 }
+
+#[test]
+fn isolated_repair_config_uses_only_loopback_and_no_gossip_seeds() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = Fixture::new();
+    let temp = tempfile::tempdir().unwrap();
+    let root = fixture.config.network_dir(temp.path());
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let directory = Directory::open(&root, true).unwrap();
+    let MemberKind::Server(info) = &fixture.config.bootstrap.members[1].kind else {
+        unreachable!()
+    };
+    let ca = info.corrosion_ca_certificate_pem.as_ref().unwrap();
+    directory
+        .write(&fixture.config.files.gossip_ca_certificate, ca.as_bytes())
+        .unwrap();
+    projection::write_repair_corrosion(&fixture.config, temp.path(), &directory, "test-credential")
+        .unwrap();
+    let text = directory.read("corrosion.toml", 64 * 1024).unwrap();
+    let config: toml::Value = toml::from_str(std::str::from_utf8(&text).unwrap()).unwrap();
+    assert_eq!(config["api"]["addr"].as_str(), Some("127.0.0.1:9834"));
+    assert_eq!(config["gossip"]["addr"].as_str(), Some("[::1]:8787"));
+    assert_eq!(config["gossip"]["client_addr"].as_str(), Some("[::1]:0"));
+    assert!(config["gossip"]["bootstrap"].as_array().unwrap().is_empty());
+    assert_eq!(config["gossip"]["plaintext"].as_bool(), Some(false));
+    assert_eq!(config["gossip"]["tls"]["insecure"].as_bool(), Some(false));
+    assert_eq!(
+        &*directory.read("corrosion-ca.pem", 16 * 1024).unwrap(),
+        ca.as_bytes()
+    );
+    let mut denied = fixture.config.bootstrap.clone();
+    fixture.revoke(&mut denied, &fixture.config.server_id);
+    // No live gossip issuer remains. Local repair does not depend on recovering
+    // positive membership or generating a new issuer to trust.
+    assert!(projection::gossip(&fixture.config, &denied, 3).is_err());
+    let desired = projection::desired(&fixture.config, &fixture.keys, &denied, 3, true).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&desired).unwrap()["peers"],
+        serde_json::json!([])
+    );
+}
+
+#[test]
+fn guarded_runtime_retries_exact_durable_denial_after_local_store_recovers() {
+    use std::cell::Cell;
+    use tako_network::{
+        api::{RpcResponse, RuntimeError, SignedRequest},
+        runtime::{RuntimeConfig, RuntimeLimits, ServerRuntime},
+    };
+    struct RecoveringStore {
+        inner: MemoryStore,
+        fail: Rc<Cell<bool>>,
+    }
+    impl RegistryStore for RecoveringStore {
+        fn snapshot(&mut self) -> RuntimeResult<RegistrySnapshot> {
+            self.inner.snapshot()
+        }
+        fn append_member(&mut self, member: &Member) -> RuntimeResult<()> {
+            self.inner.append_member(member)
+        }
+        fn append_ack(&mut self, ack: &Ack) -> RuntimeResult<()> {
+            self.inner.append_ack(ack)
+        }
+        fn append_revocation(&mut self, revocation: &Revocation) -> RuntimeResult<()> {
+            if self.fail.get() {
+                return Err(RuntimeError::Transport);
+            }
+            self.inner.append_revocation(revocation)
+        }
+    }
+    let f = Fixture::new();
+    let temp = tempfile::tempdir().unwrap();
+    let key_path = temp.path().join("keys");
+    f.keys.save_new(&key_path).unwrap();
+    let backend = Rc::new(RefCell::new(f.config.bootstrap.clone()));
+    let fail = Rc::new(Cell::new(true));
+    let open = || {
+        let guard = store::MonotonicStore::new(
+            RecoveringStore {
+                inner: MemoryStore(backend.clone()),
+                fail: fail.clone(),
+            },
+            Directory::open(temp.path(), true).unwrap(),
+            Rc::new(RefCell::new(f.config.bootstrap.clone())),
+        );
+        ServerRuntime::open(
+            guard,
+            LocalDeviceKeys::load(&key_path).unwrap(),
+            RuntimeConfig {
+                network: f.config.network.clone(),
+                server_id: f.config.server_id.clone(),
+                boot_id: BootId::random().unwrap(),
+                limits: RuntimeLimits::default(),
+            },
+            &temp.path().join("runtime.db"),
+        )
+        .unwrap()
+    };
+    let sign = |id, time| {
+        SignedRequest::sign(
+            &f.admin,
+            f.config.network.id.clone(),
+            f.config.server_id.clone(),
+            DeviceKind::Laptop,
+            time,
+            RpcRequest::Revoke {
+                id,
+                target: f.config.server_id.clone(),
+            },
+        )
+        .unwrap()
+    };
+    let id = RevocationId::random().unwrap();
+    let mut runtime = open();
+    assert!(
+        runtime
+            .handle(sign(id.clone(), 2), "POST", "/v1/network/revoke", 2)
+            .is_err()
+    );
+    assert!(backend.borrow().revocations.is_empty());
+    assert!(runtime.desired_host_state(2).unwrap().peers.is_empty());
+    drop(runtime);
+    let mut runtime = open();
+    assert!(runtime.desired_host_state(3).unwrap().peers.is_empty());
+    fail.set(false); // models isolated loopback SQL becoming available, no WG grant
+    let RpcResponse::Revoked(revocation) = runtime
+        .handle(sign(id.clone(), 3), "POST", "/v1/network/revoke", 3)
+        .unwrap()
+    else {
+        panic!("wrong response")
+    };
+    assert_eq!(revocation.id, id);
+    assert_eq!(backend.borrow().revocations.as_slice(), &[revocation]);
+    assert!(backend.borrow().acks.is_empty()); // local persistence proves no remote enforcement
+    assert!(runtime.desired_host_state(4).unwrap().peers.is_empty());
+    assert!(matches!(
+        runtime.handle(
+            sign(RevocationId::random().unwrap(), 4),
+            "POST",
+            "/v1/network/revoke",
+            4
+        ),
+        Err(RuntimeError::Denied)
+    ));
+}

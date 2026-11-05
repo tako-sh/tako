@@ -137,6 +137,48 @@ pub(super) fn write_corrosion(
     seeds: &[String],
     token: &str,
 ) -> Result<()> {
+    write_corrosion_at(
+        config,
+        data_dir,
+        directory,
+        config.network.id.address(&keys.wg_public_key()?),
+        bundle,
+        seeds,
+        token,
+    )
+}
+
+/// No peer transport survives self-revocation. Keep the authenticated SQL API
+/// usable for exact durable-denial retries, without granting network authority.
+pub(super) fn write_repair_corrosion(
+    config: &NodeConfig,
+    data_dir: &std::path::Path,
+    directory: &Directory,
+    token: &str,
+) -> Result<()> {
+    let ca = directory.read(&config.files.gossip_ca_certificate, 16 * 1024)?;
+    let ca =
+        std::str::from_utf8(&ca).map_err(|_| AgentError::Invalid("invalid repair CA encoding"))?;
+    write_corrosion_at(
+        config,
+        data_dir,
+        directory,
+        std::net::Ipv6Addr::LOCALHOST,
+        ca,
+        &[],
+        token,
+    )
+}
+
+fn write_corrosion_at(
+    config: &NodeConfig,
+    data_dir: &std::path::Path,
+    directory: &Directory,
+    ip: std::net::Ipv6Addr,
+    bundle: &str,
+    seeds: &[String],
+    token: &str,
+) -> Result<()> {
     let root = config.network_dir(data_dir);
     let path = |name: &str| -> Result<String> {
         Ok(root
@@ -148,7 +190,6 @@ pub(super) fn write_corrosion(
     // TOML quoted strings and arrays use JSON's compatible subset for these
     // validated ASCII paths, IP literals and bearer bytes (not user snippets).
     let q = |s: &str| serde_json::to_string(s);
-    let ip = config.network.id.address(&keys.wg_public_key()?);
     let text = Zeroizing::new(format!(
         "[db]\npath = {}\nschema_paths = [{}]\nsubscriptions_path = {}\n\
          [api]\naddr = \"127.0.0.1:9834\"\nauthz.bearer-token = {}\n\
