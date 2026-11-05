@@ -16,6 +16,7 @@ unit-js:
 
 unit-go:
     go test ./...
+    cd sdk/go && go test ./...
 
 workspace:
     cargo test --workspace
@@ -36,6 +37,7 @@ sdk:
 
 sdk-go:
     go test ./...
+    cd sdk/go && go test ./...
     for dir in examples/go/*/; do echo "Building $dir..." && (cd "$dir" && go build -o /dev/null .); done
 
 cli:

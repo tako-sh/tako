@@ -400,7 +400,7 @@ async fn complete_releases_a_slot() {
     let cmd = Command::CompleteRun {
         app: "a".into(),
         id,
-        worker_id: "w1".into(),
+        worker_id: run["worker_id"].as_str().unwrap().to_owned(),
     };
     write_json_line(&mut w, &cmd).await.unwrap();
     let resp: Response = read_json_line(&mut r).await.unwrap().unwrap();
@@ -525,4 +525,151 @@ async fn shutdown_removes_pid_socket_file() {
     let handle = spawn(&sock, lookup_for(Default::default()), None, None).unwrap();
     assert!(sock.exists() || sock.is_symlink());
     handle.shutdown().await;
+}
+
+fn assert_same_process_takeover(db: Arc<RunsDb>, expire: impl FnOnce(&str)) {
+    let limiter = Arc::new(crate::in_flight::InFlightLimiter::new(1));
+    let lookup: AppLookup = {
+        let db = db.clone();
+        let limiter = limiter.clone();
+        Arc::new(move |_| {
+            Some(AppHandlers {
+                db: db.clone(),
+                limiter: limiter.clone(),
+                accepting_new_work: accepting_new_work(),
+                on_enqueue: Arc::new(|| {}),
+                health_check: Arc::new(|| Ok(())),
+                on_claimed: Arc::new(|| {}),
+            })
+        })
+    };
+    let call = |cmd| handle_command(&lookup, None, None, None, cmd);
+    let claim = || {
+        let response = call(Command::ClaimRun {
+            app: "a".into(),
+            worker_id: "same:process".into(),
+            names: vec!["work".into()],
+            lease_ms: 60_000,
+        });
+        serde_json::from_value::<tako_core::RunPayload>(response.data().unwrap().clone()).unwrap()
+    };
+    let id = db
+        .enqueue("work", &serde_json::json!({}), &EnqueueOpts::default())
+        .unwrap()
+        .id;
+    let first = claim();
+    assert_eq!(first.id, id);
+    expire(&id);
+    for owner in db.reclaim_expired_with_workers().unwrap() {
+        limiter.release_claim(&owner);
+    }
+    let second = claim();
+    assert_eq!(second.id, id);
+    assert_ne!(first.worker_id, second.worker_id);
+    assert_eq!(limiter.count("same:process"), 1);
+    let app = "a".to_owned();
+    let worker_id = first.worker_id;
+    for cmd in [
+        Command::HeartbeatRun {
+            app: app.clone(),
+            id: id.clone(),
+            worker_id: worker_id.clone(),
+            lease_ms: 60_000,
+        },
+        Command::SaveStep {
+            app: app.clone(),
+            id: id.clone(),
+            worker_id: worker_id.clone(),
+            step_name: "late".into(),
+            result: serde_json::json!(1),
+        },
+        Command::CompleteRun {
+            app: app.clone(),
+            id: id.clone(),
+            worker_id: worker_id.clone(),
+        },
+        Command::CancelRun {
+            app: app.clone(),
+            id: id.clone(),
+            worker_id: worker_id.clone(),
+            reason: None,
+        },
+        Command::FailRun {
+            app: app.clone(),
+            id: id.clone(),
+            worker_id: worker_id.clone(),
+            error: "late".into(),
+            next_run_at_ms: None,
+            finalize: false,
+        },
+        Command::DeferRun {
+            app: app.clone(),
+            id: id.clone(),
+            worker_id: worker_id.clone(),
+            wake_at_ms: Some(0),
+        },
+        Command::WaitForEvent {
+            app: app.clone(),
+            id: id.clone(),
+            worker_id,
+            step_name: "late".into(),
+            event_name: "event".into(),
+            timeout_at_ms: None,
+        },
+    ] {
+        let response = call(cmd);
+        assert!(!response.is_ok(), "stale attempt was accepted");
+        assert_eq!(limiter.count("same:process"), 1);
+    }
+    assert!(
+        call(Command::SaveStep {
+            app: app.clone(),
+            id: id.clone(),
+            worker_id: second.worker_id.clone(),
+            step_name: "saved".into(),
+            result: serde_json::json!(2)
+        })
+        .is_ok()
+    );
+    assert!(
+        call(Command::CompleteRun {
+            app,
+            id,
+            worker_id: second.worker_id
+        })
+        .is_ok()
+    );
+    assert_eq!(limiter.count("same:process"), 0);
+}
+
+#[test]
+fn sqlite_same_process_reclaim_rejects_old_attempt() {
+    let db = Arc::new(RunsDb::open_in_memory().unwrap());
+    assert_same_process_takeover(db.clone(), |id| {
+        db.raw_execute("UPDATE runs SET lease_until=0 WHERE id=?1", [id])
+    });
+}
+
+#[test]
+fn postgres_same_process_reclaim_rejects_old_attempt() {
+    let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
+        return;
+    };
+    let app = format!("claim-owner-{}", nanoid::nanoid!());
+    let db = Arc::new(RunsDb::open_postgres(&url, &app).unwrap());
+    let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    assert_same_process_takeover(db, |id| {
+        client
+            .execute(
+                "UPDATE tako_workflows.runs SET lease_until=0 WHERE app_id=$1 AND id=$2",
+                &[&app, &id],
+            )
+            .unwrap();
+    });
+    client
+        .execute("DELETE FROM tako_workflows.steps WHERE app_id=$1", &[&app])
+        .unwrap();
+    client
+        .execute("DELETE FROM tako_workflows.runs WHERE app_id=$1", &[&app])
+        .unwrap();
 }

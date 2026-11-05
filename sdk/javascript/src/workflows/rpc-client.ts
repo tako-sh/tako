@@ -213,6 +213,7 @@ export class WorkflowsClient {
 
 interface RawRun {
   id: string;
+  worker_id: string;
   name: string;
   payload: unknown;
   status: string;
@@ -232,7 +233,7 @@ function rawToRun(raw: RawRun): Run {
     retries: raw.max_attempts - 1,
     runAt: raw.run_at_ms,
     leaseUntil: null,
-    workerId: null,
+    workerId: raw.worker_id,
     lastError: null,
     stepState: raw.step_state ?? {},
     createdAt: 0,

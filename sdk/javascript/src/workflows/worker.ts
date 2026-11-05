@@ -107,7 +107,7 @@ export interface WorkerOptions {
   client: WorkflowsClient;
   /** Registered workflow handlers by workflow name. */
   registry: Map<string, RegisteredWorkflow>;
-  /** Stable worker id used for leases. */
+  /** Process identity used for concurrency accounting; claims return separate owner IDs. */
   workerId: string;
   /** @defaultValue 60_000 */
   leaseMs?: number;
@@ -287,6 +287,8 @@ export class Worker {
   }
 
   private async execute(run: Run): Promise<void> {
+    const claimOwner = run.workerId;
+    if (!claimOwner) throw new Error("Claim response is missing its ownership identifier");
     const runLog = this.log.child(`worker:${run.name}`, { runId: run.id });
     const contextLog = this.log.child(run.name, { runId: run.id, workflow: run.name });
     const reg = this.registry.get(run.name);
@@ -294,7 +296,7 @@ export class Worker {
       runLog.error("Workflow failed", { error: `no handler registered for '${run.name}'` });
       await this.client.fail(
         run.id,
-        this.workerId,
+        claimOwner,
         `no handler registered for '${run.name}'`,
         null,
         true,
@@ -315,7 +317,7 @@ export class Worker {
       workflowName: run.name,
       attempt: run.attempts,
       logger: contextLog,
-      ...createStepAPI(this.client, run.id, this.workerId, stepState, runLog, createStepContext),
+      ...createStepAPI(this.client, run.id, claimOwner, stepState, runLog, createStepContext),
       bail: (reason?: string): never => {
         throw new BailSignal(reason);
       },
@@ -328,35 +330,35 @@ export class Worker {
     let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
     if (this.heartbeatIntervalMs > 0) {
       heartbeatTimer = setInterval(() => {
-        this.client.heartbeat(run.id, this.workerId, this.leaseMs).catch(() => {});
+        this.client.heartbeat(run.id, claimOwner, this.leaseMs).catch(() => {});
       }, this.heartbeatIntervalMs);
     }
 
     runLog.info("Workflow started", { attempt: run.attempts, payload: run.payload });
     try {
       await reg.handler(run.payload, context);
-      await this.client.complete(run.id, this.workerId);
+      await this.client.complete(run.id, claimOwner);
       runLog.info("Workflow completed");
     } catch (err) {
       if (err instanceof BailSignal) {
-        await this.client.cancel(run.id, this.workerId, err.reason ?? null);
+        await this.client.cancel(run.id, claimOwner, err.reason ?? null);
         runLog.info("Workflow cancelled", { reason: err.reason ?? null });
         return;
       }
       if (err instanceof FailSignal) {
-        await this.client.fail(run.id, this.workerId, err.error.message, null, true);
+        await this.client.fail(run.id, claimOwner, err.error.message, null, true);
         runLog.error("Workflow failed", { error: err.error });
         return;
       }
       if (err instanceof DeferSignal) {
-        await this.client.defer(run.id, this.workerId, err.wakeAt);
+        await this.client.defer(run.id, claimOwner, err.wakeAt);
         runLog.debug("Workflow deferred", { wakeAt: err.wakeAt });
         return;
       }
       if (err instanceof WaitSignal) {
         await this.client.waitForEvent(
           run.id,
-          this.workerId,
+          claimOwner,
           err.stepName,
           err.eventName,
           err.timeoutAt,
@@ -374,7 +376,7 @@ export class Worker {
       const nextRunAt = finalize
         ? null
         : new Date(Date.now() + expBackoffMs(run.attempts, base, max));
-      await this.client.fail(run.id, this.workerId, message, nextRunAt, finalize);
+      await this.client.fail(run.id, claimOwner, message, nextRunAt, finalize);
       const errField = err instanceof Error ? err : message;
       if (finalize) {
         runLog.error("Workflow failed", { attempt: run.attempts, error: errField });

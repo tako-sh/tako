@@ -2,6 +2,7 @@ package tako
 
 import (
 	"context"
+	cryptorand "crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -346,13 +347,17 @@ type worker struct {
 }
 
 func newWorker(ctx context.Context, client *Client, handlers map[string]workflowRegistration) *worker {
+	var processID [16]byte
+	if _, err := cryptorand.Read(processID[:]); err != nil {
+		panic(fmt.Sprintf("generate workflow worker identity: %v", err))
+	}
 	w := &worker{
 		ctx:         ctx,
 		runCtx:      context.WithoutCancel(ctx),
 		concurrency: parseWorkerConcurrency(),
 		client:      client,
 		handlers:    handlers,
-		workerID:    fmt.Sprintf("worker-%d", os.Getpid()),
+		workerID:    fmt.Sprintf("worker-%d-%x", os.Getpid(), processID),
 		leaseMs:     60_000,
 		heartbeatMs: 20_000,
 		pollMs:      1_000,
@@ -434,9 +439,13 @@ func (w *worker) finalize(op, runID string, err error) {
 }
 
 func (w *worker) execute(task *Run) {
+	if task.WorkerID == "" {
+		w.finalize("claim", task.ID, errors.New("claim response is missing its ownership identifier"))
+		return
+	}
 	reg, ok := w.handlers[task.Name]
 	if !ok {
-		w.finalize("fail", task.ID, w.client.Fail(w.runCtx, task.ID, w.workerID, fmt.Sprintf("no handler registered for %q", task.Name), nil, true))
+		w.finalize("fail", task.ID, w.client.Fail(w.runCtx, task.ID, task.WorkerID, fmt.Sprintf("no handler registered for %q", task.Name), nil, true))
 		return
 	}
 
@@ -452,14 +461,14 @@ func (w *worker) execute(task *Run) {
 			client:   w.client,
 			ctx:      w.runCtx,
 			runID:    task.ID,
-			workerID: w.workerID,
+			workerID: task.WorkerID,
 			state:    stepState,
 		},
 		ctx: w.runCtx,
 	}
 
 	hbStop := make(chan struct{})
-	go w.heartbeatLoop(task.ID, hbStop)
+	go w.heartbeatLoop(task.ID, task.WorkerID, hbStop)
 	defer close(hbStop)
 
 	err := reg.handler(ctx, task.Payload)
@@ -475,13 +484,13 @@ func (w *worker) execute(task *Run) {
 			if reason != "" {
 				rp = &reason
 			}
-			w.finalize("cancel", task.ID, w.client.Cancel(w.runCtx, task.ID, w.workerID, rp))
+			w.finalize("cancel", task.ID, w.client.Cancel(w.runCtx, task.ID, task.WorkerID, rp))
 		case errors.As(err, &fs):
-			w.finalize("fail", task.ID, w.client.Fail(w.runCtx, task.ID, w.workerID, fs.err.Error(), nil, true))
+			w.finalize("fail", task.ID, w.client.Fail(w.runCtx, task.ID, task.WorkerID, fs.err.Error(), nil, true))
 		case errors.As(err, &ds):
-			w.finalize("defer", task.ID, w.client.Defer(w.runCtx, task.ID, w.workerID, ds.wakeAt))
+			w.finalize("defer", task.ID, w.client.Defer(w.runCtx, task.ID, task.WorkerID, ds.wakeAt))
 		case errors.As(err, &ws):
-			w.finalize("wait-for-event", task.ID, w.client.WaitForEvent(w.runCtx, task.ID, w.workerID, ws.stepName, ws.eventName, ws.timeoutAt))
+			w.finalize("wait-for-event", task.ID, w.client.WaitForEvent(w.runCtx, task.ID, task.WorkerID, ws.stepName, ws.eventName, ws.timeoutAt))
 		default:
 			maxAttempts := reg.config.maxAttempts
 			if maxAttempts == 0 {
@@ -501,14 +510,14 @@ func (w *worker) execute(task *Run) {
 				t := time.Now().Add(expBackoff(task.Attempts, base, max))
 				next = &t
 			}
-			w.finalize("fail", task.ID, w.client.Fail(w.runCtx, task.ID, w.workerID, err.Error(), next, finalize))
+			w.finalize("fail", task.ID, w.client.Fail(w.runCtx, task.ID, task.WorkerID, err.Error(), next, finalize))
 		}
 		return
 	}
-	w.finalize("complete", task.ID, w.client.Complete(w.runCtx, task.ID, w.workerID))
+	w.finalize("complete", task.ID, w.client.Complete(w.runCtx, task.ID, task.WorkerID))
 }
 
-func (w *worker) heartbeatLoop(id string, stop <-chan struct{}) {
+func (w *worker) heartbeatLoop(id, claimOwner string, stop <-chan struct{}) {
 	ticker := time.NewTicker(time.Duration(w.heartbeatMs) * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -516,7 +525,7 @@ func (w *worker) heartbeatLoop(id string, stop <-chan struct{}) {
 		case <-stop:
 			return
 		case <-ticker.C:
-			_ = w.client.Heartbeat(w.runCtx, id, w.workerID, w.leaseMs)
+			_ = w.client.Heartbeat(w.runCtx, id, claimOwner, w.leaseMs)
 		}
 	}
 }

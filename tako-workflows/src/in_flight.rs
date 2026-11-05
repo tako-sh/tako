@@ -11,14 +11,26 @@
 //! restart, call [`InFlightLimiter::rehydrate`] to reseed from the DB so
 //! the cached counts match reality before accepting traffic.
 //!
-//! Worker identity is an opaque string (typically `worker-<pid>`). When a
+//! Worker process identity is an opaque string. Each claim adds a random suffix. When a
 //! worker process dies and a new one starts, its old slots are reclaimed
-//! via lease expiry (see `RunsDb::reclaim_expired`), and [`release`] is
+//! via lease expiry (see `RunsDb::reclaim_expired`), and [`InFlightLimiter::release_claim`] is
 //! called for each expired row — so the dead worker's entries drain to
 //! zero even though it never called `complete()`.
 
 use parking_lot::Mutex;
 use std::collections::HashMap;
+
+/// Keep process accounting separate from ownership of an individual attempt.
+/// The random suffix fences old attempts even if the same process reclaims a run.
+pub(crate) fn new_claim_owner(worker_id: &str) -> String {
+    format!("{worker_id}:{}", nanoid::nanoid!())
+}
+
+fn process_worker(claim_owner: &str) -> &str {
+    claim_owner
+        .rsplit_once(':')
+        .map_or(claim_owner, |(worker, _)| worker)
+}
 
 pub struct InFlightLimiter {
     max_per_worker: u32,
@@ -68,10 +80,19 @@ impl InFlightLimiter {
         }
     }
 
+    pub fn release_claim(&self, claim_owner: &str) {
+        self.release(process_worker(claim_owner));
+    }
+
     /// Replace the current counts with a fresh snapshot. Intended for
     /// rehydration from the DB on startup.
     pub fn rehydrate(&self, snapshot: HashMap<String, u32>) {
-        *self.counts.lock() = snapshot;
+        let mut counts = HashMap::<String, u32>::new();
+        for (owner, count) in snapshot {
+            let total = counts.entry(process_worker(&owner).to_owned()).or_default();
+            *total = total.saturating_add(count);
+        }
+        *self.counts.lock() = counts;
     }
 
     #[cfg(test)]
@@ -141,4 +162,20 @@ mod tests {
         assert!(limiter.try_acquire("other"));
         assert!(!limiter.try_acquire("other"));
     }
+}
+
+#[cfg(test)]
+#[test]
+fn claim_owners_share_process_slots_after_rehydration() {
+    let limiter = InFlightLimiter::new(2);
+    let first = new_claim_owner("host:worker");
+    let second = new_claim_owner("host:worker");
+    assert_ne!(first, second);
+    limiter.rehydrate(HashMap::from([(first.clone(), 1), (second.clone(), 1)]));
+    assert_eq!(limiter.count("host:worker"), 2);
+    assert!(!limiter.try_acquire("host:worker"));
+    limiter.release_claim(&first);
+    limiter.release_claim(&second);
+    assert_eq!(limiter.count("host:worker"), 0);
+    assert!(limiter.try_acquire("host:worker"));
 }

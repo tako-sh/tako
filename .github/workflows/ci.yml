@@ -173,10 +173,14 @@ jobs:
           }
 
       - name: Vet
-        run: go vet ./...
+        run: |
+          go vet ./...
+          (cd sdk/go && go vet ./...)
 
       - name: Test
-        run: go test ./...
+        run: |
+          go test ./...
+          (cd sdk/go && go test ./...)
 
       - name: Build examples
         run: |

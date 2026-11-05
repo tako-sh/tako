@@ -58,6 +58,17 @@ The server probes `GET /status` with `Host: <app>.tako` and an `X-Tako-Internal-
 
 The token is infrastructure-only. SDKs must not expose it to application code or public responses.
 
+## Workflow claim ownership
+
+`ClaimRun.worker_id` identifies a worker process for concurrency accounting.
+Every successful claim returns a fresh opaque `RunPayload.worker_id`. The worker
+must echo that returned identifier on all heartbeats, checkpoints, and lifecycle
+mutations. Reclaiming a run produces a different owner even within the same
+process, so a delayed earlier attempt cannot mutate the new attempt's state.
+SDK process identities also include randomness to avoid PID reuse across hosts
+or restarts. Ownership checks fence database writes, not external side effects;
+workflow execution remains at least once.
+
 ## Ephemeral channels
 
 Channel registry metadata, authorization responses, and internal publish lifecycle metadata carry optional `ephemeral: true`. Omission or false selects durable delivery. Ephemeral definitions omit `replayWindowMs`; supplying both is invalid. Durability is a definition setting and cannot be changed by client input or an authorization grant.

@@ -21,7 +21,10 @@ Workflow tests drive duplicate enqueues, retries, lease expiry, stale-owner
 writes, event signals/timeouts, and database reopenings. Every seed runs twice and
 must produce the same logical trace. Timestamps and generated identifiers are
 excluded from that trace. Lease expiry is injected into persisted test state so
-these scenarios do not depend on sleeping until a deadline.
+these scenarios do not depend on sleeping until a deadline. SQLite and Postgres
+RPC tests also reclaim a run within the same worker process and reject every
+mutation from the previous claim. A Postgres test gates checkpoint insertion
+inside a trigger and verifies that ownership transfer waits for its transaction.
 
 A subprocess exits without closing its workflow database after acknowledging a
 checkpoint. Recovery must retain the checkpoint and reject the old owner after
