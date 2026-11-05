@@ -234,6 +234,7 @@ impl ManagementClient {
         for headers in signed_headers {
             let response = self
                 .request(http, "rpc", headers)
+                .timeout(timeout)
                 .header("content-type", "application/json")
                 .body(body.clone())
                 .send()
@@ -440,24 +441,52 @@ pub(crate) async fn probe(host: &str) -> Result<ManagementProbe, ManagementError
 }
 
 fn management_rpc_timeout_for_command(command: &Command) -> Duration {
-    if matches!(
-        command,
-        Command::PrepareRelease { .. }
-            | Command::PrepareDeploy { .. }
-            | Command::CleanupPreparedDeploy { .. }
-            | Command::CleanupRelease { .. }
-            | Command::FinalizeRelease { .. }
-            | Command::RunRelease { .. }
-            | Command::Deploy { .. }
-            | Command::Scale { .. }
-            | Command::BackupNow { .. }
-            | Command::RestoreBackup { .. }
-            | Command::Delete { .. }
-            | Command::Rollback { .. }
-    ) {
-        MANAGEMENT_DEPLOY_RPC_TIMEOUT
-    } else {
-        MANAGEMENT_RPC_TIMEOUT
+    match command {
+        Command::DrainServer { timeout_seconds } => {
+            Duration::from_secs((*timeout_seconds).min(3600) + 30)
+        }
+        Command::ResumeServer
+        | Command::PrepareRelease { .. }
+        | Command::PrepareDeploy { .. }
+        | Command::CleanupPreparedDeploy { .. }
+        | Command::CleanupRelease { .. }
+        | Command::FinalizeRelease { .. }
+        | Command::RunRelease { .. }
+        | Command::Deploy { .. }
+        | Command::Scale { .. }
+        | Command::BackupNow { .. }
+        | Command::RestoreBackup { .. }
+        | Command::Delete { .. }
+        | Command::Rollback { .. } => MANAGEMENT_DEPLOY_RPC_TIMEOUT,
+        Command::Hello { .. }
+        | Command::ServerInfo
+        | Command::List
+        | Command::Routes
+        | Command::EnterUpgrading { .. }
+        | Command::ExitUpgrading { .. }
+        | Command::InjectChallengeToken { .. }
+        | Command::PrepareReleaseUpload { .. }
+        | Command::CheckDeploySpace { .. }
+        | Command::ListBackups { .. }
+        | Command::BackupStatus { .. }
+        | Command::BackupDownloadUrl { .. }
+        | Command::Stop { .. }
+        | Command::Status { .. }
+        | Command::ListReleases { .. }
+        | Command::UpdateSecrets { .. }
+        | Command::GetSecretsHash { .. }
+        | Command::EnqueueRun { .. }
+        | Command::Signal { .. }
+        | Command::RegisterSchedules { .. }
+        | Command::ClaimRun { .. }
+        | Command::HeartbeatRun { .. }
+        | Command::SaveStep { .. }
+        | Command::CompleteRun { .. }
+        | Command::CancelRun { .. }
+        | Command::FailRun { .. }
+        | Command::DeferRun { .. }
+        | Command::WaitForEvent { .. }
+        | Command::ChannelPublish { .. } => MANAGEMENT_RPC_TIMEOUT,
     }
 }
 
@@ -674,6 +703,20 @@ mod tests {
                 backup: None,
                 force: false,
             }),
+            MANAGEMENT_DEPLOY_RPC_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn drain_timeout_includes_cleanup_margin_and_resume_uses_deploy_timeout() {
+        for (timeout_seconds, expected) in [(0, 30), (30, 60), (3600, 3630), (u64::MAX, 3630)] {
+            assert_eq!(
+                management_rpc_timeout_for_command(&Command::DrainServer { timeout_seconds }),
+                Duration::from_secs(expected)
+            );
+        }
+        assert_eq!(
+            management_rpc_timeout_for_command(&Command::ResumeServer),
             MANAGEMENT_DEPLOY_RPC_TIMEOUT
         );
     }
