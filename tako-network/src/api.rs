@@ -2,7 +2,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    DeviceId, DeviceKind, EnrollmentRequest, LocalDeviceKeys, MemberKind, NetworkId,
+    AppEnv, DeviceId, DeviceKind, EnrollmentRequest, LocalDeviceKeys, MemberKind, NetworkId,
     NetworkPublicProfile, PendingApprovalProfile, Permissions, RegistrySnapshot, RequestId,
     Revocation, RevocationId, SshPublicKey, WgChallenge, WgProof,
 };
@@ -44,6 +44,57 @@ pub enum RuntimeError {
     Json(#[from] serde_json::Error),
 }
 
+/// The commitment binds an authenticated identity to one management operation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ManagementAction {
+    Rpc {
+        scope: Option<AppEnv>,
+        sha256: String,
+    },
+    ReleaseArtifact {
+        scope: Option<AppEnv>,
+        sha256: String,
+    },
+    Logs {
+        scope: Option<AppEnv>,
+        sha256: String,
+    },
+}
+
+impl ManagementAction {
+    pub fn scope(&self) -> Option<&AppEnv> {
+        match self {
+            Self::Rpc { scope, .. }
+            | Self::ReleaseArtifact { scope, .. }
+            | Self::Logs { scope, .. } => scope.as_ref(),
+        }
+    }
+
+    pub fn sha256(&self) -> &str {
+        match self {
+            Self::Rpc { sha256, .. }
+            | Self::ReleaseArtifact { sha256, .. }
+            | Self::Logs { sha256, .. } => sha256,
+        }
+    }
+
+    pub fn validate(&self) -> RuntimeResult<()> {
+        if self.sha256().len() != 64
+            || !self
+                .sha256()
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(RuntimeError::Invalid("management commitment"));
+        }
+        if !matches!(self, Self::Rpc { .. }) && self.scope().is_none() {
+            return Err(RuntimeError::Invalid("management scope"));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApproveRequest {
@@ -63,6 +114,9 @@ pub struct ApproveRequest {
     deny_unknown_fields
 )]
 pub enum RpcRequest {
+    Authorize {
+        action: ManagementAction,
+    },
     Approve(Box<ApproveRequest>),
     Begin {
         pending_id: RequestId,
@@ -82,6 +136,7 @@ pub enum RpcRequest {
 impl RpcRequest {
     pub fn path(&self) -> &'static str {
         match self {
+            Self::Authorize { .. } => "/v1/network/authorize",
             Self::Approve(_) => "/v1/network/approve",
             Self::Begin { .. } => "/v1/network/begin",
             Self::Complete { .. } => "/v1/network/complete",
@@ -192,6 +247,11 @@ impl SignedRequest {
     deny_unknown_fields
 )]
 pub enum RpcResponse {
+    Authorized {
+        signer: DeviceId,
+        permissions: Permissions,
+        action: ManagementAction,
+    },
     Pending(PendingApprovalProfile),
     Challenge {
         challenge_id: RequestId,

@@ -349,6 +349,15 @@ impl<S: RegistryStore> ServerRuntime<S> {
         self.challenges
             .retain(|_, challenge| challenge.expires_at > now);
         match signed.request {
+            RpcRequest::Authorize { action } => {
+                action.validate()?;
+                let permissions = snapshot.permissions(&signed.signer, now)?.clone();
+                Ok(RpcResponse::Authorized {
+                    signer: signed.signer,
+                    permissions,
+                    action,
+                })
+            }
             RpcRequest::Snapshot => Ok(RpcResponse::Snapshot(snapshot)),
             RpcRequest::Approve(grant) => {
                 self.approve_pending(*grant, signed.signer, snapshot, now)
@@ -942,6 +951,70 @@ mod tests {
             .unwrap();
         cert.sign(&key, MessageDigest::null()).unwrap();
         String::from_utf8(cert.build().to_pem().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn management_authorization_binds_action_and_rejects_replay_and_revocation() {
+        use crate::api::ManagementAction;
+        let fixture = Fixture::new();
+        let mut runtime = fixture.open();
+        let action = ManagementAction::Rpc {
+            scope: Some("demo/production".parse().unwrap()),
+            sha256: "ab".repeat(32),
+        };
+        let signed = fixture.signed(
+            &fixture.admin,
+            RpcRequest::Authorize {
+                action: action.clone(),
+            },
+            10,
+        );
+        let path = signed.request.path();
+        let mut wrong = signed.clone();
+        wrong.server_id = wrong.signer.clone();
+        assert!(runtime.handle(wrong, "POST", path, 10).is_err());
+        let mut changed = signed.clone();
+        changed.request = RpcRequest::Authorize {
+            action: ManagementAction::Rpc {
+                scope: Some("other/production".parse().unwrap()),
+                sha256: "ab".repeat(32),
+            },
+        };
+        assert!(runtime.handle(changed, "POST", path, 10).is_err());
+        let response = runtime.handle(signed.clone(), "POST", path, 10).unwrap();
+        assert_eq!(
+            response,
+            RpcResponse::Authorized {
+                signer: signed.signer.clone(),
+                permissions: admin(),
+                action,
+            }
+        );
+        assert!(matches!(
+            runtime.handle(signed.clone(), "POST", path, 10),
+            Err(RuntimeError::Replay)
+        ));
+        let revoke = fixture
+            .store
+            .0
+            .borrow()
+            .snapshot
+            .plan_revocation(
+                RevocationId::random().unwrap(),
+                &signed.signer,
+                &signed.signer,
+                11,
+            )
+            .unwrap();
+        fixture
+            .store
+            .0
+            .borrow_mut()
+            .snapshot
+            .revocations
+            .push(revoke);
+        let fresh = fixture.signed(&fixture.admin, signed.request, 12);
+        assert!(runtime.handle(fresh, "POST", path, 12).is_err());
     }
 
     struct Fixture {
