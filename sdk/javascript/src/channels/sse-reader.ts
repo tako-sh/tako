@@ -202,11 +202,15 @@ export class SseReader {
             this.dispatchEvent(new ErrorEvent("error", { error: err, message: err.message }));
             throw err;
           }
-          this.#opts.onRecovery?.(
-            err instanceof SseResponseError && err.status === 410
-              ? "history-expired"
-              : "reconnecting",
-          );
+          try {
+            this.#opts.onRecovery?.(
+              err instanceof SseResponseError && err.status === 410
+                ? "history-expired"
+                : "reconnecting",
+            );
+          } catch (error) {
+            console.error("SseReader onRecovery handler threw:", error);
+          }
           if (this.#abort.signal.aborted) throw err;
           attempt++;
           return backoff(attempt, this.#opts);

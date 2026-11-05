@@ -4,7 +4,7 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 GlobalRegistrator.register();
 
 import { act, cleanup, render, renderHook, waitFor } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { useChannel, usePresence } from "../src/react";
 import { createElement, startTransition, Suspense, useLayoutEffect, useState } from "react";
 import type { ChannelMessage } from "../src/types";
@@ -952,3 +952,88 @@ test("publishes identity and callbacks before descendant layout actions", () => 
   expect(received).toEqual([]);
   expect(sockets).toHaveLength(2);
 });
+
+test.each([
+  ["sse", "onRecovery"],
+  ["sse", "onResync"],
+  ["sse", "both"],
+  ["ws", "onRecovery"],
+  ["ws", "onResync"],
+  ["ws", "both"],
+] as const)(
+  "throwing %s recovery observers (%s) do not prevent reconnect",
+  async (transport, throwing) => {
+    const diagnostic = spyOn(console, "error").mockImplementation(() => {});
+    const observerError = new Error("observer failed");
+    const observed: string[] = [];
+    const sockets: MockWebSocket[] = [];
+    let fetches = 0;
+    configureChannels({
+      fetch: (async (_input, init) => {
+        if (++fetches === 1) return new Response(null, { status: 410 });
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              init?.signal?.addEventListener("abort", () => controller.close(), { once: true });
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        );
+      }) as typeof fetch,
+    });
+    const observers = {
+      onRecovery: () => {
+        observed.push("recovery");
+        if (throwing !== "onResync") throw observerError;
+      },
+      onResync: () => {
+        observed.push("resync");
+        if (throwing !== "onRecovery") throw observerError;
+      },
+    };
+    const { result, unmount } = renderHook(() =>
+      transport === "sse"
+        ? useChannel("chat", { baseUrl: "http://test", ...observers })
+        : useChannel("chat", {
+            transport: "ws",
+            baseUrl: "http://test",
+            ...observers,
+            webSocketFactory: (url) => {
+              const socket = new MockWebSocket(url);
+              sockets.push(socket);
+              return socket;
+            },
+          }),
+    );
+    try {
+      if (transport === "ws") {
+        act(() => {
+          sockets[0]!.emitClose(4410);
+          globalThis.dispatchEvent(new Event("online"));
+        });
+        await waitFor(() => expect(sockets).toHaveLength(2));
+        act(() => sockets[1]!.emitOpen());
+      } else {
+        await waitFor(() => expect(fetches).toBe(2), { timeout: 2000 });
+      }
+      expect(observed).toEqual(["recovery", "resync"]);
+      expect(diagnostic).toHaveBeenCalledTimes(throwing === "both" ? 2 : 1);
+      if (throwing !== "onResync")
+        expect(diagnostic).toHaveBeenCalledWith(
+          "useChannel onRecovery handler threw:",
+          observerError,
+        );
+      if (throwing !== "onRecovery")
+        expect(diagnostic).toHaveBeenCalledWith(
+          "useChannel onResync handler threw:",
+          observerError,
+        );
+      expect(result.current.status).toBe("open");
+      expect(result.current.error).toBeNull();
+      expect(result.current.messages).toEqual([]);
+    } finally {
+      unmount();
+      diagnostic.mockRestore();
+    }
+  },
+);

@@ -168,8 +168,18 @@ export function useChannel<T = unknown>(
     const recover = (reason: SseRecoveryReason) => {
       if (!active()) return;
       update("connecting");
-      optionsRef.current.onRecovery?.(reason);
-      if (active() && reason === "history-expired") optionsRef.current.onResync?.();
+      try {
+        optionsRef.current.onRecovery?.(reason);
+      } catch (error) {
+        console.error("useChannel onRecovery handler threw:", error);
+      }
+      if (active() && reason === "history-expired") {
+        try {
+          optionsRef.current.onResync?.();
+        } catch (error) {
+          console.error("useChannel onResync handler threw:", error);
+        }
+      }
     };
     const incoming = (raw: string) => {
       if (!active()) return;

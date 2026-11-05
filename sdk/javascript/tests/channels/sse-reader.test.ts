@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { Channel, type ChannelSubscribeOptions } from "../../src/channels";
 import { configureChannels, resetChannelsConfig } from "../../src/channels/configure";
 import { SseReader, type SseRecoveryReason } from "../../src/channels/sse-reader";
@@ -422,3 +422,46 @@ describe("SseReader", () => {
     }
   });
 });
+
+test.each([503, 410])(
+  "throwing recovery observer does not stop SSE retry after %i",
+  async (status) => {
+    const observerError = new Error("observer failed");
+    const diagnostic = spyOn(console, "error").mockImplementation(() => {});
+    const messages: string[] = [];
+    const errors: Error[] = [];
+    const recoveries: string[] = [];
+    let calls = 0;
+    const reader = new SseReader("http://test/events", {
+      fetch: (async () => {
+        if (++calls === 1) return new Response(null, { status });
+        return mockFetchStream(["data: business\n\n"])("http://test/events");
+      }) as typeof fetch,
+      retryOnDisconnect: true,
+      backoffBaseMs: 1,
+      backoffMaxMs: 1,
+      jitter: 0,
+      onRecovery(reason) {
+        recoveries.push(reason);
+        throw observerError;
+      },
+      onError: (error) => errors.push(error),
+      onMessage: ({ data }) => {
+        messages.push(data);
+        reader.close();
+      },
+    });
+    try {
+      await reader.start();
+      await reader.drain();
+      expect(calls).toBe(2);
+      expect(recoveries).toEqual([status === 410 ? "history-expired" : "reconnecting"]);
+      expect(messages).toEqual(["business"]);
+      expect(errors).toEqual([]);
+      expect(diagnostic).toHaveBeenCalledWith("SseReader onRecovery handler threw:", observerError);
+    } finally {
+      reader.close();
+      diagnostic.mockRestore();
+    }
+  },
+);
