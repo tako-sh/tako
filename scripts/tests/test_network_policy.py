@@ -51,6 +51,17 @@ class NetworkPolicyTests(unittest.TestCase):
                 'sport': 9844, 'dport': 40000, 'ct state': 'established',
                 'ct direction': 'reply', **changes}
 
+    def test_own_wg_loopback_requires_exact_source_destination_and_service_port(self):
+        policy = self.policy(peers=False)
+        packet = self.packet(**{'iifname':'lo', 'ip6 saddr':'fd00:1234:5678::1',
+            'ct state':'new', 'ct direction':'original', 'dport':80})
+        self.assertEqual(input_verdict(policy, packet), 'accept')
+        for change in ({'ip6 saddr':'::1'}, {'ip6 saddr':'fd00:1234:5678::2'},
+                       {'dport':22}, {'iifname':'eth0'}):
+            self.assertEqual(input_verdict(policy, {**packet, **change}), 'drop')
+        packet.update({'ct state':'established', 'ct direction':'reply', 'dport':40000})
+        self.assertEqual(input_verdict(policy, packet), 'accept')
+
     def test_tcp_replies_to_host_initiated_connections_work(self):
         for port in (22, 53, 80, 443, 9844):
             self.assertEqual(input_verdict(self.policy(ssh=False), self.packet(sport=port)), 'accept')

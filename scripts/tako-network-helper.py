@@ -66,14 +66,18 @@ def address(value):
 def endpoint(value):
     require(isinstance(value, str) and len(value) <= 80 and '%' not in value, 'invalid endpoint')
     match = re.fullmatch(r'(?:\[([0-9a-fA-F:]+)\]|([0-9.]+)):([0-9]{1,5})', value)
-    require(match is not None, 'expected public numeric endpoint')
+    require(match is not None, 'expected unicast numeric endpoint')
     try:
         ip = ipaddress.ip_address(match[1] or match[2])
     except ValueError:
         raise Rejected('invalid endpoint') from None
-    require(ip.is_global and not ip.is_multicast and not ip.is_reserved and
+    private = any(ip in ipaddress.ip_network(prefix) for prefix in (
+        ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '100.64.0.0/10')
+        if ip.version == 4 else ('fc00::/7',)))
+    require((ip.is_global or private) and not ip.is_multicast and not ip.is_loopback and
+            not ip.is_unspecified and not ip.is_link_local and not ip.is_reserved and
             not getattr(ip, 'ipv4_mapped', None) and 1 <= int(match[3]) <= 65535,
-            'expected public numeric endpoint')
+            'expected unicast numeric endpoint')
     return f'[{ip}]:{int(match[3])}' if ip.version == 6 else f'{ip}:{int(match[3])}'
 
 
@@ -102,12 +106,15 @@ def device_id(value):
 
 
 def validate(data, ident):
-    fields(data, ('network_id', 'device_id', 'address', 'private_key', 'peers'), ('listen_port',))
+    fields(data, ('network_id', 'device_id', 'address', 'private_key', 'peers'), ('listen_port', 'ssh_port'))
     require(network_id(data['network_id']) == ident, 'network_id mismatch')
     result = dict(data, address=address(data['address']), device_id=device_id(data['device_id']),
                   private_key=key(data['private_key']), listen_port=data.get('listen_port', 51820))
     require(type(result['listen_port']) is int and 1024 <= result['listen_port'] <= 65535 and
             result['listen_port'] != 8787, 'listen_port must be 1024..65535 except reserved gossip port 8787')
+    result['ssh_port'] = data.get('ssh_port', 22)
+    require(type(result['ssh_port']) is int and 1 <= result['ssh_port'] <= 65535 and
+            result['ssh_port'] not in (53, 80, 443, 9844, 9850), 'invalid or reserved SSH port')
     require(isinstance(data['peers'], list) and len(data['peers']) <= 256, 'too many peers')
     prefix = ipaddress.IPv6Network(result['address'].split('/')[0] + '/48', strict=False)
     ids, addresses, keys = {result['device_id']}, {result['address']}, set()
@@ -128,6 +135,8 @@ def validate(data, ident):
         keys.add(peer['public_key'])
         if 'endpoint' in peer:
             peer['endpoint'] = endpoint(peer['endpoint'])
+            endpoint_ip = peer['endpoint'].rsplit(':', 1)[0].strip('[]')
+            require(ipaddress.ip_address(endpoint_ip) not in prefix, 'endpoint overlaps WireGuard network')
         require(('ssh_user' in peer) == ('ssh_public_key' in peer), 'SSH permission requires user and key')
         if 'ssh_user' in peer:
             require(peer['ssh_user'] == 'tako', 'SSH user must be tako')
@@ -228,6 +237,10 @@ def firewall(state):
     for ident, config in state['networks'].items():
         dev = interface(ident)
         local = config['address'].split('/')[0]
+        local_match = f'iifname "lo" ip6 saddr {local} ip6 daddr {local}'
+        lines.append(f'{local_match} tcp dport {{ 53, 80, 443, 9844 }} accept')
+        lines.append(f'{local_match} udp dport 53 accept')
+        lines.append(f'{local_match} ct state established ct direction reply accept')
         lines.append(f'ip6 daddr {local} iifname != "{dev}" drop')
         for peer in config['peers']:
             ip = peer['address'].split('/')[0]
@@ -239,7 +252,7 @@ def firewall(state):
                 lines.append(f'{match} udp sport 8787 ct state established ct direction reply accept')
                 lines.append(f'{match} tcp dport 9850 accept')
             if 'ssh_public_key' in peer:
-                lines.append(f'{match} tcp dport 22 accept')
+                lines.append(f'{match} tcp dport {config.get("ssh_port", 22)} accept')
             lines.append(f'{match} tcp dport {{ 53, 80, 443, 9844 }} accept')
             lines.append(f'{match} udp dport 53 accept')
             lines.append(f'{match} meta l4proto ipv6-icmp accept')

@@ -47,6 +47,7 @@ class ValidationTests(unittest.TestCase):
             ('address', 'fd00::/48'), ('private_key', 'x\nPostUp = reboot'),
             ('private_key', base64.b64encode(bytes(32)).decode()),
             ('listen_port', True), ('listen_port', 0), ('listen_port', 65536), ('listen_port', 8787),
+            ('ssh_port', True), ('ssh_port', 0), ('ssh_port', 65536), ('ssh_port', 80),
             ('listen_port', '51820\n'), ('PostUp', 'reboot'), ('routes', ['::/0']),
             ('peers', {}), ('peers', [desired()['peers'][0]] * 257),
         ]
@@ -65,8 +66,8 @@ class ValidationTests(unittest.TestCase):
             ('ssh_public_key', SSH_KEY + ' comment'), ('ssh_public_key', 'ssh-ed25519 AAAA'),
             ('ssh_public_key', 'command="sh" ' + SSH_KEY), ('allowed_ips', ['::/0']),
             ('endpoint', 'localhost:51820'), ('endpoint', '127.0.0.1:80'),
-            ('endpoint', '10.0.0.1:80'), ('endpoint', '169.254.169.254:80'),
-            ('endpoint', '[fd00::1]:80'), ('endpoint', '[::1]:80'),
+            ('endpoint', '169.254.169.254:80'), ('endpoint', '[fd00:1234:5678::2]:51820'),
+            ('endpoint', '[fe80::1]:80'), ('endpoint', '[::1]:80'),
             ('endpoint', '224.0.0.1:80'), ('endpoint', '8.8.8.8:0'),
             ('endpoint', '8.8.8.8:80\nPostUp=sh'),
         ]:
@@ -99,6 +100,17 @@ class ValidationTests(unittest.TestCase):
             self.assertNotEqual(code, 0)
             self.assertFalse(json.loads(output.getvalue())['ok'])
             self.assertNotIn('/tmp/payload', output.getvalue())
+
+    def test_private_vpc_endpoints_and_exact_ssh_port(self):
+        for value in ('10.0.0.1:51820', '172.16.1.2:51821', '192.168.2.4:51820',
+                      '100.64.1.2:51820', '[fd12:3456::2]:51820'):
+            self.assertEqual(helper.endpoint(value), value)
+        data = desired()
+        data['ssh_port'] = 2222
+        config = helper.validate(data, ID)
+        policy = helper.firewall({'owner': 'test', 'networks': {ID: config}})
+        self.assertIn('tcp dport 2222 accept', policy)
+        self.assertNotIn('tcp dport 22 accept', policy)
 
     def test_ipv6_public_endpoint(self):
         self.assertEqual(helper.endpoint('[2606:4700:4700::1111]:51820'),
