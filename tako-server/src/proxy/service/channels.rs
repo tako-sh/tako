@@ -310,8 +310,7 @@ impl TakoProxy {
             None => {
                 // Dropping the handler cancels WS/SSE and releases its presence session.
                 // Close the transport itself; draining is not an application channel event.
-                session.set_keepalive(None);
-                session.as_downstream_mut().shutdown().await;
+                drain::close(session).await;
                 Ok(true)
             }
         }
