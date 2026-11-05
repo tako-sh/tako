@@ -245,23 +245,32 @@ fn floor_tracks_deleted_stream_positions_despite_gaps_in_global_row_ids() {
 #[test]
 fn postgres_replay_bounds_keep_numeric_ids_and_reject_future_or_expired_positions() {
     assert_eq!(
-        crate::store::resolve_replay_cursor(None, Some(5), Some(10)).unwrap(),
+        crate::store::resolve_replay_cursor(None, 4, Some(10)).unwrap(),
         Some(10)
     );
     assert_eq!(
-        crate::store::resolve_replay_cursor(Some(4), Some(5), Some(10)).unwrap(),
+        crate::store::resolve_replay_cursor(Some(4), 4, Some(10)).unwrap(),
         Some(4)
     );
     assert_eq!(
-        crate::store::resolve_replay_cursor(Some(10), None, Some(10)).unwrap(),
+        crate::store::resolve_replay_cursor(Some(10), 10, Some(10)).unwrap(),
         Some(10)
     );
     for requested in [3, 11] {
         assert!(matches!(
-            crate::store::resolve_replay_cursor(Some(requested), Some(5), Some(10)),
+            crate::store::resolve_replay_cursor(Some(requested), 4, Some(10)),
             Err(ChannelError::StaleCursor)
         ));
     }
+    // a:1 was consumed and deleted; b:2,3,4 never belonged to this stream.
+    assert_eq!(
+        crate::store::resolve_replay_cursor(Some(1), 1, Some(5)).unwrap(),
+        Some(1)
+    );
+    assert!(matches!(
+        crate::store::resolve_replay_cursor(Some(1), 5, Some(6)),
+        Err(ChannelError::StaleCursor)
+    ));
     assert_eq!("42".parse::<ReplayCursor>().unwrap().to_string(), "42");
 }
 

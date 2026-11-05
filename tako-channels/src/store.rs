@@ -485,14 +485,13 @@ pub(super) fn now_unix_ms() -> i64 {
 
 pub(super) fn resolve_replay_cursor(
     requested: Option<i64>,
-    oldest: Option<i64>,
+    highest_deleted: i64,
     latest: Option<i64>,
 ) -> Result<Option<i64>, ChannelError> {
     let Some(requested) = requested else {
         return Ok(latest);
     };
-    let floor = oldest.map(|id| id.saturating_sub(1)).or(latest);
-    if floor.is_none_or(|floor| requested < floor) || latest.is_none_or(|head| requested > head) {
+    if requested < highest_deleted || latest.is_none_or(|head| requested > head) {
         return Err(ChannelError::StaleCursor);
     }
     Ok(Some(requested))
