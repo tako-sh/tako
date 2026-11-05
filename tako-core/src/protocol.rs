@@ -297,8 +297,8 @@ pub enum Command {
         lease_ms: u64,
     },
 
-    /// Worker: extend the lease on a running run. Requires the original
-    /// `worker_id` so a stale worker (past its lease) can't heartbeat a
+    /// Worker: extend the lease on a running run. Requires the claim
+    /// owner returned by ClaimRun so a stale attempt cannot heartbeat a
     /// run another worker has since claimed.
     HeartbeatRun {
         app: String,
@@ -432,6 +432,9 @@ pub struct EnqueueRunResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RunPayload {
     pub id: String,
+    /// Opaque ownership identifier for this claim. Echo this as `worker_id`
+    /// on every mutation; it is not the process ID supplied to ClaimRun.
+    pub worker_id: String,
     pub name: String,
     pub payload: serde_json::Value,
     /// pending | running | succeeded | cancelled | dead

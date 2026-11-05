@@ -37,3 +37,6 @@ mod tests;
 
 #[cfg(test)]
 mod presence_tests;
+
+#[cfg(test)]
+mod history_tests;

@@ -167,6 +167,7 @@ impl PostgresRunsDb {
         }
         Ok(Some(RunPayload {
             id: claimed.0,
+            worker_id: worker_id.to_owned(),
             name: claimed.1,
             payload: serde_json::from_str(&claimed.2).unwrap_or(serde_json::Value::Null),
             status: claimed.3,
@@ -199,27 +200,32 @@ impl PostgresRunsDb {
     ) -> Result<(), RunsDbError> {
         let result = serde_json::to_string(result)?;
         let mut client = self.client.lock();
-        let rows = client.execute(
+        let mut tx = client.transaction()?;
+        // Serialize the ownership check and checkpoint with lease takeover.
+        // An INSERT ... SELECT alone can keep reading the previous owner from
+        // its MVCC snapshot while another connection reclaims the run.
+        let owned = tx.query_opt(
             &format!(
-                "INSERT INTO {}.steps (app_id, run_id, name, result, completed_at)
-                 SELECT $1, $2, $3, $4, $5
-                 FROM {}.runs
-                 WHERE app_id=$1 AND id=$2 AND worker_id=$6 AND status='running'
-                 ON CONFLICT(app_id, run_id, name) DO NOTHING",
-                self.schema, self.schema
+                "SELECT id FROM {}.runs
+                 WHERE app_id=$1 AND id=$2 AND worker_id=$3 AND status='running'
+                 FOR UPDATE",
+                self.schema
             ),
-            &[
-                &self.app_id,
-                &run_id,
-                &step_name,
-                &result,
-                &now_ms(),
-                &worker_id,
-            ],
+            &[&self.app_id, &run_id, &worker_id],
         )?;
-        if rows == 0 && !self.running_owned_by(&mut client, run_id, worker_id)? {
+        if owned.is_none() {
             return Err(RunsDbError::StaleWorker);
         }
+        tx.execute(
+            &format!(
+                "INSERT INTO {}.steps (app_id, run_id, name, result, completed_at)
+                 VALUES ($1, $2, $3, $4, $5)
+                 ON CONFLICT(app_id, run_id, name) DO NOTHING",
+                self.schema
+            ),
+            &[&self.app_id, &run_id, &step_name, &result, &now_ms()],
+        )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -331,29 +337,27 @@ impl PostgresRunsDb {
 
     pub(super) fn reclaim_expired_with_workers(&self) -> Result<Vec<String>, RunsDbError> {
         let mut client = self.client.lock();
-        let mut tx = client.transaction()?;
-        let workers = tx
+        // Return exactly the owners whose rows this statement reclaims.
+        // Row locks prevent a heartbeat or another reclaimer from changing
+        // ownership between selection and accounting.
+        let workers = client
             .query(
                 &format!(
-                    "SELECT worker_id FROM {}.runs
-                     WHERE app_id=$1 AND status='running' AND lease_until IS NOT NULL
-                       AND lease_until < $2 AND worker_id IS NOT NULL",
-                    self.schema
+                    "WITH expired AS (
+                    SELECT id, worker_id FROM {schema}.runs
+                    WHERE app_id=$1 AND status='running' AND lease_until < $2
+                    FOR UPDATE
+                 )
+                 UPDATE {schema}.runs r SET status='pending', worker_id=NULL, lease_until=NULL
+                 FROM expired WHERE r.app_id=$1 AND r.id=expired.id
+                 RETURNING expired.worker_id",
+                    schema = self.schema
                 ),
                 &[&self.app_id, &now_ms()],
             )?
             .into_iter()
-            .map(|row| row.get(0))
-            .collect::<Vec<String>>();
-        tx.execute(
-            &format!(
-                "UPDATE {}.runs SET status='pending', worker_id=NULL, lease_until=NULL
-                 WHERE app_id=$1 AND status='running' AND lease_until IS NOT NULL AND lease_until < $2",
-                self.schema
-            ),
-            &[&self.app_id, &now_ms()],
-        )?;
-        tx.commit()?;
+            .filter_map(|row| row.get::<_, Option<String>>(0))
+            .collect();
         Ok(workers)
     }
 
@@ -429,7 +433,7 @@ impl PostgresRunsDb {
         let waiters = tx.query(
             &format!(
                 "SELECT run_id, step_name FROM {}.event_waiters
-                 WHERE app_id=$1 AND event_name=$2",
+                 WHERE app_id=$1 AND event_name=$2 ORDER BY run_id, step_name",
                 self.schema
             ),
             &[&self.app_id, &event_name],
@@ -438,6 +442,22 @@ impl PostgresRunsDb {
         for row in waiters {
             let run_id: String = row.get(0);
             let step_name: String = row.get(1);
+            tx.query_opt(
+                &format!(
+                    "SELECT id FROM {}.runs WHERE app_id=$1 AND id=$2 FOR UPDATE",
+                    self.schema
+                ),
+                &[&self.app_id, &run_id],
+            )?;
+            // A claim or competing signal may have consumed this waiter while
+            // we waited for its run lock. Only its consumer can materialize it.
+            let consumed = tx.execute(
+                &format!("DELETE FROM {}.event_waiters WHERE app_id=$1 AND run_id=$2 AND step_name=$3 AND event_name=$4", self.schema),
+                &[&self.app_id, &run_id, &step_name, &event_name],
+            )?;
+            if consumed == 0 {
+                continue;
+            }
             tx.execute(
                 &format!(
                     "INSERT INTO {}.steps (app_id, run_id, name, result, completed_at)
@@ -454,14 +474,6 @@ impl PostgresRunsDb {
                     self.schema
                 ),
                 &[&self.app_id, &run_id, &now],
-            )?;
-            tx.execute(
-                &format!(
-                    "DELETE FROM {}.event_waiters
-                     WHERE app_id=$1 AND run_id=$2 AND step_name=$3",
-                    self.schema
-                ),
-                &[&self.app_id, &run_id, &step_name],
             )?;
             woken += 1;
         }
@@ -587,25 +599,6 @@ impl PostgresRunsDb {
         }
         Ok(())
     }
-
-    fn running_owned_by(
-        &self,
-        client: &mut Client,
-        run_id: &str,
-        worker_id: &str,
-    ) -> Result<bool, RunsDbError> {
-        let owner: Option<String> = client
-            .query_opt(
-                &format!(
-                    "SELECT worker_id FROM {}.runs
-                     WHERE app_id=$1 AND id=$2 AND status='running'",
-                    self.schema
-                ),
-                &[&self.app_id, &run_id],
-            )?
-            .and_then(|row| row.get(0));
-        Ok(owner.as_deref() == Some(worker_id))
-    }
 }
 
 fn init_schema(client: &mut Client, schema: &str) -> Result<(), RunsDbError> {
@@ -702,4 +695,181 @@ fn validate_identifier(identifier: &str) -> Result<(), RunsDbError> {
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn concurrent_reclaimers_and_signals_consume_state_once() {
+        let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
+            return;
+        };
+        for signal in [false, true] {
+            let schema = format!(
+                "consume_{}",
+                nanoid::nanoid!(12, &['a', 'b', 'c', 'd', 'e', 'f'])
+            );
+            let first = PostgresRunsDb::open(&url, &schema, "app").unwrap();
+            let second = PostgresRunsDb::open(&url, &schema, "app").unwrap();
+            let id = first
+                .enqueue("work", &serde_json::json!({}), &EnqueueOpts::default())
+                .unwrap()
+                .id;
+            first
+                .claim("owner", &["work".into()], 60_000)
+                .unwrap()
+                .unwrap();
+            if signal {
+                first
+                    .wait_for_event(&id, "owner", "wait", "event", None)
+                    .unwrap();
+            }
+            let pids: Vec<i32> = [&first, &second]
+                .iter()
+                .map(|db| {
+                    db.client
+                        .lock()
+                        .query_one("SELECT pg_backend_pid()", &[])
+                        .unwrap()
+                        .get(0)
+                })
+                .collect();
+            let mut gate = Client::connect(&url, NoTls).unwrap();
+            gate.execute(
+                &format!("UPDATE {schema}.runs SET lease_until=0 WHERE app_id='app' AND id=$1"),
+                &[&id],
+            )
+            .unwrap();
+            let mut tx = gate.transaction().unwrap();
+            tx.query_one(
+                &format!("SELECT id FROM {schema}.runs WHERE app_id='app' AND id=$1 FOR UPDATE"),
+                &[&id],
+            )
+            .unwrap();
+            let calls: Vec<_> = [first, second]
+                .into_iter()
+                .map(|db| {
+                    std::thread::spawn(move || {
+                        if signal {
+                            db.signal("event", &serde_json::json!(42)).unwrap()
+                        } else {
+                            db.reclaim_expired_with_workers().unwrap().len() as u64
+                        }
+                    })
+                })
+                .collect();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                let blocked: i64 = tx.query_one(
+                    "SELECT COUNT(*) FROM pg_stat_activity WHERE pid=ANY($1) AND cardinality(pg_blocking_pids(pid)) > 0",
+                    &[&pids],
+                ).unwrap().get(0);
+                if blocked == 2 {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "consumers never reached their lock gates"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            tx.commit().unwrap();
+            assert_eq!(
+                calls
+                    .into_iter()
+                    .map(|call| call.join().unwrap())
+                    .sum::<u64>(),
+                1
+            );
+            gate.batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn checkpoint_holds_ownership_until_commit() {
+        let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let schema = format!(
+            "checkpoint_{}",
+            nanoid::nanoid!(12, &['a', 'b', 'c', 'd', 'e', 'f'])
+        );
+        let db = PostgresRunsDb::open(&url, &schema, "app").unwrap();
+        let id = db
+            .enqueue("work", &serde_json::json!({}), &EnqueueOpts::default())
+            .unwrap()
+            .id;
+        db.claim("old", &["work".into()], 60_000).unwrap().unwrap();
+        let mut gate = Client::connect(&url, NoTls).unwrap();
+        let key: i64 = gate
+            .query_one("SELECT hashtext($1)::bigint", &[&schema])
+            .unwrap()
+            .get(0);
+        gate.batch_execute(&format!(
+            "CREATE FUNCTION {schema}.block_checkpoint() RETURNS trigger LANGUAGE plpgsql AS $$
+             BEGIN PERFORM pg_advisory_xact_lock({key}); RETURN NEW; END $$;
+             CREATE TRIGGER block_checkpoint BEFORE INSERT ON {schema}.steps
+             FOR EACH ROW EXECUTE FUNCTION {schema}.block_checkpoint();"
+        ))
+        .unwrap();
+        gate.query_one("SELECT pg_advisory_lock($1)", &[&key])
+            .unwrap();
+        let gate_pid: i32 = gate
+            .query_one("SELECT pg_backend_pid()", &[])
+            .unwrap()
+            .get(0);
+        let save_id = id.clone();
+        let save = std::thread::spawn(move || {
+            let result = db.save_step(&save_id, "old", "checkpoint", &serde_json::json!(42));
+            (db, result)
+        });
+        // Observe the checkpoint inside its INSERT trigger before attempting
+        // takeover. No assumption about thread scheduling or query speed.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let blocked: bool = gate.query_one(
+                "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)))",
+                &[&gate_pid],
+            ).unwrap().get(0);
+            if blocked {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "checkpoint never reached its gate"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let mut takeover = Client::connect(&url, NoTls).unwrap();
+        takeover.batch_execute("SET lock_timeout='250ms'").unwrap();
+        let transfer =
+            format!("UPDATE {schema}.runs SET worker_id='new' WHERE app_id='app' AND id=$1");
+        let blocked_transfer = takeover.execute(&transfer, &[&id]);
+        gate.query_one("SELECT pg_advisory_unlock($1)", &[&key])
+            .unwrap();
+        let (db, result) = save.join().unwrap();
+        result.unwrap();
+        assert_eq!(
+            blocked_transfer.unwrap_err().code(),
+            Some(&postgres::error::SqlState::LOCK_NOT_AVAILABLE)
+        );
+        assert_eq!(takeover.execute(&transfer, &[&id]).unwrap(), 1);
+        assert!(matches!(
+            db.save_step(&id, "old", "late", &serde_json::json!(0)),
+            Err(RunsDbError::StaleWorker)
+        ));
+        assert_eq!(
+            gate.query_one(&format!("SELECT COUNT(*) FROM {schema}.steps"), &[])
+                .unwrap()
+                .get::<_, i64>(0),
+            1
+        );
+        drop(db);
+        gate.batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .unwrap();
+    }
 }

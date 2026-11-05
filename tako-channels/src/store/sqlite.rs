@@ -196,9 +196,8 @@ impl SqliteChannelStore {
             .map_err(storage_err)
     }
 
-    pub(super) fn prune(&self) -> Result<(), ChannelError> {
+    pub(super) fn prune(&self, now: i64) -> Result<(), ChannelError> {
         let conn = self.conn.lock();
-        let now = now_unix_ms();
 
         conn.execute("DELETE FROM presence WHERE expires_at <= ?1", [now])
             .map_err(storage_err)?;

@@ -15,12 +15,11 @@
  *   TAKO_WORKER_CONCURRENCY    — max parallel tasks per worker (default 500)
  *   TAKO_WORKER_IDLE_TIMEOUT_MS — scale-to-zero idle timeout; 0 = never
  *
- * The claim leaseholder id is always `worker-<pid>` — the PID is the
- * useful forensic when a run goes orphaned (matches the process that
- * died in host logs), and there's no platform-level need for a separate
- * identifier.
+ * Process IDs include a random component so restarts and separate hosts do
+ * not share concurrency accounting. Each claim receives its own owner ID.
  */
 
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import {
   assertInternalSocketEnvConsistency,
@@ -68,7 +67,7 @@ export async function bootstrapWorker(
   const concurrency = parseIntEnv("TAKO_WORKER_CONCURRENCY", 500);
   const idleTimeoutMs = parseIntEnv("TAKO_WORKER_IDLE_TIMEOUT_MS", 0);
   const workflowWorker = process.env[WORKFLOW_WORKER_ENV]?.trim() || DEFAULT_WORKER_GROUP;
-  const workerId = `worker-${workflowWorker}-${process.pid}`;
+  const workerId = `worker-${workflowWorker}-${process.pid}-${randomUUID()}`;
 
   workflowsEngine.configure({ client, workerId });
   setWorkflowRuntime({

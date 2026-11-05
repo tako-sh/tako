@@ -16,9 +16,19 @@ unit-js:
 
 unit-go:
     go test ./...
+    cd sdk/go && go test ./...
 
 workspace:
     cargo test --workspace
+
+# Reproduce a storage history workload; omit the seed to run the built-in corpus.
+histories seed="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -n "{{ seed }}" ]; then
+        export TAKO_TEST_HISTORY_SEED="{{ seed }}"
+    fi
+    cargo test --locked -p tako-channels -p tako-workflows --lib histor -- --nocapture
 
 sdk:
     bun run --filter 'tako.sh' build
@@ -27,6 +37,7 @@ sdk:
 
 sdk-go:
     go test ./...
+    cd sdk/go && go test ./...
     for dir in examples/go/*/; do echo "Building $dir..." && (cd "$dir" && go build -o /dev/null .); done
 
 cli:

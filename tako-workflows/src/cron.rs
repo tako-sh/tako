@@ -170,7 +170,7 @@ pub fn tick_and_reclaim(
     };
     if let Some(lim) = limiter {
         for worker in &reclaimed_workers {
-            lim.release(worker);
+            lim.release_claim(worker);
         }
     }
     if cron_enqueued > 0 || !reclaimed_workers.is_empty() {

@@ -68,6 +68,12 @@ class MockServer {
   }
 
   private dispatch(cmd: Record<string, unknown>): unknown {
+    if (cmd["command"] !== "claim_run") {
+      const task = this.find(cmd["id"] as string);
+      if (!task || task.status !== "running" || task.workerId !== cmd["worker_id"]) {
+        return { status: "error", message: "stale worker" };
+      }
+    }
     switch (cmd["command"]) {
       case "claim_run": {
         const names = cmd["names"] as string[];
@@ -77,11 +83,12 @@ class MockServer {
         if (!task) return { status: "ok", data: null };
         task.status = "running";
         task.attempts += 1;
-        task.workerId = cmd["worker_id"] as string;
+        task.workerId = `${String(cmd["worker_id"])}:${task.id}:${task.attempts}`;
         return {
           status: "ok",
           data: {
             id: task.id,
+            worker_id: task.workerId,
             name: task.name,
             payload: task.payload,
             status: task.status,

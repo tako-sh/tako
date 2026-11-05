@@ -593,6 +593,51 @@ fn subscribers_observe_external_writers_and_recover_batched_replay() {
 }
 
 #[test]
+fn committed_local_publications_notify_before_returning() {
+    let store = ChannelStore::open_in_memory().unwrap();
+    let mut active = store.changes("active");
+    let quiet = store.changes("quiet");
+    for value in 0..20 {
+        let message = store
+            .append(
+                "active",
+                &ChannelPublishPayload {
+                    r#type: "event".into(),
+                    data: value.into(),
+                },
+            )
+            .unwrap();
+        assert!(active.has_changed().unwrap());
+        assert_eq!(*active.borrow_and_update(), message.id.parse().ok());
+        assert!(!quiet.has_changed().unwrap());
+    }
+}
+
+#[test]
+fn failed_append_neither_notifies_nor_leaves_replay() {
+    let store = ChannelStore::open_in_memory().unwrap();
+    let changes = store.changes("events");
+    store.raw_execute(
+        "CREATE TRIGGER reject_publish BEFORE INSERT ON channel_messages
+         BEGIN SELECT RAISE(ABORT, 'injected write failure'); END;",
+        (),
+    );
+    assert!(
+        store
+            .append(
+                "events",
+                &ChannelPublishPayload {
+                    r#type: "event".into(),
+                    data: 1.into(),
+                }
+            )
+            .is_err()
+    );
+    assert!(!changes.has_changed().unwrap());
+    assert!(store.read_after("events", None, 100).unwrap().is_empty());
+}
+
+#[test]
 fn external_publications_only_wake_subscribers_to_the_changed_stream() {
     let temp = tempfile::TempDir::new().unwrap();
     let path = temp.path().join("channels.sqlite");

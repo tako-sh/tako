@@ -259,7 +259,9 @@ function LiveStatus({ token }: { token: string }) {
 
 For durable channels, each publish is inserted before delivery. `replayWindowMs` defaults to 10 minutes, so a reconnect can bridge a browser reload, laptop sleep, network change, server restart, or rolling deploy.
 
-Replay cleanup runs every second, including when no clients are connected. Channel definitions carry their lifecycle settings with server-side publishes, so retention applies before the first subscription. Connections share an app-wide change poller; database reads run outside the async request workers. Shared Postgres stores detect publishes from every server.
+Replay cleanup runs every second, including when no clients are connected. Channel definitions carry their lifecycle settings with server-side publishes, so retention applies before the first subscription. A committed publish immediately notifies subscribers using the same store. An app-wide poller checks for commits from other processes or servers every 100 ms; database reads run outside the async request workers. Shared Postgres stores detect publishes from every server.
+
+Local replay uses SQLite WAL with `synchronous=NORMAL`: committed messages survive an application process crash, but recent commits can be lost after a host crash or power failure. Replay is a short delivery buffer; keep canonical history in the app database as described below.
 
 - SSE resumes with `Last-Event-ID`; `subscribe({ lastEventId })` sets an initial cursor. The built-in fetch-based SSE reader reconnects until `close()` is called and carries its latest message id forward.
 - WebSocket resumes with `last_message_id`; `connect({ lastMessageId })` sets it. `useChannel` tracks the latest id and reconnects WebSockets with bounded backoff and jitter. A lower-level `connect()` call returns one socket, so non-React code owns WebSocket reconnection.

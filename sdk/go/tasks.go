@@ -125,6 +125,9 @@ type ScheduleSpec struct {
 
 // Run is the server-returned run payload from ClaimRun.
 type Run struct {
+	// WorkerID is the opaque ownership identifier returned for this claim.
+	// Echo it on every heartbeat, checkpoint, and lifecycle mutation.
+	WorkerID string `json:"worker_id"`
 	// ID is the workflow run id.
 	ID string `json:"id"`
 	// Name is the workflow name.
@@ -170,7 +173,7 @@ func (c *Client) Claim(ctx context.Context, workerID string, names []string, lea
 }
 
 // Heartbeat extends the lease on a running run. `workerId` must match the
-// `worker_id` that claimed the run; if the lease was reclaimed by another
+// ownership identifier returned in Run.WorkerID; if the lease was reclaimed by another
 // worker, the call returns an error.
 func (c *Client) Heartbeat(ctx context.Context, id, workerID string, leaseMs uint64) error {
 	_, err := c.call(ctx, map[string]any{

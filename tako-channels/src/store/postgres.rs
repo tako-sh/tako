@@ -190,9 +190,8 @@ impl PostgresChannelStore {
             .map_err(|e| ChannelError::Storage(e.to_string()))
     }
 
-    pub(super) fn prune(&self) -> Result<(), ChannelError> {
+    pub(super) fn prune(&self, now: i64) -> Result<(), ChannelError> {
         let mut client = self.client.lock();
-        let now = now_unix_ms();
         client
             .execute(
                 &format!(
@@ -235,36 +234,15 @@ impl PostgresChannelStore {
     }
 }
 
-fn init_postgres(client: &mut Client, schema: &str) -> Result<(), ChannelError> {
-    let mut tx = client
-        .transaction()
-        .map_err(|e| ChannelError::Storage(e.to_string()))?;
-    // IF NOT EXISTS does not serialize concurrent PostgreSQL catalog writes.
-    tx.query_one(
-        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-        &[&format!("tako-channel-schema:{schema}")],
-    )
-    .map_err(|e| ChannelError::Storage(e.to_string()))?;
-    tx
-        .batch_execute(&format!(
-            "CREATE SCHEMA IF NOT EXISTS {schema};
-             CREATE TABLE IF NOT EXISTS {schema}.presence (
+// Append migrations here; their position is the stored version. Never edit an
+// applied migration to add a new schema change: existing stores skip that version.
+// Publishers lock metadata before messages, so migrations use the same order.
+const POSTGRES_MIGRATIONS: &[&str] = &[
+    "CREATE TABLE IF NOT EXISTS {schema}.presence (
                  app_id TEXT NOT NULL, channel TEXT NOT NULL, connection_id TEXT NOT NULL,
                  member_json TEXT NOT NULL, expires_at BIGINT NOT NULL,
                  PRIMARY KEY(app_id, channel, connection_id)
              );
-             CREATE TABLE IF NOT EXISTS {schema}.channel_messages (
-                 id BIGSERIAL PRIMARY KEY,
-                 app_id TEXT NOT NULL,
-                 channel TEXT NOT NULL,
-                 type TEXT NOT NULL,
-                 data_json TEXT NOT NULL,
-                 created_at_unix_ms BIGINT NOT NULL DEFAULT ((extract(epoch from clock_timestamp()) * 1000)::BIGINT)
-             );
-             CREATE INDEX IF NOT EXISTS idx_channel_messages_app_channel_id
-               ON {schema}.channel_messages(app_id, channel, id);
-             CREATE INDEX IF NOT EXISTS idx_channel_messages_app_id
-               ON {schema}.channel_messages(app_id, id);
              CREATE TABLE IF NOT EXISTS {schema}.channel_metadata (
                  app_id TEXT NOT NULL,
                  channel TEXT NOT NULL,
@@ -276,9 +254,82 @@ fn init_postgres(client: &mut Client, schema: &str) -> Result<(), ChannelError> 
                  latest_message_id BIGINT NOT NULL DEFAULT 0,
                  PRIMARY KEY(app_id, channel)
              );
-             ALTER TABLE {schema}.channel_metadata ADD COLUMN IF NOT EXISTS latest_message_id BIGINT NOT NULL DEFAULT 0;"
+             ALTER TABLE {schema}.channel_metadata ADD COLUMN IF NOT EXISTS latest_message_id BIGINT NOT NULL DEFAULT 0;
+             CREATE TABLE IF NOT EXISTS {schema}.channel_messages (
+                 id BIGSERIAL PRIMARY KEY,
+                 app_id TEXT NOT NULL,
+                 channel TEXT NOT NULL,
+                 type TEXT NOT NULL,
+                 data_json TEXT NOT NULL,
+                 created_at_unix_ms BIGINT NOT NULL DEFAULT ((extract(epoch from clock_timestamp()) * 1000)::BIGINT)
+             );
+             CREATE INDEX IF NOT EXISTS idx_channel_messages_app_channel_id
+               ON {schema}.channel_messages(app_id, channel, id);
+             CREATE INDEX IF NOT EXISTS idx_channel_messages_app_id
+               ON {schema}.channel_messages(app_id, id);",
+];
+
+fn init_postgres(client: &mut Client, schema: &str) -> Result<(), ChannelError> {
+    migrate_postgres(client, schema, POSTGRES_MIGRATIONS)
+}
+
+fn migrate_postgres(
+    client: &mut Client,
+    schema: &str,
+    migrations: &[&str],
+) -> Result<(), ChannelError> {
+    let mut tx = client
+        .transaction()
+        .map_err(|e| ChannelError::Storage(e.to_string()))?;
+    // Serialize catalog changes across concurrent server starts.
+    tx.query_one(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+        &[&format!("tako-channel-schema:{schema}")],
+    )
+    .map_err(|e| ChannelError::Storage(e.to_string()))?;
+    let has_versions: bool = tx
+        .query_one(
+            "SELECT to_regclass($1) IS NOT NULL",
+            &[&format!("{schema}.channel_schema_migrations")],
+        )
+        .map_err(|e| ChannelError::Storage(e.to_string()))?
+        .get(0);
+    let version: i32 = if has_versions {
+        tx.query_one(
+            &format!("SELECT COALESCE(MAX(version), 0) FROM {schema}.channel_schema_migrations"),
+            &[],
+        )
+        .map_err(|e| ChannelError::Storage(e.to_string()))?
+        .get(0)
+    } else {
+        tx.batch_execute(&format!(
+            "CREATE SCHEMA IF NOT EXISTS {schema};
+             CREATE TABLE {schema}.channel_schema_migrations (
+                 version INTEGER PRIMARY KEY CHECK (version > 0)
+             );"
         ))
         .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        0
+    };
+    if version as usize > migrations.len() {
+        return Err(ChannelError::Storage(format!(
+            "channel schema version {version} is newer than supported version {}",
+            migrations.len()
+        )));
+    }
+    // Ready stores execute no DDL. CREATE/ALTER IF NOT EXISTS would still take
+    // table locks and can deadlock with publishers during a rolling restart.
+    for (index, migration) in migrations.iter().enumerate().skip(version as usize) {
+        tx.batch_execute(&migration.replace("{schema}", schema))
+            .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        tx.execute(
+            &format!("INSERT INTO {schema}.channel_schema_migrations (version) VALUES ($1)"),
+            &[&((index + 1) as i32)],
+        )
+        .map_err(|e| ChannelError::Storage(e.to_string()))?;
+    }
+    // Schema changes and their versions commit together; failed migrations
+    // leave neither a partial schema nor a version that would skip a retry.
     tx.commit()
         .map_err(|e| ChannelError::Storage(e.to_string()))
 }
@@ -298,4 +349,76 @@ fn validate_pg_identifier(identifier: &str) -> Result<(), ChannelError> {
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+
+    #[test]
+    fn appended_migrations_run_once_and_failures_roll_back() {
+        let Ok(url) = std::env::var("TAKO_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let mut client = Client::connect(&url, NoTls).unwrap();
+        let schema = format!("channel_versions_{}", std::process::id());
+        migrate_postgres(&mut client, &schema, POSTGRES_MIGRATIONS).unwrap();
+        let mut migrations = POSTGRES_MIGRATIONS.to_vec();
+        migrations.push("ALTER TABLE {schema}.channel_metadata ADD COLUMN migration_test BOOLEAN");
+        migrate_postgres(&mut client, &schema, &migrations).unwrap();
+        client
+            .query(
+                &format!("SELECT migration_test FROM {schema}.channel_metadata LIMIT 0"),
+                &[],
+            )
+            .unwrap();
+        // This ALTER lacks IF NOT EXISTS: reopening would fail if it ran twice.
+        migrate_postgres(&mut client, &schema, &migrations).unwrap();
+        assert_eq!(
+            client
+                .query_one(
+                    &format!("SELECT MAX(version) FROM {schema}.channel_schema_migrations"),
+                    &[],
+                )
+                .unwrap()
+                .get::<_, i32>(0),
+            migrations.len() as i32,
+        );
+        assert!(matches!(
+            migrate_postgres(&mut client, &schema, POSTGRES_MIGRATIONS),
+            Err(ChannelError::Storage(message)) if message.contains("newer than supported")
+        ));
+        migrations.push(
+            "ALTER TABLE {schema}.channel_metadata ADD COLUMN rolled_back BOOLEAN; SELECT 1/0;",
+        );
+        assert!(migrate_postgres(&mut client, &schema, &migrations).is_err());
+        assert_eq!(
+            client
+                .query_one(
+                    &format!("SELECT MAX(version) FROM {schema}.channel_schema_migrations"),
+                    &[],
+                )
+                .unwrap()
+                .get::<_, i32>(0),
+            migrations.len() as i32 - 1,
+        );
+        // Retrying the corrected migration must succeed: its column and version
+        // were both rolled back by the failed transaction.
+        *migrations.last_mut().unwrap() =
+            "ALTER TABLE {schema}.channel_metadata ADD COLUMN rolled_back BOOLEAN";
+        migrate_postgres(&mut client, &schema, &migrations).unwrap();
+        assert_eq!(
+            client
+                .query_one(
+                    &format!("SELECT MAX(version) FROM {schema}.channel_schema_migrations"),
+                    &[],
+                )
+                .unwrap()
+                .get::<_, i32>(0),
+            migrations.len() as i32,
+        );
+        client
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .unwrap();
+    }
 }
