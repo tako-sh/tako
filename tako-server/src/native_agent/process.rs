@@ -64,7 +64,9 @@ impl OwnedChild {
         }
         // Execute the exact verified inode even during an installer rename.
         let executable = format!("/proc/self/fd/{}", file.as_raw_fd());
-        let child = Command::new(executable)
+        let mut command = Command::new(executable);
+        kill_with_agent(&mut command);
+        let child = command
             .arg("--config")
             .arg(config.network_dir(data_dir).join("corrosion.toml"))
             .arg("agent")
@@ -138,6 +140,24 @@ impl Drop for OwnedChild {
     }
 }
 
+/// A fail-stop deadline must not orphan owned processes. Install this before
+/// exec (only async-signal-safe syscalls); also close the parent-death race.
+fn kill_with_agent(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    let parent = unsafe { libc::getpid() };
+    unsafe {
+        command.pre_exec(move || {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::getppid() != parent {
+                return Err(std::io::Error::from_raw_os_error(libc::ECHILD));
+            }
+            Ok(())
+        });
+    }
+}
+
 pub(super) fn apply(config: &NodeConfig, desired: &[u8]) -> Result<()> {
     let mut command = Command::new(HELPER);
     command
@@ -195,6 +215,7 @@ fn validate_helper_response(config: &NodeConfig, desired: &[u8], bytes: &[u8]) -
 /// reader threads or `wait_with_output`. A timeout kills/reaps only our client.
 fn bounded_output(mut command: Command, timeout: Duration, limit: usize) -> Result<Vec<u8>> {
     use std::os::fd::AsRawFd;
+    kill_with_agent(&mut command);
     let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -302,6 +323,25 @@ mod tests {
             bounded_output(slow, Duration::from_millis(30), 2),
             Err(AgentError::Timeout)
         ));
+    }
+    #[test]
+    fn owned_commands_install_parent_death_kill_before_exec() {
+        use std::os::unix::process::CommandExt;
+        let mut command = Command::new("/bin/true");
+        kill_with_agent(&mut command);
+        unsafe {
+            command.pre_exec(|| {
+                let mut signal = 0i32;
+                if libc::prctl(libc::PR_GET_PDEATHSIG, &mut signal) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if signal != libc::SIGKILL {
+                    return Err(std::io::Error::from_raw_os_error(libc::EINVAL));
+                }
+                Ok(())
+            });
+        }
+        assert!(command.status().unwrap().success());
     }
     #[test]
     fn forced_child_shutdown_is_reported_and_reaped() {

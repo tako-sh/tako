@@ -6,6 +6,8 @@
 mod controller;
 #[path = "native_agent/ipc.rs"]
 mod ipc;
+#[path = "native_agent/lifecycle.rs"]
+mod lifecycle;
 #[path = "native_agent/process.rs"]
 mod process;
 #[path = "native_agent/projection.rs"]

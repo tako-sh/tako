@@ -1,5 +1,7 @@
 use super::{
-    AgentError, AgentRequest, AgentResponse, Result, now,
+    AgentError, AgentRequest, AgentResponse, Result,
+    lifecycle::{Control, WithdrawOnDrop},
+    now,
     process::{self, OwnedChild},
     projection,
     store::{MonotonicStore, preserves},
@@ -36,14 +38,19 @@ pub(super) fn worker(
     data_dir: PathBuf,
     boot: BootId,
     rx: mpsc::Receiver<Work>,
-    stop: Arc<AtomicBool>,
+    control: Control,
 ) -> Result<()> {
+    let _membership_lease = WithdrawOnDrop(control.clone());
+    let stop = control.stop.clone();
     let mut controller =
-        match Controller::start(config.clone(), data_dir.clone(), boot, stop.clone()) {
+        match Controller::start(config.clone(), data_dir.clone(), boot, control.clone()) {
             Ok(controller) => controller,
             Err(error) => {
                 if stop.load(Ordering::Acquire) {
-                    return Err(error);
+                    wait_for_broker(&control);
+                    if !control.isolate.load(Ordering::Acquire) {
+                        return Err(error);
+                    }
                 }
                 // Even errors before child spawn must revoke previously installed peers.
                 let isolation = (|| -> Result<()> {
@@ -80,7 +87,29 @@ pub(super) fn worker(
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
-    controller.child.stop()
+    control.withdraw();
+    // A late broker shutdown error must still isolate while this thread owns
+    // the identity, host state and nonce DB lock. Never release early.
+    wait_for_broker(&control);
+    let isolation = if control.isolate.load(Ordering::Acquire) {
+        controller.isolate()
+    } else {
+        Ok(())
+    };
+    if let Err(error) = &isolation {
+        tracing::error!(error = %error, "agent failure isolation not acknowledged");
+    }
+    let child = controller.child.stop();
+    if let Err(error) = &child {
+        tracing::error!(error = %error, "agent child shutdown failed");
+    }
+    isolation.and(child)
+}
+
+fn wait_for_broker(control: &Control) {
+    while !control.broker_drained.load(Ordering::Acquire) {
+        thread::sleep(Duration::from_millis(25));
+    }
 }
 
 struct Controller {
@@ -100,14 +129,16 @@ struct Controller {
     revoked: bool,
     stop: Arc<AtomicBool>,
     renewal: Renewal,
+    control: Control,
 }
 impl Controller {
     fn start(
         config: NodeConfig,
         data_dir: PathBuf,
         boot: BootId,
-        stop: Arc<AtomicBool>,
+        control: Control,
     ) -> Result<Self> {
+        let stop = control.stop.clone();
         config.validate()?;
         let root = config.network_dir(&data_dir);
         let directory = Directory::open(&root, true)?;
@@ -257,6 +288,7 @@ impl Controller {
             revoked: false,
             stop,
             renewal: Renewal::new(gossip_leaf_hash),
+            control,
         })
     }
     fn initial_isolate(
@@ -268,24 +300,34 @@ impl Controller {
         directory.write("desired.json", &bytes)?;
         process::apply(config, &bytes)
     }
-    fn isolate(&mut self) -> Result<()> {
+    fn withdraw(&mut self) {
         self.ready = false;
+        self.control.withdraw();
+    }
+    fn isolate(&mut self) -> Result<()> {
+        self.withdraw();
         let bytes =
             projection::desired(&self.config, &self.keys, &self.known.borrow(), now()?, true)?;
         self.apply(&bytes)
     }
     fn apply(&mut self, bytes: &[u8]) -> Result<()> {
-        self.applied.enforce(bytes, || {
-            self.directory.write("desired.json", bytes)?;
-            process::apply(&self.config, bytes)
-        })
+        if self.applied.hash != Some(openssl::sha::sha256(bytes)) {
+            self.withdraw();
+        }
+        self.applied
+            .enforce_with_membership(bytes, &self.control, || {
+                self.directory.write("desired.json", bytes)?;
+                process::apply(&self.config, bytes)
+            })
     }
     fn reconcile(&mut self) -> Result<()> {
-        self.ready = false;
         let now = now()?;
         // Runtime projection advances its durable clock floor and includes
         // local denial intent even when remote publication failed.
         let snapshot = self.runtime.desired_host_state(now)?.snapshot;
+        if !self.control.matches(&snapshot) {
+            self.withdraw();
+        }
         let desired = projection::desired(&self.config, &self.keys, &snapshot, now, false)?;
         self.apply(&desired)?;
         let effective = snapshot.effective_members(now)?;
@@ -294,6 +336,7 @@ impl Controller {
             .is_some_and(|m| matches!(m.kind, MemberKind::Server(_)) && m.permissions.server_admin)
         {
             // Empty desired state has already removed peers and SSH access.
+            self.withdraw();
             self.revoked = true;
             self.child.stop()?;
             return Err(AgentError::Invalid(
@@ -303,6 +346,7 @@ impl Controller {
         let (bundle, seeds) = projection::gossip(&self.config, &snapshot, now)?;
         let hash = gossip_hash(&bundle, &seeds)?;
         if hash != self.gossip_hash || self.renewal.restart || !self.child.running()? {
+            self.withdraw();
             self.child.stop()?;
             projection::write_corrosion(
                 &self.config,
@@ -327,12 +371,14 @@ impl Controller {
                 "registry changed while applying snapshot",
             ));
         }
-        self.ready = true;
+        // Publish the already enforced current authority before any RPC can
+        // report ready. A simultaneous broker failure/shutdown wins this gate.
+        self.ready = self.control.publish_enforced(&after);
         Ok(())
     }
     fn reconcile_or_isolate(&mut self) {
         if self.stop.load(Ordering::Acquire) {
-            self.ready = false;
+            self.withdraw();
             return;
         }
         // Restart a reaped child before reading the HTTP store. Never reopen the
@@ -350,6 +396,7 @@ impl Controller {
                 self.renewal.observe(hash);
             }
             if !self.child.running()? {
+                self.withdraw();
                 // A forced-but-reaped stop must never restart stale CA trust.
                 let (bundle, seeds) =
                     projection::gossip(&self.config, &self.known.borrow(), now()?)?;
@@ -369,7 +416,7 @@ impl Controller {
             self.reconcile()
         })();
         if let Err(error) = result {
-            self.ready = false;
+            self.withdraw();
             if self.stop.load(Ordering::Acquire) {
                 return;
             }
@@ -388,11 +435,29 @@ impl Controller {
         if !self.ready && !repair {
             return AgentResponse::unavailable(&self.boot);
         }
+        let mutates_authority = matches!(
+            &request.signed.request,
+            RpcRequest::Complete { .. } | RpcRequest::Revoke { .. }
+        );
         let result = now().and_then(|time| {
             self.runtime
                 .handle(request.signed, &request.method, &request.path, time)
                 .map_err(Into::into)
         });
+        if mutates_authority
+            && matches!(
+                &result,
+                Ok(_)
+                    | Err(AgentError::Runtime(
+                        RuntimeError::Transport
+                            | RuntimeError::Database(_)
+                            | RuntimeError::Corrosion(_)
+                            | RuntimeError::Capacity(_)
+                    ))
+            )
+        {
+            self.withdraw();
+        }
         // A successful mutation may introduce revocations, including our own.
         // Never return stale readiness or acknowledge unapplied records.
         // Unready repair RPCs still pass through runtime authentication. The
@@ -444,6 +509,18 @@ struct ApplyCache {
     hash: Option<[u8; 32]>,
 }
 impl ApplyCache {
+    fn enforce_with_membership(
+        &mut self,
+        bytes: &[u8],
+        control: &Control,
+        apply: impl FnOnce() -> Result<()>,
+    ) -> Result<()> {
+        if self.hash != Some(openssl::sha::sha256(bytes)) {
+            control.withdraw();
+        }
+        self.enforce(bytes, apply)
+    }
+
     fn enforce(&mut self, bytes: &[u8], apply: impl FnOnce() -> Result<()>) -> Result<()> {
         let hash = openssl::sha::sha256(bytes);
         if self.hash == Some(hash) {
@@ -637,6 +714,32 @@ fn validate_gossip_leaf(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn membership_is_withdrawn_before_helper_and_stays_absent_after_failure() {
+        let fixture = super::super::tests::Fixture::new();
+        let (control, members, _) = Control::new();
+        let mut applied = ApplyCache::default();
+        control.publish_enforced(&fixture.config.bootstrap);
+        assert!(
+            applied
+                .enforce_with_membership(b"new-policy", &control, || {
+                    assert!(members.borrow().is_none());
+                    Err(AgentError::Timeout)
+                })
+                .is_err()
+        );
+        assert!(members.borrow().is_none());
+        applied
+            .enforce_with_membership(b"new-policy", &control, || {
+                assert!(members.borrow().is_none());
+                Ok(())
+            })
+            .unwrap();
+        // Even a helper ACK is insufficient until runtime's final state check.
+        assert!(members.borrow().is_none());
+        assert!(control.publish_enforced(&fixture.config.bootstrap));
+        assert!(members.borrow().is_some());
+    }
     #[test]
     fn renewal_restart_requires_changed_gossip_bytes_and_survives_retry() {
         let mut renewal = Renewal::new([1; 32]);

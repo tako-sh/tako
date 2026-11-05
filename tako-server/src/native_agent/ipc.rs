@@ -2,15 +2,12 @@ use super::{
     AgentError, AgentRequest, AgentResponse, CONNECTIONS, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES,
     QUEUE_SIZE, Result,
     controller::{self, Work},
+    lifecycle::{self, BrokerOwner, Control},
 };
 use std::{
     os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt},
     path::Path,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-        mpsc,
-    },
+    sync::{Arc, mpsc},
     time::{Duration, Instant},
 };
 use tako_network::{BootId, NodeConfig, api::SignedRequest, node_config::protected::Directory};
@@ -138,6 +135,8 @@ pub async fn relay(
 
 /// Run only in the separate unprivileged systemd agent process. This function
 /// owns SIGTERM/SIGINT and returns after bounded owned-child shutdown.
+/// If DB owners cannot drain in 120 seconds, this dedicated process exits with
+/// failure rather than detaching them or reporting a clean shutdown.
 pub async fn run(data_dir: &Path) -> Result<()> {
     if data_dir != Path::new("/opt/tako") {
         return Err(AgentError::Invalid(
@@ -180,8 +179,10 @@ pub async fn run(data_dir: &Path) -> Result<()> {
     let boot = BootId::random()?;
     let (tx, rx) = mpsc::sync_channel(QUEUE_SIZE);
     let (finished_tx, mut finished_rx) = oneshot::channel();
-    let stop = Arc::new(AtomicBool::new(false));
-    let worker_stop = stop.clone();
+    let (control, membership, broker_shutdown) = Control::new();
+    let worker_control = control.clone();
+    let broker_config = config.clone();
+    let broker_data_dir = data_dir.to_owned();
     let worker_boot = boot.clone();
     let data_dir = data_dir.to_owned();
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
@@ -189,14 +190,34 @@ pub async fn run(data_dir: &Path) -> Result<()> {
     let worker = std::thread::Builder::new()
         .name("tako-network-agent".into())
         .spawn(move || {
-            let outcome = controller::worker(config, data_dir, worker_boot, rx, worker_stop);
+            let outcome = controller::worker(config, data_dir, worker_boot, rx, worker_control);
             let _ = finished_tx.send(outcome);
         })?;
+    // One broker for this agent lifetime, independent of every proxy reload.
+    let broker_control = control.clone();
+    let mut broker = tokio::spawn(async move {
+        let mut owner = BrokerOwner::new(broker_control);
+        let result = crate::native_channels::run(
+            broker_data_dir,
+            broker_config,
+            membership,
+            broker_shutdown,
+        )
+        .await;
+        owner.complete(result.is_err());
+        result
+    });
     let permits = Arc::new(Semaphore::new(CONNECTIONS));
     let mut tasks = JoinSet::new();
     let mut worker_done = false;
+    let mut broker_done = false;
     let outcome = loop {
         tokio::select! {
+            biased;
+            result = &mut broker => {
+                broker_done = true;
+                break broker_outcome(result, false);
+            }
             result = &mut finished_rx => {
                 worker_done = true;
                 break result.map_err(|_| AgentError::Invalid("controller thread stopped unexpectedly")).and_then(|r| r);
@@ -218,25 +239,58 @@ pub async fn run(data_dir: &Path) -> Result<()> {
             }
         }
     };
-    stop.store(true, Ordering::Release);
+    // Withdrawal is synchronous and precedes accepting any further work or
+    // asking either DB owner to drain. Failed broker/IPC exits request isolation.
+    control.shutdown(outcome.is_err());
     tasks.abort_all();
-    while tasks.join_next().await.is_some() {}
     drop(tx);
-    let shutdown = if worker_done {
-        Ok(())
-    } else {
-        // The controller may be in a bounded HTTP/helper call. Never detach it
-        // and report a clean exit while it still owns the DB lock or child.
-        finished_rx
-            .await
-            .map_err(|_| AgentError::Invalid("controller thread failed during shutdown"))?
+    let joins = async {
+        while tasks.join_next().await.is_some() {}
+        let broker_result = if broker_done {
+            Ok(())
+        } else {
+            broker_outcome((&mut broker).await, true)
+        };
+        // BrokerOwner has marked this before publishing completion; the
+        // controller retains its DB lock until that marker is visible.
+        if broker_result.is_err() {
+            control.shutdown(true);
+        }
+        let worker_result = if worker_done {
+            Ok(())
+        } else {
+            (&mut finished_rx)
+                .await
+                .map_err(|_| AgentError::Invalid("controller thread failed during shutdown"))
+                .and_then(|result| result)
+        };
+        (broker_result, worker_result)
     };
-    worker
+    let (broker_result, worker_result) =
+        match lifecycle::drain(lifecycle::DRAIN_DEADLINE, joins).await {
+            Ok(results) => results,
+            Err(_) => lifecycle::drain_timeout(),
+        };
+    // finished_rx is sent only after Controller has dropped. Joining must never
+    // be replaced with dropping this handle (which would detach the DB owner).
+    let joined = worker
         .join()
-        .map_err(|_| AgentError::Invalid("controller thread panicked"))?;
+        .map_err(|_| AgentError::Invalid("controller thread panicked"));
     drop(lock);
-    outcome.and(shutdown)
+    outcome.and(broker_result).and(worker_result).and(joined)
 }
+fn broker_outcome(
+    result: std::result::Result<std::io::Result<()>, tokio::task::JoinError>,
+    stopping: bool,
+) -> Result<()> {
+    match result {
+        Ok(Ok(())) if stopping => Ok(()),
+        Ok(Ok(())) => Err(AgentError::Invalid("channel broker exited unexpectedly")),
+        Ok(Err(_)) => Err(AgentError::Invalid("channel broker failed")),
+        Err(_) => Err(AgentError::Invalid("channel broker task failed")),
+    }
+}
+
 struct SocketCleanup(std::path::PathBuf);
 impl Drop for SocketCleanup {
     fn drop(&mut self) {
@@ -314,6 +368,19 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+    #[tokio::test]
+    async fn broker_errors_propagate_including_during_shutdown() {
+        assert!(broker_outcome(Ok(Ok(())), false).is_err());
+        broker_outcome(Ok(Ok(())), true).unwrap();
+        assert!(broker_outcome(Ok(Err(std::io::Error::other("fixture"))), true).is_err());
+        let panicked = tokio::spawn(async {
+            panic!("fixture broker failure");
+            #[allow(unreachable_code)]
+            Ok(())
+        })
+        .await;
+        assert!(broker_outcome(panicked, true).is_err());
     }
     #[test]
     fn root_and_service_only() {
