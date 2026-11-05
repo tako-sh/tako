@@ -170,6 +170,7 @@ fn helper_projection_revokes_peers_and_ssh_on_self_revocation() {
     let mut snapshot = fixture.config.bootstrap.clone();
     let desired = projection::desired(&fixture.config, &fixture.keys, &snapshot, 2, false).unwrap();
     let value: serde_json::Value = serde_json::from_slice(&desired).unwrap();
+    assert_eq!(value["ssh_port"], 22);
     assert_eq!(value["peers"].as_array().unwrap().len(), 1);
     assert_eq!(value["peers"][0]["kind"], "laptop");
     assert_eq!(value["peers"][0]["ssh_user"], "tako");
@@ -504,4 +505,73 @@ fn guarded_runtime_retries_exact_durable_denial_after_local_store_recovers() {
         ),
         Err(RuntimeError::Denied)
     ));
+}
+
+#[test]
+fn helper_projection_pins_custom_local_ssh_port_during_isolation() {
+    let mut fixture = Fixture::new();
+    let MemberKind::Server(info) = &mut fixture.config.bootstrap.members[1].kind else {
+        unreachable!()
+    };
+    info.ssh_port = 2222;
+    fixture.config.wireguard_listen_port = 443;
+    fixture.config.validate().unwrap();
+    let mut snapshot = fixture.config.bootstrap.clone();
+    // A peer server advertises a different SSH endpoint. It must not choose
+    // the local helper port or add per-peer SSH listener fields.
+    let peer_keys = LocalDeviceKeys::generate().unwrap();
+    let mut peer = snapshot.members[1].clone();
+    peer.device_id = peer_keys
+        .device_id(&fixture.config.network.id, DeviceKind::Server)
+        .unwrap();
+    peer.request = peer_keys
+        .enrollment_request(
+            Some(fixture.config.network.id.clone()),
+            DeviceKind::Server,
+            "peer-node".parse().unwrap(),
+        )
+        .unwrap();
+    let MemberKind::Server(info) = &mut peer.kind else {
+        unreachable!()
+    };
+    info.ssh_port = 2200;
+    snapshot.members.insert(0, peer);
+    for isolate in [false, true] {
+        let bytes =
+            projection::desired(&fixture.config, &fixture.keys, &snapshot, 2, isolate).unwrap();
+        let desired: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(desired["ssh_port"], 2222);
+        assert_eq!(desired["listen_port"], 443);
+        assert!(
+            desired["peers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|peer| peer.get("ssh_port").is_none())
+        );
+        if isolate {
+            assert_eq!(desired["peers"], serde_json::json!([]));
+        }
+    }
+    fixture.revoke(&mut snapshot, &fixture.config.server_id);
+    let bytes = projection::desired(&fixture.config, &fixture.keys, &snapshot, 3, false).unwrap();
+    let desired: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(desired["ssh_port"], 2222);
+    assert_eq!(desired["peers"], serde_json::json!([]));
+}
+
+#[test]
+fn node_config_wireguard_port_accepts_udp443_and_unprivileged_except_gossip() {
+    let mut config = Fixture::new().config;
+    for port in [443, 1024, 8786, 8788, 51820, u16::MAX] {
+        config.wireguard_listen_port = port;
+        config.validate().unwrap();
+    }
+    for port in [0, 22, 53, 80, 442, 444, 1023, 8787] {
+        config.wireguard_listen_port = port;
+        assert!(
+            config.validate().is_err(),
+            "accepted invalid WireGuard port {port}"
+        );
+    }
 }

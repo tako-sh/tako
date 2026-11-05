@@ -14,6 +14,7 @@ struct Desired<'a> {
     address: String,
     private_key: &'a str,
     listen_port: u16,
+    ssh_port: u16,
     peers: Vec<Peer>,
 }
 #[derive(Serialize)]
@@ -42,6 +43,19 @@ pub(super) fn desired(
     if snapshot.network != config.network {
         return Err(AgentError::Invalid("snapshot network mismatch"));
     }
+    // This is the local sshd listener, pinned by the prepared server identity.
+    // Keep it available even when the local record is denied/ineffective; peer
+    // SSH endpoints never determine the host's INPUT port.
+    let local = config
+        .bootstrap
+        .members
+        .iter()
+        .find(|member| member.device_id == config.server_id)
+        .ok_or(AgentError::Invalid("local server missing from bootstrap"))?;
+    let MemberKind::Server(local) = &local.kind else {
+        return Err(AgentError::Invalid("local SSH identity is not a server"));
+    };
+    let ssh_port = local.ssh_port;
     let effective = snapshot.effective_members(now)?;
     let serving = effective
         .get(&config.server_id)
@@ -87,6 +101,7 @@ pub(super) fn desired(
         address: format!("{}/128", config.network.id.address(&keys.wg_public_key()?)),
         private_key: &secret,
         listen_port: config.wireguard_listen_port,
+        ssh_port,
         peers,
     })?);
     if bytes.len() > MAX_HELPER_BYTES {

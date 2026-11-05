@@ -72,7 +72,10 @@ impl NodeConfig {
         }) {
             return Err(invalid("node config", "missing admitted server"));
         }
-        if self.wireguard_listen_port < 1024 || self.wireguard_listen_port == 8787 {
+        // UDP 443 is an explicit WireGuard option, independent of HTTPS/TCP.
+        if (self.wireguard_listen_port < 1024 && self.wireguard_listen_port != 443)
+            || self.wireguard_listen_port == 8787
+        {
             return Err(invalid("node config", "invalid WireGuard port"));
         }
         if self.corrosion_binary_sha256.len() != 64
