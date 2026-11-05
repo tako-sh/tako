@@ -164,17 +164,20 @@ impl Client {
     }
     pub async fn subscribe(&self, app: AppEnv) -> io::Result<Subscription> {
         let (stream, _) = self.request(Request::Subscribe { app }).await?;
-        Ok(Subscription {
-            stream,
-            budget: wire::Budget::new(wire::MAX_FRAME),
-        })
+        Ok(Subscription::from_stream(stream))
     }
 }
 pub struct Subscription {
-    stream: UnixStream,
+    stream: Box<dyn AsyncRead + Unpin + Send>,
     budget: wire::Budget,
 }
 impl Subscription {
+    pub(crate) fn from_stream(stream: impl AsyncRead + Unpin + Send + 'static) -> Self {
+        Self {
+            stream: Box::new(stream),
+            budget: wire::Budget::new(wire::MAX_FRAME),
+        }
+    }
     /// A failed recv is a gap. Drop this subscription and register/subscribe again.
     /// Do not cancel recv and reuse the stream: cancellation may consume a partial frame.
     pub async fn recv(&mut self) -> io::Result<Notification> {
