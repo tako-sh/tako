@@ -1,5 +1,5 @@
 use reviewed_adapter::{BearerToken, CorrosionStore, RegistryStore};
-use tako_network::api::RuntimeError;
+use tako_network::api::{RuntimeError, RuntimeResult};
 
 fn adapter(snapshot: &RegistrySnapshot) -> CorrosionStore {
     let mut store = CorrosionStore::new(
@@ -507,161 +507,163 @@ fn replace_on_scan(path: &str, body: &Value) -> RuntimeResult<Vec<u8>> {
 
 #[test]
 fn nested_member_publication_capacity_stays_latched_after_rollback() {
-    use tako_network::api::{ApproveRequest, RpcRequest, RpcResponse, SignedRequest};
-    use tako_network::runtime::{RuntimeConfig, RuntimeLimits, ServerRuntime};
+    for failing_scan in [2, 3] {
+        use tako_network::api::{ApproveRequest, RpcRequest, RpcResponse, SignedRequest};
+        use tako_network::runtime::{RuntimeConfig, RuntimeLimits, ServerRuntime};
 
-    let (mut original, admin, root) = support::bootstrap();
-    let (victim, victim_id) = support::add_laptop(
-        &mut original,
-        &root,
-        Permissions {
-            ssh_user: Some("app".parse().unwrap()),
-            ..Permissions::default()
-        },
-        false,
-        2,
-    );
-    let dir = tempfile::tempdir().unwrap();
-    let server_keys = LocalDeviceKeys::generate().unwrap();
-    server_keys.save_new(&dir.path().join("keys")).unwrap();
-    let server = original
-        .approve_independent_admin(
-            support::verified(&server_keys, &original.network.id, DeviceKind::Server, 3),
-            Approval {
-                kind: MemberKind::Server(ServerInfo {
-                    wireguard_endpoint: "203.0.113.7:51820".parse().unwrap(),
-                    ssh_host_key: server_keys.ssh_public_key().unwrap(),
-                    ssh_port: 22,
-                    https_port: 443,
-                    https_certificate_pem: Some(support::certificate_pem()),
-                    corrosion_ca_certificate_pem: None,
-                    https_spki_sha256: None,
-                }),
-                permissions: support::admin(),
-                approved_by: None,
-                independent_admin: true,
-                created_at: 3,
-                expires_at: None,
+        let (mut original, admin, root) = support::bootstrap();
+        let (victim, victim_id) = support::add_laptop(
+            &mut original,
+            &root,
+            Permissions {
+                ssh_user: Some("app".parse().unwrap()),
+                ..Permissions::default()
             },
-        )
-        .unwrap();
-    let server_id = server.device_id.clone();
-    original.members.push(server);
-    let config = RuntimeConfig {
-        network: original.network.clone(),
-        server_id: server_id.clone(),
-        boot_id: BootId::random().unwrap(),
-        limits: RuntimeLimits::default(),
-    };
-    mock_http::seed(&original);
-    let mut store = adapter(&original);
-    store.transport = Some(replace_on_scan);
-    let mut runtime = ServerRuntime::open(
-        store,
-        server_keys,
-        config.clone(),
-        &dir.path().join("runtime.db"),
-    )
-    .unwrap();
-    let call = |runtime: &mut ServerRuntime<CorrosionStore>,
-                keys: &LocalDeviceKeys,
-                request: RpcRequest,
-                now: u64| {
-        let path = request.path();
-        runtime.handle(
-            SignedRequest::sign(
-                keys,
-                original.network.id.clone(),
-                server_id.clone(),
-                DeviceKind::Laptop,
-                now,
-                request,
+            false,
+            2,
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let server_keys = LocalDeviceKeys::generate().unwrap();
+        server_keys.save_new(&dir.path().join("keys")).unwrap();
+        let server = original
+            .approve_independent_admin(
+                support::verified(&server_keys, &original.network.id, DeviceKind::Server, 3),
+                Approval {
+                    kind: MemberKind::Server(ServerInfo {
+                        wireguard_endpoint: "203.0.113.7:51820".parse().unwrap(),
+                        ssh_host_key: server_keys.ssh_public_key().unwrap(),
+                        ssh_port: 22,
+                        https_port: 443,
+                        https_certificate_pem: Some(support::certificate_pem()),
+                        corrosion_ca_certificate_pem: None,
+                        https_spki_sha256: None,
+                    }),
+                    permissions: support::admin(),
+                    approved_by: None,
+                    independent_admin: true,
+                    created_at: 3,
+                    expires_at: None,
+                },
             )
-            .unwrap(),
-            "POST",
-            path,
-            now,
+            .unwrap();
+        let server_id = server.device_id.clone();
+        original.members.push(server);
+        let config = RuntimeConfig {
+            network: original.network.clone(),
+            server_id: server_id.clone(),
+            boot_id: BootId::random().unwrap(),
+            limits: RuntimeLimits::default(),
+        };
+        mock_http::seed(&original);
+        let mut store = adapter(&original);
+        store.transport = Some(replace_on_scan);
+        let mut runtime = ServerRuntime::open(
+            store,
+            server_keys,
+            config.clone(),
+            &dir.path().join("runtime.db"),
         )
-    };
-    let applicant = LocalDeviceKeys::generate().unwrap();
-    let grant = ApproveRequest {
-        pending_id: RequestId::random().unwrap(),
-        request: applicant
-            .enrollment_request(None, DeviceKind::Laptop, "applicant".parse().unwrap())
-            .unwrap(),
-        kind: MemberKind::Laptop,
-        permissions: Permissions::default(),
-        expires_at: 1000,
-        member_expires_at: None,
-    };
-    call(
-        &mut runtime,
-        &admin,
-        RpcRequest::Approve(Box::new(grant.clone())),
-        10,
-    )
-    .unwrap();
-    let RpcResponse::Challenge {
-        challenge_id,
-        challenge,
-    } = call(
-        &mut runtime,
-        &applicant,
-        RpcRequest::Begin {
-            pending_id: grant.pending_id.clone(),
-        },
-        11,
-    )
-    .unwrap()
-    else {
-        panic!("expected challenge")
-    };
-    let mut oversized = original.clone();
-    let denial = original
-        .plan_revocation(RevocationId::random().unwrap(), &root, &victim_id, 12)
         .unwrap();
-    for i in 0..10_000 {
-        let mut denial = denial.clone();
-        denial.id = format!("{i:032x}").parse().unwrap();
-        oversized.revocations.push(denial);
-    }
-    REPLACE_ON_SCAN.with(|state| *state.borrow_mut() = Some((2, oversized)));
-    let proof = applicant
-        .answer_challenge(&challenge, &grant.request, 12)
-        .unwrap();
-    assert!(matches!(
+        let call = |runtime: &mut ServerRuntime<CorrosionStore>,
+                    keys: &LocalDeviceKeys,
+                    request: RpcRequest,
+                    now: u64| {
+            let path = request.path();
+            runtime.handle(
+                SignedRequest::sign(
+                    keys,
+                    original.network.id.clone(),
+                    server_id.clone(),
+                    DeviceKind::Laptop,
+                    now,
+                    request,
+                )
+                .unwrap(),
+                "POST",
+                path,
+                now,
+            )
+        };
+        let applicant = LocalDeviceKeys::generate().unwrap();
+        let grant = ApproveRequest {
+            pending_id: RequestId::random().unwrap(),
+            request: applicant
+                .enrollment_request(None, DeviceKind::Laptop, "applicant".parse().unwrap())
+                .unwrap(),
+            kind: MemberKind::Laptop,
+            permissions: Permissions::default(),
+            expires_at: 1000,
+            member_expires_at: None,
+        };
         call(
             &mut runtime,
+            &admin,
+            RpcRequest::Approve(Box::new(grant.clone())),
+            10,
+        )
+        .unwrap();
+        let RpcResponse::Challenge {
+            challenge_id,
+            challenge,
+        } = call(
+            &mut runtime,
             &applicant,
-            RpcRequest::Complete {
-                pending_id: grant.pending_id,
-                challenge_id,
-                proof
+            RpcRequest::Begin {
+                pending_id: grant.pending_id.clone(),
             },
-            12
-        ),
-        Err(RuntimeError::Capacity("registry projection"))
-    ));
-    assert!(REPLACE_ON_SCAN.with(|state| state.borrow().is_none()));
-    assert_eq!(mock_http::count(), 10_004);
+            11,
+        )
+        .unwrap()
+        else {
+            panic!("expected challenge")
+        };
+        let mut oversized = original.clone();
+        let denial = original
+            .plan_revocation(RevocationId::random().unwrap(), &root, &victim_id, 12)
+            .unwrap();
+        for i in 0..10_000 {
+            let mut denial = denial.clone();
+            denial.id = format!("{i:032x}").parse().unwrap();
+            oversized.revocations.push(denial);
+        }
+        REPLACE_ON_SCAN.with(|state| *state.borrow_mut() = Some((failing_scan, oversized)));
+        let proof = applicant
+            .answer_challenge(&challenge, &grant.request, 12)
+            .unwrap();
+        assert!(matches!(
+            call(
+                &mut runtime,
+                &applicant,
+                RpcRequest::Complete {
+                    pending_id: grant.pending_id,
+                    challenge_id,
+                    proof
+                },
+                12
+            ),
+            Err(RuntimeError::Capacity("registry projection"))
+        ));
+        assert!(REPLACE_ON_SCAN.with(|state| state.borrow().is_none()));
+        assert_eq!(mock_http::count(), 10_004);
 
-    mock_http::seed(&original);
-    assert!(matches!(
-        runtime.desired_host_state(13),
-        Err(RuntimeError::Capacity(_))
-    ));
-    assert!(matches!(
-        call(&mut runtime, &victim, RpcRequest::Snapshot, 13),
-        Err(RuntimeError::Capacity(_))
-    ));
-    drop(runtime);
-    assert!(matches!(
-        ServerRuntime::open(
-            adapter(&original),
-            LocalDeviceKeys::load(&dir.path().join("keys")).unwrap(),
-            config,
-            &dir.path().join("runtime.db")
-        ),
-        Err(RuntimeError::Capacity(_))
-    ));
+        mock_http::seed(&original);
+        assert!(matches!(
+            runtime.desired_host_state(13),
+            Err(RuntimeError::Capacity(_))
+        ));
+        assert!(matches!(
+            call(&mut runtime, &victim, RpcRequest::Snapshot, 13),
+            Err(RuntimeError::Capacity(_))
+        ));
+        drop(runtime);
+        assert!(matches!(
+            ServerRuntime::open(
+                adapter(&original),
+                LocalDeviceKeys::load(&dir.path().join("keys")).unwrap(),
+                config,
+                &dir.path().join("runtime.db")
+            ),
+            Err(RuntimeError::Capacity(_))
+        ));
+    }
 }

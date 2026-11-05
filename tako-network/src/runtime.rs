@@ -92,6 +92,11 @@ struct ChallengeState {
     proof: PendingWgChallenge,
 }
 
+enum RegistryOperation {
+    Snapshot,
+    Mutation,
+}
+
 pub struct ServerRuntime<S: RegistryStore> {
     store: S,
     keys: LocalDeviceKeys,
@@ -204,7 +209,7 @@ impl<S: RegistryStore> ServerRuntime<S> {
     }
 
     pub fn snapshot(&mut self) -> RuntimeResult<RegistrySnapshot> {
-        self.with_registry(|runtime| {
+        self.with_registry(RegistryOperation::Snapshot, |runtime| {
             let snapshot = runtime.store.snapshot()?;
             runtime.observe(snapshot)
         })
@@ -212,7 +217,8 @@ impl<S: RegistryStore> ServerRuntime<S> {
 
     fn with_registry<T>(
         &mut self,
-        operation: impl FnOnce(&mut Self) -> RuntimeResult<T>,
+        operation: RegistryOperation,
+        action: impl FnOnce(&mut Self) -> RuntimeResult<T>,
     ) -> RuntimeResult<T> {
         let failed: bool =
             self.db
@@ -222,9 +228,10 @@ impl<S: RegistryStore> ServerRuntime<S> {
         if failed {
             return Err(RuntimeError::Capacity("registry requires local recovery"));
         }
-        let result = operation(self);
+        let result = action(self);
         if matches!(result, Err(RuntimeError::Capacity(reason))
-            if reason != "registry admissions" && reason != "registry record")
+            if matches!(operation, RegistryOperation::Snapshot)
+                || (reason != "registry admissions" && reason != "registry record"))
         {
             self.db
                 .execute("INSERT OR IGNORE INTO registry_failure VALUES (1)", [])?;
@@ -325,6 +332,36 @@ impl<S: RegistryStore> ServerRuntime<S> {
         }
         self.advance_clock(now)?;
         let snapshot = self.snapshot()?;
+        // Re-publication of a durable denial needs identity proof, not restored
+        // effective authority. It can only publish the exact stored record.
+        if let RpcRequest::Revoke { id, target } = &signed.request
+            && let Some(previous) = snapshot.revocations.iter().find(|r| &r.id == id)
+        {
+            if previous.by != signed.signer || &previous.target != target {
+                return Err(RuntimeError::Conflict("revocation ID"));
+            }
+            let member = snapshot
+                .members
+                .iter()
+                .find(|m| m.device_id == signed.signer)
+                .ok_or(RuntimeError::Denied)?;
+            signed.verify(&member.request.ssh_public_key)?;
+            if !member.wg_verified
+                || !member.permissions.network_admin
+                || (snapshot
+                    .members
+                    .iter()
+                    .any(|m| &m.device_id == target && matches!(m.kind, MemberKind::Server(_)))
+                    && !member.permissions.server_admin)
+            {
+                return Err(RuntimeError::Denied);
+            }
+            self.consume_nonce(&signed, now)?;
+            self.with_registry(RegistryOperation::Mutation, |runtime| {
+                runtime.store.append_revocation(previous)
+            })?;
+            return Ok(RpcResponse::Revoked(previous.clone()));
+        }
         self.require_server(&snapshot, now)?;
         let entitlement = match &signed.request {
             RpcRequest::Begin { pending_id } | RpcRequest::Complete { pending_id, .. } => {
@@ -390,27 +427,12 @@ impl<S: RegistryStore> ServerRuntime<S> {
                 now,
             ),
             RpcRequest::Revoke { id, target } => {
-                let revocation = if let Some(previous) =
-                    snapshot.revocations.iter().find(|r| r.id == id)
-                {
-                    if previous.by != signed.signer || previous.target != target {
-                        return Err(RuntimeError::Conflict("revocation ID"));
-                    }
-                    if snapshot.members.iter().any(|member| {
-                        member.device_id == target && matches!(member.kind, MemberKind::Server(_))
-                    }) && !snapshot.permissions(&signed.signer, now)?.server_admin
-                    {
-                        return Err(RuntimeError::Denied);
-                    }
-                    previous.clone()
-                } else {
-                    snapshot.plan_revocation(id, &signed.signer, &target, now)?
-                };
+                let revocation = snapshot.plan_revocation(id, &signed.signer, &target, now)?;
                 let mut observed = snapshot;
                 if !observed.revocations.contains(&revocation) {
                     observed.revocations.push(revocation.clone());
                 }
-                self.with_registry(|runtime| {
+                self.with_registry(RegistryOperation::Mutation, |runtime| {
                     runtime.observe(observed)?;
                     runtime.store.append_revocation(&revocation)
                 })?;
@@ -753,7 +775,9 @@ impl<S: RegistryStore> ServerRuntime<S> {
         // HTTP outcome can therefore only retry this exact immutable admission.
         entitlement.candidate = Some(candidate.clone());
         self.save_pending(&entitlement)?;
-        self.with_registry(|runtime| runtime.store.append_member(&candidate))?;
+        self.with_registry(RegistryOperation::Mutation, |runtime| {
+            runtime.store.append_member(&candidate)
+        })?;
         let updated = self.snapshot()?;
         self.require_server(&updated, now)?;
         self.check_grant(&entitlement, &updated, now)?;
@@ -812,7 +836,7 @@ impl<S: RegistryStore> ServerRuntime<S> {
             }
         }
         for revocation in &applied.revocations {
-            self.with_registry(|runtime| {
+            self.with_registry(RegistryOperation::Mutation, |runtime| {
                 runtime.store.append_ack(&Ack {
                     revocation: revocation.id.clone(),
                     server: runtime.config.server_id.clone(),
