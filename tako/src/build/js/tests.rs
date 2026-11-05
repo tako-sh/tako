@@ -2,6 +2,134 @@ use super::*;
 use tempfile::TempDir;
 
 #[test]
+fn service_generation_is_optional_and_does_not_run_for_go() {
+    let dir = TempDir::new().unwrap();
+    let no_generator = || panic!("service generator should not run");
+    let result = write_tako_declarations_with_codegen_command(
+        dir.path(),
+        BuildAdapter::Node,
+        "src",
+        &no_generator,
+    )
+    .unwrap();
+    assert!(result.wrote_declarations);
+    assert!(!result.wrote_services);
+    assert!(!dir.path().join("src/tako.services.ts").exists());
+
+    fs::create_dir_all(dir.path().join("src/services")).unwrap();
+    let result = write_tako_declarations_with_codegen_command(
+        dir.path(),
+        BuildAdapter::Go,
+        "src",
+        &no_generator,
+    )
+    .unwrap();
+    assert!(!result.wrote_services);
+}
+
+#[test]
+#[cfg(unix)]
+fn service_module_is_standalone_and_only_written_when_changed() {
+    let dir = TempDir::new().unwrap();
+    fs::create_dir_all(dir.path().join("client/services")).unwrap();
+    fs::write(dir.path().join("tako.d.ts"), "old declarations").unwrap();
+    let fake_bun = dir.path().join("bun");
+    fs::write(
+        &fake_bun,
+        r#"test "$1" = run || exit 10
+test "$2" = tako-sh-gen-service-types || exit 11
+test "$3" = "$PWD/services" || exit 12
+test "$#" = 3 || exit 13
+cat "$PWD/contract-output"
+"#,
+    )
+    .unwrap();
+    let content = "export const services = { catalog: {} };\n";
+    fs::write(dir.path().join("client/contract-output"), content).unwrap();
+    let generate = || {
+        write_tako_declarations_with_codegen_command(
+            dir.path(),
+            BuildAdapter::Node,
+            "client",
+            &|| shell_script_command(&fake_bun),
+        )
+        .unwrap()
+    };
+    let result = generate();
+    assert!(result.wrote_declarations);
+    assert!(result.wrote_services);
+    let service_path = dir.path().join("client/tako.services.ts");
+    assert_eq!(fs::read_to_string(&service_path).unwrap(), content);
+    assert!(
+        !fs::read_to_string(dir.path().join("tako.d.ts"))
+            .unwrap()
+            .contains("export const services")
+    );
+    let old_time = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1);
+    fs::File::options()
+        .write(true)
+        .open(&service_path)
+        .unwrap()
+        .set_modified(old_time)
+        .unwrap();
+    let result = generate();
+    assert!(!result.wrote_declarations);
+    assert!(!result.wrote_services);
+    assert_eq!(
+        fs::metadata(&service_path).unwrap().modified().unwrap(),
+        old_time
+    );
+
+    fs::remove_dir(dir.path().join("client/services")).unwrap();
+    let empty = "export const services = {};\n";
+    fs::write(dir.path().join("client/contract-output"), empty).unwrap();
+    let result = generate();
+    assert!(!result.wrote_declarations);
+    assert!(result.wrote_services);
+    assert_eq!(fs::read_to_string(service_path).unwrap(), empty);
+}
+
+#[test]
+#[cfg(unix)]
+fn service_generation_errors_preserve_both_generated_files() {
+    let dir = TempDir::new().unwrap();
+    fs::create_dir_all(dir.path().join("src/services")).unwrap();
+    let declarations = dir.path().join("src/tako.d.ts");
+    let services = dir.path().join("src/tako.services.ts");
+    fs::write(&declarations, "previous declarations").unwrap();
+    fs::write(&services, "previous services").unwrap();
+    let fake_bun = dir.path().join("bun");
+    fs::write(
+        &fake_bun,
+        "printf '%s\\n' 'duplicate service catalog' >&2\nexit 1\n",
+    )
+    .unwrap();
+    let error =
+        write_tako_declarations_with_codegen_command(dir.path(), BuildAdapter::Bun, "src", &|| {
+            shell_script_command(&fake_bun)
+        })
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("service generation failed: duplicate service catalog")
+    );
+    assert_eq!(
+        fs::read_to_string(&declarations).unwrap(),
+        "previous declarations"
+    );
+    assert_eq!(fs::read_to_string(&services).unwrap(), "previous services");
+    let error =
+        write_tako_declarations_with_codegen_command(dir.path(), BuildAdapter::Bun, "src", &|| {
+            Command::new(dir.path().join("missing-bun"))
+        })
+        .unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+    assert!(error.to_string().contains("service generation failed"));
+    assert_eq!(fs::read_to_string(&services).unwrap(), "previous services");
+}
+
+#[test]
 fn write_tako_declarations_creates_tako_dts_with_no_secrets() {
     let dir = TempDir::new().unwrap();
     let written = write_tako_declarations(dir.path()).unwrap();

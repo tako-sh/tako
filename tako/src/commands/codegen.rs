@@ -30,13 +30,20 @@ pub fn run(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>>
                 adapter,
                 tako_config.js_app_root(),
             )?;
-            match (result.wrote_declarations, result.wrote_scaffolds) {
-                (true, true) => output::success("Generated tako.d.ts and channel/workflow stubs"),
-                (true, false) => output::success("Generated tako.d.ts"),
-                (false, true) => output::success("Generated channel/workflow stubs"),
-                (false, false) => {
-                    output::success("tako.d.ts and channel/workflow stubs are up to date")
-                }
+            let mut generated = Vec::new();
+            if result.wrote_declarations {
+                generated.push("tako.d.ts");
+            }
+            if result.wrote_services {
+                generated.push("tako.services.ts");
+            }
+            if result.wrote_scaffolds {
+                generated.push("channel/workflow stubs");
+            }
+            if generated.is_empty() {
+                output::success("Generated files are up to date");
+            } else {
+                output::success(&format!("Generated {}", generated.join(" and ")));
             }
         }
         PresetGroup::Go => {

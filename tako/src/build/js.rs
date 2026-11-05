@@ -7,6 +7,7 @@ use crate::config::{DEFAULT_JS_APP_ROOT, TakoToml};
 use typegen_path::resolve_declaration_path;
 pub(crate) use typegen_path::{generated_declaration_parent_dirs, is_generated_declaration_path};
 
+mod services;
 mod typegen_path;
 
 const TAKO_DTS_HEADER: &str = r#"/* prettier-ignore-start */
@@ -28,6 +29,7 @@ const JS_MODULE_EXTS: &[&str] = &[".ts", ".tsx", ".js", ".mjs", ".mts"];
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct JsGeneratedFilesResult {
     pub wrote_declarations: bool,
+    pub wrote_services: bool,
     pub wrote_scaffolds: bool,
 }
 
@@ -378,7 +380,7 @@ fn build_declarations(
     out
 }
 
-/// Write `tako.d.ts` to the project's JavaScript app root.
+/// Refresh `tako.d.ts` and the standalone JavaScript service contract module.
 pub fn write_tako_declarations(project_dir: &Path) -> std::io::Result<bool> {
     write_tako_declarations_for_adapter(project_dir, detect_build_adapter(project_dir))
 }
@@ -400,14 +402,15 @@ pub fn write_tako_declarations_for_adapter_and_app_root(
     write_tako_declarations_with_codegen_command(project_dir, adapter, app_root, &|| {
         Command::new("bun")
     })
+    .map(|result| result.wrote_declarations || result.wrote_services)
 }
 
 fn write_tako_declarations_with_codegen_command(
     project_dir: &Path,
-    _adapter: BuildAdapter,
+    adapter: BuildAdapter,
     app_root: &str,
     codegen_command: &impl Fn() -> Command,
-) -> std::io::Result<bool> {
+) -> std::io::Result<JsGeneratedFilesResult> {
     let secret_names = read_secret_names(project_dir);
     let storage_names = read_storage_names(project_dir);
     let env_names = read_env_names(project_dir);
@@ -429,17 +432,39 @@ fn write_tako_declarations_with_codegen_command(
         &var_names,
         &channel_types,
     );
+    let service_content = if adapter.preset_group() == super::PresetGroup::Js {
+        services::generate(project_dir, app_root, codegen_command)?
+    } else {
+        None
+    };
+    let wrote_declarations = write_if_changed(&path, &content)?;
+    let wrote_services = if let Some(content) = service_content {
+        write_if_changed(
+            &js_app_root_dir(project_dir, app_root).join("tako.services.ts"),
+            &content,
+        )?
+    } else {
+        false
+    };
+    Ok(JsGeneratedFilesResult {
+        wrote_declarations,
+        wrote_services,
+        wrote_scaffolds: false,
+    })
+}
+
+fn write_if_changed(path: &Path, content: &str) -> std::io::Result<bool> {
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
         fs::create_dir_all(parent)?;
     }
-    if let Ok(existing) = fs::read_to_string(&path)
+    if let Ok(existing) = fs::read_to_string(path)
         && existing == content
     {
         return Ok(false);
     }
-    fs::write(&path, content)?;
+    fs::write(path, content)?;
 
     Ok(true)
 }
@@ -550,12 +575,12 @@ pub fn write_generated_files_for_adapter_and_app_root(
     app_root: &str,
 ) -> std::io::Result<JsGeneratedFilesResult> {
     let wrote_scaffolds = ensure_js_definition_scaffolds(project_dir, app_root)?;
-    let wrote_declarations =
-        write_tako_declarations_for_adapter_and_app_root(project_dir, adapter, app_root)?;
-    Ok(JsGeneratedFilesResult {
-        wrote_declarations,
-        wrote_scaffolds,
-    })
+    let mut result =
+        write_tako_declarations_with_codegen_command(project_dir, adapter, app_root, &|| {
+            Command::new("bun")
+        })?;
+    result.wrote_scaffolds = wrote_scaffolds;
+    Ok(result)
 }
 
 pub(crate) fn js_app_root_dir(project_dir: &Path, app_root: &str) -> PathBuf {
