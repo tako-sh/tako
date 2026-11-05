@@ -20,7 +20,7 @@ use crate::{
     api::{ApproveRequest, RpcRequest, RpcResponse, RuntimeError, RuntimeResult, SignedRequest},
     corrosion::{
         MAX_RECORD_BYTES, MAX_REGISTRY_BYTES, MAX_REGISTRY_ROWS, RegistryStore, bound_projection,
-        bounded_snapshot_size,
+        bounded_json_size,
     },
 };
 
@@ -827,7 +827,7 @@ fn validate_snapshot(
     {
         return Err(RuntimeError::Capacity("registry snapshot"));
     }
-    bounded_snapshot_size(snapshot)?;
+    bounded_json_size(snapshot)?;
     snapshot.validate()?;
     Ok(())
 }

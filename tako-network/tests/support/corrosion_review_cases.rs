@@ -345,3 +345,124 @@ fn ack_republication_compacts_history_without_a_serialization_conflict() {
             .contains(&server)
     );
 }
+
+use serde_json::{Value, json};
+
+fn raw_record(kind: &str, id: &str, payload: &str) {
+    mock_http::post(
+        "/v1/transactions",
+        &json!([[
+            "INSERT INTO tako_network_records VALUES (?, ?, ?, ?)",
+            [
+                kind,
+                id,
+                hex::encode(openssl::sha::sha256(payload.as_bytes())),
+                payload
+            ]
+        ]]),
+    )
+    .unwrap();
+}
+
+fn replace_encoding(kind: &str, id: &str, payload: &str) {
+    mock_http::post(
+        "/v1/transactions",
+        &json!([[
+            "UPDATE tako_network_records SET digest=?, payload=? WHERE kind=? AND record_id=?",
+            [
+                hex::encode(openssl::sha::sha256(payload.as_bytes())),
+                payload,
+                kind,
+                id
+            ]
+        ]]),
+    )
+    .unwrap();
+}
+
+#[test]
+fn noncanonical_payload_bytes_cannot_break_admission_projection_accounting() {
+    let (mut snapshot, _, root) = support::bootstrap();
+    let (_, target) = support::add_laptop(&mut snapshot, &root, Permissions::default(), false, 2);
+    for _ in 0..25 {
+        let denial = snapshot
+            .plan_revocation(RevocationId::random().unwrap(), &root, &target, 3)
+            .unwrap();
+        snapshot.revocations.push(denial);
+    }
+    mock_http::seed(&snapshot);
+    for denial in &snapshot.revocations {
+        let mut payload = serde_json::to_string(denial).unwrap();
+        payload.extend(std::iter::repeat_n(' ', 670_000 - payload.len()));
+        replace_encoding("revocation", &denial.id.to_string(), &payload);
+    }
+    let mut store = adapter(&snapshot);
+    let initial = store.snapshot().unwrap();
+    assert_eq!(initial.revocations.len(), 25);
+    let permissions = Permissions {
+        deployments: (0..1024)
+            .map(|i| format!("a{:058}{i:04}/e{:049}", 0, 0).parse().unwrap())
+            .collect(),
+        ..Permissions::default()
+    };
+    let (_, candidate_id) = support::add_laptop(&mut snapshot, &root, permissions, false, 4);
+    let candidate = snapshot
+        .members
+        .iter()
+        .find(|m| m.device_id == candidate_id)
+        .unwrap();
+    assert!(serde_json::to_vec(candidate).unwrap().len() < reviewed_adapter::MAX_RECORD_BYTES);
+    assert!(
+        serde_json::to_vec(&snapshot).unwrap().len() < reviewed_adapter::MAX_REGISTRY_BYTES / 2
+    );
+    let before = mock_http::count();
+    let result = store.append_member(candidate);
+    result.expect("canonical admission budget must agree with projection accounting");
+    assert_eq!(mock_http::count(), before + 1);
+    let projected = store
+        .snapshot()
+        .expect("successful admission must remain readable");
+    assert!(projected.members.contains(candidate));
+    assert_eq!(projected.revocations.len(), 25);
+}
+
+#[test]
+fn rereview_ack_digest_conflicts_and_metadata_mismatches_fail_closed() {
+    let (mut snapshot, _, root) = support::bootstrap();
+    let (_, target) = support::add_laptop(&mut snapshot, &root, Permissions::default(), false, 2);
+    let server = support::add_server(&mut snapshot, &root, 3);
+    let revocation = support::revoke(&mut snapshot, &root, &target, 4);
+    let ack = Ack {
+        revocation,
+        server,
+        boot: BootId::random().unwrap(),
+    };
+    let id = format!("{}:{}:{}", ack.revocation, ack.server, ack.boot);
+    snapshot.acks.push(ack.clone());
+    mock_http::seed(&snapshot);
+    let payload = format!("{} ", serde_json::to_string(&ack).unwrap());
+    raw_record("ack", &id, &payload);
+    let mut store = adapter(&snapshot);
+    assert!(matches!(
+        store.snapshot(),
+        Err(RuntimeError::Conflict("record ID"))
+    ));
+    assert!(matches!(
+        store.append_ack(&ack),
+        Err(RuntimeError::Conflict("record ID"))
+    ));
+
+    snapshot.acks.clear();
+    mock_http::seed(&snapshot);
+    let mut wrong = ack.clone();
+    wrong.boot = BootId::random().unwrap();
+    raw_record("ack", &id, &serde_json::to_string(&wrong).unwrap());
+    assert!(matches!(
+        store.snapshot(),
+        Err(RuntimeError::Corrosion("ACK ID"))
+    ));
+    assert!(matches!(
+        store.append_ack(&ack),
+        Err(RuntimeError::Conflict("ACK ID"))
+    ));
+}

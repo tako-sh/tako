@@ -263,7 +263,7 @@ impl RegistryStore for CorrosionStore {
         }
         snapshot.members.push(member.clone());
         if snapshot.members.len() + snapshot.revocations.len() + 1 > MAX_ADMISSION_ROWS
-            || bounded_snapshot_size(&snapshot)? > MAX_ADMISSION_BYTES
+            || bounded_json_size(&snapshot)? > MAX_ADMISSION_BYTES
         {
             return Err(RuntimeError::Capacity("registry admissions"));
         }
@@ -483,15 +483,13 @@ impl RecordProjection {
             return Ok(());
         }
         self.last = Some((kind.clone(), id.clone(), digest));
-        if kind != "ack" {
-            self.bytes += payload.len();
-        }
         match kind.as_str() {
             "network" => {
                 let network: NetworkDescriptor = serde_json::from_str(payload)?;
                 if id != "network" || network != self.snapshot.network {
                     return Err(RuntimeError::Conflict("network descriptor"));
                 }
+                self.bytes += bounded_json_size(&network)?;
                 self.network_seen = true;
             }
             "member" => {
@@ -499,6 +497,7 @@ impl RecordProjection {
                 if member.device_id.to_string() != id {
                     return Err(RuntimeError::Corrosion("member ID"));
                 }
+                self.bytes += bounded_json_size(&member)?;
                 self.snapshot.members.push(member);
             }
             "revocation" => {
@@ -506,6 +505,7 @@ impl RecordProjection {
                 if revocation.id.to_string() != id {
                     return Err(RuntimeError::Corrosion("revocation ID"));
                 }
+                self.bytes += bounded_json_size(&revocation)?;
                 self.snapshot.revocations.push(revocation);
             }
             "ack" => {
@@ -541,7 +541,7 @@ impl RecordProjection {
     }
 }
 
-pub(crate) fn bounded_snapshot_size(snapshot: &RegistrySnapshot) -> RuntimeResult<usize> {
+pub(crate) fn bounded_json_size(value: &impl Serialize) -> RuntimeResult<usize> {
     struct Counter {
         bytes: usize,
         exceeded: bool,
@@ -563,7 +563,7 @@ pub(crate) fn bounded_snapshot_size(snapshot: &RegistrySnapshot) -> RuntimeResul
         bytes: 0,
         exceeded: false,
     };
-    let result = serde_json::to_writer(&mut counter, snapshot);
+    let result = serde_json::to_writer(&mut counter, value);
     if counter.exceeded {
         return Err(RuntimeError::Capacity("registry bytes"));
     }
@@ -578,7 +578,7 @@ pub(crate) fn bound_projection(snapshot: &mut RegistrySnapshot) -> RuntimeResult
     if rows > MAX_REGISTRY_ROWS {
         return Err(RuntimeError::Capacity("registry projection"));
     }
-    let mut bytes = bounded_snapshot_size(snapshot)?;
+    let mut bytes = bounded_json_size(snapshot)?;
     for ack in acks {
         if rows + snapshot.acks.len() >= MAX_REGISTRY_ROWS {
             break;
