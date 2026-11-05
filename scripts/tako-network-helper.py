@@ -110,8 +110,8 @@ def validate(data, ident):
     require(network_id(data['network_id']) == ident, 'network_id mismatch')
     result = dict(data, address=address(data['address']), device_id=device_id(data['device_id']),
                   private_key=key(data['private_key']), listen_port=data.get('listen_port', 51820))
-    require(type(result['listen_port']) is int and 1024 <= result['listen_port'] <= 65535 and
-            result['listen_port'] != 8787, 'listen_port must be 1024..65535 except reserved gossip port 8787')
+    require(type(result['listen_port']) is int and (result['listen_port'] == 443 or 1024 <= result['listen_port'] <= 65535) and
+            result['listen_port'] != 8787, 'listen_port must be 443 or 1024..65535 except reserved gossip port 8787')
     result['ssh_port'] = data.get('ssh_port', 22)
     require(type(result['ssh_port']) is int and 1 <= result['ssh_port'] <= 65535 and
             result['ssh_port'] not in (53, 80, 443, 9844, 9850), 'invalid or reserved SSH port')
@@ -220,6 +220,7 @@ class Runner:
         except (OSError, subprocess.TimeoutExpired):
             raise Rejected(f'{args[0]} unavailable or timed out') from None
         require(result.returncode == 0, f'{args[0]} failed')
+        require(len(result.stdout.encode()) <= MAX_BYTES, 'host command response too large')
         return result.stdout
 
     def available(self, command):
@@ -228,6 +229,19 @@ class Runner:
 
 def interface(ident):
     return 'tako' + ident[:10]
+
+
+def bridge_config(ident):
+    network_id(ident)
+    raw = bytes.fromhex(ident)
+    return {'name': 'tako-svc-' + ident[:12], 'interface': 'tks' + ident[:12],
+            'subnet': f'10.{raw[6]}.{raw[7]}.0/24', 'gateway': f'10.{raw[6]}.{raw[7]}.1'}
+
+
+def bridge_options(ident):
+    return {'com.docker.network.bridge.name': bridge_config(ident)['interface'],
+            'com.docker.network.bridge.enable_icc': 'false',
+            'com.docker.network.bridge.enable_ip_masquerade': 'false'}
 
 
 def firewall(state):
@@ -257,10 +271,21 @@ def firewall(state):
             lines.append(f'{match} udp dport 53 accept')
             lines.append(f'{match} meta l4proto ipv6-icmp accept')
         lines.append(f'iifname "{dev}" drop')
+        if config.get('compose_bridge'):
+            bridge = bridge_config(ident)
+            name, gateway, subnet = bridge['interface'], bridge['gateway'], bridge['subnet']
+            lines.append(f'ip daddr {gateway} iifname != "{name}" drop')
+            match = f'iifname "{name}" ip saddr {subnet} ip daddr {gateway}'
+            lines.append(f'{match} tcp dport {{ 53, 80 }} accept')
+            lines.append(f'{match} udp dport 53 accept')
+            lines.append(f'iifname "{name}" drop')
     lines.extend(['udp dport 8787 drop', 'tcp dport 9850 drop', '}',
                   'chain forward { type filter hook forward priority -10; policy accept;'])
     for ident in state['networks']:
         lines.extend([f'iifname "{interface(ident)}" drop', f'oifname "{interface(ident)}" drop'])
+        if state['networks'][ident].get('compose_bridge'):
+            bridge = bridge_config(ident)['interface']
+            lines.extend([f'iifname "{bridge}" drop', f'oifname "{bridge}" drop'])
     lines.extend(['}', '}'])
     return '\n'.join(lines) + '\n'
 
@@ -372,6 +397,133 @@ class Host:
                 rule = f'rule family="ipv6" source address="{prefix}" destination address="{local}" accept'
                 self.runner.run('firewall-cmd', '--add-rich-rule=' + rule)
                 self.runner.run('firewall-cmd', '--permanent', '--add-rich-rule=' + rule)
+
+    def docker(self, *args):
+        require(self.runner.available('docker'), 'Docker is required for native Compose applications')
+        return self.runner.run('docker', '--host', 'unix:///var/run/docker.sock',
+                               '--config', str(STATE / 'docker'), 'network', *args)
+
+    def docker_networks(self):
+        ids = self.docker('ls', '--quiet', '--no-trunc').split()
+        require(len(ids) <= 256 and len(ids) == len(set(ids)) and
+                all(re.fullmatch('[0-9a-f]{12,64}', value) for value in ids), 'invalid Docker network inventory')
+        if not ids:
+            return []
+        networks = json.loads(self.docker('inspect', *ids))
+        require(isinstance(networks, list) and len(networks) == len(ids) and
+                {item.get('Id') for item in networks} == set(ids), 'incomplete Docker network inventory')
+        return networks
+
+    def bridge_network(self, ident, networks):
+        expected = bridge_config(ident)
+        matches = [n for n in networks if n.get('Name') == expected['name']]
+        require(len(matches) <= 1, 'ambiguous native bridge')
+        for network in networks:
+            if network in matches:
+                continue
+            for ipam in network.get('IPAM', {}).get('Config') or []:
+                subnet = ipaddress.ip_network(ipam['Subnet'], strict=False)
+                require(not subnet.overlaps(ipaddress.ip_network(expected['subnet'])), 'Docker subnet collision')
+        if not matches:
+            return None
+        network = matches[0]
+        labels = network.get('Labels') or {}
+        require(labels.get('sh.tako.network') == ident and labels.get('sh.tako.owner') == self.state['owner'],
+                'foreign Docker network')
+        require(network.get('Driver') == 'bridge' and network.get('Scope') == 'local' and
+                network.get('Internal') is True and network.get('EnableIPv6') is False and
+                network.get('EnableIPv4', True) is True and not network.get('Ingress') and
+                network.get('Options') == bridge_options(ident), 'native bridge settings changed')
+        ipam = network.get('IPAM', {})
+        require(ipam.get('Driver') == 'default' and not ipam.get('Options') and
+                ipam.get('Config') == [{'Subnet': expected['subnet'], 'Gateway': expected['gateway']}],
+                'native bridge IPAM changed')
+        return network
+
+    def inspect_bridge_host(self, ident, network):
+        expected = bridge_config(ident)
+        subnet = ipaddress.ip_network(expected['subnet'])
+        dev = expected['interface']
+        links = json.loads(self.runner.run('ip', '-j', '-d', 'link', 'show'))
+        link = next((link for link in links if link['ifname'] == dev), None)
+        require((link is None and network is None) or (link is not None and network is not None and
+                link.get('linkinfo', {}).get('info_kind') == 'bridge'), 'foreign or missing native bridge interface')
+        has_gateway = False
+        for interface_state in json.loads(self.runner.run('ip', '-j', 'address', 'show')):
+            for address_state in interface_state.get('addr_info', []):
+                ip = ipaddress.ip_interface(f'{address_state["local"]}/{address_state["prefixlen"]}')
+                if interface_state['ifname'] == dev:
+                    owned = network is not None and (
+                        (str(ip.ip) == expected['gateway'] and ip.network == subnet) or
+                        (ip.version == 6 and ip.ip.is_link_local and ip.network.prefixlen == 64))
+                    require(owned, 'foreign native bridge address')
+                    has_gateway |= str(ip.ip) == expected['gateway']
+                else:
+                    require(not ip.network.overlaps(subnet), 'host address overlaps native bridge')
+        require(network is None or has_gateway, 'native bridge gateway is missing')
+        routes = json.loads(self.runner.run('ip', '-j', '-N', '-4', 'route', 'show', 'table', 'all'))
+        for route in routes:
+            destination = route.get('dst', 'default')
+            touches = route.get('dev') == dev or route.get('iif') == dev or any(
+                hop.get('dev') == dev for hop in route.get('nexthops', []))
+            if destination == 'default':
+                require(not touches, 'foreign default route on native bridge')
+                continue
+            prefix = ipaddress.ip_network(destination, strict=False)
+            if not prefix.overlaps(subnet) and not touches:
+                continue
+            owned = network is not None and route.get('dev') == dev and prefix.subnet_of(subnet)
+            owned = (owned and str(route.get('protocol')) == '2' and
+                     str(route.get('table', '254')) in ('254', 'main', '255', 'local') and
+                     route.get('type', 'unicast') in ('unicast', 'local', 'broadcast') and
+                     not any(field in route for field in ('gateway', 'via', 'encap', 'nexthops', 'nhid', 'iif')))
+            require(owned, 'host route overlaps native bridge')
+
+    def open_bridge_firewall(self, ident):
+        config = bridge_config(ident)
+        if self.runner.available('ufw') and self.runner.run('ufw', 'status').startswith('Status: active'):
+            for port, protocol in ((80, 'tcp'), (53, 'tcp'), (53, 'udp')):
+                self.runner.run('ufw', 'allow', 'in', 'on', config['interface'], 'from', config['subnet'],
+                                'to', config['gateway'], 'port', str(port), 'proto', protocol,
+                                'comment', 'tako-network-' + ident)
+        if self.runner.available('firewall-cmd'):
+            active = self.runner.run('systemctl', 'show', 'firewalld', '--property=ActiveState', '--value').strip()
+            if active == 'active':
+                for port, protocol in ((80, 'tcp'), (53, 'tcp'), (53, 'udp')):
+                    rule = (f'rule family="ipv4" source address="{config["subnet"]}" '
+                            f'destination address="{config["gateway"]}" port port="{port}" protocol="{protocol}" accept')
+                    self.runner.run('firewall-cmd', '--add-rich-rule=' + rule)
+                    self.runner.run('firewall-cmd', '--permanent', '--add-rich-rule=' + rule)
+
+    def bridge(self, ident):
+        require(ident in self.state['networks'] and self.owned_link(ident) is not None,
+                'native WireGuard link is not ready')
+        self.firewall_exists()
+        expected = bridge_config(ident)
+        network = self.bridge_network(ident, self.docker_networks())
+        self.inspect_bridge_host(ident, network)
+        self.state['networks'][ident]['compose_bridge'] = True
+        self.save(self.state)
+        self.install_firewall()
+        if network is None:
+            options = [item for key, value in bridge_options(ident).items() for item in ('--opt', key + '=' + value)]
+            self.docker('create', '--driver', 'bridge', '--internal', '--subnet', expected['subnet'],
+                        '--gateway', expected['gateway'], '--label', 'sh.tako.network=' + ident,
+                        '--label', 'sh.tako.owner=' + self.state['owner'], *options, expected['name'])
+            network = self.bridge_network(ident, self.docker_networks())
+            require(network is not None, 'native bridge creation was not acknowledged')
+            self.inspect_bridge_host(ident, network)
+        self.open_bridge_firewall(ident)
+        return expected
+
+    def remove_bridge(self, ident):
+        if not self.state['networks'][ident].get('compose_bridge'):
+            return
+        network = self.bridge_network(ident, self.docker_networks())
+        self.inspect_bridge_host(ident, network)
+        if network is not None:
+            require(not network.get('Containers'), 'stop Compose containers before removing their native network')
+            self.docker('rm', network['Id'])
 
     def dns_values(self, dev, setting):
         text = self.runner.run('resolvectl', setting, dev).strip()
@@ -521,6 +673,7 @@ class Host:
         if ident not in self.state['networks']:
             return {'applied_device_ids': []}
         self.inspect_host_state(ident, link, self.state['networks'][ident])
+        self.remove_bridge(ident)
         if link:
             self.restore_dns(ident, self.state['networks'][ident])
             self.runner.run('ip', 'link', 'set', 'dev', interface(ident), 'down')
@@ -551,12 +704,22 @@ def operation(args):
             host = Host(Runner(), state,
                         lambda value: write_file(fd, 'state.json', serialize_state(value)),
                         lambda value: write_file(sshfd, 'authorized_keys', value, 0o644))
-            result = host.apply(ident, read_desired(ident)) if action == 'apply' else host.remove(ident)
-    return dict(ok=True, action=action, network_id=ident, interface=interface(ident), **result)
+            if action == 'apply':
+                result = host.apply(ident, read_desired(ident))
+            elif action == 'bridge':
+                with directory(STATE / 'docker'):
+                    result = host.bridge(ident)
+            else:
+                if state['networks'].get(ident, {}).get('compose_bridge'):
+                    with directory(STATE / 'docker'):
+                        result = host.remove(ident)
+                else:
+                    result = host.remove(ident)
+    return dict(result, ok=True, action=action, network_id=ident, interface=interface(ident))
 
 
 def request_args(args):
-    require(len(args) == 2 and args[1] in ('apply', 'remove'), 'expected NETWORK_ID apply|remove')
+    require(len(args) == 2 and args[1] in ('apply', 'remove', 'bridge'), 'expected NETWORK_ID apply|remove|bridge')
     return network_id(args[0]), args[1]
 
 
@@ -584,7 +747,7 @@ def handle_connection(connection, tako_uid):
         connection.settimeout(5)
         require(peer_uid(connection) in (0, tako_uid), 'unauthorized local caller')
         request = receive(connection, 40)
-        require(re.fullmatch(rb'[0-9a-f]{32} (apply|remove)\n', request), 'invalid request frame')
+        require(re.fullmatch(rb'[0-9a-f]{32} (apply|remove|bridge)\n', request), 'invalid request frame')
         result = operation(request.decode('ascii').strip().split(' '))
     except Exception as error:
         result = failure(error)

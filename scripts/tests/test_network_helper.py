@@ -46,7 +46,7 @@ class ValidationTests(unittest.TestCase):
             ('address', '2001:4860::1/128'), ('address', 'fd00::1%eth0/128'),
             ('address', 'fd00::/48'), ('private_key', 'x\nPostUp = reboot'),
             ('private_key', base64.b64encode(bytes(32)).decode()),
-            ('listen_port', True), ('listen_port', 0), ('listen_port', 65536), ('listen_port', 8787),
+            ('listen_port', 80), ('listen_port', 1023), ('listen_port', True), ('listen_port', 0), ('listen_port', 65536), ('listen_port', 8787),
             ('ssh_port', True), ('ssh_port', 0), ('ssh_port', 65536), ('ssh_port', 80),
             ('listen_port', '51820\n'), ('PostUp', 'reboot'), ('routes', ['::/0']),
             ('peers', {}), ('peers', [desired()['peers'][0]] * 257),
@@ -100,6 +100,11 @@ class ValidationTests(unittest.TestCase):
             self.assertNotEqual(code, 0)
             self.assertFalse(json.loads(output.getvalue())['ok'])
             self.assertNotIn('/tmp/payload', output.getvalue())
+
+    def test_wireguard_udp_443_does_not_conflict_with_https(self):
+        data = desired()
+        data['listen_port'] = 443
+        self.assertEqual(helper.validate(data, ID)['listen_port'], 443)
 
     def test_private_vpc_endpoints_and_exact_ssh_port(self):
         for value in ('10.0.0.1:51820', '172.16.1.2:51821', '192.168.2.4:51820',

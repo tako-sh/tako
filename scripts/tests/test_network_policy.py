@@ -1,3 +1,4 @@
+import ipaddress
 import shlex
 import unittest
 
@@ -12,7 +13,7 @@ def input_verdict(policy, packet):
         matches = True
         while len(tokens) > 1:
             field = tokens.pop(0)
-            if field in ('ip6', 'ct', 'meta'):
+            if field in ('ip', 'ip6', 'ct', 'meta'):
                 field += ' ' + tokens.pop(0)
             if field in ('tcp', 'udp'):
                 matches &= packet['meta l4proto'] == field
@@ -28,7 +29,11 @@ def input_verdict(policy, packet):
                 tokens.pop(0)
             else:
                 values = [tokens.pop(0)]
-            matches &= (str(packet.get(field)) in values) != inverse
+            actual = str(packet.get(field))
+            contained = actual in values
+            if field in ('ip saddr', 'ip daddr', 'ip6 saddr', 'ip6 daddr') and actual != 'None':
+                contained |= any('/' in value and ipaddress.ip_address(actual) in ipaddress.ip_network(value) for value in values)
+            matches &= contained != inverse
         if matches:
             return tokens[0]
     return 'accept'
