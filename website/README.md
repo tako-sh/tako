@@ -14,6 +14,13 @@ Astro builds the homepage and blog. Blume builds the documentation. The combined
 
 Cloudflare serves extensionless HTML without trailing slashes. Existing trailing-slash links redirect to the canonical URL. Installer redirects live in `public/_redirects`; shared discovery headers live in `public/_headers`.
 
+## Dependencies
+
+The root workspace catalog and `overrides.astro` pin Astro to the version used by
+Blume. Update them together when upgrading Blume. This keeps the website, docs,
+and MDX integrations on one Astro copy, including on hosts with older Bun
+installers that hoist dependencies differently.
+
 ## Documentation
 
 Use `commands/sync-docs.md` to keep documentation in sync with implementation changes. Optionally provide a feature, paths, or commit range to focus the work. Edit flat `.md` files in `docs/`, using `.mdx` when interactive components such as code tabs are needed, and keep `title` and `description` frontmatter. The CLI embeds those same files at build time, so keep them readable without a website renderer.
