@@ -41,7 +41,7 @@
  * rather than a hook.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useInsertionEffect, useMemo, useRef, useState } from "react";
 import { Channel, type ChannelSubscribeOptions, type SseRecoveryReason } from "./channels";
 import type { ChannelConnectOptions, ChannelMessage } from "./types";
 
@@ -138,9 +138,11 @@ export function useChannel<T = unknown>(
   const key = channelIdentity(name, options);
   const identity = useMemo(() => ({ key }), [key]);
   const latestIdentity = useRef(identity);
-  latestIdentity.current = identity;
   const optionsRef = useRef(options);
-  optionsRef.current = options;
+  useInsertionEffect(() => {
+    latestIdentity.current = identity;
+    optionsRef.current = options;
+  });
   const [state, setState] = useState<{
     identity: typeof identity;
     messages: ChannelMessage<T>[];

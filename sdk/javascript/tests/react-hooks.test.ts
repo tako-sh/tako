@@ -3,10 +3,10 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 // Register before importing anything that touches React / DOM globals.
 GlobalRegistrator.register();
 
-import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
+import { act, cleanup, render, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { useChannel, usePresence } from "../src/react";
-import { useLayoutEffect } from "react";
+import { createElement, startTransition, Suspense, useLayoutEffect, useState } from "react";
 import type { ChannelMessage } from "../src/types";
 import { configureChannels, resetChannelsConfig } from "../src/channels/configure";
 
@@ -834,4 +834,121 @@ describe("usePresence", () => {
 afterEach(() => {
   cleanup();
   resetChannelsConfig();
+});
+
+test.each([true, false])(
+  "suspended render preserves committed messages and callbacks (identity change: %s)",
+  async (changeIdentity) => {
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    let calls = 0,
+      closed = 0,
+      suspended = 0;
+    configureChannels({
+      fetch: (async (_input, init) => {
+        calls++;
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            start(c) {
+              controller = c;
+              init?.signal?.addEventListener(
+                "abort",
+                () => {
+                  closed++;
+                  try {
+                    c.close();
+                  } catch {}
+                },
+                { once: true },
+              );
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        );
+      }) as typeof fetch,
+    });
+    let setRoom!: (room: string) => void;
+    const never = new Promise(() => {});
+    const messages: string[] = [];
+    function Page() {
+      const [room, set] = useState("old");
+      setRoom = set;
+      const channel = useChannel(changeIdentity ? room : "same", {
+        baseUrl: "https://offline.test",
+        onMessage: () => messages.push(room),
+      });
+      if (room === "pending") {
+        suspended++;
+        throw never;
+      }
+      return createElement("div", null, `${room}:${channel.status}:${channel.messages.length}`);
+    }
+    const page = render(
+      createElement(
+        Suspense,
+        { fallback: createElement("div", null, "fallback") },
+        createElement(Page),
+      ),
+    );
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+    await act(async () => {
+      controller.enqueue(new TextEncoder().encode('id: 1\ndata: {"id":"1","data":"first"}\n\n'));
+    });
+    expect(page.container.textContent).toBe("old:open:1");
+    await act(async () => {
+      startTransition(() => setRoom("pending"));
+    });
+    expect(suspended).toBeGreaterThan(0);
+    expect(page.container.textContent).toBe("old:open:1");
+    await act(async () => {
+      controller.enqueue(new TextEncoder().encode('id: 2\ndata: {"id":"2","data":"during"}\n\n'));
+    });
+    // Cancel the suspended transition and keep the original identity visible.
+    await act(async () => {
+      setRoom("old");
+    });
+    await act(async () => {
+      controller.enqueue(new TextEncoder().encode('id: 3\ndata: {"id":"3","data":"after"}\n\n'));
+    });
+    expect(calls).toBe(1);
+    expect(closed).toBe(0);
+    expect(messages).toEqual(["old", "old", "old"]);
+    expect(page.container.textContent).toBe("old:open:3");
+  },
+  10000,
+);
+
+test("publishes identity and callbacks before descendant layout actions", () => {
+  const sockets: MockWebSocket[] = [];
+  const received: string[] = [];
+  let oldSend!: (data: unknown) => void;
+  function Consumer({ changed }: { changed: boolean }) {
+    useLayoutEffect(() => {
+      if (!changed) return;
+      oldSend("late send");
+      sockets[0]!.emitMessage({ id: "late", data: "old" });
+    }, [changed]);
+    return null;
+  }
+  function Page({ changed }: { changed: boolean }) {
+    const channel = useChannel(changed ? "new" : "old", {
+      transport: "ws",
+      baseUrl: "http://test",
+      webSocketFactory: (url) => {
+        const socket = new MockWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+      onMessage: () => received.push(changed ? "new" : "old"),
+    });
+    if (!changed) oldSend = channel.send;
+    return createElement(Consumer, { changed });
+  }
+  const page = render(createElement(Page, { changed: false }));
+  act(() => sockets[0]!.emitOpen());
+  page.rerender(createElement(Page, { changed: true }));
+  expect(sockets[0]!.sent).toEqual([]);
+  expect(received).toEqual([]);
+  expect(sockets).toHaveLength(2);
 });
