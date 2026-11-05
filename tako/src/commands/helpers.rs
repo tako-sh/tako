@@ -3,12 +3,36 @@ use crate::output;
 
 /// Resolve which servers to target for a given environment.
 ///
-/// Returns explicitly mapped servers from `[envs.<name>].servers`.
+/// Uses trusted native network membership or explicit legacy server mappings.
 pub fn resolve_servers_for_env(
     tako_config: &TakoToml,
     servers: &ServersToml,
     env: &str,
 ) -> Result<Vec<String>, String> {
+    if let Some(network) = tako_config
+        .envs
+        .get(env)
+        .and_then(|env| env.network.as_deref())
+    {
+        let mut names: Vec<_> = servers
+            .servers
+            .iter()
+            .filter(|(_, entry)| {
+                entry
+                    .native
+                    .as_ref()
+                    .is_some_and(|target| target.network.id == network)
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        names.sort();
+        if names.is_empty() {
+            return Err(format!(
+                "Network '{network}' has no trusted servers for environment '{env}'"
+            ));
+        }
+        return Ok(names);
+    }
     let mapped: Vec<String> = tako_config
         .get_servers_for_env(env)
         .into_iter()
@@ -84,6 +108,81 @@ mod tests {
         servers
     }
 
+    fn native_entry(network_id: &str) -> ServerEntry {
+        ServerEntry {
+            native: Some(crate::management_http::NativeTarget {
+                network: crate::config::NetworkAlias {
+                    name: "fleet".into(),
+                    id: network_id.into(),
+                    device: "1".repeat(64),
+                },
+                server_id: "2".repeat(64).parse().unwrap(),
+            }),
+            host: "192.0.2.10".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn network_selection_uses_stable_id_and_never_falls_back_to_legacy() {
+        let id = "a".repeat(32);
+        let mut project = TakoToml::default();
+        project.envs.insert(
+            "production".into(),
+            EnvConfig {
+                network: Some(id.clone()),
+                ..Default::default()
+            },
+        );
+        let mut servers = one_server_config();
+        servers
+            .servers
+            .insert("fleet/node".into(), native_entry(&id));
+        servers
+            .servers
+            .insert("other/node".into(), native_entry(&"b".repeat(32)));
+        assert_eq!(
+            resolve_servers_for_env(&project, &servers, "production").unwrap(),
+            vec!["fleet/node"]
+        );
+        servers.servers.remove("fleet/node");
+        assert!(
+            resolve_servers_for_env(&project, &servers, "production")
+                .unwrap_err()
+                .contains("no trusted servers")
+        );
+    }
+
+    #[test]
+    fn saving_inventory_never_persists_native_members_as_legacy_servers() {
+        let mut servers = one_server_config();
+        servers
+            .servers
+            .insert("fleet/node".into(), native_entry(&"a".repeat(32)));
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        std::fs::write(
+            &path,
+            format!(
+                "theme = 'dark'\n[[networks]]\nname = 'fleet'\nid = '{}'\ndevice = '{}'\n",
+                "a".repeat(32),
+                "1".repeat(64)
+            ),
+        )
+        .unwrap();
+        servers.save_to_file(&path).unwrap();
+        let saved = ServersToml::load_from_file(&path).unwrap();
+        assert_eq!(saved, one_server_config());
+        assert_eq!(
+            crate::config::NetworksToml::load_from_file(&path)
+                .unwrap()
+                .networks
+                .len(),
+            1
+        );
+        assert!(std::fs::read_to_string(path).unwrap().contains("dark"));
+    }
+
     #[test]
     fn explicit_mapping_returns_mapped_servers() {
         let mut tako_config = TakoToml::default();
@@ -148,4 +247,90 @@ mod tests {
         assert_eq!(resolve_env_silent(None), "production");
         assert_eq!(resolve_env_silent(Some("staging")), "staging");
     }
+}
+
+pub(crate) async fn load_management_servers(
+    project: Option<&TakoToml>,
+    env: Option<&str>,
+) -> Result<ServersToml, String> {
+    let mut servers = ServersToml::load().map_err(|error| error.to_string())?;
+    let aliases = crate::config::NetworksToml::load().map_err(|error| error.to_string())?;
+    let selected = if let Some(project) = project {
+        let ids: std::collections::BTreeSet<_> = project
+            .envs
+            .iter()
+            .filter(|(name, _)| env.is_none_or(|env| env == name.as_str()))
+            .filter_map(|(_, config)| config.network.as_deref())
+            .collect();
+        ids.into_iter()
+            .map(|id| aliases.select(Some(id)).cloned())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?
+    } else {
+        aliases.networks.into_values().collect()
+    };
+    if env.is_some_and(|env| {
+        project
+            .and_then(|project| project.envs.get(env))
+            .is_some_and(|env| env.network.is_some())
+    }) {
+        servers = ServersToml::default();
+    }
+    let refresh = !output::is_dry_run();
+    for alias in selected {
+        let entries = tokio::task::spawn_blocking(move || {
+            let profile = if refresh {
+                crate::network::client::refresh(&alias)
+            } else {
+                crate::network::load_profile(&alias)
+            }
+            .map_err(|error| error.to_string())?;
+            native_server_entries(&alias, &profile)
+        })
+        .await
+        .map_err(|error| error.to_string())??;
+        for (name, entry) in entries {
+            servers.servers.insert(name, entry);
+        }
+    }
+    Ok(servers)
+}
+
+fn native_server_entries(
+    alias: &crate::config::NetworkAlias,
+    profile: &crate::network::Profile,
+) -> Result<Vec<(String, crate::config::ServerEntry)>, String> {
+    let members = crate::network::server_members(profile).map_err(|error| error.to_string())?;
+    let mut names = std::collections::BTreeMap::new();
+    for member in members.values() {
+        *names
+            .entry(member.request.name.to_string())
+            .or_insert(0usize) += 1;
+    }
+    members
+        .into_iter()
+        .map(|(server_id, member)| {
+            let tako_network::MemberKind::Server(info) = member.kind else {
+                unreachable!()
+            };
+            let name = if names[&member.request.name.to_string()] == 1 {
+                format!("{}/{}", alias.name, member.request.name)
+            } else {
+                format!("{}/{}/{}", alias.name, member.request.name, server_id)
+            };
+            Ok((
+                name,
+                crate::config::ServerEntry {
+                    native: Some(crate::management_http::NativeTarget {
+                        network: alias.clone(),
+                        server_id,
+                    }),
+                    host: info.wireguard_endpoint.ip().to_string(),
+                    port: info.ssh_port,
+                    https_port: info.https_port,
+                    ..Default::default()
+                },
+            ))
+        })
+        .collect()
 }

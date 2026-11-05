@@ -39,6 +39,18 @@ pub(crate) struct ManagementProbe {
     pub(crate) info: ServerRuntimeInfo,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ManagementTarget {
+    Legacy { host: String },
+    Native(NativeTarget),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeTarget {
+    pub(crate) network: crate::config::NetworkAlias,
+    pub(crate) server_id: tako_network::DeviceId,
+}
+
 pub(crate) struct ManagementClient {
     host: String,
     http: reqwest::Client,

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use super::error::{ConfigError, Result};
 
-/// Server inventory from config.toml `[[servers]]`.
+/// Legacy configuration and resolved native server inventory.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ServersToml {
     /// Map of server name to server entry
@@ -63,9 +63,12 @@ impl ServerTarget {
     }
 }
 
-/// Single server entry with SSH connection details
+/// Server endpoint metadata and optional native network identity.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ServerEntry {
+    #[serde(skip)]
+    pub(crate) native: Option<crate::management_http::NativeTarget>,
+
     /// VPN provider used for management. Existing entries use Tailscale.
     #[serde(default)]
     pub vpn: crate::vpn::VpnProvider,
@@ -109,6 +112,7 @@ fn default_https_port() -> u16 {
 impl Default for ServerEntry {
     fn default() -> Self {
         Self {
+            native: None,
             vpn: Default::default(),
             host: String::new(),
             port: default_ssh_port(),
@@ -116,6 +120,17 @@ impl Default for ServerEntry {
             https_port: default_https_port(),
             description: None,
             key_path: None,
+        }
+    }
+}
+
+impl ServerEntry {
+    pub(crate) fn management_target(&self) -> crate::management_http::ManagementTarget {
+        match &self.native {
+            Some(target) => crate::management_http::ManagementTarget::Native(target.clone()),
+            None => crate::management_http::ManagementTarget::Legacy {
+                host: self.host.clone(),
+            },
         }
     }
 }
@@ -200,6 +215,7 @@ impl ServersToml {
                 let libc = parse_string_field(server_value, name, "libc")?;
 
                 let entry = ServerEntry {
+                    native: None,
                     vpn: match server_value.get("vpn") {
                         Some(value) => value.clone().try_into()?,
                         None => Default::default(),
@@ -321,6 +337,9 @@ impl ServersToml {
                 ConfigError::Validation(format!("Missing server entry '{}'", name))
             })?;
 
+            if entry.native.is_some() {
+                continue;
+            }
             let mut table = toml::map::Map::new();
             table.insert("name".to_string(), toml::Value::String(name.to_string()));
             table.insert("host".to_string(), toml::Value::String(entry.host.clone()));

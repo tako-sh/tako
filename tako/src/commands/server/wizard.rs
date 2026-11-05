@@ -598,6 +598,7 @@ pub async fn add_server(
                 servers.update(
                     &existing_name,
                     ServerEntry {
+                        native: None,
                         vpn,
                         host: existing.host,
                         port: existing.port,
@@ -797,6 +798,7 @@ pub async fn add_server(
     // Add the server
     let resolved_public_ports = resolved_public_ports.unwrap_or_default();
     let entry = ServerEntry {
+        native: None,
         vpn,
         host: host.to_string(),
         port,
