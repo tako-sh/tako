@@ -233,6 +233,22 @@ fn scoped_preflight_and_application_scope_are_exact() {
 }
 
 #[test]
+fn drain_and_resume_never_inherit_application_scope() {
+    let app = scope("demo/production").unwrap();
+    for command in [
+        Command::DrainServer {
+            timeout_seconds: 30,
+        },
+        Command::ResumeServer,
+    ] {
+        let body = serde_json::to_vec(&command).unwrap();
+        let action = rpc_action(&command, &body, Some(&app)).unwrap();
+        assert!(action.scope().is_none());
+        assert_eq!(action.sha256(), hex::encode(Sha256::digest(&body)));
+    }
+}
+
+#[test]
 fn missing_or_mismatched_pins_fail_before_connecting() {
     let mut identity = identity();
     identity.info.https_spki_sha256 = Some(tako_network::KeyFingerprint::of_bytes(b"wrong"));

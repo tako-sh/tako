@@ -177,6 +177,8 @@ pub(super) fn rpc_action(
         | Command::ServerInfo
         | Command::List
         | Command::Routes
+        | Command::DrainServer { .. }
+        | Command::ResumeServer
         | Command::EnterUpgrading { .. }
         | Command::ExitUpgrading { .. }
         | Command::InjectChallengeToken { .. } => None,
