@@ -43,3 +43,42 @@ test("serialized manifests preserve required and optional request body presence"
     });
   }
 });
+
+test("OpenAPI rejects conflicting template spellings independently of HTTP method", () => {
+  const get = {
+    method: "GET",
+    path: "/items/{id}",
+    params: t.Object({ id: t.String() }),
+    responses: { 204: null },
+  } as const;
+  const post = {
+    method: "POST",
+    path: "/items/{name}",
+    params: t.Object({ name: t.String() }),
+    responses: { 204: null },
+  } as const;
+  expect(() => serviceOpenApi([defineService("items", { get, post })])).toThrow(
+    "Conflicting OpenAPI path templates",
+  );
+  expect(() =>
+    generateServiceDocument(
+      [defineService("read", { get }), defineService("write", { post })],
+      "openapi",
+    ),
+  ).toThrow("Conflicting OpenAPI path templates");
+  const shared = defineService("shared", {
+    get,
+    post: { ...post, path: get.path, params: get.params },
+  });
+  expect(serviceOpenApi([shared])).toMatchObject({
+    paths: {
+      "/items/{id}": {
+        get: { operationId: "shared.get" },
+        post: {
+          operationId: "shared.post",
+          parameters: [{ in: "path", name: "id", required: true }],
+        },
+      },
+    },
+  });
+});

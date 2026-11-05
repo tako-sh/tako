@@ -49,12 +49,21 @@ export function serviceOpenApi(services: readonly ServiceDefinition[]) {
   >;
   const ids = new Set<string>();
   const routes = new Set<string>();
+  const templates = new Map<string, string>();
   for (const service of services) {
     for (const [name, operation] of Object.entries(service.operations)) {
       const operationId = `${service.name}.${name}`;
       if (ids.has(operationId)) throw new Error(`Duplicate operation ID '${operationId}'.`);
       ids.add(operationId);
-      const route = `${operation.method} ${operation.path.replace(/\{[^}]+\}/g, "{}")}`;
+      const identity = operation.path.replace(/\{[^}]+\}/g, "{}");
+      const template = templates.get(identity);
+      if (template !== undefined && template !== operation.path) {
+        throw new Error(
+          `Conflicting OpenAPI path templates '${template}' and '${operation.path}'. Use identical parameter names for the same path hierarchy.`,
+        );
+      }
+      templates.set(identity, operation.path);
+      const route = `${operation.method} ${identity}`;
       if (routes.has(route)) throw new Error(`Duplicate HTTP route '${route}'.`);
       routes.add(route);
       const parameters = (
