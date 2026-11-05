@@ -18,13 +18,18 @@ use crate::{
     Permissions, RegistrySnapshot, RequestId, ServerInfo, SshPublicKey, SshUser, WgChallenge,
     WgPublicKey,
     api::{ApproveRequest, RpcRequest, RpcResponse, RuntimeError, RuntimeResult, SignedRequest},
-    corrosion::{MAX_RECORD_BYTES, MAX_REGISTRY_BYTES, MAX_REGISTRY_ROWS, RegistryStore},
+    corrosion::{
+        MAX_RECORD_BYTES, MAX_REGISTRY_BYTES, MAX_REGISTRY_ROWS, RegistryStore, bound_projection,
+        bounded_snapshot_size,
+    },
 };
 
 #[derive(Clone, Debug)]
 pub struct RuntimeLimits {
     pub max_pending: usize,
     pub max_challenges: usize,
+    /// Each replay pool holds at most this many nonces. Revocations use a separate
+    /// pool, and each signer gets at most ceil(max_replays / 16) in either pool.
     pub max_replays: usize,
     pub auth_window_seconds: u64,
     pub challenge_seconds: u64,
@@ -124,7 +129,7 @@ impl<S: RegistryStore> ServerRuntime<S> {
     /// `state_path` must be inside a protected, owner-only server state directory.
     /// Keep this runtime on a blocking worker; its process lock lasts until drop.
     pub fn open(
-        mut store: S,
+        store: S,
         keys: LocalDeviceKeys,
         config: RuntimeConfig,
         state_path: &Path,
@@ -133,8 +138,6 @@ impl<S: RegistryStore> ServerRuntime<S> {
         if keys.device_id(&config.network.id, DeviceKind::Server)? != config.server_id {
             return Err(RuntimeError::Invalid("server keys do not match config"));
         }
-        let snapshot = store.snapshot()?;
-        validate_snapshot(&snapshot, &config.network)?;
         let lock_path = state_path.with_extension("runtime-lock");
         let mut options = OpenOptions::new();
         options.read(true).write(true).create(true).truncate(false);
@@ -160,6 +163,10 @@ impl<S: RegistryStore> ServerRuntime<S> {
             CREATE TABLE IF NOT EXISTS runtime_identity (singleton INTEGER PRIMARY KEY CHECK(singleton=1), network TEXT NOT NULL, server TEXT NOT NULL, last_time INTEGER NOT NULL, auth_window INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS consumed_nonces (signer TEXT NOT NULL, nonce TEXT NOT NULL, expires INTEGER NOT NULL, PRIMARY KEY(signer, nonce));
             CREATE INDEX IF NOT EXISTS nonce_expiry ON consumed_nonces(expires);
+            CREATE TABLE IF NOT EXISTS observed_records (kind TEXT NOT NULL, id TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(kind, id));
+            CREATE TABLE IF NOT EXISTS registry_failure (singleton INTEGER PRIMARY KEY CHECK(singleton=1));
+            CREATE TABLE IF NOT EXISTS revocation_nonces (signer TEXT NOT NULL, nonce TEXT NOT NULL, expires INTEGER NOT NULL, PRIMARY KEY(signer, nonce));
+            CREATE INDEX IF NOT EXISTS revocation_nonce_expiry ON revocation_nonces(expires);
             CREATE TABLE IF NOT EXISTS pending_entitlements (id TEXT PRIMARY KEY, expires INTEGER NOT NULL, payload TEXT NOT NULL);")?;
         let network = serde_json::to_string(&config.network)?;
         db.execute(
@@ -184,20 +191,110 @@ impl<S: RegistryStore> ServerRuntime<S> {
         {
             return Err(RuntimeError::Conflict("local runtime identity"));
         }
-        Ok(Self {
+        let mut runtime = Self {
             store,
             keys,
             config,
             db,
             challenges: BTreeMap::new(),
             _lock: lock,
-        })
+        };
+        runtime.snapshot()?;
+        Ok(runtime)
     }
 
     pub fn snapshot(&mut self) -> RuntimeResult<RegistrySnapshot> {
-        let snapshot = self.store.snapshot()?;
+        let failed: bool =
+            self.db
+                .query_row("SELECT EXISTS(SELECT 1 FROM registry_failure)", [], |r| {
+                    r.get(0)
+                })?;
+        if failed {
+            return Err(RuntimeError::Capacity("registry requires local recovery"));
+        }
+        let result = self
+            .store
+            .snapshot()
+            .and_then(|snapshot| self.observe(snapshot));
+        if matches!(result, Err(RuntimeError::Capacity(_))) {
+            self.db
+                .execute("INSERT OR IGNORE INTO registry_failure VALUES (1)", [])?;
+        }
+        result
+    }
+
+    fn observe(&mut self, mut snapshot: RegistrySnapshot) -> RuntimeResult<RegistrySnapshot> {
+        bound_projection(&mut snapshot)?;
         validate_snapshot(&snapshot, &self.config.network)?;
+        let tx = self.db.transaction()?;
+        for record in snapshot
+            .members
+            .iter()
+            .map(|m| -> RuntimeResult<_> {
+                Ok(("member", m.device_id.to_string(), serde_json::to_string(m)?))
+            })
+            .chain(
+                snapshot
+                    .revocations
+                    .iter()
+                    .map(|r| Ok(("revocation", r.id.to_string(), serde_json::to_string(r)?))),
+            )
+        {
+            let (kind, id, payload) = record?;
+            let previous: Option<String> = tx
+                .query_row(
+                    "SELECT payload FROM observed_records WHERE kind=?1 AND id=?2",
+                    params![kind, id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if previous.as_ref().is_some_and(|old| old != &payload) {
+                return Err(RuntimeError::Conflict("observed registry record"));
+            }
+            tx.execute(
+                "INSERT OR IGNORE INTO observed_records VALUES (?1, ?2, ?3)",
+                params![kind, id, payload],
+            )?;
+        }
+        snapshot.members.clear();
+        snapshot.revocations.clear();
+        {
+            let mut statement =
+                tx.prepare("SELECT kind, payload FROM observed_records ORDER BY kind, id")?;
+            let mut rows = statement.query([])?;
+            let mut bytes = 0usize;
+            let mut count = 0usize;
+            while let Some(row) = rows.next()? {
+                let kind: String = row.get(0)?;
+                let payload: String = row.get(1)?;
+                bytes += payload.len();
+                count += 1;
+                if bytes > MAX_REGISTRY_BYTES || count > MAX_REGISTRY_ROWS {
+                    return Err(RuntimeError::Capacity("observed registry"));
+                }
+                match kind.as_str() {
+                    "member" => snapshot.members.push(serde_json::from_str(&payload)?),
+                    "revocation" => snapshot.revocations.push(serde_json::from_str(&payload)?),
+                    _ => return Err(RuntimeError::Invalid("observed registry kind")),
+                }
+            }
+        }
+        bound_projection(&mut snapshot)?;
+        validate_snapshot(&snapshot, &self.config.network)?;
+        tx.commit()?;
         Ok(snapshot)
+    }
+
+    fn advance_clock(&self, now: u64) -> RuntimeResult<()> {
+        let now = sql_time(now)?;
+        let updated = self.db.execute(
+            "UPDATE runtime_identity SET last_time=?1 WHERE singleton=1 AND last_time>=0 AND last_time<=?1",
+            [now],
+        )?;
+        if updated != 1 {
+            return Err(RuntimeError::Invalid("server clock moved backwards"));
+        }
+        Ok(())
     }
 
     pub fn handle(
@@ -217,6 +314,7 @@ impl<S: RegistryStore> ServerRuntime<S> {
         {
             return Err(RuntimeError::Authentication);
         }
+        self.advance_clock(now)?;
         let snapshot = self.snapshot()?;
         self.require_server(&snapshot, now)?;
         let entitlement = match &signed.request {
@@ -290,6 +388,11 @@ impl<S: RegistryStore> ServerRuntime<S> {
                 } else {
                     snapshot.plan_revocation(id, &signed.signer, &target, now)?
                 };
+                let mut observed = snapshot;
+                if !observed.revocations.contains(&revocation) {
+                    observed.revocations.push(revocation.clone());
+                }
+                self.observe(observed)?;
                 self.store.append_revocation(&revocation)?;
                 Ok(RpcResponse::Revoked(revocation))
             }
@@ -310,41 +413,44 @@ impl<S: RegistryStore> ServerRuntime<S> {
         let tx = self
             .db
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let last: i64 = tx.query_row(
-            "SELECT last_time FROM runtime_identity WHERE singleton=1",
-            [],
-            |r| r.get(0),
-        )?;
-        if last < 0 || sql_time(now)? < last {
-            return Err(RuntimeError::Invalid("server clock moved backwards"));
-        }
         tx.execute(
             "DELETE FROM consumed_nonces WHERE expires < ?1",
             [sql_time(now)?],
         )?;
+        tx.execute(
+            "DELETE FROM revocation_nonces WHERE expires < ?1",
+            [sql_time(now)?],
+        )?;
         let exists: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM consumed_nonces WHERE signer=?1 AND nonce=?2)",
+            "SELECT EXISTS(SELECT 1 FROM consumed_nonces WHERE signer=?1 AND nonce=?2 UNION ALL SELECT 1 FROM revocation_nonces WHERE signer=?1 AND nonce=?2)",
             params![signed.signer.to_string(), signed.nonce.to_string()],
             |r| r.get(0),
         )?;
         if exists {
             return Err(RuntimeError::Replay);
         }
-        let count: i64 = tx.query_row("SELECT count(*) FROM consumed_nonces", [], |r| r.get(0))?;
-        if count >= self.config.limits.max_replays as i64 {
+        let emergency = matches!(signed.request, RpcRequest::Revoke { .. });
+        let table = if emergency {
+            "revocation_nonces"
+        } else {
+            "consumed_nonces"
+        };
+        let (count, principal): (i64, i64) = tx.query_row(
+            &format!("SELECT count(*), coalesce(sum(signer=?1), 0) FROM {table}"),
+            [signed.signer.to_string()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        let principal_limit = self.config.limits.max_replays.div_ceil(16);
+        if count >= self.config.limits.max_replays as i64 || principal >= principal_limit as i64 {
             return Err(RuntimeError::Capacity("replays"));
         }
         tx.execute(
-            "INSERT INTO consumed_nonces VALUES (?1, ?2, ?3)",
+            &format!("INSERT INTO {table} VALUES (?1, ?2, ?3)"),
             params![
                 signed.signer.to_string(),
                 signed.nonce.to_string(),
                 sql_time(signed.timestamp + self.config.limits.auth_window_seconds)?
             ],
-        )?;
-        tx.execute(
-            "UPDATE runtime_identity SET last_time=?1 WHERE singleton=1",
-            [sql_time(now)?],
         )?;
         tx.execute(
             "DELETE FROM pending_entitlements WHERE expires <= ?1",
@@ -637,7 +743,9 @@ impl<S: RegistryStore> ServerRuntime<S> {
         Ok(RpcResponse::Active(profile))
     }
 
+    /// On any error the parent must remove peers and SSH grants and withdraw readiness.
     pub fn desired_host_state(&mut self, now: u64) -> RuntimeResult<HostDesiredState> {
+        self.advance_clock(now)?;
         let snapshot = self.snapshot()?;
         let serving = self.require_server(&snapshot, now).is_ok();
         let mut peers = Vec::new();
@@ -707,10 +815,10 @@ fn validate_snapshot(
     }
     if snapshot.members.len() + snapshot.revocations.len() + snapshot.acks.len() + 1
         > MAX_REGISTRY_ROWS
-        || serde_json::to_vec(snapshot)?.len() > MAX_REGISTRY_BYTES
     {
         return Err(RuntimeError::Capacity("registry snapshot"));
     }
+    bounded_snapshot_size(snapshot)?;
     snapshot.validate()?;
     Ok(())
 }
@@ -1223,13 +1331,16 @@ mod tests {
             .permissions
             .network_admin = false;
         assert!(fixture.call(&mut runtime, &keys, command, 12).is_err());
-        assert_eq!(runtime.snapshot().unwrap().members.len(), 2);
+        assert!(matches!(
+            runtime.snapshot(),
+            Err(RuntimeError::Conflict("observed registry record"))
+        ));
     }
 
     #[test]
     fn auth_window_audience_clock_and_capacity_fail_closed() {
         let mut fixture = Fixture::new();
-        fixture.config.limits.max_replays = 2;
+        fixture.config.limits.max_replays = 32;
         let mut runtime = fixture.open();
         let signed = fixture.signed(&fixture.admin, RpcRequest::Snapshot, 10);
         for (method, path, now) in [

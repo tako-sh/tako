@@ -1,0 +1,477 @@
+#![allow(dead_code)]
+
+mod support;
+
+use std::{cell::RefCell, rc::Rc};
+use tako_network::{
+    api::{RpcRequest, RpcResponse, RuntimeError, RuntimeResult, SignedRequest},
+    corrosion::RegistryStore,
+    runtime::{RuntimeConfig, RuntimeLimits, ServerRuntime},
+    *,
+};
+
+#[derive(Clone)]
+struct Store(Rc<RefCell<RegistrySnapshot>>);
+
+impl RegistryStore for Store {
+    fn snapshot(&mut self) -> RuntimeResult<RegistrySnapshot> {
+        Ok(self.0.borrow().clone())
+    }
+
+    fn append_member(&mut self, member: &Member) -> RuntimeResult<()> {
+        let mut snapshot = self.0.borrow_mut();
+        if !snapshot.members.contains(member) {
+            snapshot.members.push(member.clone());
+        }
+        Ok(())
+    }
+
+    fn append_revocation(&mut self, revocation: &Revocation) -> RuntimeResult<()> {
+        self.0.borrow_mut().revocations.push(revocation.clone());
+        Ok(())
+    }
+
+    fn append_ack(&mut self, ack: &Ack) -> RuntimeResult<()> {
+        self.0.borrow_mut().acks.push(ack.clone());
+        Ok(())
+    }
+}
+
+struct Fixture {
+    dir: tempfile::TempDir,
+    store: Store,
+    admin: LocalDeviceKeys,
+    laptop: LocalDeviceKeys,
+    laptop_id: DeviceId,
+    config: RuntimeConfig,
+}
+
+impl Fixture {
+    fn new(expiry: Option<u64>) -> Self {
+        let (mut snapshot, admin, admin_id) = support::bootstrap();
+        let dir = tempfile::tempdir().unwrap();
+        let server_keys = LocalDeviceKeys::generate().unwrap();
+        server_keys.save_new(&dir.path().join("keys")).unwrap();
+        let server_id = server_keys
+            .device_id(&snapshot.network.id, DeviceKind::Server)
+            .unwrap();
+        let server = snapshot
+            .approve_independent_admin(
+                support::verified(&server_keys, &snapshot.network.id, DeviceKind::Server, 2),
+                Approval {
+                    kind: MemberKind::Server(ServerInfo {
+                        wireguard_endpoint: "203.0.113.7:51820".parse().unwrap(),
+                        ssh_host_key: server_keys.ssh_public_key().unwrap(),
+                        ssh_port: 22,
+                        https_port: 443,
+                        https_certificate_pem: Some(support::certificate_pem()),
+                        corrosion_ca_certificate_pem: None,
+                        https_spki_sha256: None,
+                    }),
+                    permissions: support::admin(),
+                    approved_by: None,
+                    independent_admin: true,
+                    created_at: 2,
+                    expires_at: None,
+                },
+            )
+            .unwrap();
+        snapshot.members.push(server);
+        let laptop = LocalDeviceKeys::generate().unwrap();
+        let laptop_id = laptop
+            .device_id(&snapshot.network.id, DeviceKind::Laptop)
+            .unwrap();
+        let mut approval = support::approval(
+            MemberKind::Laptop,
+            Permissions {
+                ssh_user: Some("app".parse().unwrap()),
+                ..Permissions::default()
+            },
+            Some(admin_id),
+            3,
+        );
+        approval.expires_at = expiry;
+        let member = snapshot
+            .approve(
+                support::verified(&laptop, &snapshot.network.id, DeviceKind::Laptop, 3),
+                approval,
+            )
+            .unwrap();
+        snapshot.members.push(member);
+        let config = RuntimeConfig {
+            network: snapshot.network.clone(),
+            server_id,
+            boot_id: BootId::random().unwrap(),
+            limits: RuntimeLimits::default(),
+        };
+        Self {
+            dir,
+            store: Store(Rc::new(RefCell::new(snapshot))),
+            admin,
+            laptop,
+            laptop_id,
+            config,
+        }
+    }
+
+    fn open(&self) -> ServerRuntime<Store> {
+        ServerRuntime::open(
+            self.store.clone(),
+            LocalDeviceKeys::load(&self.dir.path().join("keys")).unwrap(),
+            self.config.clone(),
+            &self.dir.path().join("runtime.db"),
+        )
+        .unwrap()
+    }
+
+    fn call(
+        &self,
+        runtime: &mut ServerRuntime<Store>,
+        keys: &LocalDeviceKeys,
+        request: RpcRequest,
+        timestamp: u64,
+        now: u64,
+    ) -> RuntimeResult<RpcResponse> {
+        let path = request.path();
+        runtime.handle(
+            SignedRequest::sign(
+                keys,
+                self.config.network.id.clone(),
+                self.config.server_id.clone(),
+                DeviceKind::Laptop,
+                timestamp,
+                request,
+            )?,
+            "POST",
+            path,
+            now,
+        )
+    }
+}
+
+#[test]
+fn observed_revocation_survives_store_rollback_and_reopen() {
+    for restart in [false, true] {
+        let fixture = Fixture::new(None);
+        let before_revocation = fixture.store.0.borrow().clone();
+        let mut runtime = fixture.open();
+        fixture
+            .call(
+                &mut runtime,
+                &fixture.admin,
+                RpcRequest::Revoke {
+                    id: RevocationId::random().unwrap(),
+                    target: fixture.laptop_id.clone(),
+                },
+                10,
+                10,
+            )
+            .unwrap();
+        let denied = runtime.desired_host_state(11).unwrap();
+        assert!(
+            !denied
+                .peers
+                .iter()
+                .any(|p| p.device_id == fixture.laptop_id)
+        );
+        runtime.acknowledge_applied(&denied.snapshot).unwrap();
+        assert!(matches!(
+            fixture.call(&mut runtime, &fixture.laptop, RpcRequest::Snapshot, 11, 11),
+            Err(RuntimeError::Denied)
+        ));
+
+        *fixture.store.0.borrow_mut() = before_revocation;
+        if restart {
+            drop(runtime);
+            runtime = fixture.open();
+        }
+        let restored = runtime.desired_host_state(12).unwrap();
+        assert!(
+            !restored
+                .peers
+                .iter()
+                .any(|p| p.device_id == fixture.laptop_id)
+        );
+        assert!(
+            !restored
+                .ssh_authorizations
+                .iter()
+                .any(|p| p.device_id == fixture.laptop_id)
+        );
+        assert!(matches!(
+            fixture.call(&mut runtime, &fixture.laptop, RpcRequest::Snapshot, 12, 12),
+            Err(RuntimeError::Denied)
+        ));
+    }
+}
+
+#[test]
+fn host_projection_enforces_persisted_clock_floor() {
+    for restart in [false, true] {
+        let fixture = Fixture::new(Some(30));
+        let mut runtime = fixture.open();
+        fixture
+            .call(&mut runtime, &fixture.admin, RpcRequest::Snapshot, 40, 40)
+            .unwrap();
+        let expired = runtime.desired_host_state(40).unwrap();
+        assert!(
+            !expired
+                .peers
+                .iter()
+                .any(|p| p.device_id == fixture.laptop_id)
+        );
+        if restart {
+            drop(runtime);
+            runtime = fixture.open();
+        }
+        assert!(matches!(
+            fixture.call(&mut runtime, &fixture.admin, RpcRequest::Snapshot, 20, 20),
+            Err(RuntimeError::Invalid("server clock moved backwards"))
+        ));
+        assert!(matches!(
+            runtime.desired_host_state(20),
+            Err(RuntimeError::Invalid("server clock moved backwards"))
+        ));
+    }
+}
+
+#[test]
+fn member_replay_quota_reserves_revocation_capacity() {
+    for budget in [1, 3, 16] {
+        let mut fixture = Fixture::new(None);
+        fixture.config.limits.max_replays = budget;
+        let mut runtime = fixture.open();
+        fixture
+            .call(&mut runtime, &fixture.laptop, RpcRequest::Snapshot, 130, 10)
+            .unwrap();
+        assert!(matches!(
+            fixture.call(&mut runtime, &fixture.laptop, RpcRequest::Snapshot, 130, 10),
+            Err(RuntimeError::Capacity("replays"))
+        ));
+        drop(runtime);
+        let mut runtime = fixture.open();
+        assert!(matches!(
+            fixture.call(
+                &mut runtime,
+                &fixture.admin,
+                RpcRequest::Revoke {
+                    id: RevocationId::random().unwrap(),
+                    target: fixture.laptop_id.clone(),
+                },
+                10,
+                10
+            ),
+            Ok(RpcResponse::Revoked(_))
+        ));
+        assert!(
+            !runtime
+                .desired_host_state(10)
+                .unwrap()
+                .peers
+                .iter()
+                .any(|p| p.device_id == fixture.laptop_id)
+        );
+    }
+}
+
+#[test]
+fn projection_alone_advances_clock_across_reopen() {
+    let fixture = Fixture::new(Some(30));
+    let mut runtime = fixture.open();
+    assert!(
+        !runtime
+            .desired_host_state(40)
+            .unwrap()
+            .peers
+            .iter()
+            .any(|p| p.device_id == fixture.laptop_id)
+    );
+    drop(runtime);
+    let mut runtime = fixture.open();
+    assert!(matches!(
+        runtime.desired_host_state(20),
+        Err(RuntimeError::Invalid("server clock moved backwards"))
+    ));
+    assert!(matches!(
+        fixture.call(&mut runtime, &fixture.admin, RpcRequest::Snapshot, 20, 20),
+        Err(RuntimeError::Invalid("server clock moved backwards"))
+    ));
+}
+
+#[test]
+fn replay_quotas_never_evict_unexpired_nonces() {
+    let mut fixture = Fixture::new(None);
+    fixture.config.limits.max_replays = 3;
+    let mut runtime = fixture.open();
+    let envelope = SignedRequest::sign(
+        &fixture.admin,
+        fixture.config.network.id.clone(),
+        fixture.config.server_id.clone(),
+        DeviceKind::Laptop,
+        130,
+        RpcRequest::Snapshot,
+    )
+    .unwrap();
+    runtime
+        .handle(envelope.clone(), "POST", RpcRequest::Snapshot.path(), 10)
+        .unwrap();
+    fixture
+        .call(&mut runtime, &fixture.laptop, RpcRequest::Snapshot, 130, 10)
+        .unwrap();
+    drop(runtime);
+    let mut runtime = fixture.open();
+    for now in [10, 250] {
+        assert!(matches!(
+            runtime.handle(envelope.clone(), "POST", RpcRequest::Snapshot.path(), now),
+            Err(RuntimeError::Replay)
+        ));
+        assert!(matches!(
+            fixture.call(&mut runtime, &fixture.admin, RpcRequest::Snapshot, now, now),
+            Err(RuntimeError::Capacity("replays"))
+        ));
+    }
+    fixture
+        .call(&mut runtime, &fixture.admin, RpcRequest::Snapshot, 251, 251)
+        .unwrap();
+}
+
+#[test]
+fn observed_authority_cannot_be_replaced_after_reopen() {
+    let fixture = Fixture::new(None);
+    drop(fixture.open());
+    fixture.store.0.borrow_mut().members[2]
+        .permissions
+        .network_admin = true;
+    assert!(matches!(
+        ServerRuntime::open(
+            fixture.store.clone(),
+            LocalDeviceKeys::load(&fixture.dir.path().join("keys")).unwrap(),
+            fixture.config.clone(),
+            &fixture.dir.path().join("runtime.db")
+        ),
+        Err(RuntimeError::Conflict("observed registry record"))
+    ));
+}
+
+#[test]
+fn oversized_store_failure_remains_closed_after_rollback_and_reopen() {
+    let fixture = Fixture::new(None);
+    let original = fixture.store.0.borrow().clone();
+    let mut runtime = fixture.open();
+    let member = original.members[2].clone();
+    fixture.store.0.borrow_mut().members =
+        vec![member; tako_network::corrosion::MAX_REGISTRY_ROWS + 1];
+    assert!(matches!(
+        runtime.desired_host_state(10),
+        Err(RuntimeError::Capacity(_))
+    ));
+    *fixture.store.0.borrow_mut() = original;
+    assert!(matches!(
+        runtime.desired_host_state(11),
+        Err(RuntimeError::Capacity(_))
+    ));
+    drop(runtime);
+    assert!(matches!(
+        ServerRuntime::open(
+            fixture.store.clone(),
+            LocalDeviceKeys::load(&fixture.dir.path().join("keys")).unwrap(),
+            fixture.config.clone(),
+            &fixture.dir.path().join("runtime.db")
+        ),
+        Err(RuntimeError::Capacity(_))
+    ));
+}
+
+#[test]
+fn revocation_receipt_is_durable_before_any_projection_or_ack() {
+    let fixture = Fixture::new(None);
+    let original = fixture.store.0.borrow().clone();
+    let mut runtime = fixture.open();
+    fixture
+        .call(
+            &mut runtime,
+            &fixture.admin,
+            RpcRequest::Revoke {
+                id: RevocationId::random().unwrap(),
+                target: fixture.laptop_id.clone(),
+            },
+            10,
+            10,
+        )
+        .unwrap();
+    *fixture.store.0.borrow_mut() = original;
+    drop(runtime);
+    let mut runtime = fixture.open();
+    assert!(
+        !runtime
+            .desired_host_state(11)
+            .unwrap()
+            .peers
+            .iter()
+            .any(|p| p.device_id == fixture.laptop_id)
+    );
+    assert!(matches!(
+        fixture.call(&mut runtime, &fixture.laptop, RpcRequest::Snapshot, 11, 11),
+        Err(RuntimeError::Denied)
+    ));
+}
+
+#[test]
+fn failed_denial_publication_retains_local_intent_and_retries_after_reopen() {
+    struct Unavailable(Store);
+    impl RegistryStore for Unavailable {
+        fn snapshot(&mut self) -> RuntimeResult<RegistrySnapshot> {
+            self.0.snapshot()
+        }
+        fn append_member(&mut self, member: &Member) -> RuntimeResult<()> {
+            self.0.append_member(member)
+        }
+        fn append_revocation(&mut self, _: &Revocation) -> RuntimeResult<()> {
+            Err(RuntimeError::Transport)
+        }
+        fn append_ack(&mut self, ack: &Ack) -> RuntimeResult<()> {
+            self.0.append_ack(ack)
+        }
+    }
+    let fixture = Fixture::new(None);
+    let mut runtime = ServerRuntime::open(
+        Unavailable(fixture.store.clone()),
+        LocalDeviceKeys::load(&fixture.dir.path().join("keys")).unwrap(),
+        fixture.config.clone(),
+        &fixture.dir.path().join("runtime.db"),
+    )
+    .unwrap();
+    let request = RpcRequest::Revoke {
+        id: RevocationId::random().unwrap(),
+        target: fixture.laptop_id.clone(),
+    };
+    let signed = SignedRequest::sign(
+        &fixture.admin,
+        fixture.config.network.id.clone(),
+        fixture.config.server_id.clone(),
+        DeviceKind::Laptop,
+        10,
+        request.clone(),
+    )
+    .unwrap();
+    assert!(matches!(
+        runtime.handle(signed, "POST", request.path(), 10),
+        Err(RuntimeError::Transport)
+    ));
+    assert!(fixture.store.0.borrow().revocations.is_empty());
+    drop(runtime);
+    let mut runtime = fixture.open();
+    assert!(
+        !runtime
+            .desired_host_state(11)
+            .unwrap()
+            .peers
+            .iter()
+            .any(|p| p.device_id == fixture.laptop_id)
+    );
+    assert!(matches!(
+        fixture.call(&mut runtime, &fixture.admin, request, 11, 11),
+        Ok(RpcResponse::Revoked(_))
+    ));
+    assert_eq!(fixture.store.0.borrow().revocations.len(), 1);
+}
