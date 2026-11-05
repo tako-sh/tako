@@ -281,14 +281,17 @@ class Host:
     def check_routes(self, ident, desired):
         dev = interface(ident)
         wanted = {p['address'] for p in desired['peers']}
-        routes = json.loads(self.runner.run('ip', '-j', '-6', 'route', 'show', 'table', 'main'))
+        routes = json.loads(self.runner.run('ip', '-j', '-N', '-6', 'route', 'show', 'table', 'main'))
         for route in routes:
             destination = route.get('dst', '')
             if ':' in destination and '/' not in destination:
                 destination += '/128'
-            managed = (route.get('dev') == dev and str(route.get('protocol')) == '186' and
+            managed = (route.get('dev') == dev and str(route.get('protocol')) == '242' and
                        route.get('metric') == 42760)
-            require(not (destination in wanted or route.get('dev') == dev) or managed, 'foreign route')
+            link_local = (route.get('dev') == dev and destination == 'fe80::/64' and
+                          str(route.get('protocol')) == '2')
+            require(not (destination in wanted or route.get('dev') == dev) or managed or link_local,
+                    'foreign route')
         return routes
 
     def open_host_firewall(self, ident, port):
@@ -371,18 +374,18 @@ class Host:
                     old = entry['local'] + '/' + str(entry['prefixlen'])
                     if entry['scope'] != 'link' and old != desired['address']:
                         self.runner.run('ip', '-6', 'address', 'del', old, 'dev', dev)
-            self.runner.run('ip', '-6', 'address', 'replace', desired['address'], 'dev', dev, 'nodad')
+            self.runner.run('ip', '-6', 'address', 'replace', desired['address'], 'dev', dev, 'nodad', 'noprefixroute')
+            self.runner.run('ip', 'link', 'set', 'dev', dev, 'up')
             wanted = {p['address'] for p in desired['peers']}
             for route in routes:
-                if route.get('dev') == dev:
+                if route.get('dev') == dev and str(route.get('protocol')) == '242':
                     destination = route['dst'] if '/' in route['dst'] else route['dst'] + '/128'
                     if destination not in wanted:
-                        self.runner.run('ip', '-6', 'route', 'del', destination, 'dev', dev, 'proto', '186', 'metric', '42760')
+                        self.runner.run('ip', '-6', 'route', 'del', destination, 'dev', dev, 'proto', '242', 'metric', '42760')
             for destination in sorted(wanted):
-                self.runner.run('ip', '-6', 'route', 'replace', destination, 'dev', dev, 'proto', '186', 'metric', '42760')
+                self.runner.run('ip', '-6', 'route', 'replace', destination, 'dev', dev, 'proto', '242', 'metric', '42760')
             self.open_host_firewall(ident, desired['listen_port'])
             self.runner.run('systemctl', 'enable', f'tako-network@{ident}.service')
-            self.runner.run('ip', 'link', 'set', 'dev', dev, 'up')
             config['managed_addresses'] = [desired['address']]
             self.save(self.state)
         except Exception:

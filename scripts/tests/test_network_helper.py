@@ -159,7 +159,7 @@ class FakeRunner:
             raise helper.Rejected('simulated command failure')
         if args == ('ip', '-j', '-d', 'link', 'show'):
             return json.dumps(self.links)
-        if args[:4] == ('ip', '-j', '-6', 'route'):
+        if args[:5] == ('ip', '-j', '-N', '-6', 'route'):
             return json.dumps(self.routes)
         if args[:4] == ('ip', '-j', '-6', 'address'):
             return json.dumps([{'ifname': DEV, 'addr_info': self.addresses}] + self.other_addresses)
@@ -194,9 +194,12 @@ class FakeRunner:
         if args[:4] == ('ip', '-6', 'address', 'replace'):
             ip, prefix = args[4].split('/')
             self.addresses = [{'local': ip, 'prefixlen': int(prefix), 'scope': 'global'}]
+            if 'noprefixroute' not in args:
+                self.routes.append({'dst': args[4], 'dev': args[6], 'protocol': '2', 'metric': 256})
         if args[:4] == ('ip', '-6', 'route', 'replace'):
+            assert self.links[0]['operstate'] == 'up'
             self.routes = [r for r in self.routes if r['dst'] != args[4]]
-            self.routes.append({'dst': args[4], 'dev': args[6], 'protocol': '186', 'metric': 42760})
+            self.routes.append({'dst': args[4], 'dev': args[6], 'protocol': '242', 'metric': 42760})
         if args[:4] == ('ip', '-6', 'route', 'del'):
             self.routes = [r for r in self.routes if r['dst'] != args[4]]
         return ''
@@ -258,6 +261,13 @@ class ReconcileTests(unittest.TestCase):
         with self.assertRaisesRegex(helper.Rejected, 'address belongs to another interface'):
             self.apply()
         self.assertIsNone(self.saved)
+
+    def test_kernel_link_local_route_is_preserved(self):
+        self.apply()
+        route = {'dst': 'fe80::/64', 'dev': DEV, 'protocol': '2', 'metric': 256}
+        self.runner.routes.append(route)
+        self.apply()
+        self.assertIn(route, self.runner.routes)
 
     def test_foreign_route_not_replaced(self):
         self.runner.routes = [{'dst': 'fd00:1234:5678::2/128', 'dev': 'eth0'}]
