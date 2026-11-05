@@ -63,9 +63,9 @@ fake_sshd() {
         self.assertNotIn('PartOf=tako-server', unit)
         self.assertIn('Corrosion service hook prepared', result.stdout)
         self.assertFalse((root / 'usr/local/libexec/tako/corrosion').exists())
-        ssh = (root / 'etc/ssh/sshd_config.d/00-tako-network.conf').read_text()
-        self.assertIn('.ssh/authorized_keys /etc/admin-keys/tako', ssh)
-        self.assertIn('Match User tako', ssh)
+        command = (root / 'usr/local/libexec/tako/network-authorized-keys').read_text()
+        self.assertIn("sys.argv[1:] != ['tako']", command)
+        self.assertIn("network.read_file(fd, 'authorized_keys', private=False)", command)
 
     def test_bootstrap_accepts_helper_in_verified_archive(self):
         _, result = self.install(source=False, packaged=True)

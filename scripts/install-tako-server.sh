@@ -1042,20 +1042,133 @@ EOF
   chmod 0755 /usr/local/libexec/tako/native-address
 
   mkdir -p /etc/ssh/sshd_config.d /etc/systemd/system
-  native_admin_keys="$(/usr/sbin/sshd -T -C user=tako,host=localhost,addr=127.0.0.1 | awk '/^authorizedkeysfile / { for (i=2; i<=NF; i++) if ($i != "/etc/ssh/tako-network/authorized_keys" && $i != "none") printf "%s ", $i }')"
-  cat > /etc/ssh/sshd_config.d/00-tako-network.conf <<EOF
-Match User tako
-    AuthorizedKeysFile $native_admin_keys /etc/ssh/tako-network/authorized_keys
-Match all
+  cat > /usr/local/libexec/tako/network-authorized-keys <<'EOF'
+#!/usr/bin/python3 -I
+import importlib.util
+import sys
+if sys.argv[1:] != ['tako']:
+    sys.exit(1)
+spec = importlib.util.spec_from_file_location('network', '/usr/local/libexec/tako/tako-network-helper.py')
+network = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(network)
+try:
+    with network.directory(network.SSH) as fd:
+        sys.stdout.write(network.read_file(fd, 'authorized_keys', private=False))
+except (OSError, ValueError, network.Rejected):
+    sys.exit(1)
 EOF
-  # Include is not universal (notably older distribution defaults).
-  if ! grep -Eq '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config.d/\*.conf' /etc/ssh/sshd_config; then
-    sed -i '1i Include /etc/ssh/sshd_config.d/*.conf' /etc/ssh/sshd_config
-  fi
-  /usr/sbin/sshd -t
-  /usr/sbin/sshd -T -C user=tako,host=localhost,addr=127.0.0.1 | grep -q '/etc/ssh/tako-network/authorized_keys' || {
-    echo 'error: sshd configuration overrides native network authorized keys' >&2; exit 1;
-  }
+  chown root:root /usr/local/libexec/tako/network-authorized-keys
+  chmod 0755 /usr/local/libexec/tako/network-authorized-keys
+  python3 -I - <<'SSH_POLICY_PY'
+import glob
+import os
+from pathlib import Path
+import re
+import secrets
+import shlex
+import stat
+import subprocess
+
+ssh_dir = Path('/etc/ssh')
+config_path = ssh_dir / 'sshd_config'
+policy_path = ssh_dir / 'sshd_config.d/00-tako-network.conf'
+policy = '''Match User tako
+    AuthorizedKeysCommand /usr/local/libexec/tako/network-authorized-keys %u
+    AuthorizedKeysCommandUser tako
+Match all
+'''
+
+
+def read_config(path):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, 'rb') as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.geteuid() or info.st_mode & 0o022:
+            raise SystemExit('error: unsafe SSH configuration file')
+        content = stream.read(1024 * 1024 + 1)
+        if len(content) > 1024 * 1024:
+            raise SystemExit('error: SSH configuration too large')
+        return content.decode(), stat.S_IMODE(info.st_mode)
+
+
+try:
+    old_policy, policy_mode = read_config(policy_path)
+except FileNotFoundError:
+    old_policy, policy_mode = None, 0o644
+if old_policy is not None and old_policy != policy and not re.fullmatch(
+        r'Match User tako\n    AuthorizedKeysFile [^\n]* /etc/ssh/tako-network/authorized_keys\nMatch all\n', old_policy):
+    raise SystemExit('error: refusing to replace an administrator-owned network SSH policy')
+
+seen = set()
+
+def inspect(path):
+    if path == policy_path or path in seen:
+        return
+    if len(seen) >= 256:
+        raise SystemExit('error: too many SSH configuration includes')
+    seen.add(path)
+    text, _ = read_config(path)
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith('#'):
+            continue
+        match = re.fullmatch(r'\s*([A-Za-z][A-Za-z0-9]*)\s*(?:=\s*)?(.*)', line)
+        if not match:
+            raise SystemExit('error: unsupported SSH configuration syntax')
+        keyword, raw = match.groups()
+        arguments = shlex.split(raw, comments=True)
+        if keyword.lower() == 'authorizedkeyscommand' and arguments != ['none']:
+            raise SystemExit('error: existing AuthorizedKeysCommand requires administrator integration')
+        if keyword.lower() == 'include':
+            for pattern in arguments:
+                if not os.path.isabs(pattern):
+                    pattern = str(ssh_dir / pattern)
+                for included in sorted(glob.glob(pattern)):
+                    inspect(Path(included))
+
+
+inspect(config_path)
+original, config_mode = read_config(config_path)
+include = f'Include {policy_path}\n'
+updated = original if original.startswith(include) else include + original
+
+
+def replace(path, text, mode):
+    parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    temporary = '.tako-ssh-' + secrets.token_hex(16)
+    try:
+        info = os.fstat(parent)
+        if info.st_uid != os.geteuid() or info.st_mode & 0o022:
+            raise SystemExit('error: unsafe SSH configuration directory')
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode, dir_fd=parent)
+        with os.fdopen(fd, 'w') as stream:
+            os.fchmod(stream.fileno(), mode)
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.rename(temporary, path.name, src_dir_fd=parent, dst_dir_fd=parent)
+        os.fsync(parent)
+    finally:
+        try:
+            os.unlink(temporary, dir_fd=parent)
+        except FileNotFoundError:
+            pass
+        os.close(parent)
+
+
+try:
+    replace(policy_path, policy, policy_mode)
+    replace(config_path, updated, config_mode)
+    result = subprocess.run(['/usr/sbin/sshd', '-t'], capture_output=True)
+    if result.returncode:
+        raise RuntimeError('sshd validation failed')
+except Exception:
+    replace(config_path, original, config_mode)
+    if old_policy is None:
+        policy_path.unlink(missing_ok=True)
+    else:
+        replace(policy_path, old_policy, policy_mode)
+    raise SystemExit('error: SSH configuration validation failed; original policy restored') from None
+SSH_POLICY_PY
   if [ "$SERVICE_MANAGER" = systemd ]; then
     if systemctl is-active --quiet ssh; then systemctl reload ssh; fi
     if systemctl is-active --quiet sshd; then systemctl reload sshd; fi
