@@ -89,7 +89,19 @@ impl PostgresChannelStore {
         limit: u32,
     ) -> Result<Vec<ChannelMessage>, ChannelError> {
         let mut client = self.client.lock();
-        let rows = client
+        let mut tx = client
+            .build_transaction()
+            .isolation_level(::postgres::IsolationLevel::RepeatableRead)
+            .start()
+            .map_err(|e| ChannelError::Storage(e.to_string()))?;
+        if after.is_some() {
+            let bounds = tx.query_one(&format!(
+                "SELECT MIN(id), COALESCE(MAX(id), (SELECT NULLIF(latest_message_id, 0) FROM {}.channel_metadata WHERE app_id = $1 AND channel = $2))
+                 FROM {}.channel_messages WHERE app_id = $1 AND channel = $2", self.schema, self.schema
+            ), &[&self.app_id, &channel]).map_err(|e| ChannelError::Storage(e.to_string()))?;
+            resolve_replay_cursor(after, bounds.get(0), bounds.get(1))?;
+        }
+        let rows = tx
             .query(
                 &format!(
                     "SELECT id, channel, type, data_json
@@ -103,6 +115,8 @@ impl PostgresChannelStore {
             )
             .map_err(|e| ChannelError::Storage(e.to_string()))?;
 
+        tx.commit()
+            .map_err(|e| ChannelError::Storage(e.to_string()))?;
         rows.into_iter()
             .map(|row| {
                 channel_message_from_row((

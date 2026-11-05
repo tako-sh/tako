@@ -143,7 +143,7 @@ async fn ephemeral_websockets_publish_live_without_replaying_old_events() {
                     &mut session,
                     &store,
                     "live",
-                    Some(-100),
+                    Some(crate::ReplayCursor::postgres(-100)),
                     auth,
                     json!({}),
                     Default::default(),

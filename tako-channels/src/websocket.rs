@@ -189,7 +189,7 @@ pub fn parse_publish_payload(payload: &[u8]) -> Result<ChannelPublishPayload, Ch
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FirstFrameAuth {
     pub header_value: Option<ChannelHeaderValue>,
-    pub last_message_id: Option<i64>,
+    pub last_message_id: Option<crate::ReplayCursor>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -206,11 +206,14 @@ pub fn parse_first_frame(json: &str) -> Result<FirstFrameAuth, FirstFrameError> 
         .get("token")
         .and_then(|value| value.as_str())
         .map(ChannelHeaderValue::parse);
-    let last_message_id = value.get("lastMessageId").and_then(|value| match value {
-        serde_json::Value::String(value) => value.parse::<i64>().ok(),
-        serde_json::Value::Number(value) => value.as_i64(),
-        _ => None,
-    });
+    let last_message_id = match value.get("lastMessageId") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(value)) => Some(value.parse().map_err(|_| FirstFrameError)?),
+        Some(serde_json::Value::Number(value)) => {
+            Some(value.to_string().parse().map_err(|_| FirstFrameError)?)
+        }
+        _ => return Err(FirstFrameError),
+    };
 
     Ok(FirstFrameAuth {
         header_value,
@@ -322,10 +325,16 @@ mod tests {
         let parsed =
             parse_first_frame(r#"{"type":"tako.auth","token":"plain","lastMessageId":"42"}"#)
                 .unwrap();
-        assert_eq!(parsed.last_message_id, Some(42));
+        assert_eq!(
+            parsed.last_message_id,
+            Some(crate::ReplayCursor::postgres(42))
+        );
 
         let parsed = parse_first_frame(r#"{"type":"tako.auth","lastMessageId":43}"#).unwrap();
-        assert_eq!(parsed.last_message_id, Some(43));
+        assert_eq!(
+            parsed.last_message_id,
+            Some(crate::ReplayCursor::postgres(43))
+        );
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use percent_encoding::percent_decode_str;
 
-use crate::{CHANNELS_BASE_PATH, ChannelError, ChannelRoute};
+use crate::{CHANNELS_BASE_PATH, ChannelError, ChannelRoute, ReplayCursor};
 
 pub fn parse_channel_route(path: &str) -> Result<Option<ChannelRoute>, ChannelError> {
     if !path.starts_with(CHANNELS_BASE_PATH) {
@@ -22,18 +22,18 @@ pub fn parse_channel_route(path: &str) -> Result<Option<ChannelRoute>, ChannelEr
 pub fn parse_message_id_cursor(
     value: Option<&str>,
     field_name: &str,
-) -> Result<Option<i64>, ChannelError> {
+) -> Result<Option<ReplayCursor>, ChannelError> {
     let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(None);
     };
 
     value
-        .parse::<i64>()
+        .parse::<ReplayCursor>()
         .map(Some)
         .map_err(|_| ChannelError::BadRequest(format!("invalid '{field_name}' cursor")))
 }
 
-pub fn parse_ws_last_message_id(query: Option<&str>) -> Result<Option<i64>, ChannelError> {
+pub fn parse_ws_last_message_id(query: Option<&str>) -> Result<Option<ReplayCursor>, ChannelError> {
     let Some(query) = query else {
         return Ok(None);
     };

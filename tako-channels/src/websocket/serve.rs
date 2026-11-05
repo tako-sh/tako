@@ -27,7 +27,7 @@ pub async fn serve(
     session: &mut Session,
     store: &Arc<ChannelStore>,
     channel: &str,
-    requested_after: Option<i64>,
+    requested_after: Option<crate::ReplayCursor>,
     auth: ChannelAuthResponse,
     params: serde_json::Value,
     mut reader: WebSocketFrameReader,
@@ -140,8 +140,8 @@ pub async fn serve(
                 after = Some(
                     message
                         .id
-                        .parse::<i64>()
-                        .expect("channel ids are always numeric"),
+                        .parse::<crate::ReplayCursor>()
+                        .expect("channel IDs are replay cursors"),
                 );
             }
             next_ping = tokio::time::Instant::now() + keepalive_interval;

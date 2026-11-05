@@ -8,9 +8,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::{ChannelAuthResponse, ChannelError, ChannelMessage, ChannelPublishPayload};
+use crate::{
+    ChannelAuthResponse, ChannelError, ChannelMessage, ChannelPublishPayload, ReplayCursor,
+};
 use postgres::PostgresChannelStore;
 use sqlite::SqliteChannelStore;
+pub use sqlite::SqliteReplayLimits;
 
 const CHANNELS_DB_FILENAME: &str = "channels.sqlite";
 pub const POSTGRES_CHANNELS_SCHEMA: &str = "tako_channels";
@@ -165,7 +168,7 @@ impl ChannelStore {
     pub async fn read_after_async(
         self: &Arc<Self>,
         channel: &str,
-        after: Option<i64>,
+        after: Option<ReplayCursor>,
         limit: u32,
     ) -> Result<Vec<ChannelMessage>, ChannelError> {
         let channel = channel.to_owned();
@@ -176,8 +179,8 @@ impl ChannelStore {
     pub async fn replay_cursor_async(
         self: &Arc<Self>,
         channel: &str,
-        after: Option<i64>,
-    ) -> Result<Option<i64>, ChannelError> {
+        after: Option<ReplayCursor>,
+    ) -> Result<Option<ReplayCursor>, ChannelError> {
         let channel = channel.to_owned();
         self.run(move |store| store.replay_cursor(&channel, after))
             .await
@@ -229,6 +232,17 @@ impl ChannelStore {
             Self::from_backend(ChannelStoreBackend::Sqlite(SqliteChannelStore::open(path)?))?;
         let path = std::fs::canonicalize(path).map_err(|e| ChannelError::Storage(e.to_string()))?;
         store.ephemeral = crate::ephemeral::EphemeralHub::for_path(path);
+        Ok(store)
+    }
+
+    pub fn open_sqlite_with_limits(
+        path: &Path,
+        limits: SqliteReplayLimits,
+    ) -> Result<Self, ChannelError> {
+        let store = Self::open_sqlite(path)?;
+        if let ChannelStoreBackend::Sqlite(sqlite) = store.backend.as_ref() {
+            sqlite.set_limits(limits)?;
+        }
         Ok(store)
     }
 
@@ -323,23 +337,32 @@ impl ChannelStore {
     pub fn read_after(
         &self,
         channel: &str,
-        after: Option<i64>,
+        after: Option<ReplayCursor>,
         limit: u32,
     ) -> Result<Vec<ChannelMessage>, ChannelError> {
         match self.backend.as_ref() {
             ChannelStoreBackend::Sqlite(store) => store.read_after(channel, after, limit),
-            ChannelStoreBackend::Postgres(store) => store.read_after(channel, after, limit),
+            ChannelStoreBackend::Postgres(store) => store.read_after(
+                channel,
+                after.map(ReplayCursor::pg_position).transpose()?,
+                limit,
+            ),
         }
     }
 
     pub fn replay_cursor(
         &self,
         channel: &str,
-        requested: Option<i64>,
-    ) -> Result<Option<i64>, ChannelError> {
+        requested: Option<ReplayCursor>,
+    ) -> Result<Option<ReplayCursor>, ChannelError> {
         match self.backend.as_ref() {
             ChannelStoreBackend::Sqlite(store) => store.replay_cursor(channel, requested),
-            ChannelStoreBackend::Postgres(store) => store.replay_cursor(channel, requested),
+            ChannelStoreBackend::Postgres(store) => store
+                .replay_cursor(
+                    channel,
+                    requested.map(ReplayCursor::pg_position).transpose()?,
+                )
+                .map(|cursor| cursor.map(ReplayCursor::postgres)),
         }
     }
 
@@ -374,7 +397,7 @@ pub(super) fn resolve_replay_cursor(
         return Ok(latest);
     };
     let floor = oldest.map(|id| id.saturating_sub(1)).or(latest);
-    if floor.is_none_or(|floor| requested < floor) {
+    if floor.is_none_or(|floor| requested < floor) || latest.is_none_or(|head| requested > head) {
         return Err(ChannelError::StaleCursor);
     }
     Ok(Some(requested))
