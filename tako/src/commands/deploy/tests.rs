@@ -511,6 +511,144 @@ fn runtime_state_storage_validation_channels_override_all_local_workflows() {
     assert!(result.errors[0].contains("Channels"), "{:?}", result.errors);
 }
 
+fn native_multi_server_js_config() -> TakoToml {
+    let mut config = multi_server_js_config();
+    let production = config.envs.get_mut("production").unwrap();
+    production.servers.clear();
+    production.network = Some("0123456789abcdef0123456789abcdef".into());
+    config
+}
+
+#[test]
+fn runtime_state_storage_validation_native_channels_presence_and_stores_allow_sqlite() {
+    for directory in ["channels", "presence", "stores"] {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join("src").join(directory)).unwrap();
+        fs::write(
+            temp.path().join("src").join(directory).join("live.ts"),
+            "export default {};",
+        )
+        .unwrap();
+        for server_count in [1, 2] {
+            let result = config::validate_runtime_state_storage_for_deploy(
+                temp.path(),
+                &native_multi_server_js_config(),
+                &SecretsStore::default(),
+                "production",
+                server_count,
+            );
+            assert!(!result.has_errors(), "{directory}: {:?}", result.errors);
+        }
+    }
+}
+
+#[test]
+fn runtime_state_storage_validation_native_channels_do_not_replace_workflow_storage() {
+    let temp = TempDir::new().unwrap();
+    write_channel(&temp, "chat.ts", "export default defineChannel(\"chat\");");
+    write_workflow(
+        &temp,
+        "daily.ts",
+        "export default defineWorkflow(\"daily\", { handler: async () => {} });",
+    );
+    let result = config::validate_runtime_state_storage_for_deploy(
+        temp.path(),
+        &native_multi_server_js_config(),
+        &SecretsStore::default(),
+        "production",
+        2,
+    );
+    assert!(result.has_errors());
+    assert!(result.errors[0].contains("Workflows"));
+    assert!(result.errors[0].contains("postgres_url"));
+    assert!(!result.errors[0].contains("Channels"));
+}
+
+#[test]
+fn runtime_state_storage_validation_native_channels_allow_intentionally_local_workflows() {
+    let temp = TempDir::new().unwrap();
+    write_channel(&temp, "chat.ts", "export default defineChannel(\"chat\");");
+    write_workflow(
+        &temp,
+        "daily.ts",
+        "export default defineWorkflow(\"daily\", { local: true, handler: async () => {} });",
+    );
+    let result = config::validate_runtime_state_storage_for_deploy(
+        temp.path(),
+        &native_multi_server_js_config(),
+        &SecretsStore::default(),
+        "production",
+        2,
+    );
+    assert!(!result.has_errors(), "{:?}", result.errors);
+}
+
+#[test]
+fn runtime_state_storage_validation_uses_only_the_selected_environment_network() {
+    let temp = TempDir::new().unwrap();
+    write_channel(&temp, "chat.ts", "export default defineChannel(\"chat\");");
+    let mut config = native_multi_server_js_config();
+    config.envs.insert(
+        "staging".into(),
+        EnvConfig {
+            servers: vec!["sfo".into(), "iad".into()],
+            ..Default::default()
+        },
+    );
+    for (server_count, expected_errors) in [(1, false), (2, true)] {
+        let result = config::validate_runtime_state_storage_for_deploy(
+            temp.path(),
+            &config,
+            &SecretsStore::default(),
+            "staging",
+            server_count,
+        );
+        assert_eq!(result.has_errors(), expected_errors, "{:?}", result.errors);
+    }
+}
+
+#[test]
+fn runtime_state_storage_validation_native_channels_validate_configured_postgres() {
+    let temp = TempDir::new().unwrap();
+    write_channel(&temp, "chat.ts", "export default defineChannel(\"chat\");");
+    for (expiry, expected_errors) in [
+        (None, false),
+        (Some("2000-01-01"), true),
+        (Some("invalid"), true),
+    ] {
+        let mut secrets = SecretsStore::default();
+        secrets.ensure_env_key_id("production").unwrap();
+        secrets
+            .set_credential(
+                "production",
+                POSTGRES_CREDENTIAL_NAME,
+                EncryptedSecretValue::new("encrypted".into(), None),
+            )
+            .unwrap();
+        secrets
+            .environments
+            .get_mut("production")
+            .unwrap()
+            .credentials
+            .get_mut(POSTGRES_CREDENTIAL_NAME)
+            .unwrap()
+            .expires_on = expiry.map(str::to_string);
+        let result = config::validate_runtime_state_storage_for_deploy(
+            temp.path(),
+            &native_multi_server_js_config(),
+            &secrets,
+            "production",
+            2,
+        );
+        assert_eq!(result.has_errors(), expected_errors, "{:?}", result.errors);
+        assert!(
+            secrets
+                .get_credential("production", POSTGRES_CREDENTIAL_NAME)
+                .is_some()
+        );
+    }
+}
+
 fn write_workflow(temp: &TempDir, name: &str, source: &str) {
     let workflows_dir = temp.path().join("src/workflows");
     fs::create_dir_all(&workflows_dir).unwrap();
