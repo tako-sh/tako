@@ -181,7 +181,7 @@ async fn downstream_upgrade_header_marks_guard_before_any_upstream_response() {
         .digest_mut()
         .unwrap()
         .socket_digest = Some(Arc::new(
-        pingora_core::protocols::digest::SocketDigest::from_raw_fd(file.as_raw_fd()),
+        pingora_core::protocols::SocketDigest::from_raw_fd(file.as_raw_fd()),
     ));
     session
         .req_header_mut()
@@ -200,7 +200,7 @@ async fn downstream_upgrade_header_marks_guard_before_any_upstream_response() {
 async fn h2_shared_connection_keeps_each_request_counted_after_driver_exit() {
     tokio::time::timeout(Duration::from_secs(2), async {
         use pingora_core::protocols::http::v2::server::{self, H2Accept, HttpSession};
-        use pingora_core::protocols::{Digest, digest::SocketDigest};
+        use pingora_core::protocols::{Digest, SocketDigest};
         let temp = tempfile::tempdir().unwrap();
         let proxy = proxy(temp.path().into());
         let file = std::fs::File::open("/dev/null").unwrap();

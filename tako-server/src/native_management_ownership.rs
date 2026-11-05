@@ -66,6 +66,7 @@ impl PrimaryHandoff {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn generation(&self) -> Arc<PrimaryGeneration> {
         self.generation.clone()
     }

@@ -30,37 +30,88 @@ const MAX_LOG_BYTES: usize = 1024 * 1024;
 const BODY_TIMEOUT: Duration = Duration::from_secs(30);
 type HttpResponse = Response<Full<Bytes>>;
 
-pub(crate) async fn handle_request<B>(request: Request<B>, state: Arc<ServerState>) -> HttpResponse
+pub(crate) async fn handle_request<B>(
+    request: Request<B>,
+    state: Arc<ServerState>,
+    dispatch: crate::native_management_ownership::NativeDispatchGuard,
+) -> HttpResponse
 where
     B: Body<Data = Bytes> + Unpin + Send + 'static,
     B::Error: std::fmt::Display + Send + Sync + 'static,
 {
     let data_dir = state.runtime_config().data_dir.clone();
-    handle_using(request, state, move |bytes| async move {
-        let result = crate::native_agent::relay(&data_dir, "POST", "/v1/network/authorize", &bytes)
-            .await
-            .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
-        if !result.ready {
-            return Err(StatusCode::SERVICE_UNAVAILABLE);
-        }
-        if result.status != 200 {
-            return Err(StatusCode::UNAUTHORIZED);
-        }
-        result.response.ok_or(StatusCode::SERVICE_UNAVAILABLE)
-    })
+    let recheck_dir = data_dir.clone();
+    handle_with_authority(
+        request,
+        state,
+        move |bytes| async move {
+            agent_authority(
+                crate::native_agent::relay(&data_dir, "POST", "/v1/network/authorize", &bytes)
+                    .await,
+            )
+        },
+        move |signed| async move {
+            agent_authority(crate::native_agent::recheck_authority(&recheck_dir, &signed).await)
+        },
+        Some(dispatch),
+    )
     .await
 }
 
-async fn handle_using<B, F, Fut>(
+fn agent_authority(
+    result: Result<crate::native_agent::AgentResponse, crate::native_agent::AgentError>,
+) -> Result<RpcResponse, StatusCode> {
+    let result = result.map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    if !result.ready {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+    if result.status != 200 {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    result.response.ok_or(StatusCode::SERVICE_UNAVAILABLE)
+}
+
+fn permissions_for(
+    signed: &SignedRequest,
+    result: Result<RpcResponse, StatusCode>,
+) -> Result<Permissions, HttpResponse> {
+    let RpcRequest::Authorize { action } = &signed.request else {
+        return Err(error(
+            StatusCode::UNAUTHORIZED,
+            "Invalid management authorization",
+        ));
+    };
+    match result {
+        Ok(RpcResponse::Authorized {
+            signer,
+            permissions,
+            action: authorized,
+        }) if signer == signed.signer && authorized == *action => Ok(permissions),
+        Ok(_) => Err(error(
+            StatusCode::UNAUTHORIZED,
+            "Invalid management authorization",
+        )),
+        Err(status) => Err(error(
+            status,
+            "Management authorization unavailable or denied",
+        )),
+    }
+}
+
+async fn handle_with_authority<B, F, Fut, G, Check>(
     request: Request<B>,
     state: Arc<ServerState>,
     authorize: F,
+    recheck: G,
+    dispatch: Option<crate::native_management_ownership::NativeDispatchGuard>,
 ) -> HttpResponse
 where
     B: Body<Data = Bytes> + Unpin + Send + 'static,
     B::Error: std::fmt::Display + Send + Sync + 'static,
-    F: FnOnce(Vec<u8>) -> Fut,
-    Fut: Future<Output = Result<RpcResponse, StatusCode>>,
+    F: FnOnce(Vec<u8>) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<RpcResponse, StatusCode>> + Send + 'static,
+    G: FnOnce(SignedRequest) -> Check + Send + 'static,
+    Check: Future<Output = Result<RpcResponse, StatusCode>> + Send + 'static,
 {
     let (parts, body) = request.into_parts();
     if parts.method != Method::POST || parts.uri.query().is_some() {
@@ -127,21 +178,32 @@ where
         Ok(wire) => wire,
         Err(_) => return error(StatusCode::UNAUTHORIZED, "Invalid management authorization"),
     };
-    let permissions = match authorize(wire).await {
-        Ok(RpcResponse::Authorized {
-            signer,
-            permissions,
-            action: authorized,
-        }) if signer == signed.signer && authorized == *action => permissions,
-        Ok(_) => return error(StatusCode::UNAUTHORIZED, "Invalid management authorization"),
-        Err(status) => return error(status, "Management authorization unavailable or denied"),
-    };
     match operation {
         Operation::Rpc(command) => {
             let scope = action.scope().cloned();
-            // The task owns the guard so a disconnected client cannot unlock a mutation.
+            // Owned admission and mutation guards survive a disconnected waiter.
             match tokio::spawn(async move {
+                let _dispatch = dispatch;
+                if let Command::DrainServer { timeout_seconds } = &command {
+                    let permissions = match permissions_for(&signed, authorize(wire).await) {
+                        Ok(permissions) => permissions,
+                        Err(response) => return response,
+                    };
+                    if let Err(message) =
+                        authorize_command(&state, &permissions, scope.as_ref(), &command)
+                    {
+                        return error(StatusCode::FORBIDDEN, &message);
+                    }
+                    return rpc_response(
+                        state.drain_server_before_management(*timeout_seconds).await,
+                    );
+                }
                 let _guard = state.management_lock.lock().await;
+                // Consume the signed nonce only when dispatch can proceed, using current authority.
+                let permissions = match permissions_for(&signed, authorize(wire).await) {
+                    Ok(permissions) => permissions,
+                    Err(response) => return response,
+                };
                 if let Err(message) =
                     authorize_command(&state, &permissions, scope.as_ref(), &command)
                 {
@@ -159,23 +221,36 @@ where
             }
         }
         Operation::Upload(metadata, body) => {
-            let Some(scope) = action.scope() else {
+            let Some(scope) = action.scope().cloned() else {
                 return error(StatusCode::FORBIDDEN, "Explicit scope required");
             };
-            if policy::authorize_app(&permissions, scope, &metadata.app).is_err() {
+            let permissions = match permissions_for(&signed, authorize(wire).await) {
+                Ok(permissions) => permissions,
+                Err(response) => return response,
+            };
+            if policy::authorize_app(&permissions, &scope, &metadata.app).is_err() {
                 return error(StatusCode::FORBIDDEN, "Deployment permission denied");
             }
-            upload::receive(state, permissions, scope.clone(), metadata, body).await
+            upload::receive(state, scope, metadata, body, dispatch, async move {
+                let current = recheck(signed.clone()).await;
+                permissions_for(&signed, current)
+            })
+            .await
         }
         Operation::Logs(metadata) => {
-            let Some(scope) = action.scope() else {
+            let Some(scope) = action.scope().cloned() else {
                 return error(StatusCode::FORBIDDEN, "Explicit scope required");
             };
+            let _dispatch = dispatch;
             let _guard = state.management_lock.lock().await;
+            let permissions = match permissions_for(&signed, authorize(wire).await) {
+                Ok(permissions) => permissions,
+                Err(response) => return response,
+            };
             let command = Command::Status {
                 app: metadata.app.clone(),
             };
-            if authorize_command(&state, &permissions, Some(scope), &command).is_err()
+            if authorize_command(&state, &permissions, Some(&scope), &command).is_err()
                 || upload::confined_logs(&state.runtime_config().data_dir, &metadata.app).is_err()
             {
                 return error(StatusCode::FORBIDDEN, "Log access denied");

@@ -16,6 +16,8 @@ use tokio::runtime::Runtime;
 mod acme;
 mod cloudflare;
 mod data_dir;
+#[cfg(target_os = "linux")]
+mod native_promotion;
 mod signals;
 mod standby;
 mod tasks;
@@ -67,6 +69,8 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     let data_dir = PathBuf::from(&data_dir_str);
     prepare_data_dir(&data_dir)?;
+    #[cfg(target_os = "linux")]
+    native_promotion::guard_promotion_startup(&data_dir)?;
     let server_identity = if standby {
         None
     } else {
@@ -168,8 +172,30 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         server_identity,
     };
 
+    #[cfg(target_os = "linux")]
+    let native_handoff = if native_config.is_some() && !standby {
+        Some(
+            rt.block_on(crate::native_management_ownership::PrimaryHandoff::claim(
+                &data_dir,
+                Duration::from_secs(120),
+            ))?,
+        )
+    } else {
+        None
+    };
+
+    #[cfg(target_os = "linux")]
+    native_promotion::guard_promotion_startup(&data_dir)?;
     let challenge_tokens_for_promote = challenge_tokens.clone();
-    let reload_owner = take_upgrade_reload_owner(&data_dir)?;
+    #[cfg(target_os = "linux")]
+    let promotion_child = native_promotion::is_promotion_child();
+    #[cfg(not(target_os = "linux"))]
+    let promotion_child = false;
+    let reload_owner = if promotion_child {
+        None
+    } else {
+        take_upgrade_reload_owner(&data_dir)?
+    };
     let reload_owner = if should_signal_parent_on_ready() {
         reload_owner.as_deref()
     } else {
@@ -193,12 +219,12 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             runtime,
         )?
     });
-    if let Some(control) = &native_control {
-        control.attach(state.clone());
-    }
-    rt.block_on(async { state.ensure_internal_socket_started() })?;
-
-    if let Err(e) = rt.block_on(state.restore_from_state_store()) {
+    if let Err(e) = rt.block_on(async {
+        let _guard = state.management_lock.lock().await;
+        crate::drain_observer::spawn(&rt, state.clone());
+        state.ensure_internal_socket_started()?;
+        state.restore_from_state_store().await
+    }) {
         tracing::error!("Failed to restore server state from SQLite: {}", e);
         return Err(e.into());
     }
@@ -240,6 +266,19 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     if !standby {
         state.clone().start_backup_scheduler(rt.handle());
         spawn_management_http(&rt, state.clone(), args.management_host.clone());
+        #[cfg(target_os = "linux")]
+        if let Some(handoff) = native_handoff {
+            let management = rt.block_on(crate::native_management_listener::prepare(
+                data_dir.clone(),
+                state.clone(),
+                handoff,
+            ))?;
+            rt.spawn(async move {
+                if let Err(error) = management.run().await {
+                    tracing::error!(%error, "Native management listener stopped");
+                }
+            });
+        }
     }
 
     if standby {
@@ -303,6 +342,7 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let server = proxy::build_server_with_acme(proxy::ServerBuildConfig {
         draining: state.drain_flag(),
         lifecycle_lock: state.management_lock.clone(),
+        proxy_requests: state.proxy_requests.clone(),
         native_control,
         native_channels,
         native_services,

@@ -35,9 +35,6 @@ impl ComposeGateway {
     pub fn address(&self) -> Ipv4Addr {
         self.address
     }
-    pub fn subnet(&self) -> ipnet::Ipv4Net {
-        self.subnet
-    }
 
     fn new(address: Ipv4Addr, subnet: ipnet::Ipv4Net) -> Result<Self, &'static str> {
         if !address.is_private()

@@ -1,5 +1,7 @@
 mod backend;
 mod channels;
+#[cfg(test)]
+mod drain_tests;
 mod image;
 mod native;
 mod static_handler;
@@ -40,6 +42,7 @@ impl TakoProxy {
 }
 
 pub struct RequestCtx {
+    pub(super) request_guard: Option<crate::request_drain::RequestGuard>,
     pub(super) private_request: bool,
     pub(super) native_remote: Option<std::net::Ipv6Addr>,
     pub(super) backend: Option<Backend>,
@@ -98,12 +101,19 @@ impl RequestCtx {
     }
 }
 
+impl Drop for RequestCtx {
+    fn drop(&mut self) {
+        self.finish_backend_request();
+    }
+}
+
 #[async_trait]
 impl ProxyHttp for TakoProxy {
     type CTX = RequestCtx;
 
     fn new_ctx(&self) -> Self::CTX {
         RequestCtx {
+            request_guard: None,
             private_request: false,
             native_remote: None,
             backend: None,
@@ -130,6 +140,24 @@ impl ProxyHttp for TakoProxy {
             ctx.observation.set_handler("network", "control");
             return control.handle(session).await;
         }
+        if self.draining.load(std::sync::atomic::Ordering::Acquire) {
+            return native::reject(session, 503).await;
+        }
+
+        let socket = match native::duplicate_socket(session) {
+            Ok(socket) => socket,
+            Err(error) => {
+                tracing::warn!(%error, "Could not retain application transport for drain");
+                return native::reject(session, 503).await;
+            }
+        };
+        let Some(guard) = self.proxy_requests.register(socket) else {
+            return native::reject(session, 503).await;
+        };
+        if session.req_header().headers.contains_key("upgrade") {
+            guard.mark_long_lived();
+        }
+        ctx.request_guard = Some(guard);
         if self.draining.load(std::sync::atomic::Ordering::Acquire) {
             return native::reject(session, 503).await;
         }
@@ -652,6 +680,11 @@ impl ProxyHttp for TakoProxy {
         upstream_response: &mut ResponseHeader,
         ctx: &mut Self::CTX,
     ) -> Result<()> {
+        if (upstream_response.status.as_u16() == 101 || native::is_event_stream(upstream_response))
+            && let Some(guard) = &ctx.request_guard
+        {
+            guard.mark_long_lived();
+        }
         upstream_response.insert_header("X-Request-ID", ctx.observation.request_id())?;
         ctx.observation.finish_upstream_response();
         if let (Some(start), Some(backend)) = (ctx.upstream_start.take(), ctx.backend.as_ref()) {

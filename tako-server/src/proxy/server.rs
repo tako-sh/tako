@@ -25,6 +25,7 @@ pub(crate) struct PublicListenerEndpoint {
 pub(crate) struct ServerBuildConfig {
     pub(crate) draining: Arc<std::sync::atomic::AtomicBool>,
     pub(crate) lifecycle_lock: Arc<tokio::sync::Mutex<()>>,
+    pub(crate) proxy_requests: Arc<crate::request_drain::RequestDrain>,
     pub(crate) native_control: Option<Arc<crate::native_control::NativeControl>>,
     pub(crate) native_channels: Option<crate::native_channels::Client>,
     pub(crate) native_services: Option<Arc<crate::native_proxy::NativeProxy>>,
@@ -43,6 +44,7 @@ pub(crate) fn build_server_with_acme(build: ServerBuildConfig) -> Result<Server>
     let ServerBuildConfig {
         draining,
         lifecycle_lock,
+        proxy_requests,
         native_control,
         native_channels,
         native_services,
@@ -97,6 +99,7 @@ pub(crate) fn build_server_with_acme(build: ServerBuildConfig) -> Result<Server>
     proxy.native_services = native_services;
     proxy.draining = draining;
     proxy.lifecycle_lock = lifecycle_lock;
+    proxy.proxy_requests = proxy_requests;
     if let Some(client) = native_channels {
         proxy.set_native_channel_client(client);
     }

@@ -457,6 +457,9 @@ pub(crate) async fn handle_rpc_command(
     command: Command,
 ) -> tako_core::Response {
     match tokio::spawn(async move {
+        if let Command::DrainServer { timeout_seconds } = &command {
+            return state.drain_server_before_management(*timeout_seconds).await;
+        }
         let _guard = state.management_lock.lock().await;
         state.handle_command(command).await
     })

@@ -56,6 +56,7 @@ pub struct TakoProxy {
     native_services: Option<Arc<crate::native_proxy::NativeProxy>>,
     draining: Arc<std::sync::atomic::AtomicBool>,
     lifecycle_lock: Arc<tokio::sync::Mutex<()>>,
+    proxy_requests: Arc<crate::request_drain::RequestDrain>,
     /// Load balancer
     lb: Arc<LoadBalancer>,
     /// Route table (app_name -> route patterns)
@@ -109,6 +110,7 @@ impl TakoProxy {
             native_services: None,
             draining: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             lifecycle_lock: Arc::new(tokio::sync::Mutex::new(())),
+            proxy_requests: crate::request_drain::RequestDrain::default(),
             lb,
             routes,
             config,
@@ -143,6 +145,7 @@ impl TakoProxy {
             native_services: None,
             draining: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             lifecycle_lock: Arc::new(tokio::sync::Mutex::new(())),
+            proxy_requests: crate::request_drain::RequestDrain::default(),
             lb,
             routes,
             config,

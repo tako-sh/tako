@@ -61,16 +61,18 @@ impl Drop for UploadFile {
     }
 }
 
-pub(super) async fn receive<B>(
+pub(super) async fn receive<B, Check>(
     state: Arc<ServerState>,
-    permissions: Permissions,
     scope: AppEnv,
     metadata: Metadata,
     mut body: B,
+    dispatch: Option<crate::native_management_ownership::NativeDispatchGuard>,
+    recheck: Check,
 ) -> HttpResponse
 where
     B: Body<Data = Bytes> + Unpin + Send + 'static,
     B::Error: std::fmt::Display + Send + Sync + 'static,
+    Check: Future<Output = Result<Permissions, HttpResponse>> + Send + 'static,
 {
     if state.is_draining() {
         return error(StatusCode::SERVICE_UNAVAILABLE, "Server is draining");
@@ -134,6 +136,13 @@ where
         if state.is_draining() {
             return error(StatusCode::SERVICE_UNAVAILABLE, "Server is draining");
         }
+        let permissions = match recheck.await {
+            Ok(permissions) => permissions,
+            Err(response) => return response,
+        };
+        if state.is_draining() {
+            return error(StatusCode::SERVICE_UNAVAILABLE, "Server is draining");
+        }
         let command = Command::PrepareReleaseUpload {
             app: metadata.app.clone(),
             version: metadata.version.clone(),
@@ -143,6 +152,7 @@ where
         }
         // Blocking extraction retains both the guard and temporary file if its waiter is dropped.
         tokio::task::spawn_blocking(move || {
+            let _dispatch = dispatch;
             let _slot = slot;
             let _guard = guard;
             if confined_directory(
@@ -156,6 +166,9 @@ where
                     StatusCode::BAD_REQUEST,
                     "Artifact archive violates upload limits",
                 );
+            }
+            if state.is_draining() {
+                return error(StatusCode::SERVICE_UNAVAILABLE, "Server is draining");
             }
             match state.store_uploaded_release_artifact(&metadata.app, &metadata.version, &temp.0) {
                 Ok(plan) => json_response(StatusCode::OK, &tako_core::Response::ok(plan)),

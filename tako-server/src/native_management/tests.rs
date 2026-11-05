@@ -1,8 +1,37 @@
+mod review;
+
 use super::*;
 use crate::tls::{CertManager, CertManagerConfig};
 use std::collections::HashMap;
 use tako_network::{DeviceKind, LocalDeviceKeys, NetworkId};
 use tempfile::TempDir;
+
+async fn handle_using<B, F, Fut>(
+    request: Request<B>,
+    state: Arc<ServerState>,
+    authorize: F,
+) -> HttpResponse
+where
+    B: Body<Data = Bytes> + Unpin + Send + 'static,
+    B::Error: std::fmt::Display + Send + Sync + 'static,
+    F: FnOnce(Vec<u8>) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<RpcResponse, StatusCode>> + Send + 'static,
+{
+    let receipt = Arc::new(parking_lot::Mutex::new(None));
+    let saved = receipt.clone();
+    handle_with_authority(
+        request,
+        state,
+        move |bytes| async move {
+            let result = authorize(bytes).await;
+            *saved.lock() = result.as_ref().ok().cloned();
+            result
+        },
+        move |_| async move { receipt.lock().clone().ok_or(StatusCode::UNAUTHORIZED) },
+        None,
+    )
+    .await
+}
 
 fn state() -> (TempDir, Arc<ServerState>) {
     std::thread::spawn(|| {
@@ -374,12 +403,13 @@ async fn policy_reads_bindings_after_acquiring_the_dispatch_guard() {
             Ok(authorized)
         },
     ));
-    rx.await.unwrap();
+    // Authorization must wait behind the dispatch guard too.
     state
         .state_store
         .upsert_app(&config, &["new.example".into()])
         .unwrap();
     drop(guard);
+    rx.await.unwrap();
     let response = pending.await.unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
     let body = response.into_body().collect().await.unwrap().to_bytes();
@@ -499,4 +529,87 @@ async fn prepare_upload_rpc_cannot_follow_an_existing_shared_log_redirect() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn queued_request_checks_authority_only_after_dispatch_lock() {
+    let (_dir, state) = state();
+    let body = serde_json::to_vec(&Command::ServerInfo).unwrap();
+    let signed = rpc(&body, None);
+    let revoked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let checked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let callback_revoked = revoked.clone();
+    let callback_checked = checked.clone();
+    let lock = state.management_lock.lock().await;
+    let pending = tokio::spawn(handle_using(
+        request("/v1/management/rpc", &signed, body),
+        state.clone(),
+        move |_| async move {
+            callback_checked.store(true, std::sync::atomic::Ordering::Release);
+            assert!(callback_revoked.load(std::sync::atomic::Ordering::Acquire));
+            Err(StatusCode::UNAUTHORIZED)
+        },
+    ));
+    tokio::task::yield_now().await;
+    assert!(!checked.load(std::sync::atomic::Ordering::Acquire));
+    revoked.store(true, std::sync::atomic::Ordering::Release);
+    drop(lock);
+    assert_eq!(pending.await.unwrap().status(), StatusCode::UNAUTHORIZED);
+    assert!(checked.load(std::sync::atomic::Ordering::Acquire));
+}
+
+#[tokio::test]
+async fn received_upload_cannot_publish_after_authority_is_withdrawn() {
+    let (dir, state) = state();
+    let mut tar = tar::Builder::new(Vec::new());
+    let mut header = tar::Header::new_gnu();
+    header.set_size(5);
+    header.set_mode(0o644);
+    header.set_cksum();
+    tar.append_data(&mut header, "hello.txt", &b"hello"[..])
+        .unwrap();
+    let archive = zstd::stream::encode_all(&tar.into_inner().unwrap()[..], 0).unwrap();
+    let digest = hex::encode(Sha256::digest(&archive));
+    let descriptor = tako_core::release_artifact_upload_auth_body(
+        "demo/production",
+        "v1",
+        archive.len() as u64,
+        &digest,
+    );
+    let signed = signed(ManagementAction::ReleaseArtifact {
+        scope: Some("demo/production".parse().unwrap()),
+        sha256: hex::encode(Sha256::digest(&descriptor)),
+    });
+    let response = authorized(&signed, scoped());
+    let expected = signed.clone();
+    let req = Request::post("/v1/management/release-artifact")
+        .header(
+            AUTH_HEADER,
+            STANDARD.encode(serde_json::to_vec(&signed).unwrap()),
+        )
+        .header("x-tako-app", "demo/production")
+        .header("x-tako-version", "v1")
+        .header("x-tako-artifact-size", archive.len())
+        .header("x-tako-artifact-sha256", digest)
+        .body(Full::new(Bytes::from(archive)))
+        .unwrap();
+    let response = handle_with_authority(
+        req,
+        state,
+        |_| async { Ok(response) },
+        move |signed| async move {
+            assert_eq!(signed, expected);
+            Err(StatusCode::UNAUTHORIZED)
+        },
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert!(!dir.path().join("apps/demo/production/releases/v1").exists());
+    assert_eq!(
+        std::fs::read_dir(dir.path().join("tmp/uploads"))
+            .unwrap()
+            .count(),
+        0
+    );
 }

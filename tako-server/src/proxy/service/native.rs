@@ -33,6 +33,23 @@ pub(super) fn socket_addresses(session: &Session) -> (Option<IpAddr>, Option<IpA
     (None, None)
 }
 
+pub(super) fn duplicate_socket(session: &Session) -> std::io::Result<Option<std::os::fd::OwnedFd>> {
+    session
+        .digest()
+        .and_then(|digest| digest.socket_digest.as_ref())
+        .map(|socket| socket.duplicate_socket())
+        .transpose()
+}
+
+pub(super) fn is_event_stream(response: &ResponseHeader) -> bool {
+    response
+        .headers
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("text/event-stream"))
+}
+
 pub(super) fn strip_credentials(request: &mut RequestHeader) {
     for name in [
         "x-tako-network-authorization",

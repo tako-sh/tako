@@ -53,7 +53,7 @@ zstd = "0.14"
 nanoid = "0.5"
 bytes = "1"
 http-body-util = "0.1"
-hyper = { version = "1.11", features = ["http1", "server"] }
+hyper = { version = "1.11", features = ["http1", "server", "client"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 mimalloc = "0.1"
 percent-encoding = "2"

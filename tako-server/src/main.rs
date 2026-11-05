@@ -11,6 +11,7 @@ mod channels;
 mod compose_runtime;
 mod container_runtime;
 mod defaults;
+mod drain_observer;
 mod identity;
 mod image_worker;
 mod instances;
@@ -25,6 +26,10 @@ mod native_channels;
 mod native_control;
 #[cfg(target_os = "linux")]
 mod native_management;
+#[cfg(target_os = "linux")]
+mod native_management_listener;
+#[cfg(target_os = "linux")]
+mod native_management_ownership;
 mod native_management_policy;
 mod native_proxy;
 mod native_services;
@@ -37,11 +42,11 @@ mod protocol_compatibility;
 mod proxy;
 mod release;
 mod release_command;
+mod request_drain;
 mod routing;
 mod runtime_events;
 mod scaling;
 mod server_state;
-mod drain_observer;
 mod socket;
 mod startup;
 mod state_store;

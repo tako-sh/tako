@@ -1,5 +1,4 @@
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
 use std::time::{Duration, UNIX_EPOCH};
 
 use pingora_core::Result;
@@ -14,7 +13,6 @@ pub struct NativeControl {
     data_dir: PathBuf,
     hostname: String,
     requests: Semaphore,
-    state: OnceLock<Arc<crate::ServerState>>,
 }
 
 impl NativeControl {
@@ -63,15 +61,7 @@ impl NativeControl {
             data_dir: data_dir.into(),
             hostname,
             requests: Semaphore::new(32),
-            state: OnceLock::new(),
         }))
-    }
-
-    pub fn attach(&self, state: Arc<crate::ServerState>) {
-        assert!(
-            self.state.set(state).is_ok(),
-            "native control already attached"
-        );
     }
 
     pub fn matches_host(&self, host: &str) -> bool {
@@ -103,10 +93,7 @@ impl NativeControl {
             let Ok(_permit) = self.requests.try_acquire() else {
                 return reply(session, 503, b"{\"error\":\"Network agent busy\"}").await;
             };
-            let Some(state) = self.state.get().cloned() else {
-                return reply(session, 503, b"{\"error\":\"Network not ready\"}").await;
-            };
-            return bridge::handle(session, state).await;
+            return bridge::handle(session, &self.data_dir).await;
         }
         if !is_rpc_path(&path) || session.req_header().uri.query().is_some() {
             return reply(session, 404, b"{\"error\":\"Not found\"}").await;
@@ -208,12 +195,9 @@ mod bridge {
         }
     }
 
-    pub(super) async fn handle(
-        session: &mut Session,
-        state: Arc<crate::ServerState>,
-    ) -> Result<bool> {
+    pub(super) async fn handle(session: &mut Session, data_dir: &Path) -> Result<bool> {
         forward(session, |request| {
-            crate::native_management::handle_request(request, state)
+            crate::native_management_listener::relay(data_dir, request)
         })
         .await
     }
@@ -384,7 +368,6 @@ mod tests {
             data_dir: PathBuf::new(),
             hostname: "node-abc.123.tako.internal".into(),
             requests: Semaphore::new(1),
-            state: OnceLock::new(),
         };
         assert!(control.matches_host("NODE-ABC.123.TAKO.INTERNAL:443"));
         for host in [
@@ -412,8 +395,7 @@ mod tests {
                 data_dir: PathBuf::from("/does-not-exist"),
                 hostname: "node-abc.123.tako.internal".into(),
                 requests: Semaphore::new(1),
-                state: OnceLock::new(),
-            };
+                };
             assert!(control.handle(&mut session).await.unwrap());
             drop(session);
             let mut response = String::new();
