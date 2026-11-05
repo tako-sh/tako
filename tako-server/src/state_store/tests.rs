@@ -6,6 +6,47 @@ use tempfile::TempDir;
 
 const TEST_KEY: [u8; 32] = [0xAA; 32];
 
+#[test]
+fn drain_survives_reopen_and_upgrade_mode_changes() {
+    let (temp, store) = temp_store();
+    store.init().unwrap();
+    assert!(!store.drain_requested().unwrap());
+    store.set_drain_requested(true).unwrap();
+    store.set_server_mode(UpgradeMode::Upgrading).unwrap();
+    store.set_server_mode(UpgradeMode::Normal).unwrap();
+    drop(store);
+    let store = SqliteStateStore::new(temp.path().join("state.sqlite"), TEST_KEY);
+    store.init().unwrap();
+    assert!(store.drain_requested().unwrap());
+    store.set_drain_requested(false).unwrap();
+    drop(store);
+    let store = SqliteStateStore::new(temp.path().join("state.sqlite"), TEST_KEY);
+    store.init().unwrap();
+    assert!(!store.drain_requested().unwrap());
+}
+
+#[test]
+fn drain_migration_preserves_existing_apps_and_upgrade_mode() {
+    let (_temp, store) = temp_store();
+    store.init().unwrap();
+    store
+        .upsert_app(&sample_config(), &["demo.test".into()])
+        .unwrap();
+    store.set_server_mode(UpgradeMode::Upgrading).unwrap();
+    store
+        .lock_conn()
+        .unwrap()
+        .execute_batch("DROP TABLE server_drain; PRAGMA user_version = 10;")
+        .unwrap();
+    store.init().unwrap();
+    assert!(!store.drain_requested().unwrap());
+    assert_eq!(store.load_apps().unwrap().len(), 1);
+    assert_eq!(store.server_mode().unwrap(), UpgradeMode::Upgrading);
+    store.set_drain_requested(true).unwrap();
+    store.init().unwrap();
+    assert!(store.drain_requested().unwrap());
+}
+
 fn temp_store() -> (TempDir, SqliteStateStore) {
     let temp = TempDir::new().unwrap();
     let store = SqliteStateStore::new(temp.path().join("state.sqlite"), TEST_KEY);

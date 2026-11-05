@@ -5,6 +5,7 @@ mod bindings;
 mod compose;
 mod credentials;
 mod device_key;
+mod drain;
 mod encryption;
 mod schema;
 mod upgrade;
@@ -12,7 +13,7 @@ mod upgrade;
 pub(crate) use app_registry::load_persisted_releases_read_only;
 pub use device_key::load_or_create_device_key;
 
-pub const STATE_SCHEMA_VERSION: i32 = 10;
+pub const STATE_SCHEMA_VERSION: i32 = 11;
 
 #[derive(Debug, Clone)]
 pub struct PersistedApp {

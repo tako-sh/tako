@@ -135,6 +135,11 @@ fn ensure_schema_objects(conn: &rusqlite::Connection) -> Result<(), StateStoreEr
             acquired_at_unix_secs INTEGER NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS server_drain (
+            id INTEGER PRIMARY KEY CHECK(id = 1),
+            requested INTEGER NOT NULL CHECK(requested IN (0, 1))
+        );
+
         CREATE TABLE IF NOT EXISTS app_secrets (
             app TEXT NOT NULL PRIMARY KEY,
             encrypted_data BLOB NOT NULL
@@ -176,6 +181,11 @@ fn ensure_schema_objects(conn: &rusqlite::Connection) -> Result<(), StateStoreEr
 }
 
 fn ensure_default_rows(conn: &rusqlite::Connection) -> Result<(), StateStoreError> {
+    conn.execute(
+        "INSERT INTO server_drain (id, requested) VALUES (1, 0)
+         ON CONFLICT(id) DO NOTHING;",
+        [],
+    )?;
     conn.execute(
         "INSERT INTO server_state (id, server_mode)
          VALUES (1, 'normal')
