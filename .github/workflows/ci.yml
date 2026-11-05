@@ -260,7 +260,9 @@ jobs:
           TAKO_BIN: ${{ github.workspace }}/.e2e-bin/tako
           TAKO_DEV_E2E: "1"
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: cd e2e/cli && sudo -E env "PATH=$PATH" bun test tests/dev.test.ts
+        run: |
+          cd e2e/cli
+          sudo env "PATH=$PATH" "TAKO_BIN=$TAKO_BIN" TAKO_DEV_E2E=1 TAKO_TELEMETRY=0 bun test tests/dev.test.ts
 
   cli-macos:
     name: CLI Tests (macOS)
@@ -310,7 +312,9 @@ jobs:
           TAKO_BIN: ${{ github.workspace }}/.e2e-bin/tako
           TAKO_DEV_E2E: "1"
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: cd e2e/cli && sudo -E env "PATH=$PATH" bun test tests/dev.test.ts
+        run: |
+          cd e2e/cli
+          sudo env "PATH=$PATH" "TAKO_BIN=$TAKO_BIN" TAKO_DEV_E2E=1 TAKO_TELEMETRY=0 bun test tests/dev.test.ts
 
   links:
     name: Links
