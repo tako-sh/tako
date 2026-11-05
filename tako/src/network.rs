@@ -13,6 +13,7 @@ use tako_network::{
 use crate::config::{NetworkAlias, NetworksToml};
 
 pub(crate) mod client;
+pub(crate) mod revocation;
 pub(crate) mod wireguard;
 
 pub(crate) type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;

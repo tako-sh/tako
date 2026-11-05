@@ -591,52 +591,15 @@ fn approve(
 }
 
 fn revoke(device: &str, value: Option<&str>, config_path: Option<&Path>) -> Result<()> {
-    use tako_network::api::{RpcRequest, RpcResponse};
     let alias = network::resolve_network(value, config_path)?;
-    let profile = if output::is_dry_run() {
-        network::load_profile(&alias)?
-    } else {
-        network::client::refresh(&alias)?
-    };
-    let members = profile.snapshot().effective_members(network::now()?)?;
-    let candidates: Vec<_> = members
-        .into_iter()
-        .filter(|(id, member)| id.to_string() == device || member.request.name.as_str() == device)
-        .collect();
-    let [(target, member)] = candidates.as_slice() else {
-        return Err("Device must uniquely match a name or device ID".into());
-    };
     if output::is_dry_run() {
+        let revocation = network::revocation::project(&alias, device)?;
         return finish(
             "Would revoke the device and its delegated approvals",
-            serde_json::json!({"dry_run": true, "network": alias.name, "device": target}),
+            serde_json::json!({"dry_run": true, "network": alias.name, "device": revocation.target}),
         );
     }
-    let id = tako_network::RevocationId::random()?;
-    let command = RpcRequest::Revoke {
-        id: id.clone(),
-        target: target.clone(),
-    };
-    let RpcResponse::Revoked(revocation) = network::client::call(
-        &profile,
-        &network::client::available_server(&profile)?,
-        command,
-    )?
-    else {
-        return Err("Unexpected revocation response".into());
-    };
-    if revocation.id != id
-        || revocation.target != *target
-        || revocation.by
-            != profile
-                .request()
-                .device_id_for(&profile.snapshot().network.id)?
-        || revocation.ssh_fingerprint != member.request.ssh_public_key.fingerprint()?
-        || revocation.wg_fingerprint != member.request.wg_public_key.fingerprint()
-    {
-        return Err("Revocation response does not match the requested device".into());
-    }
-    network::record_revocation(&alias, revocation.clone())?;
+    let revocation = network::revocation::run(&alias, device)?;
     finish(
         "Recorded device revocation",
         serde_json::json!({"network": alias.name, "revocation": revocation, "enforcement": "pending"}),
