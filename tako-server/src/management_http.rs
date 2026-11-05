@@ -331,6 +331,9 @@ async fn handle_release_artifact_upload(
         let temp_path = temp_path.clone();
         move || {
             let _guard = management_guard;
+            if state.is_draining() {
+                return Err("Server is draining".to_string());
+            }
             state.store_uploaded_release_artifact(&app, &version, &temp_path)
         }
     })

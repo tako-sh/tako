@@ -72,6 +72,9 @@ where
     B: Body<Data = Bytes> + Unpin + Send + 'static,
     B::Error: std::fmt::Display + Send + Sync + 'static,
 {
+    if state.is_draining() {
+        return error(StatusCode::SERVICE_UNAVAILABLE, "Server is draining");
+    }
     let Ok(slot) = UPLOAD_SLOTS.try_acquire() else {
         return error(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -128,6 +131,9 @@ where
     }
     match tokio::spawn(async move {
         let guard = state.management_lock.clone().lock_owned().await;
+        if state.is_draining() {
+            return error(StatusCode::SERVICE_UNAVAILABLE, "Server is draining");
+        }
         let command = Command::PrepareReleaseUpload {
             app: metadata.app.clone(),
             version: metadata.version.clone(),

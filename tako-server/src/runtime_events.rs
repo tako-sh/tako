@@ -4,6 +4,9 @@ use crate::scaling::IdleEvent;
 use crate::socket::{AppState, InstanceState};
 
 pub(crate) async fn handle_instance_event(state: &ServerState, event: InstanceEvent) {
+    if state.is_draining() {
+        return;
+    }
     match event {
         InstanceEvent::Started { app, instance_id } => {
             tracing::debug!(app = %app, instance = %instance_id, "Instance started");
@@ -22,6 +25,9 @@ pub(crate) async fn handle_instance_event(state: &ServerState, event: InstanceEv
 }
 
 pub(crate) async fn handle_health_event(state: &ServerState, event: HealthEvent) {
+    if state.is_draining() {
+        return;
+    }
     match event {
         HealthEvent::Healthy { app, instance_id } => {
             tracing::info!(app = %app, instance = %instance_id, "Instance is healthy");
@@ -70,6 +76,12 @@ pub(crate) fn update_instance_count_metric(app_name: &str, app: &App) {
 }
 
 pub(crate) async fn handle_idle_event(state: &ServerState, event: IdleEvent) {
+    let Ok(_management) = state.management_lock.try_lock() else {
+        return;
+    };
+    if state.is_draining() {
+        return;
+    }
     let name = match &event {
         IdleEvent::InstanceIdle { app, .. } | IdleEvent::AppIdle { app } => app,
     };
@@ -151,6 +163,10 @@ async fn replace_instance_if_needed(
     instance_id: &str,
     reason: &str,
 ) {
+    let _management = state.management_lock.lock().await;
+    if state.is_draining() {
+        return;
+    }
     let app = match state.app_manager.get_app(app_name) {
         Some(app) => app,
         None => {

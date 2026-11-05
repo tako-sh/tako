@@ -18,6 +18,7 @@ pub struct App {
     /// Instances currently eligible for request routing, with immutable
     /// request-path data captured when each instance becomes healthy.
     healthy_instances: RwLock<Vec<HealthyInstance>>,
+    instance_transitions: parking_lot::Mutex<()>,
     /// Healthy instances that should not receive public traffic yet, such as
     /// a new rollout batch inside its stability window.
     routing_suppressed_instances: RwLock<HashSet<String>>,
@@ -50,6 +51,7 @@ impl App {
             config: RwLock::new(config),
             instances: DashMap::new(),
             healthy_instances: RwLock::new(Vec::new()),
+            instance_transitions: parking_lot::Mutex::new(()),
             routing_suppressed_instances: RwLock::new(HashSet::new()),
             state: RwLock::new(AppState::Stopped),
             last_error: RwLock::new(None),
@@ -96,6 +98,31 @@ impl App {
     }
 
     pub(crate) fn set_instance_state(
+        &self,
+        instance: &Arc<Instance>,
+        state: InstanceState,
+    ) -> InstanceState {
+        let _transition = self.instance_transitions.lock();
+        self.set_instance_state_locked(instance, state)
+    }
+
+    pub(crate) fn set_instance_health_state(
+        &self,
+        instance: &Arc<Instance>,
+        state: InstanceState,
+    ) -> bool {
+        let _transition = self.instance_transitions.lock();
+        if matches!(
+            instance.state(),
+            InstanceState::Draining | InstanceState::Stopped
+        ) {
+            return false;
+        }
+        self.set_instance_state_locked(instance, state);
+        true
+    }
+
+    fn set_instance_state_locked(
         &self,
         instance: &Arc<Instance>,
         state: InstanceState,

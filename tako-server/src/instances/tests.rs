@@ -266,6 +266,21 @@ fn healthy_instance_count_ignores_non_healthy_instances() {
 }
 
 #[test]
+fn completed_health_probe_cannot_restore_a_draining_instance() {
+    let (tx, _rx) = mpsc::channel(16);
+    let app = App::new(AppConfig::default(), tx, noop_log_handle());
+    let instance = app.allocate_instance();
+    app.set_instance_state(&instance, InstanceState::Healthy);
+    app.set_instance_state(&instance, InstanceState::Draining);
+    assert!(!app.set_instance_health_state(&instance, InstanceState::Healthy));
+    assert!(!app.set_instance_health_state(&instance, InstanceState::Unhealthy));
+    assert_eq!(instance.state(), InstanceState::Draining);
+    assert!(app.healthy_backend_for_request(0).is_none());
+    app.set_instance_state(&instance, InstanceState::Stopped);
+    assert!(!app.set_instance_health_state(&instance, InstanceState::Healthy));
+}
+
+#[test]
 fn active_instance_list_tracks_state_changes_and_removal() {
     let (tx, _rx) = mpsc::channel(16);
     let app = App::new(AppConfig::default(), tx, noop_log_handle());
