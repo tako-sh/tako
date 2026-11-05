@@ -1,8 +1,9 @@
-Tako native networking — implementation and verification
+Tako native networking implementation and verification
 
-Source checked: 4b65923531720f3b38b5c7210ab36096e495941f
+Source checked: 5c2bb3cdf4b3aa64aa3aa70655255019c3f3adbf
 Branch: feat/native-networks
-Base: 558135869072cd1e64e3dda08d3ee8663d786fe7
+Upstream merged: 92d838098e35a42486c3a5f23225f3b48732f2e3
+Portable bundle prerequisite: 558135869072cd1e64e3dda08d3ee8663d786fe7
 
 Implemented
 - Managed standard WireGuard, stable network identities and local aliases.
@@ -22,13 +23,22 @@ PASS cargo check --offline -p tako-cli -p tako-server --all-targets.
 PASS just test cli: 73 passed, 7 existing skips, normal test timeouts. Repeated
      after final source changes with the same result.
 PASS cargo test --offline -p tako-cli --bin tako network:: -- --test-threads=1:
-     30 passed, 1477 unrelated cases filtered out.
-PASS cargo test --offline -p tako-compose --lib -- --test-threads=1:
-     35 passed, 13 existing Docker integration tests ignored.
-PASS final focused tako-server binary suite: 264 passed, 1 existing Docker test
+     31 passed, 1477 unrelated cases filtered out.
+PASS cargo test --offline -p tako-network --lib: 58 passed.
+PASS final focused tako-server binary suite: 265 passed, 1 existing Docker test
      ignored. 639 unrelated or explicitly excluded cases filtered out.
 PASS git diff --check and canonical skill regeneration.
 PASS helper source SHA256 matches the installer receipt.
+PASS every feature commit has a Conventional Commit subject. Renaming the 38
+     older subjects preserved all 188 original commit trees. Later review fixes
+     are separate conventional commits.
+
+The upstream merge passed 90 channel tests, 96 workflow tests, and affected
+all-target compilation. It excluded 19 observed socket-permission failures and
+28 PostgreSQL cases without a configured database. Exact exclusions and commands
+are preserved in the delivery's upstream-verify-offline.sh and upstream-verification.log.
+The unchanged Compose implementation previously passed 35 unit tests, with 13
+existing Docker integration tests ignored.
 
 The server suite selects native_, operations::drain::, request_drain::,
 state_store::tests, proxy::service::native::tests, proxy::service::drain_tests,
@@ -50,6 +60,10 @@ Separate agents reviewed membership authority, the privileged host helper,
 management scopes/uploads, private routing, replay recovery, and drain lifecycle.
 Confirmed findings were fixed and regression tests added. Reviews used the
 inherited model; no cross-model review is claimed.
+Final independent reviews accepted the upstream channel/workflow merge, bounded
+Compose cleanup retries, and expired-approval recovery through authenticated
+membership snapshots. Recovery does not extend admission deadlines. Pending
+profiles prune expired historical server pins while requiring a current issuer.
 
 Outstanding verification
 - Required Docker E2E was attempted with E2E_USE_PREBUILT=1 just test e2e;
@@ -57,14 +71,22 @@ Outstanding verification
 - Live WireGuard/nftables/systemd/private DNS, pinned TLS, multi-host deployment,
   real reload/promotion, PostgreSQL integration and Go checks are unverified.
 - Website static build was blocked by esbuild EPERM; rendered verification could
-  not run without dist output. Source/type/link checks passed.
-- No remote branch or PR was published. Previous permission-gated publication
-  attempts were aborted; they were not repeated. User authorization is already
-  provided, but execution/tool access remains the operational limitation.
+  not run without dist output. Earlier source/type/link checks passed. The
+  post-merge docs check did not complete and was stopped after two minutes.
+- No remote branch or PR was published. Shell network permission and connector
+  write requests stalled and were cancelled. The per-object connector publication
+  route was abandoned because it requires repeated approval prompts. User task
+  authorization is complete; the remaining restriction is enforced by the tools.
+  A final normal publication attempt requested no additional permissions. The
+  GitHub CLI reported an invalid GH_TOKEN, and Git could not connect to the proxy.
+  The script stopped before PR creation. No token value was read or printed.
 
-No merge, installation or production deployment occurred. Keep the proposed PR
+No remote merge, installation or production deployment occurred. Keep the proposed PR
 in draft until the live scenarios above have been verified.
 
 Portable delivery
-/workspace/tako-delivery contains the PR description, final logs and a Git bundle.
-The bundle preserves the small commits and requires the base commit above.
+/workspace/tako-delivery contains the PR description, final logs, review reports,
+a Git bundle and publish-pr.sh. The script uses one normal Git push followed by
+draft PR creation through an already authenticated GitHub CLI. It checks the
+reviewed branch hash and destination and never force-pushes or merges.
+The bundle preserves the small commits and requires the prerequisite above.
