@@ -1,11 +1,38 @@
 import { Kind, TypeRegistry, type TNumber, type TString, type TSchema } from "@sinclair/typebox";
+import { Value } from "@sinclair/typebox/value";
 
 const scalarKind = "TakoHttpJsonScalar";
 const scalarValidator = Symbol.for("tako.http.scalar-validator");
 type ScalarSchema = TSchema & { [scalarValidator]: (value: unknown) => boolean };
+const arrayKind = "TakoHttpJsonArray";
+const arrayValidator = Symbol.for("tako.http.array-validator");
+type ArraySchema = TSchema & { [arrayValidator]: (value: unknown) => boolean };
 const schemas = new WeakMap<TSchema, { json: string; check: TSchema }>();
 
 TypeRegistry.Set(scalarKind, (schema, value) => (schema as ScalarSchema)[scalarValidator](value));
+TypeRegistry.Set(arrayKind, (schema, value) => (schema as ArraySchema)[arrayValidator](value));
+
+function jsonEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true; // JSON numbers equate -0 and 0.
+  if (a === null || b === null || typeof a !== "object" || typeof b !== "object") return false;
+  if (Array.isArray(a))
+    return Array.isArray(b) && a.length === b.length && a.every((item, i) => jsonEqual(item, b[i]));
+  if (Array.isArray(b)) return false;
+  const left = a as Record<string, unknown>;
+  const right = b as Record<string, unknown>;
+  const keys = Object.keys(left);
+  return (
+    keys.length === Object.keys(right).length &&
+    keys.every((key) => Object.hasOwn(right, key) && jsonEqual(left[key], right[key]))
+  );
+}
+
+function uniqueItems(values: unknown[]): boolean {
+  // Pairwise equality avoids TypeBox hash collisions and preserves JSON semantics.
+  for (let i = 0; i < values.length; i++)
+    for (let j = 0; j < i; j++) if (jsonEqual(values[i], values[j])) return false;
+  return true;
+}
 
 /** The decimal spelling JSON emits, not the underlying IEEE-754 binary fraction. */
 function decimal(value: number): { coefficient: bigint; exponent: number } {
@@ -70,7 +97,7 @@ function compileSchema(schema: TSchema): TSchema {
   if (["String", "Number", "Integer"].includes(schema[Kind])) {
     return { ...schema, [Kind]: scalarKind, [scalarValidator]: scalarCheck(schema) };
   }
-  return {
+  const check = {
     ...schema,
     ...(schema["properties"]
       ? {
@@ -93,4 +120,14 @@ function compileSchema(schema: TSchema): TSchema {
       ? { allOf: (schema["allOf"] as TSchema[]).map(serviceValidationSchema) }
       : {}),
   };
+  if (schema[Kind] === "Array" && schema["uniqueItems"] === true) {
+    const structural = { ...check, uniqueItems: false };
+    return {
+      ...check,
+      [Kind]: arrayKind,
+      [arrayValidator]: (value: unknown) =>
+        Value.Check(structural, value) && uniqueItems(value as unknown[]),
+    };
+  }
+  return check;
 }
