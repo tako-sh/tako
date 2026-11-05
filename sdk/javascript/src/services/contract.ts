@@ -104,6 +104,16 @@ export function assertServiceSchema(schema: TSchema): void {
     throw new Error("Service schema multipleOf must be positive.");
   if (schema["pattern"] !== undefined) new RegExp(schema["pattern"] as string, "u");
   if (schema["type"] === "object") {
+    const properties = schema["properties"] as Record<string, TSchema>;
+    const expected = Object.keys(properties).filter((key) => !properties[key]![OptionalKind]);
+    const required = (schema["required"] ?? []) as string[];
+    // Generation and Static derive presence from OptionalKind, so metadata must agree.
+    if (
+      required.length !== expected.length ||
+      new Set(required).size !== required.length ||
+      expected.some((key) => !required.includes(key))
+    )
+      throw new Error("Service schema required must match declared non-optional properties.");
     for (const child of Object.values(schema["properties"] ?? {}))
       assertServiceSchema(child as TSchema);
     if (schema["additionalProperties"] && typeof schema["additionalProperties"] === "object")

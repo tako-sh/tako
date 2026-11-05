@@ -81,3 +81,47 @@ test("rejects schema keywords that cannot be validated and exported consistently
     ).toThrow();
   }
 });
+
+test("required metadata must match declared properties and OptionalKind", () => {
+  for (const schema of [
+    t.Object({}, { required: ["token"] }),
+    t.Object({ token: t.Optional(t.String()) }, { required: ["token"] }),
+    { ...t.Object({ token: t.String() }), required: [] },
+    { ...t.Object({ token: t.String() }), required: ["token", "token"] },
+    { ...t.Object({ token: t.String() }), required: ["other"] },
+  ]) {
+    for (const body of [
+      schema,
+      t.Array(schema),
+      t.Object({ nested: schema }),
+      t.Union([t.String(), schema]),
+      t.Object({}, { additionalProperties: schema }),
+    ]) {
+      expect(() =>
+        defineService("required", {
+          post: { method: "POST", path: "/", body, responses: { 204: null } },
+        }),
+      ).toThrow("required");
+      expect(() =>
+        defineService("required", {
+          get: { method: "GET", path: "/", responses: { 200: body } },
+        }),
+      ).toThrow("required");
+    }
+    expect(() =>
+      defineService("required", {
+        get: { method: "GET", path: "/", query: schema, responses: { 204: null } },
+      }),
+    ).toThrow("required");
+  }
+  for (const schema of [
+    t.Object({}, { required: [] }),
+    t.Object({ token: t.Optional(t.String()) }, { required: [] }),
+    t.Object({ a: t.String(), b: t.String(), c: t.Optional(t.String()) }, { required: ["b", "a"] }),
+  ])
+    expect(() =>
+      defineService("required", {
+        get: { method: "GET", path: "/", responses: { 200: schema } },
+      }),
+    ).not.toThrow();
+});

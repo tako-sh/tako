@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Type as t } from "@sinclair/typebox";
 import { defineService } from "../../src/services/contract";
+import { createServiceHandler } from "../../src/services/handler";
 import { generateServiceDocument } from "../../src/services/generate";
 import { generateServiceTypes } from "../../bin/gen-service-types";
 
@@ -118,7 +119,7 @@ import { Type as t } from "@sinclair/typebox";
 import { defineService } from ${JSON.stringify(pathToFileURL(join(sdkRoot, "src/services/contract.ts")).href)};
 export default defineService("catalog", {
   get: { method: "GET", path: "/items/{id}", params: t.Object({ id: t.String() }), query: t.Object({ limit: t.Optional(t.Integer()) }), responses: { 200: t.Object({ title: t.String() }), 404: t.Object({ error: t.String() }) } },
-  create: { method: "POST", path: "/items", body: t.Object({ title: t.String({ minLength: 1 }), tags: t.Optional(t.Array(t.String())) }), responses: { 201: t.Object({ title: t.String() }) } },
+  create: { method: "POST", path: "/items", body: t.Object({ title: t.String({ minLength: 1 }), tags: t.Optional(t.Array(t.String())) }, { required: ["title"] }), responses: { 201: t.Object({ title: t.String() }) } },
   remove: { method: "DELETE", path: "/items", responses: { 204: null } },
 });`,
     );
@@ -164,6 +165,8 @@ async function check() {
   await client.create({ body: { title: 1 } });
   // @ts-expect-error Body cannot be omitted.
   await client.create();
+  // @ts-expect-error Explicit consistent required metadata preserves static required fields.
+  await client.create({ body: { tags: [] } });
   // @ts-expect-error Unknown operation.
   await client.missing();
   // @ts-expect-error Status must narrow before body fields are used.
@@ -222,6 +225,59 @@ console.log("consumer passed");
     await rm(root, { recursive: true, force: true });
   }
 }, 60_000);
+
+test("accepted explicit required metadata preserves generated runtime behavior", async () => {
+  const root = await mkdtemp(join(tmpdir(), "tako-service-required-"));
+  try {
+    await symlink(join(sdkRoot, "node_modules"), join(root, "node_modules"), "dir");
+    const original = defineService("required", {
+      post: {
+        method: "POST",
+        path: "/",
+        body: t.Object(
+          {
+            token: t.String(),
+            note: t.Optional(t.String()),
+          },
+          { required: ["token"], additionalProperties: false },
+        ),
+        responses: { 204: null },
+      },
+    });
+    const generated = generateServiceDocument([original]).replace(
+      '"tako.sh/services"',
+      JSON.stringify(pathToFileURL(join(sdkRoot, "src/services/index.ts")).href),
+    );
+    const file = join(root, "contract.ts");
+    await writeFile(file, generated);
+    const { services } = (await import(pathToFileURL(file).href)) as {
+      services: { required: typeof original };
+    };
+    for (const service of [original, services.required]) {
+      const handler = createServiceHandler(service, {
+        post: () => ({ status: 204, body: undefined }),
+      });
+      for (const [body, status] of [
+        [{}, 400],
+        [{ token: "ok" }, 204],
+        [{ token: "ok", note: "optional" }, 204],
+      ] as const)
+        expect(
+          (
+            await handler(
+              new Request("http://fixture/", {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify(body),
+              }),
+            )
+          ).status,
+        ).toBe(status);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("discovery rejects duplicate names and malformed exports; a missing directory is empty", async () => {
   const root = await mkdtemp(join(tmpdir(), "tako-service-discovery-"));
