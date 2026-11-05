@@ -383,6 +383,12 @@ impl ChannelStore {
         );
     }
 
+    /// Deliver an authenticated local broker notification after its commit.
+    /// The broker owns persistence and FIFO ordering; this must not publish again.
+    pub fn notify_committed(&self, message: &ChannelMessage, ephemeral: bool) {
+        self.deliver(message, ephemeral);
+    }
+
     /// Subscribe once per app before accepting local publications. Lag requires peer reset.
     pub fn publications(&self) -> tokio::sync::broadcast::Receiver<ChannelPublication> {
         self.delivery.publications.subscribe()

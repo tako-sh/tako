@@ -15,6 +15,29 @@ fn next_event(publications: &mut broadcast::Receiver<ChannelPublication>) -> Cha
     event
 }
 
+#[tokio::test]
+async fn committed_notifications_wake_readers_without_persisting_or_republishing() {
+    let temp = tempfile::tempdir().unwrap();
+    let writer = ChannelStore::open(&temp.path().join("writer.sqlite")).unwrap();
+    let reader = ChannelStore::open(&temp.path().join("reader.sqlite")).unwrap();
+    let mut publications = reader.publications();
+    let changes = reader.changes("events");
+    let durable = writer.append("events", &payload(1)).unwrap();
+    reader.notify_committed(&durable, false);
+    assert!(changes.has_changed().unwrap());
+    assert!(reader.read_after("events", None, 10).unwrap().is_empty());
+
+    let mut live = reader.subscribe_ephemeral("live").unwrap();
+    let ephemeral = writer.publish_ephemeral("live", &payload(2)).unwrap();
+    reader.notify_committed(&ephemeral, true);
+    assert_eq!(*live.recv().await.unwrap(), ephemeral);
+    assert!(reader.read_after("live", None, 10).unwrap().is_empty());
+    assert!(matches!(
+        publications.try_recv(),
+        Err(broadcast::error::TryRecvError::Empty)
+    ));
+}
+
 #[test]
 fn canonical_handles_publish_and_wake_synchronously_for_all_paths() {
     let temp = tempfile::tempdir().unwrap();
