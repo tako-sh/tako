@@ -234,8 +234,12 @@ def interface(ident):
 def bridge_config(ident):
     network_id(ident)
     raw = bytes.fromhex(ident)
+    # Stay inside 10.64.0.0/11: clear of the ranges clouds and container
+    # platforms hand out by default (10.0.0.0/16, 10.42-43.0.0/16, 10.96.0.0/12,
+    # 10.128.0.0/9), which the host route check would otherwise refuse.
+    second, third = 64 + raw[6] % 32, raw[7]
     return {'name': 'tako-svc-' + ident[:12], 'interface': 'tks' + ident[:12],
-            'subnet': f'10.{raw[6]}.{raw[7]}.0/24', 'gateway': f'10.{raw[6]}.{raw[7]}.1'}
+            'subnet': f'10.{second}.{third}.0/24', 'gateway': f'10.{second}.{third}.1'}
 
 
 def bridge_options(ident):

@@ -94,7 +94,7 @@ class NativeBridgeTests(unittest.TestCase):
     def test_bridge_is_lazy_owned_internal_idempotent_and_removed_when_empty(self):
         config = self.host.bridge(ID)
         self.assertEqual(config, {'name': 'tako-svc-' + ID[:12], 'interface': 'tks' + ID[:12],
-                                 'subnet': '10.171.171.0/24', 'gateway': '10.171.171.1'})
+                                 'subnet': '10.75.171.0/24', 'gateway': '10.75.171.1'})
         self.host.bridge(ID)
         self.apply()
         self.assertTrue(self.saved['networks'][ID]['compose_bridge'])
@@ -149,7 +149,7 @@ class NativeBridgeTests(unittest.TestCase):
 
     def test_owned_bridge_requires_its_actual_exact_gateway(self):
         self.runner.create()
-        for addresses in ([], [{'local': '10.171.171.2', 'prefixlen': 24, 'scope': 'global'}]):
+        for addresses in ([], [{'local': '10.75.171.2', 'prefixlen': 24, 'scope': 'global'}]):
             with self.subTest(addresses=addresses):
                 self.runner.bridge_addresses[0]['addr_info'] = addresses
                 with self.assertRaises(helper.Rejected):
@@ -181,12 +181,12 @@ class NativeBridgeTests(unittest.TestCase):
     def test_bridge_gateway_only_admits_actual_interface_subnet_and_http_dns(self):
         self.host.bridge(ID)
         bridge = helper.bridge_config(ID)
-        packet = {'iifname': bridge['interface'], 'ip saddr': '10.171.171.2',
+        packet = {'iifname': bridge['interface'], 'ip saddr': '10.75.171.2',
                   'ip daddr': bridge['gateway'], 'meta l4proto': 'tcp', 'dport': 80}
         for protocol, port in (('tcp', 80), ('tcp', 53), ('udp', 53)):
             self.assertEqual(input_verdict(self.runner.policy, {**packet, 'meta l4proto': protocol, 'dport': port}), 'accept')
         for change in ({'iifname': 'eth0'}, {'iifname': 'lo'}, {'ip saddr': '192.168.1.2'},
-                       {'ip daddr': '10.171.171.9'}, {'dport': 443}, {'dport': 9844}, {'dport': 22},
+                       {'ip daddr': '10.75.171.9'}, {'dport': 443}, {'dport': 9844}, {'dport': 22},
                        {'meta l4proto': 'udp', 'dport': 80}):
             self.assertEqual(input_verdict(self.runner.policy, {**packet, **change}), 'drop')
         forward = self.runner.policy.split('chain forward')[1]
