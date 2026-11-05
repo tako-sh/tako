@@ -163,7 +163,13 @@ async fn replace_instance_if_needed(
     instance_id: &str,
     reason: &str,
 ) {
-    let _management = state.management_lock.lock().await;
+    // A drain holds the spawn gate for writing while it stops instances, so a
+    // replacement spawned under the read side cannot outlive it. The health
+    // loop is single-threaded: never block it on a deployment's management lock
+    // or on a drain that is already stopping this instance.
+    let Ok(_spawning) = state.spawn_gate.try_read() else {
+        return;
+    };
     if state.is_draining() {
         return;
     }
@@ -277,6 +283,49 @@ async fn replace_instance_if_needed(
 mod tests {
     use super::*;
     use std::{collections::HashMap, sync::Arc, time::Duration};
+
+    #[tokio::test]
+    async fn dead_instances_are_handled_without_the_management_lock_and_not_during_drain() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = ServerState::new(
+            dir.path().into(),
+            Arc::new(crate::tls::CertManager::new(
+                crate::tls::CertManagerConfig {
+                    cert_dir: dir.path().join("certs"),
+                    ..Default::default()
+                },
+            )),
+            None,
+            Arc::new(parking_lot::RwLock::new(HashMap::new())),
+        )
+        .unwrap();
+        let app = state.app_manager.register_app(crate::instances::AppConfig {
+            name: "health".into(),
+            environment: "production".into(),
+            min_instances: 1,
+            ..Default::default()
+        });
+        app.set_state(AppState::Running);
+        let instance = app.allocate_instance();
+        instance.set_state(InstanceState::Healthy);
+        let name = "health/production";
+        let dead = || HealthEvent::Dead {
+            app: name.into(),
+            instance_id: instance.id.clone(),
+        };
+        // A drain owns the spawn gate: the dead instance is left for it to stop.
+        let draining = state.spawn_gate.write().await;
+        handle_health_event(&state, dead()).await;
+        assert!(app.get_instance(&instance.id).is_some());
+        drop(draining);
+        // A deployment of another app holds the management lock for minutes; the
+        // single health loop must keep going regardless.
+        let _deploying = state.management_lock.lock().await;
+        tokio::time::timeout(Duration::from_secs(5), handle_health_event(&state, dead()))
+            .await
+            .expect("health events must not queue behind the management lock");
+        assert!(app.get_instance(&instance.id).is_none());
+    }
 
     #[tokio::test]
     async fn idle_events_cannot_mutate_instances_during_deployment_or_below_minimum() {

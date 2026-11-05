@@ -2,6 +2,26 @@ use crate::release::{validate_app_name, validate_release_version};
 use crate::socket::{Command, Response};
 use tako_core::{HelloResponse, PROTOCOL_VERSION};
 
+/// Commands that only inspect state. Management dispatch runs them without the
+/// management lock, so probes and status reads keep answering within the CLI's
+/// short RPC timeout while a deployment, drain, or resume holds the lock.
+pub(crate) fn command_is_read_only(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Hello { .. }
+            | Command::ServerInfo
+            | Command::Status { .. }
+            | Command::List
+            | Command::ListReleases { .. }
+            | Command::Routes
+            | Command::GetSecretsHash { .. }
+            | Command::ListBackups { .. }
+            | Command::BackupStatus { .. }
+            | Command::BackupDownloadUrl { .. }
+            | Command::CheckDeploySpace { .. }
+    )
+}
+
 impl crate::ServerState {
     /// Handle a command from the management socket
     pub async fn handle_command(&self, cmd: Command) -> Response {

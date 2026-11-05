@@ -460,7 +460,11 @@ pub(crate) async fn handle_rpc_command(
         if let Command::DrainServer { timeout_seconds } = &command {
             return state.drain_server_before_management(*timeout_seconds).await;
         }
-        let _guard = state.management_lock.lock().await;
+        let _guard = if crate::operations::command_is_read_only(&command) {
+            None
+        } else {
+            Some(state.management_lock.lock().await)
+        };
         state.handle_command(command).await
     })
     .await
@@ -594,6 +598,33 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn read_only_commands_answer_while_the_management_lock_is_held() {
+        let state = test_state();
+        let _deploying = state.management_lock.lock().await;
+        for command in [Command::List, Command::ServerInfo, Command::Routes] {
+            let response = tokio::time::timeout(
+                Duration::from_secs(2),
+                handle_rpc_command(state.clone(), command),
+            )
+            .await
+            .expect("inspection must not queue behind lifecycle work");
+            assert!(matches!(response, tako_core::Response::Ok { .. }));
+        }
+        let blocked = tokio::spawn(handle_rpc_command(
+            state.clone(),
+            Command::Stop {
+                app: "missing/production".into(),
+            },
+        ));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !blocked.is_finished(),
+            "mutations still serialize on the lock"
+        );
+        blocked.abort();
     }
 
     #[tokio::test]

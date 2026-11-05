@@ -689,3 +689,28 @@ async fn prelock_deadline_requests_shutdown_without_releasing_live_guards_or_act
         true
     );
 }
+
+#[tokio::test]
+async fn observer_read_error_neither_raises_the_gate_nor_restarts_applications() {
+    let (_dir, state) = fixture();
+    let app = app(&state, "app");
+    let instance = app.allocate_instance();
+    app.set_instance_state(&instance, InstanceState::Healthy);
+    let conn = rusqlite::Connection::open(state.state_store.path()).unwrap();
+    conn.execute_batch("ALTER TABLE server_drain RENAME TO server_drain_hidden")
+        .unwrap();
+    assert!(state.observe_drain_once().await.is_err());
+    assert!(
+        state.is_draining(),
+        "unreadable intent fails closed per call"
+    );
+    assert!(!state.drain_flag().load(Ordering::Acquire));
+    conn.execute_batch("ALTER TABLE server_drain_hidden RENAME TO server_drain")
+        .unwrap();
+    // Before the fix the raised in-memory flag read as an unpersisted drain here,
+    // and the resume path stopped and restored every instance.
+    state.observe_drain_once().await.unwrap();
+    assert!(!state.is_draining());
+    assert_eq!(instance.state(), InstanceState::Healthy);
+    assert!(app.get_instance(&instance.id).is_some());
+}

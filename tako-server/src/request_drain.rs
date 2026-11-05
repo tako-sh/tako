@@ -5,7 +5,11 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
-const MAX_ACTIVE_REQUESTS: usize = 4096;
+// Bounds registry memory and duplicate descriptors, not throughput: long-lived
+// SSE and WebSocket streams hold a slot for their whole lifetime, so this must
+// stay well above realistic concurrent connections. Each slot costs one duplicate
+// descriptor; the service unit grants LimitNOFILE=1048576.
+const MAX_ACTIVE_REQUESTS: usize = 65_536;
 
 enum Admission {
     Open,

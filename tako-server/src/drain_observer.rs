@@ -32,10 +32,13 @@ pub(crate) fn spawn(
 
 impl ServerState {
     pub(crate) async fn observe_drain_once(&self) -> Result<(), String> {
-        let requested = self.state_store.drain_requested().map_err(|error| {
-            self.drain_requested.store(true, Ordering::Release);
-            error.to_string()
-        })?;
+        // A read error is retried on the next tick. It must not raise the shared
+        // gate: an unpersisted in-memory drain is indistinguishable from a resume
+        // and would stop and restore every application below.
+        let requested = self
+            .state_store
+            .drain_requested()
+            .map_err(|error| error.to_string())?;
         if requested {
             self.drain_requested.store(true, Ordering::Release);
             self.proxy_requests.begin_drain();

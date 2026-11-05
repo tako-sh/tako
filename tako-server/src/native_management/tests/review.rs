@@ -126,7 +126,7 @@ async fn disconnected_upload_retains_guard_and_temporary_file_through_authority_
 }
 
 #[tokio::test]
-async fn queued_logs_authenticate_after_lock_and_return_no_bytes_when_revoked() {
+async fn logs_authenticate_without_queueing_and_return_no_bytes_when_revoked() {
     let (dir, state) = state();
     let logs = dir.path().join("apps/demo/production/logs");
     std::fs::create_dir_all(&logs).unwrap();
@@ -148,20 +148,20 @@ async fn queued_logs_authenticate_after_lock_and_return_no_bytes_when_revoked() 
         .body(Full::new(Bytes::new()))
         .unwrap();
     let checked = Arc::new(AtomicBool::new(false));
-    let revoked = Arc::new(AtomicBool::new(false));
     let callback_checked = checked.clone();
-    let callback_revoked = revoked.clone();
-    let lock = state.management_lock.lock().await;
-    let pending = tokio::spawn(handle_using(request, state.clone(), move |_| async move {
-        callback_checked.store(true, Ordering::Release);
-        assert!(callback_revoked.load(Ordering::Acquire));
-        Err(StatusCode::UNAUTHORIZED)
-    }));
-    tokio::task::yield_now().await;
-    assert!(!checked.load(Ordering::Acquire));
-    revoked.store(true, Ordering::Release);
-    drop(lock);
-    let response = pending.await.unwrap();
+    // Log reads are inspection: they are authorized with current authority and
+    // answered at once instead of queueing behind lifecycle work.
+    let _lock = state.management_lock.lock().await;
+    let response = tokio::time::timeout(
+        Duration::from_secs(2),
+        handle_using(request, state.clone(), move |_| async move {
+            callback_checked.store(true, Ordering::Release);
+            Err(StatusCode::UNAUTHORIZED)
+        }),
+    )
+    .await
+    .expect("log reads must not queue behind the dispatch lock");
+    assert!(checked.load(Ordering::Acquire));
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     let body = response.into_body().collect().await.unwrap().to_bytes();
     assert!(!String::from_utf8_lossy(&body).contains("private app log"));

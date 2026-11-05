@@ -349,7 +349,7 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     let server = proxy::build_server_with_acme(proxy::ServerBuildConfig {
         draining: state.drain_flag(),
-        lifecycle_lock: state.management_lock.clone(),
+        spawn_gate: state.spawn_gate.clone(),
         proxy_requests: state.proxy_requests.clone(),
         native_control,
         native_channels,

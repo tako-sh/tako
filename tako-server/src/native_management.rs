@@ -198,7 +198,11 @@ where
                         state.drain_server_before_management(*timeout_seconds).await,
                     );
                 }
-                let _guard = state.management_lock.lock().await;
+                let _guard = if crate::operations::command_is_read_only(&command) {
+                    None
+                } else {
+                    Some(state.management_lock.lock().await)
+                };
                 // Consume the signed nonce only when dispatch can proceed, using current authority.
                 let permissions = match permissions_for(&signed, authorize(wire).await) {
                     Ok(permissions) => permissions,
@@ -242,7 +246,6 @@ where
                 return error(StatusCode::FORBIDDEN, "Explicit scope required");
             };
             let _dispatch = dispatch;
-            let _guard = state.management_lock.lock().await;
             let permissions = match permissions_for(&signed, authorize(wire).await) {
                 Ok(permissions) => permissions,
                 Err(response) => return response,

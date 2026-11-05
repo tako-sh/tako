@@ -42,10 +42,16 @@ impl TakoProxy {
             let spawner = self.lb.app_manager().spawner();
             let cold_start = self.cold_start.clone();
             let draining = self.draining.clone();
-            let lifecycle = self.lifecycle_lock.clone();
+            let spawn_gate = self.spawn_gate.clone();
 
             tokio::spawn(async move {
-                let _guard = lifecycle.lock().await;
+                // A drain holds the gate for writing while it stops instances, so
+                // a spawn admitted here is still stopped by it. Never wait: a
+                // pending drain fails every cold start anyway.
+                let Ok(_spawning) = spawn_gate.try_read() else {
+                    cold_start.mark_failed(&app_name, "server_draining");
+                    return;
+                };
                 if draining.load(std::sync::atomic::Ordering::Acquire) {
                     cold_start.mark_failed(&app_name, "server_draining");
                     return;

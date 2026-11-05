@@ -194,6 +194,9 @@ impl crate::ServerState {
     ) -> DrainReport {
         self.drain_requested.store(true, Ordering::Release);
         self.proxy_requests.begin_drain();
+        // In-flight cold starts and replacements finish under the read side first;
+        // later ones observe the flag and never spawn.
+        let _spawns = self.spawn_gate.write().await;
         self.workflows.begin_server_drain();
         let apps: Vec<_> = self
             .app_manager

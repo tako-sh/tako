@@ -96,6 +96,11 @@ pub struct ServerState {
     pub(crate) challenge_tokens: ChallengeTokens,
     pub(crate) routes: Arc<SyncRwLock<RouteTable>>,
     pub(crate) management_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Drain holds this for writing while it stops instances. Cold starts and
+    /// health replacements hold it for reading while they spawn, so an instance
+    /// started concurrently with a drain is still stopped by it. Deployments do
+    /// not take it: the management lock must not stall other apps' spawns.
+    pub(crate) spawn_gate: Arc<tokio::sync::RwLock<()>>,
     pub(crate) deploy_locks: AsyncRwLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     prepared_deploy_ssl: AsyncRwLock<HashMap<PreparedDeployKey, PreparedDeploySsl>>,
     pub(crate) cold_start: Arc<crate::scaling::ColdStartManager>,
@@ -356,6 +361,7 @@ impl ServerState {
             challenge_tokens,
             routes: Arc::new(SyncRwLock::new(RouteTable::default())),
             management_lock: Arc::new(tokio::sync::Mutex::new(())),
+            spawn_gate: Arc::new(tokio::sync::RwLock::new(())),
             deploy_locks: AsyncRwLock::new(HashMap::new()),
             prepared_deploy_ssl: AsyncRwLock::new(HashMap::new()),
             cold_start: Arc::new(crate::scaling::ColdStartManager::new(
@@ -377,10 +383,20 @@ impl ServerState {
     }
 
     pub fn is_draining(&self) -> bool {
-        if self.state_store.drain_requested().unwrap_or(true) {
-            self.drain_requested.store(true, Ordering::Release);
+        match self.state_store.drain_requested() {
+            Ok(true) => {
+                self.drain_requested.store(true, Ordering::Release);
+                true
+            }
+            Ok(false) => self.drain_requested.load(Ordering::Acquire),
+            Err(error) => {
+                // Fail closed for this caller only. Flipping the shared gate on a
+                // transient read error would make the observer treat the unpersisted
+                // in-memory drain as a resume and restart every application.
+                tracing::warn!(%error, "Could not read persisted server drain state");
+                true
+            }
         }
-        self.drain_requested.load(Ordering::Acquire)
     }
 
     pub fn drain_flag(&self) -> Arc<AtomicBool> {

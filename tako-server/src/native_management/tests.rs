@@ -532,9 +532,39 @@ async fn prepare_upload_rpc_cannot_follow_an_existing_shared_log_redirect() {
 }
 
 #[tokio::test]
+async fn read_only_request_is_authorized_and_answered_while_dispatch_lock_is_held() {
+    let (_dir, state) = state();
+    let body = serde_json::to_vec(&Command::Status {
+        app: "demo/production".into(),
+    })
+    .unwrap();
+    let signed = rpc(&body, Some("demo/production"));
+    let response = authorized(&signed, scoped());
+    let _lock = state.management_lock.lock().await;
+    let response = tokio::time::timeout(
+        Duration::from_secs(2),
+        handle_using(
+            request("/v1/management/rpc", &signed, body),
+            state.clone(),
+            move |_| async move { Ok(response) },
+        ),
+    )
+    .await
+    .expect("inspection must not queue behind lifecycle work");
+    assert!(!matches!(
+        response.status(),
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+    ));
+}
+
+#[tokio::test]
 async fn queued_request_checks_authority_only_after_dispatch_lock() {
     let (_dir, state) = state();
-    let body = serde_json::to_vec(&Command::ServerInfo).unwrap();
+    // Mutations queue behind the lock; inspection is dispatched immediately.
+    let body = serde_json::to_vec(&Command::Stop {
+        app: "demo/production".into(),
+    })
+    .unwrap();
     let signed = rpc(&body, None);
     let revoked = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let checked = Arc::new(std::sync::atomic::AtomicBool::new(false));
