@@ -429,6 +429,19 @@ impl ChannelStore {
         }
     }
 
+    /// Invalidate SQLite replay after transport loss, including clients that reconnect later.
+    /// The persisted event origin remains stable; PostgreSQL retains its shared history.
+    pub fn invalidate_replay(&self) -> Result<(), ChannelError> {
+        let _publication = self.delivery.publish.lock();
+        match self.backend.as_ref() {
+            ChannelStoreBackend::Sqlite(store) => store.invalidate_replay(|| self.signal_gap(None)),
+            ChannelStoreBackend::Postgres(_) => {
+                self.signal_gap(None);
+                Ok(())
+            }
+        }
+    }
+
     pub fn read_after(
         &self,
         channel: &str,

@@ -121,7 +121,7 @@ impl SqliteChannelStore {
             payload: payload.clone(),
             ephemeral,
         };
-        let message = append_event(&tx, self.epoch, &event)?;
+        let message = append_event(&tx, replay_epoch(&tx)?, &event)?;
         tx.commit()?;
         Ok((message, event))
     }
@@ -162,13 +162,17 @@ impl SqliteChannelStore {
         if sequence <= previous {
             return Ok(None);
         }
-        let message = append_event(&tx, self.epoch, event)?;
+        let gap = sequence > previous + 1;
+        if gap {
+            rotate_replay_epoch(&tx)?;
+        }
+        let message = append_event(&tx, replay_epoch(&tx)?, event)?;
         tx.execute(
             "INSERT INTO channel_remote_origins(origin, sequence) VALUES (?1, ?2)
             ON CONFLICT(origin) DO UPDATE SET sequence = excluded.sequence",
             rusqlite::params![event.id.origin, sequence],
         )?;
-        if sequence > previous + 1 {
+        if gap {
             // Other connections can read the row as soon as this transaction commits.
             signal_gap();
         }
@@ -185,8 +189,9 @@ impl SqliteChannelStore {
         let mut conn = self.conn.lock();
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         prune_age(&tx, load_limits(&tx)?, now_unix_ms())?;
+        let epoch = replay_epoch(&tx)?;
         if let Some(cursor) = after {
-            validate_cursor(&tx, self.epoch, channel, cursor)?;
+            validate_cursor(&tx, epoch, channel, cursor)?;
         }
         let rows = {
             let mut stmt = tx.prepare_cached(READ_AFTER_SQL)?;
@@ -211,7 +216,7 @@ impl SqliteChannelStore {
         tx.commit()?;
         rows.into_iter()
             .map(|row| {
-                let cursor = ReplayCursor::sqlite(self.epoch, channel, row.0);
+                let cursor = ReplayCursor::sqlite(epoch, channel, row.0);
                 let mut message = channel_message_from_row((row.0, row.1, row.2, row.3))?;
                 message.event_id = row
                     .4
@@ -232,14 +237,24 @@ impl SqliteChannelStore {
         let mut conn = self.conn.lock();
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         prune_age(&tx, load_limits(&tx)?, now_unix_ms())?;
+        let epoch = replay_epoch(&tx)?;
         let cursor = if let Some(cursor) = requested {
-            validate_cursor(&tx, self.epoch, channel, cursor)?;
+            validate_cursor(&tx, epoch, channel, cursor)?;
             cursor
         } else {
-            ReplayCursor::sqlite(self.epoch, channel, stream_head(&tx, channel)?)
+            ReplayCursor::sqlite(epoch, channel, stream_head(&tx, channel)?)
         };
         tx.commit()?;
         Ok(Some(cursor))
+    }
+
+    pub(super) fn invalidate_replay(&self, signal_gap: impl FnOnce()) -> Result<(), ChannelError> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        rotate_replay_epoch(&tx)?;
+        signal_gap();
+        tx.commit()?;
+        Ok(())
     }
 
     pub(super) fn sync_channel(
@@ -290,6 +305,27 @@ impl SqliteChannelStore {
         }
         Ok(())
     }
+}
+
+fn replay_epoch(conn: &rusqlite::Connection) -> Result<[u8; 16], ChannelError> {
+    let bytes: Vec<u8> = conn.query_row(
+        "SELECT epoch FROM channel_replay_state WHERE singleton = 1",
+        [],
+        |row| row.get(0),
+    )?;
+    bytes
+        .try_into()
+        .map_err(|_| storage_err("invalid replay epoch"))
+}
+
+fn rotate_replay_epoch(conn: &rusqlite::Connection) -> Result<(), ChannelError> {
+    let mut epoch = [0u8; 16];
+    getrandom::fill(&mut epoch).map_err(storage_err)?;
+    conn.execute(
+        "UPDATE channel_replay_state SET epoch = ?1 WHERE singleton = 1",
+        [epoch.as_slice()],
+    )?;
+    Ok(())
 }
 
 fn append_event(
@@ -478,6 +514,10 @@ fn init_connection(
     getrandom::fill(&mut epoch).map_err(storage_err)?;
     conn.execute("INSERT INTO channel_store_state(singleton, epoch, limits_json) VALUES(1, ?1, ?2) ON CONFLICT DO NOTHING",
         rusqlite::params![epoch.as_slice(), serde_json::to_string(&SqliteReplayLimits::default()).map_err(storage_err)?])?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS channel_replay_state (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), epoch BLOB NOT NULL);
+         INSERT INTO channel_replay_state SELECT singleton, epoch FROM channel_store_state WHERE singleton = 1 ON CONFLICT DO NOTHING;"
+    )?;
     if let Some(limits) = limits {
         conn.execute(
             "UPDATE channel_store_state SET limits_json = ?1 WHERE singleton = 1",

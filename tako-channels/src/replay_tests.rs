@@ -11,6 +11,78 @@ fn cursor(message: &ChannelMessage) -> ReplayCursor {
     message.id.parse().unwrap()
 }
 
+#[test]
+fn remote_gap_invalidates_replay_for_later_connections_and_other_open_handles() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("channels.sqlite");
+    let first = ChannelStore::open(&path).unwrap();
+    let second = ChannelStore::open(&path).unwrap();
+    let own_before = first.append("local", &payload("before")).unwrap();
+    let unseen_stream = first.replay_cursor("unseen", None).unwrap();
+    let mut event = ChannelEvent {
+        id: ChannelEventId {
+            origin: "remote-node".into(),
+            sequence: 1,
+        },
+        channel: "events".into(),
+        payload: payload("one"),
+        ephemeral: false,
+    };
+    first.ingest_remote(&event).unwrap();
+    let before_gap = first.replay_cursor("events", None).unwrap();
+    event.id.sequence = 3;
+    event.payload = payload("three");
+    first.ingest_remote(&event).unwrap();
+    for store in [&first, &second] {
+        assert!(matches!(
+            store.read_after("events", before_gap, 10),
+            Err(ChannelError::StaleCursor)
+        ));
+        assert!(matches!(
+            store.replay_cursor("unseen", unseen_stream),
+            Err(ChannelError::StaleCursor)
+        ));
+    }
+    let own_after = second.append("local", &payload("after")).unwrap();
+    let before = own_before.event_id.unwrap();
+    let after = own_after.event_id.unwrap();
+    assert_eq!(before.origin, after.origin);
+    assert_eq!(after.sequence, before.sequence + 1);
+    drop(first);
+    drop(second);
+    let reopened = ChannelStore::open(&path).unwrap();
+    assert!(matches!(
+        reopened.read_after("events", before_gap, 10),
+        Err(ChannelError::StaleCursor)
+    ));
+    let current = reopened.replay_cursor("events", None).unwrap();
+    assert!(
+        reopened
+            .read_after("events", current, 10)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn transport_loss_persists_invalidation_without_any_connected_subscriber() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("channels.sqlite");
+    let store = ChannelStore::open(&path).unwrap();
+    let message = store.append("events", &payload("one")).unwrap();
+    store.invalidate_replay().unwrap();
+    drop(store);
+    let reopened = ChannelStore::open(&path).unwrap();
+    assert!(matches!(
+        reopened.read_after("events", Some(cursor(&message)), 10),
+        Err(ChannelError::StaleCursor)
+    ));
+    assert_eq!(
+        reopened.read_after("events", None, 10).unwrap()[0].event_id,
+        message.event_id
+    );
+}
+
 fn limits() -> SqliteReplayLimits {
     SqliteReplayLimits {
         max_messages_per_stream: 2,
