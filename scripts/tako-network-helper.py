@@ -11,6 +11,7 @@ import os
 import pwd
 import re
 import secrets
+import socket
 import stat
 import struct
 import subprocess
@@ -21,6 +22,7 @@ from pathlib import Path
 NETWORKS = Path('/opt/tako/networks')
 STATE = Path('/var/lib/tako-network-helper')
 SSH = Path('/etc/ssh/tako-network')
+SOCKET = Path('/run/tako-network-helper.sock')
 TABLE = 'tako_network'
 MAX_BYTES = 1024 * 1024
 ENV = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LC_ALL': 'C'}
@@ -411,34 +413,107 @@ class Host:
         return {'applied_device_ids': []}
 
 
+def operation(args):
+    require(os.geteuid() == 0, 'root required')
+    ident, action = request_args(args)
+    os.umask(0o077)
+    with directory(STATE) as fd, directory(SSH) as sshfd:
+        lock = os.open('lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=fd)
+        with os.fdopen(lock, 'w') as stream:
+            info = os.fstat(stream.fileno())
+            require(stat.S_ISREG(info.st_mode) and info.st_uid == 0 and info.st_nlink == 1 and
+                    not info.st_mode & 0o077, 'unsafe lock')
+            fcntl.flock(stream, fcntl.LOCK_EX)
+            try:
+                state = json.loads(read_file(fd, 'state.json'))
+            except FileNotFoundError:
+                state = {'owner': 'tako-network-' + secrets.token_hex(16), 'networks': {}}
+            host = Host(Runner(), state,
+                        lambda value: write_file(fd, 'state.json', json.dumps(value) + '\n'),
+                        lambda value: write_file(sshfd, 'authorized_keys', value, 0o644))
+            result = host.apply(ident, read_desired(ident)) if action == 'apply' else host.remove(ident)
+    return dict(ok=True, action=action, network_id=ident, interface=interface(ident), **result)
+
+
+def request_args(args):
+    require(len(args) == 2 and args[1] in ('apply', 'remove'), 'expected NETWORK_ID apply|remove')
+    return network_id(args[0]), args[1]
+
+
+def failure(error):
+    # Never echo parser errors, subprocess stderr, or input containing private keys.
+    return {'ok': False, 'error': str(error) if isinstance(error, Rejected) else 'invalid or unavailable host state'}
+
+
+def peer_uid(connection):
+    return struct.unpack('3i', connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))[1]
+
+
+def receive(connection, limit):
+    data = bytearray()
+    while True:
+        part = connection.recv(min(4096, limit + 1 - len(data)))
+        if not part:
+            return bytes(data)
+        data.extend(part)
+        require(len(data) <= limit, 'request or response too large')
+
+
+def handle_connection(connection, tako_uid):
+    try:
+        connection.settimeout(5)
+        require(peer_uid(connection) in (0, tako_uid), 'unauthorized local caller')
+        request = receive(connection, 40)
+        require(re.fullmatch(rb'[0-9a-f]{32} (apply|remove)\n', request), 'invalid request frame')
+        result = operation(request.decode('ascii').strip().split(' '))
+    except Exception as error:
+        result = failure(error)
+    connection.sendall((json.dumps(result) + '\n').encode())
+
+
+def serve():
+    require(os.geteuid() == 0, 'root required')
+    require(os.environ.get('LISTEN_PID') == str(os.getpid()) and os.environ.get('LISTEN_FDS') == '1',
+            'systemd socket activation required')
+    tako_uid = pwd.getpwnam('tako').pw_uid
+    with socket.socket(fileno=3) as listener:
+        require(listener.family == socket.AF_UNIX and listener.getsockname() == str(SOCKET) and
+                listener.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN), 'invalid activation socket')
+        while True:
+            connection, _ = listener.accept()
+            with connection:
+                try:
+                    handle_connection(connection, tako_uid)
+                except OSError:
+                    pass  # A disconnected caller does not undo a reconciled network.
+
+
+def request_operation(args):
+    ident, action = request_args(args)
+    info = os.lstat(SOCKET)
+    require(stat.S_ISSOCK(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o007,
+            'unsafe helper socket')
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+        connection.settimeout(900)
+        connection.connect(str(SOCKET))
+        require(peer_uid(connection) == 0, 'untrusted helper service')
+        connection.sendall(f'{ident} {action}\n'.encode('ascii'))
+        connection.shutdown(socket.SHUT_WR)
+        result = json.loads(receive(connection, MAX_BYTES))
+        require(isinstance(result, dict) and type(result.get('ok')) is bool, 'invalid helper response')
+        return result
+
+
 def main(args):
     try:
-        require(os.geteuid() == 0, 'root required')
-        require(len(args) == 2 and args[1] in ('apply', 'remove'), 'expected NETWORK_ID apply|remove')
-        ident, action = network_id(args[0]), args[1]
-        os.umask(0o077)
-        with directory(STATE) as fd, directory(SSH) as sshfd:
-            lock = os.open('lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=fd)
-            with os.fdopen(lock, 'w') as stream:
-                info = os.fstat(stream.fileno())
-                require(stat.S_ISREG(info.st_mode) and info.st_uid == 0 and info.st_nlink == 1 and
-                        not info.st_mode & 0o077, 'unsafe lock')
-                fcntl.flock(stream, fcntl.LOCK_EX)
-                try:
-                    state = json.loads(read_file(fd, 'state.json'))
-                except FileNotFoundError:
-                    state = {'owner': 'tako-network-' + secrets.token_hex(16), 'networks': {}}
-                host = Host(Runner(), state,
-                            lambda value: write_file(fd, 'state.json', json.dumps(value) + '\n'),
-                            lambda value: write_file(sshfd, 'authorized_keys', value, 0o644))
-                result = host.apply(ident, read_desired(ident)) if action == 'apply' else host.remove(ident)
-        print(json.dumps(dict(ok=True, action=action, network_id=ident, interface=interface(ident), **result)))
-        return 0
-    except (Rejected, OSError, ValueError, KeyError, RecursionError):
-        # Never echo parser errors, subprocess stderr, or input containing private keys.
-        error = sys.exc_info()[1]
-        print(json.dumps({'ok': False, 'error': str(error) if isinstance(error, Rejected) else 'invalid or unavailable host state'}))
-        return 1
+        if args == ['--serve']:
+            serve()
+            return 0
+        result = request_operation(args)
+    except Exception as error:
+        result = failure(error)
+    print(json.dumps(result))
+    return 0 if result['ok'] else 1
 
 
 if __name__ == '__main__':

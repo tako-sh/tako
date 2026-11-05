@@ -91,14 +91,25 @@ fake_sshd() {
             self.assertNotIn('packages', result.stdout)
             self.assertFalse((root / 'usr/local/libexec/tako/tako-network-helper.py').exists())
 
-    def test_runtime_has_no_ambient_net_admin_or_unrestricted_network_sudo(self):
-        for line in SOURCE.splitlines():
-            if line.startswith('AmbientCapabilities='):
+    def test_runtime_cannot_regain_net_admin_after_setuid(self):
+        runtime = SOURCE[SOURCE.index('install_systemd_service_unit() {'):]
+        for line in runtime.splitlines():
+            if line.startswith(('AmbientCapabilities=', 'CapabilityBoundingSet=')):
                 self.assertNotIn('NET_ADMIN', line)
-        policy = next(line for line in SOURCE.splitlines() if 'NOPASSWD:' in line and 'tako-network-helper * apply' in line)
-        self.assertIn('tako-network-helper * remove', policy)
-        self.assertNotIn('/usr/bin/python', policy)
-        self.assertNotIn('/usr/sbin/ip', policy)
+                self.assertNotIn('$TAKO_NETWORK_BOUNDING_CAPABILITY', line)
+        for line in SOURCE.splitlines():
+            if 'NOPASSWD:' in line:
+                self.assertNotIn('tako-network-helper', line)
+        root, result = self.install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        unit = (root / 'etc/systemd/system/tako-network-helper.service').read_text()
+        self.assertIn('User=root', unit)
+        self.assertIn('CAP_NET_ADMIN', unit)
+        self.assertIn(' --serve', unit)
+        socket = (root / 'etc/systemd/system/tako-network-helper.socket').read_text()
+        self.assertIn('SocketMode=0660', socket)
+        self.assertIn('SocketGroup=tako', socket)
+        self.assertIn('ListenStream=/run/tako-network-helper.sock', socket)
 
     def test_installer_refresh_preserves_admin_and_management_keys(self):
         block = SOURCE[SOURCE.index('# Install authorized_keys for SSH'):SOURCE.index('# ── Server config')]

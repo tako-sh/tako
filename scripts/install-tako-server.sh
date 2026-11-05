@@ -69,7 +69,6 @@ TAKO_RESTART_SERVICE="${TAKO_RESTART_SERVICE:-1}"
 TAKO_MANAGEMENT_REQUIRED_MESSAGE="Remote management requires a configured native WireGuard, Tailscale or NetBird private network."
 TAKO_MANAGEMENT_ARGS=""
 TAKO_NETWORK_UNIT_ARGS=""
-TAKO_NETWORK_BOUNDING_CAPABILITY=""
 TAKO_PUBLIC_PORT_ARGS=""
 TAKO_SERVER_CAPABILITIES="cap_net_bind_service,cap_setuid,cap_setgid,cap_kill"
 TAKO_SERVER_INSTALL_REFRESH_HELPER="/usr/local/bin/tako-server-install-refresh"
@@ -745,9 +744,6 @@ EOF
 # Fixed root-owned helpers validate their arguments; no arbitrary root shell.
 $TAKO_USER ALL=(root) NOPASSWD: /usr/local/bin/tako-provision-app *, $TAKO_SERVER_INSTALL_REFRESH_HELPER *, $TAKO_SERVER_SERVICE_HELPER reload, $TAKO_SERVER_SERVICE_HELPER restart, $TAKO_SERVER_SERVICE_HELPER configure *, $TAKO_SERVER_SERVICE_HELPER rollback, $TAKO_SERVER_SERVICE_HELPER cleanup-upgrade, $TAKO_SERVER_SERVICE_HELPER implode
 EOF
-  if [ "$TAKO_VPN" = native ]; then
-    printf '%s\n' 'tako ALL=(root) NOPASSWD: /usr/local/libexec/tako/tako-network-helper * apply, /usr/local/libexec/tako/tako-network-helper * remove' >> /etc/sudoers.d/tako
-  fi
   chmod 0440 /etc/sudoers.d/tako
 
   if need_cmd visudo; then
@@ -965,7 +961,7 @@ install_native_network() {
     native_source="$tmp_extract/scripts/tako-network-helper.py"
     if [ ! -f "$native_source" ] || [ -L "$native_source" ]; then
       native_source="$tmp_extract/native-helper.py"
-      native_expected="cbf3cf6358438bdc5f86af444e93e34d11f5910c3907ad32b1cacd6b79d7449e"
+      native_expected="306c8066a79ac7e77aa2e4410672d268c6d84fc95c718d7dbc3b303b4291ab42"
       download_file "https://raw.githubusercontent.com/$TAKO_REPO_OWNER/$TAKO_REPO_NAME/$TAKO_RELEASE_TAG/scripts/tako-network-helper.py" "$native_source"
     fi
   fi
@@ -974,7 +970,7 @@ install_native_network() {
     [ "$native_actual" = "$native_expected" ] || { echo 'error: native helper checksum mismatch' >&2; exit 1; }
   fi
 
-  # Refuse symlinked roots before installing privileged state or executable files.
+  # Validate the desired-state, root-state, and network SSH directories without following links.
   python3 -I - <<'PY'
 import os
 import pwd
@@ -1065,6 +1061,32 @@ EOF
     if systemctl is-active --quiet sshd; then systemctl reload sshd; fi
   fi
 
+  cat > /etc/systemd/system/tako-network-helper.socket <<'EOF'
+[Unit]
+Description=Tako privileged network request socket
+[Socket]
+ListenStream=/run/tako-network-helper.sock
+SocketUser=root
+SocketGroup=tako
+SocketMode=0660
+RemoveOnStop=yes
+[Install]
+WantedBy=sockets.target
+EOF
+  cat > /etc/systemd/system/tako-network-helper.service <<'EOF'
+[Unit]
+Description=Tako privileged network reconciler
+Requires=tako-network-helper.socket
+After=tako-network-helper.socket
+[Service]
+ExecStart=/usr/bin/python3 -I /usr/local/libexec/tako/tako-network-helper.py --serve
+User=root
+Group=root
+NoNewPrivileges=true
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+Restart=on-failure
+EOF
   cat > /etc/systemd/system/tako-network.target <<'EOF'
 [Unit]
 Description=Tako native networks
@@ -1075,7 +1097,8 @@ EOF
   cat > /etc/systemd/system/tako-network@.service <<'EOF'
 [Unit]
 Description=Tako native network %i
-After=network-online.target
+Requires=tako-network-helper.socket
+After=network-online.target tako-network-helper.socket
 Wants=network-online.target
 Before=tako-network.target
 [Service]
@@ -1115,9 +1138,13 @@ WantedBy=multi-user.target
 EOF
   TAKO_NETWORK_UNIT_ARGS='Requires=tako-network.target
 After=tako-network.target'
-  # The runtime has no ambient NET_ADMIN. Only its setuid-root sudo helper can acquire it.
-  TAKO_NETWORK_BOUNDING_CAPABILITY=CAP_NET_ADMIN
-  if [ "$SERVICE_MANAGER" = systemd ]; then systemctl daemon-reload; fi
+  if [ "$SERVICE_MANAGER" = systemd ]; then
+    systemctl daemon-reload
+    systemctl enable --now tako-network-helper.socket
+    if systemctl is-active --quiet tako-network-helper.service; then
+      systemctl restart tako-network-helper.service
+    fi
+  fi
   for desired_file in /opt/tako/networks/*/desired.json; do
     [ -e "$desired_file" ] || continue
     native_id="${desired_file%/desired.json}"
@@ -1777,7 +1804,7 @@ Group=$TAKO_USER
 NoNewPrivileges=false
 SupplementaryGroups=tako-app
 AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE $TAKO_NETWORK_BOUNDING_CAPABILITY
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/usr/local/bin/tako-server --socket $TAKO_SOCKET --data-dir $TAKO_HOME $TAKO_PUBLIC_PORT_ARGS $TAKO_MANAGEMENT_ARGS
 ExecReload=/bin/kill -HUP \$MAINPID
@@ -1809,7 +1836,7 @@ Group=$TAKO_USER
 NoNewPrivileges=false
 SupplementaryGroups=tako-app
 AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE $TAKO_NETWORK_BOUNDING_CAPABILITY
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/usr/local/bin/tako-server --standby --socket $TAKO_SOCKET --data-dir $TAKO_HOME $TAKO_PUBLIC_PORT_ARGS --instance-port-offset 1000
 Restart=always
