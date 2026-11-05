@@ -223,7 +223,15 @@ pub(crate) fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         let _guard = state.management_lock.lock().await;
         crate::drain_observer::spawn(&rt, state.clone());
         state.ensure_internal_socket_started()?;
-        state.restore_from_state_store().await
+        if native_config.is_some() && !standby {
+            if state.is_draining() {
+                Ok(())
+            } else {
+                state.restore_apps_from_state_store(true).await
+            }
+        } else {
+            state.restore_from_state_store().await
+        }
     }) {
         tracing::error!("Failed to restore server state from SQLite: {}", e);
         return Err(e.into());

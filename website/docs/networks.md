@@ -58,7 +58,7 @@ tako network approve laptop-b.request.json --network production --deploy shop/pr
 
 Repeat `--deploy app/env` for additional scopes. `--expires-in` sets membership lifetime in seconds, from `1` through `31536000`; omitting it grants membership without that expiry. The enrollment request and pending approval have a separate, bounded activation window. Generate a new request if enrollment expires.
 
-For a full administrator, use `--admin`; add `--ssh` only when that device also needs a Tako administrator shell. Deployment scope does not grant network administration, server maintenance, or shell access.
+For a full administrator, use `--admin`; add `--ssh` only when that device also needs a Tako administrator shell. Deployment scope does not grant network administration, server maintenance, or shell access. It limits management actions; application authentication remains separate from network membership.
 
 Return the approved profile to the requesting device:
 
