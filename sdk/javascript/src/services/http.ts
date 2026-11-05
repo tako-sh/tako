@@ -39,6 +39,21 @@ const jsonSchema = Type.Recursive((self) =>
   ]),
 );
 
+function ownJsonProperties(value: unknown, seen = new WeakMap<object, unknown>()): unknown {
+  if (value === null || typeof value !== "object") return value;
+  if (seen.has(value)) return seen.get(value);
+  if (Array.isArray(value)) {
+    const array: unknown[] = [];
+    seen.set(value, array);
+    for (const item of value) array.push(ownJsonProperties(item, seen));
+    return array;
+  }
+  const record: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  seen.set(value, record);
+  for (const [key, item] of Object.entries(value)) record[key] = ownJsonProperties(item, seen);
+  return record;
+}
+
 export function validate(
   schema: TSchema | undefined,
   value: unknown,
@@ -47,14 +62,15 @@ export function validate(
   field: string,
   status?: number,
 ): void {
+  const data = ownJsonProperties(value);
   if (
     schema
-      ? (value === undefined && schema[OptionalKind]) || Value.Check(schema, value)
+      ? (value === undefined && schema[OptionalKind]) || Value.Check(schema, data)
       : value === undefined
   )
     return;
   const issues = schema
-    ? [...Value.Errors(schema, value)].map(({ path, message }) => ({
+    ? [...Value.Errors(schema, data)].map(({ path, message }) => ({
         path: `/${field}${path}`,
         message,
       }))
@@ -121,7 +137,11 @@ export async function readJson(
     throw new ServiceError("content-type", operation, phase, "Expected application/json", status);
   }
   try {
-    return JSON.parse(text) as unknown;
+    return JSON.parse(text, (_key, value: unknown) =>
+      value !== null && typeof value === "object" && !Array.isArray(value)
+        ? Object.setPrototypeOf(value, null)
+        : value,
+    ) as unknown;
   } catch (cause) {
     throw new ServiceError("invalid-json", operation, phase, "Malformed JSON body", status, [], {
       cause,
