@@ -1,5 +1,6 @@
 import hashlib
 import os
+import pwd
 from pathlib import Path
 import subprocess
 import tempfile
@@ -113,17 +114,18 @@ fake_sshd() {
 
     def test_installer_refresh_preserves_admin_and_management_keys(self):
         block = SOURCE[SOURCE.index('# Install authorized_keys for SSH'):SOURCE.index('# ── Server config')]
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(dir=ROOT) as tmp:
             root = Path(tmp)
             (root / '.ssh').mkdir()
             admin = root / '.ssh/authorized_keys'
             admin.write_text('ssh-ed25519 existing-admin\n')
             management = root / 'management-authorized-keys'
             management.write_text('ssh-ed25519 existing-management\n')
-            script = 'tako_home_dir() { printf "%s\\n" "$TEST_ROOT"; }\nchown() { :; }\n' + block
+            script = 'tako_home_dir() { printf "%s\\n" "$TEST_ROOT"; }\nneed_cmd() { command -v "$1" >/dev/null; }\n' + block
             for _ in range(2):
                 result = subprocess.run(['sh', '-eu'], input=script, text=True, capture_output=True,
-                    env={**os.environ, 'TEST_ROOT': str(root), 'TAKO_USER': 'tako',
+                    env={**os.environ, 'TEST_ROOT': str(root), 'TAKO_USER': pwd.getpwuid(os.getuid()).pw_name,
+                         'TAKO_HOME': str(root),
                          'TAKO_SSH_PUBKEY': 'ssh-ed25519 new-admin',
                          'TAKO_MANAGEMENT_AUTH_KEYS': str(management)}, timeout=5)
                 self.assertEqual(result.returncode, 0, result.stderr)

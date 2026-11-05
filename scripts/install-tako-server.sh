@@ -1737,40 +1737,114 @@ if [ "$TAKO_VPN" = native ]; then configure_management_http; fi
 
 maybe_prompt_ssh_pubkey
 
-# Install authorized_keys for SSH (optional).
-home_dir="$(tako_home_dir)"
-auth_keys="$home_dir/.ssh/authorized_keys"
-
+# Install authorized_keys for SSH and remote management (optional).
 if [ -n "${TAKO_SSH_PUBKEY:-}" ]; then
-  mkdir -p "$home_dir/.ssh"
-  chmod 700 "$home_dir/.ssh"
-
-  # Check if key already exists in authorized_keys to avoid duplicates
-  if [ -f "$auth_keys" ] && grep -qF "$TAKO_SSH_PUBKEY" "$auth_keys" 2>/dev/null; then
-    echo "OK SSH key already present in authorized_keys"
-  elif [ -f "$auth_keys" ] && [ -s "$auth_keys" ]; then
-    # File exists and is non-empty — append instead of overwriting
-    printf '%s\n' "$TAKO_SSH_PUBKEY" >> "$auth_keys"
-    echo "OK appended SSH key to existing authorized_keys"
-  else
-    printf '%s\n' "$TAKO_SSH_PUBKEY" > "$auth_keys"
-    echo "OK wrote SSH key to authorized_keys"
+  if ! need_cmd python3; then
+    if need_cmd pacman; then install_pkgs python; else install_pkgs python3; fi
   fi
+  home_dir="$(tako_home_dir)"
+  TAKO_ENROLL_KEY="$TAKO_SSH_PUBKEY" python3 -I - "$TAKO_USER" "$TAKO_HOME" "$home_dir" <<'ENROLL_PY'
+import contextlib
+import fcntl
+import os
+from pathlib import Path
+import pwd
+import stat
+import sys
 
-  chmod 600 "$auth_keys"
-  chown -R "$TAKO_USER":"$TAKO_USER" "$home_dir/.ssh" 2>/dev/null || true
+user = pwd.getpwnam(sys.argv[1])
+key = os.environ['TAKO_ENROLL_KEY']
+if not key or '\n' in key or '\r' in key or len(key) > 16384:
+    raise SystemExit('error: enrollment requires one public key line')
 
-  if ! grep -qxF "$TAKO_SSH_PUBKEY" "$TAKO_MANAGEMENT_AUTH_KEYS" 2>/dev/null; then
-    printf '\n%s\n' "$TAKO_SSH_PUBKEY" >> "$TAKO_MANAGEMENT_AUTH_KEYS"
-  fi
-  chmod 600 "$TAKO_MANAGEMENT_AUTH_KEYS"
-  chown "$TAKO_USER":"$TAKO_USER" "$TAKO_MANAGEMENT_AUTH_KEYS" 2>/dev/null || true
-  echo "OK enrolled SSH key for remote management"
-elif [ -f "$auth_keys" ] && [ -s "$auth_keys" ]; then
-  echo "OK existing SSH key retained for '$TAKO_USER'"
+
+def check_directory(fd):
+    info = os.fstat(fd)
+    if info.st_uid not in (0, user.pw_uid) or info.st_mode & 0o022:
+        raise ValueError('unsafe directory')
+
+
+@contextlib.contextmanager
+def anchor(path):
+    if not Path(path).is_absolute() or '..' in Path(path).parts:
+        raise ValueError('invalid enrollment directory')
+    fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in Path(path).parts[1:]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = child
+            check_directory(fd)
+        yield fd
+    finally:
+        os.close(fd)
+
+
+@contextlib.contextmanager
+def service_identity():
+    uid, gid = os.geteuid(), os.getegid()
+    try:
+        os.setegid(user.pw_gid)
+        os.seteuid(user.pw_uid)
+        yield
+    finally:
+        os.seteuid(uid)
+        os.setegid(gid)
+
+
+@contextlib.contextmanager
+def enrollment_file(parent, name):
+    flags = os.O_RDWR | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK
+    with service_identity():
+        try:
+            fd = os.open(name, flags | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=parent)
+        except FileExistsError:
+            fd = os.open(name, flags, dir_fd=parent)
+    with os.fdopen(fd, 'r+b') as stream:
+        info = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != user.pw_uid or
+                info.st_mode & 0o022 or info.st_size > 1024 * 1024):
+            raise ValueError('unsafe enrollment file')
+        fcntl.flock(stream, fcntl.LOCK_EX)
+        content = stream.read(1024 * 1024 + 1)
+        if len(content) > 1024 * 1024:
+            raise ValueError('enrollment file too large')
+        yield stream, content
+
+
+try:
+    with anchor(sys.argv[2]) as data, anchor(sys.argv[3]) as home:
+        with service_identity():
+            try:
+                os.mkdir('.ssh', 0o700, dir_fd=home)
+            except FileExistsError:
+                pass
+            ssh_fd = os.open('.ssh', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=home)
+        try:
+            check_directory(ssh_fd)
+            if os.fstat(ssh_fd).st_uid != user.pw_uid:
+                raise ValueError('unexpected SSH directory owner')
+            with enrollment_file(data, 'management-authorized-keys') as management, enrollment_file(ssh_fd, 'authorized_keys') as ssh:
+                for stream, content in (management, ssh):
+                    os.fchmod(stream.fileno(), 0o600)
+                    os.fchown(stream.fileno(), user.pw_uid, user.pw_gid)
+                    encoded = key.encode()
+                    if encoded not in content.splitlines():
+                        if content and not content.endswith(b'\n'):
+                            stream.write(b'\n')
+                        stream.write(encoded + b'\n')
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.fchmod(ssh_fd, 0o700)
+                os.fchown(ssh_fd, user.pw_uid, user.pw_gid)
+        finally:
+            os.close(ssh_fd)
+except (OSError, ValueError):
+    raise SystemExit('error: unsafe or unavailable SSH enrollment files; existing files must belong to the service user') from None
+ENROLL_PY
+  echo 'OK enrolled SSH and management key; existing keys retained'
 else
-  echo "warning: no SSH key installed for '$TAKO_USER'." >&2
-  echo "warning: configure ~/.ssh/authorized_keys manually or rerun installer with TAKO_SSH_PUBKEY." >&2
+  echo 'No new SSH key supplied; existing SSH and management keys retained'
 fi
 
 # ── Server config (config.json) ──────────────────────────────────────
