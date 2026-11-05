@@ -297,6 +297,7 @@ fn finish(message: &str, value: serde_json::Value) -> Result<()> {
 pub fn connect(value: Option<&str>, config_path: Option<&Path>) -> Result<()> {
     let alias = network::resolve_network(value, config_path)?;
     if output::is_dry_run() {
+        network::load_profile(&alias)?;
         return finish(
             "Would connect to the network",
             serde_json::json!({"dry_run": true, "network": alias.name}),
@@ -312,12 +313,6 @@ pub fn connect(value: Option<&str>, config_path: Option<&Path>) -> Result<()> {
 
 pub fn disconnect(value: Option<&str>, config_path: Option<&Path>) -> Result<()> {
     let alias = network::resolve_network(value, config_path)?;
-    if output::is_dry_run() {
-        return finish(
-            "Would disconnect from the network",
-            serde_json::json!({"dry_run": true, "network": alias.name}),
-        );
-    }
     // Local teardown must remain possible after membership expires or is revoked.
     let profile: Profile = network::read_json(&alias.profile_path()?)?;
     if profile.snapshot().network.id.to_string() != alias.id
@@ -328,6 +323,14 @@ pub fn disconnect(value: Option<&str>, config_path: Option<&Path>) -> Result<()>
             != alias.device
     {
         return Err("Saved network alias does not match its profile".into());
+    }
+    profile.snapshot().validate()?;
+    profile.request().verify()?;
+    if output::is_dry_run() {
+        return finish(
+            "Would disconnect from the network",
+            serde_json::json!({"dry_run": true, "network": alias.name}),
+        );
     }
     network::wireguard::disconnect(&alias, &profile)?;
     finish(
@@ -456,18 +459,24 @@ fn approve(
     if expires_at <= now {
         return Err("Enrollment request has expired".into());
     }
-    let command = RpcRequest::Approve(Box::new(ApproveRequest {
+    let grant = ApproveRequest {
         pending_id: tako_network::RequestId::random()?,
         request,
         kind: MemberKind::Laptop,
         permissions,
         expires_at,
         member_expires_at: None,
-    }));
-    let response = network::client::call(&profile, &network::client::server(&profile)?, command)?;
+    };
+    let issuer = network::client::server(&profile)?;
+    let response = network::client::call(
+        &profile,
+        &issuer,
+        RpcRequest::Approve(Box::new(grant.clone())),
+    )?;
     let RpcResponse::Pending(approved) = response else {
         return Err("Unexpected approval response".into());
     };
+    validate_pending_approval(&profile, &issuer, &grant, &approved)?;
     let device = approved.request.name.to_string();
     network::write_json(destination, &Profile::Pending { profile: approved }, false)?;
     finish(
@@ -493,7 +502,7 @@ fn revoke(device: &str, value: Option<&str>, config_path: Option<&Path>) -> Resu
         .into_iter()
         .filter(|(id, member)| id.to_string() == device || member.request.name.as_str() == device)
         .collect();
-    let [(target, _)] = candidates.as_slice() else {
+    let [(target, member)] = candidates.as_slice() else {
         return Err("Device must uniquely match a name or device ID".into());
     };
     if output::is_dry_run() {
@@ -502,8 +511,9 @@ fn revoke(device: &str, value: Option<&str>, config_path: Option<&Path>) -> Resu
             serde_json::json!({"dry_run": true, "network": alias.name, "device": target}),
         );
     }
+    let id = tako_network::RevocationId::random()?;
     let command = RpcRequest::Revoke {
-        id: tako_network::RevocationId::random()?,
+        id: id.clone(),
         target: target.clone(),
     };
     let RpcResponse::Revoked(revocation) =
@@ -511,6 +521,18 @@ fn revoke(device: &str, value: Option<&str>, config_path: Option<&Path>) -> Resu
     else {
         return Err("Unexpected revocation response".into());
     };
+    if revocation.id != id
+        || revocation.target != *target
+        || revocation.by
+            != profile
+                .request()
+                .device_id_for(&profile.snapshot().network.id)?
+        || revocation.ssh_fingerprint != member.request.ssh_public_key.fingerprint()?
+        || revocation.wg_fingerprint != member.request.wg_public_key.fingerprint()
+    {
+        return Err("Revocation response does not match the requested device".into());
+    }
+    network::record_revocation(&alias, revocation.clone())?;
     finish(
         "Recorded device revocation",
         serde_json::json!({"network": alias.name, "revocation": revocation, "enforcement": "pending"}),
@@ -518,6 +540,42 @@ fn revoke(device: &str, value: Option<&str>, config_path: Option<&Path>) -> Resu
     output::hint(
         "Servers enforce the revocation as it reaches them. Unreachable servers remain pending.",
     );
+    Ok(())
+}
+
+pub(crate) fn validate_pending_approval(
+    profile: &Profile,
+    issuer: &tako_network::DeviceId,
+    grant: &tako_network::api::ApproveRequest,
+    pending: &tako_network::PendingApprovalProfile,
+) -> Result<()> {
+    if pending.request != grant.request
+        || pending.pending_id != grant.pending_id
+        || pending.issuer != *issuer
+        || pending.expires_at != grant.expires_at
+        || pending.snapshot.network != profile.snapshot().network
+    {
+        return Err("Approval response does not match the requested enrollment".into());
+    }
+    let servers: std::collections::BTreeMap<_, _> = pending
+        .snapshot
+        .effective_members(network::now()?)?
+        .into_iter()
+        .filter_map(|(id, member)| match &member.kind {
+            MemberKind::Server(info) => Some((id, info.clone())),
+            MemberKind::Laptop => None,
+        })
+        .collect();
+    let known = network::server_members(profile)?;
+    let expected = known
+        .get(issuer)
+        .ok_or("Approval issuer is not an active server")?;
+    let MemberKind::Server(info) = &expected.kind else {
+        unreachable!()
+    };
+    if pending.trusted_servers != servers || pending.trusted_servers.get(issuer) != Some(info) {
+        return Err("Approval response changed the issuing server's identity".into());
+    }
     Ok(())
 }
 

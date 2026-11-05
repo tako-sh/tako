@@ -81,6 +81,31 @@ pub(super) fn fixture() -> Fixture {
     }
 }
 
+#[test]
+fn snapshot_refresh_keeps_denials_but_allows_ack_compaction() {
+    let fixture = fixture();
+    let mut previous = fixture.profile.snapshot().clone();
+    let revocation = previous
+        .plan_revocation(
+            tako_network::RevocationId::random().unwrap(),
+            &previous.network.initial_admin,
+            &fixture.server,
+            now().unwrap(),
+        )
+        .unwrap();
+    previous.revocations.push(revocation.clone());
+    previous.acks.push(tako_network::Ack {
+        revocation: revocation.id,
+        server: fixture.server,
+        boot: tako_network::BootId::random().unwrap(),
+    });
+    let mut incoming = fixture.profile.snapshot().clone();
+    merge_snapshot(&mut incoming, &previous).unwrap();
+    assert_eq!(incoming.revocations, previous.revocations);
+    assert_eq!(incoming.members, previous.members);
+    assert!(incoming.acks.is_empty());
+}
+
 fn add_member(
     snapshot: &mut RegistrySnapshot,
     keys: &LocalDeviceKeys,

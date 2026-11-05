@@ -275,11 +275,6 @@ fn merge_snapshot(snapshot: &mut RegistrySnapshot, previous: &RegistrySnapshot) 
             snapshot.revocations.push(revocation.clone());
         }
     }
-    for ack in &previous.acks {
-        if !snapshot.acks.contains(ack) {
-            snapshot.acks.push(ack.clone());
-        }
-    }
     snapshot.validate()?;
     Ok(())
 }
