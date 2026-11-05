@@ -27,6 +27,8 @@ pub(crate) fn classify(command: &Command) -> CommandClass<'_> {
         Command::CheckDeploySpace { .. } => CommandClass::DeploymentPreflight,
         Command::List
         | Command::Routes
+        | Command::DrainServer { .. }
+        | Command::ResumeServer
         | Command::EnterUpgrading { .. }
         | Command::ExitUpgrading { .. }
         | Command::InjectChallengeToken { .. } => CommandClass::ServerAdmin,
@@ -291,6 +293,8 @@ pub(crate) fn authorize_command(
         | Command::Signal { .. } => {}
         Command::Hello { .. }
         | Command::ServerInfo
+        | Command::DrainServer { .. }
+        | Command::ResumeServer
         | Command::CheckDeploySpace { .. }
         | Command::List
         | Command::Routes
@@ -666,6 +670,10 @@ mod tests {
         for command in [
             Command::List,
             Command::Routes,
+            Command::DrainServer {
+                timeout_seconds: 30,
+            },
+            Command::ResumeServer,
             Command::EnterUpgrading { owner: "x".into() },
             Command::ExitUpgrading { owner: "x".into() },
             Command::InjectChallengeToken {

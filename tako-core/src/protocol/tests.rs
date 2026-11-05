@@ -1,6 +1,37 @@
 use super::*;
 
 #[test]
+fn server_drain_commands_roundtrip() {
+    for (command, wire) in [
+        (
+            Command::DrainServer { timeout_seconds: 0 },
+            serde_json::json!({"command":"drain_server","timeout_seconds":0}),
+        ),
+        (
+            Command::DrainServer {
+                timeout_seconds: u64::MAX,
+            },
+            serde_json::json!({"command":"drain_server","timeout_seconds":u64::MAX}),
+        ),
+        (
+            Command::ResumeServer,
+            serde_json::json!({"command":"resume_server"}),
+        ),
+    ] {
+        assert_eq!(serde_json::to_value(command).unwrap(), wire);
+        let parsed: Command = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), wire);
+    }
+    for wire in [
+        serde_json::json!({"command":"drain_server"}),
+        serde_json::json!({"command":"drain_server","timeout_seconds":-1}),
+        serde_json::json!({"command":"drain_server","timeout_seconds":0.5}),
+    ] {
+        assert!(serde_json::from_value::<Command>(wire).is_err());
+    }
+}
+
+#[test]
 fn test_command_serialization() {
     let cmd = Command::Status {
         app: "my-app".to_string(),
