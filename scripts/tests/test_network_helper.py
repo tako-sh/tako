@@ -149,6 +149,8 @@ class FakeRunner:
         self.fail = None
         self.listen_ports = ''
         self.other_addresses = []
+        self.ipv4_routes = []
+        self.nexthops = []
 
     def available(self, command):
         return False
@@ -159,8 +161,16 @@ class FakeRunner:
             raise helper.Rejected('simulated command failure')
         if args == ('ip', '-j', '-d', 'link', 'show'):
             return json.dumps(self.links)
+        if args == ('ip', '-j', '-N', 'nexthop', 'show'):
+            return json.dumps(self.nexthops)
         if args[:5] == ('ip', '-j', '-N', '-6', 'route'):
+            assert args[5:] == ('show', 'table', 'all')
             return json.dumps(self.routes)
+        if args[:5] == ('ip', '-j', '-N', '-4', 'route'):
+            assert args[5:] == ('show', 'table', 'all')
+            return json.dumps(self.ipv4_routes)
+        if args[:3] == ('ip', '-j', 'address'):
+            return json.dumps([{'ifname': DEV, 'addr_info': self.addresses}])
         if args[:4] == ('ip', '-j', '-6', 'address'):
             return json.dumps([{'ifname': DEV, 'addr_info': self.addresses}] + self.other_addresses)
         if args == ('nft', '-j', 'list', 'tables'):
@@ -188,7 +198,8 @@ class FakeRunner:
                 self.links[0]['operstate'] = args[5]
         if args[:3] == ('ip', 'link', 'delete'):
             self.links = []
-            self.routes = []
+            self.routes = [route for route in self.routes if route.get('dev') != args[4]]
+            self.ipv4_routes = [route for route in self.ipv4_routes if route.get('dev') != args[4]]
             self.addresses = []
         if args[:4] == ('ip', '-6', 'address', 'del'):
             self.addresses = [a for a in self.addresses if a['local'] + '/' + str(a['prefixlen']) != args[4]]
@@ -253,7 +264,7 @@ class ReconcileTests(unittest.TestCase):
                                  address=f'fd00:{n+1:x}:5678::{i+2:x}/128') for i in range(256)]
             data = helper.validate(data, ident)
             config = {k: v for k, v in data.items() if k != 'private_key'}
-            config.update(alias='tako-network:' + ident + ':' + '00'*16, managed_addresses=[data['address']])
+            config.update(alias='tako-network:' + ident + ':' + '00'*16, managed_addresses=[data['address']], retiring_routes=[])
             candidate = {'owner': 'test-owner', 'networks': {**configs, ident: config}}
             if len((json.dumps(candidate) + '\n').encode()) > helper.MAX_BYTES:
                 break
@@ -302,6 +313,76 @@ class ReconcileTests(unittest.TestCase):
                 operation()
         self.assertEqual(len(self.runner.links), 1)
         self.assertIsNone(self.saved)
+
+    def test_apply_and_remove_preserve_foreign_addresses_in_both_families(self):
+        self.apply()
+        for foreign in ({'local': 'fd99::123', 'prefixlen': 64, 'scope': 'global'},
+                        {'local': '192.0.2.1', 'prefixlen': 32, 'scope': 'global'},
+                        {'local': '169.254.1.1', 'prefixlen': 16, 'scope': 'link'}):
+            with self.subTest(foreign=foreign):
+                self.runner.addresses.append(foreign)
+                for operation in (self.apply, lambda: self.host.remove(ID)):
+                    before = copy.deepcopy(self.runner.links)
+                    with self.assertRaisesRegex(helper.Rejected, 'foreign interface address'):
+                        operation()
+                    self.assertEqual(self.runner.links, before)
+                    self.assertIn(foreign, self.runner.addresses)
+                self.runner.addresses.remove(foreign)
+
+    def test_apply_and_remove_preserve_foreign_routes_in_all_tables_and_families(self):
+        self.apply()
+        for family in ('ipv4_routes', 'routes'):
+            for table in ('254', '255', '100'):
+                foreign = {'dst': '192.0.2.0/24' if family == 'ipv4_routes' else 'fd99::/64',
+                           'dev': DEV, 'protocol': '4', 'metric': 500, 'table': table}
+                with self.subTest(family=family, table=table):
+                    routes = getattr(self.runner, family)
+                    routes.append(foreign)
+                    for operation in (self.apply, lambda: self.host.remove(ID)):
+                        with self.assertRaisesRegex(helper.Rejected, 'foreign route'):
+                            operation()
+                        self.assertEqual(self.runner.links[0]['operstate'], 'up')
+                        self.assertIn(foreign, routes)
+                    routes.remove(foreign)
+
+    def test_managed_route_markers_do_not_authorize_arbitrary_destinations_or_tables(self):
+        self.apply()
+        for foreign in ({'dst': 'fd99::1/128', 'dev': DEV, 'protocol': '242', 'metric': 42760},
+                        {'dst': desired()['peers'][0]['address'], 'dev': DEV, 'protocol': '242', 'metric': 42760, 'table': '100'},
+                        {'dst': 'fd99::/64', 'nexthops': [{'dev': DEV}], 'protocol': '4'}):
+            self.runner.routes.append(foreign)
+            with self.assertRaisesRegex(helper.Rejected, 'foreign route'):
+                self.host.remove(ID)
+            self.assertEqual(self.runner.links[0]['operstate'], 'up')
+            self.runner.routes.remove(foreign)
+        self.runner.nexthops = [{'id': 77, 'dev': DEV}]
+        with self.assertRaisesRegex(helper.Rejected, 'foreign nexthop'):
+            self.host.remove(ID)
+
+    def test_kernel_local_and_multicast_routes_are_owned_but_unrelated_routes_survive(self):
+        self.apply()
+        self.runner.routes.extend([
+            {'dst': desired()['address'], 'dev': DEV, 'type': 'local', 'table': '255', 'protocol': '2'},
+            {'dst': 'ff00::/8', 'dev': DEV, 'type': 'multicast', 'table': '255', 'protocol': '2'}])
+        foreign = {'dst': 'fd99::/64', 'dev': 'eth0', 'protocol': '4', 'table': '100'}
+        self.runner.routes.append(foreign)
+        self.host.remove(ID)
+        self.assertEqual(self.runner.links, [])
+        self.assertIn(foreign, self.runner.routes)
+
+    def test_retry_revocation_retains_ownership_of_routes_pending_removal(self):
+        self.apply()
+        data = desired()
+        data['peers'] = []
+        self.runner.fail = ('ip', '-6', 'route', 'del')
+        with self.assertRaises(helper.Rejected):
+            self.apply(data)
+        self.assertEqual(self.saved['networks'][ID]['retiring_routes'], [desired()['peers'][0]['address']])
+        self.runner.fail = None
+        self.host = helper.Host(self.runner, copy.deepcopy(self.saved), self.save, self.write_ssh)
+        self.apply(data)
+        self.assertEqual(self.runner.routes, [])
+        self.assertEqual(self.saved['networks'][ID]['retiring_routes'], [])
 
     def test_foreign_firewall_not_reused(self):
         self.runner.table = 'admin-firewall'

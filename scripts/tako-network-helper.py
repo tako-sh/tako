@@ -290,21 +290,53 @@ class Host:
         script = (f'delete table inet {TABLE}\n' if exists else '') + firewall(self.state)
         self.runner.run('nft', '-f', '-', input=script)
 
-    def check_routes(self, ident, desired):
+    def inspect_host_state(self, ident, link, desired):
         dev = interface(ident)
+        previous = self.state['networks'].get(ident, {})
+        owned_addresses = set(previous.get('managed_addresses', []))
+        owned_routes = {p['address'] for p in previous.get('peers', [])} | set(previous.get('retiring_routes', []))
+        addresses = []
+        local_addresses = set(owned_addresses)
+        if link:
+            addresses = json.loads(self.runner.run('ip', '-j', 'address', 'show', 'dev', dev))
+            for item in addresses:
+                for entry in item.get('addr_info', []):
+                    ip = ipaddress.ip_address(entry['local'])
+                    cidr = f'{ip}/{entry["prefixlen"]}'
+                    kernel_link_local = ip.version == 6 and ip.is_link_local and entry['scope'] == 'link' and entry['prefixlen'] == 64
+                    require(ip.version == 6 and (cidr in owned_addresses or kernel_link_local),
+                            'foreign interface address')
+                    local_addresses.add(f'{ip}/128')
+        nexthops = json.loads(self.runner.run('ip', '-j', '-N', 'nexthop', 'show'))
+        require(all(item.get('dev') != dev for item in nexthops), 'foreign nexthop')
         wanted = {p['address'] for p in desired['peers']}
-        routes = json.loads(self.runner.run('ip', '-j', '-N', '-6', 'route', 'show', 'table', 'main'))
-        for route in routes:
-            destination = route.get('dst', '')
-            if ':' in destination and '/' not in destination:
-                destination += '/128'
-            managed = (route.get('dev') == dev and str(route.get('protocol')) == '242' and
-                       route.get('metric') == 42760)
-            link_local = (route.get('dev') == dev and destination == 'fe80::/64' and
-                          str(route.get('protocol')) == '2')
-            require(not (destination in wanted or route.get('dev') == dev) or managed or link_local,
-                    'foreign route')
-        return routes
+        managed_routes = []
+        for family in ('-4', '-6'):
+            routes = json.loads(self.runner.run('ip', '-j', '-N', family, 'route', 'show', 'table', 'all'))
+            for route in routes:
+                destination = route.get('dst', '')
+                if family == '-6' and ':' in destination and '/' not in destination:
+                    destination += '/128'
+                table = str(route.get('table', '254'))
+                main_table = table in ('254', 'main')
+                touches_interface = (route.get('dev') == dev or route.get('iif') == dev or
+                                     any(hop.get('dev') == dev for hop in route.get('nexthops', [])))
+                if not touches_interface:
+                    require(not (family == '-6' and main_table and destination in wanted), 'foreign route')
+                    continue
+                simple = route.get('dev') == dev and not any(k in route for k in ('gateway', 'via', 'encap', 'nexthops', 'nhid', 'iif'))
+                managed = (simple and family == '-6' and main_table and destination in owned_routes and
+                           str(route.get('protocol')) == '242' and route.get('metric') == 42760 and
+                           route.get('type', 'unicast') == 'unicast')
+                kernel = simple and family == '-6' and str(route.get('protocol')) == '2'
+                kernel_link_local = kernel and main_table and destination == 'fe80::/64' and route.get('type', 'unicast') == 'unicast'
+                kernel_local = kernel and table in ('255', 'local') and (
+                    (route.get('type') == 'local' and destination in local_addresses) or
+                    (route.get('type') == 'multicast' and destination == 'ff00::/8'))
+                require(managed or kernel_link_local or kernel_local, 'foreign route')
+                if managed:
+                    managed_routes.append(route)
+        return managed_routes, addresses
 
     def open_host_firewall(self, ident, port):
         # These additive exceptions never delete a pre-existing administrator rule.
@@ -342,23 +374,20 @@ class Host:
             other, port = entry.split()
             require(other == dev or int(port) != desired['listen_port'], 'WireGuard listen port in use')
         self.firewall_exists()
-        routes = self.check_routes(ident, desired)
+        routes, addresses = self.inspect_host_state(ident, link, desired)
         previous = self.state['networks'].get(ident)
         requested = {desired['address']} | {peer['address'] for peer in desired['peers']}
         for item in json.loads(self.runner.run('ip', '-j', '-6', 'address', 'show')):
             if item['ifname'] != dev:
                 require(all(a['local'] + '/128' not in requested for a in item.get('addr_info', [])),
                         'address belongs to another interface')
-        addresses = []
-        if link:
-            addresses = json.loads(self.runner.run('ip', '-j', '-6', 'address', 'show', 'dev', dev))
-            require(all(a['scope'] == 'link' or a['local'] + '/' + str(a['prefixlen']) in previous['managed_addresses']
-                        for item in addresses for a in item.get('addr_info', [])), 'foreign interface address')
         public_key = self.runner.run('wg', 'pubkey', input=desired['private_key'] + '\n').strip()
         require(public_key not in {p['public_key'] for p in desired['peers']}, 'peer uses local WireGuard key')
         config = {k: v for k, v in desired.items() if k != 'private_key'}
         config['alias'] = previous['alias'] if previous else 'tako-network:' + ident + ':' + secrets.token_hex(16)
         config['managed_addresses'] = sorted(set((previous or {}).get('managed_addresses', []) + [desired['address']]))
+        old_routes = {p['address'] for p in (previous or {}).get('peers', [])} | set((previous or {}).get('retiring_routes', []))
+        config['retiring_routes'] = sorted(old_routes - {p['address'] for p in desired['peers']})
         proposed = dict(self.state, networks={**self.state['networks'], ident: config})
         serialize_state(proposed)
         self.save(proposed)
@@ -399,6 +428,7 @@ class Host:
             self.open_host_firewall(ident, desired['listen_port'])
             self.runner.run('systemctl', 'enable', f'tako-network@{ident}.service')
             config['managed_addresses'] = [desired['address']]
+            config['retiring_routes'] = []
             self.save(self.state)
         except Exception:
             if owned:
@@ -412,6 +442,7 @@ class Host:
         self.firewall_exists()
         if ident not in self.state['networks']:
             return {'applied_device_ids': []}
+        self.inspect_host_state(ident, link, self.state['networks'][ident])
         if link:
             self.runner.run('ip', 'link', 'set', 'dev', interface(ident), 'down')
             self.runner.run('ip', 'link', 'delete', 'dev', interface(ident))
