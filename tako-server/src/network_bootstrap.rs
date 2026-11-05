@@ -166,7 +166,7 @@ mod unix {
     fn load_identity(data_dir: &Path, network: &NetworkId) -> Result<ServerIdentity> {
         let path = data_dir.join("networks").join(network.to_string());
         Directory::open(&path, true)?;
-        let identity = ServerIdentity::load(path)?;
+        let identity = ServerIdentity::renew(path)?;
         if identity.request().network_id.as_ref() != Some(network) {
             return Err("prepared identity belongs to a different network".into());
         }
@@ -226,8 +226,27 @@ mod unix {
         }
         let existing = if data.exists(NODE_CONFIG_FILE)? {
             let bytes = data.read(NODE_CONFIG_FILE, MAX_NODE_CONFIG_BYTES)?;
-            let previous: NodeConfig = serde_json::from_slice(&bytes)?;
+            let mut previous: NodeConfig = serde_json::from_slice(&bytes)?;
             previous.validate()?;
+            if !previous
+                .bootstrap
+                .members
+                .iter()
+                .all(|member| config.bootstrap.members.contains(member))
+                || !previous
+                    .bootstrap
+                    .revocations
+                    .iter()
+                    .all(|revocation| config.bootstrap.revocations.contains(revocation))
+            {
+                return Err(
+                    "installed network history is missing or changed in the enrollment snapshot"
+                        .into(),
+                );
+            }
+            // Installation retries may observe a newer registry. The running
+            // agent owns that registry; leave its original bootstrap untouched.
+            previous.bootstrap = config.bootstrap.clone();
             if serde_json::to_value(previous)? != serde_json::to_value(&config)? {
                 return Err("refusing to replace an existing native network configuration".into());
             }

@@ -301,6 +301,31 @@ fn installed_config_cannot_be_changed_or_repaired_implicitly() {
 }
 
 #[test]
+fn installation_retry_accepts_new_members_without_replacing_bootstrap() {
+    let f = Fixture::new();
+    let mut snapshot = f.snapshot();
+    f.call(BootstrapRequest::Install { snapshot: snapshot.clone() }).unwrap();
+    let previous = fs::read(f.data.join(NODE_CONFIG_FILE)).unwrap();
+    let request = LocalDeviceKeys::generate().unwrap().enrollment_request(
+        Some(f.network.clone()), DeviceKind::Laptop, "new-laptop".parse().unwrap(),
+    ).unwrap();
+    snapshot.members.push(Member {
+        network_id: f.network.clone(),
+        device_id: request.device_id_for(&f.network).unwrap(),
+        request,
+        kind: MemberKind::Laptop,
+        permissions: Permissions::default(),
+        approved_by: Some(snapshot.network.initial_admin.clone()),
+        independent_admin: false,
+        wg_verified: true,
+        created_at: now(),
+        expires_at: None,
+    });
+    f.call(BootstrapRequest::Install { snapshot }).unwrap();
+    assert_eq!(fs::read(f.data.join(NODE_CONFIG_FILE)).unwrap(), previous);
+}
+
+#[test]
 fn receipt_checks_digest_owner_mode_and_links() {
     let f = Fixture::new();
     verify_binary(&f.host()).unwrap();
