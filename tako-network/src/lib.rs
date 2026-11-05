@@ -5,6 +5,7 @@
 //! authenticated channel; validating its contents cannot establish its provenance.
 
 pub mod api;
+mod bootstrap;
 mod challenge;
 pub mod corrosion;
 mod enrollment;
@@ -17,6 +18,7 @@ pub mod runtime;
 mod server_identity;
 mod types;
 
+pub use bootstrap::{BootstrapRequest, BootstrapResponse, MAX_BOOTSTRAP_BYTES};
 pub use challenge::*;
 pub use enrollment::*;
 pub use error::{Error, Result};
