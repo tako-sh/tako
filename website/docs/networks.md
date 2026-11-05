@@ -94,7 +94,7 @@ tako network status production --json
 
 Revocation invalidates the device and approvals derived from it. Descendants cannot retain authority through an expired or revoked issuer. The first server bootstrapped from a newly created network receives independent administrator membership, so revoking the creating laptop does not remove that server solely through the laptop's delegation chain. Later delegated memberships remain subject to their issuer chains.
 
-Revocations merge monotonically: importing or refreshing an older snapshot cannot restore a revoked identity. Offline servers still need to receive the updated state before they enforce it. A revoke response can report enforcement as pending; inspect refreshed membership and enforcement acknowledgments rather than assuming every peer has already applied the change.
+Revocations merge monotonically: importing or refreshing an older snapshot cannot restore a revoked identity. Offline servers still need to receive the updated state before they enforce it. A revoke response can report enforcement as pending; inspect refreshed membership and enforcement acknowledgments rather than assuming every peer has already applied the change. If the response is lost, repeat the same revoke command on the same device. Tako keeps the original request ID and issuer so the retry cannot become a different revocation, even after that device revokes itself. An unreachable issuer leaves the attempt pending.
 
 ## Use private service addresses
 
@@ -123,4 +123,4 @@ tako network drain edge-a --network production --timeout 120 --json
 tako network resume edge-a --network production --json
 ```
 
-Server drain records maintenance intent and rejects new app traffic while retaining management and network control. `status = "drained"` means the intent is set; inspect `completed`, `timed_out`, remaining work, forced work, and errors to determine whether cleanup finished. Forced or incomplete cleanup is not graceful completion. Resume restores persisted apps before reopening traffic. Drain does not move local volumes, migrate workflows to another server, or redirect global ingress; plan those operations separately. See [Operations](/operations/) for maintenance guidance.
+Server drain records maintenance intent and rejects new app traffic while retaining management and network control. `status = "draining"` means cleanup is still pending. `completed = true` requires every proxy process on that server to be quiescent. Inspect `timed_out`, remaining work, forced work, and errors; request counts describe the process handling the command and can overlap instance counts. Forced or incomplete cleanup is not graceful completion. Resume restores persisted apps before reopening traffic. Drain does not move local volumes, migrate workflows to another server, or redirect global ingress; plan those operations separately. See [Operations](/operations/) for maintenance guidance.

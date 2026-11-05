@@ -121,7 +121,8 @@ Ordinary Cloudflare HTTP forwarding headers remain supported.
 
 Use `tako network drain <server> --network <alias> --timeout 120 --json` and
 `tako network resume <server> --network <alias> --json` for server maintenance.
-For server drain, `status = "drained"` records intent. Inspect completion, timeout,
+For server drain, `status = "draining"` means cleanup is pending. Completion requires
+all proxy processes on the server to be quiescent. Inspect completion, timeout,
 forced work, remaining work, and errors. Do not describe forced or incomplete
 cleanup as graceful. Drain/resume does not migrate volumes, durable workflows,
 or global ingress. Verify status, finite logs, and actual application requests
