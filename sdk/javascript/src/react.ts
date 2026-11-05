@@ -41,11 +41,16 @@
  * rather than a hook.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Channel } from "./channels";
-import type { ChannelConnectOptions, ChannelMessage, ChannelSubscribeOptions } from "./types";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Channel, type ChannelSubscribeOptions, type SseRecoveryReason } from "./channels";
+import type { ChannelConnectOptions, ChannelMessage } from "./types";
 
-import { reconnectDelay, scheduleReconnect } from "./react/reconnect";
+import {
+  channelIdentity,
+  reconnectDelay,
+  scheduleReconnect,
+  terminalClose,
+} from "./react/reconnect";
 export { usePresence, type UsePresenceOptions, type PresenceConnection } from "./react/presence";
 export type { PresenceMember } from "./presence";
 
@@ -80,6 +85,10 @@ interface BaseHookOptions<T> {
    * you do not need to memoize it.
    */
   onMessage?: MessageHandler<T>;
+  /** Reports automatic recovery outside the message stream. */
+  onRecovery?: (reason: SseRecoveryReason) => void;
+  /** Reload application state when the replay history has expired. */
+  onResync?: () => void;
 }
 
 /**
@@ -126,140 +135,187 @@ export function useChannel<T = unknown>(
 ): ChannelConnection<T> {
   const transport = options.transport ?? "sse";
 
-  const [messages, setMessages] = useState<ChannelMessage<T>[]>([]);
-  const [status, setStatus] = useState<Status>("connecting");
-  const [error, setError] = useState<Error | null>(null);
-
+  const key = channelIdentity(name, options);
+  const identity = useMemo(() => ({ key }), [key]);
+  const latestIdentity = useRef(identity);
+  latestIdentity.current = identity;
   const optionsRef = useRef(options);
   optionsRef.current = options;
-  const paramsKey = JSON.stringify(options.params ?? {});
-
-  const handlerRef = useRef<MessageHandler<T> | undefined>(options.onMessage);
-  handlerRef.current = options.onMessage;
-
-  const socketRef = useRef<{ send(data: unknown): void } | null>(null);
-  const lastMessageIdRef = useRef<string | undefined>(
-    (options as ChannelConnectOptions).lastMessageId,
-  );
-
-  const handleIncoming = useCallback((raw: string) => {
-    try {
-      const parsed = JSON.parse(raw) as ChannelMessage<T>;
-      lastMessageIdRef.current = parsed.id;
-      setMessages((prev) => appendCapped(prev, parsed));
-      const handler = handlerRef.current;
-      if (handler) {
-        try {
-          handler(parsed);
-        } catch (err) {
-          console.error("useChannel onMessage handler threw:", err);
-        }
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err : new Error(String(err)));
-    }
-  }, []);
+  const [state, setState] = useState<{
+    identity: typeof identity;
+    messages: ChannelMessage<T>[];
+    status: Status;
+    error: Error | null;
+  }>({ identity, messages: [], status: "connecting", error: null });
+  const socketRef = useRef<{
+    identity: typeof identity;
+    send(data: unknown): void;
+  } | null>(null);
 
   useEffect(() => {
+    let disposed = false;
+    const currentOptions = optionsRef.current;
+    const active = () => !disposed && latestIdentity.current === identity;
+    let lastMessageId = (currentOptions as ChannelConnectOptions).lastMessageId;
+    const seen = new Set<string>();
+    setState({ identity, messages: [], status: "connecting", error: null });
+
+    const update = (status: Status, error: Error | null = null) => {
+      if (active()) setState((previous) => ({ ...previous, status, error }));
+    };
+    const recover = (reason: SseRecoveryReason) => {
+      if (!active()) return;
+      update("connecting");
+      optionsRef.current.onRecovery?.(reason);
+      if (active() && reason === "history-expired") optionsRef.current.onResync?.();
+    };
+    const incoming = (raw: string) => {
+      if (!active()) return;
+      try {
+        const parsed = JSON.parse(raw) as ChannelMessage<T>;
+        if (parsed.id) {
+          if (seen.has(parsed.id)) return;
+          seen.add(parsed.id);
+          if (seen.size > MAX_MESSAGES) seen.delete(seen.values().next().value!);
+          lastMessageId = parsed.id;
+        }
+        setState((previous) => ({
+          ...previous,
+          messages: appendCapped(previous.messages, parsed),
+        }));
+        try {
+          optionsRef.current.onMessage?.(parsed);
+        } catch (error) {
+          console.error("useChannel onMessage handler threw:", error);
+        }
+      } catch (error) {
+        if (active())
+          setState((previous) => ({
+            ...previous,
+            error: error instanceof Error ? error : new Error(String(error)),
+          }));
+      }
+    };
+
     if (transport === "ws") {
-      let disposed = false;
-      let currentClose: (() => void) | null = null;
-      let cancelReconnect: (() => void) | null = null;
+      let close: (() => void) | undefined;
+      let cancelReconnect: (() => void) | undefined;
       let attempt = 0;
-
       const connect = () => {
-        if (disposed) return;
-
-        const channel = new Channel(name, "ws", optionsRef.current.params ?? {});
-        const currentOptions = optionsRef.current as ChannelConnectOptions;
-        const resumeFrom = lastMessageIdRef.current ?? currentOptions.lastMessageId;
-        const conn = channel.connect({
-          ...currentOptions,
-          ...(resumeFrom !== undefined && { lastMessageId: resumeFrom }),
+        if (!active()) return;
+        const channel = new Channel(name, "ws", currentOptions.params ?? {});
+        const { lastMessageId: _initial, ...connectionOptions } =
+          currentOptions as ChannelConnectOptions;
+        const connection = channel.connect({
+          ...connectionOptions,
+          ...(lastMessageId !== undefined && { lastMessageId }),
         });
-        const target = conn.raw as EventTarget;
-        socketRef.current = conn;
-        currentClose = () => conn.close();
-
-        const handleOpen = () => {
+        const target = connection.raw as EventTarget;
+        let connected = true;
+        socketRef.current = { identity, send: connection.send };
+        const onOpen = () => {
+          if (!connected || !active()) return;
           attempt = 0;
-          setStatus("open");
-          setError(null);
+          update("open");
         };
-        const handleMessage = (e: Event) => {
-          handleIncoming((e as MessageEvent).data);
+        const onMessage = (event: Event) => {
+          if (connected) incoming((event as MessageEvent<string>).data);
         };
-        const handleError = () => {
-          setError(new Error(`channel "${name}" connection error`));
+        const onError = () => {
+          if (connected) update("connecting");
         };
-        const handleClose = () => {
-          target.removeEventListener("open", handleOpen);
-          target.removeEventListener("message", handleMessage);
-          target.removeEventListener("error", handleError);
-          target.removeEventListener("close", handleClose);
-          socketRef.current = null;
-          currentClose = null;
-          if (disposed) return;
-          setStatus("connecting");
-          const delay = reconnectDelay(attempt++);
-          cancelReconnect = scheduleReconnect(connect, delay);
+        const cleanup = () => {
+          connected = false;
+          target.removeEventListener("open", onOpen);
+          target.removeEventListener("message", onMessage);
+          target.removeEventListener("error", onError);
+          target.removeEventListener("close", onClose);
+          if (socketRef.current?.identity === identity) socketRef.current = null;
         };
-
-        target.addEventListener("open", handleOpen);
-        target.addEventListener("message", handleMessage);
-        target.addEventListener("error", handleError);
-        target.addEventListener("close", handleClose);
+        const onClose = (event: Event) => {
+          cleanup();
+          if (!active()) return;
+          const code = (event as CloseEvent).code;
+          if (terminalClose(code)) {
+            update("connecting", new Error(`channel "${name}" rejected (${code}).`));
+            return;
+          }
+          if (code === 4410) lastMessageId = undefined;
+          recover(code === 4410 ? "history-expired" : "reconnecting");
+          if (active()) cancelReconnect = scheduleReconnect(connect, reconnectDelay(attempt++));
+        };
+        target.addEventListener("open", onOpen);
+        target.addEventListener("message", onMessage);
+        target.addEventListener("error", onError);
+        target.addEventListener("close", onClose);
+        close = () => {
+          cleanup();
+          connection.close();
+        };
       };
-
       connect();
-
       return () => {
         disposed = true;
         cancelReconnect?.();
-        currentClose?.();
-        socketRef.current = null;
+        close?.();
       };
     }
 
-    // SSE path — SseReader keeps the fetch-based stream connected.
-    const channel = new Channel(name, undefined, optionsRef.current.params ?? {});
-    const sub = channel.subscribe(optionsRef.current as ChannelSubscribeOptions);
-    const target = sub.raw as EventTarget;
-
-    const handleOpen = () => {
-      setStatus("open");
-      setError(null);
-    };
-    const handleError = () => {
-      setStatus("connecting");
-      setError(new Error(`channel "${name}" subscription error`));
-    };
-    const handleMessage = (e: Event) => {
-      handleIncoming((e as MessageEvent).data);
-    };
-
-    target.addEventListener("open", handleOpen);
-    target.addEventListener("message", handleMessage);
-    target.addEventListener("error", handleError);
-
+    const channel = new Channel(name, undefined, currentOptions.params ?? {});
+    const subscription = channel.subscribe({
+      ...(currentOptions as ChannelSubscribeOptions),
+      onRecovery: recover,
+      onError: (error) => {
+        if (!active()) return;
+        update("connecting", error);
+        (optionsRef.current as ChannelSubscribeOptions).onError?.(error);
+      },
+    });
+    const target = subscription.raw as EventTarget;
+    const onOpen = () => update("open");
+    const onError = (event: Event) =>
+      update(
+        "connecting",
+        (event as ErrorEvent).error instanceof Error
+          ? (event as ErrorEvent).error
+          : new Error(`channel "${name}" subscription error`),
+      );
+    const onMessage = (event: Event) => incoming((event as MessageEvent<string>).data);
+    target.addEventListener("open", onOpen);
+    target.addEventListener("message", onMessage);
+    target.addEventListener("error", onError);
     return () => {
-      target.removeEventListener("open", handleOpen);
-      target.removeEventListener("message", handleMessage);
-      target.removeEventListener("error", handleError);
-      sub.close();
+      disposed = true;
+      target.removeEventListener("open", onOpen);
+      target.removeEventListener("message", onMessage);
+      target.removeEventListener("error", onError);
+      subscription.close();
     };
-  }, [name, transport, paramsKey, handleIncoming]);
+  }, [identity, name, transport]);
 
-  const clear = useCallback(() => setMessages([]), []);
-  const send = useCallback((data: unknown) => {
-    socketRef.current?.send(data);
-  }, []);
-
-  const result: ChannelConnection<T> = { messages, status, error, clear };
-  if (transport === "ws") {
-    result.send = send;
-  }
-  return result;
+  const clear = useCallback(() => {
+    if (latestIdentity.current === identity)
+      setState((previous) => ({ ...previous, messages: [] }));
+  }, [identity]);
+  const send = useCallback(
+    (data: unknown) => {
+      if (latestIdentity.current === identity && socketRef.current?.identity === identity) {
+        socketRef.current.send(data);
+      }
+    },
+    [identity],
+  );
+  const visible =
+    state.identity === identity
+      ? state
+      : { messages: [], status: "connecting" as const, error: null };
+  return {
+    messages: visible.messages,
+    status: visible.status,
+    error: visible.error,
+    clear,
+    ...(transport === "ws" && { send }),
+  };
 }
 export { useStore } from "./react/store";
 export type { UseStoreOptions, StoreConnection } from "./react/store";

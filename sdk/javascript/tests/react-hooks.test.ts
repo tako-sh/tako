@@ -3,11 +3,12 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 // Register before importing anything that touches React / DOM globals.
 GlobalRegistrator.register();
 
-import { act, renderHook } from "@testing-library/react";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { useChannel, usePresence } from "../src/react";
 import { useLayoutEffect } from "react";
 import type { ChannelMessage } from "../src/types";
+import { configureChannels, resetChannelsConfig } from "../src/channels/configure";
 
 class MockEventSource extends EventTarget {
   url: string;
@@ -396,6 +397,202 @@ describe("useChannel (ws)", () => {
   });
 });
 
+describe("channel recovery", () => {
+  test("4410 clears the URL and auth resume cursor without a business message", async () => {
+    const sockets: MockWebSocket[] = [];
+    const recoveries: string[] = [];
+    const received: unknown[] = [];
+    let resyncs = 0;
+    const { result, unmount } = renderHook(() =>
+      useChannel("chat", {
+        transport: "ws",
+        baseUrl: "http://test",
+        authorization: "token",
+        lastMessageId: "initial",
+        webSocketFactory: (url) => {
+          const socket = new MockWebSocket(url);
+          sockets.push(socket);
+          return socket;
+        },
+        onRecovery: (reason) => recoveries.push(reason),
+        onResync: () => {
+          resyncs++;
+        },
+        onMessage: (message) => received.push(message.data),
+      }),
+    );
+    await act(async () => {
+      sockets[0]!.emitOpen();
+    });
+    act(() => {
+      sockets[0]!.emitMessage({ id: "expired", data: "before" });
+      sockets[0]!.emitError();
+      sockets[0]!.emitClose(4410);
+      globalThis.dispatchEvent(new Event("online"));
+    });
+    await waitFor(() => expect(sockets).toHaveLength(2));
+    await act(async () => {
+      sockets[1]!.emitOpen();
+    });
+    expect(new URL(sockets[1]!.url).searchParams.has("last_message_id")).toBe(false);
+    expect(JSON.parse(sockets[1]!.sent[0] as string)).toEqual({
+      type: "tako.auth",
+      token: "Bearer token",
+    });
+    act(() => {
+      sockets[1]!.emitMessage({ id: "expired", data: "before" });
+      sockets[1]!.emitMessage({ id: "fresh", data: "after" });
+      sockets[1]!.emitClose(1000);
+      globalThis.dispatchEvent(new Event("online"));
+    });
+    await waitFor(() => expect(sockets).toHaveLength(3));
+    expect(new URL(sockets[2]!.url).searchParams.get("last_message_id")).toBe("fresh");
+    expect(result.current.error).toBeNull();
+    expect(result.current.status).toBe("connecting");
+    expect(received).toEqual(["before", "after"]);
+    expect(result.current.messages.map((message) => message.data)).toEqual(received);
+    expect(recoveries).toEqual(["history-expired", "reconnecting"]);
+    expect(resyncs).toBe(1);
+    unmount();
+  });
+
+  test.each([4401, 4403, 4404])("stops on terminal WebSocket code %i", async (code) => {
+    const sockets: MockWebSocket[] = [];
+    const recoveries: string[] = [];
+    const { result, unmount } = renderHook(() =>
+      useChannel("private", {
+        transport: "ws",
+        baseUrl: "http://test",
+        webSocketFactory: (url) => {
+          const socket = new MockWebSocket(url);
+          sockets.push(socket);
+          return socket;
+        },
+        onRecovery: (reason) => recoveries.push(reason),
+      }),
+    );
+    act(() => {
+      sockets[0]!.emitError();
+      sockets[0]!.emitClose(code);
+      globalThis.dispatchEvent(new Event("online"));
+    });
+    expect(result.current.error?.message).toContain(String(code));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1400));
+    });
+    expect(sockets).toHaveLength(1);
+    expect(recoveries).toEqual([]);
+    unmount();
+  });
+
+  test.each(["name", "params", "baseUrl", "authorization", "headers"])(
+    "fences messages, callbacks, sends, and cursors when %s changes",
+    (field) => {
+      const sockets: MockWebSocket[] = [];
+      const received: string[] = [];
+      const observed: unknown[][] = [];
+      const { result, rerender, unmount } = renderHook(
+        ({ changed }) => {
+          const value = useChannel(changed && field === "name" ? "two" : "one", {
+            transport: "ws",
+            baseUrl: changed && field === "baseUrl" ? "http://other" : "http://test",
+            params: { room: changed && field === "params" ? "two" : "one" },
+            authorization: changed && field === "authorization" ? "two" : "one",
+            headers: { "X-Tenant": changed && field === "headers" ? "two" : "one" },
+            webSocketFactory: (url) => {
+              const socket = new MockWebSocket(url);
+              sockets.push(socket);
+              return socket;
+            },
+            onMessage: () => received.push(changed ? "new" : "old"),
+          });
+          if (changed) observed.push(value.messages);
+          useLayoutEffect(() => {
+            if (!changed) return;
+            sockets[0]!.emitMessage({ id: "late", data: "old late response" });
+            sockets[0]!.emitError();
+            value.send("new identity payload");
+          }, [changed]);
+          return value;
+        },
+        { initialProps: { changed: false } },
+      );
+      act(() => {
+        sockets[0]!.emitOpen();
+        sockets[0]!.emitMessage({ id: "shared", data: "old" });
+      });
+      const oldConnection = result.current;
+      const oldClear = () => oldConnection.clear();
+      const oldSend = result.current.send;
+      rerender({ changed: true });
+      expect(sockets).toHaveLength(2);
+      expect(sockets[0]!.sent).toEqual([]);
+      expect(observed.every((messages) => messages.length === 0)).toBe(true);
+      expect(new URL(sockets[1]!.url).searchParams.has("last_message_id")).toBe(false);
+      act(() => {
+        sockets[0]!.emitMessage({ id: "late", data: "old" });
+        sockets[1]!.emitMessage({ id: "shared", data: "new" });
+        oldClear();
+        oldSend("old callback");
+      });
+      expect(received).toEqual(["old", "new"]);
+      expect(result.current.messages.map((message) => message.data)).toEqual(["new"]);
+      expect(result.current.error).toBeNull();
+      expect(sockets[1]!.sent).toEqual([]);
+      unmount();
+    },
+  );
+
+  test("bounds replay deduplication to the most recent 500 IDs", () => {
+    const source = new MockEventSource("");
+    const received: unknown[] = [];
+    const { result, unmount } = renderHook(() =>
+      useChannel("chat", {
+        baseUrl: "http://test",
+        eventSourceFactory: () => source,
+        onMessage: (message) => received.push(message.data),
+      }),
+    );
+    act(() => {
+      for (let index = 0; index <= 500; index++)
+        source.emitMessage({ id: String(index), data: index });
+      source.emitMessage({ id: "500", data: "duplicate" });
+      source.emitMessage({ id: "0", data: "evicted" });
+    });
+    expect(received).toHaveLength(502);
+    expect(result.current.messages).toHaveLength(500);
+    expect(result.current.messages.at(-1)?.data).toBe("evicted");
+    unmount();
+  });
+
+  test("SSE recovery marks connecting and resyncs without fake payloads or routine errors", async () => {
+    const recoveries: string[] = [];
+    let resyncs = 0;
+    let calls = 0;
+    configureChannels({
+      fetch: (async () => {
+        calls++;
+        return new Response(null, { status: 410 });
+      }) as typeof fetch,
+    });
+    const { result, unmount } = renderHook(() =>
+      useChannel("chat", {
+        baseUrl: "http://test",
+        onRecovery: (reason) => recoveries.push(reason),
+        onResync: () => {
+          resyncs++;
+        },
+      }),
+    );
+    await waitFor(() => expect(recoveries).toEqual(["history-expired"]));
+    expect(calls).toBe(1);
+    expect(resyncs).toBe(1);
+    expect(result.current).toMatchObject({ status: "connecting", error: null, messages: [] });
+    unmount();
+    resetChannelsConfig();
+  });
+});
+
 describe("usePresence", () => {
   test("a new chat's layout update never sends to the previous chat", () => {
     const sockets: MockWebSocket[] = [];
@@ -635,6 +832,6 @@ describe("usePresence", () => {
 });
 
 afterEach(() => {
-  // renderHook mounts into document.body; clean up to avoid cross-test leakage.
-  document.body.innerHTML = "";
+  cleanup();
+  resetChannelsConfig();
 });
