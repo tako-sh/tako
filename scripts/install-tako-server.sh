@@ -965,7 +965,7 @@ install_native_network() {
     native_source="$tmp_extract/scripts/tako-network-helper.py"
     if [ ! -f "$native_source" ] || [ -L "$native_source" ]; then
       native_source="$tmp_extract/native-helper.py"
-      native_expected="3570d2634ec3de4dd64ffba96ac343b470b1355518b44d827239722561efc954"
+      native_expected="6ebae8ab20be645d3da8fe4110df2b700fd62e2a624e3dc5c2750af23dad599e"
       download_file "https://raw.githubusercontent.com/$TAKO_REPO_OWNER/$TAKO_REPO_NAME/$TAKO_RELEASE_TAG/scripts/tako-network-helper.py" "$native_source"
     fi
   fi

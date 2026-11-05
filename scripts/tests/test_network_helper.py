@@ -350,7 +350,7 @@ class ReconcileTests(unittest.TestCase):
             os.umask(previous)
             os.close(fd)
 
-    def test_active_host_firewalls_open_only_wireguard_udp(self):
+    def test_active_host_firewalls_allow_transport_and_scoped_overlay(self):
         calls = []
         class Firewalls:
             def available(self, command):
@@ -363,10 +363,15 @@ class ReconcileTests(unittest.TestCase):
                     return 'active\n'
                 return ''
         self.host.runner = Firewalls()
-        self.host.open_udp(ID, 51820)
+        self.host.state['networks'][ID] = helper.validate(desired(), ID)
+        self.host.open_host_firewall(ID, 51820)
         self.assertIn(('ufw', 'allow', '51820/udp', 'comment', 'tako-network-' + ID), calls)
         self.assertIn(('firewall-cmd', '--add-port=51820/udp'), calls)
         self.assertIn(('firewall-cmd', '--permanent', '--add-port=51820/udp'), calls)
+        self.assertIn(('ufw', 'allow', 'in', 'on', DEV, 'from', 'fd00:1234:5678::/48',
+                       'to', 'fd00:1234:5678::1', 'comment', 'tako-network-' + ID), calls)
+        self.assertTrue(any('destination address="fd00:1234:5678::1"' in arg
+                            for call in calls for arg in call))
         self.assertFalse(any('flush' in arg or 'disable' in arg for call in calls for arg in call))
 
     def test_foreign_interface_with_managed_name_after_apply_is_not_stopped(self):

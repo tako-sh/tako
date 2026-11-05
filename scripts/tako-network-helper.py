@@ -291,18 +291,26 @@ class Host:
             require(not (destination in wanted or route.get('dev') == dev) or managed, 'foreign route')
         return routes
 
-    def open_udp(self, ident, port):
-        # Ingress exceptions may predate Tako. Never delete a host firewall rule on removal.
+    def open_host_firewall(self, ident, port):
+        # These additive exceptions never delete a pre-existing administrator rule.
+        config = self.state['networks'][ident]
+        local = config['address'].split('/')[0]
+        prefix = str(ipaddress.IPv6Network(local + '/48', strict=False))
         if self.runner.available('ufw'):
             status = self.runner.run('ufw', 'status')
             if status.startswith('Status: active'):
                 self.runner.run('ufw', 'allow', f'{port}/udp', 'comment', 'tako-network-' + ident)
+                self.runner.run('ufw', 'allow', 'in', 'on', interface(ident), 'from', prefix,
+                                'to', local, 'comment', 'tako-network-' + ident)
         if self.runner.available('firewall-cmd'):
             # systemctl reports inactive with success via show, unlike firewall-cmd --state.
             active = self.runner.run('systemctl', 'show', 'firewalld', '--property=ActiveState', '--value').strip()
             if active == 'active':
                 self.runner.run('firewall-cmd', '--add-port=' + str(port) + '/udp')
                 self.runner.run('firewall-cmd', '--permanent', '--add-port=' + str(port) + '/udp')
+                rule = f'rule family="ipv6" source address="{prefix}" destination address="{local}" accept'
+                self.runner.run('firewall-cmd', '--add-rich-rule=' + rule)
+                self.runner.run('firewall-cmd', '--permanent', '--add-rich-rule=' + rule)
 
     def apply(self, ident, desired):
         dev = interface(ident)
@@ -372,7 +380,7 @@ class Host:
                         self.runner.run('ip', '-6', 'route', 'del', destination, 'dev', dev, 'proto', '186', 'metric', '42760')
             for destination in sorted(wanted):
                 self.runner.run('ip', '-6', 'route', 'replace', destination, 'dev', dev, 'proto', '186', 'metric', '42760')
-            self.open_udp(ident, desired['listen_port'])
+            self.open_host_firewall(ident, desired['listen_port'])
             self.runner.run('systemctl', 'enable', f'tako-network@{ident}.service')
             self.runner.run('ip', 'link', 'set', 'dev', dev, 'up')
             config['managed_addresses'] = [desired['address']]
