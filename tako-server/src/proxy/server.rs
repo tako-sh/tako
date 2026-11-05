@@ -156,12 +156,7 @@ pub(crate) fn build_server_with_acme(build: ServerBuildConfig) -> Result<Server>
         #[cfg(target_os = "linux")]
         if let Some(endpoints) = private_endpoints {
             for addr in endpoints {
-                let mut options = TcpSocketOptions::default();
-                options.freebind = true;
-                if addr.starts_with('[') {
-                    options.ipv6_only = Some(true);
-                }
-                proxy_service.add_tcp_with_settings(&addr, options);
+                proxy_service.add_tcp_with_settings(&addr, private_listener_socket_options(&addr));
             }
         }
 
@@ -245,6 +240,13 @@ pub(crate) fn public_listener_endpoints(port: u16) -> [PublicListenerEndpoint; 2
             options: listener_socket_options(Some(true)),
         },
     ]
+}
+
+#[cfg(target_os = "linux")]
+fn private_listener_socket_options(address: &str) -> TcpSocketOptions {
+    let mut options = listener_socket_options(address.starts_with('[').then_some(true));
+    options.freebind = true;
+    options
 }
 
 pub(crate) fn listener_socket_options(ipv6_only: Option<bool>) -> TcpSocketOptions {
@@ -422,6 +424,17 @@ pub(crate) fn create_tls_settings(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn private_listeners_allow_overlapping_proxy_processes() {
+        for (address, ipv6) in [("[fd00::1]:80", Some(true)), ("10.1.2.1:80", None)] {
+            let options = private_listener_socket_options(address);
+            assert_eq!(options.so_reuseport, Some(true));
+            assert_eq!(options.ipv6_only, ipv6);
+            assert!(options.freebind);
+        }
+    }
 
     #[test]
     fn proxy_server_conf_uses_available_parallelism() {

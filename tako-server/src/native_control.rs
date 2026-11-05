@@ -303,7 +303,7 @@ mod bridge {
                 client.read_to_string(&mut response).await.unwrap();
                 assert!(response.starts_with("HTTP/1.1 401"));
                 assert!(response.ends_with("denied"));
-                assert!(response.contains("connection: close"));
+                assert!(response.to_ascii_lowercase().contains("connection: close"));
             }).await.unwrap();
         }
 
