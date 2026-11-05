@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -39,6 +39,18 @@ fn connect_with(
             .as_deref()
             .ok_or("Active WireGuard interface has no owned configuration")?;
         validate_saved_configuration(saved, &keys)?;
+        if saved == configuration {
+            let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+            for line in configuration
+                .lines()
+                .filter(|line| !line.starts_with("Address = "))
+            {
+                writeln!(temporary, "{line}")?;
+            }
+            temporary.as_file().sync_all()?;
+            super::private_file(temporary.path(), false)?;
+            return run("wg", &["syncconf", &active, path_string(temporary.path())?]);
+        }
         run("wg-quick", &["down", path_string(&path)?])?;
     }
     super::write_bytes(&path, configuration.as_bytes(), true)?;
@@ -335,7 +347,7 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "linux")]
-    fn reconnect_reapplies_configuration_and_refuses_another_interfaces_key() {
+    fn unchanged_reconnect_reconciles_peers_without_replacing_interface_or_routes() {
         let home = TestHome::new();
         let fixture = fixture();
         network::store_keys(&fixture.profile.request().request_id, &fixture.keys).unwrap();
@@ -343,12 +355,34 @@ mod tests {
         let interface = interface_name(&fixture.profile.snapshot().network.id);
         let key = fixture.keys.wg_public_key().unwrap().to_string();
         let events = RefCell::new(Vec::new());
+        let sync_path = RefCell::new(None);
+        let desired = configuration(&fixture.profile, &fixture.keys).unwrap();
         let mut run = |program: &str, args: &[&str]| -> Result<()> {
-            assert_eq!(program, "wg-quick");
-            let path = Path::new(args[1]);
+            let path = if program == "wg" {
+                assert_eq!(&args[..2], &["syncconf", interface.as_str()]);
+                let path = Path::new(args[2]);
+                let contents = fs::read_to_string(path)?;
+                assert!(!contents.contains("Address = "));
+                assert!(!contents.contains("DNS = "));
+                assert!(!contents.contains("PostUp = "));
+                let expected = desired
+                    .lines()
+                    .filter(|line| !line.starts_with("Address = "))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+                    + "\n";
+                assert_eq!(contents, expected);
+                assert_eq!(contents.matches("[Peer]").count(), 1);
+                *sync_path.borrow_mut() = Some(path.to_owned());
+                path
+            } else {
+                assert_eq!(program, "wg-quick");
+                let path = Path::new(args[1]);
+                validate_saved_configuration(&fs::read_to_string(path)?, &fixture.keys)?;
+                path
+            };
             assert!(path.starts_with(home.directory.path()));
             assert_eq!(fs::metadata(path)?.permissions().mode() & 0o777, 0o600);
-            validate_saved_configuration(&fs::read_to_string(path)?, &fixture.keys)?;
             events.borrow_mut().push(args[0].to_string());
             Ok(())
         };
@@ -362,9 +396,23 @@ mod tests {
             })
         };
         connect_with(&alias, &fixture.profile, capture, &mut run).unwrap();
-        assert_eq!(*events.borrow(), ["up", "down", "up"]);
+        assert_eq!(*events.borrow(), ["up", "syncconf"]);
+        assert!(!sync_path.borrow().as_ref().unwrap().exists());
         let path = configuration_path(&alias, &fixture.profile).unwrap();
         let saved = fs::read(&path).unwrap();
+        let mut failed_sync_path = None;
+        assert!(
+            connect_with(&alias, &fixture.profile, capture, |program, args| {
+                assert_eq!(program, "wg");
+                assert_eq!(&args[..2], &["syncconf", interface.as_str()]);
+                failed_sync_path = Some(PathBuf::from(args[2]));
+                assert!(failed_sync_path.as_ref().unwrap().exists());
+                Err("syncconf failed".into())
+            })
+            .is_err()
+        );
+        assert!(!failed_sync_path.unwrap().exists());
+        assert_eq!(fs::read(&path).unwrap(), saved);
         assert!(
             connect_with(
                 &alias,
@@ -380,7 +428,8 @@ mod tests {
             )
             .is_err()
         );
-        assert_eq!(*events.borrow(), ["up", "down", "up"]);
+        assert_eq!(*events.borrow(), ["up", "syncconf"]);
+        assert!(!sync_path.borrow().as_ref().unwrap().exists());
         assert_eq!(fs::read(&path).unwrap(), saved);
         let mut revoked = fixture.profile.clone();
         let Profile::Active { profile } = &mut revoked else {
@@ -400,7 +449,7 @@ mod tests {
         );
         assert!(configuration(&revoked, &fixture.keys).is_err());
         disconnect_with(&alias, &revoked, capture, &mut run).unwrap();
-        assert_eq!(*events.borrow(), ["up", "down", "up", "down"]);
+        assert_eq!(*events.borrow(), ["up", "syncconf", "down"]);
         assert!(!path.exists());
         disconnect_with(
             &alias,
@@ -429,13 +478,30 @@ mod tests {
             .is_err()
         );
         let saved = fs::read(&path).unwrap();
+        let mut changed = fixture.profile.clone();
+        let Profile::Active { profile: active } = &mut changed else {
+            panic!()
+        };
+        let member = active
+            .snapshot
+            .members
+            .iter_mut()
+            .find(|member| member.device_id == fixture.server)
+            .unwrap();
+        let MemberKind::Server(info) = &mut member.kind else {
+            panic!()
+        };
+        info.wireguard_endpoint = "192.0.2.11:51820".parse().unwrap();
+        active
+            .trusted_servers
+            .insert(fixture.server.clone(), info.clone());
         let interface = interface_name(&fixture.profile.snapshot().network.id);
         let key = fixture.keys.wg_public_key().unwrap().to_string();
         let mut commands = vec![];
         assert!(
             connect_with(
                 &alias,
-                &fixture.profile,
+                &changed,
                 |_, args| {
                     Ok(if args == ["show", "interfaces"] {
                         interface.clone()
