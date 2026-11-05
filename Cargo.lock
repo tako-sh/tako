@@ -5848,6 +5848,7 @@ dependencies = [
  "tako-compose",
  "tako-core",
  "tako-images",
+ "tako-network",
  "tako-runtime",
  "tako-socket",
  "tako-spawn",

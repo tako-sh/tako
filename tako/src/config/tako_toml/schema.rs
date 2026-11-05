@@ -145,6 +145,9 @@ pub struct BuildStage {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct EnvConfig {
+    /// Stable network ID; local aliases are not portable project configuration.
+    pub network: Option<String>,
+
     /// Single route (mutually exclusive with routes)
     pub route: Option<String>,
 

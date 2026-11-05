@@ -4,6 +4,7 @@ mod dev_server_client;
 mod github;
 mod keychain;
 mod management_http;
+mod network;
 mod output;
 mod paths;
 pub mod shell;

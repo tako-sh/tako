@@ -3,6 +3,7 @@ pub mod backups;
 pub mod codegen;
 pub mod completions;
 pub mod mcp;
+pub mod network;
 
 pub mod credentials;
 pub mod delete;

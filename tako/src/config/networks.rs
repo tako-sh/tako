@@ -21,7 +21,7 @@ pub struct NetworksToml {
 
 impl NetworkAlias {
     pub fn validate(&self) -> Result<()> {
-        super::servers_toml::validate_server_name(&self.name)?;
+        validate_network_name(&self.name)?;
         validate_network_id(&self.id)?;
         if !valid_hex_id(&self.device, 64) {
             return Err(ConfigError::Validation("Invalid network device ID".into()));
@@ -36,8 +36,17 @@ impl NetworkAlias {
         Ok(directory
             .join("networks")
             .join(&self.id)
+            .join(&self.device)
             .join("profile.json"))
     }
+}
+
+pub fn validate_network_name(name: &str) -> Result<()> {
+    super::servers_toml::validate_server_name(name).map_err(|_| {
+        ConfigError::Validation(
+            "Network alias must be 1–63 lowercase letters, digits, or hyphens, starting with a letter".into(),
+        )
+    })
 }
 
 pub fn validate_network_id(id: &str) -> Result<()> {

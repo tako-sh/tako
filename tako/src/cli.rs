@@ -157,6 +157,10 @@ pub enum Commands {
     #[command(subcommand)]
     Servers(server::ServerCommands),
 
+    /// Private network membership and portable configuration
+    #[command(subcommand)]
+    Network(commands::network::NetworkCommands),
+
     /// Secret management commands
     #[command(subcommand)]
     Secrets(secret::SecretCommands),
@@ -300,6 +304,7 @@ fn telemetry_command(command: &Commands) -> &'static str {
         Commands::Doctor => "doctor",
         Commands::Status => "status",
         Commands::Servers(_) => "servers",
+        Commands::Network(_) => "network",
         Commands::Secrets(_) => "secrets",
         Commands::Storages(_) => "storages",
         Commands::Backups(_) => "backups",
@@ -414,6 +419,7 @@ impl Cli {
                     Ok(())
                 }
             }
+            Commands::Network(cmd) => commands::network::run(cmd, self.config.as_deref()),
             Commands::Secrets(cmd) => {
                 let emit_generic = json && !matches!(cmd, secret::SecretCommands::List);
                 secret::run(cmd, self.config.as_deref())?;
