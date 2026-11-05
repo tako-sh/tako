@@ -272,7 +272,7 @@ mod transport_tests {
                 .write_response_header(Box::new(header), false)
                 .await
                 .unwrap();
-            store
+            let sent = store
                 .publish_ephemeral(
                     "live",
                     &ChannelPublishPayload {
@@ -286,6 +286,7 @@ mod transport_tests {
             )
             .unwrap();
             serve_events(&mut session, events, &auth).await.unwrap();
+            sent
         });
         let response = reqwest::Client::new()
             .get(format!("http://{addr}/"))
@@ -295,10 +296,104 @@ mod transport_tests {
             .unwrap();
         assert_eq!(response.status(), 200);
         let body = response.text().await.unwrap();
+        let sent = server.await.unwrap();
+        assert!(!body.lines().any(|line| line.starts_with("id:")));
+        let data = body
+            .strip_prefix("data: ")
+            .unwrap()
+            .strip_suffix("\n\n")
+            .unwrap();
         assert_eq!(
-            body,
-            "data: {\"id\":\"\",\"channel\":\"live\",\"type\":\"progress\",\"data\":2}\n\n"
+            serde_json::from_str::<serde_json::Value>(data).unwrap(),
+            serde_json::json!({"id":"", "eventId":sent.event_id, "channel":"live", "type":"progress", "data":2})
         );
-        server.await.unwrap();
+        assert_eq!(sent.event_id.as_ref().unwrap().sequence, 2);
+    }
+}
+
+#[cfg(test)]
+mod duplex_tests {
+    use super::*;
+    use crate::{ChannelPublishPayload, ChannelStore};
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+
+    #[tokio::test]
+    async fn sse_preserves_event_identity_without_replay_over_duplex_transport() {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let (mut client, io) = tokio::io::duplex(16384);
+            client
+                .write_all(b"GET / HTTP/1.1\r\nHost: local\r\nLast-Event-ID: 123\r\n\r\n")
+                .await
+                .unwrap();
+            let mut session = pingora_proxy::Session::new_h1(Box::new(io));
+            session.read_request().await.unwrap();
+            let store = ChannelStore::open_in_memory().unwrap();
+            let payload = ChannelPublishPayload {
+                r#type: "progress".into(),
+                data: 1.into(),
+            };
+            let old = store.publish_ephemeral("live", &payload).unwrap();
+            let events = store.subscribe_ephemeral("live").unwrap();
+            let sent = store
+                .publish_ephemeral(
+                    "live",
+                    &ChannelPublishPayload {
+                        data: 2.into(),
+                        ..payload
+                    },
+                )
+                .unwrap();
+            let mut header = pingora_http::ResponseHeader::build(200, None).unwrap();
+            header
+                .insert_header("Content-Type", "text/event-stream")
+                .unwrap();
+            session
+                .write_response_header(Box::new(header), false)
+                .await
+                .unwrap();
+            let auth =
+                serde_json::from_value(serde_json::json!({"ok":true,"ephemeral":true})).unwrap();
+            let server = tokio::spawn(async move {
+                serve_events(&mut session, events, &auth).await.unwrap();
+            });
+            let mut client = BufReader::new(client);
+            let mut response = String::new();
+            loop {
+                let mut line = String::new();
+                assert!(
+                    client.read_line(&mut line).await.unwrap() > 0,
+                    "SSE ended before the event"
+                );
+                response.push_str(&line);
+                if line.starts_with("data: ") {
+                    break;
+                }
+            }
+            store.signal_gap(Some("live"));
+            client.read_to_string(&mut response).await.unwrap();
+            server.await.unwrap();
+            assert!(response.starts_with("HTTP/1.1 200"));
+            assert!(!response.lines().any(|line| line.starts_with("id:")));
+            let events: Vec<serde_json::Value> = response
+                .lines()
+                .filter_map(|line| line.strip_prefix("data: "))
+                .map(|data| serde_json::from_str(data).unwrap())
+                .collect();
+            assert_eq!(
+                events,
+                vec![serde_json::json!({
+                    "id":"", "eventId":{"origin":old.event_id.unwrap().origin,"sequence":2},
+                    "channel":"live", "type":"progress", "data":2
+                })]
+            );
+            assert_eq!(events[0], serde_json::to_value(sent).unwrap());
+            assert!(store.read_after("live", None, 10).unwrap().is_empty());
+            assert_eq!(
+                store.raw_query_i64("SELECT COUNT(*) FROM channel_metadata", []),
+                0
+            );
+        })
+        .await
+        .unwrap();
     }
 }

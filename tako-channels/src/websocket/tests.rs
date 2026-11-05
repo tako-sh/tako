@@ -152,7 +152,7 @@ async fn ephemeral_websockets_publish_live_without_replaying_old_events() {
             });
         }
     });
-    store
+    let old = store
         .publish_ephemeral(
             "live",
             &crate::ChannelPublishPayload {
@@ -176,7 +176,7 @@ async fn ephemeral_websockets_publish_live_without_replaying_old_events() {
             .unwrap();
         assert_eq!(
             serde_json::from_str::<Value>(message.to_text().unwrap()).unwrap(),
-            json!({"id":"","channel":"live","type":"progress","data":n})
+            json!({"id":"","eventId":{"origin":old.event_id.as_ref().unwrap().origin,"sequence":n + 1},"channel":"live","type":"progress","data":n})
         );
         client.close(None).await.unwrap();
     }
@@ -186,4 +186,47 @@ async fn ephemeral_websockets_publish_live_without_replaying_old_events() {
         0
     );
     server.abort();
+}
+
+#[tokio::test]
+async fn ephemeral_duplex_websockets_preserve_identity_without_replaying_old_events() {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let store = Arc::new(ChannelStore::open_in_memory().unwrap());
+        let old = store.publish_ephemeral("live", &crate::ChannelPublishPayload {
+            r#type: "old".into(),
+            data: 0.into(),
+        }).unwrap();
+        for n in [1, 2] {
+            let (client, io) = tokio::io::duplex(16384);
+            let server_store = store.clone();
+            let server = tokio::spawn(async move {
+                let mut session = Session::new_h1(Box::new(io));
+                session.read_request().await.unwrap();
+                let response = build_websocket_upgrade_response(session.req_header()).unwrap();
+                session.write_response_header(Box::new(response), false).await.unwrap();
+                serve(
+                    &mut session,
+                    &server_store,
+                    "live",
+                    Some(crate::ReplayCursor::postgres(-100)),
+                    serde_json::from_value(json!({"ok":true,"ephemeral":true,"transport":"ws"})).unwrap(),
+                    json!({}),
+                    Default::default(),
+                ).await.unwrap();
+            });
+            let (mut client, response) = tokio_tungstenite::client_async("ws://local/", client).await.unwrap();
+            assert_eq!(response.status(), 101);
+            client.send(Message::text(json!({"type":"progress", "data":n}).to_string())).await.unwrap();
+            let message = client.next().await.unwrap().unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(message.to_text().unwrap()).unwrap(),
+                json!({"id":"", "eventId":{"origin":old.event_id.as_ref().unwrap().origin,"sequence":n + 1},
+                    "channel":"live", "type":"progress", "data":n})
+            );
+            client.close(None).await.unwrap();
+            server.await.unwrap();
+        }
+        assert!(store.read_after("live", None, 10).unwrap().is_empty());
+        assert_eq!(store.raw_query_i64("SELECT COUNT(*) FROM channel_metadata", []), 0);
+    }).await.unwrap();
 }
