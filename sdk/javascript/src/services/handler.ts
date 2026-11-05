@@ -1,4 +1,3 @@
-import { OptionalKind } from "@sinclair/typebox";
 import type { ServiceDefinition, ServiceInput, ServiceResponse } from "./contract";
 import { decodeQuery, jsonBody, readJson, ServiceError, validate } from "./http";
 
@@ -63,20 +62,29 @@ export function createServiceHandler<
             params[part.slice(1, -1)] = value;
           }
         });
-        const query = decodeQuery(operation.query, url.searchParams);
-        const body = await readJson(request, name, "request");
-        validate(
+        const paramsData = validate(
           operation.params,
           operation.params ? params : undefined,
           name,
           "request",
           "params",
         );
-        validate(operation.query, query, name, "request", "query");
-        if (!(body === undefined && operation.body?.[OptionalKind]))
-          validate(operation.body, body, name, "request", "body");
+        const query = validate(
+          operation.query,
+          decodeQuery(operation.query, url.searchParams),
+          name,
+          "request",
+          "query",
+        );
+        const body = validate(
+          operation.body,
+          await readJson(request, name, "request"),
+          name,
+          "request",
+          "body",
+        );
         input = {
-          ...(operation.params ? { params } : {}),
+          ...(paramsData ? { params: paramsData } : {}),
           ...(query ? { query } : {}),
           ...(body === undefined ? {} : { body }),
         };
@@ -97,11 +105,18 @@ export function createServiceHandler<
           `Handler returned undeclared status ${result.status}`,
           result.status,
         );
-      validate(schema ?? undefined, result.body, name, "response", "body", result.status);
+      const body = validate(
+        schema ?? undefined,
+        result.body,
+        name,
+        "response",
+        "body",
+        result.status,
+      );
       const headers = new Headers(result.headers);
       if (schema === null) return new Response(null, { status: result.status, headers });
       headers.set("content-type", "application/json");
-      return new Response(jsonBody(result.body, name, "response", result.status), {
+      return new Response(jsonBody(body, name, "response", result.status), {
         status: result.status,
         headers,
       });

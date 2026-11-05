@@ -56,18 +56,18 @@ export function createServiceClient<S extends ServiceDefinition>(
       } = {},
       call: ServiceCallOptions = {},
     ) => {
-      validate(operation.params, input.params, name, "request", "params");
-      validate(
+      const params = validate(operation.params, input.params, name, "request", "params");
+      const query = validate(
         operation.query,
         input.query ?? (operation.query ? {} : undefined),
         name,
         "request",
         "query",
       );
-      validate(operation.body, input.body, name, "request", "body");
+      const data = validate(operation.body, input.body, name, "request", "body");
       const url = new URL(base);
       const path = operation.path.replace(/\{([^}]+)\}/g, (_match, key: string) => {
-        const value = String(input.params![key]);
+        const value = String(params![key]);
         if (!value || value === "." || value === "..")
           throw new ServiceError(
             "validation",
@@ -79,7 +79,7 @@ export function createServiceClient<S extends ServiceDefinition>(
         return encodeURIComponent(value);
       });
       url.pathname = base.pathname.replace(/\/$/, "") + path;
-      for (const [key, value] of Object.entries(input.query ?? {})) {
+      for (const [key, value] of Object.entries(query ?? {})) {
         if (value === undefined) continue;
         if (Array.isArray(value) && !value.length)
           throw new ServiceError(
@@ -100,7 +100,7 @@ export function createServiceClient<S extends ServiceDefinition>(
       const headers = new Headers(options.headers);
       new Headers(call.headers).forEach((value, key) => headers.set(key, value));
       headers.set("accept", "application/json");
-      const body = input.body === undefined ? undefined : jsonBody(input.body, name, "request");
+      const body = data === undefined ? undefined : jsonBody(data, name, "request");
       if (body !== undefined) headers.set("content-type", "application/json");
       let response: Response;
       try {
@@ -135,7 +135,7 @@ export function createServiceClient<S extends ServiceDefinition>(
           { cause },
         );
       }
-      let data: unknown;
+      let responseData: unknown;
       if (schema === null) {
         if ((await readText(response, name, "response", response.status)).length)
           throw new ServiceError(
@@ -146,10 +146,16 @@ export function createServiceClient<S extends ServiceDefinition>(
             response.status,
           );
       } else {
-        data = await readJson(response, name, "response", response.status);
-        validate(schema, data, name, "response", "body", response.status);
+        responseData = validate(
+          schema,
+          await readJson(response, name, "response", response.status),
+          name,
+          "response",
+          "body",
+          response.status,
+        );
       }
-      return { status: response.status, body: data, headers: response.headers };
+      return { status: response.status, body: responseData, headers: response.headers };
     };
   }
   return client as ServiceClient<S>;

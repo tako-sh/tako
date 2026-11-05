@@ -40,37 +40,66 @@ const jsonSchema = Type.Recursive((self) =>
   ]),
 );
 
-function ownJsonProperties(value: unknown, seen = new WeakMap<object, unknown>()): unknown {
+function ownJsonProperties(
+  value: unknown,
+  seen = new WeakMap<object, unknown>(),
+  active = new WeakSet<object>(),
+): unknown {
   if (value === null || typeof value !== "object") return value;
+  if (active.has(value)) throw new Error("JSON cannot contain cycles");
   if (seen.has(value)) return seen.get(value);
+  active.add(value);
   if (Array.isArray(value)) {
     const array: unknown[] = [];
+    // Keep normal array behavior while preventing inherited serialization hooks.
+    Object.defineProperty(array, "toJSON", { value: undefined });
     seen.set(value, array);
-    for (const item of value) array.push(ownJsonProperties(item, seen));
+    const length = value.length;
+    for (let i = 0; i < length; i++)
+      array.push(ownJsonProperties(Object.hasOwn(value, i) ? value[i] : undefined, seen, active));
+    active.delete(value);
     return array;
   }
   const record: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   seen.set(value, record);
-  for (const [key, item] of Object.entries(value)) record[key] = ownJsonProperties(item, seen);
+  for (const [key, item] of Object.entries(value))
+    record[key] = ownJsonProperties(item, seen, active);
+  active.delete(value);
   return record;
 }
 
-export function validate(
+/** Return the checked snapshot; callers must use it for encoding and dispatch. */
+export function validate<T>(
   schema: TSchema | undefined,
-  value: unknown,
+  value: T,
   operation: string,
   phase: ServiceErrorPhase,
   field: string,
   status?: number,
-): void {
-  const data = ownJsonProperties(value);
+): T {
+  let data: unknown;
+  try {
+    data = ownJsonProperties(value);
+  } catch (cause) {
+    throw new ServiceError("validation", operation, phase, `Cannot snapshot ${field}`, status, [], {
+      cause,
+    });
+  }
+  if (field === "body" && data !== undefined && !Value.Check(jsonSchema, data))
+    throw new ServiceError(
+      "validation",
+      operation,
+      phase,
+      "Body must contain only JSON values",
+      status,
+    );
   const checkSchema = schema && serviceValidationSchema(schema);
   if (
     schema
       ? (value === undefined && schema[OptionalKind]) || Value.Check(checkSchema!, data)
       : value === undefined
   )
-    return;
+    return data as T;
   const issues = schema
     ? [...Value.Errors(checkSchema!, data)].map(({ path, message }) => ({
         path: `/${field}${path}`,
