@@ -103,7 +103,7 @@ export function assertServiceSchema(schema: TSchema): void {
   if (schema["multipleOf"] !== undefined && !(schema["multipleOf"] > 0))
     throw new Error("Service schema multipleOf must be positive.");
   if (schema["pattern"] !== undefined) new RegExp(schema["pattern"] as string, "u");
-  if (schema["type"] === "object") {
+  if (schema[Kind] === "Object") {
     const properties = schema["properties"] as Record<string, TSchema>;
     const expected = Object.keys(properties).filter((key) => !properties[key]![OptionalKind]);
     const required = (schema["required"] ?? []) as string[];

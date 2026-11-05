@@ -95,6 +95,7 @@ test("required metadata must match declared properties and OptionalKind", () => 
       t.Array(schema),
       t.Object({ nested: schema }),
       t.Union([t.String(), schema]),
+      t.Intersect([t.Object({}), schema]),
       t.Object({}, { additionalProperties: schema }),
     ]) {
       expect(() =>

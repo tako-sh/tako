@@ -145,7 +145,7 @@ test("URL encoding uses the same checked params and query snapshots", async () =
   const client = createServiceClient(service, {
     baseURL: "http://fixture",
     fetch: async (input) => {
-      expect(String(input)).toBe("http://fixture/user?role=user");
+      expect(input instanceof URL && input.href).toBe("http://fixture/user?role=user");
       return new Response(null, { status: 204 });
     },
   });
