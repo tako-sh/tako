@@ -158,7 +158,9 @@ pub(super) async fn add(
             Stage::Admitted { snapshot }
         } else {
             Stage::Approval {
-                issuer: network::client::server(&profile)?,
+                issuer: tokio::task::block_in_place(|| {
+                    network::client::available_server(&profile)
+                })?,
                 grant: Box::new(ApproveRequest {
                     pending_id: RequestId::random()?,
                     request: request.clone(),
@@ -195,7 +197,9 @@ pub(super) async fn add(
             grant.pending_id = RequestId::random()?;
             grant.expires_at = network::now()? + 86400;
             enrollment.stage = Stage::Approval {
-                issuer: network::client::server(&profile)?,
+                issuer: tokio::task::block_in_place(|| {
+                    network::client::available_server(&profile)
+                })?,
                 grant,
             };
             network::write_json(&journal_path, &enrollment, true)?;

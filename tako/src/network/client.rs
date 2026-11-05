@@ -31,6 +31,15 @@ pub(crate) fn call(
     server: &DeviceId,
     command: RpcRequest,
 ) -> Result<RpcResponse> {
+    call_checked(profile, server, command, false)
+}
+
+fn call_checked(
+    profile: &Profile,
+    server: &DeviceId,
+    command: RpcRequest,
+    require_ready: bool,
+) -> Result<RpcResponse> {
     let keys = LocalDeviceKeys::load(&super::keys_path(&profile.request().request_id)?)?;
     profile.validate(&keys)?;
     let trusted = trusted_servers(profile)?;
@@ -45,10 +54,18 @@ pub(crate) fn call(
         super::now()?,
         command,
     )?;
-    send(info, &request)
+    send_checked(info, &request, require_ready)
 }
 
 pub(crate) fn send(info: &ServerInfo, signed: &SignedRequest) -> Result<RpcResponse> {
+    send_checked(info, signed, false)
+}
+
+fn send_checked(
+    info: &ServerInfo,
+    signed: &SignedRequest,
+    require_ready: bool,
+) -> Result<RpcResponse> {
     let (http, request) = prepare_request(info, signed)?;
     let response = http.execute(request)?;
     let status = response.status();
@@ -59,7 +76,27 @@ pub(crate) fn send(info: &ServerInfo, signed: &SignedRequest) -> Result<RpcRespo
         )
         .into());
     }
+    if require_ready
+        && response
+            .headers()
+            .get("x-tako-network-ready")
+            .is_none_or(|ready| ready != "true")
+    {
+        return Err("Native server has not applied its network state yet".into());
+    }
     super::read_bounded_json(response)
+}
+
+pub(crate) fn available_server(profile: &Profile) -> Result<DeviceId> {
+    let mut last_error = None;
+    for server in trusted_servers(profile)?.keys() {
+        match call_checked(profile, server, RpcRequest::Snapshot, true) {
+            Ok(RpcResponse::Snapshot(_)) => return Ok(server.clone()),
+            Ok(_) => return Err("Unexpected network snapshot response".into()),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| "No network server is ready".into()))
 }
 
 fn prepare_request(

@@ -429,7 +429,15 @@ impl Cli {
                 rt.block_on(commands::doctor::run())
             }
             Commands::Servers(cmd) => {
-                let emit_generic = json && !matches!(cmd, server::ServerCommands::List);
+                let emit_generic = json
+                    && !matches!(
+                        &cmd,
+                        server::ServerCommands::List
+                            | server::ServerCommands::Add {
+                                network: Some(_),
+                                ..
+                            }
+                    );
                 server::run(cmd)?;
                 if emit_generic {
                     json_success(true, "servers")

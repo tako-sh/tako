@@ -42,6 +42,9 @@ pub enum NetworkCommands {
         /// Grant deployment scope as app/environment; repeat for additional scopes
         #[arg(long, value_name = "APP/ENV")]
         deploy: Vec<tako_network::AppEnv>,
+        /// Expire this device's membership after this many seconds.
+        #[arg(long, value_name = "SECONDS", value_parser = clap::value_parser!(u64).range(1..=31_536_000))]
+        expires_in: Option<u64>,
     },
     /// Revoke a device and approvals derived from it
     Revoke {
@@ -89,6 +92,7 @@ pub fn run(command: NetworkCommands, config_path: Option<&Path>) -> Result<()> {
             admin,
             ssh,
             deploy,
+            expires_in,
         } => approve(
             &file,
             network.as_deref(),
@@ -100,6 +104,7 @@ pub fn run(command: NetworkCommands, config_path: Option<&Path>) -> Result<()> {
                 ssh_user: ssh.then(|| "tako".parse()).transpose()?,
                 deployments: deploy.into_iter().collect(),
             },
+            expires_in,
         ),
         NetworkCommands::Revoke { device, network } => {
             revoke(&device, network.as_deref(), config_path)
@@ -434,6 +439,7 @@ fn approve(
     config_path: Option<&Path>,
     destination: &Path,
     permissions: Permissions,
+    expires_in: Option<u64>,
 ) -> Result<()> {
     use tako_network::api::{ApproveRequest, RpcRequest, RpcResponse};
     let request: tako_network::EnrollmentRequest = network::read_json(file)?;
@@ -447,7 +453,7 @@ fn approve(
     if output::is_dry_run() {
         return finish(
             "Would approve the enrollment request",
-            serde_json::json!({"dry_run": true, "network": alias.name, "device": request.name, "permissions": permissions}),
+            serde_json::json!({"dry_run": true, "network": alias.name, "device": request.name, "permissions": permissions, "expires_in": expires_in}),
         );
     }
     if destination.try_exists()? {
@@ -465,9 +471,9 @@ fn approve(
         kind: MemberKind::Laptop,
         permissions,
         expires_at,
-        member_expires_at: None,
+        member_expires_at: expires_in.map(|seconds| now + seconds),
     };
-    let issuer = network::client::server(&profile)?;
+    let issuer = network::client::available_server(&profile)?;
     let response = network::client::call(
         &profile,
         &issuer,
@@ -516,8 +522,11 @@ fn revoke(device: &str, value: Option<&str>, config_path: Option<&Path>) -> Resu
         id: id.clone(),
         target: target.clone(),
     };
-    let RpcResponse::Revoked(revocation) =
-        network::client::call(&profile, &network::client::server(&profile)?, command)?
+    let RpcResponse::Revoked(revocation) = network::client::call(
+        &profile,
+        &network::client::available_server(&profile)?,
+        command,
+    )?
     else {
         return Err("Unexpected revocation response".into());
     };
